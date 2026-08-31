@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -17,14 +18,21 @@ import (
 )
 
 // Bootstrap is the JSON document the SPA fetches at /bootstrap.json on
-// page load. It tells the client where the WS endpoint lives and what
-// token to present. The wsUrl is built from the request's Host header
-// so a LAN bind serves a LAN-reachable URL, not the loopback string
-// the server resolved at bind time.
+// page load. It tells the client where the WS endpoint lives; it carries
+// no credential, because the request that fetched it either arrived with
+// the page cookie or was answered with a Set-Cookie, and the browser
+// presents that cookie on the upgrade without page script ever holding
+// it. The wsUrl is built from the request's Host header so a LAN bind
+// serves a LAN-reachable URL, not the loopback string the server
+// resolved at bind time.
 type Bootstrap struct {
-	WSURL  string `json:"wsUrl"`
-	Token  string `json:"token"`
-	Remote bool   `json:"remote,omitempty"`
+	WSURL string `json:"wsUrl"`
+	// LaunchID identifies this backend launch. The SPA scopes its
+	// notification replay checkpoint by it, since a sequence number from
+	// a previous launch means nothing to this one. Opaque, not a
+	// credential, and safe for page script to read.
+	LaunchID string `json:"launchId,omitempty"`
+	Remote   bool   `json:"remote,omitempty"`
 	// Harness marks a backend booted as the agent test harness or the
 	// soak rig (Config.Harness). The SPA keys its harness bridge on it —
 	// the bridge module ships in every bundle but is only imported when
@@ -88,9 +96,24 @@ type Config struct {
 	// it on port 0 would fail identically and only obscure the cause.
 	EphemeralPortFallback bool
 
-	// Token is the auth secret presented as ?token=<value> on WS
-	// upgrade. Empty asks Server.New to generate one (recommended).
+	// Token is this launch's session credential. Empty asks Server.New
+	// to generate one (recommended). Browsers never see it — they hold
+	// the page cookie Server.AppURL's one-time ticket buys them — so it
+	// is the credential for clients that are not browsers: the WSL
+	// launcher's probe and notification socket, the `ao-harness` CLI,
+	// the `--connect` stub dialling this server. See credential.go.
 	Token string
+
+	// PageURL assembles the full page URL this server's own tooling
+	// should navigate to, including a freshly minted one-time ticket
+	// and whatever else the boot threads onto it (the durable client id,
+	// the harness page marker). Served by the PageURLPath route.
+	//
+	// A getter supplied by the boot, not a value: the assembly rule
+	// lives with the boot that knows those extra parameters, and every
+	// call must mint a new ticket. Optional — when nil the route answers
+	// AppURL(), which is the same URL without those parameters.
+	PageURL func() string
 
 	// Dispatcher hosts the registered RPC methods. Required.
 	Dispatcher *Dispatcher
@@ -220,7 +243,16 @@ type Server struct {
 	// mu so Addr() reads aren't blocked behind a slow rebind.
 	rebindMu sync.Mutex
 
-	token string
+	// cred is this launch's page credential: the session token clients
+	// that are not browsers present, plus the one-time page tickets that
+	// buy a browser its HttpOnly cookie. See credential.go.
+	cred *Credential
+
+	// launchID identifies this boot to a client that must not reuse
+	// state minted against a previous one (the SPA's notification
+	// replay checkpoint). Opaque and non-credential: it is published in
+	// the manifest precisely so nothing else has to be.
+	launchID string
 
 	// rootCtx + rootCancel scope every connection's lifetime to the
 	// server. Shutdown cancels rootCtx so live readLoops exit
@@ -283,13 +315,13 @@ func New(cfg Config) (*Server, error) {
 	if cfg.HTTPIdleTimeout == 0 {
 		cfg.HTTPIdleTimeout = 120 * time.Second
 	}
-	token := cfg.Token
-	if token == "" {
-		t, err := NewToken()
-		if err != nil {
-			return nil, fmt.Errorf("transport: generate token: %w", err)
-		}
-		token = t
+	cred, err := NewCredential(cfg.Token)
+	if err != nil {
+		return nil, fmt.Errorf("transport: generate credential: %w", err)
+	}
+	launchID, err := NewToken()
+	if err != nil {
+		return nil, fmt.Errorf("transport: generate launch id: %w", err)
 	}
 	// Copy origin patterns so a caller mutating the Config slice after
 	// New can't reach into the live allow-list. The mu-guarded mirror
@@ -301,7 +333,8 @@ func New(cfg Config) (*Server, error) {
 	}
 	s := &Server{
 		cfg:            cfg,
-		token:          token,
+		cred:           cred,
+		launchID:       launchID,
 		originPatterns: originPatterns,
 		serveErr:       make(chan error, 1),
 	}
@@ -427,6 +460,7 @@ func (s *Server) buildHTTPServer() *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/bootstrap.json", s.loopbackHostGuard(s.handleBootstrap))
 	mux.HandleFunc("/ws", s.loopbackHostGuard(s.handleWS))
+	mux.HandleFunc(PageURLPath, s.loopbackHostGuard(s.handlePageURL))
 	if s.cfg.ScopedTokens != nil {
 		mux.HandleFunc(ScopedRPCPath, s.loopbackHostGuard(s.handleScopedRPC))
 	}
@@ -583,8 +617,14 @@ func (s *Server) Addr() string {
 	return s.addr
 }
 
-// Token returns the auth token in use.
-func (s *Server) Token() string { return s.token }
+// Token returns this launch's session credential — the carrier for
+// clients that are not browsers. A browser never receives it: it holds
+// the page cookie instead (see credential.go).
+func (s *Server) Token() string { return s.cred.Token() }
+
+// LaunchID returns the opaque identifier for this boot that the manifest
+// publishes. Not a credential.
+func (s *Server) LaunchID() string { return s.launchID }
 
 // PageMarker returns the authenticated harness-page marker, if this server
 // is serving a harness. It is intentionally read-only and immutable after
@@ -608,29 +648,70 @@ func (s *Server) MarkStartupFailed() { s.startupFailed.Store(true) }
 // manifest. Servers without RequireReadyForBootstrap start ready.
 func (s *Server) Ready() bool { return s.ready.Load() }
 
-// AppURL returns the HTTP URL the webview should load. The query
-// parameter primes the bootstrap fetch — the SPA reads ?t= and presents
-// it to the WS upgrade.
+// Origin returns this server's own origin ("http://host:port"), with no
+// credential on it. Callers that want a page to navigate to want AppURL;
+// this is for the callers that only need to name the server — the `ao`
+// CLI's endpoint, the harness's page-origin check.
+//
+// Empty before Start, for the same reason AppURL is.
+func (s *Server) Origin() string {
+	host, port, ok := s.hostPort()
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("http://%s:%s", host, port)
+}
+
+// AppURL returns the HTTP URL a browser should load, carrying a FRESHLY
+// MINTED one-time page ticket. Every call mints its own, so a caller
+// that hands out two URLs has handed out two independently usable ones,
+// and the reload path (main_desktop.go's Ctrl+R getter) always produces
+// a URL that works even if the page it replaces already spent its
+// ticket.
+//
+// The ticket is not the session token. It buys the browser one HttpOnly
+// cookie at /bootstrap.json and is spent doing so; the SPA then scrubs
+// it from the URL. See credential.go.
 //
 // Pre-Start (no listener bound yet) returns "" so callers can detect
 // the not-ready state. main.go's `runDesktop` asserts non-empty before
 // passing the URL to Wails, turning that case into a loud boot error
 // rather than letting Wails fall through to its built-in scheme.
+func (s *Server) AppURL() string {
+	host, port, ok := s.hostPort()
+	if !ok {
+		return ""
+	}
+	ticket, err := s.cred.MintPageTicket()
+	if err != nil {
+		log.Printf("transport: AppURL: mint page ticket: %v", err)
+		return ""
+	}
+	return fmt.Sprintf("http://%s:%s/?%s=%s", host, port, PageTicketParam, ticket)
+}
+
+// MintPageTicket hands out a one-time page ticket for a URL this package
+// does not build itself — the LAN share URL, which names a discovered
+// interface address rather than the listener's own host.
+func (s *Server) MintPageTicket() (string, error) { return s.cred.MintPageTicket() }
+
+// hostPort resolves the host and port a page URL should name, reporting
+// false when no listener is bound.
 //
 // Post-Start, if the cached addr string fails to parse for any reason,
 // we fall back to the live listener address (net.Listener.Addr() is
-// always well-formed). Either way the URL points at this server with
-// the live token, never at port 80 (which an earlier fallback path
-// produced when SplitHostPort failed).
-func (s *Server) AppURL() string {
+// always well-formed). Either way the result points at this server,
+// never at port 80 (which an earlier fallback path produced when
+// SplitHostPort failed).
+func (s *Server) hostPort() (string, string, bool) {
 	addr := s.Addr()
 	if addr == "" {
 		// Pre-Start: no listener exists yet, so there is no port we
-		// could plausibly point a webview at. Return "" and let the
-		// caller (typically main.go) decide that's a fatal boot
+		// could plausibly point a webview at. Report not-ready and let
+		// the caller (typically main.go) decide that's a fatal boot
 		// condition — better than silently emitting a port-less URL
 		// that hits port 80 on first navigation.
-		return ""
+		return "", "", false
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -645,37 +726,97 @@ func (s *Server) AppURL() string {
 			live = s.listener.Addr().String()
 		}
 		s.mu.Unlock()
-		log.Printf("transport: AppURL: split %q: %v (falling back to listener.Addr() %q)", addr, err, live)
+		log.Printf("transport: page URL: split %q: %v (falling back to listener.Addr() %q)", addr, err, live)
 		if live == "" {
-			return ""
+			return "", "", false
 		}
 		host, port, err = net.SplitHostPort(live)
 		if err != nil {
-			// Both addr forms unparseable — return "" rather than
+			// Both addr forms unparseable — report not-ready rather than
 			// emit a port-less URL.
-			log.Printf("transport: AppURL: live addr %q also unparseable: %v", live, err)
-			return ""
+			log.Printf("transport: page URL: live addr %q also unparseable: %v", live, err)
+			return "", "", false
 		}
 	}
 	if host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("http://%s:%s/?t=%s", host, port, s.token)
+	return host, port, true
 }
 
+// PageURLPath serves a freshly minted page URL to a client that already
+// holds the session token: the Windows launcher pointing its WebView2 at
+// the WSL backend and re-pointing it on reload, `ao-harness open` /
+// `attach`, the e2e rig opening one browser context per test. Each of
+// those navigates more than once over a backend's life, and a page URL
+// is single-use by design, so the URL is minted on demand rather than
+// stored.
+//
+// It grants nothing the caller does not already have: presenting the
+// session token is already full access to this wire.
+const PageURLPath = "/pageurl"
+
+// handlePageURL answers PageURLPath with one URL and a newline. Plain
+// text because every consumer wants exactly the string, and the two
+// non-Go ones (a shell, the e2e rig) should not need a parser.
+func (s *Server) handlePageURL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.NotFound(w, r)
+		return
+	}
+	if !OriginAllowed(r, s.currentOriginPatterns()) || !s.cred.Authenticate(r) {
+		http.NotFound(w, r)
+		return
+	}
+	pageURL := s.AppURL()
+	if s.cfg.PageURL != nil {
+		pageURL = s.cfg.PageURL()
+	}
+	if pageURL == "" {
+		http.Error(w, "page url unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	h := w.Header()
+	WriteSecurityHeaders(h)
+	h.Set("Cache-Control", "no-store, max-age=0")
+	h.Set("Content-Type", "text/plain; charset=utf-8")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	_, _ = io.WriteString(w, pageURL+"\n")
+}
+
+// handleBootstrap answers the SPA's manifest fetch and is the one place
+// a page ticket is exchanged for the page cookie.
+//
+// The origin check runs first and for the same reason it does on the
+// upgrade: this route sets a cookie, and a request another origin
+// initiated must not be able to spend a ticket or be handed a session.
+// A same-origin GET carries no Origin header at all, so the SPA's own
+// fetch passes without one.
 func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
-	supplied := r.URL.Query().Get("t")
-	if err := ConstantTimeEqual(s.token, supplied); err != nil {
+	if !OriginAllowed(r, s.currentOriginPatterns()) {
+		http.NotFound(w, r)
+		return
+	}
+	// Exchange writes the Set-Cookie for a request that paid with a
+	// ticket, and must run before anything writes a status — including
+	// the readiness and startup-failure paths below, where issuing the
+	// cookie is exactly right: the credential was good, the backend just
+	// is not serving yet, and the retry should not need another ticket.
+	if !s.cred.Exchange(w, r) {
 		// Indistinguishable from "no such path" so a LAN scanner can't
 		// fingerprint the agent-overflow server vs other 404 responses.
 		http.NotFound(w, r)
 		return
 	}
 
-	// CORS not strictly needed (same origin), but emit no-cache so a
-	// stale token never gets reused after a server restart. Security
-	// headers match the asset handler's so the bootstrap response can't
-	// be framed, sniffed, or referrer-leaked from a foreign page.
+	// CORS not strictly needed (same origin), but emit no-store so a
+	// manifest from a previous launch is never replayed from a cache.
+	// Security headers match the asset handler's so the bootstrap
+	// response can't be framed, sniffed, or referrer-leaked from a
+	// foreign page.
 	h := w.Header()
 	h.Set("Cache-Control", "no-store, max-age=0")
 	WriteSecurityHeaders(h)
@@ -698,8 +839,8 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		// Build the wsUrl from the request's Host header so a LAN
 		// client gets a LAN-reachable URL even though the server's
 		// internal addr might say "0.0.0.0:port" (unconnectable).
-		WSURL: deriveWSURL(r),
-		Token: s.token,
+		WSURL:    deriveWSURL(r),
+		LaunchID: s.launchID,
 		// Use the exact predicate captured by handleWS before upgrade so
 		// the client posture cannot disagree with LocalOnly enforcement.
 		Remote:            !remoteAddrIsLoopback(r.RemoteAddr),
@@ -761,9 +902,15 @@ func withCrossOriginIsolation(next http.Handler) http.Handler {
 	})
 }
 
-// deriveWSURL turns the inbound HTTP request's Host into the matching
-// ws:// URL. Falls back to a loopback path only when r.Host is empty
-// (synthetic test requests).
+// DeriveWSURL turns the inbound HTTP request's Host into the matching
+// ws:// URL on the same authority. Falls back to a loopback path only
+// when r.Host is empty (synthetic test requests).
+//
+// Exported for internal/clientmode, whose stub answers a manifest for
+// the page it serves and must name its own /ws the same way this server
+// names its own — the SPA requires a same-origin wsUrl on every path.
+func DeriveWSURL(r *http.Request) string { return deriveWSURL(r) }
+
 func deriveWSURL(r *http.Request) string {
 	host := r.Host
 	if host == "" {
@@ -792,7 +939,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// A LAN-bind toggle rotates the allow-list under the same mu-guarded
 	// swap as the listener; the upgrader must see whichever policy was
 	// in effect when this handshake began.
-	conn, err := upgrade(w, r, s.token, s.currentOriginPatterns(), !isLoopback)
+	conn, err := upgrade(w, r, s.cred, s.currentOriginPatterns(), !isLoopback)
 	if err != nil {
 		// upgrade has already written the HTTP error code.
 		return

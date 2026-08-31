@@ -326,13 +326,13 @@ recoloring, breaks under token renames).
 - `--connect` client mode (`main_desktop.go#runClient`): the client
   process registers **no services**. The SPA RPCs entirely against the
   remote backend; the local process is a static stub
-  (`internal/clientmode`) that injects `window.__AO_BOOTSTRAP__` into
-  index.html. But the client binary DOES have a durable per-machine
+  (`internal/clientmode`) that serves the SPA shell verbatim and answers
+  `/bootstrap.json`. But the client binary DOES have a durable per-machine
   ClientID (`ensureClientID`) and its own `<configDir>` on the client
   machine. So client-side theme files are *storable* there today, but
   there is no live channel from the stub to the webview, so theme data
-  would ride the bootstrap injection (applied at page load; live
-  file-watch reload needs a small stub endpoint later).
+  would ride the stub's manifest (applied at page load; live file-watch
+  reload needs a small stub endpoint later).
 - Pure-browser remote sessions: no local process, no files. Built-in
   themes + localStorage selection only.
 
@@ -541,8 +541,8 @@ Go is pipe and never parses theme JSON beyond `appearance.json`):
   Monokai, Dracula, Solarized, Tokyo Night, Catppuccin, …) shipped as
   built-in code themes: syntax 21 + ansi 16 + terminal + code-block/
   inline backgrounds, mapped by hand onto the 29-family taxonomy.
-- `--connect`: theme payload injected via `__AO_BOOTSTRAP__`; optional
-  stub endpoint for live reload. Browser sessions: built-ins +
+- `--connect`: theme payload carried on the stub's `/bootstrap.json`
+  manifest; optional stub endpoint for live reload. Browser sessions: built-ins +
   localStorage selection.
 - Optional later: in-app theme editing UI. The file format is the
   contract either way; agents are the primary editor.

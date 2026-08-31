@@ -174,7 +174,7 @@ async function runProbe(
   const browser = await browserType.launch();
   try {
     const page = await browser.newPage({ viewport: { width: 960, height: 1200 } });
-    await openProbeThread(page, harness.url, `Boundary probe ${engine}`);
+    await openProbeThread(page, harness, `Boundary probe ${engine}`);
 
     await harness.rpc('StartSession', threadId);
     await harness.waitForEvent<HarnessMockEvent>(

@@ -2,16 +2,21 @@ package clientmode
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
 
 	"agent-overflow/internal/transport"
+
+	"github.com/coder/websocket"
 )
 
 // splitAddrForTest mirrors net.SplitHostPort's behaviour but returns a
@@ -112,12 +117,12 @@ func TestParseConnectURL_AcceptsWSS(t *testing.T) {
 	}
 }
 
-func TestServe_InjectsBootstrap(t *testing.T) {
-	srv, err := Serve(Config{
-		WSURL:  "ws://upstream:1234/",
-		Token:  "tok-abc",
-		Assets: fakeAssets(),
-	})
+// serveStub boots a stub with the given config, filling in the fake
+// assets and registering cleanup.
+func serveStub(t *testing.T, cfg Config) *Server {
+	t.Helper()
+	cfg.Assets = fakeAssets()
+	srv, err := Serve(cfg)
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -125,6 +130,35 @@ func TestServe_InjectsBootstrap(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
+	})
+	return srv
+}
+
+// stubBootstrapURL builds the manifest URL a freshly loaded page fetches:
+// the stub's own origin, carrying the page ticket the page URL arrived
+// with.
+func stubBootstrapURL(t *testing.T, srv *Server) string {
+	t.Helper()
+	parsed, err := url.Parse(srv.AppURL())
+	if err != nil {
+		t.Fatalf("parse app url: %v", err)
+	}
+	ticket := parsed.Query().Get(transport.PageTicketParam)
+	if ticket == "" {
+		t.Fatal("app url carries no page ticket")
+	}
+	return fmt.Sprintf("http://%s/bootstrap.json?%s=%s", parsed.Host, transport.PageTicketParam, url.QueryEscape(ticket))
+}
+
+// TestServe_ServesTheShellVerbatim is the structural half of this
+// change: the stub inserts nothing into the page. No injected manifest
+// means no credential in the document, and no escaping question about
+// what a hostile token could do to an inline script tag — the class is
+// gone rather than defended.
+func TestServe_ServesTheShellVerbatim(t *testing.T) {
+	srv := serveStub(t, Config{
+		WSURL: "ws://upstream:1234/",
+		Token: "evil</" + "script><" + "script>alert(1)</" + "script>",
 	})
 
 	resp, err := http.Get(srv.AppURL())
@@ -139,166 +173,128 @@ func TestServe_InjectsBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
-	bodyStr := string(body)
-
-	// The SPA inspects mode === "client" to hide local-only settings
-	// panels (Network bind, Remote endpoints) which would otherwise
-	// edit the *remote* backend's state.
-	wantSnippet := `window.__AO_BOOTSTRAP__ = {"wsUrl":"ws://upstream:1234/","token":"tok-abc","mode":"client","remote":true};`
-	if !strings.Contains(bodyStr, wantSnippet) {
-		t.Fatalf("bootstrap snippet missing.\nwant: %s\nbody: %s", wantSnippet, bodyStr)
+	want := fakeAssets()["index.html"].Data
+	if string(body) != string(want) {
+		t.Fatalf("the shell was modified in flight.\ngot:  %s\nwant: %s", body, want)
 	}
-	// Snippet must run before the SPA module loads — i.e., it sits
-	// between <head> and the <script type="module"> tag in the source.
-	bootstrapAt := strings.Index(bodyStr, "__AO_BOOTSTRAP__")
-	moduleAt := strings.Index(bodyStr, `type="module"`)
-	if bootstrapAt < 0 || moduleAt < 0 || bootstrapAt >= moduleAt {
-		t.Fatalf("bootstrap snippet not before module script (bootstrap@%d, module@%d)", bootstrapAt, moduleAt)
+	if strings.Contains(string(body), "alert(1)") {
+		t.Fatal("the upstream token reached the document")
 	}
 }
 
-func TestServe_InjectsClientIDWhenSet(t *testing.T) {
-	srv, err := Serve(Config{
+// TestServe_AppURLCarriesTicketModeAndClientID pins what rides the page
+// URL: a one-time ticket (never the upstream token), the run mode the
+// SPA reads synchronously at module load, and the durable client
+// identity. A fresh ticket per call is what lets the reload keybinding
+// re-navigate after the first load spent one.
+func TestServe_AppURLCarriesTicketModeAndClientID(t *testing.T) {
+	srv := serveStub(t, Config{
 		WSURL:    "ws://upstream:1234/",
 		Token:    "tok-abc",
 		ClientID: "11111111-2222-3333-4444-555555555555",
-		Assets:   fakeAssets(),
-	})
-	if err != nil {
-		t.Fatalf("Serve: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
 	})
 
-	resp, err := http.Get(srv.AppURL())
+	first, err := url.Parse(srv.AppURL())
 	if err != nil {
-		t.Fatalf("GET /: %v", err)
+		t.Fatalf("parse app url: %v", err)
+	}
+	q := first.Query()
+	if q.Get("mode") != "client" {
+		t.Errorf("mode = %q, want client", q.Get("mode"))
+	}
+	if q.Get("cid") != "11111111-2222-3333-4444-555555555555" {
+		t.Errorf("cid = %q, want the configured client id", q.Get("cid"))
+	}
+	ticket := q.Get(transport.PageTicketParam)
+	if ticket == "" {
+		t.Fatal("app url carries no page ticket")
+	}
+	if strings.Contains(srv.AppURL(), "tok-abc") {
+		t.Fatal("the upstream token reached the page URL")
+	}
+	second, err := url.Parse(srv.AppURL())
+	if err != nil {
+		t.Fatalf("parse second app url: %v", err)
+	}
+	if second.Query().Get(transport.PageTicketParam) == ticket {
+		t.Fatal("two AppURL calls handed out the same ticket")
+	}
+}
+
+// TestServe_ManifestNamesThisOriginAndCarriesNoCredential is what lets
+// the SPA be identical in both modes: the stub's manifest names the
+// stub's own origin, so the page's same-origin rule holds with no
+// exemption, and it carries nothing script could read.
+func TestServe_ManifestNamesThisOriginAndCarriesNoCredential(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"wsUrl":"ws://upstream-perspective/ws"}`))
+	}))
+	t.Cleanup(upstream.Close)
+	srv := serveWithUpstream(t, upstream)
+
+	resp, err := http.Get(stubBootstrapURL(t, srv))
+	if err != nil {
+		t.Fatalf("GET /bootstrap.json: %v", err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
-
-	// clientId rides the same injected bootstrap so the remote
-	// backend's per-client ui_state bucket stays stable across
-	// launches. TestServe_InjectsBootstrap covers the omitted case —
-	// its expected snippet has no clientId key (json omitempty).
-	wantSnippet := `window.__AO_BOOTSTRAP__ = {"wsUrl":"ws://upstream:1234/","token":"tok-abc","mode":"client","clientId":"11111111-2222-3333-4444-555555555555","remote":true};`
-	if !strings.Contains(string(body), wantSnippet) {
-		t.Fatalf("bootstrap snippet missing clientId.\nwant: %s\nbody: %s", wantSnippet, string(body))
+	var manifest struct {
+		WSURL    string `json:"wsUrl"`
+		LaunchID string `json:"launchId"`
+		Remote   bool   `json:"remote"`
+	}
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		t.Fatalf("decode manifest %s: %v", body, err)
+	}
+	if want := "ws://" + srv.Addr() + "/ws"; manifest.WSURL != want {
+		t.Errorf("wsUrl = %q, want this stub's own origin %q", manifest.WSURL, want)
+	}
+	if manifest.LaunchID == "" {
+		t.Error("manifest carries no launch id")
+	}
+	if strings.Contains(string(body), "tok-live") {
+		t.Errorf("manifest carries the upstream credential: %s", body)
+	}
+	// And the exchange issued the page its own cookie.
+	var issued *http.Cookie
+	for _, cookie := range resp.Cookies() {
+		if strings.HasPrefix(cookie.Name, "ao_page_") {
+			issued = cookie
+		}
+	}
+	if issued == nil {
+		t.Fatal("the ticket exchange set no page cookie")
+	}
+	if !issued.HttpOnly {
+		t.Error("page cookie is not HttpOnly")
+	}
+	if issued.Value == "tok-live" {
+		t.Error("the stub handed the page its upstream credential as a cookie")
 	}
 }
 
-func TestServe_LoopbackUpstreamIsNotRemote(t *testing.T) {
-	srv, err := Serve(Config{
-		WSURL:  "ws://127.0.0.1:1234/ws",
-		Token:  "tok-abc",
-		Assets: fakeAssets(),
-	})
-	if err != nil {
-		t.Fatalf("Serve: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
-	})
-
-	resp, err := http.Get(srv.AppURL())
-	if err != nil {
-		t.Fatalf("GET /: %v", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-
-	wantSnippet := `window.__AO_BOOTSTRAP__ = {"wsUrl":"ws://127.0.0.1:1234/ws","token":"tok-abc","mode":"client"};`
-	if !strings.Contains(string(body), wantSnippet) {
-		t.Fatalf("loopback bootstrap snippet mismatch.\nwant: %s\nbody: %s", wantSnippet, string(body))
-	}
-}
-
-func TestServe_LoopbackRangeUpstreamIsNotRemote(t *testing.T) {
-	srv, err := Serve(Config{
-		WSURL:  "ws://127.0.0.2:1234/ws",
-		Token:  "tok-abc",
-		Assets: fakeAssets(),
-	})
-	if err != nil {
-		t.Fatalf("Serve: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
-	})
-
-	resp, err := http.Get(srv.AppURL())
-	if err != nil {
-		t.Fatalf("GET /: %v", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	wantSnippet := `window.__AO_BOOTSTRAP__ = {"wsUrl":"ws://127.0.0.2:1234/ws","token":"tok-abc","mode":"client"};`
-	if !strings.Contains(string(body), wantSnippet) {
-		t.Fatalf("loopback-range bootstrap snippet mismatch.\nwant: %s\nbody: %s", wantSnippet, string(body))
-	}
-}
-
-func TestServe_EscapesScriptTermination(t *testing.T) {
-	// Defensive: a token containing "</script>" would break out of the
-	// inline tag if rendering preserved the literal angle brackets.
-	// Go's encoding/json escapes "<" and ">" as "<" / ">" by
-	// default, which already neutralises this — but we test against the
-	// rendered HTML directly so a future refactor that switches encoder
-	// settings (json.Encoder.SetEscapeHTML(false)) can't silently break
-	// the property.
-	srv, err := Serve(Config{
-		WSURL:  "ws://h/",
-		Token:  "evil</script><script>alert(1)</script>",
-		Assets: fakeAssets(),
-	})
-	if err != nil {
-		t.Fatalf("Serve: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
-	})
-	resp, err := http.Get(srv.AppURL())
-	if err != nil {
-		t.Fatalf("GET /: %v", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	bodyStr := string(body)
-
-	// The literal "</script>" must not appear inside the injected
-	// bootstrap. If it does, a hostile token has bracketed the snippet
-	// and could inject script.
-	bootstrapStart := strings.Index(bodyStr, "__AO_BOOTSTRAP__")
-	if bootstrapStart < 0 {
-		t.Fatalf("bootstrap missing")
-	}
-	// Slice from the bootstrap to the next script tag close — which
-	// must be our own snippet's </script>, not a token-injected one.
-	snippetEnd := strings.Index(bodyStr[bootstrapStart:], "</script>")
-	if snippetEnd < 0 {
-		t.Fatalf("bootstrap snippet not closed")
-	}
-	snippet := bodyStr[bootstrapStart : bootstrapStart+snippetEnd]
-	if strings.Contains(snippet, "</script>") {
-		t.Fatalf("token-injected </script> leaked through escaping: %s", snippet)
+// TestServe_ManifestLocalityFollowsTheUpstream pins which endpoint the
+// view-only bit describes. The listener is always loopback; what the SPA
+// gates on is whether the backend doing the work is this machine's.
+func TestServe_ManifestLocalityFollowsTheUpstream(t *testing.T) {
+	for _, tc := range []struct {
+		wsURL      string
+		wantRemote bool
+	}{
+		{wsURL: "ws://upstream:1234/ws", wantRemote: true},
+		{wsURL: "ws://127.0.0.1:1234/ws", wantRemote: false},
+		// The whole 127/8 block is this machine.
+		{wsURL: "ws://127.0.0.2:1234/ws", wantRemote: false},
+	} {
+		t.Run(tc.wsURL, func(t *testing.T) {
+			srv := serveStub(t, Config{WSURL: tc.wsURL, Token: "tok-abc"})
+			if srv.remote != tc.wantRemote {
+				t.Fatalf("remote = %v, want %v", srv.remote, tc.wantRemote)
+			}
+		})
 	}
 }
 
@@ -317,7 +313,9 @@ func TestServe_ServesStaticAssets(t *testing.T) {
 		_ = srv.Shutdown(ctx)
 	})
 
-	resp, err := http.Get(srv.AppURL() + "assets/index-abc.js")
+	// The page URL carries query parameters now, so address the asset by
+	// the listener rather than by string-appending to it.
+	resp, err := http.Get("http://" + srv.Addr() + "/assets/index-abc.js")
 	if err != nil {
 		t.Fatalf("GET /assets/...: %v", err)
 	}
@@ -642,7 +640,7 @@ func TestHandleBootstrap_RelaysVerdicts(t *testing.T) {
 		if r.URL.Path != "/bootstrap.json" {
 			t.Errorf("upstream probed at %q, want /bootstrap.json", r.URL.Path)
 		}
-		sawToken = r.URL.Query().Get("t")
+		sawToken = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		w.WriteHeader(upstreamStatus)
 		if upstreamStatus == http.StatusOK {
 			_, _ = w.Write([]byte(`{"wsUrl":"ws://upstream-perspective/ws","token":"tok-live"}`))
@@ -653,7 +651,7 @@ func TestHandleBootstrap_RelaysVerdicts(t *testing.T) {
 
 	get := func() (*http.Response, string) {
 		t.Helper()
-		resp, err := http.Get(srv.AppURL() + "bootstrap.json")
+		resp, err := http.Get(stubBootstrapURL(t, srv))
 		if err != nil {
 			t.Fatalf("GET /bootstrap.json: %v", err)
 		}
@@ -673,7 +671,7 @@ func TestHandleBootstrap_RelaysVerdicts(t *testing.T) {
 	if sawToken != "tok-live" {
 		t.Errorf("upstream saw token %q, want the configured tok-live", sawToken)
 	}
-	if !strings.Contains(body, `"mode":"client"`) || strings.Contains(body, "upstream-perspective") {
+	if strings.Contains(body, "upstream-perspective") {
 		t.Errorf("stub must serve its own manifest, not the upstream's: %s", body)
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
@@ -701,12 +699,153 @@ func TestHandleBootstrap_UnreachableUpstreamIsTransient(t *testing.T) {
 	upstream.Close() // deliberately dead
 	srv := serveWithUpstream(t, upstream)
 
-	resp, err := http.Get(srv.AppURL() + "bootstrap.json")
+	resp, err := http.Get(stubBootstrapURL(t, srv))
 	if err != nil {
 		t.Fatalf("GET /bootstrap.json: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("dead upstream: stub status = %d, want 503", resp.StatusCode)
+	}
+}
+
+// exchangeStubCookie walks the page's first contact against the stub and
+// returns the session cookie it was issued.
+func exchangeStubCookie(t *testing.T, srv *Server) *http.Cookie {
+	t.Helper()
+	resp, err := http.Get(stubBootstrapURL(t, srv))
+	if err != nil {
+		t.Fatalf("GET /bootstrap.json: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bootstrap status = %d, want 200", resp.StatusCode)
+	}
+	for _, cookie := range resp.Cookies() {
+		if strings.HasPrefix(cookie.Name, "ao_page_") {
+			return cookie
+		}
+	}
+	t.Fatal("the exchange set no page cookie")
+	return nil
+}
+
+// TestHandleWS_CarriesTheUpgradeWithTheUpstreamCredential is the
+// `--connect` design in one test: the page opens a same-origin socket
+// authenticated by the cookie it holds, and this process swaps in the
+// upstream credential on the way out. The upstream never sees the page's
+// cookie or the stub's origin — a proxy hop is not a browser — and the
+// page never sees the upstream's token.
+func TestHandleWS_CarriesTheUpgradeWithTheUpstreamCredential(t *testing.T) {
+	type observed struct {
+		auth   string
+		cookie string
+		origin string
+	}
+	seen := make(chan observed, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bootstrap.json" {
+			// The stub probes this before it answers the page's manifest.
+			_, _ = w.Write([]byte(`{"wsUrl":"ws://upstream-perspective/ws"}`))
+			return
+		}
+		if r.URL.Path != "/ws" {
+			http.NotFound(w, r)
+			return
+		}
+		seen <- observed{
+			auth:   r.Header.Get("Authorization"),
+			cookie: r.Header.Get("Cookie"),
+			origin: r.Header.Get("Origin"),
+		}
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			t.Errorf("upstream accept: %v", err)
+			return
+		}
+		defer conn.CloseNow()
+		typ, data, err := conn.Read(r.Context())
+		if err != nil {
+			return
+		}
+		_ = conn.Write(r.Context(), typ, data)
+	}))
+	t.Cleanup(upstream.Close)
+	srv := serveWithUpstream(t, upstream)
+	cookie := exchangeStubCookie(t, srv)
+
+	header := http.Header{}
+	header.Set("Cookie", cookie.Name+"="+cookie.Value)
+	header.Set("Origin", "http://"+srv.Addr())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws://"+srv.Addr()+"/ws", &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatalf("dial the stub's /ws with the page cookie: %v", err)
+	}
+	defer conn.CloseNow()
+
+	if err := conn.Write(ctx, websocket.MessageText, []byte("ping")); err != nil {
+		t.Fatalf("write through the proxy: %v", err)
+	}
+	_, echoed, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read through the proxy: %v", err)
+	}
+	if string(echoed) != "ping" {
+		t.Fatalf("proxy echoed %q, want ping", echoed)
+	}
+
+	got := <-seen
+	if got.auth != "Bearer tok-live" {
+		t.Errorf("upstream Authorization = %q, want the configured bearer", got.auth)
+	}
+	if got.cookie != "" {
+		t.Errorf("the page's cookie reached the upstream: %q", got.cookie)
+	}
+	if got.origin != "" {
+		t.Errorf("the stub's origin reached the upstream: %q", got.origin)
+	}
+}
+
+// TestHandleWS_RefusesUnauthenticatedAndForeignOrigin pins the two gates
+// on the stub's own upgrade, both the transport's own rules: a page from
+// another origin on this host is refused before its credential is
+// consulted (cookies are scoped by host, not by port), and a caller with
+// no credential is refused with the same unfingerprintable 404.
+func TestHandleWS_RefusesUnauthenticatedAndForeignOrigin(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bootstrap.json" {
+			_, _ = w.Write([]byte(`{"wsUrl":"ws://upstream-perspective/ws"}`))
+			return
+		}
+		t.Error("the upstream was reached by an upgrade the stub should have refused")
+	}))
+	t.Cleanup(upstream.Close)
+	srv := serveWithUpstream(t, upstream)
+	cookie := exchangeStubCookie(t, srv)
+
+	for _, tc := range []struct {
+		name   string
+		header http.Header
+	}{
+		{name: "no credential", header: http.Header{}},
+		{name: "foreign origin with a valid cookie", header: http.Header{
+			"Cookie": {cookie.Name + "=" + cookie.Value},
+			"Origin": {"http://evil.example"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			conn, resp, err := websocket.Dial(ctx, "ws://"+srv.Addr()+"/ws", &websocket.DialOptions{HTTPHeader: tc.header})
+			if err == nil {
+				conn.CloseNow()
+				t.Fatal("the stub carried an upgrade it should have refused")
+			}
+			if resp != nil && resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("refusal status = %d, want 404", resp.StatusCode)
+			}
+		})
 	}
 }

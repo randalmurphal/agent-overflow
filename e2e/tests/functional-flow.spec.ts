@@ -219,7 +219,7 @@ test('drives pointer, wheel and viewport input without page evaluation', async (
 });
 
 test('selects a registered monitor and persists owned heartbeat evidence', async ({ harness, page }) => {
-  await page.goto(harness.url);
+  await harness.open(page);
   const deadline = Date.now() + 10_000;
   let pageID = '';
   while (Date.now() < deadline && pageID === '') {

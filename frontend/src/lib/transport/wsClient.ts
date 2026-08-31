@@ -38,7 +38,6 @@ import {
   type Bootstrap,
   BootstrapRejectedError,
   defaultBootstrap,
-  appendToken,
   pageServedOverLoopback,
 } from './bootstrap';
 import {
@@ -169,18 +168,19 @@ let fanoutScratchInUse = false;
 // already in flight.
 // 'unauthorized' is the one TERMINAL state: the backend answered and
 // positively refused our bootstrap credential (BootstrapRejectedError —
-// internal/transport/server.go handleBootstrap answers a stale `?t=`
-// with 404), AND this session has no way to obtain a fresh one because
-// it was served over the network. Tokens are minted per backend launch,
-// so a LAN/remote client whose backend restarted holds a token that will
-// be refused identically forever; the automatic ladder stops rather than
-// burn the device's radio and battery on attempts that cannot succeed.
-// Recovery is re-opening the share link — a fresh page load, hence a
-// fresh client. The banner's Retry still works as a manual escape hatch
-// (see triggerReconnect), which is what un-latches it if the refusal
-// turns out to have been a lie from something in the path.
+// internal/transport/server.go handleBootstrap answers an unrecognised
+// credential with 404), AND this session has no way to obtain a fresh
+// one because it was served over the network. The session cookie is
+// minted per backend launch, so a LAN/remote client whose backend
+// restarted holds one that will be refused identically forever; the
+// automatic ladder stops rather than burn the device's radio and battery
+// on attempts that cannot succeed. Recovery is re-opening the share link
+// — a fresh page load with a fresh ticket. The banner's Retry still
+// works as a manual escape hatch (see triggerReconnect), which is what
+// un-latches it if the refusal turns out to have been a lie from
+// something in the path.
 // A loopback session never enters this state: the embedded webview and
-// the --connect stub are handed a live token by the shell that owns the
+// the --connect stub load a page URL minted by the shell that owns the
 // backend, so their refusals stay ordinary 'reconnecting' retries.
 // 'disconnected' is the zero-value before any connect has been
 // attempted; we never re-enter it once a connect cycle starts (we stay
@@ -219,13 +219,12 @@ interface WSLike {
 const WS_OPEN = 1;
 
 // BootstrapFetcher is the indirection that lets tests inject a fake
-// bootstrap without poking at window.location. `revalidate` is set on
-// the refetch that follows a bootstrap-cache invalidation: an injected
-// (`--connect`) manifest must not short-circuit that fetch, because the
-// whole point of the refetch is to observe whether the credential is
-// still honoured (defaultBootstrap routes it through the stub's
-// /bootstrap.json probe). Fetchers that don't distinguish may ignore it.
-type BootstrapFetcher = (opts?: { revalidate?: boolean }) => Promise<Bootstrap>;
+// bootstrap without poking at window.location. Every fetch is a real
+// round-trip to /bootstrap.json on the page's own origin — there is no
+// short-circuit for any mode — which is what makes the refetch after a
+// run of failures able to observe that the credential is no longer
+// honoured.
+type BootstrapFetcher = () => Promise<Bootstrap>;
 
 interface WSClientOptions {
   // For tests: a constructor that yields a fake WSLike.
@@ -299,7 +298,9 @@ export class WSClient {
   private readonly maxFrameBytes: number;
   private readonly probeLoopbackOrigin: () => boolean;
 
-  // Cached bootstrap and the resolved WS URL with token query param.
+  // Cached bootstrap. The socket URL is the manifest's wsUrl verbatim:
+  // it names this page's own origin, so the session cookie authenticates
+  // the upgrade with nothing added to the URL.
   private bootstrap: Bootstrap | null = null;
   private bootstrapPromise: Promise<Bootstrap> | null = null;
 
@@ -353,11 +354,6 @@ export class WSClient {
   // the bootstrap cache mid-outage doesn't flip a remote client onto
   // the aggressive local retry cadence.
   private remoteBackend = false;
-  // Set when the bootstrap cache was invalidated on suspicion of a dead
-  // credential; tells the next fetch to actually revalidate instead of
-  // short-circuiting on an injected manifest. Cleared once a fetch
-  // resolves — the answer it produced is current again.
-  private bootstrapRevalidate = false;
   // Terminal latch: the backend refused this session's credential and
   // this session cannot mint another one (see enterCredentialDead).
   // While set, the automatic reconnect ladder is stopped and the status
@@ -785,7 +781,11 @@ export class WSClient {
       this.connectPromise = null;
       throw new DisconnectedError('client closed');
     }
-    const url = appendToken(bootstrap.wsUrl, bootstrap.token);
+    // No credential is appended: the upgrade is same-origin, so the
+    // browser attaches the session cookie itself. Non-browser clients
+    // (the harness client, the e2e suite) present the session token as
+    // a query parameter against the same validation instead.
+    const url = bootstrap.wsUrl;
 
     return await new Promise<void>((resolve, reject) => {
       const attempt: ConnectAttempt = { settled: false, resolve, reject };
@@ -842,10 +842,15 @@ export class WSClient {
     // only acts on this if the map is non-empty; it's still cheap
     // to send unconditionally since channel-by-channel reconciliation
     // is exactly what a reconnect needs.
+    // Scoped by launch id: the checkpoint is a per-tab dedup for
+    // notification replay, and a backend that restarted numbers its
+    // events from scratch, so a checkpoint from the previous launch must
+    // not suppress the new one's replay.
+    const scope = bootstrap.launchId ?? '';
     const replay: Record<string, number> = {
-      [NOTIFICATION_ACTIVATED_CHANNEL]: loadNotificationActivationSeq(bootstrap.token),
+      [NOTIFICATION_ACTIVATED_CHANNEL]: loadNotificationActivationSeq(scope),
     };
-    this.notificationCheckpointScope = bootstrap.token;
+    this.notificationCheckpointScope = scope;
     this.notificationReplayPending = true;
     this.notificationReplayBuffer = [];
     for (const [channel, cursor] of this.lastSeqByChannel) {
@@ -957,7 +962,7 @@ export class WSClient {
       this.preOpenFailures += 1;
       if (this.preOpenFailures >= BOOTSTRAP_INVALIDATE_AFTER_FAILURES && this.bootstrap !== null) {
         // Consecutive attempts died before OPEN: the cached bootstrap
-        // may be stale — a restarted backend mints a new token, and
+        // may be stale — a restarted backend mints a new credential, and
         // reconnecting with the old one is refused forever. Drop the
         // cache so the next attempt refetches; if the server is simply
         // down, the refetch fails into the same backoff it would have
@@ -966,7 +971,6 @@ export class WSClient {
         // failure from here on.
         this.bootstrap = null;
         this.bootstrapPromise = null;
-        this.bootstrapRevalidate = true;
         this.preOpenFailures = 0;
       }
       // First-attempt failure: surface to the awaiter so the call
@@ -1010,7 +1014,8 @@ export class WSClient {
   // against a server that will refuse each attempt identically.
   //
   // The latch is deliberately not self-clearing — no timer un-sets it —
-  // because nothing about waiting makes a per-launch token valid again.
+  // because nothing about waiting makes a per-launch credential valid
+  // again.
   // It clears on exactly two events, both of them evidence rather than
   // hope: a manual triggerReconnect (bounded by the user's finger) and
   // a manifest that fetches clean.
@@ -1023,8 +1028,8 @@ export class WSClient {
     this.credentialDead = true;
     console.warn(
       `wsClient: backend refused this session's credential (${err.message}); ` +
-        'reconnect stopped — the token is minted per backend launch, so only a ' +
-        'freshly-opened share link can restore this session',
+        'reconnect stopped — the credential is minted per backend launch, so ' +
+        'only a freshly-opened share link can restore this session',
     );
     this.setReconnecting(null);
   }
@@ -1114,7 +1119,7 @@ export class WSClient {
 
   // getBootstrap caches the manifest fetch so a reconnect doesn't re-hit
   // /bootstrap.json on every attempt. The cache is NOT permanent, and
-  // must not be: the token is bound to one server launch, so a client
+  // must not be: the credential is bound to one server launch, so a client
   // that keeps replaying a cached manifest at a restarted backend never
   // learns it has been refused. handleSocketClose drops the cache every
   // BOOTSTRAP_INVALIDATE_AFTER_FAILURES consecutive pre-open failures,
@@ -1125,7 +1130,7 @@ export class WSClient {
   private getBootstrap(): Promise<Bootstrap> {
     if (this.bootstrap) return Promise.resolve(this.bootstrap);
     if (!this.bootstrapPromise) {
-      const p = this.fetchBootstrap({ revalidate: this.bootstrapRevalidate }).then((b) => {
+      const p = this.fetchBootstrap().then((b) => {
         // Only a still-current fetch may populate the cache: the close
         // handler nulls bootstrapPromise mid-flight when it invalidates
         // the cache, and a superseded fetch landing late must not
@@ -1133,7 +1138,6 @@ export class WSClient {
         if (this.bootstrapPromise === p) {
           this.bootstrap = b;
           this.remoteBackend = b.remote === true;
-          this.bootstrapRevalidate = false;
         }
         return b;
       });

@@ -93,7 +93,9 @@ Upstream rendered any `/`-leading URL through a branch that bypassed
 navigation onto the app origin: a 404 against the transport server for
 `[x](/home/user/file.md)`, and for a crafted `[x](/design/...)` a
 confirmed origin-isolation escape (agent-authored HTML served
-same-origin could read the bootstrap token). `//host/x` counted as
+same-origin acts with the page's credential — the browser attaches the
+session cookie to whatever it requests, and HttpOnly narrows that to
+"cannot read the value", not "cannot use it"). `//host/x` counted as
 "relative" too, giving protocol-relative navigation off-origin. The
 `<img>` element had the identical bypass on `src`.
 

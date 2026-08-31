@@ -13,8 +13,9 @@ points at.
 The webview's origin is host plus port. An ephemeral port changes it every
 launch, which wipes every origin-scoped browser store: localStorage and the
 IndexedDB thread replica (`docs/architecture/thread-replica-sync.md` §6.0).
-Port obscurity was never an access control here (the bootstrap token and the
-Host/Origin checks are), so pinning costs nothing.
+Port obscurity was never an access control here (the page credential and the
+Host/Origin checks are), so pinning costs nothing. The page cookie's name
+carries the port, so a stable port also means a stable cookie name.
 
 ### Where the pin lives
 
@@ -158,6 +159,104 @@ answers an ephemeral channel with nothing and a latest-only channel with just
 its newest frame. A client judging those against a carried-over cursor would
 resync spuriously on every reconnect. Within a connection there is no such
 ambiguity: every event on a visible channel is either delivered or dropped.
+
+## The credential channel
+
+One launch, one session token, one validation function
+(`Credential.Authenticate`, `credential.go`). Everything below is about how
+that token reaches a request, never about a second policy.
+
+### A page URL carries a ticket, not the token
+
+A page URL travels: through window history, shell arguments, launcher logs,
+`--print-url-fd` output, and screenshots. What it carries is a **one-time page
+ticket** (`?t=`), and what a ticket buys is exactly one cookie.
+
+```
+Server.AppURL()  ──mint──▶  http://127.0.0.1:34567/?t=<ticket>&cid=…
+                                      │
+       browser loads the shell, SPA fetches /bootstrap.json?t=<ticket>
+                                      │
+       Credential.Exchange: validate ─▶ consume ticket ─▶ Set-Cookie
+                                      │
+       ao_page_34567=<token>; HttpOnly; SameSite=Strict; Path=/
+                                      │
+       bootstrap.ts strips ?t= from the URL; reload rides the cookie
+```
+
+Minted tickets are held oldest-first and bounded at `maxOutstandingTickets`
+(16). The bound matters because the settings panel's LAN share URL mints one
+per render; evicting the oldest keeps the newest URL — the one a user just
+copied — always valid.
+
+The exchange is single-use by construction: the second `/bootstrap.json`
+presenting the same ticket finds nothing to consume, and with no cookie either
+it gets the standard 404. A bookmarked `?t=` URL from a previous launch behaves
+identically, because tokens and tickets are both per-launch: the SPA sees a
+refused manifest and latches its existing `unauthorized` state. Nothing wedges.
+
+### Three carriers, one check
+
+| Carrier | Who uses it | Why not one of the others |
+|---|---|---|
+| `ao_page_<port>` cookie | every browser request after the exchange | script cannot read it back |
+| `Authorization: Bearer` | WSL launcher probe + notification socket, `ao-harness`, the `--connect` stub's upstream hop, e2e's `/pageurl` calls | keeps the credential out of URLs, process listings, logs |
+| `?token=` | the browser and Node WebSocket APIs | those APIs build a URL and nothing else — no handshake headers |
+
+`Authenticate` reads all three and ends in the same `ConstantTimeEqual`.
+`Exchange` is `Authenticate` plus the ticket consumption and the `Set-Cookie`.
+A route that needs a credential calls one of those two; there is no third path,
+and adding one is the mistake this shape exists to prevent.
+
+### Why the origin check is load-bearing, not defence in depth
+
+Cookies are scoped by host and path — **not by port**. Any page served by any
+other listener on the same host therefore has our page cookie attached to
+requests it makes at us, and a WebSocket handshake is not subject to the
+cross-origin read rules that keep such a page out of `/bootstrap.json`. SameSite
+does not close this: same-site ignores ports too.
+
+So `OriginAllowed` runs first on `/ws`, `/bootstrap.json` and `/pageurl`, and it
+answers from the request rather than a stored string: scheme from the TLS state,
+authority from the `Host` header, plus whatever patterns a LAN bind added. A
+request carrying no `Origin` at all is a client that is not a browser and passes
+to the credential and peer rules — that is the exception that keeps `ao-harness`
+and the launcher on the same validation function instead of a bypass. `upgrade`
+hands coder/websocket `InsecureSkipVerify: true` precisely because this package
+has already made the decision, so one rule holds on loopback and LAN alike.
+
+### `/pageurl`: a ticket is spent, and some clients navigate twice
+
+`PageURLPath` answers one freshly ticketed page URL, in plain text, to a caller
+that already holds the credential. It exists because several consumers navigate
+more than once per launch and the boot URL's ticket is gone after the first
+load:
+
+| Consumer | When it asks |
+|---|---|
+| Windows/WSL launcher | the reload keybinding re-navigates WebView2 |
+| `ao-harness open` / `info` / `attach` / `up` | any time it prints or opens a URL for a human |
+| e2e `HarnessApp.open()` | every navigation, since each test gets a fresh cookie jar |
+
+`Config.PageURL` supplies the renderer, so `main.go` keeps the single rule for
+assembling a full page URL (`?cid=`, the harness marker) and this package does
+not restate it. Two binaries call the route without linking this package
+(`internal/wsllauncher`, `internal/harnessclient`); each restates the path
+behind a drift-guard test rather than pulling the server into a launcher.
+
+### `--connect` carries the socket rather than handing over the token
+
+The stub (`internal/clientmode`) holds the upstream token server-side and gives
+its page the same thing a local boot gives it: a ticket on the URL, then a
+cookie for the stub's own origin. Its `/ws` is a `httputil.ReverseProxy` that
+checks origin and credential locally, deletes the local `Cookie` and `Origin`
+headers, and sets `Authorization: Bearer <upstream token>` for the hop.
+
+The alternative — point the page straight at the upstream — cannot work under a
+cookie model, because the stub cannot set a cookie for another origin; the page
+would need a credential it can read, which is the thing the design removes. The
+carry also keeps SPA code identical across embedded, `--connect`, and remote
+browser boots: one origin, one cookie, and `validateWsUrl` with no exemptions.
 
 ## The scoped-token route
 

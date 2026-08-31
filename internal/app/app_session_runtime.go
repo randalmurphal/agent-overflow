@@ -200,7 +200,7 @@ func (a *App) mintAOCredential(thread store.Thread) (aoSessionCredential, error)
 	if !ok {
 		return aoSessionCredential{}, nil
 	}
-	endpoint, err := aoEndpointFromAppURL(server.AppURL())
+	endpoint, err := aoEndpointFromOrigin(server.Origin())
 	if err != nil {
 		return aoSessionCredential{}, err
 	}
@@ -244,13 +244,14 @@ func (a *App) projectSlug(projectID string) (string, error) {
 	return project.Slug, nil
 }
 
-// aoEndpointFromAppURL strips the webview's query string (which carries the
-// session token) off the transport base URL. The CLI authenticates with its own
-// scoped credential and must never be handed the full-authority one.
-func aoEndpointFromAppURL(appURL string) (string, error) {
-	parsed, err := url.Parse(appURL)
+// aoEndpointFromOrigin validates the transport's own origin into the endpoint
+// the CLI dials, and strips anything but scheme and authority. The CLI
+// authenticates with its own scoped credential and is never handed a
+// full-authority one, so nothing on this path may carry a query string.
+func aoEndpointFromOrigin(origin string) (string, error) {
+	parsed, err := url.Parse(origin)
 	if err != nil || parsed.Host == "" {
-		return "", fmt.Errorf("ao session env: transport URL %q is unusable", appURL)
+		return "", fmt.Errorf("ao session env: transport URL %q is unusable", origin)
 	}
 	parsed.Path = ""
 	parsed.RawQuery = ""

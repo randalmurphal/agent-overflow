@@ -75,7 +75,7 @@ test('a multi-delta stream renders math, mermaid, tables, link policy, and footn
     ]),
   });
   const threadId = await seedAgentThread(harness, 'markdown-render-app', 'Markdown check');
-  await page.goto(harness.url);
+  await harness.open(page);
   const pageErrors = watchPageErrors(page);
   await page.getByText('Markdown check').click();
   await startMock(harness, threadId);
@@ -139,7 +139,7 @@ test('the footnote popup opens, navigates a chained reference, and closes from i
     ]),
   });
   const threadId = await seedAgentThread(harness, 'markdown-footnote-app', 'Footnote check');
-  await page.goto(harness.url);
+  await harness.open(page);
   const pageErrors = watchPageErrors(page);
   await page.getByText('Footnote check').click();
   await startMock(harness, threadId);

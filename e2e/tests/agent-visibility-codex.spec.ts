@@ -210,7 +210,7 @@ async function startSpawnTurn(
   });
 
   const threadId = await seedAgentThread(harness, projectName, title, 'codex');
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText(title).click();
   const mockId = await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'review this', null);

@@ -153,16 +153,19 @@ func runUp(e *env, args []string) error {
 	if *autopilot {
 		mode = instanceinfo.ModeSoak
 	}
+	// A `--window` boot has already spent the ticket on the URL the
+	// backend printed, so ask for one this reader can still use.
+	pageURL := pageURLForTarget(context.Background(), e, bs)
 	if e.jsonOutput() {
 		return e.writeJSON(map[string]any{
 			"id": id, "mode": mode, "window": *window, "pid": bs.PID, "port": bs.Port,
-			"url": bs.URL, "dataRoot": bs.DataRoot, "dataDir": bs.DataDir,
+			"url": pageURL, "dataRoot": bs.DataRoot, "dataDir": bs.DataDir,
 			"mockProvider": bs.MockProvider, "version": bs.Version, "backendStderr": stderrPath,
 		})
 	}
 	e.printf("instance %s (%s%s) is up\n", id, mode, windowSuffix(*window))
 	e.printf("  pid       %d\n", bs.PID)
-	e.printf("  url       %s\n", bs.URL)
+	e.printf("  url       %s\n", pageURL)
 	e.printf("  data dir  %s\n", bs.DataDir)
 	e.printf("  stderr    %s\n", stderrPath)
 	return nil

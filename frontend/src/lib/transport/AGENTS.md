@@ -18,18 +18,28 @@ remote browser alike. Protocol and authz rules:
   `src/test/mocks/wailsio-runtime.ts`, or generated code that type-checks
   under the test alias stops type-checking in production. Keep it thin:
   transport behavior belongs in `wsClient.ts`.
-- `bootstrap.ts` owns the `/bootstrap.json` fetch, the per-tab token stash
-  that survives URL scrubbing, and WS-URL validation that stops a hijacked
-  manifest pivoting the connection to another scheme. Whether the page is
-  loopback decides whether a refused credential is terminal, so getting
-  that predicate wrong is user-visible in both directions: a false
-  "remote" tells a desktop user to reopen a share link that does not
-  exist, and a false "loopback" leaves a phone retrying a dead token.
+- `bootstrap.ts` owns the `/bootstrap.json` fetch, the one-time page-ticket
+  exchange, and WS-URL validation that stops a hijacked manifest pivoting
+  the connection to another scheme. **No credential is readable by page
+  script.** The first fetch forwards the URL's `?t=` ticket, the server
+  answers with an HttpOnly cookie, and the ticket is scrubbed from the URL;
+  every later request (the manifest refetch on reconnect, the `/ws`
+  upgrade) carries the cookie because `credentials: 'same-origin'` and a
+  same-origin `wsUrl` put it there. So there is nothing to stash, nothing
+  to append to a URL, and nothing for a new reader to reach for — if you
+  find yourself wanting a token here, the answer is that the browser
+  already has one you cannot see. Whether the page is loopback decides
+  whether a refused credential is terminal, so getting that predicate
+  wrong is user-visible in both directions: a false "remote" tells a
+  desktop user to reopen a share link that does not exist, and a false
+  "loopback" leaves a phone retrying a dead session.
 
-Three manifest-derived flags, each with a different reactivity contract:
+Three boot-derived flags, each with a different reactivity contract:
 
-- `runMode.ts` reads once at module load, because a different mode means a
-  different process boot. Settings panels that mutate LOCAL-ONLY state
+- `runMode.ts` reads the page URL's `?mode=` once at module load, because a
+  different mode means a different process boot — and because it must
+  answer synchronously, before any fetch resolves. It survives the ticket
+  scrub, which removes only the ticket parameter. Settings panels that mutate LOCAL-ONLY state
   (the LAN-bind toggle, the saved `--connect` endpoints) hide or
   placeholder in `client` mode, or their RPCs would edit the remote
   server's settings instead of the user's. `isViewOnlySession` is

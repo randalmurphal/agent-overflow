@@ -35,7 +35,7 @@ test('ArrowUp walks past messages from caret 0 and ArrowDown restores the typed 
     ],
   });
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Recall thread').click();
   await expect(page.getByText('second answer')).toBeVisible();
 

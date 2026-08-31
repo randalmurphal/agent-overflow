@@ -45,15 +45,53 @@ defeats this locality, so proxy from a different host instead.
 
 ## Credentials and refusal shapes
 
-`auth.go` owns both token primitives and every credential check goes through
-them. `NewToken` returns 32 random bytes (256 bits) base64url-encoded, and `New`
-mints one when `Config.Token` is empty, so a token is per launch, never
-persisted, and a stale bookmarked URL cannot reach a new boot.
-`ConstantTimeEqual` is the only comparison, and it answers `ErrEmptyToken` when
-either side is empty: an unset server token must never authorize an unset client.
+`credential.go` owns the launch credential and is the only place a request is
+authorized; `auth.go` holds the primitives it compares with. `NewToken` returns
+32 random bytes (256 bits) base64url-encoded, and `New` mints one when
+`Config.Token` is empty, so a token is per launch, never persisted, and a stale
+bookmarked URL cannot reach a new boot. `ConstantTimeEqual` is the only
+comparison, and it answers `ErrEmptyToken` when either side is empty: an unset
+server token must never authorize an unset client.
 
-Both credentialled entry points answer a wrong or empty token with
-`http.NotFound`: `/bootstrap.json?t=` (`handleBootstrap`) and the `/ws` upgrade
+`Credential.Authenticate` is the one validation function. Three carriers reach
+it, and they all end in that same comparison:
+
+- **The page cookie** `ao_page_<port>`, which every request from a loaded page
+  rides (the manifest refetch, the `/ws` upgrade).
+- **`Authorization: Bearer`**, presented by a client that is not a browser: the
+  WSL launcher's probe and notification socket, `ao-harness`, the `--connect`
+  stub dialing its upstream.
+- **`?token=`**, for clients that can build a URL and nothing else — the browser
+  and Node WebSocket APIs cannot set handshake headers.
+
+Do not add a fourth check anywhere. A route needing a credential calls
+`Authenticate`; `/bootstrap.json` calls `Exchange`, which is `Authenticate` plus
+consuming the page ticket and writing the cookie.
+
+**A page URL carries a one-time ticket (`?t=`), never the session token.**
+Tickets are minted per page URL produced — `Server.AppURL` at boot,
+`MintPageTicket` for the LAN share URL, the `PageURLPath` route (`/pageurl`) for
+every later navigation — and the first `/bootstrap.json` presenting one
+exchanges it for the cookie. The SPA then strips it from the URL, and a reload
+rides the cookie. Outstanding tickets are bounded (`maxOutstandingTickets`,
+oldest evicted), so the newest URL a user just copied is always live. Because a
+ticket is spent by the page it was minted for, anything that navigates more than
+once asks `/pageurl` for a fresh URL rather than reusing the boot one: the WSL
+launcher's reload keybinding, `ao-harness open`/`info`/`attach`/`up`, and the
+e2e `HarnessApp.open()`. That route is itself credentialled, and the two
+binaries that call it without linking this package restate its path behind a
+drift-guard test (`internal/wsllauncher`, `internal/harnessclient`).
+
+Cookie attributes are argued where they are set (`pageCookie`): HttpOnly always,
+so page script cannot read the credential back; SameSite=Strict; `Path=/`;
+host-only; session lifetime, matching a per-launch token; and Secure only under
+real TLS, since a Secure cookie on a plain loopback bind would never be stored.
+The name carries the listen port because cookies are scoped by host and path but
+**not** by port — two backends on one host (the app and a harness instance, an
+app and a `--connect` stub) would otherwise overwrite each other's.
+
+Both credentialled entry points answer a refused credential with
+`http.NotFound`: `/bootstrap.json` (`handleBootstrap`) and the `/ws` upgrade
 (`upgrade`). The 404 is deliberately indistinguishable from "no such path" so a
 LAN scanner cannot fingerprint us, and it is the only positive auth-rejection
 signal on the wire. The SPA keys terminal state on it: a 401/403/404 on the
@@ -66,15 +104,27 @@ See `frontend/src/lib/transport/bootstrap.ts` (`BootstrapRejectedError`) and
 
 ## Origin allow-list and peer locality
 
-**The origin allow-list gates `/ws` upgrades.** `upgrade` (conn.go) checks the
-token first, then hands the live allow-list to coder/websocket. An empty list is
-loopback mode and sets `InsecureSkipVerify`: no LAN-attached browser origin
-exists to validate and the token is the gate. A non-empty list is LAN mode, and
-the handshake is refused unless the request's `Origin` matches a pattern.
-`internal/network.OriginPatterns` produces the list and this package enforces
-it. Read it live, through `currentOriginPatterns()` per handshake rather than
-`Config.OriginPatterns`, since `SetOriginPatterns` and `Rebind` rotate it under
-`mu`. Sockets already upgraded keep their handshake-time policy.
+**`OriginAllowed` (credential.go) gates `/ws`, `/bootstrap.json` and
+`/pageurl`, ahead of the credential check.** A request with no `Origin` header is
+a client that is not a browser (or a same-origin GET, which browsers send without
+one) and passes to the credential and peer rules. A request *with* an `Origin`
+passes only when it names the authority this request was addressed to — scheme
+from the TLS state, authority from the `Host` header, so the answer stays true
+across a rebind, a port change, and every spelling of loopback — or matches a
+pattern the LAN bind adds. `internal/network.OriginPatterns` produces those
+patterns and this package enforces them. Read the list live, through
+`currentOriginPatterns()` per request rather than `Config.OriginPatterns`, since
+`SetOriginPatterns` and `Rebind` rotate it under `mu`. Sockets already upgraded
+keep their handshake-time policy.
+
+The check is load-bearing on loopback too, which is why the empty list no longer
+means "accept anything". Cookies are scoped by host and not by port, so a page
+served by any other listener on this machine has our page cookie attached for it
+by the browser, and a WebSocket handshake is not subject to the cross-origin read
+rules that keep that page out of `/bootstrap.json`. SameSite cannot cover the
+gap — same-site ignores ports. `upgrade` therefore hands coder/websocket
+`InsecureSkipVerify: true` and owns the decision itself, so one rule applies on
+loopback and LAN alike.
 
 Whether that list is empty is also this package's LAN switch for the
 `loopbackHostGuard` on `/bootstrap.json`, `/ws`, and `/rpc`: a DNS-rebinding
@@ -92,7 +142,7 @@ unparseable one, and carries the same same-host-proxy caveat as above.
 `wireheaders.go` is the one definition, shared with `internal/clientmode`.
 `WriteSecurityHeaders` sends `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`, which keeps the
-bootstrap token out of outbound referers. Cache-Control is deliberately NOT in
+page ticket out of outbound referers. Cache-Control is deliberately NOT in
 that set: each route picks its own policy.
 `WriteCrossOriginIsolationHeaders` (COOP, COEP `require-corp`, CORP) is
 diagnostic-mode only, gated on `Config.CrossOriginIsolate` from

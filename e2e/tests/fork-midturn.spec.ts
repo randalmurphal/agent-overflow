@@ -210,7 +210,7 @@ test('the per-message fork stays live mid-turn and snapshots without touching th
   const sidebarRow = (title: string) =>
     page.getByTestId('thread-row-title').filter({ hasText: exactly(title) });
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await sidebarRow('Message fork').click();
   await expect(page.getByText('Turn 1 first half. Turn 1 second half.')).toBeVisible();
   await expect(page.getByText('Turn 2 first half.', { exact: true })).toBeVisible();
@@ -275,7 +275,7 @@ test('a tail fork taken mid-stream renders the interrupted snapshot beside a sti
   const sidebarRow = (title: string) =>
     page.getByTestId('thread-row-title').filter({ hasText: exactly(title) });
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await sidebarRow('Tail fork').click();
   await expect(page.getByText('Turn 1 first half.', { exact: true })).toBeVisible();
 

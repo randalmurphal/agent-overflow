@@ -120,7 +120,7 @@ async function seedAndOpen(
   });
   const threadId = seed.projects[0]!.threadIds[0]!;
   const items = await harness.rpc<Array<{ id: string }>>("ListItems", threadId);
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText(title).click();
   await expect(
     page.getByText("Use Array.prototype.sort with an explicit comparator."),

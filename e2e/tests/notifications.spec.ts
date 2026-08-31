@@ -67,7 +67,7 @@ test('notification activation opens a seeded thread and none logs a no-op', asyn
 
   // The activation precedes the SPA connection to cover transport replay and
   // the bounded pre-hydration queue, not only the already-hydrated path.
-  await page.goto(harness.url);
+  await harness.open(page);
   await expect(page.getByText('target thread content')).toBeVisible();
   await expect(page.getByText('first thread content')).not.toBeVisible();
 

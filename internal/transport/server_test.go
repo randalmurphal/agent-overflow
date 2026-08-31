@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -35,6 +36,25 @@ type serverFixture struct {
 
 func newServerFixture(t *testing.T) *serverFixture {
 	return newServerFixtureWith(t, nil)
+}
+
+// getBootstrap fetches /bootstrap.json the way a client that is not a
+// browser does: the session token in an Authorization header. The query
+// slot on this route belongs to the one-time page ticket, so a
+// non-browser caller that put its token there would be presenting a
+// ticket that was never minted.
+func getBootstrap(t *testing.T, addr string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/bootstrap.json", nil)
+	if err != nil {
+		t.Fatalf("build bootstrap request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("bootstrap request: %v", err)
+	}
+	return resp
 }
 
 // newServerFixtureWith lets a test adjust the server Config (e.g. the
@@ -173,20 +193,27 @@ func TestServer_AuthRejectsWrongToken(t *testing.T) {
 
 func TestServer_BootstrapEndpoint(t *testing.T) {
 	f := newServerFixture(t)
-	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=test-token", f.srv.Addr()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := getBootstrap(t, f.srv.Addr())
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("bootstrap status: %d", resp.StatusCode)
 	}
-	var b Bootstrap
-	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Token != "test-token" {
-		t.Fatalf("bootstrap token wrong: %s", b.Token)
+	// The manifest is the page's only server answer, and it must hand
+	// the page nothing it could read back out: the credential is the
+	// cookie, which script cannot see.
+	if strings.Contains(string(raw), "test-token") {
+		t.Fatalf("bootstrap body carries the session token: %s", raw)
+	}
+	var b Bootstrap
+	if err := json.Unmarshal(raw, &b); err != nil {
+		t.Fatal(err)
+	}
+	if b.LaunchID == "" {
+		t.Fatal("bootstrap carries no launch id")
 	}
 	if !strings.HasPrefix(b.WSURL, "ws://") || !strings.HasSuffix(b.WSURL, "/ws") {
 		t.Fatalf("bootstrap WS URL malformed: %s", b.WSURL)
@@ -214,7 +241,8 @@ func TestServer_BootstrapRemoteUsesPeerLocality(t *testing.T) {
 		{name: "non-loopback", remoteAddr: "192.168.1.25:54321", wantRemote: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "http://example.test/bootstrap.json?t=test-token", nil)
+			req := httptest.NewRequest(http.MethodGet, "http://example.test/bootstrap.json", nil)
+			req.Header.Set("Authorization", "Bearer test-token")
 			req.RemoteAddr = tc.remoteAddr
 			recorder := httptest.NewRecorder()
 
@@ -281,10 +309,7 @@ func TestServer_BootstrapReadinessGate(t *testing.T) {
 		_ = srv.Shutdown(shutCtx)
 	})
 
-	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=test-token", srv.Addr()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := getBootstrap(t, srv.Addr())
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("bootstrap status before ready = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
@@ -293,23 +318,20 @@ func TestServer_BootstrapReadinessGate(t *testing.T) {
 		t.Fatal("server reported ready before MarkReady")
 	}
 
-	badTokenResp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=wrong", srv.Addr()))
+	refusedResp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=never-minted", srv.Addr()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = badTokenResp.Body.Close()
-	if badTokenResp.StatusCode != http.StatusNotFound {
-		t.Fatalf("bad token status before ready = %d, want %d", badTokenResp.StatusCode, http.StatusNotFound)
+	_ = refusedResp.Body.Close()
+	if refusedResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("refused credential status before ready = %d, want %d", refusedResp.StatusCode, http.StatusNotFound)
 	}
 
 	srv.MarkReady()
 	if !srv.Ready() {
 		t.Fatal("server did not report ready after MarkReady")
 	}
-	resp, err = http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=test-token", srv.Addr()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp = getBootstrap(t, srv.Addr())
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("bootstrap status after ready = %d, want %d", resp.StatusCode, http.StatusOK)
@@ -318,8 +340,8 @@ func TestServer_BootstrapReadinessGate(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
 		t.Fatal(err)
 	}
-	if b.Token != "test-token" {
-		t.Fatalf("bootstrap token wrong: %s", b.Token)
+	if b.WSURL == "" {
+		t.Fatal("bootstrap after ready carries no wsUrl")
 	}
 }
 
@@ -345,10 +367,7 @@ func TestServer_BootstrapStartupFailureBeatsReadinessGate(t *testing.T) {
 	})
 
 	srv.MarkStartupFailed()
-	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=test-token", srv.Addr()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := getBootstrap(t, srv.Addr())
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("bootstrap status after startup failure = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
@@ -1031,10 +1050,34 @@ func TestServer_AppURL_PostStartIncludesPort(t *testing.T) {
 	if !strings.Contains(url, ":"+port+"/") {
 		t.Fatalf("AppURL %q does not embed live port %q", url, port)
 	}
-	// Token query param must round-trip.
-	if !strings.HasSuffix(url, "?t=test-token") {
-		t.Fatalf("AppURL %q missing token query param", url)
+	// The URL carries a one-time page ticket, never the session token:
+	// a page URL travels through window history, shell arguments and
+	// launcher logs, and what travels there must buy one cookie and
+	// nothing more.
+	ticket := ticketFromURL(t, url)
+	if ticket == "test-token" {
+		t.Fatal("AppURL put the session token on the page URL")
 	}
+	// Every call mints its own, so opening one URL never invalidates
+	// another (the reload keybinding and `ao-harness open` both depend
+	// on this).
+	if second := ticketFromURL(t, f.srv.AppURL()); second == ticket {
+		t.Fatal("two AppURL calls handed out the same ticket")
+	}
+}
+
+// ticketFromURL pulls the page ticket out of a page URL.
+func ticketFromURL(t *testing.T, pageURL string) string {
+	t.Helper()
+	parsed, err := neturl.Parse(pageURL)
+	if err != nil {
+		t.Fatalf("parse page url %q: %v", pageURL, err)
+	}
+	ticket := parsed.Query().Get(PageTicketParam)
+	if ticket == "" {
+		t.Fatalf("page url %q carries no ticket", pageURL)
+	}
+	return ticket
 }
 
 // TestRebind_NewAddrAccepts verifies that after Rebind, new WS
@@ -1454,7 +1497,7 @@ func TestServer_BootstrapRejectsRebindHost(t *testing.T) {
 	// Forge a request with a non-loopback Host. http.Get sets Host
 	// from the URL, so we go through the lower-level NewRequest path
 	// to override.
-	req, err := http.NewRequest("GET", "http://"+f.srv.Addr()+"/bootstrap.json?t=test-token", nil)
+	req, err := http.NewRequest("GET", "http://"+f.srv.Addr()+"/bootstrap.json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1483,11 +1526,12 @@ func TestServer_BootstrapAcceptsLoopbackHosts(t *testing.T) {
 	}
 	for _, host := range cases {
 		t.Run(host, func(t *testing.T) {
-			req, err := http.NewRequest("GET", "http://"+f.srv.Addr()+"/bootstrap.json?t=test-token", nil)
+			req, err := http.NewRequest("GET", "http://"+f.srv.Addr()+"/bootstrap.json", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			req.Host = host
+			req.Header.Set("Authorization", "Bearer test-token")
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -1511,7 +1555,7 @@ func TestServer_BootstrapAcceptsAnyHostInLANMode(t *testing.T) {
 	// SetOriginPatterns flips the allow-list for the live server.
 	f.srv.SetOriginPatterns([]string{"http://10.0.0.5:*"})
 
-	req, err := http.NewRequest("GET", "http://"+f.srv.Addr()+"/bootstrap.json?t=test-token", nil)
+	req, err := http.NewRequest("GET", "http://"+f.srv.Addr()+"/bootstrap.json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1519,6 +1563,7 @@ func TestServer_BootstrapAcceptsAnyHostInLANMode(t *testing.T) {
 	// LAN mode skips the check. Token still validates so a 200 is the
 	// expected outcome.
 	req.Host = "10.0.0.5"
+	req.Header.Set("Authorization", "Bearer test-token")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -2063,10 +2108,7 @@ func TestServer_BootstrapAnnouncesHarnessMode(t *testing.T) {
 
 func bootstrapDoc(t *testing.T, f *serverFixture) Bootstrap {
 	t.Helper()
-	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=test-token", f.srv.Addr()))
-	if err != nil {
-		t.Fatalf("fetch bootstrap: %v", err)
-	}
+	resp := getBootstrap(t, f.srv.Addr())
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("bootstrap status: %d", resp.StatusCode)

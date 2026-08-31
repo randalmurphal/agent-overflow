@@ -136,21 +136,25 @@ make verify     # full release gate
 
 Agent Overflow's transport (the HTTP+WebSocket layer between the Svelte
 SPA and the Go backend) defaults to loopback-only and binds to a fresh
-ephemeral port at every launch. The launch URL — `http://127.0.0.1:<port>/?t=<token>` —
-is what the embedded webview attaches to.
+ephemeral port at every launch. The launch URL — `http://127.0.0.1:<port>/?t=<ticket>` —
+is what the embedded webview attaches to. The `?t=` is a one-time page
+ticket: the first page load exchanges it for an HttpOnly session cookie
+and the ticket is stripped from the address bar, so no page script ever
+holds a credential and a copied URL opens exactly one session.
 
 A handful of opt-in modes extend that:
 
 - **`--listen <addr>`** binds the transport to a different interface
-  (e.g. `0.0.0.0:54321` for LAN). The same launch URL works from any
-  host that can reach the bound interface; the token gates access.
+  (e.g. `0.0.0.0:54321` for LAN). Settings → Network renders a share URL
+  for the bound interface; each render carries its own one-time ticket,
+  so a second device needs the panel read again.
   Equivalent to flipping the "Allow remote access" toggle in Settings →
   Network, which persists the preference across launches.
-- **`--connect ws://host:port/?token=<value>`** runs the desktop
-  binary as a thin client against a remote backend. The local
-  process boots a stub static-asset server, injects the bootstrap
-  manifest, and points the webview at the remote backend over
-  WebSocket. No local transport, store, or providers are started.
+- **`--connect ws://host:port/ws?token=<value>`** runs the desktop
+  binary as a thin client against a remote backend. The local process
+  boots a stub static-asset server, keeps the upstream token in Go, and
+  carries the webview's WebSocket to the remote backend. No local
+  transport, store, or providers are started.
 - **Windows + WSL silent mode** (`agent-overflow-windows.exe`) drops
   the Linux backend into a chosen WSL distro, runs it headless, and
   forwards `localhost:<port>` from inside the distro to the Windows
@@ -159,12 +163,15 @@ A handful of opt-in modes extend that:
 
 ### Trust model
 
-**Anyone holding the bootstrap token can RPC the host as the user that
-launched the binary.** The transport's `LocalOnlyMethods` set refuses a
-narrow surface (terminal spawn, git mutators, settings writes,
-credential retrieval) for non-loopback peers — that's defense-in-depth
-against a token leak on a shared LAN, not a security boundary you can
-expose to the public internet.
+**Anyone holding the session token — or a live page cookie — can RPC the
+host as the user that launched the binary.** The token never rides a page
+URL (a URL carries a one-time ticket, exchanged once for an HttpOnly
+cookie), so page script cannot read a credential back out; that narrows
+how a credential leaks, not what one is worth. The transport's
+`LocalOnlyMethods` set refuses a narrow surface (terminal spawn, git
+mutators, settings writes, credential retrieval) for non-loopback peers —
+that's defense-in-depth against a leak on a shared LAN, not a security
+boundary you can expose to the public internet.
 
 For non-trusted networks, deploy behind a tunnel that handles
 authentication and TLS:

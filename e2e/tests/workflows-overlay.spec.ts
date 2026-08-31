@@ -178,7 +178,7 @@ test('the sidebar footer opens home and a parked gate resolves from its detail',
   const item = await startWorkflow(harness, project.projectId, 'gate-flow', 'Port the parser');
   await waitForWorkflowState(harness, item.id, 'needs-human', 'gate');
 
-  await page.goto(harness.url);
+  await harness.open(page);
   // §6: one footer row, one count, amber only because a human is blocked.
   await expect(page.getByTestId('sidebar-workflows-attention')).toHaveText('1');
 
@@ -243,7 +243,7 @@ test('the map tracks a run live, from held to parked, without leaving the detail
   );
   const item = await startWorkflow(harness, project.projectId, 'live-flow', 'Watch it move');
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByTestId('sidebar-workflows-button').click();
   await page.getByTestId('workflow-run-row').filter({ hasText: 'Watch it move' }).click();
   await expect(page.getByTestId('workflow-run-detail')).toHaveAttribute('data-item-id', item.id);
@@ -296,7 +296,7 @@ test('scrolling away holds the reader while the run moves, and only the chip bri
   // Short enough that the run detail overflows: a surface that fits has no
   // scroll position to hold and would make every assertion below vacuous.
   await page.setViewportSize({ width: 1280, height: 320 });
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByTestId('sidebar-workflows-button').click();
   await page.getByTestId('workflow-run-row').filter({ hasText: 'Follow the frontier' }).click();
   await expect(page.getByTestId('workflow-run-detail')).toHaveAttribute('data-item-id', item.id);
@@ -420,7 +420,7 @@ test('the map grows above a reader without moving what they are reading', async 
   );
 
   await page.setViewportSize({ width: 1280, height: 400 });
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByTestId('sidebar-workflows-button').click();
   await page.getByTestId('workflow-run-row').filter({ hasText: 'Grow above me' }).click();
   await expect(page.getByTestId('workflow-run-detail')).toHaveAttribute('data-item-id', item.id);
@@ -513,7 +513,7 @@ test('a map node with a thread opens it as a pane and leaves the overlay', async
   const planThreadId = detail.phases.find((phase) => phase.phaseId === 'plan')?.threadId ?? '';
   expect(planThreadId).not.toBe('');
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByTestId('sidebar-workflows-button').click();
   await page.getByTestId('workflow-run-row').filter({ hasText: 'Open from a node' }).click();
   await expect(page.getByTestId('workflow-run-map')).toBeVisible();
@@ -538,7 +538,7 @@ test('a stop request lands on the loop foot the map draws for a wave chain', asy
   const project = await seedWorkflow(harness, 'overlay-loop-project', 'loop-flow', loopWorkflow);
   const item = await startWorkflow(harness, project.projectId, 'loop-flow', 'Loop until clean');
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByTestId('sidebar-workflows-button').click();
   await page.getByTestId('workflow-run-row').filter({ hasText: 'Loop until clean' }).click();
   await expect(page.getByTestId('workflow-run-detail')).toHaveAttribute('data-item-id', item.id);
@@ -583,7 +583,7 @@ test('the sweep steps with j / k, auto-advances past a receipt, and lands on all
   const second = await startWorkflow(harness, project.projectId, 'sweep-flow', 'Second parked run');
   await waitForWorkflowState(harness, second.id, 'needs-human', 'gate');
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await expect(page.getByTestId('sidebar-workflows-attention')).toHaveText('2');
   await page.getByTestId('sidebar-workflows-button').click();
   await page.getByTestId('workflow-run-row').filter({ hasText: 'First parked run' }).click();
@@ -634,7 +634,7 @@ test('leaving a run returns home at the top, not where the run was scrolled', as
   expect(project.workItemIds.length).toBe(12);
 
   await page.setViewportSize({ width: 1280, height: 420 });
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByTestId('sidebar-workflows-button').click();
 
   const body = page.getByTestId('workflows-overlay-body');
@@ -668,7 +668,7 @@ test('discard previews exactly what it would destroy before it destroys it', asy
   const item = await startWorkflow(harness, project.projectId, 'discard-flow', 'Finished run');
   await waitForWorkflowState(harness, item.id, 'done');
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByTestId('sidebar-workflows-button').click();
   await page.getByTestId('workflow-run-row').filter({ hasText: 'Finished run' }).click();
   await expect(page.getByTestId('workflow-run-detail')).toHaveAttribute('data-item-id', item.id);
@@ -696,7 +696,7 @@ test('New run starts a workflow from the overlay', async ({ harness, page }) => 
     singlePhaseWorkflow('intake-flow', '        - to: done'),
   );
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByTestId('sidebar-workflows-button').click();
   await page.getByTestId('workflows-new-run').click();
 
@@ -741,7 +741,7 @@ test('a question answers from the footer input, and typing there never fires the
   const item = await startWorkflow(harness, project.projectId, 'ask-flow', 'Needs an answer');
   await waitForWorkflowState(harness, item.id, 'needs-human', 'question');
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByTestId('sidebar-workflows-button').click();
   await page.getByTestId('workflow-run-row').filter({ hasText: 'Needs an answer' }).click();
   await expect(page.getByTestId('workflow-question')).toContainText('Which option?');
@@ -792,7 +792,7 @@ test('/workflow completes in the composer and expands on the wire, not in the tr
   });
   expect(seed.projects[0].threadIds).toHaveLength(1);
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Composer thread').click();
   const composer = page.getByLabel('Message Input');
   await composer.click();
@@ -883,7 +883,7 @@ test('a view-only session disables every mutating affordance', async ({ harness,
     await route.fulfill({ response, body: JSON.stringify({ ...manifest, remote: true }) });
   });
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByTestId('sidebar-workflows-button').click();
 
   // §10: home's controls all mutate, so all of them go dead with one reason.
