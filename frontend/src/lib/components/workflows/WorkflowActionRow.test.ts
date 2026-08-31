@@ -226,14 +226,14 @@ describe('WorkflowActionRow', () => {
   });
 
   describe('remote posture (§10)', () => {
-    it('disables every action with a Local only tooltip', () => {
+    it('disables every action with an ungranted tooltip', () => {
       setPageGrantsFromBootstrap(true);
       const view = mount();
       const buttons = [...view.container.querySelectorAll('[data-testid="workflow-action"]')] as HTMLButtonElement[];
       expect(buttons.length).toBeGreaterThan(0);
       for (const button of buttons) {
         expect(button.disabled).toBe(true);
-        expect(button.title).toBe('Local only');
+        expect(button.title).toBe('Not granted to this device');
       }
     });
 

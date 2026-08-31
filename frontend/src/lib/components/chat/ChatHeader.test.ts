@@ -605,7 +605,7 @@ describe('<ChatHeader>', () => {
 
       const button = getByTestId('thread-title-regenerate') as HTMLButtonElement;
       expect(button.disabled).toBe(true);
-      expect(button.title).toBe('Local only');
+      expect(button.title).toBe('Not granted to this device');
     } finally {
       setPageGrantsFromBootstrap(false);
     }

@@ -175,7 +175,7 @@
     <button
       onclick={executePrimary}
       disabled={primaryAction.disabled || actionLoading || gitUngranted}
-      title={gitUngranted ? 'Local only' : primaryAction.tooltip}
+      title={gitUngranted ? 'Not granted to this device' : primaryAction.tooltip}
       class="{SPLIT_BTN_BASE} px-2.5 rounded-l disabled:opacity-40 disabled:cursor-not-allowed"
     >
       {actionLoading ? '...' : primaryAction.label}
@@ -261,7 +261,7 @@
             label="Remove Worktree"
             variant="danger"
             disabled={workspaceLock.locked || gitUngranted}
-            title={gitUngranted ? 'Local only' : workspaceLock.locked ? workspaceLock.reason : undefined}
+            title={gitUngranted ? 'Not granted to this device' : workspaceLock.locked ? workspaceLock.reason : undefined}
             onSelect={() => {
               showDropdown = false;
               showRemoveWorktreeConfirm = true;

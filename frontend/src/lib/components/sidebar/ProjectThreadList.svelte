@@ -197,7 +197,7 @@
     onclick={handleEmptyNewThreadClick}
     oncontextmenu={handleEmptyNewThreadContextMenu}
     disabled={newThreadUngranted}
-    title={newThreadUngranted ? 'Local only' : undefined}
+    title={newThreadUngranted ? 'Not granted to this device' : undefined}
     data-testid="project-thread-list-empty"
     class="ml-4 mr-2 my-1 inline-flex items-center gap-1 rounded-[var(--radius-field)] px-2 py-1 text-[0.6875rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-surface-2/0 disabled:hover:text-fg-hint"
   >

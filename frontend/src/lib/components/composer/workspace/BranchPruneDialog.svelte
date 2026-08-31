@@ -199,7 +199,7 @@
       variant="danger"
       size="sm"
       testId="prune-dialog-confirm"
-      title={ungranted ? 'Local only' : undefined}
+      title={ungranted ? 'Not granted to this device' : undefined}
       disabled={ungranted || loading || checkedCount === 0}
       loading={deleting}
       onclick={confirmDelete}

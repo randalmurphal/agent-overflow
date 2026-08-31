@@ -59,7 +59,7 @@ describe('ProjectItem create controls', () => {
     const { getByTestId } = renderItem(p);
     const newThread = getByTestId('project-item-new-thread') as HTMLButtonElement;
     expect(newThread.disabled).toBe(true);
-    expect(newThread.title).toBe('Local only');
+    expect(newThread.title).toBe('Not granted to this device');
     expect((getByTestId('project-item-new-terminal') as HTMLButtonElement).disabled).toBe(true);
   });
 });

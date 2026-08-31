@@ -403,7 +403,7 @@
         type="button"
         onclick={handleNewTerminalClick}
         disabled={newTerminalUngranted}
-        title={newTerminalUngranted ? 'Local only' : 'New Terminal in This Project'}
+        title={newTerminalUngranted ? 'Not granted to this device' : 'New Terminal in This Project'}
         aria-label="New Terminal in This Project"
         data-testid="project-item-new-terminal"
         class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-fg-subtle disabled:hover:text-fg-subtle disabled:hover:bg-surface-2/0"
@@ -415,7 +415,7 @@
         onclick={handleNewThreadClick}
         oncontextmenu={handleNewThreadContextMenu}
         disabled={newThreadUngranted}
-        title={newThreadUngranted ? 'Local only' : 'New Thread in This Project'}
+        title={newThreadUngranted ? 'Not granted to this device' : 'New Thread in This Project'}
         aria-label="New Thread in This Project"
         data-testid="project-item-new-thread"
         class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-fg-subtle disabled:hover:text-fg-subtle disabled:hover:bg-surface-2/0"

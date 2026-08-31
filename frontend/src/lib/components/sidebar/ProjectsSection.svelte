@@ -260,7 +260,7 @@
     <ProjectSortMenu />
     <IconButton
       label="Import Sessions"
-      title={importUngranted ? 'Local only' : undefined}
+      title={importUngranted ? 'Not granted to this device' : undefined}
       size="sm"
       disabled={importUngranted}
       onClick={openSessionImport}

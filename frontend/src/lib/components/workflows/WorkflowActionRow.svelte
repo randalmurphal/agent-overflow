@@ -55,7 +55,7 @@
 
   // Every action on this row resolves a workflow run.
   let ungranted = $derived(!hasScope('threads:autonomy'));
-  const localOnly = $derived(ungranted ? 'Local only' : undefined);
+  const ungrantedTitle = $derived(ungranted ? 'Not granted to this device' : undefined);
   let kind = $derived(workflowResolutionKind(item));
   // A stop request only exists where a boundary exists to honour it: the ROOT
   // of a tree, whose workflow has a call phase. Offering it anywhere else would
@@ -223,13 +223,13 @@
           class="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
           placeholder="Answer — the phase resumes where it yielded"
           disabled={ungranted}
-          title={localOnly}
+          title={ungrantedTitle}
           data-testid="workflow-answer-input"
         />
         <button
           class="shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg disabled:cursor-not-allowed disabled:opacity-50"
           disabled={ungranted || busy || !answer.trim()}
-          title={localOnly}
+          title={ungrantedTitle}
           data-testid="workflow-answer-send"
         >Send</button>
       </form>
@@ -247,13 +247,13 @@
           class="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
           placeholder={noteFor === 'rerun' ? 'Guidance for the new attempt (optional)' : 'What needs to change (optional)'}
           disabled={ungranted}
-          title={localOnly}
+          title={ungrantedTitle}
           data-testid="workflow-note-input"
         />
         <button
           class="shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg disabled:cursor-not-allowed disabled:opacity-50"
           disabled={ungranted || busy}
-          title={localOnly}
+          title={ungrantedTitle}
           data-testid="workflow-note-send"
         >Send</button>
       </form>
@@ -265,7 +265,7 @@
           class={['rounded-md px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50', variantClass[action.variant]].join(' ')}
           onclick={() => run(action)}
           disabled={ungranted || busy}
-          title={localOnly}
+          title={ungrantedTitle}
           data-testid="workflow-action"
           data-action-id={action.id}
         >{label(action)}{#if action.key}<kbd class="ml-1.5 opacity-60">{action.key}</kbd>{/if}</button>

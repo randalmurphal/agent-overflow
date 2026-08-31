@@ -32,7 +32,7 @@
 {#if pane.thread}
   <PaneHeaderIconButton
     label="Regenerate title"
-    title={ungranted ? 'Local only' : 'Regenerate title'}
+    title={ungranted ? 'Not granted to this device' : 'Regenerate title'}
     disabled={pending || ungranted}
     testId="thread-title-regenerate"
     {pending}

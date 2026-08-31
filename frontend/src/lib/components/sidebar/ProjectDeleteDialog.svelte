@@ -92,7 +92,7 @@
       variant="danger"
       size="sm"
       testId="project-delete-confirm"
-      title={ungranted ? 'Local only' : undefined}
+      title={ungranted ? 'Not granted to this device' : undefined}
       onclick={onConfirm}
       disabled={ungranted || submitting}
       loading={submitting}

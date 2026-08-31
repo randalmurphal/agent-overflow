@@ -313,7 +313,7 @@ describe('<ThreadContextMenu> Check for Provider Updates', () => {
     expect(getByRole('button', { name: 'Restore' })).toBeInTheDocument();
   });
 
-  it('is disabled with a Local only tooltip in a view-only session', async () => {
+  it('is disabled with an ungranted tooltip in a view-only session', async () => {
     setPageGrantsFromBootstrap(true);
     const check = setBindingMock('CheckThreadImportUpdates', async () => ({
       threadId: 'thread-1',
@@ -328,7 +328,7 @@ describe('<ThreadContextMenu> Check for Provider Updates', () => {
     // Visible-but-disabled, not hidden: hiding it would read as "this thread
     // wasn't imported", which is a different fact.
     expect(item.getAttribute('aria-disabled')).toBe('true');
-    expect(item.getAttribute('title')).toBe('Local only');
+    expect(item.getAttribute('title')).toBe('Not granted to this device');
 
     await fireEvent.click(item);
     for (let i = 0; i < 5; i += 1) await Promise.resolve();

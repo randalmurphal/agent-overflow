@@ -93,7 +93,7 @@
       class="text-xs text-error hover:underline disabled:cursor-not-allowed disabled:opacity-50"
       onclick={() => { void load(); }}
       disabled={ungranted}
-      title={ungranted ? 'Local only' : undefined}
+      title={ungranted ? 'Not granted to this device' : undefined}
       data-testid="workflow-diff-retry"
     >{error} · retry</button>
   {:else if loaded}
@@ -103,7 +103,7 @@
       class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
       onclick={() => { void load(); }}
       disabled={ungranted || !threadId}
-      title={ungranted ? 'Local only' : undefined}
+      title={ungranted ? 'Not granted to this device' : undefined}
       data-testid="workflow-diff-load"
     >Load changes</button>
   {/if}
@@ -113,7 +113,7 @@
       class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
       onclick={() => { void openFullReview(); }}
       disabled={ungranted}
-      title={ungranted ? 'Local only' : undefined}
+      title={ungranted ? 'Not granted to this device' : undefined}
       data-testid="workflow-open-full-review"
     >Open full review</button>
   {/if}

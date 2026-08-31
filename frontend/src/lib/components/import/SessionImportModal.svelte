@@ -323,7 +323,7 @@
       variant="primary"
       size="sm"
       testId="session-import-confirm"
-      title={ungranted ? 'Local only' : undefined}
+      title={ungranted ? 'Not granted to this device' : undefined}
       disabled={!cta.enabled}
       loading={runActive}
       onclick={runImport}

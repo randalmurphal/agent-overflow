@@ -45,7 +45,7 @@ describe('WorkflowJobNotes', () => {
     setPageGrantsFromBootstrap(true);
     await vi.advanceTimersByTimeAsync(350);
     expect(view.getByTestId('wf-job-notes-input')).toBeDisabled();
-    expect(view.getByTestId('wf-job-notes-input')).toHaveAttribute('title', 'Local only');
+    expect(view.getByTestId('wf-job-notes-input')).toHaveAttribute('title', 'Not granted to this device');
     expect(getBindingMock('WorkflowSetJobNotes')).not.toHaveBeenCalled();
   });
 

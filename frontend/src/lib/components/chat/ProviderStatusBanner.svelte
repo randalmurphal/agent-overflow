@@ -247,7 +247,7 @@
         <button
           onclick={handleRecheckBinary}
           disabled={rechecking || accountsUngranted}
-          title={accountsUngranted ? 'Local only' : undefined}
+          title={accountsUngranted ? 'Not granted to this device' : undefined}
           data-testid="provider-status-recheck"
           class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
@@ -258,7 +258,7 @@
         <button
           onclick={handlePrimaryAction}
           disabled={rechecking || accountsUngranted}
-          title={accountsUngranted ? 'Local only' : undefined}
+          title={accountsUngranted ? 'Not granted to this device' : undefined}
           data-testid="provider-status-action"
           class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
@@ -285,7 +285,7 @@
           <button
             onclick={handleReconnect}
             disabled={reconnecting || operateUngranted}
-            title={operateUngranted ? 'Local only' : undefined}
+            title={operateUngranted ? 'Not granted to this device' : undefined}
             class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
           >
             {reconnecting ? 'Reconnecting...' : 'Reconnect'}

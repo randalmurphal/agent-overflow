@@ -25,7 +25,7 @@
 
   // Every control here drives the workflow engine, which is `threads:autonomy`.
   let ungranted = $derived(!hasScope('threads:autonomy'));
-  const localOnly = $derived(ungranted ? 'Local only' : undefined);
+  const ungrantedTitle = $derived(ungranted ? 'Not granted to this device' : undefined);
   let busy = $state('');
 
   let chain = $derived(workflowChainSummary(definition) || workflowDefinitionMeta(definition));
@@ -86,14 +86,14 @@
         class="shrink-0 text-[0.6875rem] text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
         onclick={() => { void toggleAutomation(automation); }}
         disabled={ungranted || busy === automation.id}
-        title={localOnly}
+        title={ungrantedTitle}
         data-testid="workflow-automation-toggle"
       >{automation.enabled ? 'Disable' : 'Enable'}</button>
       <button
         class="shrink-0 text-[0.6875rem] text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
         onclick={() => { void runNow(automation); }}
         disabled={ungranted || busy === automation.id}
-        title={localOnly}
+        title={ungrantedTitle}
         data-testid="workflow-automation-run-now"
       >Run now</button>
     </div>

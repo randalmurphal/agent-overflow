@@ -5,7 +5,7 @@
   // triage-agent spawners.
   //
   // Remote posture (§10): every control here mutates, so all of them disable
-  // with a "Local only" tooltip in a view-only session; the project filter is
+  // with a "Not granted to this device" tooltip in a view-only session; the project filter is
   // pure view state and stays live.
 
   import { WorkflowSetGlobalPause } from '../../stores/bindings';
@@ -27,7 +27,7 @@
   let filter = $derived(getWorkflowProjectFilter());
   let pausing = $state(false);
 
-  const localOnly = $derived(ungranted ? 'Local only' : undefined);
+  const ungrantedTitle = $derived(ungranted ? 'Not granted to this device' : undefined);
 
   async function togglePause(): Promise<void> {
     if (ungranted || pausing) return;
@@ -49,7 +49,7 @@
     class="rounded-md border border-border-subtle px-2 py-1 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
     onclick={togglePause}
     disabled={ungranted || pausing}
-    title={localOnly ?? 'Pause stops new phase starts everywhere; in-flight turns finish'}
+    title={ungrantedTitle ?? 'Pause stops new phase starts everywhere; in-flight turns finish'}
     data-testid="workflows-pause-all"
     aria-pressed={paused}
   >{paused ? '▶ Resume all' : '❚❚ Pause all'}</button>
@@ -74,7 +74,7 @@
       class="rounded-md border border-border-subtle px-2 py-1 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
       onclick={() => setWorkflowsOverlayDialog('intake')}
       disabled={ungranted}
-      title={localOnly}
+      title={ungrantedTitle}
       data-testid="workflows-new-run"
     >+ New run</button>
   </div>

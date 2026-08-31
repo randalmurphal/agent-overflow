@@ -63,13 +63,13 @@ describe('ProjectsSection import trigger', () => {
     expect(view.queryByTestId('session-import-body')).not.toBeInTheDocument();
   });
 
-  it('is disabled with a Local only tooltip in a view-only session', async () => {
+  it('is disabled with an ungranted tooltip in a view-only session', async () => {
     setPageGrantsFromBootstrap(true);
     const view = render(ProjectsSection, { props: { pane: null } });
     const button = importButton(view.container);
 
     expect(button).toBeDisabled();
-    expect(button).toHaveAttribute('title', 'Local only');
+    expect(button).toHaveAttribute('title', 'Not granted to this device');
     // The action still has a name for assistive tech; only the hover text
     // explains why it is unavailable.
     expect(button).toHaveAttribute('aria-label', 'Import Sessions');

@@ -890,7 +890,7 @@ test('a view-only session disables every mutating affordance', async ({ harness,
   await expect(page.getByTestId('workflows-pause-all')).toBeDisabled();
   const newRun = page.getByTestId('workflows-new-run');
   await expect(newRun).toBeDisabled();
-  await expect(newRun).toHaveAttribute('title', 'Local only');
+  await expect(newRun).toHaveAttribute('title', 'Not granted to this device');
   // The project filter is view state, not a mutation — it stays live.
   await expect(page.getByTestId('workflows-project-filter')).toBeEnabled();
 
@@ -899,7 +899,7 @@ test('a view-only session disables every mutating affordance', async ({ harness,
   await expect(actions.first()).toBeVisible();
   for (const action of await actions.all()) {
     await expect(action).toBeDisabled();
-    await expect(action).toHaveAttribute('title', 'Local only');
+    await expect(action).toHaveAttribute('title', 'Not granted to this device');
   }
 
   // The guard is not just visual: the §8 keys are refused too, so the run is

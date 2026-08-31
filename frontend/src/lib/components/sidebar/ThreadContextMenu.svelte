@@ -308,7 +308,7 @@
             <MenuItem
               label={checkingUpdates ? 'Checking for Provider Updates…' : 'Check for Provider Updates'}
               disabled={checkingUpdates || importUpdatesUngranted}
-              title={importUpdatesUngranted ? 'Local only' : undefined}
+              title={importUpdatesUngranted ? 'Not granted to this device' : undefined}
               onSelect={() => void handleCheckImportUpdates()}
             />
           {/if}

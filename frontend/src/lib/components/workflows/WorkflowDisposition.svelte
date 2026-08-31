@@ -94,14 +94,14 @@
         class="rounded-md border border-border-subtle px-2.5 py-1 text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
         onclick={() => { void openPRThread('review'); }}
         disabled={ungranted || busy !== '' || reviewCount === null}
-        title={ungranted ? 'Local only' : reviewError || undefined}
+        title={ungranted ? 'Not granted to this device' : reviewError || undefined}
         data-testid="workflow-pr-review-comments"
       >Review comments ({reviewError ? '–' : reviewCount ?? '…'})</button>
       <button
         class="rounded-md border border-border-subtle px-2.5 py-1 text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
         onclick={() => { void openPRThread('discuss'); }}
         disabled={ungranted || busy !== ''}
-        title={ungranted ? 'Local only' : undefined}
+        title={ungranted ? 'Not granted to this device' : undefined}
         data-testid="workflow-pr-discuss"
       >Discuss this PR</button>
     </div>
