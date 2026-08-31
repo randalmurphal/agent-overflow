@@ -25,17 +25,29 @@ an SSH tunnel, or a reverse proxy), and where the listen port comes from
 
 Adding an exported method to `App` puts it on the wire. If it touches the local
 filesystem, external processes, provider sessions, settings, credentials, or
-attachments, add its name to `LocalOnlyMethods` in the same change.
+attachments, add its name to `localOnlyCategories` **with its category** in the
+same change.
 
 `internalmethods.go` holds the two filter sets the dispatcher consults:
 
 - `InternalServiceMethods`: Wails framework hooks and `//wails:ignore` methods.
   Never registered, as defense in depth beside the codegen filter.
-- `LocalOnlyMethods`: the privileged surface (RCE-equivalent calls, session
-  control, settings mutation, attachment writes, FS bookkeeping, credential
-  retrieval and enumeration). `Dispatcher.ResolveForOrigin` refuses these from
-  non-loopback peers with the same `method_not_found` shape an unregistered
-  method returns, so the privileged surface stays unenumerable from the LAN.
+- `localOnlyCategories`: the privileged surface, one row per method, each tagged
+  with the `LocalOnlyCategory` that put it there. `LocalOnlyMethods` (the
+  `map[string]bool` the dispatcher and every gate read) is derived from it, so
+  the two cannot disagree; `LocalOnlyCategoryOf` answers the reason.
+  `Dispatcher.ResolveForOrigin` refuses these from non-loopback peers with the
+  same `method_not_found` shape an unregistered method returns, so the
+  privileged surface stays unenumerable from the LAN.
+
+`LocalOnlyCategory` is a closed set of ten: local execution, session control,
+settings mutation, attachment payload, local-FS bookkeeping, credential and
+account enumeration, WSL inventory, MCP state, desktop host control, session
+import. `localonlycategory_test.go` parses the constant block out of the source
+and fails on a constant with no name row, a name row with no constant, an entry
+tagged with an undeclared value, an untagged entry (the zero value is not a
+category), and a declared category that classifies nothing. Adding a category is
+a deliberate act with a doc comment, not a new number in a comment.
 
 The classification list is the source of truth and method bodies do not re-check
 origin. `methods_gen_test.go` fails on a generated method nobody classified
