@@ -900,12 +900,15 @@ func (s *Store) RevokeSession(sessionID string, at int64) (bool, error) {
 }
 
 // TouchSession advances last_seen_at on a live session, reporting whether
-// it moved. Deliberately scoped to live rows: a revoked session that keeps
-// being presented must not look freshly used in the device list.
+// it moved. Deliberately scoped to live rows, and "live" is both of them:
+// neither a revoked session nor a session whose DEVICE was revoked may
+// look freshly used in the device list, however often it keeps being
+// presented.
 func (s *Store) TouchSession(sessionID string, at int64) (bool, error) {
 	result, err := s.db.Exec(
 		`UPDATE sessions SET last_seen_at = ?
-		 WHERE id = ? AND revoked_at IS NULL AND last_seen_at IS NOT ?`,
+		 WHERE id = ? AND revoked_at IS NULL AND last_seen_at IS NOT ?
+		   AND device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL)`,
 		at, sessionID, at)
 	if err != nil {
 		return false, fmt.Errorf("store: touch session: %w", err)

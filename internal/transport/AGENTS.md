@@ -829,6 +829,13 @@ closes it, and `CloseSession` is that something.
   ticket NAMES a session, it does not authorize one: the subject is re-checked
   through `Config.SessionLive` before it is believed, so a ticket for a session
   revoked during the seconds it was in flight cannot resurrect it.
+- **`Config.SessionLive` answers a CONJUNCTION**, and this package does not
+  and cannot see the second half of it: a session is live only while its own
+  row and its DEVICE's row are both unrevoked
+  (`docs/specs/remote-access.md` §2). Every consult here — the ticket
+  re-check, `watchSession`'s interval, the per-RPC scope read — inherits it by
+  going through that one hook. Nothing on this side may cache the answer;
+  re-asking is the whole mechanism.
 - **An established connection re-validates on an interval and caps its own
   lifetime** (`connHandler.watchSession`), armed only for a connection that
   names a session. The interval covers the two ways a session stops that

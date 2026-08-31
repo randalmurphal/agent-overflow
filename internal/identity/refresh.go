@@ -263,7 +263,11 @@ func (s *Sessions) CheckDeviceProof(session store.Session, proof DeviceProof) Re
 		return ReasonKeyMismatch
 	}
 	if device.RevokedAt != 0 {
-		return ReasonRevokedSession
+		// Defensive. Every caller consults Live first, and Live now answers
+		// the conjunction — so a revoked device is refused there, with this
+		// same code, before a proof is ever compared. Kept because this
+		// function is exported and a later caller may not have.
+		return ReasonRevokedDevice
 	}
 	if device.KeyThumbprint == "" {
 		return ReasonKeyMismatch

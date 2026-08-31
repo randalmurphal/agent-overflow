@@ -127,6 +127,13 @@ func TestActivateAndExtendRefuseARevokedDevice(t *testing.T) {
 	if moved {
 		t.Fatal("ExtendSession renewed a revoked device's session")
 	}
+	moved, err = s.TouchSession("sess-live", 2500)
+	if err != nil {
+		t.Fatalf("TouchSession: %v", err)
+	}
+	if moved {
+		t.Fatal("TouchSession made a revoked device's session look freshly used")
+	}
 }
 
 // TestSessionReadsCarryTheDeviceRevocation — every session read joins the
