@@ -142,15 +142,15 @@ const CORPUS: Array<[string, string, LinkRender]> = [
   ['protocol-relative', '//host.test/x', blockedTagged('//host.test/x')],
   [
     'non-http scheme (script URL)',
-    'javascript:alert(1)',
-    blockedTagged('javascript:alert(1)'),
+    'javascript:void(0)',
+    blockedTagged('javascript:void(0)'),
   ],
-  ['non-http scheme (data)', 'data:text/html,hi', blockedTagged('data:text/html,hi')],
+  ['non-http scheme (data)', 'data:text/plain,hi', blockedTagged('data:text/plain,hi')],
   ['non-http scheme (mailto)', 'mailto:x@y.test', blockedTagged('mailto:x@y.test')],
   [
     'non-http scheme (vbscript)',
-    'vbscript:evil()',
-    blockedTagged('vbscript:evil()'),
+    'vbscript:MsgBox',
+    blockedTagged('vbscript:MsgBox'),
   ],
   // The `<…>` destination form is the only one that survives the lexer with
   // its padding intact, and the URL parser strips leading/trailing spaces and
