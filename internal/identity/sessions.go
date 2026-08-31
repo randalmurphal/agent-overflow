@@ -141,6 +141,16 @@ type MintRequest struct {
 	// nothing but an explicit revocation can ever end, and this is the
 	// short-lived half of the access-token/refresh pair (§4).
 	TTL time.Duration
+	// AwaitConfirmation mints the session UNACTIVATED: the row and the
+	// credential both exist, and neither admits anything until Confirm
+	// stamps `sessions.activated_at`.
+	//
+	// Set only by pairing redemption. The credential is handed to the new
+	// device immediately so it can simply keep trying while the owner
+	// checks the verification number, rather than holding a second secret
+	// to poll with — the confirmation gate lives on the row, where one
+	// predicate covers every presentation path.
+	AwaitConfirmation bool
 }
 
 // Mint issues a session and returns the row plus the credential string.
@@ -165,6 +175,10 @@ func (s *Sessions) Mint(req MintRequest) (store.Session, string, error) {
 		return store.Session{}, "", err
 	}
 	now := s.now().UnixMilli()
+	activatedAt := now
+	if req.AwaitConfirmation {
+		activatedAt = 0
+	}
 	session := store.Session{
 		ID:           uuid.NewString(),
 		UserID:       req.UserID,
@@ -174,6 +188,7 @@ func (s *Sessions) Mint(req MintRequest) (store.Session, string, error) {
 		SigningKeyID: key.ID,
 		CreatedAt:    now,
 		ExpiresAt:    now + req.TTL.Milliseconds(),
+		ActivatedAt:  activatedAt,
 	}
 	credential, err := signClaims(Claims{
 		KeyID:     key.ID,
@@ -283,6 +298,13 @@ func (s *Sessions) Live(sessionID string) (store.Session, Reason) {
 	}
 	if session.ExpiresAt <= now {
 		return store.Session{}, ReasonExpiredSession
+	}
+	// Checked after expiry on purpose: a pairing whose window lapsed
+	// before anyone confirmed it needs a fresh link, which is what
+	// "expired" says. Only a session still inside its window has a
+	// confirmation worth waiting for.
+	if session.AwaitingConfirmation() {
+		return store.Session{}, ReasonPendingConfirmation
 	}
 
 	s.mu.Lock()

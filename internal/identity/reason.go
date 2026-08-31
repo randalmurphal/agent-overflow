@@ -55,6 +55,21 @@ const (
 	// either the window signed into the claims or the row's own expiry,
 	// which can be shortened after the fact. Both have the same remedy.
 	ReasonExpiredSession
+	// ReasonPendingConfirmation means the session exists and is inside its
+	// window, but the owner has not yet confirmed the pairing verification
+	// number on the device that minted the link (§4 "Pairing"). The only
+	// refusal in this set whose remedy is on ANOTHER device, and the only
+	// one where presenting the same credential again is expected to
+	// succeed shortly — which is why it is not folded into
+	// ReasonUnknownSession.
+	ReasonPendingConfirmation
+	// ReasonUnknownCredential means the presented pairing token or refresh
+	// secret names nothing this backend holds, or nothing it will still
+	// honour. Distinct from ReasonUnknownSession, which is about a session
+	// id inside verified claims: this one is about a bare secret, where a
+	// spent value, an expired value, and a value that never existed all
+	// answer the same thing on purpose.
+	ReasonUnknownCredential
 )
 
 // reasonCodes maps each Reason to its stable wire spelling, indexed by
@@ -72,7 +87,9 @@ var reasonCodes = [...]string{
 	ReasonOutsideTimeWindow: "outside_time_window",
 	ReasonUnknownSession:    "unknown_session",
 	ReasonRevokedSession:    "revoked_session",
-	ReasonExpiredSession:    "expired_session",
+	ReasonExpiredSession:      "expired_session",
+	ReasonPendingConfirmation: "pending_confirmation",
+	ReasonUnknownCredential:   "unknown_credential",
 }
 
 // Code returns the stable wire spelling. An out-of-range value — only

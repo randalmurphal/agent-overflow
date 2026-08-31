@@ -31,6 +31,8 @@ export const AUTH_REASON_CODES = [
   'unknown_session',
   'revoked_session',
   'expired_session',
+  'pending_confirmation',
+  'unknown_credential',
 ] as const;
 
 export type AuthReasonCode = (typeof AUTH_REASON_CODES)[number];
@@ -108,6 +110,23 @@ const PRESENTATIONS: Record<AuthReasonCode, AuthReasonPresentation> = {
   expired_session: {
     title: 'This session has expired.',
     hint: 'Sign in again to continue.',
+    retryable: false,
+  },
+  // The only refusal whose remedy is on a different device, and the only one
+  // where presenting the same credential again is expected to work shortly.
+  // `retryable` says so, so a client can keep waiting instead of offering to
+  // start the pairing over.
+  pending_confirmation: {
+    title: 'This device is waiting to be confirmed.',
+    hint: 'Check that the number shown here matches the one on your computer, then confirm it there.',
+    retryable: true,
+  },
+  // A pairing token or a renewal secret that names nothing we still honour.
+  // Spent, expired, and never-existed all arrive here together, so the hint
+  // names the one action that covers all three.
+  unknown_credential: {
+    title: 'This pairing could not be completed.',
+    hint: 'Start a new pairing from the app on your computer.',
     retryable: false,
   },
 };

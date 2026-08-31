@@ -4,8 +4,8 @@ The session core: mints session credentials, verifies a presentation,
 answers the per-RPC liveness question, and revokes. Spec:
 [docs/specs/remote-access.md](../../docs/specs/remote-access.md) §3 and §4.
 
-Rows live in `internal/store` (migration v75). Enforcement of what a scope
-PERMITS is phase 3 and is not here.
+Rows live in `internal/store` (migrations v75 and v76). Enforcement of what
+a scope PERMITS is phase 3 and is not here.
 
 ## Layering, and why it is one-directional
 
@@ -100,6 +100,99 @@ the case worth closing again.
   this package inserts. A presentation naming an unknown key is refused
   and caches nothing, so an unknown id cannot grow the map.
 - `auth_audit` is bounded by the store's insert-order prune.
+
+## Pairing: the confirmation is the gate, and it is a predicate
+
+`pairing.go` runs the seven steps of spec §4 in one place. The shape worth
+keeping:
+
+- **The redeeming device generates its keypair FIRST** and presents the
+  thumbprint as part of redemption. Proof-of-possession is universal —
+  there is no path that mints a session for a device that proved nothing,
+  so no later phase has to add one.
+- **Redemption returns the real credential immediately, and it admits
+  nothing.** The session row is minted with `activated_at` unset, and
+  `store.Session.Live` requires it. So the pending state costs no poll
+  route, no poll secret, and no second credential: the device holds what
+  it will use, retries until the owner confirms, and every presentation
+  path refuses it in the meantime through the predicate every one of them
+  already runs.
+- **The verification number is derived, never stored.** HMAC over the
+  active signing secret of (domain ‖ backend id ‖ link id ‖ key
+  thumbprint), reduced to six digits. It is therefore a function of the
+  key the device actually presented: a device that redeemed with a
+  different key cannot display a number the owner's screen will match.
+  Leading zeros are preserved, because a five-digit number on one screen
+  and six on the other is a confirmation nobody completes.
+- **A refused redemption cancels the link it spent.** `RedeemPairing`
+  never releases a token back for a second attempt; the owner mints
+  another. A link that could be retried is a link a second reader can
+  race for.
+- **Re-pairing a known key ADOPTS its device row** (`key_thumbprint` is
+  uniquely indexed), so a device that pairs twice does not accumulate
+  rows. A revoked device, or one belonging to another user, is refused
+  with `key_mismatch` rather than re-admitted.
+- **`PairingPayload.CertFingerprint` is reserved and unread.** Phase 5
+  fills it when TLS exists. It is in the shape now so the QR a device
+  scanned before that phase is not a payload version older clients cannot
+  parse.
+
+## Rotating refresh, and what "reuse" costs
+
+`refresh.go`. Each renewal issues a new refresh secret and spends its
+predecessor; presenting a SPENT secret revokes the whole family — the
+session, every socket carrying it, and every outstanding secret in the
+chain — and writes `refresh-reuse-detected`. That is the leaked-copy
+detector, and it is deliberately unable to tell the copy from the
+original, which is why BOTH stop.
+
+The ordering inside `Refresh` is the contract:
+
+1. resolve the secret (unknown / spent / lapsed each answer differently);
+2. judge session liveness and the device-key proof;
+3. only then CAS-consume, and treat a lost CAS as reuse.
+
+Checks before consumption, so a client that presents the right secret with
+a wrong or missing proof can correct itself. Consuming first would sign a
+device out for one mistyped header. The cost is that a client must not
+retry a renewal whose response it never read: it cannot distinguish that
+from a copy, and neither can this package.
+
+Refresh binds to the device key on EVERY listener. A bare bearer refresh
+is `missing_proof` even on loopback, because a credential that could
+self-renew from possession alone makes rotation bookkeeping rather than a
+control.
+
+`policy.go` holds the windows in one table. Binding class decides before
+device class: every `loopback-only` session gets a short access window and
+NO refresh secret at all, because it is re-minted at boot and one that
+renewed itself would outlive the process it was minted to serve. The
+browser class gets the shortest renewable pair of the rest — it is the one
+class with a script-execution surface. Passkey re-auth on renewal is phase
+5; rotation is now.
+
+`issueFor` is the only function in this package that builds a `TokenSet`.
+Every issuance path — pairing, renewal, the local channel — goes through
+it, so a policy change cannot reach some callers and miss others.
+
+## The local page channel
+
+`local.go`. At boot the backend mints a `loopback-only` session for
+ITSELF, and the bootstrap exchange hands it to the embedded webview, the
+`--connect` client, and the WSL launcher relay alike.
+
+It exists so that "the request arrived over loopback" stops being a trust
+basis: a same-host relay carrying a remote peer's traffic is identical at
+the socket, and a credential this backend minted and the relay forwards is
+not. Nothing here removes the launch credential — it still authorizes
+every request — but a local connection now also NAMES a session, which is
+what gives revocation and attribution something to reach.
+
+Idempotent in both halves: the DEVICE is resolved by `devices.channel`
+(one row forever, `EnsureChannelDevice`), and the SESSION is extended and
+re-signed while it is live, re-minted when it is not. A revoked channel
+device is an error rather than a re-mint — re-minting around it would make
+the one revocation a host-local surface can perform unenforceable.
 
 ## Recovery codes
 
