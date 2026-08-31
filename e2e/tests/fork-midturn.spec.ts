@@ -247,7 +247,7 @@ test('the per-message fork stays live mid-turn and snapshots without touching th
   // as interrupted the way the fork's copy would be), and completing the
   // very same turn yields the whole reply rather than the half the fork
   // was taken at — which no interrupted session could produce.
-  const midSource = await harness.rpc<Item[]>('ListItems', threadId);
+  const midSource = await harness.rpc<Item[]>('ListItems', threadId, true);
   expect(midSource.map((i) => [i.kind, i.status, i.summary])).toEqual([
     ['user_text', 'completed', 'first prompt'],
     ['assistant_text', 'completed', 'Turn 1 first half. Turn 1 second half.'],
@@ -307,13 +307,13 @@ test('a tail fork taken mid-stream renders the interrupted snapshot beside a sti
 
   // Only the fork's copy settled; the source's row is still streaming.
   expect(
-    (await harness.rpc<Item[]>('ListItems', fork.id)).map((i) => [i.status, i.summary]),
+    (await harness.rpc<Item[]>('ListItems', fork.id, true)).map((i) => [i.status, i.summary]),
   ).toEqual([
     ['completed', 'run the long one'],
     ['errored', 'Turn 1 first half. — interrupted'],
   ]);
   expect(
-    (await harness.rpc<Item[]>('ListItems', threadId)).map((i) => [i.status, i.summary]),
+    (await harness.rpc<Item[]>('ListItems', threadId, true)).map((i) => [i.status, i.summary]),
   ).toEqual([
     ['completed', 'run the long one'],
     ['streaming', 'Turn 1 first half. '],
@@ -362,14 +362,14 @@ test('a Claude fork with no transcript on disk yet starts a fresh provider threa
   // The clone still settled: the fork holds the prompt plus the partial
   // reply under the interrupted treatment, and starts a fresh provider
   // thread on its first send.
-  const forkItems = await harness.rpc<Item[]>('ListItems', fork.id);
+  const forkItems = await harness.rpc<Item[]>('ListItems', fork.id, true);
   expect(forkItems.map((i) => [i.kind, i.status, i.summary])).toEqual([
     ['user_text', 'completed', 'answer before the file lands'],
     ['assistant_text', 'errored', 'Turn 1 first half. — interrupted'],
   ]);
   // The source's own row is untouched — still streaming, not settled.
   expect(
-    (await harness.rpc<Item[]>('ListItems', threadId)).map((i) => [i.status, i.summary]),
+    (await harness.rpc<Item[]>('ListItems', threadId, true)).map((i) => [i.status, i.summary]),
   ).toEqual([
     ['completed', 'answer before the file lands'],
     ['streaming', 'Turn 1 first half. '],
@@ -377,7 +377,7 @@ test('a Claude fork with no transcript on disk yet starts a fresh provider threa
 
   await driver.advance('finish');
   await harness.waitForEvent('provider:turn_completed');
-  const sourceItems = await harness.rpc<Item[]>('ListItems', threadId);
+  const sourceItems = await harness.rpc<Item[]>('ListItems', threadId, true);
   expect(sourceItems.map((i) => [i.kind, i.status, i.summary])).toEqual([
     ['user_text', 'completed', 'answer before the file lands'],
     ['assistant_text', 'completed', 'Turn 1 first half. Turn 1 second half.'],
@@ -404,14 +404,14 @@ test('a Codex fork mid-turn forks the live thread with no boundary', async ({ ha
   expect(fork.sessionRef).toBeTruthy();
   expect(fork.sessionRef).not.toBe(source.sessionRef);
 
-  const forkItems = await harness.rpc<Item[]>('ListItems', fork.id);
+  const forkItems = await harness.rpc<Item[]>('ListItems', fork.id, true);
   expect(forkItems.map((i) => [i.kind, i.status, i.summary])).toEqual([
     ['user_text', 'completed', 'run something slow'],
     ['tool_call', 'errored', 'Bash: sleep 30 — interrupted'],
   ]);
   // The source's command row is still running under its own thread.
   expect(
-    (await harness.rpc<Item[]>('ListItems', threadId)).map((i) => [i.status, i.summary]),
+    (await harness.rpc<Item[]>('ListItems', threadId, true)).map((i) => [i.status, i.summary]),
   ).toEqual([
     ['completed', 'run something slow'],
     ['running', 'Bash: sleep 30'],
@@ -419,7 +419,7 @@ test('a Codex fork mid-turn forks the live thread with no boundary', async ({ ha
 
   await driver.advance('hold');
   await harness.waitForEvent('provider:turn_completed');
-  const sourceItems = await harness.rpc<Item[]>('ListItems', threadId);
+  const sourceItems = await harness.rpc<Item[]>('ListItems', threadId, true);
   expect(sourceItems.map((i) => [i.kind, i.status, i.summary])).toEqual([
     ['user_text', 'completed', 'run something slow'],
     ['tool_call', 'completed', 'Bash: sleep 30'],

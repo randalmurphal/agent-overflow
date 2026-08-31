@@ -119,7 +119,7 @@ async function seedAndOpen(
     ],
   });
   const threadId = seed.projects[0]!.threadIds[0]!;
-  const items = await harness.rpc<Array<{ id: string }>>("ListItems", threadId);
+  const items = await harness.rpc<Array<{ id: string }>>("ListItems", threadId, true);
   await harness.open(page);
   await page.getByText(title).click();
   await expect(

@@ -250,7 +250,7 @@ test('a multi-leaf Claude transcript imports one coherent active thread', async 
   expect(threadIDs).toHaveLength(1);
   await expect(page.getByText('Imported 1 session (1 thread).')).toBeVisible();
 
-  const items = await harness.rpc<ImportedItemIdentity[] | null>('ListItems', threadIDs[0]);
+  const items = await harness.rpc<ImportedItemIdentity[] | null>('ListItems', threadIDs[0], true);
   const thinking = (items ?? []).filter((item) => item.kind === 'thinking');
   expect(thinking).toHaveLength(1);
   expect(thinking[0]?.payloadId).toBe('thinking:think:2:0');

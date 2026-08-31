@@ -19,6 +19,13 @@ directory.
   a Playwright MCP session or an ad-hoc script.
 - `tests/fixtures.ts` owns the worker-scoped backend and the per-test
   `harness.reset()`.
+- `harness.rpc('MethodName', ...)` calls bound methods by NAME STRING, so
+  no compiler connects these call sites to the Go signature. Changing a
+  bound method's parameters must sweep `e2e/tests` and `cmd/ao-harness`
+  for that name (the dispatcher rejects a wrong arity with `bad_params`,
+  which is 26 red specs, not a build error — 2026-08-31, the `ListItems`
+  `inlinePreviews` param). `make e2e` is the gate that catches it; run it
+  before merging any bound-signature change.
 - `tests/*-helpers.ts` and `tests/probe-wire.ts` hold the wire builders
   and seeds their spec families share. Put a new provider wire shape
   there, not inline in one spec.
