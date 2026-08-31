@@ -211,7 +211,7 @@ device's credential header, or a session cookie that outlived the launch that
 planted it) already admits the `/ws` upgrade, and the manifest must not be
 stricter than the socket it describes. The fallback never writes the local
 page channel's session cookie — that credential is reserved for requests the
-page credential admitted. On the upgrade itself, a spent WS ticket naming a
+page credential admitted, from a peer on this machine. On the upgrade itself, a spent WS ticket naming a
 live session stands in for `Authenticate` (the ticket was minted moments ago
 by presenting that session's credential); the ambient-cookie arm gets no such
 waiver, and the Origin check runs on every upgrade regardless.
@@ -414,6 +414,15 @@ This package decides where the string is; `internal/identity` decides what it
 means. The cookie is planted by `/bootstrap.json` from
 `Config.PageSessionCredential`, so a local client acquires the page credential
 and its session in the SAME exchange and neither needs a route of its own.
+
+**That plant is for LOOPBACK peers only.** `PageSessionCredential` hands out
+the backend's own `loopback-only` session, and the presentation side refuses
+that binding class from an off-host peer (`internal/app`'s
+`bindingAdmitsPeer`, argued in `internal/identity/AGENTS.md`). Planting it
+anyway would hand a page a credential that stops working the moment it is
+used. The LAN share URL still gets the page cookie and still loads — the
+person holding it has to reach the pairing prompt — it just arrives with no
+local channel.
 
 ## Origin allow-list and peer locality
 

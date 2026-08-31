@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -236,6 +237,71 @@ func TestUpgradeAdmitsANonLoopbackPeerOnATicketAlone(t *testing.T) {
 	}
 	if got := f.dial(t, f.remote, WSTicketParam+"="+ticket, nil); got != http.StatusSwitchingProtocols {
 		t.Fatalf("ticketed upgrade status = %d, want %d", got, http.StatusSwitchingProtocols)
+	}
+}
+
+// TestBootstrapPlantsTheLocalChannelForLoopbackPeersOnly is the PLANTING
+// half of the binding-class rule (docs/specs/remote-access.md §2).
+//
+// The credential Config.PageSessionCredential hands out is the backend's
+// own `loopback-only` session, and the presentation side refuses one from
+// an off-host peer (internal/app bindingAdmitsPeer). Planting it there
+// anyway would hand a page a credential that stops working the moment it
+// is used, so the two ends state one rule.
+//
+// The share URL still LOADS: the person holding it has to reach the SPA's
+// pairing prompt, so the page cookie is planted exactly as before. What
+// the off-host exchange no longer carries is the local channel.
+func TestBootstrapPlantsTheLocalChannelForLoopbackPeersOnly(t *testing.T) {
+	const credential = "ao1.local-channel-credential"
+	f := newAdmissionFixtureWith(t, func(cfg *Config) {
+		cfg.PageSessionCredential = func() string { return credential }
+	})
+	f.srv.MarkReady()
+
+	for _, tc := range []struct {
+		name        string
+		addr        string
+		wantSession bool
+	}{
+		{name: "loopback peer", addr: f.loopback, wantSession: true},
+		{name: "off-host peer", addr: f.remote, wantSession: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A page ticket, because that is what a share URL carries and
+			// what makes the exchange plant the page cookie at all.
+			ticket, err := f.srv.MintPageTicket()
+			if err != nil {
+				t.Fatalf("mint page ticket: %v", err)
+			}
+			resp, err := http.Get("http://" + tc.addr + "/bootstrap.json?" + PageTicketParam + "=" + ticket)
+			if err != nil {
+				t.Fatalf("bootstrap request: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("bootstrap status = %d, want 200 — the share URL must keep loading the page", resp.StatusCode)
+			}
+
+			page, session := false, false
+			for _, cookie := range resp.Cookies() {
+				switch {
+				case strings.HasPrefix(cookie.Name, sessionCookiePrefix):
+					session = true
+					if cookie.Value != credential {
+						t.Fatalf("session cookie value = %q", cookie.Value)
+					}
+				case strings.HasPrefix(cookie.Name, pageCookiePrefix):
+					page = true
+				}
+			}
+			if !page {
+				t.Error("the exchange planted no page cookie; the pairing prompt could not load")
+			}
+			if session != tc.wantSession {
+				t.Errorf("session cookie planted = %t, want %t", session, tc.wantSession)
+			}
+		})
 	}
 }
 

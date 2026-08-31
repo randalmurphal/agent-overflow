@@ -22,11 +22,17 @@
 // booting, the session core did not start, an older backend that has no
 // such cookie — leaves the credential empty, and an empty credential
 // means the connection carries the launch token alone, exactly as it did
-// before this existed. What that then buys depends on where the relay
-// sits: the backend admits a sessionless upgrade from a peer on its own
-// machine and refuses one from anywhere else, so forwarding is attribution
-// for a same-host relay (both of today's callers) and the only way in for
-// a relay reaching a backend across a network.
+// before this existed. For a SAME-HOST relay, which is what both of
+// today's callers are, forwarding is attribution: the backend admits a
+// sessionless upgrade from a peer on its own machine either way.
+//
+// It is NOT a way onto a backend across a network. The credential this
+// fetches is the backend's own `loopback-only` session, and an off-host
+// exchange is not handed one at all — the class is compared against the
+// peer at both ends (docs/specs/remote-access.md §2, and
+// internal/identity/AGENTS.md § Binding class). A relay reaching a
+// backend on another host needs a paired device session, which is a
+// credential nothing in this package fetches.
 //
 // No transport import, deliberately: this package is compiled into the
 // Windows launcher binary, which does not link the transport server. The

@@ -23,14 +23,36 @@ func identityApp(t *testing.T) *App {
 	return app
 }
 
-// requestWith builds a request carrying the given session credential in
-// the header carrier, plus an optional device key.
+// loopbackPeerAddr and offHostPeerAddr are the two peers every case here
+// resolves against. The off-host one is TEST-NET-1 (RFC 5737), which is
+// documentation-only and can never be a real peer of anything — the same
+// address internal/transport's admission fixture uses.
+const (
+	loopbackPeerAddr = "127.0.0.1:53001"
+	offHostPeerAddr  = "192.0.2.7:52001"
+)
+
+// requestWith builds a request from a peer on THIS machine, carrying the
+// given session credential in the header carrier plus an optional device
+// key.
+//
+// The peer address is set rather than left empty because SessionForRequest
+// now judges it: loopback.PeerAddress fails closed, so a request with no
+// RemoteAddr reads as off-host, which is not what a host-local caller is.
 func requestWith(t *testing.T, credential, deviceKey string) *http.Request {
+	t.Helper()
+	return requestFrom(t, loopbackPeerAddr, credential, deviceKey)
+}
+
+// requestFrom is requestWith with the peer named, for the cases that are
+// about locality.
+func requestFrom(t *testing.T, peer, credential, deviceKey string) *http.Request {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:4321/ws", nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
+	req.RemoteAddr = peer
 	if credential != "" {
 		req.Header.Set(transport.SessionCredentialHeader, credential)
 	}
@@ -38,6 +60,88 @@ func requestWith(t *testing.T, credential, deviceKey string) *http.Request {
 		req.Header.Set(transport.DeviceKeyHeader, deviceKey)
 	}
 	return req
+}
+
+// pairedDeviceGrant mints, redeems and confirms one device-bound session,
+// answering the grant its device holds. The device key is the thumbprint
+// the caller passes, because every later presentation has to repeat it.
+func pairedDeviceGrant(t *testing.T, app *App, thumbprint string) transport.TokenGrant {
+	t.Helper()
+	state := app.identityState()
+	link, err := state.sessions.MintPairingLink(identity.PairingRequest{
+		UserID:       state.owner.ID,
+		DeviceClass:  identity.DevicePhone,
+		BindingClass: identity.BindingDeviceBound,
+		Scopes:       []identity.Scope{identity.ScopeThreadsRead},
+	})
+	if err != nil {
+		t.Fatalf("MintPairingLink: %v", err)
+	}
+	grant, reason := AuthEndpoints(app).RedeemPairing(transport.PairingRedemption{
+		Token: link.Token, KeyThumbprint: thumbprint,
+	})
+	if reason != "" {
+		t.Fatalf("RedeemPairing: %s", reason)
+	}
+	if _, err := state.sessions.ConfirmPairing(grant.PairingID); err != nil {
+		t.Fatalf("ConfirmPairing: %v", err)
+	}
+	return grant
+}
+
+// TestALoopbackOnlySessionNamesNothingOffHost is the binding class enforced
+// at PRESENTATION (docs/specs/remote-access.md §2, §4 "Local clients").
+//
+// The local page channel's credential is minted `loopback-only`, and until
+// this rule existed nothing compared that class against the peer holding
+// it — so a page that loaded over the LAN share URL could name the
+// backend's own session on the upgrade. The credential stays perfectly
+// valid; what it stops doing is reaching a listener its class does not
+// cover.
+func TestALoopbackOnlySessionNamesNothingOffHost(t *testing.T) {
+	app := identityApp(t)
+	credential := PageSessionCredential(app)
+	if credential == "" {
+		t.Fatal("the local page channel produced no credential")
+	}
+
+	sessionID, ok := SessionForRequest(app, requestFrom(t, loopbackPeerAddr, credential, ""))
+	if !ok || sessionID == "" {
+		t.Fatalf("the local credential resolved to (%q, %t) from this machine", sessionID, ok)
+	}
+
+	// Off-host the same credential names nothing. The request is not
+	// refused outright: it carries no session as far as this backend is
+	// concerned, and the sessionless rules decide from there — which for
+	// the /ws upgrade is the unfingerprintable 404.
+	offHost, ok := SessionForRequest(app, requestFrom(t, offHostPeerAddr, credential, ""))
+	if offHost != "" {
+		t.Fatalf("a loopback-only session resolved to %q for an off-host peer", offHost)
+	}
+	if !ok {
+		t.Fatal("the off-host presentation was refused outright; it must fall to the sessionless path")
+	}
+
+	// A peer address this backend cannot read is treated as off-host, the
+	// same fail-closed direction loopback.PeerAddress takes everywhere else.
+	if unreadable, _ := SessionForRequest(app, requestFrom(t, "", credential, "")); unreadable != "" {
+		t.Fatalf("a session resolved to %q for a peer with no readable address", unreadable)
+	}
+}
+
+// TestAPairedDeviceSessionIsAdmittedOffHost is the other half: pairing is
+// what buys a credential that reaches a listener other machines can dial,
+// so the binding-class rule must narrow the local channel and nothing else.
+func TestAPairedDeviceSessionIsAdmittedOffHost(t *testing.T) {
+	app := identityApp(t)
+	grant := pairedDeviceGrant(t, app, "thumb-phone")
+
+	for _, peer := range []string{loopbackPeerAddr, offHostPeerAddr} {
+		sessionID, ok := SessionForRequest(app, requestFrom(t, peer, grant.Credential, "thumb-phone"))
+		if !ok || sessionID != grant.SessionID {
+			t.Fatalf("the paired device resolved to (%q, %t) from %s", sessionID, ok, peer)
+		}
+	}
 }
 
 // TestARequestCarryingNoSessionStillProceeds is the compatibility case and

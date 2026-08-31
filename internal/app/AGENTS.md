@@ -67,6 +67,14 @@ enforce for a caller that reached it another way; put it in
   deliberate: a request presenting NO session credential proceeds naming
   none, while one presenting a credential nothing can judge is REFUSED,
   because proceeding would name a session this process cannot revoke.
+- `bindingAdmitsPeer` is the ONE comparison of a session's binding class
+  against the peer presenting it, and this file is the only place in the
+  tree that can host it: `internal/identity` never sees a request and
+  `internal/transport` may not import the vocabulary. Every presentation
+  path runs through `SessionForRequest`, so `/ws`, the manifest fallback
+  and `/auth/ticket` inherit it. A `loopback-only` credential presented
+  off-host resolves NO SESSION rather than refusing the request — the
+  full argument is in `internal/identity/AGENTS.md` § Binding class.
 - `AuthEndpoints(a *App)` is a bootstrap-boundary function returning an
   unexported adapter type, **not** two exported `App` methods. An exported
   method on `App` is promoted onto `main.App` and becomes a wire RPC by

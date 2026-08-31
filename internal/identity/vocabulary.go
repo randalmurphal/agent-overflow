@@ -57,14 +57,20 @@ func (c DeviceClass) Valid() bool { return slices.Contains(DeviceClasses, c) }
 // with the socket: a session ever issued key-bound is never accepted as a
 // plain bearer on any listener, loopback included.
 //
-// This package records the class. Enforcing what each class may do on
-// which listener is phase 3.
+// This package records the class and this file declares it. Which PEER
+// each class reaches is compared where a request is resolved — the
+// `SessionForRequest` hook in internal/app, which is the one place that
+// holds both a session row and a peer address (see that package's
+// bindingAdmitsPeer). A class added here therefore has to be given an
+// answer there.
 type BindingClass string
 
 const (
 	// BindingLoopbackOnly is minted for the embedded webview, the WSL
-	// launcher relay, and the local CLI. Accepted on loopback listeners
-	// only, so a copy of one carries no remote capability at all.
+	// launcher relay, and the local CLI. Accepted from a peer on this
+	// machine only, so a copy of one carries no remote reach at all —
+	// enforced at presentation, and the bootstrap exchange refuses to
+	// plant one on an off-host page for the same reason.
 	BindingLoopbackOnly BindingClass = "loopback-only"
 	// BindingDeviceBound is minted for a paired device that holds a key or
 	// a passkey. Accepted on any listener.

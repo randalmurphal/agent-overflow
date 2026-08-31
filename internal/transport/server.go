@@ -1125,12 +1125,21 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	// trip and neither needs a route of its own. Written after the
 	// readiness checks above because the credential does not exist until
 	// the App's startup has minted it, and a page that arrives early gets
-	// it on the refetch its reconnect already performs. Gated on the
-	// PAGE credential: a request the session fallback admitted holds a
-	// device-bound session, and planting the local channel's credential
-	// on it would hand that device the one session this surface refuses
-	// to revoke.
-	if issue := s.cfg.PageSessionCredential; issue != nil && pageAuthed {
+	// it on the refetch its reconnect already performs.
+	//
+	// Two gates, and they refuse different requests. The PAGE credential:
+	// a request the session fallback admitted holds a device-bound
+	// session, and planting the local channel's credential on it would
+	// hand that device the one session this surface refuses to revoke.
+	// The PEER: that credential is `loopback-only` by class, so handing it
+	// to an off-host page would mint a credential its own class does not
+	// let it present — the share URL loads the page (deliberately, so the
+	// person holding it sees the pairing prompt) and gets no local
+	// channel with it. The presentation side refuses such a credential
+	// anyway (internal/app bindingAdmitsPeer); not planting it is the
+	// other end of the same rule, so a page is never handed a credential
+	// that would be refused the moment it used one.
+	if issue := s.cfg.PageSessionCredential; issue != nil && pageAuthed && loopback.PeerAddress(r.RemoteAddr) {
 		WriteSessionCookie(w, r, issue())
 	}
 	backendID, replicaGeneration := "", ""

@@ -249,6 +249,49 @@ that names a session, not only on renewal. A session whose device enrolled
 a key presents it everywhere, so no route added later can be a way around
 it — including `/auth/ticket`, whose whole authentication is that hook.
 
+## Binding class is compared at PRESENTATION, and only there
+
+A session's `BindingClass` is a property of the CREDENTIAL, not of the
+socket it arrives on, and `loopback-only` is the one class with a
+listener restriction: it is the posture this backend mints for ITSELF
+(`local.go`), so a copy of one must carry no reach at all. Wave 6d2
+turned that from a recorded fact into an enforced one.
+
+**The comparison lives in `internal/app`'s `SessionForRequest`
+(`bindingAdmitsPeer`), and nowhere else.** That hook is the one place in
+the tree holding both a session row and a peer address: this package
+never sees a request, and `internal/transport` cannot name a binding
+class without importing this package. Every presentation path already
+runs through it — the `/ws` upgrade's non-ticket arm, the manifest's
+session fallback, `/auth/ticket` — so a route added later inherits the
+rule instead of having to restate it. A route that resolved a session
+some other way would be the way around it; there is no second resolver.
+
+- **Peer locality is `loopback.PeerAddress`**, the same kernel-reported
+  predicate the transport judges every other locality question by, and it
+  fails closed on an address it cannot read.
+- **The refusal resolves NO SESSION rather than refusing the request.**
+  The credential is genuine and live; what it is not is presentable on
+  this listener. So the request carries no session and the sessionless
+  rules decide — off-host that is the `/ws` upgrade's unfingerprintable
+  404, and a 404 from `/auth/ticket` because there is nothing to bind a
+  ticket to.
+- **The other end is the bootstrap exchange**, which plants the local
+  channel's cookie only for a loopback peer
+  (`internal/transport/server.go`). A page is never handed a credential
+  that would be refused the moment it used one. The LAN share URL still
+  loads — it gets the page cookie and the SPA's pairing prompt — it just
+  arrives with no local channel.
+- **Consequence worth knowing:** an off-host relay can no longer borrow
+  the backend's local channel. `internal/relaysession` fetches the
+  session cookie out of an authenticated bootstrap exchange; from another
+  host that exchange now carries none, so a cross-host `--connect` stub
+  needs a paired device session rather than the backend's own.
+
+A class added to `BindingClasses` needs an answer in `bindingAdmitsPeer`
+in the same change. Everything that is not `loopback-only` is admitted
+anywhere today, which is what pairing buys.
+
 ## Backend binding
 
 Every MAC covers a domain separator, the backend id, and the payload. A

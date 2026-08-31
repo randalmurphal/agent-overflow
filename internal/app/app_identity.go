@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/identity"
+	"agent-overflow/internal/loopback"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 )
@@ -150,7 +151,7 @@ func (s *identityState) storeLocal(grant transport.TokenGrant) {
 // SessionForRequest resolves the durable session a request presents.
 // Satisfies transport.Config.SessionForRequest.
 //
-// Three outcomes, and the middle one is the one to keep:
+// Four outcomes, and the second one is the one to keep:
 //
 //   - no session credential at all → proceed, naming none. That is every
 //     launch-credential client (the harness CLI, the e2e rig, a `--connect`
@@ -158,6 +159,8 @@ func (s *identityState) storeLocal(grant transport.TokenGrant) {
 //   - a credential the session core refuses → refuse the request. This is
 //     what makes a revoked credential fail rather than silently downgrade
 //     to an unattributed connection.
+//   - a live credential whose BINDING CLASS does not reach this peer →
+//     proceed, naming none (bindingAdmitsPeer, below).
 //   - a credential it admits → proceed, naming the session.
 func SessionForRequest(a *App, r *http.Request) (string, bool) {
 	credential := transport.SessionCredential(r)
@@ -181,7 +184,49 @@ func SessionForRequest(a *App, r *http.Request) (string, bool) {
 		// which would otherwise be a way around it.
 		return "", false
 	}
+	if !bindingAdmitsPeer(session, r.RemoteAddr) {
+		return "", true
+	}
 	return session.ID, true
+}
+
+// bindingAdmitsPeer reports whether a session's BINDING CLASS
+// (docs/specs/remote-access.md §2) permits the peer that just presented
+// it. `loopback-only` is the one class with a listener restriction: it is
+// the posture the backend mints for ITSELF (the embedded webview, the WSL
+// relay, the local CLI), so a copy of one must carry no reach at all.
+// Every other class is accepted anywhere, which is what pairing buys.
+//
+// This is the presentation half of a class the store has recorded since
+// wave 5b and nothing compared. Without it the bootstrap exchange's
+// session cookie was a credential any page that could load the share URL
+// could then NAME on the upgrade, so the SPA's pairing prompt was
+// stricter than the wire underneath it.
+//
+// It lives here, in the one hook every presentation path runs through
+// (`/ws`, the manifest's session fallback, `/auth/ticket`), rather than
+// on a route: a route-by-route check is one a route added later can be
+// written without. internal/transport cannot host it — binding classes
+// are internal/identity's vocabulary and transport must not import it —
+// and internal/identity cannot, because it never sees a request.
+//
+// Peer locality is `loopback.PeerAddress`, the same kernel-reported
+// predicate the transport judges every other locality question by; there
+// is no second one. It fails closed on an address it cannot read, so an
+// unparseable peer is treated as off-host.
+//
+// The refusal is to resolve NO SESSION rather than to refuse the request
+// outright. The credential itself is genuine — this is a live session
+// presented on a listener its class does not reach — so the honest answer
+// is that this request names none, and the sessionless rules then decide:
+// off-host that is the /ws upgrade's unfingerprintable 404, the manifest's
+// 404 when no page credential paid either, and a 404 from /auth/ticket
+// because there is nothing to bind a ticket to.
+func bindingAdmitsPeer(session store.Session, remoteAddr string) bool {
+	if identity.BindingClass(session.BindingClass) != identity.BindingLoopbackOnly {
+		return true
+	}
+	return loopback.PeerAddress(remoteAddr)
 }
 
 // SessionLive reports whether a session id still admits work. Satisfies
