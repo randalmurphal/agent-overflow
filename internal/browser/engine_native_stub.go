@@ -1,9 +1,10 @@
-//go:build !(linux && cgo && !gtk3 && !android && !server && !nogui)
+//go:build !(linux && cgo && !gtk3 && !android && !server && !nogui) && !(darwin && cgo && !ios && !server && !nogui)
 
 package browser
 
 // newNativeEngine answers nil on every build without an in-process engine, so
-// selectEngine falls through to managed Chrome. The build tag mirrors the
-// Wails GTK4/WebKitGTK-6.0 glue's own exactly (its linux_cgo.go), because this
-// engine shares that window and must not compile where that glue does not.
+// selectEngine falls through to managed Chrome. Each half of the build tag
+// mirrors that platform's Wails glue exactly — `linux_cgo.go` and the
+// `*_darwin.go` set — because these engines share that glue's window and must
+// not compile where it does not.
 func newNativeEngine(string, ManagerOptions, engineEvents) browserEngine { return nil }
