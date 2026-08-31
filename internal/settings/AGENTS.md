@@ -233,7 +233,7 @@ Two rules follow, and both are load-bearing:
 - The migration must run on the BOOT path, before any `Update` can reach
   the file. `app_startup.go`'s `initThemeDirectory` is the live example
   (`theme` → `<configDir>/themes/appearance.json`,
-  `docs/architecture/theme-system.md` §6.2), and `app_theme_test.go` pins the
+  `docs/specs/theme-system.md` §6.2), and `app_appearance_test.go` pins the
   ordering in both directions.
 - A migration that can FAIL must carry the value in process state, because
   the drop happens whether or not the migration succeeded.

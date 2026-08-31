@@ -189,7 +189,9 @@ are not:
 
 ## RPC surface
 
-One WebSocket carries everything:
+One WebSocket carries everything. The receiver implementation lives in
+`internal/harnessrpc`; isolated boot registers it explicitly as
+`main.Harness` with receiver-level `LocalOnly` policy:
 `ws://127.0.0.1:<port>/ws?token=<token>`, frames per
 `internal/transport/AGENTS.md`. Call methods **by name**
 (`{type:"rpc", id, method:"HarnessInfo", params:[...]}`); both the

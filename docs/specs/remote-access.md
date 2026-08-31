@@ -702,12 +702,11 @@ no new store.
 
 ## 13. Surface inventory
 
-Complete coverage has to be structural, not a promise. The current
-counter-example: `/design/` serves agent-written files from the SPA
-origin with **no token, no response headers, no per-thread check, and
-symlinks unresolved**. That is an entire HTTP surface sitting outside
-the authorization model, found only because it was audited (see the
-boundaries doc's findings, and §16 phase 0).
+Complete coverage has to be structural, not a promise. The defect that exposed
+this requirement was the retired `/design/` route, which served agent-written
+files from the SPA origin outside the authorization model. Design mode and that
+route were removed on 2026-08-30; the lesson remains part of the boundary
+contract (see the boundaries doc's findings and §16 phase 0).
 
 Every externally-reachable surface is enumerated in one place with four
 declared properties: **listener** (which port/origin), **principal tiers
@@ -814,10 +813,8 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    and reachable today, in the desktop webview, with no remote feature
    enabled: the markdown renderer's `Link.svelte` relative branch
    (root-relative and protocol-relative hrefs render as live anchors,
-   bypassing `transformUrl`), an anchor-navigation guard, `/design/`
-   hardening (origin/content-type posture, response headers, symlink
-   containment via `os.OpenRoot` as `internal/safecopy` already does,
-   per-thread scoping, no directory listing), and a baseline CSP that
+   bypassing `transformUrl`), an anchor-navigation guard, retirement of the
+   unsafe `/design/` content route, and a baseline CSP that
    is strict in production and relaxed in dev (the Vite dev server injects
    inline styles regardless of HMR, so the split is not an HMR
    concession; disabling HMR is an independent preference). The boot

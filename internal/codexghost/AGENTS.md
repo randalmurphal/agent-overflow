@@ -5,11 +5,10 @@ rule that on every Codex session end or app restart transitions persisted
 background `tool_call` rows from a now-dead subprocess into the
 timeline's `errored` / `lost` state.
 
-The App-side bookkeeping (the store call, the emit fan-out, the
-`retireCodexBackgroundRuntime` path, the warm-reconnect
-reconciler) stays in `app_codex_reconcile.go` because it owns the
-store + transport boundary. This package only owns the summary
-rewrite contract that both call sites share.
+The App-side bookkeeping (the store call and emit fan-out), startup
+`RecoverBackgroundRuntimeOnStartup`, and warm-reconnect reconciler stay in
+`internal/codexthread` because it owns the store + transport boundary. This
+package only owns the summary rewrite contract those call sites share.
 
 ## Surface
 
@@ -28,5 +27,5 @@ rewrite contract that both call sites share.
 ## Anti-patterns
 
 - Do NOT change the contract without also updating the integration
-  tests in the main package. The App-side saga depends on the
+  tests in `internal/app`. The App-side saga depends on the
   idempotence and the trim semantics.

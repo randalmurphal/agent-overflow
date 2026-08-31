@@ -20,8 +20,10 @@ import (
 	"path/filepath"
 	"runtime"
 
+	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/harness/instanceinfo"
+	"agent-overflow/internal/harnessrpc"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
 )
@@ -100,13 +102,19 @@ func runHarness(flags cliFlags) {
 	// address/token through App.providerExtraEnv (write-once before
 	// Start), and the first session start could spawn a mock that needs
 	// them.
-	if err := h.startControl(); err != nil {
+	controlServer, providerEnv, err := harnessrpc.StartControl(h)
+	if err != nil {
 		fatalf("harness: start mock control server: %v", err)
 	}
-	defer h.shutdownControl()
+	// Install the mock-control credentials before App.Start. Provider env is a
+	// write-once boot input; the first restored/started session must not race it.
+	appservice.SetProviderExtraEnv(appService.App, providerEnv)
+	defer controlServer.Shutdown()
 	srv := bootTransport(appService, flags.listenAddr, bootTransportOptions{
 		RequireReadyForBootstrap: true,
 		HarnessReceiver:          h,
+		HarnessPageMarker:        harnessrpc.PageMarker(h),
+		HarnessMethodsSink:       func(names []string) { harnessrpc.SetWireMethods(h, names) },
 		AllowDevServerAssets:     true,
 	})
 	log.Printf("transport: harness mode (data dir %s)", paths.DataDir)
@@ -142,13 +150,13 @@ func runHarness(flags cliFlags) {
 	// No launcher pid: --harness is never spawned by the Windows launcher
 	// (that shell is --soak), so nobody but this process hosts a window.
 	instance := publishInstance(srv, paths, instanceinfo.ModeHarness, flags.window, 0, "", "", "", "")
-	h.setInstanceRemoval(instance.remove)
+	harnessrpc.SetInstanceRemoval(h, instance.remove)
 	defer instance.remove()
 
 	if flags.window {
 		if err := runWindowedShell(appService, srv, isolatedWindowTitle(instanceinfo.ModeHarness, instance.id)); err != nil {
 			instance.remove()
-			h.shutdownControl()
+			controlServer.Shutdown()
 			fatalf("harness: %v", err)
 		}
 		return
@@ -168,42 +176,28 @@ func runHarness(flags cliFlags) {
 // what a later UpdateSettings writes.
 func newIsolatedProviderApp(paths harnessPaths) *App {
 	appService := newApp()
-	// The REAL sender, the same one runHeadless installs — not a refusal
-	// stub. An isolated boot's whole premise is that everything except the
-	// provider processes is production code, and a stub made the
-	// notification pipe the one exception: `HarnessNotify` returned "OS
-	// notifications are unavailable" before emitting anything, so the
-	// e2e spec asserted the stub's error message and the emission path it
-	// was supposed to cover was never executed at all.
-	//
-	// This degrades correctly rather than presenting anything unwanted.
-	// The sender EMITS on `notification:send`; presentation is the
-	// subscriber's job. Under `--soak` on Windows that subscriber is the
-	// real launcher, which is exactly the pipe a soak exists to exercise;
-	// under a headless `--harness` nobody subscribes, and the sender logs
-	// one line and succeeds. The bus does not exist yet at this point —
-	// bootTransport installs it — and that is fine: the sender resolves it
-	// per send.
-	appService.osNotifications = newTransportNotificationSender(appService)
-	// Pin provider spawns to the mock at resolution time, not just via
-	// the seeded settings — UpdateSettings stays callable in these modes,
-	// but it can never repoint a spawn at a real provider binary.
-	appService.providerBinaryOverride = paths.MockProvider
-	// The redirected $HOME isolates every file store but not the macOS
-	// Keychain (the active Claude slot's service name ignores the home),
-	// so credential storage is pinned to the file-backed stand-in.
-	appService.fileKeychainOverride = true
-	// Pin the credential surface under the mode-owned home
-	// unconditionally: AO_HARNESS_KEEP_HOME keeps the real $HOME for
-	// provider session-file reads, and this pin is what keeps that flag
-	// read-only — slots, canonical credential, and the orphan prune must
-	// never resolve against the developer's real provider homes.
-	appService.credentialHomeOverride = paths.CredentialHome
-	// No timer may run `git fetch` against the fixture repositories: e2e
-	// assertions read ahead/behind counts as fixed state, and neither a
-	// harness run nor an hours-long soak may reach a network.
-	appService.backgroundFetchDisabled = true
+	appservice.ConfigureIsolation(appService.App, appservice.IsolationConfig{
+		ProviderBinary:         paths.MockProvider,
+		CredentialHome:         paths.CredentialHome,
+		UseFileKeychain:        true,
+		DisableBackgroundFetch: true,
+	})
 	return appService
+}
+
+func newHarness(app *App, paths harnessPaths) *harnessrpc.Harness {
+	return appservice.NewHarness(app.App, appservice.HarnessPaths{
+		DataRoot:        paths.DataRoot,
+		DataDir:         paths.DataDir,
+		HomeDir:         paths.HomeDir,
+		CredentialHome:  paths.CredentialHome,
+		MockProvider:    paths.MockProvider,
+		BuildStamp:      buildStamp(),
+		AssetsFreshness: paths.AssetsFreshness,
+		AssetsDigest:    paths.AssetsDigest,
+		ShutdownTimeout: headlessShutdownTimeout,
+		TerminateSelf:   terminateSelf,
+	})
 }
 
 // prepareHarness makes every filesystem decision the harness boot
@@ -262,7 +256,7 @@ func prepareHarness(flags cliFlags) (harnessPaths, error) {
 	if err := refuseSymlink(dataDir); err != nil {
 		return harnessPaths{}, err
 	}
-	if err := ensureAppPrivateDir(dataDir); err != nil {
+	if err := appservice.EnsurePrivateDir(dataDir); err != nil {
 		return harnessPaths{}, fmt.Errorf("create harness data dir: %w", err)
 	}
 	if err := refuseUnsafeHarnessDir(dataDir); err != nil {
@@ -335,10 +329,10 @@ func refuseRealDataDir(dataRoot string) error {
 		// No default config dir resolvable means nothing to protect.
 		return nil
 	}
-	if sameCanonicalPath(dataRoot, defaultRoot) {
+	if harnessrpc.SameCanonicalPath(dataRoot, defaultRoot) {
 		return fmt.Errorf("--data-dir %s is the OS config root; an isolated boot (--harness / --soak) refuses to run against real app data (pick a scratch dir)", dataRoot)
 	}
-	if sameCanonicalPath(dataRoot, filepath.Join(defaultRoot, "agent-overflow")) {
+	if harnessrpc.SameCanonicalPath(dataRoot, filepath.Join(defaultRoot, "agent-overflow")) {
 		return fmt.Errorf("--data-dir %s is the real app data dir; an isolated boot (--harness / --soak) refuses to run against real app data (pick a scratch dir)", dataRoot)
 	}
 	return nil
@@ -359,18 +353,6 @@ func refuseSymlink(path string) error {
 		return fmt.Errorf("%s is a symlink; an isolated boot (--harness / --soak) refuses to operate through links (it seeds and wipes this directory wholesale)", path)
 	}
 	return nil
-}
-
-// sameCanonicalPath compares two paths after symlink resolution +
-// cleaning, tolerating paths that don't exist yet (falls back to
-// lexical comparison).
-func sameCanonicalPath(a, b string) bool {
-	ca, errA := instanceinfo.CanonicalPath(a)
-	cb, errB := instanceinfo.CanonicalPath(b)
-	if errA != nil || errB != nil {
-		return false
-	}
-	return filepath.Clean(ca) == filepath.Clean(cb)
 }
 
 // isolateHarnessHome redirects $HOME (and %USERPROFILE% on Windows) to

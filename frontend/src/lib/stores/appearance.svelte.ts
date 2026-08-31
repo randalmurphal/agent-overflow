@@ -505,7 +505,7 @@ function toWire(value: AppearanceSelection): ThemeAppearance {
  * construction, but only when it actually moved.
  *
  * Both halves are deliberate and deliberately separate (see
- * `app_theme.go#SetWindowBackgroundColor`): the RPC is the live repaint, the
+ * `app_appearance.go#SetWindowBackgroundColor`): the RPC is the live repaint, the
  * persisted value is what `main_desktop.go` reads before a webview exists.
  * The change guard is what keeps this off the write path entirely for the
  * overwhelmingly common case of a theme that did not move the ground —

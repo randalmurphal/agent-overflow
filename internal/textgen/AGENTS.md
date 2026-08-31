@@ -9,7 +9,7 @@ Backs (budgets are PER ATTEMPT: `runTextGenWithFallback` hands each
 provider attempt its own):
 - `app_commit_message.go` → `GenerateCommitMessage` (180s, structured
   `{subject, body}`).
-- `app_thread_title.go` → `generatedThreadTitle` (3-min, structured
+- `app_thread_title_runtime.go` → `generatedThreadTitle` (3-min, structured
   `{title}` with optional image attachments) and `RegenerateThreadTitle`
   (same budget, no images).
 

@@ -1,7 +1,7 @@
 // Wire shape of one row in the review pane's commit selector
 // (`ListBranchCommits`). Re-exported so feature code doesn't import
 // from the generated bindings tree directly.
-export type { BranchCommit } from '../../../bindings/agent-overflow/models';
+export type { BranchCommit } from '../../../bindings/agent-overflow/internal/app/models';
 
 // Branch-prune wire shapes (GitListBranchPruneCandidates /
 // GitPruneBranches), re-exported for the same reason.
@@ -10,7 +10,7 @@ export type {
   BranchPruneCandidates,
   BranchPruneResult,
   BranchPruneSelection,
-} from '../../../bindings/agent-overflow/models';
+} from '../../../bindings/agent-overflow/internal/app/models';
 
 export interface GitStatus {
   isRepo: boolean;

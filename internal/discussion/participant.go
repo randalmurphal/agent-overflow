@@ -13,8 +13,8 @@ import (
 // ParticipantPlan is the derived per-participant blueprint produced by
 // BuildParticipantPlans: the child Thread row that the App should
 // CreateThread + the system prompt to install on its per-thread
-// system-prompt map before the provider session starts. App-bound
-// orchestration in app_discussion_start.go consumes a slice of these
+// system-prompt map before the provider session starts. Application
+// orchestration in internal/discussionapp consumes a slice of these
 // to fan out CreateThread / startSession / channel-link / cleanup.
 type ParticipantPlan struct {
 	Thread       store.Thread
@@ -67,7 +67,7 @@ func BuildParticipantPlans(parent store.Thread, def store.DiscussionDefinition, 
 }
 
 // discussionProtocolPreamble tells a participant how the turn-driving
-// mechanics in app_discussion_drive.go present other speakers to it:
+// mechanics in internal/discussionapp present other speakers to it:
 // every other participant's and the human's contributions arrive as
 // plain user messages (see turnprompt.go), so the model needs to know
 // not to narrate the protocol itself back into its reply.

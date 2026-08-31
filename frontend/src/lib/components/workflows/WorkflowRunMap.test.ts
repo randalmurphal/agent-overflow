@@ -7,7 +7,7 @@
 
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { WorkflowRunMapView } from '../../../../bindings/agent-overflow/models';
+import type { WorkflowRunMapView } from '../../../../bindings/agent-overflow/internal/app/models';
 import {
   campaignSkeleton,
   nestedFanView,

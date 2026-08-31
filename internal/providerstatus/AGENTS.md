@@ -32,8 +32,8 @@ call `provider.DetectProvider`, and emit through `a.emit`.
   the App-coupled emit flow (`testEmitHook` capture +
   `GetProviderStatuses` round trip + idempotent re-emit).
 - `ClaudeUnauthenticated` is the ONE definition of "logged out" for
-  Claude. `app_claude_probe.go`, `app_claude_ratelimits.go`,
-  `app_provider_accounts.go`, and the `providersmoke` gate all call it
+  Claude — `app_claude_probe.go`, `internal/providerlifecycleapp`,
+  `app_provider_account_bindings.go`, and the `providersmoke` gate all call it
   rather than comparing `AccountInfo` fields themselves. Do not add a
   second copy: the rule is not derivable from the field names, because
   which fields the CLI populates depends on the backend (see the

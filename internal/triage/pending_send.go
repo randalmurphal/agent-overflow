@@ -227,7 +227,7 @@ type PendingSendSnapshot struct {
 }
 
 // PeekPendingSendHeadForTest returns a snapshot of the FIFO head for threadID.
-// Exported for integration tests in the main package that verify the turn-index
+// Exported for integration tests in `internal/app` that verify the turn-index
 // split between persist and response turns.
 func (r *Router) PeekPendingSendHeadForTest(threadID string) (PendingSendSnapshot, bool) {
 	head, ok := r.peekPendingSendHead(threadID)

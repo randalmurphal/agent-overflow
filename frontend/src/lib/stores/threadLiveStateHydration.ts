@@ -3,7 +3,7 @@ import type {
   PendingInteractiveRequests,
   ProviderSessionAccountEvent,
 } from '../types/events';
-import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
+import type { ThreadLiveState } from '../../../bindings/agent-overflow/internal/app/models';
 import { GetThreadLiveState, ListPendingInteractiveRequests } from './bindings';
 import type { LiveStateHydrationGuard } from './threadPaneShared';
 import {

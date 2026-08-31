@@ -12,7 +12,7 @@ import (
 // to reach the app, which workflows exist here, and what is already running.
 //
 // The renderer is pure so its shape is testable without a database. The RPC that
-// resolves the live data lives in the main package.
+// resolves the live data lives in `internal/app`.
 
 // Bounds on what the block may contain. A composer block competes with the
 // user's actual message for context; a project with two hundred workflows must

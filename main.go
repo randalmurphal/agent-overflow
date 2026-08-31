@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/aocli"
+	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appdirs"
-	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/externalurl"
 	"agent-overflow/internal/harness/darwinbundle"
@@ -34,8 +34,6 @@ import (
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/shellenv"
 	"agent-overflow/internal/transport"
-
-	"github.com/google/uuid"
 )
 
 //go:embed all:frontend/dist
@@ -254,23 +252,14 @@ type bootTransportOptions struct {
 	// a second RPC receiver under "main.Harness.<Method>". Only harness
 	// mode sets this — in every other boot the harness surface does not
 	// exist on the wire at all.
-	HarnessReceiver any
+	HarnessReceiver    any
+	HarnessPageMarker  string
+	HarnessMethodsSink func([]string)
 	// AllowDevServerAssets honors FRONTEND_DEVSERVER_URL even in a
 	// production-stamped binary. Only harness mode sets this: --harness
 	// is an explicit operator opt-in, so the "dirty shell must not
 	// replace release assets" rule that gates dev builds doesn't apply.
 	AllowDevServerAssets bool
-}
-
-type harnessPageMarkerProvider interface {
-	harnessPageMarker() string
-}
-
-func harnessPageMarker(receiver any) string {
-	if marker, ok := receiver.(harnessPageMarkerProvider); ok {
-		return marker.harnessPageMarker()
-	}
-	return ""
 }
 
 func bootTransport(appService *App, listenAddr string, opts bootTransportOptions) *transport.Server {
@@ -302,12 +291,12 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// HarnessListMethods can answer without reaching into the
 		// dispatcher. Set before the listener serves, so no RPC can observe
 		// a half-filled list.
-		if sink, ok := opts.HarnessReceiver.(interface{ setWireMethods([]string) }); ok {
+		if opts.HarnessMethodsSink != nil {
 			names := make([]string, 0, len(methods)+len(harnessMethods))
 			for _, m := range append(append([]*transport.Method{}, methods...), harnessMethods...) {
 				names = append(names, m.Name)
 			}
-			sink.setWireMethods(names)
+			opts.HarnessMethodsSink(names)
 		}
 	}
 	logBootPhase("transport.register", phaseStarted)
@@ -337,11 +326,13 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// harness, so the SPA's bridge can never load against a wire that
 		// has no harness methods on it.
 		Harness:    opts.HarnessReceiver != nil,
-		PageMarker: harnessPageMarker(opts.HarnessReceiver),
+		PageMarker: opts.HarnessPageMarker,
 		// Late-bound for the same reason: the store opens during
 		// ServiceStartup, after this config is built. The transport only
 		// ever sees two strings.
-		BackendIdentity: appService.backendIdentity,
+		BackendIdentity: func() (string, string) {
+			return appservice.BackendIdentity(appService.App)
+		},
 		// The `ao` CLI's scoped-token registry. The App owns it because a
 		// token's lifetime is a provider session's lifetime; the transport
 		// only asks what a presented token is allowed to do.
@@ -435,7 +426,7 @@ func runHeadless(listenAddr string, printURLFD int) {
 	// Before the transport server starts, so the updater RPC handlers see a
 	// fully wired App.updater.handle / App.updater.wsl without a race. Gated at runtime
 	// on the Windows launcher having spawned us; a no-op otherwise.
-	initWSLUpdater(appService)
+	appservice.InitWSLUpdater(appService.App, bootSettingsDir())
 	// Headless mode honors only the explicit --listen flag — the
 	// Windows launcher always passes 127.0.0.1:0, so the persisted
 	// LAN-bind preference is irrelevant here. The Windows-side
@@ -444,11 +435,11 @@ func runHeadless(listenAddr string, printURLFD int) {
 	// Windows binary's embed; the transport just needs an asset
 	// handler so non-RPC paths return 404 cleanly.
 	srv := bootTransport(appService, listenAddr, bootTransportOptions{RequireReadyForBootstrap: true})
-	appService.osNotifications = newTransportNotificationSender(appService)
+	appservice.ConfigureTransportNotifications(appService.App)
 	// Now that the bus exists, the boot check above can say its piece. The
 	// notice itself was recorded before the server started, so a client that
 	// checks for updates the instant it connects already sees it.
-	appService.notifyPendingUpdateApplyFailure()
+	appservice.NotifyPendingUpdateApplyFailure(appService.App)
 	log.Printf("transport: headless mode")
 
 	phaseStarted := time.Now()
@@ -595,15 +586,7 @@ func writeBootstrap(fd int, srv *transport.Server) error {
 // Returns 0 if the addr can't be split — the launcher detects that
 // and surfaces an error.
 func portFromAddr(addr string) int {
-	_, portStr, err := net.SplitHostPort(addr)
-	if err != nil {
-		return 0
-	}
-	n, err := strconv.Atoi(portStr)
-	if err != nil {
-		return 0
-	}
-	return n
+	return appservice.PortFromAddr(addr)
 }
 
 // defaultListenHost is what an omitted host in --listen means: loopback,
@@ -652,7 +635,7 @@ func isNativeDevMode() bool {
 }
 
 func logBootPhase(phase string, started time.Time) {
-	log.Printf("boot: phase=%s duration=%s", phase, time.Since(started).Round(time.Millisecond))
+	appservice.LogBootPhase(phase, started)
 }
 
 // envTruthy treats "1"/"true" (any case) as enabled; everything else,
@@ -710,7 +693,7 @@ func bootLogsDir() string {
 // boot-time readers (bootSettingsDir) already use.
 func newApp() *App {
 	appService := NewApp()
-	appService.dataDirOverride = dataDirRoot
+	appservice.SetDataDirOverride(appService.App, dataDirRoot)
 	return appService
 }
 
@@ -725,7 +708,7 @@ func newApp() *App {
 // resolvable or persistence fails; callers omit the cid URL param and
 // the frontend degrades to a best-effort browser-cached identity.
 func ensureClientID() string {
-	return ensureClientIDIn(bootSettingsDir())
+	return appservice.EnsureClientIDIn(bootSettingsDir())
 }
 
 // appURLWithClientID threads the durable UI-state client ID onto a page
@@ -757,36 +740,6 @@ func appURLWithPageMarker(pageURL, marker string) string {
 		separator = "?"
 	}
 	return pageURL + separator + "page=" + url.QueryEscape(marker)
-}
-
-// ensureClientIDIn is the dir-parameterized core of ensureClientID,
-// split out so initStores' settings→ui_state migration can resolve the
-// same identity under a test-overridden config dir.
-func ensureClientIDIn(dir string) string {
-	if dir == "" {
-		return ""
-	}
-	path := filepath.Join(dir, "client-id.json")
-	var state struct {
-		ClientID string `json:"clientId"`
-	}
-	found, err := atomicfile.ReadJSON(path, &state)
-	if err != nil {
-		log.Printf("client-id: read %s: %v", path, err)
-	}
-	if found && validClientID(state.ClientID) {
-		return state.ClientID
-	}
-	state.ClientID = uuid.NewString()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		log.Printf("client-id: mkdir %s: %v", dir, err)
-		return ""
-	}
-	if err := atomicfile.WriteJSON(path, state); err != nil {
-		log.Printf("client-id: write %s: %v", path, err)
-		return ""
-	}
-	return state.ClientID
 }
 
 // loadPersistedNetworkSettings reads the user's settings.json without

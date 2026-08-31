@@ -8,7 +8,7 @@ Pure helper functions for app-owned workflow phase execution.
   envelope-to-outcome mapping, tool-envelope synthesis/overlay, tool narrative
   rendering, and validation retry messages live here.
 - Provider sessions, App state, observers, persistence, and filesystem writes
-  stay in the main package.
+  stay in `internal/app`.
 - Inputs are already-resolved runtime workflows: phase prompts are bodies, not
   authored file paths.
 - The app-owned runner provisions writing-item worktrees and setup hooks before
@@ -19,8 +19,11 @@ Pure helper functions for app-owned workflow phase execution.
 ## Narrative recovery (D39)
 
 **An attempt that produced an account has a narrative file**, whatever its access
-allowed. Three sources in order, resolved by `settleAttemptNarrative`
-(`app_workflow_narrative.go`) behind one existence check and one `O_EXCL` write:
+allowed. There are three sources, in order, and
+`internal/workflowhost/narrative.go` (`SettleAttemptNarrative`) resolves them
+behind one existence check and one
+`O_EXCL` write, so "an authored account always beats a reconstructed one" is
+stated once:
 
 1. the file the element wrote itself. Always wins, never touched.
 2. the accepted envelope's `narrative` control field, written verbatim with **no**
@@ -68,10 +71,13 @@ and what that campaign has ruled out.
   re-derives. `RootNonGoals` carries the root workflow's list only when it
   DIFFERS from this run's.
 - **The app resolves it, this package renders it.** `workflowPromptAncestry`
-  (`app_workflow_prompt_context.go`) walks the ancestry ONCE and builds both this
-  block and the campaign-memory digest from that walk. Failure to resolve is
-  logged and yields the blocks it could build: the chain is context, not
-  contract.
+  (`internal/app/app_workflow_host.go`) walks the run's ancestry ONCE
+  and builds both this block and the campaign-memory digest from that one walk —
+  they are both facts about the run TREE, and walking twice per element would
+  pay for the same parent rows twice. Failure to resolve is logged and yields
+  the blocks it could build: the chain is context, not contract, and an element
+  that runs without it does the work with less to go on while an element that
+  never starts does none.
 - **Consecutive runs sharing one goal collapse to one link**, attributed to the
   root-most run that stated it, because the engine copies a caller's goal onto
   every run it calls. A goal that re-appears after a different one keeps its own

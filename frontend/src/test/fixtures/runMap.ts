@@ -21,7 +21,7 @@ import {
   WorkflowRunMapUnit,
   WorkflowRunMapView,
   WorkflowRunSpend,
-} from '../../../bindings/agent-overflow/models';
+} from '../../../bindings/agent-overflow/internal/app/models';
 
 /**
  * Defaults + overrides, where an override of `undefined` REMOVES the key.

@@ -2,12 +2,9 @@
 // formatter, decoder, and sanitisers behind the thread title flow
 // (first-turn generation and user-triggered regeneration).
 //
-// The App-coupled glue — workspace resolution, settings routing, image
-// attachment plumbing, the store read behind the regeneration context,
-// and `store.UpdateTitleIfCurrent` — stays in `app_thread_title.go`.
-// This package only knows how to assemble the prompt, parse the
-// structured output, and trim the model's response into a well-formed
-// title.
+// Application coordination lives in internal/threadtitleapp. This package
+// only knows how to assemble the prompt, parse the structured output, and trim
+// the model's response into a well-formed title.
 //
 // The prompt text is adapted from t3-code's `TextGenerationPrompts.ts`
 // (INITIAL_THREAD_TITLE_PROMPT / the regeneration prompt), with one
@@ -176,7 +173,7 @@ func DecodeClaude(stdout []byte) (string, error) {
 // line, no quotes, no surrounding whitespace, internal whitespace
 // collapsed, capped at MaxRunes with an ellipsis if truncated. Returns
 // the Default sentinel when the model returns nothing usable so the
-// compare-and-swap in `UpdateTitleIfCurrent` skips the write.
+// application service skips the write.
 func Sanitize(raw string) string {
 	out := textgen.NormalizeStructuredOutputLine(raw)
 	if out == "" {

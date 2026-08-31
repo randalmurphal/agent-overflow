@@ -97,14 +97,64 @@ to the subprocess touches credentials.
 - `rotation.go` is the rule that keeps the account probe from destroying
   the login it is probing. The CLI fires its OAuth refresh at startup as
   a DETACHED task and answers `initialize` from cached local state
-  without awaiting it, and under `--max-turns 0` it exits on stdin EOF,
-  which is what `Close` does first. Anthropic retires the old refresh
-  token the moment the request is processed, so tearing down in that gap
-  is a permanently dead login, not a retry. `ProbeConfig.ReadCredential`
-  arms a watch when the credential is at or inside the CLI's five-minute
-  proactive-refresh buffer, and teardown holds until the credential
-  actually changes. Measurements and why a fixed delay is not a fix are
-  on `rotationWatch`.
+  without awaiting it, so the probe's answer says nothing about whether
+  the rotation reached disk — and under `--max-turns 0` the CLI exits on
+  stdin EOF, which is what `Close` does first. Anthropic retires the old
+  refresh token the moment the request is processed, so the gap is a
+  permanently dead login, not a retry. `ProbeConfig.ReadCredential` arms
+  a watch when the credential is at or inside the CLI's five-minute
+  proactive-refresh buffer; teardown then holds until the credential
+  actually changes. Measurements, the failure rates, and why a fixed
+  delay is not a fix are on `rotationWatch`.
+- `ratelimits_probe.go` — out-of-band HTTP probe of Anthropic's OAuth usage
+  endpoint. Reads a bounded, regular native credential file, preserves every
+  dynamically returned limit bucket, and falls back to
+  `anthropic-ratelimit-unified-*` headers for older servers. Triggered from
+  `internal/providerlifecycleapp` through `app_provider_services.go` (startup,
+  plus a 2-minute poll that runs only
+  when a turn completed since the last poll — the endpoint's 429 throttle
+  is per-bearer and shared across machines, so turn completion marks
+  activity rather than probing); emits go through the standard
+  `provider:usage` channel.
+- `mcpstatus.go` — ephemeral MCP status fetcher (`MCPStatusFetcher`,
+  driven by `claude mcp list`) plus the `system/init` → unified status
+  projectors (`MCPStatusFromRaw`, `MCPStatusFromListLine`) consumed by
+  `internal/mcpstatus` via the shared `Fetcher` interface.
+  `system/init.mcp_server_errors` (2.1.237) is the second half of that
+  projection and lands on `SessionInfo.MCPServerErrors`: servers whose
+  config entry the CLI REFUSED are absent from `mcp_servers[]`
+  entirely, so without this array a rejected server is
+  indistinguishable from one that was never configured. The two arrays
+  never name the same server, which is why `ingestClaudeInitMCPStatus`
+  can loop both without a collision, and every Put it makes from the
+  error array carries a non-empty `Error` — the mcpstatus merge matrix
+  stores those verbatim and only ever carries a prior explanation
+  forward onto an error-LESS ephemeral fetch, so nothing has to be
+  forced.
+  Version floor worth knowing when reading old reports: before 2.1.221
+  a `--mcp-config` server was not connected before the first
+  print-mode turn, so a session's first turn ran with none of them
+  available and `system/init` said so. AO does not gate on this — the
+  supported-version floor is above it — but a stale bug report
+  describing "MCP servers missing on the first message only" is that,
+  not this projection.
+  `sanitizeChildStderr` lives here too for bounding child-process
+  stderr in user-facing errors.
+- `sessionfork/` — subpackage. The fork transform over an existing
+  transcript, plus the shared reading surface (`TranscriptTypes`,
+  `ParseTranscript`, `ResolveParent`, `ResolveLogicalParent`,
+  `SessionIDFromPath`) that both the live resume path and the importer
+  read transcripts through. Has its own subarea guide.
+- `sessionimport/` — subpackage. Read-only reader for
+  `~/.claude/projects/…` behind session import: the lite lister (a stat
+  plus two 64 KB reads per file, no parse), the conversation DAG and its
+  leaf enumeration, the subagent join, and the transcript →
+  `internal/importir` event projection. Spawns nothing, writes nothing,
+  and never resolves the Claude home itself. It deliberately does NOT
+  reuse `claudeBranchIndex` — that answers "which chain will
+  `claude --resume` accept" and returns exactly one; import needs every
+  leaf, and bending the live resume path to answer both is not worth the
+  blast radius (invariant 28). Has its own subarea guide.
 
 ## Session, resume, and fork
 

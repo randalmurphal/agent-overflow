@@ -26,9 +26,9 @@ the test that needs them.
   - Helpers useful to multiple packages' tests.
   - Mock binaries that the provider packages can spawn.
 - What does NOT belong here:
-  - App-level test helpers that construct `*App`. `App` is in `main`
-    and can't be imported here; those helpers live next to the
-    integration test files under package `main`.
+  - App-level test helpers that construct `*App`. Those helpers live next to
+    the integration test files under package `internal/app` so they can reach
+    the shell's private seams.
   - Behavior under test. Helpers stage fixtures. They don't assert.
 
 ## Notes
@@ -43,7 +43,7 @@ the test that needs them.
 
 - Do NOT import `internal/git` here. The cycle is real; `git` tests
   depend on us.
-- Do NOT add package-main helpers here. Put those next to the test
-  file under `package main`.
+- Do NOT add App-shell helpers here. Put those next to the test file under
+  `internal/app`.
 - Do NOT make helpers stateful. Every helper takes `*testing.T` and a
   per-test working path.

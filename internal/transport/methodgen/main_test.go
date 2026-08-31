@@ -121,7 +121,8 @@ func TestScanReceivers_MissingDir(t *testing.T) {
 }
 
 // TestReceiverSpecs_TodaysConfig pins the shipped configuration: the
-// repo-root App registered as main.App, and nothing else. Harness is
+// internal/app implementation promoted by the repo-root wrapper and
+// registered as main.App, and nothing else. Harness is
 // deliberately absent (see the receiverSpecs doc comment) — adding a
 // spec here changes the production allow-list and the LAN-safety
 // classification gate that partners it, so it must be a deliberate
@@ -131,7 +132,7 @@ func TestReceiverSpecs_TodaysConfig(t *testing.T) {
 		t.Fatalf("receiverSpecs = %+v, want exactly the root App spec", receiverSpecs)
 	}
 	got := receiverSpecs[0]
-	want := receiverSpec{Dir: ".", Receiver: "App", Package: "main"}
+	want := receiverSpec{Dir: "internal/app", Receiver: "App", Package: "main"}
 	if got != want {
 		t.Fatalf("receiverSpecs[0] = %+v, want %+v", got, want)
 	}

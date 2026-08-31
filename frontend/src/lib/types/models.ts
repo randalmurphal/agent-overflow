@@ -575,7 +575,7 @@ export interface ProjectWithCounts {
 
 /**
  * DirectoryEntry is one row inside a DirectoryListing. Mirrors the Go
- * DirectoryEntry struct in app_directory.go.
+ * dirbrowse.Entry struct in internal/dirbrowse.
  */
 export interface DirectoryEntry {
   name: string;

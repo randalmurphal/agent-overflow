@@ -121,10 +121,10 @@ go-test:
 # only by review, 2026-08-24) plus five mutexes and per-process pipe
 # pumps on the Codex side. Browser is included because page operations,
 # popup adoption, idle shutdown, settings reconfigure, and session teardown
-# converge on one lazily started Chrome process. The repo root (`.`)
-# is included so the App integration tests (transport server boot,
-# multi-session shutdown, event-emit fan-out) get the race detector
-# too — that's the surface most likely to hide a real-world race. The
+# converge on one lazily started Chrome process. `internal/app` carries the
+# App integration tests (transport boot, multi-session shutdown, event fan-out)
+# after root decomposition; root remains for executable-bootstrap contracts.
+# Those are the surfaces most likely to hide a real-world race. The
 # timeout is per test binary, and every listed package runs in ONE go
 # test invocation, so the big suites compete for CPU. Since the
 # storetest template-DB conversion (29ec9041 triage, ed21d0fc root —
@@ -134,7 +134,7 @@ go-test:
 # timeout stays 1800s for deadlock protection on loaded hosts —
 # tighten only if you've measured headroom.
 test-race:
-	go test -race -timeout 1800s ./internal/transport/... ./internal/triage/... ./internal/provider/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... ./internal/browser/... ./internal/chromium/... .
+	go test -race -timeout 1800s ./internal/transport/... ./internal/triage/... ./internal/provider/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... ./internal/browser/... ./internal/chromium/... ./internal/app/... .
 
 # provider-smoke is the real-provider gate: it drives one trivial workflow
 # through the REAL `claude` and `codex` binaries (default PATH resolution — no
@@ -151,17 +151,17 @@ test-race:
 # Run the real gate manually before a release and after upgrading either
 # provider CLI; the mocked suites accept any structured-output schema, so
 # nothing else in the repo can catch a schema the real CLIs reject. See
-# providersmoke_test.go.
+# internal/app/providersmoke_test.go.
 #
 # -timeout covers the sum of the in-test deadlines (6m per workflow leg, 3m for
 # the imported-branch scenario, plus per-leg auth probes) with headroom, so a
 # wedged turn fails through the gate's own diagnostics rather than as a bare
 # test-binary timeout panic.
 provider-smoke-compile:
-	go test -tags providersmoke -run '^$$' .
+	go test -tags providersmoke -run '^$$' ./internal/app
 
 provider-smoke:
-	go test -tags providersmoke -run 'TestProviderSmoke' -v -count=1 -timeout 20m .
+	go test -tags providersmoke -run 'TestProviderSmoke' -v -count=1 -timeout 20m ./internal/app
 
 # import-corpus-smoke is the manual session-import gate: it runs the Claude
 # transcript reader, the Codex rollout reader, and the store writer over a COPY
@@ -188,10 +188,10 @@ provider-smoke:
 # `make go-test` and SKIP when their variable is unset, which is what keeps the
 # runner's own logic covered (importcorpussmoke_fixture_test.go) without ever
 # reading a provider home. Either variable may be set on its own. See
-# importcorpussmoke_test.go.
+# internal/app/importcorpussmoke_test.go.
 import-corpus-smoke:
 	AO_IMPORT_CORPUS_CLAUDE="$(AO_IMPORT_CORPUS_CLAUDE)" AO_IMPORT_CORPUS_CODEX="$(AO_IMPORT_CORPUS_CODEX)" \
-		go test -run 'TestImportCorpusSmoke' -v -count=1 -timeout 20m .
+		go test -run 'TestImportCorpusSmoke' -v -count=1 -timeout 20m ./internal/app
 
 # playwright install is idempotent and cached (~/.cache/ms-playwright);
 # the Chromium binary backs the frontend browser test project

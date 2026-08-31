@@ -19,6 +19,14 @@ import (
 	"agent-overflow/internal/workspacepath"
 )
 
+// Artifact is one app-managed file deliverable copied from a phase workspace.
+type Artifact struct {
+	Name    string
+	Path    string
+	Size    int64
+	ModTime int64
+}
+
 // settleDone runs the post-success work every done outcome owes the run,
 // whatever produced it. Both execution paths call it, so a tool phase and a tool
 // join get the artifact capture and the worktree retirement an agent one gets.
@@ -166,4 +174,54 @@ func OpenArtifactRoot(dataRoot, itemID string) (*os.Root, error) {
 // ArtifactDir is where one run's captured artifacts live.
 func ArtifactDir(dataRoot, itemID string) string {
 	return filepath.Join(dataRoot, "workflow-runs", itemID, "artifacts")
+}
+
+// ListArtifacts returns the newest regular file for each declared output name,
+// ordered by name. Temp files left by an interrupted atomic copy are ignored.
+func ListArtifacts(dataRoot, itemID string) (result []Artifact, resultErr error) {
+	if filepath.Base(itemID) != itemID || itemID == "." || itemID == ".." {
+		return nil, fmt.Errorf("invalid work item id")
+	}
+	directory := ArtifactDir(dataRoot, itemID)
+	if err := safecopy.ValidateDestination(dataRoot, filepath.Join(directory, ".artifact")); err != nil {
+		return nil, fmt.Errorf("list workflow artifacts: %w", err)
+	}
+	artifactRoot, err := OpenArtifactRoot(dataRoot, itemID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return []Artifact{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list workflow artifacts: %w", err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, artifactRoot.Close()) }()
+	entries, err := fs.ReadDir(artifactRoot.FS(), ".")
+	if err != nil {
+		return nil, fmt.Errorf("list workflow artifacts: %w", err)
+	}
+	byName := make(map[string]Artifact, len(entries))
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), safecopy.TempPrefix) {
+			continue
+		}
+		info, err := fs.Stat(artifactRoot.FS(), entry.Name())
+		if err != nil {
+			return nil, fmt.Errorf("inspect workflow artifact %q: %w", entry.Name(), err)
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		artifact := Artifact{
+			Name: strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())),
+			Path: filepath.Join(directory, entry.Name()), Size: info.Size(), ModTime: info.ModTime().UnixMilli(),
+		}
+		if current, exists := byName[artifact.Name]; !exists || artifact.ModTime > current.ModTime || artifact.ModTime == current.ModTime && artifact.Path > current.Path {
+			byName[artifact.Name] = artifact
+		}
+	}
+	artifacts := make([]Artifact, 0, len(byName))
+	for _, artifact := range byName {
+		artifacts = append(artifacts, artifact)
+	}
+	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].Name < artifacts[j].Name })
+	return artifacts, nil
 }

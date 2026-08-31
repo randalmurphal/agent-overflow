@@ -9,7 +9,7 @@ methods, the `SendPlanRevisionComments` saga that flips a thread
 back into plan mode and dispatches the revision, the
 `appendPlanRevisionCommentsToContent` composer in `app_send.go`, the
 selected-text resolver, and the proposed-plan-upsert emitter all
-stay in `app_proposed_plans.go`.
+stay in `app_review_comments.go`.
 
 ## Surface
 

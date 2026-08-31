@@ -9,7 +9,7 @@ The App-bound CRUD methods (`ListDiffReviewComments`,
 `DeleteDiffReviewComment`), the `SendDiffReviewComments` saga that
 turns drafts into a follow-up message, and the
 `appendDiffReviewCommentsToContent` composer (which combines a draft
-prompt with user content) stay in `app_diff_review_comments.go`.
+prompt with user content) stay in `app_review_comments.go`.
 
 ## Surface
 

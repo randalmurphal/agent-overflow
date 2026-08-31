@@ -233,7 +233,7 @@ func (d *Deliberation) nextSpeakerAfter(threadID string) string {
 // in the roster (mirrors rememberParticipant's lazy-add: a poster the
 // FSM hasn't seen yet still gets a well-defined "next speaker").
 //
-// Exported so the app layer's restart-rebuild path (deliberationForChannel)
+// Exported so discussionapp's restart-rebuild path (deliberationForChannel)
 // can compute "the participant after the last agent poster" using the
 // exact same round-robin rule the live FSM uses, rather than
 // re-deriving it.

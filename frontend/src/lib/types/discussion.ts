@@ -61,7 +61,7 @@ export interface ChannelMessage {
 
 /**
  * One entry in ChannelStatePayload's participants roster. Mirrors Go's
- * ChannelParticipantState (app_discussion_events.go).
+ * ChannelParticipantState (app_discussion.go).
  */
 export interface ChannelParticipantState {
   threadId: string;
@@ -79,7 +79,7 @@ export interface ChannelParticipantState {
  * The discussion:state wire payload and GetChannelState's return shape —
  * a snapshot of the deliberation FSM plus enough participant metadata to
  * render "whose turn is it" without a second round-trip. Mirrors Go's
- * ChannelStatePayload (app_discussion_events.go). `status` mirrors
+ * ChannelStatePayload (app_discussion.go). `status` mirrors
  * `Channel['status']` above but is declared independently rather than
  * imported from it — the two happen to share the same wire values today,
  * not because one is a specialization of the other.

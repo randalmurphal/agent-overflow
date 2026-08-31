@@ -69,7 +69,7 @@ export default defineConfig({
                 navigation: {
                   // Component tests assert iframe attributes and mocked
                   // postMessage behavior; they do not need happy-dom to perform
-                  // real /design/... iframe navigations. Letting those fetches
+                  // real child-frame navigations. Letting those fetches
                   // run leaves aborted async tasks behind during cleanup and
                   // floods stderr with teardown noise.
                   disableChildFrameNavigation: true,

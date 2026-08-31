@@ -92,7 +92,7 @@ read tail-first.
   `ReviewLineBlockRow.onExpandGap` → `store.expandDiffContext` →
   `GetDiffContextLines` (new side only, since expanded context is identical
   on both sides; per-scope source resolution lives in
-  `app_diff_context.go`) → `utils/diffContextExpansion.ts` merges the
+  `app_review_diffs.go`) → `utils/diffContextExpansion.ts` merges the
   fetched lines into the parsed file as context rows and rewrites hunk
   headers. Expansion state is per pane and CLEARED on every reload (a
   fresh patch can renumber everything); the rebuild memo is keyed by
@@ -230,7 +230,7 @@ read tail-first.
   verification-gated and snapshot-first: the persist tap captures each
   edit's new-side file content into `edit_file_snapshots` (gzipped,
   per payload+path, written only when the just-edited workspace file
-  provably matched the patch), and `app_diff_context.go` resolves the
+  provably matched the patch), and `app_review_diffs.go` resolves the
   edit selection (`editPayloadId` / `editTurnIndex`, whole-turn = last
   snapshot of the path in item order) against snapshots before falling
   back to the current workspace file for pre-snapshot history. Either

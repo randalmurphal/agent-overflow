@@ -1,6 +1,6 @@
 import { fireEvent, render } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
-import type { WorkflowArtifact } from '../../../../bindings/agent-overflow/models';
+import type { WorkflowArtifact } from '../../../../bindings/agent-overflow/internal/app/models';
 import WorkflowOutputs from './WorkflowOutputs.svelte';
 
 const artifacts = [{ name: 'report', path: '/tmp/run/report.pdf', size: 12 }] as WorkflowArtifact[];

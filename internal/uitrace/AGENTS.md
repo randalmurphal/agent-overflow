@@ -8,8 +8,8 @@ validation, caps, and rotation machinery:
 - the always-on frontend runtime-error log (`frontend-errors.jsonl`)
   fed by the global `error` / `unhandledrejection` handlers, so render
   exceptions are diagnosable without devtools open (a silent render
-  throw also permanently leaks Svelte deriveds. See
-  `ReportFrontendErrorBatch` in `app_ui_trace.go`).
+  throw also permanently leaks Svelte deriveds — see
+  `ReportFrontendErrorBatch` in `app_observability.go`).
 
 ## Layout
 
@@ -28,7 +28,7 @@ validation, caps, and rotation machinery:
   `<configDir>/ui-trace/frontend-errors.jsonl`) and the JSONL format
   are deliberately exported as constants so any tool that tails the
   files can resolve the paths.
-- What does NOT belong here: Wails binding wiring (`app_ui_trace.go`
+- What does NOT belong here: Wails binding wiring (`app_observability.go`
   delegates) and frontend serialisation. The render trace stays
   dev-only by design; the error log is the one always-on channel, and
   both bindings are exposed unconditionally because the caps make the

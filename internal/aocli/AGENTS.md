@@ -73,10 +73,11 @@ than a row of the requested result.
 
 ## The AO_* session contract
 
-`session.go` owns these names: the reader of the contract declares them so the
-writer cannot drift from it. `mintAOCredential` (`app_ao_session.go`) builds the
-map, and `sessionProcessEnv` (`app_session.go`) is the one place it is merged
-into a provider subprocess's environment.
+`session.go` owns these names — the reader of the contract declares them so the
+writer cannot drift from it. The writer is `mintAOCredential`
+(`app_session_runtime.go`), which builds the map; `sessionProcessEnv`
+(`app_session.go`) is the one place it is merged into a provider subprocess's
+environment.
 
 | Variable | Set for | Meaning |
 |---|---|---|
@@ -266,11 +267,179 @@ resolver uses (`app_workflow_narrative.go`), never one the CLI assembles.
 `--unit <id>` reads on the try the unit ROW carries: the try is the one path
 component a caller cannot see.
 
-**Absence and a wrong coordinate are different answers and exit differently.**
-An attempt that wrote no narrative exits 1 with the path that was looked for: it
-ran and left no account, which is a verdict rather than a failure. A run, phase,
-attempt, or unit that does not exist is refused by the app and exits 2, and the
-refusal names what the run actually has (`it has phases survey, review`).
+`run guide <run-id> "<text>"` is the other direction of a `notify:` gate: that
+tells the watching thread what the run decided, this tells the run what the
+watcher wants next. The run keeps working — the turn in flight is never
+interrupted, and there is no mid-turn injection at all — and the text is
+delivered at the run's next FRESH phase entry, rendered into that attempt's
+prompt as a labelled, quoted block of operator guidance, then cleared. Before it
+existed, redirecting a free-running campaign meant pausing it, editing, and
+resuming, which throws away the turn in flight and, in a fan-out, the wave under
+it. The output states WHEN the run reads it, because the answer differs by where
+the run is resting: a `running` run reads it at the phase it advances or loops
+into, while a run parked on a continuable reason is CONTINUED by a bare `run
+resume` — not a phase entry — so its note names `run resume <id> --phase <id>` as
+what enters one now. Both bounds (how many entries may wait, how long one may
+be) are the app's and its refusal states the number, so this CLI does not
+duplicate them. The author is stamped app-side from the calling credential — an
+interactive session as a human operator, a phase session as that phase's run —
+never from the text. Guiding a CALLED run reaches that run's own remaining
+phases only, and the output says so.
+
+`run resolve` is the one run verb outside the `runControl` family, because its
+two directions are a DECISION rather than a state: `--approve` and `--reject`
+name the routes the gate itself declared, so neither can be the default and
+supplying both is a usage error, not a precedence rule. It settles `human:`
+routes only — a `park:` route rests under the same `gate` reason but declares
+no approve/reject, so the engine refuses it with a message naming `run resume`
+as the repair, and the usage string, composer repair map, and wake all key the
+distinction off the `decision=` field `run status` renders per attempt (D41
+amendment). `run answer` takes its
+text as a positional — it is the point of the command — and `requireArgs`
+refuses a blank one, since an empty answer is a question still unanswered. Both
+verbs need the `resolve` grant in a phase session; an interactive session holds
+every listed method already.
+
+The human lines carry what the next verb needs (D38): `runView.line()` renders
+`parent=<run-id>` so a campaign's flat `run list` shows its tree, and
+`failed-units=<ids>` on `run status` so `run retry-unit`'s second argument is
+readable from the CLI. Both single-run reads then print one
+`failed-unit=<id> note=<quoted>` line per failed unit that carries a note
+(`runView.writeFailedUnitLines`, shared by `run status` and `run inspect`),
+because the status is not the whole answer: **a pause tears its in-flight units
+down `failed` with an interrupted note** — there is no interrupted unit status,
+and `failed` is exactly what the repair verbs recover — so a reader given only
+the ids and the status reads their own pause as a wave of agent failures. The
+note is quoted as untrusted data (a runner's error text lands in it) and bounded
+at `maxUnitNoteRunes`, like the park cause beside it; `run inspect --phase <id>`
+prints it whole on the unit's own line. A unit with no note contributes no line —
+the run line already named it. `run status` alone additionally renders one
+`phase=<id> attempt=N status=… provider=… model=… effort=… cause=… session=… decision=<kind>->…`
+line per phase attempt (`runView.statusBlock`), because a gate consumed exactly
+one attempt's outputs and a reader deciding between `run resolve`, `run resume
+--phase`, and `run rerun` needs to know which one and what it ran with. Kind and
+target print as one field: they are one fact. `session=continued` marks an
+attempt that ran on a session an EARLIER attempt of the same phase started — a
+loop route's `session: continue`, an answered question, or a finalized takeover.
+The three are deliberately not distinguished: they mean the same thing to a
+reader (this round remembers the last one), the definition says which edge asked
+for it, and no column records the mode — reusing the thread is what a
+continuation is, so the two rows' shared thread id is the whole evidence. A cold
+attempt carries no value at all, because that is every attempt of every run that
+has never looped. `cause=` is the ENGINE's own
+diagnosis of a park (`store` v51's `park_cause`) — the worktree that would not
+cut, the phase missing from the snapshot, the budget that ran out — quoted as
+untrusted data and bounded at `maxCauseRunes`, because a status block carries
+one line per attempt. It is absent for every attempt that rested on its own
+envelope, and for the reasons that name their own cause. Before it existed, an
+engine-side park was diagnosable only from the filesystem.
+
+Both single-run reads also print one **budget line** directly under the run line
+(`runView.writeBudgetLine`, shared so `run status` and `run inspect` cannot
+spell a run's spend two ways): `budget=<spent>/<ceiling> (<n>%)`, plus
+`of-run=<id>` when the ceiling belongs to an ancestor, `estimated=true` when
+part of the spend was priced from the app's rate table rather than reported by a
+provider, `unpriced-rows=<n>` when some rows resolve to no rate at all (which
+makes the figure a lower bound and is why the run will park at its next phase
+boundary), and `exhausted=true` once it is crossed. The units come from the kind
+— dollars, tokens, or a duration — so a reader never has to guess what 25 is,
+and an unknown kind still prints its percent under a name rather than vanishing.
+The app resolves every number through the same call the engine ENFORCES with and
+computes the percent itself; a CLI that recomputed the share would be a second
+answer to "how much is left". **A run with no ceiling prints no budget line at
+all** — most runs are that run, and a `budget=none` on each of them is a field a
+reader learns to skip on the one surface they scan for what the run needs.
+Before this, a ceiling was enforced, announced once at the park, and invisible
+every moment before that.
+
+Failed units and phase attempts
+are both resolved on the single-run read only — a list would pay an extra query
+per row — and the acting verbs re-read status through `reportRunState`, which
+prints the run line alone: "where is it now" is what they were asked, and a
+spend line is not it. A `run
+list` with no rows prints `No runs in this project.` rather than nothing,
+because a blank answer reads as a command that did not work; `--json` still
+prints the app's own `[]`.
+
+## The read verbs, and their documented `--json` shapes
+
+`run status` answers where a run is. `run inspect` and `run narrative` answer
+what it *is*, and they exist because the alternative was measured: an agent
+supervising a multi-day campaign ran 45 raw SQLite queries against the live
+database and 79 hand-assembled narrative-file reads, because no verb exposed a
+run's worktree, branch, seeds, called runs, or any attempt's outputs. Everything
+they return was already persisted. Neither adds state; both stay narrow for the
+reason `run status` does — an agent's context window pays per byte.
+
+`run inspect <run-id>` is the one-call picture: the `run status` document
+unchanged, plus the worktree/branch/base-branch the work happens on, the seeds
+the run froze at start, the runs it called with the invocation that made each,
+and — for the LATEST attempt of each phase — a bounded digest of that attempt's
+envelope outputs. `--phase <id>` (optionally `--attempt <n>`) reads one attempt
+whole instead: full envelope outputs, gate decision, the park cause printed
+WHOLE on its own line (naming an attempt is how a caller says the bounded form
+on the status line was not enough — the engine already capped what it stored),
+and the fan-out units with each unit's status, try, branch, and worktree. The digests and the drill-down
+are exclusive on purpose — the digest is what stands in for outputs nobody
+named, so computing both would print the same values twice.
+
+`run narrative <run-id> --phase <id>` prints the account one attempt wrote,
+resolved through the same path builders the wake reference resolver uses
+(`internal/workflowhost/narrative.go` → `NarrativeLookup` / its unit twin), never
+a path the CLI assembles. `--unit <id>` reads a fan-out unit's account instead,
+on the try the unit ROW carries: the try is the one path component a caller
+cannot see, so asking for it would be asking them to guess.
+
+Absence and a wrong coordinate are different answers and exit differently. An
+attempt that wrote no narrative exits **1** with the path that was looked for —
+it ran and left no account, which is a verdict, not a failure. A run, phase,
+attempt, or unit that does not exist is refused by the app and exits **2**, and
+the refusal names what the run actually has (`it has phases survey, review`), so
+a typo is repaired without a second command.
+
+The `--json` documents, which the CLI forwards verbatim as everywhere else:
+
+```
+run inspect  { run: <run status document, incl. seeds>,
+               worktreePath?, branch?, baseBranch?,
+               children: [{itemId, workflowId?, goal?, state, reason?,
+                           parentPhaseId?, parentUnitId?, parentAttempt?}],
+               guidance?: [{text, at, ageSeconds, by, byRun?}],
+               phase?:   {phaseId, attempt, status, provider?, model?, effort?,
+                          cause?,
+                          outputs?: {<name>: <raw JSON value>},
+                          decision?, decisionTarget?, exhaustedLoops?,
+                          units: [{unitId, kind, status, unitAttempt, note?,
+                                   branch?, worktreePath?, threadId?}]} }
+run narrative { itemId, phaseId, attempt, unitId?, unitAttempt?,
+                path, present, bytes?, truncated?, content? }
+```
+
+`run status --json` gains `budget` — `{kind, ceilingTokens|ceilingUsd|
+ceilingMillis, spentTokens, spentUsd, elapsedMillis, percent, estimated,
+unpricedRows?, exhausted, rootItemId?}`, absent entirely for a run with no ceiling, and carried
+on `run inspect`'s nested `run` document the same way. It also gains
+`seeds` (the run's frozen input object) and
+`pendingGuidance` (how many `run guide` entries are waiting for the run's next
+phase entry, absent at zero; `run inspect` carries the entries themselves under
+`guidance`, bounded and aged); each entry of
+`phases` carries `cause` (the engine's park diagnosis, absent when there is
+none) and `session` (`"continued"`, absent for a cold attempt) on both verbs;
+each entry of `failedUnits` carries `note` (what the unit rests with — how it
+ended, or what a repair told its next try — absent when the row carries none),
+as does each `phase.units` entry on `run inspect`; and `phases` gains `outputs` / `outputOverflow` — populated by `run
+inspect` alone, absent on `run status`, whose projection stays envelope-free. Seeds print
+on the human block too, one `seed <name>=<json>` line each, exactly as `run
+output` prints a declared output; they stay off `runView.line()` because the
+control verbs share it and "where is it now" is not a run's frozen inputs.
+
+Envelope output values are quoted through `internal/untrustedtext` wherever they
+reach a human line — digest and drill-down alike. They came out of a model and
+are usually being read by one; there is no leading data notice, because a
+command result the caller asked for is not an injected message, and the quoting
+is what makes each value one unambiguous token. Narrative CONTENT is printed
+verbatim: it is the point of the command, the header above it already says what
+it is, and quoting prose into `\n` escapes would make it unreadable.
 
 Both verbs take the same grants as `run status` (`introspect`, or `start-run`
 for a run this phase started) and are `LocalOnly`: a wider view of a run the
@@ -320,13 +489,25 @@ refusal naming the phase that may act only on the runs it started.
 
 ## `/workflow` composer context
 
-`composer.go` is the pure renderer behind the `/workflow` composer command. It
-takes a resolved `ComposerContext` and returns the text block injected into the
-conversation. Lists are bounded (`MaxComposerWorkflows`, `MaxComposerRuns`) and
-truncation is stated in the block, never silent. A `CommandOnPath: false` block
-says so outright, because a boot that could not publish the symlink must not
-leave "command not found" as the first news of it. The project-scope line names
-the slug `--project` takes, because the offline commands cannot infer it.
+`composer.go` is the pure renderer behind the `/workflow` composer command: it
+takes a resolved `ComposerContext` (project name and **slug**, workflow source
+directories, available workflows, active runs, whether the thread has a live
+session, whether boot published the command on PATH) and returns the text block
+injected
+into the conversation. Lists are bounded (`MaxComposerWorkflows`,
+`MaxComposerRuns`) and truncation is stated in the block, never silent. A
+`CommandOnPath: false` block says so outright — it is the one place an agent
+reads before typing the command, so a boot that could not publish the symlink
+must not leave "command not found" as the first news of it. The project-scope
+line names the slug `--project` takes (`--project <slug>` when there is none),
+because the offline commands cannot infer it and a reader who has only the block
+must still be able to write the flag. The app-side
+resolver that produces the live data is
+`workflowComposerBlock` (`app_workflow_host.go`); the split exists so the
+block format is unit-testable without a database. That resolver is NOT a bound
+method — the block never reaches the frontend. The composer holds only the
+literal word `/workflow`, and the send path appends the block to the
+provider-bound payload (D31, `app_chat_bar.go`).
 
 The app-side resolver that produces the live data is `workflowComposerBlock`
 (`app_workflow_composer.go`), and the split exists so the block format is

@@ -56,7 +56,7 @@ Both names are kebab-case because that is the only identifier grammar
 `def` can reference; `job_notes` could be neither a declared workflow
 input nor a `{{...}}` reference, so it would be an inert seed. Creating
 or updating an automation with a stored seed under either name is
-refused (`app_workflow_automations.go`).
+refused (`app_workflow_bindings.go`).
 
 ## Invariants
 
@@ -163,9 +163,9 @@ between a due timer and a queued command.
 
 ## References
 
-- `docs/specs/workflows-system.md` §11 covers automations.
-- `app_workflow_automations.go` is the RPC surface and its validation.
-- `app_workflow_scheduler.go` holds lifecycle, the start callback, and
-  the event queue.
-- `internal/store/automations.go` holds definitions, notes, fire records,
+- `docs/specs/workflows-system.md` §11 — automations.
+- `app_workflow_bindings.go` — the RPC surface and its validation.
+- `internal/workflowapp/runtime.go` — lifecycle and the event queue;
+  `app_workflow.go` retains the start callback adapter.
+- `internal/store/automations.go` — definitions, notes, fire records,
   and the active-run probe.

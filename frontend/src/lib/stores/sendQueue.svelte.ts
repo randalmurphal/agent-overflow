@@ -1,5 +1,5 @@
 import type { SourceDiffReview, SourceProposedPlan } from '../types/models';
-import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
+import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/internal/app/models';
 import { RegisterQueueItem } from './bindings';
 import { createKeyedSignalRegistry, type KeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 

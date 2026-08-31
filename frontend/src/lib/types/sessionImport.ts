@@ -1,6 +1,6 @@
 // Session-import wire shapes.
 //
-// The Go structs are generated into `bindings/agent-overflow/models`, so
+// The Go structs are generated into `bindings/agent-overflow/internal/app/models`, so
 // every shape that exists there is re-exported from there and NOT restated
 // here — same arrangement as `types/git.ts`. Feature code imports from this
 // file rather than the generated tree; nothing outside this file may
@@ -22,7 +22,7 @@ export type {
   ImportUpdateResult,
   ImportUpdateStatus,
   ImportableSession,
-} from '../../../bindings/agent-overflow/models';
+} from '../../../bindings/agent-overflow/internal/app/models';
 
 /** Providers that can be imported from. */
 export type ImportProvider = 'claude' | 'codex';

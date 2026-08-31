@@ -26,7 +26,7 @@ const (
 // ErrChannelNotOpen is wrapped into PostMessage's rejection when a
 // channel's status isn't "open" (concluded or closed). Callers
 // distinguish this expected-shape rejection via errors.Is from other
-// failures — in particular, syncDiscussionTurn (app_discussion_runtime.go)
+// failures — in particular, discussionapp.Service.SyncTurn
 // treats it as a benign drop when a participant's turn finishes just
 // after the human moderator concluded the discussion, rather than a
 // wire error to surface.

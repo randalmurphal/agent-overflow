@@ -9,124 +9,153 @@ the package's whole documentation, so they carry more.
 
 | Package | Role |
 |---|---|
-| `provider/` | Provider process lifecycle and stdio protocols. (guide) |
-| `provideraccounts/` | Multi-account metadata, opaque credential slots, ephemeral login/probe homes, atomic active-credential switching. (guide) |
-| `triage/` | Event classification. Decides what goes to the frontend vs SQLite. (guide) |
-| `store/` | SQLite access, migrations, schema. (guide) |
-| `store/storetest/` | Test-only: one migrated template DB per package (`Run` in `TestMain`), byte-copied per test by `Clone` / `ClonePath`. |
-| `usageledger/` | The one pricing rule the `usage_ledger` is read through: `Spend` folds a `store.UsageDetailRow` group into `{WireUSD, EstimatedUSD, UnpricedRows}`; `PriceGroups` folds a whole aggregation. Every dollar surface (usage dashboard, workflow run cost, budget enforcement) goes through it, so a budget is enforced against the number a human is shown. An unrecognized `cost_source` is an error, never a silently skipped group. |
-| `usagebackoff/` | Durable per-account holds on the usage endpoint after a 429. Keyed by (provider, account), never provider-wide. A headerless 429 escalates 10m, 20m, 40m, 1h; success clears hold and strikes. Persists via `atomicfile` because the server window outlives app restarts. |
-| `serialqueue/` | `Queue`: jobs run one at a time in submission order, goroutine exists only while work is pending. The shape for app-side reactions to workflow engine events (inline would block the command loop, bare `go` would race two transitions of one run). `Wait` drains for shutdown. Zero value ready. |
-| `usagecost/` | Hardcoded per-million-token USD rate table with family-prefix matching. Prices ledger rows whose wire carries no cost, at query time only; `usageledger` is the only caller. Estimates never persist, so a rate update reprices all history. |
-| `itemmeta/` | Shaping helpers for the persisted `items.meta` JSON column, shared by triage and the migration chain. (guide) |
-| `importir/` | Neutral vocabulary the session importer speaks across the provider boundary (`Event`, `Warning`); readers emit it, the writer consumes it, neither imports the other. (guide) |
-| `sessionimport/` | Store side of session import: the writer (`[]importir.Event` in, one `store.ImportBatch` out) and the orchestrator (`Scan` / `ImportOne` / `Cursor` / `PlanUpdate`). (guide) |
-| `gitdiff/` | Review-pane diff sources via `git` subprocesses. (guide) |
-| `git/` | Git and `gh` operations (branches, worktrees, commit, push, PR). (guide) |
-| `gitroot/` | `MainRoot` (path to the MAIN repository root, `--git-common-dir` semantics) and `RegisteredWorktrees`. Pure filesystem reads of git's layout, never a subprocess. (guide) |
-| `project/` | Project-row lifecycle bridging git roots and `store.Project`; `EnsureForWorkspace` resolves worktrees to the real project (core principle 7). (guide) |
-| `gitwatch/` | Live git status streams per workspace (fs watch + polling fallback). (guide) |
-| `terminal/` | PTY session manager with ring-buffer replay. (guide) |
-| `discussion/` | Multi-agent deliberation coordination. (guide) |
-| `browser/` | Built-in browser MCP server and one lazy, shared Chrome process with per-workspace tabs and site-data checkpoints. (guide) |
-| `chromium/` | Shared Chrome-for-Testing installer used by browser tools and the harness. (guide) |
-| `attachment/` | Message attachment storage (metadata in store, bytes on disk). (guide) |
-| `settings/` | Persistent settings JSON with validation. (guide) |
-| `atomicfile/` | Crash-safe private state files (temp + fsync + rename, 0600/0700). (guide) |
-| `logging/` | Structured NDJSON provider-event logging + age-based retention sweep. (guide) |
-| `observability/` | Opt-in OTel tracing, NDJSON replay writer, and the always-armed SIGUSR1 goroutine dump. (guide) |
-| `diagenv/` | Names of the opt-in diagnostic env vars and the WSLENV `Passthrough()` list. Names only. (guide) |
-| `platform/` | Runtime-environment probes (WSL detection etc.). (guide) |
-| `sysstat/` | Host CPU + memory sampler backing the sidebar footer. (guide) |
-| `procrss/` | Per-process RSS for THIS process and its owned helpers. Linux reads a `/proc` parent tree; macOS joins descendants with their OS responsible-process sets so launchd-parented WebKit/Chrome XPC helpers are included, then reads RSS through libproc. Backs harness perf, health, and the macOS watchdog. Name match is by prefix. Other platforms return `ErrUnsupported`. |
-| `workspacefiles/` | Workspace-scoped file search for @-mention completion. (guide) |
-| `testutil/` | Shared test helpers (mock provider scripts, git repo, project fixtures). (guide) |
-| `kerneltest/` | Importable provider-spawn isolation guard. Any fixture in ANY package that constructs a session-capable App, or adds a new spawn path, must install `IsolateSpawns`. (guide) |
-| `harness/` | Agent test harness engines behind `--harness`: fixtures, event replay, `control/`, `scenario/`, `instanceinfo/`, `governor/`. (guide; full doc at `docs/architecture/agent-harness.md`) |
-| `harnessclient/` | Go client for a running harness/soak instance, twin of `e2e/src/harness.ts`. Restates frame shapes so `cmd/ao-harness` links no server code; tests pin the restatement against real `transport` structs. (guide) |
-| `harnessrun/` | Durable harness run manifests, leases, process-group teardown, artifact capture, quarantine retention. (guide) |
-| `cdpclient/` | Minimal CDP client backing `ao-harness profile` and `bench --trace`. Deliberately not `chromedp/cdproto`. (guide) |
+| `app/` | Importable Wails application shell: `App`, all bound façades/DTOs, composition and lifecycle wiring, explicit cross-owner transactions, harness/provider smoke adapters, and application integration tests. Root embeds it in a named `main.App` wrapper to preserve method IDs and owns only executable bootstrap. Has its own subarea guide. |
+| `provider/` | Provider process lifecycle and stdio protocols. Has its own subarea guide. |
+| `provideraccounts/` | Non-secret multi-account metadata, last-known account quota snapshots, opaque provider-native credential slots, ephemeral login/probe homes, and atomic active-credential switching. |
+| `provideraccountapp/` | Managed provider-account application service. Owns account locks, fingerprints, metadata and credential stores, audit, identity/login/removal, organization enrichment, and credential-committing usage refresh; `internal/app` retains stable Wails façades and provider-session adapters. Has its own subarea guide. |
+| `providerdiscoveryapp/` | Bounded provider identity/model caches plus separate Claude/Codex zero-token probes, provider binary status detection, probe-enriched Claude catalogs, live Codex models, and custom-environment cache invalidation. Managed-account adoption stays behind an injected `provideraccountapp` port; `internal/app` retains stable Wails façades and event/settings adapters. Has its own subarea guide. |
+| `providerlifecycleapp/` | Provider quota lifecycle coordination: account-scoped snapshot cache/merge/persistence, durable 429 backoff, per-provider activity polling and coalescing gates, separate Claude/Codex refresh probes, session-event quota attribution, and session-account projection. `internal/app` retains provider-event triage/disconnect ordering and stable façades. Has its own subarea guide. |
+| `triage/` | Event classification. Decides what goes to the frontend vs SQLite. |
+| `store/` | SQLite access, migrations, schema. |
+| `store/storetest/` | Test-only: one migrated template DB per package (`Run` in `TestMain`), byte-copied per test by `Clone` / `ClonePath`, so a store-backed test does not replay the migration chain. |
+| `usageledger/` | The one pricing rule the `usage_ledger` is read through: `Spend` folds a `store.UsageDetailRow` group into `{WireUSD, EstimatedUSD, UnpricedRows}` and `PriceGroups` folds a whole aggregation, composing wire-reported cost with `usagecost` estimates for token-only rows. Every dollar surface (usage dashboard, workflow run cost, workflow budget enforcement) goes through it, so a budget is enforced against the number a human is shown. An unrecognized `cost_source` is an error, never a silently skipped group. |
+| `usagebackoff/` | Durable per-account holds on the usage endpoint after a 429. The throttle is per-bearer, so a hold is keyed by (provider, account) and never provider-wide; a headerless 429 escalates 10m → 20m → 40m → 1h and a success clears both the hold and the strike count. Holds and strikes persist through `atomicfile`, because a server window outlives the app restarts that would otherwise hand every boot a clean slate. |
+| `serialqueue/` | `Queue`: jobs run one at a time, in submission order, on a goroutine that exists only while work is pending. The shape every app-side reaction to a workflow engine event needs — the reaction cannot run inline on the engine's command loop, and a bare `go` would let two transitions of one run race. `Wait` drains, which is what lets shutdown finish a receipt before SQLite closes. Zero value ready. |
+| `usagecost/` | Hardcoded per-million-token USD rate table with progressive family-prefix matching (exact match, then trim trailing `-`/`.` segments). Prices `usage_ledger` rows whose wire carries no cost (Codex, claudetui) at query time — `usageledger`'s `Spend` / `PriceGroups` is the only caller, and the one fold every dollar-reporting surface shares (usage dashboard, workflow run cost, workflow budget enforcement). Stdlib-only; estimates are computed fresh per query and never persisted, so a rate-table update reprices all history. |
+| `itemmeta/` | Shaping helpers for the persisted `items.meta` JSON column, shared by the triage write path and the store migration chain (which cannot import each other). Stdlib-only. |
+| `importir/` | The neutral vocabulary the session importer speaks across the provider boundary: `Event` (a `provider.ProviderEvent` plus the source uuid / byte offset it was read from) and `Warning`. Provider readers emit it, the store-side writer consumes it, and neither imports the other. Stdlib + `internal/provider` only — which is what lets a provider package depend on it without acquiring a path to `store` or `triage`. |
+| `sessionimport/` | The store side of session import. The WRITER maps `[]importir.Event` to one `store.ImportBatch`; the ORCHESTRATOR owns `Scan` / `ImportOne` / cursor / refresh rules; `Manager` owns the cached listing and one bounded asynchronous import run. Provider homes, lifecycle, thread locks, and progress emission are injected by `internal/app` and never resolved here. Has its own subarea guide covering the writer input contract, event map, scan/import/cursor rules, and manager lifecycle. |
+| `sessionruntime/` | Process-local provider-session runtime. `Manager` owns live entries/liveness, scoped AO token authorities, start/reconnect/config admission, Claude live-config/prompt state, and idle/retention sweep handles behind one atomic lock boundary. `internal/app` retains provider spawn/close, store/account/orphan/queue policy, event projection, and the stable Wails façades. Has its own subarea guide. |
+| `gitdiff/` | Review-pane diff sources via `git` subprocesses: workspace-vs-HEAD, branch-base-to-worktree (temp-index snapshot, no clean filters), per-commit patches, and commit lists. |
+| `git/` | Git and `gh` operations (branches, worktrees, commit, push, PR). |
+| `gitapp/` | Application-facing git reads/actions, exact-tip branch pruning, workspace-keyed git-status pump coordination, and the unattended background-fetch lifecycle. `internal/app` retains stable Wails façades, transport cleanup/event projection, and live-thread destructive ordering. Has its own subarea guide. |
+| `gitroot/` | `MainRoot` (a path → the MAIN repository root it belongs to, git's `--git-common-dir` semantics — a LINKED WORKTREE resolves to the repository it was cut from, not to itself) and `RegisteredWorktrees` (a repository's `.git/worktrees/*/gitdir` registrations, the only thing that can still place a worktree the user DELETED). Pure filesystem reads of git's own layout, stdlib-only, never a subprocess: the session-import scan asks this once per session cwd and one `git` invocation per row is unaffordable. A worktree resolves to a repository only when that repository's own `gitdir` back-pointer names it — the resolved root becomes an auto-created project row, and the other pointer files are anyone's to write. Has its own subarea guide. |
+| `project/` | Project-row lifecycle helpers that bridge git repository roots and `store.Project`. `EnsureForWorkspace` resolves through `gitroot.MainRoot`, so a thread created (or imported) in a worktree lands in the real project — core principle 7. |
+| `projectapp/` | Store-backed application service for project lifecycle, implicit repository-root identity, workspace membership policy, worktree-setup persistence, deletion footprints, and deletion lock ordering. `internal/app` retains exact Wails DTOs plus the real git/workspace adapter and the explicitly destructive deletion saga; live workflow/session cancellation stays in that application shell so invariant 35 remains visible. |
+| `threadapp/` | Store-backed application service for thread creation/defaults/terminal rows, CRUD/list/read/pin/branch metadata, model/profile and interaction-mode policy, PR-seeded creation, recursive deletion ordering, fork store policy, and the shared keyed thread-action lock registry. `internal/app` retains exact Wails façades/DTOs/events plus explicit provider-session, Claude/Codex fork, git/forge, setup, attachment/draft, and destructive-resource ports. |
+| `gitwatch/` | Live git status streams per workspace (recursive fs watch + polling fallback). |
+| `terminal/` | PTY session manager with ring-buffer replay. |
+| `discussion/` | Provider-agnostic discussion definitions, ordered channels, prompt rendering, and deliberation FSM. |
+| `discussionapp/` | Store-backed application service for discussion start/rebuild/turn driving/conclusion and live projections. Owns every process-local deliberation ward; `internal/app` retains Wails DTOs plus narrow session/event adapters. Has its own subarea guide. |
+| `assetwatch/` | Live reload for the flat theme and spinner asset directories: one shared private fsnotify core, trailing-edge debounce, directory re-arm, and theme self-write suppression behind concept-specific watcher types. `internal/app` owns event emission and lifecycle wiring. |
+| `appupdate/` | In-app update state machine: release discovery, checksum verification, desktop staging, WSL launcher handoff, deadlines, and lifecycle events. `internal/app` retains stable wire and host adapters. |
+| `claudeapp/` | Application-facing Claude leaf controls: exact live context usage, background-task control, and filesystem-backed skill listing. `internal/app` retains shutdown policy and wire projection; session/account lifecycle stays outside. |
+| `claudecatalog/` | Process-wide pairing of the probe-enriched Claude model and slash-command catalogs. One zero-token initialize response fills both, so capture and reset are owned together and keyed by the same probe identity. |
+| `codexapp/` | Application-facing Codex leaf controls and cached global reads: background-terminal control, workspace skills, and account-wide usage. `internal/app` retains shutdown policy and wire projection; send/rollback/account/session lifecycle stays outside. |
+| `codexthread/` | Codex provider-thread reconciliation and cumulative-cost coordination: ghost-row settlement, bounded reopen probe/resume, single-flighted post-turn estimate reads, rollback fencing, and the lifetime-thread usage overlay. `internal/app` retains session creation, provider event routing, rollback policy, and wire façades. Has its own subarea guide. |
+| `attachment/` | Message attachment storage (metadata in store, bytes on disk). |
+| `settings/` | Persistent settings JSON with validation. |
+| `atomicfile/` | Crash-safe private state files: byte-oriented `Write`, JSON `WriteJSON`, and `ReadJSON` (temp + fsync + rename, 0600/0700). Backs provider-account credentials/metadata, `wsldistro`, and launcher window state. Stdlib-only. |
+| `logging/` | Structured NDJSON provider-event logging, plus the age-based retention sweep over that directory — which prunes goroutine dumps alongside its own logs, since they land in the same place. |
+| `observability/` | Opt-in OpenTelemetry tracing + NDJSON replay writer, plus `goroutinedump` — the one always-armed piece: a SIGUSR1 handler writing a pprof debug=2 goroutine dump into the logging directory, throttled to one per 10s. It answers "where is this stripped, already-wedged binary parked", which the opt-in pprof listener cannot. |
+| `diagenv/` | Names of the opt-in diagnostic env vars (`AGENT_OVERFLOW_PPROF`, `AGENT_OVERFLOW_RENDERER_DIAG`) plus the `Passthrough()` list the WSL-boundary launchers forward via WSLENV. Names only, stdlib-only; the behaviors live in `observability/pprofserve` and the transport server. |
+| `platform/` | Runtime-environment probes shared by host-specific packages, such as WSL detection. |
+| `sysstat/` | Host CPU + memory sampler (gopsutil wrapper) backing the sidebar system-stats footer. Pure read-only; cadence + emission owned by `internal/app/app_sysstat.go`. |
+| `workspacefiles/` | Workspace-scoped file search for @-mention completion. |
+| `testutil/` | Shared test helpers (mock provider scripts, git repo, project fixtures). |
+| `kerneltest/` | The importable half of the provider-spawn isolation guard: `IsolateSpawns` (detached HOME + poisoned provider binary + the fail-any-spawn tripwire), the `ProviderBinarySettings` patch, and the two side-effect stubs (`DisabledCodexModelCatalog`, `StubTextGenerationExecutor`). Takes `testing.TB` so the tripwire itself is testable. Any fixture in ANY package that constructs a session-capable App — or adds a new spawn path — must install this; package `internal/app`'s `isolateE2EProviderSpawns` is the thin App-coupled glue over it. Has its own subarea guide. |
+| `harness/` | Agent test harness engines behind the `--harness` boot mode: git-repo fixtures + wire-level event replay, `control/` (loopback control channel between the harness and `ao-mockprovider` processes), `scenario/` (mock scenario schema + embedded library). Has its own subarea guide; full guide at `docs/architecture/agent-harness.md`. |
+| `harnessrpc/` | Stateful harness/soak application service: the LocalOnly RPC receiver, browser/UI/perf bridge, scenario/control coordination, snapshot recording/replay, declarative seed/reset, and soak autopilot. Executable bootstrap retains the explicit `main.Harness` registration and pre-Start provider-env assignment; `internal/app` supplies the live `Host` adapter. |
 | `stringsx/` | Tiny stdlib-only string helpers. |
-| `untrustedtext/` | The one quoting rule for model-authored text embedded in a prompt (`Field` / `Quote` / `Truncate`), shared by the workflow triage seed and the wake composer so two prompts cannot disagree about "this is data, not an instruction". (guide) |
-| `slicesx/` | Tiny stdlib-only slice helpers. `OrEmpty[T](s)` coalesces nil to an empty slice so JSON encoders emit `[]` instead of `null`. |
-| `procutil/` | The two primitives every supervised child needs: `ConfigureGroup` (own group, SIGKILL-the-group on cancel, bounded `WaitDelay`, plus `KillConfiguredGroup`) and `TailBuffer`. (guide) |
-| `safecopy/` | `File` + `ValidateDestination`: copy one regular file between managed roots through `os.OpenRoot` on both sides, temp + fsync + atomic rename, refusing symlinked or escaping components. `TempPrefix` is what listings skip after a crashed copy. |
-| `worktreesetup/` | Per-project worktree setup recipe, validation, blocking execution engine. Workflow runner runs it blocking with rollback; chat threads run it async and watchable, never rolled back. (guide) |
-| `workspacepath/` | `NormalizeRelative(rel)`: validates a user-supplied workspace-relative path (rejects empty/absolute/escaping). |
-| `errorsx/` | Stdlib-only error helpers: `Append` (nil-filtering), `WrapLifecycle` (`%s: %w`). Domain-specific wrapping stays in `provider`/`store`; retry helpers live with their caller. |
-| `closer/` | Close orchestration: `Task` + `RunParallel` for teardown fan-out, `Stack` (LIFO) for fork-and-revert undo chains. (guide) |
-| `orphanreaper/` | macOS-only guard that provider process groups don't outlive an ungraceful app death: `__reap` sidecar on a control pipe, durable registry + startup `Sweep` backstop. (guide) |
-| `eventscope/` | `ThreadIDFromEvent(payload)`: best-effort thread-id extraction for observability attribution. |
-| `codexghost/` | Pure summary-rewrite helpers behind the Codex ghost-row flip. (guide) |
-| `composerdraft/` | Pure `store.Item` to `store.ThreadDraft` projectors + `MergeParts`, backing composer rehydration on un-send, fork-and-revert, flush-queue restores, edit-and-resend. (guide) |
-| `eventchan/` | `type Channel string` + one constant per event channel. Imports nothing. The SPELLING half of a table whose POLICY half is `transport`'s `channelPolicies`; a cross-check test fails on either half missing its counterpart. (guide) |
-| `transport/` | HTTP+WebSocket wire protocol (RPC dispatch + event push). (guide) |
-| `clientmode/` | `--connect <url>` remote-client stub injecting `window.__AO_BOOTSTRAP__`. (guide) |
-| `appidentity/` | Launch profiles and process identity. Unknown profile is an error, never a fallback. (guide) |
-| `editor/` | Open-in-editor detection (catalog + WSL bridge) and detached spawn. (guide) |
-| `externalurl/` | Validates HTTP(S) URLs and opens them via the host browser, including the WSL bridge. (guide) |
-| `devserverprobe/` | TTL-cached loopback TCP dialer gating the dev-server chip. (guide) |
-| `wsllauncher/` | Detects WSL distros and spawns the Linux backend pinned to a Job Object. (guide) |
-| `wsldistro/` | Cross-process schema for `%APPDATA%\agent-overflow\wsl.json`. (guide) |
-| `selfupdate/` | Cross-process contract for the Windows/WSL self-update split: the `updater:install` directive, staging primitives, marker, `LinuxUpdaterBlocked`. Tag-free; no network, no exec. (guide) |
-| `shellenv/` | Probes the login shell for PATH at startup so `exec.LookPath` finds nvm/asdf binaries when launched outside a terminal. (guide) |
-| `appimage/` | The one scrub stripping AppImage launch artifacts out of child environments so spawned tools resolve against the real system. Marker-gated, pure, idempotent. (guide) |
-| `uikeys/` | Browser-style WebviewWindow keybindings shared by every window the app opens. (guide) |
-| `windowgeom/` | GUI-free window placement: persisted `Geometry`, `Clamp`, debounced `Tracker`. No Wails. (guide) |
-| `uiwindow/` | Wails glue binding a live window to `windowgeom`. GUI-only. (guide) |
-| `uitrace/` | JSONL diagnostic appenders for the frontend (dev render trace + always-on error log). (guide) |
-| `dirbrowse/` | Project-picker directory listing behind `BrowseDirectory`. (guide) |
-| `keybindings/` | Persisted keybindings config + merge. (guide) |
-| `theme/` | Client-side `themes/` directory: opaque theme JSON, typed `appearance.json`, boot seeding, `WindowBackground`. (guide) |
-| `spinner/` | Client-side `spinners/` directory: custom working-indicator sprite pairs, listed opaquely. (guide) |
-| `network/` | LAN-bind toggle helpers: wire shape, bind host / origin allow-list / share-URL formatters, local-IP discovery. (guide) |
-| `textgen/` | Short structured-output text generation through a provider CLI, backing commit-message and thread-title flows. (guide) |
-| `claudemodels/` | Merge policy + per-probe-identity cache for the Claude model catalog. Never subtracts, never spawns. (guide) |
-| `claudecommands/` | Per-probe-identity cache of the CLI's slash-command list. Replace-wholesale, never merged. (guide) |
-| `claudeconfig/` | Read/write adapter for the slice of Claude Code's on-disk config AO shares with the CLI. Never spawns; unknown keys round-trip untouched. (guide) |
-| `codexmodels/` | Per-binary TTL cache + single-flight around Codex `model/list`. (guide) |
-| `codexusage/` | Per-account TTL cache + single-flight around Codex `account/usage/read`; failures cache briefly so an empty report never reaches a caller. (guide) |
-| `codexskills/` | Per-`(binary, cwd)` TTL cache + single-flight around Codex `skills/list`; the cwd dimension is load-bearing. (guide) |
-| `mcpstatus/` | Per-App cache of MCP server status: live sessions feed it, ephemeral fetchers fill in for inactive threads. (guide) |
-| `chatmodel/` | Pure helpers for chat-thread model profiles. (guide) |
-| `threadmode/` | Pure validators for the interaction-mode and runtime-mode axes. (guide) |
-| `promptoverride/` | Pure half of the settings-level system-prompt override: `Match`, closed placeholder vocabulary, single-pass `Render`. (guide) |
-| `commitmsg/` | Pure prompt builder + decoder + sanitisers behind `GenerateCommitMessage`. (guide) |
-| `threadtitle/` | Pure prompt builders + decoder + sanitiser behind the thread-title flow. (guide) |
-| `diffreview/` | Pure helpers behind the diff-review comment flow. (guide) |
-| `prthread/` | Pure formatting helpers behind `CreateThreadFromPR`. (guide) |
-| `planrevision/` | Pure helpers behind the proposed-plan inline-comment revision flow. (guide) |
-| `providerstatus/` | Wire shape + pure mapping helpers for the `provider:status` channel. (guide) |
-| `providerschema/` | The strict-mode rules both provider CLIs enforce on structured-output schemas (`Validate`); one definition of "a provider will accept this" shared by generation and consumption. (guide) |
-| `usermessage/` | JSON wire shape persisted in `store.Item.Meta` for user_text rows; every entry point routes through its helpers. (guide) |
-| `flushqueue/` | Pure projectors behind the per-thread flush queue; app-bound sagas stay in the main package. (guide) |
-| `workflow/def/` | Pure workflow YAML parsing/resolution, interpolation, envelope schemas, gate evaluation, graph validation. (guide) |
-| `workflow/engine/` | Single-goroutine workflow FSM, pause, resource semaphores, teardown, startup rebuild. (guide) |
-| `workflow/runner/` | Pure helpers for phase prompt assembly, per-attempt paths, envelope outcomes. (guide) |
-| `workflow/memory/` | Campaign memory: append-only NDJSON notes keyed by the run TREE's root, digest injected into element prompts. (guide) |
-| `workflow/wake/` | Pure composer for the message a resting root run injects into its bound thread (D17). (guide) |
-| `workflow/scheduler/` | Automations (§11): cron / internal-event triggers, one goroutine, never imports the engine. (guide) |
-| `workflow/profile/` | Per-project workflow profile loading, binding lookup, secret resolution and masking. (guide) |
-| `workflow/starters/` | Embedded workflow definition sets used by `agent-overflow workflow new`; never an engine-visible built-in tier. (guide) |
-| `workflowhost/` | The app-side workflow runner implementing `engine.Runner`. Reaches the process around it ONLY through `Host` (nine capability-named interfaces, satisfied by `workflowHostAdapter` in `main`); registers nothing on the wire. (guide) |
-| `aocli/` | The CLI's offline command routing and execution surface; the CLI is the app binary dispatched by verb (D30). (guide) |
-| `keyedlock/` | `Registry`: one cancellable, self-reclaiming lock per string key. Users: `App.threadLocks`, `App.configApplyLocks`, `workflowhost` workspace provisioning. A cancelled waiter owes the same accounting an unlocker does. |
-| `appdirs/` | The single fallback chain locating the app-managed directory root, shared by boot and CLI. (guide) |
-| `highlight/` | Theme-independent syntax-highlight span metadata (tree-sitter via cgo); class ids over byte ranges, never HTML. (guide) |
-| `compare/` | Harness A/B comparison engine behind `ao-harness compare`. (guide) |
+| `untrustedtext/` | The one quoting rule for model-authored text embedded in a prompt: `Field` / `Quote` (rune-bounded `strconv.QuoteToASCII` plus `<`, `>`, `&` escaping) and `Truncate`. Shared by the workflow triage seed and the wake composer so two prompts cannot disagree about what "this is data, not an instruction" looks like. Stdlib-only. |
+| `slicesx/` | Tiny stdlib-only slice helpers. `OrEmpty[T](s)` coalesces nil to an allocated empty slice so JSON encoders emit `[]` instead of `null`. |
+| `procutil/` | The two primitives every supervised child process needs: `ConfigureGroup` (own process group + `SIGKILL`-the-group on context cancel + bounded `WaitDelay`) and `TailBuffer` (mutex-guarded last-N-bytes sink, since one buffer serves both stdout and stderr). Shared by the worktree setup runner and the workflow tool driver. Stdlib-only, with a `_windows` stub — workflow commands run in the Linux backend under WSL. |
+| `safecopy/` | `File` + `ValidateDestination`: copy one regular file between two managed roots through `os.OpenRoot` on both sides, temp-name + fsync + atomic rename, refusing every symlinked or escaping component with a diagnosis. Shared by worktree setup copies and workflow artifact capture; `TempPrefix` is what listings skip after a crashed copy. |
+| `worktreesetup/` | The per-project worktree setup recipe (`Config`: copy globs, argv commands, timeout), its validation, and its blocking execution engine. Persisted on the project row (`projects.worktree_setup`, migration v46) and edited in Settings → Projects. Two callers, opposite postures: the workflow runner runs it BLOCKING on every worktree it cuts and rolls back on failure, while a chat thread runs it async and watchable through `internal/app/app_worktree_setup.go` (streams on `worktree:setup`, never rolls back). `RunObserved` is the one engine; `Run` is it with a no-op observer. Has its own subarea guide covering the copy-safety properties and the `AO_PROJECT_ROOT` / `AO_WORKTREE_PATH` contract. |
+| `worktreesetupapp/` | Async chat-worktree setup application service for persisted threads: run registry, observation, retry, path/thread cancellation, durable settlement, crash sweep, and shutdown join. `internal/app` retains Wails DTOs plus narrow store/event adapters; workflow provisioning continues to call `worktreesetup` directly. Has its own subarea guide. |
+| `worktreeapp/` | Read-only worktree membership, status, picker safety, and shared-workspace activity projections. `internal/app` retains filesystem deletion/workspace switching so lock, setup-cancel, transcript-relocation, persistence, event, and session-restart order stays explicit. Has its own subarea guide. |
+| `workspacepath/` | `NormalizeRelative(rel)` validates a user-supplied workspace-relative path (rejects empty/absolute/parent-escaping) and returns the OS-cleaned form callers can safely join under a workspace root. |
+| `errorsx/` | Stdlib-only error helpers: `Append` (nil-filtering slice append) and `WrapLifecycle` (action-prefixed `%s: %w`). |
+| `closer/` | Close-orchestration helpers: `Task` + `RunParallel(tasks, timeout)` for goroutine-fan-out teardown, and `Stack` (LIFO cleanup list with reverse-order `Run`) for fork-and-revert undo chains. |
+| `orphanreaper/` | macOS-only guard that provider subprocess groups don't outlive an ungraceful app death (no Pdeathsig / Job Object there). A `__reap` sidecar holds a control pipe and kills watched groups on parent-death EOF; a durable registry + startup `Sweep` is the backstop. `internal/app/app_orphan_reaper.go` owns the lifecycle wiring. |
+| `eventscope/` | `ThreadIDFromEvent(payload)` — best-effort thread-id extraction from arbitrary event payloads (map / struct / JSON fallback) used by the observability fan-out to attribute emissions. |
+| `codexghost/` | Pure summary-rewrite helpers (`GhostSummary` + `SessionEndedSuffix`) backing the Codex ghost-row flip that runs on every Codex session start. |
+| `composerdraft/` | Pure `store.Item` → `store.ThreadDraft` projectors (`FromUserItem`, `FromParts`) plus `MergeParts`, backing composer rehydration on the Stop/Esc un-send, fork-and-revert, and the flush-queue restores, and the edit-and-resend saga's staged crash copy. App-bound cross-thread attachment cloning stays in `internal/app/app_draft.go`. |
+| `eventchan/` | `type Channel string` plus one constant per event channel the backend pushes. Imports NOTHING (not even from this repo) so every emitting layer — `internal/app`, `transport`, `triage`, and `workflow/engine` — can take it in its emit signature. It is the SPELLING half of one table whose POLICY half is `transport`'s `channelPolicies`; a cross-check test AST-parses this package and fails on either half missing its counterpart, so adding a channel is two edits and no more. The newtype stops a channel *variable* crossing without an explicit conversion (which is what the harness escape hatches spell); `internal/app`'s `TestEmitSitesNameAnEventChannelConstant` stops a bare string LITERAL, which Go would otherwise assign silently. Has its own subarea guide. |
+| `transport/` | HTTP+WebSocket wire protocol (RPC dispatch + event push) used by the embedded webview and any remote client. |
+| `clientmode/` | `--connect <url>` remote-client stub: tiny loopback HTTP server that injects `window.__AO_BOOTSTRAP__` into the embedded SPA so the desktop binary attaches to a remote backend instead of booting a local transport. |
+| `appidentity/` | Pure process identity and display-name helpers shared by native desktop and WSL launcher entry points. |
+| `editor/` | Open-in-editor detection (catalog + WSL bridge) and detached-spawn helper. Backs the `OpenInEditor` and `ListAvailableEditors` bindings. |
+| `externalurl/` | Validates HTTP(S) URLs and launches them through the host OS browser opener, including the WSL-to-Windows browser bridge. |
+| `devserverprobe/` | TTL-cached loopback TCP dialer behind `ProbeDevServerURL`: confirms a listener actually exists on a loopback URL command output mentioned, gating the dev-server chip. Loopback hosts only; stdlib-only. Has its own subarea guide. |
+| `wsllauncher/` | Detects WSL distros and spawns the Linux backend pinned to a Win32 Job Object. The Windows launcher uses the full surface; the WSL backend uses `ListDistros` for the Settings UI distro picker. |
+| `wsldistro/` | Cross-process schema for `%APPDATA%\agent-overflow\wsl.json` — atomic Load/Save and the WSL-side path resolver fed by the launcher's WSLENV-injected env var. Shared between `cmd/agent-overflow-windows` and the WSL backend. |
+| `selfupdate/` | Cross-process contract for the Windows/WSL self-update split, imported by both the headless WSL backend and the Windows launcher: the `updater:install` directive + its validation (bare `.exe` name, sha256, version), the staging-dir primitives (`StageCopy` — verified temp+fsync+rename — and `SweepStagingDir`), the "swap never applied" `Marker`, `StagedFileProvider` (an `updater.Provider` over one local file, so the launcher reuses the stock verify/swap/relaunch machinery), and `LinuxUpdaterBlocked` — the native-Linux preflight that refuses an in-place swap an AppImage mount or a non-writable install directory could never host. Tag-free; no network, no exec. Has its own subarea guide. |
+| `shellenv/` | Probes the user's login shell for PATH at startup and merges it into `os.Environ()`. Lets `exec.LookPath("claude")` etc. find binaries installed via nvm/asdf/`~/.local/bin` when launched outside a terminal (WSL backend, Finder-launched `.app`). |
+| `appimage/` | The one scrub that strips an AppImage launch's artifacts (`APPIMAGE`/`APPDIR`/`ARGV0`/`OWD` plus the mount's `PATH`/`LD_LIBRARY_PATH`/`XDG_DATA_DIRS`/`GSETTINGS_SCHEMA_DIR` segments) out of a child environment, so provider CLIs, terminals, editors, and the browser opener resolve against the real system instead of a squashfs that vanishes on app exit. Marker-gated, pure, idempotent, stdlib-only — every other launch shape passes through unchanged. Has its own subarea guide listing the spawn sites. |
+| `uikeys/` | Browser-style WebviewWindow keybindings (Ctrl+/-/=/R/F11) shared by every window the app opens — desktop binary, `--connect` remote client, and the Windows WSL launcher. |
+| `windowgeom/` | GUI-free desktop-window placement: the persisted `Geometry` shape, `Clamp` (validate/anchor a saved window against the current screens), and the debounced `Tracker` that coalesces move/resize/state events into one write. Embedded by `settings`; no Wails. |
+| `uiwindow/` | Wails glue binding a live `WebviewWindow` to `windowgeom`: `RestoreAndTrack` (called from an `ApplicationStarted` handler) creates the window with a saved placement restored — maximized/fullscreen on the monitor it was saved on, no flash — and `Track` wires window events to a debounced sink. GUI-only (imports Wails), like `uikeys`. |
+| `uitrace/` | JSONL diagnostic appenders for the frontend: the dev-only render trace (`AppendUIRenderTraceBatch`) and the always-on runtime-error log (`ReportFrontendErrorBatch`). Validates each line, caps the batch, and rotates at `MaxFileBytes`. |
+| `dirbrowse/` | Project-picker directory listing. Backs the `BrowseDirectory` binding with path normalisation, `.git`-marker detection, EntryLimit truncation, and missing-path fallback. |
+| `keybindings/` | Persisted keybindings config + merge. Owns `Defaults`, atomic Get/Update/Reset Service, and the user-override `Merge` that backs the three Keybindings bindings. |
+| `theme/` | The client-side `<configDir>/themes/` directory: theme files listed as opaque raw JSON (Go never parses one — the token vocabulary lives in the frontend registry), the typed `appearance.json` selection with atomic validated writes, boot seeding of the embedded `theme.schema.json` / `TOKENS.md` reference artifacts, and the cheap `WindowBackground` read the desktop entry point uses before the App exists. Has its own subarea guide. |
+| `spinner/` | The client-side `<configDir>/spinners/` directory: the user's custom working-indicator sprites, each a PAIR of `<id>.png` (a horizontal frame strip) and `<id>.json` (its manifest), listed as opaque manifest text plus base64 PNG bytes — Go never parses a manifest, the animation vocabulary lives in the frontend — plus boot seeding of the embedded `SPINNERS.md` authoring reference. Half a pair is a warning naming the missing file, never a silent skip. Has its own subarea guide. |
+| `network/` | LAN-bind toggle helpers: `Settings` wire shape, bind host / origin allow-list / share-URL formatters, and deterministic local-IP discovery. App orchestrates settings + transport rebind around it. |
+| `textgen/` | Short structured-output text generation through a provider CLI (Claude/Codex). Owns `Config`, `CLISpec`/`CLIResult`/`CLIExecutor`, scratch-file scaffolding, output capture, `RunCodex`/`RunClaude` (which own the reasoning-effort flag from `Config.Effort` and omit it when empty — callers must not append their own), and the post-processing helpers (`DecodeClaudeStructuredLastLine`, `NormalizeStructuredOutputLine`, `CapRunesWithEllipsis`) backing the commit-message and thread-title flows. |
+| `claudemodels/` | Merge policy + per-probe-identity cache for the Claude model catalog: folds the `models` array the zero-token account probe's `initialize` response carries into the hand-maintained `provider.ClaudeModels`. Enriches capability flags and adds models the CLI ships before we list them; never subtracts, never spawns. Backs `GetModelsForProvider("claude")`. |
+| `claudecommands/` | Per-probe-identity cache of the slash-command list the zero-token account probe's `initialize` response carries (`{name, description, argumentHint}`). Replace-wholesale, never merged: the CLI's list is the whole truth for that identity, an empty list is a real answer, and a wire error leaves the previous list alone. Bounded to 8 identities, clones on read and write. Backs the composer's command palette. |
+| `claudeconfig/` | Read/write adapter for the slice of Claude Code's on-disk configuration AO shares with the CLI: `~/.claude.json` MCP server scopes + `oauthAccount` clearing (writable), and the read-only enumerations a session would load — plugin/project MCP membership and `ListSkills` (user/project/plugin SKILL.md tiers). Never spawns; unknown config keys round-trip untouched. Has its own subarea guide. |
+| `codexmodels/` | Per-binary TTL cache + single-flight wrapper around Codex `model/list`. Backs `GetModelsForProvider("codex")` and `refreshCodexModelCatalog` so settings rendering doesn't fan out one Codex CLI subprocess per call. |
+| `codexusage/` | Per-account TTL cache + single-flight around Codex's `account/usage/read` report, backing `GetCodexAccountUsage`. Unlike `codexmodels`, failures are cached briefly and shared so a failed read can never reach a caller as an empty report. Has its own subarea guide. |
+| `codexskills/` | The caller-facing `Skill` / `CwdSkills` shape plus a per-`(binary, cwd)` TTL cache + single-flight around Codex `skills/list`. The cwd dimension is load-bearing — skills are directory-scoped, so two workspaces have different answers — and `Key` is where that shape is decided. Live sessions invalidate it wholesale from `skills/changed`. Has its own subarea guide. |
+| `mcpstatus/` | Per-App cache of MCP server status. Live provider sessions feed it for free (Claude `system/init`, Codex startup/oauth notifications); ephemeral fetchers (`claude mcp list`, Codex `mcpServerStatus/list`) fill in for inactive threads under per-key + per-provider single-flight gates. Backs `GetMcpServerStatus`, `ListMcpServerStatuses`, `RefreshMcpServerStatus` and the `mcp:status` event channel. |
+| `mcpapp/` | Application-level MCP config/status/auth coordination: provider-native config projection, thread/workspace toggles, temporary OAuth process lifetime, and live Claude reconnect/Codex reload application. `internal/app` retains stable Wails bindings and session/lifecycle adapters. Has its own subarea guide. |
+| `chatmodel/` | Pure helpers for chat-thread model profiles: `FallbackProfile`, `ProfileFromThread`, `SanitizeProfile`, `SanitizeContextWindow`, `SupportsStoredFastMode`, `HasCapability`, context-window queries. The App's persistence-coupled helpers (`rememberChatModelProfile`, `seedChatModelProfile`) compose this package's pieces with store reads/writes. |
+| `threadmode/` | Pure validators and parsers for the thread interaction-mode (chat/plan/discussion/workflow/terminal) and runtime-mode (read-only / approval-required / auto-accept-edits / auto / full-access) axes. Owns `ValidateCreate`, `ValidateSet`, `IsPostCreationMode`, `ParseRuntime`, `ParseOptionalRuntime`. Persistence and session-restart orchestration that consume the validators stay in `internal/app`. |
+| `promptoverride/` | The pure half of the settings-level system-prompt override (`docs/specs/prompt-tool-overrides.md`): `Match` (first enabled entry whose model list contains the session's model, both sides normalized through `NormalizeModelSlug` with the `[1m]` context marker trimmed), the CLOSED placeholder vocabulary, single-pass `Render` (an unknown placeholder survives verbatim, an absent fact renders empty, a substituted value is never rescanned), and `ClaudeMemoryDir` (`(string, error)`; delegating the project slug to `sessionfork.WorkspaceProjectDir` so writer and reader cannot drift). Fact gathering — git probe, model catalog, host version — and the memory-directory `MkdirAll` stay in `app_session_prompt_override.go`, because `Render` also runs on the live-config reconcile path and must stay side-effect-free. Has its own subarea guide. |
+| `commitmsg/` | Pure prompt builder, schema constants, structured-output decoder, and subject/body sanitisers behind `GenerateCommitMessage`. Workspace resolution, settings routing, and CLI invocation stay in `internal/app`. |
+| `threadtitle/` | Pure prompt builders (first-turn + regeneration), the newest-first thread-context formatter behind regeneration, schema constants, decoder, and sanitiser behind the thread-title flow. |
+| `threadtitleapp/` | Thread-title application coordination: per-thread singleflight, auto/heal/user regeneration policy, context and image-attachment gathering, sanitization, and compare-and-swap persistence. `internal/app` injects provider CLI execution and retains the stable Wails façade/event projection. Has its own subarea guide. |
+| `diffreview/` | Pure helpers behind the diff-review comment flow: prompt builder, line-anchor picker, and comment-slice → ID projector. App-bound CRUD, the `SendDiffReviewComments` saga, and the content composer stay in `internal/app`. |
+| `prthread/` | Pure formatting helpers behind `CreateThreadFromPR`: title formatter, first-user-message composer, backtick-aware fence picker, and rune-boundary diff/title truncators (Bug C4/C6 regression guards). Forge CLI invocation, local-clone resolution, and store reads/writes stay in `internal/app`. |
+| `planrevision/` | Pure helpers behind the proposed-plan inline-comment revision flow: prompt builder + comment-slice → ID projector. App-bound CRUD, the `SendPlanRevisionComments` saga, and the content composer stay in `internal/app`. |
+| `providerstatus/` | Wire shape (`Event`) + pure mapping helpers for the `provider:status` event channel: `ActionURL` URL table, `EventFromDetect` pull→push shape converter, `ClaudeUnauthenticated` heuristic. App-bound emitters (`emitProviderStatus*`, `emitClaudeUnauthenticatedStatus`, `emitProviderStatusOnSessionStartError`, `probeStartupProviderStatuses`) stay in `app_provider_status.go`. |
+| `providerschema/` | The strict-mode rules both provider CLIs enforce on structured-output schemas (`Validate` → `[]Violation`), each backed by an observed CLI rejection. Stdlib-only and JSON-in, so schema generation (`workflow/def`, test-only) and schema consumption (`cmd/ao-mockprovider`) share one definition of "a provider will accept this". |
+| `usermessage/` | JSON wire shape persisted in `store.Item.Meta` for user_text rows (`Meta` + `AttachmentMeta`) plus the `Marshal` / `FromItem` / `EncodeDraftSource` helpers every entry point (send, steer, flush-queue dispatch, fork-and-revert, composer-restore) routes through. App-bound sagas in `app_send.go` / `app_draft.go` / `app_flush_queue_restore.go` / `app_codex_provider_queue.go` / `app_steer.go` build inputs and call these to cross the serialisation boundary. |
+| `flushqueue/` | Pure projectors behind the per-thread flush queue: wire shape (`QueuedItem`), inner JSON shape (`Payload`), `triage.QueuedFlushItem → QueuedItem` decoder, and the `queue:<uuid>` id allocator. App-bound register/dispatch/undo sagas stay in `internal/app`, split three ways: `app_flush_queue.go` (register, the per-thread dispatch worker, turn placement, the provider write), `app_flush_queue_restore.go` (session-death and failed-resend recovery into the composer draft or back onto the queue), and `app_codex_provider_queue.go` (what is left of the Codex >= 0.148 provider-owned queue now that AO never writes to it: the legacy-row sunset at session start, the ownership predicate it answers from, and the rollback purge). |
+| `workflow/def/` | Pure workflow YAML parsing/resolution, embedded authoring schema, interpolation, envelope-schema generation/post-validation, ordered runtime gate evaluation/tracing, graph dry-run validation, and derived workspace need. |
+| `workflow/engine/` | Single-goroutine workflow item/phase FSM, direct run start, global pause, project-local resource semaphores (including the implicit `provider:<name>` bound), teardown, and SQLite startup rebuild/crash sweep. |
+| `workflow/runner/` | Pure helpers for workflow phase prompt assembly, per-attempt paths, envelope outcomes, validation retry feedback, and the tool driver's envelope synthesis/overlay and narrative rendering. |
+| `workflow/memory/` | Campaign memory: the note shape and its closed `pattern/warning/learning/handoff` vocabulary, the `<configDir>/workflow-memory/<root-run-id>/notes.ndjson` layout, the append-only NDJSON codec (torn-final-line tolerant on read, self-healing on the next append), and the bounded newest-first digest injected into every element's prompt. Keyed by the run TREE's root, so a recursive campaign's waves and lanes share one log. Stdlib + `internal/untrustedtext`; provenance is a `NewNote` parameter rather than a draft field, so an author-supplied one is structurally impossible. Has its own subarea guide. |
+| `workflow/wake/` | Pure composer for the compact message a resting root run injects into its bound thread (D17): resting state + typed reason + declared outputs + narrative/artifact/failed-unit references, every value quoted as untrusted data and every list bounded. No envelope dumps, no lookups — the app layer resolves the run record and owns delivery. |
+| `workflow/scheduler/` | Automations (§11): typed cron / internal-event triggers, run-if conditions evaluated through `def`, skip-if-running with recorded skips, and the reserved `trigger` / `job-notes` seeds. One goroutine and one timer; robfig/cron is used for `ParseStandard` + `Next` only, never its runner. Never imports the engine — the app feeds it run transitions and supplies the one start callback. |
+| `workflow/profile/` | Pure per-project workflow profile loading/validation, binding lookup, and explicit env/file secret resolution with child-process env rendering and masking. |
+| `workflow/starters/` | Embedded workflow definition sets used as sources by `agent-overflow workflow new`; never an engine-visible built-in tier. |
+| `workflowapp/` | Workflow application layer: agent CLI reads, narratives, campaign memory, long-poll watch, disposition/discard policy, run-tree checkout ownership, PR/triage follow-up, ordered engine-event/wake coordination, and live engine/scheduler/autoresume ownership. `internal/app` retains exact Wails methods/DTOs, constructs the provider-aware `workflowhost.Runner`, and injects provider-session send, transport/replay, notification/text-generation, git/forge, worktree-cache, settings, and thread-construction capabilities. |
+| `workflowdefs/` | Recursive fsnotify watcher for shared and project-local workflow definition trees. Owns trailing-edge debounce and discovery of newly created project trees; `internal/app` owns the typed definitions-changed event and lifecycle wiring. |
+| `workflowwatch/` | Zero-value-ready bounded transition ring behind workflow run long polls. Records on the engine event path without I/O, broadcasts waiters, and reports gaps for stale/restarted cursors; SQLite remains the current-state source of truth. |
+| `workflowhost/` | The app-side workflow RUNNER: the `engine.Runner` implementation that turns one phase, unit, or join into a live provider turn or a supervised command, and the per-attempt machinery around it — workspace provisioning (item worktree, fan-out sub-worktrees), reliability timers, the send epoch ladder, the start watchdog, the envelope/turn observer, human takeover, the typed usage-limit park, narratives, and artifact capture. It reaches the process around it ONLY through `Host` (`host.go`): eight capability-named consumer-side interfaces, satisfied in `internal/app` by the pure-glue `workflowHostAdapter` (`app_workflow_host.go`). Bound methods stay in `internal/app` — this package registers nothing on the wire. Has its own subarea guide. |
+| `aocli/` | The CLI's two halves: offline command routing (config-root discovery, workflow validation/listing/scaffolding) and the execution surface (the AO_* session contract, the scoped HTTP RPC client behind `agent-overflow run` / `notes` / `schedule`, and the pure `/workflow` composer-block renderer). The CLI is the app binary dispatched by verb (D30), not a separate executable; `main.go` routes on `aocli.Commands()`. |
+| `keyedlock/` | `Registry`: one cancellable, self-reclaiming mutual-exclusion lock per string key, with `Lock` / `LockCtx` and a `Refs` count. Three users: per-thread action serialization (`App.threadLocks`), per-thread session-config apply (`App.configApplyLocks`), and per-item workflow workspace provisioning (`workflowhost.Runner.workspaceLocks`). A cancelled waiter owes the same accounting an unlocker does, which is what keeps the registry from leaking an entry per key. Stdlib-only. |
+| `appdirs/` | The single UserConfigDir→UserHomeDir→`/agent-overflow` fallback chain locating the app-managed directory root; shared by `main.go` boot reads and the CLI so discovery never drifts. |
+| `highlight/` | Theme-independent syntax-highlight span metadata (tree-sitter via cgo). Whole-document parsing returns class ids over byte ranges — metadata like `PathRef[]`, never HTML. Has its own subarea guide. |
+| `highlightapp/` | Application coordination around `highlight`: shared cache, remote streaming seeds, bounded diff-span persistence, persisted code spans, and injected root/store/event boundaries. `internal/app` retains stable Wails DTOs and methods. |
 
 ## Responsibility boundary
 
-- What BELONGS here: pure Go packages with a single responsibility,
-  `New*` constructors, no global mutable state. Return errors; `app.go`
-  decides what the user sees.
-- What does NOT belong here: `main`-package code (entry point, bindings
-  wiring), binding registration and event emission (`a.emit` call sites
-  live in `app*.go`), and cross-package coordination on behalf of
-  callers. Packages expose functions; callers compose.
-- Frontend-facing SHAPES may live here: the Wails generator emits
-  per-package TS models, so declare a bound method's payload type in the
-  package that owns the concept, not mirrored into `main`. See
+- What BELONGS here:
+  - Pure Go packages with a single responsibility, `New*` constructors,
+    no global mutable state.
+  - Return errors. `app/app.go` decides whether a given error is a toast, a
+    status bar entry, or a user-facing state projection.
+- What does NOT belong here:
+  - Executable `main`-package code. Entry dispatch, embedded frontend assets,
+    platform boot, transport construction, and the named Wails compatibility
+    wrapper stay at the repo root (`main*.go`, `service.go`).
+  - Binding registration and event emission. The bound method and the
+    `a.emit(name, ...)` call site live in `app/app*.go`; root `main` owns which
+    promoted methods reach the wire and under what compatibility name.
+  - Cross-package coordination on behalf of callers. Packages expose
+    functions; callers compose.
+- Frontend-facing SHAPES may live here. The Wails generator emits
+  per-package TS models — `frontend/bindings/agent-overflow/internal/<pkg>/models.ts`
+  exists for ~25 packages today, and the generated `app.ts` imports them
+  (`import * as store$0 from "./internal/store/models.js"`). A payload
+  type reachable from a bound method's signature is generated wherever
+  it is declared, so define it in the package that owns the concept
+  rather than mirroring it into `main`. What must stay in `main` is the
+  named compatibility registration, not the implementation struct. See
   `docs/architecture/root-decomposition.md` § Wire compatibility.
 
 ## Adding a package
@@ -148,10 +177,12 @@ the package's whole documentation, so they carry more.
 
 ## Testing bar
 
-- Unit tests for parsing, pure logic, data shape. Integration tests at
-  `app_*_test.go` (repo root) for anything crossing package boundaries.
-- Deterministic only. `t.TempDir()` for fixtures; never scan shared
-  system state.
+- Unit tests for parsing, pure logic, data shape.
+- Integration tests at `internal/app/app_*_test.go` for anything crossing
+  package boundaries (session lifecycle, approval round-trip, git
+  workflow).
+- Tests must be deterministic. Use `t.TempDir()` for fixtures; never
+  scan shared system state.
 - Tests must never spawn a real provider CLI or touch the real
   `~/.claude` / `~/.codex` homes. Real spawns burn billed tokens, and a
   teardown kill mid token-refresh destroys the developer's login (root

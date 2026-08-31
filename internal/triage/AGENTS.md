@@ -279,7 +279,19 @@ is no separate persisted background row. Mailbox row identity mixes the
 child's durable resume generation into a content hash, so identity is
 never rebuilt from an in-memory counter (`codexMailboxCompletionID`).
 
-## App-layer observers and enricher
+- `SetAssistantTextStreamObserver` — a streaming assistant_text row's
+  full accumulated summary at each persistence flush window
+  (final=false) and once at settle with the final model text
+  (final=true). Backs the remote-client highlight seed push
+  (`app_highlight.go` / `internal/highlightapp`).
+- `SetDiffPayloadObserver` — a just-persisted diff-bearing payload with
+  COMPLETE content: tool results (`persistToolResult` and the
+  summary_only→exact upgrade) carry payloadID + preview patches + the
+  full unified patch; diff-kind payload full writes carry payloadID +
+  patch (the append branch never notifies — its content is a delta).
+  Backs highlight span persistence (`payloads.preview_spans` /
+  `payloads.spans` columns) and the remote diff seed push
+  (`app_highlight.go` / `internal/highlightapp`).
 
 `newTriageRouter` (`app_flush_queue.go`) is the one construction site,
 and it wires `SetAssistantTextStreamObserver` (accumulated summary per

@@ -50,10 +50,10 @@ this file covers the package boundaries.
 ## Responsibility boundary
 
 - These packages are engines, not policy: no `*App` access, no store
-  schema knowledge beyond what their inputs carry. The `Harness` RPC
-  receiver (`app_harness*.go` at the repo root) owns wiring them to
-  the live app (event bus, store snapshot/restore, session lifecycle).
-- `control` and `scenario` are shared with `cmd/ao-mockprovider`. The
+  schema knowledge beyond what their inputs carry. The `internal/harnessrpc`
+  receiver owns wiring them to the live app through its explicit `Host`
+  adapter (event emission, store snapshot/restore, session lifecycle).
+- `control` and `scenario` are shared with `cmd/ao-mockprovider` — the
   mock binary is the other consumer. Changing a wire shape or scenario
   field means checking both sides plus `e2e/`.
 - The mock engine reports `turn_interrupted` when a provider interrupt wins an

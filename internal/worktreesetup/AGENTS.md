@@ -20,7 +20,8 @@ finding that tells the author to move it here (see
 - A failure is always an error, never a warning, never a partial success.
   The caller decides what that means: workflow provisioning rolls the worktree
   back and parks `needs-human(setup-failed)`, while a chat thread keeps the
-  worktree, surfaces the failure, and offers a retry (`app_worktree_setup.go`).
+  worktree, surfaces the failure, and offers a retry
+  (`internal/worktreesetupapp`).
 - Observation is optional and additive. `RunObserved` is the whole engine and
   `Run` is it with a no-op observer. There is ONE execution path, so the
   blocking caller cannot drift from the streaming one.

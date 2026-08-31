@@ -101,7 +101,7 @@ export {
   // read/write pair rather than settings keys: the recipe lives on the
   // project row, and the setter validates before persisting because the
   // argv commands it stores run unattended on every worktree the project
-  // cuts. See app_project_worktree_setup.go.
+  // cuts. See app_projects.go.
   GetProjectWorktreeSetup,
   SetProjectWorktreeSetup,
 
@@ -119,7 +119,7 @@ export {
   GetUsageStats,
   // Codex's OWN account-level token report, not the AO ledger. Returns
   // null when there is nothing to report (older codex, an API-key login,
-  // a brand-new account) — absence, never zeros. See app_codex_usage.go.
+  // a brand-new account) — absence, never zeros. See app_codex_bindings.go.
   GetCodexAccountUsage,
   GetRateLimitsSnapshots,
   ListProviderAccounts,
@@ -399,7 +399,7 @@ export {
   TriggerMcpAuth,
   TriggerWorkspaceMcpAuth,
 
-  // In-app self-update (app_updater.go). LocalOnly — loopback callers only.
+  // In-app self-update (internal/appupdate, via root bindings). LocalOnly — loopback callers only.
   CheckForUpdate,
   ListReleases,
   DownloadUpdate,
@@ -488,7 +488,7 @@ export {
   BusyThread,
   WorkspaceActivity,
   WorktreeStatus,
-} from '../../../bindings/agent-overflow/models.js';
+} from '../../../bindings/agent-overflow/internal/app/models.js';
 export {
   CompanionEvent as BrowserCompanionEvent,
   CompanionInput as BrowserCompanionInputEvent,
@@ -531,7 +531,7 @@ import {
   NewThreadDefaultsUpdate as NewThreadDefaultsUpdateClass,
   SendMessageOptions as SendMessageOptionsClass,
   StartTerminalOptions as StartTerminalOptionsClass,
-} from '../../../bindings/agent-overflow/models.js';
+} from '../../../bindings/agent-overflow/internal/app/models.js';
 import type { SourceDiffReview, SourceProposedPlan, Thread } from '../types/models';
 import type { ReasoningEffort } from '../types/settings';
 
@@ -655,7 +655,7 @@ import {
   RegisterQueueItem as RegisterQueueItemRaw,
   GetQueueState as GetQueueStateRaw,
 } from '../../../bindings/agent-overflow/app.js';
-import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
+import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/internal/app/models';
 
 export function RegisterQueueItem(
   threadId: string,
@@ -690,13 +690,13 @@ export { UsageBucket, UsageQuery } from '../../../bindings/agent-overflow/intern
 
 // Picker-facing worktree model. Unlike the lower-level internal/git shape,
 // this includes backend-computed delete availability.
-export { WorktreeListItem } from '../../../bindings/agent-overflow/models.js';
+export { WorktreeListItem } from '../../../bindings/agent-overflow/internal/app/models.js';
 
 // Composer command-menu wire shapes. `SlashCommand.name` never carries a
 // leading slash on any of the three surfaces that report one, and
 // `ClaudeSlashCommands.probed === false` means UNKNOWN — a menu must not
 // render it as "this binary has none".
-export type { ClaudeSlashCommands } from '../../../bindings/agent-overflow/models';
+export type { ClaudeSlashCommands } from '../../../bindings/agent-overflow/internal/app/models';
 export type { SlashCommand } from '../../../bindings/agent-overflow/internal/provider/models';
 export type {
   CwdSkills as CodexCwdSkills,
@@ -714,8 +714,8 @@ import {
 } from '../../../bindings/agent-overflow/app.js';
 import {
   CodexReviewTarget as CodexReviewTargetClass,
-} from '../../../bindings/agent-overflow/models.js';
-import type { CodexReviewStarted } from '../../../bindings/agent-overflow/models';
+} from '../../../bindings/agent-overflow/internal/app/models.js';
+import type { CodexReviewStarted } from '../../../bindings/agent-overflow/internal/app/models';
 
 export type CodexReviewTargetKind =
   | 'uncommittedChanges'
@@ -756,7 +756,7 @@ import {
 } from '../../../bindings/agent-overflow/app.js';
 import {
   SyncThreadWindowRequest as SyncThreadWindowRequestClass,
-} from '../../../bindings/agent-overflow/models.js';
+} from '../../../bindings/agent-overflow/internal/app/models.js';
 import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 
 export type SyncThreadWindowStatus = 'fresh' | 'stale' | 'rewritten' | 'gone';
