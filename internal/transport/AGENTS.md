@@ -153,7 +153,22 @@ Tickets are minted per page URL produced — `Server.AppURL` at boot,
 every later navigation — and the first `/bootstrap.json` presenting one
 exchanges it for the cookie. The SPA then strips it from the URL, and a reload
 rides the cookie. Outstanding tickets are bounded (`maxOutstandingTickets`,
-oldest evicted), so the newest URL a user just copied is always live. Because a
+oldest evicted), so the newest URL a user just copied is always live.
+
+**There is ONE ticket mechanism** (`ticket.go`), and both users share it. A
+`ticketBook` mints a CSPRNG token, hands it out over a channel that is already
+authenticated, and lets the FIRST presentation spend it — with a constant-time
+compare, an eviction rule, and a bound. The page ticket and the WebSocket ticket
+differ in exactly two parameters:
+
+| | subject | deadline |
+|---|---|---|
+| page ticket (`Credential.tickets`) | none — a launch has one page credential, so the ticket only decides who receives it | none — the URL is produced for a person to open, and a launcher's fixed `?t=` URL must still work an hour later |
+| WS ticket (`Server.wsTickets`) | the session id it names | `wsTicketTTL` (30s) — a client mints one immediately before it dials |
+
+Do not add a third implementation. A new single-use token is a new book with
+those two parameters set; building it separately means a second constant-time
+compare and a second place for "single use" to be got subtly wrong. Because a
 ticket is spent by the page it was minted for, anything that navigates more than
 once asks `/pageurl` for a fresh URL rather than reusing the boot one: the WSL
 launcher's reload keybinding, `ao-harness open`/`info`/`attach`/`up`, and the
@@ -213,6 +228,62 @@ behind it), and `frontend/src/lib/transport/authReason.ts` is the one place
 it becomes a sentence. `TestFrontendHintsCoverEveryRefusal` pins the two
 sets together. A code is stable forever once shipped; an older bundle may
 still be mapping it.
+
+## The device-facing credential routes
+
+`authroutes.go` holds three POSTs (spec §4), the only routes on this mux a
+client reaches WITHOUT the launch credential — because they are how a client
+that has never met this backend gets one.
+
+| route | what the caller presents | registered when |
+|---|---|---|
+| `/auth/pair` | a single-use pairing token, plus the thumbprint of the key the device generated first | `Config.AuthEndpoints != nil` |
+| `/auth/token` | a rotating refresh secret in the body, its device key in `X-AO-Device-Key` | `Config.AuthEndpoints != nil` |
+| `/auth/ticket` | the session credential it already holds | `Config.SessionForRequest != nil` |
+
+Rules that hold across all three:
+
+- **This package owns the wire, not the decision.** `AuthEndpoints` is a
+  two-method interface declared here and satisfied by an app-side adapter over
+  `internal/identity` — the same direction and the same reason as
+  `ScopedTokens`. The DTOs (`PairingRedemption`, `SessionRenewal`,
+  `TokenGrant`) are dumb: nothing here validates a token, interprets a reason
+  code, or knows what a session row is.
+- **A refusal is 401 with `{"reason": "<code>"}`**, whatever refused it. The
+  code is the whole message; prose belongs to
+  `frontend/src/lib/transport/authReason.ts`, which can phrase it for the
+  surface the person is looking at. Mapping codes onto distinct statuses would
+  put the same fact in two places.
+- **A proof never comes from the body.** `SessionRenewal.KeyThumbprint` is read
+  from `DeviceKeyHeader` and the JSON tag is `-`. A proof a caller may write
+  into the same document it is proving something about is not a proof.
+- **Origin runs before anything else**, for the reason it does on the bootstrap
+  exchange: these routes hand out credentials, and a request another origin
+  initiated must never be answered with one.
+- **One budget for all three** (`authRateLimit`), because they are alternative
+  ways for the same peer to ask this backend for a credential.
+- `DeviceKeyHeader` carries a THUMBPRINT this phase, not a signature. It proves
+  the client knows which key the device enrolled, not that it holds the private
+  half; the spec's end state is a per-request DPoP proof, which needs a signing
+  scheme the wire does not have yet. The header is named for the KEY so phase 5
+  replaces the value and keeps every call site.
+
+**The owner-facing half of pairing is deliberately not here.** Minting a link,
+reading the verification number, confirming and cancelling are Go API on
+`identity.Sessions`, called from an already-authenticated in-process surface.
+Putting them on the wire would add an unauthenticated-by-construction surface
+for a caller that does not exist.
+
+**The session credential has two carriers and one reader**
+(`SessionCredential`): `X-AO-Session` for a client that can set headers, and the
+HttpOnly `ao_session_<port>` cookie for the browser, which cannot set them on a
+WebSocket handshake. The **header wins** when both are present — a relay
+forwarding a credential on purpose (the WSL launcher) is making a statement
+about whose request this is, while an ambient cookie is the browser's default.
+This package decides where the string is; `internal/identity` decides what it
+means. The cookie is planted by `/bootstrap.json` from
+`Config.PageSessionCredential`, so a local client acquires the page credential
+and its session in the SAME exchange and neither needs a route of its own.
 
 ## Origin allow-list and peer locality
 
@@ -537,8 +608,31 @@ closes it, and `CloseSession` is that something.
 - `Config.SessionForRequest` resolves a request's session BEFORE the upgrade
   and may refuse it. Refusal is `http.NotFound`, the same unfingerprintable
   shape a bad launch credential gets — see § Credentials and refusal shapes.
-  The hook is nil today, which is why nothing about the launch-credential path
-  changes yet; phase 3 supplies it from `internal/identity`.
+  The app supplies it from `internal/identity`; a request carrying no session
+  credential still proceeds and names none, which is every launch-credential
+  client. It does NOT replace the launch credential on `/ws` — that migration
+  is phase 3.
+- **A `?ticket=` on the upgrade takes precedence over the hook**, and is spent
+  whether or not the upgrade then succeeds; that is what single use means. The
+  ticket NAMES a session, it does not authorize one: the subject is re-checked
+  through `Config.SessionLive` before it is believed, so a ticket for a session
+  revoked during the seconds it was in flight cannot resurrect it.
+- **An established connection re-validates on an interval and caps its own
+  lifetime** (`connHandler.watchSession`), armed only for a connection that
+  names a session. The interval covers the two ways a session stops that
+  revocation's synchronous teardown does not reach: it EXPIRED, or something
+  outside this process revoked it. The lifetime cap forces a periodic
+  re-ticket, and **loopback connections are exempt from it** — the local page's
+  session is re-minted at boot and travels no network, so capping it would cost
+  the webview a visible reconnect and buy nothing. `resolveWatchWindows` holds
+  every default and exemption in one function precisely so none of that is
+  invisible at the call site.
+- `connHandler.closeCause` names why a server-side teardown happened
+  (`revoked` / `session no longer live` / `connection lifetime reached`). All
+  three cancel the connection context, which at the terminal error alone is
+  indistinguishable from a server shutdown — and that is exactly when somebody
+  is checking whether a revocation took effect. A new cause is a constant and a
+  case, never a fourth atomic three call sites have to remember to read.
 - Registration rides `ConnState.RegisterCleanup`, the same LIFO pass every
   other per-connection resource uses. Do NOT add a parallel teardown: a second
   path could disagree with the first about when a connection ended, and the

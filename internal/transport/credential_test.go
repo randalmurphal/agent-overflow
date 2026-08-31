@@ -451,10 +451,7 @@ func TestCredential_OutstandingTicketsAreBounded(t *testing.T) {
 		}
 		tickets = append(tickets, ticket)
 	}
-	cred.mu.Lock()
-	held := len(cred.tickets)
-	cred.mu.Unlock()
-	if held > maxOutstandingTickets {
+	if held := cred.tickets.outstanding(); held > maxOutstandingTickets {
 		t.Fatalf("outstanding tickets = %d, want at most %d", held, maxOutstandingTickets)
 	}
 	if !cred.consumeTicket(tickets[len(tickets)-1]) {

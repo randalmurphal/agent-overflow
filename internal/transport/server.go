@@ -164,6 +164,38 @@ type Config struct {
 	// server has always had.
 	SessionForRequest func(r *http.Request) (sessionID string, ok bool)
 
+	// SessionLive reports whether a session id still admits work. The
+	// same seam as SessionForRequest, taking an ID rather than a request
+	// because its two callers do not have one: the upgrade that spent a
+	// WebSocket ticket (the ticket names the session; nothing about the
+	// request does), and the per-connection re-validation that runs long
+	// after the request is gone.
+	//
+	// Optional. Nil means an established connection is never re-checked
+	// and a ticket's subject is taken as live, which is the behavior
+	// before any client presents a session.
+	SessionLive func(sessionID string) bool
+
+	// PageSessionCredential returns the session credential to plant on
+	// the page as an HttpOnly cookie during the bootstrap exchange, or ""
+	// when there is none.
+	//
+	// A getter for the reason BackendIdentity is one: the local page
+	// channel's session is minted during the App's startup, which runs
+	// after New(). It is also what lets the app re-issue a credential
+	// approaching its expiry without this package knowing a window
+	// exists.
+	//
+	// Optional — when nil, no session cookie is written and local clients
+	// name no session, exactly as before.
+	PageSessionCredential func() string
+
+	// AuthEndpoints backs the device-facing credential routes (pairing
+	// redemption and token rotation). The app satisfies it with an
+	// adapter over internal/identity.
+	// Optional — when nil, neither route is registered.
+	AuthEndpoints AuthEndpoints
+
 	// ScopedTokens resolves an `ao` CLI credential to the caller scope it
 	// was minted for. The App owns the registry (a token lives exactly as
 	// long as the provider session it belongs to); this package owns the
@@ -190,6 +222,30 @@ type Config struct {
 	// defaults to defaultKeepalivePongTimeout (10s). Test knob, like
 	// KeepaliveInterval.
 	KeepalivePongTimeout time.Duration
+
+	// SessionRecheckInterval is how often an established connection
+	// re-asks whether the session it named is still live
+	// (docs/specs/remote-access.md §4). Zero defaults to
+	// defaultSessionRecheck (60s); negative disables the re-check.
+	//
+	// It is a floor on how long a connection can outlive its credential
+	// by a route nothing else covers: revocation force-closes sockets
+	// synchronously, so this catches the two cases revocation does not —
+	// a session that simply EXPIRED, and a revocation this process did
+	// not perform (another replica, a direct database edit).
+	SessionRecheckInterval time.Duration
+
+	// MaxRemoteConnLifetime caps how long one non-loopback connection
+	// naming a session may stay open, forcing a periodic re-ticket. Zero
+	// defaults to defaultRemoteConnLifetime (12h); negative disables the
+	// cap.
+	//
+	// Loopback connections are deliberately exempt. The cap exists so a
+	// credential that travels a network is re-presented periodically; the
+	// local page's session is re-minted at boot and has no network to
+	// travel, so capping it would buy nothing and cost the webview a
+	// visible reconnect.
+	MaxRemoteConnLifetime time.Duration
 
 	// OriginPatterns is the WS origin allow-list. Empty (default) uses
 	// InsecureSkipVerify — appropriate for loopback. Phase E (LAN bind
@@ -336,6 +392,13 @@ type Server struct {
 	bootstrapLimit *rateLimiter
 	pageURLLimit   *rateLimiter
 	scopedRPCLimit *rateLimiter
+	authLimit      *rateLimiter
+
+	// wsTickets holds the single-use tickets minted at AuthTicketPath and
+	// spent on the upgrade. Server-owned rather than Credential-owned
+	// because a ticket names a session, and a session outlives no launch
+	// but belongs to none either.
+	wsTickets *ticketBook
 
 	// remoteConns counts live non-loopback WebSocket connections.
 	// Feeds HasRemoteClient, which gates work that only benefits
@@ -403,6 +466,8 @@ func New(cfg Config) (*Server, error) {
 		bootstrapLimit: newRateLimiter("/bootstrap.json", bootstrapRateLimit),
 		pageURLLimit:   newRateLimiter(PageURLPath, pageURLRateLimit),
 		scopedRPCLimit: newRateLimiter(ScopedRPCPath, scopedRPCRateLimit),
+		authLimit:      newRateLimiter("/auth", authRateLimit),
+		wsTickets:      newTicketBook(maxOutstandingWSTickets, wsTicketTTL),
 	}
 	if !cfg.RequireReadyForBootstrap {
 		s.ready.Store(true)
@@ -543,6 +608,23 @@ func (s *Server) buildHTTPServer() *http.Server {
 	if s.cfg.ScopedTokens != nil {
 		mux.HandleFunc(ScopedRPCPath,
 			rateLimited(s.scopedRPCLimit, s.loopbackHostGuard(s.handleScopedRPC)))
+	}
+	// The credential routes share ONE budget, deliberately: they are
+	// alternative ways for the same peer to ask this backend for a
+	// credential, so a peer that has exhausted its patience on one must
+	// not simply move to the next.
+	if s.cfg.AuthEndpoints != nil {
+		mux.HandleFunc(AuthPairPath,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthPair)))
+		mux.HandleFunc(AuthTokenPath,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthToken)))
+	}
+	// The ticket route needs no AuthEndpoints — it mints from the session
+	// the caller already holds — so it is registered whenever a session
+	// can be resolved at all.
+	if s.cfg.SessionForRequest != nil {
+		mux.HandleFunc(AuthTicketPath,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthTicket)))
 	}
 	assetH := s.cfg.AssetHandler
 	if assetH == nil {
@@ -718,6 +800,20 @@ func (s *Server) PageMarker() string { return s.cfg.PageMarker }
 // through its own one-method interface so neither package imports the
 // other. Never nil for a server built by New.
 func (s *Server) SessionConns() *SessionConns { return s.sessionConns }
+
+// sessionStillLive asks the session core whether a session id admits work
+// right now. A nil hook answers yes, which is the pre-session behavior:
+// nothing has told this server that sessions exist, so nothing may refuse
+// on their behalf.
+func (s *Server) sessionStillLive(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	if check := s.cfg.SessionLive; check != nil {
+		return check(sessionID)
+	}
+	return true
+}
 
 // HasRemoteClient reports whether at least one non-loopback WebSocket
 // connection is currently attached. Producers of remote-only event
@@ -919,6 +1015,15 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.Set("Content-Type", "application/json")
+	// The local page's session credential rides the SAME exchange the
+	// page credential does, so a local client acquires both in one round
+	// trip and neither needs a route of its own. Written after the
+	// readiness checks above because the credential does not exist until
+	// the App's startup has minted it, and a page that arrives early gets
+	// it on the refetch its reconnect already performs.
+	if issue := s.cfg.PageSessionCredential; issue != nil {
+		WriteSessionCookie(w, r, issue())
+	}
 	backendID, replicaGeneration := "", ""
 	if s.cfg.BackendIdentity != nil {
 		backendID, replicaGeneration = s.cfg.BackendIdentity()
@@ -1086,8 +1191,22 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	//
 	// Nil hook means no client presents a session yet (the state before
 	// phase 3), and every request proceeds naming none.
+	//
+	// A ticket on the URL takes precedence, and is spent whether or not
+	// the upgrade goes on to succeed — that is what single use means. It
+	// names the session; it does not authorize the connection, so the
+	// session it names is re-checked for liveness before it is believed.
+	// A ticket for a session revoked during the seconds it was in flight
+	// must not resurrect it.
 	sessionID := ""
-	if resolve := s.cfg.SessionForRequest; resolve != nil {
+	if ticket := r.URL.Query().Get(WSTicketParam); ticket != "" {
+		subject, spent := s.wsTickets.consume(ticket)
+		if !spent || !s.sessionStillLive(subject) {
+			http.NotFound(w, r)
+			return
+		}
+		sessionID = subject
+	} else if resolve := s.cfg.SessionForRequest; resolve != nil {
 		id, ok := resolve(r)
 		if !ok {
 			http.NotFound(w, r)
@@ -1134,6 +1253,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		keepaliveInterval: s.cfg.KeepaliveInterval,
 		pongTimeout:       s.cfg.KeepalivePongTimeout,
 		sessionConns:      s.sessionConns,
+		sessionLive:       s.cfg.SessionLive,
+		sessionRecheck:    s.cfg.SessionRecheckInterval,
+		maxLifetime:       s.cfg.MaxRemoteConnLifetime,
 		hello: helloFrame{
 			Capabilities: serverCapabilities,
 			BackendID:    backendID,
