@@ -92,7 +92,7 @@ export const UNKNOWN_SCOPE_REFUSAL: ScopeRefusalPresentation = {
  * did not accept.
  */
 export const SESSION_REFUSAL: ScopeRefusalPresentation = {
-  title: 'This device is not signed in to Agent Overflow.',
+  title: 'This device is no longer paired with this backend.',
   hint: 'Pair it again under Settings → Network → Devices on that computer.',
 };
 

@@ -343,10 +343,13 @@ class is enforced at presentation.
 
 ## 5. Authorization
 
-### Two enforcement tiers, eleven labels
+### Two enforcement tiers, eleven grantable labels
 
 Scope names are the audit vocabulary; the enforced boundary is
-**observe vs. execute**, crossed with binding class (§2).
+**observe vs. execute**, crossed with binding class (§2). Two more
+declared values are method properties rather than grants: `session`,
+the floor (its own tier below observe — wave 7b, §6), and `host`
+(presence-only, §2).
 
 | Scope | Tier | Covers |
 |---|---|---|
@@ -361,6 +364,7 @@ Scope names are the audit vocabulary; the enforced boundary is
 | `settings:read` | observe | settings and preference reads: settings snapshot, keybindings, themes, spinners, chat-bar favorites (added wave 6b — the original ten could not spell a settings read) |
 | `settings:write` | execute | user/device-tier settings; host-tier and the step-up set are excluded |
 | `access:admin` | execute | device list/revoke, audit read; **minting and network changes additionally require step-up** |
+| `session` | floor (not a grant) | any named live session: the per-argument methods — the settings patch (per-key tiers), the ui_state methods (own bucket only) |
 
 Rationale for the splits: answering an approval authorizes host command
 execution, and a thread in `full-access` mode needs no approval at all,
@@ -690,9 +694,27 @@ must stay on the wire) — the codec split is the mechanism instead.
 `workflowPaused` joined the refused-from-patch class. `settings.json`
 writes now happen only when a host key moves. A store-less Service
 keeps every tier in the file, which the pre-database boot readers
-(bind address, window geometry) depend on. Still open in phase 4: the
-session-floor scope value (wave 7b) and device-class defaults (the
-seam exists; the class table is phase 6).
+(bind address, window geometry) depend on. Still open in phase 4:
+device-class defaults (the seam exists; the class table is phase 6).
+
+LANDED 2026-08-31 (wave 7b), the floor half: `session` is a declared
+scope value in both vocabularies' senses at once — transport declares
+it beside `host` as a method property no session can be granted, in
+its own `TierSession` below observe (a floor call is not read-only; a
+device-tier settings write rides it), and `AuthorizeSessionMethod`
+admits it on session presence alone, liveness re-read per call.
+`UpdateSettings` and the three ui_state methods carry it; the frozen
+floor set, "never a grant", and the event-filter bit are each pinned
+by test. `GetSettings` deliberately stays `settings:read` — it answers
+the merged host+user+device view, more than the caller's own bucket.
+Alongside it, §5's per-device narrowing became real at the mint
+surface: `MintDevicePairing(deviceClass, access)` with `full` (empty
+means full — the parameter was appended to an existing call) or
+`view-only`, resolving to `identity.ObserveScopes`
+(threads:read/files:read/settings:read, pinned to transport's observe
+tier by test); an undeclared level is refused, never widened, and the
+grant set is fixed at mint. The pairing modal offers the choice as a
+two-option control defaulting to Full access.
 
 ## 7. Transport, reachability, TLS
 
@@ -1825,7 +1847,10 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    registry rows: LANDED 2026-08-31 (wave 6d2 — §5 "Phase 3 closed").
    **Phase 3 is complete.**
 4. **Settings storage.** Host JSON / user+device in `ui_state`,
-   migrations, per-class defaults.
+   migrations, per-class defaults. Tiered residency: LANDED 2026-08-31
+   (wave 7a — §6). The session floor and view-only pairing: LANDED
+   2026-08-31 (wave 7b — §6). Open: device-class defaults (phase 6
+   supplies the class table).
 5. **Serve mode, endpoint, TLS, tsnet, passkeys, remote update with
    rollback, provider remote re-auth.** DPoP mandatory here (the token
    endpoint accepts thumbprints from phase 2 so nothing reworks).
