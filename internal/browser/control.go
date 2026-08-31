@@ -27,7 +27,7 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) 
 	p.touch()
 	m.setActivePage(access.ThreadID, p.id)
 	m.emitThreadState(access.ThreadID)
-	m.syncThreadStream(access.ThreadID)
+	m.syncPanePresentation(access.ThreadID)
 	return info, nil
 }
 
@@ -107,13 +107,7 @@ func (m *Manager) Visibility(_ context.Context, access Access, visible *bool, pa
 	m.mu.Unlock()
 	if visible != nil {
 		m.emitThreadState(access.ThreadID)
-		if info.Visible {
-			m.syncThreadStream(access.ThreadID)
-		} else {
-			for _, p := range m.ownedPages(access.ThreadID) {
-				p.stopStream()
-			}
-		}
+		m.syncPanePresentation(access.ThreadID)
 	}
 	return info, nil
 }
@@ -142,8 +136,7 @@ func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOption
 	m.mu.Unlock()
 	if opts.Action != "get" && opts.Action != "" {
 		for _, p := range m.ownedPages(access.ThreadID) {
-			p.stopStream()
-			p.streamCmdMu.Lock()
+			p.mu.Lock()
 			opCtx, cancel := operationContext(context.Background(), p.ctx, 5*time.Second)
 			var err error
 			if info.ViewportSet {
@@ -152,12 +145,12 @@ func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOption
 				err = p.driver.ClearViewport(opCtx)
 			}
 			cancel()
-			p.streamCmdMu.Unlock()
+			p.mu.Unlock()
 			if err != nil {
 				return SessionInfo{}, fmt.Errorf("browser: apply viewport: %w", err)
 			}
 		}
-		m.syncThreadStream(access.ThreadID)
+		m.syncPanePresentation(access.ThreadID)
 	}
 	return info, nil
 }

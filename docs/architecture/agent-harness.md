@@ -755,10 +755,10 @@ then either holds it open until SIGINT/SIGTERM or, with `--detach`,
 prints the pid and returns (stop it by killing that pid). A wait that
 runs out of its wall-clock `--timeout` fails and kills the browser group
 rather than reporting a page that is not there. The browser is resolved
-in three links, and the chosen one is printed: `--browser` or
-`$AO_HARNESS_BROWSER`, then the Chrome-for-Testing already managed by the
-built-in browser (a path lookup, never a download), then a Chromium-family
-binary on `PATH`. `--devtools-port`
+in two links, and the chosen one is printed: `--browser` or
+`$AO_HARNESS_BROWSER`, then a Chromium-family binary on `PATH`. There is
+no third link: the built-in browser hosts its own engine and downloads
+nothing, so there is no managed Chrome cache to borrow. `--devtools-port`
 additionally exposes CDP, which is what `profile` and `bench --trace`
 need. A headless-shell page hosts the bridge faithfully but is not the
 production rendering engine on any platform, so treat its perf numbers as

@@ -14,7 +14,6 @@ import (
 	"agent-overflow/internal/webview2host"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
-	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/google/uuid"
@@ -22,9 +21,9 @@ import (
 
 // The hosted engine: the Windows/WSL implementation of the driver.go seam.
 //
-// Nothing about a page's OPERATIONS differs from managed Chrome — CDP is
-// CDP, so `cdp_page.go` and its siblings drive a WebView2 controller
-// unchanged. What differs is everything around a page's LIFETIME:
+// A page's OPERATIONS are plain CDP — `cdp_page.go` and its siblings drive
+// a WebView2 controller exactly as they would a Chrome tab. What differs is
+// everything around a page's LIFETIME:
 //
 //   - the controller lives in the Windows launcher's process, because a
 //     WebView2 controller must be a child window of a Win32 window and the
@@ -67,8 +66,8 @@ type hostRelay interface {
 }
 
 // paneHost is the engine capability the Manager's visibility path drives.
-// Every windowed engine implements it; managed Chrome has no window to
-// show. The Manager decides WHICH page is presented (policy); the engine
+// Every windowed engine implements it; an engine with no window to show does
+// not. The Manager decides WHICH page is presented (policy); the engine
 // decides how a controller is made to appear (mechanism).
 type paneHost interface {
 	ShowPage(handle string)
@@ -211,11 +210,9 @@ func (e *hostedEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 	if err != nil {
 		return nil, err
 	}
-	// opts.Cookies is deliberately dropped. A hosted profile is a real
-	// browser profile on disk (spec §4): WebView2 persists its own cookies,
-	// and there is no CDP browser context to seed one into. Restoring the
-	// AO checkpoint here would write a second, staler copy of state the
-	// engine already holds.
+	// Site data is the engine's own (spec §4): a hosted profile is a real
+	// browser profile on disk and WebView2 persists it, so AO seeds nothing
+	// into it and reads nothing out of it.
 	return &hostedProfile{engine: e, id: id, ephemeral: !opts.Persist}, nil
 }
 
@@ -248,24 +245,16 @@ type hostedProfile struct {
 
 func (p *hostedProfile) Handle() string { return p.id }
 
-func (p *hostedProfile) NewPage(ctx context.Context, hooks pageHooks, restore map[string]map[string]string) (pageDriver, error) {
-	return p.engine.createPage(ctx, p, hooks, restore)
+func (p *hostedProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDriver, error) {
+	return p.engine.createPage(ctx, p, hooks)
 }
 
 // AttachPage would adopt a page the engine opened by itself. The launcher
 // does not surface WebView2's NewWindowRequested, so no popup is ever
 // reported and this is unreachable; failing loudly beats returning a
 // driver for a controller nobody created.
-func (p *hostedProfile) AttachPage(context.Context, string, pageHooks, map[string]map[string]string) (pageDriver, error) {
+func (p *hostedProfile) AttachPage(context.Context, string, pageHooks) (pageDriver, error) {
 	return nil, errors.New("browser: the pane host does not report engine-opened popups")
-}
-
-// Cookies has nothing to checkpoint. Site data for a hosted profile lives
-// in the launcher's own profile directory, per workspace, persisted by the
-// engine (spec §4) — and a browser-wide CDP cookie read would cross the
-// workspace boundary the profile exists to draw.
-func (p *hostedProfile) Cookies(context.Context) ([]*network.CookieParam, error) {
-	return nil, nil
 }
 
 // CancelDownload keeps the CDP path. Browser.cancelDownload's support in
@@ -286,7 +275,7 @@ func (p *hostedProfile) Dispose(context.Context) error {
 
 // createPage runs the full round trip: directive out, report back, chromedp
 // attached to the target the report named.
-func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, hooks pageHooks, restore map[string]map[string]string) (pageDriver, error) {
+func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, hooks pageHooks) (pageDriver, error) {
 	pageID := newHostedPageID()
 	waiter, err := e.watch(pageID)
 	if err != nil {
@@ -320,7 +309,7 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		return nil, err
 	}
 	pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(target.ID(targetID)))
-	driver, err := startCDPPage(browserCtx, pageCtx, pageCancel, hooks, restore)
+	driver, err := startCDPPage(browserCtx, pageCtx, pageCancel, hooks)
 	if err != nil {
 		e.closePage(pageID)
 		return nil, err

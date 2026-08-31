@@ -122,12 +122,7 @@ var LocalOnlyMethods = map[string]bool{
 	"BrowseDirectory":             true,
 	"SavePayloadToFile":           true,
 	"ClearBrowserSiteData":        true,
-	"BrowserCompanionSubscribe":   true,
-	"BrowserCompanionNextFrame":   true,
-	"BrowserCompanionUnsubscribe": true,
-	"BrowserCompanionResize":      true,
 	"BrowserCompanionDo":          true,
-	"BrowserCompanionInput":       true,
 	"BrowserCompanionThreadState": true,
 	// The pane mount drives real native views in the desktop window; a
 	// remote client has no pane and no say over where one paints.
@@ -137,11 +132,11 @@ var LocalOnlyMethods = map[string]bool{
 	// CopyPageFile writes to the host OS clipboard (and stages onto the
 	// Windows volume under WSL).
 	"BrowserCompanionCopyPageFile": true,
-	"WriteThreadWorkspaceFile":    true,
-	"GitPush":                     true,
-	"GitStatusSubscribe":          true,
-	"GitStatusUnsubscribe":        true,
-	"GetGitStatus":                true,
+	"WriteThreadWorkspaceFile":     true,
+	"GitPush":                      true,
+	"GitStatusSubscribe":           true,
+	"GitStatusUnsubscribe":         true,
+	"GetGitStatus":                 true,
 	// GetWorkspaceActivity answers two integer counters, but it takes a
 	// caller-supplied path and resolves it through EvalSymlinks — a
 	// filesystem probe, and therefore an existence-and-shape oracle for a

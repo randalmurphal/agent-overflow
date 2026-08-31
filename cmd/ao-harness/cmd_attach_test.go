@@ -29,7 +29,7 @@ func fakeBrowser(t *testing.T, dir, name string) string {
 	return path
 }
 
-func testResolver(env map[string]string, path map[string]string, configRoot string) browserResolver {
+func testResolver(env map[string]string, path map[string]string) browserResolver {
 	return browserResolver{
 		getenv: func(key string) string { return env[key] },
 		lookPath: func(name string) (string, error) {
@@ -38,17 +38,15 @@ func testResolver(env map[string]string, path map[string]string, configRoot stri
 			}
 			return "", errors.New("not found in $PATH")
 		},
-		configRoot: func() (string, error) { return configRoot, nil },
 	}
 }
 
 func TestBrowserResolutionPrefersTheExplicitFlag(t *testing.T) {
 	dir := t.TempDir()
 	explicit := fakeBrowser(t, dir, "my-chrome")
-	cached := filepath.Join(dir, "cache")
-	installFakeChrome(t, cached, "150.0.1.2")
+	onPath := map[string]string{"chromium": fakeBrowser(t, dir, "chromium")}
 
-	choice, err := testResolver(nil, nil, cached).resolve(explicit)
+	choice, err := testResolver(nil, onPath).resolve(explicit)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -57,13 +55,12 @@ func TestBrowserResolutionPrefersTheExplicitFlag(t *testing.T) {
 	}
 }
 
-func TestBrowserResolutionReadsTheEnvOverrideBeforeTheCache(t *testing.T) {
+func TestBrowserResolutionReadsTheEnvOverrideBeforePath(t *testing.T) {
 	dir := t.TempDir()
 	fromEnv := fakeBrowser(t, dir, "env-chrome")
-	cached := filepath.Join(dir, "cache")
-	installFakeChrome(t, cached, "150.0.1.2")
+	onPath := map[string]string{"chromium": fakeBrowser(t, dir, "chromium")}
 
-	choice, err := testResolver(map[string]string{attachBrowserEnv: fromEnv}, nil, cached).resolve("")
+	choice, err := testResolver(map[string]string{attachBrowserEnv: fromEnv}, onPath).resolve("")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -77,35 +74,19 @@ func TestBrowserResolutionReadsTheEnvOverrideBeforeTheCache(t *testing.T) {
 // asserting which engine renders the page they are about to measure.
 func TestBrowserResolutionRefusesAMissingExplicitBinary(t *testing.T) {
 	dir := t.TempDir()
-	cached := filepath.Join(dir, "cache")
-	installFakeChrome(t, cached, "150.0.1.2")
 	onPath := map[string]string{"chromium": fakeBrowser(t, dir, "chromium")}
 
-	_, err := testResolver(nil, onPath, cached).resolve(filepath.Join(dir, "absent"))
+	_, err := testResolver(nil, onPath).resolve(filepath.Join(dir, "absent"))
 	if err == nil {
 		t.Fatal("resolve accepted a nonexistent --browser path")
 	}
 }
 
-func TestBrowserResolutionFallsBackToManagedChromeThenPath(t *testing.T) {
+func TestBrowserResolutionFallsBackToPath(t *testing.T) {
 	dir := t.TempDir()
-	cached := filepath.Join(dir, "cache")
-	managed := installFakeChrome(t, cached, "150.0.1.2")
 	onPath := map[string]string{"chromium": fakeBrowser(t, dir, "chromium")}
 
-	choice, err := testResolver(nil, onPath, cached).resolve("")
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	if choice.Path != managed {
-		t.Fatalf("resolve = %q, want the managed Chrome %q", choice.Path, managed)
-	}
-	if !strings.Contains(choice.Source, "150.0.1.2") {
-		t.Fatalf("source %q does not name the cached version", choice.Source)
-	}
-
-	empty := filepath.Join(dir, "empty-cache")
-	choice, err = testResolver(nil, onPath, empty).resolve("")
+	choice, err := testResolver(nil, onPath).resolve("")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -115,43 +96,13 @@ func TestBrowserResolutionFallsBackToManagedChromeThenPath(t *testing.T) {
 }
 
 func TestBrowserResolutionFailsLoudlyWithNoBrowserAnywhere(t *testing.T) {
-	dir := t.TempDir()
-	_, err := testResolver(nil, nil, filepath.Join(dir, "empty")).resolve("")
+	_, err := testResolver(nil, nil).resolve("")
 	if err == nil {
 		t.Fatal("resolve succeeded with no browser available")
 	}
 	if !strings.Contains(err.Error(), attachBrowserEnv) {
 		t.Fatalf("error %q does not name the $%s escape hatch", err, attachBrowserEnv)
 	}
-}
-
-// installFakeChrome lays out one version under the app's managed Chrome cache.
-func installFakeChrome(t *testing.T, configRoot, version string) string {
-	t.Helper()
-	var platform, relative string
-	switch runtime.GOOS + "/" + runtime.GOARCH {
-	case "darwin/arm64":
-		platform = "mac-arm64"
-	case "darwin/amd64":
-		platform = "mac-x64"
-	case "linux/amd64":
-		platform = "linux64"
-	case "windows/amd64":
-		platform = "win64"
-	default:
-		t.Skipf("no Chrome-for-Testing platform for %s/%s", runtime.GOOS, runtime.GOARCH)
-	}
-	versionDir := filepath.Join(configRoot, "chrome", version)
-	switch {
-	case strings.HasPrefix(platform, "mac-"):
-		relative = filepath.Join("chrome-"+platform, "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing")
-	case platform == "win64":
-		relative = filepath.Join("chrome-win64", "chrome.exe")
-	default:
-		relative = filepath.Join("chrome-"+platform, "chrome")
-	}
-	path := filepath.Join(versionDir, relative)
-	return fakeBrowser(t, filepath.Dir(path), strings.TrimSuffix(filepath.Base(path), ".exe"))
 }
 
 func TestBrowserArgsOmitHeadlessFlagForTheHeadlessShell(t *testing.T) {

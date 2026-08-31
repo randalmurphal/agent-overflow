@@ -35,7 +35,7 @@ type cdpPage struct {
 	lastNetwork time.Time
 }
 
-func startCDPPage(controller, pageCtx context.Context, pageCancel context.CancelFunc, hooks pageHooks, restore map[string]map[string]string) (pageDriver, error) {
+func startCDPPage(controller, pageCtx context.Context, pageCancel context.CancelFunc, hooks pageHooks) (pageDriver, error) {
 	if err := chromedp.Run(pageCtx); err != nil {
 		pageCancel()
 		// A dead controller is the usual reason a target never attaches, and
@@ -48,15 +48,32 @@ func startCDPPage(controller, pageCtx context.Context, pageCancel context.Cancel
 		frames:   make(map[cdp.FrameID]struct{}),
 		requests: make(map[network.RequestID]struct{}), lastNetwork: time.Now(),
 	}
-	if err := p.installStorageRestore(restore); err != nil {
-		pageCancel()
-		return nil, err
-	}
 	if err := p.installHandlers(); err != nil {
 		pageCancel()
 		return nil, err
 	}
 	return p, nil
+}
+
+// browserCommandContext and targetCommandContext re-address a CDP command at
+// the browser-wide or the target-wide executor. They live beside the page
+// driver because the page driver is the only place a CDP command is issued
+// from now that the managed-Chrome engine is gone; the hosted engine reuses
+// them for the browser-level commands it sends through the relay.
+func browserCommandContext(ctx context.Context) context.Context {
+	chromedpContext := chromedp.FromContext(ctx)
+	if chromedpContext == nil || chromedpContext.Browser == nil {
+		return ctx
+	}
+	return cdp.WithExecutor(ctx, chromedpContext.Browser)
+}
+
+func targetCommandContext(ctx context.Context) context.Context {
+	chromedpContext := chromedp.FromContext(ctx)
+	if chromedpContext == nil || chromedpContext.Target == nil {
+		return ctx
+	}
+	return cdp.WithExecutor(ctx, chromedpContext.Target)
 }
 
 func (p *cdpPage) Lifetime() context.Context { return p.ctx }
@@ -68,17 +85,6 @@ func (p *cdpPage) OwnsFrame(frame string) bool {
 	defer p.frameMu.RUnlock()
 	_, ok := p.frames[cdp.FrameID(frame)]
 	return ok
-}
-
-func (p *cdpPage) installStorageRestore(values map[string]map[string]string) error {
-	script, err := storageRestoreScript(values)
-	if err != nil {
-		return err
-	}
-	if _, err := page.AddScriptToEvaluateOnNewDocument(script).WithRunImmediately(true).Do(targetCommandContext(p.ctx)); err != nil {
-		return fmt.Errorf("browser: install storage restore: %w", err)
-	}
-	return nil
 }
 
 func (p *cdpPage) installHandlers() error {
@@ -105,16 +111,6 @@ func (p *cdpPage) installHandlers() error {
 					_ = fetch.FailRequest(requestID, network.ErrorReasonBlockedByClient).Do(targetCommandContext(ctx))
 				}
 			}()
-		case *page.EventScreencastFrame:
-			sessionID := event.SessionID
-			go func() {
-				ctx, cancel := operationContext(context.Background(), p.ctx, 3*time.Second)
-				defer cancel()
-				_ = page.ScreencastFrameAck(sessionID).Do(targetCommandContext(ctx))
-			}()
-			if p.hooks.Screencast != nil {
-				p.hooks.Screencast(event.Data)
-			}
 		case *page.EventFrameAttached:
 			p.frameMu.Lock()
 			p.frames[event.FrameID] = struct{}{}
@@ -354,17 +350,6 @@ func (p *cdpPage) EvaluateReadOnly(ctx context.Context, expression string) (json
 // ReadOnlyCaveat is empty: Chrome rejects the side effect itself, in the
 // engine, so the tool result needs no qualifier.
 func (p *cdpPage) ReadOnlyCaveat() string { return "" }
-
-func (p *cdpPage) LocalStorage(ctx context.Context) (string, map[string]string, error) {
-	var value struct {
-		Origin string            `json:"origin"`
-		Data   map[string]string `json:"data"`
-	}
-	if err := chromedp.Run(ctx, chromedp.Evaluate(localStorageExpression(), &value)); err != nil {
-		return "", nil, err
-	}
-	return value.Origin, value.Data, nil
-}
 
 func (p *cdpPage) SetViewport(ctx context.Context, width, height int) error {
 	return emulation.SetDeviceMetricsOverride(int64(width), int64(height), 1, false).Do(targetCommandContext(ctx))

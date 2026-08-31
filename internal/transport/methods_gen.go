@@ -33,15 +33,10 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "BrowseDirectory", ID: 320967638},                       // main.App.BrowseDirectory
 	{Name: "BrowserCompanionCopyPageFile", ID: 2556357179},         // main.App.BrowserCompanionCopyPageFile
 	{Name: "BrowserCompanionDo", ID: 197228034},                    // main.App.BrowserCompanionDo
-	{Name: "BrowserCompanionInput", ID: 2747693029},                // main.App.BrowserCompanionInput
-	{Name: "BrowserCompanionNextFrame", ID: 776020183},             // main.App.BrowserCompanionNextFrame
 	{Name: "BrowserCompanionPaneAttach", ID: 205254296},            // main.App.BrowserCompanionPaneAttach
 	{Name: "BrowserCompanionPaneDetach", ID: 3255514830},           // main.App.BrowserCompanionPaneDetach
 	{Name: "BrowserCompanionPaneRect", ID: 2491183339},             // main.App.BrowserCompanionPaneRect
-	{Name: "BrowserCompanionResize", ID: 2921114943},               // main.App.BrowserCompanionResize
-	{Name: "BrowserCompanionSubscribe", ID: 668496681},             // main.App.BrowserCompanionSubscribe
 	{Name: "BrowserCompanionThreadState", ID: 1485125416},          // main.App.BrowserCompanionThreadState
-	{Name: "BrowserCompanionUnsubscribe", ID: 3385360912},          // main.App.BrowserCompanionUnsubscribe
 	{Name: "BrowserHostReport", ID: 2848608143},                    // main.App.BrowserHostReport
 	{Name: "CancelSessionImport", ID: 2562316972},                  // main.App.CancelSessionImport
 	{Name: "CheckForUpdate", ID: 2347956003},                       // main.App.CheckForUpdate

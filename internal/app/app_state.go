@@ -100,9 +100,10 @@ type appSessionImportState struct {
 }
 
 // appBrowserState is the provider-neutral arbitrary-web browser concern. The
-// MCP listener is cheap and per-session-tokened; Manager owns the engine —
-// the lazily launched Chrome process and its workspace contexts, or the
-// in-process engine hosted in this app's own window — and every page in it.
+// MCP listener is cheap and per-session-tokened; Manager owns the engine — the
+// launcher-hosted controllers or the in-process views this app's own window
+// holds — and every page in it. A deployment with no window has no engine at
+// all, and browser tools are not offered there.
 type appBrowserState struct {
 	manager *appbrowser.Manager
 	mcp     *appbrowser.MCPServer
@@ -112,9 +113,14 @@ type appBrowserState struct {
 	cdpRelay appbrowser.CDPRelay
 	// nativeWindow answers the desktop window an in-process browser engine
 	// hosts its views inside, or nil where there is no window at all
-	// (--connect, harness, tests) — which is what keeps those on managed
-	// Chrome. Set once before Start by the desktop entry point.
-	nativeWindow       func() unsafe.Pointer
+	// (--connect, harness, tests) — which is what leaves those with no engine
+	// and no browser tools. Set once before Start by the desktop entry point.
+	nativeWindow func() unsafe.Pointer
+	// mockEngine pins the Manager to the fake engine (spec §10). It is one of
+	// the mocked-boot isolation pins (bootstrap.go), so the harness and soak
+	// render the pane's chrome and host rect with no browser behind them and
+	// no display to need.
+	mockEngine         bool
 	applyMu            sync.Mutex
 	applyWG            sync.WaitGroup
 	settingsGeneration atomic.Uint64

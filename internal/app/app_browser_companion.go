@@ -25,31 +25,6 @@ func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
 	}, nil
 }
 
-// BrowserCompanionSubscribe attaches the calling connection to the live frame
-// stream for a thread. Chrome only screencasts while at least one companion is
-// mounted; connection cleanup is the leak-proof fallback for an unclean UI
-// disconnect.
-func (a *App) BrowserCompanionSubscribe(ctx context.Context, threadID string, width, height int) (appbrowser.CompanionSubscription, error) {
-	if a.browser.manager == nil {
-		return appbrowser.CompanionSubscription{}, fmt.Errorf("browser manager unavailable")
-	}
-	access, err := a.browserAccess(threadID)
-	if err != nil {
-		return appbrowser.CompanionSubscription{}, err
-	}
-	result, err := a.browser.manager.SubscribeCompanion(access, width, height)
-	if err != nil {
-		return appbrowser.CompanionSubscription{}, err
-	}
-	if state := transport.ConnStateFromContext(ctx); state != nil {
-		if !state.RegisterCleanup(func() { a.browser.manager.UnsubscribeCompanion(result.ID) }) {
-			a.browser.manager.UnsubscribeCompanion(result.ID)
-			return appbrowser.CompanionSubscription{}, fmt.Errorf("browser: connection closing")
-		}
-	}
-	return result, nil
-}
-
 // BrowserCompanionThreadState answers the thread's current page/session
 // snapshot without acquiring anything. The `browser:companion-state` channel
 // is ephemeral (no replay), so a freshly loaded UI has no way to know a
@@ -122,27 +97,6 @@ func (a *App) BrowserCompanionCopyPageFile(ctx context.Context, threadID, pageID
 	return a.browser.manager.CopyPageFileToClipboard(ctx, access, pageID)
 }
 
-func (a *App) BrowserCompanionUnsubscribe(subscriptionID string) error {
-	if a.browser.manager != nil {
-		a.browser.manager.UnsubscribeCompanion(subscriptionID)
-	}
-	return nil
-}
-
-func (a *App) BrowserCompanionNextFrame(ctx context.Context, subscriptionID string) (appbrowser.CompanionEvent, error) {
-	if a.browser.manager == nil {
-		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
-	}
-	return a.browser.manager.NextCompanionFrame(ctx, subscriptionID)
-}
-
-func (a *App) BrowserCompanionResize(subscriptionID string, width, height int) error {
-	if a.browser.manager == nil {
-		return fmt.Errorf("browser manager unavailable")
-	}
-	return a.browser.manager.ResizeCompanion(subscriptionID, width, height)
-}
-
 func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action BrowserCompanionAction) (appbrowser.CompanionEvent, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
@@ -177,15 +131,4 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		return appbrowser.CompanionEvent{}, err
 	}
 	return a.browser.manager.CompanionState(access), nil
-}
-
-func (a *App) BrowserCompanionInput(ctx context.Context, threadID, pageID string, event appbrowser.CompanionInput) error {
-	if a.browser.manager == nil {
-		return fmt.Errorf("browser manager unavailable")
-	}
-	access, err := a.browserAccess(threadID)
-	if err != nil {
-		return err
-	}
-	return a.browser.manager.CompanionInput(ctx, access, pageID, event)
 }

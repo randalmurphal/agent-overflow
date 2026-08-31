@@ -309,17 +309,6 @@ func (p *wkPage) EvaluateReadOnly(ctx context.Context, expression string) (json.
 	return raw, nil
 }
 
-func (p *wkPage) LocalStorage(ctx context.Context) (string, map[string]string, error) {
-	var value struct {
-		Origin string            `json:"origin"`
-		Data   map[string]string `json:"data"`
-	}
-	if err := p.evalInto(ctx, "return "+localStorageExpression()+";", &value); err != nil {
-		return "", nil, err
-	}
-	return value.Origin, value.Data, nil
-}
-
 func (p *wkPage) ResolveLocator(ctx context.Context, locator Locator, attribute string) ([]LocatorMatch, error) {
 	raw, err := p.evalBody(ctx, webkitLocatorResolveScript(locator, attribute))
 	if err != nil {

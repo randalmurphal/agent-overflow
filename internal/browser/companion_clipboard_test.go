@@ -43,9 +43,8 @@ func TestCopyPageFileResolvesTheDisplayedFileAndRefusesTheRest(t *testing.T) {
 	p := &managedPage{id: "page", owner: "thread", ctx: context.Background()}
 	var copied string
 	m := &Manager{
-		scopes:        map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{p.id: p}}},
-		sessions:      map[string]SessionInfo{"thread": {ActivePageID: p.id}},
-		subscriptions: map[string]companionSubscriber{},
+		scopes:   map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{p.id: p}}},
+		sessions: map[string]SessionInfo{"thread": {ActivePageID: p.id}},
 		copyFileToOSClipboard: func(_ context.Context, path string) error {
 			copied = path
 			return nil

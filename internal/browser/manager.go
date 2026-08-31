@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,11 +15,14 @@ import (
 	"time"
 	"unsafe"
 
-	"agent-overflow/internal/chromium"
 	"agent-overflow/internal/webview2host"
 
 	"github.com/google/uuid"
 )
+
+// browserProfileDir is the AO-owned tree an engine keeps one workspace's site
+// data under (spec §4). Clearing site data deletes it wholesale.
+const browserProfileDir = "browser-profiles"
 
 const (
 	operationTimeout          = 30 * time.Second
@@ -32,8 +34,6 @@ const (
 	maxSnapshotText           = 100_000
 	maxSnapshotElements       = 500
 	maxEvaluateBytes          = 256_000
-	maxLocalStorageChars      = 1 << 20
-	maxLocalStorageOrigins    = 64
 	maxScreenshotBytes        = 20 << 20
 	maxFullScreenshotHeight   = 12_000
 	maxFullScreenshotWidth    = 4_000
@@ -54,8 +54,8 @@ const (
 // quotas, and the AO-managed per-tab clipboard. How an operation reaches a live
 // page belongs to the engine behind `browserEngine` / `pageDriver` (driver.go).
 type Manager struct {
-	engine browserEngine
-	state  *stateStore
+	engine     browserEngine
+	profileDir string
 
 	startMu sync.Mutex
 	mu      sync.Mutex
@@ -65,7 +65,6 @@ type Manager struct {
 	scopes         map[string]*workspaceScope
 	idleTimer      *time.Timer
 	eventSink      func(CompanionEvent)
-	subscriptions  map[string]companionSubscriber
 	panes          map[string]paneMount
 	sessions       map[string]SessionInfo
 	artifactRoot   string
@@ -82,24 +81,27 @@ type Manager struct {
 }
 
 type ManagerOptions struct {
-	// FileStateKey keeps isolated harness/test runs out of the user's desktop
-	// keychain. Production leaves this false and stores the encryption key in
-	// the OS credential store.
-	FileStateKey bool
+	// FakeEngine selects the in-memory engine (fake_engine.go) whose pages
+	// exist and navigate but render nothing. Set by the harness and soak
+	// boots, which have to draw the pane's chrome and host rect on machines
+	// with no display (spec §10). Takes precedence over every other wiring
+	// fact, because an isolated boot must never reach a real engine.
+	FakeEngine bool
 
-	// PaneHost, when set, selects the hosted engine instead of managed
-	// Chrome: pages become WebView2 controllers in the Windows launcher,
-	// driven over CDP through the relay tunnel (hosted_engine.go). Set on
-	// the Windows/WSL deployment, where the launcher is what owns a window
-	// a browser view can live in; nil everywhere else. Takes precedence
-	// over NativeWindow, which that deployment never sets.
+	// PaneHost, when set, selects the launcher-hosted engine: pages become
+	// WebView2 controllers in the Windows launcher, driven over CDP through
+	// the relay tunnel (hosted_engine.go). Set on the Windows/WSL
+	// deployment, where the launcher is what owns a window a browser view
+	// can live in; nil everywhere else. Takes precedence over NativeWindow,
+	// which that deployment never sets.
 	PaneHost *PaneHostOptions
 
 	// NativeWindow returns the desktop window an in-process engine hosts its
 	// views inside (spec docs/specs/embedded-browser.md §6), or nil when this
-	// process has none — a remote `--connect` client, a headless harness boot,
-	// or a test. Nil, or a getter that answers nil, keeps managed Chrome.
-	// Platforms whose engine lives in another process ignore it.
+	// process has none — a remote `--connect` backend, a headless serve mode,
+	// or a test. Nil, or a getter that answers nil, leaves the deployment
+	// with NO engine. Platforms whose engine lives in another process ignore
+	// it.
 	NativeWindow func() unsafe.Pointer
 }
 
@@ -124,7 +126,6 @@ type CDPRelay interface {
 type workspaceScope struct {
 	workspace     string
 	profile       engineProfile
-	state         storageState
 	pages         map[string]*managedPage
 	downloadDir   string
 	downloadBytes atomic.Int64
@@ -143,9 +144,6 @@ type managedPage struct {
 	createdAt    int64
 	metaMu       sync.RWMutex
 	info         PageInfo
-	streamMu     sync.Mutex
-	stream       *pageStream
-	streamCmdMu  sync.Mutex
 	logMu        sync.Mutex
 	logs         []ConsoleLog
 	clipboardMu  sync.Mutex
@@ -179,33 +177,43 @@ func (p *managedPage) attach(driver pageDriver) {
 	p.ctx = driver.Lifetime()
 }
 
-func NewManager(installer *chromium.Installer, configDir string, config Config, opts ManagerOptions) *Manager {
-	state := newStateStore(configDir)
-	if opts.FileStateKey {
-		state.keyFn = state.loadOrCreateFallbackKey
-	}
+func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 	m := &Manager{
-		state:         state,
-		config:        config,
-		scopes:        make(map[string]*workspaceScope),
-		subscriptions: make(map[string]companionSubscriber),
-		panes:         make(map[string]paneMount),
-		sessions:      make(map[string]SessionInfo),
-		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
+		config:       config,
+		profileDir:   filepath.Join(configDir, browserProfileDir),
+		scopes:       make(map[string]*workspaceScope),
+		panes:        make(map[string]paneMount),
+		sessions:     make(map[string]SessionInfo),
+		artifactRoot: filepath.Join(configDir, "browser-artifacts"),
 	}
-	events := engineEvents{
+	m.engine = selectEngine(configDir, opts, engineEvents{
 		PopupOpened:      m.adoptPopup,
 		PageClosed:       m.removeClosedPage,
 		PageInfoChanged:  m.updatePageInfo,
 		DownloadStarted:  m.downloadStarted,
 		DownloadProgress: m.downloadProgress,
-	}
-	if opts.PaneHost != nil {
-		m.engine = newHostedEngine(opts.PaneHost.Relay, opts.PaneHost.Directive, events)
-	} else {
-		m.engine = selectEngine(installer, configDir, opts, events)
-	}
+	})
+	pruneEncryptedCheckpoints(configDir)
 	return m
+}
+
+// pruneEncryptedCheckpoints deletes the AES-GCM site-data checkpoints and the
+// key file the pre-engine browser wrote (spec §4). They hold cookies and
+// localStorage for a Chrome that no longer exists and cannot be imported into
+// an engine profile, so first boot of this code is where they stop existing.
+// Best-effort by design: a checkpoint we cannot unlink is unreadable anyway.
+func pruneEncryptedCheckpoints(configDir string) {
+	_ = os.RemoveAll(filepath.Join(configDir, "browser-state"))
+	_ = os.Remove(filepath.Join(configDir, "browser-state.key"))
+}
+
+// Available reports whether this deployment has a browser engine at all. It is
+// the question the App answers before offering a thread the browser MCP
+// server: a windowless deployment gets no browser tools rather than 28 tools
+// that all refuse (spec §9).
+func (m *Manager) Available() bool {
+	_, none := m.engine.(unavailableEngine)
+	return !none
 }
 
 // ReportPaneHost routes one launcher report (created / create-failed /
@@ -244,7 +252,7 @@ func (m *Manager) Reconfigure(config Config) error {
 	m.config = config
 	m.mu.Unlock()
 	if !config.Enabled || changedPersistence {
-		return m.closeBrowser(context.Background(), true)
+		return m.closeBrowser(context.Background())
 	}
 	return nil
 }
@@ -298,7 +306,6 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	m.captureLocalStorage(opCtx, p)
 	if err := p.driver.Navigate(opCtx, targetURL); err != nil {
 		return PageInfo{}, err
 	}
@@ -307,7 +314,6 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 	if err == nil {
 		p.setInfo(info)
 		info = p.cachedInfo()
-		m.checkpointPage(opCtx, p)
 	}
 	m.pageChanged(p)
 	return info, err
@@ -343,10 +349,6 @@ func (m *Manager) ClosePage(ctx context.Context, access Access, pageID string) e
 		return err
 	}
 	p.mu.Lock()
-	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-	m.captureLocalStorage(opCtx, p)
-	cancel()
-	p.stopStream()
 	m.cancelPageDownloads(p, scope)
 	p.driver.Close()
 	p.mu.Unlock()
@@ -356,7 +358,7 @@ func (m *Manager) ClosePage(ctx context.Context, access Access, pageID string) e
 	m.mu.Unlock()
 	m.repairActivePage(access.ThreadID)
 	m.emitThreadState(access.ThreadID)
-	m.syncThreadStream(access.ThreadID)
+	m.syncPanePresentation(access.ThreadID)
 	if empty {
 		return m.disposeScope(ctx, scope.workspace)
 	}
@@ -378,18 +380,28 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	return errors.Join(errs...)
 }
 
+// ClearSiteData closes every engine page first, then deletes the AO-owned
+// profile tree (spec §4). The order is load-bearing: an engine still holding a
+// profile open would write its cookie jar back out over the cleared directory.
+//
+// It cannot reach the site data of an engine that keeps its own (macOS
+// `+dataStoreForIdentifier:` lives inside WebKit's directory), which is why
+// the disposal above is the part that always happens.
 func (m *Manager) ClearSiteData(ctx context.Context) error {
-	if err := m.closeBrowser(ctx, false); err != nil {
+	if err := m.closeBrowser(ctx); err != nil {
 		return err
 	}
-	return m.state.clear()
+	if err := os.RemoveAll(m.profileDir); err != nil {
+		return fmt.Errorf("browser: clear site data: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	m.closed = true
 	m.mu.Unlock()
-	return m.closeBrowser(context.Background(), true)
+	return m.closeBrowser(context.Background())
 }
 
 func (m *Manager) pageForOpen(ctx context.Context, access Access, requested string) (*managedPage, error) {
@@ -465,7 +477,7 @@ func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, 
 	}
 	p := newManagedPage(access)
 	p.info = PageInfo{ID: p.id, URL: "about:blank"}
-	driver, err := scope.profile.NewPage(ctx, m.pageHooks(p), m.localStorageSnapshot(scope))
+	driver, err := scope.profile.NewPage(ctx, m.pageHooks(p))
 	if err != nil {
 		abandon()
 		return nil, err
@@ -488,10 +500,9 @@ func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, 
 // reports. Nothing here decides ownership or limits.
 func (m *Manager) pageHooks(p *managedPage) pageHooks {
 	return pageHooks{
-		Console:    p.appendLog,
-		PageURL:    func() string { return p.cachedInfo().URL },
-		Allow:      func(rawURL string) bool { return m.navigationAllowed(p.access, rawURL) },
-		Screencast: func(frame string) { m.handleScreencastFrame(p, frame) },
+		Console: p.appendLog,
+		PageURL: func() string { return p.cachedInfo().URL },
+		Allow:   func(rawURL string) bool { return m.navigationAllowed(p.access, rawURL) },
 	}
 }
 
@@ -499,25 +510,16 @@ func (m *Manager) createScope(workspace string) (*workspaceScope, error) {
 	m.mu.Lock()
 	persist := m.config.PersistSiteData
 	m.mu.Unlock()
-	state := storageState{Version: 1, Workspace: workspace, LocalStorage: make(map[string]map[string]string)}
-	if persist {
-		loaded, err := m.state.load(workspace)
-		if err != nil {
-			log.Printf("browser: load site data for %s: %v", workspace, err)
-		} else {
-			state = loaded
-		}
-	}
 	digest := sha256.Sum256([]byte(workspace))
 	downloadDir := filepath.Join(m.artifactRoot, "downloads", fmt.Sprintf("%x", digest[:12]))
 	if err := os.MkdirAll(downloadDir, 0o700); err != nil {
 		return nil, fmt.Errorf("browser: create download directory: %w", err)
 	}
-	profile, err := m.engine.NewProfile(context.Background(), profileOptions{Workspace: workspace, DownloadDir: downloadDir, Cookies: state.Cookies, Persist: persist})
+	profile, err := m.engine.NewProfile(context.Background(), profileOptions{Workspace: workspace, DownloadDir: downloadDir, Persist: persist})
 	if err != nil {
 		return nil, err
 	}
-	return &workspaceScope{workspace: workspace, profile: profile, state: state, pages: make(map[string]*managedPage), downloadDir: downloadDir}, nil
+	return &workspaceScope{workspace: workspace, profile: profile, pages: make(map[string]*managedPage), downloadDir: downloadDir}, nil
 }
 
 func (m *Manager) ensureStarted(ctx context.Context) error {
@@ -573,7 +575,7 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	p := newManagedPage(access)
 	p.info = PageInfo{ID: p.id, URL: truncateUTF8(popup.URL, maxBrowserURLBytes), Title: truncateUTF8(popup.Title, maxBrowserTitleBytes)}
 	p.touch()
-	driver, err := scope.profile.AttachPage(context.Background(), popup.Handle, m.pageHooks(p), m.localStorageSnapshot(scope))
+	driver, err := scope.profile.AttachPage(context.Background(), popup.Handle, m.pageHooks(p))
 	if err != nil {
 		return
 	}
@@ -605,7 +607,6 @@ func (m *Manager) removeClosedPage(handle string) {
 		for id, p := range scope.pages {
 			if p.driver.Handle() == handle {
 				owner = p.owner
-				p.stopStream()
 				delete(scope.pages, id)
 				if len(scope.pages) == 0 {
 					emptyWorkspace = workspace
@@ -620,7 +621,7 @@ func (m *Manager) removeClosedPage(handle string) {
 	m.mu.Unlock()
 	if owner != "" {
 		m.emitThreadState(owner)
-		m.syncThreadStream(owner)
+		m.syncPanePresentation(owner)
 	}
 	if emptyWorkspace != "" {
 		_ = m.disposeScope(context.Background(), emptyWorkspace)
@@ -635,21 +636,16 @@ func (m *Manager) disposeScope(ctx context.Context, workspace string) error {
 		return nil
 	}
 	delete(m.scopes, workspace)
-	persist := m.config.PersistSiteData
 	noScopes := len(m.scopes) == 0
 	m.mu.Unlock()
-	var saveErr error
-	if persist {
-		saveErr = m.checkpointScope(ctx, scope)
-	}
-	disposeErr := scope.profile.Dispose(ctx)
+	err := scope.profile.Dispose(ctx)
 	if noScopes {
 		m.scheduleIdleClose()
 	}
-	return errors.Join(saveErr, disposeErr)
+	return err
 }
 
-func (m *Manager) closeBrowser(caller context.Context, save bool) error {
+func (m *Manager) closeBrowser(caller context.Context) error {
 	// Release an in-flight engine start first: it holds startMu, and this
 	// shutdown needs it.
 	m.engine.Interrupt()
@@ -662,7 +658,6 @@ func (m *Manager) closeBrowser(caller context.Context, save bool) error {
 		scopes = append(scopes, scope)
 		for _, p := range scope.pages {
 			owners[p.owner] = struct{}{}
-			p.stopStream()
 		}
 	}
 	m.scopes = make(map[string]*workspaceScope)
@@ -673,11 +668,6 @@ func (m *Manager) closeBrowser(caller context.Context, save bool) error {
 		info.UpdatedAt = time.Now()
 		m.sessions[owner] = info
 	}
-	for id, sub := range m.subscriptions {
-		close(sub.done)
-		delete(m.subscriptions, id)
-	}
-	persist := save && m.config.PersistSiteData
 	if m.idleTimer != nil {
 		m.idleTimer.Stop()
 		m.idleTimer = nil
@@ -692,12 +682,7 @@ func (m *Manager) closeBrowser(caller context.Context, save bool) error {
 	var wg sync.WaitGroup
 	for _, scope := range scopes {
 		wg.Go(func() {
-			var err error
-			if persist {
-				err = m.checkpointScope(closeCtx, scope)
-			}
-			err = errors.Join(err, scope.profile.Dispose(closeCtx))
-			if err != nil {
+			if err := scope.profile.Dispose(closeCtx); err != nil {
 				errs <- err
 			}
 		})
@@ -742,7 +727,7 @@ func (m *Manager) scheduleIdleClose() {
 		empty := len(m.scopes) == 0
 		m.mu.Unlock()
 		if empty {
-			_ = m.closeBrowser(context.Background(), true)
+			_ = m.closeBrowser(context.Background())
 		}
 	})
 }

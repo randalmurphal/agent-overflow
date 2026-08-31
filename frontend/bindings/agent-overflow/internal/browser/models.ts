@@ -7,8 +7,9 @@ import { Create as $Create } from "@wailsio/runtime";
 
 /**
  * CompanionEvent is live browser state for the calling thread's companion
- * pane. State is emitted on page lifecycle/navigation changes; frames are
- * delivered privately only while a frontend subscription is active.
+ * pane, emitted on page lifecycle and navigation changes. It carries no
+ * pixels: the pane's page content is a real view the engine presents behind
+ * the pane's host rect (spec §7).
  */
 export class CompanionEvent {
     "kind": string;
@@ -16,10 +17,6 @@ export class CompanionEvent {
     "pages"?: PageInfo[];
     "activePageId"?: string;
     "pageId"?: string;
-    "frame"?: string;
-    "width"?: number;
-    "height"?: number;
-    "sequence"?: number;
     "error"?: string;
     "visible"?: boolean | null;
     "sessionName"?: string;
@@ -49,40 +46,11 @@ export class CompanionEvent {
     }
 }
 
-export class CompanionInput {
-    "kind": string;
-    "x"?: number;
-    "y"?: number;
-    "deltaX"?: number;
-    "deltaY"?: number;
-    "button"?: string;
-    "buttons"?: number;
-    "clickCount"?: number;
-    "key"?: string;
-    "text"?: string;
-    "alt"?: boolean;
-    "control"?: boolean;
-    "meta"?: boolean;
-    "shift"?: boolean;
-
-    /** Creates a new CompanionInput instance. */
-    constructor($$source: Partial<CompanionInput> = {}) {
-        if (!("kind" in $$source)) {
-            this["kind"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new CompanionInput instance from a string or object.
-     */
-    static createFrom($$source: any = {}): CompanionInput {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new CompanionInput($$parsedSource as Partial<CompanionInput>);
-    }
-}
-
+/**
+ * CompanionSubscription is what mounting a pane answers: the mount id the
+ * frontend detaches and reports rects with, plus the thread's current state so
+ * the pane renders without a second round trip.
+ */
 export class CompanionSubscription {
     "id": string;
     "state": CompanionEvent;

@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"sync"
 	"unsafe"
-
-	"github.com/chromedp/cdproto/network"
 )
 
 // The WebKitGTK engine's process and profile halves (spec §6). It is IN-PROCESS
@@ -176,7 +174,9 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 	// hold characters a directory name cannot, and must not be readable from
 	// the profile directory listing.
 	digest := sha256.Sum256([]byte(opts.Workspace))
-	root := filepath.Join(e.configDir, "browser-profiles", fmt.Sprintf("%x", digest[:12]))
+	// browserProfileDir is the same constant ClearSiteData deletes: the two
+	// must name one tree or clearing site data would miss the engine's.
+	root := filepath.Join(e.configDir, browserProfileDir, fmt.Sprintf("%x", digest[:12]))
 	dataDir := filepath.Join(root, "data")
 	cacheDir := filepath.Join(root, "cache")
 	cookieFile := filepath.Join(dataDir, "cookies.sqlite")
@@ -227,21 +227,14 @@ type webkitProfile struct {
 func (p *webkitProfile) Handle() string { return p.handle }
 
 // webkitUserScript is what every page in this engine has injected at document
-// start in every frame: the checkpoint's localStorage seed, then the console
-// capture that stands in for CDP's Runtime and Log domains.
-func webkitUserScript(restore map[string]map[string]string) (string, error) {
-	seed, err := storageRestoreScript(restore)
-	if err != nil {
-		return "", err
-	}
-	return seed + webkitConsoleCaptureScript(webkitConsoleHandler), nil
+// start in every frame: the console capture that stands in for CDP's Runtime
+// and Log domains.
+func webkitUserScript() string {
+	return webkitConsoleCaptureScript(webkitConsoleHandler)
 }
 
-func (p *webkitProfile) NewPage(_ context.Context, hooks pageHooks, restore map[string]map[string]string) (pageDriver, error) {
-	script, err := webkitUserScript(restore)
-	if err != nil {
-		return nil, err
-	}
+func (p *webkitProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, error) {
+	script := webkitUserScript()
 	page, err := p.newPageShell(hooks)
 	if err != nil {
 		return nil, err
@@ -256,16 +249,12 @@ func (p *webkitProfile) NewPage(_ context.Context, hooks pageHooks, restore map[
 	return page, nil
 }
 
-func (p *webkitProfile) AttachPage(_ context.Context, handle string, hooks pageHooks, restore map[string]map[string]string) (pageDriver, error) {
+func (p *webkitProfile) AttachPage(_ context.Context, handle string, hooks pageHooks) (pageDriver, error) {
 	view := p.engine.takePopup(handle)
 	if view == nil {
 		return nil, fmt.Errorf("browser: page %s is no longer available", handle)
 	}
-	script, err := webkitUserScript(restore)
-	if err != nil {
-		webkitCloseView(view)
-		return nil, err
-	}
+	script := webkitUserScript()
 	page, err := p.newPageShell(hooks)
 	if err != nil {
 		webkitCloseView(view)
@@ -314,15 +303,6 @@ func (p *webkitProfile) newPageShell(hooks pageHooks) (*webkitPage, error) {
 func (p *webkitProfile) parkNew(page *webkitPage) {
 	page.slot = p.engine.claimSlot()
 	webkitParkView(page.view, page.slot, webkitHiddenWidth, webkitHiddenHeight)
-}
-
-// Cookies has nothing to hand the checkpoint. This engine's site data is its
-// own WebKitNetworkSession, persisted under the AO profile directory when the
-// setting is on and held in memory when it is off — so re-persisting a copy
-// through the encrypted checkpoint would be a second, staler source of truth.
-// Spec §4 deletes the checkpoint with the CDP engine.
-func (p *webkitProfile) Cookies(context.Context) ([]*network.CookieParam, error) {
-	return nil, nil
 }
 
 func (p *webkitProfile) registerDownload(handle string, download unsafe.Pointer) {

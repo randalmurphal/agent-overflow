@@ -8,8 +8,6 @@ import (
 	"sync"
 	"time"
 	"unsafe"
-
-	"github.com/chromedp/cdproto/network"
 )
 
 // The WKWebView engine's process and profile halves (spec §6). It is IN-PROCESS
@@ -43,8 +41,9 @@ const (
 // newNativeEngine answers a WKWebView engine only when the caller supplied a
 // desktop window to host views inside AND this macOS carries the one API the
 // engine is built on. The same darwin binary also runs with no window at all —
-// `--connect`, the harness, `go test` — and those keep managed Chrome, which is
-// why this is a capability answer and never a GOOS check.
+// `--connect`, a headless serve mode, `go test` — and those get NO engine and
+// no browser tools, which is why this is a capability answer and never a GOOS
+// check.
 //
 // configDir is deliberately unused here, unlike the WebKitGTK engine. macOS
 // exposes no documented way to place a WKWebsiteDataStore in a directory of the
@@ -231,23 +230,16 @@ type wkDownload struct {
 func (p *wkProfile) Handle() string { return p.handle }
 
 // wkUserScript is what every page in this engine has injected at document start
-// in every frame: the checkpoint's localStorage seed, then the console capture
-// that stands in for CDP's Runtime and Log domains. The capture script posts to
+// in every frame: the console capture that stands in for CDP's Runtime and Log
+// domains. The capture script posts to
 // `window.webkit.messageHandlers.<handler>`, which WKUserContentController
 // spells exactly as WebKitGTK's does — so the builder is shared, not forked.
-func wkUserScript(restore map[string]map[string]string) (string, error) {
-	seed, err := storageRestoreScript(restore)
-	if err != nil {
-		return "", err
-	}
-	return seed + webkitConsoleCaptureScript(webkitConsoleHandler), nil
+func wkUserScript() string {
+	return webkitConsoleCaptureScript(webkitConsoleHandler)
 }
 
-func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks, restore map[string]map[string]string) (pageDriver, error) {
-	script, err := wkUserScript(restore)
-	if err != nil {
-		return nil, err
-	}
+func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, error) {
+	script := wkUserScript()
 	page, err := p.newPageShell(hooks)
 	if err != nil {
 		return nil, err
@@ -262,16 +254,12 @@ func (p *wkProfile) NewPage(_ context.Context, hooks pageHooks, restore map[stri
 	return page, nil
 }
 
-func (p *wkProfile) AttachPage(_ context.Context, handle string, hooks pageHooks, restore map[string]map[string]string) (pageDriver, error) {
+func (p *wkProfile) AttachPage(_ context.Context, handle string, hooks pageHooks) (pageDriver, error) {
 	view := p.engine.takePopup(handle)
 	if view == nil {
 		return nil, fmt.Errorf("browser: page %s is no longer available", handle)
 	}
-	script, err := wkUserScript(restore)
-	if err != nil {
-		wkCloseView(view)
-		return nil, err
-	}
+	script := wkUserScript()
 	page, err := p.newPageShell(hooks)
 	if err != nil {
 		wkCloseView(view)
@@ -321,14 +309,6 @@ func (p *wkProfile) newPageShell(hooks pageHooks) (*wkPage, error) {
 func (p *wkProfile) parkNew(page *wkPage) {
 	page.slot = p.engine.claimSlot()
 	wkParkView(page.view, page.slot, wkHiddenWidth, wkHiddenHeight)
-}
-
-// Cookies has nothing to hand the checkpoint. This engine's site data is its own
-// WKWebsiteDataStore, so re-persisting a copy through the encrypted checkpoint
-// would be a second, staler source of truth. Spec §4 deletes the checkpoint with
-// the CDP engine.
-func (p *wkProfile) Cookies(context.Context) ([]*network.CookieParam, error) {
-	return nil, nil
 }
 
 func (p *wkProfile) registerDownload(handle string, ptr unsafe.Pointer) {

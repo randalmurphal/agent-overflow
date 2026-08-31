@@ -11,12 +11,13 @@ import (
 
 // Engine selection is the one part of the WKWebView engine that can be proven
 // without a window, and it is the part that decides what every OTHER
-// environment gets: no window means managed Chrome, which is what keeps
-// `--connect`, the harness, and `go test` itself off an in-process engine.
+// environment gets: no window means NO engine, which is what keeps
+// `--connect`, the harness, and `go test` itself off an in-process one.
+// The windowless half of that rule is tag-free, in manager_test.go.
 
 func TestNativeEngineNeedsAWindowToExist(t *testing.T) {
 	if engine := newNativeEngine(t.TempDir(), ManagerOptions{}, engineEvents{}); engine != nil {
-		t.Fatal("without a window provider the engine must fall through to managed Chrome")
+		t.Fatal("without a window provider there must be no native engine at all")
 	}
 }
 
@@ -28,8 +29,8 @@ func TestNativeEngineRefusesToStartBeforeTheWindowExists(t *testing.T) {
 		NativeWindow: func() unsafe.Pointer { return nil },
 	}, engineEvents{})
 	if engine == nil {
-		// An older macOS has no callAsyncJavaScript and keeps managed Chrome,
-		// which is a legitimate answer rather than a failure.
+		// An older macOS has no callAsyncJavaScript and therefore no engine
+		// at all, which is a legitimate answer rather than a failure.
 		if wkSupported() {
 			t.Fatal("a window provider must select the native engine")
 		}
@@ -57,12 +58,5 @@ func TestNativeEngineRefusesProfilesWhileStopped(t *testing.T) {
 	}
 	if _, err := engine.NewProfile(context.Background(), profileOptions{Workspace: t.TempDir()}); err == nil {
 		t.Fatal("a profile on a stopped engine must be an error, not a live session")
-	}
-}
-
-func TestSelectEngineFallsBackToManagedChrome(t *testing.T) {
-	engine := selectEngine(nil, t.TempDir(), ManagerOptions{}, engineEvents{})
-	if _, ok := engine.(*cdpEngine); !ok {
-		t.Fatalf("windowless selection = %T, want managed Chrome", engine)
 	}
 }

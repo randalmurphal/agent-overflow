@@ -158,7 +158,7 @@ func TestHostedEngineCreateTimesOutAndClosesTheController(t *testing.T) {
 	profile := testProfile(t, engine)
 
 	started := time.Now()
-	_, err := profile.NewPage(context.Background(), pageHooks{}, nil)
+	_, err := profile.NewPage(context.Background(), pageHooks{})
 	if err == nil {
 		t.Fatal("a create with no answer succeeded")
 	}
@@ -180,7 +180,7 @@ func TestHostedEngineCreateRespectsCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := profile.NewPage(ctx, pageHooks{}, nil)
+		_, err := profile.NewPage(ctx, pageHooks{})
 		done <- err
 	}()
 	sink.next(t)
@@ -216,7 +216,7 @@ func TestHostedEngineSurfacesACreateFailedReport(t *testing.T) {
 	profile := testProfile(t, engine)
 	answerCreate(t, engine, sink, webview2host.ReportCreateFailed, "WebView2 runtime missing")
 
-	_, err := profile.NewPage(context.Background(), pageHooks{}, nil)
+	_, err := profile.NewPage(context.Background(), pageHooks{})
 	if err == nil {
 		t.Fatal("a failed create succeeded")
 	}
@@ -232,7 +232,7 @@ func TestHostedEngineSurfacesACloseRacingTheCreate(t *testing.T) {
 	profile := testProfile(t, engine)
 	answerCreate(t, engine, sink, webview2host.ReportClosed, "window closed")
 
-	_, err := profile.NewPage(context.Background(), pageHooks{}, nil)
+	_, err := profile.NewPage(context.Background(), pageHooks{})
 	if err == nil {
 		t.Fatal("a create closed under us succeeded")
 	}
@@ -246,7 +246,7 @@ func TestHostedEngineRefusesACreatedReportWithNoTarget(t *testing.T) {
 	profile := testProfile(t, engine)
 	answerCreate(t, engine, sink, webview2host.ReportCreated, "   ")
 
-	_, err := profile.NewPage(context.Background(), pageHooks{}, nil)
+	_, err := profile.NewPage(context.Background(), pageHooks{})
 	if err == nil {
 		t.Fatal("a created report with no CDP target was accepted")
 	}
@@ -261,7 +261,7 @@ func TestHostedEngineClosesTheControllerWhenTheAttachFails(t *testing.T) {
 	profile := testProfile(t, engine)
 	answerCreate(t, engine, sink, webview2host.ReportCreated, "TARGET-1")
 
-	_, err := profile.NewPage(context.Background(), pageHooks{}, nil)
+	_, err := profile.NewPage(context.Background(), pageHooks{})
 	if err == nil {
 		t.Fatal("a create with an unreachable CDP endpoint succeeded")
 	}
@@ -289,7 +289,7 @@ func TestHostedEngineInterruptReleasesAPendingCreate(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := profile.NewPage(context.Background(), pageHooks{}, nil)
+		_, err := profile.NewPage(context.Background(), pageHooks{})
 		done <- err
 	}()
 	sink.next(t)
@@ -430,15 +430,11 @@ func TestHostedProfileDisposeClosesTheWholeProfile(t *testing.T) {
 	}
 }
 
-func TestHostedProfileHasNoCookieCheckpointAndNoPopups(t *testing.T) {
+func TestHostedProfileReportsNoPopups(t *testing.T) {
 	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
 	profile := testProfile(t, engine)
 
-	cookies, err := profile.Cookies(context.Background())
-	if err != nil || cookies != nil {
-		t.Fatalf("Cookies returned (%v, %v), want (nil, nil)", cookies, err)
-	}
-	if _, err := profile.AttachPage(context.Background(), "TARGET-1", pageHooks{}, nil); err == nil {
+	if _, err := profile.AttachPage(context.Background(), "TARGET-1", pageHooks{}); err == nil {
 		t.Fatal("the pane host adopted a popup it can never report")
 	}
 }
@@ -455,7 +451,7 @@ var _ paneHost = (*hostedEngine)(nil)
 
 func TestManagerSelectsTheHostedEngineFromThePaneHostOptions(t *testing.T) {
 	sink := newDirectiveSink()
-	manager := NewManager(nil, t.TempDir(), Config{}, ManagerOptions{PaneHost: &PaneHostOptions{
+	manager := NewManager(t.TempDir(), Config{}, ManagerOptions{PaneHost: &PaneHostOptions{
 		Directive: sink.send,
 		Relay:     stubRelay{},
 	}})
@@ -476,10 +472,16 @@ func TestManagerSelectsTheHostedEngineFromThePaneHostOptions(t *testing.T) {
 	sink.expectOps(t, webview2host.OpClose)
 }
 
-func TestManagerWithoutAPaneHostKeepsManagedChrome(t *testing.T) {
-	manager := NewManager(nil, t.TempDir(), Config{}, ManagerOptions{})
-	if _, ok := manager.engine.(*cdpEngine); !ok {
-		t.Fatalf("engine is %T, want managed Chrome", manager.engine)
+// A windowless deployment has NO engine. That is the whole story spec §9
+// leaves behind: no pane host, no native window, no fallback browser to
+// quietly launch — a browser tool call gets one sentence saying so.
+func TestManagerWithoutAWindowHasNoEngineAtAll(t *testing.T) {
+	manager := NewManager(t.TempDir(), Config{}, ManagerOptions{})
+	if _, ok := manager.engine.(unavailableEngine); !ok {
+		t.Fatalf("engine is %T, want no engine", manager.engine)
+	}
+	if manager.Available() {
+		t.Fatal("a windowless deployment reported browser tools as available")
 	}
 	if err := manager.ReportPaneHost("page1", webview2host.ReportClosed, ""); err == nil {
 		t.Fatal("a deployment with no pane host accepted a report")

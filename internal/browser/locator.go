@@ -113,9 +113,6 @@ func (m *Manager) Locator(ctx context.Context, access Access, opts LocatorOption
 		}
 		result.Download = &download
 	}
-	if mutatingLocatorAction(action) {
-		m.captureLocalStorage(opCtx, p)
-	}
 	info, infoErr := m.finishPageOperation(opCtx, p)
 	if infoErr != nil {
 		return LocatorResult{}, infoErr

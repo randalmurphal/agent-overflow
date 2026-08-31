@@ -248,7 +248,8 @@ func runDesktop(listenAddr string) {
 			// The embedded browser's in-process engine hosts its views inside
 			// this window. Handed over before Start, because the manager picks
 			// its engine while starting; answering nil (no window yet, or a
-			// platform with no in-process engine) keeps managed Chrome.
+			// platform with no in-process engine) leaves the process with NO
+			// browser engine and no browser tools.
 			appservice.SetBrowserNativeWindow(appService.App, func() unsafe.Pointer {
 				window := getWindow()
 				if window == nil {

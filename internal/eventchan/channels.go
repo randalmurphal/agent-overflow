@@ -109,9 +109,8 @@ const (
 // connection with the BrowserHostReport RPC. Payload shape:
 // internal/webview2host.Directive.
 const (
-	BrowserCompanionState  Channel = "browser:companion-state"
-	BrowserHost            Channel = "browser:host"
-	BrowserInstallProgress Channel = "browser:install-progress"
+	BrowserCompanionState Channel = "browser:companion-state"
+	BrowserHost           Channel = "browser:host"
 )
 
 // session-import:* — one frame per session an import run finishes, plus

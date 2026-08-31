@@ -21,7 +21,7 @@ func TestBrowserSettingsDefaultToEnabledPersistent(t *testing.T) {
 }
 
 func TestBrowserMCPConfigRegistersOnlyHeadlessProviders(t *testing.T) {
-	manager := appbrowser.NewManager(nil, t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{})
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
 	server := appbrowser.NewMCPServer(manager, true)
 	app := &App{}
 	app.browser.manager, app.browser.mcp = manager, server

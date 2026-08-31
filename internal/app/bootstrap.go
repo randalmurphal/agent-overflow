@@ -12,13 +12,17 @@ import (
 )
 
 // IsolationConfig is the complete mocked-provider boot contract shared by the
-// harness and soak modes. Keeping the four safety pins in one value prevents a
-// new boot mode from applying only part of the isolation boundary.
+// harness and soak modes. Keeping the safety pins in one value prevents a new
+// boot mode from applying only part of the isolation boundary.
 type IsolationConfig struct {
 	ProviderBinary         string
 	CredentialHome         string
 	UseFileKeychain        bool
 	DisableBackgroundFetch bool
+	// MockBrowserEngine pins the browser Manager to the fake engine. A mocked
+	// boot has no display and must never open a real one, yet its pane chrome
+	// and host rect still have to render (spec §10).
+	MockBrowserEngine bool
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -31,6 +35,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.credentialHomeOverride = config.CredentialHome
 	a.fileKeychainOverride = config.UseFileKeychain
 	a.backgroundFetchDisabled = config.DisableBackgroundFetch
+	a.browser.mockEngine = config.MockBrowserEngine
 }
 
 // SetDataDirOverride installs the executable's --data-dir boot input.

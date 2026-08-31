@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"regexp"
-
-	"github.com/chromedp/cdproto/network"
 )
 
 // The engine seam. `Manager` owns policy — Access checks, the page registry and
@@ -39,18 +37,16 @@ type browserEngine interface {
 }
 
 // engineProfile is one canonical workspace's isolated site data: the unit that
-// owns its pages, download behavior, and cookies.
+// owns its pages and their download behavior. Site data itself is the ENGINE's
+// (spec §4) — a real browser profile on disk, or an ephemeral session — so
+// nothing here reads or writes it.
 type engineProfile interface {
 	// Handle identifies this profile in engine events.
 	Handle() string
 	// NewPage creates a hidden page in this profile.
-	NewPage(ctx context.Context, hooks pageHooks, restore map[string]map[string]string) (pageDriver, error)
+	NewPage(ctx context.Context, hooks pageHooks) (pageDriver, error)
 	// AttachPage adopts a page the engine created on its own (a popup).
-	AttachPage(ctx context.Context, handle string, hooks pageHooks, restore map[string]map[string]string) (pageDriver, error)
-	// Cookies reads this profile's cookies for the encrypted checkpoint.
-	// The CDP-shaped record is the persisted format, which spec §4 deletes
-	// along with the whole checkpoint system.
-	Cookies(ctx context.Context) ([]*network.CookieParam, error)
+	AttachPage(ctx context.Context, handle string, hooks pageHooks) (pageDriver, error)
 	// CancelDownload aborts one in-flight download by its engine id.
 	CancelDownload(id string)
 	// Dispose destroys the profile and every page still in it.
@@ -63,13 +59,10 @@ type profileOptions struct {
 	Workspace string
 	// DownloadDir is the AO artifact directory downloads must land in.
 	DownloadDir string
-	// Cookies seeds the profile from the persisted checkpoint.
-	Cookies []*network.CookieParam
-	// Persist is the user's site-data setting. An engine whose site data
-	// lives on disk (spec §4) keeps it only when this is true; managed
-	// Chrome is always incognito and ignores it, restoring from Cookies
-	// instead. The hosted engine forwards it as the directive's Ephemeral
-	// flag.
+	// Persist is the user's site-data setting. An engine keeps its profile
+	// on disk only when this is true; false is an in-memory/ephemeral
+	// session (spec §4). The hosted engine forwards it as the directive's
+	// Ephemeral flag.
 	Persist bool
 }
 
@@ -83,10 +76,6 @@ type pageHooks struct {
 	PageURL func() string
 	// Allow answers the navigation-authority question for one request URL.
 	Allow func(url string) bool
-	// Screencast receives one base64 JPEG frame for the streamed companion
-	// pane. CDP-only, and deleted with that pane (spec §9); an engine
-	// without a screencast never calls it.
-	Screencast func(frame string)
 }
 
 // pageDriver is one engine's implementation of every per-page operation the
@@ -132,8 +121,6 @@ type pageDriver interface {
 	// engine that can only be best-effort is never SILENTLY different. The
 	// Manager attaches the answer without learning which engine gave it.
 	ReadOnlyCaveat() string
-	// LocalStorage reads the page origin's localStorage for the checkpoint.
-	LocalStorage(ctx context.Context) (origin string, data map[string]string, err error)
 
 	// ResolveLocator evaluates a locator and returns its matches.
 	ResolveLocator(ctx context.Context, locator Locator, attribute string) ([]LocatorMatch, error)

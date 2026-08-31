@@ -48,9 +48,8 @@ func TestChannelPolicyEveryRowHasAWhy(t *testing.T) {
 // this list move together.
 var (
 	frozenLoopbackOnlyChannels = []string{
-		"browser:companion-state",  // local URLs and file paths
-		"browser:host",             // 2026-08-31: launcher pane directive, same posture as webview:trim
-		"browser:install-progress", // 2026-08-26 pass
+		"browser:companion-state", // local URLs and file paths
+		"browser:host",            // 2026-08-31: launcher pane directive, same posture as webview:trim
 		"git:status",
 		"harness:mock",     // 2026-08-25 pass
 		"harness:perf",     // W3 bridge: per-process RSS + host detail
@@ -101,7 +100,6 @@ var (
 		"webview:trim", // 2026-08-25: replaying a stale trim would GC an active session
 	}
 	frozenLatestOnlyChannels = []string{
-		"browser:install-progress", // superseding artifact-install phase
 		// A LEVEL, not an edge: a reconnecting launcher replays with a
 		// zero cursor and must converge on the current keep-awake state.
 		"power:keepawake",

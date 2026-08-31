@@ -722,12 +722,7 @@ func (p *privilegedApp) OpenExternalURL() string                { return "ok" }
 func (p *privilegedApp) ProbeDevServerURL() string              { return "ok" }
 func (p *privilegedApp) BrowseDirectory() string                { return "ok" }
 func (p *privilegedApp) SavePayloadToFile() string              { return "ok" }
-func (p *privilegedApp) BrowserCompanionSubscribe() string      { return "ok" }
-func (p *privilegedApp) BrowserCompanionNextFrame() string      { return "ok" }
-func (p *privilegedApp) BrowserCompanionUnsubscribe() string    { return "ok" }
-func (p *privilegedApp) BrowserCompanionResize() string         { return "ok" }
 func (p *privilegedApp) BrowserCompanionDo() string             { return "ok" }
-func (p *privilegedApp) BrowserCompanionInput() string          { return "ok" }
 func (p *privilegedApp) BrowserCompanionThreadState() string    { return "ok" }
 func (p *privilegedApp) BrowserCompanionPaneAttach() string     { return "ok" }
 func (p *privilegedApp) BrowserCompanionPaneDetach() string     { return "ok" }

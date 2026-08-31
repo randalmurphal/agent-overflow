@@ -571,14 +571,6 @@ var channelPolicies = []ChannelPolicy{
 			"state and re-emits.",
 	},
 	{
-		Channel:   eventchan.BrowserInstallProgress,
-		Audience:  AudienceLoopbackOnly,
-		Retention: RetentionLatestOnly,
-		Why: "Managed full-Chrome install progress; error strings can quote " +
-			"manifest URLs. Each phase supersedes the prior phase, so reconnect " +
-			"and live-drop recovery need only the newest state.",
-	},
-	{
 		Channel:   eventchan.SessionImportProgress,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,

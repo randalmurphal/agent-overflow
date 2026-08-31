@@ -190,12 +190,13 @@ Windows use of `launchHarness` refuses unless this launcher marker is present.
 Every `up`, managed `run`, and compare leg installs the platform memory policy
 before starting the backend. `up` defaults to 2 GiB and managed plans may
 choose a lower or higher limit within host capacity. The ceiling was raised
-from 600 MiB when the in-app browser made full managed Chrome a legitimate
+from 600 MiB when the in-app browser made a full managed Chrome a legitimate
 app-owned child; 1 GiB and 1.5 GiB trials also killed the browser-companion
-E2E during Chrome's measured 1.69 GB aggregate-RSS macOS startup peak. The
-bound covers the backend, mock providers, browser/webview children, and
-profilers that remain in the
-backend's process tree. Worktree reservations use the same 2 GiB claim, so
+E2E during that Chrome's measured 1.69 GB aggregate-RSS macOS startup peak.
+Managed Chrome is gone (the harness now boots the fake browser engine and
+spawns no browser at all), but the bound still covers the backend, mock
+providers, webview children, and profilers that remain in the backend's
+process tree. Worktree reservations use the same 2 GiB claim, so
 parallel harnesses cannot overcommit the host's available-memory floor.
 
 - Linux uses a private cgroup v2 with `memory.max=2 GiB`,

@@ -3,7 +3,6 @@
 
 export {
     CompanionEvent,
-    CompanionInput,
     CompanionSubscription,
     PageInfo,
     PaneRect

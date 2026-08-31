@@ -1,21 +1,29 @@
 package browser
 
-import "agent-overflow/internal/chromium"
-
-// selectEngine picks the engine this process hosts pages in.
+// selectEngine picks the engine this process hosts pages in. It is a table of
+// three WIRING facts the caller supplies, never a `runtime.GOOS` check: the
+// same binary runs windowed and windowless, and the answer has to differ.
 //
-// A platform whose engine lives INSIDE this process (spec
-// docs/specs/embedded-browser.md §6: WebKitGTK on Linux, WKWebView on macOS)
-// answers `newNativeEngine` with a driver bound to the app's own desktop
-// window. Every other case — no window at all (remote `--connect` clients,
-// headless harness runs, tests), a platform whose engine lives in another
-// process (Windows, §5), or a build without the native toolchain — keeps
-// managed Chrome. The choice is made from a capability the caller supplies,
-// never from `runtime.GOOS`: the same Linux binary runs both with a window and
-// without one.
-func selectEngine(installer *chromium.Installer, configDir string, opts ManagerOptions, events engineEvents) browserEngine {
+//  1. FakeEngine — the harness and soak boots (spec §10). Their pane chrome and
+//     host rect render against pages no real engine ever painted.
+//  2. PaneHost — the executable built a CDP relay, which happens only on the
+//     Windows/WSL deployment (§5). Pages become launcher-hosted WebView2
+//     controllers.
+//  3. NativeWindow answering a real window, on a build whose platform half can
+//     host one (§6: WebKitGTK on Linux, WKWebView on macOS).
+//
+// Nothing else has an engine. A remote `--connect` backend, a headless serve
+// mode, and `go test` get `unavailableEngine`, whose refusal is the whole
+// windowless story: no pane, no browser tools, and one sentence saying so.
+func selectEngine(configDir string, opts ManagerOptions, events engineEvents) browserEngine {
+	switch {
+	case opts.FakeEngine:
+		return newFakeEngine()
+	case opts.PaneHost != nil:
+		return newHostedEngine(opts.PaneHost.Relay, opts.PaneHost.Directive, events)
+	}
 	if engine := newNativeEngine(configDir, opts, events); engine != nil {
 		return engine
 	}
-	return newCDPEngine(installer, events)
+	return unavailableEngine{}
 }

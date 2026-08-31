@@ -74,7 +74,6 @@ func (m *Manager) Click(ctx context.Context, access Access, pageID, selector str
 	if err := p.driver.Click(opCtx, selector); err != nil {
 		return PageInfo{}, fmt.Errorf("browser: click %q: %w", selector, err)
 	}
-	m.captureLocalStorage(opCtx, p)
 	return m.finishPageOperation(opCtx, p)
 }
 
@@ -97,7 +96,6 @@ func (m *Manager) Type(ctx context.Context, access Access, opts TypeOptions) (Pa
 	if err := p.driver.Type(opCtx, opts.Selector, opts.Text, opts.Clear); err != nil {
 		return PageInfo{}, fmt.Errorf("browser: type into %q: %w", opts.Selector, err)
 	}
-	m.captureLocalStorage(opCtx, p)
 	return m.finishPageOperation(opCtx, p)
 }
 
@@ -134,7 +132,6 @@ func (m *Manager) Press(ctx context.Context, access Access, pageID, key string) 
 			p.setClipboardText(selected)
 		}
 	}
-	m.captureLocalStorage(opCtx, p)
 	return m.finishPageOperation(opCtx, p)
 }
 
@@ -293,7 +290,6 @@ func (m *Manager) Evaluate(ctx context.Context, access Access, pageID, expressio
 	if len(encoded) > maxEvaluateBytes {
 		return nil, fmt.Errorf("browser: evaluation result exceeds %d bytes", maxEvaluateBytes)
 	}
-	m.captureLocalStorage(opCtx, p)
 	m.refreshPageAfterOperation(opCtx, p)
 	return result, nil
 }

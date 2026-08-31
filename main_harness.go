@@ -167,7 +167,8 @@ func runHarness(flags cliFlags) {
 // newIsolatedProviderApp builds the App for a boot mode whose providers
 // are mocked: the agent test harness (--harness) and the soak rig
 // (--soak). It is the ONE place these pins are applied, so a second
-// mocked boot mode cannot ship with three of the four — enforced by
+// mocked boot mode cannot ship with only some of them — the four
+// provider-safety pins are enforced by
 // TestMockedBootModesShareOneIsolationHelper.
 //
 // Every pin here is structural, not advisory: settings stay editable at
@@ -181,6 +182,10 @@ func newIsolatedProviderApp(paths harnessPaths) *App {
 		CredentialHome:         paths.CredentialHome,
 		UseFileKeychain:        true,
 		DisableBackgroundFetch: true,
+		// Neither mode has a display, so neither can host a browser engine.
+		// The fake one keeps the companion pane's chrome, tab strip and host
+		// rect renderable (spec §10) with no browser behind them.
+		MockBrowserEngine: true,
 	})
 	return appService
 }

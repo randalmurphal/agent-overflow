@@ -3,63 +3,60 @@
 ## Product contract
 
 Agent Overflow supplies one provider-neutral HTTP MCP server to every
-headless Claude and Codex session. The server is registered even when browser
-tools are disabled; the disabled server advertises an empty tool list and
-never starts Chromium. This keeps the off-state cheap while allowing a live
-provider to rediscover the tools without restarting its process.
+headless Claude and Codex session on a deployment that HAS a browser engine.
+The server is registered even when browser tools are disabled; the disabled
+server advertises an empty tool list and never starts the engine. This keeps
+the off-state cheap while allowing a live provider to rediscover the tools
+without restarting its process.
+
+A deployment with no engine — a remote `--connect` backend, a headless serve
+mode, `go test` — registers no server at all, so a session there is offered no
+browser tools rather than tools that could only refuse.
 
 Three settings are independent:
 
 - `browserEnabled` (default `true`) controls tool exposure and immediately
   closes browser state when turned off.
-- `browserPersistSiteData` (default `true`) restores encrypted cookies and
-  local storage per canonical workspace. HTTP cache, service workers,
-  permissions, downloads, and IndexedDB are not persisted. On the embedded
-  WebKit engine the setting instead decides whether the workspace's site data
-  lives in an AO-owned profile directory or only in memory, so the engine's own
-  store is the single source of truth rather than a checkpointed copy of it.
+- `browserPersistSiteData` (default `true`) decides whether a canonical
+  workspace's site data lives in a real browser profile on disk or only in
+  memory. The site data is the ENGINE's, always: AO reads and writes none of
+  it, so the engine's own store is the single source of truth rather than a
+  copy of it.
 - `browserAllowOutsideWorkspace` (default `false`) widens direct-file opening
   beyond the current workspace/project roots.
 
-Managed Chromium always runs headless and browser pages start in the
-background — as do embedded WebKit pages, which are parked out of the window's
-layout rather than launched anywhere. An agent explicitly presents a page with
+Browser pages start hidden — parked out of the window's layout rather than
+opened anywhere the user can see. An agent explicitly presents a page with
 `browser_visibility`; AO then opens an ephemeral browser companion beside that
-thread and renders that exact page.
-The user and agent share its URL, DOM, cookies, history, focus, and tab set; no
-separate Chrome window or duplicate browsing session is opened.
+thread and the engine positions that exact page's real view over the pane's
+host rect. The user and agent share its URL, DOM, cookies, history, focus, and
+tab set; no separate browser window or duplicate browsing session is opened.
 
 The Browser settings panel also exposes a destructive **Clear site data**
-action. It closes active browser contexts before removing their encrypted
-state so a later teardown cannot write the cleared state back.
+action. It closes the workspace's pages first, then deletes the profile
+directory, so a later teardown cannot write the cleared state back.
 
 ## Ownership and lifecycle
 
-- One lazily installed full Chrome-for-Testing artifact per AO installation.
-- One lazily launched Chromium process per AO process.
-- One isolated CDP BrowserContext per canonical workspace with at least one
-  active browser page. Threads on that workspace intentionally share login
-  state; pages remain owned by the registering thread.
+- One lazily started engine per AO process. AO downloads no engine: the engine
+  is the platform's own, hosted by the app or by its launcher.
+- One isolated profile per canonical workspace with at least one active browser
+  page. Threads on that workspace intentionally share login state; pages remain
+  owned by the registering thread.
 - A thread gets an opaque MCP URL capability at provider-session start. Its
-  registration does not create a BrowserContext or page.
-- The first page operation creates the workspace context and a page. Page
+  registration does not create a profile or page.
+- The first page operation creates the workspace profile and a page. Page
   operations serialize per page; unrelated pages run concurrently.
-- The companion starts CDP screencasting only while mounted and explicitly
-  visible. AO streams only the thread's explicitly selected tab, caps the
-  viewport at 1920×1200, coalesces to 15 FPS, and uses JPEG quality 65. Frames
-  use a capacity-one, subscription-addressed
-  RPC stream, so unrelated app/harness connections never receive browser pixels
-  and a slow renderer retains only the newest frame.
-- A first-use download continues under an app-owned bounded context if the
-  provider's individual tool-call deadline expires; the next call reuses the
-  completed artifact. A cached artifact remains usable while the version
-  manifest is offline. The local UI surfaces first-download and completion or
-  failure notifications without sending install paths to remote clients.
-- Session teardown closes that thread's pages. A workspace context with no
-  pages is checkpointed and disposed. A process with no contexts is closed
-  after a bounded idle delay.
-- App shutdown cancels calls, checkpoints site data, disposes contexts, stops
-  Chromium, then closes the MCP listener.
+- The companion presents a page's real view only while a pane is mounted with a
+  paintable host rect AND the thread's session is visible. AO presents only the
+  thread's explicitly selected tab and caps the viewport at 1920×1200. No pixels
+  cross the wire in either direction, so a hidden pane costs nothing and no
+  connection can receive browser image data.
+- Session teardown closes that thread's pages. A workspace profile with no
+  pages is disposed. An engine with no profiles is stopped after a bounded idle
+  delay.
+- App shutdown cancels calls, disposes profiles, stops the engine, then closes
+  the MCP listener.
 
 ## Tool surface
 
@@ -80,7 +77,7 @@ it without relying on an optional skill.
 | `browser_pages` / `browser_select_page` | List only thread-owned tabs and explicitly pin one as the companion tab. Selection does not show the companion. AO never inspects another system browser. |
 | `browser_label_page` | Set/clear a short case-insensitively unique label for cross-agent coordination. |
 | `browser_close_page` | Close one caller-owned page. |
-| `browser_visibility` / `browser_viewport` | Explicitly present a `page_id`, hide the companion without closing pages, and get/set/reset a bounded viewport override. Hidden companions do no screencast work. |
+| `browser_visibility` / `browser_viewport` | Explicitly present a `page_id`, hide the companion without closing pages, and get/set/reset a bounded viewport override. Hidden companions present nothing and cost nothing. |
 | `browser_snapshot` | Return URL/title, bounded visible text, and bounded interactive-element records with CSS selectors and reusable DOM node IDs. |
 | `browser_screenshot` | Return a JPEG of the viewport, a bounded clip, or a height-capped full page. |
 | `browser_locator` | Stateless Playwright-equivalent locators (CSS, role/name, label, placeholder, text, test ID, scopes, filters, union/intersection, indexes, and nested frames) with strict query/read/action/check/select/wait behavior and optional navigation/download expectations. |
@@ -92,7 +89,7 @@ it without relying on an optional skill.
 | `browser_scroll` | Scroll the page or a selected element. |
 | `browser_wait` | Wait for duration, locator state, URL glob, commit, DOMContentLoaded, load, or 500 ms network idle. |
 | `browser_history` | Back, forward, reload, or stop. |
-| `browser_evaluate_readonly` | Evaluate bounded inspection JavaScript; directly awaitable reads and `Promise.resolve(read)` are supported. Chrome rejects a possible side effect in the engine; an engine that cannot says so in the tool result rather than differing silently. |
+| `browser_evaluate_readonly` | Evaluate bounded inspection JavaScript; directly awaitable reads and `Promise.resolve(read)` are supported. A CDP-backed engine rejects a possible side effect in the engine itself; an engine that cannot says so in the tool result rather than differing silently. |
 | `browser_evaluate` | Existing explicit mutation-capable JavaScript escape hatch; bounded and serialized. |
 | `browser_clipboard` | Read/write a bounded tab-local MIME clipboard. Paste/copy chords bridge this clipboard without touching the OS clipboard. |
 | `browser_console_logs` | Read the bounded tab console/runtime ring by level and substring. |
@@ -126,11 +123,11 @@ permissions alone would make it a sandbox bypass.
 
 ## Browser hardening
 
-Chromium's sandbox and site isolation remain enabled.
-The manager uses a private temporary profile, grants no camera, microphone,
+The engine's own sandbox and site isolation remain enabled.
+The manager uses a per-workspace profile, grants no camera, microphone,
 geolocation, notification, or system-clipboard permission, bounds navigation
 and tool deadlines, caps pages and contexts, dismisses JavaScript dialogs,
-blocks dangerous navigation schemes, and never exposes the Chrome debugging
+blocks dangerous navigation schemes, and never exposes a debugging
 endpoint outside the local controller process. Downloads and asset bundles go
 only to AO-owned directories with file/count/byte caps; download filenames are
 sanitized across macOS, Linux, and Windows and never target the user's normal
@@ -164,7 +161,7 @@ external user browser are not part of the Codex skill API and remain excluded.
   from its original inline override and fetches the changed tool list.
 - A server-side enabled check is authoritative even if a provider holds a
   stale tool schema. New calls are rejected immediately; the global setting
-  also closes Chromium and thereby cancels calls already in flight.
+  also stops the engine and thereby cancels calls already in flight.
 
 The composer MCP menu shows the server as `ao-browser-tools`. Its row is a
 normal thread/session toggle and defaults on. The Browser setting remains the
@@ -178,10 +175,8 @@ CLI's normal configuration.
 
 A native Linux desktop drives the WebKitGTK views embedded in the app's own
 window: same tools, same authority, no second browser process, and site data
-under an AO-owned profile directory rather than a temporary Chrome profile.
-The streamed companion pane is CDP-only, so on the WebKit engine
-`browser_visibility` reports that the pane is not available yet; the presented
-native view replaces it.
+under an AO-owned profile directory. `browser_visibility` presents that page's
+real view behind the pane's host rect.
 
 A windowed macOS desktop drives WKWebView subviews of the app's own NSWindow
 on the same terms. The tool contract, the bounds, and the JavaScript every
@@ -193,7 +188,8 @@ so the differences are only where the platform itself differs:
   workspace gets its own persistent store keyed by a digest of the workspace
   root; on macOS 11–13 there is no per-workspace persistent store at all, so
   the site-data setting has no effect there and every workspace is
-  in-memory-only. macOS 10.15 has no engine at all and keeps managed Chrome.
+  in-memory-only. A macOS too old for `-callAsyncJavaScript:` has no engine
+  at all, and therefore no browser tools.
 - **Devtools are Safari's.** Views are marked inspectable, and inspection
   happens from Safari's Develop menu rather than an in-app inspector.
 - **A full-page screenshot resizes the view.** WebKit's macOS snapshot cannot
@@ -212,19 +208,20 @@ The Windows/WSL deployment uses the hosted engine
 (`docs/specs/embedded-browser.md`): a page is a WebView2 controller in the
 Windows launcher's process, and the backend drives it over CDP through the
 launcher's relay tunnel. The tool surface is identical, because the operations
-are the same CDP calls. What differs is the user-visible half — a real browser
-view positioned by the launcher rather than a streamed image — so the
-screencast companion described above does not apply on that leg.
+are the same CDP calls; the user-visible half is a real browser view the
+launcher positions over the pane's host rect.
 
-Every windowless run — `--connect`, the harness, `go test`, and any desktop
-whose OS is too old for its native engine — uses managed Chrome for Testing,
-launched headless and, when explicitly requested, displayed through the
-companion protocol.
+Every windowless run — `--connect`, a headless serve mode, `go test`, and any
+desktop whose OS is too old for its native engine — has **no browser engine and
+no browser tools**. There is no fallback browser to launch: the engines live in
+the desktop app instance, and a browser tool call on a windowless deployment
+answers one sentence saying browser tools are not available there. The mocked
+boot modes (`--harness`, `--soak`) are the one exception: they pin a fake engine
+so the companion pane's chrome, tab strip, and host rect render with nothing
+behind them.
 
-The companion RPCs and
-URL/title state events are
-loopback-only because they expose local files and authenticated browser
-content. Pixels return only to the connection holding their subscription; a
-LAN `--connect` client does not receive or control this surface.
-Unsupported OS/arch combinations fail the tool call without affecting
-provider or app lifecycle.
+The companion RPCs and URL/title state events are loopback-only because they
+expose local files and authenticated browser content, and the pane mount drives
+real native views in the desktop window. A LAN `--connect` client does not
+receive or control this surface. Unsupported OS/arch combinations fail the tool
+call without affecting provider or app lifecycle.

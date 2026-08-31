@@ -1,10 +1,13 @@
 # Embedded Browser
 
-Status: spike-validated. Both platform spikes passed every item
+Status: implemented. Both platform spikes passed every item
 (verdicts + evidence: /tmp/spike-webview2-dual/VERDICTS.md,
 /tmp/spike-webkitgtk-embed/VERDICTS.md); their recipes are folded in
 below. macOS is built to the same driver contract and verified on a
-Mac (§10).
+Mac (§10). The §9 deletion wave has landed: managed Chrome, the
+screencast path and its four RPCs, and the encrypted site-data
+checkpoints are gone, and a windowless deployment now has no engine and
+no browser tools.
 
 ## 1. What this replaces, and why
 

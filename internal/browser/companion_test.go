@@ -37,9 +37,8 @@ func TestBackgroundPageActivityDoesNotStealCompanionSelection(t *testing.T) {
 	second := &managedPage{id: "second", owner: "thread", createdAt: 2}
 	second.info = PageInfo{ID: second.id, URL: "https://second.test"}
 	m := &Manager{
-		scopes:        map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
-		sessions:      map[string]SessionInfo{"thread": {ActivePageID: first.id, Visible: true}},
-		subscriptions: map[string]companionSubscriber{},
+		scopes:   map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
+		sessions: map[string]SessionInfo{"thread": {ActivePageID: first.id, Visible: true}},
 	}
 
 	m.pageChanged(second)
@@ -54,9 +53,8 @@ func TestVisibilityRequiresExplicitPageWhenConcurrentAndPinsSelection(t *testing
 	second := &managedPage{id: "second", owner: "thread", createdAt: 2}
 	second.info = PageInfo{ID: second.id, Label: "docs", URL: "https://second.test"}
 	m := &Manager{
-		scopes:        map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
-		sessions:      map[string]SessionInfo{"thread": {ActivePageID: first.id}},
-		subscriptions: map[string]companionSubscriber{},
+		scopes:   map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
+		sessions: map[string]SessionInfo{"thread": {ActivePageID: first.id}},
 	}
 	access := Access{ThreadID: "thread", Workspace: "/repo"}
 	show := true
@@ -116,9 +114,8 @@ func TestConcurrentThreadsKeepSelectionVisibilityAndLabelsScoped(t *testing.T) {
 	second := &managedPage{id: "second", owner: "thread-b", createdAt: 2}
 	second.info = PageInfo{ID: second.id}
 	m := &Manager{
-		scopes:        map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
-		sessions:      map[string]SessionInfo{},
-		subscriptions: map[string]companionSubscriber{},
+		scopes:   map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
+		sessions: map[string]SessionInfo{},
 	}
 	show := true
 	var wg sync.WaitGroup
@@ -145,48 +142,5 @@ func TestConcurrentThreadsKeepSelectionVisibilityAndLabelsScoped(t *testing.T) {
 		if state.ActivePageID != pageID || state.Visible == nil || !*state.Visible || len(state.Pages) != 1 || state.Pages[0].Label != "preview" {
 			t.Fatalf("scoped state %s = %#v", threadID, state)
 		}
-	}
-}
-
-func TestCompanionFrameDeliveryIsAddressedAndLatestOnly(t *testing.T) {
-	m := &Manager{subscriptions: map[string]companionSubscriber{
-		"wanted": {threadID: "thread", frames: make(chan CompanionEvent, 1), done: make(chan struct{})},
-		"other":  {threadID: "other", frames: make(chan CompanionEvent, 1), done: make(chan struct{})},
-	}}
-	m.deliverCompanionFrame(CompanionEvent{Kind: "frame", ThreadID: "thread", Sequence: 1})
-	m.deliverCompanionFrame(CompanionEvent{Kind: "frame", ThreadID: "thread", Sequence: 2})
-
-	event, err := m.NextCompanionFrame(context.Background(), "wanted")
-	if err != nil || event.Sequence != 2 {
-		t.Fatalf("latest frame = %#v, %v", event, err)
-	}
-	select {
-	case event := <-m.subscriptions["other"].frames:
-		t.Fatalf("other thread received frame: %#v", event)
-	default:
-	}
-}
-
-func TestCompanionUnsubscribeReleasesFrameWaiter(t *testing.T) {
-	m := &Manager{subscriptions: map[string]companionSubscriber{
-		"sub": {threadID: "thread", frames: make(chan CompanionEvent, 1), done: make(chan struct{})},
-	}}
-	done := make(chan error, 1)
-	go func() {
-		_, err := m.NextCompanionFrame(context.Background(), "sub")
-		done <- err
-	}()
-	m.UnsubscribeCompanion("sub")
-	if err := <-done; err == nil {
-		t.Fatal("frame waiter survived unsubscribe")
-	}
-}
-
-func TestClampCompanionViewportBoundsResourceUse(t *testing.T) {
-	if w, h := clampViewport(1, 2); w != minCompanionWidth || h != minCompanionHeight {
-		t.Fatalf("minimum clamp = %dx%d", w, h)
-	}
-	if w, h := clampViewport(99999, 99999); w != maxCompanionWidth || h != maxCompanionHeight {
-		t.Fatalf("maximum clamp = %dx%d", w, h)
 	}
 }

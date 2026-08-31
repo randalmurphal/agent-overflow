@@ -35,11 +35,10 @@ the process being judged. Anything else goes through an RPC.
 not. `attach` has the same exposure, for the same reason: the page URL
 is the authenticated one.
 
-Two sanctioned reads outside the "files the backend writes" rule, both
-of an executable path only: `attach` resolves a browser through
-`$AO_HARNESS_BROWSER`, then the Chrome-for-Testing managed by the built-in
-browser under the `internal/appdirs` root, then `exec.LookPath`. It never
-downloads — this binary has no network story and must not grow one.
+One sanctioned read outside the "files the backend writes" rule, of an
+executable path only: `attach` resolves a browser through
+`$AO_HARNESS_BROWSER`, then `exec.LookPath`. It never downloads — this
+binary has no network story and must not grow one.
 
 ## Rules this binary enforces
 

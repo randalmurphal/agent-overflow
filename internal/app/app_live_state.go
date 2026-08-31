@@ -18,20 +18,20 @@ import (
 // threads.live_todo (migration v65) because a todo list outlives the session
 // that reported it and the process that received it.
 type ThreadLiveState struct {
-	ThreadID               string                              `json:"threadId"`
-	EffectiveModel         string                              `json:"effectiveModel,omitempty"`
-	EffectiveModelRevision uint64                              `json:"effectiveModelRevision,omitempty"`
-	ActiveTurn             *LiveStateActiveTurn                `json:"activeTurn,omitempty"`
-	QueueItems             []QueuedItem                        `json:"queueItems"`
-	FlushedItems           []QueueFlushedItem                  `json:"flushedItems"`
+	ThreadID               string               `json:"threadId"`
+	EffectiveModel         string               `json:"effectiveModel,omitempty"`
+	EffectiveModelRevision uint64               `json:"effectiveModelRevision,omitempty"`
+	ActiveTurn             *LiveStateActiveTurn `json:"activeTurn,omitempty"`
+	QueueItems             []QueuedItem         `json:"queueItems"`
+	FlushedItems           []QueueFlushedItem   `json:"flushedItems"`
 	// DeferredItems are pending-send timeline rows not yet persisted to
 	// SQLite (they persist on their wire echo), in FIFO send order. A
 	// refresh reconciling against a ListThreadSliceAround page merges
 	// these in so the user's own just-sent message survives the install.
-	DeferredItems []store.Item                        `json:"deferredItems"`
-	Interactive   provider.PendingInteractiveRequests `json:"interactive"`
-	Todo                   *LiveStateTodo                      `json:"todo,omitempty"`
-	ProviderAccount        *ProviderSessionAccountEvent        `json:"providerAccount,omitempty"`
+	DeferredItems   []store.Item                        `json:"deferredItems"`
+	Interactive     provider.PendingInteractiveRequests `json:"interactive"`
+	Todo            *LiveStateTodo                      `json:"todo,omitempty"`
+	ProviderAccount *ProviderSessionAccountEvent        `json:"providerAccount,omitempty"`
 	// CompactingSinceUnixMs is non-zero while the provider is compacting
 	// this thread's context (epoch ms of the window's start). Mirrors the
 	// `provider:compacting` push channel for refresh/reconnect — the

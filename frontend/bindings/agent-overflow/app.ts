@@ -220,16 +220,6 @@ export function BrowserCompanionDo(threadID: string, action: app$0.BrowserCompan
     });
 }
 
-export function BrowserCompanionInput(threadID: string, pageID: string, event: browser$0.CompanionInput): $CancellablePromise<void> {
-    return $Call.ByID(2747693029, threadID, pageID, event);
-}
-
-export function BrowserCompanionNextFrame(subscriptionID: string): $CancellablePromise<browser$0.CompanionEvent> {
-    return $Call.ByID(776020183, subscriptionID).then(($result: any) => {
-        return $$createType3($result);
-    });
-}
-
 /**
  * BrowserCompanionPaneAttach registers the calling connection's mounted pane
  * surface for a thread. The native view is presented only while a mount with
@@ -255,22 +245,6 @@ export function BrowserCompanionPaneRect(paneID: string, rect: browser$0.PaneRec
     return $Call.ByID(2491183339, paneID, rect);
 }
 
-export function BrowserCompanionResize(subscriptionID: string, width: number, height: number): $CancellablePromise<void> {
-    return $Call.ByID(2921114943, subscriptionID, width, height);
-}
-
-/**
- * BrowserCompanionSubscribe attaches the calling connection to the live frame
- * stream for a thread. Chrome only screencasts while at least one companion is
- * mounted; connection cleanup is the leak-proof fallback for an unclean UI
- * disconnect.
- */
-export function BrowserCompanionSubscribe(threadID: string, width: number, height: number): $CancellablePromise<browser$0.CompanionSubscription> {
-    return $Call.ByID(668496681, threadID, width, height).then(($result: any) => {
-        return $$createType4($result);
-    });
-}
-
 /**
  * BrowserCompanionThreadState answers the thread's current page/session
  * snapshot without acquiring anything. The `browser:companion-state` channel
@@ -282,10 +256,6 @@ export function BrowserCompanionThreadState(threadID: string): $CancellablePromi
     return $Call.ByID(1485125416, threadID).then(($result: any) => {
         return $$createType3($result);
     });
-}
-
-export function BrowserCompanionUnsubscribe(subscriptionID: string): $CancellablePromise<void> {
-    return $Call.ByID(3385360912, subscriptionID);
 }
 
 /**
