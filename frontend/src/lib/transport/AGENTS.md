@@ -19,7 +19,7 @@ remote browser alike. Protocol and authz rules:
   under the test alias stops type-checking in production. Keep it thin:
   transport behavior belongs in `wsClient.ts`.
 - `bootstrap.ts` owns the `/bootstrap.json` fetch, the one-time page-ticket
-  exchange, and WS-URL validation that stops a hijacked manifest pivoting
+  exchange, and WS-URL validation that stops a tampered manifest pivoting
   the connection to another scheme. **No credential is readable by page
   script.** The first fetch forwards the URL's `?t=` ticket, the server
   answers with an HttpOnly cookie, and the ticket is scrubbed from the URL;

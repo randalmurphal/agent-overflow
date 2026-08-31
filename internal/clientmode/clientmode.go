@@ -161,13 +161,11 @@ func ParseConnectURL(raw string) (Config, error) {
 		return Config{}, errors.New("clientmode: --connect URL missing required ?token=<value>")
 	}
 
-	// Strip the token from the URL before injecting into the SPA. The
-	// wsClient appends `?token=<value>` on its own at upgrade time, so
-	// keeping it on the bootstrap URL would double-encode it in the
-	// rendered connection URL and confuse log output for very little
-	// benefit. We also strip from a defensive cache-poisoning angle:
-	// any future log of WSURL won't accidentally leak the token in
-	// stack traces or telemetry.
+	// Strip the token from the URL. The proxy rewrite is the only
+	// thing that re-attaches it (as a bearer header), so the endpoint
+	// string this process stores, dials and logs is free of it: any
+	// future log of WSURL cannot carry the credential into stack
+	// traces or telemetry.
 	q.Del("token")
 	parsed.RawQuery = q.Encode()
 

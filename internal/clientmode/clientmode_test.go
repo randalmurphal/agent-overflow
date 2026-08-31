@@ -153,12 +153,13 @@ func stubBootstrapURL(t *testing.T, srv *Server) string {
 // TestServe_ServesTheShellVerbatim is the structural half of this
 // change: the stub inserts nothing into the page. No injected manifest
 // means no credential in the document, and no escaping question about
-// what a hostile token could do to an inline script tag — the class is
-// gone rather than defended.
+// what a markup-shaped token does to an inline script tag — the class
+// is gone rather than defended, which the markup-shaped token below
+// exercises.
 func TestServe_ServesTheShellVerbatim(t *testing.T) {
 	srv := serveStub(t, Config{
 		WSURL: "ws://upstream:1234/",
-		Token: "evil</" + "script><" + "script>alert(1)</" + "script>",
+		Token: "tok</" + "script><" + "script>marker()</" + "script>",
 	})
 
 	resp, err := http.Get(srv.AppURL())
@@ -177,7 +178,7 @@ func TestServe_ServesTheShellVerbatim(t *testing.T) {
 	if string(body) != string(want) {
 		t.Fatalf("the shell was modified in flight.\ngot:  %s\nwant: %s", body, want)
 	}
-	if strings.Contains(string(body), "alert(1)") {
+	if strings.Contains(string(body), "marker()") {
 		t.Fatal("the upstream token reached the document")
 	}
 }

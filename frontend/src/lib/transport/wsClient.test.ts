@@ -176,12 +176,10 @@ describe('WSClient', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
     __resetRunModeForTest();
   });
 
   afterEach(() => {
-    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
     __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
