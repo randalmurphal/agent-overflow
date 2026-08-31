@@ -80,7 +80,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DownloadUpdate", ID: 115027584, Scope: "host"},                                        // main.App.DownloadUpdate
 	{Name: "ForkThread", ID: 4063914461, Scope: "threads:operate"},                                // main.App.ForkThread
 	{Name: "ForkThreadFromMessage", ID: 3977213964, Scope: "threads:operate"},                     // main.App.ForkThreadFromMessage
-	{Name: "GenerateCommitMessage", ID: 1669373286, Scope: "threads:operate"},                     // main.App.GenerateCommitMessage
+	{Name: "GenerateCommitMessage", ID: 1669373286, Scope: "git:operate"},                         // main.App.GenerateCommitMessage
 	{Name: "GetAccessOverview", ID: 1559710962, Scope: "access:admin"},                            // main.App.GetAccessOverview
 	{Name: "GetAttachmentData", ID: 71154490, Scope: "threads:read"},                              // main.App.GetAttachmentData
 	{Name: "GetAttachmentThumbnail", ID: 3414107538, Scope: "threads:read"},                       // main.App.GetAttachmentThumbnail
@@ -142,31 +142,31 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetWorkingTreeDiff", ID: 1858968113, Scope: "files:read"},                             // main.App.GetWorkingTreeDiff
 	{Name: "GetWorkspaceActivity", ID: 673985705, Scope: "git:operate"},                           // main.App.GetWorkspaceActivity
 	{Name: "GetWorkspaceCurrentDiff", ID: 736820142, Scope: "files:read"},                         // main.App.GetWorkspaceCurrentDiff
-	{Name: "GitCheckout", ID: 1598126927, Scope: "threads:operate"},                               // main.App.GitCheckout
-	{Name: "GitCheckoutForProject", ID: 585511915, Scope: "threads:operate"},                      // main.App.GitCheckoutForProject
-	{Name: "GitCommit", ID: 1971060042, Scope: "threads:operate"},                                 // main.App.GitCommit
-	{Name: "GitCreateBranch", ID: 2582897723, Scope: "threads:operate"},                           // main.App.GitCreateBranch
-	{Name: "GitCreateBranchFrom", ID: 429779991, Scope: "threads:operate"},                        // main.App.GitCreateBranchFrom
-	{Name: "GitCreatePR", ID: 4106667105, Scope: "threads:operate"},                               // main.App.GitCreatePR
-	{Name: "GitCreateWorktree", ID: 3327650914, Scope: "threads:operate"},                         // main.App.GitCreateWorktree
-	{Name: "GitListBranchPruneCandidates", ID: 3795082615, Scope: "threads:operate"},              // main.App.GitListBranchPruneCandidates
-	{Name: "GitListBranches", ID: 2693102179, Scope: "threads:operate"},                           // main.App.GitListBranches
-	{Name: "GitListBranchesForProject", ID: 2675387767, Scope: "threads:operate"},                 // main.App.GitListBranchesForProject
-	{Name: "GitListWorktrees", ID: 3232495403, Scope: "threads:operate"},                          // main.App.GitListWorktrees
-	{Name: "GitListWorktreesForProject", ID: 409101231, Scope: "threads:operate"},                 // main.App.GitListWorktreesForProject
-	{Name: "GitMaybeFetchRemotes", ID: 2000020570, Scope: "threads:operate"},                      // main.App.GitMaybeFetchRemotes
-	{Name: "GitMaybeFetchRemotesForProject", ID: 338919746, Scope: "threads:operate"},             // main.App.GitMaybeFetchRemotesForProject
-	{Name: "GitPruneBranches", ID: 3331815821, Scope: "threads:operate"},                          // main.App.GitPruneBranches
-	{Name: "GitPull", ID: 3933172764, Scope: "threads:operate"},                                   // main.App.GitPull
-	{Name: "GitPush", ID: 4036251239, Scope: "threads:operate"},                                   // main.App.GitPush
-	{Name: "GitRemoveWorktree", ID: 4002429606, Scope: "threads:operate"},                         // main.App.GitRemoveWorktree
-	{Name: "GitStageAll", ID: 548906954, Scope: "threads:operate"},                                // main.App.GitStageAll
-	{Name: "GitStatusSubscribe", ID: 3282404643, Scope: "threads:operate"},                        // main.App.GitStatusSubscribe
-	{Name: "GitStatusUnsubscribe", ID: 3263989430, Scope: "threads:operate"},                      // main.App.GitStatusUnsubscribe
-	{Name: "GitSyncBranch", ID: 1057032236, Scope: "threads:operate"},                             // main.App.GitSyncBranch
-	{Name: "GitSyncBranchForProject", ID: 3862053920, Scope: "threads:operate"},                   // main.App.GitSyncBranchForProject
-	{Name: "GitWorktreeStatus", ID: 1333748060, Scope: "threads:operate"},                         // main.App.GitWorktreeStatus
-	{Name: "GitWorktreeStatusForProject", ID: 71861776, Scope: "threads:operate"},                 // main.App.GitWorktreeStatusForProject
+	{Name: "GitCheckout", ID: 1598126927, Scope: "git:operate"},                                   // main.App.GitCheckout
+	{Name: "GitCheckoutForProject", ID: 585511915, Scope: "git:operate"},                          // main.App.GitCheckoutForProject
+	{Name: "GitCommit", ID: 1971060042, Scope: "git:operate"},                                     // main.App.GitCommit
+	{Name: "GitCreateBranch", ID: 2582897723, Scope: "git:operate"},                               // main.App.GitCreateBranch
+	{Name: "GitCreateBranchFrom", ID: 429779991, Scope: "git:operate"},                            // main.App.GitCreateBranchFrom
+	{Name: "GitCreatePR", ID: 4106667105, Scope: "git:operate"},                                   // main.App.GitCreatePR
+	{Name: "GitCreateWorktree", ID: 3327650914, Scope: "git:operate"},                             // main.App.GitCreateWorktree
+	{Name: "GitListBranchPruneCandidates", ID: 3795082615, Scope: "git:operate"},                  // main.App.GitListBranchPruneCandidates
+	{Name: "GitListBranches", ID: 2693102179, Scope: "git:operate"},                               // main.App.GitListBranches
+	{Name: "GitListBranchesForProject", ID: 2675387767, Scope: "git:operate"},                     // main.App.GitListBranchesForProject
+	{Name: "GitListWorktrees", ID: 3232495403, Scope: "git:operate"},                              // main.App.GitListWorktrees
+	{Name: "GitListWorktreesForProject", ID: 409101231, Scope: "git:operate"},                     // main.App.GitListWorktreesForProject
+	{Name: "GitMaybeFetchRemotes", ID: 2000020570, Scope: "git:operate"},                          // main.App.GitMaybeFetchRemotes
+	{Name: "GitMaybeFetchRemotesForProject", ID: 338919746, Scope: "git:operate"},                 // main.App.GitMaybeFetchRemotesForProject
+	{Name: "GitPruneBranches", ID: 3331815821, Scope: "git:operate"},                              // main.App.GitPruneBranches
+	{Name: "GitPull", ID: 3933172764, Scope: "git:operate"},                                       // main.App.GitPull
+	{Name: "GitPush", ID: 4036251239, Scope: "git:operate"},                                       // main.App.GitPush
+	{Name: "GitRemoveWorktree", ID: 4002429606, Scope: "git:operate"},                             // main.App.GitRemoveWorktree
+	{Name: "GitStageAll", ID: 548906954, Scope: "git:operate"},                                    // main.App.GitStageAll
+	{Name: "GitStatusSubscribe", ID: 3282404643, Scope: "git:operate"},                            // main.App.GitStatusSubscribe
+	{Name: "GitStatusUnsubscribe", ID: 3263989430, Scope: "git:operate"},                          // main.App.GitStatusUnsubscribe
+	{Name: "GitSyncBranch", ID: 1057032236, Scope: "git:operate"},                                 // main.App.GitSyncBranch
+	{Name: "GitSyncBranchForProject", ID: 3862053920, Scope: "git:operate"},                       // main.App.GitSyncBranchForProject
+	{Name: "GitWorktreeStatus", ID: 1333748060, Scope: "git:operate"},                             // main.App.GitWorktreeStatus
+	{Name: "GitWorktreeStatusForProject", ID: 71861776, Scope: "git:operate"},                     // main.App.GitWorktreeStatusForProject
 	{Name: "HighlightClassNames", ID: 2772816619, Scope: "files:read"},                            // main.App.HighlightClassNames
 	{Name: "HighlightCode", ID: 4080150350, Scope: "files:read"},                                  // main.App.HighlightCode
 	{Name: "HighlightPatch", ID: 834878499, Scope: "files:read"},                                  // main.App.HighlightPatch

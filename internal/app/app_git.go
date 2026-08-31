@@ -79,7 +79,7 @@ func (a *App) GetWorkingTreeDiff(threadID string) (string, error) {
 
 // GitListBranches lists repository branches from the thread's project root.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitListBranches(threadID string) ([]gitops.GitBranch, error) {
 	return a.gitApplication().ListBranches(threadID)
 }
@@ -87,7 +87,7 @@ func (a *App) GitListBranches(threadID string) ([]gitops.GitBranch, error) {
 // GitListBranchesForProject lists repository branches from a project root
 // without requiring a thread row.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitListBranchesForProject(projectID string) ([]gitops.GitBranch, error) {
 	return a.gitApplication().ListBranchesForProject(projectID)
 }
@@ -102,7 +102,7 @@ func (a *App) GitListBranchesForProject(projectID string) ([]gitops.GitBranch, e
 // only touches `refs/remotes/*` and never HEAD/index/working tree, so
 // running it concurrently with an active turn is safe.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitMaybeFetchRemotes(threadID string) (bool, error) {
 	return a.gitApplication().MaybeFetchRemotes(threadID)
 }
@@ -110,7 +110,7 @@ func (a *App) GitMaybeFetchRemotes(threadID string) (bool, error) {
 // GitMaybeFetchRemotesForProject is the project-root counterpart to
 // GitMaybeFetchRemotes for draft placeholders.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitMaybeFetchRemotesForProject(projectID string) (bool, error) {
 	return a.gitApplication().MaybeFetchRemotesForProject(projectID)
 }
@@ -119,7 +119,7 @@ func (a *App) GitMaybeFetchRemotesForProject(projectID string) (bool, error) {
 // The thread lock is held across the current-branch read so a concurrent
 // checkout can't flip the path between the check and the operation.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitSyncBranch(threadID string, branch string) ([]gitops.GitBranch, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -145,7 +145,7 @@ func (a *App) GitSyncBranch(threadID string, branch string) ([]gitops.GitBranch,
 // GitSyncBranchForProject fast-forwards a branch for a draft placeholder
 // without requiring a thread row.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitSyncBranchForProject(projectID, workspacePath, branch string) ([]gitops.GitBranch, error) {
 	project, workspace, _, err := a.resolveProjectGitPaths(projectID, workspacePath)
 	if err != nil {
@@ -174,7 +174,7 @@ func (a *App) syncBranchInWorkspace(core *gitops.Core, project, workspace, branc
 // WARNING: This stages everything (git add -A) before committing, including
 // untracked files. Use GitStageAll + a direct Commit call for more control.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitCommit(threadID, subject, body string) (gitops.GitActionResult, error) {
 	return a.gitApplication().Commit(threadID, subject, body)
 }
@@ -182,28 +182,28 @@ func (a *App) GitCommit(threadID, subject, body string) (gitops.GitActionResult,
 // GitStageAll runs `git add -A` in the thread's workspace, staging all changes
 // including untracked files. Use before GitCommit when explicit staging is desired.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitStageAll(threadID string) error {
 	return a.gitApplication().StageAll(threadID)
 }
 
 // GitPush pushes the workspace's current branch.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitPush(threadID string) (gitops.GitActionResult, error) {
 	return a.gitApplication().Push(threadID)
 }
 
 // GitPull fast-forwards the workspace's current branch.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitPull(threadID string) (gitops.GitActionResult, error) {
 	return a.gitApplication().Pull(threadID)
 }
 
 // GitCheckout switches the workspace to an existing branch.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitCheckout(threadID, branch string) error {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -245,7 +245,7 @@ func (a *App) GitCheckout(threadID, branch string) error {
 // GitCheckoutForProject switches a project/worktree placeholder workspace to an
 // existing branch without requiring a thread row.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitCheckoutForProject(projectID, workspacePath, branch string) (GitWorkspaceState, error) {
 	_, workspace, worktreePath, err := a.resolveProjectGitPaths(projectID, workspacePath)
 	if err != nil {
@@ -272,7 +272,7 @@ func (a *App) GitCheckoutForProject(projectID, workspacePath, branch string) (Gi
 
 // GitCreateBranch creates a branch in the thread's repository.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitCreateBranch(threadID, name string) error {
 	return a.gitApplication().CreateBranch(threadID, name)
 }
@@ -297,7 +297,7 @@ func (a *App) GitCreateBranch(threadID, name string) error {
 // restartSessionIfAffected because the cwd is unchanged — the provider
 // session keeps running.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalChanges bool) (store.Thread, error) {
 	// Lock before the read — see PrepareThreadWorktree for why a pre-lock read
 	// races the empty-draft cleanup's delete.
@@ -443,7 +443,7 @@ func (a *App) createBranchInWorkspace(workspace, name, resolvedBase string, base
 // GitCreatePR opens a pull request for the workspace's current branch. When
 // draft is true the PR is opened as a GitHub draft (gh pr create --draft).
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitCreatePR(threadID, title, body string, draft bool) (gitops.GitActionResult, error) {
 	return a.gitApplication().CreatePR(threadID, title, body, draft)
 }

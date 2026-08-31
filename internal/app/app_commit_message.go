@@ -42,7 +42,7 @@ type GeneratedCommitMessage struct {
 // present the result (or the error) to the user for edit before
 // actually committing.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GenerateCommitMessage(threadID string) (GeneratedCommitMessage, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {

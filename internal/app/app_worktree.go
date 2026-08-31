@@ -45,7 +45,7 @@ type WorktreeListItem struct {
 // GitCreateWorktree creates a new worktree for the requested branch and returns its path.
 // Preserves legacy semantics — no carry-over of local changes.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 	updated, err := a.PrepareThreadWorktree(threadID, "", branch, false)
 	if err != nil {
@@ -274,7 +274,7 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 // Thin wrapper over RemoveOtherWorktree using the thread's own worktree path
 // so the auto-reattach behavior stays unified.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitRemoveWorktree(threadID string) error {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -667,7 +667,7 @@ func (a *App) threadsReferencingWorkspace(path string) ([]string, error) {
 // cleanup UI. The thread parameter is just used to resolve the project root;
 // the path can be any worktree of that project.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitWorktreeStatus(threadID, worktreePath string) (WorktreeStatus, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -683,7 +683,7 @@ func (a *App) GitWorktreeStatus(threadID, worktreePath string) (WorktreeStatus, 
 // GitWorktreeStatusForProject classifies a project worktree without requiring a
 // thread row.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitWorktreeStatusForProject(projectID, worktreePath string) (WorktreeStatus, error) {
 	project, err := a.gitProjectPath(projectID)
 	if err != nil {
@@ -702,7 +702,7 @@ func (a *App) computeWorktreeStatus(project, worktreePath string) (WorktreeStatu
 
 // GitListWorktrees lists worktrees for the thread's repository.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitListWorktrees(threadID string) ([]WorktreeListItem, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -720,7 +720,7 @@ func (a *App) GitListWorktrees(threadID string) ([]WorktreeListItem, error) {
 // GitListWorktreesForProject lists worktrees for a project without requiring
 // a thread row.
 //
-//ao:scope threads:operate
+//ao:scope git:operate
 func (a *App) GitListWorktreesForProject(projectID string) ([]WorktreeListItem, error) {
 	project, err := a.gitProjectPath(projectID)
 	if err != nil {
