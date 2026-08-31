@@ -45,6 +45,7 @@ import {
   type ClientFrame,
   type ClientRPCFrame,
   type ServerEventFrame,
+  type ServerHelloFrame,
   type ServerFrame,
   clampString,
   extractRpcIdFromOversizedFrame,
@@ -313,6 +314,35 @@ let fanoutScratchInUse = false;
 // not present itself as settled.
 export type TransportStatus = 'connected' | 'reconnecting' | 'unauthorized' | 'disconnected';
 
+// TransportHello is what the connection's opening frame told us about
+// the backend on the other end, plus the one thing only the client can
+// compute: the clock skew between the two machines.
+//
+// Null until a hello arrives, which is also the steady state against a
+// backend too old to send one. Consumers must read that as "advertises
+// nothing" and degrade, never as "assume the feature is there" — which
+// is why `hasCapability` is the only accessor and there is deliberately
+// no version comparison anywhere in the client.
+export interface TransportHello {
+  /** The backend's wire dialect. Recorded for logs and bug reports;
+   *  nothing branches on it (docs/specs/remote-access.md §9). */
+  protocolVersion: number;
+  /** Behaviors this backend advertises. Possibly empty. */
+  capabilities: readonly string[];
+  /** Backend identity, or '' when the store had not opened yet. Empty
+   *  means unknown and must never be treated as a wildcard. */
+  backendId: string;
+  /** The backend's wall clock when it accepted this connection, in Unix
+   *  millis. */
+  serverTimeMs: number;
+  /** serverTimeMs minus the client's clock at receipt. Positive means
+   *  the backend is ahead. Captured here because it is only measurable
+   *  at the instant the frame lands, and a signed-credential failure
+   *  from clock skew is undebuggable without it. Includes one-way
+   *  network latency, so it is an indication, not a measurement. */
+  clockSkewMs: number;
+}
+
 export interface TransportStatusSnapshot {
   status: TransportStatus;
   /** Wall-clock millis when the next reconnect attempt fires. null when
@@ -321,6 +351,7 @@ export interface TransportStatusSnapshot {
 }
 
 type StatusHandler = (snapshot: TransportStatusSnapshot) => void;
+type HelloHandler = (hello: TransportHello | null) => void;
 
 // WSConstructor matches the global WebSocket signature plus enough state
 // to drive a fake in tests. We keep this typed (not `any`) so the test
@@ -531,6 +562,14 @@ export class WSClient {
   private readonly retryQueue: ClientRPCFrame[] = [];
   private readonly subscribers = new Map<string, Set<EventHandler>>();
   private readonly statusHandlers = new Set<StatusHandler>();
+  private readonly helloHandlers = new Set<HelloHandler>();
+  // The most recent hello. Survives a disconnect on purpose: the same
+  // backend is what the ladder is trying to reach, so clearing it would
+  // make every capability read flap to "unsupported" for the length of
+  // an outage and back. A reconnect to a DIFFERENT backend overwrites it
+  // with that backend's frame, which is the only case where the old
+  // answer was wrong.
+  private helloSnapshot: TransportHello | null = null;
   private statusSnapshot: TransportStatusSnapshot = {
     status: 'disconnected',
     nextAttemptAt: null,
@@ -666,6 +705,40 @@ export class WSClient {
     handler(this.statusSnapshot);
     return () => {
       this.statusHandlers.delete(handler);
+    };
+  }
+
+  /** What the backend said about itself in its hello frame, or null if
+   *  none has arrived (including against a backend too old to send one). */
+  getHello(): TransportHello | null {
+    return this.helloSnapshot;
+  }
+
+  /**
+   * Whether the attached backend advertises `capability`.
+   *
+   * This is the ONLY sanctioned compatibility question. No hello, or an
+   * unrecognised name, answers false, so a feature degrades instead of
+   * being attempted against a backend that cannot serve it. There is
+   * deliberately no protocol-version comparison to reach for: version
+   * gating guesses, flags ask (docs/specs/remote-access.md §9).
+   *
+   * Never an authorization check. The backend re-checks every RPC; a
+   * flag says the behavior EXISTS, not that this caller may use it.
+   */
+  hasCapability(capability: string): boolean {
+    return this.helloSnapshot?.capabilities.includes(capability) ?? false;
+  }
+
+  /**
+   * Subscribe to hello changes. Fires synchronously with the current
+   * value, then whenever a connection reports a different one.
+   */
+  onHelloChange(handler: HelloHandler): () => void {
+    this.helloHandlers.add(handler);
+    handler(this.helloSnapshot);
+    return () => {
+      this.helloHandlers.delete(handler);
     };
   }
 
@@ -1403,6 +1476,10 @@ export class WSClient {
       this.serverSendsHeartbeats = true;
       return;
     }
+    if (frame.type === 'hello') {
+      this.applyHello(frame);
+      return;
+    }
     if (frame.type === 'rpc') {
       const pending = this.pending.get(frame.id);
       if (!pending) return;
@@ -1446,6 +1523,43 @@ export class WSClient {
       this.notificationReplayBuffer = [];
       this.notificationReplayPending = false;
       for (const event of buffered) this.handleEventEntry(event);
+    }
+  }
+
+  // applyHello records the connection's opening frame and publishes it.
+  //
+  // Every field is validated rather than trusted: this is remote input,
+  // and a future backend may send shapes this build has never seen. A
+  // malformed field falls back to its neutral value instead of rejecting
+  // the frame, because a hello we half-understand is still worth more
+  // than none — and refusing it would make an additive server-side change
+  // look like a backend with no capabilities at all. Unknown FIELDS are
+  // ignored for free: nothing here enumerates the object.
+  private applyHello(frame: ServerHelloFrame): void {
+    const capabilities = Array.isArray(frame.capabilities)
+      ? frame.capabilities.filter((c): c is string => typeof c === 'string')
+      : [];
+    const serverTimeMs = Number.isFinite(frame.serverTimeMs) ? frame.serverTimeMs : 0;
+    const next: TransportHello = {
+      protocolVersion: Number.isFinite(frame.protocolVersion) ? frame.protocolVersion : 0,
+      capabilities,
+      backendId: typeof frame.backendId === 'string' ? frame.backendId : '',
+      serverTimeMs,
+      clockSkewMs: serverTimeMs === 0 ? 0 : serverTimeMs - Date.now(),
+    };
+    const previous = this.helloSnapshot;
+    this.helloSnapshot = next;
+    // Publish only on a real change. A reconnect to the same backend
+    // repeats the same answer except for the clock reading, and waking
+    // every consumer for a few milliseconds of skew would turn a routine
+    // reconnect into a re-render.
+    if (previous !== null && sameHello(previous, next)) return;
+    for (const handler of [...this.helloHandlers]) {
+      try {
+        handler(next);
+      } catch (err) {
+        console.warn('wsClient: hello handler threw', err);
+      }
     }
   }
 
@@ -1672,6 +1786,16 @@ export class WSClient {
       if (this.pending.has(frame.id)) this.sendFrame(frame);
     }
   }
+}
+
+// sameHello compares the two backends' SUBSTANTIVE answers. Clock skew
+// is excluded on purpose: it differs on every connection by definition,
+// so including it would defeat the change check entirely.
+function sameHello(a: TransportHello, b: TransportHello): boolean {
+  return a.protocolVersion === b.protocolVersion
+    && a.backendId === b.backendId
+    && a.capabilities.length === b.capabilities.length
+    && a.capabilities.every((cap, i) => cap === b.capabilities[i]);
 }
 
 function loadNotificationActivationSeq(scope: string): number {

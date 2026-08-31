@@ -7,7 +7,8 @@ walkthroughs live in
 
 ## What this package owns
 
-The HTTP listener (embedded SPA, `/bootstrap.json`, the `/ws` upgrade, and
+The HTTP listener (embedded SPA, `/bootstrap.json`, `/healthz`, the `/ws`
+upgrade, and
 `POST /rpc` for the `ao` CLI), the JSON wire frame, token authentication, the
 per-connection authorization policy, reflection-based RPC dispatch, and a
 per-channel bounded ring for event replay on reconnect. Method IDs are FNV-1a
@@ -42,6 +43,66 @@ origin. `methods_gen_test.go` fails on a generated method nobody classified
 (`TestGeneratedMethods_AllClassified`) and on a classified name that no longer
 exists. A reverse proxy on the same host makes remote peers appear loopback and
 defeats this locality, so proxy from a different host instead.
+
+## HTTP surface inventory
+
+`httpsurfaces.go` is not a list that describes the routes: it IS the
+registration. `buildHTTPServer` mounts exactly what `httpSurfaces()`
+returns, so a route cannot reach the wire without declaring the four
+properties `docs/specs/remote-access.md` §13 requires — listener,
+principal tiers, required scope, content-type posture — plus the `Why`
+behind them. Declaration and mount cannot drift, because they are the
+same statement. `httpsurfaces_test.go` freezes the pattern set, so adding
+a route is a deliberate two-place edit rather than an append.
+
+Scopes in that table are DECLARATIONS, not enforcement: the generated
+scope table arrives in phase 3, and the enforced facts today remain the
+token check, the Host guard, and peer locality. Writing intent down now
+is what lets phase 3 diff against it.
+
+`/healthz` is the one deliberately unauthenticated route besides the
+bundle. It answers version + backend id because its two consumers — the
+pre-WS compatibility check and the update watchdog — run precisely when
+no valid credential is held; a token-gated health route answers 404 for a
+restarted backend, which is indistinguishable from down and is the exact
+condition it exists to detect. It is still not readable cross-origin: no
+`Access-Control-Allow-Origin`, plus the same `loopbackHostGuard` the
+credentialled routes use. Readiness stays `/bootstrap.json`'s 503 and
+must not be folded in here.
+
+## Hello frame
+
+Every upgraded connection is written a `{"type":"hello"}` frame FIRST,
+synchronously, before the event pump or keepalive goroutines exist
+(`conn.go writeHello`). The ordering is the contract: a client that reads
+hello first seeds its compatibility state before anything else lands and
+needs no "have I been told yet" branch on every other frame. Racing it
+against the pump would make that guarantee probabilistic.
+
+It carries `protocolVersion`, `capabilities`, `backendId`, and
+`serverTimeMs`.
+
+- **Nothing gates on the version.** Features negotiate through capability
+  flags: a client asks "does this backend have X" and degrades on the
+  answer instead of inferring from a number (spec §9). `ProtocolVersion`
+  moves only for a change that alters what an EXISTING frame or field
+  means; adding a frame type, field, or channel is additive and does not
+  move it. Additive-only is what makes the swap window — an old bundle
+  live against a just-updated backend — safe.
+- **`serverCapabilities` is empty today** and a test freezes that. A name
+  is stable forever once shipped, because a client on an older bundle may
+  still ask about it; retiring one means the backend stops advertising
+  it, never that it starts meaning something else. A flag says a behavior
+  EXISTS — it is never authorization, which is re-checked per RPC.
+- `capabilities` serializes as `[]`, never `null`, so "advertises
+  nothing" stays distinguishable from "too old to send this frame".
+- `serverTimeMs` is sampled per accept, not cached at boot: the field
+  exists so a client can measure its own skew, and a cached value would
+  be wrong by the process uptime.
+
+Frame consumers must ignore unknown frame types. The Go launcher client
+(`wsllauncher/notification_client.go`) does this by having no `default`
+in its type switch; keep it that way.
 
 ## Credentials and refusal shapes
 

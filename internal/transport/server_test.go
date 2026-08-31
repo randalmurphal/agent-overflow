@@ -453,12 +453,8 @@ func TestServer_EventSubscriptionFiltersLiveDelivery(t *testing.T) {
 	if _, err := f.bus.Emit("notification:send", "wanted"); err != nil {
 		t.Fatal(err)
 	}
-	_, raw, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var got ServerFrame
-	if err := json.Unmarshal(raw, &got); err != nil {
+	if err := json.Unmarshal(readPastHello(t, conn), &got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Type != frameTypeEvent || got.Channel != "notification:send" {
@@ -798,12 +794,8 @@ func TestServer_ReplayMapTooLarge(t *testing.T) {
 		t.Fatalf("ws write: %v", err)
 	}
 
-	_, raw, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("ws read: %v", err)
-	}
 	var resp ServerFrame
-	if err := json.Unmarshal(raw, &resp); err != nil {
+	if err := json.Unmarshal(readPastHello(t, conn), &resp); err != nil {
 		t.Fatal(err)
 	}
 	if resp.Error == nil || resp.Error.Code != ErrCodeBadParams {
@@ -937,12 +929,8 @@ func TestServer_BadFrameReturnsError(t *testing.T) {
 	if err := conn.Write(ctx, websocket.MessageText, []byte("not-json")); err != nil {
 		t.Fatal(err)
 	}
-	_, raw, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var resp ServerFrame
-	if err := json.Unmarshal(raw, &resp); err != nil {
+	if err := json.Unmarshal(readPastHello(t, conn), &resp); err != nil {
 		t.Fatal(err)
 	}
 	if resp.Error == nil {

@@ -570,6 +570,117 @@ describe('WSClient', () => {
     vi.useRealTimers();
   });
 
+  it('records the hello frame and answers capability questions from it', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    // Before any hello: every capability question answers false, so a
+    // feature degrades rather than being attempted against a backend
+    // that may not have it.
+    expect(client.getHello()).toBeNull();
+    expect(client.hasCapability('anything')).toBe(false);
+
+    const p = client.callByID(1, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.pushFrame({
+      type: 'hello',
+      protocolVersion: 1,
+      capabilities: ['demo.feature'],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: Date.now(),
+    });
+
+    expect(client.getHello()?.backendId).toBe('backend-uuid-1');
+    expect(client.getHello()?.protocolVersion).toBe(1);
+    expect(client.hasCapability('demo.feature')).toBe(true);
+    // An unrecognised name is false, never a guess from the version.
+    expect(client.hasCapability('some.future.feature')).toBe(false);
+
+    const id = ws.sent.find((f) => f.type === 'rpc')!.id as string;
+    ws.pushFrame({ type: 'rpc', id, result: 'ok' });
+    await expect(p).resolves.toBe('ok');
+    client.close();
+  });
+
+  it('keeps the hello answer across a reconnect and republishes only on change', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const seen: Array<string | null> = [];
+    client.onHelloChange((hello) => seen.push(hello?.backendId ?? null));
+
+    client.subscribe('thread:updated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    const hello = {
+      type: 'hello',
+      protocolVersion: 1,
+      capabilities: ['demo.feature'],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: Date.now(),
+    };
+    first.pushFrame(hello);
+
+    first.triggerClose(1006);
+    // The ladder is trying to reach the SAME backend, so the capability
+    // answer must not flap to "unsupported" for the length of an outage.
+    expect(client.hasCapability('demo.feature')).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(300);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    // Same backend, same answer but a fresh clock: waking every consumer
+    // for a few milliseconds of skew would turn a routine reconnect into
+    // a re-render.
+    second.pushFrame({ ...hello, serverTimeMs: Date.now() + 5 });
+    expect(seen).toEqual([null, 'backend-uuid-1']);
+
+    // A different backend IS a change, and must be published.
+    second.pushFrame({ ...hello, backendId: 'backend-uuid-2' });
+    expect(seen).toEqual([null, 'backend-uuid-1', 'backend-uuid-2']);
+
+    client.close();
+    vi.useRealTimers();
+  });
+
+  it('accepts a hello whose fields are the wrong shape, falling back neutrally', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    // A future backend may send shapes this build has never seen.
+    // Half-understanding the frame beats rejecting it: refusing would
+    // make an additive server change look like a backend with no
+    // capabilities at all.
+    ws.pushFrame({
+      type: 'hello',
+      protocolVersion: 'two',
+      capabilities: [null, 'demo.feature', 7],
+      backendId: 42,
+      serverTimeMs: 'soon',
+      unknownFutureField: { nested: true },
+    });
+
+    const hello = client.getHello()!;
+    expect(hello.protocolVersion).toBe(0);
+    expect(hello.capabilities).toEqual(['demo.feature']);
+    expect(hello.backendId).toBe('');
+    expect(hello.serverTimeMs).toBe(0);
+    expect(hello.clockSkewMs).toBe(0);
+    expect(client.hasCapability('demo.feature')).toBe(true);
+
+    client.close();
+  });
+
   it('re-sends replay frame on reconnect with lastSeqByChannel', async () => {
     vi.useFakeTimers();
     // Stub Math.random so the jitter delay is deterministic. Initial

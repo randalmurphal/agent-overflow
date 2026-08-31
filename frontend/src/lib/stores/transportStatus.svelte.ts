@@ -15,6 +15,7 @@ import {
   DisconnectedError,
   TransportError,
   wsClient,
+  type TransportHello,
   type TransportStatusSnapshot,
 } from '../transport/wsClient';
 
@@ -36,6 +37,41 @@ let unsubscribe: (() => void) | null = wsClient.onStatusChange(publish);
 
 export function getTransportStatus(): TransportStatusSnapshot {
   return snapshot;
+}
+
+// The hello frame's contents, mirrored into runes for the same reason as
+// the status snapshot: it changes on a connection edge, and consumers
+// render from it. Subscribed at module load so a $derived can read it
+// without mutating state inside a derive.
+let hello = $state<TransportHello | null>(null);
+
+let unsubscribeHello: (() => void) | null = wsClient.onHelloChange((next) => {
+  hello = next;
+});
+
+/** What the attached backend said about itself, or null before any hello
+ *  has arrived. Reactive; safe to read from a `$derived`. */
+export function getTransportHello(): TransportHello | null {
+  return hello;
+}
+
+/**
+ * Whether the attached backend advertises `capability`.
+ *
+ * The one compatibility question feature code is allowed to ask. No
+ * hello and an unrecognised name both answer false, so a feature
+ * degrades rather than being attempted against a backend that cannot
+ * serve it. Reactive, unlike `wsClient.hasCapability`, so a UI written
+ * against it re-evaluates when a reconnect lands on a backend with a
+ * different answer.
+ *
+ * There is deliberately no protocol-version accessor here: gating on a
+ * version guesses at what a number implies, gating on a flag asks
+ * (docs/specs/remote-access.md §9). A flag is also never authorization —
+ * the backend re-checks every RPC regardless.
+ */
+export function backendHasCapability(capability: string): boolean {
+  return hello?.capabilities.includes(capability) ?? false;
 }
 
 /**
@@ -170,5 +206,19 @@ export function resetTransportStatusForTest(): void {
     unsubscribe();
     unsubscribe = null;
   }
+  if (unsubscribeHello) {
+    unsubscribeHello();
+    unsubscribeHello = null;
+  }
   snapshot = { status: 'disconnected', nextAttemptAt: null };
+  hello = null;
+}
+
+/**
+ * Test seam: drive the hello snapshot without a live socket. The unit
+ * suite has no transport, so nothing would ever populate it; a test that
+ * exercises a capability-gated path sets what it needs.
+ */
+export function __setTransportHelloForTest(next: TransportHello | null): void {
+  hello = next;
 }

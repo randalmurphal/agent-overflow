@@ -48,6 +48,19 @@ remote browser alike. Protocol and authz rules:
   "remote" tells a desktop user to reopen a share link that does not
   exist, and a false "loopback" leaves a phone retrying a dead token.
 
+The connection's opening frame is the OTHER identity source, alongside
+the manifest. `wsClient` records it as `TransportHello` and
+`stores/transportStatus.svelte.ts` mirrors it into runes. Read it through
+`backendHasCapability()`; that is the only sanctioned compatibility
+question. No hello and an unrecognised name both answer false, so a
+feature degrades instead of being attempted against a backend that cannot
+serve it. There is deliberately no protocol-version accessor to reach
+for: version gating guesses at what a number implies, flag gating asks
+(`docs/specs/remote-access.md` §9). A flag is never authorization — the
+backend re-checks every RPC regardless. The snapshot survives a
+disconnect on purpose, since the ladder is trying to reach the same
+backend and a flapping capability answer would be worse than a stale one.
+
 Three manifest-derived flags, each with a different reactivity contract:
 
 - `runMode.ts` reads once at module load, because a different mode means a

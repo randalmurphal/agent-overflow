@@ -92,6 +92,12 @@ type connSettings struct {
 	maxConcurrentRPCs int
 	keepaliveInterval time.Duration
 	pongTimeout       time.Duration
+	// hello is the frame written before any other traffic. Populated per
+	// connection rather than once at boot because ServerTimeMs is the
+	// clock at accept time — a value cached at startup would be a
+	// confidently wrong answer to the one question the field exists to
+	// settle.
+	hello helloFrame
 }
 
 // connHandler owns one upgraded WebSocket. It pumps client frames into
@@ -187,6 +193,21 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// exits and after in-flight RPC goroutines drain.
 	connCtx, state := WithConnState(connCtx)
 	defer state.RunCleanups()
+
+	// Hello first, synchronously, before the pump and keepalive
+	// goroutines exist. Ordering is the contract: a client that reads
+	// hello as the first frame can seed its compatibility state before
+	// the first event or RPC answer lands, and does not need a
+	// "have I been told yet" branch on every other frame. Racing it
+	// against the pump would make the guarantee probabilistic.
+	//
+	// A failed write means the peer is already gone. Nothing to recover:
+	// return and let the deferred teardown run, rather than serving a
+	// connection whose first frame never arrived.
+	if err := h.writeHello(connCtx, settings.hello); err != nil {
+		log.Printf("transport: ws %s hello write failed: %s", profile.remoteAddr, closeReason(err))
+		return
+	}
 
 	// Event pump: deliver every event the bus produces to the wire.
 	// Lives on its own goroutine so a slow read doesn't backpressure
@@ -590,6 +611,26 @@ func (h *connHandler) writeFrame(ctx context.Context, frame ServerFrame) {
 			log.Printf("transport: ws write: %v", err)
 		}
 	}
+}
+
+// writeHello writes the connection's opening frame. Unlike writeFrame it
+// RETURNS the error: hello is the one frame whose failure is worth
+// abandoning the connection over, since everything after it assumes the
+// client has been told what it is talking to.
+func (h *connHandler) writeHello(ctx context.Context, hello helloFrame) error {
+	hello.Type = frameTypeHello
+	hello.ProtocolVersion = ProtocolVersion
+	if hello.Capabilities == nil {
+		// Never `null` on the wire: an empty array says "advertises
+		// nothing", which a client reads without a nil check, while null
+		// invites one more branch at every consumer.
+		hello.Capabilities = []string{}
+	}
+	buf, err := json.Marshal(hello)
+	if err != nil {
+		return fmt.Errorf("marshal hello frame: %w", err)
+	}
+	return h.writeRaw(ctx, buf)
 }
 
 // writeRaw is the single wire-write chokepoint: pre-encoded bytes go

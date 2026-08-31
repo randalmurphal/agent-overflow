@@ -42,12 +42,31 @@ export interface ServerPingFrame {
   type: 'ping';
 }
 
+// Server hello: the first frame on every connection
+// (internal/transport/frame.go helloFrame). States what backend this is,
+// what dialect it speaks, and what it can do, so a client seeds its
+// compatibility state before any other frame lands.
+//
+// Nothing gates on `protocolVersion` — features negotiate through
+// `capabilities`, which is why the version is typed as a plain number
+// with no comparison helper anywhere. A backend too old to send this
+// frame simply leaves the client with no hello, which reads as "no
+// capabilities" and degrades rather than guessing.
+export interface ServerHelloFrame {
+  type: 'hello';
+  protocolVersion: number;
+  capabilities: string[];
+  backendId?: string;
+  serverTimeMs: number;
+}
+
 export type ServerFrame =
   | ServerRPCFrame
   | ServerEventFrame
   | ServerBatchFrame
   | ServerReplayFrame
-  | ServerPingFrame;
+  | ServerPingFrame
+  | ServerHelloFrame;
 
 export interface ClientRPCFrame {
   type: 'rpc';

@@ -98,6 +98,13 @@ type Config struct {
 	// EventBus pushes server-initiated events. Required.
 	EventBus *EventBus
 
+	// Version is the semantic version this binary reports on /healthz and
+	// in logs. Injected because the string is stamped into package main
+	// at link time; this package never reads a build variable. Empty is
+	// valid (tests, unstamped builds) and reports as empty rather than
+	// inventing a number.
+	Version string
+
 	// AssetHandler serves the SPA assets. Optional — when nil, the
 	// HTTP server returns 404 for non-RPC paths. main.go wires this
 	// to http.FileServer(http.FS(embeddedAssets)) so the same process
@@ -425,20 +432,9 @@ func matchesErrno(err error, errnos []syscall.Errno) bool {
 // callers from the LAN need to reach the server by its LAN host.
 func (s *Server) buildHTTPServer() *http.Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/bootstrap.json", s.loopbackHostGuard(s.handleBootstrap))
-	mux.HandleFunc("/ws", s.loopbackHostGuard(s.handleWS))
-	if s.cfg.ScopedTokens != nil {
-		mux.HandleFunc(ScopedRPCPath, s.loopbackHostGuard(s.handleScopedRPC))
+	for _, surface := range s.httpSurfaces() {
+		mux.Handle(surface.Pattern, surface.Handler)
 	}
-	assetH := s.cfg.AssetHandler
-	if assetH == nil {
-		assetH = http.NotFoundHandler()
-	}
-	assetFinal := withAssetHeaders(assetH)
-	if s.cfg.CrossOriginIsolate {
-		assetFinal = withCrossOriginIsolation(assetFinal)
-	}
-	mux.Handle("/", assetFinal)
 	return &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: s.cfg.HTTPReadHeaderTimeout,
@@ -710,6 +706,52 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Health is the /healthz document: what backend this is and what version
+// it runs. Deliberately two fields. It answers "is the thing I expect
+// still there, and is it still the build I was talking to", which is all
+// the pre-WS compatibility check and the update watchdog need; readiness
+// keeps its own channel (/bootstrap.json's 503) rather than being folded
+// in here, because a health probe that conflates "booting" with
+// "unreachable" is the failure mode both consumers are trying to avoid.
+//
+// Additive-only, like every other wire shape: a field may be appended,
+// never repurposed.
+type Health struct {
+	// Version is Config.Version, the semantic version stamped at link
+	// time. Empty on an unstamped build, which reads as unknown.
+	Version string `json:"version"`
+	// BackendID identifies this backend. Empty until the history store
+	// opens — the same "unknown, never a wildcard" rule the bootstrap
+	// manifest carries.
+	BackendID string `json:"backendId,omitempty"`
+}
+
+// handleHealthz serves the unauthenticated health document. The posture
+// decision and its reasoning live on the route's row in
+// httpsurfaces.go; the enforcement here is: GET only, no credential
+// consulted, no CORS header (so a foreign page may issue the request but
+// can never read the answer), no-store, and the same security headers
+// every other route sends.
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	WriteSecurityHeaders(h)
+	h.Set("Cache-Control", "no-store, max-age=0")
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		h.Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	backendID := ""
+	if s.cfg.BackendIdentity != nil {
+		backendID, _ = s.cfg.BackendIdentity()
+	}
+	h.Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(Health{
+		Version:   s.cfg.Version,
+		BackendID: backendID,
+	})
+}
+
 // withAssetHeaders wraps the asset handler with caching + security
 // headers. Cache headers are content- and peer-aware: Vite-hashed asset
 // paths (/assets/*) get a year of immutable caching for remote peers
@@ -808,6 +850,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		defer s.remoteConns.Add(-1)
 	}
 
+	backendID := ""
+	if s.cfg.BackendIdentity != nil {
+		backendID, _ = s.cfg.BackendIdentity()
+	}
+
 	// Use the server's root context so Shutdown can cancel us promptly,
 	// not r.Context() which net/http only cancels on connection close.
 	runConnHandler(s.rootCtx, conn, s.cfg.Dispatcher, s.cfg.EventBus, connSettings{
@@ -815,6 +862,15 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		maxConcurrentRPCs: s.cfg.MaxConcurrentRPCs,
 		keepaliveInterval: s.cfg.KeepaliveInterval,
 		pongTimeout:       s.cfg.KeepalivePongTimeout,
+		hello: helloFrame{
+			Capabilities: serverCapabilities,
+			BackendID:    backendID,
+			// Sampled per accept: the field's whole purpose is letting a
+			// client measure its own skew against this backend, which a
+			// value cached at boot would silently corrupt by the process
+			// uptime.
+			ServerTimeMs: time.Now().UnixMilli(),
+		},
 	}, profile)
 	// Best-effort close. Read errors above already represent a closed
 	// connection; any normal-closure send here is for the other half

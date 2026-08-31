@@ -14,7 +14,86 @@ const (
 	frameTypeSubscribe = "subscribe"
 	frameTypeBatch     = "batch"
 	frameTypePing      = "ping"
+	frameTypeHello     = "hello"
 )
+
+// ProtocolVersion is the wire dialect this build speaks, stated in the
+// hello frame on every connection.
+//
+// It is a FACT, not a gate. Nothing on either side compares it to decide
+// whether to proceed: features negotiate through capability flags, so a
+// client asks "does this backend have X" and degrades on the answer
+// instead of guessing from a number
+// (docs/specs/remote-access.md §9, compatibility policy). The version is
+// here for logs, bug reports, and the day a change is genuinely not
+// expressible as a flag — at which point the decision to gate on it is
+// made deliberately, with this comment as the record that no such
+// decision has been made yet.
+//
+// Bump it only for a change that alters what an EXISTING frame or field
+// means. Adding a frame type, a field, or a channel is additive and does
+// not move it: additive-only is the discipline that makes the swap window
+// (an old bundle live against a just-updated backend) safe.
+const ProtocolVersion = 1
+
+// serverCapabilities is the set every connection is told about.
+//
+// A capability says the backend HAS a behavior, never that the caller is
+// allowed to use it: authorization is re-checked per RPC, and hello flags
+// are compatibility hints only (spec §5, frontend capability model).
+// Deliberately not per-connection for the same reason — anything that
+// varies by who is asking is authorization, and belongs in the scope
+// table rather than here.
+//
+// Rules for a name, which apply from the first entry:
+//
+//   - It is a stable string that never changes meaning once shipped. A
+//     client on an older bundle may still be asking about it. Retiring
+//     one means the backend stops advertising it, never that it starts
+//     meaning something else.
+//   - It names a BEHAVIOR a client can degrade around, not a version, a
+//     build flag, or a deployment mode.
+//   - Order is fixed so the frame bytes are stable across boots: a
+//     diffable log line, and nothing downstream has to sort.
+//
+// EMPTY today. The mechanism is what phase 1 owes; the first real flag
+// arrives with the first behavior a client would otherwise have to guess
+// at. An empty list is a complete, honest answer — "this backend
+// advertises nothing" — and is distinguishable on the wire from a
+// backend too old to send the frame at all.
+var serverCapabilities = []string{}
+
+// helloFrame is the first frame written on every upgraded connection.
+//
+// A separate envelope rather than fields on ServerFrame: ServerFrame is
+// built per event and per RPC response, and four more fields would grow
+// every one of them to carry something only the connection's first frame
+// ever uses. Same reasoning as batchFrame.
+//
+// Forward tolerance is the contract on the other side: a client that
+// does not know this frame type must ignore it, and a client that knows
+// it must ignore fields it does not recognise. Both are exercised by the
+// future-dialect fixture in the TS suite.
+type helloFrame struct {
+	Type string `json:"type"`
+	// ProtocolVersion states the dialect; see the constant.
+	ProtocolVersion int `json:"protocolVersion"`
+	// Capabilities is always present, never null: an empty JSON array
+	// means "this backend advertises nothing", which a client can read
+	// without a nil check. A missing field would be indistinguishable
+	// from a backend too old to send the frame at all.
+	Capabilities []string `json:"capabilities"`
+	// BackendID identifies this backend across clients and reconnects.
+	// Empty when the history store has not opened yet — the same rule as
+	// the bootstrap manifest, and it means "unknown", never a wildcard.
+	BackendID string `json:"backendId,omitempty"`
+	// ServerTimeMs is the backend's wall clock at the moment this
+	// connection was accepted, in Unix milliseconds. Phones behind
+	// captive portals drift, and a silent clock skew is the hardest class
+	// of auth failure to debug once signed credentials arrive (spec §9),
+	// so the honest measurement is published from the first frame.
+	ServerTimeMs int64 `json:"serverTimeMs"`
+}
 
 // MaxReplayChannels caps the number of channels a single replay request
 // can ask the server to scan. A maliciously oversized LastSeqByChannel
