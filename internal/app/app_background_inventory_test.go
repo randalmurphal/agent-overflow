@@ -158,10 +158,14 @@ func TestListRunningBackgroundWorkUnionsAllThreeSources(t *testing.T) {
 		t.Fatalf("expected the unified-exec task to exist in no table, store returned %d rows", len(storeOnly))
 	}
 
-	rows, err := app.ListRunningBackgroundWork()
+	inv, err := app.ListRunningBackgroundWork()
 	if err != nil {
 		t.Fatalf("ListRunningBackgroundWork: %v", err)
 	}
+	if len(inv.UnreadableThreadIDs) != 0 {
+		t.Fatalf("unreadable threads = %v, want none", inv.UnreadableThreadIDs)
+	}
+	rows := inv.Rows
 	if len(rows) != 3 {
 		t.Fatalf("inventory row count = %d, want 3: %+v", len(rows), rows)
 	}
@@ -219,10 +223,14 @@ func TestListRunningBackgroundWorkSkipsThreadsWithoutALiveSession(t *testing.T) 
 	}
 	seedClaudeBackgroundTaskRow(t, app, thread.ID, "bg-orphan", "task-orphan", 1000)
 
-	rows, err := app.ListRunningBackgroundWork()
+	inv, err := app.ListRunningBackgroundWork()
 	if err != nil {
 		t.Fatalf("ListRunningBackgroundWork: %v", err)
 	}
+	if len(inv.UnreadableThreadIDs) != 0 {
+		t.Fatalf("unreadable threads = %v, want none", inv.UnreadableThreadIDs)
+	}
+	rows := inv.Rows
 	if len(rows) != 0 {
 		t.Fatalf("inventory reported %d rows for a thread with no session: %+v", len(rows), rows)
 	}
@@ -231,10 +239,11 @@ func TestListRunningBackgroundWorkSkipsThreadsWithoutALiveSession(t *testing.T) 
 	// this half the assertion above would also pass on a method that
 	// returns nothing at all.
 	registerInventoryTestSession(app, thread.ID, string(provider.Claude))
-	rows, err = app.ListRunningBackgroundWork()
+	inv, err = app.ListRunningBackgroundWork()
 	if err != nil {
 		t.Fatalf("ListRunningBackgroundWork (with session): %v", err)
 	}
+	rows = inv.Rows
 	if len(rows) != 1 || rows[0].ItemID != "bg-orphan" {
 		t.Fatalf("expected the launch once a session exists, got %+v", rows)
 	}
@@ -281,10 +290,14 @@ func TestListRunningBackgroundWorkOmitsRecentlyCompletedWork(t *testing.T) {
 		t.Fatalf("tray row count = %d, want the launch plus its recent completion", len(tray))
 	}
 
-	rows, err := app.ListRunningBackgroundWork()
+	inv, err := app.ListRunningBackgroundWork()
 	if err != nil {
 		t.Fatalf("ListRunningBackgroundWork: %v", err)
 	}
+	if len(inv.UnreadableThreadIDs) != 0 {
+		t.Fatalf("unreadable threads = %v, want none", inv.UnreadableThreadIDs)
+	}
+	rows := inv.Rows
 	if len(rows) != 0 {
 		t.Fatalf("inventory reported finished work as running: %+v", rows)
 	}
@@ -318,8 +331,8 @@ func TestStopThreadBackgroundWorkRoutesThroughTheProviderStopRPC(t *testing.T) {
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
 	waitUntilE2E(t, 3*time.Second, "background launch carries its task_id", func() bool {
-		rows, err := app.ListRunningBackgroundWork()
-		return err == nil && len(rows) == 1 && rows[0].StopID == "task-inv-1"
+		inv, err := app.ListRunningBackgroundWork()
+		return err == nil && len(inv.Rows) == 1 && inv.Rows[0].StopID == "task-inv-1"
 	})
 
 	stopped, err := app.StopThreadBackgroundWork(thread.ID)

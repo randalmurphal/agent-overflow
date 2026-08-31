@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 
 	"agent-overflow/internal/provider"
@@ -69,6 +70,24 @@ type RunningBackgroundWork struct {
 	StartedAt int64 `json:"startedAt"`
 }
 
+// BackgroundWorkInventory is ListRunningBackgroundWork's answer: the
+// running rows, oldest first, plus the ids of any live-session threads
+// whose rows could not be read.
+//
+// Incompleteness rides the payload rather than the error return because
+// the wire delivers one or the other, never both: a bound method's
+// non-nil error discards its result at the dispatcher, so "partial rows
+// plus an error" would reach a client as no rows at all. A caller
+// deciding what to shut down wants the rows it CAN see and the fact
+// that a thread went unread; the full error text is logged server-side.
+type BackgroundWorkInventory struct {
+	Rows []RunningBackgroundWork `json:"rows"`
+	// UnreadableThreadIDs names live-session threads whose task rows
+	// failed to read. Empty on the ordinary path; non-empty means the
+	// inventory is a lower bound, not the whole answer.
+	UnreadableThreadIDs []string `json:"unreadableThreadIds,omitempty"`
+}
+
 // ListRunningBackgroundWork returns every background task running right
 // now, across every thread, oldest first — the answer to "what is this
 // host still carrying" from a client that cannot look at the machine.
@@ -92,7 +111,7 @@ type RunningBackgroundWork struct {
 // differs: the tray's completed-sibling retention window is a
 // live-render tuning value, so the terminal rows it carries are dropped
 // and an inventory reports what is running.
-func (a *App) ListRunningBackgroundWork() ([]RunningBackgroundWork, error) {
+func (a *App) ListRunningBackgroundWork() (BackgroundWorkInventory, error) {
 	live := a.sessionManager().snapshot()
 	threadIDs := make([]string, 0, len(live))
 	for threadID := range live {
@@ -100,36 +119,34 @@ func (a *App) ListRunningBackgroundWork() ([]RunningBackgroundWork, error) {
 	}
 	sort.Strings(threadIDs)
 
-	var (
-		out  []RunningBackgroundWork
-		errs []error
-	)
+	var inv BackgroundWorkInventory
 	for _, threadID := range threadIDs {
 		rows, err := a.runningBackgroundWorkForThread(threadID, live[threadID].Provider)
 		if err != nil {
 			// One unreadable thread must not blank the whole
 			// inventory: a partial answer that names what it could
 			// not read beats no answer at all when the caller is
-			// deciding what to shut down.
-			errs = append(errs, err)
+			// deciding what to shut down. The wire cannot carry rows
+			// beside an error (see BackgroundWorkInventory), so the
+			// gap is reported in the payload and detailed in the log.
+			log.Printf("app: list running background work: thread %s: %v", threadID, err)
+			inv.UnreadableThreadIDs = append(inv.UnreadableThreadIDs, threadID)
 			continue
 		}
-		out = append(out, rows...)
+		inv.Rows = append(inv.Rows, rows...)
 	}
 
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].StartedAt != out[j].StartedAt {
-			return out[i].StartedAt < out[j].StartedAt
+	sort.SliceStable(inv.Rows, func(i, j int) bool {
+		if inv.Rows[i].StartedAt != inv.Rows[j].StartedAt {
+			return inv.Rows[i].StartedAt < inv.Rows[j].StartedAt
 		}
-		if out[i].ThreadID != out[j].ThreadID {
-			return out[i].ThreadID < out[j].ThreadID
+		if inv.Rows[i].ThreadID != inv.Rows[j].ThreadID {
+			return inv.Rows[i].ThreadID < inv.Rows[j].ThreadID
 		}
-		return out[i].ItemID < out[j].ItemID
+		return inv.Rows[i].ItemID < inv.Rows[j].ItemID
 	})
-	if len(errs) > 0 {
-		return slicesx.OrEmpty(out), fmt.Errorf("list running background work: %w", errors.Join(errs...))
-	}
-	return slicesx.OrEmpty(out), nil
+	inv.Rows = slicesx.OrEmpty(inv.Rows)
+	return inv, nil
 }
 
 // StopThreadBackgroundWork terminates every background task one thread

@@ -3,6 +3,7 @@
 
 export {
     AttachmentThumbnail,
+    BackgroundWorkInventory,
     BranchCommit,
     BranchPruneCandidate,
     BranchPruneCandidates,
