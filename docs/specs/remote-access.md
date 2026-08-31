@@ -226,9 +226,29 @@ key IS the session id — a renewal extends the session row rather than
 minting a new one, so revoke-the-family is exactly revoke-the-session
 and every open socket keys on one durable id. Reuse spends the whole
 chain FIRST, then revokes. Windows live in `policy.go` (browser
-15m/12h, native 1h/30d). The device-key binding is a thumbprint
-presented on `X-AO-Device-Key` until phase 5's DPoP proof replaces the
-value; browser passkey re-auth gating is phase 5.
+15m/12h, native 1h/30d). Browser passkey re-auth gating is phase 5.
+
+LANDED 2026-08-31 (wave 8a): the signed device-key proof replaced the
+bare thumbprint on `X-AO-Device-Key` for every path that binds to a
+device key (`/auth/pair`, `/auth/token`, `/auth/ticket` via the one
+SessionForRequest hook). ES256 compact JWS, public key embedded,
+payload binds method + PATH (deliberately not RFC 9449's full URI — one
+backend answers under several authorities) + `jti` + `iatMs`
+(milliseconds); alg pinned, no agility. Verification:
+`internal/identity/deviceproof.go`, replay guard two rotating
+generations capped 8192 with rotate-early-at-cap
+(`proofreplay.go`), freshness ±2min symmetric. The ROW decides the
+acceptable shape (`devices.proof_kind`, v77, DEFAULT `bearer`): a
+`key` row presenting a bare string is `proof_downgraded`, never a
+fallback, enrollment included; a `bearer` row (plain-HTTP LAN browser,
+constraint 6 — no secure context, no WebCrypto) keeps its exact prior
+path, so no migration step runs. Client key: non-extractable WebCrypto
+ECDSA P-256 in IndexedDB, generated at enrollment ONLY
+(`frontend/src/lib/transport/deviceKey.ts`); a key-bound session whose
+key vanished clears itself rather than retrying a refusal the backend
+answers by design. New reasons: `proof_replayed` (retryable),
+`proof_not_bound`, `proof_downgraded`. A real-Chromium proof vector
+pins Go↔WebCrypto agreement.
 
 Every authentication failure carries a **closed, typed reason code**
 end-to-end (missing/malformed proof, key mismatch, time window,
