@@ -122,8 +122,27 @@ class MockWebSocket {
     this.sent.push(JSON.parse(data) as Record<string, unknown>);
   }
 
+  // When set, close() only moves to CLOSING and parks the event;
+  // flushClose() delivers it. Models the real browser socket, whose
+  // close event is always asynchronous — the window in which a fresh
+  // connect can start while the old socket is still tearing down.
+  deferClose = false;
+  private pendingClose: { code: number; reason?: string } | null = null;
+
   close(code?: number, reason?: string): void {
+    if (this.deferClose && this.readyState < 2) {
+      this.readyState = 2; // CLOSING
+      this.pendingClose = { code: code ?? 1005, reason };
+      return;
+    }
     this.triggerClose(code ?? 1005, reason);
+  }
+
+  flushClose(): void {
+    if (this.pendingClose === null) return;
+    const { code, reason } = this.pendingClose;
+    this.pendingClose = null;
+    this.triggerClose(code, reason);
   }
 
   addEventListener(type: 'open', listener: () => void): void;
@@ -3085,6 +3104,85 @@ describe('WSClient', () => {
       expect(first.readyState).toBe(3);
       const url = new URL(MockWebSocket.instances[1]!.url);
       expect(url.searchParams.get('ticket')).toBe('tik-2');
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // A dying socket's close event landing during the pre-socket stage of
+  // a fresh connect must not queue a second attempt: the fresh attempt's
+  // socket is already past 'open' when the queued one dials, so the
+  // supersede guard never reaps it and BOTH sockets stay attached (seen
+  // live as two registry entries for one page after a pairing redial).
+  it('does not dial a second socket when a close lands mid-connect', async () => {
+    localStorage.clear();
+    try {
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      // Only the SECOND mint stalls until released — that is the
+      // pre-socket window of the connect attempt under test. Any later
+      // mint answers at once, so a wrongly queued third attempt gets to
+      // dial and the assertion below can see its socket.
+      let releaseMint: (() => void) | null = null;
+      let mints = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          mints += 1;
+          if (mints === 2) {
+            await new Promise<void>((resolve) => {
+              releaseMint = resolve;
+            });
+          }
+          return new Response(JSON.stringify({ ticket: `tik-${mints}` }), { status: 200 });
+        }),
+      );
+
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      void client.callByID(123, ['arg']).catch(() => {});
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+      const first = MockWebSocket.instances[0]!;
+      first.acceptOpen();
+      await flushMicrotasks();
+
+      // The client closes the socket (browser semantics: CLOSING now,
+      // close event later), and fresh demand starts a connect that
+      // stalls in its mint, before constructing a socket.
+      first.deferClose = true;
+      client.redialAfterPairing();
+      expect(first.readyState).toBe(2);
+      void client.callByID(124, ['arg']).catch(() => {});
+      await vi.waitFor(() => expect(mints).toBe(2));
+
+      // The old socket's close arrives while that attempt is in flight.
+      first.flushClose();
+      await flushMicrotasks();
+
+      // The stalled attempt proceeds and its socket opens.
+      releaseMint!();
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+      MockWebSocket.instances[1]!.acceptOpen();
+      await flushMicrotasks();
+
+      // No queued third attempt fires behind it (the ladder's first
+      // delay is well under this wait).
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(MockWebSocket.instances).toHaveLength(2);
+      expect(MockWebSocket.instances[1]!.readyState).toBe(1);
       client.close();
     } finally {
       clearPairedSession();

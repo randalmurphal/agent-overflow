@@ -1545,6 +1545,17 @@ export class WSClient {
       // multiple reconnects on a flaky socket.
       return;
     }
+    if (this.connectPromise !== null) {
+      // An attempt is already in flight — its settlement owns the next
+      // step (every failure path nulls connectPromise before it
+      // reschedules, and success makes this schedule moot). This arm is
+      // reachable when a dying socket's close event lands during the
+      // pre-socket stage of a fresh connect: queuing beside that
+      // attempt would dial a SECOND socket, and the first one — already
+      // past 'open' by then — never re-fires the event the supersede
+      // guard reaps on, so both would stay attached.
+      return;
+    }
     const attempt = this.reconnectAttempt;
     this.reconnectAttempt = attempt + 1;
     const cap = this.remoteBackend ? RECONNECT_MAX_REMOTE_MS : RECONNECT_MAX_LOCAL_MS;
