@@ -92,6 +92,28 @@ export type Scope =
   | 'session'
   | 'host';
 
+/**
+ * The EXECUTE-tier capability names, mirroring
+ * internal/transport/scopes.go's `scopeTiers` (every entry whose tier is
+ * `TierExecute`). Restated here rather than derived, for the reason the
+ * scope list itself is restated: this build has to be able to answer the
+ * question without a round trip, and the two sides are pinned to each
+ * other by test.
+ *
+ * `session` and `host` are absent on purpose — neither is a grant, so
+ * neither can be in a session's set (see the module header).
+ */
+export const EXECUTE_SCOPES: readonly Scope[] = [
+  'threads:operate',
+  'approvals:respond',
+  'threads:autonomy',
+  'terminal:operate',
+  'git:operate',
+  'attachments:write',
+  'settings:write',
+  'access:admin',
+] as const;
+
 /** Every declared capability, in the spec table's order. */
 export const SCOPES: readonly Scope[] = [
   'threads:read',
@@ -110,6 +132,7 @@ export const SCOPES: readonly Scope[] = [
 ] as const;
 
 const SCOPE_SET: ReadonlySet<string> = new Set(SCOPES);
+const EXECUTE_SCOPE_SET: ReadonlySet<Scope> = new Set(EXECUTE_SCOPES);
 
 /**
  * Is this a capability name this build knows?
@@ -227,6 +250,41 @@ export function hasScope(scope: Scope): boolean {
 export function grantedScopes(): ScopeSnapshot {
   subscribeScopes();
   return snapshot;
+}
+
+/**
+ * Is this page in VIEW-ONLY mode — a session that was granted a set, and
+ * whose set contains no execute-tier capability?
+ *
+ * The one definition of the mode, so the ambient indicator and any
+ * surface that needs the mode rather than a named capability read the
+ * same answer. It is derived from the GRANT SET and never from a device
+ * class: the pairing surface mints `view-only` for a phone and `full`
+ * for a phone alike (docs/specs/remote-access.md §5), so "is it a
+ * browser" answers a different question.
+ *
+ * A control still gates on the capability it needs — `hasScope('git:operate')`
+ * — never on this. A view-only session is not the only reason a given
+ * control is out of reach, and a mode-shaped gate would disable a
+ * `git:operate` button for a session that holds it while lacking
+ * something else.
+ *
+ * Three answers are deliberately FALSE:
+ *  - the local page, which holds every scope;
+ *  - a full-access paired device, which holds execute-tier names;
+ *  - a page whose answer has not resolved yet, and an unpaired networked
+ *    page — both hold an EMPTY set, which is "nothing was granted to me",
+ *    not "I was granted a read-only slice". Answering true there would
+ *    flash the indicator on every boot and would label the pairing prompt
+ *    as a working read-only app.
+ */
+export function isViewOnly(): boolean {
+  subscribeScopes();
+  if (snapshot.everyScope || snapshot.scopes.size === 0) return false;
+  for (const scope of snapshot.scopes) {
+    if (EXECUTE_SCOPE_SET.has(scope)) return false;
+  }
+  return true;
 }
 
 /**

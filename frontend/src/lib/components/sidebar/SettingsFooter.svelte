@@ -9,7 +9,7 @@
   import UpdateBadge from '../shared/UpdateBadge.svelte';
   import { hasPendingUpdate } from '../../stores/updates.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
-  import { hasScope } from '../../transport/scopes';
+  import { hasScope, isViewOnly } from '../../transport/scopes';
 
   interface Props {
     onOpenSettings?: () => void;
@@ -25,6 +25,13 @@
   // it drives THIS machine's sleep inhibitor, so it is host presence that
   // authorizes it rather than any grant.
   let noHost = $derived(!hasScope('host'));
+  // The app's one ambient read-only marker. It rides the footer the
+  // sidebar already draws rather than a banner of its own: the mode is a
+  // standing fact about this session, not an event, and a surface that
+  // reserves space at the top of the shell for a standing fact is the
+  // opposite of unobtrusive. Never rendered on the owner's own screen or
+  // for a full-access device — see transport/scopes.ts isViewOnly.
+  let viewOnly = $derived(isViewOnly());
   let keepAwakeTitle = $derived(
     keepAwakeOn
       ? settings.keepAwakeScreen
@@ -50,6 +57,13 @@
         Settings{#if hasPendingUpdate()}<UpdateBadge />{/if}
       {/snippet}
     </Button>
+    {#if viewOnly}
+      <span
+        class="shrink-0 rounded-[var(--radius-field)] border border-border-subtle px-1.5 py-0.5 text-[0.625rem] font-medium uppercase tracking-[0.12em] text-fg-subtle"
+        data-testid="view-only-indicator"
+        title="This device was paired with read-only access."
+      >View only</span>
+    {/if}
     {#if !noHost}
       <Button
         variant="ghost"

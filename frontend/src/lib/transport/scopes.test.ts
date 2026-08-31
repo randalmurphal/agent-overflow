@@ -6,6 +6,7 @@ import {
   grantedScopes,
   hasScope,
   isScope,
+  isViewOnly,
   refreshGrantedScopes,
   setPageGrantsFromBootstrap,
 } from './scopes';
@@ -176,6 +177,53 @@ describe('scopes', () => {
 
     expect(grantedScopes().source).toBe('local-page');
     expect(hasScope('threads:operate')).toBe(true);
+  });
+
+  describe('view-only mode', () => {
+    it('is the observe grant set and nothing else', async () => {
+      setPageGrantsFromBootstrap(true);
+      await pairWith(['threads:read', 'files:read', 'settings:read']);
+
+      expect(isViewOnly()).toBe(true);
+    });
+
+    it('is false for a device holding any execute-tier grant', async () => {
+      setPageGrantsFromBootstrap(true);
+      await pairWith(['threads:read', 'files:read', 'settings:read', 'git:operate']);
+
+      expect(isViewOnly()).toBe(false);
+    });
+
+    it('is false on the owner\'s own screen', () => {
+      setPageGrantsFromBootstrap(false);
+
+      expect(isViewOnly()).toBe(false);
+    });
+
+    it('is false before the answer resolves and for an unpaired page', () => {
+      // Both hold an EMPTY set, which says "nothing was granted to me" —
+      // not "I was granted a read-only slice". Answering true would flash
+      // the indicator on every boot and would label the pairing prompt as
+      // a working read-only app.
+      expect(isViewOnly()).toBe(false);
+
+      setPageGrantsFromBootstrap(true);
+      expect(isViewOnly()).toBe(false);
+    });
+
+    it('flips the moment a narrower grant set is published', async () => {
+      // The mid-flight downgrade: a full-access device re-paired onto a
+      // view-only link re-reads its grants through the same
+      // refreshGrantedScopes() the redial calls, with no reload.
+      setPageGrantsFromBootstrap(true);
+      await pairWith(['threads:read', 'git:operate']);
+      expect(isViewOnly()).toBe(false);
+
+      clearPairedSession();
+      await pairWith(['threads:read', 'files:read', 'settings:read']);
+      expect(isViewOnly()).toBe(true);
+      expect(hasScope('git:operate')).toBe(false);
+    });
   });
 
   it('refuses a stored grant list that is not a list of names', async () => {
