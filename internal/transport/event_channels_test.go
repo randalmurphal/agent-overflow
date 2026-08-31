@@ -57,8 +57,6 @@ var (
 		"harness:ui-query", // W3 bridge: a directive carrying DOM reads back
 		"mcp:oauth-completed",
 		"mcp:status",
-		"notification:activated",
-		"notification:send",
 		"power:keepawake", // 2026-08-25: launcher power directive, same posture as webview:trim
 		"pr:updated",
 		"provider:account",
@@ -210,5 +208,43 @@ func TestChannelPolicyUnreviewedWorklist(t *testing.T) {
 	for _, channel := range unreviewed {
 		policy := channelPolicyIndex[channel]
 		t.Logf("  unreviewed: %-32s audience=%v retention=%v", channel, policy.Audience, policy.Retention)
+	}
+}
+
+// TestNotificationChannelsReachRemoteButStayHostProduced pins the pairing
+// the notification audience rests on.
+//
+// Both channels are AudienceAny, so an attached remote client is told a
+// turn finished and follows the reveal a click produces — the reason to
+// attach one at all. That is only sound because PRODUCING either frame is
+// host-side: `notification:send` comes from App.notifyOS, which no RPC
+// exposes, and `notification:activated` comes from the
+// `NotificationActivated` binding, which is LocalOnly. Drop that entry and
+// the audience change becomes "any LAN token-holder can steer every
+// attached client's pane focus" — the receive side stays innocuous only
+// while the send side stays local. The two decisions live in different
+// files, so this is where they are held together.
+func TestNotificationChannelsReachRemoteButStayHostProduced(t *testing.T) {
+	for _, channel := range []eventchan.Channel{
+		eventchan.NotificationSend,
+		eventchan.NotificationActivated,
+	} {
+		if !eventVisibleToOrigin(string(channel), false) {
+			t.Errorf("%s must reach a non-loopback client", channel)
+		}
+		if !eventVisibleToOrigin(string(channel), true) {
+			t.Errorf("%s must still reach a loopback client", channel)
+		}
+		// The launcher replays notification:send by cursor after a
+		// reconnect, and an activation can arrive before the desktop
+		// window's first socket exists. Neither survives a zero-capacity
+		// or capacity-1 ring.
+		if got := channelRetention(string(channel)); got != RetentionDefault {
+			t.Errorf("%s retention = %v, want %v", channel, got, RetentionDefault)
+		}
+	}
+	if !LocalOnlyMethods["NotificationActivated"] {
+		t.Error("NotificationActivated left LocalOnlyMethods while notification:activated reaches remote clients: " +
+			"a LAN peer could now steer every attached client's pane focus")
 	}
 }

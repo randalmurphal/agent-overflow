@@ -9,8 +9,6 @@ import (
 func TestEventVisibleToOrigin(t *testing.T) {
 	for _, channel := range []string{
 		"git:status",
-		"notification:activated",
-		"notification:send",
 		"provider:approval",
 		"provider:status",
 		"provider:queue_flushed",
@@ -36,6 +34,12 @@ func TestEventVisibleToOrigin(t *testing.T) {
 		"provider:item_event",
 		"provider:usage",
 		"provider:session_died",
+		// Both notification channels reach an attached remote client: being
+		// told a turn finished while away from the desk is the reason to
+		// attach one, and the reveal that follows the click belongs to the
+		// same owner's session. Producing either is still host-side only.
+		"notification:send",
+		"notification:activated",
 		// highlight:diff_seed goes everywhere: its persist-time seeds can
 		// be parse-primed — better than the loopback RPC recompute — so
 		// local clients consume them as in-place cache upgrades.

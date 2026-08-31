@@ -322,6 +322,10 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		AssetHandler:             assetHandler,
 		DevAssetProxy:            devAssetProxy,
 		RequireReadyForBootstrap: opts.RequireReadyForBootstrap,
+		// The link-time stamp, injected rather than read by the transport:
+		// /healthz reports it, and the update watchdog compares it across
+		// a restart to tell a new build from a bounce.
+		Version: version,
 		// One condition, two surfaces: the boots that register the Harness
 		// receiver are exactly the boots whose /bootstrap.json says
 		// harness, so the SPA's bridge can never load against a wire that

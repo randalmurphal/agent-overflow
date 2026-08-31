@@ -50,6 +50,17 @@
 //   - close() during pending reconnect cancels the timer
 //   - subscriber-throw isolation; unsubscribe-during-dispatch
 //   - send-throw fails the matching pending RPC
+//   - forward tolerance (the future-dialect fixture): unknown frame
+//     types, unknown event channels, unknown fields on known frames and
+//     unaddressable shapes all counted rather than thrown on, with the
+//     known traffic still delivered in full and the console silent; the
+//     replay cursor stays free of the mis-shaped entries that would
+//     otherwise break gap recovery for the session; the per-kind tally
+//     is capped against a peer naming a new type every frame
+//   - the zero-seeded notification:activated cursor (the cold-launch
+//     mechanism) is asked for only by a session that is local in both
+//     senses; a remote session omits it, writes no checkpoint, and still
+//     replays what it actually missed across a reconnect
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BootstrapRejectedError } from './bootstrap';
@@ -63,6 +74,7 @@ import {
   RECONNECT_INITIAL_MS,
   RECONNECT_MAX_LOCAL_MS,
   RECONNECT_MAX_REMOTE_MS,
+  RETRY_ON_TRANSIENT_CLOSE,
   RPC_TIMEOUT_MS,
   STALE_TRAFFIC_THRESHOLD_MS,
   STALE_CHECK_INTERVAL_MS,
@@ -108,8 +120,8 @@ class MockWebSocket {
     this.sent.push(JSON.parse(data) as Record<string, unknown>);
   }
 
-  close(code?: number, _reason?: string): void {
-    this.triggerClose(code ?? 1005);
+  close(code?: number, reason?: string): void {
+    this.triggerClose(code ?? 1005, reason);
   }
 
   addEventListener(type: 'open', listener: () => void): void;
@@ -143,15 +155,22 @@ class MockWebSocket {
   // Default code 1006 (abnormal closure) — the shape of a network
   // death, which is what most tests simulate and what the outage
   // diagnostics record.
-  triggerClose(code = 1006): void {
+  // `reason` is the peer's close reason. Real deployments supply one on
+  // every deliberate close (a relay teardown, a policy close), and it is
+  // the single most useful field for telling those apart after the fact,
+  // so the fake carries it.
+  triggerClose(code = 1006, reason = ''): void {
     if (this.readyState === 3) return;
     this.readyState = 3; // CLOSED
-    const ev = new CloseEvent('close', { code });
+    const ev = new CloseEvent('close', { code, reason });
     for (const fn of [...this.listeners.close]) fn(ev);
   }
 
-  triggerError(): void {
-    const ev = new Event('error');
+  // `detail` stands in for the richer error object a non-browser socket
+  // (the `--connect` shell) delivers, where the browser event carries
+  // nothing.
+  triggerError(detail?: Event): void {
+    const ev = detail ?? new Event('error');
     for (const fn of [...this.listeners.error]) fn(ev);
   }
 }
@@ -342,6 +361,103 @@ describe('WSClient', () => {
     client.close();
   });
 
+  // The zero-seeded cursor asks the backend for the notification
+  // channel's whole retained ring. That is right for the desktop window,
+  // which a toast click can cold-launch before it has a socket, and wrong
+  // for anything else: the queue on the other end OPENS every activation
+  // it receives, so a phone attaching would have its pane walked through
+  // every notification the desk has clicked since boot.
+  it('does not ask for the activation ring when the manifest says the backend is remote', async () => {
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 'test-token', remote: true }),
+    });
+    client.subscribe('notification:activated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    expect(ws.sent[0]).toEqual({ type: 'replay', lastSeqByChannel: {} });
+    client.close();
+  });
+
+  it('does not ask for the activation ring when the page itself is not loopback-served', async () => {
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap,
+      loopbackOrigin: () => false,
+    });
+    client.subscribe('notification:activated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    expect(ws.sent[0]).toEqual({ type: 'replay', lastSeqByChannel: {} });
+    client.close();
+  });
+
+  it('leaves no activation checkpoint behind on a remote session', async () => {
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 'test-token', remote: true }),
+    });
+    client.subscribe('notification:activated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    ws.pushFrame({ type: 'replay' });
+    ws.pushFrame({
+      type: 'event',
+      channel: 'notification:activated',
+      seq: 3,
+      data: { kind: 'none' },
+    });
+
+    // Nothing reads the checkpoint back on this session, so writing one
+    // is a sessionStorage write per click that buys nothing.
+    expect(sessionStorage.getItem('ao:notification-activation-seq')).toBeNull();
+    client.close();
+  });
+
+  it('still replays what a remote session actually missed across a reconnect', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 'test-token', remote: true }),
+    });
+    client.subscribe('notification:activated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.pushFrame({ type: 'replay' });
+    first.pushFrame({
+      type: 'event',
+      channel: 'notification:activated',
+      seq: 5,
+      data: { kind: 'none' },
+    });
+
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await flushMicrotasks();
+
+    // Declining the cold-launch seed is not the same as opting out of
+    // gap recovery: the ordinary cursor is still carried, so the session
+    // asks for exactly the activations that happened while it was gone.
+    expect(second.sent[0]).toEqual({
+      type: 'replay',
+      lastSeqByChannel: { 'notification:activated': 5 },
+    });
+    client.close();
+  });
+
   it('orders a live activation that races ahead of replay completion', async () => {
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
     const seen: string[] = [];
@@ -389,6 +505,465 @@ describe('WSClient', () => {
       caught = err;
     }
     expect(caught).toBeInstanceOf(DisconnectedError);
+
+    client.close();
+  });
+
+  it('rejects with the close code and reason preserved, not a bare "socket closed"', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const p = client.callByID(1, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.triggerClose(1012, 'backend restarting');
+    let caught: unknown;
+    try {
+      await p;
+    } catch (err) {
+      caught = err;
+    }
+    const err = caught as DisconnectedError;
+    expect(err).toBeInstanceOf(DisconnectedError);
+    expect(err.closeCode).toBe(1012);
+    expect(err.closeReason).toBe('backend restarting');
+    // In the MESSAGE too: the ~150 sites that render a failure read
+    // `err.message`, and the cause has to survive that rendering or it
+    // never reaches a human.
+    expect(err.message).toContain('1012');
+    expect(err.message).toContain('backend restarting');
+    // Not terminal: the ladder is still running, so a store that
+    // suspends on this edge will re-source on the next connect.
+    expect(err.terminal).toBe(false);
+
+    client.close();
+  });
+
+  it('carries the socket error that preceded the close as the rejection cause', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const p = client.callByID(1, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    // A socket-level failure arrives before the close on every engine
+    // that reports one. 1006 is the same code for every abnormal end, so
+    // this object is the only thing distinguishing them.
+    const detail = new ErrorEvent('error', { message: 'TLS handshake failed' });
+    ws.triggerError(detail);
+    ws.triggerClose(1006);
+
+    let caught: unknown;
+    try {
+      await p;
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as DisconnectedError).cause).toBe(detail);
+
+    client.close();
+  });
+
+  it('clears a previous socket error so it cannot be blamed for the next close', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    client.subscribe('thread:updated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.triggerError(new ErrorEvent('error', { message: 'first socket died' }));
+    first.triggerClose(1006);
+
+    await vi.advanceTimersByTimeAsync(300);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const p = client.callByID(1, []);
+    await vi.advanceTimersByTimeAsync(0);
+    // Second socket dies cleanly, with no error event of its own.
+    second.triggerClose(1001, 'going away');
+    let caught: unknown;
+    try {
+      await p;
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as DisconnectedError).cause).toBeUndefined();
+    expect((caught as DisconnectedError).closeReason).toBe('going away');
+
+    client.close();
+    vi.useRealTimers();
+  });
+
+  it('ships an EMPTY retry-on-transient-close allowlist', () => {
+    // A tripwire, not a formality. The allowlist is the one place an RPC
+    // can be re-sent without its caller knowing, and every entry trades
+    // a lost answer for a possibly-duplicated action. Growing it must be
+    // a reviewed decision that also updates this expectation and the
+    // entry's `why`, never a quiet append.
+    expect(RETRY_ON_TRANSIENT_CLOSE).toHaveLength(0);
+  });
+
+  it('does not retry an ordinary call across a transient close', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const p = client.callByID(1, []);
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.triggerClose(1006);
+
+    await expect(p).rejects.toBeInstanceOf(DisconnectedError);
+    await vi.advanceTimersByTimeAsync(300);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    // Only the replay handshake — the dead call was NOT re-sent.
+    expect(second.sent.filter((f) => f.type === 'rpc')).toHaveLength(0);
+
+    client.close();
+    vi.useRealTimers();
+  });
+
+  it('re-sends an allowlisted call once after a transient close, and only once', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap,
+      retryOnTransientClose: [{ methodId: 42, why: 'test seam' }],
+    });
+
+    const p = client.callByID(42, ['arg']);
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    const id = first.sent.find((f) => f.type === 'rpc')!.id as string;
+
+    first.triggerClose(1006);
+    await vi.advanceTimersByTimeAsync(300);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Re-sent under the SAME id: request ids are client-side bookkeeping,
+    // so the caller's promise is still the one waiting on this answer.
+    const resent = second.sent.filter((f) => f.type === 'rpc');
+    expect(resent).toHaveLength(1);
+    expect(resent[0]!.id).toBe(id);
+
+    // The one retry is spent. A second close settles the call rather
+    // than parking it again — otherwise a flapping link would keep a
+    // caller waiting indefinitely on a call it believes is in flight.
+    second.triggerClose(1006, 'flapped again');
+    await expect(p).rejects.toMatchObject({ closeReason: 'flapped again' });
+
+    client.close();
+    vi.useRealTimers();
+  });
+
+  it('records the hello frame and answers capability questions from it', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    // Before any hello: every capability question answers false, so a
+    // feature degrades rather than being attempted against a backend
+    // that may not have it.
+    expect(client.getHello()).toBeNull();
+    expect(client.hasCapability('anything')).toBe(false);
+
+    const p = client.callByID(1, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.pushFrame({
+      type: 'hello',
+      protocolVersion: 1,
+      capabilities: ['demo.feature'],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: Date.now(),
+    });
+
+    expect(client.getHello()?.backendId).toBe('backend-uuid-1');
+    expect(client.getHello()?.protocolVersion).toBe(1);
+    expect(client.hasCapability('demo.feature')).toBe(true);
+    // An unrecognised name is false, never a guess from the version.
+    expect(client.hasCapability('some.future.feature')).toBe(false);
+
+    const id = ws.sent.find((f) => f.type === 'rpc')!.id as string;
+    ws.pushFrame({ type: 'rpc', id, result: 'ok' });
+    await expect(p).resolves.toBe('ok');
+    client.close();
+  });
+
+  it('keeps the hello answer across a reconnect and republishes only on change', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const seen: Array<string | null> = [];
+    client.onHelloChange((hello) => seen.push(hello?.backendId ?? null));
+
+    client.subscribe('thread:updated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    const hello = {
+      type: 'hello',
+      protocolVersion: 1,
+      capabilities: ['demo.feature'],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: Date.now(),
+    };
+    first.pushFrame(hello);
+
+    first.triggerClose(1006);
+    // The ladder is trying to reach the SAME backend, so the capability
+    // answer must not flap to "unsupported" for the length of an outage.
+    expect(client.hasCapability('demo.feature')).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(300);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    // Same backend, same answer but a fresh clock: waking every consumer
+    // for a few milliseconds of skew would turn a routine reconnect into
+    // a re-render.
+    second.pushFrame({ ...hello, serverTimeMs: Date.now() + 5 });
+    expect(seen).toEqual([null, 'backend-uuid-1']);
+
+    // A different backend IS a change, and must be published.
+    second.pushFrame({ ...hello, backendId: 'backend-uuid-2' });
+    expect(seen).toEqual([null, 'backend-uuid-1', 'backend-uuid-2']);
+
+    client.close();
+    vi.useRealTimers();
+  });
+
+  it('accepts a hello whose fields are the wrong shape, falling back neutrally', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    // A future backend may send shapes this build has never seen.
+    // Half-understanding the frame beats rejecting it: refusing would
+    // make an additive server change look like a backend with no
+    // capabilities at all.
+    ws.pushFrame({
+      type: 'hello',
+      protocolVersion: 'two',
+      capabilities: [null, 'demo.feature', 7],
+      backendId: 42,
+      serverTimeMs: 'soon',
+      unknownFutureField: { nested: true },
+    });
+
+    const hello = client.getHello()!;
+    expect(hello.protocolVersion).toBe(0);
+    expect(hello.capabilities).toEqual(['demo.feature']);
+    expect(hello.backendId).toBe('');
+    expect(hello.serverTimeMs).toBe(0);
+    expect(hello.clockSkewMs).toBe(0);
+    expect(client.hasCapability('demo.feature')).toBe(true);
+
+    client.close();
+  });
+
+  // The future-dialect fixture (docs/specs/remote-access.md §9).
+  //
+  // The swap window — an old bundle live against a just-updated backend
+  // for minutes — is a normal operating state. This drives a recorded
+  // stream salted with everything the NEXT dialect could plausibly add
+  // and asserts the client keeps working: unknown frame types, unknown
+  // event channels, unknown fields on frames it does know, and shapes it
+  // cannot address at all. Nothing may throw, nothing may reach the
+  // error console, and no known-frame handling may be disturbed.
+  it('runs normally against a future dialect, and reports zero errors', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const known: unknown[] = [];
+    const futureChannel: unknown[] = [];
+    client.subscribe('thread:updated', (data) => known.push(data));
+    client.subscribe('future:channel', (data) => futureChannel.push(data));
+
+    const p = client.callByID(1, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    const id = ws.sent.find((f) => f.type === 'rpc')!.id as string;
+
+    // A hello carrying fields this build has never seen, alongside the
+    // ones it has.
+    ws.pushFrame({
+      type: 'hello',
+      protocolVersion: 2,
+      capabilities: ['demo.feature'],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: Date.now(),
+      negotiatedCiphers: ['x'],
+      leaseTtlMs: 30_000,
+    });
+
+    // Frame types from a dialect that does not exist yet.
+    ws.pushFrame({ type: 'lease', scopes: ['threads:read'], ttlMs: 30_000 });
+    ws.pushFrame({ type: 'push-token-request', nonce: 'abc' });
+    ws.pushFrame({ type: 'hello-again', protocolVersion: 3 });
+
+    // A known frame with unknown fields, and a known event on a channel
+    // this build never registered.
+    ws.pushFrame({
+      type: 'event',
+      channel: 'thread:updated',
+      seq: 1,
+      data: { id: 't1' },
+      deviceId: 'device-9',
+      originScope: 'threads:write',
+    });
+    ws.pushFrame({ type: 'event', channel: 'future:channel', seq: 1, data: { future: true } });
+    ws.pushFrame({ type: 'event', channel: 'nobody:listens', seq: 1, data: null });
+
+    // A batch mixing a known event with one on an unknown channel, plus
+    // an entry shape this build cannot address at all. The known event
+    // must still arrive — dropping a prefix or a suffix would leave the
+    // seq cursor lying about what was delivered.
+    ws.pushFrame({
+      type: 'batch',
+      events: [
+        { channel: 'thread:updated', seq: 2, data: { id: 't2' }, replicaEpoch: 4 },
+        { channel: 'future:channel', seq: 2, data: { future: true } },
+        { channel: 42, seq: 'soon', data: null },
+      ],
+      coalescedFrom: 3,
+    });
+
+    // Shapes that are not frames at all.
+    ws.pushRawText('not json at all');
+    ws.pushFrame(null);
+    ws.pushFrame([1, 2, 3]);
+    ws.pushFrame({ id: 'no-type-field' });
+
+    // The RPC still completes across all of it.
+    ws.pushFrame({ type: 'rpc', id, result: 'ok' });
+    await expect(p).resolves.toBe('ok');
+
+    // Known traffic was delivered in full, including the batch entries
+    // on either side of the unaddressable one.
+    expect(known).toEqual([{ id: 't1' }, { id: 't2' }]);
+    expect(futureChannel).toEqual([{ future: true }, { future: true }]);
+    // Unknown fields did not disturb the hello this build understands.
+    expect(client.getHello()?.backendId).toBe('backend-uuid-1');
+    expect(client.hasCapability('demo.feature')).toBe(true);
+
+    // Everything unaddressable was COUNTED, never thrown on.
+    const stats = client.getUnknownInputStats();
+    expect(stats.kinds).toMatchObject({
+      lease: 1,
+      'push-token-request': 1,
+      'hello-again': 1,
+      'event-shape': 1,
+      unparseable: 1,
+      'non-object': 2, // null and the array
+      untyped: 1,
+    });
+    expect(stats.total).toBe(8);
+
+    // Zero errors, and no per-frame warn spam either: a routine version
+    // skew must not fill the console.
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(consoleWarn).not.toHaveBeenCalled();
+
+    // And the client is still usable afterwards — the point of the whole
+    // exercise is that the swap window is survivable, not merely quiet.
+    const after = client.callByID(2, []);
+    await flushMicrotasks();
+    const secondId = ws.sent.filter((f) => f.type === 'rpc')[1]!.id as string;
+    ws.pushFrame({ type: 'rpc', id: secondId, result: 'still working' });
+    await expect(after).resolves.toBe('still working');
+
+    client.close();
+  });
+
+  it('keeps the replay cursor clean when a future dialect sends an event it cannot address', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    first.pushFrame({ type: 'event', channel: 'thread:updated', seq: 4, data: null });
+    // Channel and seq of a shape this build cannot read. Before the
+    // ingest check these landed in the cursor map as key "undefined" with
+    // a NaN seq, which serialized into the next replay request as
+    // {"undefined": null} — a map[string]uint64 decode failure that made
+    // the server refuse the WHOLE replay, costing the client its gap
+    // recovery for the rest of the session.
+    first.pushFrame({ type: 'event', seq: 5, data: null });
+    first.pushFrame({ type: 'event', channel: 'thread:updated', seq: 'later', data: null });
+
+    first.triggerClose(1006);
+    // Drain the reconnect timer (Math.random=0.5, attempt=0 -> 125ms).
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await flushMicrotasks();
+
+    const replay = second.sent.find((f) => f.type === 'replay')!;
+    const cursors = replay.lastSeqByChannel as Record<string, unknown>;
+    expect(cursors['thread:updated']).toBe(4);
+    for (const [channel, seq] of Object.entries(cursors)) {
+      expect(typeof channel).toBe('string');
+      expect(channel).not.toBe('undefined');
+      expect(Number.isSafeInteger(seq)).toBe(true);
+    }
+
+    client.close();
+  });
+
+  it('bounds the unknown-kind tally against a peer naming a new frame type every frame', async () => {
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    for (let i = 0; i < 200; i += 1) {
+      ws.pushFrame({ type: `future-type-${i}` });
+    }
+
+    const stats = client.getUnknownInputStats();
+    // Every frame counted, but the per-kind breakdown is capped so the
+    // map cannot be grown without limit by the peer.
+    expect(stats.total).toBe(200);
+    expect(Object.keys(stats.kinds).length).toBeLessThanOrEqual(8);
 
     client.close();
   });
@@ -769,7 +1344,7 @@ describe('WSClient', () => {
     client.close();
   });
 
-  it('rejects on malformed bootstrap JSON via fetch path', async () => {
+  it('wraps a malformed-bootstrap failure as a transport error and keeps the cause', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     // Stub global fetch with a response that returns invalid JSON.
     const fetchMock = vi.fn(async () => ({
@@ -790,7 +1365,14 @@ describe('WSClient', () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(SyntaxError);
+    // The caller must see a TRANSPORT-class failure, not the raw
+    // SyntaxError: a manifest that would not parse means the request was
+    // never sent, and a caller with side effects classifies on
+    // DisconnectedError to decide whether "nothing happened" is safe to
+    // assume. The original error survives as `cause` so triage keeps it.
+    expect(caught).toBeInstanceOf(DisconnectedError);
+    expect((caught as DisconnectedError).cause).toBeInstanceOf(SyntaxError);
+    expect((caught as DisconnectedError).message).toContain('Unexpected token');
     client.close();
     vi.unstubAllGlobals();
   });

@@ -296,21 +296,34 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.NotificationActivated,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why: "OS-notification click routing for the local desktop window; the " +
-			"target names the local thread/workspace to reveal. A LAN peer has " +
-			"no OS notification to have clicked.",
+		Why: "A reveal-this-target directive following a notification click. " +
+			"Every attached client is the same owner's session, and acting on " +
+			"a notification away from the desk is the reason remote access " +
+			"exists, so an attached remote client follows the same reveal. " +
+			"The target names a thread or work item by id, which such a " +
+			"client already reads over its ordinary RPCs. PRODUCING one stays " +
+			"host-only — NotificationActivated is in LocalOnlyMethods — so a " +
+			"remote client can receive a reveal and never inject one. " +
+			"Retained, because a click can cold-launch the desktop window " +
+			"before its first connection; only a loopback page asks for that " +
+			"ring, since a remote page was not launched by a toast on this " +
+			"host (frontend/src/lib/transport/wsClient.ts).",
 	},
 	{
 		Channel:   eventchan.NotificationSend,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why: "Instructs a host-side presenter (the Windows launcher's " +
-			"notification client) to raise a real OS notification carrying " +
-			"thread titles and message text. Its only legitimate consumer is " +
-			"on this host, which is loopback by construction. Retained: the " +
-			"launcher replays this channel by cursor after a reconnect " +
+		Why: "Instructs a presenter to raise a notification. The host-side " +
+			"presenter (the Windows launcher's notification client) is one " +
+			"consumer; an attached remote client is the other, and being told " +
+			"a turn finished while away from the desk is the whole point of " +
+			"attaching one. It carries thread titles and message text, which " +
+			"is not a new disclosure to a client that reads both over its " +
+			"ordinary RPCs. Emitting is host-side only (App.notifyOS), so no " +
+			"client can make another client raise one. Retained: the launcher " +
+			"replays this channel by cursor after a reconnect " +
 			"(wsllauncher/notification_client.go), so it must NOT become " +
 			"ephemeral or latest-only.",
 	},

@@ -7,7 +7,8 @@ walkthroughs live in
 
 ## What this package owns
 
-The HTTP listener (embedded SPA, `/bootstrap.json`, the `/ws` upgrade, and
+The HTTP listener (embedded SPA, `/bootstrap.json`, `/healthz`, the `/ws`
+upgrade, and
 `POST /rpc` for the `ao` CLI), the JSON wire frame, token authentication, the
 per-connection authorization policy, reflection-based RPC dispatch, and a
 per-channel bounded ring for event replay on reconnect. Method IDs are FNV-1a
@@ -54,6 +55,70 @@ origin. `methods_gen_test.go` fails on a generated method nobody classified
 (`TestGeneratedMethods_AllClassified`) and on a classified name that no longer
 exists. A reverse proxy on the same host makes remote peers appear loopback and
 defeats this locality, so proxy from a different host instead.
+
+## Every route on this mux is also a row in internal/surfaces
+
+`buildHTTPServer` registers patterns as plain literals (or constants
+holding one) because that is what `internal/surfaces`' AST gate reads:
+add a route here without a `Route` row there and the gate fails. Keep the
+pattern a literal or a constant for the same reason — a computed pattern
+is a route the gate cannot see.
+
+`/healthz` is the one deliberately unauthenticated route besides the
+bundle. It answers version + backend id because its two consumers — the
+pre-WS compatibility check and the update watchdog — run precisely when
+no valid credential is held; a token-gated health route answers 404 for a
+restarted backend, which is indistinguishable from down and is the exact
+condition it exists to detect. It is still not readable cross-origin: no
+`Access-Control-Allow-Origin`, plus the same `loopbackHostGuard` the
+credentialled routes use. Readiness stays `/bootstrap.json`'s 503 and
+must not be folded in here.
+
+## Hello frame
+
+Every upgraded connection is written a `{"type":"hello"}` frame FIRST,
+synchronously, before the event pump or keepalive goroutines exist
+(`conn.go writeHello`). The ordering is the contract: a client that reads
+hello first seeds its compatibility state before anything else lands and
+needs no "have I been told yet" branch on every other frame. Racing it
+against the pump would make that guarantee probabilistic.
+
+It carries `protocolVersion`, `capabilities`, `backendId`, and
+`serverTimeMs`.
+
+- **Nothing gates on the version.** Features negotiate through capability
+  flags: a client asks "does this backend have X" and degrades on the
+  answer instead of inferring from a number (spec §9). `ProtocolVersion`
+  moves only for a change that alters what an EXISTING frame or field
+  means; adding a frame type, field, or channel is additive and does not
+  move it. Additive-only is what makes the swap window — an old bundle
+  live against a just-updated backend — safe.
+- **`serverCapabilities` is frozen by a test**, and the frozen list spells
+  each name as a literal so a rename cannot slip through it. A name is
+  stable forever once shipped, because a client on an older bundle may
+  still ask about it; retiring one means the backend stops advertising
+  it, never that it starts meaning something else. A flag says a behavior
+  EXISTS — it is never authorization, which is re-checked per RPC. **Ship
+  a flag in the same release as the behavior it names.** Added later it
+  lies about every build in between, which advertises nothing while
+  having the behavior — so the flag lands with the change even when
+  nothing reads it yet. The reader can come later; the flag cannot.
+- `capabilities` serializes as `[]`, never `null`, so "advertises
+  nothing" stays distinguishable from "too old to send this frame".
+- `serverTimeMs` is sampled per accept, not cached at boot: the field
+  exists so a client can measure its own skew, and a cached value would
+  be wrong by the process uptime.
+
+Every frame consumer must ignore what it does not recognize — unknown
+frame types, unknown event channels, and unknown fields on frames it does
+know — without erroring and without dropping the parts it does
+understand. That tolerance is what lets a frame or field be added in one
+release and consumed in the next. The Go clients get it by having no
+`default` in their type switch (`wsllauncher/notification_client.go`,
+`harnessclient`); keep it that way. The SPA's client counts unknown input
+instead, so the condition stays observable — see
+`frontend/src/lib/transport/AGENTS.md` and the future-dialect fixtures in
+`wsClient.test.ts` and `e2e/tests/transport-forward-tolerance.spec.ts`.
 
 ## Credentials and refusal shapes
 
@@ -264,7 +329,16 @@ unregistrable by construction; both spell the explicit conversion at the call
 site so the escape hatch stays visible.
 `TestChannelPolicyPreservesFrozenClassification` freezes every non-default
 classification, so changing one of those lists is a behavior change, not a
-refactor. Registry lookups stay keyed by plain `string`, because each is reached
+refactor.
+
+**Opening a channel to remote clients decides the RECEIVE side only, and
+whatever PRODUCES that channel must be re-checked in the same change.** A
+channel whose frames drive UI on every attached client is a steering primitive
+the moment a client can also emit it, so the row's audience and the producer's
+`LocalOnlyMethods` entry are one decision spread across two files — and nothing
+in either file points at the other. Pin the pairing with a test that reads both,
+as `TestNotificationChannelsReachRemoteButStayHostProduced` does for
+`notification:activated`. Registry lookups stay keyed by plain `string`, because each is reached
 by a channel name that came off the wire at least some of the time and the
 newtype would assert a registration nobody checked.
 

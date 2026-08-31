@@ -403,6 +403,27 @@ var Routes = []Route{
 			"Minting a credential requires presenting one.",
 	},
 	{
+		Pattern:    "/healthz",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureStructured,
+		Why: "The only route on this listener that checks nothing, and " +
+			"deliberately: both consumers — the SPA's pre-WS compatibility " +
+			"check and the update watchdog — run precisely when no valid " +
+			"credential is held, and a gated health route answers 404 for a " +
+			"restarted backend, which is indistinguishable from down and is " +
+			"the exact condition it exists to detect. What it discloses is " +
+			"the version string and the backend id, both of which the " +
+			"bundle already serves to anyone who can load the page, and " +
+			"neither of which authorizes anything. Two checks it does keep, " +
+			"neither a credential: the same Host guard as the credentialled " +
+			"routes, and no Access-Control-Allow-Origin, so a foreign page " +
+			"may issue the request and can never read the answer. Readiness " +
+			"stays on /bootstrap.json's 503 rather than being folded in " +
+			"here — a probe that conflates booting with unreachable is what " +
+			"both consumers are trying to avoid.",
+	},
+	{
 		Pattern:    "/rpc",
 		Listener:   "app transport",
 		Credential: CredPageSession,
