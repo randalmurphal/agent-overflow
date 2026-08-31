@@ -96,7 +96,13 @@ func TestBackgroundTaskNotification_PersistsNotificationWithoutMutatingLifecycle
 	}
 }
 
-func TestBackgroundTaskNotification_DrainedStashWithoutLaunchDoesNotCreateRows(t *testing.T) {
+// A task_notification whose launch cannot be resolved writes no rows
+// AND leaves the stashed terminal alone: the launch row may still land
+// later (subagent transcript projection lags the main wire), and
+// draining the stash here destroyed the only evidence the late row
+// could settle against. Rowless stashes are pruned by the session-end
+// settle and the boot sweep instead.
+func TestBackgroundTaskNotification_PreservesStashWithoutLaunchAndCreatesNoRows(t *testing.T) {
 	cases := []struct {
 		name    string
 		status  string
@@ -144,9 +150,9 @@ func TestBackgroundTaskNotification_DrainedStashWithoutLaunchDoesNotCreateRows(t
 			}
 
 			if _, found, err := st.GetPendingBackgroundTerminal("t1", "hidden-task"); err != nil {
-				t.Fatalf("read drained stash: %v", err)
-			} else if found {
-				t.Fatal("expected hidden-task stash to be drained")
+				t.Fatalf("read stash: %v", err)
+			} else if !found {
+				t.Fatal("expected hidden-task stash to be preserved for a late-arriving launch row")
 			}
 			items, err := st.ListItems("t1")
 			if err != nil {

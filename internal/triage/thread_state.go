@@ -237,6 +237,20 @@ type threadState struct {
 	// (same session-scoped lifetime). See subagent_progress.go.
 	subagentProgress map[string]provider.SubagentProgressMeta
 
+	// pendingToolCorrelations holds correlation metadata (task_id /
+	// subagent_model / parent_tool_use_id) from a metaUpdateOnly
+	// EventToolStart that arrived BEFORE its tool_call row was persisted,
+	// keyed by tool_use_id. Claude emits `system/task_started` on the
+	// main wire the moment ANY agent — including a nested async
+	// subagent — backgrounds a shell, but the launch row for a
+	// subagent-owned Bash only lands later, when the subagent transcript
+	// projection catches up. Dropping the update there permanently
+	// strips the row of its task_id: no Stop button, no terminal
+	// correlation, a tray zombie. Held entries are applied and cleared
+	// by persistToolCallLaunch's create/update path. Bounded by
+	// maxPendingToolCorrelationsPerThread; swept with the threadState.
+	pendingToolCorrelations map[string]itemMetaCorrelationFields
+
 	// compactingSince is the open compacting window: the epoch-ms
 	// timestamp of the frame that opened it. Live-only projection behind
 	// `provider:compacting` (compaction_status.go); closed by the explicit

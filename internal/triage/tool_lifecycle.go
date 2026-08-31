@@ -125,9 +125,22 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 
 	if metaUpdateOnly {
 		if !found {
-			// No existing row to annotate. The tool_use block must have
-			// been dropped (fresh session) — drop the meta update rather
-			// than fabricate a ghost tool_call row.
+			// No existing row to annotate YET. For a subagent-owned
+			// backgrounded shell, `system/task_started` arrives on the
+			// main wire the moment the shell backgrounds, while the
+			// launch row only lands when the subagent transcript
+			// projection catches up (an async agent can lag by a full
+			// turn). Hold the correlation fields for the create path
+			// below instead of dropping them — the drop permanently
+			// severed the task_id ↔ tool_use_id mapping (no Stop
+			// button, no terminal correlation: the tray-zombie class,
+			// 2026-08-31). A row that never materializes is fine: the
+			// hold is bounded and swept with the threadState.
+			r.holdPendingToolCorrelation(evt.ThreadID, itemID, itemMetaCorrelationFields{
+				TaskID:          meta.TaskID,
+				SubagentModel:   meta.SubagentModel,
+				ParentToolUseID: stringsx.FirstNonEmptyTrimmed(eventParentID(evt), meta.ParentToolUseID),
+			})
 			return nil
 		}
 		if meta.ToolName != "" {
@@ -216,6 +229,22 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		r.enrichPathRefsFromTexts(evt.ThreadID, &item, texts...)
 	}
 
+	// Apply correlation metadata that arrived BEFORE this row existed
+	// (a held metaUpdateOnly — see the hold above). Runs for both the
+	// fresh-create and re-discovered branches: either way this is the
+	// first time the correlation fields have a row to land on.
+	held, heldFound := r.takePendingToolCorrelation(evt.ThreadID, itemID)
+	if heldFound {
+		if merged, err := mergeItemMetaCorrelationFields(item.Meta, held); err != nil {
+			log.Printf("triage: apply held correlation fields to %s: %v", itemID, err)
+		} else {
+			item.Meta = merged
+		}
+		if item.ParentID == "" && held.ParentToolUseID != "" {
+			item.ParentID = held.ParentToolUseID
+		}
+	}
+
 	// Promote heavy tool inputs (Edit/Write/MultiEdit/NotebookEdit
 	// content) out of items.meta into a sibling tool_call_input
 	// payload so the persisted row + the live emit stay small. On a
@@ -225,6 +254,15 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	inputPayload := r.shapeToolItemMeta(&item, now)
 	if err := r.persistItemWithInputPayload(item, nil, inputPayload); err != nil {
 		return err
+	}
+
+	// A held task_id may belong to a shell that ALREADY exited: its
+	// task_updated terminal was stashed (or its killed terminal dropped
+	// as unresolvable) while no row existed. Now that the launch row is
+	// durable, drain the stash into the completion sibling so the tray
+	// row settles instead of ticking forever.
+	if heldFound && item.IsBackground && held.TaskID != "" {
+		r.settleStashedTerminalForLateLaunch(evt, item.ID, held.TaskID)
 	}
 	return r.persistProvisionalSubagentPrompt(item, meta, now)
 }
@@ -822,13 +860,16 @@ func decodeBackgroundTaskTerminalMeta(raw json.RawMessage) backgroundTaskTermina
 //     batch so the gap is sub-perceptual.
 //
 //   - source="task_updated", status="killed": Claude reports that the
-//     provider killed/stopped the background process. For visible
-//     launches this includes user stops (StopClaudeTask → stop_task
-//     control_request → CLI replies task_updated{killed}), and should
-//     render immediately without waiting for a later task_notification.
-//     If the launch is not visible in this parent thread, the signal
-//     is dropped by writeBackgroundCompletionSibling rather than
-//     creating a standalone orphan row.
+//     provider killed/stopped the background process — a user stop
+//     (StopClaudeTask → stop_task control_request → CLI replies
+//     task_updated{killed}), a foreground agent exiting and taking its
+//     shells with it, or session close (claude-wire.md §Background
+//     task ownership). Renders immediately without waiting for a later
+//     task_notification. When no launch row exists YET, the terminal
+//     is stashed instead of dropped — the row may land later via the
+//     subagent transcript projection (settleStashedTerminalForLate-
+//     Launch drains it then; the session-end settle prunes stashes
+//     whose row never materializes).
 //
 //   - source anything else (today: "task_output"): AGENT observed
 //     via TaskOutput tool_result. Triage drains the stash if present,
@@ -855,13 +896,19 @@ func (r *Router) handleBackgroundTaskTerminal(evt provider.ProviderEvent) error 
 }
 
 // stashBackgroundTaskTerminal records the host-side process exit
-// without writing a chat row. The stash row is what the tray query
-// joins against to hide the still-running-from-the-agent's-view
-// launch (Tray-A: tray reflects process state, not agent state).
+// without writing a chat row. The lifecycle gates in
+// items_lifecycle.go (HasLiveBackgroundToolCall,
+// HasQueueBlockingBackgroundToolCall) join against the stash so an
+// exited-but-unobserved shell stops blocking the reaper and the flush
+// queue; the tray learns of the exit through the
+// `provider:background_task_state{exited}` emit below (Tray-A: tray
+// reflects process state, not agent state).
 //
 // Launch resolution is best-effort. A missing launch is acceptable —
-// observation may still arrive later (carrying its own task_id) and
-// the stash will be drained by id alone.
+// observation may still arrive later (carrying its own task_id), the
+// launch row itself may land later (subagent transcript projection —
+// settleStashedTerminalForLateLaunch drains by task_id then), and the
+// session-end settle sweeps whatever remains.
 func (r *Router) stashBackgroundTaskTerminal(evt provider.ProviderEvent, meta backgroundTaskTerminalMeta) error {
 	if meta.TaskID == "" {
 		log.Printf("triage: task_updated stash dropped — no task_id (thread=%s)", evt.ThreadID)
@@ -950,6 +997,55 @@ func (r *Router) RecoverOrphanedBackgroundTasks() (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("triage: list recoverable Claude bg launches: %w", err)
 	}
+	recovered := r.settleOrphanedBackgroundLaunches(launches)
+	// Any stash row the sweep did not consume belongs to a task with no
+	// launch row (a subagent-private shell); at boot no observer for it
+	// can ever arrive, and the table has no other prune.
+	if err := r.store.DeleteAllPendingBackgroundTerminals(); err != nil {
+		log.Printf("triage: prune stranded background-terminal stashes: %v", err)
+	}
+	return recovered, nil
+}
+
+// SettleBackgroundLaunchesForSessionEnd is the per-thread, live-app
+// equivalent of RecoverOrphanedBackgroundTasks: called when a Claude
+// session ends — user stop, idle reaper, config restart
+// (teardownAndCloseSession), or unexpected process death
+// (handleSessionDied). Background shells die with the CLI process and a
+// later resume does not revive them (claude-wire.md §Background task
+// ownership), so every still-running backgrounded launch on the thread
+// is settled the same way boot recovery would have: stash drained into
+// the completion sibling when the host reported an exit, status
+// "killed" otherwise, source "session_died" either way. Before this,
+// rows the wire could no longer settle — above all NESTED launches,
+// which invariant 24 exempts from every top-level lifecycle gate —
+// ticked in the tray until the next app restart.
+//
+// The store query self-filters to Claude providers (threads join), so
+// calling it for a Codex thread is a cheap no-op — Codex background
+// rows are owned by the ghost-flip/reconcile path.
+//
+// Leftover stash rows for the thread are pruned afterwards: with the
+// owning process gone, a stash whose launch row never materialized has
+// no future observer.
+func (r *Router) SettleBackgroundLaunchesForSessionEnd(threadID string) (int, error) {
+	launches, err := r.store.ListRecoverableClaudeBackgroundLaunchesForThread(threadID)
+	if err != nil {
+		return 0, fmt.Errorf("triage: list recoverable Claude bg launches for thread %s: %w", threadID, err)
+	}
+	settled := r.settleOrphanedBackgroundLaunches(launches)
+	if err := r.store.DeletePendingBackgroundTerminalsForThread(threadID); err != nil {
+		log.Printf("triage: prune background-terminal stashes for thread %s: %v", threadID, err)
+	}
+	return settled, nil
+}
+
+// settleOrphanedBackgroundLaunches writes a session_died completion
+// sibling for each launch, draining each launch's terminal stash when
+// one exists. Shared by boot recovery (all threads) and the session-end
+// settle (one thread); per-launch errors are logged, never propagated,
+// so one bad row can't poison the sweep.
+func (r *Router) settleOrphanedBackgroundLaunches(launches []store.Item) int {
 	now := time.Now().UnixMilli()
 	recovered := 0
 	for _, launch := range launches {
@@ -991,13 +1087,31 @@ func (r *Router) RecoverOrphanedBackgroundTasks() (int, error) {
 		}
 		recovered++
 	}
-	return recovered, nil
+	return recovered
 }
 
 // observeBackgroundTaskTerminal handles the agent-observation half
-// (TaskOutput tool_result enrichment). Drains the stash if any and
-// writes the sibling at the current write head.
+// (TaskOutput tool_result enrichment) plus the killed wire terminal.
+// Drains the stash if any and writes the sibling at the current write
+// head.
+//
+// A killed task_updated whose launch row does not exist YET (a
+// subagent-owned shell killed when its agent exits, before the
+// transcript projection persisted the launch) is stashed instead of
+// dropped: the Take-then-drop here used to destroy the only record of
+// the exit, leaving the late-arriving row a permanent running zombie.
+// The late-launch drain (settleStashedTerminalForLateLaunch) or the
+// session-end settle consumes it.
 func (r *Router) observeBackgroundTaskTerminal(evt provider.ProviderEvent, meta backgroundTaskTerminalMeta) error {
+	if meta.Source == "task_updated" && meta.TaskID != "" {
+		launch, found, err := r.resolveBackgroundTaskLaunch(evt.ThreadID, evt.ItemID, meta.ToolUseID, meta.TaskID)
+		if err != nil {
+			return err
+		}
+		if !found || launch.Kind != itemKindToolCall {
+			return r.stashBackgroundTaskTerminal(evt, meta)
+		}
+	}
 	stash, stashFound, err := r.store.TakePendingBackgroundTerminal(evt.ThreadID, meta.TaskID)
 	if err != nil {
 		log.Printf("triage: drain stash for %s/%s: %v", evt.ThreadID, meta.TaskID, err)
@@ -1015,7 +1129,10 @@ func (r *Router) observeBackgroundTaskTerminal(evt provider.ProviderEvent, meta 
 // Used by:
 //   - observeBackgroundTaskTerminal (TaskOutput tool_result drain)
 //   - handleBackgroundTaskNotification (task_notification drain)
-//   - recoverOrphanedBackgroundTasks (startup synthesised drain)
+//   - settleOrphanedBackgroundLaunches (boot recovery + session-end
+//     settle, synthesised drain)
+//   - settleStashedTerminalForLateLaunch (launch row arriving after
+//     its stashed terminal)
 //
 // Launch resolution prefers the event's tool_use_id, then meta, then
 // the items.meta.task_id index. A launch is required: Claude can emit
@@ -1883,6 +2000,92 @@ func mergeItemMetaCorrelationFields(existing string, fields itemMetaCorrelationF
 		return existing, err
 	}
 	return string(out), nil
+}
+
+// maxPendingToolCorrelationsPerThread bounds the pre-row correlation
+// hold (threadState.pendingToolCorrelations). Entries exist only in the
+// window between a `system/task_started` meta update and the launch
+// row's persist — normally one wire hop; the transcript-projection lag
+// for async subagents stretches it to a turn. 64 concurrent
+// pre-row backgrounded shells per thread is far past any real fan-out;
+// past the cap new holds are dropped (logged), matching the old
+// behavior for the excess only.
+const maxPendingToolCorrelationsPerThread = 64
+
+// holdPendingToolCorrelation stashes correlation fields from a
+// metaUpdateOnly EventToolStart whose tool_call row has not been
+// persisted yet. Repeated holds for the same tool_use merge (first
+// non-empty value wins per field — task_started and the
+// subagent-model stamp arrive as separate updates).
+func (r *Router) holdPendingToolCorrelation(threadID, itemID string, fields itemMetaCorrelationFields) {
+	if fields.TaskID == "" && fields.SubagentModel == "" && fields.ParentToolUseID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.state(threadID)
+	if st.pendingToolCorrelations == nil {
+		st.pendingToolCorrelations = make(map[string]itemMetaCorrelationFields)
+	}
+	existing, ok := st.pendingToolCorrelations[itemID]
+	if !ok && len(st.pendingToolCorrelations) >= maxPendingToolCorrelationsPerThread {
+		log.Printf("triage: pending tool-correlation hold full for thread %s — dropping fields for %s", threadID, itemID)
+		return
+	}
+	if existing.TaskID == "" {
+		existing.TaskID = fields.TaskID
+	}
+	if existing.SubagentModel == "" {
+		existing.SubagentModel = fields.SubagentModel
+	}
+	if existing.ParentToolUseID == "" {
+		existing.ParentToolUseID = fields.ParentToolUseID
+	}
+	st.pendingToolCorrelations[itemID] = existing
+}
+
+// takePendingToolCorrelation pops the held correlation fields for a
+// tool_use, if any.
+func (r *Router) takePendingToolCorrelation(threadID, itemID string) (itemMetaCorrelationFields, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || st.pendingToolCorrelations == nil {
+		return itemMetaCorrelationFields{}, false
+	}
+	fields, ok := st.pendingToolCorrelations[itemID]
+	if ok {
+		delete(st.pendingToolCorrelations, itemID)
+	}
+	return fields, ok
+}
+
+// settleStashedTerminalForLateLaunch drains a pending terminal stashed
+// while the launch row did not exist yet, writing the completion
+// sibling the normal observe path would have written. Called right
+// after the launch row's synchronous persist, so sibling resolution
+// finds it. No stash means the shell is still running — nothing to do.
+// Mirrors RecoverOrphanedBackgroundTasks' drain: a crash between the
+// Take and the sibling write leaves a stashless running launch, which
+// the session-end settle recovers as killed.
+func (r *Router) settleStashedTerminalForLateLaunch(evt provider.ProviderEvent, toolUseID, taskID string) {
+	stash, found, err := r.store.TakePendingBackgroundTerminal(evt.ThreadID, taskID)
+	if err != nil {
+		log.Printf("triage: drain stash for late launch %s/%s: %v", evt.ThreadID, taskID, err)
+		return
+	}
+	if !found {
+		return
+	}
+	meta := backgroundTaskTerminalMeta{
+		TaskID:    taskID,
+		ToolUseID: toolUseID,
+		Source:    stringsxFirst(stash.Source, "task_updated"),
+	}
+	mergeStashIntoTerminalMeta(&meta, stash)
+	if err := r.writeBackgroundCompletionSibling(evt, meta, true); err != nil {
+		log.Printf("triage: settle stashed terminal for late launch %s/%s: %v", evt.ThreadID, toolUseID, err)
+	}
 }
 
 // setStringFieldIfChanged writes value into parsed[key] when the

@@ -127,13 +127,22 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		// Send clears the composer before its next paste so the prompt the TUI
 		// restored can't fuse with the re-send.
 	} else {
-		if err := a.stopSession(args.thread.ID); err != nil {
-			return revertedConversationCut{}, fmt.Errorf("%s: stop session: %w", args.errorPrefix, err)
-		}
+		// Mark BEFORE the stop, mirroring the Codex branch: the stop's
+		// teardown settles still-running background launches with
+		// session_died completion siblings
+		// (SettleBackgroundLaunchesForSessionEnd), and a consented
+		// revert wants these rows flipped inactive silently instead —
+		// the history tail they'd annotate is about to be truncated. An
+		// inactive row is excluded from the settle's query, so the mark
+		// doubles as the opt-out. The tasks themselves die with the
+		// stop's process-group close one step later.
 		if args.clearRunningBackgroundTasks {
 			if err := a.markConfirmedBackgroundTasksInactiveAfterProviderCleanup(args.thread.ID, args.errorPrefix); err != nil {
 				return revertedConversationCut{}, err
 			}
+		}
+		if err := a.stopSession(args.thread.ID); err != nil {
+			return revertedConversationCut{}, fmt.Errorf("%s: stop session: %w", args.errorPrefix, err)
 		}
 		if err := a.rollbackProviderConversationToMessage(args.thread, args.anchor, args.userItem); err != nil {
 			return revertedConversationCut{}, fmt.Errorf("%s: %w", args.errorPrefix, err)

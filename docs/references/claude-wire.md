@@ -672,6 +672,15 @@ foreground. It's NOT a "backgrounded-only" signal.
 
 Don't branch on exact values; treat as a classification hint.
 
+### `owned_by_subagent`
+
+`owned_by_subagent: true` marks a task launched by a subagent rather
+than the main agent (observed on 2.1.237; see §Background task
+ownership). The envelope arrives on the main wire either way — and for
+subagent-owned tasks it usually arrives BEFORE the owner's transcript
+projection has persisted the launch row, which is why triage holds the
+correlation rather than requiring the row to exist.
+
 ### Subagent extension
 
 For `task_type: "local_agent"`, the envelope also carries:
@@ -761,10 +770,48 @@ the tray ("process state: is it still running?") from the chat
 ("agent observation state: has the model seen it complete?"). See
 [`turn-lifecycle.md §Tray decoupling`](../architecture/turn-lifecycle.md#tray-decoupling-process-state-vs-agent-observation-tray-a).
 
-`patch.status="killed"` is the carve-out: it only appears as the CLI's
-reply to a user-initiated `stop_task` control_request. The user
-already knows the process was stopped, so triage skips the stash and
-writes the `tool_completion{status:"killed"}` sibling immediately.
+`patch.status="killed"` is the carve-out: no agent observation is
+coming (the CLI killed the process — a user `stop_task`
+control_request, a foreground agent exiting and taking its shells with
+it, or session close; see §Background task ownership), so triage skips
+the stash and writes the `tool_completion{status:"killed"}` sibling
+immediately. When the launch row does not exist yet (a subagent-owned
+shell killed before the transcript projection persisted its row), the
+killed terminal is stashed instead so the late-arriving row can settle
+against it.
+
+---
+
+## Background task ownership
+
+Confirmed by live spikes against claude 2.1.237 (2026-08-31; the
+months-old source mirror disagreed on the async case, the wire won):
+
+- Every shell task has an OWNING agent (`task.agentId` in the CLI's
+  registry). `system/task_started` marks subagent-owned shells with
+  `owned_by_subagent: true`; the envelope still arrives on the MAIN
+  wire regardless of the owner's nesting depth, typically before the
+  owner's transcript projection has persisted the launch row (triage
+  holds the correlation fields until the row lands —
+  `pendingToolCorrelations`).
+- A FOREGROUND (awaited) agent's exit kills its still-running shells
+  (`killShellTasksForAgent` in the CLI's `runAgent` finally block).
+  The orphaned shells' terminals — `task_updated{killed}` +
+  `task_notification{stopped}` — are emitted on the main wire.
+- An ASYNC (backgrounded) agent's exit does NOT kill its shells. They
+  keep running until the session closes (observed 125+s past agent
+  completion), and their eventual terminals arrive on the main wire.
+  A tray row for such a shell showing "running" after its agent
+  finished is truthful.
+- Session close kills every remaining shell and, on a graceful stdin
+  close, emits their killed terminals before exit. AO tears the thread
+  down first, so those frames are dropped by design; the app-side
+  settle (`SettleBackgroundLaunchesForSessionEnd`) writes the
+  session_died siblings instead, on both intentional close and
+  process death.
+- A resumed session (`--resume`) does NOT revive background tasks —
+  the shells died with the old process. Still-running launch rows from
+  a previous session are provably orphans.
 
 ---
 

@@ -85,7 +85,17 @@ subagent-aware path as guilty until it proves scope containment.
   depth, while the reaper and queue gates beside it in
   `store/items_lifecycle.go` stay `parent_id = ''`. Showing a nested
   background Bash in the tray is display; whether it blocks the flush
-  queue or survives a teardown is top-level only (invariant 24).
+  queue is top-level only (invariant 24). Settlement is NOT top-level:
+  `SettleBackgroundLaunchesForSessionEnd` (session close and death)
+  and the boot sweep settle launches at any depth, because the gates'
+  exemption is exactly what used to leave nested rows ticking forever.
+- A `system/task_started` meta update can precede its launch row —
+  subagent-owned shells announce on the main wire before the owner's
+  transcript projection persists the row. `persistToolCallLaunch`
+  holds the correlation fields (`pendingToolCorrelations`, bounded,
+  swept with the threadState) and applies them when the row lands,
+  draining any terminal stashed in the meantime. Never drop a
+  correlation-bearing meta update just because the row is missing.
 
 ## Stopped-thread routing (invariant 29)
 

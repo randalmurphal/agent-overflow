@@ -78,6 +78,20 @@ func (r *Router) handleSessionDied(evt provider.ProviderEvent) error {
 		}
 	}
 
+	// The process is gone and its backgrounded shells with it. Settle
+	// their launch rows now (session_died siblings, tool_lifecycle.go)
+	// rather than leaving tray zombies until the next app boot — the
+	// wire terminals that would have settled them died with the
+	// process. Runs on every replay of the same death; the sibling
+	// writes are idempotent. An auto-reconnect starts only after the
+	// follow-on "disconnected", so a replacement session cannot have
+	// launched new shells yet.
+	if settled, err := r.SettleBackgroundLaunchesForSessionEnd(evt.ThreadID); err != nil {
+		log.Printf("triage: settle background launches on session_died for thread %s: %v", evt.ThreadID, err)
+	} else if settled > 0 {
+		log.Printf("triage: settled %d background launches on session_died for thread %s", settled, evt.ThreadID)
+	}
+
 	if wasNew {
 		r.emit(eventchan.ProviderSessionDied, SessionDiedEvent{
 			ThreadID:   evt.ThreadID,

@@ -11,9 +11,11 @@ import (
 // removes it when an observation event (system/task_notification or
 // TaskOutput tool_result) writes the tool_completion sibling.
 //
-// The tray query joins against this table to hide launches whose
-// process has exited but whose chat sibling has not been written yet —
-// "tray = process state, chat = agent state" decoupling.
+// The lifecycle gates in items_lifecycle.go join against this table so
+// an exited-but-unobserved shell stops blocking the reaper and the
+// flush queue — "tray = process state, chat = agent state" decoupling.
+// The tray itself learns of the exit through the
+// `provider:background_task_state{exited}` event, not this table.
 //
 // ToolUseID may be empty when the launching tool_use_id is unknown
 // (rare: parser map lost across reconnect with no items.meta.task_id
@@ -127,6 +129,38 @@ func (s *Store) TakePendingBackgroundTerminal(threadID, taskID string) (PendingB
 		return PendingBackgroundTaskTerminal{}, false, fmt.Errorf("store: commit take pending terminal %s/%s: %w", threadID, taskID, err)
 	}
 	return t, true, nil
+}
+
+// DeletePendingBackgroundTerminalsForThread drops every stash row on
+// one thread. Called by the session-end settle after it has drained the
+// stashes of the thread's known launches: with the owning provider
+// process gone, a leftover stash belongs to a task whose launch row
+// never materialized (a subagent-private shell) and no observer for it
+// can ever arrive. Without this the rowless entries accumulated
+// forever — the table has no other prune.
+func (s *Store) DeletePendingBackgroundTerminalsForThread(threadID string) error {
+	if threadID == "" {
+		return nil
+	}
+	if _, err := s.db.Exec(
+		`DELETE FROM pending_background_task_terminals WHERE thread_id = ?`,
+		threadID,
+	); err != nil {
+		return fmt.Errorf("store: delete pending terminals for thread %s: %w", threadID, err)
+	}
+	return nil
+}
+
+// DeleteAllPendingBackgroundTerminals drops every stash row. Boot-only
+// (Router.RecoverOrphanedBackgroundTasks, after its drain): at startup
+// no provider session from the previous instance survives, so any row
+// the recovery sweep did not consume is dead evidence for a task with
+// no launch row.
+func (s *Store) DeleteAllPendingBackgroundTerminals() error {
+	if _, err := s.db.Exec(`DELETE FROM pending_background_task_terminals`); err != nil {
+		return fmt.Errorf("store: delete all pending terminals: %w", err)
+	}
+	return nil
 }
 
 type rowScanner interface {

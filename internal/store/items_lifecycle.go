@@ -585,14 +585,30 @@ func (s *Store) GetIncompleteCodexSubagentLaunch(threadID, itemID string) (Item,
 // synthesising the completion sibling, so the user sees the real exit
 // state rather than a generic session_died/killed badge.
 func (s *Store) ListRecoverableClaudeBackgroundLaunches() ([]Item, error) {
-	// This is the one query in the file with no thread scope, so its plan
-	// matters at multi-GB history sizes: the outer predicate is served by
-	// the partial idx_items_running_bg_tool_calls (v41 — keep the WHERE
-	// terms textually in sync with it), and the `c.completion_of <> ''`
-	// term exists solely so the NOT EXISTS probe qualifies for the partial
-	// idx_items_completion_of instead of scanning each candidate's thread.
-	rows, err := s.reader().Query(
-		`SELECT ` + itemColumns + `
+	return s.listRecoverableClaudeBackgroundLaunches("")
+}
+
+// ListRecoverableClaudeBackgroundLaunchesForThread is the thread-scoped
+// variant behind the session-end settle
+// (triage.SettleBackgroundLaunchesForSessionEnd): when a Claude session
+// closes — user stop, idle reaper, config restart, or process death —
+// every still-running backgrounded launch on the thread is provably an
+// orphan (background shells die with the CLI process; a later resume
+// does not revive them — claude-wire.md §Background task ownership),
+// exactly the boot-recovery predicate applied to one thread.
+func (s *Store) ListRecoverableClaudeBackgroundLaunchesForThread(threadID string) ([]Item, error) {
+	return s.listRecoverableClaudeBackgroundLaunches(threadID)
+}
+
+func (s *Store) listRecoverableClaudeBackgroundLaunches(threadID string) ([]Item, error) {
+	// The unscoped form is the one query in the file with no thread
+	// scope, so its plan matters at multi-GB history sizes: the outer
+	// predicate is served by the partial idx_items_running_bg_tool_calls
+	// (v41 — keep the WHERE terms textually in sync with it), and the
+	// `c.completion_of <> ''` term exists solely so the NOT EXISTS probe
+	// qualifies for the partial idx_items_completion_of instead of
+	// scanning each candidate's thread.
+	query := `SELECT ` + itemColumns + `
 		   FROM items
 		   JOIN threads ON threads.id = items.thread_id
 		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
@@ -601,8 +617,13 @@ func (s *Store) ListRecoverableClaudeBackgroundLaunches() ([]Item, error) {
 		    AND items.status = 'running'
 		    AND items.is_background = 1
 		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
-		    AND ` + noCompletionSiblingSQL + ``,
-	)
+		    AND ` + noCompletionSiblingSQL
+	var args []any
+	if threadID != "" {
+		query += ` AND items.thread_id = ?`
+		args = append(args, threadID)
+	}
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list recoverable Claude background launches: %w", err)
 	}

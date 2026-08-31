@@ -1102,6 +1102,19 @@ func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 	if err == nil && sess.Provider == string(provider.Codex) {
 		err = a.retireCodexBackgroundRuntime(threadID)
 	}
+	if a.triage != nil {
+		// The provider process is gone, so its backgrounded shells are
+		// too — including subagent-owned NESTED launches, which the
+		// top-level lifecycle gates never settle (invariant 24). Write
+		// their session_died completion siblings now instead of leaving
+		// tray zombies until the next app boot. Self-filtering: the
+		// query only matches Claude-provider threads, and callers hold
+		// the thread action lock, so a replacement session cannot have
+		// started new launches yet.
+		if _, err := a.triage.SettleBackgroundLaunchesForSessionEnd(threadID); err != nil {
+			log.Printf("app: settle background launches on session close for thread %s: %v", threadID, err)
+		}
+	}
 	if sess.Provider != "" {
 		a.emitProviderSessionDisconnected(threadID, sess.Provider)
 	}
