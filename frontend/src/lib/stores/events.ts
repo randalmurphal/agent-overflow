@@ -11,6 +11,8 @@
 //   - eventsTerminal.ts      — backgrounded-terminal output/exit
 //   - eventsQueue.ts         — send-queue mirror (state/flushed/restored)
 //   - eventsMessageRevert.ts — user-message revert (Stop/Esc un-send)
+//   - eventsDraftRows.ts     — composer-draft convergence across clients
+//   - eventsProjectRows.ts   — project row projections (sidebar list)
 //   - eventsTransportGap.ts  — missed-seq resync
 //   - eventsDiscussion.ts    — discussion:message / discussion:state push
 //   - eventsNotification.ts  — OS activation routing + cold-start queue
@@ -68,6 +70,10 @@ import {
   applyProjectUpdated,
   type ProjectUpdateEvent,
 } from './eventsProjectRows';
+import {
+  applyDraftUpdated,
+  type DraftUpdatedEvent,
+} from './eventsDraftRows';
 import {
   applyApprovalEvent,
   applyUserInputEvent,
@@ -398,6 +404,15 @@ export function setupEventListeners(): () => void {
     applyProjectUpdated,
   );
 
+  // draft:updated — one frame per persisted composer-draft write, naming the
+  // thread and the screen that wrote it. The applier drops this client's own
+  // echo and re-reads otherwise, so a draft typed on one screen appears on
+  // every other screen showing that thread.
+  const cancelDraftUpdated = wailsEventOn<DraftUpdatedEvent>(
+    'draft:updated',
+    applyDraftUpdated,
+  );
+
   // thread:title_generation — the completion frame of one title-generation
   // run (auto first-turn, heal, or user-triggered regeneration). Clears the
   // pending flag the regenerate affordance renders from; the redacted error
@@ -542,6 +557,7 @@ export function setupEventListeners(): () => void {
     cancelUserMessageReverted();
     cancelThreadUpdated();
     cancelProjectUpdated();
+    cancelDraftUpdated();
     cancelThreadTitleGeneration();
     cancelWorktreeSetup();
     cancelTransportGap();

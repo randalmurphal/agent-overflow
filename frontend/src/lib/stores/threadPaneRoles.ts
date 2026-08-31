@@ -357,7 +357,7 @@ export interface PaneDoors {
  * Consumers: `stores/eventsItemStream.ts`, `stores/eventsProvider.ts`
  * (intersected with a `Pick` of `ErrorSurface`'s writers),
  * `stores/eventsQueue.ts`, `stores/eventsDiscussion.ts`,
- * `stores/eventsMessageRevert.ts`,
+ * `stores/eventsMessageRevert.ts`, `stores/eventsDraftRows.ts`,
  * `stores/eventsThreadRows.ts`, `stores/eventsTransportGap.ts`,
  * `stores/revertOnInterrupt.svelte.ts`. Each narrows at its pane
  * acquisition point (the registry hands out whole `ThreadPane`s), so a

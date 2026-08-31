@@ -1864,7 +1864,7 @@ func TestListThreadsWithItemsSurfacesNonEmptyDrafts(t *testing.T) {
 		}
 	}
 
-	if err := s.UpsertThreadDraft(ThreadDraft{
+	if _, err := s.UpsertThreadDraft(ThreadDraft{
 		ThreadID:                  implDraft.ID,
 		Content:                   "PLEASE IMPLEMENT THIS PLAN:\n# Foo",
 		Attachments:               "[]",
@@ -1876,7 +1876,7 @@ func TestListThreadsWithItemsSurfacesNonEmptyDrafts(t *testing.T) {
 	}
 	// emptyDraft gets a content-only draft with no source-plan link. That is
 	// still user-authored state, so it should now surface in the sidebar.
-	if err := s.UpsertThreadDraft(ThreadDraft{
+	if _, err := s.UpsertThreadDraft(ThreadDraft{
 		ThreadID:      emptyDraft.ID,
 		Content:       "typed but never sent",
 		Attachments:   "[]",

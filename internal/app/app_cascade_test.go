@@ -111,7 +111,7 @@ func populateThreadForCascade(t *testing.T, app *App, thread store.Thread) []str
 	}
 
 	// 1 draft.
-	if err := app.store.UpsertThreadDraft(store.ThreadDraft{
+	if _, err := app.store.UpsertThreadDraft(store.ThreadDraft{
 		ThreadID:  thread.ID,
 		Content:   "draft content",
 		UpdatedAt: time.Now().UnixMilli(),
@@ -321,7 +321,7 @@ func TestCascade_ForkPreservesOriginalState(t *testing.T) {
 			t.Fatalf("InsertItem %d: %v", i, err)
 		}
 	}
-	if err := app.store.UpsertThreadDraft(store.ThreadDraft{
+	if _, err := app.store.UpsertThreadDraft(store.ThreadDraft{
 		ThreadID: source.ID, Content: "source draft", UpdatedAt: time.Now().UnixMilli(),
 	}); err != nil {
 		t.Fatalf("UpsertThreadDraft: %v", err)

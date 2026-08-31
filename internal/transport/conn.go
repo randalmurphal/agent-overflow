@@ -81,6 +81,9 @@ type connProfile struct {
 	// remoteAddr is the peer's kernel-reported address, carried for the
 	// per-connection close log so concurrent clients' lines correlate.
 	remoteAddr string
+	// client is the screen on the other end, declared on the upgrade URL.
+	// Zero when the client declared nothing, which is normal.
+	client ClientIdentity
 }
 
 // connSettings carries the server-config knobs runConnHandler needs.
@@ -183,7 +186,7 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// long-lived server-side resources without waiting for the App to
 	// shut down. runCleanups runs in LIFO order after the read loop
 	// exits and after in-flight RPC goroutines drain.
-	connCtx, state := WithConnState(connCtx)
+	connCtx, state := WithConnState(connCtx, profile.client)
 	defer state.RunCleanups()
 
 	// Event pump: deliver every event the bus produces to the wire.

@@ -14,6 +14,14 @@ const (
 	DiscussionState   Channel = "discussion:state"
 )
 
+// draft:* — one frame per persisted composer-draft write, naming the thread
+// and the screen that wrote it. Carries no draft TEXT: receivers re-read
+// through GetDraft, which is loopback-only for the same reason this channel
+// is (in-progress user-typed work).
+const (
+	DraftUpdated Channel = "draft:updated"
+)
+
 // git:* — per-workspace git status streams, keyed by canonical absolute
 // workspace path.
 const (

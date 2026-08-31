@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/usermessage"
 )
 
@@ -42,7 +44,11 @@ type Draft struct {
 }
 
 // SaveDraft replaces the draft row for a thread.
-func (a *App) SaveDraft(threadID string, content string, attachmentIDs []string, terminalChips []TerminalChip, sourceProposedPlan *SourceProposedPlan) error {
+//
+// ctx carries the calling screen's identity so the broadcast can name it and
+// so that screen can recognize the echo of its own save. The generated TS
+// bindings strip a leading ctx parameter, so the wire signature is unchanged.
+func (a *App) SaveDraft(ctx context.Context, threadID string, content string, attachmentIDs []string, terminalChips []TerminalChip, sourceProposedPlan *SourceProposedPlan) error {
 	if a.store == nil {
 		return fmt.Errorf("draft store not initialized")
 	}
@@ -58,7 +64,7 @@ func (a *App) SaveDraft(threadID string, content string, attachmentIDs []string,
 	if err != nil {
 		return fmt.Errorf("save draft: encode source proposed plan: %w", err)
 	}
-	return a.store.UpsertThreadDraft(store.ThreadDraft{
+	return a.writeThreadDraft(clientOf(ctx), store.ThreadDraft{
 		ThreadID:                  threadID,
 		Content:                   content,
 		Attachments:               string(attachmentsJSON),
@@ -115,11 +121,11 @@ func (a *App) GetDraft(threadID string) (Draft, error) {
 // ClearDraft deletes any stored draft for a thread. Missing rows are not
 // treated as an error because the caller just wants the thread to have no
 // draft.
-func (a *App) ClearDraft(threadID string) error {
+func (a *App) ClearDraft(ctx context.Context, threadID string) error {
 	if a.store == nil {
 		return fmt.Errorf("draft store not initialized")
 	}
-	return a.store.DeleteThreadDraft(threadID)
+	return a.removeThreadDraft(clientOf(ctx), threadID)
 }
 
 // DeleteEmptyDraftThread removes a materialized chat/plan draft row after the
@@ -204,6 +210,11 @@ type stagedThreadDraft struct {
 //
 // Callers that only ever ADD to the draft (the flush-queue restore
 // paths) discard the result.
+//
+// The write is attributed to nobody: every caller is a backend saga (a revert
+// parking the user's work, a flush-queue restore putting an undelivered
+// message back), so there is no screen to credit and every client applies the
+// frame.
 func (a *App) mergeAndUpsertThreadDraft(threadID string, parts []composerdraft.Part) (stagedThreadDraft, error) {
 	current, existed, err := a.store.GetThreadDraft(threadID)
 	if err != nil {
@@ -213,7 +224,7 @@ func (a *App) mergeAndUpsertThreadDraft(threadID string, parts []composerdraft.P
 	if err != nil {
 		return stagedThreadDraft{}, err
 	}
-	if err := a.store.UpsertThreadDraft(merged); err != nil {
+	if err := a.writeThreadDraft(transport.ClientIdentity{}, merged); err != nil {
 		return stagedThreadDraft{}, err
 	}
 	return stagedThreadDraft{merged: merged, prior: current, priorExisted: existed}, nil

@@ -70,6 +70,7 @@ import {
   transportGapChannel,
 } from './wsClient';
 import { __resetRunModeForTest, isViewOnlySession } from './runMode';
+import { getConnectionId, getDeviceId } from './clientIdentity';
 
 // MockWebSocket is a hand-rolled fake that exposes the same shape as
 // the WSLike interface the wsClient depends on. Tests drive it via
@@ -841,11 +842,18 @@ describe('WSClient', () => {
     vi.unstubAllGlobals();
   });
 
-  it('opens the manifest wsUrl verbatim, with no credential in the URL', async () => {
+  it('opens the manifest wsUrl with only the identity parameters appended', async () => {
     // The page's credential is the HttpOnly cookie the manifest fetch
     // set, and the browser attaches it to a same-origin upgrade by
-    // itself. Anything appended here would be a credential the page
-    // could read — the exact thing this transport no longer has.
+    // itself. Nothing that could function as a credential may be
+    // appended here — that would be one the page could read, the exact
+    // thing this transport no longer has.
+    //
+    // The two identity parameters are the deliberate exception, and are
+    // asserted as an exhaustive allow-list rather than by presence: they
+    // are self-asserted, unauthenticated, and grant nothing. The server
+    // uses them to say WHICH SCREEN wrote a row, never whether it may.
+    // Adding a third parameter here has to be a decision, not a drift.
     const wsUrl = `ws://${window.location.host}/ws`;
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -860,7 +868,11 @@ describe('WSClient', () => {
       const p = client.callByID(1, []);
       await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
       const ws = MockWebSocket.instances[0]!;
-      expect(ws.url).toBe(wsUrl);
+      const opened = new URL(ws.url);
+      expect(`${opened.protocol}//${opened.host}${opened.pathname}`).toBe(wsUrl);
+      expect([...opened.searchParams.keys()].sort()).toEqual(['conn', 'did']);
+      expect(opened.searchParams.get('did')).toBe(getDeviceId());
+      expect(opened.searchParams.get('conn')).toBe(getConnectionId());
       expect(isViewOnlySession()).toBe(true);
 
       ws.acceptOpen();

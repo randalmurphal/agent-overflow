@@ -334,6 +334,27 @@ message; single-event windows fall through to `type:"event"`. Non-loopback
 connections additionally get `permessage-deflate` with context takeover, about
 1.5 MB per connection, since bytes are free on a local pipe and CPU is not.
 
+`connProfile.client` (clientidentity.go) is the calling screen's identity,
+parsed once from the upgrade URL's `did` / `conn` query parameters and reachable
+from any bound method as `transport.ClientFromContext(ctx)`. A bound method that
+takes a leading `ctx context.Context` reads it there; the generated TS bindings
+STRIP that parameter, so adding one changes no wire signature and no call site.
+
+- `DeviceID` (`did`) is durable per browser profile and SHARED by that profile's
+  tabs. It is for attribution — "edited on <device>" — and must never be used to
+  suppress a client's own echo: two tabs of one browser would each suppress the
+  other's writes and sit on stale state.
+- `ConnectionID` (`conn`) is minted per page load and is the echo-suppression
+  key.
+- Both are empty for an in-process call, a background saga, or a test. That is a
+  normal answer meaning "no screen behind this write", not an error, and the
+  frames such a write produces are applied by every client.
+
+Identity rides the upgrade URL rather than a post-connect handshake frame
+because it must be readable before the FIRST RPC on the connection: a write
+issued in a pre-handshake window would broadcast unattributed and echo back into
+the surface that made it.
+
 The keepalive loop (conn.go `keepalive`) defaults to a 10s cadence and a 10s
 pong timeout, both overridable through `Config.KeepaliveInterval` and
 `Config.KeepalivePongTimeout`, which are test knobs, not production tuning.

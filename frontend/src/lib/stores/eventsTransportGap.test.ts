@@ -2,8 +2,19 @@
 // §3.4). A gap carries no entity key, so the only safe answer is to
 // forget what we claimed to know about the backend's counters — in every
 // tier that holds a stamp, not just the registry.
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTransportGap } from './eventsTransportGap';
+import { resetPanesForTest } from './panes.svelte';
+import {
+  registerComposerDraft,
+  resetComposerDraftRegistryForTest,
+} from './composerDraftRegistry.svelte';
+import {
+  rememberDraftSnapshot,
+  resetComposerDraftSnapshotStateForTest,
+} from './composerDraftSnapshots';
+import type { ComposerDraftStore } from './composerDraft.svelte';
+import { buildPane, makeThread } from '../../test/helpers/chat';
 import {
   __resetThreadHistoryStampsForTest,
   getThreadHistoryStamp,
@@ -198,5 +209,53 @@ describe('transport gap — workflow channels', () => {
 
     expect(getBindingMock('WorkflowGetEngineState')?.mock.calls.length).toBeGreaterThan(1);
     expect(getBindingMock('WorkflowListDefinitions')?.mock.calls.length).toBe(definitions + 1);
+  });
+});
+
+// A gap on draft:updated means this client missed a write another screen
+// made. Recovery is the applier's re-read minus the identity checks: after a
+// gap there is no frame to read an identity from, and re-reading a draft this
+// client wrote itself costs a round trip and changes nothing.
+describe('transport gap — draft:updated', () => {
+  beforeEach(() => {
+    resetPanesForTest();
+    resetComposerDraftRegistryForTest();
+    resetComposerDraftSnapshotStateForTest();
+    setBindingMock('ListThreads', async () => []);
+    setBindingMock('ListProjects', async () => []);
+  });
+
+  async function paneWithDraft(threadId: string, paneKey: string) {
+    const pane = await buildPane(makeThread({ id: threadId }), [], paneKey);
+    const reloadFromBackend = vi.fn(async () => {});
+    registerComposerDraft(pane.paneId, { reloadFromBackend } as unknown as ComposerDraftStore);
+    return reloadFromBackend;
+  }
+
+  it('re-reads every mounted composer', async () => {
+    const first = await paneWithDraft('thread-a', 'main');
+    const second = await paneWithDraft('thread-b', 'second');
+
+    applyTransportGap({ channel: 'draft:updated', seq: 9 });
+
+    expect(first).toHaveBeenCalledWith('thread-a');
+    expect(second).toHaveBeenCalledWith('thread-b');
+  });
+
+  // The guard the applier uses holds here too: reloadFromBackend discards
+  // unsaved local text, and a gap is not a reason to do that to someone who
+  // is mid-sentence.
+  it('leaves a composer holding unsaved work alone', async () => {
+    const reload = await paneWithDraft('thread-a', 'main');
+    rememberDraftSnapshot('thread-a', {
+      content: 'half a sentence',
+      attachments: [],
+      terminalChips: [],
+      sourceProposedPlan: null,
+    });
+
+    applyTransportGap({ channel: 'draft:updated', seq: 9 });
+
+    expect(reload).not.toHaveBeenCalled();
   });
 });

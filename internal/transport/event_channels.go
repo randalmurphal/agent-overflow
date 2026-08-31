@@ -193,6 +193,20 @@ var channelPolicies = []ChannelPolicy{
 			"channel id, so it must never become latest-only.",
 	},
 	{
+		Channel:   eventchan.DraftUpdated,
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionDefault,
+		Why: "Names a thread whose composer draft moved and the screen that " +
+			"moved it; the draft TEXT never rides it, because receivers " +
+			"re-read through GetDraft. Loopback-only regardless: GetDraft / " +
+			"SaveDraft / ClearDraft are all CategorySessionControl for the " +
+			"disclosure reason (in-progress user-typed work), and a push " +
+			"telling a LAN peer WHICH thread someone is typing in is the " +
+			"same class of answer one turn smaller. Never latest-only: a " +
+			"clear and a save are different edges on the same thread, and " +
+			"collapsing them loses the one the client needed.",
+	},
+	{
 		Channel:   eventchan.GitStatus,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,

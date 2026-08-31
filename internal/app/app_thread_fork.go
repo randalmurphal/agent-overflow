@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/closer"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
@@ -356,7 +357,7 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 			cleanups.Run(),
 		)
 	}
-	if err := a.store.UpsertThreadDraft(promptDraft); err != nil {
+	if err := a.writeThreadDraft(transport.ClientIdentity{}, promptDraft); err != nil {
 		return store.Thread{}, errors.Join(
 			fmt.Errorf("fork thread from message: restore prompt draft: %w", err),
 			cleanups.Run(),

@@ -26,6 +26,8 @@ import { getThreads } from './threads.svelte';
 import { resyncGitStatusAfterGap } from './gitStatusStore.svelte';
 import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
 import { resyncMcpServersAfterGap } from './mcpServers.svelte';
+import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
+import { hasRememberedDraftSnapshot } from './composerDraftSnapshots';
 import { resyncSettings } from './settings.svelte';
 import { resyncWorkflowRunMapAfterGap } from './workflowRunMap.svelte';
 import {
@@ -231,6 +233,26 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // anyway — a deletion takes its threads with it). Blanket rather than
       // per-row because the gap carries no entity key.
       refreshSidebarProjections();
+      return;
+    }
+    case 'draft:updated': {
+      // Edge-triggered like the other row channels: one frame per persisted
+      // draft write, and no later frame restates the write a gap swallowed.
+      // A missed frame leaves the composer holding text another screen has
+      // already replaced, and the next thing the user types saves it back
+      // over the newer version.
+      //
+      // Recovery is the same re-read the applier does, minus the identity
+      // checks — after a gap this client cannot know whose write it missed,
+      // and its own writes are already in its composer, so re-reading them
+      // costs a round trip and changes nothing. The unsaved-work guard still
+      // holds: reloadFromBackend would discard text the user is typing, and
+      // a gap is not a reason to do that.
+      for (const pane of ingestPanes()) {
+        const threadId = pane.threadId;
+        if (!threadId || hasRememberedDraftSnapshot(threadId)) continue;
+        void getComposerDraftForPane(pane.paneId)?.reloadFromBackend(threadId);
+      }
       return;
     }
     case 'settings:updated': {

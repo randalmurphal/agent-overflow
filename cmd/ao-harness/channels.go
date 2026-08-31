@@ -28,6 +28,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.BrowserInstallProgress,
 		eventchan.DiscussionMessage,
 		eventchan.DiscussionState,
+		eventchan.DraftUpdated,
 		eventchan.GitStatus,
 		eventchan.HarnessMock,
 		eventchan.HarnessPerf,

@@ -217,7 +217,7 @@ func TestWorkflowWakeDeliversToAnIdleBoundThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A draft the user has typed but not sent must survive a background wake.
-	if err := h.app.store.UpsertThreadDraft(store.ThreadDraft{
+	if _, err := h.app.store.UpsertThreadDraft(store.ThreadDraft{
 		ThreadID: thread.ID, Content: "half-written thought", UpdatedAt: 5,
 	}); err != nil {
 		t.Fatal(err)

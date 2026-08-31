@@ -95,7 +95,7 @@ func TestRevertAndResendReplacesMessageAndRestoresWIP(t *testing.T) {
 		TerminalChips: `[{"id":"chip-1","label":"npm test"}]`,
 		UpdatedAt:     time.Now().UnixMilli(),
 	}
-	if err := app.store.UpsertThreadDraft(wip); err != nil {
+	if _, err := app.store.UpsertThreadDraft(wip); err != nil {
 		t.Fatalf("seed WIP draft: %v", err)
 	}
 
@@ -165,7 +165,7 @@ func TestRevertAndResendKeepsMergedDraftWhenResendFails(t *testing.T) {
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-fail")
 
-	if err := app.store.UpsertThreadDraft(store.ThreadDraft{
+	if _, err := app.store.UpsertThreadDraft(store.ThreadDraft{
 		ThreadID:      thread.ID,
 		Content:       "half-typed follow-up",
 		TerminalChips: `[{"id":"chip-1","label":"npm test"}]`,

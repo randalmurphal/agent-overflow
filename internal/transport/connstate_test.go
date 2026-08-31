@@ -8,7 +8,7 @@ import (
 
 func TestConnStateContextRoundTrip(t *testing.T) {
 	t.Parallel()
-	ctx, state := WithConnState(context.Background())
+	ctx, state := WithConnState(context.Background(), ClientIdentity{})
 	if got := ConnStateFromContext(ctx); got != state {
 		t.Fatalf("ConnStateFromContext: got %p, want %p", got, state)
 	}
@@ -23,7 +23,7 @@ func TestConnStateFromBareContext(t *testing.T) {
 
 func TestRunCleanupsLIFO(t *testing.T) {
 	t.Parallel()
-	_, state := WithConnState(context.Background())
+	_, state := WithConnState(context.Background(), ClientIdentity{})
 	var order []int
 	state.RegisterCleanup(func() { order = append(order, 1) })
 	state.RegisterCleanup(func() { order = append(order, 2) })
@@ -36,7 +36,7 @@ func TestRunCleanupsLIFO(t *testing.T) {
 
 func TestRunCleanupsIsIdempotent(t *testing.T) {
 	t.Parallel()
-	_, state := WithConnState(context.Background())
+	_, state := WithConnState(context.Background(), ClientIdentity{})
 	var calls int32
 	state.RegisterCleanup(func() { atomic.AddInt32(&calls, 1) })
 	state.RunCleanups()
@@ -48,7 +48,7 @@ func TestRunCleanupsIsIdempotent(t *testing.T) {
 
 func TestRegisterAfterCloseReturnsFalse(t *testing.T) {
 	t.Parallel()
-	_, state := WithConnState(context.Background())
+	_, state := WithConnState(context.Background(), ClientIdentity{})
 	state.RunCleanups()
 	if ok := state.RegisterCleanup(func() {}); ok {
 		t.Fatalf("RegisterCleanup after runCleanups must return false")
@@ -57,7 +57,7 @@ func TestRegisterAfterCloseReturnsFalse(t *testing.T) {
 
 func TestPanickingCleanupDoesNotAbortOthers(t *testing.T) {
 	t.Parallel()
-	_, state := WithConnState(context.Background())
+	_, state := WithConnState(context.Background(), ClientIdentity{})
 	var ran int32
 	state.RegisterCleanup(func() { atomic.AddInt32(&ran, 1) })
 	state.RegisterCleanup(func() { panic("boom") })
@@ -72,7 +72,7 @@ func TestPanickingCleanupDoesNotAbortOthers(t *testing.T) {
 
 func TestRegisterCleanupNilNoOp(t *testing.T) {
 	t.Parallel()
-	_, state := WithConnState(context.Background())
+	_, state := WithConnState(context.Background(), ClientIdentity{})
 	if state.RegisterCleanup(nil) {
 		t.Fatalf("RegisterCleanup(nil) must return false")
 	}

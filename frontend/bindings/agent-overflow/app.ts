@@ -3095,6 +3095,10 @@ export function RevertConversationAndResendMessage(threadID: string, userItemID:
 
 /**
  * SaveDraft replaces the draft row for a thread.
+ * 
+ * ctx carries the calling screen's identity so the broadcast can name it and
+ * so that screen can recognize the echo of its own save. The generated TS
+ * bindings strip a leading ctx parameter, so the wire signature is unchanged.
  */
 export function SaveDraft(threadID: string, content: string, attachmentIDs: string[], terminalChips: app$0.TerminalChip[], sourceProposedPlan: app$0.SourceProposedPlan | null): $CancellablePromise<void> {
     return $Call.ByID(3025273299, threadID, content, attachmentIDs, terminalChips, sourceProposedPlan);
@@ -3787,6 +3791,11 @@ export function UpdateNewThreadDefaults(update: app$0.NewThreadDefaultsUpdate): 
  * UpdateProjectSortPositions re-orders the projects list. The frontend
  * emits the full ordered list when the user drops a drag-reorder so the
  * store assigns dense positions 0..N-1 in one transaction.
+ * 
+ * One frame per row written. Every listed project is written, not only the
+ * ones whose index moved, because the reorder also bumps updated_at — that
+ * bump is deliberate (it makes a reorder count as project activity), so those
+ * rows really did change and other clients need them.
  */
 export function UpdateProjectSortPositions(orderedIDs: string[]): $CancellablePromise<void> {
     return $Call.ByID(3717363955, orderedIDs);

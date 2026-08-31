@@ -48,6 +48,27 @@ import {
   clampString,
   extractRpcIdFromOversizedFrame,
 } from './frames';
+import { getConnectionId, getDeviceId } from './clientIdentity';
+
+/**
+ * Append this screen's identity to the upgrade URL. Kept as a function rather
+ * than a captured constant so a reconnect after a device-id change (the launcher
+ * pinning a bucket via ?cid=) uses the current value.
+ *
+ * Failing to parse the URL is not fatal: the identity is an attribution
+ * nicety, and refusing to connect over it would trade a working session for a
+ * missing label.
+ */
+function withClientIdentity(wsUrl: string): string {
+  try {
+    const url = new URL(wsUrl);
+    url.searchParams.set('did', getDeviceId());
+    url.searchParams.set('conn', getConnectionId());
+    return url.toString();
+  } catch {
+    return wsUrl;
+  }
+}
 
 // Test-visible exports for the bound constants. We keep the const
 // names for the production code paths (clearer at the call site than
@@ -785,7 +806,14 @@ export class WSClient {
     // browser attaches the session cookie itself. Non-browser clients
     // (the harness client, the e2e suite) present the session token as
     // a query parameter against the same validation instead.
-    const url = bootstrap.wsUrl;
+    //
+    // What IS appended is this screen's identity, so bound methods can
+    // attribute a write and so this client can recognize the echo of its own
+    // change. It rides the URL rather than a post-open frame because it has to
+    // be in place before the first RPC lands: a draft saved in the window
+    // before a handshake completed would echo back into the composer that
+    // typed it. Both ids are opaque and the backend re-validates their shape.
+    const url = withClientIdentity(bootstrap.wsUrl);
 
     return await new Promise<void>((resolve, reject) => {
       const attempt: ConnectAttempt = { settled: false, resolve, reject };

@@ -60,6 +60,23 @@ stops waking readers.
   NON-ARCHIVED projects, which is why archive arrives as `unlisted` rather than
   as a row change. Threads that went with a deleted project arrive as their own
   `thread:updated` `deleted` frames, so the project handler never touches panes.
+- `draft:updated` carries no row at all — the thread, the write's timestamp,
+  and the identity of the screen that wrote it. The draft TEXT never rides the
+  channel: `GetDraft` is loopback-only because a composer holds in-progress
+  user work, and a push carrying that text would be the one path around it.
+  The handler (`eventsDraftRows.ts`) re-reads instead, and drops the frame in
+  three cases, each of which is a real bug if you remove it. (1) The frame's
+  `connectionId` is this page load's — its own echo, and re-reading on it
+  repaints the composer with a round-tripped copy of itself mid-keystroke.
+  Suppression is keyed on the CONNECTION, never on `deviceId`: two tabs of one
+  browser share a device, and each would then sit on the other's stale text.
+  (2) This client holds an unsaved snapshot for the thread
+  (`hasRememberedDraftSnapshot`) — the remote write is not the last write, the
+  local pending save is, and adopting the remote text deletes characters out
+  from under someone still typing. (3) No pane shows the thread, so there is
+  nothing to converge and the next open hydrates from the row anyway. Deletes
+  and edits take the same path: a cleared thread and a thread that never had a
+  draft are the same state, and `GetDraft` answers both as empty.
 - `settings:updated` is the odd one out and deliberately so: it names the tier
   and the changed KEYS, never the values, because settings carry redacted
   fields with no read path. The handler (`settings.svelte.ts` `resyncSettings`)

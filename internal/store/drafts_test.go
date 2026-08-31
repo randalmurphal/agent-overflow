@@ -40,7 +40,7 @@ func TestThreadDraftInsertAndReadBack(t *testing.T) {
 		TerminalChips: `[{"id":"chip-1","preview":"ls -la"}]`,
 		UpdatedAt:     time.Now().UnixMilli(),
 	}
-	if err := s.UpsertThreadDraft(draft); err != nil {
+	if _, err := s.UpsertThreadDraft(draft); err != nil {
 		t.Fatalf("UpsertThreadDraft: %v", err)
 	}
 
@@ -71,7 +71,7 @@ func TestThreadDraftUpsertReplaces(t *testing.T) {
 		TerminalChips: "[]",
 		UpdatedAt:     1000,
 	}
-	if err := s.UpsertThreadDraft(first); err != nil {
+	if _, err := s.UpsertThreadDraft(first); err != nil {
 		t.Fatalf("insert v1: %v", err)
 	}
 	second := ThreadDraft{
@@ -81,7 +81,7 @@ func TestThreadDraftUpsertReplaces(t *testing.T) {
 		TerminalChips: "[]",
 		UpdatedAt:     2000,
 	}
-	if err := s.UpsertThreadDraft(second); err != nil {
+	if _, err := s.UpsertThreadDraft(second); err != nil {
 		t.Fatalf("upsert v2: %v", err)
 	}
 
@@ -109,14 +109,14 @@ func TestThreadDraftDeleteIsIdempotent(t *testing.T) {
 		TerminalChips: "[]",
 		UpdatedAt:     time.Now().UnixMilli(),
 	}
-	if err := s.UpsertThreadDraft(draft); err != nil {
+	if _, err := s.UpsertThreadDraft(draft); err != nil {
 		t.Fatalf("UpsertThreadDraft: %v", err)
 	}
-	if err := s.DeleteThreadDraft(thread.ID); err != nil {
+	if _, err := s.DeleteThreadDraft(thread.ID); err != nil {
 		t.Fatalf("DeleteThreadDraft: %v", err)
 	}
 	// Second delete must be a no-op, not an error.
-	if err := s.DeleteThreadDraft(thread.ID); err != nil {
+	if _, err := s.DeleteThreadDraft(thread.ID); err != nil {
 		t.Fatalf("second DeleteThreadDraft: %v", err)
 	}
 
@@ -144,7 +144,7 @@ func TestThreadDraftCascadesOnThreadDelete(t *testing.T) {
 		TerminalChips: "[]",
 		UpdatedAt:     time.Now().UnixMilli(),
 	}
-	if err := s.UpsertThreadDraft(draft); err != nil {
+	if _, err := s.UpsertThreadDraft(draft); err != nil {
 		t.Fatalf("UpsertThreadDraft: %v", err)
 	}
 
@@ -163,7 +163,7 @@ func TestThreadDraftCascadesOnThreadDelete(t *testing.T) {
 
 func TestThreadDraftRequiresThreadID(t *testing.T) {
 	s := newTestStore(t)
-	err := s.UpsertThreadDraft(ThreadDraft{UpdatedAt: 1})
+	_, err := s.UpsertThreadDraft(ThreadDraft{UpdatedAt: 1})
 	if err == nil {
 		t.Fatal("expected error for empty thread id")
 	}
@@ -183,7 +183,7 @@ func TestThreadDraftPendingPlanImplementationRoundTrip(t *testing.T) {
 
 	// Populated case: column round-trips verbatim.
 	populated := `{"threadId":"src","itemId":"plan-1","payloadId":"pl-1"}`
-	if err := s.UpsertThreadDraft(ThreadDraft{
+	if _, err := s.UpsertThreadDraft(ThreadDraft{
 		ThreadID:                  thread.ID,
 		Content:                   "PLEASE IMPLEMENT THIS PLAN:",
 		Attachments:               "[]",
@@ -203,7 +203,7 @@ func TestThreadDraftPendingPlanImplementationRoundTrip(t *testing.T) {
 
 	// Nil case: passing "" must round-trip back as "" (column stored as
 	// SQL NULL — the partial index keeps that subset selective).
-	if err := s.UpsertThreadDraft(ThreadDraft{
+	if _, err := s.UpsertThreadDraft(ThreadDraft{
 		ThreadID:                  thread.ID,
 		Content:                   "post-clear",
 		Attachments:               "[]",
@@ -230,7 +230,7 @@ func TestThreadDraftNormalisesEmptyJSONFields(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	err := s.UpsertThreadDraft(ThreadDraft{
+	_, err := s.UpsertThreadDraft(ThreadDraft{
 		ThreadID:  thread.ID,
 		Content:   "blank arrays",
 		UpdatedAt: 1,
