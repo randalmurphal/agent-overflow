@@ -704,12 +704,16 @@ Prerequisite sweep, valuable standalone:
   too: over a slow link, attach cost is a diff against the replica,
   not a full load. Backend-UUID keying already shipped (one database
   per backend, `ao-replica-<backendId>`; generation mismatch clears
-  and re-stamps). Obligations still open: purge on sign-out and
-  device revocation — today **no code path ever deletes a replica
-  database**, and a backendId change orphans the old
-  `ao-replica-<oldId>` database on the origin forever, outside the
-  per-database caps — and the resume ladder becomes replay-ring → windowed
-  replica diff → full snapshot, in that order. At rest: the phone
+  and re-stamps). Lifecycle LANDED 2026-08-31 (wave 4c):
+  `purgeReplicaDatabases(liveBackendIds)` is the named purge
+  primitive sign-out and revocation will call (empty set = drop
+  everything), a boot sweep reaps `ao-replica-*` databases no live
+  backend claims, deletion is token-sequenced against the session's
+  own open machinery, and engines without `indexedDB.databases()`
+  report `enumerated: false` honestly. Still open: the sign-out /
+  revocation CALLERS (phase 2), and the resume ladder becomes
+  replay-ring → windowed replica diff → full snapshot, in that
+  order. At rest: the phone
   replica is encrypted with a key held in native secure storage
   outside the webview (biometric-gateable); browser profiles cannot
   do this. Revocation is not remote wipe. Cutting a device's access
@@ -789,13 +793,20 @@ Prerequisite sweep, valuable standalone:
 
 ## 10. Multi-backend clients
 
-Decide the **seams** in phase 1, not a speculative store rewrite:
+Decide the **seams** in phase 1, not a speculative store rewrite.
+LANDED 2026-08-31 (wave 4c):
 
-- Document and enforce global uniqueness of thread/project ids (already
-  UUIDs) so most stores need no re-keying.
-- `bindings.ts` routes RPCs through a resolvable transport handle
-  rather than importing a singleton.
-- Event fan-out carries connection origin (backend UUID).
+- Thread/project id global uniqueness is a stated contract:
+  `internal/entityid` mints them (canonical v4 UUIDs, `Valid` pins the
+  format), every mint site calls it, and mint-site tests fail a
+  short-id regression.
+- `bindings.ts` routes RPCs through `resolveTransport()`
+  (`frontend/src/lib/transport/handle.ts`) rather than importing the
+  `wsClient` singleton; one resolution today, the multi-backend form
+  changes only the resolution.
+- Event fan-out carries connection origin: every delivered event's
+  handler receives `{backendId}` as a second argument, stamped from
+  the connection's identity (empty = unknown, never "mine").
 - The IndexedDB thread replica keys its **database** by backend UUID
   so two backends' threads can never collide in one browser profile.
   Already shipped (`replica/session.ts`, `ao-replica-${backendId}`) —
