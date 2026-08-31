@@ -50,6 +50,7 @@ import {
   extractRpcIdFromOversizedFrame,
 } from './frames';
 import { getConnectionId, getDeviceId } from './clientIdentity';
+import { hasPairedSession, mintDialTicket } from './deviceSession';
 
 /**
  * Append this screen's identity to the upgrade URL. Kept as a function rather
@@ -1064,6 +1065,18 @@ export class WSClient {
         terminal: this.credentialDead,
       });
     }
+    // A PAIRED device holds its session credential in script (it arrived
+    // in the /auth/pair response body, not as a cookie), so the upgrade
+    // names its session through the single-use ticket instead
+    // (docs/specs/remote-access.md §4). Minted fresh per attempt — a
+    // ticket lives seconds and is spent whether or not the upgrade
+    // succeeds. Null when this browser never paired (every embedded and
+    // local page: their cookie rides the upgrade by itself) or when the
+    // backend will not honour the stored session; the dial then proceeds
+    // exactly as before. Runs before the closed check so a close() during
+    // the mint still stops the attempt. The unpaired path stays fully
+    // synchronous — no awaited microtask is added to every ordinary dial.
+    const dialTicket = hasPairedSession() ? await mintDialTicket() : null;
     if (this.closed) {
       this.connectPromise = null;
       throw new DisconnectedError('client closed', { terminal: true });
@@ -1079,7 +1092,12 @@ export class WSClient {
     // be in place before the first RPC lands: a draft saved in the window
     // before a handshake completed would echo back into the composer that
     // typed it. Both ids are opaque and the backend re-validates their shape.
-    const url = withClientIdentity(bootstrap.wsUrl);
+    let url = withClientIdentity(bootstrap.wsUrl);
+    if (dialTicket !== null) {
+      const withTicket = new URL(url);
+      withTicket.searchParams.set('ticket', dialTicket);
+      url = withTicket.toString();
+    }
 
     // Each attempt starts with no known socket-level cause; a stale one
     // from the previous socket must never be attributed to this close.

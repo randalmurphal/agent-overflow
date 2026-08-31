@@ -83,6 +83,7 @@ import {
 } from './wsClient';
 import { __resetRunModeForTest, isViewOnlySession } from './runMode';
 import { getConnectionId, getDeviceId } from './clientIdentity';
+import { clearPairedSession, redeemPairing } from './deviceSession';
 
 // MockWebSocket is a hand-rolled fake that exposes the same shape as
 // the WSLike interface the wsClient depends on. Tests drive it via
@@ -2963,5 +2964,46 @@ describe('WSClient', () => {
 
     client.close();
     vi.useRealTimers();
+  });
+
+  // The paired-device dial: a browser that holds its session credential
+  // in script (it arrived in the /auth/pair response body, not as a
+  // cookie) names its session through a fresh single-use ticket on the
+  // upgrade URL. Every other test in this file dials unpaired and pins
+  // the converse: no ticket parameter, no /auth fetch.
+  it('names a paired session on the upgrade via a fresh ticket', async () => {
+    localStorage.clear();
+    try {
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      const ticketFetch = vi.fn(
+        async () => new Response(JSON.stringify({ ticket: 'tik-9' }), { status: 200 }),
+      );
+      vi.stubGlobal('fetch', ticketFetch);
+
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      void client.callByID(123, ['arg']).catch(() => {});
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+
+      expect(ticketFetch).toHaveBeenCalledWith('/auth/ticket', expect.anything());
+      const url = new URL(MockWebSocket.instances[0]!.url);
+      expect(url.searchParams.get('ticket')).toBe('tik-9');
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
   });
 });

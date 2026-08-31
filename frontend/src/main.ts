@@ -1,4 +1,4 @@
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import App from './App.svelte';
 import { appTitleForEnv } from './appTitle';
 import { installBrowserHistoryGuard } from './lib/utils/browserHistoryGuard';
@@ -43,4 +43,44 @@ installBrowserHistoryGuard();
 (window as Window & { __aoRevealDrain?: () => Promise<RevealDrainSummary> }).__aoRevealDrain = () =>
   revealDrainStats();
 
-mount(App, { target: document.getElementById('app')! });
+// A `#pair=` fragment means this page was opened from a pairing link
+// (docs/specs/remote-access.md §4): mount the pairing screen instead of
+// the app, and boot the app only after the flow finishes. Lazily
+// imported so ordinary boots never load it. The fragment never reaches
+// the server (fragments don't), and it is stripped before the app
+// mounts so a reload after pairing is an ordinary boot.
+async function mountApp(): Promise<void> {
+  const target = document.getElementById('app')!;
+  if (location.hash.startsWith('#pair=')) {
+    const [{ default: PairingScreen }, session] = await Promise.all([
+      import('./lib/components/pairing/PairingScreen.svelte'),
+      import('./lib/transport/deviceSession'),
+    ]);
+    let payload: import('./lib/transport/deviceSession').PairingPayload | null = null;
+    let parseError = '';
+    try {
+      payload = session.parsePairingFragment(location.hash);
+    } catch (err) {
+      parseError = err instanceof Error ? err.message : String(err);
+    }
+    let screen: ReturnType<typeof mount> | null = null;
+    screen = mount(PairingScreen, {
+      target,
+      props: {
+        payload,
+        parseError,
+        onDone: () => {
+          history.replaceState(null, '', location.pathname + location.search);
+          void (async () => {
+            if (screen) await unmount(screen);
+            mount(App, { target });
+          })();
+        },
+      },
+    });
+    return;
+  }
+  mount(App, { target });
+}
+
+void mountApp();
