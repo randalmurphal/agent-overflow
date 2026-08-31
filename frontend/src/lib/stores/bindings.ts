@@ -540,6 +540,7 @@ export type {
   PendingPairing,
   PairingInvite,
   PairingStatusView,
+  DeviceRevocationResult,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 export {
   Distro as WSLDistro,

@@ -261,23 +261,31 @@ func (a *App) CancelDevicePairing(linkID string) error {
 // re-mint around a revoked channel device by design — so the refusal
 // belongs in front of the call, where it can say what happened.
 //
+// It reports what it did rather than only that it succeeded. A revoke
+// that swept nothing is a real and different answer from one that ended
+// two sessions, and a surface that renders both the same way is how a
+// device kept access unnoticed (spec §2). Re-revoking an already-revoked
+// device is deliberately still allowed: it re-sweeps, and a session that
+// outlived a first revocation is exactly the one worth reaching.
+//
 //ao:scope access:admin
-func (a *App) RevokeAccessDevice(deviceID string) error {
+func (a *App) RevokeAccessDevice(deviceID string) (DeviceRevocationResult, error) {
 	state, err := a.accessState()
 	if err != nil {
-		return err
+		return DeviceRevocationResult{}, err
 	}
 	device, err := a.store.GetDevice(deviceID)
 	if err != nil {
-		return fmt.Errorf("access: read device %s: %w", deviceID, err)
+		return DeviceRevocationResult{}, fmt.Errorf("access: read device %s: %w", deviceID, err)
 	}
 	if device.Channel == identity.LocalChannel {
-		return fmt.Errorf(
+		return DeviceRevocationResult{}, fmt.Errorf(
 			"access: %q is this app's own page channel, not a paired device; revoking it would sign this window out",
 			device.Label)
 	}
-	if _, err := state.sessions.RevokeDevice(deviceID); err != nil {
-		return err
+	revoked, err := state.sessions.RevokeDevice(deviceID)
+	if err != nil {
+		return DeviceRevocationResult{}, err
 	}
 	// After the revocation, never before: the state belongs to a device
 	// that still holds credentials until RevokeDevice returns, and
@@ -289,7 +297,11 @@ func (a *App) RevokeAccessDevice(deviceID string) error {
 		// left to revoke, so say it in the log and answer success.
 		log.Printf("access: drop ui state for revoked device %s: %v", deviceID, err)
 	}
-	return nil
+	return DeviceRevocationResult{
+		DeviceMoved:       revoked.DeviceMoved,
+		SessionsEnded:     revoked.SessionsEnded,
+		ConnectionsClosed: revoked.ConnectionsClosed,
+	}, nil
 }
 
 // RestoreAccessDevice re-admits a revoked device's key to pairing — the

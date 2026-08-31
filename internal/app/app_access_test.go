@@ -514,7 +514,7 @@ func TestRevokeAccessDevice_EndsEveryCredentialAndDropsTheDevicesUIState(t *test
 		}
 	}
 
-	if err := app.RevokeAccessDevice(gone.ID); err != nil {
+	if _, err := app.RevokeAccessDevice(gone.ID); err != nil {
 		t.Fatalf("RevokeAccessDevice: %v", err)
 	}
 
@@ -550,7 +550,7 @@ func TestRevokeAccessDevice_EndsEveryCredentialAndDropsTheDevicesUIState(t *test
 
 	// Idempotent: a second revocation of a device already gone is not an
 	// error, because nothing about the outcome differs.
-	if err := app.RevokeAccessDevice(gone.ID); err != nil {
+	if _, err := app.RevokeAccessDevice(gone.ID); err != nil {
 		t.Fatalf("second RevokeAccessDevice: %v", err)
 	}
 }
@@ -601,7 +601,7 @@ func TestRevokeReachesTheLiveSockets(t *testing.T) {
 	// including one minted after the first was revoked — which is what a
 	// device that reconnects on a fresh credential is.
 	second := mintSessionFor(t, app, device)
-	if err := app.RevokeAccessDevice(device.ID); err != nil {
+	if _, err := app.RevokeAccessDevice(device.ID); err != nil {
 		t.Fatalf("RevokeAccessDevice: %v", err)
 	}
 	if !conns.sawClose(second.ID) {
@@ -615,7 +615,7 @@ func TestRevokeReachesTheLiveSockets(t *testing.T) {
 func TestRestoreDeviceReadmitsItToTheOverview(t *testing.T) {
 	app := accessApp(t)
 	device, _ := pairDevice(t, app, "A phone", "thumb-restore")
-	if err := app.RevokeAccessDevice(device.ID); err != nil {
+	if _, err := app.RevokeAccessDevice(device.ID); err != nil {
 		t.Fatalf("RevokeAccessDevice: %v", err)
 	}
 	if err := app.RestoreAccessDevice(device.ID); err != nil {
@@ -685,7 +685,7 @@ func TestRevokeAccessDevice_RefusesTheLocalPageChannel(t *testing.T) {
 	app := accessApp(t)
 	local := localChannelSession(t, app)
 
-	if err := app.RevokeAccessDevice(local.DeviceID); err == nil {
+	if _, err := app.RevokeAccessDevice(local.DeviceID); err == nil {
 		t.Fatal("RevokeAccessDevice revoked this app's own page channel")
 	}
 	if err := app.RevokeAccessSession(local.ID); err == nil {
@@ -737,7 +737,7 @@ func TestRevokeAccessSession_EndsOneCredentialAndLeavesTheDevicePaired(t *testin
 func TestRevokeRefusesRowsItCannotResolve(t *testing.T) {
 	app := accessApp(t)
 
-	if err := app.RevokeAccessDevice("no-such-device"); err == nil {
+	if _, err := app.RevokeAccessDevice("no-such-device"); err == nil {
 		t.Error("RevokeAccessDevice reported success for a device that does not exist")
 	}
 	if err := app.RevokeAccessSession("no-such-session"); err == nil {
@@ -769,7 +769,7 @@ func TestAccessSurfaceWithoutIdentity(t *testing.T) {
 	if err := app.CancelDevicePairing("any"); err == nil {
 		t.Error("CancelDevicePairing answered with no session core")
 	}
-	if err := app.RevokeAccessDevice("any"); err == nil {
+	if _, err := app.RevokeAccessDevice("any"); err == nil {
 		t.Error("RevokeAccessDevice answered with no session core")
 	}
 	if err := app.RevokeAccessSession("any"); err == nil {

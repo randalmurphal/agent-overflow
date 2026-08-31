@@ -116,6 +116,29 @@ type PairingStatusView struct {
 	ExpiresAtMs        int64  `json:"expiresAtMs"`
 }
 
+// DeviceRevocationResult is what one RevokeAccessDevice actually did.
+//
+// It exists because "revoked, 2 sessions ended, 1 connection closed" and
+// "already revoked, nothing was live" are different answers and the person
+// who just lost a phone needs to be told which one they got. The call
+// reported success uniformly until wave 7c, so a second revoke that swept
+// nothing looked exactly like the first one that swept everything —
+// which is how a device that kept access went unnoticed
+// (docs/specs/remote-access.md §2).
+type DeviceRevocationResult struct {
+	// DeviceMoved is false when the device row was already revoked. Not a
+	// failure: re-revoking is a legitimate thing to do, and it still
+	// re-sweeps and still closes sockets.
+	DeviceMoved bool `json:"deviceMoved"`
+	// SessionsEnded is how many un-revoked credentials this call ended.
+	SessionsEnded int `json:"sessionsEnded"`
+	// ConnectionsClosed is how many live sockets it force-closed. It can
+	// exceed SessionsEnded (one session, several tabs) and it can be
+	// non-zero when SessionsEnded is not, which is the case worth seeing:
+	// a socket that survived an earlier revocation.
+	ConnectionsClosed int `json:"connectionsClosed"`
+}
+
 // Pairing states. Strings on the wire rather than an integer, because the
 // surface renders them and the audit log spells the same words.
 const (

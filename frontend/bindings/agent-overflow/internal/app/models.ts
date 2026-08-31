@@ -1039,6 +1039,62 @@ export class CreateThreadOptions {
 }
 
 /**
+ * DeviceRevocationResult is what one RevokeAccessDevice actually did.
+ * 
+ * It exists because "revoked, 2 sessions ended, 1 connection closed" and
+ * "already revoked, nothing was live" are different answers and the person
+ * who just lost a phone needs to be told which one they got. The call
+ * reported success uniformly until wave 7c, so a second revoke that swept
+ * nothing looked exactly like the first one that swept everything —
+ * which is how a device that kept access went unnoticed
+ * (docs/specs/remote-access.md §2).
+ */
+export class DeviceRevocationResult {
+    /**
+     * DeviceMoved is false when the device row was already revoked. Not a
+     * failure: re-revoking is a legitimate thing to do, and it still
+     * re-sweeps and still closes sockets.
+     */
+    "deviceMoved": boolean;
+
+    /**
+     * SessionsEnded is how many un-revoked credentials this call ended.
+     */
+    "sessionsEnded": number;
+
+    /**
+     * ConnectionsClosed is how many live sockets it force-closed. It can
+     * exceed SessionsEnded (one session, several tabs) and it can be
+     * non-zero when SessionsEnded is not, which is the case worth seeing:
+     * a socket that survived an earlier revocation.
+     */
+    "connectionsClosed": number;
+
+    /** Creates a new DeviceRevocationResult instance. */
+    constructor($$source: Partial<DeviceRevocationResult> = {}) {
+        if (!("deviceMoved" in $$source)) {
+            this["deviceMoved"] = false;
+        }
+        if (!("sessionsEnded" in $$source)) {
+            this["sessionsEnded"] = 0;
+        }
+        if (!("connectionsClosed" in $$source)) {
+            this["connectionsClosed"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DeviceRevocationResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DeviceRevocationResult {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DeviceRevocationResult($$parsedSource as Partial<DeviceRevocationResult>);
+    }
+}
+
+/**
  * DiffContextRequest identifies one hunk-gap slice of a review diff's
  * NEW side (expanded context is unchanged on both sides, so the new
  * side is the only source needed). Scope mirrors the review pane's

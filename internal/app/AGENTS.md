@@ -177,6 +177,15 @@ are facts about this process rather than about a row:
   all present; revoking it signs the host's own window out. Both
   revocations refuse it, `RevokeAccessSession` by resolving the session's
   device first.
+- **A revoke reports what it DID, not that it succeeded.**
+  `RevokeAccessDevice` answers a `DeviceRevocationResult` — whether the
+  device row moved, how many sessions ended, how many sockets closed —
+  because "revoked, 2 sessions ended" and "already revoked, nothing was
+  live" are different answers and the person who just lost a phone needs
+  to be told which one they got. Reporting success uniformly is how a
+  device that kept access went unnoticed (spec §2, incident 2026-08-31).
+  Re-revoking is deliberately still allowed and still re-sweeps; the
+  surface is where that becomes visible, not where it is decided.
 - **`backend-peer` is not a class this surface mints.** Enrolling another
   backend is the federation flow with its own trust decisions; admitting
   one here would give it the posture of an owner's own device.

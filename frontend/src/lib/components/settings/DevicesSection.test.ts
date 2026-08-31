@@ -3,6 +3,7 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import DevicesSection from './DevicesSection.svelte';
 import { setBindingMock, getBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { setRunMode, resetRunMode } from '../../../test/runMode';
+import { getToasts } from '../../stores/toast.svelte';
 
 interface MockDevice {
   id: string;
@@ -83,7 +84,11 @@ describe('<DevicesSection>', () => {
 
   it('revokes a paired device only on the second, arming click', async () => {
     setBindingMock('GetAccessOverview', async () => overview({ devices: [LOCAL_DEVICE, PHONE] }));
-    const revoke = setBindingMock('RevokeAccessDevice', async () => undefined);
+    const revoke = setBindingMock('RevokeAccessDevice', async () => ({
+      deviceMoved: true,
+      sessionsEnded: 1,
+      connectionsClosed: 2,
+    }));
     const { findByRole } = render(DevicesSection);
 
     const button = await findByRole('button', { name: 'Revoke' });
@@ -93,6 +98,39 @@ describe('<DevicesSection>', () => {
     const armed = await findByRole('button', { name: 'Confirm revoke' });
     await fireEvent.click(armed);
     await waitFor(() => expect(revoke).toHaveBeenCalledWith('dev-phone'));
+  });
+
+  // A revoke that swept nothing has to say so. Reporting success uniformly
+  // is how a device that kept access went unnoticed
+  // (docs/specs/remote-access.md §2).
+  it('reports what a revoke actually did, including when it did nothing', async () => {
+    setBindingMock('GetAccessOverview', async () => overview({ devices: [PHONE] }));
+    setBindingMock('RevokeAccessDevice', async () => ({
+      deviceMoved: true,
+      sessionsEnded: 2,
+      connectionsClosed: 1,
+    }));
+    const { findByRole } = render(DevicesSection);
+    await fireEvent.click(await findByRole('button', { name: 'Revoke' }));
+    await fireEvent.click(await findByRole('button', { name: 'Confirm revoke' }));
+    await waitFor(() =>
+      expect(getToasts().at(-1)?.message).toBe(
+        "Revoked Randal's phone. 2 sessions ended, 1 connection closed.",
+      ),
+    );
+
+    setBindingMock('RevokeAccessDevice', async () => ({
+      deviceMoved: false,
+      sessionsEnded: 0,
+      connectionsClosed: 0,
+    }));
+    await fireEvent.click(await findByRole('button', { name: 'Revoke' }));
+    await fireEvent.click(await findByRole('button', { name: 'Confirm revoke' }));
+    await waitFor(() =>
+      expect(getToasts().at(-1)?.message).toBe(
+        "Randal's phone was already revoked. Nothing was live.",
+      ),
+    );
   });
 
   it('ends a single session through its own two-step control', async () => {

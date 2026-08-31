@@ -25,6 +25,7 @@
     RestoreAccessDevice,
     type AccessOverview,
     type AccessDevice,
+    type DeviceRevocationResult,
     type PendingPairing,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
@@ -107,9 +108,36 @@
     }
   }
 
+  // What a revoke actually did, in the words the backend answered with.
+  // "Revoked" and "already revoked, nothing was live" are different
+  // outcomes and the second one used to look identical to the first —
+  // which is how a device that kept access went unnoticed
+  // (docs/specs/remote-access.md §2).
+  function revokedSummary(result: DeviceRevocationResult, label: string): string {
+    const ended: string[] = [];
+    if (result.sessionsEnded > 0) {
+      ended.push(`${result.sessionsEnded} session${result.sessionsEnded === 1 ? '' : 's'} ended`);
+    }
+    if (result.connectionsClosed > 0) {
+      ended.push(
+        `${result.connectionsClosed} connection${result.connectionsClosed === 1 ? '' : 's'} closed`,
+      );
+    }
+    if (ended.length === 0) {
+      return result.deviceMoved
+        ? `Revoked ${label}. Nothing was live.`
+        : `${label} was already revoked. Nothing was live.`;
+    }
+    const prefix = result.deviceMoved ? `Revoked ${label}` : `${label} was already revoked`;
+    return `${prefix}. ${ended.join(', ')}.`;
+  }
+
   function revokeDevice(device: AccessDevice): void {
     armOrRun(`device:${device.id}`, () =>
-      act('Failed to revoke the device', () => RevokeAccessDevice(device.id)),
+      act('Failed to revoke the device', async () => {
+        const result = await RevokeAccessDevice(device.id);
+        addToast('success', revokedSummary(result, device.label));
+      }),
     );
   }
 

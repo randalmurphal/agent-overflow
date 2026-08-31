@@ -25,6 +25,7 @@ export {
     ContextSettingsProfile,
     ContextSettingsUpdate,
     CreateThreadOptions,
+    DeviceRevocationResult,
     DiffContextRequest,
     DiffContextResult,
     Draft,
