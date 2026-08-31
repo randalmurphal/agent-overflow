@@ -932,14 +932,21 @@ func isClosedError(err error) bool {
 // Loopback connections skip compression — shared-memory pipe, no
 // benefit. Clients that don't support permessage-deflate (Safari /
 // WKWebView) fall back to uncompressed transparently.
-func upgrade(w http.ResponseWriter, r *http.Request, cred *Credential, originPatterns []string, enableCompression bool) (*websocket.Conn, error) {
+// sessionProven says the caller already authenticated this request
+// through a spent WS ticket naming a live session — the ticket was
+// minted moments ago by presenting that session's credential, so the
+// page credential (which a paired device loses on every backend
+// restart) is not demanded on top. The Origin check runs regardless:
+// it is about which documents may open a socket here, not about who
+// the caller is.
+func upgrade(w http.ResponseWriter, r *http.Request, cred *Credential, originPatterns []string, enableCompression, sessionProven bool) (*websocket.Conn, error) {
 	if !OriginAllowed(r, originPatterns) {
 		// Same 404 as a refused credential and as a path that does not
 		// exist, so no response shape tells one apart from the others.
 		http.NotFound(w, r)
 		return nil, errOriginNotServed
 	}
-	if !cred.Authenticate(r) {
+	if !sessionProven && !cred.Authenticate(r) {
 		// Match the unauth path's response shape with the static asset
 		// 404. Distinguishable status codes let a LAN scanner fingerprint
 		// "this is the agent-overflow server" — return 404 instead.

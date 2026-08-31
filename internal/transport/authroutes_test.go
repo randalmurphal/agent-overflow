@@ -290,6 +290,31 @@ func TestTicketNamesTheSessionOnTheUpgrade(t *testing.T) {
 	}
 }
 
+// A paired device holds no page credential after a backend restart —
+// its one-time ticket is spent and its page cookie died with the launch
+// that planted it — so the spent WS ticket alone must admit the
+// upgrade. The waiver is scoped to the ticket arm: the ambient-cookie
+// arm still demands the page credential.
+func TestTicketAdmitsTheUpgradeWithoutAPageCredential(t *testing.T) {
+	f := newSessionFixture(t)
+	ticket := mintTicket(t, f)
+
+	url := "ws://" + f.addr + "/ws?" + WSTicketParam + "=" + ticket
+	conn, _, err := websocket.Dial(context.Background(), url, nil)
+	if err != nil {
+		t.Fatalf("dial with only a ticket: %v", err)
+	}
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for f.srv.SessionConns().CountForSession("sess-1") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the ticket-only connection never joined the live-session registry")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestTicketIsRefusedTwice(t *testing.T) {
 	f := newSessionFixture(t)
 	ticket := mintTicket(t, f)

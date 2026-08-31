@@ -1228,6 +1228,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// A ticket for a session revoked during the seconds it was in flight
 	// must not resurrect it.
 	sessionID := ""
+	ticketProven := false
 	if ticket := r.URL.Query().Get(WSTicketParam); ticket != "" {
 		subject, spent := s.wsTickets.consume(ticket)
 		if !spent || !s.sessionStillLive(subject) {
@@ -1235,6 +1236,13 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sessionID = subject
+		// The spent ticket authenticates this connection: it was minted
+		// moments ago by a request presenting the session's credential,
+		// and a paired device holds no page credential after a backend
+		// restart. The ambient-cookie arm below does NOT get this waiver
+		// — a cookie is the browser's default behavior, not a deliberate
+		// per-connection proof.
+		ticketProven = true
 	} else if resolve := s.cfg.SessionForRequest; resolve != nil {
 		id, ok := resolve(r)
 		if !ok {
@@ -1248,7 +1256,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// A LAN-bind toggle rotates the allow-list under the same mu-guarded
 	// swap as the listener; the upgrader must see whichever policy was
 	// in effect when this handshake began.
-	conn, err := upgrade(w, r, s.cred, s.currentOriginPatterns(), !isLoopback)
+	conn, err := upgrade(w, r, s.cred, s.currentOriginPatterns(), !isLoopback, ticketProven)
 	if err != nil {
 		// upgrade has already written the HTTP error code.
 		return

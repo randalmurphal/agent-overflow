@@ -151,7 +151,10 @@ device's credential header, or a session cookie that outlived the launch that
 planted it) already admits the `/ws` upgrade, and the manifest must not be
 stricter than the socket it describes. The fallback never writes the local
 page channel's session cookie — that credential is reserved for requests the
-page credential admitted.
+page credential admitted. On the upgrade itself, a spent WS ticket naming a
+live session stands in for `Authenticate` (the ticket was minted moments ago
+by presenting that session's credential); the ambient-cookie arm gets no such
+waiver, and the Origin check runs on every upgrade regardless.
 
 **A page URL carries a one-time ticket (`?t=`), never the session token.**
 Tickets are minted per page URL produced — `Server.AppURL` at boot,
