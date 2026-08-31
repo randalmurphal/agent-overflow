@@ -5,6 +5,7 @@ import (
 	"math"
 	"time"
 
+	"agent-overflow/internal/itemwire"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
 )
@@ -47,7 +48,7 @@ const (
 // ListRecentThreadItems loads a broad recent tail window. Active chat panes
 // use ListThreadSliceAround for bounded switch/refresh loads; this method is
 // retained for legacy callers and any future full-tail refresh surfaces.
-func (a *App) ListRecentThreadItems(threadID string, turnLimit int) (store.PagedItems, error) {
+func (a *App) ListRecentThreadItems(threadID string, turnLimit int, inlinePreviews bool) (store.PagedItems, error) {
 	if turnLimit <= 0 {
 		turnLimit = initialTurnWindow
 	}
@@ -75,8 +76,7 @@ func (a *App) ListRecentThreadItems(threadID string, turnLimit int) (store.Paged
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list recent thread items: %w", err)
 	}
-	paged.Items = slicesx.OrEmpty(paged.Items)
-	return paged, nil
+	return projectPage(paged, inlinePreviews, keepNewest), nil
 }
 
 // ListThreadSliceAround loads the bounded active-pane window around an anchor.
@@ -85,13 +85,12 @@ func (a *App) ListRecentThreadItems(threadID string, turnLimit int) (store.Paged
 // anchor's item coordinate. When `anchorItemID` is "" or no longer exists,
 // the function returns the tail `targetItemCount` items — the bottom-snapshot
 // restore case.
-func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int) (store.PagedItems, error) {
+func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int, inlinePreviews bool) (store.PagedItems, error) {
 	paged, err := a.store.ListThreadSliceAround(threadID, anchorItemID, clampSliceItemBudget(targetItemCount))
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list thread slice around: %w", err)
 	}
-	paged.Items = slicesx.OrEmpty(paged.Items)
-	return paged, nil
+	return projectPage(paged, inlinePreviews, keepNewest), nil
 }
 
 // clampSliceItemBudget normalizes a caller-supplied slice-window budget:
@@ -118,7 +117,7 @@ func clampSliceItemBudget(targetItemCount int) int {
 // NEGATIVE indexes, so index 0 is not the start of a turn — keeping the load
 // strictly below that turn with a hard primary-row budget (mirror of
 // ListItemsAfterTurn's MaxInt ceiling).
-func (a *App) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget int) (store.PagedItems, error) {
+func (a *App) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget int, inlinePreviews bool) (store.PagedItems, error) {
 	if itemBudget <= 0 {
 		itemBudget = paginationItems
 	}
@@ -133,15 +132,14 @@ func (a *App) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget i
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items before turn: %w", err)
 	}
-	paged.Items = slicesx.OrEmpty(paged.Items)
-	return paged, nil
+	return projectPage(paged, inlinePreviews, keepNewest), nil
 }
 
 // ListItemsAfterTurn is the legacy turn-ceiling pager. Active panes use
 // ListItemsAfterCursor so long single turns remain item-bounded. The synthetic
 // cursor points at the end of afterTurnIndex, so rows strictly above that turn
 // are loaded with a hard primary-row budget.
-func (a *App) ListItemsAfterTurn(threadID string, afterTurnIndex, itemBudget int) (store.PagedItems, error) {
+func (a *App) ListItemsAfterTurn(threadID string, afterTurnIndex, itemBudget int, inlinePreviews bool) (store.PagedItems, error) {
 	if itemBudget <= 0 {
 		itemBudget = paginationItems
 	}
@@ -153,8 +151,7 @@ func (a *App) ListItemsAfterTurn(threadID string, afterTurnIndex, itemBudget int
 		if err != nil {
 			return store.PagedItems{}, fmt.Errorf("list items after turn: %w", err)
 		}
-		paged.Items = slicesx.OrEmpty(paged.Items)
-		return paged, nil
+		return projectPage(paged, inlinePreviews, keepOldest), nil
 	}
 	paged, err := a.store.ListItemsAfterCursor(
 		threadID,
@@ -164,15 +161,14 @@ func (a *App) ListItemsAfterTurn(threadID string, afterTurnIndex, itemBudget int
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items after turn: %w", err)
 	}
-	paged.Items = slicesx.OrEmpty(paged.Items)
-	return paged, nil
+	return projectPage(paged, inlinePreviews, keepOldest), nil
 }
 
 // ListItemsBeforeCursor loads older items on demand, strictly before the
 // frontend's current item-coordinate window floor. The item budget is a hard
 // primary-row cap; render-support ancestors can be stitched in above it, but
 // same-turn rows outside the cursor range stay omitted until explicitly paged.
-func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor, itemBudget int) (store.PagedItems, error) {
+func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor, itemBudget int, inlinePreviews bool) (store.PagedItems, error) {
 	if itemBudget <= 0 {
 		itemBudget = paginationItems
 	}
@@ -183,14 +179,13 @@ func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items before cursor: %w", err)
 	}
-	paged.Items = slicesx.OrEmpty(paged.Items)
-	return paged, nil
+	return projectPage(paged, inlinePreviews, keepNewest), nil
 }
 
 // ListItemsAfterCursor loads newer items on demand, strictly after the
 // frontend's current item-coordinate window ceiling. It is the forward pager
 // companion to ListItemsBeforeCursor.
-func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, itemBudget int) (store.PagedItems, error) {
+func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, itemBudget int, inlinePreviews bool) (store.PagedItems, error) {
 	if itemBudget <= 0 {
 		itemBudget = paginationItems
 	}
@@ -201,8 +196,7 @@ func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, 
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items after cursor: %w", err)
 	}
-	paged.Items = slicesx.OrEmpty(paged.Items)
-	return paged, nil
+	return projectPage(paged, inlinePreviews, keepOldest), nil
 }
 
 // ListSubagentDescendants loads the full child transcript under a
@@ -213,12 +207,12 @@ func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, 
 // descendant in timeline order, capped store-side at the same scale as
 // maxWindowItems (newest rows win) so a malicious LAN-attached caller
 // can't stream an unbounded subtree per call.
-func (a *App) ListSubagentDescendants(threadID, rootItemID string) ([]store.Item, error) {
+func (a *App) ListSubagentDescendants(threadID, rootItemID string, inlinePreviews bool) ([]store.Item, error) {
 	items, err := a.store.ListSubagentDescendants(threadID, rootItemID)
 	if err != nil {
 		return nil, fmt.Errorf("list subagent descendants: %w", err)
 	}
-	return slicesx.OrEmpty(items), nil
+	return projectItemSlice(items, inlinePreviews, keepNewest), nil
 }
 
 // ListThreadProposedPlans returns the current proposed-plan item for a thread,
@@ -229,10 +223,10 @@ func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list thread proposed plans: %w", err)
 	}
-	if items == nil {
-		return []store.Item{}, nil
-	}
-	return items, nil
+	// 0-or-1 plan rows, never a diff carrier: the projection is here so
+	// no item reaches a client unprojected, not because these rows have
+	// bytes to give up. Previews stay on for the same reason.
+	return projectItemSlice(items, true, keepNewest), nil
 }
 
 // ListLiveBackgroundTasks returns running launches plus their
@@ -266,10 +260,10 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 	if a.triage != nil {
 		items = append(items, a.triage.ListLiveCodexBackgroundTasks(threadID, now, cutoff)...)
 	}
-	if items == nil {
-		return []store.Item{}, nil
-	}
-	return items, nil
+	// Running launches, so no completed diff previews to weigh: the
+	// projection is here to keep the "no item reaches a client
+	// unprojected" rule total, not for the bytes.
+	return projectItemSlice(items, true, keepNewest), nil
 }
 
 // GetThreadUserMessageTicks returns every reader-authored user message
@@ -344,7 +338,53 @@ func (a *App) GetThreadItem(threadID, itemID string) (store.Item, error) {
 	if !found {
 		return store.Item{}, nil
 	}
-	return item, nil
+	// One row, fetched to resolve a scroll target. Previews stay on:
+	// there is no window here for them to crowd out.
+	return itemwire.Project(item, true), nil
+}
+
+// ItemProjectionSource carries the complete STORED values of the three
+// item fields the wire projection may shorten. It is the recovery route
+// every marker the projection writes points at: the persisted record was
+// never truncated, so a client that hits a marker can always ask for
+// what it did not receive.
+//
+// All three ride one response because they are read together — an
+// expanded diff card needs the patch text and the spans that highlight
+// it — and because each is a few KB for a single item. The projection
+// exists because 109 of them ride one window, not because any one of
+// them is large.
+type ItemProjectionSource struct {
+	ItemID              string `json:"itemId"`
+	Meta                string `json:"meta,omitempty"`
+	PayloadMeta         string `json:"payloadMeta,omitempty"`
+	PayloadPreviewSpans string `json:"payloadPreviewSpans,omitempty"`
+}
+
+// GetThreadItemProjectionSource returns one item's unprojected meta,
+// payload meta and preview spans. Thread-scoped for the same reason
+// GetThreadItem is: an item id must not be a key to arbitrary history.
+// Returns the zero value when no row matches — callers check ItemID != "".
+//
+// Deliberately NOT routed through the projection: this IS the route out
+// of it, and a projection applied here would make an elided field
+// unrecoverable, which is exactly the failure remote-access.md §14 names
+// (a promised on-demand endpoint that never arrived turns an accepted
+// temporary loss into a permanent one).
+func (a *App) GetThreadItemProjectionSource(threadID, itemID string) (ItemProjectionSource, error) {
+	item, found, err := a.store.GetThreadItem(threadID, itemID)
+	if err != nil {
+		return ItemProjectionSource{}, fmt.Errorf("get thread item projection source: %w", err)
+	}
+	if !found {
+		return ItemProjectionSource{}, nil
+	}
+	return ItemProjectionSource{
+		ItemID:              item.ID,
+		Meta:                item.Meta,
+		PayloadMeta:         item.PayloadMeta,
+		PayloadPreviewSpans: item.PayloadPreviewSpans,
+	}, nil
 }
 
 // ListRecentTurns returns the N most recent turn records for the given

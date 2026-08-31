@@ -525,9 +525,15 @@ func (a *App) backendIdentity() (backendID, replicaGeneration string) {
 
 // --- Item operations ---
 
-// ListItems returns every item persisted for a thread in chronological order.
-func (a *App) ListItems(threadID string) ([]store.Item, error) {
-	return a.store.ListItems(threadID)
+// ListItems returns every item persisted for a thread in chronological
+// order. Unwindowed, so it carries the byte backstop the same way the
+// paged loads do; active panes use the bounded slice surface instead.
+func (a *App) ListItems(threadID string, inlinePreviews bool) ([]store.Item, error) {
+	items, err := a.store.ListItems(threadID)
+	if err != nil {
+		return nil, err
+	}
+	return projectItemSlice(items, inlinePreviews, keepNewest), nil
 }
 
 // --- Payload operations ---

@@ -58,6 +58,17 @@ stops waking readers.
   a binding, and never reach for `window.runtime`.
 - A new entity store registers its RPCs in the architecture test's
   registry, and may import the RPCs it owns and no others.
+- Every item-window RPC states this client's projection preference, and
+  states it as `wantsInlinePreviews()` from `threadPaneShared.ts` — never
+  a literal and never a fresh `getSettings()` read. The backend bounds
+  what a window carries (`internal/itemwire`) and cannot read the setting
+  itself, because one backend serves several clients that can disagree.
+  A call site that asks differently from its neighbours puts mixed rows
+  in one window, which is a correctness bug, not a byte difference. Rows
+  that come back marked keep their marker for life: the recovered value
+  lives in `utils/itemProjectionSource.svelte.ts` and is composed at
+  render, never merged into the row, or a cached row could persist into
+  the replica claiming to be complete.
 - `providerAccounts.svelte.ts` is the one account load, login, switch,
   refresh and remove path, for the picker and Settings alike.
 - Settings DEFAULTS are never written here. `lib/generated/settingsDefaults.ts`

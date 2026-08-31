@@ -1150,7 +1150,7 @@ func TestE2E_StopSessionWithoutStartIsClean(t *testing.T) {
 	}
 
 	// App still usable.
-	if _, err := app.ListItems(thread.ID); err != nil {
+	if _, err := app.ListItems(thread.ID, true); err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}
 }

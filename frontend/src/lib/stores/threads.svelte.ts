@@ -3,6 +3,7 @@ import { clearPayloadCacheForThread } from '../utils/payloadDataCache';
 import { clearThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { clearThreadSizePriors } from '../utils/virtual/priors';
 import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
+import { clearItemProjectionSourcesForThread } from '../utils/itemProjectionSource.svelte';
 import { ListThreads } from './bindings';
 import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './liveTodoState.svelte';
 import { threadItemCache } from './threadItemCache';
@@ -98,6 +99,7 @@ export function removeThread(id: string): void {
   clearThreadScrollSnapshot(id);
   clearThreadSizePriors(id);
   evictDiffSpansForThread(id);
+  clearItemProjectionSourcesForThread(id);
   clearPayloadCacheForThread(id);
   clearLiveUsageSnapshot(id);
   releaseThreadTerminalState(id);

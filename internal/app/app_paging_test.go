@@ -20,7 +20,7 @@ func TestListRecentThreadItems_EmptyThreadReturnsStableShape(t *testing.T) {
 		t.Fatalf("createTestThread: %v", err)
 	}
 
-	paged, err := app.ListRecentThreadItems(thread.ID, 0)
+	paged, err := app.ListRecentThreadItems(thread.ID, 0, true)
 	if err != nil {
 		t.Fatalf("ListRecentThreadItems: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestListRecentThreadItems_DefaultsTurnLimitWhenNonPositive(t *testing.T) {
 		}
 	}
 
-	paged, err := app.ListRecentThreadItems(thread.ID, 0)
+	paged, err := app.ListRecentThreadItems(thread.ID, 0, true)
 	if err != nil {
 		t.Fatalf("ListRecentThreadItems: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestListRecentThreadItems_RespectsExplicitTurnLimit(t *testing.T) {
 		}
 	}
 
-	paged, err := app.ListRecentThreadItems(thread.ID, 1)
+	paged, err := app.ListRecentThreadItems(thread.ID, 1, true)
 	if err != nil {
 		t.Fatalf("ListRecentThreadItems: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestListItemsBeforeTurn_DefaultsItemBudgetWhenNonPositive(t *testing.T) {
 	// itemBudget=0 defaults to paginationItems (200). Asking for
 	// everything before turn 5 must load all 5 older turns — the 5
 	// items easily fit under the default budget.
-	paged, err := app.ListItemsBeforeTurn(thread.ID, 5, 0)
+	paged, err := app.ListItemsBeforeTurn(thread.ID, 5, 0, true)
 	if err != nil {
 		t.Fatalf("ListItemsBeforeTurn: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestListItemsBeforeTurn_ItemBudgetSemantics(t *testing.T) {
 		}
 	}
 
-	paged, err := app.ListItemsBeforeTurn(thread.ID, 3, 5)
+	paged, err := app.ListItemsBeforeTurn(thread.ID, 3, 5, true)
 	if err != nil {
 		t.Fatalf("ListItemsBeforeTurn: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestListItemsBeforeTurn_ExcludesHeadHealedRowsOfFloorTurn(t *testing.T) {
 		}
 	}
 
-	paged, err := app.ListItemsBeforeTurn(thread.ID, 1, 10)
+	paged, err := app.ListItemsBeforeTurn(thread.ID, 1, 10, true)
 	if err != nil {
 		t.Fatalf("ListItemsBeforeTurn: %v", err)
 	}

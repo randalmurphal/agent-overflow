@@ -5,6 +5,7 @@ import type {
 } from '../utils/scroll/index.svelte';
 import type { SmoothingClock } from '../markdown/smoothing/PerItemSmoother';
 import type { ActiveTurn } from './threadStatuses.svelte';
+import { getSettings } from './settings.svelte';
 
 // Test-only injection: when set, every PerItemSmoother created by
 // `getOrCreateSmoothing` uses this clock instead of the default rAF +
@@ -41,6 +42,31 @@ export function isReasoningTailKind(kind: ItemKind | string): boolean {
 // rendering and don't benefit from word-aligned reveal.
 export function isSmoothLiveContentKind(kind: ItemKind | string): boolean {
   return kind === 'assistant_text' || isReasoningTailKind(kind);
+}
+
+/**
+ * Whether this client wants diff preview patches inline in the item
+ * windows it asks for.
+ *
+ * The backend never reads the setting to answer this — one backend serves
+ * several clients, and a preference read server-side would hand them all
+ * whichever client's setting happened to be stored. The preference rides
+ * the request, and this is the single place that decides it, so a new
+ * paging call site cannot quietly ask for a different projection than the
+ * rest of the window; mixed rows in one window is the failure mode.
+ *
+ * It follows `collapseDiffPreviews` because that setting decides whether
+ * a diff card paints its patch on arrival. Cards that arrive collapsed
+ * render no patch, so shipping one spends bytes on pixels nobody sees;
+ * expanding such a card fetches it (DiffFileStack). Cards that arrive
+ * expanded need the patch in hand, or the window paints loading states.
+ *
+ * Flipping the setting does not invalidate loaded rows: a row that
+ * arrived with its patch renders it, and a row that arrived without one
+ * carries the marker that makes it fetch on expand.
+ */
+export function wantsInlinePreviews(): boolean {
+  return !getSettings().collapseDiffPreviews;
 }
 
 /**

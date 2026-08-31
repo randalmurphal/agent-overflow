@@ -2006,6 +2006,43 @@ export class InterruptAndRevertResult {
     }
 }
 
+/**
+ * ItemProjectionSource carries the complete STORED values of the three
+ * item fields the wire projection may shorten. It is the recovery route
+ * every marker the projection writes points at: the persisted record was
+ * never truncated, so a client that hits a marker can always ask for
+ * what it did not receive.
+ * 
+ * All three ride one response because they are read together — an
+ * expanded diff card needs the patch text and the spans that highlight
+ * it — and because each is a few KB for a single item. The projection
+ * exists because 109 of them ride one window, not because any one of
+ * them is large.
+ */
+export class ItemProjectionSource {
+    "itemId": string;
+    "meta"?: string;
+    "payloadMeta"?: string;
+    "payloadPreviewSpans"?: string;
+
+    /** Creates a new ItemProjectionSource instance. */
+    constructor($$source: Partial<ItemProjectionSource> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ItemProjectionSource instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ItemProjectionSource {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ItemProjectionSource($$parsedSource as Partial<ItemProjectionSource>);
+    }
+}
+
 export class LiveStateActiveTurn {
     "threadId": string;
     "turnId": string;
@@ -3330,6 +3367,17 @@ export class SyncThreadWindowRequest {
     "itemBudget": number;
     "haveEpoch": number;
     "haveRev": number;
+
+    /**
+     * InlinePreviews is the client's stated projection preference: true
+     * when it paints inline diff previews on arrival, false when they
+     * sit behind a chevron (`collapseDiffPreviews`, the default) and
+     * none of the patch text is rendered until clicked. It rides the
+     * request because it is a per-CLIENT setting and one backend serves
+     * several clients that can disagree; the server never reads the
+     * setting itself.
+     */
+    "inlinePreviews"?: boolean;
 
     /** Creates a new SyncThreadWindowRequest instance. */
     constructor($$source: Partial<SyncThreadWindowRequest> = {}) {

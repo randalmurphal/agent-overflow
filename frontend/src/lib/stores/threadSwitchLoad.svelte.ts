@@ -25,6 +25,7 @@ import {
   closeCompanionsForSource,
 } from './companionPanes.svelte';
 import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
+import { clearItemProjectionSourcesForThread } from '../utils/itemProjectionSource.svelte';
 import {
   MAX_CACHED_SNAPSHOT_ITEMS,
   threadItemCache,
@@ -99,6 +100,7 @@ import {
   REPLICA_WRITE_BACK_DELAY_MS,
   SLICE_AROUND_ITEM_BUDGET,
   SPINNER_THRESHOLD_MS,
+  wantsInlinePreviews,
   type DraftThreadPlaceholder,
   type PaneErrorKind,
   type PaneScrollController,
@@ -659,6 +661,7 @@ export function createThreadSwitchLoad(
       // shared cache tracks per-key thread ownership, so entries a
       // still-open thread also requested survive the drop.
       evictDiffSpansForThread(outgoingThreadId);
+      clearItemProjectionSourcesForThread(outgoingThreadId);
     }
   }
 
@@ -680,6 +683,7 @@ export function createThreadSwitchLoad(
     if (!outgoingThreadId) return;
     cacheOutgoingWindow(outgoingThreadId);
     evictDiffSpansForThread(outgoingThreadId);
+    clearItemProjectionSourcesForThread(outgoingThreadId);
   }
 
   /**
@@ -1020,6 +1024,7 @@ export function createThreadSwitchLoad(
         itemBudget: SLICE_AROUND_ITEM_BUDGET,
         haveEpoch: stamp ? stamp.epoch : UNKNOWN_STAMP_VALUE,
         haveRev: stamp ? stamp.rev : UNKNOWN_STAMP_VALUE,
+        inlinePreviews: wantsInlinePreviews(),
       });
 
     try {
@@ -1429,6 +1434,7 @@ export function createThreadSwitchLoad(
           currentThread.id,
           anchorItemId,
           ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+          wantsInlinePreviews(),
         );
       } catch (err) {
         if (!refreshIsCurrent()) return;

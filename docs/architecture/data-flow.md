@@ -39,6 +39,29 @@ Crash loss is bounded to the currently active item (seconds of work, not
 minutes). On recovery, resume the provider session and reconcile against
 SQLite.
 
+## Wire Projection
+
+**The stored row is complete; the copy a client receives is bounded.**
+Every path that hands items to a client — the slice/cursor pagers,
+`SyncThreadWindow`, live item upserts and patches — passes them through
+`internal/itemwire` first. It drops values that are large and paint
+nothing on arrival: oversized `meta.input` leaves, and inline diff
+preview patches a client did not ask for. Whatever it removes, it names
+in a typed marker on the row, and `GetThreadItemProjectionSource`
+returns the stored value for a card that needs it back.
+
+Two rules keep this from becoming a second storage shape:
+
+- It is a **projection, not a truncation**. Object structure, keys, and
+  array indices survive, so a consumer reading a sub-field finds either
+  the value it always found or an absent key — never a JSON string that
+  no longer parses. `internal/itemmeta` owns shaping on the persist
+  path; this owns nothing there.
+- The marker is a **render-time signal**. A fetched value is never
+  merged back into the row, so a row cached in L1 or the IndexedDB
+  replica can never masquerade as complete: a row is elided if and only
+  if it says so.
+
 ## Background Tasks
 
 A backgrounded command produces two timeline items:

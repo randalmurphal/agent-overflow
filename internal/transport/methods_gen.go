@@ -113,6 +113,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetThreadContextUsage", ID: 3852033265},                // main.App.GetThreadContextUsage
 	{Name: "GetThreadDefaults", ID: 3362481473},                    // main.App.GetThreadDefaults
 	{Name: "GetThreadItem", ID: 1969869112},                        // main.App.GetThreadItem
+	{Name: "GetThreadItemProjectionSource", ID: 1848576136},        // main.App.GetThreadItemProjectionSource
 	{Name: "GetThreadLiveState", ID: 70226550},                     // main.App.GetThreadLiveState
 	{Name: "GetThreadRuntimeMode", ID: 2573491630},                 // main.App.GetThreadRuntimeMode
 	{Name: "GetThreadTurnPreview", ID: 1512475224},                 // main.App.GetThreadTurnPreview
