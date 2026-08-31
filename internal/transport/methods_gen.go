@@ -253,6 +253,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RespondToUserInput", ID: 1071592868},                   // main.App.RespondToUserInput
 	{Name: "RestartTerminal", ID: 4152403588},                      // main.App.RestartTerminal
 	{Name: "RestartToUpdate", ID: 3141913084},                      // main.App.RestartToUpdate
+	{Name: "RestoreAccessDevice", ID: 3386497005},                  // main.App.RestoreAccessDevice
 	{Name: "RetryThreadWorktreeSetup", ID: 1657104469},             // main.App.RetryThreadWorktreeSetup
 	{Name: "RevertConversationAndResendMessage", ID: 2059566413},   // main.App.RevertConversationAndResendMessage
 	{Name: "RevokeAccessDevice", ID: 2945903583},                   // main.App.RevokeAccessDevice

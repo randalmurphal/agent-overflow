@@ -349,7 +349,13 @@ func (s *Sessions) resolveRedeemingDevice(link store.PairingLink, req Redemption
 	existing, err := s.store.DeviceByKeyThumbprint(req.KeyThumbprint)
 	switch {
 	case err == nil:
-		if existing.RevokedAt != 0 || existing.UserID != link.UserID {
+		if existing.RevokedAt != 0 {
+			// The owner withdrew this device; a fresh link must not undo
+			// that by itself. The reason names the remedy: restore the
+			// device on the owner surface, then redeem a NEW link.
+			return store.Device{}, ReasonRevokedDevice
+		}
+		if existing.UserID != link.UserID {
 			return store.Device{}, ReasonKeyMismatch
 		}
 		if err := s.store.RelabelDevice(existing.ID, label, req.Platform); err != nil {

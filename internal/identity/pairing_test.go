@@ -347,14 +347,45 @@ func TestRepairingARevokedDeviceIsRefused(t *testing.T) {
 	link := mustMintLink(t, sessions, owner)
 	if _, reason := sessions.RedeemPairing(RedemptionRequest{
 		Token: link.Token, KeyThumbprint: "thumb-phone",
-	}); reason != ReasonKeyMismatch {
-		t.Fatalf("re-pairing a revoked device = %s, want key_mismatch", reason)
+	}); reason != ReasonRevokedDevice {
+		t.Fatalf("re-pairing a revoked device = %s, want revoked_device", reason)
 	}
 	// The refused redemption must have settled the link, not released it.
 	if _, reason := sessions.RedeemPairing(RedemptionRequest{
 		Token: link.Token, KeyThumbprint: "thumb-fresh",
 	}); reason != ReasonUnknownCredential {
 		t.Fatalf("a link survived a refused redemption: %s", reason)
+	}
+}
+
+// TestRestoreReadmitsARevokedKeyToPairing — the remedy the revoked-key
+// refusal names. Restoring moves no credential: the device's old sessions
+// stay revoked, and only a FRESH link (the refused attempt spent its own)
+// redeems, adopting the existing device row.
+func TestRestoreReadmitsARevokedKeyToPairing(t *testing.T) {
+	sessions, _, _, owner, _ := newFixture(t)
+	first := mustRedeem(t, sessions, mustMintLink(t, sessions, owner).Token, "thumb-phone")
+	if _, err := sessions.ConfirmPairing(first.PairingID); err != nil {
+		t.Fatalf("ConfirmPairing: %v", err)
+	}
+	if _, err := sessions.RevokeDevice(first.DeviceID); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+	moved, err := sessions.RestoreDevice(first.DeviceID)
+	if err != nil || !moved {
+		t.Fatalf("RestoreDevice = (%v, %v), want a moved row", moved, err)
+	}
+	// Restoring twice is a no-op, not an error.
+	if moved, err := sessions.RestoreDevice(first.DeviceID); err != nil || moved {
+		t.Fatalf("second RestoreDevice = (%v, %v), want no-op", moved, err)
+	}
+	// The old session did not come back with the device.
+	if _, reason := sessions.Verify(first.Tokens.Credential); reason != ReasonRevokedSession {
+		t.Fatalf("old credential after restore = %s, want revoked_session", reason)
+	}
+	second := mustRedeem(t, sessions, mustMintLink(t, sessions, owner).Token, "thumb-phone")
+	if second.DeviceID != first.DeviceID {
+		t.Fatalf("restored key minted a second device row: %q then %q", first.DeviceID, second.DeviceID)
 	}
 }
 

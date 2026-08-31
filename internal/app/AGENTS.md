@@ -96,8 +96,10 @@ are facts about this process rather than about a row:
 Every method is `CategoryDeviceAccess` in
 `internal/transport/internalmethods.go`, and
 `TestDeviceAccessSurfaceIsWholeAndLocalOnly` is the tripwire that keeps
-the set together. Minting ISSUES a credential and revoking withdraws
-every credential a device holds; the overview read goes with them because
+the set together. Minting ISSUES a credential, revoking withdraws
+every credential a device holds, and restoring re-admits a revoked
+device's KEY to pairing without moving any credential (the revoked-key
+redemption refusal names it as the remedy); the overview read goes with them because
 it carries the device map, the connection counts, the audit log, and a
 pending pairing's verification number — which is only a check if the
 owner is the only party comparing it.

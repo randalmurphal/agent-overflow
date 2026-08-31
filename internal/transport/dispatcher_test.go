@@ -1012,6 +1012,7 @@ func (p *privilegedApp) ConfirmDevicePairing() string { return "ok" }
 func (p *privilegedApp) CancelDevicePairing() string  { return "ok" }
 func (p *privilegedApp) RevokeAccessDevice() string   { return "ok" }
 func (p *privilegedApp) RevokeAccessSession() string  { return "ok" }
+func (p *privilegedApp) RestoreAccessDevice() string  { return "ok" }
 
 // TestDispatcher_LocalOnlyRefusedFromNonLoopback pins the LAN-bind
 // safety contract on the dispatcher itself. ResolveForOrigin must

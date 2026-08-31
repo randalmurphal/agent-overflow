@@ -569,6 +569,24 @@ func (s *Store) RevokeDevice(deviceID string, at int64) ([]string, error) {
 	return sessionIDs, nil
 }
 
+// RestoreDevice clears a device's revocation, reporting whether a row
+// moved. Only the device row: its sessions stay revoked, because a
+// restore re-admits the KEY to pairing, never a credential that was
+// withdrawn — the device still has to redeem a fresh owner-minted link
+// and pass the verification number to hold one again.
+func (s *Store) RestoreDevice(deviceID string) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE devices SET revoked_at = NULL WHERE id = ? AND revoked_at IS NOT NULL`, deviceID)
+	if err != nil {
+		return false, fmt.Errorf("store: restore device: %w", err)
+	}
+	moved, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: restore device: rows affected: %w", err)
+	}
+	return moved > 0, nil
+}
+
 func scanDevice(sc interface{ Scan(...any) error }) (Device, error) {
 	var device Device
 	var thumbprint, passkey sql.NullString

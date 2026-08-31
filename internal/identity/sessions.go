@@ -390,6 +390,29 @@ func (s *Sessions) RevokeDevice(deviceID string) ([]string, error) {
 	return sessionIDs, nil
 }
 
+// RestoreDevice re-admits a revoked device's key to pairing. Its sessions
+// stay revoked — restoring answers "I want that device back" (the refusal
+// RedeemPairing gives a revoked key names this call as the remedy), and
+// the way back to a credential is still a fresh owner-minted link plus
+// the verification number. Reports whether a row moved; restoring a
+// device that is not revoked is a no-op, not an error.
+func (s *Sessions) RestoreDevice(deviceID string) (bool, error) {
+	if deviceID == "" {
+		return false, nil
+	}
+	moved, err := s.store.RestoreDevice(deviceID)
+	if err != nil {
+		return false, err
+	}
+	if moved {
+		s.audit(store.AuthAuditEntry{
+			Event: string(AuditDeviceRestored), Outcome: store.AuthAuditOutcomeAllowed,
+			DeviceID: deviceID,
+		})
+	}
+	return moved, nil
+}
+
 // RecordRefusal writes one refused presentation to the credential log.
 // Kept separate from Verify so the caller — which knows the peer address
 // and the surface that was reached — supplies the attribution this package

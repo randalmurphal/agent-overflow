@@ -33,6 +33,7 @@ export const AUTH_REASON_CODES = [
   'expired_session',
   'pending_confirmation',
   'unknown_credential',
+  'revoked_device',
 ] as const;
 
 export type AuthReasonCode = (typeof AUTH_REASON_CODES)[number];
@@ -127,6 +128,14 @@ const PRESENTATIONS: Record<AuthReasonCode, AuthReasonPresentation> = {
   unknown_credential: {
     title: 'This pairing could not be completed.',
     hint: 'Start a new pairing from the app on your computer.',
+    retryable: false,
+  },
+  // A pairing redemption from a device the owner revoked. The remedy is on
+  // the owner's screen, not this one: restore the device there, then open
+  // a FRESH link (the one just used was spent by this attempt).
+  revoked_device: {
+    title: "This device's access was removed.",
+    hint: 'Restore it under Settings → Network → Devices on the computer, then pair again with a new link.',
     retryable: false,
   },
 };

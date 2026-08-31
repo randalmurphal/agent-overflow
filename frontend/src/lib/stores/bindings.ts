@@ -153,6 +153,7 @@ export {
   CancelDevicePairing,
   RevokeAccessDevice,
   RevokeAccessSession,
+  RestoreAccessDevice,
 
   // WSL distro switcher — exposed only when the backend is running
   // inside a WSL distribution spawned by the Windows launcher. The

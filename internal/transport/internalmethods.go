@@ -876,4 +876,7 @@ var localOnlyCategories = map[string]LocalOnlyCategory{
 	"CancelDevicePairing":  CategoryDeviceAccess,
 	"RevokeAccessDevice":   CategoryDeviceAccess,
 	"RevokeAccessSession":  CategoryDeviceAccess,
+	// RestoreAccessDevice re-admits a revoked device's key to pairing,
+	// which decides who can enroll next — the same authority as the mint.
+	"RestoreAccessDevice": CategoryDeviceAccess,
 }

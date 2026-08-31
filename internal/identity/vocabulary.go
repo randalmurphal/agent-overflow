@@ -173,6 +173,9 @@ const (
 	// AuditDeviceRevoked records a device and every session it held being
 	// revoked together.
 	AuditDeviceRevoked AuditEvent = "device-revoked"
+	// AuditDeviceRestored records a revoked device being re-admitted to
+	// pairing. No credential moves: the device still redeems a fresh link.
+	AuditDeviceRestored AuditEvent = "device-restored"
 	// AuditVerificationRefused records a presentation this backend refused,
 	// carrying the typed Reason.
 	AuditVerificationRefused AuditEvent = "verification-refused"

@@ -494,6 +494,31 @@ func TestRevokeReachesTheLiveSockets(t *testing.T) {
 	}
 }
 
+// TestRestoreDeviceReadmitsItToTheOverview — restore is the surface's
+// half of the revoked-key refusal's remedy: the row comes back without
+// its sessions, ready to redeem a fresh link.
+func TestRestoreDeviceReadmitsItToTheOverview(t *testing.T) {
+	app := accessApp(t)
+	device, _ := pairDevice(t, app, "A phone", "thumb-restore")
+	if err := app.RevokeAccessDevice(device.ID); err != nil {
+		t.Fatalf("RevokeAccessDevice: %v", err)
+	}
+	if err := app.RestoreAccessDevice(device.ID); err != nil {
+		t.Fatalf("RestoreAccessDevice: %v", err)
+	}
+	overview, err := app.GetAccessOverview()
+	if err != nil {
+		t.Fatalf("GetAccessOverview: %v", err)
+	}
+	restored := findDevice(t, overview, "A phone")
+	if restored.RevokedAtMs != 0 {
+		t.Fatalf("restored device still carries revokedAtMs=%d", restored.RevokedAtMs)
+	}
+	if len(restored.Sessions) != 0 {
+		t.Fatalf("restore brought %d sessions back; a restore moves no credential", len(restored.Sessions))
+	}
+}
+
 // TestRevokeReachesSocketsWhenTheTransportBootsFirst pins the attach
 // against the PRODUCTION boot order: main.go hands the registry over at
 // transport-construct time, before Start has run initIdentity. An attach

@@ -3080,6 +3080,15 @@ export function RestartToUpdate(): $CancellablePromise<void> {
 }
 
 /**
+ * RestoreAccessDevice re-admits a revoked device's key to pairing — the
+ * remedy RedeemPairing's revoked-key refusal names. No credential moves:
+ * the device still redeems a fresh link and passes the number check.
+ */
+export function RestoreAccessDevice(deviceID: string): $CancellablePromise<void> {
+    return $Call.ByID(3386497005, deviceID);
+}
+
+/**
  * RetryThreadWorktreeSetup re-runs the project's recipe against the thread's
  * current worktree. It re-reads the recipe rather than replaying the failed
  * run's copy, so fixing the recipe in Settings and hitting Retry does what the

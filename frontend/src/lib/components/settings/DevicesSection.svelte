@@ -1,8 +1,9 @@
 <script lang="ts">
   // Settings → Network → Devices: which devices hold a credential on this
   // backend, the pairing flow that adds one (PairDeviceModal), and the
-  // revocations that take one away. Wire: the seven CategoryDeviceAccess
-  // RPCs (internal/app/app_access.go).
+  // revocations that take one away — plus restore, the way back in for a
+  // revoked device's key. Wire: the eight CategoryDeviceAccess RPCs
+  // (internal/app/app_access.go).
   //
   // The local page channel — the backend's own window, whatever relays it
   // — renders as "This computer" with no revoke control: the backend
@@ -21,6 +22,7 @@
     CancelDevicePairing,
     RevokeAccessDevice,
     RevokeAccessSession,
+    RestoreAccessDevice,
     type AccessOverview,
     type AccessDevice,
     type PendingPairing,
@@ -58,6 +60,7 @@
   let armTimer: ReturnType<typeof setTimeout> | null = null;
 
   let devices = $derived((overview?.devices ?? []).filter((d) => !d.revokedAtMs));
+  let revokedDevices = $derived((overview?.devices ?? []).filter((d) => !!d.revokedAtMs));
   let pending = $derived(overview?.pendingPairings ?? []);
   let audit = $derived(overview?.audit ?? []);
   let pairedCount = $derived(devices.filter((d) => d.channel !== 'local').length);
@@ -114,6 +117,10 @@
     armOrRun(`session:${sessionId}`, () =>
       act('Failed to end the session', () => RevokeAccessSession(sessionId)),
     );
+  }
+
+  function restoreDevice(device: AccessDevice): void {
+    void act('Failed to restore the device', () => RestoreAccessDevice(device.id));
   }
 
   function confirmPending(link: PendingPairing): void {
@@ -281,6 +288,28 @@
           No other device holds a credential for this backend.
         </p>
       {/if}
+
+      {#each revokedDevices as device (device.id)}
+        {@const Icon = CLASS_ICONS[device.class as keyof typeof CLASS_ICONS] ?? Monitor}
+        <div
+          class="flex items-center gap-3 rounded-[var(--radius-field)] border border-border-subtle/60 bg-surface-0/50 px-3 py-2"
+          data-testid="revoked-device"
+        >
+          <span class="text-fg-hint opacity-60"><Icon size={18} strokeWidth={1.75} /></span>
+          <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+            <p class="truncate text-[0.75rem] font-medium text-fg-muted">
+              {device.label || device.class}
+            </p>
+            <p class="text-[0.6875rem] text-fg-hint">
+              Access removed {device.revokedAtMs ? relativeTime(device.revokedAtMs) : ''}. Restoring
+              lets it pair again with a fresh link — nothing signs in until you confirm the number.
+            </p>
+          </div>
+          <Button variant="ghost" size="xs" disabled={acting} onclick={() => restoreDevice(device)}>
+            Restore
+          </Button>
+        </div>
+      {/each}
     </div>
 
     {#if audit.length > 0}

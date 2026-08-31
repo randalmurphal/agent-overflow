@@ -248,6 +248,7 @@ export const ConfirmDevicePairing = dispatch('ConfirmDevicePairing');
 export const CancelDevicePairing = dispatch('CancelDevicePairing');
 export const RevokeAccessDevice = dispatch('RevokeAccessDevice');
 export const RevokeAccessSession = dispatch('RevokeAccessSession');
+export const RestoreAccessDevice = dispatch('RestoreAccessDevice');
 
 // WSL distro switcher (Settings → Network → WSL Distro section).
 // IsWSL gates whether the section renders at all; the other three

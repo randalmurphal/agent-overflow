@@ -169,6 +169,7 @@ func TestDeviceAccessSurfaceIsWholeAndLocalOnly(t *testing.T) {
 		"CancelDevicePairing",
 		"RevokeAccessDevice",
 		"RevokeAccessSession",
+		"RestoreAccessDevice",
 	} {
 		if !LocalOnlyMethods[method] {
 			t.Errorf("%q is not local-only; the device-access surface decides who reaches this backend at all", method)

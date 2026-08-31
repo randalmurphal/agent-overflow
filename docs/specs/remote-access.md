@@ -181,9 +181,10 @@ migration v76, `/auth/pair` as the one wire route, redemption minting
 the real credential pair UNACTIVATED with the confirmation gate inside
 `Session.Live`, and the verification number as a backend-derived MAC
 over (link id, redeeming key). Wave 5c added the owner-facing surface:
-seven `CategoryDeviceAccess` RPCs in `internal/app/app_access.go`
+eight `CategoryDeviceAccess` RPCs in `internal/app/app_access.go`
 (overview / mint / status / confirm / cancel / revoke-session /
-revoke-device) and the redeeming client — `#pair=` fragment parse,
+revoke-device / restore-device — restore being the remedy the
+revoked-key redemption refusal names) and the redeeming client — `#pair=` fragment parse,
 `frontend/src/lib/transport/deviceSession.ts` (thumbprint mint, single-
 flight ticket renewal, store-before-use rotation discipline), and the
 full-page `PairingScreen`. Step 6's fingerprint field is reserved in

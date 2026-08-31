@@ -152,6 +152,25 @@ describe('<DevicesSection>', () => {
     await waitFor(() => expect(cancel).toHaveBeenCalledWith('link-2'));
   });
 
+  it('lists a revoked device apart, with restore instead of revoke', async () => {
+    setBindingMock('GetAccessOverview', async () =>
+      overview({
+        devices: [
+          LOCAL_DEVICE,
+          { ...PHONE, revokedAtMs: Date.now() - 3_600_000, sessions: [] },
+        ],
+      }),
+    );
+    const restore = setBindingMock('RestoreAccessDevice', async () => undefined);
+    const { findByRole, queryByRole, findByTestId } = render(DevicesSection);
+
+    await findByTestId('revoked-device');
+    // A revoked row offers restore, never a second revoke.
+    expect(queryByRole('button', { name: 'Revoke' })).toBeNull();
+    await fireEvent.click(await findByRole('button', { name: 'Restore' }));
+    await waitFor(() => expect(restore).toHaveBeenCalledWith('dev-phone'));
+  });
+
   it('renders a pointer instead of controls in client mode', async () => {
     setRunMode('client');
     const { findByText, queryByRole } = render(DevicesSection);

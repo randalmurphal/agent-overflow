@@ -70,6 +70,12 @@ const (
 	// spent value, an expired value, and a value that never existed all
 	// answer the same thing on purpose.
 	ReasonUnknownCredential
+	// ReasonRevokedDevice means a pairing redemption presented the key of
+	// a device the owner revoked. Distinct from ReasonKeyMismatch (whose
+	// remedy is re-pairing, which is exactly what was just refused): the
+	// remedy here is on the OWNER's screen — restore the device, then
+	// redeem a fresh link.
+	ReasonRevokedDevice
 )
 
 // reasonCodes maps each Reason to its stable wire spelling, indexed by
@@ -90,6 +96,7 @@ var reasonCodes = [...]string{
 	ReasonExpiredSession:      "expired_session",
 	ReasonPendingConfirmation: "pending_confirmation",
 	ReasonUnknownCredential:   "unknown_credential",
+	ReasonRevokedDevice:       "revoked_device",
 }
 
 // Code returns the stable wire spelling. An out-of-range value — only

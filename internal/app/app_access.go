@@ -265,6 +265,20 @@ func (a *App) RevokeAccessDevice(deviceID string) error {
 	return nil
 }
 
+// RestoreAccessDevice re-admits a revoked device's key to pairing — the
+// remedy RedeemPairing's revoked-key refusal names. No credential moves:
+// the device still redeems a fresh link and passes the number check.
+func (a *App) RestoreAccessDevice(deviceID string) error {
+	state, err := a.accessState()
+	if err != nil {
+		return err
+	}
+	if _, err := state.sessions.RestoreDevice(deviceID); err != nil {
+		return err
+	}
+	return nil
+}
+
 // RevokeAccessSession ends one session, leaving its device paired.
 //
 // Refused for the local page channel on the same grounds as
