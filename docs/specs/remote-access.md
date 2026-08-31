@@ -605,20 +605,52 @@ Prerequisite sweep, valuable standalone:
   repeats stay silent; the broadcast row is also the RPC's return
   value, so initiator echo equals optimistic apply
   (`frontend/src/lib/stores/eventsThreadRows.ts` is the applier).
-  Still open in this bullet: `settings:updated` (with tier + keys) and
-  `project:*`.
-- `draft:updated` with initiator echo-suppression; last-write-wins plus
-  an "edited on <device>" affordance (cuttable polish).
-- Wire `GetQueueState` as the fresh-attach bootstrap.
-- Races: backend is single-writer; losers get typed already-handled
-  responses; state-change events flip other devices to "answered on
-  <device>" live.
-- **Device attribution** on persisted mutations (which device did it).
-  A trivial column now, required later for audit and shared-thread
-  provenance.
-- Gap-recovery switch gains an entry per new channel.
-- Threads begin recording **branch / remote / head** so future forks are
-  possible for threads created before team sharing exists.
+  `settings:updated` and `project:updated`: LANDED 2026-08-31 (wave
+  4b). Settings frames carry the tier plus changed KEY NAMES, never
+  values (the redaction GetSettings applies must not have a push-side
+  bypass; receivers re-read); one frame per tier moved; the write
+  chokepoint is `internal/settings/mutate.go` with an AST tripwire, and
+  the tier map (`tier.go`) is total by test. Project frames reuse the
+  thread action vocabulary through the generic `internal/store/rowwrite.go`
+  helper; two tripwires classify every projectapp method and hold
+  emit-on-write.
+- `draft:updated`: LANDED 2026-08-31 (wave 4b). Emits ride the persist
+  (autosave no-ops stay silent via the upsert's change-tested ON
+  CONFLICT), the frame names the writer (`transport.ClientIdentity`,
+  `did`/`conn` on the WS upgrade URL, readable before the first RPC)
+  and never the text; echo suppression keys on the CONNECTION so two
+  tabs of one browser do not sit on each other's stale text. The
+  channel is loopback-only, matching GetDraft's classification. The
+  "edited on <device>" affordance remains cuttable polish.
+- Queue: LANDED 2026-08-31 (wave 4b), with the brief's premise
+  corrected — `GetThreadLiveState` already bootstrapped queue state on
+  every authoritative attach, so no second bootstrap was added. What
+  landed: `GetQueueState` is the targeted gap-recovery read for
+  `provider:queue_state_changed`, `queue_restored` takes the full pane
+  refresh, and the two unrecoverable badge channels say so explicitly.
+- Races: LANDED 2026-08-31 (wave 4b). The triage router arbitrates
+  concurrent approval/user-input answers on positive evidence and
+  releases the claim when a write never reached the provider; losers
+  get the typed `already_handled` transport code, which the composer
+  treats as answered-elsewhere. Fixing this surfaced a live defect:
+  the benign-race filter matched error STRINGS, which dispatcher
+  redaction blanks for every non-loopback caller, so remote clients
+  saw error banners where the desktop saw nothing. "Answered on
+  <device>" live flip is not built (needs the attribution UI).
+- **Device attribution**: LANDED 2026-08-31 (wave 4b) as CREATION
+  attribution — v73 `threads.created_by_device`, write-once by the
+  `import_source` mechanism, empty = the backend created it. Mutation
+  audit is a log table and its own decision; a single column
+  re-stamped per mutation would destroy provenance without producing
+  history.
+- Gap-recovery switch gains an entry per new channel: LANDED (wave 4b)
+  for settings/project/draft/queue.
+- Thread **branch / remote / head** at creation: LANDED 2026-08-31
+  (wave 4b) — v74 `created_branch` / `created_remote_url` /
+  `created_head_commit`, surfaced as `Thread.Origin`, observed at the
+  one moment the answer is true; forks re-observe, workflow threads
+  attribute to no device, session import records nothing. Nothing
+  renders it yet.
 
 ## 9. Wire evolution, phone, notifications
 
@@ -1387,9 +1419,10 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 
 1. **Sync sweep + seams.** Archive-closes-session fix: LANDED
    2026-08-31 (b809e997, §7). Thread-row emits: LANDED 2026-08-31
-   (9d48ee7c, §8). Remaining: settings/project emits,
-   channels, gap entries, race handling,
-   device attribution column, thread branch/remote/head recording.
+   (9d48ee7c, §8). The sync sweep is COMPLETE: settings/project/draft
+   emits, gap entries, race arbitration with the typed
+   `already_handled` code, the device-attribution column, and thread
+   branch/remote/head recording all LANDED 2026-08-31 (wave 4b, §8).
    Hello frame + `/healthz`, per-call cause preservation with the
    frozen-empty retry allowlist, forward tolerance with its
    future-dialect fixtures, and the notification audience change:
