@@ -26,6 +26,18 @@ remote browser alike. Protocol and authz rules:
   reads as Go-style error wrapping and truncates to the last segment.
   Structured detail goes in parentheses, comma-separated.
 
+  One channel is seeded into the replay map at zero rather than carried
+  from a cursor: `notification:activated`, because a Windows toast click
+  can COLD-LAUNCH the desktop window, so the click that started the page
+  landed before it had a socket. That seed asks for the channel's whole
+  retained ring, and the queue on the other end OPENS each activation it
+  receives, so it is gated on the session being local in BOTH senses
+  (`isRemoteSession`) — a remote page was not launched by a toast on that
+  host, and asking would walk its panes through every notification the
+  desk has clicked since boot. Declining the seed is not opting out of
+  gap recovery: the ordinary cursor still carries what the session
+  actually missed.
+
   `RETRY_ON_TRANSIENT_CLOSE` is the only sanctioned way an RPC is re-sent
   without its caller knowing. It is EMPTY, and a test pins that. An entry
   needs the call to be idempotent on the backend AND its loss to fall in

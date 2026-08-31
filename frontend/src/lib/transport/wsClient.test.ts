@@ -57,6 +57,10 @@
 //     replay cursor stays free of the mis-shaped entries that would
 //     otherwise break gap recovery for the session; the per-kind tally
 //     is capped against a peer naming a new type every frame
+//   - the zero-seeded notification:activated cursor (the cold-launch
+//     mechanism) is asked for only by a session that is local in both
+//     senses; a remote session omits it, writes no checkpoint, and still
+//     replays what it actually missed across a reconnect
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BootstrapRejectedError } from './bootstrap';
@@ -355,6 +359,103 @@ describe('WSClient', () => {
     expect(ws.sent[0]).toEqual({
       type: 'replay',
       lastSeqByChannel: { 'notification:activated': 0 },
+    });
+    client.close();
+  });
+
+  // The zero-seeded cursor asks the backend for the notification
+  // channel's whole retained ring. That is right for the desktop window,
+  // which a toast click can cold-launch before it has a socket, and wrong
+  // for anything else: the queue on the other end OPENS every activation
+  // it receives, so a phone attaching would have its pane walked through
+  // every notification the desk has clicked since boot.
+  it('does not ask for the activation ring when the manifest says the backend is remote', async () => {
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 'test-token', remote: true }),
+    });
+    client.subscribe('notification:activated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    expect(ws.sent[0]).toEqual({ type: 'replay', lastSeqByChannel: {} });
+    client.close();
+  });
+
+  it('does not ask for the activation ring when the page itself is not loopback-served', async () => {
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap,
+      loopbackOrigin: () => false,
+    });
+    client.subscribe('notification:activated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    expect(ws.sent[0]).toEqual({ type: 'replay', lastSeqByChannel: {} });
+    client.close();
+  });
+
+  it('leaves no activation checkpoint behind on a remote session', async () => {
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 'test-token', remote: true }),
+    });
+    client.subscribe('notification:activated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    ws.pushFrame({ type: 'replay' });
+    ws.pushFrame({
+      type: 'event',
+      channel: 'notification:activated',
+      seq: 3,
+      data: { kind: 'none' },
+    });
+
+    // Nothing reads the checkpoint back on this session, so writing one
+    // is a sessionStorage write per click that buys nothing.
+    expect(sessionStorage.getItem('ao:notification-activation-seq')).toBeNull();
+    client.close();
+  });
+
+  it('still replays what a remote session actually missed across a reconnect', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 'test-token', remote: true }),
+    });
+    client.subscribe('notification:activated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.pushFrame({ type: 'replay' });
+    first.pushFrame({
+      type: 'event',
+      channel: 'notification:activated',
+      seq: 5,
+      data: { kind: 'none' },
+    });
+
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await flushMicrotasks();
+
+    // Declining the cold-launch seed is not the same as opting out of
+    // gap recovery: the ordinary cursor is still carried, so the session
+    // asks for exactly the activations that happened while it was gone.
+    expect(second.sent[0]).toEqual({
+      type: 'replay',
+      lastSeqByChannel: { 'notification:activated': 5 },
     });
     client.close();
   });

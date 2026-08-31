@@ -127,7 +127,9 @@ func TestServer_HelloOmitsBackendIDWhenIdentityIsUnknown(t *testing.T) {
 // it is fine and additive; changing what a shipped name MEANS is not,
 // and this list is where that decision has to be written down.
 func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
-	want := []string{}
+	want := []string{
+		"notifications.remote",
+	}
 	if len(serverCapabilities) != len(want) {
 		t.Fatalf("advertised capabilities = %v, want %v — update this list and the name's doc comment in the same change",
 			serverCapabilities, want)

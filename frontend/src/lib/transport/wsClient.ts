@@ -1114,10 +1114,25 @@ export class WSClient {
     // only acts on this if the map is non-empty; it's still cheap
     // to send unconditionally since channel-by-channel reconciliation
     // is exactly what a reconnect needs.
-    const replay: Record<string, number> = {
-      [NOTIFICATION_ACTIVATED_CHANNEL]: loadNotificationActivationSeq(bootstrap.token),
-    };
-    this.notificationCheckpointScope = bootstrap.token;
+    const replay: Record<string, number> = {};
+    // The zero-seeded notification cursor is a LOCAL cold-launch
+    // mechanism, not a general one: it exists because a Windows toast can
+    // start the desktop window, so the click that launched it landed
+    // before this page had a socket to hear it on. A remote page was not
+    // launched by a toast on that host, so asking for the channel's
+    // retained ring would hand it every activation the desk has produced
+    // since boot — and the queue on the other end OPENS each one, which
+    // would hijack a phone's pane on every fresh attach. It asks for
+    // nothing here and receives live activations only; the ordinary
+    // cursor loop below still replays what it actually missed across a
+    // reconnect. Scope stays null for the same reason: a checkpoint
+    // nothing reads back is only writes to sessionStorage per click.
+    if (!this.isRemoteSession(bootstrap.remote === true)) {
+      replay[NOTIFICATION_ACTIVATED_CHANNEL] = loadNotificationActivationSeq(bootstrap.token);
+      this.notificationCheckpointScope = bootstrap.token;
+    } else {
+      this.notificationCheckpointScope = null;
+    }
     this.notificationReplayPending = true;
     this.notificationReplayBuffer = [];
     for (const [channel, cursor] of this.lastSeqByChannel) {
@@ -1310,8 +1325,14 @@ export class WSClient {
   // loopback, exactly as LocalOnlyMethods sees it) and keeps the
   // ordinary retry loop — honest-but-vague beats claiming a share link
   // that may not exist.
-  private isRemoteSession(): boolean {
-    return this.remoteBackend || !this.probeLoopbackOrigin();
+  //
+  // `remoteBackend` defaults to the latched field, which is what the
+  // failure-reporting callers want ("what do we currently believe"). A
+  // caller holding the manifest that produced one specific socket passes
+  // its verdict instead, so a superseded late fetch cannot decide a
+  // question about a different connection.
+  private isRemoteSession(remoteBackend: boolean = this.remoteBackend): boolean {
+    return remoteBackend || !this.probeLoopbackOrigin();
   }
 
   // enterCredentialDead latches the transport's one terminal state and

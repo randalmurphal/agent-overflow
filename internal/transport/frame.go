@@ -56,12 +56,26 @@ const ProtocolVersion = 1
 //   - Order is fixed so the frame bytes are stable across boots: a
 //     diffable log line, and nothing downstream has to sort.
 //
-// EMPTY today. The mechanism is what phase 1 owes; the first real flag
-// arrives with the first behavior a client would otherwise have to guess
-// at. An empty list is a complete, honest answer — "this backend
-// advertises nothing" — and is distinguishable on the wire from a
-// backend too old to send the frame at all.
-var serverCapabilities = []string{}
+// A flag must ship in the SAME release as the behavior it names. Added
+// later, it lies about every build in between: those advertise nothing
+// while having the behavior, and a client asking the question gets the
+// wrong answer forever. That is why the list is not deferred until
+// something reads it — the reader can come later, the flag cannot.
+var serverCapabilities = []string{
+	CapabilityRemoteNotifications,
+}
+
+// CapabilityRemoteNotifications says this backend delivers the
+// notification channels (`notification:send`, `notification:activated`)
+// to non-loopback connections. Before it, both were loopback-only, so an
+// attached remote client was told nothing when a turn finished and had no
+// way to discover that other than never receiving a frame — indeterminate
+// between "no notifications configured" and "backend too old".
+//
+// It says the frames ARRIVE. It does not say a client should raise
+// anything, which is that client's own decision, and it is not
+// authorization: emitting stays host-side only.
+const CapabilityRemoteNotifications = "notifications.remote"
 
 // helloFrame is the first frame written on every upgraded connection.
 //

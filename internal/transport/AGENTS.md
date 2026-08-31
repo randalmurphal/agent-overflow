@@ -89,11 +89,16 @@ It carries `protocolVersion`, `capabilities`, `backendId`, and
   means; adding a frame type, field, or channel is additive and does not
   move it. Additive-only is what makes the swap window — an old bundle
   live against a just-updated backend — safe.
-- **`serverCapabilities` is empty today** and a test freezes that. A name
-  is stable forever once shipped, because a client on an older bundle may
+- **`serverCapabilities` is frozen by a test**, and the frozen list spells
+  each name as a literal so a rename cannot slip through it. A name is
+  stable forever once shipped, because a client on an older bundle may
   still ask about it; retiring one means the backend stops advertising
   it, never that it starts meaning something else. A flag says a behavior
-  EXISTS — it is never authorization, which is re-checked per RPC.
+  EXISTS — it is never authorization, which is re-checked per RPC. **Ship
+  a flag in the same release as the behavior it names.** Added later it
+  lies about every build in between, which advertises nothing while
+  having the behavior — so the flag lands with the change even when
+  nothing reads it yet. The reader can come later; the flag cannot.
 - `capabilities` serializes as `[]`, never `null`, so "advertises
   nothing" stays distinguishable from "too old to send this frame".
 - `serverTimeMs` is sampled per accept, not cached at boot: the field
@@ -265,7 +270,16 @@ unregistrable by construction; both spell the explicit conversion at the call
 site so the escape hatch stays visible.
 `TestChannelPolicyPreservesFrozenClassification` freezes every non-default
 classification, so changing one of those lists is a behavior change, not a
-refactor. Registry lookups stay keyed by plain `string`, because each is reached
+refactor.
+
+**Opening a channel to remote clients decides the RECEIVE side only, and
+whatever PRODUCES that channel must be re-checked in the same change.** A
+channel whose frames drive UI on every attached client is a steering primitive
+the moment a client can also emit it, so the row's audience and the producer's
+`LocalOnlyMethods` entry are one decision spread across two files — and nothing
+in either file points at the other. Pin the pairing with a test that reads both,
+as `TestNotificationChannelsReachRemoteButStayHostProduced` does for
+`notification:activated`. Registry lookups stay keyed by plain `string`, because each is reached
 by a channel name that came off the wire at least some of the time and the
 newtype would assert a registration nobody checked.
 
