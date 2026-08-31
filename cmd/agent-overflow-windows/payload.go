@@ -117,17 +117,22 @@ func wslHomePath(ctx context.Context, distro string) (string, error) {
 	return out + "/.local/bin/agent-overflow", nil
 }
 
-// runWSLOutput is a thin wsl.exe -d <distro> -- <cmd> wrapper that
+// runWSLOutput is a thin wsl.exe -d <distro> --exec <cmd> wrapper that
 // returns stdout as a string. Errors include the captured stderr so
 // callers can surface useful diagnostics ("distro not found",
 // "WSL2 vmcompute is broken", etc) to the user rather than silently
 // swallowing them.
 //
+// --exec, never --: the -- form re-parses the joined argv through the
+// user's login shell, which mangles quoting and pre-expands `$`
+// references (wsllauncher.buildLaunchArgs has the incident note).
+// Callers that need shell semantics pass an explicit /bin/sh -c.
+//
 // HideWindow keeps wsl.exe from flashing a console window every time
 // we invoke it; the launcher's UI surface is the WebView, never the
 // child's console.
 func runWSLOutput(ctx context.Context, distro string, args ...string) (string, error) {
-	full := append([]string{"-d", distro, "--"}, args...)
+	full := append([]string{"-d", distro, "--exec"}, args...)
 	cmd := exec.CommandContext(ctx, "wsl.exe", full...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 

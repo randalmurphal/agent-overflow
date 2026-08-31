@@ -29,19 +29,10 @@ describe('ThreadRowBadges', () => {
     expect(queryByLabelText('Terminal Thread')).toBeNull();
   });
 
-  it('renders the design badge (not the terminal one) for design threads', () => {
-    const { getByLabelText, queryByLabelText } = render(ThreadRowBadges, {
-      thread: makeThread({ mode: 'design' }),
-    });
-    expect(getByLabelText('Design Thread')).toBeTruthy();
-    expect(queryByLabelText('Terminal Thread')).toBeNull();
-  });
-
   it('renders no mode badge for a plain chat thread', () => {
     const { queryByLabelText } = render(ThreadRowBadges, {
       thread: makeThread({ mode: 'chat' }),
     });
     expect(queryByLabelText('Terminal Thread')).toBeNull();
-    expect(queryByLabelText('Design Thread')).toBeNull();
   });
 });

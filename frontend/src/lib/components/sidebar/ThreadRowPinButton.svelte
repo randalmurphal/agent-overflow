@@ -15,19 +15,25 @@
   import Pin from '@lucide/svelte/icons/pin';
   import Icon from '../primitives/Icon.svelte';
   import {
+    PIN_GROUP_BACK,
+    PIN_GROUP_FRONT,
     pinThreadAction,
+    setThreadPinGroupAction,
     unpinThreadAction,
     type ThreadActionCtx,
   } from './threadRowActions';
 
   interface Props {
     isPinned: boolean;
+    pinGroup?: number;
     /** Builds the action context lazily so we don't capture stale
      *  refs across re-renders. */
     buildCtx: () => ThreadActionCtx;
   }
 
-  let { isPinned, buildCtx }: Props = $props();
+  let { isPinned, pinGroup, buildCtx }: Props = $props();
+
+  let isBackBurner = $derived(isPinned && pinGroup === PIN_GROUP_BACK);
 
   function handleToggle(e: MouseEvent): void {
     e.stopPropagation();
@@ -37,22 +43,37 @@
       void pinThreadAction(buildCtx());
     }
   }
+
+  function handleContextMenu(e: MouseEvent): void {
+    // An unpinned affordance keeps the row's normal context menu. Once
+    // pinned, right-click is the direct two-tier toggle promised by the
+    // pin control itself.
+    if (!isPinned) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void setThreadPinGroupAction(
+      buildCtx(),
+      isBackBurner ? PIN_GROUP_FRONT : PIN_GROUP_BACK,
+    );
+  }
 </script>
 
 <button
   type="button"
   onclick={handleToggle}
+  oncontextmenu={handleContextMenu}
   data-testid="thread-row-pin"
+  data-pin-group={isPinned ? (isBackBurner ? 'back' : 'front') : undefined}
   aria-label={isPinned ? 'Unpin Thread' : 'Pin Thread'}
   aria-pressed={isPinned}
   title={isPinned ? 'Unpin Thread' : 'Pin Thread'}
   class={
     'flex items-center justify-center h-4 w-4 rounded-[var(--radius-field)] shrink-0 cursor-pointer ' +
-    'text-fg-subtle hover:text-fg hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 ' +
+    'hover:text-fg hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 ' +
     'transition-opacity duration-150 ' +
     (isPinned
-      ? 'text-accent opacity-100 pointer-events-auto'
-      : 'opacity-0 pointer-events-none group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-has-[:focus-visible]/thread-row:opacity-100 group-has-[:focus-visible]/thread-row:pointer-events-auto')
+      ? `${isBackBurner ? 'text-fg-muted' : 'text-accent'} opacity-100 pointer-events-auto`
+      : 'text-fg-subtle opacity-0 pointer-events-none group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-has-[:focus-visible]/thread-row:opacity-100 group-has-[:focus-visible]/thread-row:pointer-events-auto')
   }
 >
   <Icon

@@ -348,7 +348,7 @@ func validWorkflowBindingThread(item store.WorkItem, thread store.Thread) error 
 			thread.ID, thread.ProjectID, item.ProjectID)
 	}
 	if _, ok := threadmode.ManualSelectionModes[thread.Mode]; !ok {
-		return fmt.Errorf("thread %s has mode %q; a run binds a conversation thread (chat, plan, or design)",
+		return fmt.Errorf("thread %s has mode %q; a run binds a conversation thread (chat or plan)",
 			thread.ID, thread.Mode)
 	}
 	return nil

@@ -6,8 +6,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createThreadPane } from './thread.svelte';
-import { setBindingMock } from '../../test/mocks/bindings-app';
-import { buildPane, makeThread } from '../../test/helpers/chat';
+import { makeThread } from '../../test/helpers/chat';
 import { installThreadPaneTestEnv, seedThreadPaneLayout } from '../../test/helpers/threadPane';
 import { isCompanionOpen, openCompanion } from './companionPanes.svelte';
 
@@ -95,61 +94,5 @@ describe('threadPaneCompanions', () => {
       expect(pane.showPlanSidebar).toBe(false);
     });
 
-    it('does not auto-open design preview for a fresh design thread', async () => {
-      const pane = await buildPane(
-        makeThread({ id: 'thread-a', mode: 'design' }),
-      );
-
-      expect(pane.showDesignPreviewPanel).toBe(false);
-    });
-
-    it('does not auto-open design preview when options hydrate while closed', async () => {
-      const pane = await buildPane(
-        makeThread({ id: 'thread-a', mode: 'design' }),
-      );
-      seedThreadPaneLayout(pane.paneId);
-      setBindingMock('LatestDesignOptionSet', async () => ({
-        setId: 'set-1',
-        optionIds: ['alpha'],
-      }));
-
-      await pane.applyDesignOptionsUpdate('thread-a', 'set-1');
-
-      expect(pane.activeOptionSet).toEqual({
-        setId: 'set-1',
-        optionPaths: ['options/set-1/alpha'],
-      });
-      expect(pane.showDesignPreviewPanel).toBe(false);
-
-      pane.toggleDesignPreviewPanel();
-      expect(pane.showDesignPreviewPanel).toBe(true);
-    });
-
-    it('closes design preview when switching to a different design thread', async () => {
-      const threadA = makeThread({ id: 'thread-a', mode: 'design' });
-      const threadB = makeThread({ id: 'thread-b', mode: 'design' });
-      const pane = await buildPane(threadA);
-      seedThreadPaneLayout(pane.paneId);
-      pane.setShowDesignPreviewPanel(true);
-
-      setBindingMock('SwitchThread', async () => threadB);
-      await pane.switchThread(threadB);
-
-      expect(pane.showDesignPreviewPanel).toBe(false);
-    });
-
-    it('closes design preview when switching to a non-design thread', async () => {
-      const threadA = makeThread({ id: 'thread-a', mode: 'design' });
-      const threadB = makeThread({ id: 'thread-b', mode: 'chat' });
-      const pane = await buildPane(threadA);
-      seedThreadPaneLayout(pane.paneId);
-      pane.setShowDesignPreviewPanel(true);
-
-      setBindingMock('SwitchThread', async () => threadB);
-      await pane.switchThread(threadB);
-
-      expect(pane.showDesignPreviewPanel).toBe(false);
-      expect(isCompanionOpen(pane.paneId, 'design-preview')).toBe(false);
-    });
   });
 });

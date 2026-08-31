@@ -179,7 +179,7 @@ const HEX_ALLOWLIST: Record<string, string> = {
     ]),
   ),
   'app.css':
-    'the theme layer itself — the `:root` dark palette and the `html.light` override block are the hex source of truth every token resolves from (phase 2 moves them into themes/*.json). `--design-paper` lives here too: agent-authored iframe paper, default-locked opaque by design rather than themed',
+    'the theme layer itself — the `:root` dark palette and the `html.light` override block are the hex source of truth every token resolves from (phase 2 moves them into themes/*.json)',
   'styles/syntax.css':
     'the github-dark / github-light `--syntax-*` palettes — 21 token values per mode, the code axis of the theme layer',
   'lib/components/composer/imageCompress.ts':

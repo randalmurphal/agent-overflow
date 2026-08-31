@@ -42,7 +42,7 @@ func reconcileOptionsFor(
 		t.Fatalf("GetThread() error = %v", err)
 	}
 	sanitized := app.sanitizeThreadModelSettings(stored)
-	opts, _, err := app.buildSessionOptions(sanitized)
+	opts, err := app.buildSessionOptions(sanitized)
 	if err != nil {
 		t.Fatalf("buildSessionOptions() error = %v", err)
 	}
@@ -162,7 +162,7 @@ func TestReconcileSettingsOwnedAxesConvergesAnEnabledOverride(t *testing.T) {
 	}
 }
 
-// A FEATURE-owned prompt (design mode, discussions) is untouched by any of
+// A feature-owned prompt (currently discussions) is untouched by any of
 // this: buildSessionOptions has already written it, and the settings override
 // stands down exactly as it does on the spawn path.
 func TestReconcileSettingsOwnedAxesLeavesFeatureOwnedPromptsAlone(t *testing.T) {

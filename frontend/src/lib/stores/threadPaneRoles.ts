@@ -2,7 +2,7 @@
 //
 // `ThreadPane` (thread.svelte.ts) is the pane's whole API — 172 members
 // covering the timeline, the scroll host, per-row UI state, streaming
-// reveal, the error banner, discussion, design, terminal placement,
+// reveal, the error banner, discussion, terminal placement,
 // companions and the draft-thread lifecycle. No consumer uses more than
 // a slice of it, but every consumer that types a prop or a parameter as
 // `ThreadPane` takes a dependency on all of it: a signature says nothing
@@ -349,7 +349,7 @@ export interface PaneDoors {
 
 /**
  * The write surface the backend-event fan-out lands on: item stream,
- * approvals, turn lifecycle, context window, channel and design pushes.
+ * approvals, turn lifecycle, context window, and channel pushes.
  * Reads are limited to what those handlers need to address or dedupe
  * against (`paneId`/`threadId`/`thread`, the pending queues, `items`,
  * `channelMessages` for the discussion refresh diff).
@@ -357,7 +357,7 @@ export interface PaneDoors {
  * Consumers: `stores/eventsItemStream.ts`, `stores/eventsProvider.ts`
  * (intersected with a `Pick` of `ErrorSurface`'s writers),
  * `stores/eventsQueue.ts`, `stores/eventsDiscussion.ts`,
- * `stores/eventsDesign.ts`, `stores/eventsMessageRevert.ts`,
+ * `stores/eventsMessageRevert.ts`,
  * `stores/eventsThreadRows.ts`, `stores/eventsTransportGap.ts`,
  * `stores/revertOnInterrupt.svelte.ts`. Each narrows at its pane
  * acquisition point (the registry hands out whole `ThreadPane`s), so a
@@ -401,7 +401,6 @@ export interface ThreadPaneIngest {
   readonly applyChannelMessage: (message: ChannelMessage) => void;
   readonly applyChannelMessages: (messages: ChannelMessage[]) => void;
   readonly applyChannelState: (payload: ChannelStatePayload) => void;
-  readonly applyDesignOptionsUpdate: (threadId: string, setId: string) => Promise<void>;
 }
 
 /**

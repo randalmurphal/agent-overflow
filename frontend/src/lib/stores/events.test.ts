@@ -1583,12 +1583,12 @@ describe('setupEventListeners', () => {
 
     emitWailsEvent('thread:mode_changed', {
       threadId: 'thread-1',
-      mode: 'design',
+      mode: 'plan',
       needsReconnect: false,
     });
 
-    expect(getThreads()[0]?.mode).toBe('design');
-    expect(pane.thread?.mode).toBe('design');
+    expect(getThreads()[0]?.mode).toBe('plan');
+    expect(pane.thread?.mode).toBe('plan');
     expect(getToasts().length).toBe(toastCountBefore);
   });
 

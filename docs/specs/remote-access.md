@@ -96,7 +96,7 @@ effective = granted(device) ∩ ceiling(principal tier) ∩ ceiling(network path
 
 Resolved **once**, at session establishment, into a precomputed set
 carried on the connection. Every surface (WS RPC, HTTP RPC, event
-push, attachments, snapshots, design files) authorizes from that one
+push, attachments, and snapshots) authorizes from that one
 set (§13). There is no second code path that decides access, so there is
 no surface that can drift out of policy.
 
@@ -482,12 +482,21 @@ when the dev server binds beyond loopback). We build the gateway:
   the user adds explicitly. A localhost proxy that forwards anywhere
   reaches every host-local service on the box; this one forwards only
   to declared dev servers. Gateway access requires an execute-tier scope.
-- **The gateway is its own origin**, the same posture `/design/`
-  acquires in phase 0 (today `/design/` is a route on the SPA's own
-  mux, host, and port — that is the defect, not the model): proxied
-  content is agent/app-authored and never shares the SPA origin; the
-  session credential is never visible to it — access rides a
-  short-lived ticket bound to the gateway origin.
+- **The gateway is its own origin**: proxied content is
+  agent/app-authored and never shares the SPA origin, and the session
+  credential is never visible to it — access rides a short-lived
+  ticket bound to the gateway origin. Without a domain, "its own
+  origin" means its own loopback listener on its own pinned port.
+  One interaction to get right, because it makes the Origin
+  allow-list load-bearing rather than defense in depth: **cookies are
+  scoped by host, not by port**, so a document on the gateway origin
+  still has the boot cookie attached to requests it makes to the SPA
+  origin — including a WS upgrade, which CORS does not cover. The
+  upgrade must therefore refuse any `Origin` outside the allow-list,
+  and the gateway origin is never in it. This is the surface that
+  reintroduces the hazard `/design/` used to carry, so it inherits
+  the posture that route was going to be given rather than starting
+  from scratch.
 - Detection reuses t3code's proven shape, server-side: enumerate
   loopback listeners (`lsof`/PowerShell), publish only candidates
   whose bounded 1s probe returns HTML or a redirect, cache probe
@@ -898,12 +907,17 @@ no new store.
 
 ## 13. Surface inventory
 
-Complete coverage has to be structural, not a promise. The current
-counter-example: `/design/` serves agent-written files from the SPA
-origin with **no token, no response headers, no per-thread check, and
-symlinks unresolved**. That is an entire HTTP surface sitting outside
-the authorization model, found only because it was audited (see the
-boundaries doc's findings, and §16 phase 0).
+Complete coverage has to be structural, not a promise. The worked
+counter-example, now removed: `/design/` served agent-written files
+from the SPA origin with **no token, no response headers, no
+per-thread check, and symlinks unresolved** — an entire HTTP surface
+sitting outside the authorization model, found only because it was
+audited, and closed in 2026-08-30's design-mode removal rather than
+by the fix that audit prescribed. It is kept here because deletion is
+not a mechanism: the same surface would have gone unenumerated for
+its whole life, and the dev-server gateway in §7 is the next thing
+shaped like it. What follows is what makes the next one visible
+without an audit (see the boundaries doc's findings, and §16 phase 0).
 
 Every externally-reachable surface is enumerated in one place with four
 declared properties: **listener** (which port/origin), **principal tiers
@@ -919,12 +933,12 @@ Classes to enumerate:
 
 - **RPC methods**: generated from `//ao:scope` annotations (§5).
 - **HTTP routes**: bootstrap, WS upgrade, scoped RPC, auth/token,
-  tickets, attachments, snapshots, design files, health/version.
+  tickets, attachments, snapshots, health/version.
 - **Event channels**: required scope per channel, resolved into the
   connection's precomputed visible set.
 - **Listeners**: loopback, LAN, tsnet, tunnel, plus the auxiliary
-  loopback servers (browser MCP, design MCP, harness control,
-  claudetui gateway + hook relay, pprof, the `--connect` client stub)
+  loopback servers (browser MCP, harness control, claudetui gateway +
+  hook relay, pprof, the `--connect` client stub, the dev supervisor)
   and the **implicit** ones our own child processes open — chromedp
   gives every managed Chrome a loopback DevTools port, which no
   inventory named until this audit. Each declares what capability it
@@ -934,8 +948,8 @@ Classes to enumerate:
   alone, which is a larger grant than "no session credential"
   suggests. A listener whose credential is weaker than the surface it
   gates is the pattern the enumeration exists to make visible. The
-  starting inventory is 12 listeners across 6 packages, verified
-  2026-08-30.
+  starting inventory is 9 listeners across 7 packages, one of them
+  implicit, verified 2026-08-30 against the design-mode-less tree.
 - **Content origins**: anything serving bytes an agent or user
   authored declares its origin and content-type posture; agent-authored
   bytes never execute at the SPA origin.
@@ -1138,51 +1152,37 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 
 0. **Open content-isolation defects.** Independent of everything else
    and reachable today, in the desktop webview, with no remote feature
-   enabled. Every item below was re-verified against this tree on
-   2026-08-30. Two entries left the list that day: the markdown
+   enabled. Re-verified against this tree on 2026-08-30, after design
+   mode was removed on main. That removal closed the largest item on
+   this list outright — the `/design/` route was the only same-origin
+   surface serving agent-authored bytes, and with it went the
+   unauthenticated read, the symlink following, the directory
+   listings, the second Chrome launcher's sandbox disagreement, and
+   half the MCP-endpoint item. Four other entries left the list
+   earlier and are recorded elsewhere rather than here: the markdown
    renderer's relative-href branch (fixed at the render layer, both
-   render paths verified) and a correction to `frontend/CLAUDE.md`
-   (the claim it was going to correct now lives in a code comment and
-   is true against current code). Two more turned out already shipped
-   and are recorded in §7 and §9 rather than here: the persisted
-   stable port and the backend-keyed replica.
+   paths verified), the persisted stable port and the backend-keyed
+   replica (both already shipped, §7 and §9), and a `frontend/CLAUDE.md`
+   correction whose claim now lives in a code comment.
 
-   - **`/design/` sits outside the authorization model.** It is a
-     route on the SPA's own mux, host, and port, with no token, no
-     per-thread check, directory listings on (so a GET of `/design/`
-     enumerates every thread id on the install), no response headers,
-     and `http.Dir`'s symlink following intact — an unauthenticated
-     read of anything the app process can read, available to any
-     loopback peer. Fix: its own origin, a per-thread capability
-     token, containment via `os.OpenRoot` (the primitive
-     `internal/safecopy` already uses), listings off, and the
-     `WriteSecurityHeaders` block the SPA route already gets.
-     Without a domain, "its own origin" means its own loopback
-     listener on its own pinned port, and every internal consumer of
-     the design URL moves with it (the screenshot capture path builds
-     that URL today). One interaction to get right, because it makes
-     the Origin allow-list load-bearing rather than defense in depth:
-     **cookies are scoped by host, not by port**, so a document on
-     the design origin still has the boot cookie attached to
-     requests it makes to the SPA origin — including a WS upgrade,
-     which CORS does not cover. The upgrade must therefore refuse
-     any `Origin` outside the allow-list, and the design origin is
-     never in it.
-   - **Anchor-navigation guard.** `handleExternalLinkClick` returns
-     *without* `preventDefault` when `safeExternalURL` yields null, so
-     a non-`http(s)` href performs its default navigation. The
-     markdown renderer can no longer emit such an anchor, but this is
-     app-wide policy that every other component inherits, and today
-     it is neither fail-closed nor documented as intentional.
-   - **`PRStep.svelte`** binds two forge-derived hrefs with no
-     `safeExternalURL`, while the two sibling consumers of the same
-     field (`PrBadge.svelte`, `GitActionsControl.svelte`) both
-     validate. Both layers of defense are absent at once here.
+   Two items were considered and **deliberately not taken**, so they
+   do not come back on a later pass. The click delegate's
+   no-`preventDefault` fall-through stays as it is: an agent that
+   could plant a hostile anchor already has a shell, so the anchor
+   buys it nothing, and the markdown path can no longer emit one
+   regardless. `PRStep.svelte`'s two unvalidated forge hrefs stay as
+   they are: a forge API returns the same URL the real pull request
+   page would link, so validating ours while the real page does not
+   is theater. Both are recorded in the boundaries doc as observed
+   behavior, not as debt.
+
    - **A baseline CSP**, strict in production and relaxed in dev.
      There is no CSP anywhere in the product today. The Vite dev
      server needs inline styles regardless of HMR, so the split is
      not an HMR concession; disabling HMR is an independent
-     preference.
+     preference. This is now the primary content-isolation control
+     rather than a defense-in-depth layer behind the design route,
+     because the route it was layered behind is gone.
    - **The boot credential moves out of script reach.** Bootstrap
      exchanges the one-time `?t=` URL token for an HttpOnly cookie,
      strips the token from the URL, and the WS upgrade authenticates
@@ -1194,39 +1194,34 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
      Its loopback listener serves the injected `__AO_BOOTSTRAP__`,
      upstream token included, on an unauthenticated `GET /`. Same
      credential shape, so it is fixed in the same change.
-   - **The two MCP endpoints authenticate on an unguessable path
-     alone** — no `Origin`/`Sec-Fetch-Site` rejection and no
-     loopback-peer re-check (the claudetui gateway already does the
-     peer check; copy it). Lazy-starting these listeners is not
-     available: the URL rides provider argv at spawn, so it must
-     exist before any tool is called. The two checks are the fix.
-   - **Managed-browser navigation policy.** `Manager.Open` accepts
-     loopback URLs, which is right for dev servers and wrong for the
-     app's own ports: as written, a page in the in-app browser is a
-     loopback peer of the app, and an agent can reach any thread's
-     `/design/` workdir through it, around `browser_open_file`'s
-     workspace containment. Deny our own transport and auxiliary
-     ports; leave dev-server ports alone.
-   - **The two Chrome launchers disagree on sandbox posture.**
-     `internal/screenshot` disables the OS sandbox while rendering
-     agent-authored HTML; `internal/browser` explicitly refuses the
-     same flag and documents why failing to launch is the better
-     outcome. Same class of content, so align on the stricter
-     posture.
+   - **The browser MCP endpoint authenticates on an unguessable path
+     alone** — no `Origin` / `Sec-Fetch-Site` rejection, no
+     loopback-peer re-check, and the body decodes whatever its
+     `Content-Type` claims, which makes a `tools/call` POST a CORS
+     simple request that runs without a preflight. The claudetui
+     gateway next door already does the peer check off `r.RemoteAddr`;
+     copy it, require `application/json`, and reject any `Origin`.
+     Lazy-starting the listener is not available: its URL rides
+     provider argv at spawn, so it must exist before the first tool
+     call.
    - **Tests**: a `//`-leading link href through `ChatMarkdown` (the
      `//`-versus-schemeless discrimination exists in both render
-     paths and is pinned in neither for links), the delegate's
-     behavior on a non-`http` anchor, and a link-level differential
-     between `staticHtml.ts` and `Link.svelte` — `markdown/AGENTS.md`
-     already names that silent fork as a known hazard.
+     paths and is pinned in neither for links), and a link-level
+     differential between `staticHtml.ts` and `Link.svelte` —
+     `markdown/AGENTS.md` already names that silent fork as a known
+     hazard.
    - **The §13 surface enumeration + CI gate**, seeded with the
-     verified inventory: 12 listeners including the implicit Chrome
-     DevTools ports, the transport's routes, and content origins. The
-     RPC-method and event-channel columns join in phase 3 when the
-     scope table generates.
+     verified inventory: 9 listeners across 7 packages including the
+     implicit Chrome DevTools port, the transport's routes, and
+     content origins. The RPC-method and event-channel columns join
+     in phase 3 when the scope table generates.
    - **Doc drift inside the classification table.**
-     `internalmethods.go` describes six categories; the map carries
-     nine and 269 entries. Anything citing "six" is stale.
+     `internalmethods.go`'s header comment describes six categories;
+     the map body carries ten (1-10, plus the 8b/9b/9c sub-entries).
+     Anything citing "six" is stale. The entry count moved again when
+     design mode's methods were deleted (264 today), which is the
+     argument for the gate asserting the category set rather than a
+     number.
 
 1. **Sync sweep + seams.** Archive-closes-session fix (§7 — a
    standing leak today, acute once hosts are unattended). Emits,

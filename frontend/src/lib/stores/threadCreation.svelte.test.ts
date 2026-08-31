@@ -85,11 +85,11 @@ describe('resolveDraftTargetProject', () => {
     addProjectLocal(makeProject({ id: 'project-2', path: '/tmp/p2', name: 'Project Two' }));
     addProjectLocal(makeProject({ id: 'project-1', path: '/tmp/p1', name: 'Project One' }));
     const pane = createThreadPane({ paneId: 'main' });
-    pane.replaceThread(makeThread({ projectId: 'project-2', mode: 'design' }));
+    pane.replaceThread(makeThread({ projectId: 'project-2' }));
 
-    const resolved = resolveDraftTargetProject(pane, 'chat');
+    const resolved = resolveDraftTargetProject(pane);
 
-    expect(resolved).toEqual({ projectId: 'project-2', mode: 'chat' });
+    expect(resolved).toEqual({ projectId: 'project-2' });
   });
 
   it('falls back to the most recently active project when the pane has no thread', () => {
@@ -98,50 +98,32 @@ describe('resolveDraftTargetProject', () => {
     addProjectLocal(makeProject({ id: 'newer', path: '/tmp/new', name: 'Newer' }));
     const pane = createThreadPane({ paneId: 'main' });
 
-    const resolved = resolveDraftTargetProject(pane, 'chat');
+    const resolved = resolveDraftTargetProject(pane);
 
-    expect(resolved).toEqual({ projectId: 'newer', mode: 'chat' });
+    expect(resolved).toEqual({ projectId: 'newer' });
   });
 
   it('falls back to the most recently active project when target pane is null', () => {
     addProjectLocal(makeProject({ id: 'older', path: '/tmp/old', name: 'Older' }));
     addProjectLocal(makeProject({ id: 'newer', path: '/tmp/new', name: 'Newer' }));
 
-    const resolved = resolveDraftTargetProject(null, 'chat');
+    const resolved = resolveDraftTargetProject(null);
 
-    expect(resolved).toEqual({ projectId: 'newer', mode: 'chat' });
+    expect(resolved).toEqual({ projectId: 'newer' });
   });
 
   it('returns null when no projects exist at all', () => {
     const pane = createThreadPane({ paneId: 'main' });
 
-    const resolved = resolveDraftTargetProject(pane, 'chat');
+    const resolved = resolveDraftTargetProject(pane);
 
     expect(resolved).toBeNull();
   });
 
   it('returns null when no projects exist and target pane is also null', () => {
-    expect(resolveDraftTargetProject(null, 'chat')).toBeNull();
+    expect(resolveDraftTargetProject(null)).toBeNull();
   });
 
-  it('flows the requested mode through when falling back to the recent project', () => {
-    addProjectLocal(makeProject({ id: 'newer', path: '/tmp/new', name: 'Newer' }));
-    const pane = createThreadPane({ paneId: 'main' });
-
-    const resolved = resolveDraftTargetProject(pane, 'design');
-
-    expect(resolved).toEqual({ projectId: 'newer', mode: 'design' });
-  });
-
-  it('flows the requested mode through when the pane has a thread', () => {
-    addProjectLocal(makeProject({ id: 'project-1', path: '/tmp/p1', name: 'Project One' }));
-    const pane = createThreadPane({ paneId: 'main' });
-    pane.replaceThread(makeThread({ projectId: 'project-1', mode: 'chat' }));
-
-    const resolved = resolveDraftTargetProject(pane, 'design');
-
-    expect(resolved).toEqual({ projectId: 'project-1', mode: 'design' });
-  });
 });
 
 describe('openDraftThreadForProject', () => {
@@ -160,7 +142,6 @@ describe('openDraftThreadForProject', () => {
 
     const opening = openDraftThreadForProject({
       projectId: project.id,
-      mode: 'chat',
       targetPane: pane,
     });
 
@@ -199,12 +180,10 @@ describe('openDraftThreadForProject', () => {
 
     const firstOpening = openDraftThreadForProject({
       projectId: firstProject.id,
-      mode: 'chat',
       targetPane: pane,
     });
     const secondOpening = openDraftThreadForProject({
       projectId: secondProject.id,
-      mode: 'design',
       targetPane: pane,
     });
 
@@ -222,7 +201,7 @@ describe('openDraftThreadForProject', () => {
 
     expect(pane.thread).toMatchObject({
       projectId: secondProject.id,
-      mode: 'design',
+      mode: 'chat',
       model: 'gpt-5.4-mini',
       branch: 'feature/newer',
     });
@@ -237,7 +216,6 @@ describe('openDraftThreadForProject', () => {
 
     const opening = openDraftThreadForProject({
       projectId: project.id,
-      mode: 'chat',
       targetPane: pane,
     });
 
@@ -266,7 +244,6 @@ describe('openDraftThreadForProject', () => {
     try {
       await expect(openDraftThreadForProject({
         projectId: project.id,
-        mode: 'chat',
         targetPane: pane,
       })).resolves.toBe(pane);
     } finally {

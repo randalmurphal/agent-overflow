@@ -1,5 +1,5 @@
 // Right-click menu visibility gating. Items + order are pinned:
-// Rename, Fork (when fork-able), Mark Unread, Copy Path,
+// Rename, Fork (when fork-able), Mark Unread, pin controls, Copy Path,
 // Copy Thread ID, Delete (when not a child thread).
 
 import { afterEach, describe, expect, it, beforeEach } from 'vitest';
@@ -68,6 +68,7 @@ describe('<ThreadContextMenu> single-row menu', () => {
       'Rename Thread',
       'Fork Thread',
       'Mark Unread',
+      'Pin Thread',
       'Copy Path',
       'Copy Thread ID',
       'Delete',
@@ -103,12 +104,36 @@ describe('<ThreadContextMenu> single-row menu', () => {
     expect(baseElement.querySelectorAll('[role="separator"]').length).toBe(0);
   });
 
-  it('does NOT include Pin/Unpin or Open Workspace in Editor', () => {
-    const { baseElement } = renderMenu(makeThread({ pinnedAt: 1 }));
+  it('shows move-to-back and unpin controls for a front-burner thread', () => {
+    const { baseElement } = renderMenu(makeThread({ pinnedAt: 1, pinGroup: 0 }));
+    expect(visibleLabels(baseElement)).toEqual([
+      'Open in New Pane',
+      'Rename Thread',
+      'Fork Thread',
+      'Mark Unread',
+      'Move to Back Burner',
+      'Unpin Thread',
+      'Copy Path',
+      'Copy Thread ID',
+      'Delete',
+    ]);
+  });
+
+  it('shows move-to-front and unpin controls for a back-burner thread', () => {
+    const { baseElement } = renderMenu(makeThread({ pinnedAt: 1, pinGroup: 1 }));
     const labels = visibleLabels(baseElement);
-    expect(labels).not.toContain('Pin');
-    expect(labels).not.toContain('Unpin');
-    expect(labels).not.toContain('Open Workspace in Editor');
+    expect(labels).toContain('Move to Front Burner');
+    expect(labels).toContain('Unpin Thread');
+    expect(labels).not.toContain('Move to Back Burner');
+  });
+
+  it('does not expose single-thread pin controls in a bulk menu', () => {
+    setThreadSelection(['thread-1', 'thread-2']);
+    const { baseElement } = renderMenu(makeThread());
+    const labels = visibleLabels(baseElement);
+    expect(labels).not.toContain('Pin Thread');
+    expect(labels).not.toContain('Unpin Thread');
+    expect(labels.some((label) => label.startsWith('Move to '))).toBe(false);
   });
 });
 

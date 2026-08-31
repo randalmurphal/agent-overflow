@@ -14,7 +14,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
-	"agent-overflow/internal/threadmode"
 )
 
 func (a *App) triggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
@@ -28,19 +27,6 @@ func (a *App) triggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return MCPAuthInitResult{}, err
-	}
-	// A design thread spawns with `--mcp-config <design servers>
-	// --strict-mcp-config`, so its session cannot see a single workspace
-	// MCP server. Without this guard the auto-start below would spawn
-	// exactly that session and ask it to authenticate a name it will
-	// never resolve — the CLI answers `Server not found: <name>` and the
-	// user gets a sign-in-failed toast blaming the server. The toggle
-	// path already carves design threads out the same way
-	// (setClaudeThreadMCPEnabled); the OAuth grant itself is global to
-	// the CLI's secure storage, so a regular thread in any workspace can
-	// perform it.
-	if thread.Mode == threadmode.ModeDesign {
-		return MCPAuthInitResult{}, ErrMCPDesignThreadUnsupported
 	}
 	if !a.hasActiveSession(threadID) {
 		if err := a.startSession(context.Background(), threadID); err != nil {

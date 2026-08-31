@@ -158,6 +158,18 @@ no kill-on-close coverage.
 
 ## Anti-patterns
 
+- Do NOT pass a Linux command through wsl.exe's implicit-shell mode
+  (`wsl.exe -- <cmd> ...`); always `--exec`. The `--` form joins the
+  argv with spaces and re-parses the string through the user's LOGIN
+  shell, so correctness depends on which shell the user runs: quoting
+  is destroyed and `$` references are pre-expanded in the outer shell
+  (a zsh login shell turned the memory-limit wrapper's `exec "$@"`
+  into `exec ""`, killing every harness-wsl boot — incident
+  2026-08-30). `--exec` passes argv verbatim with no shell; when shell
+  semantics are wanted, spell out `/bin/sh -c <script>` explicitly.
+  This applies to EVERY wsl.exe call site, including the ones in
+  `cmd/agent-overflow-windows` (payload, memory watchdog, containment
+  evidence).
 - Do NOT shell out to `wsl --shutdown` to kill the backend. That kills
   every process in the distro, not just ours, breaking other tools the
   user has running.

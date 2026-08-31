@@ -111,6 +111,14 @@ describe('<ChatHeader>', () => {
     vi.mocked(openTerminalThread).mockClear();
   });
 
+  it('keeps its bottom border above the timeline fade overdraw', async () => {
+    const pane = await buildPane(makeThread({ title: 'Layered header' }));
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    const header = getByTestId('chat-header');
+    expect(header.classList).toContain('relative');
+    expect(header.classList).toContain('z-10');
+  });
+
   it('shows the thread title as a button in view mode', async () => {
     const pane = await buildPane(makeThread({ title: 'Shipping design' }));
     const { getByTestId } = render(ChatHeader, { props: { pane } });
@@ -224,20 +232,6 @@ describe('<ChatHeader>', () => {
     expect(pane.showReviewPane).toBe(false);
     await fireEvent.click(getByTestId('review-toggle'));
     expect(pane.showReviewPane).toBe(true);
-  });
-
-  it('shows the design preview toggle and hides the diff toggle on design threads', async () => {
-    const pane = await buildPane(makeThread({ mode: 'design' }));
-    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
-    const { getByTestId, queryByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-
-    expect(queryByTestId('review-toggle')).toBeNull();
-    expect(pane.showDesignPreviewPanel).toBe(false);
-    await fireEvent.click(getByTestId('design-preview-toggle'));
-    expect(pane.showDesignPreviewPanel).toBe(true);
-    await fireEvent.click(getByTestId('design-preview-toggle'));
-    expect(pane.showDesignPreviewPanel).toBe(false);
   });
 
   it('toggles the terminal drawer and latches focus-on-open via the terminal button', async () => {

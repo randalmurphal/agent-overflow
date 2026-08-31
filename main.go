@@ -338,16 +338,6 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// has no harness methods on it.
 		Harness:    opts.HarnessReceiver != nil,
 		PageMarker: harnessPageMarker(opts.HarnessReceiver),
-		// Late-bound: appService.DesignServer is a bound method value,
-		// not the result of calling it. The transport server consults
-		// this getter per-request so the /design/ route registers
-		// up-front (at server build) but the underlying handler can be
-		// supplied later by App.ServiceStartup → initSubsystems.
-		// Snapshotting the result here would always be nil because
-		// initSubsystems hasn't run yet, leaving /design/ unregistered
-		// and iframe loads falling through to the SPA shell with
-		// X-Frame-Options: DENY.
-		DesignHandler: appService.DesignServer,
 		// Late-bound for the same reason: the store opens during
 		// ServiceStartup, after this config is built. The transport only
 		// ever sees two strings.
@@ -358,7 +348,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		ScopedTokens: appService,
 		// Diagnostic cross-origin isolation so the renderer exposes
 		// measureUserAgentSpecificMemory. Opt-in: COEP breaks remote
-		// subresources (chat-markdown images, design-preview assets).
+		// subresources such as chat-markdown images.
 		CrossOriginIsolate: envTruthy(os.Getenv(diagenv.RendererDiag)),
 	}
 	if cfg.CrossOriginIsolate {

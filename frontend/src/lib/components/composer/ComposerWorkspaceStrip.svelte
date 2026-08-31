@@ -1,13 +1,9 @@
 <script lang="ts">
   // Workspace strip rendered INSIDE the composer card as the bottom-
-  // most row. Thread-mode picker leads on the left (interactive while
-  // the thread is a draft, read-only label once committed since mode
-  // is post-creation-immutable), then the project picker. Chat threads
-  // additionally surface the env (workspace/worktree) picker, an
+  // most row. The project picker leads on the left. Threads additionally
+  // surface the env (workspace/worktree) picker, an
   // optional worktree branch-name input when the user has staged a new
-  // worktree, and the branch picker. Design threads stop after the
-  // project — they operate against the project root and have no
-  // worktree/branch surface to switch.
+  // worktree, and the branch picker.
   // The whole group sits on the left so the strip reads as a single
   // "where am I" cluster rather than several opposing controls; the
   // usage chip is pinned to the right as the opposing "what has this
@@ -22,7 +18,6 @@
   // chip.
 
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import ThreadModePicker from './workspace/ThreadModePicker.svelte';
   import ProjectPicker from './workspace/ProjectPicker.svelte';
   import EnvPicker from './workspace/EnvPicker.svelte';
   import BranchPicker from './workspace/BranchPicker.svelte';
@@ -45,7 +40,6 @@
 
   let { pane, readonly = false, usageLabel = '' }: Props = $props();
   let workspaceLock = createWorkspaceChangeLockState(() => pane);
-  let isDesignThread = $derived(pane.thread?.mode === 'design');
 </script>
 
 {#if pane.thread}
@@ -54,14 +48,11 @@
     data-testid="composer-workspace-strip"
     inert={readonly || undefined}
   >
-    <ThreadModePicker {pane} />
     <ProjectPicker {pane} />
-    {#if !isDesignThread}
-      <EnvPicker {pane} {workspaceLock} />
-      <BranchPicker {pane} />
-      {#if !readonly}
-        <WorktreeNameInput {pane} workspaceDirty={false} {workspaceLock} />
-      {/if}
+    <EnvPicker {pane} {workspaceLock} />
+    <BranchPicker {pane} />
+    {#if !readonly}
+      <WorktreeNameInput {pane} workspaceDirty={false} {workspaceLock} />
     {/if}
     <div class="ml-auto">
       {#if readonly}

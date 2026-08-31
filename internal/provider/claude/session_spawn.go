@@ -158,21 +158,14 @@ type Config struct {
 	Env         map[string]string
 	EventLogger *logging.Logger
 	// MCPServers carries optional MCP server configs to register for
-	// this session. Threaded through `--mcp-config <json>`; unless
-	// MergeMCPServers is true, `--strict-mcp-config` isolates the session from
-	// native discovery. Design uses strict isolation while interactive chat
-	// merges AO's first-party workflow proposal tool with user servers.
+	// this session. Threaded through `--mcp-config <json>` and merged with
+	// native user/workspace discovery.
 	// Shape matches Claude Code's --mcp-config schema:
 	//   {"mcpServers": {"<name>": {"url": "..."}}} for HTTP servers
 	//   or {"mcpServers": {"<name>": {"command": "...", "args": [...]}}}
 	//   for stdio servers. The map provided here is wrapped under
 	//   "mcpServers" before serialization.
 	MCPServers map[string]any
-	// MergeMCPServers keeps native user/workspace MCP discovery enabled while
-	// adding MCPServers. Design sessions leave this false to retain their
-	// strict, isolated server set; interactive chat uses true for AO's
-	// first-party workflow proposal tool.
-	MergeMCPServers bool
 }
 
 // claudeSpawnEnv and claudeSpawnUnsetEnv are the two halves of a Claude
@@ -419,10 +412,6 @@ func buildArgs(cfg Config, systemPromptPath string) []string {
 	}
 	if mcpJSON, ok := mcpConfigForCLI(cfg); ok {
 		args = append(args, "--mcp-config", mcpJSON)
-		if !cfg.MergeMCPServers {
-			// Design-mode isolation: only load the servers passed above.
-			args = append(args, "--strict-mcp-config")
-		}
 	}
 	// PermissionFlags is either nil (default CLI prompting) or a complete
 	// permission-related CLI flag sequence for the selected runtime mode.

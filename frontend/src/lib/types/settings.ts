@@ -25,7 +25,7 @@ export type ContextWindow = number;
  * ThreadMode mirrors the canonical mode column on thread rows. Discussion
  * is included for symmetry even though it's reached via a separate flow.
  */
-export type ThreadMode = "chat" | "plan" | "design" | "discussion";
+export type ThreadMode = "chat" | "plan" | "discussion";
 
 export type RuntimeMode =
   | "read-only"
@@ -71,7 +71,7 @@ export interface AgentPaneScopeSnapshot {
 
 export interface PaneLayoutPersistedPane {
   paneId: string;
-  kind: "thread" | "plan" | "design-preview" | "review" | "agent";
+  kind: "thread" | "plan" | "review" | "agent";
   threadId?: string;
   sourcePaneId?: string;
   widthPx: number;
@@ -272,6 +272,7 @@ export interface Settings {
   spinnerCompactionAnimation: string;
   confirmArchive: boolean;
   confirmDelete: boolean;
+  autoPinNewThreads: boolean;
   claudeBinaryPath: string;
   codexBinaryPath: string;
   claudeEnabled: boolean;
@@ -426,8 +427,7 @@ export interface Settings {
   /**
    * Retention TTL window for the background cleanup sweep. Threads
    * whose updated_at is older than retention.days days are removed
-   * along with their on-disk side effects (attachments, design
-   * workdirs, replay logs).
+   * along with their on-disk side effects (attachments and replay logs).
    * Dated provider-event log files and bug-report bookmark files are
    * pruned on the same cutoff. 0 disables the sweep entirely.
    */

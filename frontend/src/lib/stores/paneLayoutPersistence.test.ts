@@ -58,15 +58,15 @@ function seedPane(paneId: string, thread: Thread): void {
   pane.replaceThread(thread);
 }
 
-// A thread whose hydration blows up. The throw is on `mode` rather than `id`
+// A thread whose hydration blows up. The throw is on `contextWindow` rather than `id`
 // deliberately: `id` is read by the restore path BEFORE hydration (matching
 // persisted pane rows to threads, and the one-thread-one-pane dedup), so a
 // counted `id` getter models "hydration failed" only until the next reader is
 // added — and then it throws synchronously outside the per-pane isolation and
-// takes the whole restore with it. `mode` is read by `switchThread` alone.
+// takes the whole restore with it. `contextWindow` is read by `switchThread`.
 function makeThreadThatThrowsDuringSwitch(threadId: string): Thread {
   const thread = makeThread({ id: threadId });
-  Object.defineProperty(thread, 'mode', {
+  Object.defineProperty(thread, 'contextWindow', {
     configurable: true,
     get: () => {
       throw new Error('switch failed');
@@ -79,7 +79,7 @@ function makeSavedLayout(
   panes: Array<
     | { paneId: string; threadId: string; widthPx: number }
     | { paneId: string; kind: 'thread'; threadId: string; widthPx: number }
-    | { paneId: string; kind: 'plan' | 'design-preview' | 'review'; sourcePaneId: string; widthPx: number }
+    | { paneId: string; kind: 'plan' | 'review'; sourcePaneId: string; widthPx: number }
     | {
         paneId: string;
         kind: 'agent';
@@ -241,23 +241,6 @@ describe('pane layout persistence', () => {
       { paneId: 'left', threadId: 'left-thread', widthPx: 660 },
     ], 'left'));
   });
-
-  it('falls back to a surviving thread pane when the focused companion is dropped on restore', async () => {
-    const thread = makeThread({ id: 'chat-thread', mode: 'chat' });
-    await installUIStateMock(makeSavedLayout([
-      { paneId: 'main', threadId: thread.id, widthPx: 1 },
-      { paneId: 'design-preview-main', kind: 'design-preview', sourcePaneId: 'main', widthPx: 700 },
-    ], 'design-preview-main'));
-    installPaneMocks();
-
-    await loadPersistedPaneLayout([thread]);
-
-    // The design-preview companion is dropped (source thread is not
-    // design-mode), so its persisted focus cannot be honored.
-    expect(getCompanionPane('design-preview-main')).toBeNull();
-    expect(getFocusedPaneId()).toBe('main');
-  });
-
 
   it('round-trips an agent companion with its scope and seeds the state on restore', async () => {
     const left = makeThread({ id: 'left-thread', title: 'Left' });
@@ -605,22 +588,6 @@ describe('pane layout persistence', () => {
       { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
     ]);
     expect(getCompanionPane('plan-ghost')).toBeNull();
-  });
-
-  it('drops design-preview companions when the restored source thread is not design-mode', async () => {
-    const thread = makeThread({ id: 'chat-thread', mode: 'chat' });
-    await installUIStateMock(makeSavedLayout([
-      { paneId: 'main', threadId: thread.id, widthPx: 1 },
-      { paneId: 'design-preview-main', kind: 'design-preview', sourcePaneId: 'main', widthPx: 700 },
-    ], 'main'));
-    installPaneMocks();
-
-    await loadPersistedPaneLayout([thread]);
-
-    expect(getPaneLayoutItems()).toEqual([
-      { id: 'main', paneId: 'main', kind: 'thread', widthPx: 1 },
-    ]);
-    expect(getCompanionPane('design-preview-main')).toBeNull();
   });
 
   it('adopts a legacy localStorage layout when the bucket is still empty', async () => {

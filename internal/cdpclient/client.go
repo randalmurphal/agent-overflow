@@ -4,7 +4,7 @@
 // domain events.
 //
 // It is deliberately NOT a generated binding surface. chromedp/cdproto is
-// already in this module (internal/screenshot uses it), and it carries
+// already in this module (internal/browser uses it), and it carries
 // every domain of the protocol as generated Go — megabytes of types to
 // call six methods with. The callers here (`ao-harness profile`,
 // `ao-harness bench --trace`) each speak a handful of methods whose

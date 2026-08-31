@@ -206,19 +206,31 @@
     data-testid="project-thread-list"
   >
     {#each visibleNodes as node (node.thread.id)}
-      <div role="listitem" animate:sidebarFlip in:sidebarEnter out:sidebarExit>
-        <ThreadRow
-          thread={node.thread}
-          {pane}
-          indent={node.depth + 1}
-          hasChildren={node.isExpandable}
-          expanded={node.isExpanded}
-          displayLiveStatus={node.displayLiveStatus}
-          displayStatus={node.displayStatus}
-          onToggleExpand={() => toggleDiscussion(node.thread.id)}
-          selected={isThreadSelected(node.thread.id)}
-          onSelectClick={(modifier) => handleSelectClick(node.thread.id, modifier)}
-        />
+      <!-- role="presentation" keeps the animated wrapper transparent to the
+           list > listitem structure now that the divider shares it. -->
+      <div role="presentation" animate:sidebarFlip in:sidebarEnter out:sidebarExit>
+        {#if node.startsBackBurnerBlock}
+          <div
+            role="separator"
+            aria-hidden="true"
+            data-testid="thread-pin-group-divider"
+            class="mx-2 my-1 border-t border-border-subtle/60"
+          ></div>
+        {/if}
+        <div role="listitem">
+          <ThreadRow
+            thread={node.thread}
+            {pane}
+            indent={node.depth + 1}
+            hasChildren={node.isExpandable}
+            expanded={node.isExpanded}
+            displayLiveStatus={node.displayLiveStatus}
+            displayStatus={node.displayStatus}
+            onToggleExpand={() => toggleDiscussion(node.thread.id)}
+            selected={isThreadSelected(node.thread.id)}
+            onSelectClick={(modifier) => handleSelectClick(node.thread.id, modifier)}
+          />
+        </div>
       </div>
     {/each}
 

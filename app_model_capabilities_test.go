@@ -137,7 +137,7 @@ func TestBuildSessionOptionsStampsTheFastModeTier(t *testing.T) {
 		t.Fatalf("GetThread() error = %v", err)
 	}
 
-	opts, _, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
+	opts, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
 	if err != nil {
 		t.Fatalf("buildSessionOptions() error = %v", err)
 	}

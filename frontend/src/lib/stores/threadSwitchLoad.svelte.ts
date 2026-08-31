@@ -22,9 +22,7 @@ import {
   type RefreshToken,
 } from '../utils/refreshScheduler';
 import {
-  closeCompanion,
   closeCompanionsForSource,
-  companionForSource,
 } from './companionPanes.svelte';
 import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
 import {
@@ -94,7 +92,6 @@ import type { ThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import type { ThreadRowUiState } from './threadRowUiState.svelte';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
 import type { ThreadChannelState } from './threadChannelState.svelte';
-import type { ThreadDesignState } from './threadDesignState.svelte';
 import type { ThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import type { LiveTodoState } from './liveTodoState.svelte';
 import {
@@ -173,7 +170,6 @@ export interface ThreadSwitchLoadOptions {
   activityRuns: ThreadActivityRuns;
   streamingReveal: ThreadStreamingReveal;
   channelState: ThreadChannelState;
-  designState: ThreadDesignState;
   pendingInteractiveState: ThreadPendingInteractiveState;
   liveTodoState: LiveTodoState;
   liveStateHydration: ThreadLiveStateHydration;
@@ -704,7 +700,6 @@ export function createThreadSwitchLoad(
       () => options.setSendInFlight(false),
       () => options.optimisticItemIds.clear(),
       () => options.channelState.clear(),
-      () => options.designState.reset(),
       // Bottom-drawer state is pane-scoped: opening the terminal on thread
       // A should not spill into thread B.
       () => options.setShowTerminal(false),
@@ -849,7 +844,7 @@ export function createThreadSwitchLoad(
    * Commit the incoming thread to the pane.
    */
   function commitIncomingThread(newThread: Thread): void {
-    // Companion panes (plan / design-preview / review / take-control)
+    // Companion panes (plan / review / take-control / browser)
     // belong to the thread they were opened for. Switching this pane to
     // a DIFFERENT thread closes them instead of retargeting them; a
     // same-thread re-switch keeps them open. Closing
@@ -865,11 +860,6 @@ export function createThreadSwitchLoad(
       },
       () => options.clearDraftPlaceholder(),
       () => options.setThread(newThread),
-      () => {
-        if (newThread.mode === 'design') return;
-        const preview = companionForSource(paneId, 'design-preview');
-        if (preview) closeCompanion(preview.paneId);
-      },
     ]);
   }
 

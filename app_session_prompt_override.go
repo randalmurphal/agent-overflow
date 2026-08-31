@@ -13,7 +13,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/stringsx"
 
 	"github.com/shirou/gopsutil/v4/host"
 )
@@ -97,7 +96,7 @@ type promptOverrideResolution struct {
 // save landing mid-spawn cannot produce a session whose prompt, tool list,
 // and memory directory came from three different versions of the file.
 //
-// opts.WorkDir must already be final (design workdir resolved): a prompt
+// opts.WorkDir must already be final: a prompt
 // that describes a directory the session is not in is worse than one that
 // describes none.
 func (a *App) applySettingsOwnedAxes(t store.Thread, opts *provider.SessionOptions) (promptOverrideResolution, error) {
@@ -115,8 +114,8 @@ func (a *App) applySettingsOwnedAxes(t store.Thread, opts *provider.SessionOptio
 	// one code path rather than two that can disagree.
 	opts.ClaudePeerSessionName = a.peerSessionNameForThread(t)
 
-	// A non-empty prompt at this point means a FEATURE owns it (design
-	// mode's artifact prompt, the discussion deliberation prompt — see
+	// A non-empty prompt at this point means a FEATURE owns it (the
+	// discussion deliberation prompt — see
 	// featureOwnedSystemPrompt, the one definition of that precedence).
 	// Those features already run fully custom prompts and replacing one
 	// would break them.
@@ -154,7 +153,7 @@ func (a *App) applySettingsOwnedAxes(t store.Thread, opts *provider.SessionOptio
 // queue a restart the user never asked for). The prompt is resolved:
 //
 //  1. A non-empty opts.SystemPrompt after buildSessionOptions means a
-//     FEATURE owns it (design mode, discussions). Those converge exactly as
+//     feature owns it (currently discussions). Those converge exactly as
 //     they always have — nothing to do.
 //  2. Otherwise the settings-level override decides. Today's entry is
 //     MATCHED (cheap — a slug comparison, no git, no render) and its STORED
@@ -205,10 +204,10 @@ func (a *App) reconcileSettingsOwnedAxes(
 	//
 	// The pin is CONDITIONAL for the same reason it is on the Claude side
 	// below: SystemPrompt is a shared axis, and a non-empty value after
-	// buildSessionOptions means a FEATURE owns it (design mode's artifact
-	// prompt, the discussion deliberation prompt). Those converge by
+	// buildSessionOptions means a feature owns it (currently the discussion
+	// deliberation prompt). Those converge by
 	// restart exactly as they always have, and pinning over one would
-	// freeze a design thread on its first prompt forever.
+	// freeze a feature-owned prompt at its first value forever.
 	if t.Provider != string(provider.Claude) {
 		if opts.SystemPrompt == "" {
 			opts.SystemPrompt = launch.SystemPrompt
@@ -375,19 +374,18 @@ func (a *App) reconcilePromptOverrideRender(
 	return rendered, true
 }
 
-// featureOwnedSystemPrompt returns the prompt a FEATURE owns for this
-// thread: design mode's artifact prompt and the discussion deliberation
-// prompt. Non-empty means the settings-level override is skipped — those
-// features already run a fully custom prompt and replacing it would break
-// them.
+// featureOwnedSystemPrompt returns the prompt a feature owns for this thread:
+// currently the discussion deliberation prompt. Non-empty means the
+// settings-level override is skipped — those features already run a fully
+// custom prompt and replacing it would break them.
 //
 // The one definition of that precedence rule, and it is evaluated exactly
 // once per build (in buildSessionOptions). Everything downstream reads the
 // answer off opts.SystemPrompt instead: after the build, non-empty means
 // "a feature owns this" and empty means "the settings override may claim
 // it". Re-deriving it later is how the two sides drift.
-func (a *App) featureOwnedSystemPrompt(t store.Thread, designCfg designSessionConfig) string {
-	return stringsx.JoinNonEmpty("\n\n", designCfg.Prompt, a.threadSystemPrompt(t.ID))
+func (a *App) featureOwnedSystemPrompt(t store.Thread) string {
+	return a.threadSystemPrompt(t.ID)
 }
 
 // promptOverrideFacts gathers the spawn-time values the placeholders

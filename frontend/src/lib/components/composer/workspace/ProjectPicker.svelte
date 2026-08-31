@@ -30,7 +30,6 @@
   import { getProject, getProjects } from '../../../stores/projects.svelte';
   import {
     flipPaneDraftPlaceholder,
-    type DraftMode,
   } from '../../../stores/threadCreation.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
@@ -44,12 +43,6 @@
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
   let switching = $state(false);
-
-  // Drafts are mode-keyed. The loaded thread's mode decides which mode
-  // a project switch creates a draft in — matches the sidebar buttons
-  // so a chat draft stays chat when its project flips, and a design
-  // draft stays design.
-  let draftMode = $derived<DraftMode>(pane.thread?.mode === 'design' ? 'design' : 'chat');
 
   // Picker is interactive while the pane is sitting on a draft (either
   // unmaterialized placeholder or materialized but no-items-yet).
@@ -90,7 +83,7 @@
       // the placeholder doesn't surface as a blank toolbar after the
       // project flip. Calling pane.startDraftPlaceholder directly would
       // drop those values.
-      await flipPaneDraftPlaceholder(pane, project, draftMode);
+      await flipPaneDraftPlaceholder(pane, project);
     } catch (err) {
       console.error('Failed to switch draft project:', err);
       addToast('error', userFacingError(err));

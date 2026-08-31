@@ -946,11 +946,6 @@ func (p *privilegedApp) DeleteAttachment() string       { return "ok" }
 func (p *privilegedApp) GetAttachmentData() string      { return "ok" }
 func (p *privilegedApp) GetAttachmentThumbnail() string { return "ok" }
 func (p *privilegedApp) GetLocalImageData() string      { return "ok" }
-func (p *privilegedApp) IngestDiagnosticBatch() string  { return "ok" }
-func (p *privilegedApp) EnsureDesignWorkdir() string    { return "ok" }
-func (p *privilegedApp) DismissDesignOptionSet() string { return "ok" }
-func (p *privilegedApp) LatestDesignOptionSet() string  { return "ok" }
-func (p *privilegedApp) GetDesignWorkdirInfo() string   { return "ok" }
 
 // 5. Local-FS bookkeeping.
 func (p *privilegedApp) AppendUIRenderTraceBatch() string { return "ok" }

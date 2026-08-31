@@ -96,6 +96,19 @@ var procGetProcessMemoryInfo = windows.NewLazySystemDLL("psapi.dll").NewProc("Ge
 func windowsProcessRSS(pid uint32) (uint64, error) {
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ, false, pid)
 	if err != nil {
+		// A tree member that exited between the Toolhelp snapshot and this
+		// open holds no memory and is not a monitor failure. WebView2
+		// recycles helper processes constantly, so the gap is routine;
+		// OpenProcess reports the vanished pid as ERROR_INVALID_PARAMETER
+		// (the same contract State handles above). Erroring here tore down
+		// a healthy harness instance on 2026-08-30: the reservation layer
+		// treats a monitor error as a safety failure and quits. The Linux
+		// and Darwin samplers skip vanished members for the same reason.
+		// Owner death is still caught — the monitor rechecks the owner's
+		// identity around every RSS sample.
+		if err == windows.ERROR_INVALID_PARAMETER {
+			return 0, nil
+		}
 		return 0, fmt.Errorf("harness governor: open process %d memory: %w", pid, err)
 	}
 	defer windows.CloseHandle(h)

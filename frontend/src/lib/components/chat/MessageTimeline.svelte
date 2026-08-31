@@ -54,6 +54,7 @@
   import { createTimelineRowUiPrune } from './timelineRowUiPrune';
   import { createTimelineJump, JUMP_FLASH_DURATION_MS } from './timelineJump.svelte';
   import { createTimelineActivityRunAutoCollapse } from './timelineActivityRunAutoCollapse';
+  import { createTimelineVisibilityGeometry } from './timelineVisibilityGeometry';
   import { coldLoadPriors, coldLoadWarmEdge } from '../../utils/coldLoadTrace';
 
   // Extra buffer rendered above + below the viewport so fast scrolls
@@ -202,6 +203,7 @@
   });
   // Imperative handle into the virtualizer. Set once it mounts.
   let listRef: TimelineVirtualizerHandle | undefined = $state(undefined);
+  const visibilityGeometry = createTimelineVisibilityGeometry();
   let scrollSurfaceContentWidth = $state(0);
   // Message-nav rail instance — its viewport sync (in-view ticks +
   // position marker) is driven imperatively from the scroll callbacks
@@ -489,6 +491,7 @@
         getPane: () => pane,
         getListRef: () => listRef,
         getRevealedNodes: () => revealedNodes,
+        geometryReady: visibilityGeometry.ready,
       }),
       createTimelineRowUiPrune({
         getPane: () => pane,
@@ -601,6 +604,10 @@
     if (!list) return;
     return list.subscribeContentGeometry((sample) => {
       stick.deliverContentGeometry(sample);
+      // A hidden document invalidates the collapse gate's cached viewport.
+      // This existing post-flush geometry delivery is the first trustworthy
+      // point after resume; schedule exactly once when it clears the barrier.
+      if (visibilityGeometry.noteGeometrySample()) quietWork.schedule();
       // Streaming growth and remeasure shift row offsets without a
       // scroll event; keep the rail's marker + in-view fill honest.
       // rAF-coalesced inside the rail, so bursts cost one recompute
@@ -608,6 +615,8 @@
       navRail?.scheduleViewportSync();
     });
   });
+
+  $effect(() => visibilityGeometry.install());
 
   // The scroll surface's CONTENT-box width, sourced ONLY from the async
   // ResizeObserver inside observeScrollSurfaceContentWidth. It feeds the
@@ -1105,15 +1114,16 @@
   </div>
 
   <!-- Top-fade overlay (see the TOP_FADE_PX comment for why this is an
-       overlay and not a mask on the scroller). Sits after the scroller
-       in source order so it paints above content, before the
-       jump-to-latest chip so the chip stays on top. -->
+       overlay and not a mask on the scroller). `.scroll-top-fade` owns the
+       one-pixel overdraw across the independently snapped compositor edge.
+       It sits after the scroller in source order so it paints above content,
+       before the jump-to-latest chip so the chip stays on top. -->
   <div
     aria-hidden="true"
-    class="pointer-events-none absolute top-0 left-0"
+    class="scroll-top-fade"
     style:right={`${SCROLLBAR_SAFE_PX}px`}
-    style:height={`${TOP_FADE_PX}px`}
-    style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
+    style:--scroll-top-fade-depth={`${TOP_FADE_PX}px`}
+    data-testid="message-timeline-top-fade"
   ></div>
 
   <!-- The pane's scrollbar. A sibling of the scroller (nothing that starts

@@ -71,13 +71,6 @@
   --scrim: oklch(0 0 0);
   --scrim-fg: oklch(1 0 0);
 
-  /* The design canvas' paper. Sandboxed user-authored HTML is written
-     against a white page — it brings its own colors and cannot be assumed
-     to survive a dark ground — so the iframe paper is deliberately white
-     rather than a surface tier. Theme-invariant like the scrim pair, and
-     themeable in principle (it is a token), default-locked in practice. */
-  --design-paper: #ffffff;
-
   /* Per-tool-kind icon colors. Cooler tones in the cobalt-violet
      family so categories read distinct without clashing with --accent.
      Keyed by ToolKindIcon enum names (see chat/toolCardHeader.ts),
@@ -323,10 +316,6 @@ html.light {
   /* Code-block ground, named apart from the elevation tier it currently
      aliases — see tokens.css. */
   --color-code-block: var(--code-block);
-  /* Deliberate white paper for sandboxed user-authored HTML — see the
-     :root definition. */
-  --color-design-paper: var(--design-paper);
-
   /* New semantic colors — the opacity-driven hierarchy layer. `fg` is
      the focal text, `fg-muted` is body copy, `fg-subtle` is labels,
      `fg-hint` is timestamps. Used via Tailwind utilities
@@ -526,6 +515,20 @@ pre, code, kbd, samp, .ansi-body {
 .pane-scroll-surface::-webkit-scrollbar {
   width: 0;
   height: 0;
+}
+
+/*
+ * Sibling overlays and composited scroll clips can snap to opposite device-
+ * pixel edges in WebKit. The opaque extra pixel crosses that seam while the
+ * declared depth still measures from the viewport edge to transparent.
+ */
+.scroll-top-fade {
+  position: absolute;
+  top: -1px;
+  left: 0;
+  height: calc(var(--scroll-top-fade-depth) + 1px);
+  pointer-events: none;
+  background: linear-gradient(to bottom, var(--surface-0) 1px, transparent);
 }
 
 /*

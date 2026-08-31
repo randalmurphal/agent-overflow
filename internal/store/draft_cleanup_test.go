@@ -206,16 +206,16 @@ func TestDeleteEmptyDraftThreadKeepsThreadWithWorktree(t *testing.T) {
 	}
 }
 
-func TestDeleteEmptyDraftThreadKeepsNonChatPlanModes(t *testing.T) {
+func TestDeleteEmptyDraftThreadKeepsDiscussionMode(t *testing.T) {
 	s := newTestStore(t)
-	thread := createDraftCleanupThread(t, s, "design-draft", "design")
+	thread := createDraftCleanupThread(t, s, "discussion-draft", "discussion")
 
 	deleted, err := s.DeleteEmptyDraftThread(thread.ID)
 	if err != nil {
 		t.Fatalf("DeleteEmptyDraftThread: %v", err)
 	}
 	if deleted {
-		t.Fatal("design draft should not be deleted")
+		t.Fatal("discussion draft should not be deleted")
 	}
 	if !threadRowExists(t, s, thread.ID) {
 		t.Fatal("thread row was deleted")

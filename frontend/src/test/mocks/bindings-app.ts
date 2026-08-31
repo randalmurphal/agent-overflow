@@ -75,6 +75,9 @@ export const GetThread = dispatch('GetThread');
 export const ListThreads = dispatch('ListThreads');
 export const MarkThreadRead = dispatch('MarkThreadRead');
 export const MarkThreadUnread = dispatch('MarkThreadUnread');
+export const PinThread = dispatch('PinThread');
+export const SetThreadPinGroup = dispatch('SetThreadPinGroup');
+export const UnpinThread = dispatch('UnpinThread');
 export const RenameThread = dispatch('RenameThread');
 export const RegenerateThreadTitle = dispatch('RegenerateThreadTitle');
 export const SwitchThread = dispatch('SwitchThread');
@@ -404,12 +407,6 @@ export const GetChannelState = dispatch('GetChannelState');
 export const PostChannelMessage = dispatch('PostChannelMessage');
 export const ConcludeDiscussion = dispatch('ConcludeDiscussion');
 
-export const ListDesignOptions = dispatch('ListDesignOptions');
-export const LatestDesignOptionSet = dispatch('LatestDesignOptionSet');
-export const DismissDesignOptionSet = dispatch('DismissDesignOptionSet');
-export const EnsureDesignWorkdir = dispatch('EnsureDesignWorkdir');
-export const GetDesignWorkdirInfo = dispatch('GetDesignWorkdirInfo');
-export const IngestDiagnosticBatch = dispatch('IngestDiagnosticBatch');
 
 // Composer enhancements
 export const UploadAttachment = dispatch('UploadAttachment');
@@ -608,8 +605,6 @@ export const SavePayloadToFile = dispatch('SavePayloadToFile');
 export const GetWorkingTreeDiff = dispatch('GetWorkingTreeDiff');
 export const GitStageAll = dispatch('GitStageAll');
 export const ListArchivedThreads = dispatch('ListArchivedThreads');
-export const PinThread = dispatch('PinThread');
-export const UnpinThread = dispatch('UnpinThread');
 export const UpdateProjectSortPositions = dispatch('UpdateProjectSortPositions');
 export const ProviderTerminalAttach = dispatch('ProviderTerminalAttach');
 export const ProviderTerminalDetach = dispatch('ProviderTerminalDetach');

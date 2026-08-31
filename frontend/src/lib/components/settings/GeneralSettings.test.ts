@@ -29,6 +29,18 @@ describe('<GeneralSettings> — Thread defaults section', () => {
     expect(getByTestId('settings-worktree-branch-prefix')).toBeTruthy();
   });
 
+  it('dispatches the auto-pin setting from its default-on state', async () => {
+    const { getByRole } = render(GeneralSettings);
+    const toggle = getByRole('switch', { name: 'Toggle Auto-Pin New Threads' });
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+
+    await fireEvent.click(toggle);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ autoPinNewThreads: false });
+  });
+
   it('dispatches defaultThreadEnvMode patch on change', async () => {
     const { getByTestId } = render(GeneralSettings);
     const select = getByTestId('settings-default-thread-env-mode') as HTMLSelectElement;

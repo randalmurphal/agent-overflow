@@ -18,6 +18,7 @@ export {
   MarkThreadRead,
   MarkThreadUnread,
   PinThread,
+  SetThreadPinGroup,
   UnpinThread,
   RenameThread,
   RegenerateThreadTitle,
@@ -248,14 +249,6 @@ export {
   GetChannelState,
   PostChannelMessage,
   ConcludeDiscussion,
-
-  // Design operations
-  ListDesignOptions,
-  LatestDesignOptionSet,
-  DismissDesignOptionSet,
-  EnsureDesignWorkdir,
-  GetDesignWorkdirInfo,
-  IngestDiagnosticBatch,
 
   // Composer enhancements
   UploadAttachment,
@@ -547,7 +540,7 @@ export interface CreateThreadOptions {
   title?: string;
   provider?: 'claude' | 'codex' | string;
   model?: string;
-  mode?: 'chat' | 'plan' | 'design' | 'discussion' | string;
+  mode?: 'chat' | 'plan' | 'discussion' | string;
   // `| string` keeps a slug this build does not know from failing to
   // compile; the union is the canonical set (see types/settings.ts).
   reasoningEffort?: ReasoningEffort | string;

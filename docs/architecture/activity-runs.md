@@ -243,7 +243,10 @@ a run collapsing off-screen changes nothing about where its header sits.
   just make it look dimmer than the rows below it. Paint-only, so it never
   touches `scrollHeight`/`clientHeight`/`scrollTop` and stays clear of the
   controller. It needs no scrollbar-safe inset (the conversation's does): the
-  overlay bar hangs outside the clip's right edge.
+  overlay bar hangs outside the clip's right edge. All three scroll-surface
+  copies use `.scroll-top-fade`, whose extra opaque pixel starts
+  above the clip so independently snapped WebKit compositor edges cannot expose
+  an unfaded row; that overdraw does not shorten the declared 24px fade.
 - `overflow-y: auto`, `overflow-x: hidden`: a wide preview inside a tool row
   must not raise a horizontal bar at run level, which would consume *height*
   and shift every row below.
@@ -393,8 +396,19 @@ construction nobody can see it happen), and its inner position is forgotten
 the same way a clicked collapse forgets it. The gate runs on the row-UI
 prune's cadence (structural changes + scroll end, one-tick debounced, never
 per scroll frame), reads only the engine's cached geometry, and pays nothing
-when no holds exist. It also stands down while a reader-visible glide is in
-flight or armed (`PaneScrollController.autoScrollInFlight`): a release
+when no holds exist. A hidden document invalidates that cache as proof of
+invisibility: provider events and Svelte flushes can continue while rAF and
+ResizeObserver delivery pause. `timelineVisibilityGeometry.ts` therefore
+closes only this pass from the hidden edge through resume, and reopens it only
+when MessageTimeline's existing virtualizer subscription publishes a new
+visible, post-flush content-geometry sample. The edge adds no timer, layout
+read, observer, or normal-streaming schedule; the sample schedules one pass
+only when it clears the barrier. No sample means deliberate over-retention —
+an old run stays open until later geometry rather than folding against an
+unproven viewport.
+
+The gate also stands down while a reader-visible glide is in flight or armed
+(`PaneScrollController.autoScrollInFlight`): a release
 routes through the bottom-held transaction, whose pinned restore is a
 direct write, and landing that mid-glide, or in the armed gap before the
 spring's first frame, would turn the animation into a snap to the bottom.

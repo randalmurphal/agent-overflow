@@ -2,9 +2,7 @@
   // Chat header: the shared pane title (PaneTitleHandle — renameable,
   // draggable, focus-outlined) plus an attention dot on the left, and the
   // action cluster on the right (ChatHeaderActions: PR/diff badges, Open,
-  // git actions, terminal, design preview). Thread mode (chat vs design) is
-  // read inside ChatHeaderActions from `pane.thread.mode`; nothing here needs
-  // to render mode chrome.
+  // git actions, terminal). Nothing here needs to render mode chrome.
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { resolvePaneAttentionDot } from '../panes/paneAttention';
   import PaneTitleHandle from '../panes/PaneTitleHandle.svelte';
@@ -23,9 +21,11 @@
 </script>
 
 {#if pane.thread}
+  <!-- The timeline fade overdraws its composited clip by one pixel. Keep the
+       header's existing bottom border above that overlap. -->
   <div
     data-testid="chat-header"
-    class="flex items-center gap-2 border-b border-border-subtle bg-transparent px-5 py-2 shrink-0 min-w-0 flex-nowrap"
+    class="relative z-10 flex items-center gap-2 border-b border-border-subtle bg-transparent px-5 py-2 shrink-0 min-w-0 flex-nowrap"
   >
     {#if attentionDot}
       <span

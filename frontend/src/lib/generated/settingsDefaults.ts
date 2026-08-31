@@ -23,6 +23,7 @@ export const SETTINGS_DEFAULTS = {
   browserAllowOutsideWorkspace: false,
   confirmArchive: true,
   confirmDelete: true,
+  autoPinNewThreads: true,
   claudeBinaryPath: "claude",
   codexBinaryPath: "codex",
   claudeEnabled: true,

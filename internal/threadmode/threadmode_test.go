@@ -39,16 +39,16 @@ func TestValidateCreate_RejectsUnknown(t *testing.T) {
 }
 
 func TestValidateCreate_AcceptsLegal(t *testing.T) {
-	for _, mode := range []string{"chat", "plan", "design"} {
+	for _, mode := range []string{"chat", "plan"} {
 		if got, err := ValidateCreate(mode); err != nil || got != mode {
 			t.Fatalf("ValidateCreate(%q) = (%q, %v); want (%q, nil)", mode, got, err, mode)
 		}
 	}
 }
 
-func TestValidateSet_RejectsDesign(t *testing.T) {
-	if _, err := ValidateSet("design"); err == nil {
-		t.Fatal("expected ValidateSet to reject design (immutable thread type)")
+func TestValidateCreate_RejectsRetiredDesign(t *testing.T) {
+	if _, err := ValidateCreate("design"); err == nil {
+		t.Fatal("expected ValidateCreate to reject retired design mode")
 	}
 }
 

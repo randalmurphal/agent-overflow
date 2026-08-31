@@ -42,9 +42,6 @@ import "agent-overflow/internal/eventchan"
 //     event names onto six `updater:*` channels. All six are listed;
 //     `mustBridgedChannel` panics at startup if a row is deleted from
 //     that bridge, so the two spellings cannot drift apart silently.
-//   - `internal/design/watcher.go` emits a `WatchSubject` that
-//     `app_design.go` switches onto `design:reload-main` /
-//     `design:options-update`. Both are listed.
 //   - **Unbounded, harness-only:** `Harness.HarnessEmit(channel, payload)`
 //     (app_harness.go) publishes onto an ARBITRARY caller-named channel,
 //     and `harness.Replayer` (app_harness_replay.go) republishes whatever
@@ -177,23 +174,6 @@ const unreviewedMarker = "unreviewed"
 // is indistinguishable from one that chose "any", and this table is read
 // to answer exactly that question.
 var channelPolicies = []ChannelPolicy{
-	{
-		Channel:   eventchan.DesignOptionsUpdate,
-		Audience:  AudienceAny,
-		Retention: RetentionDefault,
-		Why: "Ids only (threadId, setId) — a refetch nudge. ListDesignOptions " +
-			"is deliberately wire-safe, so remote design panes depend on this " +
-			"nudge to refetch. Keyed per thread + set: never latest-only. " +
-			"Default ring so replay delivers missed invalidations.",
-	},
-	{
-		Channel:   eventchan.DesignReloadMain,
-		Audience:  AudienceAny,
-		Retention: RetentionDefault,
-		Why: "threadId-only edge signal that cache-busts the design iframe; " +
-			"the client throttles to 500ms. Same wire-safe read story as " +
-			"design:options-update. Keyed per thread.",
-	},
 	{
 		Channel:   eventchan.DiscussionMessage,
 		Audience:  AudienceAny,
@@ -579,14 +559,6 @@ var channelPolicies = []ChannelPolicy{
 		Why: "Managed full-Chrome install progress; error strings can quote " +
 			"manifest URLs. Each phase supersedes the prior phase, so reconnect " +
 			"and live-drop recovery need only the newest state.",
-	},
-	{
-		Channel:   eventchan.ScreenshotInstallProgress,
-		Audience:  AudienceLoopbackOnly,
-		Retention: RetentionDefault,
-		Why: "Host-side browser-binary install progress; error strings can " +
-			"quote manifest URLs. Backend-driven with no frontend " +
-			"subscriber today, so no remote client loses anything.",
 	},
 	{
 		Channel:   eventchan.SessionImportProgress,

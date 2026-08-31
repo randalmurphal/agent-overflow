@@ -76,13 +76,10 @@ it. Read it live, through `currentOriginPatterns()` per handshake rather than
 `Config.OriginPatterns`, since `SetOriginPatterns` and `Rebind` rotate it under
 `mu`. Sockets already upgraded keep their handshake-time policy.
 
-Whether that list is empty is also this package's LAN switch for two guards.
-Empty enables `loopbackHostGuard` on `/bootstrap.json`, `/ws`, `/rpc`, and
-`/design/`, a DNS-rebinding defence that 404s any non-loopback `Host` header
-(`IsLoopbackHost` accepts only `127.0.0.1`, `localhost`, and `::1`). Non-empty
-enables `designLoopbackOnly`, which 404s `/design/*` for non-loopback peers,
-because agent-rendered HTML in the design workdir can carry user material and
-that route has no token check of its own.
+Whether that list is empty is also this package's LAN switch for the
+`loopbackHostGuard` on `/bootstrap.json`, `/ws`, and `/rpc`: a DNS-rebinding
+defence that 404s any non-loopback `Host` header (`IsLoopbackHost` accepts only
+`127.0.0.1`, `localhost`, and `::1`).
 
 **Peer locality is `remoteAddrIsLoopback(r.RemoteAddr)`** (conn.go), captured
 before the upgrade and reused for `LocalOnlyMethods`, permessage-deflate
@@ -101,7 +98,7 @@ that set: each route picks its own policy.
 diagnostic-mode only, gated on `Config.CrossOriginIsolate` from
 `diagenv.RendererDiag`: it buys `crossOriginIsolated` and
 `measureUserAgentSpecificMemory` at the cost of breaking remote images in chat
-markdown and remote assets in design previews, so do not make it default.
+markdown, so do not make it default.
 
 ## Scoped tokens (the `ao` CLI surface)
 
@@ -262,7 +259,10 @@ pong timeout, both overridable through `Config.KeepaliveInterval` and
 
 - A client-visible `{type:"ping"}` frame every interval. The SPA's stale-socket
   watchdog (`wsClient.ts STALE_TRAFFIC_THRESHOLD_MS`) is three heartbeat
-  periods, so keep the two constants in ratio when changing either.
+  periods, so keep the two constants in ratio when changing either. It makes no
+  silence verdict while `document.hidden`: browser engines may throttle both
+  its interval and WebSocket message delivery then, and visibility resume gives
+  the connection a fresh threshold before judging it again.
 - Every third tick also round-trips a protocol ping, and a missed pong convicts
   only when the reader was parked in `ws.Read` with no recent frame (`inRead`
   plus `lastReadAt`).

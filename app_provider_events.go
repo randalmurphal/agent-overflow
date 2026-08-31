@@ -35,12 +35,6 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 	// serialized-callback justification as deathReported.
 	var sawInit bool
 	return func(evt provider.ProviderEvent) {
-		// Design-mode tools used to be wired through Claude event
-		// interception (handleClaudeDesignTool); after the v42 rewrite
-		// Claude consumes the design MCP tools the same way Codex does
-		// — via the HTTP MCP server registered through --mcp-config.
-		// No event-side dispatch is required.
-
 		if evt.Kind == provider.EventRateLimits {
 			evt = a.attributeSessionRateLimits(evt, threadID, sessionToken)
 		}
@@ -433,5 +427,4 @@ func (a *App) unregisterSession(threadID, sessionToken string) {
 	// thread's next session with a stale fence watermark.
 	a.highlightSeeder.purgeThread(threadID)
 
-	a.teardownDesignThread(threadID)
 }

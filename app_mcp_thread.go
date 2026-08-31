@@ -13,7 +13,6 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadmode"
 )
 
 // ThreadMCPServer is the per-thread MCP row the composer menu renders.
@@ -195,19 +194,14 @@ func (a *App) SetWorkspaceMcpServerEnabled(providerName, workspacePath, name str
 // ---------------- Claude ----------------
 
 func (a *App) setClaudeThreadMCPEnabled(t store.Thread, name string, enabled bool) error {
-	// Design Claude sessions launch with --strict-mcp-config — user MCP
-	// isn't visible to them, so only the config write (affecting future
-	// non-design sessions in this workspace) applies.
-	if t.Mode != threadmode.ModeDesign {
-		if sess, ok := a.sessionManager().get(t.ID); ok && sess.claude != nil {
-			ctx, cancel := context.WithTimeout(a.lifeCtx(), mcpLiveApplyTimeout)
-			defer cancel()
-			if err := sess.claude.ToggleMCPServer(ctx, name, enabled); err != nil {
-				return err
-			}
-			a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: name})
-			return nil
+	if sess, ok := a.sessionManager().get(t.ID); ok && sess.claude != nil {
+		ctx, cancel := context.WithTimeout(a.lifeCtx(), mcpLiveApplyTimeout)
+		defer cancel()
+		if err := sess.claude.ToggleMCPServer(ctx, name, enabled); err != nil {
+			return err
 		}
+		a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: name})
+		return nil
 	}
 	return a.setClaudeWorkspaceMCPDisabled(t.WorkspacePath, name, !enabled)
 }

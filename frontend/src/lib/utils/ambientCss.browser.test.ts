@@ -207,7 +207,6 @@ describe('startAmbientPhase', () => {
     // Long enough to be plainly out of phase without alignment.
     await new Promise((r) => setTimeout(r, 320));
     const second = mount('<svg class="stepped-spin"></svg>');
-    await new Promise((r) => setTimeout(r, 30));
 
     const a = animationOf(first, 'ambient-spin');
     const b = animationOf(second, 'ambient-spin');
@@ -223,9 +222,21 @@ describe('startAmbientPhase', () => {
     // this test exists for still clears the bound by 2.5x.
     const phase = (animation: Animation): number =>
       ((((animation.currentTime as number) % 1500) + 1500) % 1500);
-    const apart = Math.abs(phase(a) - phase(b));
+    const phaseDistance = (): number => {
+      const apart = Math.abs(phase(a) - phase(b));
+      return Math.min(apart, 1500 - apart);
+    };
+
+    // `animationstart` is delivered on the first animation frame. Under the
+    // full browser suite Chromium can defer that frame past a fixed timer even
+    // though no unaligned frame was painted. Wait for the event's observable
+    // result with a wall-clock deadline, then retain the same phase assertion.
+    const deadline = Date.now() + 2000;
+    while (phaseDistance() >= AMBIENT_SLOT_MS && Date.now() < deadline) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
     expect(
-      Math.min(apart, 1500 - apart),
+      phaseDistance(),
       'later spinner is on a different beat from the first',
     ).toBeLessThan(AMBIENT_SLOT_MS);
   });

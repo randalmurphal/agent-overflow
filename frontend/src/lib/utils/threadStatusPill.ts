@@ -137,8 +137,6 @@ export function resolveThreadStatusPill(
     switch (thread.mode) {
       case 'plan':
         return { label: 'Planning', ...RUNNING_SUCCESS };
-      case 'design':
-        return { label: 'Designing', ...RUNNING_SUCCESS };
       case 'discussion':
         return {
           label: 'Discussing',

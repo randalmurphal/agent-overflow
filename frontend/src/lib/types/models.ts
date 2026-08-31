@@ -27,7 +27,7 @@ export interface Thread {
   prRef?: string;
   /**
    * Canonical mode column.
-   * "chat" | "plan" | "design" | "discussion" | "terminal" plus the
+   * "chat" | "plan" | "discussion" | "terminal" plus the
    * workflow-owned modes, which listing surfaces exclude by mode.
    * Optional in the TS layer so older fixtures omit it cleanly; new UI
    * code defaults to "chat" when missing. "terminal" threads are
@@ -37,7 +37,6 @@ export interface Thread {
   mode?:
     | "chat"
     | "plan"
-    | "design"
     | "discussion"
     | "terminal"
     | "workflow"
@@ -86,11 +85,16 @@ export interface Thread {
   lastReadAt?: number;
   /**
    * Unix-ms timestamp of when the user pinned the thread. Undefined /
-   * null means unpinned. Pinned threads sort into a dedicated tier above
-   * needs-attention so the user can keep a reference thread visible.
+   * null means unpinned. Pinned threads sort into front/back blocks above
+   * needs-attention; the timestamp is metadata, not an ordering key.
    * Set by PinThread / cleared by UnpinThread.
    */
   pinnedAt?: number;
+  /**
+   * Manual pinned attention group. Undefined / null and 0 are front burner;
+   * 1 is back burner. Unpinned rows never carry a group.
+   */
+  pinGroup?: number;
   /**
    * Derived by ListThreads from the latest assistant proposed plan. True when
    * the latest plan is completed and has not been implemented yet, so sidebar

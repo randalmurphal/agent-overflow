@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e
+.PHONY: help ao-harness-docs install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -145,16 +145,21 @@ test-race:
 # one trivial turn per provider plus four for that scenario — and requires both
 # CLIs installed and authenticated.
 #
-# The `providersmoke` build tag is what keeps it out of `make go-test` and
-# `make verify`, which stay hermetic. Run this manually before a release and
-# after upgrading either provider CLI; the mocked suites accept any
-# structured-output schema, so nothing else in the repo can catch a schema the
-# real CLIs reject. See providersmoke_test.go.
+# The `providersmoke` build tag keeps these tests out of `make go-test`.
+# `make verify` compiles them without running any test so production API changes
+# cannot leave the manual gate broken; that compile-only check stays hermetic.
+# Run the real gate manually before a release and after upgrading either
+# provider CLI; the mocked suites accept any structured-output schema, so
+# nothing else in the repo can catch a schema the real CLIs reject. See
+# providersmoke_test.go.
 #
 # -timeout covers the sum of the in-test deadlines (6m per workflow leg, 3m for
 # the imported-branch scenario, plus per-leg auth probes) with headroom, so a
 # wedged turn fails through the gate's own diagnostics rather than as a bare
 # test-binary timeout panic.
+provider-smoke-compile:
+	go test -tags providersmoke -run '^$$' .
+
 provider-smoke:
 	go test -tags providersmoke -run 'TestProviderSmoke' -v -count=1 -timeout 20m .
 
@@ -295,6 +300,12 @@ perf-wsl:
 soak:
 	@$(MAKE) launch-wsl LAUNCH_PROFILE=soak UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES)
 
+# launch-wsl bakes the launch profile into the exe NAME
+# (agent-overflow-harness-<ts>-<pid>.exe vs agent-overflow-dev-...), not
+# just into argv. Process listings truncate argv but always show the
+# image name; identical names across profiles made a "kill the harness"
+# image-name match kill the developer's main instance (incident
+# 2026-08-30). Keep the profile in the name.
 launch-wsl:
 	@if [ -z "$$WSL_DISTRO_NAME" ]; then \
 		echo "ERROR: WSL_DISTRO_NAME is unset. Run this target from inside a WSL shell."; \
@@ -302,7 +313,8 @@ launch-wsl:
 	fi
 	@case "$(LAUNCH_PROFILE)" in ""|harness|soak|perf) ;; *) echo "ERROR: LAUNCH_PROFILE must be empty, 'harness', 'soak', or 'perf', got '$(LAUNCH_PROFILE)'" >&2; exit 1;; esac
 	@set -e; \
-	DEV_VERSION=dev-$$(date +%Y%m%d%H%M%S)-$$$$; \
+	PROFILE_TAG="$(LAUNCH_PROFILE)"; [ -n "$$PROFILE_TAG" ] || PROFILE_TAG=dev; \
+	DEV_VERSION=$$PROFILE_TAG-$$(date +%Y%m%d%H%M%S)-$$$$; \
 	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1 UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES) WSL_BUILD_MODE=$(LAUNCH_WSL_BUILD_MODE); \
 	if [ -n "$(LAUNCH_PROFILE)" ]; then \
 		$(MAKE) mockprovider; \
@@ -319,7 +331,7 @@ launch-wsl:
 	WIN_DEV_DIR_LINUX=$$(wslpath -u "$$WIN_LAD")/agent-overflow/dev; \
 	WIN_DEV_EXE_LINUX="$$WIN_DEV_DIR_LINUX/agent-overflow-$$DEV_VERSION.exe"; \
 	mkdir -p "$$WIN_DEV_DIR_LINUX"; \
-	find "$$WIN_DEV_DIR_LINUX" -maxdepth 1 -name 'agent-overflow-dev-*.exe' ! -name "agent-overflow-$$DEV_VERSION.exe" -delete 2>/dev/null || true; \
+	find "$$WIN_DEV_DIR_LINUX" -maxdepth 1 -name 'agent-overflow-*.exe' ! -name "agent-overflow-$$DEV_VERSION.exe" -delete 2>/dev/null || true; \
 	cp bin/agent-overflow.exe "$$WIN_DEV_EXE_LINUX"; \
 	PROFILE_ARGS=""; \
 	if [ -n "$(LAUNCH_PROFILE)" ]; then \

@@ -18,6 +18,8 @@ import {
 } from '../../stores/threadStatuses.svelte';
 import type { SourceDiffReview, SourceProposedPlan, Thread } from '../../types/models';
 import { buildSendOptions } from '../../utils/sendOptions';
+import { getThreadById } from '../../stores/threads.svelte';
+import { autoPinNewThread, shouldAutoPinFirstSend } from '../../stores/threadAutoPin';
 
 export interface SendOptions {
   threadId: string;
@@ -66,6 +68,7 @@ export interface SendOptions {
 export async function dispatchSend(opts: SendOptions): Promise<boolean> {
   let sendStarted = false;
   try {
+    const autoPinAfterSend = shouldAutoPinFirstSend(getThreadById(opts.threadId));
     // Optimistically flip the sidebar pill to Working the moment the
     // user clicks Send. Provider sessions for brand-new threads take
     // seconds to cold-start before the backend emits `turn_started`;
@@ -88,7 +91,8 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
       revisionSourceDiffReview: opts.revisionSourceDiffReview,
       revisionSourceDiffCommentIds: opts.revisionSourceDiffCommentIds,
     });
-    const updated = (await SendMessageWithOptions(opts.threadId, opts.message, sendOptions)) as Thread;
+    let updated = (await SendMessageWithOptions(opts.threadId, opts.message, sendOptions)) as Thread;
+    if (autoPinAfterSend) updated = await autoPinNewThread(updated);
     syncThread(updated);
     return true;
   } catch (err) {

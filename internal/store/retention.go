@@ -5,7 +5,7 @@ import "fmt"
 // ThreadIDsOlderThan returns thread IDs whose updated_at strictly
 // precedes cutoffMs (Unix milliseconds), oldest first. SELECT only —
 // deletion routes through app_thread_delete.go::deleteThreadTreeLocked,
-// which owns side effects (attachment dirs, design workdirs, replay
+// which owns side effects (attachment dirs, replay
 // logs, checkpoint git refs in the user's repos) that a row-level
 // DELETE in this package would silently skip.
 //

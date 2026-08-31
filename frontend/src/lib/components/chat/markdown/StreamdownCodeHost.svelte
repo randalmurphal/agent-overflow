@@ -228,7 +228,7 @@
   // Bumped for every fire and every synchronous adoption; a resolving
   // request only adopts if it is still the newest. Supersession by
   // sequence, not source length — a block whose text is REPLACED with
-  // shorter content (design previews, non-append rerenders) must
+  // shorter content (such as non-append rerenders) must
   // still converge.
   let fireSeq = 0;
   let releaseGate: (() => void) | null = null;

@@ -36,7 +36,7 @@ Debian 13+).
 | `make go-build` / `make go-test` | `go build ./...` / `go test ./...` with repo-standard platform env |
 | `make check` | `make go-build` + frontend `pnpm run check` |
 | `make test` | `make go-test` + frontend `pnpm test` |
-| `make verify` | full release gate |
+| `make verify` | full hermetic release gate, including a compile-only check of the real-provider smoke tests |
 | `make release` | direct-install artifacts in `dist/release/<version>/` |
 | `make harness` | real app, isolated data dir, mocked providers; `harness-window` / `harness-wsl` open a real window on it, `make e2e` runs Playwright against it, `bin/ao-harness` drives any instance from a shell. See [agent-harness.md](docs/architecture/agent-harness.md). |
 | `make soak` | the harness shell plus the indefinite streaming preset, for hours-long renderer reproductions beside your own app; `soak-check` summarizes, `soak-window` is the native equivalent. See [soak-rig.md](docs/architecture/soak-rig.md). |

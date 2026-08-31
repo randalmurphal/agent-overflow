@@ -109,7 +109,6 @@ describe('resolveThreadStatusPill', () => {
   it.each([
     ['chat', 'Working'],
     ['plan', 'Planning'],
-    ['design', 'Designing'],
     ['discussion', 'Discussing'],
   ] as const)(
     'running + mode=%s resolves to %s',

@@ -24,20 +24,25 @@ func TestBuildLaunchArgs(t *testing.T) {
 	want := []string{
 		"--cd", "~",
 		"-d", "Ubuntu-24.04",
-		"--",
+		"--exec",
 		"/home/u/.local/bin/agent-overflow", "--listen", "127.0.0.1:0", "--print-url-fd", "0",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("buildLaunchArgs() = %v, want %v", got, want)
 	}
 
-	// --cd must precede the `--` separator; after `--`, wsl.exe treats
-	// every token as part of the Linux command line, so a misplaced --cd
-	// would be passed to the backend binary instead of WSL.
+	// --cd must precede `--exec`; after `--exec`, wsl.exe treats every
+	// token as part of the Linux argv, so a misplaced --cd would be
+	// passed to the backend binary instead of WSL. `--exec` (verbatim
+	// argv, no shell) rather than `--` (login-shell re-parse) is
+	// load-bearing — see buildLaunchArgs.
 	cd := slices.Index(got, "--cd")
-	sep := slices.Index(got, "--")
+	sep := slices.Index(got, "--exec")
 	if cd < 0 || sep < 0 || cd > sep {
-		t.Fatalf("--cd (index %d) must come before -- (index %d): %v", cd, sep, got)
+		t.Fatalf("--cd (index %d) must come before --exec (index %d): %v", cd, sep, got)
+	}
+	if slices.Contains(got, "--") {
+		t.Fatalf("launch args must never use wsl.exe's login-shell `--` mode: %v", got)
 	}
 
 	// ExtraArgs (test fixtures) append after the fixed flag set.
@@ -49,9 +54,12 @@ func TestBuildLaunchArgs(t *testing.T) {
 
 func TestBuildLaunchArgsWithMemoryLimitWrapsLinuxBackend(t *testing.T) {
 	got := buildLaunchArgsWithMemoryLimit("Ubuntu", "/home/u/agent-overflow", nil, 64<<20)
-	sep := slices.Index(got, "--")
+	sep := slices.Index(got, "--exec")
 	if sep < 0 || len(got) <= sep+5 {
 		t.Fatalf("launch args missing wrapped command: %v", got)
+	}
+	if slices.Contains(got, "--") {
+		t.Fatalf("wrapper must never ride wsl.exe's login-shell `--` mode (it pre-expands the script's $ refs): %v", got)
 	}
 	command := got[sep+1:]
 	wantPrefix := []string{"/bin/sh", "-c"}

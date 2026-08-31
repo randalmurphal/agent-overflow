@@ -43,16 +43,6 @@ describe('App integration — agent-mode toggle', () => {
     resetAppState();
   });
 
-  it('renders no agent-mode toggle on a design thread', async () => {
-    const thread = makeThread({ title: 'Design Thread', mode: 'design' });
-    const { queryByTestId } = await mountWithThread(thread);
-    // Design threads have no chat ↔ plan toggle and no display-only
-    // mode pill in the composer toolbar — the ThreadModePicker in the
-    // workspace strip is the canonical mode indicator.
-    expect(queryByTestId('composer-agent-mode-toggle')).toBeNull();
-    expect(queryByTestId('composer-design-lock-pill')).toBeNull();
-  });
-
   it('toggles chat → plan via the composer button and calls UpdateThreadMode', async () => {
     const thread = makeThread({ title: 'Default Thread', mode: 'chat' });
     const update = setBindingMock('UpdateThreadMode', async (_id, mode) => ({

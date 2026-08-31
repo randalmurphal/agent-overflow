@@ -191,7 +191,9 @@ func InstallPayload(ctx context.Context, distro, hostPath, wslPath string) error
 
 	script := installPayloadScript(wslHostPath, wslPath, uniqueInstallTempPath(wslPath))
 
-	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--", "/bin/sh", "-c", script)
+	// --exec, never --: the -- form re-parses the joined argv through the
+	// user's login shell, mangling the script (see buildLaunchArgs).
+	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--exec", "/bin/sh", "-c", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err := cmd.CombinedOutput()
 	if err != nil {

@@ -164,9 +164,6 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if err := a.cleanupThreadAttachmentFiles(threadID); err != nil {
 		errs = append(errs, fmt.Errorf("cleanup attachments: %w", err))
 	}
-	if err := a.cleanupThreadDesignWorkdir(threadID); err != nil {
-		errs = append(errs, fmt.Errorf("cleanup design workdir: %w", err))
-	}
 	if a.replay != nil {
 		if err := a.replay.RemoveThreadLog(threadID); err != nil {
 			errs = append(errs, fmt.Errorf("cleanup replay log: %w", err))

@@ -8,81 +8,40 @@ does not, and the specific cases the design has to handle. It is the
 reference for reviewing changes that touch listeners, routes, event
 channels, or credentials.
 
-## Confirmed defects (2026-08-04; A and B FIXED 2026-08-18)
+## Confirmed defects (2026-08-04; fixed)
 
-Found by audit, each step verified in code. All three were reachable
-**today in the desktop webview**, with no remote feature enabled. Fixes
-are spec §16 phase 0.
+The audit found three desktop-webview paths: raw model-authored links could
+navigate the app window, and the former same-origin design-file route exposed
+unauthenticated HTML and symlink-following file reads. The shared markdown root
+cause was fixed on 2026-08-18: links and images now render only after
+`transformUrl` approval, while path-shaped links use the nonce-protected
+`agent-overflow:open` editor flow. The remaining file-route exposure was removed
+with the retired design subsystem on 2026-08-30; the route no longer exists.
 
-> **Status 2026-08-18: A and B are fixed at their shared root cause.**
-> `Link.svelte` no longer has the `isPathRelativeUrl` raw-anchor
-> branch, and `Image.svelte` no longer has its raw-`src` twin
-> (`frontend/src/lib/markdown/AGENTS.md` § Security boundary): an anchor or `<img>` renders only for
-> a `transformUrl`-approved URL, so neither a `/`-leading nor a
-> `//host` href can top-level-navigate the window (or issue a raw
-> same-origin fetch) from model output. Path-shaped markdown hrefs
-> are instead rewritten during parsing to the nonce'd
-> `agent-overflow:open` editor scheme (`pathLinkExtension.ts`), only
-> on surfaces that carry a workspace, so third-party PR/review text
-> never grows editor affordances. The click-time gate is
-> `editor.ResolvePath`: existing regular files open from anywhere (a
-> deliberate 2026-08-18 loosening), folder opens are refused
-> everywhere (`.vscode/` tasks execute on folder open), UNC paths and
-> out-of-workspace scaffolding stay refused. The bodies of A and B
-> below are kept in their original present-tense form as the record
-> of what was reachable. **C remains open**, as do the `/design/`
-> hardening items (CSP/nosniff/XFO/token) that defense-in-depth still
-> wants even with the navigation path closed.
->
-> **Re-verified 2026-08-30** against the first-party markdown
-> renderer (svelte-streamdown was adopted into `src/` since). Both
-> render paths — the component path and the compact fixed-tag HTML
-> path, a pair `markdown/AGENTS.md` flags as a silent-fork hazard —
-> agree and call the same gate. The gate now fails closed
-> structurally: `parseUrl` is `new URL()` with the upstream base
-> parameter deleted, so `/design/x`, `//host/x`, and `*` all throw
-> rather than resolve. `//`-leading is explicitly excluded from the
-> schemeless class in both paths, so it renders as a tagged blocked
-> span. What did **not** change: the click delegate's
-> no-`preventDefault` fall-through is still there (now unreachable
-> from markdown, still app-wide policy for every other anchor), the
-> bootstrap token is still in `sessionStorage` and on
-> `window.__AO_BOOTSTRAP__`, and `/design/` is untouched — its last
-> functional commit predates the audit. Two unvalidated hrefs in
-> `PRStep.svelte` remain, and are now outliers: both sibling
-> consumers of the same field validate.
+The click-time file gate remains `editor.ResolvePath`: existing regular files
+open from anywhere, folder opens are refused (`.vscode/` tasks execute on folder
+open), and UNC paths plus out-of-workspace scaffolding remain refused.
 
-**A. Model-authored content can reach the full method surface.**
-The markdown renderer's `Link.svelte`
-(`frontend/src/lib/markdown/render/elements/`) renders any href where
-`isPathRelativeUrl` is true (literally `startsWith('/')`) through a
-branch that **bypasses `transformUrl`**, emitting the raw href with no
-`target`/`rel`. The click delegate's `safeExternalURL` returns null for
-anything that is not `http(s)` and then returns *without*
-`preventDefault`, so the browser performs a same-tab top-level
-navigation. `/design/` serves agent-written files from the SPA origin as
-`text/html` with no CSP, no `nosniff`, no `X-Frame-Options`, and no
-token. Script running there reads
-`sessionStorage['ao:bootstrap-token']`, opens `/ws?token=…` as a
-loopback peer (so `LocalOnlyMethods` does not apply), and reaches every
-bound method. A design-mode agent writes the file itself as ordinary
-output; the link text is model-authored.
+**Re-verified 2026-08-30** against the first-party markdown renderer
+(svelte-streamdown was adopted into `src/` since the original audit).
+Both render paths — the component path and the compact fixed-tag HTML
+path, a pair `markdown/AGENTS.md` flags as a silent-fork hazard —
+agree and call the same gate, and the gate fails closed structurally:
+`parseUrl` is `new URL()` with the upstream base parameter deleted, so
+`/x`, `//host/x`, and `*` all throw rather than resolve. `//`-leading
+is explicitly excluded from the schemeless class in both paths, so it
+renders as a tagged blocked span.
 
-**B. The app window can be replaced, with no design mode involved.** The
-same branch treats a protocol-relative `//other-host.example` as
-"relative", so model output alone can navigate the top-level window
-off-origin. The credential is not readable across origins, but the app
-window becomes third-party content with no route back, a convincing
-surface for a misleading prompt.
-
-**C. Unauthenticated local file read.** `http.Dir` blocks `../` but does
-not resolve symlinks, and `/design/` requires no token at all. A symlink
-created in an agent workdir exposes any user-readable file. There is
-also no per-thread scoping, and directory listings are enabled.
-
-The preview iframes are correctly sandboxed (`allow-scripts` without
-`allow-same-origin`). A and B route *around* that sandbox via top-level
-navigation rather than through it.
+Two things the markdown fix did not touch, both still true today. The
+click delegate (`utils/externalLinks.ts`) returns *without*
+`preventDefault` when `safeExternalURL` yields null, so a non-`http(s)`
+anchor performs its default navigation — unreachable from markdown now,
+still app-wide policy for every other anchor. And the bootstrap token
+is still readable by script, in `sessionStorage['ao:bootstrap-token']`
+and on `window.__AO_BOOTSTRAP__`; moving it out of script reach is spec
+§16 phase 0. Neither is a live path on its own: with no same-origin
+route serving agent-authored bytes, there is nothing at the SPA origin
+to run the script that would read it.
 
 The rest of the render pipeline audited clean and should not be
 re-litigated: raw HTML disabled (`renderHtml={false}`), non-`http(s)`
@@ -96,64 +55,63 @@ names from parsed integers, highlight spans are metadata rendered
 through the template, no `eval`/`new Function` anywhere, and no
 credential in localStorage.
 
-Root cause of A and B is a single branch in a file the repo already
-patches.
-
 ## Also confirmed (2026-08-30)
 
-Found by a follow-up audit of the design route, the in-app browser,
-and the full listener set. Same posture as above: verified in code,
-reachable today, fixes are spec §16 phase 0.
+Found by a follow-up audit of the in-app browser, the `--connect`
+stub, and the full listener set, then re-checked on 2026-08-30 against
+the tree with design mode removed. Verified in code, reachable today.
 
-**D. The in-app browser widened who counts as a loopback peer.**
-`Manager.Open` accepts loopback URLs — correct for the dev servers it
-exists to show, but it also lets a page reach the app's own transport
-port and the auxiliary listeners. Two consequences: an agent can read
-any thread's `/design/` workdir through `browser_open` +
-`browser_dom`, around the workspace containment `browser_open_file`
-enforces (two tools, two containment models, one routes past the
-other); and arbitrary web content becomes a loopback peer that did
-not exist a month ago. The pixels-only companion pane is *not* the
-weak point — screencast JPEGs into an `<img>`, no DOM crossing, an
-ephemeral Chrome profile with no access to the webview's
-`sessionStorage`. That part of the design is right and holds.
-
-**E. The `--connect` client stub serves the upstream credential.**
+**D. The `--connect` client stub serves the upstream credential.**
 Its loopback listener returns the injected `__AO_BOOTSTRAP__` — token
 included — on `GET /`, behind a Host guard and nothing else. Any
 loopback peer on the machine running `--connect` reads a working
-credential for the remote backend.
+credential for the remote backend. Fix is spec §16 phase 0, in the
+same change that moves the boot credential out of script reach.
 
-**F. Both MCP endpoints authenticate on the path alone.** The browser
-and design MCP servers check only the method and an unguessable
-per-thread UUID in the path: no `Origin` or `Sec-Fetch-Site`
-rejection, no loopback-peer assertion, and the body is decoded
-regardless of `Content-Type`. The claudetui gateway next door already
-does the peer check. The grant behind that path is page evaluation
-and workspace file reads, so this is a larger capability than "an
-auxiliary listener with no session credential" implies (spec §13's
-rule is reworded accordingly). The path also rides the provider CLI's
-argv, readable from `/proc/<pid>/cmdline` by any process of the same
-user — same-user is already the trust boundary, but it means the
-credential is not secret from local software the way an in-memory
-token is.
+**E. The browser MCP endpoint authenticates on the path alone.**
+`MCPServer.handle` checks the HTTP method and an unguessable
+per-thread UUID in the path, then decodes the body regardless of
+`Content-Type`: no `Origin` or `Sec-Fetch-Site` rejection and no
+loopback-peer assertion. The claudetui gateway next door already does
+the peer check off `r.RemoteAddr` (`gateway.go:151`), so the pattern
+exists in-tree. Two consequences worth stating precisely:
 
-**G. The two Chrome launchers disagree on sandbox posture.**
-`internal/screenshot` disables the OS sandbox while rendering
-agent-authored HTML; `internal/browser` explicitly refuses the same
-flag and comments that failing to launch is the safer outcome. Same
-class of content, opposite decision, same codebase.
+- A `tools/call` POST from a web page is a CORS *simple request* when
+  it declares `text/plain`, so no preflight fires. The page cannot
+  read the response, but the tool still runs — page evaluation and
+  workspace file reads execute on a request the browser never asked
+  permission for. Requiring `application/json` alone forces a
+  preflight; the `Origin` and peer checks then answer it.
+- The path rides the provider CLI's argv, readable from
+  `/proc/<pid>/cmdline` by any process of the same user. Same-user is
+  already the trust boundary, so this is not a new grant, but it does
+  mean the credential is not secret from local software the way an
+  in-memory token is.
 
-**Not a defect, checked and cleared**: the open CORS header on the
-embedded `modern-screenshot` asset is deliberate and required — the
-capture iframe fetches it from an opaque sandbox origin, which cannot
-be named in an allow-list. Its only side effect is that the asset is
-cross-origin readable, which reveals the port to a page that probes
-for it; the port is already discoverable to anything that can probe
-loopback, so this changes nothing. It stays, declared in the
-enumeration as a static asset carrying no data. Likewise the browser
-MCP listener cannot start lazily: its URL rides provider argv at
-spawn, so it must exist before the first tool call.
+The grant behind that path is larger than "an auxiliary listener with
+no session credential" implies, which is why spec §13's rule is worded
+as "declare what capability you carry and how you authenticate".
+
+**Closed by the design-mode removal (2026-08-30).** Three items from
+this section no longer have a subject. The same-origin `/design/`
+route is gone, so its unauthenticated read, its symlink following and
+its directory listings go with it. The design MCP listener is gone,
+halving the endpoint-authentication item above. And the two Chrome
+launchers can no longer disagree on sandbox posture, because
+`internal/screenshot` is gone and `internal/browser` — the strict one,
+which refuses `--no-sandbox` and comments that failing to launch is
+the better outcome — is the only launcher left.
+
+**Not a defect, checked and cleared.** The in-app browser reaching
+loopback URLs is correct: that is what it exists for, and it is a
+browser. It cannot obtain a session credential by doing so —
+`/bootstrap.json` requires the server token in `?t=`, and the managed
+Chrome runs an ephemeral profile with no access to the webview's
+`sessionStorage`. The companion pane is pixels only (screencast JPEGs
+into an `<img>`, no DOM crossing). The one thing it *could* reach was
+`/design/`, and that route is gone. Likewise the browser MCP listener
+cannot start lazily: its URL rides provider argv at spawn, so it must
+exist before the first tool call.
 
 ## What a session credential represents
 
@@ -210,8 +168,8 @@ tamper-proof.
 | 14 | On-machine records are altered to hide activity | Audit is an `O_APPEND` hash-chained file with no wire mutation path, mirrored off-machine. Evident, not prevented. See the section above. |
 | 15 | A revoked or lost device still holds its synced replica | Revocation cuts access, not past disclosure. The phone replica is encrypted at rest with a key in native secure storage; browser replicas are not, and whatever a device already synced must be assumed readable to whoever controls that device. |
 | 16 | A backend under someone else's control serves a modified phone bundle | The shell verifies every bundle against the release signing key baked into the shell; backends can only relay genuine signed releases. One such backend cannot reach the phone's device keys or its other backends' credentials through an update. Dev-bundle trust is an explicit per-device opt-in. |
-| 17 | A page loaded in the in-app browser addresses the app's own loopback ports | Managed-browser navigation denies our own transport and auxiliary ports (dev-server ports are unaffected); `/design/` carries a per-thread token, so reaching the port is not reaching the content. |
-| 18 | A local process reads an auxiliary listener's path credential out of provider argv | The listener re-checks that the peer is loopback and refuses browser-originated requests, so holding the URL is not sufficient by itself. Same-user local software remains inside the trust boundary by construction (see the section above). |
+| 17 | A page loaded in the in-app browser addresses the app's own loopback ports | Reaching a port is not reaching content: `/bootstrap.json` needs the server token, the managed Chrome runs an ephemeral profile that cannot read the webview's storage, and no route serves agent-authored bytes at the SPA origin. Navigation itself stays unrestricted, because a browser that refuses addresses is not a browser. |
+| 18 | A local process or a web page reads or guesses an auxiliary listener's path credential | The listener re-checks that the peer is loopback, requires `application/json` so a cross-origin POST must preflight, and rejects any `Origin`. Holding the URL is not sufficient by itself. Same-user local software remains inside the trust boundary by construction (see the section above). |
 
 ## Claims we deliberately do not make
 

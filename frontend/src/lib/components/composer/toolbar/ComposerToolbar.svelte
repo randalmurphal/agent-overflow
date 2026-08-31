@@ -66,13 +66,8 @@
     hideSendButton = false,
   }: Props = $props();
 
-  // Mode-toggle slot rules (immutable thread type policy):
-  //   - chat threads: AgentModeToggle (chat ↔ plan)
-  //   - design threads: nothing — design is its own surface; the
-  //     in-pane ThreadModePicker in the workspace strip already
-  //     surfaces the thread's mode, no second indicator needed here
-  //   - discussion threads: nothing — discussion has its own composer flow
-  let isDesignThread = $derived(pane.thread?.mode === 'design');
+  // Discussion has its own composer flow; ordinary threads expose the
+  // chat ↔ plan agent-mode toggle here.
   let isDiscussionThread = $derived(pane.thread?.mode === 'discussion');
 
   // Rate-limit rings appear once the thread is "locked in" — the
@@ -202,7 +197,7 @@
   {#if hasComposableSurface}
     <ModelProviderMenu {pane} />
     <EffortMenu {pane} />
-    {#if !isDesignThread && !isDiscussionThread && supportsPlanMode}
+    {#if !isDiscussionThread && supportsPlanMode}
       <AgentModeToggle {pane} />
     {/if}
     {#if supportsRuntimeModes}

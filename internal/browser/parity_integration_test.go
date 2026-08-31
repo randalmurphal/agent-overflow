@@ -66,7 +66,7 @@ func TestManagerCodexBrowserParityWithManagedChrome(t *testing.T) {
 	}))
 	defer server.Close()
 
-	installer := chromium.NewInstaller(filepath.Join(root, "artifacts"), chromium.ArtifactChrome, "", nil)
+	installer := chromium.NewInstaller(filepath.Join(root, "artifacts"), "", nil)
 	installer.BinaryPath = strings.TrimSpace(os.Getenv("AO_BROWSER_BINARY"))
 	manager := NewManager(installer, filepath.Join(root, "state"), Config{Enabled: true}, ManagerOptions{FileStateKey: true})
 	manager.state = newTestStateStore(filepath.Join(root, "state"), bytes.Repeat([]byte{7}, 32))

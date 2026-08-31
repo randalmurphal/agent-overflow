@@ -87,18 +87,17 @@ describe('buildSidebarThreadTree', () => {
   });
 
   it('uses the running tier for every running thread mode', () => {
-    const modes: Array<NonNullable<Thread['mode']>> = ['chat', 'plan', 'design', 'discussion'];
+    const modes: Array<NonNullable<Thread['mode']>> = ['chat', 'plan', 'discussion'];
     const tree = buildSidebarThreadTree({
       threads: modes.map((mode, index) => mkThread(mode, { mode, updatedAt: index + 1 })),
       liveStatusOf: liveStatusMap({
         chat: 'running',
         plan: 'running',
-        design: 'running',
         discussion: 'running',
       }),
     });
 
-    expect(tree.map((n) => n.sortGroup)).toEqual(['running', 'running', 'running', 'running']);
+    expect(tree.map((n) => n.sortGroup)).toEqual(['running', 'running', 'running']);
   });
 
   it('excludes workflow-owned modes before building parent-child relationships', () => {
@@ -156,14 +155,40 @@ describe('buildSidebarThreadTree', () => {
     expect(tree.map((n) => n.thread.id)).toEqual(['pinned', 'blocking']);
   });
 
-  it('orders pinned threads by pinnedAt desc within the pinned tier', () => {
+  it('ignores pinnedAt and uses normal activity ordering within a pin block', () => {
     const earlier = mkThread('earlier', { updatedAt: 9000, pinnedAt: 100 });
     const later = mkThread('later', { updatedAt: 1, pinnedAt: 200 });
     const tree = buildSidebarThreadTree({
       threads: [earlier, later],
       liveStatusOf: liveStatusMap({}),
     });
-    expect(tree.map((n) => n.thread.id)).toEqual(['later', 'earlier']);
+    expect(tree.map((n) => n.thread.id)).toEqual(['earlier', 'later']);
+  });
+
+  it('forms front and back pin blocks and applies normal status ordering inside each', () => {
+    const threads = [
+      mkThread('front-idle', { pinnedAt: 500, pinGroup: 0, updatedAt: 9000 }),
+      mkThread('back-idle', { pinnedAt: 800, pinGroup: 1, updatedAt: 8000 }),
+      mkThread('front-attention', { pinnedAt: 100, pinGroup: 0, updatedAt: 1 }),
+      mkThread('back-attention', { pinnedAt: 200, pinGroup: 1, updatedAt: 2 }),
+      mkThread('unpinned-attention', { updatedAt: 10_000 }),
+    ];
+    const tree = buildSidebarThreadTree({
+      threads,
+      liveStatusOf: liveStatusMap({
+        'front-attention': 'pending-approval',
+        'back-attention': 'pending-approval',
+        'unpinned-attention': 'error',
+      }),
+    });
+
+    expect(tree.map((node) => node.thread.id)).toEqual([
+      'front-attention',
+      'front-idle',
+      'back-attention',
+      'back-idle',
+      'unpinned-attention',
+    ]);
   });
 
   it('puts drafts above pinned and a needs-attention thread', () => {
@@ -410,6 +435,36 @@ describe('flattenSidebarThreadTree', () => {
     expect(flat[0].isExpandable).toBe(false);
     expect(flat[0].isExpanded).toBe(false);
   });
+
+  it('marks exactly the first back-burner top-level row when both pin blocks exist', () => {
+    const tree = buildSidebarThreadTree({
+      threads: [
+        mkThread('front', { pinnedAt: 1, pinGroup: 0 }),
+        mkThread('back-a', { pinnedAt: 2, pinGroup: 1, updatedAt: 2 }),
+        mkThread('back-b', { pinnedAt: 3, pinGroup: 1, updatedAt: 1 }),
+      ],
+      liveStatusOf: liveStatusMap({}),
+    });
+    const flat = flattenSidebarThreadTree({ nodes: tree, expandedThreadIds: new Set() });
+
+    expect(flat.map((node) => [node.thread.id, node.startsBackBurnerBlock])).toEqual([
+      ['front', false],
+      ['back-a', true],
+      ['back-b', false],
+    ]);
+  });
+
+  it('does not mark a divider when only one pin block exists', () => {
+    const tree = buildSidebarThreadTree({
+      threads: [
+        mkThread('back-a', { pinnedAt: 1, pinGroup: 1 }),
+        mkThread('back-b', { pinnedAt: 2, pinGroup: 1 }),
+      ],
+      liveStatusOf: liveStatusMap({}),
+    });
+    const flat = flattenSidebarThreadTree({ nodes: tree, expandedThreadIds: new Set() });
+    expect(flat.every((node) => !node.startsBackBurnerBlock)).toBe(true);
+  });
 });
 
 describe('toggleSidebarTreeThreadExpansion', () => {
@@ -470,6 +525,18 @@ describe('previewSidebarThreads', () => {
     const result = previewSidebarThreads({ nodes: tree, activeThreadId: null });
     expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 1);
     expect(result.visibleNodes[0].thread.id).toBe('pinned');
+    expect(result.hiddenNodes).toHaveLength(3);
+  });
+
+  it('keeps both pin groups visible without consuming preview slots', () => {
+    const front = mkThread('front', { pinnedAt: 1000, pinGroup: 0, updatedAt: 2 });
+    const back = mkThread('back', { pinnedAt: 900, pinGroup: 1, updatedAt: 1 });
+    const rest = Array.from({ length: 9 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
+    const tree = buildAt([front, back, ...rest]);
+    const result = previewSidebarThreads({ nodes: tree, activeThreadId: null });
+
+    expect(result.visibleNodes.slice(0, 2).map((node) => node.thread.id)).toEqual(['front', 'back']);
+    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 2);
     expect(result.hiddenNodes).toHaveLength(3);
   });
 

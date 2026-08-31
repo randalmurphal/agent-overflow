@@ -14,7 +14,6 @@ import (
 	"agent-overflow/internal/attachment"
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/chromium"
-	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
@@ -25,7 +24,6 @@ import (
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
-	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
@@ -45,7 +43,7 @@ import (
 // because every other subsystem either embeds the store or reads from it,
 // observability boots next because the triage router installs metrics
 // before it can accept events, and the remaining subsystems (triage,
-// discussion, design, terminals, attachments, workspace search) boot
+// discussion, terminals, attachments, workspace search) boot
 // last once their inputs are ready.
 //
 //wails:ignore
@@ -155,7 +153,7 @@ func (a *App) Start(ctx context.Context) error {
 // initStores resolves the on-disk data directory, opens SQLite, wires the
 // git/settings helpers, and installs the provider-event logger. Returns
 // (dbDir, store) so later phases can attach their own subdirectories
-// (replay/, attachments/, design-artifacts/) without re-computing the
+// (replay/ and attachments/) without re-computing the
 // root path.
 //
 // A logger init failure closes the store before returning so we don't
@@ -504,8 +502,7 @@ func (a *App) initObservability(ctx context.Context, dbDir string) error {
 }
 
 // initSubsystems wires the remaining services: triage (with metrics),
-// discussion registry/channels, design artifacts and
-// reactor, the design MCP server, terminals, attachments, and workspace
+// discussion registry/channels, terminals, attachments, and workspace
 // search. Called after initStores / initObservability so every subsystem
 // has its dependencies in place.
 //
@@ -575,23 +572,8 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	logBootPhase("app.sweep_crashed_worktree_setups", worktreeSetupSweepStarted)
 	a.registry = discussion.NewRegistry(st)
 	a.channels = discussion.NewChannelService(st)
-	designBase := filepath.Join(dbDir, "design-workdirs")
-	a.design.workdir = design.NewWorkDirManager(designBase)
-	a.design.diagnostics = design.NewDiagnosticBuffer(nil)
-	a.design.server = design.FileHandler(designBase)
-	a.design.watchers = make(map[string]*design.Watcher)
-	// Headless Chromium-driven capture for the agent's read_screenshot
-	// tool. Lazy: the binary downloads on first capture (~150 MB
-	// once), and the browser process boots only when something asks
-	// for a screenshot. Threads that never call read_screenshot pay
-	// nothing.
-	a.design.screenshots = screenshot.NewManager(
-		screenshot.NewInstaller(dbDir, a.emit),
-	)
-	a.design.reactor = design.NewReactor(a.design.diagnostics, a.newDesignCapturer())
-	a.design.mcp = design.NewMCPServer(a.design.reactor)
 	browserSettings := a.currentSettings()
-	browserInstaller := chromium.NewInstaller(dbDir, chromium.ArtifactChrome, eventchan.BrowserInstallProgress, a.emit)
+	browserInstaller := chromium.NewInstaller(dbDir, eventchan.BrowserInstallProgress, a.emit)
 	browserInstaller.BinaryPath = strings.TrimSpace(os.Getenv("AO_BROWSER_BINARY"))
 	a.browser.manager = appbrowser.NewManager(
 		browserInstaller,

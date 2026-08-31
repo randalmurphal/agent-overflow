@@ -33,7 +33,7 @@ func (t Thread) GetAutoCompactStandardPercent() int { return t.AutoCompactStanda
 // threshold override. Zero means provider default/inherit.
 func (t Thread) GetAutoCompactExtendedPercent() int { return t.AutoCompactExtendedPercent }
 
-// GetMode returns the interaction mode (chat / plan / design /
+// GetMode returns the interaction mode (chat / plan /
 // discussion).
 func (t Thread) GetMode() string { return t.Mode }
 

@@ -19,6 +19,7 @@
   } from '../../stores/bindings';
   import Icon from '../primitives/Icon.svelte';
   import { errString } from '../../utils/errors';
+  import { isMacPlatform } from '../../utils/platform';
 
   let { ctx }: { ctx: PanelContext } = $props();
   let surface: HTMLDivElement | undefined = $state(undefined);
@@ -242,9 +243,22 @@
       shift: event.shiftKey,
     });
   }
+
+  function closeTabShortcut(event: KeyboardEvent): void {
+    if (event.isComposing || event.key.toLowerCase() !== 'w' || event.altKey || event.shiftKey) return;
+    const modifier = isMacPlatform() ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+    if (!modifier || !activePageId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void act('close', activePageId);
+  }
 </script>
 
-<div class="flex h-full min-h-0 flex-col bg-surface-0" data-testid="browser-pane">
+<div
+  class="flex h-full min-h-0 flex-col bg-surface-0"
+  data-testid="browser-pane"
+  onkeydowncapture={closeTabShortcut}
+>
   <div class="flex min-h-9 items-end gap-1 overflow-x-auto border-b border-border-subtle bg-surface-1 px-1 pt-1">
     {#if sessionName}
       <span class="mb-1 max-w-36 shrink-0 truncate px-1.5 text-[0.68rem] text-fg-muted" title={sessionName}>{sessionName}</span>

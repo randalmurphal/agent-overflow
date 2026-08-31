@@ -105,41 +105,11 @@ type Config struct {
 	// would expose path traversal of the local filesystem.
 	AssetHandler http.Handler
 
-	// DesignHandler is a late-bound lookup for the per-thread design
-	// file server, registered at the /design/ prefix. It's a getter
-	// rather than a plain http.Handler because the underlying handler
-	// is constructed during the App's ServiceStartup lifecycle, which
-	// runs AFTER bootTransport calls New() — a value snapshot taken at
-	// config time would always be nil and the route would never
-	// register. The mux registration consults the getter per-request
-	// so a handler that becomes available mid-flight is picked up
-	// without restarting the server.
-	//
-	// Optional — when this field is nil, no /design/ route registers
-	// and design requests fall through to the asset handler (returning
-	// the SPA shell with X-Frame-Options: DENY, the iframe-display
-	// failure mode we explicitly want to avoid; see DesignPreviewPanel
-	// for the gating that protects against this on the client side).
-	//
-	// When the getter returns nil at request time the route returns
-	// 404, which the iframe handles cleanly (the parent receives an
-	// onerror event and re-tries on the next workdir-ready signal).
-	//
-	// main.go wires this to App.DesignServer (the bound method, no
-	// parens) which returns design.FileHandler(designBaseDir) once
-	// initSubsystems has run. That handler already strips the /design
-	// prefix and injects the diagnostic-capture script into HTML
-	// responses. The route is wrapped by loopbackHostGuard so design
-	// dirs are unreachable from a hostile rebound DNS origin — the
-	// bytes the agent writes can include user material.
-	DesignHandler func() http.Handler
-
 	// BackendIdentity reports the history store's backend id and replica
-	// generation for the bootstrap manifest. A getter, not a value, for
-	// the same reason as DesignHandler: the store opens during the App's
-	// startup, which runs AFTER New() — a snapshot taken at config time
-	// would always be empty. This package never learns what a store is;
-	// app wiring supplies the two strings.
+	// generation for the bootstrap manifest. A getter, not a value, because
+	// the store opens during the App's startup, which runs AFTER New() — a
+	// snapshot taken at config time would always be empty. This package never
+	// learns what a store is; app wiring supplies the two strings.
 	//
 	// Optional — when nil, the manifest carries no identity and the
 	// client keeps its replica disabled.
@@ -194,7 +164,7 @@ type Config struct {
 	// ordinary boots, which do not expose the harness bridge.
 	PageMarker string
 
-	// CrossOriginIsolate makes every asset and design response carry
+	// CrossOriginIsolate makes every asset response carry
 	// cross-origin isolation headers (COOP/COEP/CORP) so the SPA runs
 	// crossOriginIsolated and measureUserAgentSpecificMemory works.
 	// Diagnostic opt-in (AGENT_OVERFLOW_RENDERER_DIAG) — COEP blocks
@@ -460,51 +430,6 @@ func (s *Server) buildHTTPServer() *http.Server {
 	if s.cfg.ScopedTokens != nil {
 		mux.HandleFunc(ScopedRPCPath, s.loopbackHostGuard(s.handleScopedRPC))
 	}
-	if s.cfg.DesignHandler != nil {
-		// Wrap in the same loopback host guard as /bootstrap.json:
-		// design files can include user material the agent put in the
-		// working dir, and a hostile DNS-rebound origin shouldn't be
-		// able to read them. /design/ must be registered before /
-		// because mux longest-match-wins routing already handles it,
-		// but listing it here makes the priority obvious.
-		//
-		// The route is registered unconditionally on a getter; if the
-		// underlying handler isn't ready yet (App.ServiceStartup races
-		// the first iframe load) we serve 404 from the design route
-		// rather than falling through to the SPA shell. Falling
-		// through used to be the failure mode: the SPA's
-		// X-Frame-Options: DENY would block iframe display and leave
-		// the preview stuck on chrome-error://, masking what was
-		// really a startup-order bug.
-		//
-		// StripPrefix lets the FileHandler resolve "{threadId}/main/..."
-		// against its baseDir directly. Without it, http.FileServer
-		// would look for files at "{baseDir}/design/{threadId}/main/..."
-		// — a path the agent never writes to.
-		designH := http.StripPrefix("/design", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			h := s.cfg.DesignHandler()
-			if h == nil {
-				http.NotFound(w, r)
-				return
-			}
-			h.ServeHTTP(w, r)
-		}))
-		// On LAN bind the loopbackHostGuard becomes a pass-through and
-		// /design/ has no token check, so we additionally refuse from
-		// non-loopback peers to avoid leaking agent-rendered content
-		// (which can include user material) over LAN. LAN-served design
-		// previews are a separate feature — pick it up via a deliberate
-		// token-validation pass when we want them.
-		// Diag-mode isolation headers must cover /design/ too: COEP
-		// applies to nested documents, so the preview iframe fails to
-		// load under the isolated shell unless its responses carry
-		// CORP/COEP themselves.
-		var designFinal http.Handler = s.loopbackHostGuard(s.designLoopbackOnly(designH).ServeHTTP)
-		if s.cfg.CrossOriginIsolate {
-			designFinal = withCrossOriginIsolation(designFinal)
-		}
-		mux.Handle("/design/", designFinal)
-	}
 	assetH := s.cfg.AssetHandler
 	if assetH == nil {
 		assetH = http.NotFoundHandler()
@@ -525,22 +450,6 @@ func (s *Server) buildHTTPServer() *http.Server {
 		// rootCtx so existing handlers don't see a spurious cancel.
 		BaseContext: func(_ net.Listener) context.Context { return s.rootCtx },
 	}
-}
-
-// designLoopbackOnly refuses /design/* requests from non-loopback peers
-// even when the server is bound to a LAN interface. The agent-rendered
-// HTML in the design workdir can include user-prompted material; until
-// we add explicit token validation, LAN peers don't get the design
-// surface. Returns 404 so a LAN scanner can't fingerprint that the
-// route exists.
-func (s *Server) designLoopbackOnly(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(s.currentOriginPatterns()) > 0 && !remoteAddrIsLoopback(r.RemoteAddr) {
-			http.NotFound(w, r)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // loopbackHostGuard returns a wrapper that rejects non-loopback Host
@@ -844,9 +753,7 @@ func withAssetHeaders(next http.Handler) http.Handler {
 }
 
 // withCrossOriginIsolation stamps the diagnostic isolation headers on
-// every response of the wrapped handler. Kept separate from
-// withAssetHeaders because it also wraps the /design/ route, which has
-// its own header stack.
+// every response of the wrapped handler.
 func withCrossOriginIsolation(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteCrossOriginIsolationHeaders(w.Header())

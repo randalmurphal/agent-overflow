@@ -719,8 +719,8 @@ func inlineSettingsEnvForCLI(cfg Config) map[string]string {
 //
 // The CLI's --mcp-config requires each server spec to carry an
 // explicit "type" discriminator ("http" | "sse" | "stdio"). The
-// design MCP (and any future provider-agnostic MCP server we share
-// with Codex) returns the canonical untagged shape `{"url": "..."}`
+// provider-agnostic browser MCP returns the canonical untagged shape
+// `{"url": "..."}`
 // because Codex's serde uses `untagged + deny_unknown_fields` and
 // rejects an unknown "type" field on the StreamableHttp variant —
 // the providers can't share a single tagged shape. Backfill "type":

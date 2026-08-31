@@ -545,6 +545,41 @@ describe('<ThreadRow> pin affordance placement', () => {
     expect(pin.compareDocumentPosition(time) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
+  it('uses accent for front-burner pins and the muted token for back-burner pins', () => {
+    const pane = createThreadPane();
+    const frontView = render(ThreadRow, {
+      props: { thread: makeThread({ id: 'front', pinnedAt: 1, pinGroup: 0 }), pane },
+    });
+    const backView = render(ThreadRow, {
+      props: { thread: makeThread({ id: 'back', pinnedAt: 1, pinGroup: 1 }), pane },
+    });
+    const front = frontView.container.querySelector('[data-testid="thread-row-pin"]') as HTMLElement;
+    const back = backView.container.querySelector('[data-testid="thread-row-pin"]') as HTMLElement;
+
+    expect(front.className).toContain('text-accent');
+    expect(front.getAttribute('data-pin-group')).toBe('front');
+    expect(back.className).toContain('text-fg-muted');
+    expect(back.className).not.toContain('text-accent');
+    expect(back.getAttribute('data-pin-group')).toBe('back');
+  });
+
+  it('right-clicking a pinned icon toggles its group without opening the row menu', async () => {
+    const pane = createThreadPane();
+    const move = setBindingMock('SetThreadPinGroup', vi.fn(async () => makeThread({
+      pinnedAt: 1,
+      pinGroup: 1,
+    })));
+    const { getByTestId, queryByRole } = render(ThreadRow, {
+      props: { thread: makeThread({ pinnedAt: 1, pinGroup: 0 }), pane },
+    });
+
+    await fireEvent.contextMenu(getByTestId('thread-row-pin'));
+    await Promise.resolve();
+
+    expect(move).toHaveBeenCalledWith('thread-1', 1);
+    expect(queryByRole('menu', { name: 'Thread Actions' })).toBeNull();
+  });
+
   it('renders an unpinned pin button so row-hover can reveal it', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
@@ -739,9 +774,6 @@ describe('<ThreadRow> live status dot', () => {
 
     await rerender({ thread: { ...chat, mode: 'plan' }, pane });
     expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Planning');
-
-    await rerender({ thread: { ...chat, mode: 'design' }, pane });
-    expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Designing');
 
     await rerender({ thread: { ...chat, mode: 'discussion' }, pane });
     expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Discussing');

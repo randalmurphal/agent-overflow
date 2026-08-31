@@ -210,6 +210,17 @@
       </SettingsField>
 
       <SettingsField
+        label="Auto-pin new threads"
+        hint="Put a new thread on the front burner after its first message is sent."
+      >
+        <ToggleSwitch
+          checked={settings.autoPinNewThreads}
+          ariaLabel="Toggle Auto-Pin New Threads"
+          onToggle={(value) => updateSetting('autoPinNewThreads', value)}
+        />
+      </SettingsField>
+
+      <SettingsField
         label="Worktree branch prefix"
         hint="Prefix for generated worktree branches."
         htmlFor="worktree-branch-prefix"

@@ -41,7 +41,7 @@ func TestManagerWithManagedChrome(t *testing.T) {
 	if artifactDir == "" {
 		artifactDir = filepath.Join(root, "artifacts")
 	}
-	installer := chromium.NewInstaller(artifactDir, chromium.ArtifactChrome, "", nil)
+	installer := chromium.NewInstaller(artifactDir, "", nil)
 	installer.BinaryPath = strings.TrimSpace(os.Getenv("AO_BROWSER_BINARY"))
 	config := Config{Enabled: true, PersistSiteData: true}
 	manager := NewManager(installer, filepath.Join(root, "state"), config, ManagerOptions{FileStateKey: true})

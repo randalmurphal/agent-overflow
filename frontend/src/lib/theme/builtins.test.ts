@@ -261,9 +261,9 @@ describe('curated built-in themes', () => {
  * Tokens a curated palette may leave to the cascade even inside a section it
  * otherwise fills. Two groups, both deliberate:
  *
- * The brand marks, the media-overlay pair and the design paper are
- * mode-invariant by design — a theme does not get to restate someone else's
- * logo color, and a scrim sits on user media rather than on app chrome.
+ * The brand marks and media-overlay pair are mode-invariant — a theme does
+ * not get to restate someone else's logo color, and a scrim sits on user
+ * media rather than on app chrome.
  *
  * The rest are DERIVED roles that follow a base the theme has already set: the
  * card and generic-icon aliases, the foreground fade hierarchy over
@@ -279,7 +279,6 @@ const OPTIONAL_KEYS = new Set<string>([
   'provider-claude-tui',
   'scrim',
   'scrim-fg',
-  'design-paper',
   'card',
   'ico-generic',
   'fg-muted',

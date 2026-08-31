@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-
-	"agent-overflow/internal/headlessshell"
 )
 
 func unzip(src, dst string) error {
@@ -106,16 +104,23 @@ func extractZipFile(file *zip.File, dst string, maxBytes int64) (int64, error) {
 // currentPlatform returns the Chrome-for-Testing platform string for
 // the running OS+arch.
 func currentPlatform() (string, error) {
-	return headlessshell.Platform()
+	switch runtime.GOOS + "/" + runtime.GOARCH {
+	case "linux/amd64":
+		return "linux64", nil
+	case "darwin/amd64":
+		return "mac-x64", nil
+	case "darwin/arm64":
+		return "mac-arm64", nil
+	case "windows/amd64":
+		return "win64", nil
+	default:
+		return "", fmt.Errorf("unsupported platform %s/%s — Chrome for Testing has no build", runtime.GOOS, runtime.GOARCH)
+	}
 }
 
 // binaryPathFor is the canonical post-extraction path under
-// versionDir. The Chrome-for-Testing zips for chrome-headless-shell
-// always extract to a single subdirectory named after the platform.
-func binaryPathFor(versionDir, platform string, artifact Artifact) string {
-	if artifact == ArtifactHeadlessShell {
-		return headlessshell.BinaryPath(versionDir, platform)
-	}
+// versionDir for a full Chrome-for-Testing archive.
+func binaryPathFor(versionDir, platform string) string {
 	switch platform {
 	case "mac-x64", "mac-arm64":
 		return filepath.Join(versionDir, "chrome-"+platform, "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing")
@@ -126,14 +131,12 @@ func binaryPathFor(versionDir, platform string, artifact Artifact) string {
 	}
 }
 
-// findHeadlessShell walks versionDir looking for the executable.
+// findBrowserBinary walks versionDir looking for the executable.
 // Used as a fallback when the canonical layout shifts (defensive —
 // has not been observed in practice as of Chrome 148).
-func findBrowserBinary(versionDir, platform string, artifact Artifact) (string, error) {
+func findBrowserBinary(versionDir, platform string) (string, error) {
 	target := "chrome"
-	if artifact == ArtifactHeadlessShell {
-		target = headlessshell.BinaryName(platform)
-	} else if platform == "win64" {
+	if platform == "win64" {
 		target += ".exe"
 	} else if strings.HasPrefix(platform, "mac-") {
 		target = "Google Chrome for Testing"
@@ -158,11 +161,11 @@ func findBrowserBinary(versionDir, platform string, artifact Artifact) (string, 
 	if err != nil {
 		return "", err
 	}
-	return "", fmt.Errorf("%s binary not found under %s", artifact, versionDir)
+	return "", fmt.Errorf("Chrome binary not found under %s", versionDir)
 }
 
 // errFoundShell is the sentinel filepath.Walk uses to short-circuit.
-var errFoundShell = errors.New("found chrome-headless-shell")
+var errFoundShell = errors.New("found Chrome")
 
 // validateVersionSegment rejects a manifest Version that would
 // escape the cache directory or step on its parent. Real Chrome
@@ -191,7 +194,7 @@ func validateVersionSegment(version string) error {
 
 // assertHTTPS rejects manifest / zip URLs whose scheme isn't HTTPS.
 // TLS to googlechromelabs.github.io is the only integrity guarantee
-// we have for the headless-shell binary; a downgrade to plain HTTP
+// we have for the browser binary; a downgrade to plain HTTP
 // would let a network attacker substitute the archive contents.
 func assertHTTPS(rawURL string) error {
 	u, err := url.Parse(rawURL)

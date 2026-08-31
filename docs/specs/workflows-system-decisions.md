@@ -493,10 +493,8 @@ and read files natively; MCP calls block and trap results in-context.
   become CLI subcommands; D7's `wftools` package becomes CLI + server-side
   handlers; the studio agent works with files + `ao workflow validate`; D13's
   post-back-to-thread flag is retained as the human-visibility nicety, but
-  background `ao run wait` is the primary agent pattern. The design-mode loopback
-  MCP server stays as-is for design mode; the workflow system just doesn't extend
-  it (the `--strict-mcp-config` composition refactor drops out of M0 scope unless
-  design mode needs it independently).
+  background `ao run wait` is the primary agent pattern. Workflow tooling does
+  not add a separate loopback MCP server.
 
 ## D14. Per-workflow workspace + cleanup policy (user ruling, 2026-07-11)
 
@@ -871,8 +869,9 @@ verdict it now is, with what the first attempt got wrong.
   not by CI.** `make provider-smoke` (Makefile) drives one trivial workflow
   through the real `claude` and `codex` binaries and asserts schema
   acceptance, envelope round-trip, and the §9 worktree/branch rules; the
-  `providersmoke` build tag keeps it out of `make go-test` and `make verify`,
-  which stay hermetic and token-free. **Cadence: before a release, and after
+  `providersmoke` build tag keeps it out of `make go-test`; `make verify`
+  compiles it without running any test, so it stays hermetic and token-free.
+  **Cadence: before a release, and after
   upgrading either provider CLI.** That is the enforcement mechanism for
   D2a: the mocked suites accept any structured-output schema by
   construction, and `internal/providerschema` encodes rules observed from CLI

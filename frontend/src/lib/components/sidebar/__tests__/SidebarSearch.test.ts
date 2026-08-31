@@ -67,7 +67,7 @@ describe('<SidebarSearch>', () => {
       props: {},
     });
     const input = getByTestId('sidebar-thread-search') as HTMLInputElement;
-    await fireEvent.input(input, { target: { value: 'design' } });
+    await fireEvent.input(input, { target: { value: 'search text' } });
     await tick();
     expect(queryByTestId('sidebar-thread-search-kbd')).toBeNull();
     expect(getByTestId('sidebar-thread-search-clear')).toBeInTheDocument();

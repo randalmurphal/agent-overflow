@@ -11,7 +11,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
-	"agent-overflow/internal/threadmode"
 )
 
 // ErrMCPProviderUnsupported reports an inbound binding call carrying a
@@ -23,14 +22,6 @@ var ErrMCPProviderUnsupported = errors.New("mcp: unsupported provider")
 // not live (and auto-start failed) so a binding cannot drive the
 // provider-side operation it needs.
 var ErrMCPSessionUnavailable = errors.New("mcp: thread session not available")
-
-// ErrMCPDesignThreadUnsupported reports an MCP operation that needs a
-// session able to see workspace MCP servers, asked of a design thread.
-// Design sessions launch with `--strict-mcp-config` and only ever load
-// their own design servers, so the provider round-trip would resolve
-// nothing. Config-level operations (the enable/disable toggle) are
-// unaffected — those write files, not sessions.
-var ErrMCPDesignThreadUnsupported = errors.New("mcp: design threads load only their own MCP config; sign in from a regular thread")
 
 const (
 	mcpProviderClaude = "claude"
@@ -89,9 +80,6 @@ func (a *App) ReconnectMcpServer(threadID, name string) error {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return fmt.Errorf("reconnect mcp server: load thread: %w", err)
-	}
-	if thread.Mode == threadmode.ModeDesign {
-		return ErrMCPDesignThreadUnsupported
 	}
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {

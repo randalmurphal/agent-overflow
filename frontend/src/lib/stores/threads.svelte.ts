@@ -166,12 +166,16 @@ export function updateThreadLastRead(id: string, lastReadAt: number | undefined)
 }
 
 /**
- * Patches the thread's pinnedAt locally so the sidebar reorders before
- * the next refreshThreads() round-trip. `undefined` clears the pin.
+ * Patches the complete pin state in one array replacement so a group move or
+ * unpin cannot expose a transient mismatched pinnedAt / pinGroup pair.
  */
-export function updateThreadPinnedAt(id: string, pinnedAt: number | undefined): void {
+export function updateThreadPinState(
+  id: string,
+  pinnedAt: number | undefined,
+  pinGroup: number | undefined,
+): void {
   threads = threads.map((t) =>
-    t.id === id ? { ...t, pinnedAt } : t,
+    t.id === id ? { ...t, pinnedAt, pinGroup } : t,
   );
 }
 

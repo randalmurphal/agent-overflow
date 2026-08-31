@@ -360,7 +360,7 @@
       the button inside opts back in to pointer events when visible.
     -->
     <div class="absolute inset-y-0 left-0 flex items-center justify-center w-6 pointer-events-none">
-      <ThreadRowPinButton {isPinned} buildCtx={ctx} />
+      <ThreadRowPinButton {isPinned} pinGroup={thread.pinGroup} buildCtx={ctx} />
     </div>
   {/if}
   {#if hasChildren}

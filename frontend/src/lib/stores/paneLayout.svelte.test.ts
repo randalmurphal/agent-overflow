@@ -36,7 +36,6 @@ describe('paneLayout store', () => {
     expect(isCompanionKind('agent')).toBe(true);
     expect(isCompanionKind('review')).toBe(true);
     expect(isCompanionKind('plan')).toBe(true);
-    expect(isCompanionKind('design-preview')).toBe(true);
     expect(isCompanionKind('take-control')).toBe(true);
     expect(isCompanionKind('thread')).toBe(false);
   });
@@ -123,7 +122,6 @@ describe('paneLayout store', () => {
       { id: 'other', paneId: 'other', kind: 'thread', widthPx: 1 },
       { id: 'take-control-source', paneId: 'take-control-source', kind: 'take-control', widthPx: 1, sourcePaneId: 'source' },
       { id: 'plan-source', paneId: 'plan-source', kind: 'plan', widthPx: 1, sourcePaneId: 'source' },
-      { id: 'design-preview-source', paneId: 'design-preview-source', kind: 'design-preview', widthPx: 1, sourcePaneId: 'source' },
       { id: 'review-source', paneId: 'review-source', kind: 'review', widthPx: 1, sourcePaneId: 'source' },
       { id: 'plan-missing', paneId: 'plan-missing', kind: 'plan', widthPx: 1, sourcePaneId: 'missing' },
     ]);
@@ -135,7 +133,6 @@ describe('paneLayout store', () => {
       'source',
       'take-control-source',
       'plan-source',
-      'design-preview-source',
       'review-source',
     ]);
   });

@@ -23,6 +23,13 @@ load-older behavior, or anything that touches `scrollTop`.
   writes `--composer-height`. Observe as `'composer-geometry'`, the
   live-capable path, so active output springs through activity-rail
   height changes while idle geometry still sync-pins.
+- Every sibling-overlay top fade uses the global `.scroll-top-fade` rule. Its opaque
+  first pixel starts one CSS pixel above the scroll clip while its bottom stays
+  at the declared fade depth. WebKit can snap a composited scroll layer and an
+  ancestor-painted gradient to opposite device-pixel edges, exposing a bright
+  row if they merely meet. Do not inline a `top: 0` gradient beside a scroller,
+  and do not clip the rule's overdraw. A header directly above one
+  keeps its border in a higher stacking level, as `ChatHeader` does.
 
 Thread-switch restore is split on purpose: `$effect.pre` arms warm-up and
 restore consent before DOM flush, then the restore `$effect` calls
@@ -134,7 +141,11 @@ The rules that bite here:
   built and rejected, so do not bring back a softer in-view collapse. The
   gate is a `timelineQuietWork.ts` pass and must never run while
   `autoScrollInFlight()`: its bottom-pinned restore is a direct write that
-  snaps a live glide.
+  snaps a live glide. Document hiding invalidates its cached geometry too:
+  `timelineVisibilityGeometry.ts` keeps the gate closed through resume until
+  the existing virtualizer subscription publishes a new visible,
+  post-flush content-geometry sample. Do not replace that evidence with a
+  timer, DOM read, extra observer, or visibility alone.
 - Engagement is deviation-based through `pane.hasUserExpansionWithin`,
   never a rendered-height proxy: with `collapseDiffPreviews` off, diffs
   render expanded and a pixel guard would pin every run with an edit.
@@ -167,7 +178,7 @@ The rules that bite here:
 
 ## Companion panes
 
-Plan, design preview and review surfaces mount as companion panes through
+Plan and review surfaces mount as companion panes through
 `components/panes/CompanionPane.svelte`, opened by the companion and
 review store helpers rather than as a sidebar inside `ChatView`. Their
 bodies receive `ctx: PanelContext`, not `pane: ThreadPane`, so they cannot

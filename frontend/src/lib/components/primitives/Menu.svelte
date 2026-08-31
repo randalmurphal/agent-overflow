@@ -22,7 +22,7 @@
      * Tailwind class controlling the menu's minimum width. Defaults to
      * 200px, which fits the descriptions / long paths most pickers in
      * the composer toolbar render. Pickers with only short labels
-     * (e.g. ThreadModePicker's "Chat" / "Design") should pass a
+     * with only very short labels should pass a
      * tighter value so the popup doesn't look balloon-wide.
      */
     minWidthClass?: string;

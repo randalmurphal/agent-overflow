@@ -13,16 +13,15 @@ import type { AgentPaneScopeSnapshot } from '../types/settings';
 // 'thread' panes host a ChatView for a ThreadPane (the registry in
 // panes.svelte.ts). Companion panes are NOT ThreadPanes: they host surfaces
 // paired to a source thread pane via `sourcePaneId`. take-control and browser
-// are live/ephemeral; plan, design-preview, review, and agent companions are
+// are live/ephemeral; plan, review, and agent companions are
 // persisted by layout persistence and restored through companionPanes.svelte.ts.
-export type PaneLayoutKind = 'thread' | 'take-control' | 'browser' | 'plan' | 'design-preview' | 'review' | 'agent';
-export type CompanionPaneKind = 'take-control' | 'browser' | 'plan' | 'design-preview' | 'review' | 'agent';
+export type PaneLayoutKind = 'thread' | 'take-control' | 'browser' | 'plan' | 'review' | 'agent';
+export type CompanionPaneKind = 'take-control' | 'browser' | 'plan' | 'review' | 'agent';
 
 export function isCompanionKind(kind: PaneLayoutKind): kind is CompanionPaneKind {
   return kind === 'take-control' ||
     kind === 'browser' ||
     kind === 'plan' ||
-    kind === 'design-preview' ||
     kind === 'review' ||
     kind === 'agent';
 }

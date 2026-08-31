@@ -2,7 +2,7 @@
 
 Pure validators and parsers for the two thread-mode axes:
 
-- **Interaction mode**: `chat`, `plan`, `design` (or saga-owned
+- **Interaction mode**: `chat`, `plan` (or saga-owned
   `discussion` / `workflow` / `workflow-studio` / `workflow-triage`, which are
   set only by their owning sagas). Controls the UX shell and how
   user input is routed.
@@ -23,8 +23,8 @@ and `app_runtime_mode.go`, which compose this package's pieces.
 
 | Function | Purpose |
 |---|---|
-| `ValidateCreate(mode) (string, error)` | Normalises an interaction mode for `CreateThread`. Empty → `DefaultCreateMode` ("chat"). Accepts `chat`/`plan`/`design`. Rejects every saga-owned mode (`discussion` and all workflow modes) and unknown values. |
-| `ValidateSet(mode) (string, error)` | Normalises an interaction mode for `UpdateThreadMode`. Accepts `chat`/`plan` only. Immutable thread types (`design`, `discussion`, and all workflow modes) stay owned by their sagas. Rejects empty (UpdateThreadMode is always an explicit user action). |
+| `ValidateCreate(mode) (string, error)` | Normalises an interaction mode for `CreateThread`. Empty → `DefaultCreateMode` ("chat"). Accepts `chat`/`plan`. Rejects every saga-owned mode (`discussion` and all workflow modes) and unknown values. |
+| `ValidateSet(mode) (string, error)` | Normalises an interaction mode for `UpdateThreadMode`. Accepts `chat`/`plan` only. Immutable saga-owned thread types stay owned by their sagas. Rejects empty (UpdateThreadMode is always an explicit user action). |
 | `IsPostCreationMode(mode) bool` | Reports whether a *current* mode is one the UI is allowed to flip post-creation. Used to gate `UpdateThreadMode` on threads whose type is immutable. |
 | `IsLegal(mode) bool` | Reports whether persistence accepts the mode. |
 | `IsSagaOwned(mode) bool` | Reports whether creation belongs to a coordinating saga. |

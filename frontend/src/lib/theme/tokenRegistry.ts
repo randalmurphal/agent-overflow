@@ -146,7 +146,6 @@ const MODE_INVARIANT_KEYS: ReadonlySet<string> = new Set([
   'provider-claude',
   'scrim',
   'scrim-fg',
-  'design-paper',
 ]);
 
 function entry(
@@ -265,12 +264,6 @@ const COLOR_ENTRIES: readonly TokenEntry[] = [
     'app.css',
     'scrim-fg',
     'Foreground of the media-overlay pair. Stored opaque and consumed at partial alpha; mode-invariant by default.',
-  ),
-  entry(
-    'colors',
-    'app.css',
-    'design-paper',
-    'The design canvas iframe paper. Sandboxed agent HTML is authored against a light page, so this is default-locked.',
   ),
   entry(
     'colors',

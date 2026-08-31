@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,10 +11,8 @@ import (
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/codexconfig"
-	"agent-overflow/internal/design"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/mcpstatus"
-	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/sessionimport"
 	"agent-overflow/internal/usagebackoff"
 
@@ -280,32 +277,6 @@ type appSessionImportState struct {
 	active  *sessionImportRun
 	stopped bool
 	wg      sync.WaitGroup
-}
-
-// appDesignState is the design-mode concern (`app_design*.go`): the per-thread
-// working directories, the file server over them, the preview screenshotter,
-// and the fs watchers that drive the reactor.
-type appDesignState struct {
-	// workdir owns each thread's per-thread {main,options}
-	// directory layout. The base directory is the HTTP file server's
-	// StripPrefix target — server below mounts it at /design/
-	// on the existing transport.
-	workdir     *design.WorkDirManager
-	diagnostics *design.DiagnosticBuffer
-	server      http.Handler
-	// screenshots drives a long-lived headless Chromium that
-	// renders the design preview URL for the agent's read_screenshot
-	// tool. Lazily started on first capture; closed on app shutdown.
-	// nil during early boot or in tests that don't exercise the
-	// design screenshot path — callers tolerate that explicitly.
-	screenshots *screenshot.Manager
-	// watchers is the per-thread fs watcher map. Keyed by thread
-	// ID; entries land on session start and Stop() on session teardown.
-	// watchersMu guards both insertion and removal.
-	watchersMu sync.Mutex
-	watchers   map[string]*design.Watcher
-	reactor    *design.Reactor
-	mcp        *design.MCPServer
 }
 
 // appBrowserState is the provider-neutral arbitrary-web browser concern. The

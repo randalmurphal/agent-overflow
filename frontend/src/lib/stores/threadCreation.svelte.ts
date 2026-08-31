@@ -14,8 +14,6 @@ import { errString } from '../utils/errors';
 import type { DraftPlaceholderDefaults, ThreadPane } from './thread.svelte';
 import type { Project, Thread } from '../types/models';
 
-export type DraftMode = 'chat' | 'design';
-
 interface DraftDefaultsRequest {
   token: object;
   switchGeneration: number;
@@ -55,14 +53,13 @@ function finishDraftDefaultsRequest(
 async function loadAndStartDraftPlaceholder(
   pane: ThreadPane,
   project: Project,
-  mode: DraftMode,
 ): Promise<boolean> {
   // Reserve the pane before the RPC. A second "+ New" request or a thread
   // switch must win even if this older defaults response resolves last.
   const request = beginDraftDefaultsRequest(pane);
   let defaults: DraftPlaceholderDefaults | undefined;
   try {
-    defaults = await GetThreadDefaults({ projectId: project.id, mode });
+    defaults = await GetThreadDefaults({ projectId: project.id, mode: 'chat' });
   } catch (err) {
     console.warn('GetThreadDefaults failed; using empty placeholder defaults', err);
   }
@@ -72,15 +69,14 @@ async function loadAndStartDraftPlaceholder(
     return false;
   }
 
-  pane.startDraftPlaceholder(project, mode, defaults);
+  pane.startDraftPlaceholder(project, 'chat', defaults);
   finishDraftDefaultsRequest(pane, request);
   return true;
 }
 
 /**
  * Fetch fresh seed defaults and replace the pane's draft placeholder
- * with one keyed on the new (project, mode). The composer pickers
- * (ProjectPicker, ThreadModePicker) both call this to keep the
+ * with one keyed on the new project. ProjectPicker calls this to keep the
  * placeholder's toolbar (model, effort, runtime mode) and workspace
  * strip (current git branch) populated across flips — calling
  * `pane.startDraftPlaceholder` directly drops the seeded values and
@@ -93,9 +89,8 @@ async function loadAndStartDraftPlaceholder(
 export async function flipPaneDraftPlaceholder(
   pane: ThreadPane,
   project: Project,
-  mode: DraftMode,
 ): Promise<void> {
-  await loadAndStartDraftPlaceholder(pane, project, mode);
+  await loadAndStartDraftPlaceholder(pane, project);
 }
 
 /**
@@ -104,27 +99,23 @@ export async function flipPaneDraftPlaceholder(
  * keybinding firing without a focused thread). Prefers the focused
  * pane's current project, then falls back to the most recently active
  * project (ListProjects is sorted server-side by lastActive
- * descending). Mode flows through from the caller — "+ New" defaults
- * to chat; the design palette command passes 'design'. Returns null
- * when no projects exist at all — the caller should surface "add a
+ * descending). Returns null when no projects exist at all — the caller should surface "add a
  * project first".
  */
 export function resolveDraftTargetProject(
   targetPane: ThreadPane | null,
-  mode: DraftMode,
-): { projectId: string; mode: DraftMode } | null {
+): { projectId: string } | null {
   const fromPane = targetPane?.thread?.projectId;
   if (fromPane) {
-    return { projectId: fromPane, mode };
+    return { projectId: fromPane };
   }
   const fallback = getProjects()[0]?.project.id;
   if (!fallback) return null;
-  return { projectId: fallback, mode };
+  return { projectId: fallback };
 }
 
 export interface OpenDraftThreadOptions {
   projectId: string;
-  mode: DraftMode;
   targetPane?: ThreadPane | null;
   openInNewPane?: boolean;
 }
@@ -145,7 +136,7 @@ export interface OpenDraftThreadOptions {
 export async function openDraftThreadForProject(
   options: OpenDraftThreadOptions,
 ): Promise<ThreadPane | null> {
-  const { projectId, mode, targetPane, openInNewPane = false } = options;
+  const { projectId, targetPane, openInNewPane = false } = options;
   expandProject(projectId);
   const project = getProject(projectId)?.project;
   if (!project) {
@@ -163,7 +154,7 @@ export async function openDraftThreadForProject(
   // and workspace strip don't render "no model / no branch" before
   // materialization. Failure here is tolerable — we still want the
   // placeholder to appear; the user can pick from the toolbar.
-  const opened = await loadAndStartDraftPlaceholder(pane, project, mode);
+  const opened = await loadAndStartDraftPlaceholder(pane, project);
   return opened ? pane : null;
 }
 

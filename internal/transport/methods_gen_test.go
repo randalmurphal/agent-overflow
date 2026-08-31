@@ -64,6 +64,7 @@ var wireSafeMethods = map[string]bool{
 	"ListArchivedThreads":  true,
 	"ListThreads":          true,
 	"PinThread":            true,
+	"SetThreadPinGroup":    true,
 	"UnpinThread":          true,
 	"MarkThreadRead":       true,
 	"MarkThreadUnread":     true,
@@ -177,10 +178,6 @@ var wireSafeMethods = map[string]bool{
 	"UpdateProposedPlanComment": true,
 	"ListProposedPlanComments":  true,
 	"ListThreadProposedPlans":   true,
-
-	// Design-mode read of stored option choices. Workdir mutations
-	// are LocalOnly in category 4.
-	"ListDesignOptions": true,
 
 	// Attachment listings (metadata only — bytes/thumbnails are
 	// LocalOnly in category 4).

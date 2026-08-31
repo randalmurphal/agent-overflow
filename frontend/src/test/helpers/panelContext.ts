@@ -15,8 +15,6 @@ export function makeStubPanelContext(overrides: Partial<PanelContext> = {}): Pan
     threadId: 'thread-1',
     thread: null,
     workspacePath: '/repo',
-    designViewport: 'desktop',
-    activeOptionSet: null,
     items: [],
     timelineRevision: 0,
     getItemById: () => undefined,
@@ -25,9 +23,6 @@ export function makeStubPanelContext(overrides: Partial<PanelContext> = {}): Pan
     close() {},
     replaceThread() {},
     async switchThread() {},
-    setDesignViewport() {},
-    setActiveOptionSet() {},
-    async refreshDesignOptions() {},
     ...overrides,
   };
 }

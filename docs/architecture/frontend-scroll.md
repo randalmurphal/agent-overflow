@@ -175,6 +175,12 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     row-UI prune. Geometry-mutating passes run only while no glide is
     running or armed, at most one per callback. Design rationale:
     [`scroll-arbitration-plan.md`](scroll-arbitration-plan.md).
+    Its activity-run pass additionally uses
+    `timelineVisibilityGeometry.ts`: a hidden document makes cached
+    virtualizer geometry ineligible to prove an off-screen fold until the
+    existing content-geometry subscription produces a new visible,
+    post-flush sample. The barrier is pass-local so background row-UI and
+    recent-window memory bounds keep their established cadence.
   - `timelineRowUiPrune.ts` bounds per-row expansion-handle retention
     to a buffer around the visible range plus the tail (a quiet-work
     pass on the 'always' rung: it mutates no visible geometry and must

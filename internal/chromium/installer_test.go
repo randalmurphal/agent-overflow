@@ -17,51 +17,11 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
-	"agent-overflow/internal/headlessshell"
 )
-
-// fakeArchive builds an in-memory zip mirroring Chrome-for-Testing's
-// layout: one top-level directory named after the platform,
-// containing a fake `chrome-headless-shell` (or .exe on Windows).
-// The fake binary is a tiny shell script / batch file we never
-// actually exec — it only has to exist with the executable bit set
-// for headlessshell.Executable() to accept it.
-func fakeArchive(t *testing.T, platform string) []byte {
-	t.Helper()
-	binName := "chrome-headless-shell"
-	if platform == "win64" {
-		binName = "chrome-headless-shell.exe"
-	}
-	innerDir := "chrome-headless-shell-" + platform
-
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	// Top-level folder entry — some unzippers care, ours doesn't,
-	// but match the real layout.
-	if _, err := zw.Create(innerDir + "/"); err != nil {
-		t.Fatalf("zip create dir: %v", err)
-	}
-
-	// The headless-shell binary with executable mode set.
-	hdr := &zip.FileHeader{Name: innerDir + "/" + binName, Method: zip.Deflate}
-	hdr.SetMode(0o755)
-	w, err := zw.CreateHeader(hdr)
-	if err != nil {
-		t.Fatalf("zip create file: %v", err)
-	}
-	if _, err := w.Write([]byte("#!/bin/sh\nexit 0\n")); err != nil {
-		t.Fatalf("zip write: %v", err)
-	}
-
-	if err := zw.Close(); err != nil {
-		t.Fatalf("zip close: %v", err)
-	}
-	return buf.Bytes()
-}
 
 func fakeChromeArchive(t *testing.T, platform string) []byte {
 	t.Helper()
-	path := filepath.ToSlash(strings.TrimPrefix(binaryPathFor("root", platform, ArtifactChrome), "root"+string(filepath.Separator)))
+	path := filepath.ToSlash(strings.TrimPrefix(binaryPathFor("root", platform), "root"+string(filepath.Separator)))
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	hdr := &zip.FileHeader{Name: path, Method: zip.Deflate}
@@ -88,7 +48,7 @@ func TestChromeBinaryPathsMatchPublishedArchiveLayouts(t *testing.T) {
 		"mac-arm64": filepath.Join(root, "chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"),
 	}
 	for platform, want := range cases {
-		if got := binaryPathFor(root, platform, ArtifactChrome); got != want {
+		if got := binaryPathFor(root, platform); got != want {
 			t.Errorf("%s path = %q, want %q", platform, got, want)
 		}
 	}
@@ -99,7 +59,7 @@ func TestInstallerUsesSuppliedExecutableWithoutNetwork(t *testing.T) {
 	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	installer := NewInstaller("", ArtifactChrome, eventchan.BrowserInstallProgress, nil)
+	installer := NewInstaller("", eventchan.BrowserInstallProgress, nil)
 	installer.BinaryPath = binary
 	result, err := installer.Install(context.Background())
 	if err != nil {
@@ -127,7 +87,7 @@ func TestInstallerInstallsFullChromeArtifact(t *testing.T) {
 			}},
 		}})
 	})
-	installer := NewInstaller(t.TempDir(), ArtifactChrome, "", nil)
+	installer := NewInstaller(t.TempDir(), "", nil)
 	installer.ManifestURL = server.URL + "/manifest"
 	installer.AllowInsecureScheme = true
 	result, err := installer.Install(context.Background())
@@ -145,11 +105,11 @@ func TestInstallerInstallsFullChromeArtifact(t *testing.T) {
 // any external network access.
 func fakeManifestServer(t *testing.T, version string) (*httptest.Server, *int32) {
 	t.Helper()
-	platform, err := headlessshell.Platform()
+	platform, err := currentPlatform()
 	if err != nil {
-		t.Skipf("headlessshell.Platform unsupported: %v", err)
+		t.Skipf("unsupported platform: %v", err)
 	}
-	zipBytes := fakeArchive(t, platform)
+	zipBytes := fakeChromeArchive(t, platform)
 
 	var downloads int32
 	var mu sync.Mutex
@@ -174,7 +134,7 @@ func fakeManifestServer(t *testing.T, version string) (*httptest.Server, *int32)
 				"Stable": {
 					Version: version,
 					Downloads: map[string][]chromeForTestingDownload{
-						"chrome-headless-shell": {{Platform: platform, URL: zipURL}},
+						"chrome": {{Platform: platform, URL: zipURL}},
 					},
 				},
 			},
@@ -186,7 +146,7 @@ func fakeManifestServer(t *testing.T, version string) (*httptest.Server, *int32)
 }
 
 func TestInstaller_Install_Fresh(t *testing.T) {
-	if _, err := headlessshell.Platform(); err != nil {
+	if _, err := currentPlatform(); err != nil {
 		t.Skipf("unsupported platform: %v", err)
 	}
 	cacheDir := t.TempDir()
@@ -194,7 +154,7 @@ func TestInstaller_Install_Fresh(t *testing.T) {
 
 	var events []InstallProgress
 	emit := func(name eventchan.Channel, data any) {
-		if name != eventchan.ScreenshotInstallProgress {
+		if name != eventchan.BrowserInstallProgress {
 			return
 		}
 		if p, ok := data.(InstallProgress); ok {
@@ -202,7 +162,7 @@ func TestInstaller_Install_Fresh(t *testing.T) {
 		}
 	}
 
-	inst := NewInstaller(cacheDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, emit)
+	inst := NewInstaller(cacheDir, eventchan.BrowserInstallProgress, emit)
 	inst.ManifestURL = srv.URL + "/manifest"
 	inst.AllowInsecureScheme = true // httptest.NewServer is plain HTTP
 
@@ -213,7 +173,7 @@ func TestInstaller_Install_Fresh(t *testing.T) {
 	if res.Version != "999.0.1.0" {
 		t.Errorf("Version = %q, want 999.0.1.0", res.Version)
 	}
-	if !headlessshell.Executable(res.BinaryPath) {
+	if !isExecutable(res.BinaryPath) {
 		t.Errorf("BinaryPath %q not executable", res.BinaryPath)
 	}
 	if *downloads != 1 {
@@ -240,13 +200,13 @@ func TestInstaller_Install_Fresh(t *testing.T) {
 }
 
 func TestInstaller_Install_Cached(t *testing.T) {
-	if _, err := headlessshell.Platform(); err != nil {
+	if _, err := currentPlatform(); err != nil {
 		t.Skipf("unsupported platform: %v", err)
 	}
 	cacheDir := t.TempDir()
 	srv, downloads := fakeManifestServer(t, "999.0.1.0")
 
-	inst := NewInstaller(cacheDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, nil)
+	inst := NewInstaller(cacheDir, eventchan.BrowserInstallProgress, nil)
 	inst.ManifestURL = srv.URL + "/manifest"
 	inst.AllowInsecureScheme = true
 
@@ -265,7 +225,7 @@ func TestInstaller_Install_Cached(t *testing.T) {
 }
 
 func TestInstaller_Install_BadStatus(t *testing.T) {
-	if _, err := headlessshell.Platform(); err != nil {
+	if _, err := currentPlatform(); err != nil {
 		t.Skipf("unsupported platform: %v", err)
 	}
 	cacheDir := t.TempDir()
@@ -275,7 +235,7 @@ func TestInstaller_Install_BadStatus(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	inst := NewInstaller(cacheDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, nil)
+	inst := NewInstaller(cacheDir, eventchan.BrowserInstallProgress, nil)
 	inst.ManifestURL = srv.URL + "/manifest"
 	inst.HTTPClient = &http.Client{Timeout: 5 * time.Second}
 	inst.AllowInsecureScheme = true
@@ -291,7 +251,7 @@ func TestInstallerDownloadRefusesOversizedArchiveFromHeaders(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(server.Close)
-	installer := NewInstaller(t.TempDir(), ArtifactChrome, "", nil)
+	installer := NewInstaller(t.TempDir(), "", nil)
 	err := installer.download(context.Background(), server.URL, filepath.Join(t.TempDir(), "chrome.zip.partial"), "test")
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized download error = %v", err)
@@ -304,7 +264,7 @@ func TestInstallerRejectsInsecureManifestBeforeNetworkRequest(t *testing.T) {
 		requested = true
 	}))
 	t.Cleanup(server.Close)
-	installer := NewInstaller(t.TempDir(), ArtifactChrome, "", nil)
+	installer := NewInstaller(t.TempDir(), "", nil)
 	installer.ManifestURL = server.URL + "/manifest"
 	if _, err := installer.Install(context.Background()); err == nil || !strings.Contains(err.Error(), "non-https") {
 		t.Fatalf("insecure manifest error = %v", err)
@@ -321,14 +281,14 @@ func TestInstallerUsesCachedArtifactWhenManifestIsOffline(t *testing.T) {
 	}
 	configDir := t.TempDir()
 	version := "999.0.1.0"
-	binaryPath := binaryPathFor(filepath.Join(configDir, "headless-shell", version), platform, ArtifactHeadlessShell)
+	binaryPath := binaryPathFor(filepath.Join(configDir, "chrome", version), platform)
 	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(binaryPath, []byte("cached"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	installer := NewInstaller(configDir, ArtifactHeadlessShell, "", nil)
+	installer := NewInstaller(configDir, "", nil)
 	installer.ManifestURL = "http://127.0.0.1:1/offline"
 	installer.AllowInsecureScheme = true
 	installer.HTTPClient = &http.Client{Timeout: 100 * time.Millisecond}
@@ -350,7 +310,7 @@ func TestInstaller_Install_BadPlatform(t *testing.T) {
 				"Stable": {
 					Version: "999.0.1.0",
 					Downloads: map[string][]chromeForTestingDownload{
-						"chrome-headless-shell": {{Platform: "alien-arch", URL: "ignored"}},
+						"chrome": {{Platform: "alien-arch", URL: "ignored"}},
 					},
 				},
 			},
@@ -359,7 +319,7 @@ func TestInstaller_Install_BadPlatform(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	inst := NewInstaller(cacheDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, nil)
+	inst := NewInstaller(cacheDir, eventchan.BrowserInstallProgress, nil)
 	inst.ManifestURL = srv.URL
 	inst.AllowInsecureScheme = true
 
@@ -373,7 +333,7 @@ func TestInstaller_Install_BadPlatform(t *testing.T) {
 }
 
 func TestInstaller_Install_RecoversIfBinaryAtUnexpectedPath(t *testing.T) {
-	platform, err := headlessshell.Platform()
+	platform, err := currentPlatform()
 	if err != nil {
 		t.Skipf("unsupported platform: %v", err)
 	}
@@ -384,11 +344,15 @@ func TestInstaller_Install_RecoversIfBinaryAtUnexpectedPath(t *testing.T) {
 	cacheDir := t.TempDir()
 
 	// Build a zip whose binary is at an unexpected nested path —
-	// simulates an upstream layout shift. findHeadlessShell should
+	// simulates an upstream layout shift. findBrowserBinary should
 	// recover by walking the version dir.
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	hdr := &zip.FileHeader{Name: "weird-layout/nested/chrome-headless-shell", Method: zip.Deflate}
+	target := "chrome"
+	if strings.HasPrefix(platform, "mac-") {
+		target = "Google Chrome for Testing"
+	}
+	hdr := &zip.FileHeader{Name: "weird-layout/nested/" + target, Method: zip.Deflate}
 	hdr.SetMode(0o755)
 	w, err := zw.CreateHeader(hdr)
 	if err != nil {
@@ -412,7 +376,7 @@ func TestInstaller_Install_RecoversIfBinaryAtUnexpectedPath(t *testing.T) {
 				"Stable": {
 					Version: "999.0.1.0",
 					Downloads: map[string][]chromeForTestingDownload{
-						"chrome-headless-shell": {{Platform: platform, URL: srv.URL + "/zip"}},
+						"chrome": {{Platform: platform, URL: srv.URL + "/zip"}},
 					},
 				},
 			},
@@ -420,7 +384,7 @@ func TestInstaller_Install_RecoversIfBinaryAtUnexpectedPath(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(body)
 	})
 
-	inst := NewInstaller(cacheDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, nil)
+	inst := NewInstaller(cacheDir, eventchan.BrowserInstallProgress, nil)
 	inst.ManifestURL = srv.URL + "/manifest"
 	inst.AllowInsecureScheme = true
 
@@ -428,10 +392,10 @@ func TestInstaller_Install_RecoversIfBinaryAtUnexpectedPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	if !strings.HasSuffix(res.BinaryPath, "chrome-headless-shell") {
-		t.Errorf("recovered BinaryPath = %q, want suffix chrome-headless-shell", res.BinaryPath)
+	if !strings.HasSuffix(res.BinaryPath, target) {
+		t.Errorf("recovered BinaryPath = %q, want suffix %q", res.BinaryPath, target)
 	}
-	if !headlessshell.Executable(res.BinaryPath) {
+	if !isExecutable(res.BinaryPath) {
 		t.Errorf("recovered BinaryPath %q not executable", res.BinaryPath)
 	}
 }
@@ -441,11 +405,11 @@ func TestInstaller_Install_RecoversIfBinaryAtUnexpectedPath(t *testing.T) {
 // left behind by previous Chrome rolls, so the on-disk cache size is
 // O(1) in the number of upstream releases rather than unbounded.
 func TestInstaller_PrunesOldVersionsOnFreshInstall(t *testing.T) {
-	if _, err := headlessshell.Platform(); err != nil {
+	if _, err := currentPlatform(); err != nil {
 		t.Skipf("unsupported platform: %v", err)
 	}
 	configDir := t.TempDir()
-	cacheDir := filepath.Join(configDir, "headless-shell")
+	cacheDir := filepath.Join(configDir, "chrome")
 	if err := os.MkdirAll(filepath.Join(cacheDir, "888.0.1.0"), 0o755); err != nil {
 		t.Fatalf("seed stale 888: %v", err)
 	}
@@ -454,7 +418,7 @@ func TestInstaller_PrunesOldVersionsOnFreshInstall(t *testing.T) {
 	}
 	srv, _ := fakeManifestServer(t, "999.0.1.0")
 
-	inst := NewInstaller(configDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, nil)
+	inst := NewInstaller(configDir, eventchan.BrowserInstallProgress, nil)
 	inst.ManifestURL = srv.URL + "/manifest"
 	inst.AllowInsecureScheme = true
 
@@ -478,14 +442,14 @@ func TestInstaller_PrunesOldVersionsOnFreshInstall(t *testing.T) {
 // again) is removed on the second invocation even though no fresh
 // download happened.
 func TestInstaller_PrunesOldVersionsOnWarmCache(t *testing.T) {
-	if _, err := headlessshell.Platform(); err != nil {
+	if _, err := currentPlatform(); err != nil {
 		t.Skipf("unsupported platform: %v", err)
 	}
 	configDir := t.TempDir()
-	cacheDir := filepath.Join(configDir, "headless-shell")
+	cacheDir := filepath.Join(configDir, "chrome")
 	srv, _ := fakeManifestServer(t, "999.0.1.0")
 
-	inst := NewInstaller(configDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, nil)
+	inst := NewInstaller(configDir, eventchan.BrowserInstallProgress, nil)
 	inst.ManifestURL = srv.URL + "/manifest"
 	inst.AllowInsecureScheme = true
 
@@ -513,16 +477,16 @@ func TestInstaller_PrunesOldVersionsOnWarmCache(t *testing.T) {
 }
 
 // TestInstaller_PruneIgnoresInvalidSegments pins the safety guarantee:
-// a directory under headless-shell/ whose name doesn't pass
+// a directory under chrome/ whose name doesn't pass
 // validateVersionSegment is left alone. Without this check, a hand-
 // edited cacheDir could turn the prune step into a recursive-remove
 // primitive on arbitrary sibling paths.
 func TestInstaller_PruneIgnoresInvalidSegments(t *testing.T) {
-	if _, err := headlessshell.Platform(); err != nil {
+	if _, err := currentPlatform(); err != nil {
 		t.Skipf("unsupported platform: %v", err)
 	}
 	configDir := t.TempDir()
-	cacheDir := filepath.Join(configDir, "headless-shell")
+	cacheDir := filepath.Join(configDir, "chrome")
 	// Both names trip the contains("..") guard in validateVersionSegment
 	// — they're shapes a hand-edited cacheDir might plausibly contain
 	// (a half-typed traversal attempt, a manual-rename gone wrong) but
@@ -535,7 +499,7 @@ func TestInstaller_PruneIgnoresInvalidSegments(t *testing.T) {
 	}
 	srv, _ := fakeManifestServer(t, "999.0.1.0")
 
-	inst := NewInstaller(configDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, nil)
+	inst := NewInstaller(configDir, eventchan.BrowserInstallProgress, nil)
 	inst.ManifestURL = srv.URL + "/manifest"
 	inst.AllowInsecureScheme = true
 
