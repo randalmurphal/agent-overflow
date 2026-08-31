@@ -52,9 +52,12 @@ func readPastHello(t *testing.T, conn *websocket.Conn) []byte {
 // every other frame.
 func TestServer_HelloIsTheFirstFrameOnEveryConnection(t *testing.T) {
 	f := newServerFixture(t)
-	conn := f.dial(t)
-
+	// Sampled before the DIAL, not before the read: the server stamps the
+	// hello while it handles the upgrade, so a window opened afterwards
+	// starts later than the value it is bounding and fails whenever the
+	// upgrade costs a millisecond.
 	before := time.Now().UnixMilli()
+	conn := f.dial(t)
 	raw := readFirstFrame(t, conn)
 	after := time.Now().UnixMilli()
 
