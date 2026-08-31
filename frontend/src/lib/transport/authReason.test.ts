@@ -41,11 +41,22 @@ describe('presentAuthReason', () => {
     expect(shown.retryable).toBe(true);
   });
 
-  // Every other refusal is resolved by presenting a DIFFERENT credential, so
-  // offering a retry would offer a button that cannot work.
+  // The other refusal whose remedy is not "present a different credential":
+  // the device holds the real credential already and is waiting for the owner
+  // to match the verification number on the minting surface. Retrying is
+  // exactly what it should do, on a credential that will start working.
+  it('sends a pending confirmation back to the other device', () => {
+    const shown = presentAuthReason('pending_confirmation');
+    expect(shown.retryable).toBe(true);
+  });
+
+  // Every remaining refusal is resolved by presenting a DIFFERENT credential,
+  // so offering a retry would offer a button that cannot work.
+  const RETRYABLE_REFUSALS = new Set(['outside_time_window', 'pending_confirmation']);
+
   it('marks the credential refusals as not retryable', () => {
     for (const code of AUTH_REASON_CODES) {
-      if (code === 'outside_time_window') continue;
+      if (RETRYABLE_REFUSALS.has(code)) continue;
       expect(presentAuthReason(code).retryable, code).toBe(false);
     }
     expect(UNKNOWN_AUTH_REASON.retryable).toBe(false);
