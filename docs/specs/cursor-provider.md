@@ -166,15 +166,58 @@ shared ACP runtime):
   chunks replayed as 1), ordering and tool calls preserved; the
   response then carries current modes/models/configOptions with the
   session's model intact.
+- Permissions (spike-confirmed): shell `execute` in `agent` mode fires
+  `session/request_permission` with `toolCall` context and options
+  `[{optionId: "allow-once", kind: "allow_once"}, allow-always,
+  reject-once]`; a file edit prompts nothing. `plan` mode is enforced
+  (edit request refused, zero tool calls) and switching emits
+  `current_mode_update`. `session/set_config_option` takes `configId`
+  (not `configOptionId`; wrong keys return `-32603` with zod-style
+  detail) and returns the full refreshed configOptions.
+- Execute output: completed `tool_call_update` carries
+  `rawOutput: {exitCode, stdout, stderr}`.
+- MCP passthrough (spike-confirmed WORKING on 2026.08.25): an
+  `mcpServers: [{type: "http", name, url, headers}]` entry in
+  `session/new` is connected immediately (initialize →
+  notifications/initialized → tools/list over streamable HTTP) and
+  tools are callable. Tool-call updates title as `"<server>: <tool>"`,
+  `kind: "other"`, `rawInput: {providerIdentifier, toolName, args}`,
+  but completed `rawOutput` is only `{success: true}` — the MCP result
+  content is not surfaced in the tool call, only in the model's prose.
+- Subagents (spike-confirmed): the parent turn shows a `tool_call`
+  (`kind: "other"`, `rawInput: {_toolName: "task", prompt, description,
+  subagentType}`) that completes with `rawOutput: {durationMs,
+  isBackground}`, and a single `cursor/task` notification arrives at
+  completion carrying `{toolCallId, description, prompt, subagentType,
+  model, agentId, durationMs}`. No live child streaming and no child
+  transcript on the wire; the child's findings only surface in the
+  parent's prose.
+- Client fs/terminal: cursor never calls `fs/*` or `terminal/*` even
+  when the client advertises them — file and shell work is all
+  agent-side. Implement them in `internal/provider/acp` for spec
+  completeness (other ACP agents use them), expect zero cursor
+  traffic.
+- Image prompts work: `{type: "image", data: <base64>, mimeType}`
+  content block accepted and seen by the model (spike: described a
+  1px PNG).
+- Headless (`agent -p --output-format stream-json --model … --trust`):
+  Claude-Code-shaped events (`system`/`init` with
+  `permissionMode`/`session_id`, `user`, `assistant` message chunks,
+  `result`), and `result` carries `usage: {inputTokens, outputTokens,
+  cacheReadTokens, cacheWriteTokens}` plus `duration_ms`,
+  `request_id`. Usage is real but headless-only. Headless requires
+  workspace trust (`--trust`); ACP sessions never prompt for trust.
 
 ## Gap table (living)
 
 | Feature | Wire status | Resolution |
 |---|---|---|
-| Token usage per turn | no usage data observed over ACP (S1, 2026.08.25) | gap, pending S13 headless cross-check + re-probe on CLI updates |
+| Token usage per turn | none over ACP; headless `result.usage` proves the backend tracks it (S1+S13) | GAP over ACP; re-probe for `usage_update` on CLI updates |
 | Thread fork | `session/fork` → Method not found (S2) | GAP: fork disabled in the provider catalog for cursor |
 | Rewind/checkpoints | no ACP method documented | gap unless a spike finds a route |
-| Non-image attachments | `embeddedContext: false` advertised at initialize | path-in-prompt; images native (`image: true`), verify send shape in S5 |
+| Non-image attachments | `embeddedContext: false` advertised at initialize | path-in-prompt; images native and spike-verified (S5) |
+| Subagent child streaming | `cursor/task` fires only at completion; no child transcript on the wire (S8) | launch row + completion metadata only; no live child view |
+| MCP tool result content | completed update carries `{success: true}` only (S3) | render call + args + success; result text stays in model prose |
 
 ## Integration inventory (Phase B)
 
@@ -242,14 +285,14 @@ docs. Spike models: `gpt-5.4-nano` / `composer-2.5[fast=true]`.
 |---|---|---|
 | S1 | Does `agent acp` emit `usage_update` (or any usage data)? | CLOSED 2026-08-31: none observed on a full turn; re-probe each CLI update |
 | S2 | Is `session/fork` implemented? | CLOSED 2026-08-31: `-32601`, same for `session/resume`; only `session/load` |
-| S3 | Does `session/new` `mcpServers` actually spawn/connect servers today? Detectable when it silently doesn't? | open |
+| S3 | MCP passthrough reality | CLOSED 2026-08-31: works end-to-end (connect at session/new, tools/list, tools/call); result content thin, see Gap table |
 | S4 | Slash/custom commands over ACP? | CLOSED 2026-08-31: `available_commands_update` after `session/new`, builtin + user skills |
-| S5 | Image content-block send shape in `session/prompt`? (non-image ruled out: `embeddedContext: false`) | open |
+| S5 | Image content-block send shape | CLOSED 2026-08-31: base64 image block accepted and seen by the model |
 | S6 | `session/load` replay burst: shape, ordering, fidelity | CLOSED 2026-08-31: coalesced canonical replay before RPC response; see Verified wire facts |
-| S7 | On-disk session format (importer fallback input) | PARTIAL 2026-08-31: `~/.cursor/acp-sessions/<id>/` meta.json + SQLite store.db; schema unexplored; wire-first import preferred via `session/list` |
-| S8 | `cursor/task` subagent notification lifecycle: correlation to tool calls, transcript access, interruption | open |
+| S7 | On-disk session format (importer fallback input) | PARTIAL 2026-08-31: `~/.cursor/acp-sessions/<id>/` meta.json + SQLite (`blobs` + `meta`); blobs are raw model-conversation JSON, some compressed; full schema only matters if wire-first import proves insufficient |
+| S8 | `cursor/task` subagent lifecycle | CLOSED 2026-08-31: completion-time notification only, no child streaming; see Verified wire facts |
 | S9 | Thinking stream presence | CLOSED 2026-08-31: `agent_thought_chunk` streams (per-model coverage still worth sampling) |
-| S10 | Permission-request shapes per mode (`agent`/`plan`/`ask`), sandbox interaction, option ids | PARTIAL 2026-08-31: file edit in `agent` mode prompts nothing; command/plan/ask shapes open |
-| S11 | `initialize` capability advertisement vs reality (the MCP bug showed capabilities can lie) | open |
-| S12 | Terminal methods: does cursor call `terminal/*` when the client advertises them? | open |
-| S13 | Headless `stream-json` event shapes (textgen path + usage cross-check) | open |
+| S10 | Permission-request shapes per mode | CLOSED 2026-08-31: execute prompts (allow-once/always, reject-once), edits don't; plan mode enforced; `ask` untested but same config surface |
+| S11 | Capability advertisement vs reality | CLOSED 2026-08-31: every advertised capability checked out on 2026.08.25 (list, load, image, MCP http); re-verify after CLI updates |
+| S12 | Does cursor call `terminal/*`/`fs/*` when advertised? | CLOSED 2026-08-31: never; all file/shell work is agent-side |
+| S13 | Headless `stream-json` event shapes | CLOSED 2026-08-31: Claude-Code-shaped stream, `result.usage` present; needs `--trust` |
