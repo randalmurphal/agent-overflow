@@ -10,8 +10,9 @@ remote-hosted backend, reached through this stub.
   `Serve`, `Server`. The stub HTTP server, the credential exchange, the
   WebSocket carrier, and the URL parser all live here.
 - `clientmode_test.go`: URL-parsing tests, shell-serving and manifest
-  tests, the credential and origin rules on `/ws`, the upstream
-  revalidation verdicts, static-asset serving, idempotent shutdown.
+  tests, the credential and origin rules on `/ws`, the forwarded session
+  credential and its refresh-on-refusal, the upstream revalidation
+  verdicts, static-asset serving, idempotent shutdown.
 
 ## Responsibility boundary
 
@@ -61,6 +62,33 @@ connection-derived that means no bucket at all.
 
 So the SPA's socket is same-origin (it dials this stub), and the
 cross-origin hop happens in Go where no page script can observe it.
+
+## The hop also names a session
+
+The bearer token says which BACKEND this stub was configured for; it says
+nothing about which connection is asking. Reaching the upstream over
+loopback or the LAN, the stub would otherwise be trusted for its topology
+alone — the same problem the WSL launcher has, in the same shape, which is
+why the mechanism lives in `internal/relaysession` and not twice.
+
+`Serve` builds a `relaysession.Source` against the upstream's
+`/bootstrap.json` (`relaysession.BootstrapURL`, which is also what derives
+`upstreamBootstrapURL` for the revalidation probe — one derivation, so the
+endpoint this stub dials and the endpoint it asks for a credential can
+never name different backends). The proxy's `Rewrite` then deletes any
+inbound `X-AO-Session` and sets the one this process fetched: a browser
+cannot put a header on an upgrade, but a local non-browser client holding
+this stub's cookie could, and a forwarded one would let it name a session
+it never obtained.
+
+Failure degrades, never blocks. An upstream with no session core to speak
+of leaves the header off and the upgrade carries the bearer token alone,
+exactly as it did before forwarding existed. `ModifyResponse` marks the
+credential stale on any non-101 answer — a refused upgrade is the one
+signal it has gone dead — and passes the response through untouched: the
+verdict on whether the TOKEN is still honoured belongs to the
+`/bootstrap.json` probe below, which is the one place that maps upstream
+status onto the SPA's terminal state.
 
 **Carrying `/ws` rather than pointing the browser at the upstream is the
 design choice this package is built around.** The alternative — hand the
@@ -118,3 +146,5 @@ outage still lands its cookie and its retry costs no ticket.
   exchange, and the origin rule this package reuses rather than restates.
 - `internal/transport/server.go`: the in-process HTTP+WS server
   skipped on `--connect`.
+- `internal/relaysession`: the forwarded session credential, shared with
+  the WSL launcher. Its package doc carries the full contract.

@@ -123,21 +123,24 @@ put on a page URL.
 
 ## The launcher forwards the backend's session credential
 
-`session_credential.go`. Every launcher connection reaches the WSL backend
-through the localhost relay, so it looks like a loopback peer at the
-socket — indistinguishable from a same-host relay carrying somebody else's
-traffic. Presenting the credential the backend minted for its own local
-page channel is what makes the notification socket attributable and
-revocable instead of trusted for its apparent topology
-(`docs/specs/remote-access.md` §4, "Local clients").
+`internal/relaysession`, reached through the small
+`newSessionCredentialSource` adapter in `notification_client.go`. Every
+launcher connection reaches the WSL backend through the localhost relay,
+so it looks like a loopback peer at the socket — indistinguishable from a
+same-host relay carrying somebody else's traffic. Presenting the
+credential the backend minted for its own local page channel is what makes
+the notification socket attributable and revocable instead of trusted for
+its apparent topology (`docs/specs/remote-access.md` §4, "Local clients").
 
-- **The credential is not on the bootstrap line, and cannot be.** The
-  launcher receives that line as soon as the transport binds; the session
-  core boots later, during the backend's startup. So the launcher ASKS,
-  over the channel it is already authenticated on — an authenticated
-  `/bootstrap.json` GET, reading the credential out of the session cookie
-  that exchange plants. One route, one exchange, no second delivery
-  mechanism.
+The mechanism is shared with the `--connect` stub, which has the same
+problem with the same shape, so it lives in one package rather than twice.
+That package restates the cookie prefix and the header name for the reason
+`PageURLPath` is restated here — the Windows launcher links it and does
+not link the transport server — and its
+`TestSessionCarriersMatchTransport` pins both spellings. Read
+`internal/relaysession`'s package doc for the full contract; what matters
+here is the launcher's half:
+
 - **It rides a header on the dial** (`X-AO-Session`), never the URL. A Go
   dial can set one, and a credential in a URL lands in every log that
   records them.
@@ -145,15 +148,14 @@ revocable instead of trusted for its apparent topology
   backend, or one whose session core did not start all leave the
   credential empty, and the connection carries the launch token alone
   exactly as before. Forwarding improves attribution; it is never a new
-  requirement for the launcher to connect.
-- **A refused dial forces a re-fetch**, because that is the one signal a
-  forwarded credential has gone stale (the backend restarted, or the
-  session was revoked). Without it the ladder would replay a dead
-  credential until the launcher restarted.
-- The cookie prefix and the header name are **restated** here rather than
-  imported, for the reason `PageURLPath` is: this package is compiled into
-  the Windows launcher, which does not link the transport server.
-  `TestSessionCarriersMatchTransport` pins both spellings.
+  requirement for the launcher to connect. A WebSocket URL that will not
+  map onto a bootstrap URL yields an inert source, not a construction
+  failure.
+- **A refused dial marks the credential stale** (`Source.Stale`), because
+  that is the one signal a forwarded credential has gone dead (the backend
+  restarted, or the session was revoked). The next attempt in the ladder
+  fetches — after the backoff, when the backend is likelier to answer —
+  rather than replaying a dead credential until the launcher restarted.
 
 ## WSL2 localhost forwarding
 

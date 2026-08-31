@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/loopback"
+	"agent-overflow/internal/relaysession"
 	"agent-overflow/internal/transport"
 )
 
@@ -108,6 +109,12 @@ type Server struct {
 	// wsProxy carries the SPA's WebSocket to the upstream /ws, adding
 	// the upstream credential on the way out. Built once at Serve time.
 	wsProxy *httputil.ReverseProxy
+
+	// session is the upstream backend's local page-channel credential,
+	// forwarded on every carried upgrade so the hop names a session
+	// instead of being trusted for arriving over loopback. Best-effort:
+	// see internal/relaysession.
+	session *relaysession.Source
 
 	// probeClient bounds the upstream probe. Overridable in tests.
 	probeClient *http.Client
@@ -219,11 +226,17 @@ func Serve(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("clientmode: read index.html: %w", err)
 	}
-	upstreamBootstrap, err := upstreamBootstrapURL(cfg.WSURL)
+	upstreamBootstrap, err := relaysession.BootstrapURL(cfg.WSURL)
 	if err != nil {
 		return nil, fmt.Errorf("clientmode: derive upstream bootstrap URL: %w", err)
 	}
-	wsProxy, err := newWSProxy(cfg.WSURL, cfg.Token)
+	// One client for both jobs that speak HTTP to the upstream: the
+	// revalidation probe and the credential fetch. Same endpoint, same
+	// bound — and the credential fetch runs inline on an upgrade, which is
+	// the path that must not stall.
+	upstreamClient := &http.Client{Timeout: bootstrapProbeTimeout}
+	session := relaysession.New(upstreamBootstrap, cfg.Token, upstreamClient)
+	wsProxy, err := newWSProxy(cfg.WSURL, cfg.Token, session)
 	if err != nil {
 		return nil, fmt.Errorf("clientmode: build websocket proxy: %w", err)
 	}
@@ -251,7 +264,8 @@ func Serve(cfg Config) (*Server, error) {
 		remote:               !loopback.EndpointAuthority(parsedWSURL.Host),
 		upstreamBootstrapURL: upstreamBootstrap,
 		wsProxy:              wsProxy,
-		probeClient:          &http.Client{Timeout: bootstrapProbeTimeout},
+		session:              session,
+		probeClient:          upstreamClient,
 	}
 
 	mux := http.NewServeMux()
@@ -511,30 +525,6 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(manifest)
 }
 
-// upstreamBootstrapURL maps the configured WS endpoint onto the upstream
-// transport's manifest endpoint: ws→http / wss→https, and a trailing
-// /ws path segment (the transport's upgrade route) replaced by
-// /bootstrap.json so a reverse-proxy path prefix survives.
-func upstreamBootstrapURL(wsURL string) (string, error) {
-	parsed, err := url.Parse(wsURL)
-	if err != nil {
-		return "", fmt.Errorf("parse ws url: %w", err)
-	}
-	switch parsed.Scheme {
-	case "ws":
-		parsed.Scheme = "http"
-	case "wss":
-		parsed.Scheme = "https"
-	default:
-		return "", fmt.Errorf("unsupported scheme %q", parsed.Scheme)
-	}
-	prefix := strings.TrimSuffix(strings.TrimSuffix(parsed.Path, "/"), "/ws")
-	parsed.Path = prefix + "/bootstrap.json"
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return parsed.String(), nil
-}
-
 // loopbackOnly requires the request's Host to name loopback, which the
 // bind address alone does not establish. The stub binds 127.0.0.1, but a
 // DNS name that resolves to 127.0.0.1 reaches it just as well: a page
@@ -673,7 +663,7 @@ func readIndexHTML(assets fs.FS) ([]byte, error) {
 // connection and splices both directions, which also clears the HTTP
 // server's write deadline (net/http hijackLocked), so the stub's request
 // timeouts cannot cut a healthy long-lived socket.
-func newWSProxy(wsURL, token string) (*httputil.ReverseProxy, error) {
+func newWSProxy(wsURL, token string, session *relaysession.Source) (*httputil.ReverseProxy, error) {
 	parsed, err := url.Parse(wsURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse ws url: %w", err)
@@ -700,6 +690,33 @@ func newWSProxy(wsURL, token string) (*httputil.ReverseProxy, error) {
 			pr.Out.Header.Del("Cookie")
 			pr.Out.Header.Del("Origin")
 			pr.Out.Header.Set("Authorization", "Bearer "+token)
+			// The session credential is this process's to set and nobody
+			// else's. Deleted before it is written, so the value on the
+			// hop is always the one this stub fetched: a browser cannot
+			// put a header on an upgrade, but a local non-browser client
+			// holding this stub's cookie could, and a forwarded one would
+			// let it name a session it did not obtain.
+			pr.Out.Header.Del(relaysession.Header)
+			if credential := session.Credential(pr.In.Context()); credential != "" {
+				pr.Out.Header.Set(relaysession.Header, credential)
+			}
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			// Anything but the switch is a refused upgrade, and a refusal
+			// is the one signal that a forwarded credential has gone stale
+			// — the upstream restarted, or the session was revoked. Mark
+			// it rather than refetching here: the SPA's reconnect ladder
+			// owns the retry, and the next carried upgrade fetches a live
+			// one instead of replaying the dead one.
+			//
+			// The response is passed through untouched. The verdict on
+			// whether the TOKEN is still honoured belongs to the
+			// /bootstrap.json probe, which is the one place that maps
+			// upstream status onto the SPA's terminal state.
+			if resp.StatusCode != http.StatusSwitchingProtocols {
+				session.Stale()
+			}
+			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			// An unreachable upstream is the SPA's ordinary outage: its
