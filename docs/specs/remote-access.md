@@ -22,7 +22,7 @@ is per-device by design; prefer over-doing it to under-doing it.
   under backend sections.
 - An always-on personal machine (home server) is a first-class case:
   every other device pairs once over LAN and attaches automatically
-  thereafter. No tailnet is required; tailnet/tunnel exist for
+  thereafter. No tailnet is required; the tailnet exists for
   off-network reach only.
 - Teammates' *backends* peer with ours (federation) holding read-only
   scoped sessions over shared workspaces, and can fork enrolled threads
@@ -52,7 +52,6 @@ anywhere. Authorization is therefore a product of three axes:
 |---|---|---|
 | `loopback-only` | embedded webview, WSL launcher relay, `ao` CLI | loopback listeners only |
 | `device-bound` | paired devices with a key (DPoP) or passkey | any listener |
-| `public` | sessions used over tunnel/Funnel | any listener; DPoP proof required per request |
 
 Rules:
 
@@ -63,7 +62,6 @@ Rules:
 - **Execute-tier scopes (§5) require `binding ≥ device-bound`.** A
   leaked `loopback-only` webview session therefore carries no remote
   capability at all.
-- Publicly-reachable listeners accept only `public`-class presentations.
 
 ### Principal tiers
 
@@ -86,7 +84,11 @@ device is not equally privileged everywhere:
 |---|---|
 | loopback / same host | full (subject to tier) |
 | private network: LAN with TLS, tailnet | full (subject to tier) |
-| public: Funnel, Cloudflare tunnel | full **minus the step-up set and `terminal:operate`** (ruled 2026-08-31, §18), and `public` binding required |
+
+These are the only paths. The backend never listens on a publicly
+reachable endpoint: tunnel/Funnel exposure was cut entirely (ruled
+2026-08-31, §18), so every connection is a device the owner enrolled,
+arriving over a network the owner controls.
 
 ### Effective scopes
 
@@ -100,10 +102,10 @@ push, attachments, and snapshots) authorizes from that one
 set (§13). There is no second code path that decides access, so there is
 no surface that can drift out of policy.
 
-This is what makes "my phone on my tailnet" and "my phone over a public
-tunnel" different privileges without maintaining two device records, and
-what makes a teammate's backend structurally incapable of holding an
-execute scope even if a grant were mis-issued.
+This is what makes the host's own window and a paired phone different
+privileges without maintaining two device records, and what makes a
+teammate's backend structurally incapable of holding an execute scope
+even if a grant were mis-issued.
 
 ### Scope of impact (stated plainly)
 
@@ -194,7 +196,7 @@ built.
 ### Sessions
 
 - **Access tokens are short-lived** (minutes–hours), always
-  key-bound for `device-bound`/`public` classes.
+  key-bound for the `device-bound` class.
 - **Refresh is rotating with reuse detection**: each renewal issues a
   new refresh secret and invalidates its predecessor; replay of a spent
   refresh forks the family, **auto-revokes the whole family**, and
@@ -696,8 +698,8 @@ seam exists; the class table is phase 6).
 
 ### Multi-listener, one session store
 
-Loopback (webview, CLI), optional LAN bind, optional tsnet listener,
-optional tunnel-fronted. Sessions are valid across listeners **subject
+Loopback (webview, CLI), optional LAN bind, optional tsnet listener.
+Sessions are valid across listeners **subject
 to their binding class** (§2). Local clients never hairpin through the
 tailnet, and a soft listener cannot launder a strong credential into a
 weaker presentation.
@@ -708,7 +710,7 @@ domain + known loopback names), Origin / `Sec-Fetch-Site` checks on
 
 Listener and endpoint-advertisement init is **per-listener isolated**:
 one integration failing to start (a broken `tailscale` binary on
-PATH, a dead tunnel) degrades that listener only and surfaces its
+PATH) degrades that listener only and surfaces its
 error — it never takes down the others (t3code shipped exactly this
 bug: one spawn defect killed all endpoint advertisement).
 
@@ -729,7 +731,7 @@ The always-on home machine is a first-class case, not a degraded one:
 enable the LAN listener, pair each device once (QR/code), and durable
 rotating sessions plus the stable endpoint make every later attach
 automatic. Laptop, phone app, and the machine's own window connect
-the same way, no tailnet involved. Tailscale/Funnel are for
+the same way, no tailnet involved. Tailscale is for
 *off-network* reach only, never a LAN prerequisite. The one
 platform-imposed limit (constraint 6): plain-HTTP LAN **browsers** are
 bearer-only: no passkeys, no service workers. The desktop app, CLI,
@@ -738,7 +740,7 @@ subject to browser secure-context rules, and get encrypted TLS with no
 domain at all via cert pinning anchored in the pairing payload (see
 TLS below). Wanting passkeys in a LAN browser is the one thing that
 requires the DNS-01 owned-domain path: real HTTPS on a private
-address, still no tunnel. It is an optional upgrade, never a
+address, nothing publicly reachable. It is an optional upgrade, never a
 dependency.
 
 ### TLS (in-app termination)
@@ -747,7 +749,7 @@ Two supported paths; others are documented escape hatches, not built:
 
 1. **Owned domain + DNS-01**. DNS record → LAN IP (public DNS may hold
    private addresses), Let's Encrypt via DNS-01, backend renews. Real
-   HTTPS on a LAN-only path, valid passkey RP ID, no tunnel.
+   HTTPS on a LAN-only path, valid passkey RP ID.
 2. **tsnet cert**. LE cert for the node's `*.ts.net` name, MagicDNS
    resolution, direct peer connections.
 
@@ -764,8 +766,7 @@ WebSocket bridge (§9, constraint 8). Plain browsers are the one class
 that cannot pin, so they remain the cleartext-LAN / owned-domain
 cases; passkey RP ID still requires the owned-domain path.
 
-Escape hatches: private CA (mkcert-style, manual trust), cloudflared
-subprocess with an owned domain. The chosen HTTPS name is the backend's
+Escape hatch: private CA (mkcert-style, manual trust). The chosen HTTPS name is the backend's
 **canonical domain**: passkey RP ID, related-origins anchor (max 5), and
 the phone app's dial target.
 
@@ -794,7 +795,7 @@ when the dev server binds beyond loopback). We build the gateway:
 - The backend proxies HTTP **and WebSocket upgrades** (HMR) to
   `localhost:<port>` on its own machine; the in-app browser points at
   the gateway when the thread's host is not the local machine. Works
-  over LAN, tailnet, and tunnel alike; the dev server needs no
+  over LAN and tailnet alike; the dev server needs no
   `--host` flag and never binds beyond loopback.
 - **Reachable ports are an allowlist, never arbitrary**: ports the
   dev-server scanner attributed to this thread's sessions, plus ports
@@ -824,13 +825,14 @@ when the dev server binds beyond loopback). We build the gateway:
 
 ### Anywhere access
 
-tsnet embedded (BSD-3, userspace, works in WSL2 without TUN) with
-Funnel for public reach; cloudflared subprocess as the alternative.
-Public listeners: `public`-class sessions only, step-up set unreachable
-without fresh proof, pairing/token/ticket endpoints rate-limited with
-limits keyed by **token/account with a global counter across listeners**
-(per-IP fails behind a tunnel, where every request shares one source
-address; derive real client IP from our own validated forwarded header).
+tsnet embedded (BSD-3, userspace, works in WSL2 without TUN): the
+backend joins the owner's tailnet as its own node, and off-network
+reach IS the tailnet. There is no public listener and no tunnel
+integration — Funnel/cloudflared were cut (ruled 2026-08-31, §18) —
+so "anywhere" always means a device the owner enrolled on a network
+path the owner controls. Pairing/token/ticket endpoints stay
+rate-limited, keyed by **token/account with a global counter across
+listeners**.
 
 ### Headless serve mode and remote update
 
@@ -1234,7 +1236,8 @@ build a file-open protocol.
 ## 11. Team sharing (federation)
 
 Chosen topology: **peer backends, not teammate devices.** A teammate's
-backend holds one read-only, `public`-class, key-bound session against
+backend holds one read-only, key-bound peer session (class named at
+phase-8 design time) against
 ours, scoped to shared workspaces, and re-projects to its own devices.
 Reviewed alternative (teammates' browsers connecting directly) is
 simpler but puts N of their devices and credentials against our machine;
@@ -1285,8 +1288,8 @@ no new store.
   That would require the store to become a full-fidelity event store
   (violating principle 3) and is untestable under the no-real-provider
   invariant.
-- Reachability: Tailscale node sharing (cross-tailnet, no merge),
-  Funnel/Cloudflare URL, or LAN.
+- Reachability: Tailscale node sharing (cross-tailnet, no merge) or
+  LAN.
 
 ## 12. Consequences for existing principles
 
@@ -1333,7 +1336,7 @@ Classes to enumerate:
   tickets, attachments, snapshots, health/version.
 - **Event channels**: required scope per channel, resolved into the
   connection's precomputed visible set.
-- **Listeners**: loopback, LAN, tsnet, tunnel, plus the auxiliary
+- **Listeners**: loopback, LAN, tsnet, plus the auxiliary
   loopback servers (browser MCP, harness control, claudetui gateway +
   hook relay, pprof, the `--connect` client stub, the dev supervisor)
   and the **implicit** ones our own child processes open — chromedp
@@ -1390,7 +1393,7 @@ frame.**
 - **tsnet is opt-in and lazily initialized.** An embedded userspace
   WireGuard stack costs memory and keeps DERP connections alive; a user
   who never enables remote access must not pay for it. Same for the
-  tunnel subprocess and the TLS listener.
+  TLS listener.
 - **CSP and security headers are constant strings** set from a
   prebuilt header block, with no per-request construction.
 - **Symlink-safe file serving** costs a few extra syscalls per *open*
@@ -1604,8 +1607,8 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    free Firebase project; iOS Web Push requires home-screen install and
    is unavailable to EU-mode PWAs. Vendor push keys cannot ship in
    self-hosted binaries (§9).
-5. cloudflared is subprocess-only; tsnet needs a control plane
-   (Tailscale account or self-hosted Headscale).
+5. tsnet needs a control plane (Tailscale account or self-hosted
+   Headscale).
 6. Plain-HTTP LAN browsers lose WebAuthn, service workers, clipboard,
    **and non-extractable WebCrypto**, so they are bearer-only. There is
    no LAN-HTTP DPoP path.
@@ -1883,13 +1886,16 @@ scope. Device revoke and rename from a paired device ride the standing
 grant behind a confirmation dialog; step-up stays on pairing-grant
 minting only, because pairing is where the strong ceremony already
 lives (passkey once phase 5 lands) and a device's own unlock covers
-casual access. Also ruled: the reachable paths are LAN and the owner's
-tailnet, and both are trusted alike — every granted scope, including
-`terminal:operate`, works over the tailnet. The public-path ceiling
-(§2) applies only to a deliberately published endpoint (Funnel or an
-equivalent public tunnel), and there it excludes `terminal:operate` on
-top of the step-up set. The owner does not plan to publish one, so the
-ceiling is headroom, not a constraint.
+casual access. Also ruled, superseding an
+earlier same-day ceiling ruling: the public path does not exist. The
+reachable paths are loopback, LAN, and the owner's tailnet, all
+trusted alike — every granted scope, `terminal:operate` included,
+works over the tailnet. Funnel/cloudflared tunnel exposure is cut from
+the design entirely (the `public` session class with it): every
+connection is an intentional one through an enrolled device, and
+sharing rides proper channels (tailnet node sharing, LAN) rather than
+a published endpoint. If a no-tailnet share link is ever wanted, it
+returns as a phase-8 question against a team hub, not this backend.
 
 Settled in review: approvals are never gated on the owner's own devices;
 terminal access is not withheld from native clients by device class;
