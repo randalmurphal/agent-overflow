@@ -124,6 +124,58 @@ export function indexedDbAvailable(): boolean {
   return typeof indexedDB !== 'undefined' && indexedDB !== null;
 }
 
+/**
+ * Every database name on this origin, or NULL where the engine cannot
+ * enumerate them (`indexedDB.databases` is absent on Firefox before 126;
+ * Chromium, WebKit and every shell this app ships in have it).
+ *
+ * Null means UNKNOWN and never "none": a caller that turned it into a
+ * deletion decision would delete on exactly the engines that cannot show
+ * it what it is deleting. `purge.ts` documents what is lost where the
+ * enumeration is missing.
+ */
+export function listDatabaseNames(): Promise<string[] | null> {
+  // lib.dom types `databases()` as always present; the runtime does not
+  // agree, and this is the check that keeps the older engine working.
+  const factory: Partial<Pick<IDBFactory, 'databases'>> = indexedDB;
+  const databases = factory.databases;
+  if (typeof databases !== 'function') return Promise.resolve(null);
+  return withTimeout('list databases', async () => {
+    const infos = await databases.call(indexedDB);
+    const names: string[] = [];
+    for (const info of infos) {
+      if (typeof info.name === 'string' && info.name !== '') names.push(info.name);
+    }
+    return names;
+  });
+}
+
+/**
+ * Delete one database by name, watchdogged like every other operation.
+ *
+ * A deletion is BLOCKED for as long as any connection stays open — this
+ * page's own connection is the caller's business to close first, but
+ * another page on the origin is not, and `onblocked` is the only signal
+ * that it happened. Rejecting there is the honest answer ("this one did
+ * not go"); the request itself stays live and usually completes the
+ * moment the other page's `versionchange` handler closes its connection,
+ * which is why the next sweep finds nothing to do.
+ */
+export function deleteDatabase(name: string): Promise<void> {
+  return withTimeout(
+    'delete database',
+    () =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.deleteDatabase(name);
+        request.onsuccess = () => resolve();
+        request.onerror = () =>
+          reject(request.error ?? new Error(`replica: deleting ${name} failed`));
+        request.onblocked = () =>
+          reject(new Error(`replica: deleting ${name} blocked by another connection`));
+      }),
+  );
+}
+
 export function openReplicaDb(name: string): Promise<IDBDatabase> {
   return withTimeout(
     'open',
