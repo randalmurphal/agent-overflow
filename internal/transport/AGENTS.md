@@ -537,6 +537,18 @@ retention interactions, and the client-side forward-skip detection are in
 `TestMethodsGen_InSync` bytes-diffs a fresh run against the committed output, so
 a new exported `App` method without a regeneration fails CI.
 
+That gate is only as good as its cache key, and for a long time it was not
+good at all. `go test` keys a cached result on the files the TEST PROCESS
+opens; this test opens none of `internal/app`, because it shells out to
+`methodgen`. A cached PASS therefore stood over source the test never
+looked at, and two newly exported `App` methods reached a green six-gate
+run undeclared (2026-08-30). The generator now writes an input manifest
+(`-inputs`) and the test opens every path in it — **files for their
+content, and their directories for the entry list**, since only the second
+notices a method declared in a file that did not exist on the cached run.
+If `methodgen` ever grows an input, add it to `writeInputManifest` in the
+same change, or the gate silently stops covering it.
+
 A `receiverSpecs` entry's `Package` and `TypeName` are the FQN labels a method
 hashes under, not facts about where the code lives, so a service promoted into
 `internal/<pkg>` keeps `{Package: "main", TypeName: "App"}` and its IDs never

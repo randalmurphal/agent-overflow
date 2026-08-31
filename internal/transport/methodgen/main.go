@@ -92,6 +92,12 @@ var receiverSpecs = []receiverSpec{
 	{Dir: "internal/app", Receiver: "App", Package: "main"},
 }
 
+// internalMethodsPath is the skip list's source file. Named once so the
+// input manifest and the parser cannot point at different files.
+func internalMethodsPath(root string) string {
+	return filepath.Join(root, "internal/transport/internalmethods.go")
+}
+
 // loadInternalSkipList parses internal/transport/internalmethods.go
 // for the var InternalServiceMethods literal and returns its keys as a
 // skip set, so the runtime dispatcher and the codegen tool stay in
@@ -99,7 +105,7 @@ var receiverSpecs = []receiverSpec{
 // expose framework lifecycle methods.
 func loadInternalSkipList(root string) (map[string]bool, error) {
 	internalServiceMethods := map[string]bool{}
-	target := filepath.Join(root, "internal/transport/internalmethods.go")
+	target := internalMethodsPath(root)
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, target, nil, parser.ParseComments)
 	if err != nil {
@@ -152,6 +158,7 @@ type MethodEntry struct {
 func main() {
 	out := flag.String("out", defaultOut, "output file path (relative to repo root)")
 	rootFlag := flag.String("root", ".", "repository root every receiverSpec.Dir resolves against")
+	inputs := flag.String("inputs", "", "write the list of files read, one per line, to this path (for the freshness gate)")
 	flag.Parse()
 
 	root := *rootFlag
@@ -193,7 +200,70 @@ func main() {
 		fmt.Fprintf(os.Stderr, "methodgen: write %s: %v\n", target, err)
 		os.Exit(1)
 	}
+	if *inputs != "" {
+		if err := writeInputManifest(root, receiverSpecs, *inputs); err != nil {
+			fmt.Fprintf(os.Stderr, "methodgen: inputs: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	fmt.Printf("methodgen: wrote %d methods to %s\n", len(entries), target)
+}
+
+// writeInputManifest records every file this run read, one absolute path
+// per line.
+//
+// It exists for the freshness gate, and for a reason that is invisible
+// from either side alone: `go test` keys its result cache on the files the
+// TEST PROCESS opens, and the gate reads none of this source — it shells
+// out to this tool. So a change under internal/app leaves the gate's
+// cached PASS standing, and a newly exported App method reaches a green
+// `make go-test` while methods_gen.go still does not declare it. That is
+// not hypothetical: it is how the RedeemPairing/RenewSession pair got past
+// a full six-gate run (2026-08-30). The gate reads this manifest's files
+// so the cache key covers what the generator actually parsed.
+func writeInputManifest(root string, specs []receiverSpec, target string) error {
+	paths := []string{internalMethodsPath(root)}
+	for _, spec := range specs {
+		// The DIRECTORY as well as its files. Go's cache hashes a file by
+		// content but a directory by its entry list, and only the second
+		// notices the case that matters most here: a file that did not
+		// exist on the cached run. Declaring a new App method is exactly
+		// that — usually a whole new file.
+		paths = append(paths, filepath.Join(root, spec.Dir))
+		files, err := specFiles(root, spec)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, files...)
+	}
+	return os.WriteFile(target, []byte(strings.Join(paths, "\n")+"\n"), 0644)
+}
+
+// specFiles lists one spec directory's production Go source, sorted.
+//
+// Its own function because two callers must never disagree about which
+// files the generator reads: scanReceivers parses them, and
+// writeInputManifest names them for the freshness gate's cache key.
+func specFiles(root string, spec receiverSpec) ([]string, error) {
+	dir := filepath.Join(root, spec.Dir)
+	dirEntries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read receiver dir %s: %w", dir, err)
+	}
+	var paths []string
+	for _, de := range dirEntries {
+		if de.IsDir() || filepath.Ext(de.Name()) != ".go" {
+			continue
+		}
+		// Skip *_test.go — bindings only consider production code.
+		if strings.HasSuffix(de.Name(), "_test.go") {
+			continue
+		}
+		paths = append(paths, filepath.Join(dir, de.Name()))
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 // scanReceivers walks every spec's directory and extracts each
@@ -213,22 +283,12 @@ func scanReceivers(root string, specs []receiverSpec, skip map[string]bool) ([]M
 	claimed := map[string]string{}
 
 	for _, spec := range specs {
-		dir := filepath.Join(root, spec.Dir)
-		dirEntries, err := os.ReadDir(dir)
+		paths, err := specFiles(root, spec)
 		if err != nil {
-			return nil, fmt.Errorf("read receiver dir %s: %w", dir, err)
+			return nil, err
 		}
 
-		for _, de := range dirEntries {
-			if de.IsDir() || filepath.Ext(de.Name()) != ".go" {
-				continue
-			}
-			// Skip *_test.go — bindings only consider production code.
-			if strings.HasSuffix(de.Name(), "_test.go") {
-				continue
-			}
-
-			path := filepath.Join(dir, de.Name())
+		for _, path := range paths {
 			file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 			if err != nil {
 				return nil, fmt.Errorf("parse %s: %w", path, err)
