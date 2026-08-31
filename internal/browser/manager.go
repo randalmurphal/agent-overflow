@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"agent-overflow/internal/chromium"
 	"agent-overflow/internal/webview2host"
@@ -86,8 +87,16 @@ type ManagerOptions struct {
 	// Chrome: pages become WebView2 controllers in the Windows launcher,
 	// driven over CDP through the relay tunnel (hosted_engine.go). Set on
 	// the Windows/WSL deployment, where the launcher is what owns a window
-	// a browser view can live in; nil everywhere else.
+	// a browser view can live in; nil everywhere else. Takes precedence
+	// over NativeWindow, which that deployment never sets.
 	PaneHost *PaneHostOptions
+
+	// NativeWindow returns the desktop window an in-process engine hosts its
+	// views inside (spec docs/specs/embedded-browser.md §6), or nil when this
+	// process has none — a remote `--connect` client, a headless harness boot,
+	// or a test. Nil, or a getter that answers nil, keeps managed Chrome.
+	// Platforms whose engine lives in another process ignore it.
+	NativeWindow func() unsafe.Pointer
 }
 
 // PaneHostOptions is what the hosted engine needs from the process around
@@ -189,7 +198,7 @@ func NewManager(installer *chromium.Installer, configDir string, config Config, 
 	if opts.PaneHost != nil {
 		m.engine = newHostedEngine(opts.PaneHost.Relay, opts.PaneHost.Directive, events)
 	} else {
-		m.engine = newCDPEngine(installer, events)
+		m.engine = selectEngine(installer, configDir, opts, events)
 	}
 	return m
 }
@@ -499,7 +508,7 @@ func (m *Manager) createScope(workspace string) (*workspaceScope, error) {
 	if err := os.MkdirAll(downloadDir, 0o700); err != nil {
 		return nil, fmt.Errorf("browser: create download directory: %w", err)
 	}
-	profile, err := m.engine.NewProfile(context.Background(), profileOptions{Workspace: workspace, DownloadDir: downloadDir, Cookies: state.Cookies, Ephemeral: !persist})
+	profile, err := m.engine.NewProfile(context.Background(), profileOptions{Workspace: workspace, DownloadDir: downloadDir, Cookies: state.Cookies, Persist: persist})
 	if err != nil {
 		return nil, err
 	}

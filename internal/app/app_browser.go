@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"time"
+	"unsafe"
 
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/mcpapp"
@@ -14,6 +15,15 @@ import (
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 )
+
+// SetBrowserNativeWindow hands the browser manager the desktop window an
+// in-process engine hosts its views inside. Call it before Start: the manager
+// is built during startup, and an engine chosen without a window would be the
+// managed-Chrome one for the life of the process. A getter (rather than a
+// pointer) because the window is created later, on the app loop.
+func SetBrowserNativeWindow(a *App, window func() unsafe.Pointer) {
+	a.browser.nativeWindow = window
+}
 
 func browserConfigFromSettings(current settings.Settings) appbrowser.Config {
 	return appbrowser.Config{

@@ -407,7 +407,7 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 
 func TestHostedProfileDisposeClosesTheWholeProfile(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	profile, err := engine.NewProfile(context.Background(), profileOptions{Workspace: "/home/dev/repo", Ephemeral: true})
+	profile, err := engine.NewProfile(context.Background(), profileOptions{Workspace: "/home/dev/repo", Persist: false})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
 	}

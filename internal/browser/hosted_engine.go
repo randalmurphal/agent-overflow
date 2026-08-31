@@ -206,7 +206,7 @@ func (e *hostedEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 	// and there is no CDP browser context to seed one into. Restoring the
 	// AO checkpoint here would write a second, staler copy of state the
 	// engine already holds.
-	return &hostedProfile{engine: e, id: id, ephemeral: opts.Ephemeral}, nil
+	return &hostedProfile{engine: e, id: id, ephemeral: !opts.Persist}, nil
 }
 
 func hostedProfileID(workspace string) (string, error) {

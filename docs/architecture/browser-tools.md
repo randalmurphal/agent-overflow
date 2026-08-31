@@ -14,13 +14,18 @@ Three settings are independent:
   closes browser state when turned off.
 - `browserPersistSiteData` (default `true`) restores encrypted cookies and
   local storage per canonical workspace. HTTP cache, service workers,
-  permissions, downloads, and IndexedDB are not persisted.
+  permissions, downloads, and IndexedDB are not persisted. On the embedded
+  WebKit engine the setting instead decides whether the workspace's site data
+  lives in an AO-owned profile directory or only in memory, so the engine's own
+  store is the single source of truth rather than a checkpointed copy of it.
 - `browserAllowOutsideWorkspace` (default `false`) widens direct-file opening
   beyond the current workspace/project roots.
 
-Chromium always runs headless and browser pages start in the background. An
-agent explicitly presents a page with `browser_visibility`; AO then opens an
-ephemeral browser companion beside that thread and renders that exact CDP page.
+Managed Chromium always runs headless and browser pages start in the
+background — as do embedded WebKit pages, which are parked out of the window's
+layout rather than launched anywhere. An agent explicitly presents a page with
+`browser_visibility`; AO then opens an ephemeral browser companion beside that
+thread and renders that exact page.
 The user and agent share its URL, DOM, cookies, history, focus, and tab set; no
 separate Chrome window or duplicate browsing session is opened.
 
@@ -87,7 +92,7 @@ it without relying on an optional skill.
 | `browser_scroll` | Scroll the page or a selected element. |
 | `browser_wait` | Wait for duration, locator state, URL glob, commit, DOMContentLoaded, load, or 500 ms network idle. |
 | `browser_history` | Back, forward, reload, or stop. |
-| `browser_evaluate_readonly` | Evaluate bounded inspection JavaScript with Chrome's side-effect rejection; directly awaitable reads and `Promise.resolve(read)` are supported. |
+| `browser_evaluate_readonly` | Evaluate bounded inspection JavaScript; directly awaitable reads and `Promise.resolve(read)` are supported. Chrome rejects a possible side effect in the engine; an engine that cannot says so in the tool result rather than differing silently. |
 | `browser_evaluate` | Existing explicit mutation-capable JavaScript escape hatch; bounded and serialized. |
 | `browser_clipboard` | Read/write a bounded tab-local MIME clipboard. Paste/copy chords bridge this clipboard without touching the OS clipboard. |
 | `browser_console_logs` | Read the bounded tab console/runtime ring by level and substring. |
@@ -171,16 +176,24 @@ CLI's normal configuration.
 
 ## Platform behavior
 
-Native macOS and Linux use managed Chrome for Testing, launched headless and,
-when explicitly requested, displayed through the companion protocol.
+A native Linux desktop drives the WebKitGTK views embedded in the app's own
+window: same tools, same authority, no second browser process, and site data
+under an AO-owned profile directory rather than a temporary Chrome profile.
+The streamed companion pane is CDP-only, so on the WebKit engine
+`browser_visibility` reports that the pane is not available yet; the presented
+native view replaces it.
 
-The Windows/WSL deployment uses the hosted engine instead
+The Windows/WSL deployment uses the hosted engine
 (`docs/specs/embedded-browser.md`): a page is a WebView2 controller in the
 Windows launcher's process, and the backend drives it over CDP through the
 launcher's relay tunnel. The tool surface is identical, because the operations
 are the same CDP calls. What differs is the user-visible half — a real browser
 view positioned by the launcher rather than a streamed image — so the
 screencast companion described above does not apply on that leg.
+
+macOS and every windowless run of the Linux binary (`--connect`, the harness)
+use managed Chrome for Testing, launched headless and, when explicitly
+requested, displayed through the companion protocol.
 
 The companion RPCs and
 URL/title state events are

@@ -152,7 +152,7 @@ func TestManagerCodexBrowserParityWithManagedChrome(t *testing.T) {
 	if viewport, err := manager.Viewport(ctx, access, ViewportOptions{Action: "set", Width: 900, Height: 700}); err != nil || !viewport.ViewportSet {
 		t.Fatalf("viewport=%#v err=%v", viewport, err)
 	}
-	innerWidth, err := manager.EvaluateReadOnly(ctx, access, opened.ID, `window.innerWidth`)
+	innerWidth, _, err := manager.EvaluateReadOnly(ctx, access, opened.ID, `window.innerWidth`)
 	if err != nil || innerWidth != float64(900) {
 		t.Fatalf("viewport width=%#v err=%v", innerWidth, err)
 	}
@@ -251,15 +251,15 @@ func TestManagerCodexBrowserParityWithManagedChrome(t *testing.T) {
 	if _, err := manager.Locator(ctx, access, LocatorOptions{PageID: opened.ID, Locator: Locator{CSS: "#double"}, Action: "double_click"}); err != nil {
 		t.Fatal(err)
 	}
-	done, err := manager.EvaluateReadOnly(ctx, access, opened.ID, `document.querySelector('#double').dataset.done`)
+	done, _, err := manager.EvaluateReadOnly(ctx, access, opened.ID, `document.querySelector('#double').dataset.done`)
 	if err != nil || done != "yes" {
 		t.Fatalf("double=%#v err=%v", done, err)
 	}
-	asyncTitle, err := manager.EvaluateReadOnly(ctx, access, opened.ID, `Promise.resolve(document.title)`)
+	asyncTitle, _, err := manager.EvaluateReadOnly(ctx, access, opened.ID, `Promise.resolve(document.title)`)
 	if err != nil || asyncTitle != "Parity fixture" {
 		t.Fatalf("async read-only=%#v err=%v", asyncTitle, err)
 	}
-	if _, err := manager.EvaluateReadOnly(ctx, access, opened.ID, `document.body.dataset.mutated='yes'`); err == nil {
+	if _, _, err := manager.EvaluateReadOnly(ctx, access, opened.ID, `document.body.dataset.mutated='yes'`); err == nil {
 		t.Fatal("read-only evaluation allowed mutation")
 	}
 
@@ -368,7 +368,7 @@ func TestManagerCodexBrowserParityWithManagedChrome(t *testing.T) {
 	if _, err := manager.Pointer(ctx, access, PointerOptions{PageID: opened.ID, Action: "drag", Path: []Point{start, {X: (start.X + end.X) / 2, Y: (start.Y + end.Y) / 2}, end}}); err != nil {
 		t.Fatal(err)
 	}
-	dropped, err := manager.EvaluateReadOnly(ctx, access, opened.ID, `document.querySelector('#drop').dataset.dropped`)
+	dropped, _, err := manager.EvaluateReadOnly(ctx, access, opened.ID, `document.querySelector('#drop').dataset.dropped`)
 	if err != nil || dropped != "yes" {
 		t.Fatalf("drag result=%#v err=%v", dropped, err)
 	}

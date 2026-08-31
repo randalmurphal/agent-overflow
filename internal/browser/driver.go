@@ -65,11 +65,12 @@ type profileOptions struct {
 	DownloadDir string
 	// Cookies seeds the profile from the persisted checkpoint.
 	Cookies []*network.CookieParam
-	// Ephemeral asks for a profile that persists nothing, from the
-	// browserPersistSiteData setting. Managed Chrome's contexts are always
-	// incognito and ignore it; an engine whose profiles are real on-disk
-	// browser profiles (spec §4) needs it to honour the setting at all.
-	Ephemeral bool
+	// Persist is the user's site-data setting. An engine whose site data
+	// lives on disk (spec §4) keeps it only when this is true; managed
+	// Chrome is always incognito and ignores it, restoring from Cookies
+	// instead. The hosted engine forwards it as the directive's Ephemeral
+	// flag.
+	Persist bool
 }
 
 // pageHooks are the AO-owned callbacks a page driver reports into. They carry
@@ -125,6 +126,12 @@ type pageDriver interface {
 	// EvaluateReadOnly runs an expression the engine rejects on side effects,
 	// returning the undecoded result so the Manager can bound it.
 	EvaluateReadOnly(ctx context.Context, expression string) (json.RawMessage, error)
+	// ReadOnlyCaveat is what this engine can actually promise about
+	// EvaluateReadOnly. Empty means the engine rejects side effects itself;
+	// a non-empty string is carried into the tool result verbatim, so an
+	// engine that can only be best-effort is never SILENTLY different. The
+	// Manager attaches the answer without learning which engine gave it.
+	ReadOnlyCaveat() string
 	// LocalStorage reads the page origin's localStorage for the checkpoint.
 	LocalStorage(ctx context.Context) (origin string, data map[string]string, err error)
 

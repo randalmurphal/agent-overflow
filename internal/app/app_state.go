@@ -4,6 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	appbrowser "agent-overflow/internal/browser"
 	gitops "agent-overflow/internal/git"
@@ -99,15 +100,21 @@ type appSessionImportState struct {
 }
 
 // appBrowserState is the provider-neutral arbitrary-web browser concern. The
-// MCP listener is cheap and per-session-tokened; Manager owns the lazily
-// launched Chrome process and workspace BrowserContexts.
+// MCP listener is cheap and per-session-tokened; Manager owns the engine —
+// the lazily launched Chrome process and its workspace contexts, or the
+// in-process engine hosted in this app's own window — and every page in it.
 type appBrowserState struct {
 	manager *appbrowser.Manager
 	mcp     *appbrowser.MCPServer
 	// cdpRelay is the backend end of the Windows launcher's CDP tunnel,
 	// handed in by the executable before startup (bootstrap.go) and non-nil
 	// only on the WSL deployment. Its presence selects the hosted engine.
-	cdpRelay           appbrowser.CDPRelay
+	cdpRelay appbrowser.CDPRelay
+	// nativeWindow answers the desktop window an in-process browser engine
+	// hosts its views inside, or nil where there is no window at all
+	// (--connect, harness, tests) — which is what keeps those on managed
+	// Chrome. Set once before Start by the desktop entry point.
+	nativeWindow       func() unsafe.Pointer
 	applyMu            sync.Mutex
 	applyWG            sync.WaitGroup
 	settingsGeneration atomic.Uint64

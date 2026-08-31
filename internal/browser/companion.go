@@ -334,6 +334,19 @@ func (m *Manager) syncPanePresentation(pages []*managedPage, active *managedPage
 }
 
 func (p *managedPage) startStream(m *Manager, width, height int) {
+	// The streamed pane is CDP screencast all the way down — it addresses the
+	// page's chromedp context directly rather than going through the driver
+	// seam — so it can only run on the managed-Chrome engine. Saying so is the
+	// difference between an explained absence and a cryptic protocol error;
+	// spec §7 replaces this whole surface with the presented native view, and
+	// §9 deletes the screencast with it.
+	if _, ok := p.driver.(*cdpPage); !ok {
+		m.emit(CompanionEvent{
+			Kind: "error", ThreadID: p.owner, PageID: p.id,
+			Error: "browser: the companion pane is not available on this browser engine yet",
+		})
+		return
+	}
 	width, height = clampViewport(width, height)
 	p.streamMu.Lock()
 	if p.stream != nil && p.stream.width == width && p.stream.height == height {

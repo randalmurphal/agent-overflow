@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"log"
 	"sync"
+	"unsafe"
 
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appidentity"
@@ -244,6 +245,17 @@ func runDesktop(listenAddr string) {
 		title:          appidentity.AppTitle(nativeSingleInstanceMode()),
 		singleInstance: true,
 		services: func(getWindow func() *application.WebviewWindow) []application.Service {
+			// The embedded browser's in-process engine hosts its views inside
+			// this window. Handed over before Start, because the manager picks
+			// its engine while starting; answering nil (no window yet, or a
+			// platform with no in-process engine) keeps managed Chrome.
+			appservice.SetBrowserNativeWindow(appService.App, func() unsafe.Pointer {
+				window := getWindow()
+				if window == nil {
+					return nil
+				}
+				return window.NativeWindow()
+			})
 			return []application.Service{
 				application.NewService(appservice.NewDesktopNotificationService(appService.App, getWindow)),
 				application.NewService(appService),

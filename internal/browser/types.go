@@ -387,7 +387,7 @@ type Controller interface {
 	Wait(context.Context, Access, string, string, int) (PageInfo, error)
 	History(context.Context, Access, string, string) (PageInfo, error)
 	Evaluate(context.Context, Access, string, string) (any, error)
-	EvaluateReadOnly(context.Context, Access, string, string) (any, error)
+	EvaluateReadOnly(context.Context, Access, string, string) (any, string, error)
 	CloseThread(context.Context, string) error
 	Close() error
 	ClearSiteData(context.Context) error

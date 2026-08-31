@@ -298,37 +298,43 @@ func (m *Manager) Evaluate(ctx context.Context, access Access, pageID, expressio
 	return result, nil
 }
 
-func (m *Manager) EvaluateReadOnly(ctx context.Context, access Access, pageID, expression string) (any, error) {
+// EvaluateReadOnly returns the bounded result and the engine's own caveat
+// about what "read only" could be enforced as. The caveat is a driver
+// capability answer, not a Manager judgement: an engine with engine-level
+// side-effect rejection returns none, and one that can only be best-effort
+// says so in the tool result rather than looking identical.
+func (m *Manager) EvaluateReadOnly(ctx context.Context, access Access, pageID, expression string) (any, string, error) {
 	if len(expression) > maxBrowserInputBytes {
-		return nil, fmt.Errorf("browser: expression exceeds %d bytes", maxBrowserInputBytes)
+		return nil, "", fmt.Errorf("browser: expression exceeds %d bytes", maxBrowserInputBytes)
 	}
 	if strings.TrimSpace(expression) == "" {
-		return nil, fmt.Errorf("browser: expression is required")
+		return nil, "", fmt.Errorf("browser: expression is required")
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
+	caveat := p.driver.ReadOnlyCaveat()
 	raw, err := p.driver.EvaluateReadOnly(opCtx, unwrapReadOnlyPromise(expression))
 	if err != nil {
-		return nil, err
+		return nil, caveat, err
 	}
 	if len(raw) == 0 {
-		return nil, nil
+		return nil, caveat, nil
 	}
 	if len(raw) > maxEvaluateBytes {
-		return nil, fmt.Errorf("browser: evaluation result exceeds %d bytes", maxEvaluateBytes)
+		return nil, caveat, fmt.Errorf("browser: evaluation result exceeds %d bytes", maxEvaluateBytes)
 	}
 	var result any
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, fmt.Errorf("browser: decode evaluation result: %w", err)
+		return nil, caveat, fmt.Errorf("browser: decode evaluation result: %w", err)
 	}
 	m.refreshPageAfterOperation(opCtx, p)
-	return result, nil
+	return result, caveat, nil
 }
 
 func unwrapReadOnlyPromise(expression string) string {

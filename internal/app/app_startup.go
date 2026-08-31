@@ -529,7 +529,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		browserInstaller,
 		dbDir,
 		browserConfigFromSettings(browserSettings),
-		appbrowser.ManagerOptions{FileStateKey: a.fileKeychainOverride, PaneHost: a.paneHostOptions()},
+		appbrowser.ManagerOptions{FileStateKey: a.fileKeychainOverride, PaneHost: a.paneHostOptions(), NativeWindow: a.browser.nativeWindow},
 	)
 	a.browser.manager.SetEventSink(func(event appbrowser.CompanionEvent) {
 		a.emit(eventchan.BrowserCompanionState, event)

@@ -351,6 +351,10 @@ func (p *cdpPage) EvaluateReadOnly(ctx context.Context, expression string) (json
 	return json.RawMessage(remote.Value), nil
 }
 
+// ReadOnlyCaveat is empty: Chrome rejects the side effect itself, in the
+// engine, so the tool result needs no qualifier.
+func (p *cdpPage) ReadOnlyCaveat() string { return "" }
+
 func (p *cdpPage) LocalStorage(ctx context.Context) (string, map[string]string, error) {
 	var value struct {
 		Origin string            `json:"origin"`
