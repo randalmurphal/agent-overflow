@@ -54,7 +54,7 @@ func (r *draftBroadcasts) expectSilence(what string) {
 // ctxFromClient builds the context a bound method sees when the named screen
 // issued the call, the same way the transport assembles it at upgrade.
 func ctxFromClient(client transport.ClientIdentity) context.Context {
-	ctx, _ := transport.WithConnState(context.Background(), client)
+	ctx, _ := transport.WithConnState(context.Background(), transport.ConnPrincipal{Client: client})
 	return ctx
 }
 

@@ -49,6 +49,16 @@ could read. The flow mirrors a local boot exactly:
    local `Cookie` and `Origin` headers and sets `Authorization: Bearer
    <upstream token>` for the hop.
 
+The hop REPLACES the query rather than forwarding it (the operator's
+endpoint owns it, and the page's own `?t=` ticket means nothing
+upstream), so anything the page must still be identified by has to be
+re-emitted explicitly. `upstreamQuery` does that for the two declared
+client-identity parameters (`did`, `conn`), parsed and re-rendered
+through `transport.ParseClientIdentity` so only bounded values cross and
+an operator parameter of the same name wins. Without it the upstream
+would see an anonymous connection, and since the `ui_state` scope became
+connection-derived that means no bucket at all.
+
 So the SPA's socket is same-origin (it dials this stub), and the
 cross-origin hop happens in Go where no page script can observe it.
 

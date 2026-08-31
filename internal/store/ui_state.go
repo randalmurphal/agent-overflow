@@ -7,14 +7,20 @@ import (
 	"strings"
 )
 
-// ui_state is the persisted per-client UI view state table (migration
-// v15). Scope is an opaque namespace string owned by the caller —
-// "client:<uuid>" today, "user:<id>" reserved for when identities
-// exist — and values are opaque strings (the frontend JSON-encodes
-// structured values). This is the durable copy behind the frontend's
-// appStorage module; it exists because webview localStorage resets
-// every launch (ephemeral transport port = new origin). Transient UI
-// state still belongs to frontend $state, not here.
+// ui_state is the persisted per-device UI view state table (migration
+// v15). Scope is a namespace string owned by the caller —
+// "device:<id>" for a paired device, "client:<uuid>" for a screen on the
+// local page channel, "user:<id>" reserved for the user tier — and
+// values are opaque strings (the frontend JSON-encodes structured
+// values). This is the durable copy behind the frontend's appStorage
+// module; it exists because webview localStorage resets every launch
+// (ephemeral transport port = new origin). Transient UI state still
+// belongs to frontend $state, not here.
+//
+// This package has no opinion about which scope a caller may name. The
+// derivation — connection to scope, and the refusal when a connection
+// resolves to none — lives in internal/app, which is where the session
+// core is reachable.
 
 var ErrEmptyUIStateScope = errors.New("store: ui state scope is empty")
 
@@ -144,6 +150,30 @@ func (s *Store) DeleteUIState(scope string, keys []string) error {
 	}
 	committed = true
 	return nil
+}
+
+// DeleteUIStateScope removes a whole bucket, returning how many rows
+// went. One statement, because the scope is the unit: revoking a device
+// drops its state (docs/specs/remote-access.md §6), and a caller that had
+// to enumerate the keys first could drop a partial bucket if a write
+// landed between the read and the delete.
+//
+// A scope with no rows answers 0, which is a normal answer: a device that
+// never persisted anything is as fully cleared as one that did.
+func (s *Store) DeleteUIStateScope(scope string) (int64, error) {
+	scope, err := normalizeUIStateScope(scope)
+	if err != nil {
+		return 0, err
+	}
+	result, err := s.db.Exec(`DELETE FROM ui_state WHERE scope = ?`, scope)
+	if err != nil {
+		return 0, fmt.Errorf("store: delete ui state scope %q: %w", scope, err)
+	}
+	dropped, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: delete ui state scope %q: rows affected: %w", scope, err)
+	}
+	return dropped, nil
 }
 
 // ClearUIState removes every scope's persisted UI view state. The one

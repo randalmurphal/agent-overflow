@@ -560,11 +560,11 @@ export function DeleteThread(id: string): $CancellablePromise<void> {
 }
 
 /**
- * DeleteUIState removes keys from the calling client's bucket.
+ * DeleteUIState removes keys from the calling connection's bucket.
  * Missing keys are a no-op.
  */
-export function DeleteUIState(clientID: string, keys: string[]): $CancellablePromise<void> {
-    return $Call.ByID(1186757769, clientID, keys);
+export function DeleteUIState(keys: string[]): $CancellablePromise<void> {
+    return $Call.ByID(1186757769, keys);
 }
 
 /**
@@ -1357,11 +1357,11 @@ export function GetUIRenderTracePath(): $CancellablePromise<string> {
 }
 
 /**
- * GetUIState returns the calling client's full persisted UI-state
+ * GetUIState returns the calling connection's full persisted UI-state
  * bucket. A fresh client gets an empty map — defaults, not an error.
  */
-export function GetUIState(clientID: string): $CancellablePromise<{ [_ in string]?: string }> {
-    return $Call.ByID(3380106838, clientID).then(($result: any) => {
+export function GetUIState(): $CancellablePromise<{ [_ in string]?: string }> {
+    return $Call.ByID(3380106838).then(($result: any) => {
         return $$createType64($result);
     });
 }
@@ -3342,10 +3342,10 @@ export function SetThreadPinGroup(id: string, group: number): $CancellablePromis
 }
 
 /**
- * SetUIState batch-upserts entries into the calling client's bucket.
+ * SetUIState batch-upserts entries into the calling connection's bucket.
  */
-export function SetUIState(clientID: string, entries: { [_ in string]?: string }): $CancellablePromise<void> {
-    return $Call.ByID(1514250938, clientID, entries);
+export function SetUIState(entries: { [_ in string]?: string }): $CancellablePromise<void> {
+    return $Call.ByID(1514250938, entries);
 }
 
 /**

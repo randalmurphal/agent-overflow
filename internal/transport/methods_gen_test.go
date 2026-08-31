@@ -110,11 +110,13 @@ var wireSafeMethods = map[string]bool{
 	// decision — don't leave this entry standing on a premise that moved.
 	"GetClaudeSlashCommands": true,
 
-	// Per-client UI view state (ui_state table). Remote clients are
-	// the point: each presents an opaque client ID and can only touch
-	// its own "client:<id>" scope (built server-side in app_uistate.go,
-	// which also bounds batch/key/value sizes). Opaque preference
-	// strings — no credentials, no FS, same reasoning as keybindings.
+	// Per-device UI view state (ui_state table). Remote clients are the
+	// point: each reaches exactly one bucket, and WHICH one is derived
+	// from the connection rather than named as a parameter
+	// (app_uistate.go's uiStateScope, which also bounds batch/key/value
+	// sizes). A caller cannot ask for another device's bucket, because
+	// there is no argument in which to ask. Opaque preference strings —
+	// no credentials, no FS, same reasoning as keybindings.
 	"GetUIState":    true,
 	"SetUIState":    true,
 	"DeleteUIState": true,

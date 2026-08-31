@@ -655,6 +655,14 @@ func readIndexHTML(assets fs.FS) ([]byte, error) {
 //     serves — an Origin it does not recognise is refused, correctly,
 //     because a proxy hop is not a browser. Removing it presents the
 //     stub as what it is: a client that is not a browser.
+//   - Carry the page's declared client identity across the hop. The
+//     query is REPLACED (the operator's URL owns it, and the page's own
+//     `?t=` ticket means nothing upstream), so the two identity
+//     parameters have to be re-emitted explicitly or the upstream sees
+//     an anonymous connection — which since the ui_state scope became
+//     connection-derived would leave this stub with no bucket at all.
+//     Parsed and re-rendered rather than copied, so only the two
+//     declared, length-bounded parameters cross.
 //
 // Everything else is byte-transparent: the handshake key, the requested
 // subprotocols and the compression extension all pass through, so the
@@ -687,7 +695,7 @@ func newWSProxy(wsURL, token string) (*httputil.ReverseProxy, error) {
 			pr.Out.URL.Scheme = target.Scheme
 			pr.Out.URL.Host = target.Host
 			pr.Out.URL.Path = target.Path
-			pr.Out.URL.RawQuery = target.RawQuery
+			pr.Out.URL.RawQuery = upstreamQuery(target.RawQuery, pr.In.URL.Query())
 			pr.Out.Host = ""
 			pr.Out.Header.Del("Cookie")
 			pr.Out.Header.Del("Origin")
@@ -702,4 +710,30 @@ func newWSProxy(wsURL, token string) (*httputil.ReverseProxy, error) {
 			http.Error(w, "backend unreachable", http.StatusServiceUnavailable)
 		},
 	}, nil
+}
+
+// upstreamQuery assembles the query the proxied upgrade carries: the
+// operator URL's own parameters, plus the page's declared client identity.
+//
+// The operator's values win a collision. They are the endpoint's
+// configuration and the page cannot see them; a page parameter that
+// overwrote one would be the page reconfiguring the hop.
+func upstreamQuery(operator string, page url.Values) string {
+	declared := transport.ParseClientIdentity(page).Query()
+	if len(declared) == 0 {
+		return operator
+	}
+	values, err := url.ParseQuery(operator)
+	if err != nil {
+		// An operator URL we cannot parse is one we must not rewrite from
+		// a guess: forward it byte-for-byte, and lose only attribution.
+		return operator
+	}
+	for key, list := range declared {
+		if values.Has(key) {
+			continue
+		}
+		values[key] = list
+	}
+	return values.Encode()
 }

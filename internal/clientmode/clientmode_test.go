@@ -718,6 +718,7 @@ func TestHandleWS_CarriesTheUpgradeWithTheUpstreamCredential(t *testing.T) {
 		auth   string
 		cookie string
 		origin string
+		query  string
 	}
 	seen := make(chan observed, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -734,6 +735,7 @@ func TestHandleWS_CarriesTheUpgradeWithTheUpstreamCredential(t *testing.T) {
 			auth:   r.Header.Get("Authorization"),
 			cookie: r.Header.Get("Cookie"),
 			origin: r.Header.Get("Origin"),
+			query:  r.URL.RawQuery,
 		}
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
@@ -756,7 +758,9 @@ func TestHandleWS_CarriesTheUpgradeWithTheUpstreamCredential(t *testing.T) {
 	header.Set("Origin", "http://"+srv.Addr())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(ctx, "ws://"+srv.Addr()+"/ws", &websocket.DialOptions{HTTPHeader: header})
+	conn, _, err := websocket.Dial(ctx,
+		"ws://"+srv.Addr()+"/ws?did=screen-abcdef01&conn=live-abcdef01&nonsense=1",
+		&websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
 		t.Fatalf("dial the stub's /ws with the page cookie: %v", err)
 	}
@@ -782,6 +786,53 @@ func TestHandleWS_CarriesTheUpgradeWithTheUpstreamCredential(t *testing.T) {
 	}
 	if got.origin != "" {
 		t.Errorf("the stub's origin reached the upstream: %q", got.origin)
+	}
+	// The page's declared identity has to survive the hop: the upstream
+	// scopes its ui_state bucket by the connection, so a stub that dropped
+	// these two parameters would leave every --connect client with no
+	// bucket at all. Nothing else the page put on the URL crosses.
+	upstreamQuery, err := url.ParseQuery(got.query)
+	if err != nil {
+		t.Fatalf("upstream query %q: %v", got.query, err)
+	}
+	if upstreamQuery.Get("did") != "screen-abcdef01" {
+		t.Errorf("upstream did = %q, want the page's device id", upstreamQuery.Get("did"))
+	}
+	if upstreamQuery.Get("conn") != "live-abcdef01" {
+		t.Errorf("upstream conn = %q, want the page's connection id", upstreamQuery.Get("conn"))
+	}
+	if upstreamQuery.Has("nonsense") {
+		t.Errorf("an undeclared page parameter crossed the hop: %q", got.query)
+	}
+}
+
+// TestUpstreamQuery_OperatorParametersWin — the operator's endpoint owns
+// its query and the page cannot see it, so a page parameter that
+// overwrote one would be the page reconfiguring the hop.
+func TestUpstreamQuery_OperatorParametersWin(t *testing.T) {
+	page := url.Values{"did": {"screen-abcdef01"}, "conn": {"live-abcdef01"}}
+	got, err := url.ParseQuery(upstreamQuery("did=operator-pinned-id&region=eu", page))
+	if err != nil {
+		t.Fatalf("parse the assembled query: %v", err)
+	}
+	if got.Get("did") != "operator-pinned-id" {
+		t.Errorf("did = %q, want the operator's value", got.Get("did"))
+	}
+	if got.Get("region") != "eu" {
+		t.Errorf("region = %q, want the operator's value preserved", got.Get("region"))
+	}
+	if got.Get("conn") != "live-abcdef01" {
+		t.Errorf("conn = %q, want the page's value where the operator named none", got.Get("conn"))
+	}
+}
+
+// TestUpstreamQuery_UnparseableOperatorQueryIsForwardedVerbatim — an
+// operator URL we cannot parse is one we must not rewrite from a guess.
+func TestUpstreamQuery_UnparseableOperatorQueryIsForwardedVerbatim(t *testing.T) {
+	const operator = "%zz"
+	page := url.Values{"did": {"screen-abcdef01"}}
+	if got := upstreamQuery(operator, page); got != operator {
+		t.Fatalf("upstreamQuery = %q, want %q", got, operator)
 	}
 }
 

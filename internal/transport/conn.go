@@ -262,7 +262,15 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// long-lived server-side resources without waiting for the App to
 	// shut down. runCleanups runs in LIFO order after the read loop
 	// exits and after in-flight RPC goroutines drain.
-	connCtx, state := WithConnState(connCtx, profile.client)
+	//
+	// The principal carries BOTH halves of "who is this": the session the
+	// upgrade admitted and the screen that declared itself on the URL.
+	// Handlers that scope durable state read the session first and fall
+	// back to the screen, which is why neither may be dropped here.
+	connCtx, state := WithConnState(connCtx, ConnPrincipal{
+		Client:    profile.client,
+		SessionID: profile.sessionID,
+	})
 	defer state.RunCleanups()
 
 	// A connection carrying a durable session joins the live-session

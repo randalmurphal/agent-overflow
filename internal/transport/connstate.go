@@ -14,9 +14,11 @@ import (
 // subscriptions (gitwatch, future event streams) so a dropped client
 // does not leak server-side resources.
 //
-// It also carries the connection's ClientIdentity — which screen is on the
-// other end — for handlers that attribute a write or let a client recognize
-// the echo of its own change.
+// It also carries the connection's ConnPrincipal — the durable session it
+// presented and which screen is on the other end — for handlers that
+// attribute a write, let a client recognize the echo of its own change, or
+// scope persisted state to the caller rather than to a string the caller
+// supplied.
 //
 // One ConnState per connection. The dispatcher injects it into the
 // per-call ctx via WithConnState so handlers can pull it out of their
@@ -27,21 +29,41 @@ type ConnState struct {
 	cleanups []func()
 	closed   bool
 
-	// client is read at upgrade time and never written again, so it needs
-	// no lock: a connection cannot change which screen it belongs to.
-	client ClientIdentity
+	// principal is read at upgrade time and never written again, so it
+	// needs no lock: a connection cannot change which session admitted it
+	// or which screen it belongs to.
+	principal ConnPrincipal
+}
+
+// ConnPrincipal is who a connection is, resolved at upgrade time and fixed
+// for its lifetime.
+//
+// A struct rather than two parameters, because the two answers are not
+// interchangeable and both are strings: SessionID is what this backend
+// ADMITTED (Config.SessionForRequest verified a presented credential),
+// while Client is what the peer DECLARED on its upgrade URL. A handler
+// scoping durable state wants the first wherever it exists; a handler
+// suppressing a client's echo of its own write wants the second. Named
+// fields are what stop a call site swapping them.
+type ConnPrincipal struct {
+	// Client is the screen on the other end. Zero means the peer declared
+	// none, which is normal (the harness, the e2e rig, tests).
+	Client ClientIdentity
+	// SessionID is the durable session this connection presented, empty
+	// when it named none — every launch-credential client today.
+	SessionID string
 }
 
 type connStateKey struct{}
 
 // WithConnState returns ctx augmented with a fresh ConnState carrying the
-// connection's client identity. The returned ConnState is the one accessible
-// via ConnStateFromContext on any descendant of ctx.
+// connection's principal. The returned ConnState is the one accessible via
+// ConnStateFromContext on any descendant of ctx.
 //
-// Pass the zero ClientIdentity for a connection with no screen behind it (the
-// harness, tests, in-process bindings).
-func WithConnState(ctx context.Context, client ClientIdentity) (context.Context, *ConnState) {
-	state := &ConnState{client: client}
+// Pass the zero ConnPrincipal for a connection with no session and no screen
+// behind it (the harness, tests, in-process bindings).
+func WithConnState(ctx context.Context, principal ConnPrincipal) (context.Context, *ConnState) {
+	state := &ConnState{principal: principal}
 	return context.WithValue(ctx, connStateKey{}, state), state
 }
 
@@ -51,7 +73,21 @@ func (c *ConnState) Client() ClientIdentity {
 	if c == nil {
 		return ClientIdentity{}
 	}
-	return c.client
+	return c.principal.Client
+}
+
+// SessionID returns the durable session the connection presented, or "" when
+// it presented none.
+//
+// Fixed at upgrade, so it answers "which session was admitted here", never
+// "is that session still live". A handler that authorizes on it must re-ask
+// the session core, because a revocation lands after the upgrade that
+// recorded this.
+func (c *ConnState) SessionID() string {
+	if c == nil {
+		return ""
+	}
+	return c.principal.SessionID
 }
 
 // ClientFromContext is the one-liner handlers use: the identity of the screen
@@ -59,6 +95,12 @@ func (c *ConnState) Client() ClientIdentity {
 // binding, a background saga, a test).
 func ClientFromContext(ctx context.Context) ClientIdentity {
 	return ConnStateFromContext(ctx).Client()
+}
+
+// SessionFromContext is the session half of the same one-liner: the durable
+// session this call's connection presented, or "" when it presented none.
+func SessionFromContext(ctx context.Context) string {
+	return ConnStateFromContext(ctx).SessionID()
 }
 
 // ConnStateFromContext extracts the per-connection ConnState if one was

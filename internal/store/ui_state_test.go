@@ -140,6 +140,53 @@ func TestUIState_EmptyScopeRejected(t *testing.T) {
 	if err := s.DeleteUIState("", []string{"a"}); !errors.Is(err, ErrEmptyUIStateScope) {
 		t.Fatalf("DeleteUIState empty scope: got %v, want ErrEmptyUIStateScope", err)
 	}
+	if _, err := s.DeleteUIStateScope(" "); !errors.Is(err, ErrEmptyUIStateScope) {
+		t.Fatalf("DeleteUIStateScope empty scope: got %v, want ErrEmptyUIStateScope", err)
+	}
+}
+
+// TestUIState_DeleteScopeDropsOneBucket — revoking a device drops its
+// state, and it must take no neighbour's rows with it.
+func TestUIState_DeleteScopeDropsOneBucket(t *testing.T) {
+	s := newTestStore(t)
+
+	if err := s.SetUIState("device:gone", map[string]string{"a": "1", "b": "2"}); err != nil {
+		t.Fatalf("SetUIState(device:gone): %v", err)
+	}
+	if err := s.SetUIState("device:kept", map[string]string{"a": "9"}); err != nil {
+		t.Fatalf("SetUIState(device:kept): %v", err)
+	}
+
+	dropped, err := s.DeleteUIStateScope("device:gone")
+	if err != nil {
+		t.Fatalf("DeleteUIStateScope: %v", err)
+	}
+	if dropped != 2 {
+		t.Fatalf("dropped %d rows, want 2", dropped)
+	}
+	gone, err := s.GetUIState("device:gone")
+	if err != nil {
+		t.Fatalf("GetUIState(device:gone): %v", err)
+	}
+	if len(gone) != 0 {
+		t.Fatalf("the revoked device's bucket survived: %v", gone)
+	}
+	kept, err := s.GetUIState("device:kept")
+	if err != nil {
+		t.Fatalf("GetUIState(device:kept): %v", err)
+	}
+	if kept["a"] != "9" {
+		t.Fatalf("a neighbouring bucket was disturbed: %v", kept)
+	}
+
+	// Idempotent: a scope with no rows is as cleared as one that had them.
+	again, err := s.DeleteUIStateScope("device:gone")
+	if err != nil {
+		t.Fatalf("second DeleteUIStateScope: %v", err)
+	}
+	if again != 0 {
+		t.Fatalf("second delete dropped %d rows, want 0", again)
+	}
 }
 
 func TestUIState_EmptyKeyRejected(t *testing.T) {

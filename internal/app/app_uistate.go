@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,37 +9,49 @@ import (
 	"path/filepath"
 
 	"agent-overflow/internal/atomicfile"
+	"agent-overflow/internal/identity"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 
 	"github.com/google/uuid"
 )
 
 // UI-state bindings: the wire surface behind the frontend appStorage
-// module. Each client (embedded webview, --connect shell, LAN browser)
-// presents an opaque client ID; its bucket lives in the ui_state table
-// under scope "client:<id>", built server-side so a caller can only
-// ever touch the client namespace ("user:<id>" stays reserved for when
-// identities exist).
+// module. A bucket lives in the ui_state table under a scope this
+// package builds from the CONNECTION — never from a parameter, which is
+// the identity hole docs/specs/remote-access.md §6 opens by naming:
+// a caller-supplied client id is a bearer string, and any client could
+// spell another's.
 //
-// Not LocalOnlyMethods entries: per-client UI view state is the whole
+// Two scope shapes, resolved by uiStateScope below: "device:<id>" for a
+// paired device, "client:<id>" for a screen on this backend's own local
+// page channel. "user:<id>" stays reserved for the user tier (§6).
+//
+// Not LocalOnlyMethods entries: per-device UI view state is the whole
 // point of this table — remote clients (--connect, LAN browsers) need
 // their own buckets. Same reasoning as GetKeybindings: UI preferences,
 // not credentials or filesystem access. The ui_state rows are opaque
-// strings written and read only by the presenting client.
+// strings written and read only by the connection they belong to.
 
 // Wire-input bounds. Generous for real UI state (pane layout JSON is
-// the largest value today at well under 4 KB) while keeping a buggy or
-// hostile client from growing the table without limit.
+// the largest value today at well under 4 KB) while keeping a buggy
+// client from growing the table without limit.
 const (
 	maxUIStateBatch    = 128
 	maxUIStateKeyLen   = 128
 	maxUIStateValueLen = 32 * 1024
 )
 
-// validClientID accepts the IDs both sides mint (Go uuid.NewString,
-// frontend crypto.randomUUID) with room for future formats: 8..64
-// chars of [A-Za-z0-9-]. Anything else is rejected before it can name
-// a scope.
+// validClientID bounds every id that reaches a scope string — the client
+// id a screen declares on its upgrade URL and the device id a session
+// resolves to alike. It accepts the shapes all three sides mint (Go
+// uuid.NewString, frontend crypto.randomUUID) with room for future
+// formats: 8..64 chars of [A-Za-z0-9-].
+//
+// The bound is what keeps a colon, a path separator, or an empty string
+// out of the scope namespace, so it stays in front of scope building even
+// now that the ids are backend-resolved rather than caller-supplied: an
+// id that could carry a colon could name somebody else's namespace.
 func validClientID(id string) bool {
 	if len(id) < 8 || len(id) > 64 {
 		return false
@@ -85,32 +98,90 @@ func EnsureClientIDIn(dir string) string {
 	return state.ClientID
 }
 
-func uiStateScope(clientID string) (string, error) {
-	if !validClientID(clientID) {
-		return "", fmt.Errorf("ui state: invalid client id")
+// uiStateScope resolves the bucket this call may touch, from the
+// connection and nothing else (docs/specs/remote-access.md §6, "Fix the
+// identity hole").
+//
+// Three outcomes:
+//
+//  1. The connection presented a session whose device is a PAIRED one →
+//     "device:<deviceID>". The screen's declared client id is ignored:
+//     a paired device is the unit the spec scopes device-tier state to,
+//     and its state is dropped when the device is revoked.
+//  2. The connection presented a session on the LOCAL page channel →
+//     "client:<declared client id>", exactly today's buckets. See the
+//     comment on that branch; the carve-out is deliberate.
+//  3. No session at all → the same client scope, which keeps every
+//     launch-credential client (the harness CLI, the e2e rig, a
+//     `--connect` stub predating the forwarded credential) working
+//     unchanged. A connection with neither a session nor a declared
+//     client id gets an error: there is no anonymous bucket, because one
+//     would be a bucket every anonymous connection shares.
+//
+// A session the core refuses is an error rather than a fall-through to
+// the client scope. Falling through would hand a revoked device a
+// working bucket by dropping the credential it presented, which is the
+// opposite of what revoking it meant.
+func (a *App) uiStateScope(ctx context.Context) (string, error) {
+	if sessionID := transport.SessionFromContext(ctx); sessionID != "" {
+		state := a.identityState()
+		if state == nil {
+			return "", fmt.Errorf("ui state: this connection names a session and identity is not wired")
+		}
+		session, reason := state.sessions.Live(sessionID)
+		if reason.Refused() {
+			return "", fmt.Errorf("ui state: session refused (%s)", reason.Code())
+		}
+		device, err := a.store.GetDevice(session.DeviceID)
+		if err != nil {
+			return "", fmt.Errorf("ui state: read the session's device: %w", err)
+		}
+		if device.Channel != identity.LocalChannel {
+			if !validClientID(device.ID) {
+				return "", fmt.Errorf("ui state: device id is not a usable scope")
+			}
+			return "device:" + device.ID, nil
+		}
+		// The local page channel names the BACKEND's own channel, not one
+		// screen. The embedded webview, the WSL relay and the `--connect`
+		// stub all present the single session this backend minted for
+		// itself, so scoping by it would collapse several distinct screens
+		// — two desktops, a relayed window, a stub — into one bucket and
+		// make them fight over pane layout and window geometry.
+		//
+		// So per-screen buckets stay keyed on the durable client id until
+		// native clients pair as their own devices (phase 5). That id is
+		// declared by the peer, which is exactly as strong as it was
+		// before this change and no weaker: the only connections reaching
+		// this branch are ones already holding this backend's own
+		// loopback-only credential.
 	}
-	return "client:" + clientID, nil
+	client := transport.ClientFromContext(ctx).DeviceID
+	if !validClientID(client) {
+		return "", fmt.Errorf("ui state: this connection names neither a session nor a client")
+	}
+	return "client:" + client, nil
 }
 
-// GetUIState returns the calling client's full persisted UI-state
+// GetUIState returns the calling connection's full persisted UI-state
 // bucket. A fresh client gets an empty map — defaults, not an error.
-func (a *App) GetUIState(clientID string) (map[string]string, error) {
+func (a *App) GetUIState(ctx context.Context) (map[string]string, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("ui state: store unavailable")
 	}
-	scope, err := uiStateScope(clientID)
+	scope, err := a.uiStateScope(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return a.store.GetUIState(scope)
 }
 
-// SetUIState batch-upserts entries into the calling client's bucket.
-func (a *App) SetUIState(clientID string, entries map[string]string) error {
+// SetUIState batch-upserts entries into the calling connection's bucket.
+func (a *App) SetUIState(ctx context.Context, entries map[string]string) error {
 	if a.store == nil {
 		return fmt.Errorf("ui state: store unavailable")
 	}
-	scope, err := uiStateScope(clientID)
+	scope, err := a.uiStateScope(ctx)
 	if err != nil {
 		return err
 	}
@@ -191,13 +262,13 @@ func migrateUIStateFromSettings(configDir string, st *store.Store) {
 	log.Printf("ui state migration: moved %d settings.json key(s) into %s", len(entries), scope)
 }
 
-// DeleteUIState removes keys from the calling client's bucket.
+// DeleteUIState removes keys from the calling connection's bucket.
 // Missing keys are a no-op.
-func (a *App) DeleteUIState(clientID string, keys []string) error {
+func (a *App) DeleteUIState(ctx context.Context, keys []string) error {
 	if a.store == nil {
 		return fmt.Errorf("ui state: store unavailable")
 	}
-	scope, err := uiStateScope(clientID)
+	scope, err := a.uiStateScope(ctx)
 	if err != nil {
 		return err
 	}
