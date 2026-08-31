@@ -7,8 +7,6 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/chromedp/cdproto/emulation"
 )
 
 func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) (PageInfo, error) {
@@ -18,7 +16,7 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) 
 	}
 	p.mu.Lock()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-	info, infoErr := pageInfo(opCtx, p.id)
+	info, infoErr := m.pageInfo(opCtx, p)
 	cancel()
 	p.mu.Unlock()
 	if infoErr != nil {
@@ -149,9 +147,9 @@ func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOption
 			opCtx, cancel := operationContext(context.Background(), p.ctx, 5*time.Second)
 			var err error
 			if info.ViewportSet {
-				err = emulation.SetDeviceMetricsOverride(int64(info.ViewportW), int64(info.ViewportH), 1, false).Do(targetCommandContext(opCtx))
+				err = p.driver.SetViewport(opCtx, info.ViewportW, info.ViewportH)
 			} else {
-				err = emulation.ClearDeviceMetricsOverride().Do(targetCommandContext(opCtx))
+				err = p.driver.ClearViewport(opCtx)
 			}
 			cancel()
 			p.streamCmdMu.Unlock()
@@ -232,7 +230,7 @@ func (m *Manager) applyConfiguredViewport(p *managedPage) error {
 	}
 	ctx, cancel := operationContext(context.Background(), p.ctx, 5*time.Second)
 	defer cancel()
-	if err := emulation.SetDeviceMetricsOverride(int64(info.ViewportW), int64(info.ViewportH), 1, false).Do(targetCommandContext(ctx)); err != nil {
+	if err := p.driver.SetViewport(ctx, info.ViewportW, info.ViewportH); err != nil {
 		return fmt.Errorf("browser: apply viewport: %w", err)
 	}
 	return nil

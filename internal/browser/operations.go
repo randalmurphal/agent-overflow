@@ -4,16 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
-	"runtime"
 	"strings"
 	"time"
-
-	"github.com/chromedp/cdproto/input"
-	"github.com/chromedp/cdproto/page"
-	cdpruntime "github.com/chromedp/cdproto/runtime"
-	"github.com/chromedp/chromedp"
-	"github.com/chromedp/chromedp/kb"
 )
 
 func (m *Manager) Snapshot(ctx context.Context, access Access, pageID string) (Snapshot, error) {
@@ -25,9 +17,9 @@ func (m *Manager) Snapshot(ctx context.Context, access Access, pageID string) (S
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	var snapshot Snapshot
-	if err := chromedp.Run(opCtx, chromedp.Evaluate(snapshotExpression(), &snapshot)); err != nil {
-		return Snapshot{}, fmt.Errorf("browser: snapshot: %w", err)
+	snapshot, err := p.driver.Snapshot(opCtx)
+	if err != nil {
+		return Snapshot{}, err
 	}
 	snapshot.ID = p.id
 	for i := range snapshot.Elements {
@@ -47,40 +39,17 @@ func (m *Manager) Screenshot(ctx context.Context, access Access, opts Screenshot
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	params := page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatJpeg).WithQuality(85).WithFromSurface(true)
 	if opts.FullPage && opts.Clip != nil {
 		return nil, fmt.Errorf("browser: screenshot clip and full_page are mutually exclusive")
 	}
-	if opts.Clip != nil {
-		clip := opts.Clip
+	if clip := opts.Clip; clip != nil {
 		if !finite(clip.X) || !finite(clip.Y) || !finite(clip.Width) || !finite(clip.Height) || clip.X < 0 || clip.Y < 0 || clip.Width <= 0 || clip.Height <= 0 || clip.Width > maxFullScreenshotWidth || clip.Height > maxFullScreenshotHeight {
 			return nil, fmt.Errorf("browser: screenshot clip is outside the bounded capture area")
 		}
-		params = params.WithCaptureBeyondViewport(true).WithClip(&page.Viewport{X: clip.X, Y: clip.Y, Width: clip.Width, Height: clip.Height, Scale: 1})
-	} else if opts.FullPage {
-		_, _, contentSize, _, _, cssContentSize, metricsErr := page.GetLayoutMetrics().Do(targetCommandContext(opCtx))
-		if metricsErr != nil {
-			return nil, fmt.Errorf("browser: screenshot metrics: %w", metricsErr)
-		}
-		size := cssContentSize
-		if size == nil {
-			size = contentSize
-		}
-		if size != nil {
-			height := size.Height
-			width := size.Width
-			if height > maxFullScreenshotHeight {
-				height = maxFullScreenshotHeight
-			}
-			if width > maxFullScreenshotWidth {
-				width = maxFullScreenshotWidth
-			}
-			params = params.WithCaptureBeyondViewport(true).WithClip(&page.Viewport{X: 0, Y: 0, Width: width, Height: height, Scale: 1})
-		}
 	}
-	data, err := params.Do(targetCommandContext(opCtx))
+	data, err := p.driver.Screenshot(opCtx, opts)
 	if err != nil {
-		return nil, fmt.Errorf("browser: screenshot: %w", err)
+		return nil, err
 	}
 	if len(data) > maxScreenshotBytes {
 		return nil, fmt.Errorf("browser: screenshot exceeds %d bytes; use a viewport capture or reduce the page size", maxScreenshotBytes)
@@ -102,7 +71,7 @@ func (m *Manager) Click(ctx context.Context, access Access, pageID, selector str
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	if err := chromedp.Run(opCtx, chromedp.ScrollIntoView(selector, chromedp.ByQuery), chromedp.Click(selector, chromedp.ByQuery)); err != nil {
+	if err := p.driver.Click(opCtx, selector); err != nil {
 		return PageInfo{}, fmt.Errorf("browser: click %q: %w", selector, err)
 	}
 	m.captureLocalStorage(opCtx, p)
@@ -125,12 +94,7 @@ func (m *Manager) Type(ctx context.Context, access Access, opts TypeOptions) (Pa
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	actions := []chromedp.Action{chromedp.Focus(opts.Selector, chromedp.ByQuery)}
-	if opts.Clear {
-		actions = append(actions, chromedp.KeyEvent("a", browserKeyOptions("ControlOrMeta+a", controlOrMetaModifier())...), chromedp.KeyEvent(kb.Backspace))
-	}
-	actions = append(actions, chromedp.SendKeys(opts.Selector, opts.Text, chromedp.ByQuery))
-	if err := chromedp.Run(opCtx, actions...); err != nil {
+	if err := p.driver.Type(opCtx, opts.Selector, opts.Text, opts.Clear); err != nil {
 		return PageInfo{}, fmt.Errorf("browser: type into %q: %w", opts.Selector, err)
 	}
 	m.captureLocalStorage(opCtx, p)
@@ -141,9 +105,7 @@ func (m *Manager) Press(ctx context.Context, access Access, pageID, key string) 
 	if len(key) > maxBrowserInputBytes {
 		return PageInfo{}, fmt.Errorf("browser: key input exceeds %d bytes", maxBrowserInputBytes)
 	}
-	rawKey := key
-	key, modifiers := browserKey(key)
-	if key == "" {
+	if !chordHasKey(key) {
 		return PageInfo{}, fmt.Errorf("browser: key is required")
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
@@ -154,27 +116,42 @@ func (m *Manager) Press(ctx context.Context, access Access, pageID, key string) 
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	if isModifierChord(rawKey, "v") {
+	// The per-tab clipboard is AO-managed state, so a paste chord is answered
+	// from it rather than from any OS or engine clipboard.
+	if isModifierChord(key, "v") {
 		if text := p.clipboardText(); text != "" {
-			if err := chromedp.Run(opCtx, chromedp.KeyEvent(text)); err != nil {
+			if err := p.driver.TypeText(opCtx, text); err != nil {
 				return PageInfo{}, fmt.Errorf("browser: paste clipboard: %w", err)
 			}
 			return m.finishPageOperation(opCtx, p)
 		}
 	}
-	keyOptions := browserKeyOptions(rawKey, modifiers)
-	if err := chromedp.Run(opCtx, chromedp.KeyEvent(key, keyOptions...)); err != nil {
-		return PageInfo{}, fmt.Errorf("browser: press key: %w", err)
+	if err := p.driver.Press(opCtx, key); err != nil {
+		return PageInfo{}, err
 	}
-	if isModifierChord(rawKey, "c") {
-		var selected string
-		_ = chromedp.Run(opCtx, chromedp.Evaluate(`(()=>{const a=document.activeElement;if(a&&(a instanceof HTMLInputElement||a instanceof HTMLTextAreaElement)&&a.selectionStart!==null)return a.value.slice(a.selectionStart,a.selectionEnd);return String(getSelection()||"")})()`, &selected))
-		if selected != "" {
+	if isModifierChord(key, "c") {
+		if selected := p.driver.SelectionText(opCtx); selected != "" {
 			p.setClipboardText(selected)
 		}
 	}
 	m.captureLocalStorage(opCtx, p)
 	return m.finishPageOperation(opCtx, p)
+}
+
+// chordHasKey reports whether a key chord names anything besides modifiers. A
+// modifier-only chord is rejected before it can cost a page, which is why this
+// rule is the Manager's rather than an engine's.
+func chordHasKey(raw string) bool {
+	for _, part := range strings.Split(strings.TrimSpace(raw), "+") {
+		switch strings.ToLower(strings.TrimSpace(part)) {
+		case "control", "ctrl", "shift", "alt", "option", "meta", "command", "cmd", "controlormeta":
+		default:
+			if part != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isModifierChord(raw, key string) bool {
@@ -189,23 +166,6 @@ func isModifierChord(raw, key string) bool {
 		}
 	}
 	return hasModifier && hasKey
-}
-
-func browserEditingCommand(command string) chromedp.KeyOption {
-	return func(event *input.DispatchKeyEventParams) *input.DispatchKeyEventParams {
-		if event.Type == input.KeyDown || event.Type == input.KeyRawDown {
-			event.Commands = []string{command}
-		}
-		return event
-	}
-}
-
-func browserKeyOptions(raw string, modifiers input.Modifier) []chromedp.KeyOption {
-	options := []chromedp.KeyOption{chromedp.KeyModifiers(modifiers)}
-	if isModifierChord(raw, "a") {
-		options = append(options, browserEditingCommand("selectAll"))
-	}
-	return options
 }
 
 func (p *managedPage) clipboardText() string {
@@ -230,8 +190,8 @@ func (p *managedPage) setClipboardText(text string) {
 }
 
 func (m *Manager) Scroll(ctx context.Context, access Access, pageID, selector string, x, y float64) (PageInfo, error) {
-	if !finite(x) || !finite(y) || x < -100_000 || x > 100_000 || y < -100_000 || y > 100_000 {
-		return PageInfo{}, fmt.Errorf("browser: scroll delta is out of range")
+	if err := validateScrollDelta(x, y); err != nil {
+		return PageInfo{}, err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
 	if err != nil {
@@ -241,16 +201,11 @@ func (m *Manager) Scroll(ctx context.Context, access Access, pageID, selector st
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	selectorJSON, _ := json.Marshal(selector)
-	expression := fmt.Sprintf(`(() => { const s=%s; const el=s?document.querySelector(s):window; if(!el) throw new Error("selector not found"); el.scrollBy({left:%f,top:%f,behavior:"instant"}); return true; })()`, selectorJSON, x, y)
-	var ok bool
-	if err := chromedp.Run(opCtx, chromedp.Evaluate(expression, &ok)); err != nil {
+	if err := p.driver.Scroll(opCtx, selector, x, y); err != nil {
 		return PageInfo{}, fmt.Errorf("browser: scroll: %w", err)
 	}
 	return m.finishPageOperation(opCtx, p)
 }
-
-func finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
 
 func (m *Manager) Wait(ctx context.Context, access Access, pageID, selector string, milliseconds int) (PageInfo, error) {
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
@@ -269,7 +224,7 @@ func (m *Manager) Wait(ctx context.Context, access Access, pageID, selector stri
 	opCtx, cancel := operationContext(ctx, p.ctx, timeout)
 	defer cancel()
 	if strings.TrimSpace(selector) != "" {
-		if err := chromedp.Run(opCtx, chromedp.WaitVisible(selector, chromedp.ByQuery)); err != nil {
+		if err := p.driver.WaitVisible(opCtx, selector); err != nil {
 			return PageInfo{}, fmt.Errorf("browser: wait for %q: %w", selector, err)
 		}
 	} else if milliseconds > 0 {
@@ -295,38 +250,17 @@ func (m *Manager) History(ctx context.Context, access Access, pageID, action str
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	var runErr error
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "back":
-		current, entries, err := page.GetNavigationHistory().Do(targetCommandContext(opCtx))
-		if err != nil {
-			return PageInfo{}, fmt.Errorf("browser: history back: %w", err)
-		}
-		if current <= 0 {
-			return PageInfo{}, fmt.Errorf("browser: no previous history entry")
-		}
-		runErr = page.NavigateToHistoryEntry(entries[current-1].ID).Do(targetCommandContext(opCtx))
-	case "forward":
-		current, entries, err := page.GetNavigationHistory().Do(targetCommandContext(opCtx))
-		if err != nil {
-			return PageInfo{}, fmt.Errorf("browser: history forward: %w", err)
-		}
-		if int(current)+1 >= len(entries) {
-			return PageInfo{}, fmt.Errorf("browser: no forward history entry")
-		}
-		runErr = page.NavigateToHistoryEntry(entries[current+1].ID).Do(targetCommandContext(opCtx))
-	case "reload":
-		runErr = page.Reload().Do(targetCommandContext(opCtx))
-	case "stop":
-		runErr = page.StopLoading().Do(targetCommandContext(opCtx))
+	normalized := strings.ToLower(strings.TrimSpace(action))
+	switch normalized {
+	case "back", "forward", "reload", "stop":
 	default:
 		return PageInfo{}, fmt.Errorf("browser: history action must be back, forward, reload, or stop")
 	}
-	if runErr != nil {
-		return PageInfo{}, fmt.Errorf("browser: history %s: %w", action, runErr)
+	if err := p.driver.History(opCtx, normalized); err != nil {
+		return PageInfo{}, err
 	}
-	if strings.ToLower(strings.TrimSpace(action)) != "stop" {
-		if err := waitForPage(opCtx, p, "", "load"); err != nil {
+	if normalized != "stop" {
+		if err := m.waitForPage(opCtx, p, "", "load"); err != nil {
 			return PageInfo{}, fmt.Errorf("browser: history %s: %w", action, err)
 		}
 	}
@@ -348,12 +282,9 @@ func (m *Manager) Evaluate(ctx context.Context, access Access, pageID, expressio
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	var result any
-	awaitPromise := func(params *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
-		return params.WithAwaitPromise(true)
-	}
-	if err := chromedp.Run(opCtx, chromedp.Evaluate(expression, &result, awaitPromise)); err != nil {
-		return nil, fmt.Errorf("browser: evaluate: %w", err)
+	result, err := p.driver.Evaluate(opCtx, expression)
+	if err != nil {
+		return nil, err
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
@@ -382,22 +313,18 @@ func (m *Manager) EvaluateReadOnly(ctx context.Context, access Access, pageID, e
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	expression = unwrapReadOnlyPromise(expression)
-	remote, exception, err := cdpruntime.Evaluate(expression).WithReturnByValue(true).WithAwaitPromise(true).WithThrowOnSideEffect(true).Do(targetCommandContext(opCtx))
+	raw, err := p.driver.EvaluateReadOnly(opCtx, unwrapReadOnlyPromise(expression))
 	if err != nil {
-		return nil, fmt.Errorf("browser: read-only evaluate: %w", err)
+		return nil, err
 	}
-	if exception != nil {
-		return nil, fmt.Errorf("browser: read-only evaluate rejected a possible side effect: %s", exception.Text)
-	}
-	if remote == nil || len(remote.Value) == 0 {
+	if len(raw) == 0 {
 		return nil, nil
 	}
-	if len(remote.Value) > maxEvaluateBytes {
+	if len(raw) > maxEvaluateBytes {
 		return nil, fmt.Errorf("browser: evaluation result exceeds %d bytes", maxEvaluateBytes)
 	}
 	var result any
-	if err := json.Unmarshal(remote.Value, &result); err != nil {
+	if err := json.Unmarshal(raw, &result); err != nil {
 		return nil, fmt.Errorf("browser: decode evaluation result: %w", err)
 	}
 	m.refreshPageAfterOperation(opCtx, p)
@@ -450,7 +377,7 @@ func unwrapReadOnlyPromise(expression string) string {
 }
 
 func (m *Manager) finishPageOperation(ctx context.Context, p *managedPage) (PageInfo, error) {
-	info, err := pageInfo(ctx, p.id)
+	info, err := m.pageInfo(ctx, p)
 	if err == nil {
 		p.setInfo(info)
 		info = p.cachedInfo()
@@ -460,7 +387,7 @@ func (m *Manager) finishPageOperation(ctx context.Context, p *managedPage) (Page
 }
 
 func (m *Manager) refreshPageAfterOperation(ctx context.Context, p *managedPage) {
-	info, err := pageInfo(ctx, p.id)
+	info, err := m.pageInfo(ctx, p)
 	if err == nil {
 		p.setInfo(info)
 	}
@@ -487,59 +414,6 @@ func (m *Manager) lookupOrSelectPage(ctx context.Context, access Access, pageID 
 	default:
 		return nil, nil, ambiguousPageError(owned)
 	}
-}
-
-func browserKey(raw string) (string, input.Modifier) {
-	parts := strings.Split(strings.TrimSpace(raw), "+")
-	if len(parts) == 0 {
-		return "", 0
-	}
-	out := ""
-	var modifiers input.Modifier
-	for _, part := range parts {
-		switch strings.ToLower(strings.TrimSpace(part)) {
-		case "control", "ctrl":
-			modifiers |= input.ModifierCtrl
-		case "shift":
-			modifiers |= input.ModifierShift
-		case "alt", "option":
-			modifiers |= input.ModifierAlt
-		case "meta", "command", "cmd":
-			modifiers |= input.ModifierMeta
-		case "controlormeta":
-			modifiers |= controlOrMetaModifier()
-		case "enter", "return":
-			out += kb.Enter
-		case "tab":
-			out += kb.Tab
-		case "escape", "esc":
-			out += kb.Escape
-		case "backspace":
-			out += kb.Backspace
-		case "delete":
-			out += kb.Delete
-		case "arrowup", "up":
-			out += kb.ArrowUp
-		case "arrowdown", "down":
-			out += kb.ArrowDown
-		case "arrowleft", "left":
-			out += kb.ArrowLeft
-		case "arrowright", "right":
-			out += kb.ArrowRight
-		case "space":
-			out += " "
-		default:
-			out += part
-		}
-	}
-	return out, modifiers
-}
-
-func controlOrMetaModifier() input.Modifier {
-	if runtime.GOOS == "darwin" {
-		return input.ModifierMeta
-	}
-	return input.ModifierCtrl
 }
 
 func snapshotExpression() string {

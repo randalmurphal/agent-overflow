@@ -8,21 +8,21 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	cdpbrowser "github.com/chromedp/cdproto/browser"
-	"github.com/chromedp/cdproto/cdp"
 )
 
-func (m *Manager) downloadStarted(event *cdpbrowser.EventDownloadWillBegin) {
-	p, scope := m.pageForFrame(event.FrameID)
+// downloadStarted is the quota decision. The engine reports that a download
+// began; whether it is allowed to consume workspace and artifact bytes is
+// policy, and so is the sanitized name it will eventually be renamed to.
+func (m *Manager) downloadStarted(event downloadStart) {
+	p, scope := m.pageForFrame(event.Frame)
 	if p == nil {
 		return
 	}
 	p.downloadMu.Lock()
 	p.downloadSeq++
 	entry := DownloadInfo{
-		Sequence: p.downloadSeq, ID: event.GUID, URL: event.URL,
-		SuggestedName: safeArtifactName(event.SuggestedFilename, "download"),
+		Sequence: p.downloadSeq, ID: event.ID, URL: event.URL,
+		SuggestedName: safeArtifactName(event.SuggestedName, "download"),
 		State:         "in_progress", StartedAt: time.Now().UTC().Format(time.RFC3339Nano), reservedBytes: maxDownloadBytes,
 	}
 	scopeReserved := scope != nil && scope.downloadBytes.Add(maxDownloadBytes) <= maxWorkspaceDownloadBytes
@@ -45,21 +45,19 @@ func (m *Manager) downloadStarted(event *cdpbrowser.EventDownloadWillBegin) {
 	p.signalDownloadLocked()
 	p.downloadMu.Unlock()
 	if entry.State == "canceled" && scope != nil {
-		go func() {
-			_ = cdpbrowser.CancelDownload(event.GUID).WithBrowserContextID(scope.contextID).Do(browserCommandContext(scope.ctx))
-		}()
+		go scope.profile.CancelDownload(event.ID)
 	}
 }
 
-func (m *Manager) downloadProgress(event *cdpbrowser.EventDownloadProgress) {
-	p, scope := m.pageForDownload(event.GUID)
+func (m *Manager) downloadProgress(event downloadProgress) {
+	p, scope := m.pageForDownload(event.ID)
 	if p == nil {
 		return
 	}
 	p.downloadMu.Lock()
 	index := -1
 	for i := len(p.downloads) - 1; i >= 0; i-- {
-		if p.downloads[i].ID == event.GUID {
+		if p.downloads[i].ID == event.ID {
 			index = i
 			break
 		}
@@ -73,8 +71,8 @@ func (m *Manager) downloadProgress(event *cdpbrowser.EventDownloadProgress) {
 		p.downloadMu.Unlock()
 		return
 	}
-	entry.Bytes = int64(event.ReceivedBytes)
-	if entry.Bytes > maxDownloadBytes && event.State == cdpbrowser.DownloadProgressStateInProgress {
+	entry.Bytes = int64(event.Received)
+	if entry.Bytes > maxDownloadBytes && event.State == downloadInProgress {
 		entry.State = "canceled"
 		entry.Error = fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes)
 		if scope != nil && entry.reservedBytes > 0 {
@@ -86,14 +84,16 @@ func (m *Manager) downloadProgress(event *cdpbrowser.EventDownloadProgress) {
 		p.downloadMu.Unlock()
 		if scope != nil {
 			go func() {
-				_ = cdpbrowser.CancelDownload(event.GUID).WithBrowserContextID(scope.contextID).Do(browserCommandContext(scope.ctx))
-				_ = os.Remove(filepath.Join(scope.downloadDir, filepath.Base(event.GUID)))
+				scope.profile.CancelDownload(event.ID)
+				// A download the engine never finished keeps the handle-named
+				// partial file it was streaming into.
+				_ = os.Remove(filepath.Join(scope.downloadDir, filepath.Base(event.ID)))
 			}()
 		}
 		return
 	}
 	switch event.State {
-	case cdpbrowser.DownloadProgressStateCompleted:
+	case downloadCompleted:
 		entry.State = "completed"
 		if scope != nil && entry.reservedBytes > 0 {
 			scope.downloadBytes.Add(-entry.reservedBytes + entry.Bytes)
@@ -103,7 +103,7 @@ func (m *Manager) downloadProgress(event *cdpbrowser.EventDownloadProgress) {
 		if scope != nil {
 			source := event.FilePath
 			if source == "" {
-				source = filepath.Join(scope.downloadDir, filepath.Base(event.GUID))
+				source = filepath.Join(scope.downloadDir, filepath.Base(event.ID))
 			}
 			if !pathInside(scope.downloadDir, source) {
 				entry.State, entry.Error = "failed", "browser returned a download path outside its artifact directory"
@@ -119,7 +119,7 @@ func (m *Manager) downloadProgress(event *cdpbrowser.EventDownloadProgress) {
 				entry.Path = destination
 			}
 		}
-	case cdpbrowser.DownloadProgressStateCanceled:
+	case downloadCanceled:
 		entry.State = "canceled"
 		if scope != nil && entry.reservedBytes > 0 {
 			scope.downloadBytes.Add(-entry.reservedBytes)
@@ -136,15 +136,14 @@ func pathInside(root, path string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
-func (m *Manager) pageForFrame(frameID cdp.FrameID) (*managedPage, *workspaceScope) {
+// pageForFrame walks the registry the Manager owns and asks each driver whether
+// the frame is one of its own. Ownership stays here; frame bookkeeping does not.
+func (m *Manager) pageForFrame(frame string) (*managedPage, *workspaceScope) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			p.frameMu.RLock()
-			_, ok := p.frames[frameID]
-			p.frameMu.RUnlock()
-			if ok {
+			if p.driver.OwnsFrame(frame) {
 				return p, scope
 			}
 		}
@@ -152,7 +151,7 @@ func (m *Manager) pageForFrame(frameID cdp.FrameID) (*managedPage, *workspaceSco
 	return nil, nil
 }
 
-func (m *Manager) pageForDownload(guid string) (*managedPage, *workspaceScope) {
+func (m *Manager) pageForDownload(id string) (*managedPage, *workspaceScope) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, scope := range m.scopes {
@@ -160,7 +159,7 @@ func (m *Manager) pageForDownload(guid string) (*managedPage, *workspaceScope) {
 			p.downloadMu.Lock()
 			found := false
 			for _, download := range p.downloads {
-				if download.ID == guid {
+				if download.ID == id {
 					found = true
 					break
 				}
@@ -200,7 +199,7 @@ func (m *Manager) cancelPageDownloads(p *managedPage, scope *workspaceScope) {
 	}
 	p.downloadMu.Unlock()
 	for _, id := range ids {
-		_ = cdpbrowser.CancelDownload(id).WithBrowserContextID(scope.contextID).Do(browserCommandContext(scope.ctx))
+		scope.profile.CancelDownload(id)
 	}
 }
 

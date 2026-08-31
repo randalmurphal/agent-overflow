@@ -12,10 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/google/uuid"
 )
@@ -136,12 +134,12 @@ func (m *Manager) emitThreadState(threadID string) {
 	}
 }
 
-func (m *Manager) updateTargetInfo(info target.Info) {
+func (m *Manager) updatePageInfo(handle, url, title string) {
 	m.mu.Lock()
 	var found *managedPage
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.target == info.TargetID {
+			if p.driver.Handle() == handle {
 				found = p
 				break
 			}
@@ -154,7 +152,7 @@ func (m *Manager) updateTargetInfo(info target.Info) {
 	if found == nil {
 		return
 	}
-	found.setInfo(PageInfo{ID: found.id, URL: truncateUTF8(info.URL, maxBrowserURLBytes), Title: truncateUTF8(info.Title, maxBrowserTitleBytes)})
+	found.setInfo(PageInfo{ID: found.id, URL: truncateUTF8(url, maxBrowserURLBytes), Title: truncateUTF8(title, maxBrowserTitleBytes)})
 	m.emitThreadState(found.owner)
 }
 
@@ -335,7 +333,7 @@ func (p *managedPage) startStream(m *Manager, width, height int) {
 		defer cancel()
 		targetCtx := targetCommandContext(ctx)
 		_ = page.StopScreencast().Do(targetCtx)
-		if err := emulation.SetDeviceMetricsOverride(int64(width), int64(height), 1, false).Do(targetCtx); err != nil {
+		if err := p.driver.SetViewport(ctx, width, height); err != nil {
 			m.emit(CompanionEvent{Kind: "error", ThreadID: p.owner, PageID: p.id, Error: err.Error()})
 			return
 		}
@@ -458,12 +456,7 @@ func (s *pageStream) run(m *Manager) {
 	}
 }
 
-func (m *Manager) handleScreencastFrame(p *managedPage, event *page.EventScreencastFrame) {
-	go func() {
-		ctx, cancel := operationContext(context.Background(), p.ctx, 3*time.Second)
-		defer cancel()
-		_ = page.ScreencastFrameAck(event.SessionID).Do(targetCommandContext(ctx))
-	}()
+func (m *Manager) handleScreencastFrame(p *managedPage, data string) {
 	p.streamMu.Lock()
 	stream := p.stream
 	if stream == nil || !stream.ready {
@@ -471,7 +464,7 @@ func (m *Manager) handleScreencastFrame(p *managedPage, event *page.EventScreenc
 		return
 	}
 	stream.seq++
-	frame := CompanionEvent{Kind: "frame", ThreadID: p.owner, PageID: p.id, Frame: event.Data, Width: stream.width, Height: stream.height, Sequence: stream.seq}
+	frame := CompanionEvent{Kind: "frame", ThreadID: p.owner, PageID: p.id, Frame: data, Width: stream.width, Height: stream.height, Sequence: stream.seq}
 	select {
 	case stream.frames <- frame:
 	default:

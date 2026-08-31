@@ -7,9 +7,20 @@ Built-in browser MCP backed by one lazily launched managed Chrome process.
 - `MCPServer` owns the loopback Streamable HTTP endpoint. Every provider
   thread receives an unguessable capability URL; unregistering the thread
   revokes it and closes only that thread's pages.
-- `Manager` owns the Chrome process and workspace BrowserContexts. A canonical
-  workspace gets one isolated context, while every page is tagged with its
-  provider thread owner. A thread can never address another thread's page.
+- An ENGINE is reached only through the seam in `driver.go`: `browserEngine`
+  (the process and its profile factory), `engineProfile` (one workspace's
+  isolated site data), and `pageDriver` (every per-page tool operation).
+  `cdp_*.go` is the managed-Chrome implementation of those three; a second
+  engine (spec `docs/specs/embedded-browser.md` §6) implements them and nothing
+  else.
+- `Manager` owns POLICY and never engine mechanics: `Access` checks, the page
+  registry and its per-thread ownership, labels, session/visibility state, every
+  cap and bound, artifact quotas, the AO-managed per-tab clipboard, and the MCP
+  server. A canonical workspace gets one isolated profile, while every page is
+  tagged with its provider thread owner. A thread can never address another
+  thread's page. Policy must not migrate into a driver, and engine specifics
+  must not stay in `Manager` — an engine reports facts through `pageHooks` /
+  `engineEvents` and the Manager alone decides what they mean.
 - Chrome is not launched by app startup or MCP registration. The first tool
   that needs a page installs/launches it. It closes two minutes after the final
   workspace context becomes idle.

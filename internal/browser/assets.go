@@ -3,7 +3,6 @@ package browser
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,11 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chromedp/cdproto/cdp"
-	cdpio "github.com/chromedp/cdproto/io"
-	"github.com/chromedp/cdproto/network"
-	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/chromedp"
 	"github.com/google/uuid"
 )
 
@@ -67,13 +61,9 @@ func (m *Manager) listAssets(ctx context.Context, p *managedPage) (AssetInventor
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	var raw struct {
-		PageURL    string      `json:"pageUrl"`
-		Assets     []AssetInfo `json:"assets"`
-		InlineSVGs []InlineSVG `json:"inlineSvgs"`
-	}
-	if err := chromedp.Run(opCtx, chromedp.Evaluate(assetInventoryExpression(), &raw)); err != nil {
-		return AssetInventory{}, fmt.Errorf("browser: list page assets: %w", err)
+	raw, err := p.driver.AssetInventory(opCtx)
+	if err != nil {
+		return AssetInventory{}, err
 	}
 	seen := make(map[string]int, len(raw.Assets))
 	nodeIDs := make(map[string]string)
@@ -223,7 +213,7 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	frameTree, err := page.GetFrameTree().Do(targetCommandContext(opCtx))
+	fetch, err := p.driver.AssetFetcher(opCtx)
 	if err != nil {
 		return AssetBundle{}, err
 	}
@@ -232,38 +222,28 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 			bundle.Failures = append(bundle.Failures, AssetFailure{ID: asset.ID, Name: asset.Name, URL: asset.URL, Reason: "asset URL is outside browser navigation authority"})
 			continue
 		}
-		result, loadErr := network.LoadNetworkResource(asset.URL, &network.LoadNetworkResourceOptions{DisableCache: false, IncludeCredentials: true}).WithFrameID(frameTree.Frame.ID).Do(targetCommandContext(opCtx))
-		if loadErr != nil || result == nil || !result.Success || result.Stream == "" {
-			reason := "load failed"
-			if loadErr != nil {
-				reason = loadErr.Error()
-			} else if result != nil && result.NetErrorName != "" {
-				reason = result.NetErrorName
-			}
-			bundle.Failures = append(bundle.Failures, AssetFailure{ID: asset.ID, Name: asset.Name, URL: asset.URL, Reason: reason})
+		stream, loadErr := fetch(asset.URL)
+		if loadErr != nil {
+			bundle.Failures = append(bundle.Failures, AssetFailure{ID: asset.ID, Name: asset.Name, URL: asset.URL, Reason: loadErr.Error()})
 			continue
 		}
-		contentType := ""
-		for key, value := range result.Headers {
-			if strings.EqualFold(key, "content-type") {
-				contentType = fmt.Sprint(value)
-				break
-			}
-		}
+		contentType := stream.ContentType
 		name := safeArtifactName(asset.Name, asset.Kind)
 		path, pathErr := uniqueArtifactPath(dir, name)
 		if pathErr != nil {
+			stream.Close()
 			bundle.Failures = append(bundle.Failures, AssetFailure{ID: asset.ID, Name: name, URL: asset.URL, Reason: pathErr.Error(), ContentType: contentType})
 			continue
 		}
 		file, fileErr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if fileErr != nil {
+			stream.Close()
 			bundle.Failures = append(bundle.Failures, AssetFailure{ID: asset.ID, Name: name, URL: asset.URL, Reason: fileErr.Error(), ContentType: contentType})
 			continue
 		}
-		written, copyErr := readCDPStream(opCtx, result.Stream, file, maxAssetBytes, min64(maxAssetBundleBytes-total, maxAssetBytes))
+		written, copyErr := stream.Copy(file, maxAssetBytes, min64(maxAssetBundleBytes-total, maxAssetBytes))
 		closeErr := file.Close()
-		_ = cdpio.Close(result.Stream).Do(targetCommandContext(opCtx))
+		stream.Close()
 		if copyErr == nil {
 			copyErr = closeErr
 		}
@@ -285,35 +265,6 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 	bundle.ManifestPath = manifestPath
 	bundle.Summary = map[string]any{"requestedCount": len(selected), "downloadedCount": len(bundle.Assets), "failedCount": len(bundle.Failures), "elapsedMs": time.Since(started).Milliseconds(), "bytes": total}
 	return bundle, nil
-}
-
-func readCDPStream(ctx context.Context, handle cdpio.StreamHandle, file *os.File, perFile, remaining int64) (int64, error) {
-	var written int64
-	for {
-		var read cdpio.ReadReturns
-		err := cdp.Execute(targetCommandContext(ctx), cdpio.CommandRead, cdpio.Read(handle).WithSize(1<<20), &read)
-		if err != nil {
-			return written, err
-		}
-		chunk := []byte(read.Data)
-		if read.Base64encoded {
-			chunk, err = base64.StdEncoding.DecodeString(read.Data)
-			if err != nil {
-				return written, err
-			}
-		}
-		if int64(len(chunk))+written > perFile || int64(len(chunk))+written > remaining {
-			return written, fmt.Errorf("browser: asset exceeds bundle size limit")
-		}
-		n, err := file.Write(chunk)
-		written += int64(n)
-		if err != nil {
-			return written, err
-		}
-		if read.EOF {
-			return written, nil
-		}
-	}
 }
 
 func min64(a, b int64) int64 {
