@@ -19,11 +19,11 @@ import (
 // Everything here is adaptation over internal/identity, on the same terms
 // as app_identity.go: no policy decision lives in this file, because a
 // decision made here is one the session core could not enforce for a
-// caller that reached it another way. What this file DOES own is the wire
-// shape — flat DTOs, millisecond epochs, additive-only — and the two
-// refusals that are facts about this process rather than about a row: the
-// local page channel is not a device a person may revoke, and a device
-// class this backend does not pair is not one a mint may name.
+// caller that reached it another way. What this surface DOES own is the
+// wire shape (app_access_types.go) and the two refusals that are facts
+// about this process rather than about a row: the local page channel is
+// not a device a person may revoke, and a device class this backend does
+// not pair is not one a mint may name.
 //
 // All of these are LocalOnlyMethods (CategoryDeviceAccess). Minting a
 // pairing link issues a credential and revoking one withdraws every
@@ -36,121 +36,6 @@ import (
 // refusals around them) without putting the whole table on the wire; the
 // full log is bounded separately at maxAuthAuditRows.
 const accessAuditLimit = 50
-
-// AccessOverview is the whole settings surface in one call. One call
-// because the three lists are read together and shown together, and three
-// round trips would let the device list disagree with the audit line that
-// explains it.
-type AccessOverview struct {
-	// Devices is every device row of the owner account, revoked ones
-	// included: the list is also the record of what was removed.
-	Devices []AccessDevice `json:"devices"`
-	// PendingPairings is every link still waiting on somebody — to be
-	// redeemed, or to have its verification number confirmed.
-	PendingPairings []PendingPairing `json:"pendingPairings,omitempty"`
-	// Audit is the most recent credential events, newest first.
-	Audit []AccessAuditEntry `json:"audit,omitempty"`
-}
-
-// AccessDevice is one client instance that holds, or held, credentials.
-type AccessDevice struct {
-	ID       string `json:"id"`
-	Label    string `json:"label"`
-	Class    string `json:"class"`
-	Platform string `json:"platform,omitempty"`
-	// Channel is non-empty only for a device this backend minted for
-	// ITSELF — today just the local page channel. The surface reads it to
-	// present that row differently and to hide a revoke control that
-	// would refuse anyway.
-	Channel      string `json:"channel,omitempty"`
-	CreatedAtMs  int64  `json:"createdAtMs"`
-	LastSeenAtMs int64  `json:"lastSeenAtMs,omitempty"`
-	RevokedAtMs  int64  `json:"revokedAtMs,omitempty"`
-	// Sessions carries the live and awaiting-confirmation sessions only.
-	// A device's expired and revoked sessions are history the audit log
-	// already holds, and shipping them would grow this list without
-	// bound for a device that has reconnected for months.
-	Sessions []AccessSession `json:"sessions,omitempty"`
-}
-
-// AccessSession is one credential a device currently holds.
-type AccessSession struct {
-	ID      string `json:"id"`
-	Binding string `json:"binding"`
-	// AwaitingConfirmation is true for a session a redemption minted that
-	// the owner has not confirmed. It exists and admits nothing.
-	AwaitingConfirmation bool  `json:"awaitingConfirmation,omitempty"`
-	CreatedAtMs          int64 `json:"createdAtMs"`
-	ActivatedAtMs        int64 `json:"activatedAtMs,omitempty"`
-	LastUsedAtMs         int64 `json:"lastUsedAtMs,omitempty"`
-	ExpiresAtMs          int64 `json:"expiresAtMs"`
-	// Connections is how many sockets are carrying this session right
-	// now, read from the transport's live-session registry. Zero for a
-	// session nobody is attached on, which is a normal answer.
-	Connections int `json:"connections,omitempty"`
-}
-
-// PendingPairing is one link the owner can still act on.
-type PendingPairing struct {
-	LinkID      string `json:"linkId"`
-	CreatedAtMs int64  `json:"createdAtMs"`
-	// ExpiresAtMs is when this pairing stops being actionable — see
-	// pairingDeadline, which is not always the link row's own expiry.
-	ExpiresAtMs int64 `json:"expiresAtMs"`
-	// Redeemed is true once a device has presented the token and its key.
-	// The two fields below are populated only then.
-	Redeemed           bool   `json:"redeemed,omitempty"`
-	DeviceLabel        string `json:"deviceLabel,omitempty"`
-	VerificationNumber string `json:"verificationNumber,omitempty"`
-}
-
-// AccessAuditEntry is one row of the credential log.
-type AccessAuditEntry struct {
-	AtMs      int64  `json:"atMs"`
-	Event     string `json:"event"`
-	Outcome   string `json:"outcome"`
-	DeviceID  string `json:"deviceId,omitempty"`
-	SessionID string `json:"sessionId,omitempty"`
-	Detail    string `json:"detail,omitempty"`
-	Peer      string `json:"peer,omitempty"`
-}
-
-// PairingInvite is what a fresh mint hands the surface: the id to poll on
-// and the URL to show as a link or a QR code.
-type PairingInvite struct {
-	LinkID string `json:"linkId"`
-	// URL is a full page URL — a spendable one-time page ticket included,
-	// because the redeeming device holds no credential and could not load
-	// the page otherwise — with the pairing payload in the FRAGMENT. A
-	// fragment is never sent to a server, never written to an access log,
-	// and never lands in a Referer header.
-	URL         string `json:"url"`
-	ExpiresAtMs int64  `json:"expiresAtMs"`
-}
-
-// PairingStatusView is one link's state, for the surface polling while it
-// waits for a device to redeem.
-type PairingStatusView struct {
-	LinkID string `json:"linkId"`
-	// State is one of: pending, redeemed, confirmed, canceled, expired.
-	State string `json:"state"`
-	// VerificationNumber and DeviceLabel are populated once a device has
-	// redeemed. The number is what the owner compares against the one the
-	// device is showing before confirming.
-	VerificationNumber string `json:"verificationNumber,omitempty"`
-	DeviceLabel        string `json:"deviceLabel,omitempty"`
-	ExpiresAtMs        int64  `json:"expiresAtMs"`
-}
-
-// Pairing states. Strings on the wire rather than an integer, because the
-// surface renders them and the audit log spells the same words.
-const (
-	pairingStatePending   = "pending"
-	pairingStateRedeemed  = "redeemed"
-	pairingStateConfirmed = "confirmed"
-	pairingStateCanceled  = "canceled"
-	pairingStateExpired   = "expired"
-)
 
 // pairingFragmentPrefix is what the redeeming page looks for in the URL
 // fragment. Named rather than spelled twice: the frontend reads the same
