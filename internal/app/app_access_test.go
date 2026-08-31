@@ -3,7 +3,9 @@ package app
 import (
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/store"
@@ -436,6 +438,76 @@ func TestRevokeAccessDevice_EndsEveryCredentialAndDropsTheDevicesUIState(t *test
 	if err := app.RevokeAccessDevice(gone.ID); err != nil {
 		t.Fatalf("second RevokeAccessDevice: %v", err)
 	}
+}
+
+// recordingConns is the transport's live-connection registry as the
+// session core sees it, recording which sessions were force-closed.
+type recordingConns struct {
+	mu     sync.Mutex
+	closed []string
+}
+
+func (r *recordingConns) CloseSession(sessionID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed = append(r.closed, sessionID)
+	return 1
+}
+
+func (r *recordingConns) sawClose(sessionID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range r.closed {
+		if id == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRevokeReachesTheLiveSockets — "revoked" that has not reached a live
+// socket is not revoked. A connection already upgraded holds its stream
+// open on a credential it presented once, so the revocation has to close
+// it rather than wait for a next presentation that never comes.
+func TestRevokeReachesTheLiveSockets(t *testing.T) {
+	app := accessApp(t)
+	conns := &recordingConns{}
+	AttachSessionConns(app, conns)
+
+	device, session := pairDevice(t, app, "A browser", "thumb-browser")
+	if err := app.RevokeAccessSession(session.ID); err != nil {
+		t.Fatalf("RevokeAccessSession: %v", err)
+	}
+	if !conns.sawClose(session.ID) {
+		t.Fatal("revoking a session left its live sockets open")
+	}
+
+	// A device-wide revocation reaches every session the device holds,
+	// including one minted after the first was revoked — which is what a
+	// device that reconnects on a fresh credential is.
+	second := mintSessionFor(t, app, device)
+	if err := app.RevokeAccessDevice(device.ID); err != nil {
+		t.Fatalf("RevokeAccessDevice: %v", err)
+	}
+	if !conns.sawClose(second.ID) {
+		t.Fatal("revoking a device left one of its sessions' sockets open")
+	}
+}
+
+// mintSessionFor issues a second session on an EXISTING device row.
+func mintSessionFor(t *testing.T, app *App, device store.Device) store.Session {
+	t.Helper()
+	session, _, err := app.identityState().sessions.Mint(identity.MintRequest{
+		UserID:       device.UserID,
+		DeviceID:     device.ID,
+		BindingClass: identity.BindingDeviceBound,
+		Scopes:       identity.Scopes,
+		TTL:          time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	return session
 }
 
 // TestRevokeAccessDevice_RefusesTheLocalPageChannel — that row is not a
