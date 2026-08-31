@@ -119,31 +119,62 @@ shared ACP runtime):
 - Mid-turn steering: a prompt sent while one is in flight folds into
   the same turn (no concurrent/queued prompts).
 - Sessions on disk are owned by the CLI; the id is the only resume
-  token a client needs. Unofficial location:
-  `~/.cursor/projects/<project>/agent-transcripts/<id>/<id>.jsonl`
-  (reverse-engineered, spike required before the importer trusts it).
+  token a client needs. Spike-verified location (CLI 2026.08.25):
+  `~/.cursor/acp-sessions/<sessionId>/` holding `meta.json` plus a
+  SQLite `store.db` (WAL). The JSONL location circulating in
+  reverse-engineering posts does not apply to ACP sessions.
+- Wire-native session enumeration exists: `sessionCapabilities.list`
+  is advertised at `initialize`, and `session/list` returns
+  `{sessions: [{sessionId, cwd, title, updatedAt}]}`. With
+  `session/load`'s replay, import can be wire-first (enumerate + load)
+  with SQLite scraping as fallback for sessions the CLI can no longer
+  load.
 - Auth lives in the CLI (`agent login`, or `CURSOR_API_KEY` /
   `--auth-token`). Nothing works unauthenticated.
 - Permission modes: `agent` / `plan` / `ask`, plus sandbox and
   force/yolo config. Unanswered `session/request_permission` blocks
   tool execution indefinitely (no documented timeout).
 - t3-code gaps that are client omissions, not wire limits: subagent
-  visibility (`cursor/task` exists), MCP passthrough, thinking stream,
-  slash-command advertisement (`available_commands_update`, spec-side).
-- Known wire-level absences pending spike confirmation: token usage
-  over ACP (spec defines optional `usage_update`; cursor docs never
-  mention it; headless mode has per-turn totals), `session/fork`
-  (spec-defined, cursor-unconfirmed), rewind/checkpoints (interactive
-  CLI only, no ACP method).
+  visibility (`cursor/task` exists), MCP passthrough, thinking stream
+  (`agent_thought_chunk` spike-confirmed streaming), slash-command
+  advertisement (`available_commands_update` spike-confirmed: fires
+  after `session/new` with builtin skills and the user's own skills).
+- Spike-confirmed absences (CLI 2026.08.25): `session/fork` and
+  `session/resume` both return `-32601 Method not found` (only
+  `session/load` exists); no usage data of any kind was emitted across
+  a full real turn. Rewind/checkpoints remain interactive-CLI only.
+- First-turn capture facts (2026-08-31, `gpt-5.4-nano`): `initialize`
+  advertises `promptCapabilities` image=true,
+  embeddedContext=false, audio=false and `mcpCapabilities` http+sse.
+  `session/new` returns modes (`agent`/`plan`/`ask`), the model
+  catalog, and `configOptions` in one response; model ids use a
+  structured grammar `name[k=v,...]` (e.g. `composer-2.5[fast=true]`,
+  `gpt-5.4-nano[reasoning=medium]`), and the ACP catalog includes
+  cheap tiers (`gpt-5.4-nano`, `gpt-5-mini`, `gemini-2.5-flash`).
+  Tool-call lifecycle: `tool_call` (pending) →
+  `tool_call_update` (title/rawInput/locations) → `in_progress` →
+  `completed` with `content: [{type: "diff", ...}]`. Wire quirks the
+  parser must survive: `toolCallId` embeds a literal newline joining
+  two ids (`call_…\nctc_…`), and diff `oldText`/`newText` carry
+  diff-header junk (`"-- /dev/null"`, `"++ b/<path>"` prefix line). A
+  `session_info_update` kind carries title changes;
+  `session/prompt` resolves with `{stopReason: "end_turn"}`. A file
+  edit in `agent` mode ran with no permission request.
+- `session/load` replay (spike-confirmed): the burst arrives before
+  the RPC response and is a coalesced canonical transcript — consecutive
+  thought/message chunks merged into single updates (101 live thought
+  chunks replayed as 1), ordering and tool calls preserved; the
+  response then carries current modes/models/configOptions with the
+  session's model intact.
 
 ## Gap table (living)
 
 | Feature | Wire status | Resolution |
 |---|---|---|
-| Token usage per turn | `usage_update` unconfirmed over ACP | spike S1; gap-table if absent |
-| Thread fork | `session/fork` unconfirmed | spike S2; fall back to gap (fork disabled in catalog) |
+| Token usage per turn | no usage data observed over ACP (S1, 2026.08.25) | gap, pending S13 headless cross-check + re-probe on CLI updates |
+| Thread fork | `session/fork` → Method not found (S2) | GAP: fork disabled in the provider catalog for cursor |
 | Rewind/checkpoints | no ACP method documented | gap unless a spike finds a route |
-| Non-image attachments | spec content blocks; cursor acceptance unconfirmed | spike S5; else path-in-prompt like t3-code |
+| Non-image attachments | `embeddedContext: false` advertised at initialize | path-in-prompt; images native (`image: true`), verify send shape in S5 |
 
 ## Integration inventory (Phase B)
 
@@ -203,21 +234,22 @@ second model is needed; never `-fast` variants or `auto`).
 ## Spike backlog
 
 Environment: real `agent` CLI (2026.08.25+, Team plan), isolated spike
-dir outside this repo. Each spike's captured wire traffic seeds the
-wire reference docs.
+dir at `~/spikes/cursor-acp/` (rpc.mjs driver + `cap-*.jsonl`
+captures). Each spike's captured wire traffic seeds the wire reference
+docs. Spike models: `gpt-5.4-nano` / `composer-2.5[fast=true]`.
 
 | ID | Question | Status |
 |---|---|---|
-| S1 | Does `agent acp` emit `usage_update` (or any usage data)? | open |
-| S2 | Is `session/fork` implemented? Error shape if not? | open |
+| S1 | Does `agent acp` emit `usage_update` (or any usage data)? | CLOSED 2026-08-31: none observed on a full turn; re-probe each CLI update |
+| S2 | Is `session/fork` implemented? | CLOSED 2026-08-31: `-32601`, same for `session/resume`; only `session/load` |
 | S3 | Does `session/new` `mcpServers` actually spawn/connect servers today? Detectable when it silently doesn't? | open |
-| S4 | `available_commands_update` emitted? Slash/custom commands over ACP? | open |
-| S5 | Image + non-image content blocks accepted in `session/prompt`? | open |
-| S6 | `session/load` replay burst: shape, ordering, idle-gap behavior, fidelity vs live stream | open |
-| S7 | Transcript JSONL on-disk format + true location (importer input) | open |
+| S4 | Slash/custom commands over ACP? | CLOSED 2026-08-31: `available_commands_update` after `session/new`, builtin + user skills |
+| S5 | Image content-block send shape in `session/prompt`? (non-image ruled out: `embeddedContext: false`) | open |
+| S6 | `session/load` replay burst: shape, ordering, fidelity | CLOSED 2026-08-31: coalesced canonical replay before RPC response; see Verified wire facts |
+| S7 | On-disk session format (importer fallback input) | PARTIAL 2026-08-31: `~/.cursor/acp-sessions/<id>/` meta.json + SQLite store.db; schema unexplored; wire-first import preferred via `session/list` |
 | S8 | `cursor/task` subagent notification lifecycle: correlation to tool calls, transcript access, interruption | open |
-| S9 | Thinking stream (`agent_thought_chunk`) presence per model | open |
-| S10 | Permission-request shapes per mode (`agent`/`plan`/`ask`), sandbox interaction, option ids | open |
+| S9 | Thinking stream presence | CLOSED 2026-08-31: `agent_thought_chunk` streams (per-model coverage still worth sampling) |
+| S10 | Permission-request shapes per mode (`agent`/`plan`/`ask`), sandbox interaction, option ids | PARTIAL 2026-08-31: file edit in `agent` mode prompts nothing; command/plan/ask shapes open |
 | S11 | `initialize` capability advertisement vs reality (the MCP bug showed capabilities can lie) | open |
 | S12 | Terminal methods: does cursor call `terminal/*` when the client advertises them? | open |
 | S13 | Headless `stream-json` event shapes (textgen path + usage cross-check) | open |
