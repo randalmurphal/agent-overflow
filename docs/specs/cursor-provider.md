@@ -238,7 +238,18 @@ shared ACP runtime):
   median inter-chunk gap 0ms, p90 2ms, pauses up to ~3s — with tiny
   payloads (median thought chunk 4 chars; 101 chunks totalled 436
   chars). Parser-side coalescing is mandatory, not an optimization.
-- Headless (`agent -p --output-format stream-json --model … --trust`):
+- Unreachable edge cases, resolved from spec vocabulary rather than
+  observation (t3-code's cursor handling is generic passthrough, so
+  only the vocabulary is borrowable): the ACP `StopReason` enum is
+  `end_turn | max_tokens | max_turn_requests | refusal | cancelled`
+  (first two observed; all five handled); auth expiry is spec error
+  `-32000 authRequired` (handling is ours: one `authenticate` retry,
+  then user-facing "run `agent login`"); rate limits have no cursor
+  surface anywhere — Grok's ACP extension proves agents invent custom
+  error codes (`-32003`) and non-spec stopReasons (`"rate_limit"`), so
+  the parser must treat unknown stopReasons and error codes as
+  non-fatal, user-visible errors with raw payload captured for the
+  wire doc.
   Claude-Code-shaped events (`system`/`init` with
   `permissionMode`/`session_id`, `user`, `assistant` message chunks,
   `result`), and `result` carries `usage: {inputTokens, outputTokens,
