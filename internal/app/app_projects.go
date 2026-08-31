@@ -31,6 +31,8 @@ func (w appProjectWorkspace) FindWorktree(projectPath, candidate string) (string
 
 // ListProjects returns projects with a lightweight thread count per
 // project for the sidebar.
+//
+//ao:scope threads:read
 func (a *App) ListProjects() ([]store.ProjectWithCounts, error) {
 	return a.projectApplication().List()
 }
@@ -39,6 +41,8 @@ func (a *App) ListProjects() ([]store.ProjectWithCounts, error) {
 // already backing another project. Returns ErrProjectPathInUse when the
 // path already has a project row — the frontend interprets that as
 // "redirect to the existing project" rather than a failure.
+//
+//ao:scope git:operate
 func (a *App) CreateProject(path string) (store.Project, error) {
 	row, err := a.projectApplication().Create(path)
 	if err != nil {
@@ -49,6 +53,8 @@ func (a *App) CreateProject(path string) (store.Project, error) {
 }
 
 // RenameProject updates the display name. Path is immutable.
+//
+//ao:scope threads:operate
 func (a *App) RenameProject(id, name string) (store.Project, error) {
 	write, err := a.projectApplication().Rename(id, name)
 	if err != nil {
@@ -59,6 +65,8 @@ func (a *App) RenameProject(id, name string) (store.Project, error) {
 }
 
 // ArchiveProject hides the project without deleting it.
+//
+//ao:scope threads:operate
 func (a *App) ArchiveProject(id string) error {
 	write, err := a.projectApplication().Archive(id)
 	if err != nil {
@@ -69,6 +77,8 @@ func (a *App) ArchiveProject(id string) error {
 }
 
 // UnarchiveProject reverses ArchiveProject and returns the refreshed row.
+//
+//ao:scope threads:operate
 func (a *App) UnarchiveProject(id string) (store.Project, error) {
 	write, err := a.projectApplication().Unarchive(id)
 	if err != nil {
@@ -86,6 +96,8 @@ func (a *App) UnarchiveProject(id string) (store.Project, error) {
 // ones whose index moved, because the reorder also bumps updated_at — that
 // bump is deliberate (it makes a reorder count as project activity), so those
 // rows really did change and other clients need them.
+//
+//ao:scope threads:operate
 func (a *App) UpdateProjectSortPositions(orderedIDs []string) error {
 	moved, err := a.projectApplication().UpdateSortPositions(orderedIDs)
 	if err != nil {
@@ -109,6 +121,8 @@ type WorktreeSetupConfig struct {
 // GetProjectWorktreeSetup returns the project's recipe. An unconfigured project
 // returns the empty recipe — the editor's starting state — rather than an
 // error, because "not configured yet" is the normal case, not a fault.
+//
+//ao:scope terminal:operate
 func (a *App) GetProjectWorktreeSetup(projectID string) (WorktreeSetupConfig, error) {
 	config, err := a.projectApplication().GetWorktreeSetup(projectID)
 	if err != nil {
@@ -124,6 +138,8 @@ func (a *App) GetProjectWorktreeSetup(projectID string) (WorktreeSetupConfig, er
 //
 // A recipe that asks for nothing clears the row, so "remove everything" and
 // "never configured" are the same state.
+//
+//ao:scope terminal:operate
 func (a *App) SetProjectWorktreeSetup(projectID string, config WorktreeSetupConfig) (WorktreeSetupConfig, error) {
 	stored := worktreesetup.Config{Copy: config.Copy, Run: config.Run, Timeout: config.Timeout}
 	saved, write, err := a.projectApplication().SetWorktreeSetup(projectID, stored)
@@ -177,6 +193,8 @@ type ProjectDeletionResult struct {
 // FIRST, before a single thread lock is taken: cancelling a live run reaches
 // App.InterruptTurn, which locks the run's phase thread — one of the locks this
 // method would otherwise already hold on every thread in the project.
+//
+//ao:scope threads:operate
 func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	if a.store == nil {
 		return ProjectDeletionResult{}, fmt.Errorf("delete project: store unavailable")

@@ -44,6 +44,8 @@ const pairingFragmentPrefix = "#pair="
 
 // GetAccessOverview returns the device, pairing, and audit lists in one
 // read.
+//
+//ao:scope access:admin
 func (a *App) GetAccessOverview() (AccessOverview, error) {
 	state, err := a.accessState()
 	if err != nil {
@@ -121,6 +123,9 @@ func (a *App) GetAccessOverview() (AccessOverview, error) {
 // another backend is §8's federation flow, with its own trust decisions,
 // and admitting one through the device-pairing surface would grant it the
 // posture of an owner's own device.
+//
+//ao:scope access:admin
+//ao:stepup
 func (a *App) MintDevicePairing(deviceClass string) (PairingInvite, error) {
 	state, err := a.accessState()
 	if err != nil {
@@ -185,6 +190,8 @@ func (a *App) MintDevicePairing(deviceClass string) (PairingInvite, error) {
 
 // DevicePairingStatus reads one link, for the surface polling while it
 // waits.
+//
+//ao:scope access:admin
 func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
 	state, err := a.accessState()
 	if err != nil {
@@ -205,6 +212,8 @@ func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
 
 // ConfirmDevicePairing activates the session a redemption created, after
 // the owner has matched the verification number.
+//
+//ao:scope access:admin
 func (a *App) ConfirmDevicePairing(linkID string) error {
 	state, err := a.accessState()
 	if err != nil {
@@ -217,6 +226,8 @@ func (a *App) ConfirmDevicePairing(linkID string) error {
 // CancelDevicePairing refuses a link and revokes whatever a redemption
 // already created — the number did not match, or the link was minted by
 // mistake.
+//
+//ao:scope access:admin
 func (a *App) CancelDevicePairing(linkID string) error {
 	state, err := a.accessState()
 	if err != nil {
@@ -235,6 +246,8 @@ func (a *App) CancelDevicePairing(linkID string) error {
 // it would sign the host's own window out, and identity refuses to
 // re-mint around a revoked channel device by design — so the refusal
 // belongs in front of the call, where it can say what happened.
+//
+//ao:scope access:admin
 func (a *App) RevokeAccessDevice(deviceID string) error {
 	state, err := a.accessState()
 	if err != nil {
@@ -268,6 +281,8 @@ func (a *App) RevokeAccessDevice(deviceID string) error {
 // RestoreAccessDevice re-admits a revoked device's key to pairing — the
 // remedy RedeemPairing's revoked-key refusal names. No credential moves:
 // the device still redeems a fresh link and passes the number check.
+//
+//ao:scope access:admin
 func (a *App) RestoreAccessDevice(deviceID string) error {
 	state, err := a.accessState()
 	if err != nil {
@@ -285,6 +300,8 @@ func (a *App) RestoreAccessDevice(deviceID string) error {
 // RevokeAccessDevice, resolved through the session's device row: the
 // channel's session is re-minted at boot, so revoking it mid-run would
 // close the host's own window until a restart.
+//
+//ao:scope access:admin
 func (a *App) RevokeAccessSession(sessionID string) error {
 	state, err := a.accessState()
 	if err != nil {

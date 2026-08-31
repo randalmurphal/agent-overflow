@@ -67,6 +67,8 @@ type LiveStateTodoStep struct {
 // LocalOnly: the payload can expose pending prompts, tool approvals, drafted
 // queued messages, attachment ids, and provider session state. It belongs in
 // the same loopback-only class as GetQueueState and ListPendingInteractiveRequests.
+//
+//ao:scope threads:operate
 func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	threadID = strings.TrimSpace(threadID)
 	state := ThreadLiveState{

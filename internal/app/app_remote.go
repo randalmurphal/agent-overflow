@@ -18,6 +18,8 @@ type RemoteEndpointSummary = settings.RemoteEndpointSummary
 // keeps the bulk read path free of credentials so a remote token-
 // holder enumerating saved endpoints can't grab tokens for unrelated
 // backends.
+//
+//ao:scope settings:write
 func (a *App) ListRemoteEndpoints() ([]RemoteEndpointSummary, error) {
 	if a.settings == nil {
 		return nil, fmt.Errorf("settings service unavailable")
@@ -40,6 +42,8 @@ func (a *App) ListRemoteEndpoints() ([]RemoteEndpointSummary, error) {
 // which is an explicit user action; ListRemoteEndpoints fires on every
 // settings render and would otherwise leak tokens to any LAN-attached
 // token-holder.
+//
+//ao:scope host
 func (a *App) GetRemoteEndpointToken(id string) (string, error) {
 	if a.settings == nil {
 		return "", fmt.Errorf("settings service unavailable")
@@ -64,6 +68,8 @@ func (a *App) GetRemoteEndpointToken(id string) (string, error) {
 // without writing). Forcing the return through Summary keeps both
 // paths token-free; the local UI fetches the token explicitly via
 // GetRemoteEndpointToken when the user copies the launch command.
+//
+//ao:scope settings:write
 func (a *App) AddRemoteEndpoint(name, url, token string) (RemoteEndpointSummary, error) {
 	if a.settings == nil {
 		return RemoteEndpointSummary{}, fmt.Errorf("settings service unavailable")
@@ -82,7 +88,9 @@ func (a *App) AddRemoteEndpoint(name, url, token string) (RemoteEndpointSummary,
 //
 // SECURITY: returns RemoteEndpointSummary so a no-op Update from a
 // LAN-attached token-holder can't harvest the persisted token. See
-// AddRemoteEndpoint for the threat model.
+// AddRemoteEndpoint for the reasoning.
+//
+//ao:scope settings:write
 func (a *App) UpdateRemoteEndpoint(id, name, url, token string) (RemoteEndpointSummary, error) {
 	if a.settings == nil {
 		return RemoteEndpointSummary{}, fmt.Errorf("settings service unavailable")
@@ -97,6 +105,8 @@ func (a *App) UpdateRemoteEndpoint(id, name, url, token string) (RemoteEndpointS
 // DeleteRemoteEndpoint removes the named-by-ID record. Returns an
 // error if the ID isn't found so a stale UI gets a clear signal
 // rather than silently no-oping.
+//
+//ao:scope settings:write
 func (a *App) DeleteRemoteEndpoint(id string) error {
 	if a.settings == nil {
 		return fmt.Errorf("settings service unavailable")
@@ -107,6 +117,8 @@ func (a *App) DeleteRemoteEndpoint(id string) error {
 // TouchRemoteEndpoint bumps the LastUsedAt timestamp on the named
 // record. Used by the settings UI's "Connect" affordance so the
 // list can sort or visually emphasise recently-used endpoints.
+//
+//ao:scope settings:write
 func (a *App) TouchRemoteEndpoint(id string) error {
 	if a.settings == nil {
 		return fmt.Errorf("settings service unavailable")

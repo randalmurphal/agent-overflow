@@ -49,6 +49,8 @@ func resetClaudeProbeCacheForTest() {
 //
 // Cache hits do NOT re-emit `provider:account`: the frontend store
 // already has the value from the original miss.
+//
+//ao:scope access:admin
 func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	return a.providerDiscoveryService().ProbeClaudeAccount()
 }
@@ -63,6 +65,8 @@ func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 // Splitting Recheck from Probe keeps user intent visible at the call
 // site: any caller that wants live state asks for it explicitly,
 // rather than passing a `bypassCache` flag that's easy to forget.
+//
+//ao:scope access:admin
 func (a *App) RecheckClaudeAccount() (provider.AccountInfo, error) {
 	return a.providerDiscoveryService().RecheckClaudeAccount()
 }

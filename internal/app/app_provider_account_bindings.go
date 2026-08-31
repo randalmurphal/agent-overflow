@@ -20,6 +20,7 @@ type ManagedProviderAccount struct {
 	NeedsLogin bool `json:"needsLogin"`
 }
 
+//ao:scope access:admin
 func (a *App) ListProviderAccounts() ([]ManagedProviderAccount, error) {
 	if a.providerAccounts == nil {
 		return []ManagedProviderAccount{}, nil
@@ -35,6 +36,7 @@ func (a *App) ListProviderAccounts() ([]ManagedProviderAccount, error) {
 	return out, nil
 }
 
+//ao:scope access:admin
 func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProviderAccount, error) {
 	if a.providerAccounts == nil {
 		return ManagedProviderAccount{}, errors.New("provider account storage is unavailable")
@@ -46,6 +48,8 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 // LoginProviderAccount runs the provider's native browser login in a
 // short-lived isolated home, retains only the resulting native credential,
 // atomically activates it, and registers non-secret metadata.
+//
+//ao:scope access:admin
 func (a *App) LoginProviderAccount(
 	providerName string,
 ) (_ ManagedProviderAccount, retErr error) {
@@ -60,6 +64,8 @@ func (a *App) LoginProviderAccount(
 // account activates the next card in display order; removing the final account
 // clears the provider's canonical credential. Existing Codex processes retain
 // cached authentication until the normal safe reconnect-on-send gate.
+//
+//ao:scope access:admin
 func (a *App) RemoveProviderAccount(providerName, accountID string) error {
 	if a.providerAccounts == nil {
 		return errors.New("provider account storage is unavailable")
@@ -83,6 +89,8 @@ func (a *App) RemoveProviderAccount(providerName, accountID string) error {
 // enforced inside refreshProviderAccountUsage, scoped to the one account that
 // earned them: the throttle is per-bearer, so another account's card must stay
 // refreshable while the selected account waits one out.
+//
+//ao:scope access:admin
 func (a *App) RefreshProviderAccountUsage(providerName, accountID string) error {
 	if a.providerAccounts == nil {
 		return errors.New("provider account storage is unavailable")

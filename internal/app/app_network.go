@@ -11,6 +11,8 @@ import (
 // preference plus the server-derived URL and token. The URL and
 // token are recomputed on every call so a rebind (e.g. via
 // SetNetworkSettings) reflects immediately on the next read.
+//
+//ao:scope host
 func (a *App) GetNetworkSettings() (network.Settings, error) {
 	cfg := a.currentSettings()
 	return network.FromServer(a.transportServer.Load(), cfg.Network.BindAll), nil
@@ -34,6 +36,9 @@ func (a *App) GetNetworkSettings() (network.Settings, error) {
 // variants plus the discovered LAN IP; on bind-all=false the list
 // is empty (loopback has no browser-origin to validate, and
 // InsecureSkipVerify is fine).
+//
+//ao:scope settings:write
+//ao:stepup
 func (a *App) SetNetworkSettings(s network.Settings) (network.Settings, error) {
 	if a.settings == nil {
 		return network.Settings{}, fmt.Errorf("settings service unavailable")

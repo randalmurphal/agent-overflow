@@ -17,6 +17,8 @@ import (
 // banners (ProviderStatusBanner) stay in sync with the settings page without
 // polling. Idempotent: re-emitting the same state is harmless — the frontend
 // keeps only the latest per-provider entry.
+//
+//ao:scope access:admin
 func (a *App) GetProviderStatuses() ([]provider.ProviderStatus, error) {
 	return a.providerDiscoveryService().ProviderStatuses(), nil
 }
@@ -30,6 +32,8 @@ func (a *App) currentSettings() settings.Settings {
 
 // GetSettings returns the current persisted settings merged over defaults,
 // with every secret redacted (see redactedSettings).
+//
+//ao:scope settings:write
 func (a *App) GetSettings() (settings.Settings, error) {
 	return redactedSettings(a.currentSettings()), nil
 }
@@ -82,6 +86,8 @@ func redactedSettings(current settings.Settings) settings.Settings {
 // store holds a plaintext secret. (Nothing consumes the secrets from here —
 // tokens are fetched through GetRemoteEndpointToken and sensitive environment
 // values have no read path at all.)
+//
+//ao:scope settings:write
 func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 	if a.settings == nil {
 		return settings.Settings{}, fmt.Errorf("settings service unavailable")
@@ -220,6 +226,8 @@ func settingsRollbackPatch(previous settings.Settings, patch map[string]any) (ma
 // TTL-cached), Claude's is the shipped catalog enriched by whatever the last
 // zero-token account probe reported (never a spawn of its own), and anything
 // else is the shipped list verbatim.
+//
+//ao:scope threads:operate
 func (a *App) GetModelsForProvider(providerName string) ([]provider.ModelInfo, error) {
 	return a.providerDiscoveryService().ModelsForProvider(context.Background(), providerName)
 }

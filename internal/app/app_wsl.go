@@ -22,6 +22,8 @@ var (
 
 // IsWSL reports whether the backend is running inside a WSL
 // distribution.
+//
+//ao:scope threads:read
 func (a *App) IsWSL() (bool, error) {
 	return wslIsWSL(), nil
 }
@@ -29,6 +31,8 @@ func (a *App) IsWSL() (bool, error) {
 // ListWSLDistros returns the WSL distros reported by `wsl.exe -l -v`
 // over WSL interop, or nil + nil on non-WSL hosts. Re-queries each
 // call so a distro installed mid-session shows up without a restart.
+//
+//ao:scope host
 func (a *App) ListWSLDistros() ([]wsllauncher.Distro, error) {
 	if !wslIsWSL() {
 		return nil, nil
@@ -44,6 +48,8 @@ func (a *App) ListWSLDistros() ([]wsllauncher.Distro, error) {
 // configured to boot into on next launch, or "" when the preference
 // isn't readable: not running under WSL, the launcher didn't inject
 // AGENT_OVERFLOW_WIN_APPDATA, or the wsl.json file doesn't exist yet.
+//
+//ao:scope host
 func (a *App) GetWSLDistroPreference() (string, error) {
 	if !wslIsWSL() {
 		return "", nil
@@ -71,6 +77,9 @@ func (a *App) GetWSLDistroPreference() (string, error) {
 // stale reference can't trap the user with an unbootable saved pick.
 // InstalledVer / InstalledDistro are preserved by load-mutate-save —
 // those fields are owned by the launcher's install path.
+//
+//ao:scope host
+//ao:stepup
 func (a *App) SetWSLDistroPreference(name string) (string, error) {
 	if !wslIsWSL() {
 		return "", fmt.Errorf("WSL distro preference is only writable from a WSL backend")

@@ -62,6 +62,8 @@ type CodexAccountUsageBucket struct {
 //     frontend must branch on provider before reaching for this.
 //   - timeout / provider error: surfaced verbatim so the UI can render
 //     the CLI-supplied message.
+//
+//ao:scope threads:operate
 func (a *App) CleanCodexBackgroundTerminals(threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
@@ -95,6 +97,8 @@ func (a *App) CleanCodexBackgroundTerminals(threadID string) error {
 //     Claude's per-row stop is StopClaudeTask, keyed by task id.
 //   - blank process id / timeout / provider error: surfaced verbatim so
 //     the UI can render the CLI-supplied message.
+//
+//ao:scope threads:operate
 func (a *App) TerminateCodexBackgroundTerminal(threadID, processID string) (bool, error) {
 	if a.shuttingDown.Load() {
 		return false, ErrShuttingDown
@@ -104,6 +108,8 @@ func (a *App) TerminateCodexBackgroundTerminal(threadID, processID string) (bool
 
 // StopCodexSubagent interrupts the live child turn owned by launchID. The
 // provider resolves the launch through its typed child-ownership map.
+//
+//ao:scope threads:operate
 func (a *App) StopCodexSubagent(threadID, launchID string) (bool, error) {
 	if a.shuttingDown.Load() {
 		return false, ErrShuttingDown
@@ -127,6 +133,8 @@ func (a *App) StopCodexSubagent(threadID, launchID string) (bool, error) {
 // LocalOnly on the wire: it drives the user's own `codex` CLI (a live
 // session's connection when there is one, a short-lived app-server otherwise)
 // and its answer names absolute paths on the host filesystem.
+//
+//ao:scope threads:operate
 func (a *App) GetCodexSkills(ctx context.Context, workspacePath string, forceReload bool) (codexskills.CwdSkills, error) {
 	return a.codexAppService().Skills(ctx, workspacePath, forceReload)
 }
@@ -150,6 +158,8 @@ func (a *App) GetCodexSkills(ctx context.Context, workspacePath string, forceRel
 //
 // Local-only on the wire: it spawns the Codex CLI (or drives a live session)
 // under the user's credentials and returns account-scoped data.
+//
+//ao:scope access:admin
 func (a *App) GetCodexAccountUsage() (*CodexAccountUsage, error) {
 	result, err := a.codexAppService().AccountUsage()
 	if err != nil || result == nil {

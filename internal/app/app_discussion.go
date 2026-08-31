@@ -10,40 +10,55 @@ import (
 )
 
 // ListDiscussions returns persisted discussion definitions for the given scope.
+//
+//ao:scope threads:read
 func (a *App) ListDiscussions(scope string) ([]store.DiscussionDefinition, error) {
 	return a.discussionService().List(scope)
 }
 
+//ao:scope threads:read
 func (a *App) ListDiscussionsForThread(threadID string) ([]store.DiscussionDefinition, error) {
 	return a.discussionService().ListForThread(threadID)
 }
 
 // GetDiscussion returns a persisted discussion definition by name and scope.
+//
+//ao:scope threads:read
 func (a *App) GetDiscussion(name, scope string) (store.DiscussionDefinition, error) {
 	return a.discussionService().Get(name, scope)
 }
 
 // CreateDiscussion validates and persists a discussion definition.
+//
+//ao:scope threads:operate
 func (a *App) CreateDiscussion(def store.DiscussionDefinition) error {
 	return a.discussionService().Create(def)
 }
 
 // UpdateDiscussion replaces an existing persisted discussion definition.
+//
+//ao:scope threads:operate
 func (a *App) UpdateDiscussion(prevName, prevScope string, def store.DiscussionDefinition) error {
 	return a.discussionService().Update(prevName, prevScope, def)
 }
 
 // DeleteDiscussion removes a persisted discussion definition.
+//
+//ao:scope threads:operate
 func (a *App) DeleteDiscussion(name, scope string) error {
 	return a.discussionService().Delete(name, scope)
 }
 
 // StartDiscussion creates a deliberation channel and marks the thread as operating in discussion mode.
+//
+//ao:scope threads:operate
 func (a *App) StartDiscussion(threadID, discussionName string) error {
 	return a.discussionService().Start(threadID, discussionName)
 }
 
 // GetChannelMessages returns ordered messages for a discussion channel.
+//
+//ao:scope threads:read
 func (a *App) GetChannelMessages(channelID string, afterSeq, limit int) ([]store.ChannelMessage, error) {
 	return a.discussionService().GetMessages(channelID, afterSeq, limit)
 }
@@ -54,6 +69,8 @@ func (a *App) GetChannelMessages(channelID string, afterSeq, limit int) ([]store
 // with role/provider/model. Rebuilds the FSM from SQLite when the
 // process restarted since the channel was opened (deliberationForChannel).
 // Read-only — same LAN-safety class as GetChannelMessages.
+//
+//ao:scope threads:read
 func (a *App) GetChannelState(channelID string) (ChannelStatePayload, error) {
 	state, err := a.discussionService().ChannelState(channelID)
 	return projectChannelState(state), err
@@ -76,6 +93,8 @@ func (a *App) GetChannelState(channelID string) (ChannelStatePayload, error) {
 // promptDiscussionSpeakerAsync → sendMessage), so it is classified
 // LocalOnly in internal/transport/internalmethods.go alongside
 // SendMessage — see the category-2 comment there.
+//
+//ao:scope threads:operate
 func (a *App) PostChannelMessage(channelID, content string) (store.ChannelMessage, error) {
 	return a.discussionService().Post(channelID, content)
 }
@@ -96,6 +115,8 @@ func (a *App) PostChannelMessage(channelID, content string) (store.ChannelMessag
 // channel is no longer open (syncDiscussionTurn's ErrChannelNotOpen
 // handling in app_discussion_runtime.go) — the reply stays visible only
 // in that participant's own child thread.
+//
+//ao:scope threads:operate
 func (a *App) ConcludeDiscussion(channelID string) (ChannelStatePayload, error) {
 	state, err := a.discussionService().Conclude(channelID)
 	return projectChannelState(state), err

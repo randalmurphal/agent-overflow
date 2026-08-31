@@ -64,6 +64,8 @@ type ReleaseSummary struct {
 // quietly hide the UI. A failed release check comes back as CheckError on the
 // result rather than an RPC error — the caller still gets every field that
 // does not depend on the network.
+//
+//ao:scope host
 func (a *App) CheckForUpdate() (UpdateAvailability, error) {
 	if a.updater == nil {
 		return UpdateAvailability{CurrentVersion: a.version}, nil
@@ -87,6 +89,8 @@ func wireUpdateAvailability(availability appupdate.UpdateAvailability) UpdateAva
 
 // ListReleases returns the installable releases for this build's update target,
 // newest first, so the frontend can offer a version picker. Read-only; LocalOnly.
+//
+//ao:scope host
 func (a *App) ListReleases() ([]ReleaseSummary, error) {
 	if a.updater == nil {
 		return nil, ErrUpdatesUnsupported
@@ -136,6 +140,8 @@ func wireReleaseSummaries(releases []appupdate.ReleaseSummary) []ReleaseSummary 
 // returns ErrUpdateBusy if another is already in flight. The busy flag also
 // fences a concurrent CheckForUpdate out of re-targeting the provider while the
 // chosen release is being resolved and installed.
+//
+//ao:scope host
 func (a *App) DownloadUpdate(tag string) error {
 	if a.updater == nil {
 		return ErrUpdatesUnsupported
@@ -156,6 +162,8 @@ func (a *App) DownloadUpdate(tag string) error {
 // Windows launcher's, on a filesystem this process only sees through /mnt/c —
 // so it hands the staged artifact to the launcher instead and lets the launcher
 // kill it. See restartToUpdateWSL.
+//
+//ao:scope host
 func (a *App) RestartToUpdate() error {
 	if a.updater == nil {
 		return ErrUpdatesUnsupported
@@ -183,6 +191,8 @@ func (a *App) RestartToUpdate() error {
 //
 // LocalOnly: it mutates install state, clears an on-disk marker, and releases
 // the updater's busy fence.
+//
+//ao:scope host
 func (a *App) ReportUpdateInstallStatus(stage, version, message string) error {
 	if a.updater == nil {
 		return ErrUpdatesUnsupported

@@ -136,6 +136,7 @@ func firstVisibleModel(providerName string, hidden []string) string {
 	return chatmodel.FallbackModelForProvider(providerName)
 }
 
+//ao:scope settings:write
 func (a *App) ListChatBarFavorites() ([]store.ChatBarFavorite, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("list chat bar favorites: store unavailable")
@@ -143,6 +144,7 @@ func (a *App) ListChatBarFavorites() ([]store.ChatBarFavorite, error) {
 	return a.store.ListChatBarFavorites()
 }
 
+//ao:scope settings:write
 func (a *App) SetChatBarFavorite(fav store.ChatBarFavorite, starred bool) ([]store.ChatBarFavorite, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("set chat bar favorite: store unavailable")
@@ -159,6 +161,7 @@ func (a *App) SetChatBarFavorite(fav store.ChatBarFavorite, starred bool) ([]sto
 	return a.store.ListChatBarFavorites()
 }
 
+//ao:scope threads:operate
 func (a *App) StartDiscussionByID(threadID, discussionID string) error {
 	return a.discussionService().StartByID(threadID, strings.TrimSpace(discussionID))
 }

@@ -3,385 +3,395 @@
 // Run "go run ./internal/transport/methodgen" to regenerate.
 //
 // This file lists every exported (App).Method that the runtime
-// dispatcher exposes on the WebSocket transport. Methods marked
-// //wails:ignore in the App receiver source are intentionally
-// excluded so they remain unreachable from the wire — same set the
-// auto-generated TS bindings expose, just enforced at runtime.
+// dispatcher exposes on the WebSocket transport, with the capability
+// each one exercises. Methods marked //wails:ignore in the App receiver
+// source are intentionally excluded so they remain unreachable from the
+// wire — same set the auto-generated TS bindings expose, just enforced
+// at runtime.
 
 package transport
 
-// GeneratedMethod pairs a method name with its FNV-1a 32-bit hash.
-// The hash matches Wails' internal/hash.Fnv("main.App.<Name>") so the
-// frontend's $Call.ByID(<num>, ...args) routes correctly.
-type GeneratedMethod struct {
-	Name string
-	ID   uint32
+// MethodMeta is one row of the classification table: a method's wire
+// identity and the capability its source annotation declares.
+//
+// The ID is Wails' internal/hash.Fnv("main.App.<Name>"), so the
+// frontend's $Call.ByID(<num>, ...args) routes correctly. Scope and
+// StepUp come from the //ao:scope and //ao:stepup directives on the
+// method's doc comment; the generator refuses to emit a table with an
+// unannotated method in it, which is what makes every row below a
+// decision somebody made (docs/specs/remote-access.md §5).
+type MethodMeta struct {
+	Name   string
+	ID     uint32
+	Scope  Scope
+	StepUp bool
 }
 
 // GeneratedMethods is the static, sorted-by-name list of every method
 // the dispatcher should expose. Use NewMethodAllowList to build a
-// dispatcher allow-list from this set.
-var GeneratedMethods = []GeneratedMethod{
-	{Name: "AddRemoteEndpoint", ID: 893963951},                     // main.App.AddRemoteEndpoint
-	{Name: "AppendUIRenderTraceBatch", ID: 2157691816},             // main.App.AppendUIRenderTraceBatch
-	{Name: "ArchiveProject", ID: 1352159878},                       // main.App.ArchiveProject
-	{Name: "ArchiveThread", ID: 3655608409},                        // main.App.ArchiveThread
-	{Name: "AttachThreadWorktree", ID: 2367642633},                 // main.App.AttachThreadWorktree
-	{Name: "AutoResumeThread", ID: 4095667805},                     // main.App.AutoResumeThread
-	{Name: "BackgroundClaudeTask", ID: 2098425262},                 // main.App.BackgroundClaudeTask
-	{Name: "BookmarkUIRenderTrace", ID: 1374242488},                // main.App.BookmarkUIRenderTrace
-	{Name: "BrowseDirectory", ID: 320967638},                       // main.App.BrowseDirectory
-	{Name: "BrowserCompanionDo", ID: 197228034},                    // main.App.BrowserCompanionDo
-	{Name: "BrowserCompanionInput", ID: 2747693029},                // main.App.BrowserCompanionInput
-	{Name: "BrowserCompanionNextFrame", ID: 776020183},             // main.App.BrowserCompanionNextFrame
-	{Name: "BrowserCompanionResize", ID: 2921114943},               // main.App.BrowserCompanionResize
-	{Name: "BrowserCompanionSubscribe", ID: 668496681},             // main.App.BrowserCompanionSubscribe
-	{Name: "BrowserCompanionUnsubscribe", ID: 3385360912},          // main.App.BrowserCompanionUnsubscribe
-	{Name: "CancelDevicePairing", ID: 2608316491},                  // main.App.CancelDevicePairing
-	{Name: "CancelSessionImport", ID: 2562316972},                  // main.App.CancelSessionImport
-	{Name: "CheckForUpdate", ID: 2347956003},                       // main.App.CheckForUpdate
-	{Name: "CheckThreadImportUpdates", ID: 2932719708},             // main.App.CheckThreadImportUpdates
-	{Name: "CleanCodexBackgroundTerminals", ID: 16360282},          // main.App.CleanCodexBackgroundTerminals
-	{Name: "ClearBrowserSiteData", ID: 544013229},                  // main.App.ClearBrowserSiteData
-	{Name: "ClearDraft", ID: 296814681},                            // main.App.ClearDraft
-	{Name: "CloseTerminal", ID: 2702963191},                        // main.App.CloseTerminal
-	{Name: "CloseThreadTerminals", ID: 1705768020},                 // main.App.CloseThreadTerminals
-	{Name: "CompactCodexThread", ID: 4090329093},                   // main.App.CompactCodexThread
-	{Name: "ConcludeDiscussion", ID: 4019739936},                   // main.App.ConcludeDiscussion
-	{Name: "ConfirmDevicePairing", ID: 3813775159},                 // main.App.ConfirmDevicePairing
-	{Name: "CountRunningBackgroundTasks", ID: 2617952423},          // main.App.CountRunningBackgroundTasks
-	{Name: "CreateDiffReviewComment", ID: 565306783},               // main.App.CreateDiffReviewComment
-	{Name: "CreateDiscussion", ID: 757689265},                      // main.App.CreateDiscussion
-	{Name: "CreateProject", ID: 969543070},                         // main.App.CreateProject
-	{Name: "CreateProposedPlanComment", ID: 4246792665},            // main.App.CreateProposedPlanComment
-	{Name: "CreateThread", ID: 2579322833},                         // main.App.CreateThread
-	{Name: "CreateThreadFromPR", ID: 1716017387},                   // main.App.CreateThreadFromPR
-	{Name: "DeleteAttachment", ID: 2428457759},                     // main.App.DeleteAttachment
-	{Name: "DeleteDiffReviewComment", ID: 1303317790},              // main.App.DeleteDiffReviewComment
-	{Name: "DeleteDiscussion", ID: 302062730},                      // main.App.DeleteDiscussion
-	{Name: "DeleteEmptyDraftThread", ID: 3876094070},               // main.App.DeleteEmptyDraftThread
-	{Name: "DeleteProject", ID: 3379369923},                        // main.App.DeleteProject
-	{Name: "DeleteProposedPlanComment", ID: 554913120},             // main.App.DeleteProposedPlanComment
-	{Name: "DeleteProviderCustomEnvVar", ID: 784096448},            // main.App.DeleteProviderCustomEnvVar
-	{Name: "DeleteRemoteEndpoint", ID: 3667944297},                 // main.App.DeleteRemoteEndpoint
-	{Name: "DeleteThread", ID: 1186337974},                         // main.App.DeleteThread
-	{Name: "DeleteUIState", ID: 1186757769},                        // main.App.DeleteUIState
-	{Name: "DevicePairingStatus", ID: 604263015},                   // main.App.DevicePairingStatus
-	{Name: "DownloadUpdate", ID: 115027584},                        // main.App.DownloadUpdate
-	{Name: "ForkThread", ID: 4063914461},                           // main.App.ForkThread
-	{Name: "ForkThreadFromMessage", ID: 3977213964},                // main.App.ForkThreadFromMessage
-	{Name: "GenerateCommitMessage", ID: 1669373286},                // main.App.GenerateCommitMessage
-	{Name: "GetAccessOverview", ID: 1559710962},                    // main.App.GetAccessOverview
-	{Name: "GetAttachmentData", ID: 71154490},                      // main.App.GetAttachmentData
-	{Name: "GetAttachmentThumbnail", ID: 3414107538},               // main.App.GetAttachmentThumbnail
-	{Name: "GetBranchBaseDiff", ID: 1342635161},                    // main.App.GetBranchBaseDiff
-	{Name: "GetChannelMessages", ID: 3595031866},                   // main.App.GetChannelMessages
-	{Name: "GetChannelState", ID: 3664812883},                      // main.App.GetChannelState
-	{Name: "GetClaudeSkills", ID: 1573335127},                      // main.App.GetClaudeSkills
-	{Name: "GetClaudeSlashCommands", ID: 2854892544},               // main.App.GetClaudeSlashCommands
-	{Name: "GetCodexAccountUsage", ID: 1110466608},                 // main.App.GetCodexAccountUsage
-	{Name: "GetCodexSkills", ID: 1018032480},                       // main.App.GetCodexSkills
-	{Name: "GetCommitDiff", ID: 3399370629},                        // main.App.GetCommitDiff
-	{Name: "GetContextSettings", ID: 3416004963},                   // main.App.GetContextSettings
-	{Name: "GetDiffContextLines", ID: 1590634674},                  // main.App.GetDiffContextLines
-	{Name: "GetDiscussion", ID: 1924583939},                        // main.App.GetDiscussion
-	{Name: "GetDraft", ID: 875977146},                              // main.App.GetDraft
-	{Name: "GetEditorSettings", ID: 1655853383},                    // main.App.GetEditorSettings
-	{Name: "GetGitStatus", ID: 4123560639},                         // main.App.GetGitStatus
-	{Name: "GetGitStatusFastForProject", ID: 2193133889},           // main.App.GetGitStatusFastForProject
-	{Name: "GetKeybindings", ID: 3015840904},                       // main.App.GetKeybindings
-	{Name: "GetLocalImageData", ID: 3247514443},                    // main.App.GetLocalImageData
-	{Name: "GetMcpServerStatus", ID: 4139359668},                   // main.App.GetMcpServerStatus
-	{Name: "GetMergeConflictFile", ID: 3176695009},                 // main.App.GetMergeConflictFile
-	{Name: "GetModelsForProvider", ID: 1632984917},                 // main.App.GetModelsForProvider
-	{Name: "GetNetworkSettings", ID: 1026796858},                   // main.App.GetNetworkSettings
-	{Name: "GetPRCIJobLog", ID: 2411810578},                        // main.App.GetPRCIJobLog
-	{Name: "GetPRCIJobs", ID: 2370852281},                          // main.App.GetPRCIJobs
-	{Name: "GetPRCommitDiff", ID: 1737292419},                      // main.App.GetPRCommitDiff
-	{Name: "GetPRDetail", ID: 2443547196},                          // main.App.GetPRDetail
-	{Name: "GetPRDiff", ID: 1867413234},                            // main.App.GetPRDiff
-	{Name: "GetPRMergeConflicts", ID: 106351482},                   // main.App.GetPRMergeConflicts
-	{Name: "GetPayloadChunk", ID: 73280836},                        // main.App.GetPayloadChunk
-	{Name: "GetPayloadData", ID: 3448919335},                       // main.App.GetPayloadData
-	{Name: "GetPayloadPreview", ID: 4070214921},                    // main.App.GetPayloadPreview
-	{Name: "GetProjectWorktreeSetup", ID: 471350242},               // main.App.GetProjectWorktreeSetup
-	{Name: "GetProviderStatuses", ID: 3829328996},                  // main.App.GetProviderStatuses
-	{Name: "GetQueueState", ID: 3079581691},                        // main.App.GetQueueState
-	{Name: "GetRateLimitsSnapshots", ID: 3325141610},               // main.App.GetRateLimitsSnapshots
-	{Name: "GetRemoteEndpointToken", ID: 3604571249},               // main.App.GetRemoteEndpointToken
-	{Name: "GetSettings", ID: 2554697378},                          // main.App.GetSettings
-	{Name: "GetSpinnerFiles", ID: 2622552651},                      // main.App.GetSpinnerFiles
-	{Name: "GetTerminalReplay", ID: 2329592604},                    // main.App.GetTerminalReplay
-	{Name: "GetThemeFiles", ID: 2000462111},                        // main.App.GetThemeFiles
-	{Name: "GetThread", ID: 1098302047},                            // main.App.GetThread
-	{Name: "GetThreadContextUsage", ID: 3852033265},                // main.App.GetThreadContextUsage
-	{Name: "GetThreadDefaults", ID: 3362481473},                    // main.App.GetThreadDefaults
-	{Name: "GetThreadItem", ID: 1969869112},                        // main.App.GetThreadItem
-	{Name: "GetThreadItemProjectionSource", ID: 1848576136},        // main.App.GetThreadItemProjectionSource
-	{Name: "GetThreadLiveState", ID: 70226550},                     // main.App.GetThreadLiveState
-	{Name: "GetThreadRuntimeMode", ID: 2573491630},                 // main.App.GetThreadRuntimeMode
-	{Name: "GetThreadTurnPreview", ID: 1512475224},                 // main.App.GetThreadTurnPreview
-	{Name: "GetThreadUserMessageHistory", ID: 3340938325},          // main.App.GetThreadUserMessageHistory
-	{Name: "GetThreadUserMessageTicks", ID: 556088547},             // main.App.GetThreadUserMessageTicks
-	{Name: "GetThreadWorktreeSetup", ID: 49371251},                 // main.App.GetThreadWorktreeSetup
-	{Name: "GetTurnEditsDiff", ID: 2905371438},                     // main.App.GetTurnEditsDiff
-	{Name: "GetUIRenderTracePath", ID: 1009213933},                 // main.App.GetUIRenderTracePath
-	{Name: "GetUIState", ID: 3380106838},                           // main.App.GetUIState
-	{Name: "GetUsageStats", ID: 3135466533},                        // main.App.GetUsageStats
-	{Name: "GetWSLDistroPreference", ID: 294719565},                // main.App.GetWSLDistroPreference
-	{Name: "GetWorkingTreeDiff", ID: 1858968113},                   // main.App.GetWorkingTreeDiff
-	{Name: "GetWorkspaceActivity", ID: 673985705},                  // main.App.GetWorkspaceActivity
-	{Name: "GetWorkspaceCurrentDiff", ID: 736820142},               // main.App.GetWorkspaceCurrentDiff
-	{Name: "GitCheckout", ID: 1598126927},                          // main.App.GitCheckout
-	{Name: "GitCheckoutForProject", ID: 585511915},                 // main.App.GitCheckoutForProject
-	{Name: "GitCommit", ID: 1971060042},                            // main.App.GitCommit
-	{Name: "GitCreateBranch", ID: 2582897723},                      // main.App.GitCreateBranch
-	{Name: "GitCreateBranchFrom", ID: 429779991},                   // main.App.GitCreateBranchFrom
-	{Name: "GitCreatePR", ID: 4106667105},                          // main.App.GitCreatePR
-	{Name: "GitCreateWorktree", ID: 3327650914},                    // main.App.GitCreateWorktree
-	{Name: "GitListBranchPruneCandidates", ID: 3795082615},         // main.App.GitListBranchPruneCandidates
-	{Name: "GitListBranches", ID: 2693102179},                      // main.App.GitListBranches
-	{Name: "GitListBranchesForProject", ID: 2675387767},            // main.App.GitListBranchesForProject
-	{Name: "GitListWorktrees", ID: 3232495403},                     // main.App.GitListWorktrees
-	{Name: "GitListWorktreesForProject", ID: 409101231},            // main.App.GitListWorktreesForProject
-	{Name: "GitMaybeFetchRemotes", ID: 2000020570},                 // main.App.GitMaybeFetchRemotes
-	{Name: "GitMaybeFetchRemotesForProject", ID: 338919746},        // main.App.GitMaybeFetchRemotesForProject
-	{Name: "GitPruneBranches", ID: 3331815821},                     // main.App.GitPruneBranches
-	{Name: "GitPull", ID: 3933172764},                              // main.App.GitPull
-	{Name: "GitPush", ID: 4036251239},                              // main.App.GitPush
-	{Name: "GitRemoveWorktree", ID: 4002429606},                    // main.App.GitRemoveWorktree
-	{Name: "GitStageAll", ID: 548906954},                           // main.App.GitStageAll
-	{Name: "GitStatusSubscribe", ID: 3282404643},                   // main.App.GitStatusSubscribe
-	{Name: "GitStatusUnsubscribe", ID: 3263989430},                 // main.App.GitStatusUnsubscribe
-	{Name: "GitSyncBranch", ID: 1057032236},                        // main.App.GitSyncBranch
-	{Name: "GitSyncBranchForProject", ID: 3862053920},              // main.App.GitSyncBranchForProject
-	{Name: "GitWorktreeStatus", ID: 1333748060},                    // main.App.GitWorktreeStatus
-	{Name: "GitWorktreeStatusForProject", ID: 71861776},            // main.App.GitWorktreeStatusForProject
-	{Name: "HighlightClassNames", ID: 2772816619},                  // main.App.HighlightClassNames
-	{Name: "HighlightCode", ID: 4080150350},                        // main.App.HighlightCode
-	{Name: "HighlightPatch", ID: 834878499},                        // main.App.HighlightPatch
-	{Name: "HighlightPatchWithContext", ID: 3722752402},            // main.App.HighlightPatchWithContext
-	{Name: "HighlightSchemaVersion", ID: 2896867980},               // main.App.HighlightSchemaVersion
-	{Name: "ImportSessions", ID: 786331585},                        // main.App.ImportSessions
-	{Name: "ImportThreadUpdates", ID: 535929682},                   // main.App.ImportThreadUpdates
-	{Name: "InterruptAndRevertIfClean", ID: 753394581},             // main.App.InterruptAndRevertIfClean
-	{Name: "InterruptTurn", ID: 850013031},                         // main.App.InterruptTurn
-	{Name: "IsWSL", ID: 2789068977},                                // main.App.IsWSL
-	{Name: "ListArchivedThreads", ID: 2451527188},                  // main.App.ListArchivedThreads
-	{Name: "ListAttachments", ID: 1730798413},                      // main.App.ListAttachments
-	{Name: "ListAvailableEditors", ID: 2556802234},                 // main.App.ListAvailableEditors
-	{Name: "ListBranchCommits", ID: 352990129},                     // main.App.ListBranchCommits
-	{Name: "ListChatBarFavorites", ID: 2114948965},                 // main.App.ListChatBarFavorites
-	{Name: "ListDiffReviewComments", ID: 3057473088},               // main.App.ListDiffReviewComments
-	{Name: "ListDiscussions", ID: 942288562},                       // main.App.ListDiscussions
-	{Name: "ListDiscussionsForThread", ID: 2502562885},             // main.App.ListDiscussionsForThread
-	{Name: "ListImportableSessions", ID: 99668597},                 // main.App.ListImportableSessions
-	{Name: "ListItems", ID: 2158085763},                            // main.App.ListItems
-	{Name: "ListItemsAfterCursor", ID: 2915892537},                 // main.App.ListItemsAfterCursor
-	{Name: "ListItemsAfterTurn", ID: 932754656},                    // main.App.ListItemsAfterTurn
-	{Name: "ListItemsBeforeCursor", ID: 162135710},                 // main.App.ListItemsBeforeCursor
-	{Name: "ListItemsBeforeTurn", ID: 2147361923},                  // main.App.ListItemsBeforeTurn
-	{Name: "ListLiveBackgroundTasks", ID: 320784263},               // main.App.ListLiveBackgroundTasks
-	{Name: "ListMcpServerStatuses", ID: 2582096622},                // main.App.ListMcpServerStatuses
-	{Name: "ListPRCommits", ID: 4110818691},                        // main.App.ListPRCommits
-	{Name: "ListPRReviewThreads", ID: 763649720},                   // main.App.ListPRReviewThreads
-	{Name: "ListPendingInteractiveRequests", ID: 4186874978},       // main.App.ListPendingInteractiveRequests
-	{Name: "ListProjects", ID: 2721360259},                         // main.App.ListProjects
-	{Name: "ListProposedPlanComments", ID: 2030403250},             // main.App.ListProposedPlanComments
-	{Name: "ListProviderAccounts", ID: 981125684},                  // main.App.ListProviderAccounts
-	{Name: "ListRecentCommits", ID: 1937809620},                    // main.App.ListRecentCommits
-	{Name: "ListRecentThreadItems", ID: 2604956482},                // main.App.ListRecentThreadItems
-	{Name: "ListRecentTurns", ID: 1083162294},                      // main.App.ListRecentTurns
-	{Name: "ListReleases", ID: 397986043},                          // main.App.ListReleases
-	{Name: "ListRemoteEndpoints", ID: 3443007043},                  // main.App.ListRemoteEndpoints
-	{Name: "ListRunningBackgroundWork", ID: 3808352241},            // main.App.ListRunningBackgroundWork
-	{Name: "ListSubagentDescendants", ID: 1299118478},              // main.App.ListSubagentDescendants
-	{Name: "ListTerminals", ID: 2445206506},                        // main.App.ListTerminals
-	{Name: "ListThreadEditDiffs", ID: 2243533007},                  // main.App.ListThreadEditDiffs
-	{Name: "ListThreadMcpServers", ID: 245278513},                  // main.App.ListThreadMcpServers
-	{Name: "ListThreadProposedPlans", ID: 2485050629},              // main.App.ListThreadProposedPlans
-	{Name: "ListThreadSliceAround", ID: 4176102096},                // main.App.ListThreadSliceAround
-	{Name: "ListThreads", ID: 1090132042},                          // main.App.ListThreads
-	{Name: "ListWSLDistros", ID: 2332614075},                       // main.App.ListWSLDistros
-	{Name: "ListWorkspaceMcpServers", ID: 2808137798},              // main.App.ListWorkspaceMcpServers
-	{Name: "LoginProviderAccount", ID: 1520009058},                 // main.App.LoginProviderAccount
-	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995},           // main.App.MarkDiffReviewCommentsSent
-	{Name: "MarkThreadRead", ID: 1480646012},                       // main.App.MarkThreadRead
-	{Name: "MarkThreadUnread", ID: 236597375},                      // main.App.MarkThreadUnread
-	{Name: "MintDevicePairing", ID: 400809065},                     // main.App.MintDevicePairing
-	{Name: "MoveThreadTerminals", ID: 3013708277},                  // main.App.MoveThreadTerminals
-	{Name: "NotificationActivated", ID: 2831503793},                // main.App.NotificationActivated
-	{Name: "OpenExternalURL", ID: 3362740399},                      // main.App.OpenExternalURL
-	{Name: "OpenInEditor", ID: 3994295523},                         // main.App.OpenInEditor
-	{Name: "OpenTerminal", ID: 2247958725},                         // main.App.OpenTerminal
-	{Name: "PinThread", ID: 1748405812},                            // main.App.PinThread
-	{Name: "PostChannelMessage", ID: 1315440605},                   // main.App.PostChannelMessage
-	{Name: "PrepareThreadWorktree", ID: 2870364785},                // main.App.PrepareThreadWorktree
-	{Name: "ProbeClaudeAccount", ID: 1313986574},                   // main.App.ProbeClaudeAccount
-	{Name: "ProbeCodexAccount", ID: 2614227175},                    // main.App.ProbeCodexAccount
-	{Name: "ProbeDevServerURL", ID: 3448359500},                    // main.App.ProbeDevServerURL
-	{Name: "ProjectDeletionPreview", ID: 2575010484},               // main.App.ProjectDeletionPreview
-	{Name: "ProviderTerminalAttach", ID: 1393518281},               // main.App.ProviderTerminalAttach
-	{Name: "ProviderTerminalDetach", ID: 2584141779},               // main.App.ProviderTerminalDetach
-	{Name: "ProviderTerminalInput", ID: 1783659784},                // main.App.ProviderTerminalInput
-	{Name: "ProviderTerminalRefresh", ID: 1209472335},              // main.App.ProviderTerminalRefresh
-	{Name: "ProviderTerminalReplay", ID: 907422467},                // main.App.ProviderTerminalReplay
-	{Name: "ProviderTerminalResize", ID: 2998028796},               // main.App.ProviderTerminalResize
-	{Name: "ProviderTerminalSetControl", ID: 1382066673},           // main.App.ProviderTerminalSetControl
-	{Name: "RecheckClaudeAccount", ID: 2274850917},                 // main.App.RecheckClaudeAccount
-	{Name: "RecheckCodexAccount", ID: 227978482},                   // main.App.RecheckCodexAccount
-	{Name: "ReconfigureObservability", ID: 225050321},              // main.App.ReconfigureObservability
-	{Name: "ReconnectMcpServer", ID: 878560845},                    // main.App.ReconnectMcpServer
-	{Name: "ReconnectSession", ID: 1420075138},                     // main.App.ReconnectSession
-	{Name: "RefreshMcpServerStatus", ID: 2215279661},               // main.App.RefreshMcpServerStatus
-	{Name: "RefreshProviderAccountUsage", ID: 2539237007},          // main.App.RefreshProviderAccountUsage
-	{Name: "RefreshTerminal", ID: 2618043580},                      // main.App.RefreshTerminal
-	{Name: "RegenerateThreadTitle", ID: 3682640111},                // main.App.RegenerateThreadTitle
-	{Name: "RegisterQueueItem", ID: 1034543696},                    // main.App.RegisterQueueItem
-	{Name: "RemoveOtherWorktree", ID: 2899196344},                  // main.App.RemoveOtherWorktree
-	{Name: "RemoveOtherWorktreeForProject", ID: 574548500},         // main.App.RemoveOtherWorktreeForProject
-	{Name: "RemoveProviderAccount", ID: 684418419},                 // main.App.RemoveProviderAccount
-	{Name: "RenameProject", ID: 3728890856},                        // main.App.RenameProject
-	{Name: "RenameThread", ID: 727416435},                          // main.App.RenameThread
-	{Name: "ReplyToPRThread", ID: 446243420},                       // main.App.ReplyToPRThread
-	{Name: "ReportFrontendErrorBatch", ID: 2174329377},             // main.App.ReportFrontendErrorBatch
-	{Name: "ReportUpdateInstallStatus", ID: 314214419},             // main.App.ReportUpdateInstallStatus
-	{Name: "RequestWebviewMemoryTrim", ID: 2045178958},             // main.App.RequestWebviewMemoryTrim
-	{Name: "ResetKeybindings", ID: 2775767393},                     // main.App.ResetKeybindings
-	{Name: "ResizeTerminal", ID: 1887984285},                       // main.App.ResizeTerminal
-	{Name: "RespondToApproval", ID: 1919237704},                    // main.App.RespondToApproval
-	{Name: "RespondToUserInput", ID: 1071592868},                   // main.App.RespondToUserInput
-	{Name: "RestartTerminal", ID: 4152403588},                      // main.App.RestartTerminal
-	{Name: "RestartToUpdate", ID: 3141913084},                      // main.App.RestartToUpdate
-	{Name: "RestoreAccessDevice", ID: 3386497005},                  // main.App.RestoreAccessDevice
-	{Name: "RetryThreadWorktreeSetup", ID: 1657104469},             // main.App.RetryThreadWorktreeSetup
-	{Name: "RevertConversationAndResendMessage", ID: 2059566413},   // main.App.RevertConversationAndResendMessage
-	{Name: "RevokeAccessDevice", ID: 2945903583},                   // main.App.RevokeAccessDevice
-	{Name: "RevokeAccessSession", ID: 2284519219},                  // main.App.RevokeAccessSession
-	{Name: "SaveDraft", ID: 3025273299},                            // main.App.SaveDraft
-	{Name: "SavePRCIJobLog", ID: 1537914193},                       // main.App.SavePRCIJobLog
-	{Name: "SavePayloadToFile", ID: 3576148797},                    // main.App.SavePayloadToFile
-	{Name: "SearchThreadItems", ID: 1414650511},                    // main.App.SearchThreadItems
-	{Name: "SearchThreadMessages", ID: 3644945077},                 // main.App.SearchThreadMessages
-	{Name: "SearchWorkspaceFiles", ID: 3852272821},                 // main.App.SearchWorkspaceFiles
-	{Name: "SendDiffReviewComments", ID: 2317109106},               // main.App.SendDiffReviewComments
-	{Name: "SendMessage", ID: 1496882310},                          // main.App.SendMessage
-	{Name: "SendMessageWithOptions", ID: 3632185196},               // main.App.SendMessageWithOptions
-	{Name: "SendPlanRevisionComments", ID: 1407159655},             // main.App.SendPlanRevisionComments
-	{Name: "SetAppearance", ID: 3167202905},                        // main.App.SetAppearance
-	{Name: "SetChatBarFavorite", ID: 2813580982},                   // main.App.SetChatBarFavorite
-	{Name: "SetEditorSettings", ID: 3655340267},                    // main.App.SetEditorSettings
-	{Name: "SetNetworkSettings", ID: 3915514446},                   // main.App.SetNetworkSettings
-	{Name: "SetPRUpdatesActive", ID: 1078249699},                   // main.App.SetPRUpdatesActive
-	{Name: "SetProjectWorktreeSetup", ID: 322092470},               // main.App.SetProjectWorktreeSetup
-	{Name: "SetProviderCustomEnvVar", ID: 2118904465},              // main.App.SetProviderCustomEnvVar
-	{Name: "SetThreadMcpServerEnabled", ID: 1041195811},            // main.App.SetThreadMcpServerEnabled
-	{Name: "SetThreadPinGroup", ID: 3112222989},                    // main.App.SetThreadPinGroup
-	{Name: "SetUIState", ID: 1514250938},                           // main.App.SetUIState
-	{Name: "SetWSLDistroPreference", ID: 3978807241},               // main.App.SetWSLDistroPreference
-	{Name: "SetWindowBackgroundColor", ID: 3648660014},             // main.App.SetWindowBackgroundColor
-	{Name: "SetWorkspaceMcpServerEnabled", ID: 2181574220},         // main.App.SetWorkspaceMcpServerEnabled
-	{Name: "StartCodexReview", ID: 1913732562},                     // main.App.StartCodexReview
-	{Name: "StartDiscussion", ID: 3188309099},                      // main.App.StartDiscussion
-	{Name: "StartDiscussionByID", ID: 2336869067},                  // main.App.StartDiscussionByID
-	{Name: "StartSession", ID: 2850159713},                         // main.App.StartSession
-	{Name: "StartTerminal", ID: 3009548683},                        // main.App.StartTerminal
-	{Name: "SteerMessageWithOptions", ID: 1698485705},              // main.App.SteerMessageWithOptions
-	{Name: "StopClaudeTask", ID: 536320598},                        // main.App.StopClaudeTask
-	{Name: "StopCodexSubagent", ID: 4232843083},                    // main.App.StopCodexSubagent
-	{Name: "StopSession", ID: 3838500111},                          // main.App.StopSession
-	{Name: "StopThreadBackgroundWork", ID: 2155771620},             // main.App.StopThreadBackgroundWork
-	{Name: "SubmitPRReview", ID: 2692607191},                       // main.App.SubmitPRReview
-	{Name: "SubscribePRUpdates", ID: 3272491649},                   // main.App.SubscribePRUpdates
-	{Name: "SwitchProviderAccount", ID: 1249964095},                // main.App.SwitchProviderAccount
-	{Name: "SwitchThread", ID: 3897387725},                         // main.App.SwitchThread
-	{Name: "SyncThreadWindow", ID: 3841902986},                     // main.App.SyncThreadWindow
-	{Name: "TerminateCodexBackgroundTerminal", ID: 870653875},      // main.App.TerminateCodexBackgroundTerminal
-	{Name: "TouchRemoteEndpoint", ID: 2647456459},                  // main.App.TouchRemoteEndpoint
-	{Name: "TriggerMcpAuth", ID: 1291217507},                       // main.App.TriggerMcpAuth
-	{Name: "TriggerWorkspaceMcpAuth", ID: 417766274},               // main.App.TriggerWorkspaceMcpAuth
-	{Name: "UnarchiveProject", ID: 2561521885},                     // main.App.UnarchiveProject
-	{Name: "UnarchiveThread", ID: 3655125512},                      // main.App.UnarchiveThread
-	{Name: "UnpinThread", ID: 3175043037},                          // main.App.UnpinThread
-	{Name: "UnsubscribePRUpdates", ID: 2888550814},                 // main.App.UnsubscribePRUpdates
-	{Name: "UpdateContextSettingsProfile", ID: 1472386383},         // main.App.UpdateContextSettingsProfile
-	{Name: "UpdateDiffReviewComment", ID: 2452201652},              // main.App.UpdateDiffReviewComment
-	{Name: "UpdateDiscussion", ID: 1706395020},                     // main.App.UpdateDiscussion
-	{Name: "UpdateKeybindings", ID: 3490094229},                    // main.App.UpdateKeybindings
-	{Name: "UpdateNewThreadDefaults", ID: 595194384},               // main.App.UpdateNewThreadDefaults
-	{Name: "UpdateProjectSortPositions", ID: 3717363955},           // main.App.UpdateProjectSortPositions
-	{Name: "UpdateProposedPlanComment", ID: 2747956806},            // main.App.UpdateProposedPlanComment
-	{Name: "UpdateRemoteEndpoint", ID: 4268476031},                 // main.App.UpdateRemoteEndpoint
-	{Name: "UpdateSettings", ID: 2894041249},                       // main.App.UpdateSettings
-	{Name: "UpdateThreadBranch", ID: 2929723500},                   // main.App.UpdateThreadBranch
-	{Name: "UpdateThreadContextSettings", ID: 2621473242},          // main.App.UpdateThreadContextSettings
-	{Name: "UpdateThreadContextWindow", ID: 2456875639},            // main.App.UpdateThreadContextWindow
-	{Name: "UpdateThreadFastMode", ID: 4175109385},                 // main.App.UpdateThreadFastMode
-	{Name: "UpdateThreadMode", ID: 3609479719},                     // main.App.UpdateThreadMode
-	{Name: "UpdateThreadModel", ID: 4179686417},                    // main.App.UpdateThreadModel
-	{Name: "UpdateThreadModelSelection", ID: 3140398729},           // main.App.UpdateThreadModelSelection
-	{Name: "UpdateThreadProvider", ID: 665741969},                  // main.App.UpdateThreadProvider
-	{Name: "UpdateThreadReasoningEffort", ID: 892204206},           // main.App.UpdateThreadReasoningEffort
-	{Name: "UpdateThreadRuntimeMode", ID: 325190827},               // main.App.UpdateThreadRuntimeMode
-	{Name: "UpdateThreadWorkspace", ID: 3875142865},                // main.App.UpdateThreadWorkspace
-	{Name: "UploadAttachment", ID: 2485473713},                     // main.App.UploadAttachment
-	{Name: "VerifyEditDiffs", ID: 3907724148},                      // main.App.VerifyEditDiffs
-	{Name: "Version", ID: 2431199839},                              // main.App.Version
-	{Name: "WorkflowAgentAddMemory", ID: 4000394635},               // main.App.WorkflowAgentAddMemory
-	{Name: "WorkflowAgentAmendSeeds", ID: 4273669366},              // main.App.WorkflowAgentAmendSeeds
-	{Name: "WorkflowAgentGetNotes", ID: 864025136},                 // main.App.WorkflowAgentGetNotes
-	{Name: "WorkflowAgentGuideRun", ID: 76499272},                  // main.App.WorkflowAgentGuideRun
-	{Name: "WorkflowAgentInspectRun", ID: 1146143060},              // main.App.WorkflowAgentInspectRun
-	{Name: "WorkflowAgentListMemory", ID: 1978122086},              // main.App.WorkflowAgentListMemory
-	{Name: "WorkflowAgentListRuns", ID: 717593283},                 // main.App.WorkflowAgentListRuns
-	{Name: "WorkflowAgentRunNarrative", ID: 3748461612},            // main.App.WorkflowAgentRunNarrative
-	{Name: "WorkflowAgentRunOutput", ID: 315193175},                // main.App.WorkflowAgentRunOutput
-	{Name: "WorkflowAgentRunStatus", ID: 49502656},                 // main.App.WorkflowAgentRunStatus
-	{Name: "WorkflowAgentSchedule", ID: 3469145856},                // main.App.WorkflowAgentSchedule
-	{Name: "WorkflowAgentSetNotes", ID: 8517788},                   // main.App.WorkflowAgentSetNotes
-	{Name: "WorkflowAgentStartRun", ID: 1060823172},                // main.App.WorkflowAgentStartRun
-	{Name: "WorkflowAgentWatchRun", ID: 2308429865},                // main.App.WorkflowAgentWatchRun
-	{Name: "WorkflowAnswerQuestion", ID: 4150249282},               // main.App.WorkflowAnswerQuestion
-	{Name: "WorkflowBindThread", ID: 1931806823},                   // main.App.WorkflowBindThread
-	{Name: "WorkflowCancelItem", ID: 4158962817},                   // main.App.WorkflowCancelItem
-	{Name: "WorkflowCompleteTakeover", ID: 3393508470},             // main.App.WorkflowCompleteTakeover
-	{Name: "WorkflowCreateAutomation", ID: 3011758347},             // main.App.WorkflowCreateAutomation
-	{Name: "WorkflowCreateItemPR", ID: 1792283305},                 // main.App.WorkflowCreateItemPR
-	{Name: "WorkflowDeleteAutomation", ID: 1133480652},             // main.App.WorkflowDeleteAutomation
-	{Name: "WorkflowDiscardItem", ID: 2163033761},                  // main.App.WorkflowDiscardItem
-	{Name: "WorkflowDiscardPreview", ID: 2659721862},               // main.App.WorkflowDiscardPreview
-	{Name: "WorkflowDiscussPR", ID: 1236472344},                    // main.App.WorkflowDiscussPR
-	{Name: "WorkflowDropUnit", ID: 1005356607},                     // main.App.WorkflowDropUnit
-	{Name: "WorkflowFetchPRReviewComments", ID: 819019128},         // main.App.WorkflowFetchPRReviewComments
-	{Name: "WorkflowGetEngineState", ID: 2130001947},               // main.App.WorkflowGetEngineState
-	{Name: "WorkflowGetItem", ID: 70120675},                        // main.App.WorkflowGetItem
-	{Name: "WorkflowGetJobNotes", ID: 3798011060},                  // main.App.WorkflowGetJobNotes
-	{Name: "WorkflowGetRunMap", ID: 4156752389},                    // main.App.WorkflowGetRunMap
-	{Name: "WorkflowListAutomations", ID: 2319799628},              // main.App.WorkflowListAutomations
-	{Name: "WorkflowListDefinitions", ID: 2064216126},              // main.App.WorkflowListDefinitions
-	{Name: "WorkflowListItemCosts", ID: 1544440599},                // main.App.WorkflowListItemCosts
-	{Name: "WorkflowListItems", ID: 3037887964},                    // main.App.WorkflowListItems
-	{Name: "WorkflowListUnresolvedItems", ID: 3613211765},          // main.App.WorkflowListUnresolvedItems
-	{Name: "WorkflowMergeItem", ID: 3006532931},                    // main.App.WorkflowMergeItem
-	{Name: "WorkflowPauseItem", ID: 3764767257},                    // main.App.WorkflowPauseItem
-	{Name: "WorkflowRequestSoftStop", ID: 2570221545},              // main.App.WorkflowRequestSoftStop
-	{Name: "WorkflowRerunItem", ID: 1986594501},                    // main.App.WorkflowRerunItem
-	{Name: "WorkflowResolveGate", ID: 3348479803},                  // main.App.WorkflowResolveGate
-	{Name: "WorkflowResumeItem", ID: 3138507556},                   // main.App.WorkflowResumeItem
-	{Name: "WorkflowRetryFailedUnits", ID: 2846965054},             // main.App.WorkflowRetryFailedUnits
-	{Name: "WorkflowRetryUnit", ID: 1648002260},                    // main.App.WorkflowRetryUnit
-	{Name: "WorkflowRunAutomationNow", ID: 2615697354},             // main.App.WorkflowRunAutomationNow
-	{Name: "WorkflowScheduleResume", ID: 658224978},                // main.App.WorkflowScheduleResume
-	{Name: "WorkflowSendPRReviewCommentsToThread", ID: 1172404443}, // main.App.WorkflowSendPRReviewCommentsToThread
-	{Name: "WorkflowSetAutomationEnabled", ID: 642610548},          // main.App.WorkflowSetAutomationEnabled
-	{Name: "WorkflowSetGlobalPause", ID: 774492663},                // main.App.WorkflowSetGlobalPause
-	{Name: "WorkflowSetJobNotes", ID: 1934298592},                  // main.App.WorkflowSetJobNotes
-	{Name: "WorkflowStartRun", ID: 1009082601},                     // main.App.WorkflowStartRun
-	{Name: "WorkflowTakeOverUnit", ID: 1931942299},                 // main.App.WorkflowTakeOverUnit
-	{Name: "WorkflowUnbindThread", ID: 2006703348},                 // main.App.WorkflowUnbindThread
-	{Name: "WorkflowUpdateAutomation", ID: 536579134},              // main.App.WorkflowUpdateAutomation
-	{Name: "WriteTerminal", ID: 146795716},                         // main.App.WriteTerminal
-	{Name: "WriteThreadWorkspaceFile", ID: 3895036895},             // main.App.WriteThreadWorkspaceFile
+// dispatcher allow-list from this set, and LocalOnlyMethods for the
+// reachability cut derived from the scopes.
+var GeneratedMethods = []MethodMeta{
+	{Name: "AddRemoteEndpoint", ID: 893963951, Scope: "settings:write"},                           // main.App.AddRemoteEndpoint
+	{Name: "AppendUIRenderTraceBatch", ID: 2157691816, Scope: "host"},                             // main.App.AppendUIRenderTraceBatch
+	{Name: "ArchiveProject", ID: 1352159878, Scope: "threads:operate"},                            // main.App.ArchiveProject
+	{Name: "ArchiveThread", ID: 3655608409, Scope: "threads:operate"},                             // main.App.ArchiveThread
+	{Name: "AttachThreadWorktree", ID: 2367642633, Scope: "git:operate"},                          // main.App.AttachThreadWorktree
+	{Name: "AutoResumeThread", ID: 4095667805, Scope: "threads:operate"},                          // main.App.AutoResumeThread
+	{Name: "BackgroundClaudeTask", ID: 2098425262, Scope: "threads:operate"},                      // main.App.BackgroundClaudeTask
+	{Name: "BookmarkUIRenderTrace", ID: 1374242488, Scope: "host"},                                // main.App.BookmarkUIRenderTrace
+	{Name: "BrowseDirectory", ID: 320967638, Scope: "host"},                                       // main.App.BrowseDirectory
+	{Name: "BrowserCompanionDo", ID: 197228034, Scope: "terminal:operate"},                        // main.App.BrowserCompanionDo
+	{Name: "BrowserCompanionInput", ID: 2747693029, Scope: "terminal:operate"},                    // main.App.BrowserCompanionInput
+	{Name: "BrowserCompanionNextFrame", ID: 776020183, Scope: "terminal:operate"},                 // main.App.BrowserCompanionNextFrame
+	{Name: "BrowserCompanionResize", ID: 2921114943, Scope: "terminal:operate"},                   // main.App.BrowserCompanionResize
+	{Name: "BrowserCompanionSubscribe", ID: 668496681, Scope: "terminal:operate"},                 // main.App.BrowserCompanionSubscribe
+	{Name: "BrowserCompanionUnsubscribe", ID: 3385360912, Scope: "terminal:operate"},              // main.App.BrowserCompanionUnsubscribe
+	{Name: "CancelDevicePairing", ID: 2608316491, Scope: "access:admin"},                          // main.App.CancelDevicePairing
+	{Name: "CancelSessionImport", ID: 2562316972, Scope: "threads:operate"},                       // main.App.CancelSessionImport
+	{Name: "CheckForUpdate", ID: 2347956003, Scope: "host"},                                       // main.App.CheckForUpdate
+	{Name: "CheckThreadImportUpdates", ID: 2932719708, Scope: "threads:operate"},                  // main.App.CheckThreadImportUpdates
+	{Name: "CleanCodexBackgroundTerminals", ID: 16360282, Scope: "threads:operate"},               // main.App.CleanCodexBackgroundTerminals
+	{Name: "ClearBrowserSiteData", ID: 544013229, Scope: "terminal:operate"},                      // main.App.ClearBrowserSiteData
+	{Name: "ClearDraft", ID: 296814681, Scope: "threads:operate"},                                 // main.App.ClearDraft
+	{Name: "CloseTerminal", ID: 2702963191, Scope: "terminal:operate"},                            // main.App.CloseTerminal
+	{Name: "CloseThreadTerminals", ID: 1705768020, Scope: "terminal:operate"},                     // main.App.CloseThreadTerminals
+	{Name: "CompactCodexThread", ID: 4090329093, Scope: "threads:operate"},                        // main.App.CompactCodexThread
+	{Name: "ConcludeDiscussion", ID: 4019739936, Scope: "threads:operate"},                        // main.App.ConcludeDiscussion
+	{Name: "ConfirmDevicePairing", ID: 3813775159, Scope: "access:admin"},                         // main.App.ConfirmDevicePairing
+	{Name: "CountRunningBackgroundTasks", ID: 2617952423, Scope: "threads:read"},                  // main.App.CountRunningBackgroundTasks
+	{Name: "CreateDiffReviewComment", ID: 565306783, Scope: "threads:operate"},                    // main.App.CreateDiffReviewComment
+	{Name: "CreateDiscussion", ID: 757689265, Scope: "threads:operate"},                           // main.App.CreateDiscussion
+	{Name: "CreateProject", ID: 969543070, Scope: "git:operate"},                                  // main.App.CreateProject
+	{Name: "CreateProposedPlanComment", ID: 4246792665, Scope: "threads:operate"},                 // main.App.CreateProposedPlanComment
+	{Name: "CreateThread", ID: 2579322833, Scope: "threads:operate"},                              // main.App.CreateThread
+	{Name: "CreateThreadFromPR", ID: 1716017387, Scope: "threads:operate"},                        // main.App.CreateThreadFromPR
+	{Name: "DeleteAttachment", ID: 2428457759, Scope: "attachments:write"},                        // main.App.DeleteAttachment
+	{Name: "DeleteDiffReviewComment", ID: 1303317790, Scope: "threads:operate"},                   // main.App.DeleteDiffReviewComment
+	{Name: "DeleteDiscussion", ID: 302062730, Scope: "threads:operate"},                           // main.App.DeleteDiscussion
+	{Name: "DeleteEmptyDraftThread", ID: 3876094070, Scope: "threads:operate"},                    // main.App.DeleteEmptyDraftThread
+	{Name: "DeleteProject", ID: 3379369923, Scope: "threads:operate"},                             // main.App.DeleteProject
+	{Name: "DeleteProposedPlanComment", ID: 554913120, Scope: "threads:operate"},                  // main.App.DeleteProposedPlanComment
+	{Name: "DeleteProviderCustomEnvVar", ID: 784096448, Scope: "settings:write", StepUp: true},    // main.App.DeleteProviderCustomEnvVar
+	{Name: "DeleteRemoteEndpoint", ID: 3667944297, Scope: "settings:write"},                       // main.App.DeleteRemoteEndpoint
+	{Name: "DeleteThread", ID: 1186337974, Scope: "threads:operate"},                              // main.App.DeleteThread
+	{Name: "DeleteUIState", ID: 1186757769, Scope: "settings:write"},                              // main.App.DeleteUIState
+	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin"},                           // main.App.DevicePairingStatus
+	{Name: "DownloadUpdate", ID: 115027584, Scope: "host"},                                        // main.App.DownloadUpdate
+	{Name: "ForkThread", ID: 4063914461, Scope: "threads:operate"},                                // main.App.ForkThread
+	{Name: "ForkThreadFromMessage", ID: 3977213964, Scope: "threads:operate"},                     // main.App.ForkThreadFromMessage
+	{Name: "GenerateCommitMessage", ID: 1669373286, Scope: "threads:operate"},                     // main.App.GenerateCommitMessage
+	{Name: "GetAccessOverview", ID: 1559710962, Scope: "access:admin"},                            // main.App.GetAccessOverview
+	{Name: "GetAttachmentData", ID: 71154490, Scope: "threads:read"},                              // main.App.GetAttachmentData
+	{Name: "GetAttachmentThumbnail", ID: 3414107538, Scope: "threads:read"},                       // main.App.GetAttachmentThumbnail
+	{Name: "GetBranchBaseDiff", ID: 1342635161, Scope: "files:read"},                              // main.App.GetBranchBaseDiff
+	{Name: "GetChannelMessages", ID: 3595031866, Scope: "threads:read"},                           // main.App.GetChannelMessages
+	{Name: "GetChannelState", ID: 3664812883, Scope: "threads:read"},                              // main.App.GetChannelState
+	{Name: "GetClaudeSkills", ID: 1573335127, Scope: "threads:operate"},                           // main.App.GetClaudeSkills
+	{Name: "GetClaudeSlashCommands", ID: 2854892544, Scope: "threads:read"},                       // main.App.GetClaudeSlashCommands
+	{Name: "GetCodexAccountUsage", ID: 1110466608, Scope: "access:admin"},                         // main.App.GetCodexAccountUsage
+	{Name: "GetCodexSkills", ID: 1018032480, Scope: "threads:operate"},                            // main.App.GetCodexSkills
+	{Name: "GetCommitDiff", ID: 3399370629, Scope: "files:read"},                                  // main.App.GetCommitDiff
+	{Name: "GetContextSettings", ID: 3416004963, Scope: "settings:write"},                         // main.App.GetContextSettings
+	{Name: "GetDiffContextLines", ID: 1590634674, Scope: "files:read"},                            // main.App.GetDiffContextLines
+	{Name: "GetDiscussion", ID: 1924583939, Scope: "threads:read"},                                // main.App.GetDiscussion
+	{Name: "GetDraft", ID: 875977146, Scope: "threads:operate"},                                   // main.App.GetDraft
+	{Name: "GetEditorSettings", ID: 1655853383, Scope: "settings:write"},                          // main.App.GetEditorSettings
+	{Name: "GetGitStatus", ID: 4123560639, Scope: "git:operate"},                                  // main.App.GetGitStatus
+	{Name: "GetGitStatusFastForProject", ID: 2193133889, Scope: "git:operate"},                    // main.App.GetGitStatusFastForProject
+	{Name: "GetKeybindings", ID: 3015840904, Scope: "settings:write"},                             // main.App.GetKeybindings
+	{Name: "GetLocalImageData", ID: 3247514443, Scope: "files:read"},                              // main.App.GetLocalImageData
+	{Name: "GetMcpServerStatus", ID: 4139359668, Scope: "settings:write"},                         // main.App.GetMcpServerStatus
+	{Name: "GetMergeConflictFile", ID: 3176695009, Scope: "git:operate"},                          // main.App.GetMergeConflictFile
+	{Name: "GetModelsForProvider", ID: 1632984917, Scope: "threads:operate"},                      // main.App.GetModelsForProvider
+	{Name: "GetNetworkSettings", ID: 1026796858, Scope: "host"},                                   // main.App.GetNetworkSettings
+	{Name: "GetPRCIJobLog", ID: 2411810578, Scope: "git:operate"},                                 // main.App.GetPRCIJobLog
+	{Name: "GetPRCIJobs", ID: 2370852281, Scope: "git:operate"},                                   // main.App.GetPRCIJobs
+	{Name: "GetPRCommitDiff", ID: 1737292419, Scope: "git:operate"},                               // main.App.GetPRCommitDiff
+	{Name: "GetPRDetail", ID: 2443547196, Scope: "git:operate"},                                   // main.App.GetPRDetail
+	{Name: "GetPRDiff", ID: 1867413234, Scope: "git:operate"},                                     // main.App.GetPRDiff
+	{Name: "GetPRMergeConflicts", ID: 106351482, Scope: "git:operate"},                            // main.App.GetPRMergeConflicts
+	{Name: "GetPayloadChunk", ID: 73280836, Scope: "threads:read"},                                // main.App.GetPayloadChunk
+	{Name: "GetPayloadData", ID: 3448919335, Scope: "threads:read"},                               // main.App.GetPayloadData
+	{Name: "GetPayloadPreview", ID: 4070214921, Scope: "threads:read"},                            // main.App.GetPayloadPreview
+	{Name: "GetProjectWorktreeSetup", ID: 471350242, Scope: "terminal:operate"},                   // main.App.GetProjectWorktreeSetup
+	{Name: "GetProviderStatuses", ID: 3829328996, Scope: "access:admin"},                          // main.App.GetProviderStatuses
+	{Name: "GetQueueState", ID: 3079581691, Scope: "threads:operate"},                             // main.App.GetQueueState
+	{Name: "GetRateLimitsSnapshots", ID: 3325141610, Scope: "threads:read"},                       // main.App.GetRateLimitsSnapshots
+	{Name: "GetRemoteEndpointToken", ID: 3604571249, Scope: "host"},                               // main.App.GetRemoteEndpointToken
+	{Name: "GetSettings", ID: 2554697378, Scope: "settings:write"},                                // main.App.GetSettings
+	{Name: "GetSpinnerFiles", ID: 2622552651, Scope: "settings:write"},                            // main.App.GetSpinnerFiles
+	{Name: "GetTerminalReplay", ID: 2329592604, Scope: "terminal:operate"},                        // main.App.GetTerminalReplay
+	{Name: "GetThemeFiles", ID: 2000462111, Scope: "settings:write"},                              // main.App.GetThemeFiles
+	{Name: "GetThread", ID: 1098302047, Scope: "threads:read"},                                    // main.App.GetThread
+	{Name: "GetThreadContextUsage", ID: 3852033265, Scope: "threads:operate"},                     // main.App.GetThreadContextUsage
+	{Name: "GetThreadDefaults", ID: 3362481473, Scope: "threads:operate"},                         // main.App.GetThreadDefaults
+	{Name: "GetThreadItem", ID: 1969869112, Scope: "threads:read"},                                // main.App.GetThreadItem
+	{Name: "GetThreadItemProjectionSource", ID: 1848576136, Scope: "threads:read"},                // main.App.GetThreadItemProjectionSource
+	{Name: "GetThreadLiveState", ID: 70226550, Scope: "threads:operate"},                          // main.App.GetThreadLiveState
+	{Name: "GetThreadRuntimeMode", ID: 2573491630, Scope: "threads:read"},                         // main.App.GetThreadRuntimeMode
+	{Name: "GetThreadTurnPreview", ID: 1512475224, Scope: "threads:read"},                         // main.App.GetThreadTurnPreview
+	{Name: "GetThreadUserMessageHistory", ID: 3340938325, Scope: "threads:read"},                  // main.App.GetThreadUserMessageHistory
+	{Name: "GetThreadUserMessageTicks", ID: 556088547, Scope: "threads:read"},                     // main.App.GetThreadUserMessageTicks
+	{Name: "GetThreadWorktreeSetup", ID: 49371251, Scope: "terminal:operate"},                     // main.App.GetThreadWorktreeSetup
+	{Name: "GetTurnEditsDiff", ID: 2905371438, Scope: "threads:read"},                             // main.App.GetTurnEditsDiff
+	{Name: "GetUIRenderTracePath", ID: 1009213933, Scope: "host"},                                 // main.App.GetUIRenderTracePath
+	{Name: "GetUIState", ID: 3380106838, Scope: "settings:write"},                                 // main.App.GetUIState
+	{Name: "GetUsageStats", ID: 3135466533, Scope: "threads:read"},                                // main.App.GetUsageStats
+	{Name: "GetWSLDistroPreference", ID: 294719565, Scope: "host"},                                // main.App.GetWSLDistroPreference
+	{Name: "GetWorkingTreeDiff", ID: 1858968113, Scope: "files:read"},                             // main.App.GetWorkingTreeDiff
+	{Name: "GetWorkspaceActivity", ID: 673985705, Scope: "git:operate"},                           // main.App.GetWorkspaceActivity
+	{Name: "GetWorkspaceCurrentDiff", ID: 736820142, Scope: "files:read"},                         // main.App.GetWorkspaceCurrentDiff
+	{Name: "GitCheckout", ID: 1598126927, Scope: "threads:operate"},                               // main.App.GitCheckout
+	{Name: "GitCheckoutForProject", ID: 585511915, Scope: "threads:operate"},                      // main.App.GitCheckoutForProject
+	{Name: "GitCommit", ID: 1971060042, Scope: "threads:operate"},                                 // main.App.GitCommit
+	{Name: "GitCreateBranch", ID: 2582897723, Scope: "threads:operate"},                           // main.App.GitCreateBranch
+	{Name: "GitCreateBranchFrom", ID: 429779991, Scope: "threads:operate"},                        // main.App.GitCreateBranchFrom
+	{Name: "GitCreatePR", ID: 4106667105, Scope: "threads:operate"},                               // main.App.GitCreatePR
+	{Name: "GitCreateWorktree", ID: 3327650914, Scope: "threads:operate"},                         // main.App.GitCreateWorktree
+	{Name: "GitListBranchPruneCandidates", ID: 3795082615, Scope: "threads:operate"},              // main.App.GitListBranchPruneCandidates
+	{Name: "GitListBranches", ID: 2693102179, Scope: "threads:operate"},                           // main.App.GitListBranches
+	{Name: "GitListBranchesForProject", ID: 2675387767, Scope: "threads:operate"},                 // main.App.GitListBranchesForProject
+	{Name: "GitListWorktrees", ID: 3232495403, Scope: "threads:operate"},                          // main.App.GitListWorktrees
+	{Name: "GitListWorktreesForProject", ID: 409101231, Scope: "threads:operate"},                 // main.App.GitListWorktreesForProject
+	{Name: "GitMaybeFetchRemotes", ID: 2000020570, Scope: "threads:operate"},                      // main.App.GitMaybeFetchRemotes
+	{Name: "GitMaybeFetchRemotesForProject", ID: 338919746, Scope: "threads:operate"},             // main.App.GitMaybeFetchRemotesForProject
+	{Name: "GitPruneBranches", ID: 3331815821, Scope: "threads:operate"},                          // main.App.GitPruneBranches
+	{Name: "GitPull", ID: 3933172764, Scope: "threads:operate"},                                   // main.App.GitPull
+	{Name: "GitPush", ID: 4036251239, Scope: "threads:operate"},                                   // main.App.GitPush
+	{Name: "GitRemoveWorktree", ID: 4002429606, Scope: "threads:operate"},                         // main.App.GitRemoveWorktree
+	{Name: "GitStageAll", ID: 548906954, Scope: "threads:operate"},                                // main.App.GitStageAll
+	{Name: "GitStatusSubscribe", ID: 3282404643, Scope: "threads:operate"},                        // main.App.GitStatusSubscribe
+	{Name: "GitStatusUnsubscribe", ID: 3263989430, Scope: "threads:operate"},                      // main.App.GitStatusUnsubscribe
+	{Name: "GitSyncBranch", ID: 1057032236, Scope: "threads:operate"},                             // main.App.GitSyncBranch
+	{Name: "GitSyncBranchForProject", ID: 3862053920, Scope: "threads:operate"},                   // main.App.GitSyncBranchForProject
+	{Name: "GitWorktreeStatus", ID: 1333748060, Scope: "threads:operate"},                         // main.App.GitWorktreeStatus
+	{Name: "GitWorktreeStatusForProject", ID: 71861776, Scope: "threads:operate"},                 // main.App.GitWorktreeStatusForProject
+	{Name: "HighlightClassNames", ID: 2772816619, Scope: "files:read"},                            // main.App.HighlightClassNames
+	{Name: "HighlightCode", ID: 4080150350, Scope: "files:read"},                                  // main.App.HighlightCode
+	{Name: "HighlightPatch", ID: 834878499, Scope: "files:read"},                                  // main.App.HighlightPatch
+	{Name: "HighlightPatchWithContext", ID: 3722752402, Scope: "files:read"},                      // main.App.HighlightPatchWithContext
+	{Name: "HighlightSchemaVersion", ID: 2896867980, Scope: "files:read"},                         // main.App.HighlightSchemaVersion
+	{Name: "ImportSessions", ID: 786331585, Scope: "threads:operate"},                             // main.App.ImportSessions
+	{Name: "ImportThreadUpdates", ID: 535929682, Scope: "threads:operate"},                        // main.App.ImportThreadUpdates
+	{Name: "InterruptAndRevertIfClean", ID: 753394581, Scope: "threads:operate"},                  // main.App.InterruptAndRevertIfClean
+	{Name: "InterruptTurn", ID: 850013031, Scope: "threads:operate"},                              // main.App.InterruptTurn
+	{Name: "IsWSL", ID: 2789068977, Scope: "threads:read"},                                        // main.App.IsWSL
+	{Name: "ListArchivedThreads", ID: 2451527188, Scope: "threads:read"},                          // main.App.ListArchivedThreads
+	{Name: "ListAttachments", ID: 1730798413, Scope: "threads:read"},                              // main.App.ListAttachments
+	{Name: "ListAvailableEditors", ID: 2556802234, Scope: "host"},                                 // main.App.ListAvailableEditors
+	{Name: "ListBranchCommits", ID: 352990129, Scope: "git:operate"},                              // main.App.ListBranchCommits
+	{Name: "ListChatBarFavorites", ID: 2114948965, Scope: "settings:write"},                       // main.App.ListChatBarFavorites
+	{Name: "ListDiffReviewComments", ID: 3057473088, Scope: "threads:read"},                       // main.App.ListDiffReviewComments
+	{Name: "ListDiscussions", ID: 942288562, Scope: "threads:read"},                               // main.App.ListDiscussions
+	{Name: "ListDiscussionsForThread", ID: 2502562885, Scope: "threads:read"},                     // main.App.ListDiscussionsForThread
+	{Name: "ListImportableSessions", ID: 99668597, Scope: "threads:operate"},                      // main.App.ListImportableSessions
+	{Name: "ListItems", ID: 2158085763, Scope: "threads:read"},                                    // main.App.ListItems
+	{Name: "ListItemsAfterCursor", ID: 2915892537, Scope: "threads:read"},                         // main.App.ListItemsAfterCursor
+	{Name: "ListItemsAfterTurn", ID: 932754656, Scope: "threads:read"},                            // main.App.ListItemsAfterTurn
+	{Name: "ListItemsBeforeCursor", ID: 162135710, Scope: "threads:read"},                         // main.App.ListItemsBeforeCursor
+	{Name: "ListItemsBeforeTurn", ID: 2147361923, Scope: "threads:read"},                          // main.App.ListItemsBeforeTurn
+	{Name: "ListLiveBackgroundTasks", ID: 320784263, Scope: "threads:read"},                       // main.App.ListLiveBackgroundTasks
+	{Name: "ListMcpServerStatuses", ID: 2582096622, Scope: "settings:write"},                      // main.App.ListMcpServerStatuses
+	{Name: "ListPRCommits", ID: 4110818691, Scope: "git:operate"},                                 // main.App.ListPRCommits
+	{Name: "ListPRReviewThreads", ID: 763649720, Scope: "git:operate"},                            // main.App.ListPRReviewThreads
+	{Name: "ListPendingInteractiveRequests", ID: 4186874978, Scope: "approvals:respond"},          // main.App.ListPendingInteractiveRequests
+	{Name: "ListProjects", ID: 2721360259, Scope: "threads:read"},                                 // main.App.ListProjects
+	{Name: "ListProposedPlanComments", ID: 2030403250, Scope: "threads:read"},                     // main.App.ListProposedPlanComments
+	{Name: "ListProviderAccounts", ID: 981125684, Scope: "access:admin"},                          // main.App.ListProviderAccounts
+	{Name: "ListRecentCommits", ID: 1937809620, Scope: "git:operate"},                             // main.App.ListRecentCommits
+	{Name: "ListRecentThreadItems", ID: 2604956482, Scope: "threads:read"},                        // main.App.ListRecentThreadItems
+	{Name: "ListRecentTurns", ID: 1083162294, Scope: "threads:read"},                              // main.App.ListRecentTurns
+	{Name: "ListReleases", ID: 397986043, Scope: "host"},                                          // main.App.ListReleases
+	{Name: "ListRemoteEndpoints", ID: 3443007043, Scope: "settings:write"},                        // main.App.ListRemoteEndpoints
+	{Name: "ListRunningBackgroundWork", ID: 3808352241, Scope: "threads:read"},                    // main.App.ListRunningBackgroundWork
+	{Name: "ListSubagentDescendants", ID: 1299118478, Scope: "threads:read"},                      // main.App.ListSubagentDescendants
+	{Name: "ListTerminals", ID: 2445206506, Scope: "terminal:operate"},                            // main.App.ListTerminals
+	{Name: "ListThreadEditDiffs", ID: 2243533007, Scope: "threads:read"},                          // main.App.ListThreadEditDiffs
+	{Name: "ListThreadMcpServers", ID: 245278513, Scope: "settings:write"},                        // main.App.ListThreadMcpServers
+	{Name: "ListThreadProposedPlans", ID: 2485050629, Scope: "threads:read"},                      // main.App.ListThreadProposedPlans
+	{Name: "ListThreadSliceAround", ID: 4176102096, Scope: "threads:read"},                        // main.App.ListThreadSliceAround
+	{Name: "ListThreads", ID: 1090132042, Scope: "threads:read"},                                  // main.App.ListThreads
+	{Name: "ListWSLDistros", ID: 2332614075, Scope: "host"},                                       // main.App.ListWSLDistros
+	{Name: "ListWorkspaceMcpServers", ID: 2808137798, Scope: "settings:write"},                    // main.App.ListWorkspaceMcpServers
+	{Name: "LoginProviderAccount", ID: 1520009058, Scope: "access:admin"},                         // main.App.LoginProviderAccount
+	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995, Scope: "threads:operate"},                // main.App.MarkDiffReviewCommentsSent
+	{Name: "MarkThreadRead", ID: 1480646012, Scope: "threads:operate"},                            // main.App.MarkThreadRead
+	{Name: "MarkThreadUnread", ID: 236597375, Scope: "threads:operate"},                           // main.App.MarkThreadUnread
+	{Name: "MintDevicePairing", ID: 400809065, Scope: "access:admin", StepUp: true},               // main.App.MintDevicePairing
+	{Name: "MoveThreadTerminals", ID: 3013708277, Scope: "terminal:operate"},                      // main.App.MoveThreadTerminals
+	{Name: "NotificationActivated", ID: 2831503793, Scope: "host"},                                // main.App.NotificationActivated
+	{Name: "OpenExternalURL", ID: 3362740399, Scope: "host"},                                      // main.App.OpenExternalURL
+	{Name: "OpenInEditor", ID: 3994295523, Scope: "host"},                                         // main.App.OpenInEditor
+	{Name: "OpenTerminal", ID: 2247958725, Scope: "terminal:operate"},                             // main.App.OpenTerminal
+	{Name: "PinThread", ID: 1748405812, Scope: "threads:operate"},                                 // main.App.PinThread
+	{Name: "PostChannelMessage", ID: 1315440605, Scope: "threads:operate"},                        // main.App.PostChannelMessage
+	{Name: "PrepareThreadWorktree", ID: 2870364785, Scope: "git:operate"},                         // main.App.PrepareThreadWorktree
+	{Name: "ProbeClaudeAccount", ID: 1313986574, Scope: "access:admin"},                           // main.App.ProbeClaudeAccount
+	{Name: "ProbeCodexAccount", ID: 2614227175, Scope: "access:admin"},                            // main.App.ProbeCodexAccount
+	{Name: "ProbeDevServerURL", ID: 3448359500, Scope: "host"},                                    // main.App.ProbeDevServerURL
+	{Name: "ProjectDeletionPreview", ID: 2575010484, Scope: "git:operate"},                        // main.App.ProjectDeletionPreview
+	{Name: "ProviderTerminalAttach", ID: 1393518281, Scope: "terminal:operate"},                   // main.App.ProviderTerminalAttach
+	{Name: "ProviderTerminalDetach", ID: 2584141779, Scope: "terminal:operate"},                   // main.App.ProviderTerminalDetach
+	{Name: "ProviderTerminalInput", ID: 1783659784, Scope: "terminal:operate"},                    // main.App.ProviderTerminalInput
+	{Name: "ProviderTerminalRefresh", ID: 1209472335, Scope: "terminal:operate"},                  // main.App.ProviderTerminalRefresh
+	{Name: "ProviderTerminalReplay", ID: 907422467, Scope: "terminal:operate"},                    // main.App.ProviderTerminalReplay
+	{Name: "ProviderTerminalResize", ID: 2998028796, Scope: "terminal:operate"},                   // main.App.ProviderTerminalResize
+	{Name: "ProviderTerminalSetControl", ID: 1382066673, Scope: "terminal:operate"},               // main.App.ProviderTerminalSetControl
+	{Name: "RecheckClaudeAccount", ID: 2274850917, Scope: "access:admin"},                         // main.App.RecheckClaudeAccount
+	{Name: "RecheckCodexAccount", ID: 227978482, Scope: "access:admin"},                           // main.App.RecheckCodexAccount
+	{Name: "ReconfigureObservability", ID: 225050321, Scope: "host"},                              // main.App.ReconfigureObservability
+	{Name: "ReconnectMcpServer", ID: 878560845, Scope: "settings:write"},                          // main.App.ReconnectMcpServer
+	{Name: "ReconnectSession", ID: 1420075138, Scope: "threads:operate"},                          // main.App.ReconnectSession
+	{Name: "RefreshMcpServerStatus", ID: 2215279661, Scope: "settings:write"},                     // main.App.RefreshMcpServerStatus
+	{Name: "RefreshProviderAccountUsage", ID: 2539237007, Scope: "access:admin"},                  // main.App.RefreshProviderAccountUsage
+	{Name: "RefreshTerminal", ID: 2618043580, Scope: "terminal:operate"},                          // main.App.RefreshTerminal
+	{Name: "RegenerateThreadTitle", ID: 3682640111, Scope: "threads:operate"},                     // main.App.RegenerateThreadTitle
+	{Name: "RegisterQueueItem", ID: 1034543696, Scope: "threads:operate"},                         // main.App.RegisterQueueItem
+	{Name: "RemoveOtherWorktree", ID: 2899196344, Scope: "git:operate"},                           // main.App.RemoveOtherWorktree
+	{Name: "RemoveOtherWorktreeForProject", ID: 574548500, Scope: "git:operate"},                  // main.App.RemoveOtherWorktreeForProject
+	{Name: "RemoveProviderAccount", ID: 684418419, Scope: "access:admin"},                         // main.App.RemoveProviderAccount
+	{Name: "RenameProject", ID: 3728890856, Scope: "threads:operate"},                             // main.App.RenameProject
+	{Name: "RenameThread", ID: 727416435, Scope: "threads:operate"},                               // main.App.RenameThread
+	{Name: "ReplyToPRThread", ID: 446243420, Scope: "git:operate"},                                // main.App.ReplyToPRThread
+	{Name: "ReportFrontendErrorBatch", ID: 2174329377, Scope: "host"},                             // main.App.ReportFrontendErrorBatch
+	{Name: "ReportUpdateInstallStatus", ID: 314214419, Scope: "host"},                             // main.App.ReportUpdateInstallStatus
+	{Name: "RequestWebviewMemoryTrim", ID: 2045178958, Scope: "host"},                             // main.App.RequestWebviewMemoryTrim
+	{Name: "ResetKeybindings", ID: 2775767393, Scope: "settings:write"},                           // main.App.ResetKeybindings
+	{Name: "ResizeTerminal", ID: 1887984285, Scope: "terminal:operate"},                           // main.App.ResizeTerminal
+	{Name: "RespondToApproval", ID: 1919237704, Scope: "approvals:respond"},                       // main.App.RespondToApproval
+	{Name: "RespondToUserInput", ID: 1071592868, Scope: "approvals:respond"},                      // main.App.RespondToUserInput
+	{Name: "RestartTerminal", ID: 4152403588, Scope: "terminal:operate"},                          // main.App.RestartTerminal
+	{Name: "RestartToUpdate", ID: 3141913084, Scope: "host"},                                      // main.App.RestartToUpdate
+	{Name: "RestoreAccessDevice", ID: 3386497005, Scope: "access:admin"},                          // main.App.RestoreAccessDevice
+	{Name: "RetryThreadWorktreeSetup", ID: 1657104469, Scope: "terminal:operate"},                 // main.App.RetryThreadWorktreeSetup
+	{Name: "RevertConversationAndResendMessage", ID: 2059566413, Scope: "threads:operate"},        // main.App.RevertConversationAndResendMessage
+	{Name: "RevokeAccessDevice", ID: 2945903583, Scope: "access:admin"},                           // main.App.RevokeAccessDevice
+	{Name: "RevokeAccessSession", ID: 2284519219, Scope: "access:admin"},                          // main.App.RevokeAccessSession
+	{Name: "SaveDraft", ID: 3025273299, Scope: "threads:operate"},                                 // main.App.SaveDraft
+	{Name: "SavePRCIJobLog", ID: 1537914193, Scope: "git:operate"},                                // main.App.SavePRCIJobLog
+	{Name: "SavePayloadToFile", ID: 3576148797, Scope: "host"},                                    // main.App.SavePayloadToFile
+	{Name: "SearchThreadItems", ID: 1414650511, Scope: "threads:read"},                            // main.App.SearchThreadItems
+	{Name: "SearchThreadMessages", ID: 3644945077, Scope: "threads:read"},                         // main.App.SearchThreadMessages
+	{Name: "SearchWorkspaceFiles", ID: 3852272821, Scope: "files:read"},                           // main.App.SearchWorkspaceFiles
+	{Name: "SendDiffReviewComments", ID: 2317109106, Scope: "threads:operate"},                    // main.App.SendDiffReviewComments
+	{Name: "SendMessage", ID: 1496882310, Scope: "threads:operate"},                               // main.App.SendMessage
+	{Name: "SendMessageWithOptions", ID: 3632185196, Scope: "threads:operate"},                    // main.App.SendMessageWithOptions
+	{Name: "SendPlanRevisionComments", ID: 1407159655, Scope: "threads:operate"},                  // main.App.SendPlanRevisionComments
+	{Name: "SetAppearance", ID: 3167202905, Scope: "settings:write"},                              // main.App.SetAppearance
+	{Name: "SetChatBarFavorite", ID: 2813580982, Scope: "settings:write"},                         // main.App.SetChatBarFavorite
+	{Name: "SetEditorSettings", ID: 3655340267, Scope: "settings:write"},                          // main.App.SetEditorSettings
+	{Name: "SetNetworkSettings", ID: 3915514446, Scope: "settings:write", StepUp: true},           // main.App.SetNetworkSettings
+	{Name: "SetPRUpdatesActive", ID: 1078249699, Scope: "git:operate"},                            // main.App.SetPRUpdatesActive
+	{Name: "SetProjectWorktreeSetup", ID: 322092470, Scope: "terminal:operate"},                   // main.App.SetProjectWorktreeSetup
+	{Name: "SetProviderCustomEnvVar", ID: 2118904465, Scope: "settings:write", StepUp: true},      // main.App.SetProviderCustomEnvVar
+	{Name: "SetThreadMcpServerEnabled", ID: 1041195811, Scope: "settings:write", StepUp: true},    // main.App.SetThreadMcpServerEnabled
+	{Name: "SetThreadPinGroup", ID: 3112222989, Scope: "threads:operate"},                         // main.App.SetThreadPinGroup
+	{Name: "SetUIState", ID: 1514250938, Scope: "settings:write"},                                 // main.App.SetUIState
+	{Name: "SetWSLDistroPreference", ID: 3978807241, Scope: "host", StepUp: true},                 // main.App.SetWSLDistroPreference
+	{Name: "SetWindowBackgroundColor", ID: 3648660014, Scope: "host"},                             // main.App.SetWindowBackgroundColor
+	{Name: "SetWorkspaceMcpServerEnabled", ID: 2181574220, Scope: "settings:write", StepUp: true}, // main.App.SetWorkspaceMcpServerEnabled
+	{Name: "StartCodexReview", ID: 1913732562, Scope: "threads:operate"},                          // main.App.StartCodexReview
+	{Name: "StartDiscussion", ID: 3188309099, Scope: "threads:operate"},                           // main.App.StartDiscussion
+	{Name: "StartDiscussionByID", ID: 2336869067, Scope: "threads:operate"},                       // main.App.StartDiscussionByID
+	{Name: "StartSession", ID: 2850159713, Scope: "threads:operate"},                              // main.App.StartSession
+	{Name: "StartTerminal", ID: 3009548683, Scope: "terminal:operate"},                            // main.App.StartTerminal
+	{Name: "SteerMessageWithOptions", ID: 1698485705, Scope: "threads:operate"},                   // main.App.SteerMessageWithOptions
+	{Name: "StopClaudeTask", ID: 536320598, Scope: "threads:operate"},                             // main.App.StopClaudeTask
+	{Name: "StopCodexSubagent", ID: 4232843083, Scope: "threads:operate"},                         // main.App.StopCodexSubagent
+	{Name: "StopSession", ID: 3838500111, Scope: "threads:operate"},                               // main.App.StopSession
+	{Name: "StopThreadBackgroundWork", ID: 2155771620, Scope: "threads:operate"},                  // main.App.StopThreadBackgroundWork
+	{Name: "SubmitPRReview", ID: 2692607191, Scope: "git:operate"},                                // main.App.SubmitPRReview
+	{Name: "SubscribePRUpdates", ID: 3272491649, Scope: "git:operate"},                            // main.App.SubscribePRUpdates
+	{Name: "SwitchProviderAccount", ID: 1249964095, Scope: "access:admin"},                        // main.App.SwitchProviderAccount
+	{Name: "SwitchThread", ID: 3897387725, Scope: "threads:operate"},                              // main.App.SwitchThread
+	{Name: "SyncThreadWindow", ID: 3841902986, Scope: "threads:read"},                             // main.App.SyncThreadWindow
+	{Name: "TerminateCodexBackgroundTerminal", ID: 870653875, Scope: "threads:operate"},           // main.App.TerminateCodexBackgroundTerminal
+	{Name: "TouchRemoteEndpoint", ID: 2647456459, Scope: "settings:write"},                        // main.App.TouchRemoteEndpoint
+	{Name: "TriggerMcpAuth", ID: 1291217507, Scope: "settings:write"},                             // main.App.TriggerMcpAuth
+	{Name: "TriggerWorkspaceMcpAuth", ID: 417766274, Scope: "settings:write"},                     // main.App.TriggerWorkspaceMcpAuth
+	{Name: "UnarchiveProject", ID: 2561521885, Scope: "threads:operate"},                          // main.App.UnarchiveProject
+	{Name: "UnarchiveThread", ID: 3655125512, Scope: "threads:operate"},                           // main.App.UnarchiveThread
+	{Name: "UnpinThread", ID: 3175043037, Scope: "threads:operate"},                               // main.App.UnpinThread
+	{Name: "UnsubscribePRUpdates", ID: 2888550814, Scope: "git:operate"},                          // main.App.UnsubscribePRUpdates
+	{Name: "UpdateContextSettingsProfile", ID: 1472386383, Scope: "settings:write"},               // main.App.UpdateContextSettingsProfile
+	{Name: "UpdateDiffReviewComment", ID: 2452201652, Scope: "threads:operate"},                   // main.App.UpdateDiffReviewComment
+	{Name: "UpdateDiscussion", ID: 1706395020, Scope: "threads:operate"},                          // main.App.UpdateDiscussion
+	{Name: "UpdateKeybindings", ID: 3490094229, Scope: "settings:write"},                          // main.App.UpdateKeybindings
+	{Name: "UpdateNewThreadDefaults", ID: 595194384, Scope: "threads:operate"},                    // main.App.UpdateNewThreadDefaults
+	{Name: "UpdateProjectSortPositions", ID: 3717363955, Scope: "threads:operate"},                // main.App.UpdateProjectSortPositions
+	{Name: "UpdateProposedPlanComment", ID: 2747956806, Scope: "threads:operate"},                 // main.App.UpdateProposedPlanComment
+	{Name: "UpdateRemoteEndpoint", ID: 4268476031, Scope: "settings:write"},                       // main.App.UpdateRemoteEndpoint
+	{Name: "UpdateSettings", ID: 2894041249, Scope: "settings:write"},                             // main.App.UpdateSettings
+	{Name: "UpdateThreadBranch", ID: 2929723500, Scope: "threads:operate"},                        // main.App.UpdateThreadBranch
+	{Name: "UpdateThreadContextSettings", ID: 2621473242, Scope: "threads:operate"},               // main.App.UpdateThreadContextSettings
+	{Name: "UpdateThreadContextWindow", ID: 2456875639, Scope: "threads:operate"},                 // main.App.UpdateThreadContextWindow
+	{Name: "UpdateThreadFastMode", ID: 4175109385, Scope: "threads:operate"},                      // main.App.UpdateThreadFastMode
+	{Name: "UpdateThreadMode", ID: 3609479719, Scope: "threads:autonomy"},                         // main.App.UpdateThreadMode
+	{Name: "UpdateThreadModel", ID: 4179686417, Scope: "threads:operate"},                         // main.App.UpdateThreadModel
+	{Name: "UpdateThreadModelSelection", ID: 3140398729, Scope: "threads:operate"},                // main.App.UpdateThreadModelSelection
+	{Name: "UpdateThreadProvider", ID: 665741969, Scope: "threads:operate"},                       // main.App.UpdateThreadProvider
+	{Name: "UpdateThreadReasoningEffort", ID: 892204206, Scope: "threads:operate"},                // main.App.UpdateThreadReasoningEffort
+	{Name: "UpdateThreadRuntimeMode", ID: 325190827, Scope: "threads:operate"},                    // main.App.UpdateThreadRuntimeMode
+	{Name: "UpdateThreadWorkspace", ID: 3875142865, Scope: "threads:operate"},                     // main.App.UpdateThreadWorkspace
+	{Name: "UploadAttachment", ID: 2485473713, Scope: "attachments:write"},                        // main.App.UploadAttachment
+	{Name: "VerifyEditDiffs", ID: 3907724148, Scope: "files:read"},                                // main.App.VerifyEditDiffs
+	{Name: "Version", ID: 2431199839, Scope: "threads:read"},                                      // main.App.Version
+	{Name: "WorkflowAgentAddMemory", ID: 4000394635, Scope: "threads:autonomy"},                   // main.App.WorkflowAgentAddMemory
+	{Name: "WorkflowAgentAmendSeeds", ID: 4273669366, Scope: "threads:autonomy"},                  // main.App.WorkflowAgentAmendSeeds
+	{Name: "WorkflowAgentGetNotes", ID: 864025136, Scope: "threads:autonomy"},                     // main.App.WorkflowAgentGetNotes
+	{Name: "WorkflowAgentGuideRun", ID: 76499272, Scope: "threads:autonomy"},                      // main.App.WorkflowAgentGuideRun
+	{Name: "WorkflowAgentInspectRun", ID: 1146143060, Scope: "threads:autonomy"},                  // main.App.WorkflowAgentInspectRun
+	{Name: "WorkflowAgentListMemory", ID: 1978122086, Scope: "threads:autonomy"},                  // main.App.WorkflowAgentListMemory
+	{Name: "WorkflowAgentListRuns", ID: 717593283, Scope: "threads:autonomy"},                     // main.App.WorkflowAgentListRuns
+	{Name: "WorkflowAgentRunNarrative", ID: 3748461612, Scope: "threads:autonomy"},                // main.App.WorkflowAgentRunNarrative
+	{Name: "WorkflowAgentRunOutput", ID: 315193175, Scope: "threads:autonomy"},                    // main.App.WorkflowAgentRunOutput
+	{Name: "WorkflowAgentRunStatus", ID: 49502656, Scope: "threads:autonomy"},                     // main.App.WorkflowAgentRunStatus
+	{Name: "WorkflowAgentSchedule", ID: 3469145856, Scope: "threads:autonomy"},                    // main.App.WorkflowAgentSchedule
+	{Name: "WorkflowAgentSetNotes", ID: 8517788, Scope: "threads:autonomy"},                       // main.App.WorkflowAgentSetNotes
+	{Name: "WorkflowAgentStartRun", ID: 1060823172, Scope: "threads:autonomy"},                    // main.App.WorkflowAgentStartRun
+	{Name: "WorkflowAgentWatchRun", ID: 2308429865, Scope: "threads:autonomy"},                    // main.App.WorkflowAgentWatchRun
+	{Name: "WorkflowAnswerQuestion", ID: 4150249282, Scope: "threads:autonomy"},                   // main.App.WorkflowAnswerQuestion
+	{Name: "WorkflowBindThread", ID: 1931806823, Scope: "threads:autonomy"},                       // main.App.WorkflowBindThread
+	{Name: "WorkflowCancelItem", ID: 4158962817, Scope: "threads:autonomy"},                       // main.App.WorkflowCancelItem
+	{Name: "WorkflowCompleteTakeover", ID: 3393508470, Scope: "threads:autonomy"},                 // main.App.WorkflowCompleteTakeover
+	{Name: "WorkflowCreateAutomation", ID: 3011758347, Scope: "threads:autonomy"},                 // main.App.WorkflowCreateAutomation
+	{Name: "WorkflowCreateItemPR", ID: 1792283305, Scope: "threads:autonomy"},                     // main.App.WorkflowCreateItemPR
+	{Name: "WorkflowDeleteAutomation", ID: 1133480652, Scope: "threads:autonomy"},                 // main.App.WorkflowDeleteAutomation
+	{Name: "WorkflowDiscardItem", ID: 2163033761, Scope: "threads:autonomy"},                      // main.App.WorkflowDiscardItem
+	{Name: "WorkflowDiscardPreview", ID: 2659721862, Scope: "git:operate"},                        // main.App.WorkflowDiscardPreview
+	{Name: "WorkflowDiscussPR", ID: 1236472344, Scope: "threads:autonomy"},                        // main.App.WorkflowDiscussPR
+	{Name: "WorkflowDropUnit", ID: 1005356607, Scope: "threads:autonomy"},                         // main.App.WorkflowDropUnit
+	{Name: "WorkflowFetchPRReviewComments", ID: 819019128, Scope: "threads:autonomy"},             // main.App.WorkflowFetchPRReviewComments
+	{Name: "WorkflowGetEngineState", ID: 2130001947, Scope: "threads:read"},                       // main.App.WorkflowGetEngineState
+	{Name: "WorkflowGetItem", ID: 70120675, Scope: "threads:read"},                                // main.App.WorkflowGetItem
+	{Name: "WorkflowGetJobNotes", ID: 3798011060, Scope: "threads:read"},                          // main.App.WorkflowGetJobNotes
+	{Name: "WorkflowGetRunMap", ID: 4156752389, Scope: "threads:read"},                            // main.App.WorkflowGetRunMap
+	{Name: "WorkflowListAutomations", ID: 2319799628, Scope: "threads:read"},                      // main.App.WorkflowListAutomations
+	{Name: "WorkflowListDefinitions", ID: 2064216126, Scope: "threads:read"},                      // main.App.WorkflowListDefinitions
+	{Name: "WorkflowListItemCosts", ID: 1544440599, Scope: "threads:read"},                        // main.App.WorkflowListItemCosts
+	{Name: "WorkflowListItems", ID: 3037887964, Scope: "threads:read"},                            // main.App.WorkflowListItems
+	{Name: "WorkflowListUnresolvedItems", ID: 3613211765, Scope: "threads:read"},                  // main.App.WorkflowListUnresolvedItems
+	{Name: "WorkflowMergeItem", ID: 3006532931, Scope: "threads:autonomy"},                        // main.App.WorkflowMergeItem
+	{Name: "WorkflowPauseItem", ID: 3764767257, Scope: "threads:autonomy"},                        // main.App.WorkflowPauseItem
+	{Name: "WorkflowRequestSoftStop", ID: 2570221545, Scope: "threads:autonomy"},                  // main.App.WorkflowRequestSoftStop
+	{Name: "WorkflowRerunItem", ID: 1986594501, Scope: "threads:autonomy"},                        // main.App.WorkflowRerunItem
+	{Name: "WorkflowResolveGate", ID: 3348479803, Scope: "threads:autonomy"},                      // main.App.WorkflowResolveGate
+	{Name: "WorkflowResumeItem", ID: 3138507556, Scope: "threads:autonomy"},                       // main.App.WorkflowResumeItem
+	{Name: "WorkflowRetryFailedUnits", ID: 2846965054, Scope: "threads:autonomy"},                 // main.App.WorkflowRetryFailedUnits
+	{Name: "WorkflowRetryUnit", ID: 1648002260, Scope: "threads:autonomy"},                        // main.App.WorkflowRetryUnit
+	{Name: "WorkflowRunAutomationNow", ID: 2615697354, Scope: "threads:autonomy"},                 // main.App.WorkflowRunAutomationNow
+	{Name: "WorkflowScheduleResume", ID: 658224978, Scope: "threads:autonomy"},                    // main.App.WorkflowScheduleResume
+	{Name: "WorkflowSendPRReviewCommentsToThread", ID: 1172404443, Scope: "threads:autonomy"},     // main.App.WorkflowSendPRReviewCommentsToThread
+	{Name: "WorkflowSetAutomationEnabled", ID: 642610548, Scope: "threads:autonomy"},              // main.App.WorkflowSetAutomationEnabled
+	{Name: "WorkflowSetGlobalPause", ID: 774492663, Scope: "threads:autonomy"},                    // main.App.WorkflowSetGlobalPause
+	{Name: "WorkflowSetJobNotes", ID: 1934298592, Scope: "threads:autonomy"},                      // main.App.WorkflowSetJobNotes
+	{Name: "WorkflowStartRun", ID: 1009082601, Scope: "threads:autonomy"},                         // main.App.WorkflowStartRun
+	{Name: "WorkflowTakeOverUnit", ID: 1931942299, Scope: "threads:autonomy"},                     // main.App.WorkflowTakeOverUnit
+	{Name: "WorkflowUnbindThread", ID: 2006703348, Scope: "threads:autonomy"},                     // main.App.WorkflowUnbindThread
+	{Name: "WorkflowUpdateAutomation", ID: 536579134, Scope: "threads:autonomy"},                  // main.App.WorkflowUpdateAutomation
+	{Name: "WriteTerminal", ID: 146795716, Scope: "terminal:operate"},                             // main.App.WriteTerminal
+	{Name: "WriteThreadWorkspaceFile", ID: 3895036895, Scope: "git:operate"},                      // main.App.WriteThreadWorkspaceFile
 }
 
 // NewMethodAllowList returns a name set suitable for

@@ -54,6 +54,8 @@ type BranchPruneResult struct {
 //
 // Same locking rationale as GitMaybeFetchRemotes — fetch touches
 // refs/remotes/* only; classification is read-only.
+//
+//ao:scope threads:operate
 func (a *App) GitListBranchPruneCandidates(threadID string) (BranchPruneCandidates, error) {
 	result, err := a.gitApplication().ListBranchPruneCandidates(threadID)
 	if err != nil {
@@ -74,6 +76,8 @@ func (a *App) GitListBranchPruneCandidates(threadID string) (BranchPruneCandidat
 // force-delete work the user did not see. No thread lock is needed: git
 // itself refuses to delete any checked-out branch, and every other
 // precondition is enforced by the fresh candidate check at delete time.
+//
+//ao:scope threads:operate
 func (a *App) GitPruneBranches(threadID string, selections []BranchPruneSelection) (BranchPruneResult, error) {
 	projected := make([]gitapp.BranchPruneSelection, len(selections))
 	for index := range selections {

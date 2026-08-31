@@ -107,6 +107,8 @@ type UserMessageRevertedEvent struct {
 // predicates are intentionally independent — the frontend checks
 // composer draft + queue + pane items; the backend checks SQLite +
 // flush queue. Both must agree for revert to succeed.
+//
+//ao:scope threads:operate
 func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResult, error) {
 	if a.shuttingDown.Load() {
 		return InterruptAndRevertResult{}, ErrShuttingDown

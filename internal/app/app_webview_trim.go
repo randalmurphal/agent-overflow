@@ -58,6 +58,8 @@ type webviewTrimDirective struct {
 // "requested", "skipped-active-turn", "skipped-recent", or
 // "skipped-no-activity" — so the caller can log without a second RPC.
 // LocalOnly (internal/transport/internalmethods.go).
+//
+//ao:scope host
 func (a *App) RequestWebviewMemoryTrim(inputSinceLastTrim bool) (string, error) {
 	if a.hasActiveProviderTurn() {
 		return "skipped-active-turn", nil

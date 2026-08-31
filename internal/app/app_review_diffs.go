@@ -23,6 +23,8 @@ import (
 //
 // ignoreWhitespace is the review pane's "hide whitespace changes"
 // toggle (`-w`); see gitdiff.Options.
+//
+//ao:scope files:read
 func (a *App) GetWorkspaceCurrentDiff(threadID string, ignoreWhitespace bool) (string, error) {
 	const action = "get workspace current diff"
 	thread, err := a.store.GetThread(threadID)
@@ -48,6 +50,8 @@ func (a *App) GetWorkspaceCurrentDiff(threadID string, ignoreWhitespace bool) (s
 // (committed work since merge-base plus uncommitted changes) against the
 // merge base of baseBranch and the workspace HEAD — i.e. what a PR onto
 // baseBranch would contain.
+//
+//ao:scope files:read
 func (a *App) GetBranchBaseDiff(threadID string, baseBranch string, ignoreWhitespace bool) (string, error) {
 	const action = "get branch base diff"
 	if strings.TrimSpace(baseBranch) == "" {
@@ -79,6 +83,8 @@ type BranchCommit = gitdiff.Commit
 // ListBranchCommits returns the commits a PR from the workspace HEAD
 // onto baseBranch would carry (`base..HEAD`, newest first). Empty for
 // non-git workspaces.
+//
+//ao:scope git:operate
 func (a *App) ListBranchCommits(threadID string, baseBranch string) ([]BranchCommit, error) {
 	const action = "list branch commits"
 	if strings.TrimSpace(baseBranch) == "" {
@@ -110,6 +116,8 @@ const recentCommitLimit = 100
 // `git log` from HEAD, newest first) — the same source codex's own
 // review picker uses, so a thread on the default branch still gets a
 // list. Empty for non-git workspaces.
+//
+//ao:scope git:operate
 func (a *App) ListRecentCommits(threadID string) ([]BranchCommit, error) {
 	const action = "list recent commits"
 	thread, err := a.store.GetThread(threadID)
@@ -132,6 +140,8 @@ func (a *App) ListRecentCommits(threadID string) ([]BranchCommit, error) {
 
 // GetCommitDiff returns the unified patch a single local commit
 // introduced (first-parent diff; empty-tree diff for a root commit).
+//
+//ao:scope files:read
 func (a *App) GetCommitDiff(threadID string, sha string, ignoreWhitespace bool) (string, error) {
 	const action = "get commit diff"
 	thread, err := a.store.GetThread(threadID)
@@ -201,6 +211,8 @@ const maxDiffContextLines = 1000
 // GetDiffContextLines returns new-side source lines for review-diff
 // hunk-gap expansion. Same wire-exposure class as the diff getters:
 // classified LocalOnlyMethods.
+//
+//ao:scope files:read
 func (a *App) GetDiffContextLines(threadID string, req DiffContextRequest) (DiffContextResult, error) {
 	const action = "get diff context lines"
 	if a.shuttingDown.Load() {
@@ -277,6 +289,8 @@ const maxVerifyEditDiffFiles = 200
 // Same wire-exposure class as GetDiffContextLines: classified
 // LocalOnlyMethods; remote clients' rejection leaves every path
 // unexpandable, which is exactly what their clicks would find.
+//
+//ao:scope files:read
 func (a *App) VerifyEditDiffs(threadID string, req VerifyEditDiffsRequest) (VerifyEditDiffsResult, error) {
 	const action = "verify edit diffs"
 	if a.shuttingDown.Load() {

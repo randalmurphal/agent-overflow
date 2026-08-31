@@ -20,6 +20,8 @@ func (a *App) keybindingsService() (*keybindings.Service, error) {
 // path). An unreadable user file is not an error here — it is a field
 // of the result the frontend renders, so the bindings survive the
 // report; see keybindings.LoadResult.
+//
+//ao:scope settings:write
 func (a *App) GetKeybindings() (keybindings.LoadResult, error) {
 	svc, err := a.keybindingsService()
 	if err != nil {
@@ -31,6 +33,8 @@ func (a *App) GetKeybindings() (keybindings.LoadResult, error) {
 // UpdateKeybindings replaces the user keybindings file with the
 // caller's config. See keybindings.Service.Update for the validation
 // + cap contract.
+//
+//ao:scope settings:write
 func (a *App) UpdateKeybindings(bindings []keybindings.Keybinding) error {
 	svc, err := a.keybindingsService()
 	if err != nil {
@@ -41,6 +45,8 @@ func (a *App) UpdateKeybindings(bindings []keybindings.Keybinding) error {
 
 // ResetKeybindings deletes the user file so GetKeybindings returns
 // defaults.
+//
+//ao:scope settings:write
 func (a *App) ResetKeybindings() error {
 	svc, err := a.keybindingsService()
 	if err != nil {

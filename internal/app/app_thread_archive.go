@@ -42,6 +42,8 @@ import (
 // server-side — it called StopSession, swallowed any failure, and
 // archived anyway. Moving it here is what makes the stop true for every
 // client instead of only the one that remembers to ask.
+//
+//ao:scope threads:operate
 func (a *App) ArchiveThread(id string) error {
 	// Stamped BEFORE the lock, because waiting for the lock is exactly
 	// the window in which this archive can go stale: a send already
@@ -79,6 +81,8 @@ func (a *App) ArchiveThread(id string) error {
 // point. An unarchive can no longer land between an archive's row flip
 // and its session close, which is the one ordering that would leave a
 // visibly-active thread with a session dying underneath it.
+//
+//ao:scope threads:operate
 func (a *App) UnarchiveThread(id string) (store.Thread, error) {
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()

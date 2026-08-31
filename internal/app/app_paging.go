@@ -48,6 +48,8 @@ const (
 // ListRecentThreadItems loads a broad recent tail window. Active chat panes
 // use ListThreadSliceAround for bounded switch/refresh loads; this method is
 // retained for legacy callers and any future full-tail refresh surfaces.
+//
+//ao:scope threads:read
 func (a *App) ListRecentThreadItems(threadID string, turnLimit int, inlinePreviews bool) (store.PagedItems, error) {
 	if turnLimit <= 0 {
 		turnLimit = initialTurnWindow
@@ -85,6 +87,8 @@ func (a *App) ListRecentThreadItems(threadID string, turnLimit int, inlinePrevie
 // anchor's item coordinate. When `anchorItemID` is "" or no longer exists,
 // the function returns the tail `targetItemCount` items — the bottom-snapshot
 // restore case.
+//
+//ao:scope threads:read
 func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int, inlinePreviews bool) (store.PagedItems, error) {
 	paged, err := a.store.ListThreadSliceAround(threadID, anchorItemID, clampSliceItemBudget(targetItemCount))
 	if err != nil {
@@ -95,7 +99,7 @@ func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCou
 
 // clampSliceItemBudget normalizes a caller-supplied slice-window budget:
 // non-positive takes the pane default, and anything larger than
-// maxWindowItems is capped so a malicious LAN-attached caller can't
+// maxWindowItems is capped so an unintended LAN-attached caller can't
 // request a slice covering the whole thread and OOM the process. Active
 // panes stay on this bounded slice surface and page older/newer history
 // explicitly. Shared by ListThreadSliceAround and SyncThreadWindow, which
@@ -117,6 +121,8 @@ func clampSliceItemBudget(targetItemCount int) int {
 // NEGATIVE indexes, so index 0 is not the start of a turn — keeping the load
 // strictly below that turn with a hard primary-row budget (mirror of
 // ListItemsAfterTurn's MaxInt ceiling).
+//
+//ao:scope threads:read
 func (a *App) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget int, inlinePreviews bool) (store.PagedItems, error) {
 	if itemBudget <= 0 {
 		itemBudget = paginationItems
@@ -139,6 +145,8 @@ func (a *App) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget i
 // ListItemsAfterCursor so long single turns remain item-bounded. The synthetic
 // cursor points at the end of afterTurnIndex, so rows strictly above that turn
 // are loaded with a hard primary-row budget.
+//
+//ao:scope threads:read
 func (a *App) ListItemsAfterTurn(threadID string, afterTurnIndex, itemBudget int, inlinePreviews bool) (store.PagedItems, error) {
 	if itemBudget <= 0 {
 		itemBudget = paginationItems
@@ -168,6 +176,8 @@ func (a *App) ListItemsAfterTurn(threadID string, afterTurnIndex, itemBudget int
 // frontend's current item-coordinate window floor. The item budget is a hard
 // primary-row cap; render-support ancestors can be stitched in above it, but
 // same-turn rows outside the cursor range stay omitted until explicitly paged.
+//
+//ao:scope threads:read
 func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor, itemBudget int, inlinePreviews bool) (store.PagedItems, error) {
 	if itemBudget <= 0 {
 		itemBudget = paginationItems
@@ -185,6 +195,8 @@ func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor
 // ListItemsAfterCursor loads newer items on demand, strictly after the
 // frontend's current item-coordinate window ceiling. It is the forward pager
 // companion to ListItemsBeforeCursor.
+//
+//ao:scope threads:read
 func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, itemBudget int, inlinePreviews bool) (store.PagedItems, error) {
 	if itemBudget <= 0 {
 		itemBudget = paginationItems
@@ -205,8 +217,10 @@ func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, 
 // internal/store/paging.go topLevelItemsFilter); this is the expansion
 // path that hydrates them. The result is every visible transitive
 // descendant in timeline order, capped store-side at the same scale as
-// maxWindowItems (newest rows win) so a malicious LAN-attached caller
+// maxWindowItems (newest rows win) so an unintended LAN-attached caller
 // can't stream an unbounded subtree per call.
+//
+//ao:scope threads:read
 func (a *App) ListSubagentDescendants(threadID, rootItemID string, inlinePreviews bool) ([]store.Item, error) {
 	items, err := a.store.ListSubagentDescendants(threadID, rootItemID)
 	if err != nil {
@@ -218,6 +232,8 @@ func (a *App) ListSubagentDescendants(threadID, rootItemID string, inlinePreview
 // ListThreadProposedPlans returns the current proposed-plan item for a thread,
 // outside the timeline window. It keeps the historical slice return shape for
 // binding compatibility, but callers should treat it as 0-or-1 items.
+//
+//ao:scope threads:read
 func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
 	items, err := a.store.ListThreadProposedPlans(threadID)
 	if err != nil {
@@ -242,6 +258,8 @@ func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
 // unified-exec tasks that intentionally do not exist in chat history.
 // Pending Codex unifiedExec launches surface here before they are known
 // to be backgrounded.
+//
+//ao:scope threads:read
 func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 	now := time.Now().UnixMilli()
 	cutoff := now - backgroundTaskRetentionMillis
@@ -271,6 +289,8 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 // baseline, covering the WHOLE thread rather than the loaded window.
 // Wire-only context injections are excluded. A few bytes per row, read
 // once per thread switch.
+//
+//ao:scope threads:read
 func (a *App) GetThreadUserMessageTicks(threadID string) ([]store.UserMessageTick, error) {
 	ticks, err := a.store.ListThreadUserMessageTicks(threadID)
 	if err != nil {
@@ -294,6 +314,8 @@ const (
 // ArrowUp history-recall baseline, which the frontend merges with the
 // loaded window's live rows and the pending send queue. Wire-only
 // context injections and subagent child prompts are excluded.
+//
+//ao:scope threads:read
 func (a *App) GetThreadUserMessageHistory(threadID string, limit int) ([]store.UserMessageHistoryEntry, error) {
 	if limit <= 0 {
 		limit = userMessageHistoryDefaultLimit
@@ -314,6 +336,8 @@ func (a *App) GetThreadUserMessageHistory(threadID string, limit int) ([]store.U
 // the wire. Returns the zero preview when the item is not a
 // reader-authored user message on this thread — callers check
 // userText != "".
+//
+//ao:scope threads:read
 func (a *App) GetThreadTurnPreview(threadID, itemID string) (store.TurnPreview, error) {
 	preview, found, err := a.store.ThreadTurnPreview(threadID, itemID)
 	if err != nil {
@@ -330,6 +354,8 @@ func (a *App) GetThreadTurnPreview(threadID, itemID string) (store.TurnPreview, 
 // via id enumeration. Used by the frontend's scroll-to-item flow to
 // discover an out-of-window item's turn_index before loading back.
 // Returns the zero Item when no row matches — callers check ID != "".
+//
+//ao:scope threads:read
 func (a *App) GetThreadItem(threadID, itemID string) (store.Item, error) {
 	item, found, err := a.store.GetThreadItem(threadID, itemID)
 	if err != nil {
@@ -371,6 +397,8 @@ type ItemProjectionSource struct {
 // unrecoverable, which is exactly the failure remote-access.md §14 names
 // (a promised on-demand endpoint that never arrived turns an accepted
 // temporary loss into a permanent one).
+//
+//ao:scope threads:read
 func (a *App) GetThreadItemProjectionSource(threadID, itemID string) (ItemProjectionSource, error) {
 	item, found, err := a.store.GetThreadItem(threadID, itemID)
 	if err != nil {
@@ -396,6 +424,8 @@ func (a *App) GetThreadItemProjectionSource(threadID, itemID string) (ItemProjec
 // historical, not live. Only a fresh `provider:turn_started` push can set
 // `pane.activeTurn`. See docs/architecture/invariants.md #22 and
 // docs/architecture/turn-lifecycle.md §Frontend state shape.
+//
+//ao:scope threads:read
 func (a *App) ListRecentTurns(threadID string, limit int) ([]store.Turn, error) {
 	return a.store.ListRecentTurns(threadID, limit)
 }

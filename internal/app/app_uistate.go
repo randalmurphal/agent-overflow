@@ -165,6 +165,8 @@ func (a *App) uiStateScope(ctx context.Context) (string, error) {
 
 // GetUIState returns the calling connection's full persisted UI-state
 // bucket. A fresh client gets an empty map — defaults, not an error.
+//
+//ao:scope settings:write
 func (a *App) GetUIState(ctx context.Context) (map[string]string, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("ui state: store unavailable")
@@ -177,6 +179,8 @@ func (a *App) GetUIState(ctx context.Context) (map[string]string, error) {
 }
 
 // SetUIState batch-upserts entries into the calling connection's bucket.
+//
+//ao:scope settings:write
 func (a *App) SetUIState(ctx context.Context, entries map[string]string) error {
 	if a.store == nil {
 		return fmt.Errorf("ui state: store unavailable")
@@ -264,6 +268,8 @@ func migrateUIStateFromSettings(configDir string, st *store.Store) {
 
 // DeleteUIState removes keys from the calling connection's bucket.
 // Missing keys are a no-op.
+//
+//ao:scope settings:write
 func (a *App) DeleteUIState(ctx context.Context, keys []string) error {
 	if a.store == nil {
 		return fmt.Errorf("ui state: store unavailable")

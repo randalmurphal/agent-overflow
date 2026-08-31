@@ -31,6 +31,7 @@ type ContextSettingsUpdate struct {
 	AutoCompactExtendedPercent int    `json:"autoCompactExtendedPercent"`
 }
 
+//ao:scope settings:write
 func (a *App) GetContextSettings(providerName, model string) (ContextSettingsProfile, error) {
 	if a.store == nil {
 		return ContextSettingsProfile{}, fmt.Errorf("context settings: store unavailable")
@@ -67,6 +68,7 @@ func (a *App) GetContextSettings(providerName, model string) (ContextSettingsPro
 	}, nil
 }
 
+//ao:scope settings:write
 func (a *App) UpdateContextSettingsProfile(update ContextSettingsUpdate) (ContextSettingsProfile, error) {
 	if a.store == nil {
 		return ContextSettingsProfile{}, fmt.Errorf("update context settings profile: store unavailable")
@@ -92,6 +94,7 @@ func (a *App) UpdateContextSettingsProfile(update ContextSettingsUpdate) (Contex
 	return a.GetContextSettings(providerName, model)
 }
 
+//ao:scope threads:operate
 func (a *App) UpdateThreadContextSettings(threadID string, update ContextSettingsUpdate) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update thread context settings: store unavailable")

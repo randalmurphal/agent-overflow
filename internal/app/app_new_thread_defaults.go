@@ -30,6 +30,8 @@ type NewThreadDefaultsUpdate struct {
 // UpdateNewThreadDefaults updates the provider/model profile used to seed
 // future draft placeholders and newly-created threads. It intentionally does
 // not mutate any existing thread row.
+//
+//ao:scope threads:operate
 func (a *App) UpdateNewThreadDefaults(update NewThreadDefaultsUpdate) (ThreadDefaults, error) {
 	if a.store == nil {
 		return ThreadDefaults{}, fmt.Errorf("update new thread defaults: store unavailable")

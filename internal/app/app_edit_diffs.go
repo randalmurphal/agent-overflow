@@ -53,6 +53,8 @@ const maxTurnEditsDiffBytes = 10 * 1024 * 1024
 
 // ListThreadEditDiffs lists a thread's edit tool calls for the review
 // pane's Edits scope, grouped client-side by turn via TurnLabels.
+//
+//ao:scope threads:read
 func (a *App) ListThreadEditDiffs(threadID string) (EditDiffList, error) {
 	const action = "list thread edit diffs"
 	if _, err := a.store.GetThread(threadID); err != nil {
@@ -142,6 +144,8 @@ type TurnEditsDiff struct {
 // order — the sequential story of what the turn changed. Nothing is
 // merged: a file edited twice appears as two patch sections, each with
 // the line numbers of its own moment.
+//
+//ao:scope threads:read
 func (a *App) GetTurnEditsDiff(threadID string, turnIndex int) (TurnEditsDiff, error) {
 	const action = "get turn edits diff"
 	if _, err := a.store.GetThread(threadID); err != nil {

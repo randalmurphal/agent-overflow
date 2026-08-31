@@ -85,6 +85,8 @@ type RevertAndResendOptions struct {
 // lock this saga holds across the whole sequence. Rather than reach
 // half of the takeover machinery from inside the lock, an unguarded
 // call fails loudly.
+//
+//ao:scope threads:operate
 func (a *App) RevertConversationAndResendMessage(
 	threadID string,
 	userItemID string,

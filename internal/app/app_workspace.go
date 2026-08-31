@@ -10,6 +10,8 @@ import (
 
 // WriteThreadWorkspaceFile writes content to a path relative to the thread's
 // active workspace and returns the normalized relative path.
+//
+//ao:scope git:operate
 func (a *App) WriteThreadWorkspaceFile(threadID, relativePath, content string) (string, error) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {

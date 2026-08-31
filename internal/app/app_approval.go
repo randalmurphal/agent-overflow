@@ -50,6 +50,8 @@ func (a *App) releaseInteractiveClaim(threadID, requestID string) {
 // ListPendingInteractiveRequests returns live approval and structured-input
 // prompts for a thread so a pane that missed the original event can hydrate
 // its composer controls.
+//
+//ao:scope approvals:respond
 func (a *App) ListPendingInteractiveRequests(threadID string) (provider.PendingInteractiveRequests, error) {
 	snapshot := provider.PendingInteractiveRequests{
 		Approvals:  []provider.ApprovalRequest{},
@@ -72,6 +74,8 @@ func (a *App) ListPendingInteractiveRequests(threadID string) (provider.PendingI
 // failure event, because nothing failed — the question was answered without
 // them, which is the state they wanted. Forwarding both answers would send
 // the provider a second response for a request it has already resolved.
+//
+//ao:scope approvals:respond
 func (a *App) RespondToApproval(threadID string, response provider.ApprovalResponse) error {
 	if a.triage != nil && !a.triage.ClaimApprovalResponse(threadID, response.RequestID) {
 		return fmt.Errorf("approval %s: %w", response.RequestID, transport.ErrAlreadyHandled)
@@ -123,6 +127,8 @@ func (a *App) RespondToApproval(threadID string, response provider.ApprovalRespo
 // Arbitrated the same way as RespondToApproval: a form two screens can both
 // submit is answered once, and the second submitter is told it arrived second
 // rather than handed a failure.
+//
+//ao:scope approvals:respond
 func (a *App) RespondToUserInput(threadID string, response provider.UserInputResponse) error {
 	if a.triage != nil && !a.triage.ClaimUserInputResponse(threadID, response.RequestID) {
 		return fmt.Errorf("user input %s: %w", response.RequestID, transport.ErrAlreadyHandled)

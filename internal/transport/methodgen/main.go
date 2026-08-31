@@ -15,6 +15,14 @@
 //     the committed file. Drift fails CI so a developer who adds an
 //     App method without regenerating gets a fast signal.
 //
+// Every collected method must carry a `//ao:scope <name>` directive in
+// its doc comment, in the same comment-directive form as
+// //wails:ignore, naming a scope internal/transport/scopes.go declares;
+// an optional `//ao:stepup` line marks the calls that re-key the system
+// (docs/specs/remote-access.md §4, §5). A method with no scope, or one
+// naming a scope nobody declared, fails the run with every offending
+// name listed — the completeness gate is the generator, not a test.
+//
 // Method-name -> FNV-1a-32 ID map matches Wails' internal/hash.Fnv
 // (verified at v3.0.0-alpha.76 against the generated frontend bindings:
 // fnvHash("main.App.ArchiveProject") == 1352159878).
@@ -148,11 +156,76 @@ func loadInternalSkipList(root string) (map[string]bool, error) {
 	return internalServiceMethods, nil
 }
 
+// scopesPath is the scope vocabulary's source file. Named once for the
+// same reason internalMethodsPath is: the input manifest and the parser
+// must never point at different files.
+func scopesPath(root string) string {
+	return filepath.Join(root, "internal/transport/scopes.go")
+}
+
+// loadScopeVocabulary parses internal/transport/scopes.go for the
+// `Scope` constant block and returns the declared spellings.
+//
+// Parsed rather than restated. This tool cannot import the package it
+// generates into — a broken methods_gen.go would then stop the very run
+// that fixes it — so the alternative to reading the source is a third
+// copy of the vocabulary, which is one more place for a typo to hide.
+// An empty result is fatal: a vocabulary nobody declared would refuse
+// every annotation in the tree.
+func loadScopeVocabulary(root string) (map[string]bool, error) {
+	target := scopesPath(root)
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, target, nil, parser.ParseComments)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", target, err)
+	}
+	scopes := map[string]bool{}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		// A grouped const carries its type forward when a spec omits
+		// it, so track the last one seen rather than reading each spec
+		// in isolation.
+		var groupType string
+		for _, spec := range gen.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			if ident, ok := vs.Type.(*ast.Ident); ok {
+				groupType = ident.Name
+			}
+			if groupType != "Scope" {
+				continue
+			}
+			for _, value := range vs.Values {
+				lit, ok := value.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				name, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					continue
+				}
+				scopes[name] = true
+			}
+		}
+	}
+	if len(scopes) == 0 {
+		return nil, fmt.Errorf("no Scope constants found in %s", target)
+	}
+	return scopes, nil
+}
+
 // MethodEntry is one row in the generated map.
 type MethodEntry struct {
-	Name string
-	ID   uint32
-	FQN  string
+	Name   string
+	ID     uint32
+	FQN    string
+	Scope  string
+	StepUp bool
 }
 
 func main() {
@@ -169,7 +242,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	entries, err := scanReceivers(root, receiverSpecs, skip)
+	scopes, err := loadScopeVocabulary(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "methodgen: %v\n", err)
+		os.Exit(1)
+	}
+
+	entries, err := scanReceivers(root, receiverSpecs, skip, scopes)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "methodgen: %v\n", err)
 		os.Exit(1)
@@ -223,7 +302,7 @@ func main() {
 // a full six-gate run (2026-08-30). The gate reads this manifest's files
 // so the cache key covers what the generator actually parsed.
 func writeInputManifest(root string, specs []receiverSpec, target string) error {
-	paths := []string{internalMethodsPath(root)}
+	paths := []string{internalMethodsPath(root), scopesPath(root)}
 	for _, spec := range specs {
 		// The DIRECTORY as well as its files. Go's cache hashes a file by
 		// content but a directory by its entry list, and only the second
@@ -276,11 +355,19 @@ func specFiles(root string, spec receiverSpec) ([]string, error) {
 // falls back to name lookup when a frame carries no ID, and refuses a
 // duplicate at Register time (transport.Dispatcher.byName). Refuse it
 // here too, so a shadowing method fails codegen rather than boot.
-func scanReceivers(root string, specs []receiverSpec, skip map[string]bool) ([]MethodEntry, error) {
+//
+// Classification is mandatory and is enforced here rather than by a
+// test: an unannotated method is a method nobody decided about, and the
+// generator is the one gate that runs before the name reaches the wire
+// at all. Every offending name is collected and reported together, so
+// one run tells a developer everything they have to classify.
+func scanReceivers(root string, specs []receiverSpec, skip map[string]bool, scopes map[string]bool) ([]MethodEntry, error) {
 	fset := token.NewFileSet()
 	var entries []MethodEntry
 	// method name -> the FQN that claimed it, for the collision report.
 	claimed := map[string]string{}
+	// Annotation faults, collected across every spec and reported once.
+	var unannotated, undeclared []string
 
 	for _, spec := range specs {
 		paths, err := specFiles(root, spec)
@@ -327,18 +414,96 @@ func scanReceivers(root string, specs []receiverSpec, skip map[string]bool) ([]M
 				}
 				claimed[name] = fqn
 
+				scope, stepUp, err := methodAnnotations(fn.Doc)
+				if err != nil {
+					return nil, fmt.Errorf("%s (%s): %w", name, path, err)
+				}
+				switch {
+				case scope == "":
+					unannotated = append(unannotated, name)
+				case !scopes[scope]:
+					undeclared = append(undeclared, fmt.Sprintf("%s (//ao:scope %s)", name, scope))
+				}
+
 				entries = append(entries, MethodEntry{
-					Name: name,
-					ID:   fnvHash(fqn),
-					FQN:  fqn,
+					Name:   name,
+					ID:     fnvHash(fqn),
+					FQN:    fqn,
+					Scope:  scope,
+					StepUp: stepUp,
 				})
 			}
 		}
 	}
 
+	if len(unannotated) > 0 {
+		sort.Strings(unannotated)
+		return nil, fmt.Errorf("%d bound method(s) carry no //ao:scope annotation: %s\n"+
+			"Every bound method is also a wire RPC, so each one declares the capability it exercises. "+
+			"Add `//ao:scope <name>` to the doc comment, naming a scope internal/transport/scopes.go "+
+			"declares, plus `//ao:stepup` if the call re-keys the system "+
+			"(docs/specs/remote-access.md §5)", len(unannotated), strings.Join(unannotated, ", "))
+	}
+	if len(undeclared) > 0 {
+		sort.Strings(undeclared)
+		declared := make([]string, 0, len(scopes))
+		for name := range scopes {
+			declared = append(declared, name)
+		}
+		sort.Strings(declared)
+		return nil, fmt.Errorf("%d bound method(s) name an undeclared scope: %s\nDeclared scopes: %s",
+			len(undeclared), strings.Join(undeclared, ", "), strings.Join(declared, ", "))
+	}
+
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return entries, nil
 }
+
+// methodAnnotations reads the //ao: directives out of one method's doc
+// comment: the mandatory `//ao:scope <name>` and the optional
+// `//ao:stepup`.
+//
+// Comment directives rather than struct tags or a side table, for the
+// same reason //wails:ignore is one: the classification travels with the
+// method through a rename, a move between files, and a grep, and a
+// reviewer reading the method reads its authority in the same screen.
+//
+// An empty scope is returned as empty rather than as an error — the
+// caller collects every unannotated name and reports them together,
+// which is one useful failure instead of the first one alphabetically.
+// A malformed or repeated directive IS an error: it is a typo in a line
+// somebody wrote on purpose, and guessing which one they meant would
+// silently classify a method.
+func methodAnnotations(doc *ast.CommentGroup) (scope string, stepUp bool, err error) {
+	if doc == nil {
+		return "", false, nil
+	}
+	for _, c := range doc.List {
+		switch {
+		case c.Text == stepUpDirective:
+			stepUp = true
+		case strings.HasPrefix(c.Text, scopeDirective):
+			value := strings.TrimSpace(strings.TrimPrefix(c.Text, scopeDirective))
+			if value == "" {
+				return "", false, fmt.Errorf("%s directive names no scope", scopeDirective)
+			}
+			if scope != "" {
+				return "", false, fmt.Errorf("two %s directives (%q and %q); a method exercises one capability",
+					scopeDirective, scope, value)
+			}
+			scope = value
+		}
+	}
+	return scope, stepUp, nil
+}
+
+// The two directive spellings, named once so the parser and every error
+// message agree. gofmt strips trailing space, so the step-up line is an
+// exact match the way //wails:ignore is.
+const (
+	scopeDirective  = "//ao:scope"
+	stepUpDirective = "//ao:stepup"
+)
 
 // isPointerReceiver returns true when expr is "*<typeName>" — the
 // receiver form for production-bound methods. Pointer-only because
@@ -388,28 +553,42 @@ func renderFile(entries []MethodEntry) ([]byte, error) {
 // Run "go run ./internal/transport/methodgen" to regenerate.
 //
 // This file lists every exported (App).Method that the runtime
-// dispatcher exposes on the WebSocket transport. Methods marked
-// //wails:ignore in the App receiver source are intentionally
-// excluded so they remain unreachable from the wire — same set the
-// auto-generated TS bindings expose, just enforced at runtime.
+// dispatcher exposes on the WebSocket transport, with the capability
+// each one exercises. Methods marked //wails:ignore in the App receiver
+// source are intentionally excluded so they remain unreachable from the
+// wire — same set the auto-generated TS bindings expose, just enforced
+// at runtime.
 
 package transport
 
-// GeneratedMethod pairs a method name with its FNV-1a 32-bit hash.
-// The hash matches Wails' internal/hash.Fnv("main.App.<Name>") so the
-// frontend's $Call.ByID(<num>, ...args) routes correctly.
-type GeneratedMethod struct {
-	Name string
-	ID   uint32
+// MethodMeta is one row of the classification table: a method's wire
+// identity and the capability its source annotation declares.
+//
+// The ID is Wails' internal/hash.Fnv("main.App.<Name>"), so the
+// frontend's $Call.ByID(<num>, ...args) routes correctly. Scope and
+// StepUp come from the //ao:scope and //ao:stepup directives on the
+// method's doc comment; the generator refuses to emit a table with an
+// unannotated method in it, which is what makes every row below a
+// decision somebody made (docs/specs/remote-access.md §5).
+type MethodMeta struct {
+	Name   string
+	ID     uint32
+	Scope  Scope
+	StepUp bool
 }
 
 // GeneratedMethods is the static, sorted-by-name list of every method
 // the dispatcher should expose. Use NewMethodAllowList to build a
-// dispatcher allow-list from this set.
-var GeneratedMethods = []GeneratedMethod{
+// dispatcher allow-list from this set, and LocalOnlyMethods for the
+// reachability cut derived from the scopes.
+var GeneratedMethods = []MethodMeta{
 `)
 	for _, e := range entries {
-		fmt.Fprintf(&buf, "\t{Name: %q, ID: %d}, // %s\n", e.Name, e.ID, e.FQN)
+		fmt.Fprintf(&buf, "\t{Name: %q, ID: %d, Scope: %q", e.Name, e.ID, e.Scope)
+		if e.StepUp {
+			buf.WriteString(", StepUp: true")
+		}
+		fmt.Fprintf(&buf, "}, // %s\n", e.FQN)
 	}
 	buf.WriteString(`}
 

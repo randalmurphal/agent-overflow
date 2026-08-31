@@ -23,6 +23,7 @@ type PRCIJobLogResult struct {
 	TotalBytes int  `json:"totalBytes"`
 }
 
+//ao:scope git:operate
 func (a *App) GetPRCIJobs(pr gitops.PRReference) (gitops.CIPipeline, error) {
 	if a.shuttingDown.Load() {
 		return gitops.CIPipeline{}, ErrShuttingDown
@@ -33,6 +34,7 @@ func (a *App) GetPRCIJobs(pr gitops.PRReference) (gitops.CIPipeline, error) {
 	return a.gitCore().ListPRCIJobs("", pr)
 }
 
+//ao:scope git:operate
 func (a *App) GetPRCIJobLog(pr gitops.PRReference, jobID string) (PRCIJobLogResult, error) {
 	if a.shuttingDown.Load() {
 		return PRCIJobLogResult{}, ErrShuttingDown
@@ -55,6 +57,8 @@ func (a *App) GetPRCIJobLog(pr gitops.PRReference, jobID string) (PRCIJobLogResu
 // SavePRCIJobLog fetches the full job log and writes it under the
 // app-managed ci-logs directory, returning the absolute path. The path
 // is stable per (pr, job), so a re-save refreshes the same file.
+//
+//ao:scope git:operate
 func (a *App) SavePRCIJobLog(pr gitops.PRReference, jobID, jobName string) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown

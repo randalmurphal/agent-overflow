@@ -162,6 +162,7 @@ func prUpdateKey(pr gitops.PRReference) string {
 	return fmt.Sprintf("%s:%s:%d", pr.Forge, pr.Project(), pr.Number)
 }
 
+//ao:scope git:operate
 func (a *App) GetPRDetail(pr gitops.PRReference) (gitops.PRDetail, error) {
 	if a.shuttingDown.Load() {
 		return gitops.PRDetail{}, ErrShuttingDown
@@ -172,6 +173,7 @@ func (a *App) GetPRDetail(pr gitops.PRReference) (gitops.PRDetail, error) {
 	return a.gitCore().GetPRDetail("", pr)
 }
 
+//ao:scope git:operate
 func (a *App) GetPRDiff(threadID string, pr gitops.PRReference, baseRef string) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
@@ -228,6 +230,8 @@ func (a *App) localPRDiff(threadID string, pr gitops.PRReference, baseRef string
 // and that commit plus the base branch are present locally, the fetch
 // round-trips are skipped. Empty, unknown, or not-yet-fetched values
 // fall back to a full fetch.
+//
+//ao:scope git:operate
 func (a *App) ListPRCommits(threadID string, pr gitops.PRReference, baseRef, headSHA string) ([]BranchCommit, error) {
 	if a.shuttingDown.Load() {
 		return nil, ErrShuttingDown
@@ -265,6 +269,8 @@ func (a *App) ListPRCommits(threadID string, pr gitops.PRReference, baseRef, hea
 // introduced (first-parent diff), read from the thread's local clone.
 // Requires a clone — the selector that feeds it only renders when
 // ListPRCommits found one.
+//
+//ao:scope git:operate
 func (a *App) GetPRCommitDiff(threadID string, pr gitops.PRReference, sha string, ignoreWhitespace bool) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
@@ -315,6 +321,7 @@ func (a *App) fetchPRHeadAndBase(workspace string, pr gitops.PRReference, baseRe
 	return headOID, nil
 }
 
+//ao:scope git:operate
 func (a *App) ListPRReviewThreads(pr gitops.PRReference) ([]gitops.ReviewThread, error) {
 	if a.shuttingDown.Load() {
 		return nil, ErrShuttingDown
@@ -351,6 +358,7 @@ func mapSubmitPRReviewResult(result gitops.SubmitReviewResult, err error) (Submi
 	return SubmitPRReviewResult{}, err
 }
 
+//ao:scope git:operate
 func (a *App) SubmitPRReview(pr gitops.PRReference, review gitops.SubmitReviewRequest) (SubmitPRReviewResult, error) {
 	if a.shuttingDown.Load() {
 		return SubmitPRReviewResult{}, ErrShuttingDown
@@ -362,6 +370,7 @@ func (a *App) SubmitPRReview(pr gitops.PRReference, review gitops.SubmitReviewRe
 	return mapSubmitPRReviewResult(result, err)
 }
 
+//ao:scope git:operate
 func (a *App) ReplyToPRThread(pr gitops.PRReference, threadID string, databaseID int64, body string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
@@ -389,6 +398,8 @@ func (a *App) ReplyToPRThread(pr gitops.PRReference, threadID string, databaseID
 // one snapshot: the fetch happens only on the path that creates a pump, and
 // even there a pump that appeared concurrently wins and its snapshot is
 // what the caller gets.
+//
+//ao:scope git:operate
 func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PRUpdateSubscriptionResult, error) {
 	if a.shuttingDown.Load() {
 		return PRUpdateSubscriptionResult{}, ErrShuttingDown
@@ -556,6 +567,7 @@ func (a *App) takePRUpdateReferenceLocked(pump *prUpdatePump) prUpdateReference 
 	}
 }
 
+//ao:scope git:operate
 func (a *App) UnsubscribePRUpdates(subscriptionID string) error {
 	a.unsubscribePRUpdates(subscriptionID)
 	return nil
@@ -573,6 +585,8 @@ func (a *App) UnsubscribePRUpdates(subscriptionID string) error {
 //
 // An unknown id is a no-op, not an error: visibility flips race scope
 // switches and pane disposal, and losing that race is benign.
+//
+//ao:scope git:operate
 func (a *App) SetPRUpdatesActive(subscriptionID string, active bool) error {
 	a.prUpdates.mu.Lock()
 	handle, ok := a.prUpdates.handles[subscriptionID]

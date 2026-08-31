@@ -22,6 +22,8 @@ import (
 // the UI should label those buckets' CostUSD as a lower bound.
 // Not a LocalOnlyMethods entry: read-only aggregate data, safe for
 // remote clients.
+//
+//ao:scope threads:read
 func (a *App) GetUsageStats(query store.UsageQuery) ([]store.UsageBucket, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("usage stats: store unavailable")

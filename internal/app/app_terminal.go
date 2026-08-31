@@ -55,6 +55,8 @@ type TerminalReplay struct {
 
 // OpenTerminal starts a new PTY-backed terminal session bound to the given
 // thread.
+//
+//ao:scope terminal:operate
 func (a *App) OpenTerminal(threadID string, opts TerminalOpenOptions) (TerminalHandle, error) {
 	if a.terminals == nil {
 		return TerminalHandle{}, fmt.Errorf("terminal manager not initialized")
@@ -79,6 +81,8 @@ func (a *App) OpenTerminal(threadID string, opts TerminalOpenOptions) (TerminalH
 // payload is base64 rather than a raw string so that non-UTF-8 byte
 // sequences (control codes, mouse events, binary heredocs) round-trip
 // losslessly from the frontend.
+//
+//ao:scope terminal:operate
 func (a *App) WriteTerminal(terminalID string, dataB64 string) error {
 	if a.terminals == nil {
 		return fmt.Errorf("terminal manager not initialized")
@@ -91,6 +95,8 @@ func (a *App) WriteTerminal(terminalID string, dataB64 string) error {
 }
 
 // ResizeTerminal forwards a winsize change to the PTY.
+//
+//ao:scope terminal:operate
 func (a *App) ResizeTerminal(terminalID string, rows uint16, cols uint16) error {
 	if a.terminals == nil {
 		return fmt.Errorf("terminal manager not initialized")
@@ -102,6 +108,8 @@ func (a *App) ResizeTerminal(terminalID string, rows uint16, cols uint16) error 
 // nudging the PTY winsize and restoring it — the programmatic form of the manual
 // resize users do to clear a glitched provider TUI frame (e.g. Claude Code's Ink
 // renderer after a reflow desync). The visible grid size is unchanged.
+//
+//ao:scope terminal:operate
 func (a *App) RefreshTerminal(terminalID string) error {
 	if a.terminals == nil {
 		return fmt.Errorf("terminal manager not initialized")
@@ -110,6 +118,8 @@ func (a *App) RefreshTerminal(terminalID string) error {
 }
 
 // CloseTerminal kills the terminal's process group and removes the session.
+//
+//ao:scope terminal:operate
 func (a *App) CloseTerminal(terminalID string) error {
 	if a.terminals == nil {
 		return fmt.Errorf("terminal manager not initialized")
@@ -118,6 +128,8 @@ func (a *App) CloseTerminal(terminalID string) error {
 }
 
 // ListTerminals returns a summary per active terminal for the given thread.
+//
+//ao:scope terminal:operate
 func (a *App) ListTerminals(threadID string) ([]terminal.SessionSummary, error) {
 	if a.terminals == nil {
 		return nil, fmt.Errorf("terminal manager not initialized")
@@ -127,6 +139,8 @@ func (a *App) ListTerminals(threadID string) ([]terminal.SessionSummary, error) 
 
 // MoveThreadTerminals rekeys live terminal sessions from a placeholder thread
 // id to the materialized thread id without restarting their PTYs.
+//
+//ao:scope terminal:operate
 func (a *App) MoveThreadTerminals(fromThreadID, toThreadID string) ([]terminal.SessionSummary, error) {
 	if a.terminals == nil {
 		return nil, fmt.Errorf("terminal manager not initialized")
@@ -146,6 +160,8 @@ func (a *App) MoveThreadTerminals(fromThreadID, toThreadID string) ([]terminal.S
 // CloseThreadTerminals kills every live terminal session bound to a thread-like
 // key. Placeholder draft ids use this to tear down ephemeral drawer terminals
 // when their workspace context changes or the placeholder is replaced.
+//
+//ao:scope terminal:operate
 func (a *App) CloseThreadTerminals(threadID string) error {
 	if a.terminals == nil {
 		return fmt.Errorf("terminal manager not initialized")
@@ -162,6 +178,8 @@ func isDraftPlaceholderThreadID(threadID string) bool {
 
 // RestartTerminal kills the given terminal and spawns a fresh replacement
 // with the same configuration.
+//
+//ao:scope terminal:operate
 func (a *App) RestartTerminal(terminalID string) (TerminalHandle, error) {
 	if a.terminals == nil {
 		return TerminalHandle{}, fmt.Errorf("terminal manager not initialized")
@@ -180,6 +198,8 @@ func (a *App) RestartTerminal(terminalID string) (TerminalHandle, error) {
 // GetTerminalReplay returns the base64-encoded replay buffer plus a sequence
 // watermark. base64 keeps binary safety for non-UTF-8 bytes emitted by the
 // shell.
+//
+//ao:scope terminal:operate
 func (a *App) GetTerminalReplay(terminalID string) (TerminalReplay, error) {
 	if a.terminals == nil {
 		return TerminalReplay{}, fmt.Errorf("terminal manager not initialized")

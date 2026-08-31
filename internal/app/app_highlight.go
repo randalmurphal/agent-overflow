@@ -105,6 +105,8 @@ type HighlightResult struct {
 // HighlightClassNames returns the classId → semantic-name table
 // (index = class id, 0 = "none"). The frontend fetches it once at boot
 // and renders class id N as CSS class `syntax-<name>`. Wire-safe.
+//
+//ao:scope files:read
 func (a *App) HighlightClassNames() []string {
 	return highlight.ClassNames()
 }
@@ -114,12 +116,16 @@ func (a *App) HighlightClassNames() []string {
 // frontend fetches it once at boot and ignores stored spans stamped
 // with anything else — those fall back to the RPC path, which
 // recomputes under the current schema. Wire-safe.
+//
+//ao:scope files:read
 func (a *App) HighlightSchemaVersion() string {
 	return highlight.SchemaVersion()
 }
 
 // HighlightCode returns spans for raw source text. Wire-safe: pure
 // text-in/metadata-out, no local state touched.
+//
+//ao:scope files:read
 func (a *App) HighlightCode(req HighlightCodeRequest) (HighlightResult, error) {
 	res, err := a.highlightService().Code(req.Lang, req.Source)
 	return wireHighlightResult(res), err
@@ -129,6 +135,8 @@ func (a *App) HighlightCode(req HighlightCodeRequest) (HighlightResult, error) {
 // diff: result line i corresponds to patch line i, add/del spans cover
 // the prefix-stripped body, context spans include a 1-byte plain pad
 // for the kept leading space. Wire-safe.
+//
+//ao:scope files:read
 func (a *App) HighlightPatch(req HighlightPatchRequest) (HighlightResult, error) {
 	res, err := a.highlightService().Patch(req.Path, req.Patch)
 	return wireHighlightResult(res), err
@@ -142,6 +150,8 @@ func (a *App) HighlightPatch(req HighlightPatchRequest) (HighlightResult, error)
 // ref, no local clone), the unprimed result is returned instead of an
 // error. LocalOnlyMethods category 1: it reads workspace/ref file
 // content by path; remote clients use HighlightPatch.
+//
+//ao:scope files:read
 func (a *App) HighlightPatchWithContext(threadID string, req HighlightPatchContextRequest) (HighlightResult, error) {
 	res, err := a.highlightService().PatchWithContext(threadID, highlightapp.ContextRequest{
 		Scope: req.Scope, CommitSHA: req.CommitSHA, HeadSHA: req.HeadSHA,

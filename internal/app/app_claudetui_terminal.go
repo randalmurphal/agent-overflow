@@ -47,6 +47,8 @@ type ProviderTerminalOutputEvent struct {
 // for every chunk; the terminal ring keeps buffering for replay regardless, so
 // nothing is lost between attach and the frontend's first replay fetch (the
 // frontend dedupes overlap by the replay watermark).
+//
+//ao:scope terminal:operate
 func (a *App) ProviderTerminalAttach(threadID string) (ProviderTerminalHandle, error) {
 	sess, err := a.claudetuiSession(threadID)
 	if err != nil {
@@ -72,6 +74,8 @@ func (a *App) ProviderTerminalAttach(threadID string) (ProviderTerminalHandle, e
 
 // ProviderTerminalDetach stops output fan-out and releases the take-control
 // lease for the session's terminal. Called when a take-control pane closes.
+//
+//ao:scope terminal:operate
 func (a *App) ProviderTerminalDetach(threadID string) error {
 	sess, err := a.claudetuiSession(threadID)
 	if err != nil {
@@ -84,6 +88,8 @@ func (a *App) ProviderTerminalDetach(threadID string) error {
 // ProviderTerminalReplay returns the base64 replay buffer plus the output
 // sequence watermark so a freshly mounted take-control xterm renders the
 // provider's last frame. Mirrors GetTerminalReplay for the provider PTY.
+//
+//ao:scope terminal:operate
 func (a *App) ProviderTerminalReplay(threadID string) (TerminalReplay, error) {
 	sess, err := a.claudetuiSession(threadID)
 	if err != nil {
@@ -103,6 +109,8 @@ func (a *App) ProviderTerminalReplay(threadID string) (TerminalReplay, error) {
 // ProviderTerminalInput delivers base64-encoded human keystrokes to the PTY.
 // The session refuses input unless the take-control lease is held, so a
 // read-only attach cannot inject keystrokes even if a caller tries.
+//
+//ao:scope terminal:operate
 func (a *App) ProviderTerminalInput(threadID string, dataB64 string) error {
 	sess, err := a.claudetuiSession(threadID)
 	if err != nil {
@@ -117,6 +125,8 @@ func (a *App) ProviderTerminalInput(threadID string, dataB64 string) error {
 
 // ProviderTerminalResize forwards a winsize change to the PTY so the TUI
 // repaints at the take-control pane's width.
+//
+//ao:scope terminal:operate
 func (a *App) ProviderTerminalResize(threadID string, rows uint16, cols uint16) error {
 	sess, err := a.claudetuiSession(threadID)
 	if err != nil {
@@ -127,6 +137,8 @@ func (a *App) ProviderTerminalResize(threadID string, rows uint16, cols uint16) 
 
 // ProviderTerminalRefresh forces the TUI to repaint a glitched frame via a
 // winsize nudge (the visible grid is unchanged).
+//
+//ao:scope terminal:operate
 func (a *App) ProviderTerminalRefresh(threadID string) error {
 	sess, err := a.claudetuiSession(threadID)
 	if err != nil {
@@ -138,6 +150,8 @@ func (a *App) ProviderTerminalRefresh(threadID string) error {
 // ProviderTerminalSetControl acquires (control=true) or releases the human
 // take-control input lease. While a human holds it, AO's programmatic Send is
 // refused so the two input drivers never interleave.
+//
+//ao:scope terminal:operate
 func (a *App) ProviderTerminalSetControl(threadID string, control bool) error {
 	sess, err := a.claudetuiSession(threadID)
 	if err != nil {

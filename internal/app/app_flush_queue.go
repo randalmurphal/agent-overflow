@@ -779,6 +779,8 @@ func (a *App) persistFlushDispatchError(threadID string, turnIndex int, dispatch
 // without an extra round-trip. Emits `provider:queue_state_changed`
 // for any other client (remote `--connect` peers, additional
 // webviews) that may be observing the same thread.
+//
+//ao:scope threads:operate
 func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessageOptions) (QueuedItem, error) {
 	// A user queueing a message has just consumed their composer draft, so the
 	// bound entry point clears it, and nothing is waiting on the dispatch.
@@ -935,6 +937,8 @@ func (a *App) registerQueueItem(
 // LocalOnly: the snapshot exposes the user's drafted-but-not-yet-sent
 // prompts, attachment IDs, and plan refs. Same disclosure shape as
 // the diff bindings, hence loopback-only at the transport layer.
+//
+//ao:scope threads:operate
 func (a *App) GetQueueState(threadID string) ([]QueuedItem, error) {
 	if strings.TrimSpace(threadID) == "" {
 		return nil, fmt.Errorf("get queue state: empty thread id")

@@ -540,6 +540,8 @@ func (a *App) backendIdentity() (backendID, replicaGeneration string) {
 // ListItems returns every item persisted for a thread in chronological
 // order. Unwindowed, so it carries the byte backstop the same way the
 // paged loads do; active panes use the bounded slice surface instead.
+//
+//ao:scope threads:read
 func (a *App) ListItems(threadID string, inlinePreviews bool) ([]store.Item, error) {
 	items, err := a.store.ListItems(threadID)
 	if err != nil {

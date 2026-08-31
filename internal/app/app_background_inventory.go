@@ -111,6 +111,8 @@ type BackgroundWorkInventory struct {
 // differs: the tray's completed-sibling retention window is a
 // live-render tuning value, so the terminal rows it carries are dropped
 // and an inventory reports what is running.
+//
+//ao:scope threads:read
 func (a *App) ListRunningBackgroundWork() (BackgroundWorkInventory, error) {
 	live := a.sessionManager().snapshot()
 	threadIDs := make([]string, 0, len(live))
@@ -160,6 +162,8 @@ func (a *App) ListRunningBackgroundWork() (BackgroundWorkInventory, error) {
 // termination path per provider and this method adds none. Failures are
 // joined rather than short-circuiting: a task that refuses to die must
 // not keep the rest alive.
+//
+//ao:scope threads:operate
 func (a *App) StopThreadBackgroundWork(threadID string) (int, error) {
 	if a.shuttingDown.Load() {
 		return 0, ErrShuttingDown

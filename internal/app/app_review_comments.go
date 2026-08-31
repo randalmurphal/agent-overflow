@@ -19,6 +19,8 @@ import (
 // ListProposedPlanComments returns inline comments for one immutable plan
 // version. Resolved comments stay persisted and visible on older versions so
 // review history does not disappear when the agent proposes a revision.
+//
+//ao:scope threads:read
 func (a *App) ListProposedPlanComments(threadID, planItemID string) ([]store.ProposedPlanComment, error) {
 	comments, err := a.store.ListProposedPlanComments(threadID, planItemID)
 	if err != nil {
@@ -30,6 +32,7 @@ func (a *App) ListProposedPlanComments(threadID, planItemID string) ([]store.Pro
 	return comments, nil
 }
 
+//ao:scope threads:operate
 func (a *App) CreateProposedPlanComment(threadID string, input store.ProposedPlanCommentInput) (store.ProposedPlanComment, error) {
 	item, err := a.validateProposedPlanItem(threadID, input.PlanItemID)
 	if err != nil {
@@ -63,6 +66,7 @@ func (a *App) CreateProposedPlanComment(threadID string, input store.ProposedPla
 	return created, nil
 }
 
+//ao:scope threads:operate
 func (a *App) UpdateProposedPlanComment(threadID, commentID string, input store.ProposedPlanCommentUpdate) (store.ProposedPlanComment, error) {
 	updated, err := a.store.UpdateProposedPlanComment(threadID, commentID, input, time.Now().UnixMilli())
 	if err != nil {
@@ -74,6 +78,7 @@ func (a *App) UpdateProposedPlanComment(threadID, commentID string, input store.
 	return updated, nil
 }
 
+//ao:scope threads:operate
 func (a *App) DeleteProposedPlanComment(threadID, commentID string) error {
 	comment, err := a.store.GetProposedPlanComment(threadID, commentID)
 	if err != nil {
@@ -91,6 +96,8 @@ func (a *App) DeleteProposedPlanComment(threadID, commentID string) error {
 // SendPlanRevisionComments sends only the selected draft comments back to the
 // agent. The same thread already contains the plan body, so this deliberately
 // avoids stuffing the full plan text into the prompt.
+//
+//ao:scope threads:operate
 func (a *App) SendPlanRevisionComments(threadID, planItemID string, commentIDs []string) (store.Thread, error) {
 	if len(store.UniqueNonEmptyStringsForApp(commentIDs)) > store.MaxProposedPlanRevisionCommentIDs {
 		return store.Thread{}, fmt.Errorf("send plan revision comments: too many comments selected")
@@ -177,6 +184,7 @@ func (a *App) emitProposedPlanUpsert(threadID, planItemID string) error {
 	return fmt.Errorf("proposed plan %s not found on thread %s", planItemID, threadID)
 }
 
+//ao:scope threads:read
 func (a *App) ListDiffReviewComments(threadID, scope, sourceKey string) ([]store.DiffReviewComment, error) {
 	comments, err := a.store.ListDiffReviewComments(threadID, scope, sourceKey)
 	if err != nil {
@@ -188,6 +196,7 @@ func (a *App) ListDiffReviewComments(threadID, scope, sourceKey string) ([]store
 	return comments, nil
 }
 
+//ao:scope threads:operate
 func (a *App) CreateDiffReviewComment(threadID string, input store.DiffReviewCommentInput) (store.DiffReviewComment, error) {
 	now := time.Now().UnixMilli()
 	comment := store.DiffReviewComment{
@@ -212,6 +221,7 @@ func (a *App) CreateDiffReviewComment(threadID string, input store.DiffReviewCom
 	return created, nil
 }
 
+//ao:scope threads:operate
 func (a *App) UpdateDiffReviewComment(threadID, commentID string, input store.DiffReviewCommentUpdate) (store.DiffReviewComment, error) {
 	updated, err := a.store.UpdateDiffReviewComment(threadID, commentID, input, time.Now().UnixMilli())
 	if err != nil {
@@ -220,6 +230,7 @@ func (a *App) UpdateDiffReviewComment(threadID, commentID string, input store.Di
 	return updated, nil
 }
 
+//ao:scope threads:operate
 func (a *App) DeleteDiffReviewComment(threadID, commentID string) error {
 	if err := a.store.DeleteOrResolveDiffReviewComment(threadID, commentID, time.Now().UnixMilli()); err != nil {
 		return fmt.Errorf("delete diff review comment: %w", err)
@@ -227,6 +238,7 @@ func (a *App) DeleteDiffReviewComment(threadID, commentID string) error {
 	return nil
 }
 
+//ao:scope threads:operate
 func (a *App) MarkDiffReviewCommentsSent(threadID, scope, sourceKey string, commentIDs []string, sentTurnID string) error {
 	if err := a.store.MarkDiffReviewCommentsSent(threadID, scope, sourceKey, commentIDs, time.Now().UnixMilli(), sentTurnID); err != nil {
 		return fmt.Errorf("mark diff review comments sent: %w", err)
@@ -238,6 +250,7 @@ type SendDiffReviewCommentsInput struct {
 	PR *store.DiffReviewPRContext `json:"pr,omitempty"`
 }
 
+//ao:scope threads:operate
 func (a *App) SendDiffReviewComments(threadID, scope, sourceKey string, commentIDs []string, input SendDiffReviewCommentsInput) (store.Thread, error) {
 	scope, err := store.NormalizeDiffReviewScope(scope)
 	if err != nil {

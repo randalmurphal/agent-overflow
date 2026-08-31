@@ -15,6 +15,8 @@ type WorkspaceFileSearchResult struct {
 
 // SearchWorkspaceFiles returns workspace files matching the query, scoped to
 // the workspace of the given thread.
+//
+//ao:scope files:read
 func (a *App) SearchWorkspaceFiles(threadID, query string, limit int) (WorkspaceFileSearchResult, error) {
 	if a.workspaceFiles == nil {
 		return WorkspaceFileSearchResult{}, fmt.Errorf("workspace file searcher not initialized")

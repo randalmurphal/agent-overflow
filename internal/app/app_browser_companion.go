@@ -29,6 +29,8 @@ func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
 // stream for a thread. Chrome only screencasts while at least one companion is
 // mounted; connection cleanup is the leak-proof fallback for an unclean UI
 // disconnect.
+//
+//ao:scope terminal:operate
 func (a *App) BrowserCompanionSubscribe(ctx context.Context, threadID string, width, height int) (appbrowser.CompanionSubscription, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionSubscription{}, fmt.Errorf("browser manager unavailable")
@@ -50,6 +52,7 @@ func (a *App) BrowserCompanionSubscribe(ctx context.Context, threadID string, wi
 	return result, nil
 }
 
+//ao:scope terminal:operate
 func (a *App) BrowserCompanionUnsubscribe(subscriptionID string) error {
 	if a.browser.manager != nil {
 		a.browser.manager.UnsubscribeCompanion(subscriptionID)
@@ -57,6 +60,7 @@ func (a *App) BrowserCompanionUnsubscribe(subscriptionID string) error {
 	return nil
 }
 
+//ao:scope terminal:operate
 func (a *App) BrowserCompanionNextFrame(ctx context.Context, subscriptionID string) (appbrowser.CompanionEvent, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
@@ -64,6 +68,7 @@ func (a *App) BrowserCompanionNextFrame(ctx context.Context, subscriptionID stri
 	return a.browser.manager.NextCompanionFrame(ctx, subscriptionID)
 }
 
+//ao:scope terminal:operate
 func (a *App) BrowserCompanionResize(subscriptionID string, width, height int) error {
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
@@ -71,6 +76,7 @@ func (a *App) BrowserCompanionResize(subscriptionID string, width, height int) e
 	return a.browser.manager.ResizeCompanion(subscriptionID, width, height)
 }
 
+//ao:scope terminal:operate
 func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action BrowserCompanionAction) (appbrowser.CompanionEvent, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
@@ -105,6 +111,7 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	return a.browser.manager.CompanionState(access), nil
 }
 
+//ao:scope terminal:operate
 func (a *App) BrowserCompanionInput(ctx context.Context, threadID, pageID string, event appbrowser.CompanionInput) error {
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")

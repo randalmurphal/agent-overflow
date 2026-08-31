@@ -11,6 +11,8 @@ import (
 // DevServerChip (rationale: internal/devserverprobe doc.go). Loopback-
 // only on the wire: the answer is a port-scan oracle for the backend
 // host, and a remote viewer's localhost is not this machine anyway.
+//
+//ao:scope host
 func (a *App) ProbeDevServerURL(rawURL string) (bool, error) {
 	return a.devServerProbe().Live(context.Background(), rawURL)
 }

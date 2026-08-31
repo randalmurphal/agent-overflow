@@ -53,6 +53,8 @@ import (
 // turn's pending_input vec and emits an `item/completed userMessage`
 // inside the same turn so triage handleUserText correlates the wire
 // echo with the pending-send marker we register here.
+//
+//ao:scope threads:operate
 func (a *App) SteerMessageWithOptions(threadID string, content string, opts SendMessageOptions) (store.Thread, error) {
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown

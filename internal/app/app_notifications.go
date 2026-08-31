@@ -105,6 +105,8 @@ func (a *App) activateNotificationTarget(target notify.Target) error {
 // NotificationActivated is called by the native Windows launcher after a
 // bridged notification click. It validates the launcher-provided target and
 // emits the same frontend event as the in-process desktop callback.
+//
+//ao:scope host
 func (a *App) NotificationActivated(target notify.Target) error {
 	return a.activateNotificationTarget(target)
 }

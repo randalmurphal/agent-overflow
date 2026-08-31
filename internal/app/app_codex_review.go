@@ -65,6 +65,8 @@ type CodexReviewStarted struct {
 // offer it only on an idle thread.
 //
 // LocalOnly: it drives the thread's live provider subprocess.
+//
+//ao:scope threads:operate
 func (a *App) StartCodexReview(ctx context.Context, threadID string, target CodexReviewTarget) (CodexReviewStarted, error) {
 	if a.shuttingDown.Load() {
 		return CodexReviewStarted{}, ErrShuttingDown
@@ -125,6 +127,8 @@ func codexReviewCommandText(target codex.ReviewTarget) string {
 // idle thread.
 //
 // LocalOnly: it drives the thread's live provider subprocess.
+//
+//ao:scope threads:operate
 func (a *App) CompactCodexThread(ctx context.Context, threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown

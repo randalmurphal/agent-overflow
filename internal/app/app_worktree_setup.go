@@ -15,6 +15,8 @@ import (
 //
 // LocalOnly: the payload is the stdout/stderr of local commands run against
 // the user's checkout, the same data class as GetTerminalReplay.
+//
+//ao:scope terminal:operate
 func (a *App) GetThreadWorktreeSetup(threadID string) (WorktreeSetupRunState, error) {
 	state, err := a.worktreeSetupService().GetThreadWorktreeSetup(threadID)
 	return projectWorktreeSetupState(state), err
@@ -30,6 +32,8 @@ func (a *App) GetThreadWorktreeSetup(threadID string) (WorktreeSetupRunState, er
 // different mistakes and say so.
 //
 // LocalOnly: this executes the project's argv commands. RCE-equivalent.
+//
+//ao:scope terminal:operate
 func (a *App) RetryThreadWorktreeSetup(threadID string) error {
 	return a.worktreeSetupService().RetryThreadWorktreeSetup(threadID)
 }

@@ -7,10 +7,14 @@ package alpha
 type Alpha struct{}
 
 // DoAlpha is collected.
+//
+//ao:scope threads:read
 func (a *Alpha) DoAlpha() error { return nil }
 
 // SharedName is collected here and deliberately re-declared on the
 // beta fixture's Gamma, to exercise the cross-spec collision refusal.
+//
+//ao:scope host
 func (a *Alpha) SharedName() {}
 
 // unexportedAlpha is skipped: not exported.

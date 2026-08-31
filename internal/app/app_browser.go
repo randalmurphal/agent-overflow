@@ -107,6 +107,8 @@ func (a *App) teardownBrowserThread(threadID string) {
 // ClearBrowserSiteData closes active browser contexts before deleting their
 // encrypted checkpoints, preventing a later teardown from writing cleared
 // cookies back to disk.
+//
+//ao:scope terminal:operate
 func (a *App) ClearBrowserSiteData() error {
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")

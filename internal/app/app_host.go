@@ -16,6 +16,8 @@ import (
 // this to display the current release. Read-only, no FS / process /
 // settings touch — intentionally NOT in LocalOnlyMethods so a
 // remote --connect client sees the backend's version too.
+//
+//ao:scope threads:read
 func (a *App) Version() string {
 	return a.version
 }
@@ -24,6 +26,8 @@ func (a *App) Version() string {
 // browser. The backend owns this instead of letting the webview handle
 // target=_blank / window.open so WSL can deliberately cross into the
 // Windows default browser instead of launching a Linux/WSLg browser.
+//
+//ao:scope host
 func (a *App) OpenExternalURL(rawURL string) error {
 	return externalurl.Open(context.Background(), rawURL)
 }
@@ -31,6 +35,8 @@ func (a *App) OpenExternalURL(rawURL string) error {
 // BrowseDirectory lists the contents of path for the project-picker
 // UI. The full contract (path normalisation, ordering, .git-marker
 // detection, EntryLimit truncation) lives in internal/dirbrowse.
+//
+//ao:scope host
 func (a *App) BrowseDirectory(path string) (dirbrowse.Listing, error) {
 	return dirbrowse.Browse(path)
 }
@@ -47,6 +53,8 @@ type LocalImageData struct {
 // used by editor links. It accepts existing regular files only, caps bytes at
 // the attachment limit, and validates the content signature before returning
 // it. This method is LocalOnly because its arguments select a host file.
+//
+//ao:scope files:read
 func (a *App) GetLocalImageData(path, workspacePath string) (LocalImageData, error) {
 	resolved, err := editor.ResolvePath(path, workspacePath)
 	if err != nil {

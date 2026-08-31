@@ -190,6 +190,8 @@ type SessionImportProgressEvent struct {
 // Cached for sessionimport.ScanTTL; the request's ForceRefresh bypasses it. A
 // provider whose home cannot be read is reported in Providers and does not
 // fail the call — a broken Codex home must not take Claude's sessions away.
+//
+//ao:scope threads:operate
 func (a *App) ListImportableSessions(req ImportScanRequest) (ImportScanResult, error) {
 	scan, err := a.sessionImporter().List(req.ForceRefresh)
 	if err != nil {
@@ -211,6 +213,8 @@ func (a *App) ListImportableSessions(req ImportScanRequest) (ImportScanResult, e
 // the thread diverged; a send landing between those reads would make the
 // answer describe a thread that no longer exists — reporting "3 new items" for
 // a thread that is, by the time the user clicks, diverged-local.
+//
+//ao:scope threads:operate
 func (a *App) CheckThreadImportUpdates(threadID string) (ImportUpdateStatus, error) {
 	update, err := a.sessionImporter().CheckThreadUpdates(threadID)
 	if err != nil {
@@ -233,6 +237,8 @@ func (a *App) CheckThreadImportUpdates(threadID string) (ImportUpdateStatus, err
 // It re-plans rather than trusting a status the caller checked earlier: the
 // file and the thread can both have moved since, and a stale plan would
 // append rows against indices the thread has since allocated.
+//
+//ao:scope threads:operate
 func (a *App) ImportThreadUpdates(threadID string) (ImportUpdateResult, error) {
 	result, err := a.sessionImporter().ApplyThreadUpdates(threadID)
 	if err != nil {
@@ -252,6 +258,8 @@ func (a *App) ImportThreadUpdates(threadID string) (ImportUpdateResult, error) {
 // Duplicate ids in one request collapse: the scan's dedup happens BEFORE a
 // run, so importing one row twice in the same run would create the threads
 // twice.
+//
+//ao:scope threads:operate
 func (a *App) ImportSessions(req ImportSessionsRequest) (ImportRunHandle, error) {
 	handle, err := a.sessionImporter().Start(req.IDs)
 	if err != nil {
@@ -263,6 +271,8 @@ func (a *App) ImportSessions(req ImportSessionsRequest) (ImportRunHandle, error)
 // CancelSessionImport stops the named run. The run still emits its terminal
 // frame, with Completed short of Total — a listener never has to infer the
 // end from silence.
+//
+//ao:scope threads:operate
 func (a *App) CancelSessionImport(importID string) error {
 	return a.sessionImporter().Cancel(importID)
 }

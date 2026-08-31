@@ -39,6 +39,8 @@ import (
 // rollback: each step that has a side-effect appends an undo to a LIFO
 // `cleanups` slice; on later failure the chain runs in reverse order
 // and any cleanup errors are joined with the primary error.
+//
+//ao:scope threads:operate
 func (a *App) ForkThread(ctx context.Context, sourceThreadID string, atTurnIndex *int) (store.Thread, error) {
 	// Hold the source thread's action lock for the duration of the fork so
 	// concurrent SendMessage / InterruptAndRevertIfClean / etc. can't write
@@ -235,6 +237,8 @@ func (a *App) ForkThread(ctx context.Context, sourceThreadID string, atTurnIndex
 // ForkThreadFromMessage creates a fork whose conversation stops before the
 // selected user message. This is the message-keyed counterpart to revert: the
 // selected prompt is not copied into the fork.
+//
+//ao:scope threads:operate
 func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, userItemID string) (store.Thread, error) {
 	unlock := a.threadLocks().Lock(sourceThreadID)
 	defer unlock()

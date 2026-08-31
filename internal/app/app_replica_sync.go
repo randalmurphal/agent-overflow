@@ -73,6 +73,8 @@ type SyncThreadWindowResponse struct {
 //
 // The other paging RPCs are unchanged; this one covers the initial
 // window only.
+//
+//ao:scope threads:read
 func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (SyncThreadWindowResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), syncThreadWindowTimeout)
 	defer cancel()

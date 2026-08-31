@@ -10,6 +10,8 @@ import (
 
 // UploadAttachment decodes base64 bytes, validates + persists them on disk,
 // and returns the new attachment metadata.
+//
+//ao:scope attachments:write
 func (a *App) UploadAttachment(threadID, filename, mimeType, dataB64 string) (store.Attachment, error) {
 	if a.attachments == nil {
 		return store.Attachment{}, fmt.Errorf("attachment store not initialized")
@@ -18,6 +20,8 @@ func (a *App) UploadAttachment(threadID, filename, mimeType, dataB64 string) (st
 }
 
 // ListAttachments returns every attachment metadata row for a thread.
+//
+//ao:scope threads:read
 func (a *App) ListAttachments(threadID string) ([]store.Attachment, error) {
 	if a.attachments == nil {
 		return nil, fmt.Errorf("attachment store not initialized")
@@ -33,6 +37,8 @@ func (a *App) ListAttachments(threadID string) ([]store.Attachment, error) {
 }
 
 // DeleteAttachment removes both the metadata row and the disk file.
+//
+//ao:scope attachments:write
 func (a *App) DeleteAttachment(attachmentID string) error {
 	if a.attachments == nil {
 		return fmt.Errorf("attachment store not initialized")
@@ -48,6 +54,8 @@ func (a *App) DeleteAttachment(attachmentID string) error {
 // rendering should call GetAttachmentThumbnail instead so we don't ship
 // 5 MB of pixels for a 128 px tile (especially over the remote
 // `--connect` transport).
+//
+//ao:scope threads:read
 func (a *App) GetAttachmentData(threadID, attachmentID string) (string, error) {
 	if a.attachments == nil {
 		return "", fmt.Errorf("attachment store not initialized")
@@ -75,6 +83,8 @@ type AttachmentThumbnail struct {
 // the savings matter even locally (base64 + JSON encode cost) and become
 // the difference between "instant grid" and "watch them load" over the
 // remote `--connect` transport.
+//
+//ao:scope threads:read
 func (a *App) GetAttachmentThumbnail(threadID, attachmentID string) (AttachmentThumbnail, error) {
 	if a.attachments == nil {
 		return AttachmentThumbnail{}, fmt.Errorf("attachment store not initialized")

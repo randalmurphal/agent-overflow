@@ -14,6 +14,8 @@ func (a *App) rememberRateLimitsEvent(name eventchan.Channel, data any) {
 // channel, so this read-only RPC intentionally remains available to connected
 // clients. It closes the first-connect/reconnect race where the startup probe
 // completed before the frontend subscribed to that channel.
+//
+//ao:scope threads:read
 func (a *App) GetRateLimitsSnapshots() []provider.RateLimitsSnapshot {
 	return a.providerLifecycleService().Snapshots()
 }
