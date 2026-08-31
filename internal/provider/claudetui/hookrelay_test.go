@@ -88,28 +88,6 @@ func TestHookRelayCompactionDispatch(t *testing.T) {
 	}
 }
 
-// TestIsLoopback covers the peer check that guards BOTH the hook relay and the
-// gateway: only loopback peers pass; a LAN/public address is rejected.
-func TestIsLoopback(t *testing.T) {
-	cases := []struct {
-		addr string
-		want bool
-	}{
-		{"127.0.0.1:54321", true},
-		{"[::1]:8080", true},
-		{"127.0.0.5:1", true},
-		{"192.168.1.10:443", false},
-		{"10.0.0.1:80", false},
-		{"8.8.8.8:53", false},
-		{"", false},
-	}
-	for _, tc := range cases {
-		if got := isLoopback(tc.addr); got != tc.want {
-			t.Errorf("isLoopback(%q) = %v, want %v", tc.addr, got, tc.want)
-		}
-	}
-}
-
 func TestHookRelayRejectsBadToken(t *testing.T) {
 	relay := newTestRelay(t, nil)
 

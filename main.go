@@ -305,7 +305,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	appService.SetEventBus(bus)
 
 	phaseStarted = time.Now()
-	assetHandler, err := buildAssetHandler(assets, isNativeDevMode() || opts.AllowDevServerAssets)
+	assetHandler, devAssetProxy, err := buildAssetHandler(assets, isNativeDevMode() || opts.AllowDevServerAssets)
 	if err != nil {
 		fatalf("transport: build asset handler: %v", err)
 	}
@@ -320,6 +320,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		Dispatcher:               dispatcher,
 		EventBus:                 bus,
 		AssetHandler:             assetHandler,
+		DevAssetProxy:            devAssetProxy,
 		RequireReadyForBootstrap: opts.RequireReadyForBootstrap,
 		// One condition, two surfaces: the boots that register the Harness
 		// receiver are exactly the boots whose /bootstrap.json says
@@ -865,18 +866,24 @@ func isolatedDevAssetWarning(devURL string) string {
 //     Serve the embedded frontend/dist bundle. http.FS over fs.Sub is
 //     the safe pairing — http.Dir would expose path traversal of the
 //     developer's local filesystem.
-func buildAssetHandler(embeddedAssets embed.FS, allowDevAssets bool) (http.Handler, error) {
+//
+// The devProxy return says which case was taken. It is the transport's
+// Config.DevAssetProxy — the one input that picks the relaxed CSP — so
+// the policy is decided by the same condition that decided the handler,
+// rather than by a second reading of the environment that could drift
+// from it.
+func buildAssetHandler(embeddedAssets embed.FS, allowDevAssets bool) (handler http.Handler, devProxy bool, err error) {
 	if devURL := os.Getenv("FRONTEND_DEVSERVER_URL"); devURL != "" && allowDevAssets {
 		parsed, err := url.Parse(devURL)
 		if err != nil {
-			return nil, fmt.Errorf("parse FRONTEND_DEVSERVER_URL %q: %w", devURL, err)
+			return nil, false, fmt.Errorf("parse FRONTEND_DEVSERVER_URL %q: %w", devURL, err)
 		}
 		log.Printf("transport: dev mode — proxying assets to %s", devURL)
-		return httputil.NewSingleHostReverseProxy(parsed), nil
+		return httputil.NewSingleHostReverseProxy(parsed), true, nil
 	}
 	embeddedSPA, err := fs.Sub(embeddedAssets, "frontend/dist")
 	if err != nil {
-		return nil, fmt.Errorf("locate embedded frontend/dist: %w", err)
+		return nil, false, fmt.Errorf("locate embedded frontend/dist: %w", err)
 	}
-	return http.FileServer(http.FS(embeddedSPA)), nil
+	return http.FileServer(http.FS(embeddedSPA)), false, nil
 }

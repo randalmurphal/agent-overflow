@@ -11,12 +11,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"agent-overflow/internal/loopback"
 	"agent-overflow/internal/transport"
 )
 
@@ -248,17 +248,25 @@ func Serve(cfg Config) (*Server, error) {
 		cred:                 cred,
 		launchID:             launchID,
 		indexHTML:            indexHTML,
-		remote:               !isLoopbackEndpointHost(parsedWSURL.Host),
+		remote:               !loopback.EndpointAuthority(parsedWSURL.Host),
 		upstreamBootstrapURL: upstreamBootstrap,
 		wsProxy:              wsProxy,
 		probeClient:          &http.Client{Timeout: bootstrapProbeTimeout},
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleIndex)
+	// "/{$}" is the exact root and nothing else, so every other path
+	// reaches the file server. The bundle's root-level files —
+	// boot-theme.js, favicon.svg — live beside /assets/ in dist and are
+	// unreachable if the shell answers for them: served as text/html
+	// under X-Content-Type-Options: nosniff, the boot script would be
+	// refused and the first-paint theme stamp would silently stop
+	// applying on this origin only. Serving the whole bundle from one
+	// file server also matches what the transport does with the same FS.
+	mux.HandleFunc("/{$}", s.handleIndex)
+	mux.Handle("/", withSecurityHeaders(http.FileServerFS(cfg.Assets)))
 	mux.HandleFunc("/bootstrap.json", s.handleBootstrap)
 	mux.HandleFunc("/ws", s.handleWS)
-	mux.Handle("/assets/", withSecurityHeaders(http.FileServerFS(cfg.Assets)))
 
 	// loopbackOnly wraps every route with a Host-header check so a site
 	// whose DNS resolves to 127.0.0.1 cannot navigate the user's browser
@@ -347,10 +355,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// handleIndex serves index.html for "/" and "/index.html". Anything
-// else under "/" that isn't /assets/ falls through to the SPA shell so
-// client-side routing keeps working (the SPA's router handles in-app
-// paths from the rendered shell).
+// handleIndex serves index.html for the exact root and nothing else.
+// The SPA has no client-side router — it is loaded once, at "/", and
+// only ever rewrites its own query string — so every other path is a
+// bundle file or a 404, and answering one with the shell would just
+// mislabel it as HTML.
 //
 // The shell is served verbatim: nothing is injected into it any more.
 // The SPA learns where its socket is from /bootstrap.json, exactly as it
@@ -369,7 +378,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// Same headers the transport package puts on the SPA shell. Keeps
 	// the security posture identical between the embedded-webview path
 	// (transport.go) and the remote-client path (this).
-	transport.WriteSecurityHeaders(h)
+	transport.WriteSecurityHeaders(h, transport.CSPProduction)
 	// no-store, matching the transport's policy for the entry shell: a
 	// deploy must never be shadowed by a cached shell, and the local
 	// webview loads it once per process so nothing is gained by keeping
@@ -491,7 +500,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	h := w.Header()
 	h.Set("Content-Type", "application/json")
-	transport.WriteSecurityHeaders(h)
+	transport.WriteSecurityHeaders(h, transport.CSPProduction)
 	// Same no-store posture as the shell: a manifest from a previous
 	// launch names a socket that no longer exists.
 	h.Set("Cache-Control", "no-store, max-age=0")
@@ -526,21 +535,25 @@ func upstreamBootstrapURL(wsURL string) (string, error) {
 	return parsed.String(), nil
 }
 
-// loopbackOnly is a DNS-rebinding defense. The stub binds to 127.0.0.1,
-// but a hostile site whose DNS resolves to 127.0.0.1 could navigate the
-// user to http://attacker.tld:<our-port>/ and the embedded bootstrap
-// script (carrying the WS URL + token) would execute under the
-// attacker's origin. Browsers attach the requested Host header to those
-// requests verbatim, so we reject anything that isn't a loopback name.
+// loopbackOnly requires the request's Host to name loopback, which the
+// bind address alone does not establish. The stub binds 127.0.0.1, but a
+// DNS name that resolves to 127.0.0.1 reaches it just as well: a page
+// navigated to http://that.name:<our-port>/ arrives here over the
+// loopback interface, and the document it gets back — including the
+// boot script that fetches the WS URL — would run under that name's
+// origin rather than ours. Browsers send the requested Host verbatim,
+// so refusing a non-loopback one refuses the whole shape.
+// loopback.HostHeader is the strict predicate that does it, and it
+// refuses names rather than classifying them for exactly this reason.
 //
 // 404 (not 403) is the deliberate response code: the rest of the
-// transport / clientmode surface returns NotFound for both auth
-// failures and missing paths, so an attacker can't fingerprint the
-// server vs an arbitrary web service running on 127.0.0.1 by probing
-// rebind-protected vs open URLs.
+// transport / clientmode surface returns NotFound for both credential
+// failures and missing paths, so probing cannot tell a guarded route
+// from an absent one, or this server from any other service on
+// 127.0.0.1.
 func loopbackOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !transport.IsLoopbackHost(r.Host) {
+		if !loopback.HostHeader(r.Host) {
 			http.NotFound(w, r)
 			return
 		}
@@ -559,7 +572,7 @@ func loopbackOnly(next http.Handler) http.Handler {
 func withSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		transport.WriteSecurityHeaders(h)
+		transport.WriteSecurityHeaders(h, transport.CSPProduction)
 		h.Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, r)
 	})
@@ -689,30 +702,4 @@ func newWSProxy(wsURL, token string) (*httputil.ReverseProxy, error) {
 			http.Error(w, "backend unreachable", http.StatusServiceUnavailable)
 		},
 	}, nil
-}
-
-// isLoopbackEndpointHost classifies a client-configured upstream URL with
-// the same netip loopback semantics used for the transport peer address.
-// It intentionally differs from the stricter IsLoopbackHost policy used to
-// defend this stub's HTTP listener from DNS rebinding.
-func isLoopbackEndpointHost(host string) bool {
-	if host == "" {
-		return false
-	}
-	hostOnly, _, err := net.SplitHostPort(host)
-	if err != nil {
-		if strings.Contains(host, ":") {
-			if !(strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]")) {
-				return false
-			}
-			hostOnly = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
-		} else {
-			hostOnly = host
-		}
-	}
-	if strings.EqualFold(hostOnly, "localhost") {
-		return true
-	}
-	addr, err := netip.ParseAddr(hostOnly)
-	return err == nil && addr.IsLoopback()
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"io"
 	"net"
 	"net/http"
@@ -14,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
+	"agent-overflow/internal/loopback"
 )
 
 const (
@@ -521,7 +522,7 @@ func validMCPRequest(w http.ResponseWriter, r *http.Request) bool {
 	// — that copy also accepts the literal "localhost", which an accepted
 	// connection's RemoteAddr never carries). Go fills RemoteAddr from the
 	// accepted socket, so a request header cannot set it.
-	if !isLoopbackPeer(r.RemoteAddr) {
+	if !loopback.PeerAddress(r.RemoteAddr) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return false
 	}
@@ -544,17 +545,6 @@ func validMCPRequest(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	return true
-}
-
-// isLoopbackPeer reports whether an accepted connection's RemoteAddr is
-// on a loopback interface.
-func isLoopbackPeer(remoteAddr string) bool {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 // jsonContentType reports whether a Content-Type header declares JSON.

@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
-	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -693,45 +691,3 @@ var (
 	errOriginNotServed   = errors.New("transport: request origin is not served by this listener")
 	errCredentialRefused = errors.New("transport: request carries no valid credential")
 )
-
-// remoteAddrIsLoopback reports whether the peer's RemoteAddr is a
-// loopback interface. Used at upgrade time to decide whether to allow
-// LocalOnlyMethods for the resulting connection.
-//
-// Three parse paths:
-//
-//  1. netip.ParseAddrPort handles the canonical "ip:port" form
-//     (e.g. "127.0.0.1:54321", "[::1]:54321"). The IsLoopback method
-//     understands every loopback variant — IPv4 127/8, IPv6 ::1, and
-//     IPv4-mapped-in-IPv6 ::ffff:127.0.0.1.
-//  2. net.SplitHostPort + netip.ParseAddr is the fallback for inputs
-//     that ParseAddrPort rejects (rare — typically synthetic test
-//     requests with malformed addresses).
-//  3. An unparseable RemoteAddr is treated as non-loopback (fail
-//     closed). httptest sometimes leaves RemoteAddr empty; the
-//     production transport always populates it. Defaulting to "not
-//     loopback" means a synthetic request can't inadvertently bypass
-//     LocalOnly enforcement just because its RemoteAddr was malformed.
-//
-// Note: this trusts that the kernel reports a true peer address. A
-// reverse-proxy fronting the transport would have to terminate WS
-// upgrades and re-issue them with a real loopback peer for the
-// LocalOnlyMethods enforcement to remain meaningful — that's the
-// documented deployment model for v1.
-func remoteAddrIsLoopback(remoteAddr string) bool {
-	if remoteAddr == "" {
-		return false
-	}
-	if addrPort, err := netip.ParseAddrPort(remoteAddr); err == nil {
-		return addrPort.Addr().IsLoopback()
-	}
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	addr, err := netip.ParseAddr(host)
-	if err != nil {
-		return false
-	}
-	return addr.IsLoopback()
-}
