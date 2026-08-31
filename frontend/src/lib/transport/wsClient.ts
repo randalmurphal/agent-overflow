@@ -282,10 +282,17 @@ function matchesRetryAllowlist(
 // temporarily_unavailable, etc).
 export class TransportError extends Error {
   code: string;
-  constructor(code: string, message: string) {
+  // reason is set only on code 'auth_failed' and names which credential
+  // check refused the call (internal/identity's closed set). Kept off the
+  // message because the message is generic prose for non-loopback callers,
+  // so it is the only thing a hint can be derived from — see
+  // ./authReason.ts, which is the one place it is translated.
+  reason?: string;
+  constructor(code: string, message: string, reason?: string) {
     super(message);
     this.name = 'TransportError';
     this.code = code;
+    this.reason = reason;
   }
 }
 
@@ -1582,7 +1589,11 @@ export class WSClient {
       clearTimeout(pending.timer);
       if (frame.error) {
         pending.reject(
-          new TransportError(frame.error.code, clampString(frame.error.message ?? '')),
+          new TransportError(
+            frame.error.code,
+            clampString(frame.error.message ?? ''),
+            frame.error.reason,
+          ),
         );
         return;
       }

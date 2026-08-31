@@ -191,6 +191,28 @@ CODE instead (`frame.go`), and the method wraps the matching sentinel:
 add one, wrap rather than replace, so callers testing for the concrete
 cause keep working.
 
+### Two refusal shapes, and which one applies
+
+A request the backend cannot attribute to anything gets the 404 above and
+learns nothing. A caller whose SESSION credential was read and then refused
+gets `ErrCodeAuthFailed` with a `reason` naming which check refused it —
+built by `AuthFailure`, never by a struct literal, because the two fields
+are only meaningful together.
+
+The split is about what the answer discloses. The 404 hides whether a route
+exists from someone who has presented nothing; the typed reason tells a
+paired client which of its own credentials went wrong, which it needs in
+order to say anything more useful than "not allowed". A refusal that is
+already attributable discloses nothing by being specific.
+
+`reason` values are the wire spellings of `internal/identity`'s closed set.
+Transport carries the string and does not interpret it: `internal/identity`
+owns the vocabulary (transport cannot import it without pulling the store in
+behind it), and `frontend/src/lib/transport/authReason.ts` is the one place
+it becomes a sentence. `TestFrontendHintsCoverEveryRefusal` pins the two
+sets together. A code is stable forever once shipped; an older bundle may
+still be mapping it.
+
 ## Origin allow-list and peer locality
 
 **`OriginAllowed` (credential.go) gates `/ws`, `/bootstrap.json` and
