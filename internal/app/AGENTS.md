@@ -15,8 +15,12 @@ register `*app.App` directly, or change the explicit transport registration
 labels: any of those changes every method ID.
 
 `internal/transport/methodgen` scans this directory but hashes methods under
-`main.App`. A bound method addition/removal must update LocalOnly classification
-when applicable, regenerate Wails bindings with `-ts`, regenerate methodgen,
+`main.App`. Every bound method here carries an `//ao:scope <name>` directive in
+its doc comment (plus `//ao:stepup` where the spec requires a per-call proof);
+the generator fails the run without one, and `transport.LocalOnlyMethods` is
+derived from those scopes rather than hand-listed. A bound method
+addition/removal must annotate it, regenerate Wails bindings with `-ts`,
+regenerate methodgen,
 and verify all existing `$Call.ByID` values remain stable unless a wire migration
 was explicitly approved.
 

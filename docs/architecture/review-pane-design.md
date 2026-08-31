@@ -127,8 +127,8 @@ read/write APIs and per-PR-key polling.
   gets a **"send to agent"** action handing the thread (file, line, bodies)
   to the linked agent.
 - **Transport classification.** Every new App method shelling to
-  `gh`/`glab`/`git` is classified in
-  `internal/transport/internalmethods.go` `LocalOnlyMethods`.
+  `gh`/`glab`/`git` annotates `//ao:scope git:operate`, which derives
+  local-only.
 
 ## Edge Cases
 

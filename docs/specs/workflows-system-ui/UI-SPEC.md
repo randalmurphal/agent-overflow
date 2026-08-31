@@ -408,8 +408,8 @@ open overlay; suppressed while a text field has focus.
 Remote browsers get **view-only** workflows: the overlay renders fully;
 every mutating affordance (pause-all, intake, action rows, notes, Run now,
 enable/disable, discard, bind) is disabled with tooltip "Local only".
-Mutation RPCs classify `LocalOnlyMethods` in
-`internal/transport/internalmethods.go`. Remote gate-approval is explicitly
+Mutation RPCs annotate `//ao:scope threads:autonomy`, which derives
+local-only. Remote gate-approval is explicitly
 out.
 
 ---

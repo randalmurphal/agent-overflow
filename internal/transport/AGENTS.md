@@ -24,38 +24,56 @@ Not owned here: the receiver (the dispatcher takes an `any` and reflects), TLS
 an SSH tunnel, or a reverse proxy), and where the listen port comes from
 (`Config.Port` is injected, never read from a file here).
 
-## Every new App method is also a wire RPC, so classify it
+## Every new App method is also a wire RPC, so annotate it
 
-Adding an exported method to `App` puts it on the wire. If it touches the local
-filesystem, external processes, provider sessions, settings, credentials, or
-attachments, add its name to `localOnlyCategories` **with its category** in the
-same change.
+Adding an exported method to `App` puts it on the wire, so every one carries a
+`//ao:scope <name>` directive in its doc comment naming the capability it
+exercises — the same comment-directive form as `//wails:ignore`. `methodgen`
+**fails the run** listing every unannotated method, and again for a name the
+vocabulary does not declare. There is no default and no silence: the generator
+is the gate, and it runs before a method reaches the wire at all.
 
-`internalmethods.go` holds the two filter sets the dispatcher consults:
+`scopes.go` is the vocabulary — the ten scope names a session can be granted
+(`docs/specs/remote-access.md` §5) plus `host` for a call with no remote form —
+and the tier each resolves to: **observe** (`threads:read`, `files:read`),
+**execute**, **host**. It restates `internal/identity`'s ten names rather than
+importing them, since this package stays store-free; `internal/app` imports both
+and `TestScopeVocabularyMatchesIdentity` fails in either direction.
+
+`//ao:stepup` marks the calls §4 requires a fresh per-call proof for: minting a
+pairing link, network bind / exposure changes, provider custom-env writes, MCP
+config writes, the WSL distro preference. `TestStepUpMethodsAreTheSpecSet` pins
+that list, because a dropped directive turns a mandatory proof into an ambient
+standing grant and nothing else in the tree would notice.
+
+`internalmethods.go` holds the two things the dispatcher consults:
 
 - `InternalServiceMethods`: Wails framework hooks and `//wails:ignore` methods.
   Never registered, as defense in depth beside the codegen filter.
-- `localOnlyCategories`: the privileged surface, one row per method, each tagged
-  with the `LocalOnlyCategory` that put it there. `LocalOnlyMethods` (the
-  `map[string]bool` the dispatcher and every gate read) is derived from it, so
-  the two cannot disagree; `LocalOnlyCategoryOf` answers the reason.
+- `LocalOnlyMethods`: **derived** from the generated table — local-only when the
+  scope's tier is not observe, or when the method requires step-up.
   `Dispatcher.ResolveForOrigin` refuses these from non-loopback peers with the
   same `method_not_found` shape an unregistered method returns, so the
   privileged surface stays unenumerable from the LAN.
 
-`LocalOnlyCategory` is a closed set of eleven: local execution, session control,
-settings mutation, attachment payload, local-FS bookkeeping, credential and
-account enumeration, WSL inventory, MCP state, desktop host control, session
-import, device access. `localonlycategory_test.go` parses the constant block out of the source
-and fails on a constant with no name row, a name row with no constant, an entry
-tagged with an undeclared value, an untagged entry (the zero value is not a
-category), and a declared category that classifies nothing. Adding a category is
-a deliberate act with a doc comment, not a new number in a comment.
+`transitionalReachability` is the only hand-edited reachability left, and it is
+migration scaffolding. The annotation wave was required to change no method's
+reachability, so the 43 methods whose honest scope disagreed with the partition
+they inherited are pinned there with a one-line reason each — every entry a live
+question for the enforcement work, not a settled classification. The map only
+shrinks: `TestTransitionalOverridesAreLoadBearing` fails an entry that has
+stopped contradicting the derivation. Nothing new belongs in it; a new method
+takes the reachability its scope implies.
 
-The classification list is the source of truth and method bodies do not re-check
-origin. `methods_gen_test.go` fails on a generated method nobody classified
-(`TestGeneratedMethods_AllClassified`) and on a classified name that no longer
-exists. A reverse proxy on the same host makes remote peers appear loopback and
+That preservation is itself pinned. `preScopeTableLocalOnly`
+(`reachability_test.go`) is the frozen local-only partition of 2026-08-31, and
+`TestLocalOnlyMethodsMatchTheFrozenPartition` names the direction of any drift —
+a method that GAINED local-only is a remote client losing a surface, one that
+LOST it is a privileged call answered over the LAN. Moving a method is then a
+deliberate line in a diff rather than a side effect of re-reading its scope.
+
+The classification is the source of truth and method bodies do not re-check
+origin. A reverse proxy on the same host makes remote peers appear loopback and
 defeats this locality, so proxy from a different host instead.
 
 ## Every route on this mux is also a row in internal/surfaces
@@ -429,7 +447,10 @@ registry mechanics are in
 
 Adding a method to `ScopedTokenMethods` widens what a compromised agent session
 can do. Do it only for methods whose row-level authorization is enforced from
-`CallerScopeFrom`, and add it to `LocalOnlyMethods` too. `GrantNotRequired`
+`CallerScopeFrom`, and only for a method whose scope already keeps it out of
+the observe tier — `TestScopedTokenMethodsAreLocalOnly` pins that, and
+`TestScopedTokenMethodsExistInGeneratedTable` catches a name that has drifted
+off the receiver. `GrantNotRequired`
 (`"*"`) marks a method whose authority is entirely row-level, admitting every
 scoped token whatever grants the phase froze. It is not a grant: no workflow may
 declare it, `def.KnownGrant` does not know it, and a test pins that in both
@@ -490,7 +511,7 @@ refactor.
 whatever PRODUCES that channel must be re-checked in the same change.** A
 channel whose frames drive UI on every attached client is a steering primitive
 the moment a client can also emit it, so the row's audience and the producer's
-`LocalOnlyMethods` entry are one decision spread across two files — and nothing
+`//ao:scope` annotation are one decision spread across two files — and nothing
 in either file points at the other. Pin the pairing with a test that reads both,
 as `TestNotificationChannelsReachRemoteButStayHostProduced` does for
 `notification:activated`. Registry lookups stay keyed by plain `string`, because each is reached
@@ -541,10 +562,16 @@ retention interactions, and the client-side forward-skip detection are in
 
 ## Code generation
 
-`methodgen/` emits `methods_gen.go`, the static name to FNV-ID table. Run
-`go run ./internal/transport/methodgen` and commit the result;
+`methodgen/` emits `methods_gen.go`, the `MethodMeta{Name, ID, Scope, StepUp}`
+table. Run `go run ./internal/transport/methodgen` and commit the result;
 `TestMethodsGen_InSync` bytes-diffs a fresh run against the committed output, so
 a new exported `App` method without a regeneration fails CI.
+
+It reads the scope vocabulary out of `scopes.go` by AST rather than restating
+it, for the reason it parses `internalmethods.go` the same way: this tool cannot
+import the package it generates into, or a broken `methods_gen.go` would stop
+the very run that fixes it. That makes `scopes.go` a generator INPUT — see the
+manifest paragraph below.
 
 That gate is only as good as its cache key, and for a long time it was not
 good at all. `go test` keys a cached result on the files the TEST PROCESS

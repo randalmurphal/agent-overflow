@@ -537,7 +537,8 @@ Registration (the seam already anticipates a third provider:
    listener, and relay, analogous to the Codex arm's handler wiring.
 3. The `session` wrapper struct gains a `claudetui` typed pointer; its
    interface-dispatch sites pick it up via the shared `provider.Session`.
-4. The relay's App-bound methods → `LocalOnlyMethods`.
+4. The relay's App-bound methods → `//ao:scope terminal:operate`, which
+   derives local-only.
 5. `docs/references/claude.md` / `providers.md`: document the TUI path.
 
 Provider-package discipline (unchanged): the package returns normalized

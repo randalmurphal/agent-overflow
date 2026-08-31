@@ -7,6 +7,13 @@ answers the per-RPC liveness question, and revokes. Spec:
 Rows live in `internal/store` (migrations v75 and v76). Enforcement of what
 a scope PERMITS is phase 3 and is not here.
 
+The ten scope names are declared here as the audit and persistence
+vocabulary, and RESTATED in `internal/transport/scopes.go` — which adds
+`host` and the observe/execute/host tier each resolves to — because
+transport must not import this package. `internal/app` imports both, so
+`TestScopeVocabularyMatchesIdentity` there is what keeps one spelling,
+failing in either direction.
+
 ## Layering, and why it is one-directional
 
 ```
