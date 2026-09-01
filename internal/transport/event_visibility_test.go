@@ -10,15 +10,12 @@ func TestEventVisibleToOrigin(t *testing.T) {
 	for _, channel := range []string{
 		"git:status",
 		"provider:approval",
-		"provider:status",
 		"provider:queue_flushed",
 		"provider:queue_restored",
 		"provider:queue_state_changed",
 		"provider:background_task_state",
 		"provider:user_input",
-		"provider:account",
 		"provider:session_account",
-		"provider:account_usage_error",
 		"terminal:exit",
 		"terminal:output",
 		"provider:terminal_output",
@@ -34,6 +31,14 @@ func TestEventVisibleToOrigin(t *testing.T) {
 		"provider:item_event",
 		"provider:usage",
 		"provider:session_died",
+		// Wave 8i: a provider sign-in is driven from wherever the owner
+		// is, so the three channels that report one reach a remote admin
+		// device. All three are scoped access:admin, the same grant that
+		// starts and answers the flow over RPC.
+		"provider:account",
+		"provider:account_usage_error",
+		"provider:status",
+		"provider:login",
 		// Both notification channels reach an attached remote client: being
 		// told a turn finished while away from the desk is the reason to
 		// attach one, and the reveal that follows the click belongs to the

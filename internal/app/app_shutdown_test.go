@@ -268,6 +268,11 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// SwitchThread's read-state stamp runs off the RPC path, so an
 		// in-flight one is a SQLite write with nobody holding it open.
 		"stop thread read stamps",
+		// "stop provider logins" MUST appear before "close store" — a
+		// sign-in that completes writes the account's metadata row, and
+		// joining here is also what removes its temporary credential home
+		// instead of leaving it for the next boot's sweep.
+		"stop provider logins",
 		"close provider sessions",
 		// "stop orphan reaper" follows session close: each session
 		// releases its watched group on a clean close, so the sidecar has

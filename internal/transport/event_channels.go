@@ -427,20 +427,30 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.ProviderAccount,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeAccessAdmin,
 		Why: "Carries the user's email/display name plus authenticated " +
 			"subscriptionType, tokenSource (oauth | apikey | console), and " +
 			"apiProvider — account, auth-model, and billing identity in one " +
-			"frame.",
+			"frame. Scoped rather than loopback-only because signing a " +
+			"provider account in is now something a REMOTE admin device " +
+			"does: on a headless host there is no browser to open, so the " +
+			"page opens on the device reading this and the card that " +
+			"appears afterwards is the only confirmation it worked. " +
+			"access:admin is the same grant that already lets that device " +
+			"list, switch and remove these accounts over RPC, so the frame " +
+			"discloses nothing its holder could not read a call later.",
 	},
 	{
 		Channel:   eventchan.ProviderAccountUsageError,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeAccessAdmin,
-		Why:       "Account-scoped billing/quota failure detail; same identity class as provider:account.",
+		Why: "Account-scoped billing/quota failure detail; same identity " +
+			"class and same grant as provider:account, and widened " +
+			"alongside it — a remote sign-in that lands but cannot read " +
+			"its quota has to say so rather than go quiet.",
 	},
 	{
 		Channel:   eventchan.ProviderApproval,
@@ -577,12 +587,36 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.ProviderStatus,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeAccessAdmin,
 		Why: "Reports provider CLI installation/auth state and carries an " +
 			"actionURL plus provider-side error prose — install paths and " +
-			"authentication failures for the local machine's toolchain.",
+			"authentication failures for the local machine's toolchain. " +
+			"Scoped rather than loopback-only because \"not signed in\" is " +
+			"the banner a remote admin acts on: it now carries the Sign in " +
+			"action that starts a provider login, and a device that can " +
+			"start one has to be able to see why it is needed. The host " +
+			"detail it discloses is where the two provider CLIs are " +
+			"installed, which the same access:admin caller reads directly " +
+			"from the provider settings it may already edit.",
+	},
+	{
+		Channel:   eventchan.ProviderLogin,
+		Audience:  AudienceAny,
+		Retention: RetentionEphemeral,
+		Scope:     ScopeAccessAdmin,
+		Why: "The live state of one provider sign-in: phase, the authorize " +
+			"URL to open, and the Codex device code to type. Reaching a " +
+			"REMOTE admin device is the entire point — a headless host has " +
+			"no browser, so the page opens wherever the owner is — and " +
+			"access:admin is the grant that starts, answers and cancels " +
+			"the same flow over RPC. Ephemeral because replay is both " +
+			"useless and wrong here: an authorize URL is a one-use PKCE " +
+			"challenge and a device code dies with its flow, so a replayed " +
+			"frame offers a link that no longer answers. A client that " +
+			"reconnects mid-flow reads GetProviderLoginState instead, " +
+			"which is per-provider and current.",
 	},
 	{
 		Channel:   eventchan.ProviderSubagentProgress,

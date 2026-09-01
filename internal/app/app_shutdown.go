@@ -254,6 +254,16 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.stopMarkThreadReads()
 	record("stop thread read stamps", nil)
 
+	// Step 3h: end any provider sign-in still waiting on a person. It holds a
+	// provider CLI open and a temporary credential home on disk, and joining
+	// here is what removes the home — a login abandoned by process exit leaves
+	// one for the next boot's sweep instead. Bounded by the cancelled app
+	// context above, which is what each run is already unblocking from.
+	if a.providerAccounts != nil {
+		a.providerAccounts.ShutdownProviderLogins()
+	}
+	record("stop provider logins", nil)
+
 	// Step 4: stop provider sessions. Session closers aggregate their errors via
 	// closeSessionsParallel — we surface them under a single
 	// "close provider sessions" step so the order spy sees one entry.

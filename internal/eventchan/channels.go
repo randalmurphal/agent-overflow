@@ -98,6 +98,7 @@ const (
 	ProviderCompacting             Channel = "provider:compacting"
 	ProviderFastMode               Channel = "provider:fast_mode"
 	ProviderItemEvent              Channel = "provider:item_event"
+	ProviderLogin                  Channel = "provider:login"
 	ProviderModelFallback          Channel = "provider:model_fallback"
 	ProviderQueueFlushed           Channel = "provider:queue_flushed"
 	ProviderQueueRestored          Channel = "provider:queue_restored"

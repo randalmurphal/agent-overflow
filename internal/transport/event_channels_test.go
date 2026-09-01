@@ -64,8 +64,13 @@ var (
 		"mcp:status",
 		"power:keepawake", // 2026-08-25: launcher power directive, same posture as webview:trim
 		"pr:updated",
-		"provider:account",
-		"provider:account_usage_error",
+		// provider:account, provider:account_usage_error and
+		// provider:status left this list in wave 8i (provider remote
+		// re-auth): signing a provider account in is now something a
+		// paired admin device does, because a headless host has no
+		// browser to open the page in. All three are scoped
+		// access:admin, which is the grant that already lets that
+		// device list, switch and remove the same accounts over RPC.
 		"provider:approval",
 		"provider:background_task_state",
 		"provider:command_lifecycle", // 2026-08-25 pass
@@ -73,7 +78,6 @@ var (
 		"provider:queue_restored",
 		"provider:queue_state_changed",
 		"provider:session_account",
-		"provider:status",
 		"provider:terminal_output",
 		"provider:user_input",
 		"session-import:progress",
@@ -98,6 +102,11 @@ var (
 		"harness:ui-query",        // a one-shot query directive; a replayed one has no waiter
 		"highlight:diff_seed",
 		"highlight:seed",
+		// Wave 8i: an authorize URL is a one-use PKCE challenge and a
+		// device code dies with its flow, so a replayed frame offers a
+		// link that no longer answers. GetProviderLoginState is the
+		// reconnect path instead.
+		"provider:login",
 		"updater:install",
 		"webview:trim", // 2026-08-25: replaying a stale trim would GC an active session
 	}

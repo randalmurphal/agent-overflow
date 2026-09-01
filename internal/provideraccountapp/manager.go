@@ -39,23 +39,23 @@ type AccountSink interface {
 	PublishAccount(providerName string, account provideraccounts.Account, info provider.AccountInfo, generation uint64)
 	PublishCleared(providerName string, generation uint64)
 	PublishUsageError(providerName, accountID string, err error)
+	PublishLogin(state LoginState)
 }
 
 // Deps are the narrow process/lifecycle ports used by Manager.
 type Deps struct {
-	Context           func() context.Context
-	IsShuttingDown    func() bool
-	ShutdownError     error
-	CurrentSettings   func() settings.Settings
-	ProviderBinary    func(providerName string) string
-	BrowserExecutable func() (string, error)
-	OpenBrowser       func(context.Context, string) error
-	HTTPClient        func() *http.Client
-	Sessions          SessionGateway
-	Probes            ProbeInvalidator
-	RateLimits        RateLimitSink
-	Backoff           UsageBackoff
-	Accounts          AccountSink
+	Context         func() context.Context
+	IsShuttingDown  func() bool
+	ShutdownError   error
+	CurrentSettings func() settings.Settings
+	ProviderBinary  func(providerName string) string
+	OpenBrowser     func(context.Context, string) error
+	HTTPClient      func() *http.Client
+	Sessions        SessionGateway
+	Probes          ProbeInvalidator
+	RateLimits      RateLimitSink
+	Backoff         UsageBackoff
+	Accounts        AccountSink
 }
 
 // Manager owns the complete managed-account consistency boundary. Every
@@ -72,6 +72,13 @@ type Manager struct {
 	claudeReconcileMu sync.Mutex
 	codexReconcileMu  sync.Mutex
 	auditPath         string
+
+	// The sign-in registry (loginsession.go). Its lock is a leaf: no other
+	// Manager lock is taken under it, and nothing is published while it is
+	// held.
+	loginMu     sync.Mutex
+	logins      map[string]*loginRun
+	loginStates map[string]LoginState
 }
 
 // NewManager constructs an unattached manager. Attach installs the two stores

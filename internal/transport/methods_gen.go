@@ -50,6 +50,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "BrowserCompanionSubscribe", ID: 668496681, Scope: "terminal:operate"},                 // main.App.BrowserCompanionSubscribe
 	{Name: "BrowserCompanionUnsubscribe", ID: 3385360912, Scope: "terminal:operate"},              // main.App.BrowserCompanionUnsubscribe
 	{Name: "CancelDevicePairing", ID: 2608316491, Scope: "access:admin"},                          // main.App.CancelDevicePairing
+	{Name: "CancelProviderLogin", ID: 341374423, Scope: "access:admin"},                           // main.App.CancelProviderLogin
 	{Name: "CancelSessionImport", ID: 2562316972, Scope: "threads:operate"},                       // main.App.CancelSessionImport
 	{Name: "CheckForUpdate", ID: 2347956003, Scope: "host"},                                       // main.App.CheckForUpdate
 	{Name: "CheckThreadImportUpdates", ID: 2932719708, Scope: "threads:operate"},                  // main.App.CheckThreadImportUpdates
@@ -122,6 +123,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetPayloadData", ID: 3448919335, Scope: "threads:read"},                               // main.App.GetPayloadData
 	{Name: "GetPayloadPreview", ID: 4070214921, Scope: "threads:read"},                            // main.App.GetPayloadPreview
 	{Name: "GetProjectWorktreeSetup", ID: 471350242, Scope: "terminal:operate"},                   // main.App.GetProjectWorktreeSetup
+	{Name: "GetProviderLoginState", ID: 84914540, Scope: "access:admin"},                          // main.App.GetProviderLoginState
 	{Name: "GetProviderStatuses", ID: 3829328996, Scope: "access:admin"},                          // main.App.GetProviderStatuses
 	{Name: "GetQueueState", ID: 3079581691, Scope: "threads:operate"},                             // main.App.GetQueueState
 	{Name: "GetRateLimitsSnapshots", ID: 3325141610, Scope: "threads:read"},                       // main.App.GetRateLimitsSnapshots
@@ -222,7 +224,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListThreads", ID: 1090132042, Scope: "threads:read"},                                  // main.App.ListThreads
 	{Name: "ListWSLDistros", ID: 2332614075, Scope: "host"},                                       // main.App.ListWSLDistros
 	{Name: "ListWorkspaceMcpServers", ID: 2808137798, Scope: "settings:write"},                    // main.App.ListWorkspaceMcpServers
-	{Name: "LoginProviderAccount", ID: 1520009058, Scope: "access:admin"},                         // main.App.LoginProviderAccount
 	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995, Scope: "threads:operate"},                // main.App.MarkDiffReviewCommentsSent
 	{Name: "MarkThreadRead", ID: 1480646012, Scope: "threads:operate"},                            // main.App.MarkThreadRead
 	{Name: "MarkThreadUnread", ID: 236597375, Scope: "threads:operate"},                           // main.App.MarkThreadUnread
@@ -303,6 +304,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "StartCodexReview", ID: 1913732562, Scope: "threads:operate"},                          // main.App.StartCodexReview
 	{Name: "StartDiscussion", ID: 3188309099, Scope: "threads:operate"},                           // main.App.StartDiscussion
 	{Name: "StartDiscussionByID", ID: 2336869067, Scope: "threads:operate"},                       // main.App.StartDiscussionByID
+	{Name: "StartProviderLogin", ID: 1484798083, Scope: "access:admin"},                           // main.App.StartProviderLogin
 	{Name: "StartSession", ID: 2850159713, Scope: "threads:operate"},                              // main.App.StartSession
 	{Name: "StartTerminal", ID: 3009548683, Scope: "terminal:operate"},                            // main.App.StartTerminal
 	{Name: "SteerMessageWithOptions", ID: 1698485705, Scope: "threads:operate"},                   // main.App.SteerMessageWithOptions
@@ -311,6 +313,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "StopSession", ID: 3838500111, Scope: "threads:operate"},                               // main.App.StopSession
 	{Name: "StopThreadBackgroundWork", ID: 2155771620, Scope: "threads:operate"},                  // main.App.StopThreadBackgroundWork
 	{Name: "SubmitPRReview", ID: 2692607191, Scope: "git:operate"},                                // main.App.SubmitPRReview
+	{Name: "SubmitProviderLoginCode", ID: 3556446736, Scope: "access:admin"},                      // main.App.SubmitProviderLoginCode
 	{Name: "SubscribePRUpdates", ID: 3272491649, Scope: "git:operate"},                            // main.App.SubscribePRUpdates
 	{Name: "SwitchProviderAccount", ID: 1249964095, Scope: "access:admin"},                        // main.App.SwitchProviderAccount
 	{Name: "SwitchThread", ID: 3897387725, Scope: "threads:operate"},                              // main.App.SwitchThread

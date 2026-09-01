@@ -24,7 +24,6 @@ import (
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/diagenv"
-	"agent-overflow/internal/externalurl"
 	"agent-overflow/internal/harness/darwinbundle"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/network"
@@ -92,12 +91,6 @@ var resetTransportPortPin bool
 func main() {
 	if err := disclaimHarnessResponsibility(); err != nil {
 		fatalf("isolate macOS harness responsibility: %v", err)
-	}
-	if os.Getenv(externalurl.BrowserHelperEnvironment) == externalurl.BrowserHelperValue && len(os.Args) == 2 {
-		if err := externalurl.Open(context.Background(), os.Args[1]); err != nil {
-			fatalf("open URL: %v", err)
-		}
-		return
 	}
 	// The orphan-reaper sidecar (macOS) re-execs this binary with the
 	// __reap subcommand. Short-circuit before any other startup — flag
