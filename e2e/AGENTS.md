@@ -118,6 +118,14 @@ missing value over one that skips. Two rules keep the evidence real:
 - Draft threads (no items yet) are hidden from the sidebar. Seed at least
   one turn, or send the first message before navigating, when a spec needs
   the thread visible.
+- **Every page this backend hands out shares ONE ui_state bucket.** Pane
+  layout persists under the `client:<id>` scope and `/pageurl` answers with
+  the same client id every time, so a second page BOOTS INTO the panes the
+  first one opened — and then watches their threads. A spec that needs a
+  client with no panes, or with a different set, opens it BEFORE any other
+  page opens one; `HarnessReset` clears ui_state, so the first page of each
+  test is the only one that can boot bare.
+  `transport-watch-badge-carriers.spec.ts` turns on that ordering.
 - **A spec boots its OWN backend only for state `harness.reset()` cannot
   undo**, and then owns everything downstream of it. The LAN bind and the
   canonical domain both PERSIST to the settings file and REBIND the
