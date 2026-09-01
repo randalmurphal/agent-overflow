@@ -7,19 +7,35 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { isClientMode } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import { INPUT_CLASS, SECONDARY_BUTTON_CLASS } from './styles';
 
-  // In `--connect` mode the SPA is attached to a remote backend.
-  // GetNetworkSettings / SetNetworkSettings would query and mutate the
-  // *remote* server's bind preference, which both isn't actionable from
-  // here (the user can't restart the remote process to apply the rebind)
-  // and is misleading — the URL printed below would point at the remote
-  // machine, not the local one. Render a placeholder instead.
+  // Two independent axes, resolved the way EditorSection resolves the same
+  // pair — a surface that needs both asks both (transport/AGENTS.md).
+  //
+  // `clientMode` is a process-boot fact: in `--connect` mode the SPA is
+  // attached to a remote backend, so GetNetworkSettings /
+  // SetNetworkSettings would query and mutate the *remote* server's bind
+  // preference, which both isn't actionable from here (the user can't
+  // restart the remote process to apply the rebind) and is misleading —
+  // the URL printed below would point at the remote machine, not the local
+  // one.
+  //
+  // `host` is authorization, and it is the one no session is ever granted:
+  // the bind preference is a fact about THE MACHINE, so `GetNetworkSettings`
+  // carries `//ao:scope host` and is refused for every paired device,
+  // view-only and full alike. Without this arm the load fired on mount and
+  // the refusal came back as `Failed to load network settings` — a passive
+  // load reporting to nobody, which is exactly the burst the view-only
+  // rule exists to prevent (stores/AGENTS.md § A PASSIVE load asks before
+  // it fires; found by the harness, 2026-08-31).
   const clientMode = isClientMode();
+  let noHost = $derived(!hasScope('host'));
+  let localOnly = $derived(clientMode || noHost);
 
   let settings = $state<NetworkSettings | null>(null);
   let saving = $state(false);
@@ -27,7 +43,7 @@
   let copyTimeout: ReturnType<typeof setTimeout> | null = null;
 
   async function load(): Promise<void> {
-    if (clientMode) return;
+    if (localOnly) return;
     try {
       const result = await GetNetworkSettings();
       settings = result;
@@ -78,7 +94,10 @@
   });
 </script>
 
-<div class="flex flex-col gap-6">
+<div
+  class="flex flex-col gap-6"
+  data-testid={localOnly ? 'network-section-local-only' : undefined}
+>
   <section>
     <SettingsHeader title="Network Binding">
       {#snippet details()}
@@ -86,6 +105,10 @@
           Network binding can only be edited from your local install. This window is
           attached to a remote backend, so changes here would update the remote
           machine's bind preference, not yours.
+        {:else if noHost}
+          Network binding belongs to the machine running Agent Overflow. This device
+          reached it over the network, so the bind preference and the share URL are
+          shown and changed there.
         {:else}
           By default the server binds to
           <code class="font-mono text-[0.6875rem]">127.0.0.1</code> so only this machine can
@@ -96,7 +119,7 @@
         {/if}
       {/snippet}
     </SettingsHeader>
-    {#if !clientMode}
+    {#if !localOnly}
       <div class="flex flex-col gap-1">
         <SettingsField
           label="Allow remote access"
@@ -114,7 +137,7 @@
     {/if}
   </section>
 
-  {#if !clientMode && settings}
+  {#if !localOnly && settings}
     <section>
       <SettingsHeader
         title="Share URL"

@@ -62,6 +62,20 @@ stops waking readers.
   had the grant must still surface through `transport/scopeRefusal.ts`.
   `viewOnlyPassiveLoads.test.ts` is the sweep, and it asserts both
   directions so a guard cannot pass by never firing at all.
+
+  **The rule is not about stores.** A section that calls its RPCs from its
+  own mount effect is the same passive load one layer out, and that sweep
+  cannot see it: all four settings sections under Network — bind
+  preference, devices, saved `--connect` targets, WSL distro — fired
+  ungranted on every paired device's first visit while it was green
+  (2026-08-31, found by `e2e/tests/harness-remote-device-lifecycle.spec.ts`
+  reading the absence off the wire). Their sweep is
+  `components/settings/passiveLoads.test.ts`. Ask for the scope the RPC
+  actually carries: `host` refuses EVERY paired device, full access
+  included, while a named capability refuses only the sessions that lack
+  it — so a section gated on the wrong one is wrong in a direction a
+  view-only case alone cannot see, and each of those cases pairs a
+  full-access device too.
 - `events.ts` is the single subscription root. It owns channel names,
   generics and teardown order, and fans each channel out to the
   `events*.ts` module that owns the reaction. Add a channel there, put the

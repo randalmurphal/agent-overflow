@@ -181,7 +181,15 @@ remote browser alike. Protocol and authz rules:
   anything, checks before it fires: it has nobody to report a refusal to,
   so an ungranted session spends one refusal per surface per open. That was
   the whole shape of the view-only toast burst (owner's live test,
-  2026-08-30). `stores/viewOnlyPassiveLoads.test.ts` is the sweep.
+  2026-08-30). Two sweeps, because the loaders live in two places:
+  `stores/viewOnlyPassiveLoads.test.ts` for the stores, and
+  `components/settings/passiveLoads.test.ts` for the sections that call
+  their RPCs from their own mount effect — which the first sweep cannot
+  see, and which is how four of them stayed ungated until a harness spec
+  read the absence off the wire (2026-08-31). `host` is the scope to be
+  careful with here: it refuses EVERY paired device, full access
+  included, so it is the right gate for a fact about the MACHINE and the
+  wrong one for a capability.
 
   Notified at the two moments the answer can move — the manifest
   resolving, and `redialAfterPairing` — and polled never. Nothing clears

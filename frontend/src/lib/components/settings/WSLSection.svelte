@@ -55,9 +55,18 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { isClientMode } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import SettingsHeader from './SettingsHeader.svelte';
 
   const clientMode = isClientMode();
+  // Which distro the LAUNCHER boots into is a fact about the Windows
+  // machine, so `ListWSLDistros` and `GetWSLDistroPreference` carry
+  // `//ao:scope host` and no session holds it. The mount's load spent two
+  // refusals learning that, and the answer was already knowable (found by
+  // the harness, 2026-08-31; stores/AGENTS.md § A PASSIVE load asks
+  // before it fires). Renders nothing when ungranted, exactly as it
+  // renders nothing off Windows: there is no host here to configure.
+  let localOnly = $derived(clientMode || !hasScope('host'));
 
   let loading = $state(true);
   let supported = $state(false);
@@ -67,7 +76,7 @@
   let saving = $state(false);
 
   async function load(): Promise<void> {
-    if (clientMode) {
+    if (localOnly) {
       loading = false;
       return;
     }
@@ -110,8 +119,8 @@
   });
 </script>
 
-{#if clientMode}
-  <!-- Hidden in --connect mode entirely; nothing to render. -->
+{#if localOnly}
+  <!-- Hidden in --connect mode and off-host entirely; nothing to render. -->
 {:else if loading}
   <section data-testid="wsl-section-loading">
     <SettingsHeader title="WSL Distro" />

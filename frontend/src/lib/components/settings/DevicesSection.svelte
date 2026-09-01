@@ -34,7 +34,7 @@
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
   import { isClientMode } from '../../transport/runMode';
-  import { isViewOnlyGrantSet } from '../../transport/scopes';
+  import { hasScope, isViewOnlyGrantSet } from '../../transport/scopes';
   import PairDeviceModal from './PairDeviceModal.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import { GHOST_BUTTON_CLASS } from './styles';
@@ -43,6 +43,17 @@
   // --connect mode the RPCs are refused as local-only, so the section
   // renders a pointer instead of controls that can only fail.
   const clientMode = isClientMode();
+  // The other axis, and the one a paired device lands on. The nine RPCs
+  // below carry `//ao:scope access:admin`, which full access holds and
+  // view-only does not — so a view-only device's mount fired
+  // `GetAccessOverview` and got `Failed to load devices` back, a passive
+  // load discovering a refusal it could have asked about (stores/AGENTS.md
+  // § A PASSIVE load asks before it fires; found by the harness,
+  // 2026-08-31). Asked for the CAPABILITY rather than for view-onlyness:
+  // a session can lack `access:admin` without being view-only, and the
+  // gate has to be right for that one too.
+  let ungranted = $derived(!hasScope('access:admin'));
+  let unavailable = $derived(clientMode || ungranted);
 
   const CLASS_ICONS = {
     phone: Smartphone,
@@ -70,12 +81,16 @@
   let pairedCount = $derived(devices.filter((d) => d.channel !== 'local').length);
 
   async function load(): Promise<void> {
-    if (clientMode) return;
+    if (unavailable) return;
     try {
       overview = await GetAccessOverview();
     } catch (err) {
       addToast('error', `Failed to load devices: ${errString(err)}`);
     }
+    // `host`, not `access:admin`: the bind preference is a fact about the
+    // machine, so this one is refused even for a full-access device that
+    // may do everything else on this screen.
+    if (!hasScope('host')) return;
     try {
       bindAll = (await GetNetworkSettings()).bindAll;
     } catch {
@@ -229,28 +244,30 @@
   // short-lived poll runs only while something is pending — the common
   // steady state costs nothing.
   $effect(() => {
-    if (clientMode || pending.length === 0) return;
+    if (unavailable || pending.length === 0) return;
     const timer = setInterval(() => void load(), 3_000);
     return () => clearInterval(timer);
   });
 </script>
 
-<section>
+<section data-testid={unavailable ? 'devices-section-unavailable' : undefined}>
   <div class="flex items-start justify-between gap-4">
     <SettingsHeader
       title="Devices"
       description={clientMode
         ? 'Device credentials are managed from the backend machine itself. This window is attached remotely, so pairing and revocation live on that install’s own screen.'
-        : 'Each paired device holds its own credential for this backend. Revoking one signs that device out everywhere without touching the others.'}
+        : ungranted
+          ? 'Pairing and revocation were not granted to this device. They stay on the machine running Agent Overflow, and on devices paired with full access.'
+          : 'Each paired device holds its own credential for this backend. Revoking one signs that device out everywhere without touching the others.'}
     />
-    {#if !clientMode}
+    {#if !unavailable}
       <Button variant="primary" size="sm" class="shrink-0 whitespace-nowrap" onclick={() => (pairOpen = true)}>
         Pair a device
       </Button>
     {/if}
   </div>
 
-  {#if !clientMode && overview}
+  {#if !unavailable && overview}
     <div class="flex flex-col gap-1.5">
       {#each pending as link (link.linkId)}
         <div
@@ -476,6 +493,6 @@
   {/if}
 </section>
 
-{#if !clientMode}
+{#if !unavailable}
   <PairDeviceModal open={pairOpen} {bindAll} onClose={() => (pairOpen = false)} onChanged={() => void load()} />
 {/if}

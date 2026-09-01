@@ -25,6 +25,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { isClientMode } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import RemoteEndpointRow from './RemoteEndpointRow.svelte';
   import RemoteEndpointForm from './RemoteEndpointForm.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
@@ -39,6 +40,14 @@
   // settings file). Render a read-only placeholder instead and let
   // the user edit endpoints from their local install.
   const clientMode = isClientMode();
+  // The authorization axis, alongside that process-boot one. The list is
+  // this install's saved launch targets, so `ListRemoteEndpoints` carries
+  // `//ao:scope settings:write` — a view-only device holds no such grant,
+  // and the mount's load spent a refusal to find that out (found by the
+  // harness, 2026-08-31; stores/AGENTS.md § A PASSIVE load asks before it
+  // fires).
+  let ungranted = $derived(!hasScope('settings:write'));
+  let unavailable = $derived(clientMode || ungranted);
 
   // EndpointSummary is the wire shape ListRemoteEndpoints returns:
   // metadata only, no token. Tokens are fetched on-demand via
@@ -65,7 +74,7 @@
   let formError = $state<string | null>(null);
 
   async function load(): Promise<void> {
-    if (clientMode) {
+    if (unavailable) {
       // Skip the RPC entirely in client mode. The remote backend would
       // happily return its own endpoints, but rendering them here
       // would mislead the user into thinking they're editing local
@@ -197,11 +206,13 @@
       title="Saved --connect targets"
       description={clientMode
         ? "Remote endpoints can only be edited from your local install. This window is attached to a remote backend, so changes here would update the remote machine's settings instead of yours."
-        : 'Store the URL + token for a remote agent-overflow backend so you can launch the desktop app against it without retyping. Tokens are stored in plaintext alongside the rest of settings.'}
-      details={clientMode ? undefined : connectUsage}
+        : ungranted
+          ? 'Saved launch targets were not granted to this device. They belong to the install that stores them, and are edited on its own screen.'
+          : 'Store the URL + token for a remote agent-overflow backend so you can launch the desktop app against it without retyping. Tokens are stored in plaintext alongside the rest of settings.'}
+      details={unavailable ? undefined : connectUsage}
     />
 
-    {#if !clientMode}
+    {#if !unavailable}
       {#if loading}
         <p class="text-[0.75rem] text-fg-muted">Loading…</p>
       {:else if endpoints.length === 0 && editingId === null}
@@ -209,7 +220,7 @@
       {/if}
     {/if}
 
-    {#if !clientMode && !loading && endpoints.length > 0}
+    {#if !unavailable && !loading && endpoints.length > 0}
       <ul
         class="divide-y divide-border-subtle/60 overflow-hidden rounded-[var(--radius-control)] border border-border-subtle"
         data-testid="remote-endpoints-list"
@@ -225,7 +236,7 @@
       </ul>
     {/if}
 
-    {#if !clientMode}
+    {#if !unavailable}
       <div class="mt-2.5">
         {#if editingId === null}
           <button type="button" onclick={startNew} class={SECONDARY_BUTTON_CLASS}>
