@@ -911,6 +911,10 @@ func (r *Router) stashBackgroundTaskTerminal(evt provider.ProviderEvent, meta ba
 		State:     "exited",
 		UpdatedAt: now,
 	})
+	// The state event above is loopback-only (it names the local command's
+	// output-derived state), so a remote client learns this transition only
+	// here. Same nudge, same refetch, no command data.
+	r.emitBackgroundTasksChangedNudge(evt.ThreadID)
 	return nil
 }
 
@@ -1201,6 +1205,12 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 			UpdatedAt: now,
 		})
 	}
+	// Unconditional, unlike the drained event above: the completion sibling
+	// is what drops this launch out of CountLiveRunningBackgroundToolCalls,
+	// so the workspace-change lock's answer just changed whether or not a
+	// stash was drained on the way. That lock gates irreversible actions and
+	// reads only wildcard channels, so this is the frame it waits on.
+	r.emitBackgroundTasksChangedNudge(evt.ThreadID)
 	return nil
 }
 

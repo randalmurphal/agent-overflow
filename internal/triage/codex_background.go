@@ -136,7 +136,13 @@ func (r *Router) codexBackgroundIfPresent(threadID string) *codexBackgroundState
 	return st.codexBackground
 }
 
-func (r *Router) emitCodexBackgroundTasksChanged(threadID string) {
+// emitBackgroundTasksChangedNudge sends the set-less refetch nudge on
+// provider:background_tasks_changed. Provider-neutral despite living beside
+// the Codex projector: Claude's terminal transitions fire it too, because
+// that channel is the only one carrying them that reaches a remote client
+// (provider:background_task_state is loopback-only, and the item upsert the
+// workspace-change lock used to watch is now narrowed by watch).
+func (r *Router) emitBackgroundTasksChangedNudge(threadID string) {
 	if strings.TrimSpace(threadID) == "" {
 		return
 	}
@@ -192,7 +198,7 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 			rebindCodexUnifiedExecProcessLocked(state, existing, meta.ProcessID)
 			r.mu.Unlock()
 			if emitChanged {
-				r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+				r.emitBackgroundTasksChangedNudge(evt.ThreadID)
 			}
 			return true
 		}
@@ -218,7 +224,7 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 		emitChanged = true
 		r.mu.Unlock()
 		if emitChanged {
-			r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+			r.emitBackgroundTasksChangedNudge(evt.ThreadID)
 		}
 		return true
 	case isSpawnAgentCandidate && meta.Tool == "spawn_agent":
@@ -229,7 +235,7 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 		if _, ok := state.spawnAgent[itemID]; ok {
 			r.mu.Unlock()
 			if emitChanged {
-				r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+				r.emitBackgroundTasksChangedNudge(evt.ThreadID)
 			}
 			return true
 		}
@@ -237,7 +243,7 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 	}
 	r.mu.Unlock()
 	if emitChanged {
-		r.emitCodexBackgroundTasksChanged(evt.ThreadID)
+		r.emitBackgroundTasksChangedNudge(evt.ThreadID)
 	}
 	return isSpawnAgentCandidate && meta.Tool == "spawn_agent"
 }
@@ -340,6 +346,6 @@ func (r *Router) observeCodexTurnComplete(threadID string) {
 	spawnChanged := clearPendingCodexSpawnTrackersLocked(state)
 	r.mu.Unlock()
 	if spawnChanged {
-		r.emitCodexBackgroundTasksChanged(threadID)
+		r.emitBackgroundTasksChangedNudge(threadID)
 	}
 }

@@ -1773,7 +1773,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		if err != nil {
 			log.Printf("triage: cleanup live Codex subagent launches for thread %s: %v", threadID, err)
 		} else if count > 0 {
-			r.emitCodexBackgroundTasksChanged(threadID)
+			r.emitBackgroundTasksChangedNudge(threadID)
 		}
 	}
 	return true

@@ -276,6 +276,38 @@ describe('createWorkspaceChangeLockState', () => {
     });
   });
 
+  // The lock consumes WILDCARD channels only. provider:item_event is
+  // narrowed to the threads a client watches, so a sibling's task
+  // starting in this workspace no longer reaches an unwatching client at
+  // all — a lock that re-checked on it would go stale precisely in the
+  // sibling case it exists for. The four events above cover every
+  // transition the item stream used to stand in for, so this is a
+  // removal, not a downgrade.
+  it('does NOT re-check on provider:item_event', async () => {
+    vi.useFakeTimers();
+    let response: Activity = idle();
+    const list = setBindingMock('GetWorkspaceActivity', async () => response);
+    const pane = await buildPane();
+
+    const { getByTestId } = render(Harness, { props: { pane } });
+    const state = getByTestId('workspace-change-lock');
+    await vi.waitFor(() => expect(state).toHaveAttribute('data-locked', 'false'));
+    expect(list.mock.calls.length).toBe(1);
+
+    response = busyWithTasks();
+    for (let i = 0; i < 5; i += 1) {
+      emitWailsEvent('provider:item_event', {
+        action: 'upsert',
+        threadId: 'thread-1',
+        item: { id: `tool-${i}`, threadId: 'thread-1', kind: 'tool_call', status: 'running' },
+      });
+      await vi.advanceTimersByTimeAsync(100);
+    }
+
+    expect(list.mock.calls.length).toBe(1);
+    expect(state).toHaveAttribute('data-locked', 'false');
+  });
+
   it('shares ONE check between the two controls that gate on it', async () => {
     setBindingMock('GetWorkspaceActivity', async () => idle());
     const pane = await buildPane();

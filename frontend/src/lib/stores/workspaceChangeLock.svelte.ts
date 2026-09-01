@@ -58,12 +58,6 @@
 
 import type { ThreadPane } from './thread.svelte';
 import { GetWorkspaceActivity, type WorkspaceActivity } from './bindings';
-// Imported from the leaf that OWNS the fan-out, not from the `events.ts`
-// composition root: this module is loaded by the test setup (it holds a
-// module-level store that has to be reset between tests), and pulling the
-// whole event graph in there would evaluate every handler module before a
-// suite's own `vi.mock` calls register.
-import { onItemUpsert } from './eventsItemStream';
 import { wailsEventOn } from './wailsEvents';
 import { hasScope } from '../transport/scopes';
 import { getActiveTurn } from './threadStatuses.svelte';
@@ -72,11 +66,11 @@ import { isMethodUnavailableError } from './transportStatus.svelte';
 import { createRefreshScheduler } from '../utils/refreshScheduler';
 import { workspaceKeyForThread } from '../utils/workspaceKey';
 
-// Item-stream events fire per wire round — several per second while any pane
-// streams — and every live key answers each one. 100ms collapses that burst;
-// 400ms is the hard ceiling on how stale a lock gating an irreversible action
-// may be, and unlike the debounce it replaced it holds under a stream that
-// never pauses.
+// Turn and background-task events burst — a thread cycling wire rounds emits
+// several per second — and every live key answers each one. 100ms collapses
+// that burst; 400ms is the hard ceiling on how stale a lock gating an
+// irreversible action may be, and unlike the debounce it replaced it holds
+// under a stream that never pauses.
 const REFRESH_DELAY_MS = 100;
 const REFRESH_MAX_WAIT_MS = 400;
 
@@ -137,13 +131,19 @@ const store = createEntityStore<WorkspaceActivity, void>({
       },
     });
 
-    // None of these filter on the event's threadId: the busy thread may be
-    // one this client has never mounted, so there is nothing to compare a
-    // workspace key against. See EVENT ROUTING in the header.
+    // Every source here is a WILDCARD channel, deliberately, and none of
+    // them filters on the event's threadId: the busy thread may be one this
+    // client has never mounted, so there is nothing to compare a workspace
+    // key against. See EVENT ROUTING in the header. That rules out the
+    // transcript stream — `provider:item_event` is narrowed to the threads
+    // this client has a surface for (transport/entityFilteredChannels.ts),
+    // so a background launch or completion in a sibling thread would simply
+    // not arrive. The two legs of the backend's answer are covered:
+    // open turns by turn_started / turn_completed, and live background
+    // tasks by background_tasks_changed, which fires at launch on both
+    // providers and at Claude's exit / drain / orphan-recovery
+    // transitions.
     const cancels = [
-      onItemUpsert((item) => {
-        if (item.isBackground || item.completionOf) refresh.request();
-      }),
       // A turn opening or closing in ANY thread can flip a workspace's lock:
       // the local pane's own turn is covered synchronously below, but a
       // sibling thread's is only visible through these.
@@ -153,7 +153,9 @@ const store = createEntityStore<WorkspaceActivity, void>({
       // Background-task state events fire on host-process exit
       // (state=exited) and on agent-observation drain (state=drained). Both
       // transitions can flip the lock if a backgrounded task drops out of
-      // the live set.
+      // the live set. Loopback-only (it names the local command), so this
+      // one is a local-client refinement on top of the nudge above rather
+      // than coverage of its own.
       wailsEventOn('provider:background_task_state', () => refresh.request()),
     ];
     let released = false;
