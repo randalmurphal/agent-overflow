@@ -148,7 +148,7 @@ func (s *Service) AddRemoteEndpoint(name, rawURL, token string) (RemoteEndpoint,
 		URL:   cleanURL,
 		Token: cleanToken,
 	}
-	if _, err := s.mutate("", func(current Settings) (Settings, error) {
+	if _, err := s.mutate("", DeviceDesktop, func(current Settings) (Settings, error) {
 		current.RemoteEndpoints = append(current.RemoteEndpoints, next)
 		return current, nil
 	}); err != nil {
@@ -171,7 +171,7 @@ func (s *Service) UpdateRemoteEndpoint(id, name, rawURL, token string) (RemoteEn
 	}
 
 	var updated RemoteEndpoint
-	if _, err := s.mutate("", func(current Settings) (Settings, error) {
+	if _, err := s.mutate("", DeviceDesktop, func(current Settings) (Settings, error) {
 		idx := indexRemoteEndpointByID(current.RemoteEndpoints, id)
 		if idx < 0 {
 			return Settings{}, fmt.Errorf("remote endpoint %q not found", id)
@@ -212,7 +212,7 @@ func (s *Service) DeleteRemoteEndpoint(id string) error {
 		return errors.New("remote endpoint id required")
 	}
 
-	_, err := s.mutate("", func(current Settings) (Settings, error) {
+	_, err := s.mutate("", DeviceDesktop, func(current Settings) (Settings, error) {
 		idx := indexRemoteEndpointByID(current.RemoteEndpoints, id)
 		if idx < 0 {
 			return Settings{}, fmt.Errorf("remote endpoint %q not found", id)
@@ -238,7 +238,7 @@ func (s *Service) TouchRemoteEndpoint(id string) error {
 		return errors.New("remote endpoint id required")
 	}
 
-	_, err := s.mutate("", func(current Settings) (Settings, error) {
+	_, err := s.mutate("", DeviceDesktop, func(current Settings) (Settings, error) {
 		idx := indexRemoteEndpointByID(current.RemoteEndpoints, id)
 		if idx < 0 {
 			return Settings{}, fmt.Errorf("remote endpoint %q not found", id)

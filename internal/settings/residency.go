@@ -107,21 +107,32 @@ func (s *Service) InvalidateTierCache() {
 }
 
 // Caller is this service seen from one connection: the same settings, with
-// the device tier resolved out of THAT caller's bucket.
+// the device tier resolved out of THAT caller's bucket, over THAT caller's
+// device-class defaults (classdefaults.go).
 //
 // The bucket is empty for a caller with no device of its own — an in-process
 // saga, a test, a tool holding the launch credential. Such a caller reads the
-// device defaults, because it has no screen whose preferences it could be
+// class defaults, because it has no screen whose preferences it could be
 // asking for, and its writes land in the backend machine's own bucket.
 type Caller struct {
 	svc    *Service
 	bucket string
+	class  DeviceClass
 }
 
-// For binds the service to one caller's device bucket. `For("")` is the
-// backend's own view, which is what the bucket-free Service methods use.
-func (s *Service) For(bucket string) Caller {
-	return Caller{svc: s, bucket: bucket}
+// For binds the service to one caller's device bucket AND the class of screen
+// behind it. `For("", DeviceDesktop)` is the backend's own view, which is what
+// the bucket-free Service methods use.
+//
+// The class is a parameter rather than a second method because a bucket and a
+// class are two halves of one answer to "which screen is this?", and the bug
+// this wave exists to prevent is exactly the two travelling apart — a paired
+// phone read through a call that named its bucket and forgot its class would
+// silently answer desktop defaults. Every caller therefore states one; a
+// caller that genuinely cannot name the screen passes DeviceDesktop, which is
+// what every device resolved as before the table existed.
+func (s *Service) For(bucket string, class DeviceClass) Caller {
+	return Caller{svc: s, bucket: bucket, class: class}
 }
 
 // BackendScreen binds the service to the BACKEND MACHINE's own screen — the
@@ -141,33 +152,45 @@ func (s *Service) For(bucket string) Caller {
 // this machine's.
 //
 // A store-less service, or one whose backend bucket never resolved, answers
-// the same defaults `For("")` would: no bucket, no preferences, no failure.
+// the same defaults `For("", DeviceDesktop)` would: no bucket, no
+// preferences, no failure.
+//
+// The class is DESKTOP because that is what this screen is: the machine
+// running the backend, presenting in its own window (or through the Windows
+// launcher, which is the same machine).
 func (s *Service) BackendScreen() Caller {
 	s.mu.RLock()
 	bucket := s.backendBucket
 	s.mu.RUnlock()
-	return s.For(bucket)
+	return s.For(bucket, DeviceDesktop)
 }
 
 // Get returns the settings this caller sees: the shared host+user snapshot
-// with its own device slice overlaid.
+// with its class defaults and then its own device slice overlaid.
 func (c Caller) Get() Settings {
-	return c.svc.getFor(c.bucket)
+	return c.svc.getFor(c.bucket, c.class)
 }
 
 // Update applies a partial patch, routing each key to its tier's storage, and
 // returns the caller's own view of the result.
 func (c Caller) Update(patch map[string]any) (Settings, error) {
-	return c.svc.update(c.bucket, patch)
+	return c.svc.update(c.bucket, c.class, patch)
 }
 
 // AddRecentWorkspace pushes a workspace path onto this caller's recent list.
 func (c Caller) AddRecentWorkspace(path string) {
-	c.svc.addRecentWorkspace(c.bucket, path)
+	c.svc.addRecentWorkspace(c.bucket, c.class, path)
 }
 
-// getFor is Get plus the caller's device overlay. The host+user half is the
-// cached in-memory snapshot; the device half is one `ui_state` read.
+// getFor is Get plus the caller's class defaults and then its device overlay.
+// The host+user half is the cached in-memory snapshot; the class half is a
+// table lookup; the device half is one `ui_state` read.
+//
+// The two device layers are applied in that order and never merged: the class
+// row is what a screen of this kind gets, the bucket's rows are what THIS
+// screen chose, and a choice outranks a class. sanitizeLoadedSettings runs
+// once at the end, over the merged result, so a class default is clamped by
+// exactly the rules a hand-edited row is.
 //
 // Deliberately NOT cached per bucket. The rows a bucket holds are written by
 // this package AND by the frontend's appStorage through store.SetUIState, so a
@@ -175,19 +198,29 @@ func (c Caller) AddRecentWorkspace(path string) {
 // about settings — a staleness bug in exchange for saving one indexed SELECT
 // on a table with a handful of rows, on an RPC the UI issues at page load and
 // on `settings:updated`. Backend logic never takes this path at all: it reads
-// Get(), which touches no database.
-func (s *Service) getFor(bucket string) Settings {
+// Get(), which touches no database and belongs to no screen.
+//
+// A STORE-LESS service applies neither layer. That is the pre-database boot
+// reader (main.go, main_desktop.go), where the device tier still lives in
+// settings.json — so the file's own value is the screen's write, and a class
+// row applied over the top would outrank it. No store, no residency, no
+// class.
+func (s *Service) getFor(bucket string, class DeviceClass) Settings {
 	current := s.Get()
-	if bucket == "" {
-		return current
-	}
 	s.mu.RLock()
 	store := s.store
 	s.mu.RUnlock()
-	if store == nil {
+	rows := classOverrides(class)
+	if store == nil || (bucket == "" && len(rows) == 0) {
+		// Nothing to overlay: the shared snapshot is already sanitized, so
+		// re-running the pass here would be work with no possible effect.
 		return current
 	}
-	return sanitizeLoadedSettings(overlayScope(current, store, bucket, TierDevice))
+	applyRows(&current, rows, TierDevice)
+	if bucket != "" {
+		current = overlayScope(current, store, bucket, TierDevice)
+	}
+	return sanitizeLoadedSettings(current)
 }
 
 // fileResident reports whether a settings key persists in settings.json.

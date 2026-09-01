@@ -782,10 +782,10 @@ func (s *Service) Get() Settings {
 // This guard keeps a future caller — including a refactor or remote
 // loopback path — from regressing the contract.
 func (s *Service) Update(patch map[string]any) (Settings, error) {
-	return s.update("", patch)
+	return s.update("", DeviceDesktop, patch)
 }
 
-func (s *Service) update(bucket string, patch map[string]any) (Settings, error) {
+func (s *Service) update(bucket string, class DeviceClass, patch map[string]any) (Settings, error) {
 	if _, ok := patch["remoteEndpoints"]; ok {
 		return Settings{}, fmt.Errorf("settings: use AddRemoteEndpoint / UpdateRemoteEndpoint / DeleteRemoteEndpoint to mutate remote endpoints")
 	}
@@ -813,7 +813,7 @@ func (s *Service) update(bucket string, patch map[string]any) (Settings, error) 
 		// step-up for the same change, which was two answers to one question.
 		return Settings{}, fmt.Errorf("settings: use WorkflowSetGlobalPause to pause or resume workflows")
 	}
-	return s.mutate(bucket, func(current Settings) (Settings, error) {
+	return s.mutate(bucket, class, func(current Settings) (Settings, error) {
 		patched, err := applyPatch(current, patch)
 		if err != nil {
 			return Settings{}, fmt.Errorf("settings: apply patch: %w", err)
@@ -841,7 +841,7 @@ func (s *Service) SetNetwork(n NetworkSettings) (Settings, error) {
 	if err != nil {
 		return Settings{}, fmt.Errorf("settings: validate: %w", err)
 	}
-	return s.mutate("", func(current Settings) (Settings, error) {
+	return s.mutate("", DeviceDesktop, func(current Settings) (Settings, error) {
 		current.Network = validated
 		return current, nil
 	})
@@ -853,7 +853,7 @@ func (s *Service) SetNetwork(n NetworkSettings) (Settings, error) {
 // threads:autonomy-scoped WorkflowSetGlobalPause RPC, and a generic settings
 // patch must not persist a pause the engine never heard about.
 func (s *Service) SetWorkflowPaused(paused bool) (Settings, error) {
-	return s.mutate("", func(current Settings) (Settings, error) {
+	return s.mutate("", DeviceDesktop, func(current Settings) (Settings, error) {
 		current.WorkflowPaused = paused
 		return current, nil
 	})
@@ -862,19 +862,19 @@ func (s *Service) SetWorkflowPaused(paused bool) (Settings, error) {
 // AddRecentWorkspace pushes a workspace path to the front of the BACKEND's
 // own recent list, deduplicating and capping at 10 entries. The list is
 // device tier, so an RPC-driven caller should reach it through
-// `For(bucket).AddRecentWorkspace` instead — this spelling is the one for a
-// call with no connection behind it.
+// `For(bucket, class).AddRecentWorkspace` instead — this spelling is the one
+// for a call with no connection behind it.
 func (s *Service) AddRecentWorkspace(path string) {
-	s.addRecentWorkspace("", path)
+	s.addRecentWorkspace("", DeviceDesktop, path)
 }
 
-func (s *Service) addRecentWorkspace(bucket, path string) {
+func (s *Service) addRecentWorkspace(bucket string, class DeviceClass, path string) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return
 	}
 
-	if _, err := s.mutate(bucket, func(current Settings) (Settings, error) {
+	if _, err := s.mutate(bucket, class, func(current Settings) (Settings, error) {
 		// Build new list: path first, then existing entries minus duplicates.
 		seen := map[string]bool{path: true}
 		recent := []string{path}

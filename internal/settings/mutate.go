@@ -61,6 +61,14 @@ func (s *Service) changeObserver() ChangeObserver {
 // screen). The SAME scope is used for the pre-read and the write, so a
 // device-tier value that did not move is not reported as if it had.
 //
+// class names the kind of screen behind that bucket, and the pre-read applies
+// its defaults (classdefaults.go) the same way getFor does. It has to: change
+// detection compares the patched struct against what this caller was ALREADY
+// reading, and a phone reading lowPowerMode=true from its class while mutate
+// probed the global false would see a patch to false move nothing, persist
+// nothing, and read back as true — the device would be unable to turn the
+// class default off at all.
+//
 // apply owns its own validation. mutate deliberately does NOT validate on its
 // behalf: Update and the provider-environment mutators validate the whole
 // struct, while AddRecentWorkspace and the remote-endpoint CRUD validate only
@@ -72,7 +80,7 @@ func (s *Service) changeObserver() ChangeObserver {
 // SQLite and a JSON file cannot be — so a failure part-way through returns the
 // error without restamping the cache or announcing anything; the next read
 // reloads from storage and sees whatever landed.
-func (s *Service) mutate(bucket string, apply func(current Settings) (Settings, error)) (Settings, error) {
+func (s *Service) mutate(bucket string, class DeviceClass, apply func(current Settings) (Settings, error)) (Settings, error) {
 	var changes []TierChange
 	result, err := func() (Settings, error) {
 		s.mu.Lock()
@@ -83,8 +91,12 @@ func (s *Service) mutate(bucket string, apply func(current Settings) (Settings, 
 			deviceScope = s.backendBucket
 		}
 		current := s.loadFromFile()
-		if s.store != nil && deviceScope != "" {
-			current = sanitizeLoadedSettings(overlayScope(current, s.store, deviceScope, TierDevice))
+		if rows := classOverrides(class); s.store != nil && (deviceScope != "" || len(rows) > 0) {
+			applyRows(&current, rows, TierDevice)
+			if deviceScope != "" {
+				current = overlayScope(current, s.store, deviceScope, TierDevice)
+			}
+			current = sanitizeLoadedSettings(current)
 		}
 		// Probed BEFORE apply runs: apply is allowed to edit the value it is
 		// handed in place (UpdateRemoteEndpoint assigns into the endpoint
@@ -126,9 +138,12 @@ func (s *Service) mutate(bucket string, apply func(current Settings) (Settings, 
 			}
 		}
 
-		// Cache the SHARED half only. next carries one caller's device slice,
-		// and handing that to every later Get would make one screen's font
-		// size the backend's answer for all of them.
+		// Cache the SHARED half only. next carries one caller's device slice
+		// AND its class defaults, and handing that to every later Get would
+		// make one screen's font size the backend's answer for all of them —
+		// or, since the class layer arrived, put a phone's lowPowerMode in
+		// front of a desktop. Resetting to defaultKeyValues strips both,
+		// because both are re-applied per caller on the way out (getFor).
 		snapshot := next
 		if s.store != nil {
 			applyRows(&snapshot, defaultKeyValues(), TierDevice)

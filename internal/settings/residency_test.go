@@ -74,7 +74,7 @@ func fileObject(t *testing.T, svc *Service) map[string]json.RawMessage {
 func TestUpdateRoutesEachTierToItsOwnStorage(t *testing.T) {
 	svc, store := tieredService(t)
 
-	if _, err := svc.For("client:phone").Update(map[string]any{
+	if _, err := svc.For("client:phone", DeviceDesktop).Update(map[string]any{
 		"retention":     map[string]any{"days": 7}, // host
 		"confirmDelete": false,                     // user
 		"fontSize":      17,                        // device
@@ -107,17 +107,17 @@ func TestUpdateRoutesEachTierToItsOwnStorage(t *testing.T) {
 func TestDeviceTierResolvesPerCaller(t *testing.T) {
 	svc, _ := tieredService(t)
 
-	if _, err := svc.For("client:phone").Update(map[string]any{"fontSize": 17}); err != nil {
+	if _, err := svc.For("client:phone", DeviceDesktop).Update(map[string]any{"fontSize": 17}); err != nil {
 		t.Fatalf("phone Update: %v", err)
 	}
-	if _, err := svc.For("client:desk").Update(map[string]any{"fontSize": 20, "confirmDelete": false}); err != nil {
+	if _, err := svc.For("client:desk", DeviceDesktop).Update(map[string]any{"fontSize": 20, "confirmDelete": false}); err != nil {
 		t.Fatalf("desk Update: %v", err)
 	}
 
-	if got := svc.For("client:phone").Get().FontSize; got != 17 {
+	if got := svc.For("client:phone", DeviceDesktop).Get().FontSize; got != 17 {
 		t.Errorf("phone FontSize = %d, want 17", got)
 	}
-	if got := svc.For("client:desk").Get().FontSize; got != 20 {
+	if got := svc.For("client:desk", DeviceDesktop).Get().FontSize; got != 20 {
 		t.Errorf("desk FontSize = %d, want 20", got)
 	}
 	// A caller with no device of its own reads the default, because it has no
@@ -127,7 +127,7 @@ func TestDeviceTierResolvesPerCaller(t *testing.T) {
 	}
 	// The user tier is shared: one write, both callers see it.
 	for _, bucket := range []string{"client:phone", "client:desk"} {
-		if svc.For(bucket).Get().ConfirmDelete {
+		if svc.For(bucket, DeviceDesktop).Get().ConfirmDelete {
 			t.Errorf("%s still sees confirmDelete on", bucket)
 		}
 	}
@@ -149,7 +149,7 @@ func TestValidatorsRunForEveryDestination(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			svc, store := tieredService(t)
-			if _, err := svc.For("client:phone").Update(testCase.patch); err == nil {
+			if _, err := svc.For("client:phone", DeviceDesktop).Update(testCase.patch); err == nil {
 				t.Fatalf("Update(%v) succeeded", testCase.patch)
 			}
 			if testCase.scope != "" {
@@ -193,12 +193,12 @@ func TestSeedingMovesFileValuesIntoTheirScopes(t *testing.T) {
 	if got := svc.Get().ConfirmDelete; got {
 		t.Error("the seeded user value is not visible through Get")
 	}
-	if got := svc.For(testBackendBucket).Get().PaneDensity; got != "spacious" {
+	if got := svc.For(testBackendBucket, DeviceDesktop).Get().PaneDensity; got != "spacious" {
 		t.Errorf("seeded PaneDensity = %q, want spacious", got)
 	}
 	// A device that never paired starts from the defaults, not from this
 	// machine's screen.
-	if got := svc.For("client:phone").Get().FontSize; got != DefaultSettings.FontSize {
+	if got := svc.For("client:phone", DeviceDesktop).Get().FontSize; got != DefaultSettings.FontSize {
 		t.Errorf("a fresh device's FontSize = %d, want the default %d", got, DefaultSettings.FontSize)
 	}
 }
@@ -255,10 +255,10 @@ func TestMovedKeysLeaveTheFileOnTheNextHostWrite(t *testing.T) {
 	svc.AttachTierStore(store, testBackendBucket)
 
 	// Change the row out from under the stale file value.
-	if _, err := svc.For(testBackendBucket).Update(map[string]any{"fontSize": 20}); err != nil {
+	if _, err := svc.For(testBackendBucket, DeviceDesktop).Update(map[string]any{"fontSize": 20}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if got := svc.For(testBackendBucket).Get().FontSize; got != 20 {
+	if got := svc.For(testBackendBucket, DeviceDesktop).Get().FontSize; got != 20 {
 		t.Fatalf("FontSize = %d, want the row's 20 rather than the file's 17", got)
 	}
 
@@ -288,7 +288,7 @@ func TestADeviceOnlyWriteLeavesTheFileAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := svc.For("client:phone").Update(map[string]any{"fontSize": 17}); err != nil {
+	if _, err := svc.For("client:phone", DeviceDesktop).Update(map[string]any{"fontSize": 17}); err != nil {
 		t.Fatalf("device Update: %v", err)
 	}
 	after, err := os.Stat(svc.Path())
@@ -317,12 +317,12 @@ func TestABucketLessDeviceWriteLandsOnTheBackendScreen(t *testing.T) {
 func TestBackendScreenReadsTheBackendMachinesOwnBucket(t *testing.T) {
 	svc, _ := tieredService(t)
 
-	if _, err := svc.For(testBackendBucket).Update(map[string]any{
+	if _, err := svc.For(testBackendBucket, DeviceDesktop).Update(map[string]any{
 		"notifyTurnComplete": false,
 	}); err != nil {
 		t.Fatalf("backend Update: %v", err)
 	}
-	if _, err := svc.For("client:phone").Update(map[string]any{
+	if _, err := svc.For("client:phone", DeviceDesktop).Update(map[string]any{
 		"notifyApprovalNeeded": false,
 	}); err != nil {
 		t.Fatalf("phone Update: %v", err)
@@ -336,7 +336,7 @@ func TestBackendScreenReadsTheBackendMachinesOwnBucket(t *testing.T) {
 		t.Error("BackendScreen adopted another device's preference")
 	}
 	// And the phone keeps its own answer, unaffected by the backend's.
-	phone := svc.For("client:phone").Get()
+	phone := svc.For("client:phone", DeviceDesktop).Get()
 	if !phone.NotifyTurnComplete || phone.NotifyApprovalNeeded {
 		t.Errorf("phone view = %+v, want only its own toggle off", phone)
 	}
@@ -377,13 +377,13 @@ func TestNotificationPreferencesDefaultOn(t *testing.T) {
 // workspaces IT opened.
 func TestRecentWorkspacesArePerCaller(t *testing.T) {
 	svc, _ := tieredService(t)
-	svc.For("client:phone").AddRecentWorkspace("/repo/phone")
-	svc.For("client:desk").AddRecentWorkspace("/repo/desk")
+	svc.For("client:phone", DeviceDesktop).AddRecentWorkspace("/repo/phone")
+	svc.For("client:desk", DeviceDesktop).AddRecentWorkspace("/repo/desk")
 
-	if got := svc.For("client:phone").Get().RecentWorkspaces; !slices.Equal(got, []string{"/repo/phone"}) {
+	if got := svc.For("client:phone", DeviceDesktop).Get().RecentWorkspaces; !slices.Equal(got, []string{"/repo/phone"}) {
 		t.Errorf("phone RecentWorkspaces = %v", got)
 	}
-	if got := svc.For("client:desk").Get().RecentWorkspaces; !slices.Equal(got, []string{"/repo/desk"}) {
+	if got := svc.For("client:desk", DeviceDesktop).Get().RecentWorkspaces; !slices.Equal(got, []string{"/repo/desk"}) {
 		t.Errorf("desk RecentWorkspaces = %v", got)
 	}
 }
@@ -415,7 +415,7 @@ func TestAnUnreadableRowDoesNotCostTheWholeBucket(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	got := svc.For("client:phone").Get()
+	got := svc.For("client:phone", DeviceDesktop).Get()
 	if got.PaneDensity != "spacious" {
 		t.Errorf("PaneDensity = %q, want spacious", got.PaneDensity)
 	}
@@ -429,7 +429,7 @@ func TestAnUnreadableRowDoesNotCostTheWholeBucket(t *testing.T) {
 func TestAnUnreadableBucketFallsBackToDefaults(t *testing.T) {
 	svc, store := tieredService(t)
 	store.readErr = fmt.Errorf("ui_state is unavailable")
-	if got := svc.For("client:phone").Get().FontSize; got != DefaultSettings.FontSize {
+	if got := svc.For("client:phone", DeviceDesktop).Get().FontSize; got != DefaultSettings.FontSize {
 		t.Errorf("FontSize = %d, want the default %d", got, DefaultSettings.FontSize)
 	}
 }
