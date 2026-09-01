@@ -886,9 +886,10 @@ no scope annotations means):
 ## Event-channel policy registry
 
 `event_channels.go` holds `channelPolicies`, one authored row per channel the
-app emits: `{Channel, Audience, Retention, Scope, Why}`. It decides all three
-per-channel questions: who may receive a channel's frames by ORIGIN, what
-GRANT a session needs to receive them, and how deep its replay ring is.
+app emits: `{Channel, Audience, Retention, Scope, EntityFiltered, Why}`. It
+decides all four per-channel questions: who may receive a channel's frames by
+ORIGIN, what GRANT a session needs to receive them, whether a connection may
+narrow them to the entities it is looking at, and how deep its replay ring is.
 It cannot be generated, because emit sites are spread across several packages
 and some build their channel name at runtime.
 
@@ -909,6 +910,14 @@ package's `TestEmitSitesNameAnEventChannelConstant` catches.
 - `Retention`: `RetentionDefault` (full ring) / `RetentionEphemeral`
   (capacity 0) / `RetentionLatestOnly` (capacity 1). Class-level doctrine,
   including the unkeyed membership rule for latest-only, lives on the constants.
+- `EntityFiltered`: whether a connection that has named the threads it is
+  looking at stops receiving this channel's frames for the others (see
+  *Narrowing a connection to what it is looking at* below). The membership
+  rule is on the field: HIGH-FREQUENCY PAYLOAD CARRIERS whose only consumers
+  render the named thread and whose absence degrades to a slower correct
+  path. Low-frequency thread-keyed channels stay wildcard deliberately — the
+  bytes saved would not pay for the reasoning every future consumer of that
+  channel then owes.
 - `Why`: the decision. A `Why` containing `"unreviewed"` marks a row that
   inherited a default rather than one anyone decided, and
   `TestChannelPolicyUnreviewedWorklist` prints any that appear.
@@ -962,11 +971,44 @@ entity, not per caller. N subscribers on one cwd share one
 `gitwatch.Subscription`, one goroutine, and one frame per change; pause and
 resume compose across them, and fetch errors ride the payload.
 
+## Narrowing a connection to what it is looking at
+
+`event_entity.go` holds the doctrine and the derived set; `EntityFiltered` on a
+policy row is the only place membership is declared. A `watch` frame names the
+threads a connection is looking at, and `Subscriber.watches` withholds the
+filtered channels for every other thread — in `deliver` AND in `handleReplay`,
+because a filter that only applied live would hand the whole backlog back on
+the next reconnect.
+
+Four properties the code depends on, each with a test in
+`event_entity_test.go` / `conn_watch_test.go`:
+
+- **The key is computed once, at emit.** `App.emitKeyed` derives it before the
+  bus sees the payload, so N subscribers cost one extraction rather than N.
+  `Event.EntityKey` rides the ring entry, which is what lets replay filter
+  without re-parsing.
+- **Fail-open.** An empty key is delivered to everyone. A payload
+  `eventscope.ThreadIDFromEvent` cannot attribute degrades to the previous,
+  wider behavior — never to a silently missing frame.
+- **A withheld frame is not a drop.** The check runs BEFORE the gap accounting,
+  so withholding never flags the channel and never mints a `gap:true` marker.
+  Reversing that order turns narrowing into a resync storm.
+- **Watching is not subscribing.** A `watch` frame must not touch channel
+  subscription: the SPA never sends `subscribe`, and `ChannelSubscriberCount`
+  is what tells the launcher whether a dedicated bridge is attached.
+
+The client side is the other half of the same decision and cannot be inferred
+from these rows — a filtered channel needs an exemption in the client's
+forward-skip heuristic, and a thread with a consumer needs a source in
+`frontend/src/lib/stores/watchedThreads.ts`. Adding a row means auditing every
+consumer of that channel for one that reads it for a thread with no surface.
+
 ## Wire frames and the gap marker
 
 `frame.go` is the frame catalog: `ClientFrame` and `ServerFrame` document every
 type, field, and bound (`MaxReplayChannels`, `MaxSubscribeChannels`,
-`MaxRPCParams`) beside the decoder. What a gap means to a client is not.
+`MaxRPCParams`, `MaxWatchThreads`, `MaxWatchThreadIDBytes`) beside the decoder.
+What a gap means to a client is not.
 
 `gap:true` means "your replay seq fell outside the in-memory ring, re-fetch
 through the list endpoints". It is a resync instruction rather than a late

@@ -10,7 +10,9 @@ remote browser alike. Protocol and authz rules:
   replay-on-reconnect cursor, the dedup check, and mid-connection drop
   detection, since a forward skip on a channel already seen on THIS
   connection means the server's non-blocking fanout dropped what sat
-  between. It is the implementation behind the handle below, not the door:
+  between — unless this client ASKED for less, which is the one exemption
+  and lives with `entityFilteredChannels.ts` below. It is the
+  implementation behind the handle below, not the door:
   code that issues RPCs or subscribes resolves a transport instead of
   importing this singleton.
 
@@ -228,6 +230,19 @@ remote browser alike. Protocol and authz rules:
   ADDITIVELY: a new optional field or a new frame type is safe because
   of the tolerance above, while renaming or repurposing an existing one
   is not, and no amount of client tolerance makes it so.
+- `entityFilteredChannels.ts` is the list of channels the backend narrows
+  to the threads this client says it is looking at
+  (`wsClient.setWatchedThreads` sends the `watch` frame; the set is composed
+  in `stores/watchedThreads.ts`). It exists for ONE consumer: the forward-skip
+  heuristic above, which must not read a withheld frame's spent sequence
+  number as a drop. So the list is not a convenience copy — it is half of a
+  decision whose other half is `ChannelPolicy.EntityFiltered`, and
+  `TestFrontendEntityFilteredChannelsMatch` (Go side) fails in both
+  directions: a channel missing here is a resync storm on the app's busiest
+  channels, an extra one is a real drop nobody is told about. Add to it only
+  together with the Go row, and never widen the exemption past "a filter has
+  been sent" and "this channel is filtered" — an explicit `gap:true` marker
+  is the server stating a loss and is always honoured.
 - `authReason.ts` is the ONE place a credential refusal becomes a
   sentence. The backend answers `auth_failed` plus a `reason` from a
   closed set (`internal/identity/reason.go`), and a component that

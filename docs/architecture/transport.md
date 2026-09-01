@@ -182,8 +182,51 @@ It fires only when the channel's previous event arrived on the current socket.
 Across a reconnect a forward skip is expected and not a drop, because `Replay`
 answers an ephemeral channel with nothing and a latest-only channel with just
 its newest frame. A client judging those against a carried-over cursor would
-resync spuriously on every reconnect. Within a connection there is no such
-ambiguity: every event on a visible channel is either delivered or dropped.
+resync spuriously on every reconnect.
+
+Within a connection an event on a visible channel is delivered, dropped, or
+WITHHELD, and only the middle one is a loss. Withheld is per-thread narrowing
+(below): the client asked not to receive that entity's frames, and the seq
+those frames spent still advances the channel. So the client exempts the
+forward-skip heuristic on entity-filtered channels once it has sent a watch
+frame — never on other channels, never before a set exists, and never for an
+explicit `gap:true` marker, which is the server stating a real loss rather
+than the client inferring one. `frontend/src/lib/transport/entityFilteredChannels.ts`
+is the list it exempts, pinned to the registry in both directions by
+`TestFrontendEntityFilteredChannelsMatch`.
+
+### A connection names the threads it is looking at
+
+A client sends `{"type":"watch","threads":[...]}` and the server stops
+delivering the ENTITY-FILTERED channels (`ChannelPolicy.EntityFiltered`, see
+`internal/transport/AGENTS.md`) for every thread outside that set. Nothing else
+narrows: an unwatched thread still drives the sidebar, the tray, notifications,
+and every other channel, because the filter is a property of the channel and
+not of the connection.
+
+The rules the two ends agree on:
+
+- **Absolute, not additive.** Each frame replaces the last, and `[]` is a legal
+  value meaning "no panes open". A connection that has never sent one receives
+  everything, which is where every client starts and where a client that does
+  not speak the frame stays.
+- **Per connection, and re-stated on reconnect.** The filter is socket state,
+  so a new socket starts wildcard and the client sends its set again — BEFORE
+  its replay frame, since frames are read in order and a replay answered ahead
+  of the filter would ship exactly the backlog the client no longer wants.
+- **Fail-open on attribution.** An event whose entity key is empty is delivered
+  to everyone. A payload the key extractor does not recognize degrades to the
+  old, wider behavior rather than vanishing.
+- **A withheld frame is not a gap.** The filter runs ahead of the drop
+  accounting, so withholding never flags the channel and never mints a
+  `gap:true` marker; a client that asked for less is not told it lost
+  something.
+
+The client half derives its set from surfaces that EXIST — open panes, live-tail
+registrations — and never from what is on screen, focused, or in a visible
+document (`frontend/src/lib/stores/watchedThreads.ts`). A surface that stopped
+receiving while off-screen would render stale the moment it is looked at again,
+and the recovery is a resync the user waits through.
 
 ## The credential channel
 

@@ -80,6 +80,27 @@ stops waking readers.
   generics and teardown order, and fans each channel out to the
   `events*.ts` module that owns the reaction. Add a channel there, put the
   reaction in a domain module, and never subscribe from a component.
+- `watchedThreads.ts` decides which threads the backend keeps pushing the
+  entity-filtered channels for (`transport/entityFilteredChannels.ts`). It is
+  a leaf that unions REGISTERED SOURCES rather than importing the stores it
+  reads, because the contributors sit at different levels — the pane registry,
+  and `discussionLiveTail.ts`'s routing table, whose participant CHILD threads
+  have no pane at all — and either one composing the set alone would silently
+  drop the other's threads.
+
+  **EXISTENCE, NEVER VISIBILITY.** A thread is watched because a surface for
+  it exists, not because that surface is on screen, focused, or in a visible
+  document. Nothing in the composition may read `document.hidden`,
+  `IntersectionObserver`, or which pane has focus: a surface that stopped
+  receiving renders stale the instant it is looked at again, and the recovery
+  is a resync the user waits through. Registering a source is the OTHER half
+  of adding a Go `EntityFiltered` row — a surface that consumes one of those
+  channels and contributes no ids stops receiving.
+
+  Order matters at a mount. `watchThreadsBeforeMount` pushes the opening ids
+  ahead of `switchThread`, because a thread only becomes derivable from the
+  sources after that resolves — which is after its history and window loads
+  have already gone out on the same socket.
 - `thread:updated` is the convergence channel for the thread row, and the
   handler is `eventsThreadRows.ts`. The backend broadcasts one event per
   persisted row change, so the handler must apply the WHOLE row, not the
