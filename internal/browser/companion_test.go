@@ -8,6 +8,55 @@ import (
 	"time"
 )
 
+func TestMoveCompanionPageReordersAndNewPagesAppend(t *testing.T) {
+	pages := make(map[string]*managedPage, 3)
+	for i, id := range []string{"first", "second", "third"} {
+		p := &managedPage{id: id, owner: "thread", createdAt: int64(i + 1)}
+		p.tabOrder.Store(p.createdAt)
+		p.info = PageInfo{ID: id}
+		pages[id] = p
+	}
+	m := &Manager{
+		scopes:   map[string]*workspaceScope{"/repo": {pages: pages}},
+		sessions: map[string]SessionInfo{"thread": {}},
+	}
+	access := Access{ThreadID: "thread", Workspace: "/repo"}
+
+	order := func() []string {
+		state := m.threadState("thread")
+		ids := make([]string, 0, len(state.Pages))
+		for _, page := range state.Pages {
+			ids = append(ids, page.ID)
+		}
+		return ids
+	}
+
+	if err := m.MoveCompanionPage(access, "third", 0); err != nil {
+		t.Fatalf("move = %v", err)
+	}
+	if got := order(); got[0] != "third" || got[1] != "first" || got[2] != "second" {
+		t.Fatalf("order after front move = %v", got)
+	}
+	// An out-of-range index clamps to the end instead of failing.
+	if err := m.MoveCompanionPage(access, "third", 99); err != nil {
+		t.Fatalf("clamped move = %v", err)
+	}
+	if got := order(); got[2] != "third" {
+		t.Fatalf("order after clamped move = %v", got)
+	}
+	// A page opened after a renumbering move still lands at the end.
+	late := &managedPage{id: "late", owner: "thread", createdAt: time.Now().UnixNano()}
+	late.tabOrder.Store(late.createdAt)
+	late.info = PageInfo{ID: "late"}
+	pages["late"] = late
+	if got := order(); got[3] != "late" {
+		t.Fatalf("order with late page = %v", got)
+	}
+	if err := m.MoveCompanionPage(access, "missing", 0); err == nil {
+		t.Fatal("moving an unknown page did not fail")
+	}
+}
+
 func TestCompanionStateKeepsTabOrderAndUsesExplicitActivePage(t *testing.T) {
 	first := &managedPage{id: "first", owner: "thread", createdAt: 1}
 	first.info = PageInfo{ID: first.id, URL: "https://first.test", Title: "First"}

@@ -133,16 +133,30 @@ export class PageInfo {
  * size over the viewport, which makes the position exact under webview zoom
  * (Ctrl+=) and any DPI without either side knowing the other's scale factor.
  * Visible is false while the pane is mounted but must not be painted over: an
- * AO overlay intersects the rect, or the rect is clipped by the pane strip.
+ * AO overlay intersects the rect, or the rect is entirely off the pane strip.
+ * 
+ * Clip* is the VISIBLE intersection of the rect with every clipping ancestor,
+ * in the same CSS-pixel space. A native view cannot be cropped by the DOM, so
+ * the engine crops it: the view keeps the full rect's size (the page must not
+ * relayout because it scrolled half behind the sidebar) and the host clips its
+ * presentation to the clip rect. An unclipped pane reports clip == rect.
+ * Background is the pane surface's resolved CSS color ("#rrggbb"); engines
+ * paint it where the page has not presented yet, so freshly exposed strips
+ * match the pane instead of flashing the engine default.
  */
 export class PaneRect {
     "x": number;
     "y": number;
     "width": number;
     "height": number;
+    "clipX": number;
+    "clipY": number;
+    "clipWidth": number;
+    "clipHeight": number;
     "viewportWidth": number;
     "viewportHeight": number;
     "visible": boolean;
+    "background"?: string;
 
     /** Creates a new PaneRect instance. */
     constructor($$source: Partial<PaneRect> = {}) {
@@ -157,6 +171,18 @@ export class PaneRect {
         }
         if (!("height" in $$source)) {
             this["height"] = 0;
+        }
+        if (!("clipX" in $$source)) {
+            this["clipX"] = 0;
+        }
+        if (!("clipY" in $$source)) {
+            this["clipY"] = 0;
+        }
+        if (!("clipWidth" in $$source)) {
+            this["clipWidth"] = 0;
+        }
+        if (!("clipHeight" in $$source)) {
+            this["clipHeight"] = 0;
         }
         if (!("viewportWidth" in $$source)) {
             this["viewportWidth"] = 0;

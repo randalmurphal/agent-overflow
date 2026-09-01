@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 )
@@ -72,7 +71,7 @@ func countPagesLocked(scopes map[string]*workspaceScope) int {
 }
 
 func ambiguousPageError(pages []*managedPage) error {
-	sort.Slice(pages, func(i, j int) bool { return pages[i].createdAt < pages[j].createdAt })
+	sortPagesByTabOrder(pages)
 	refs := make([]string, 0, len(pages))
 	for _, p := range pages {
 		info := p.cachedInfo()

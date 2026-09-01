@@ -142,6 +142,10 @@ type managedPage struct {
 	mu           sync.Mutex
 	lastUse      atomic.Int64
 	createdAt    int64
+	// tabOrder is the page's position key in the thread's tab strip: creation
+	// time by default, renumbered by MoveCompanionPage. Atomic because tab
+	// sorts run outside m.mu.
+	tabOrder     atomic.Int64
 	metaMu       sync.RWMutex
 	info         PageInfo
 	logMu        sync.Mutex
@@ -164,12 +168,14 @@ type managedPage struct {
 // once the engine has produced one, so the driver's own event handlers can
 // already report into this page while it is being created.
 func newManagedPage(access Access) *managedPage {
-	return &managedPage{
+	p := &managedPage{
 		id: uuid.NewString(), owner: access.ThreadID, access: access,
 		createdAt:    time.Now().UnixNano(),
 		downloadWait: make(chan struct{}), inventories: make(map[string]AssetInventory),
 		nodeRefs: make(map[string]nodeReference),
 	}
+	p.tabOrder.Store(p.createdAt)
+	return p
 }
 
 func (p *managedPage) attach(driver pageDriver) {

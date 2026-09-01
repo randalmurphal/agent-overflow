@@ -13,6 +13,9 @@ type BrowserCompanionAction struct {
 	Kind    string `json:"kind"`
 	PageID  string `json:"pageId,omitempty"`
 	Address string `json:"address,omitempty"`
+	// Index is the target tab position for "move". Not omitempty: index 0
+	// (move to the front) is a real value.
+	Index int `json:"index"`
 }
 
 func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
@@ -112,6 +115,8 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		_, err = a.browser.manager.History(ctx, access, action.PageID, action.Kind)
 	case "activate":
 		err = a.browser.manager.ActivateCompanionPage(access, action.PageID)
+	case "move":
+		err = a.browser.manager.MoveCompanionPage(access, action.PageID, action.Index)
 	case "show":
 		visible := true
 		_, err = a.browser.manager.Visibility(ctx, access, &visible, action.PageID)

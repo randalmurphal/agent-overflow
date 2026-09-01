@@ -65,9 +65,14 @@ export function reportBrowserPaneRect(
     y: number;
     width: number;
     height: number;
+    clipX: number;
+    clipY: number;
+    clipWidth: number;
+    clipHeight: number;
     viewportWidth: number;
     viewportHeight: number;
     visible: boolean;
+    background: string;
   },
 ): void {
   const id = paneIds.get(threadId);

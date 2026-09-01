@@ -118,7 +118,7 @@ func (m *Manager) threadState(threadID string) CompanionEvent {
 	}
 	session, hasSession := m.sessions[threadID]
 	m.mu.Unlock()
-	sort.Slice(pages, func(i, j int) bool { return pages[i].createdAt < pages[j].createdAt })
+	sortPagesByTabOrder(pages)
 	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(pages))}
 	visible := false
 	if hasSession {
@@ -341,6 +341,54 @@ func (m *Manager) syncPanePresentation(threadID string) {
 		host.SetPageBounds(active.driver.Handle(), rect)
 		host.ShowPage(active.driver.Handle())
 	}
+}
+
+// sortPagesByTabOrder is THE tab-strip order: every surface that lists a
+// thread's pages (companion state, ambiguity errors) sorts with it so the
+// UI, the tools and the errors never disagree about which tab is first.
+func sortPagesByTabOrder(pages []*managedPage) {
+	sort.Slice(pages, func(i, j int) bool {
+		oi, oj := pages[i].tabOrder.Load(), pages[j].tabOrder.Load()
+		if oi != oj {
+			return oi < oj
+		}
+		return pages[i].createdAt < pages[j].createdAt
+	})
+}
+
+// MoveCompanionPage places one of the thread's pages at index in tab order
+// (clamped). Order is runtime state, like the pages themselves: the moved
+// prefix is renumbered 1..n, and a page opened later keeps appending at the
+// end because its creation-time key is always larger.
+func (m *Manager) MoveCompanionPage(access Access, pageID string, index int) error {
+	p, _, err := m.lookupOwnedPage(access, pageID)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	var pages []*managedPage
+	for _, scope := range m.scopes {
+		for _, q := range scope.pages {
+			if q.owner == access.ThreadID {
+				pages = append(pages, q)
+			}
+		}
+	}
+	m.mu.Unlock()
+	sortPagesByTabOrder(pages)
+	ordered := make([]*managedPage, 0, len(pages))
+	for _, q := range pages {
+		if q != p {
+			ordered = append(ordered, q)
+		}
+	}
+	index = max(0, min(index, len(ordered)))
+	ordered = append(ordered[:index], append([]*managedPage{p}, ordered[index:]...)...)
+	for i, q := range ordered {
+		q.tabOrder.Store(int64(i + 1))
+	}
+	m.emitThreadState(access.ThreadID)
+	return nil
 }
 
 func (m *Manager) NewCompanionPage(ctx context.Context, access Access) (PageInfo, error) {

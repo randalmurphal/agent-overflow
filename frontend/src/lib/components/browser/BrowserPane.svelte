@@ -20,6 +20,10 @@
   import Icon from '../primitives/Icon.svelte';
   import { errString } from '../../utils/errors';
   import { airspaceIntersects, airspaceSurfaces } from '../../utils/paneAirspace.svelte';
+  import { rgbChannels, toConcreteColor } from '../../utils/cssColorProbe';
+  import { getPaneLayoutItems } from '../../stores/paneLayout.svelte';
+  import { getSidebarWidth, isSidebarCollapsed } from '../../stores/sidebarLayout.svelte';
+  import { getAppliedTheme } from '../../theme/themeApply.svelte';
   import { isMacPlatform } from '../../utils/platform';
 
   // The pane surface is an empty HOST RECT: the platform positions a real
@@ -36,7 +40,9 @@
   let addressFocused = $state(false);
   let error = $state('');
   let rectFrame = 0;
-  let lastSent = { x: -1, y: -1, width: -1, height: -1, viewportWidth: -1, viewportHeight: -1, visible: false };
+  let lastSentKey = '';
+  let bgRaw = '';
+  let bgHex = '';
 
   let view = $derived(attachment?.current ?? null);
   let pages = $derived(view?.state.pages ?? []);
@@ -55,7 +61,7 @@
     return () => {
       if (rectFrame) cancelAnimationFrame(rectFrame);
       rectFrame = 0;
-      lastSent = { x: -1, y: -1, width: -1, height: -1, viewportWidth: -1, viewportHeight: -1, visible: false };
+      lastSentKey = '';
       attachment?.release();
       attachment = null;
     };
@@ -79,57 +85,85 @@
     });
   }
 
-  // A native view cannot be partially cropped by the DOM, so a host rect
-  // that pokes outside a clipping ancestor (the pane scrolled half behind
-  // the sidebar) hides the view rather than letting it overhang neighbors.
-  function clippedByAncestors(el: HTMLElement, rect: DOMRect): boolean {
+  // A native view cannot be partially cropped by the DOM, so the report
+  // carries the VISIBLE INTERSECTION of the host rect with every clipping
+  // ancestor (and the viewport): the platform host crops the view to it
+  // while the page keeps the full rect's size. A pane half behind the
+  // sidebar shows its visible half instead of hiding or overhanging.
+  function visibleClip(el: HTMLElement, rect: DOMRect): { left: number; top: number; right: number; bottom: number } {
+    let left = Math.max(rect.left, 0);
+    let top = Math.max(rect.top, 0);
+    let right = Math.min(rect.right, window.innerWidth);
+    let bottom = Math.min(rect.bottom, window.innerHeight);
     for (let node = el.parentElement; node; node = node.parentElement) {
       const style = getComputedStyle(node);
       if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
       const r = node.getBoundingClientRect();
-      if (
-        rect.left < r.left - 1 ||
-        rect.right > r.right + 1 ||
-        rect.top < r.top - 1 ||
-        rect.bottom > r.bottom + 1
-      ) {
-        return true;
+      if (style.overflowX !== 'visible') {
+        left = Math.max(left, r.left);
+        right = Math.min(right, r.right);
+      }
+      if (style.overflowY !== 'visible') {
+        top = Math.max(top, r.top);
+        bottom = Math.min(bottom, r.bottom);
       }
     }
-    return false;
+    return { left, top, right, bottom };
   }
+
+  // The pane surface's resolved background color, memoized on the computed
+  // string so the canvas round trip only runs when the theme actually
+  // changes; the theme-change trigger below clears the memo.
+  function paneBackground(el: HTMLElement): string {
+    const raw = getComputedStyle(el).backgroundColor;
+    if (raw === bgRaw) return bgHex;
+    bgRaw = raw;
+    const channels = rgbChannels(toConcreteColor(raw));
+    bgHex =
+      channels && channels.a === 1
+        ? '#' + [channels.r, channels.g, channels.b].map((c) => c.toString(16).padStart(2, '0')).join('')
+        : '';
+    return bgHex;
+  }
+
+  const round2 = (value: number): number => Math.round(value * 100) / 100;
 
   function flushRect(): void {
     const el = surface;
     const threadId = ctx.threadId;
     if (!el || !threadId) return;
     const rect = el.getBoundingClientRect();
+    const clip = visibleClip(el, rect);
+    const clipWidth = Math.max(0, clip.right - clip.left);
+    const clipHeight = Math.max(0, clip.bottom - clip.top);
+    // Obscurity is judged against the VISIBLE part: an overlay above a
+    // clipped-away strip does not hide the pane.
     const visible =
       rect.width >= 1 &&
       rect.height >= 1 &&
-      !clippedByAncestors(el, rect) &&
-      !airspaceIntersects(rect);
+      clipWidth >= 1 &&
+      clipHeight >= 1 &&
+      !airspaceIntersects({ left: clip.left, top: clip.top, right: clip.right, bottom: clip.bottom });
     const report = {
-      x: Math.round(rect.left * 100) / 100,
-      y: Math.round(rect.top * 100) / 100,
-      width: Math.round(rect.width * 100) / 100,
-      height: Math.round(rect.height * 100) / 100,
+      x: round2(rect.left),
+      y: round2(rect.top),
+      width: round2(rect.width),
+      height: round2(rect.height),
+      clipX: round2(clip.left),
+      clipY: round2(clip.top),
+      clipWidth: round2(clipWidth),
+      clipHeight: round2(clipHeight),
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
       visible,
+      background: paneBackground(el),
     };
-    if (
-      report.x === lastSent.x &&
-      report.y === lastSent.y &&
-      report.width === lastSent.width &&
-      report.height === lastSent.height &&
-      report.viewportWidth === lastSent.viewportWidth &&
-      report.viewportHeight === lastSent.viewportHeight &&
-      report.visible === lastSent.visible
-    ) {
-      return;
-    }
-    lastSent = report;
+    const key =
+      `${report.x},${report.y},${report.width},${report.height},` +
+      `${report.clipX},${report.clipY},${report.clipWidth},${report.clipHeight},` +
+      `${report.viewportWidth},${report.viewportHeight},${report.visible},${report.background}`;
+    if (key === lastSentKey) return;
+    lastSentKey = key;
     reportBrowserPaneRect(threadId, report);
   }
 
@@ -155,11 +189,31 @@
   // id re-sends the rect a too-early report dropped.
   $effect(() => {
     airspaceSurfaces();
-    if (attached) lastSent = { ...lastSent, x: -1 };
+    if (attached) lastSentKey = '';
     scheduleRect();
   });
 
-  async function act(kind: string, pageId = activePageId, nextAddress = ''): Promise<void> {
+  // Layout-driven POSITION changes: a divider drag on another pane slides
+  // this pane sideways without resizing it, which no ResizeObserver, window
+  // resize or scroll event reports (live incident 2026-08-31: the native
+  // view stayed planted until the next scroll). Pane widths and the sidebar
+  // are the app's own movers, so reading them here re-measures on every
+  // frame of a drag. Over-firing is fine — flushRect dedupes.
+  $effect(() => {
+    for (const item of getPaneLayoutItems()) void item.widthPx;
+    void getSidebarWidth();
+    void isSidebarCollapsed();
+    scheduleRect();
+  });
+
+  // A theme or mode change recolors the pane surface without moving it.
+  $effect(() => {
+    void getAppliedTheme();
+    bgRaw = '';
+    scheduleRect();
+  });
+
+  async function act(kind: string, pageId = activePageId, nextAddress = '', index = 0): Promise<void> {
     const threadId = ctx.threadId;
     if (!threadId) return;
     error = '';
@@ -168,6 +222,7 @@
         kind,
         pageId,
         address: nextAddress,
+        index,
       }));
       applyBrowserCompanionState(state);
     } catch (err) {
@@ -186,6 +241,61 @@
     }
   }
 
+  // ─── Tab drag-reorder ──────────────────────────────────────────────────
+  // Same HTML5 DnD protocol the pane host uses for pane reordering. The
+  // drop slot is a thin insertion bar between tabs; the drop commits a
+  // "move" action and the authoritative order comes back with the state.
+
+  const TAB_DRAG_MIME = 'application/x-ao-browser-tab';
+  let dragPageId = $state('');
+  let dropSlot = $state(-1);
+
+  function tabDragStart(event: DragEvent, pageId: string): void {
+    if (!event.dataTransfer) return;
+    event.dataTransfer.setData(TAB_DRAG_MIME, pageId);
+    event.dataTransfer.effectAllowed = 'move';
+    dragPageId = pageId;
+  }
+
+  function tabDragOver(event: DragEvent, index: number): void {
+    if (!dragPageId || !event.dataTransfer?.types.includes(TAB_DRAG_MIME)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    const tab = event.currentTarget as HTMLElement;
+    const rect = tab.getBoundingClientRect();
+    dropSlot = event.clientX < rect.left + rect.width / 2 ? index : index + 1;
+  }
+
+  function stripDragOver(event: DragEvent): void {
+    if (!dragPageId || !event.dataTransfer?.types.includes(TAB_DRAG_MIME)) return;
+    // Only the strip's own empty tail; a tab under the pointer already set
+    // its slot and stopped the event from bubbling this far unhandled.
+    if (event.target !== event.currentTarget) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    dropSlot = pages.length;
+  }
+
+  function tabDrop(event: DragEvent): void {
+    const pageId = event.dataTransfer?.getData(TAB_DRAG_MIME) ?? '';
+    const slot = dropSlot;
+    dragPageId = '';
+    dropSlot = -1;
+    if (!pageId || slot < 0) return;
+    event.preventDefault();
+    const from = pages.findIndex((page) => page.id === pageId);
+    if (from < 0) return;
+    // The backend's move index addresses the list WITHOUT the moved tab.
+    const to = from < slot ? slot - 1 : slot;
+    if (to === from) return;
+    void act('move', pageId, '', to);
+  }
+
+  function tabDragEnd(): void {
+    dragPageId = '';
+    dropSlot = -1;
+  }
+
   function closeTabShortcut(event: KeyboardEvent): void {
     if (event.isComposing || event.key.toLowerCase() !== 'w' || event.altKey || event.shiftKey) return;
     const modifier = isMacPlatform() ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
@@ -201,14 +311,36 @@
   data-testid="browser-pane"
   onkeydowncapture={closeTabShortcut}
 >
-  <div class="flex min-h-9 items-end gap-1 overflow-x-auto border-b border-border-subtle bg-surface-1 px-1 pt-1">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="flex min-h-9 items-end gap-1 overflow-x-auto border-b border-border-subtle bg-surface-1 px-1 pt-1"
+    onmousedown={(event) => {
+      // Middle-press would start OS autoscroll; on a tab strip it closes tabs.
+      if (event.button === 1) event.preventDefault();
+    }}
+    ondragover={stripDragOver}
+    ondrop={tabDrop}
+  >
     {#if sessionName}
       <span class="mb-1 max-w-36 shrink-0 truncate px-1.5 text-[0.68rem] text-fg-muted" title={sessionName}>{sessionName}</span>
     {/if}
-    {#each pages as page (page.id)}
+    {#each pages as page, tabIndex (page.id)}
+      {#if dropSlot === tabIndex && dragPageId}
+        <div class="h-6 w-0.5 shrink-0 self-center rounded bg-accent"></div>
+      {/if}
       <div
-        class="group flex h-8 min-w-28 max-w-48 items-center rounded-t-md {page.id === activePageId ? 'bg-surface-0 text-fg' : 'text-fg-muted hover:bg-surface-2'}"
+        class="group flex h-8 min-w-28 max-w-48 items-center rounded-t-md {page.id === activePageId ? 'bg-surface-0 text-fg' : 'text-fg-muted hover:bg-surface-2'} {page.id === dragPageId ? 'opacity-50' : ''}"
         title={page.label ? `${page.label} — ${page.title || page.url}` : page.title || page.url}
+        draggable="true"
+        ondragstart={(event) => tabDragStart(event, page.id)}
+        ondragover={(event) => tabDragOver(event, tabIndex)}
+        ondrop={tabDrop}
+        ondragend={tabDragEnd}
+        onauxclick={(event) => {
+          if (event.button !== 1) return;
+          event.preventDefault();
+          void act('close', page.id);
+        }}
       >
         <button
           class="h-full min-w-0 flex-1 truncate pl-2 text-left text-[0.72rem]"
@@ -222,6 +354,9 @@
         ><Icon icon={X} size={12} /></button>
       </div>
     {/each}
+    {#if dropSlot === pages.length && dragPageId}
+      <div class="h-6 w-0.5 shrink-0 self-center rounded bg-accent"></div>
+    {/if}
     <button class="mb-1 rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="New tab" title="New tab" onclick={() => void act('new', '')}>
       <Icon icon={Plus} size={14} />
     </button>

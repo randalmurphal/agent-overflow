@@ -229,10 +229,19 @@ export class BrowserCompanionAction {
     "pageId"?: string;
     "address"?: string;
 
+    /**
+     * Index is the target tab position for "move". Not omitempty: index 0
+     * (move to the front) is a real value.
+     */
+    "index": number;
+
     /** Creates a new BrowserCompanionAction instance. */
     constructor($$source: Partial<BrowserCompanionAction> = {}) {
         if (!("kind" in $$source)) {
             this["kind"] = "";
+        }
+        if (!("index" in $$source)) {
+            this["index"] = 0;
         }
 
         Object.assign(this, $$source);
