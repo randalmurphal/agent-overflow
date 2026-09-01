@@ -160,6 +160,14 @@ func (a *App) Start(ctx context.Context) error {
 	// which is the default. See app_domaincert.go.
 	a.startDomainCertificateLoop(dbDir)
 
+	// Join the owner's tailnet when they asked for it, and keep the node's
+	// listeners attached to the transport that is already running. Honors
+	// the persisted preference, which is what makes off-network access
+	// survive a restart without the user touching the toggle again. Builds
+	// nothing at all while the setting is off, which is the default. See
+	// app_tailnet.go.
+	a.startTailnetLoop(dbDir)
+
 	return nil
 }
 

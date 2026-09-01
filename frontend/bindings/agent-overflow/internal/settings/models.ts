@@ -242,6 +242,24 @@ export class NetworkSettings {
     "externalCertFile"?: string;
     "externalKeyFile"?: string;
 
+    /**
+     * TailnetEnabled asks this backend to join the owner's tailnet as
+     * its own node (docs/specs/remote-access.md §7, "Anywhere access").
+     * Off by default and lazily initialized: while it is false nothing
+     * is constructed, no state directory exists, and no goroutine runs.
+     * Turning it on is a network exposure change, which is why the RPC
+     * that writes this group demands a step-up proof.
+     */
+    "tailnetEnabled"?: boolean;
+
+    /**
+     * TailnetControlURL is the coordination server the node registers
+     * with. Empty means the Tailscale service, which is what nearly
+     * every install wants; a self-hosted control plane (Headscale) is
+     * the reason this is configurable at all. An absolute http(s) URL.
+     */
+    "tailnetControlUrl"?: string;
+
     /** Creates a new NetworkSettings instance. */
     constructor($$source: Partial<NetworkSettings> = {}) {
         if (!("bindAll" in $$source)) {

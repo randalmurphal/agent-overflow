@@ -38,9 +38,25 @@ type Settings struct {
 	ExternalCertFile string `json:"externalCertFile"`
 	ExternalKeyFile  string `json:"externalKeyFile"`
 
+	// TailnetEnabled asks this backend to join the owner's tailnet as its
+	// own node (docs/specs/remote-access.md §7). Off by default; turning
+	// it on is what makes the app reachable from outside the LAN without
+	// a public listener or a tunnel.
+	TailnetEnabled bool `json:"tailnetEnabled"`
+
+	// TailnetControlURL is the coordination server the node registers
+	// with. Empty means the Tailscale service, which is what nearly every
+	// install wants; a self-hosted control plane is why it is settable.
+	TailnetControlURL string `json:"tailnetControlUrl"`
+
 	// TLS is read-only status, filled by the app from what is actually
 	// loaded. Ignored on Set — nothing here is a preference.
 	TLS TLSStatus `json:"tls"`
+
+	// Tailnet is read-only status about the node, on the same terms as
+	// TLS: every field is observed, none is a preference, and the screen
+	// re-reads GetNetworkSettings rather than subscribing.
+	Tailnet TailnetStatus `json:"tailnet"`
 
 	// URL is the http://host:port/?t=<ticket> URL the user can paste
 	// into a remote browser. The `t` is a ONE-TIME page ticket, spent
@@ -117,6 +133,96 @@ type TLSStatus struct {
 	// pins, the same string the pairing payload carries. Shown so the
 	// two can be compared by eye when a pin is refused.
 	SelfSignedFingerprint string `json:"selfSignedFingerprint"`
+}
+
+// TailnetStatus is what the Network settings screen shows about the
+// tailnet node. Read-only in both directions, like TLSStatus.
+//
+// The state vocabulary is Tailscale's own, carried verbatim rather than
+// mapped onto a local set. Mapping would mean a table that has to be
+// extended before this backend can even describe a state its dependency
+// added, and "the node reports a state this build does not have a
+// sentence for" is better shown than swallowed.
+type TailnetStatus struct {
+	// Running is true when the node is on the tailnet and answering.
+	// Derived from State, and carried separately so the screen does not
+	// have to know which spelling means "up".
+	Running bool `json:"running"`
+
+	// State is the node's backend state — "NeedsLogin", "Starting",
+	// "Running", "Stopped". Empty when the feature is off, which is not
+	// a state the node can be in.
+	State string `json:"state"`
+
+	// AuthURL is the sign-in link to open while the node waits for the
+	// owner to approve it, and empty otherwise. Single use: it is
+	// published only while it is live, and cleared the moment the node
+	// joins.
+	AuthURL string `json:"authUrl"`
+
+	// DNSName is the node's MagicDNS name — what the owner types to
+	// reach this backend from any of their devices.
+	DNSName string `json:"dnsName"`
+
+	// IPs are the node's tailnet addresses. Shown because a tailnet with
+	// MagicDNS turned off has nothing but these.
+	IPs []string `json:"ips"`
+
+	// URL is the address to open on another device on the same tailnet,
+	// carrying a one-time page ticket like the LAN URL above.
+	//
+	// There is deliberately no Insecure flag beside it. An http:// URL
+	// here is not the same act as an http:// URL on a LAN: every byte of
+	// it crosses an encrypted, authenticated WireGuard link between two
+	// devices the owner enrolled, so warning about it would teach the
+	// user to ignore a warning that does mean something on the LAN URL.
+	URL string `json:"url"`
+
+	// HTTPS is true when the node also answers TLS on its ts.net name,
+	// which needs HTTPS enabled in the tailnet's admin panel. False
+	// means the URL above is http:// and the reason is the tailnet's
+	// settings, not this backend's.
+	HTTPS bool `json:"https"`
+
+	// HasState is true when a node identity exists on disk. It is what
+	// makes "forget this node" offerable only when there is something to
+	// forget — and, while the feature is off, the only sign that this
+	// backend is still a device in the owner's tailnet admin panel.
+	HasState bool `json:"hasState"`
+
+	// LastError is the last node failure, verbatim. Cleared by the next
+	// success. Errors are user-facing state, not log entries.
+	LastError string `json:"lastError"`
+}
+
+// tailnetURL renders the address to open on another tailnet device, or
+// "" when there is nothing reachable to publish.
+//
+// Same one-time-ticket rule as the LAN URL, and the same consequence:
+// each read of the share panel hands out a URL that opens one browser
+// session. It mints only while the node is actually up, so an install
+// with the feature off spends no ticket at all.
+func tailnetURL(srv *transport.Server, s TailnetStatus) string {
+	if !s.Running || s.DNSName == "" {
+		return ""
+	}
+	if s.HTTPS {
+		// tsnet answers TLS on 443 for the node's own name, so the URL is
+		// the bare name — which is the whole point of the ts.net
+		// certificate.
+		if url, ok := ticketedURL(srv, "https", s.DNSName); ok {
+			return url
+		}
+		return ""
+	}
+	_, port, err := net.SplitHostPort(srv.Addr())
+	if err != nil {
+		return ""
+	}
+	if url, ok := ticketedURL(srv, "http", net.JoinHostPort(s.DNSName, port)); ok {
+		return url
+	}
+	return ""
 }
 
 // BindHost returns the bind interface for the given LAN toggle.
@@ -263,11 +369,13 @@ func FromServerWithLAN(srv *transport.Server, s Settings, lanIP string) Settings
 	out.URL = ""
 	out.Token = ""
 	out.Insecure = false
+	out.Tailnet.URL = ""
 	if srv == nil {
 		return out
 	}
 	out.Token = srv.Token()
 	out.URL = AppURLWithLAN(srv, s, lanIP)
+	out.Tailnet.URL = tailnetURL(srv, s.Tailnet)
 	// A LAN bind whose URL is http:// carries the token and every later
 	// byte in cleartext. Surface that to the UI so the user sees a clear
 	// "front this with Tailscale / SSH tunnel" warning before sharing

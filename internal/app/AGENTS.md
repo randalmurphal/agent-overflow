@@ -284,6 +284,45 @@ this file is the seam.
   Let's Encrypt issuance, and the "Check certificate now" button is how
   that gets checked.
 
+## The tailnet node
+
+`app_tailnet.go` is the same seam one layer over: `internal/tailnet` knows
+how to be a node and `internal/transport` knows how to serve a listener,
+and neither knows about settings. It follows the domain-certificate loop's
+shape deliberately — one goroutine, one `reconcileTailnet` returning its
+own next wait, boot and `SetNetworkSettings` KICKing rather than working
+inline — because bring-up waits on a person approving the machine and
+outlives every RPC timeout there is. The screen polls `GetNetworkSettings`
+while the feature is enabled and the node is not yet Running.
+
+- **The loop's wake-ups include the NODE's own event channel**, re-read
+  every pass rather than captured once. A closed node's channel is closed,
+  and a closed channel selected on forever is a spin.
+- **Listeners are attached only while the node is Running**, and the
+  numeric port is the SAME one the main bind uses. One port for one
+  backend keeps the share URL, the cookie name and the origin rule
+  deriving from the same authority they always did.
+- **`SetAuxiliaryHosts` is set after a listener exists and cleared when
+  one goes away**, so the Host guard never admits a name nothing serves.
+- **HTTPS is attempted only when the node reports certificate domains**,
+  which is the tailnet admin panel's answer and not ours to substitute
+  for. No domains means cleartext over WireGuard, and the status says so
+  rather than failing.
+- **A tailnet failure is that listener's failure and nothing else's.** It
+  lands in `network.TailnetStatus.LastError` verbatim, backs off between
+  `tailnetRetryFloor` and `tailnetRetryCeiling`, and never reaches
+  `Server.ServeErr` — the spec's rule that one integration failing
+  degrades only its own path.
+- **`ForgetTailnetNode` carries `//ao:scope host` and NO `//ao:stepup`.**
+  Every act it can perform is a DELETION of local state, it refuses while
+  the feature is enabled so it cannot race the reconciler, and turning the
+  feature off went through the step-up-gated `SetNetworkSettings` first —
+  the same argument `RenewCanonicalDomainCert` makes.
+- **Tests reach no control plane and no network.** `internal/tailnet`'s
+  rig runs an in-process control server; what is live-only is a real
+  Tailscale sign-in, a real `ts.net` certificate, and DERP-relayed reach
+  between two machines.
+
 ## Tests
 
 Application tests stay beside the shell. `main_test.go` changes their working

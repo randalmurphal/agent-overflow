@@ -654,6 +654,32 @@ export function ForgetAccessDevice(deviceID: string): $CancellablePromise<void> 
 }
 
 /**
+ * ForgetTailnetNode deletes this backend's tailnet identity from disk, so
+ * the next enable enrolls a fresh device. It is how the owner moves the
+ * backend to a different tailnet or a different account: the node key and
+ * the machine key live in that one directory and there is no other way to
+ * change which tailnet they belong to.
+ * 
+ * Refused while the feature is enabled. Deleting the state under a live
+ * node would leave this process holding an identity nothing on disk
+ * records, and the owner's admin panel would keep showing a device that
+ * no longer has a way back.
+ * 
+ * `host` scope and deliberately NO step-up. Every act this call can
+ * perform is a DELETION of local state: it cannot widen what this backend
+ * exposes, it cannot enroll anything, and it cannot run at all until the
+ * feature has already been turned off — which is itself a step-up-gated
+ * write through SetNetworkSettings. Demanding a second proof would gate
+ * the cleanup after an act that was already proved, which is the same
+ * argument RenewCanonicalDomainCert makes.
+ */
+export function ForgetTailnetNode(): $CancellablePromise<network$0.Settings> {
+    return $Call.ByID(767560289).then(($result: any) => {
+        return $$createType14($result);
+    });
+}
+
+/**
  * ForkThread copies a source thread's timeline into a new fork and wires
  * the provider-specific resume state. The whole sequence is atomic from
  * the caller's point of view: if any step fails, the partially-created
@@ -720,7 +746,7 @@ export function ForkThreadFromMessage(sourceThreadID: string, userItemID: string
  */
 export function GenerateCommitMessage(threadID: string): $CancellablePromise<app$0.GeneratedCommitMessage> {
     return $Call.ByID(1669373286, threadID).then(($result: any) => {
-        return $$createType14($result);
+        return $$createType15($result);
     });
 }
 
@@ -730,7 +756,7 @@ export function GenerateCommitMessage(threadID: string): $CancellablePromise<app
  */
 export function GetAccessOverview(): $CancellablePromise<app$0.AccessOverview> {
     return $Call.ByID(1559710962).then(($result: any) => {
-        return $$createType15($result);
+        return $$createType16($result);
     });
 }
 
@@ -758,7 +784,7 @@ export function GetAttachmentData(threadID: string, attachmentID: string): $Canc
  */
 export function GetAttachmentThumbnail(threadID: string, attachmentID: string): $CancellablePromise<app$0.AttachmentThumbnail> {
     return $Call.ByID(3414107538, threadID, attachmentID).then(($result: any) => {
-        return $$createType16($result);
+        return $$createType17($result);
     });
 }
 
@@ -777,7 +803,7 @@ export function GetBranchBaseDiff(threadID: string, baseBranch: string, ignoreWh
  */
 export function GetChannelMessages(channelID: string, afterSeq: number, limit: number): $CancellablePromise<store$0.ChannelMessage[]> {
     return $Call.ByID(3595031866, channelID, afterSeq, limit).then(($result: any) => {
-        return $$createType18($result);
+        return $$createType19($result);
     });
 }
 
@@ -818,7 +844,7 @@ export function GetChannelState(channelID: string): $CancellablePromise<app$0.Ch
  */
 export function GetClaudeSkills(workspacePath: string): $CancellablePromise<claudeconfig$0.Skill[]> {
     return $Call.ByID(1573335127, workspacePath).then(($result: any) => {
-        return $$createType20($result);
+        return $$createType21($result);
     });
 }
 
@@ -846,7 +872,7 @@ export function GetClaudeSkills(workspacePath: string): $CancellablePromise<clau
  */
 export function GetClaudeSlashCommands(): $CancellablePromise<app$0.ClaudeSlashCommands> {
     return $Call.ByID(2854892544).then(($result: any) => {
-        return $$createType21($result);
+        return $$createType22($result);
     });
 }
 
@@ -873,7 +899,7 @@ export function GetClaudeSlashCommands(): $CancellablePromise<app$0.ClaudeSlashC
  */
 export function GetCodexAccountUsage(): $CancellablePromise<app$0.CodexAccountUsage | null> {
     return $Call.ByID(1110466608).then(($result: any) => {
-        return $$createType23($result);
+        return $$createType24($result);
     });
 }
 
@@ -897,7 +923,7 @@ export function GetCodexAccountUsage(): $CancellablePromise<app$0.CodexAccountUs
  */
 export function GetCodexSkills(workspacePath: string, forceReload: boolean): $CancellablePromise<codexskills$0.CwdSkills> {
     return $Call.ByID(1018032480, workspacePath, forceReload).then(($result: any) => {
-        return $$createType24($result);
+        return $$createType25($result);
     });
 }
 
@@ -911,7 +937,7 @@ export function GetCommitDiff(threadID: string, sha: string, ignoreWhitespace: b
 
 export function GetContextSettings(providerName: string, model: string): $CancellablePromise<app$0.ContextSettingsProfile> {
     return $Call.ByID(3416004963, providerName, model).then(($result: any) => {
-        return $$createType25($result);
+        return $$createType26($result);
     });
 }
 
@@ -922,7 +948,7 @@ export function GetContextSettings(providerName: string, model: string): $Cancel
  */
 export function GetDiffContextLines(threadID: string, req: app$0.DiffContextRequest): $CancellablePromise<app$0.DiffContextResult> {
     return $Call.ByID(1590634674, threadID, req).then(($result: any) => {
-        return $$createType26($result);
+        return $$createType27($result);
     });
 }
 
@@ -931,7 +957,7 @@ export function GetDiffContextLines(threadID: string, req: app$0.DiffContextRequ
  */
 export function GetDiscussion(name: string, scope: string): $CancellablePromise<store$0.DiscussionDefinition> {
     return $Call.ByID(1924583939, name, scope).then(($result: any) => {
-        return $$createType27($result);
+        return $$createType28($result);
     });
 }
 
@@ -941,7 +967,7 @@ export function GetDiscussion(name: string, scope: string): $CancellablePromise<
  */
 export function GetDraft(threadID: string): $CancellablePromise<app$0.Draft> {
     return $Call.ByID(875977146, threadID).then(($result: any) => {
-        return $$createType28($result);
+        return $$createType29($result);
     });
 }
 
@@ -953,7 +979,7 @@ export function GetDraft(threadID: string): $CancellablePromise<app$0.Draft> {
  */
 export function GetEditorSettings(): $CancellablePromise<settings$0.EditorSettings> {
     return $Call.ByID(1655853383).then(($result: any) => {
-        return $$createType29($result);
+        return $$createType30($result);
     });
 }
 
@@ -970,7 +996,7 @@ export function GetEditorSettings(): $CancellablePromise<settings$0.EditorSettin
  */
 export function GetGitStatus(threadID: string): $CancellablePromise<git$0.GitStatus> {
     return $Call.ByID(4123560639, threadID).then(($result: any) => {
-        return $$createType30($result);
+        return $$createType31($result);
     });
 }
 
@@ -984,7 +1010,7 @@ export function GetGitStatus(threadID: string): $CancellablePromise<git$0.GitSta
  */
 export function GetGitStatusFastForProject(projectID: string): $CancellablePromise<git$0.GitStatus> {
     return $Call.ByID(2193133889, projectID).then(($result: any) => {
-        return $$createType30($result);
+        return $$createType31($result);
     });
 }
 
@@ -1000,7 +1026,7 @@ export function GetGitStatusFastForProject(projectID: string): $CancellablePromi
  */
 export function GetKeybindings(): $CancellablePromise<keybindings$0.LoadResult> {
     return $Call.ByID(3015840904).then(($result: any) => {
-        return $$createType31($result);
+        return $$createType32($result);
     });
 }
 
@@ -1012,7 +1038,7 @@ export function GetKeybindings(): $CancellablePromise<keybindings$0.LoadResult> 
  */
 export function GetLocalImageData(path: string, workspacePath: string): $CancellablePromise<app$0.LocalImageData> {
     return $Call.ByID(3247514443, path, workspacePath).then(($result: any) => {
-        return $$createType32($result);
+        return $$createType33($result);
     });
 }
 
@@ -1025,7 +1051,7 @@ export function GetLocalImageData(path: string, workspacePath: string): $Cancell
  */
 export function GetMcpServerStatus(providerName: string, name: string, force: boolean): $CancellablePromise<mcpstatus$0.ServerStatus> {
     return $Call.ByID(4139359668, providerName, name, force).then(($result: any) => {
-        return $$createType33($result);
+        return $$createType34($result);
     });
 }
 
@@ -1044,22 +1070,24 @@ export function GetMergeConflictFile(threadID: string, treeOID: string, path: st
  */
 export function GetModelsForProvider(providerName: string): $CancellablePromise<provider$0.ModelInfo[]> {
     return $Call.ByID(1632984917, providerName).then(($result: any) => {
-        return $$createType35($result);
+        return $$createType36($result);
     });
 }
 
 /**
  * GetNetworkSettings returns the persisted network preferences — the
  * bind toggle, the canonical domain, the DNS hook, the external
- * certificate pair — plus what only the running process knows: the
- * share URL, this launch's token, and the certificate status. Everything
- * server-derived is recomputed on every call, so a rebind or a renewal
- * reflects on the next read. The screen polls this while an issuance is
- * in flight; there is no push channel for it.
+ * certificate pair, the tailnet toggle and its coordination server —
+ * plus what only the running process knows: the share URLs, this launch's
+ * token, the certificate status, and the tailnet node's status.
+ * Everything server-derived is recomputed on every call, so a rebind, a
+ * renewal or a node joining reflects on the next read. The screen polls
+ * this while an issuance or a sign-in is in flight; there is no push
+ * channel for it.
  */
 export function GetNetworkSettings(): $CancellablePromise<network$0.Settings> {
     return $Call.ByID(1026796858).then(($result: any) => {
-        return $$createType36($result);
+        return $$createType14($result);
     });
 }
 
@@ -2604,7 +2632,7 @@ export function PinThread(id: string): $CancellablePromise<store$0.Thread> {
  */
 export function PostChannelMessage(channelID: string, content: string): $CancellablePromise<store$0.ChannelMessage> {
     return $Call.ByID(1315440605, channelID, content).then(($result: any) => {
-        return $$createType17($result);
+        return $$createType18($result);
     });
 }
 
@@ -3031,7 +3059,7 @@ export function RenameThread(id: string, title: string): $CancellablePromise<voi
  */
 export function RenewCanonicalDomainCert(): $CancellablePromise<network$0.Settings> {
     return $Call.ByID(95139518).then(($result: any) => {
-        return $$createType36($result);
+        return $$createType14($result);
     });
 }
 
@@ -3416,7 +3444,7 @@ export function SetChatBarFavorite(fav: store$0.ChatBarFavorite, starred: boolea
  */
 export function SetEditorSettings(s: settings$0.EditorSettings): $CancellablePromise<settings$0.EditorSettings> {
     return $Call.ByID(3655340267, s).then(($result: any) => {
-        return $$createType29($result);
+        return $$createType30($result);
     });
 }
 
@@ -3438,6 +3466,11 @@ export function SetEditorSettings(s: settings$0.EditorSettings): $CancellablePro
  * app_domaincert.go, kicked at the end of this call, because a DNS-01
  * exchange outlives any RPC.
  * 
+ * The tailnet: the toggle and its coordination server are persisted and
+ * the reconciler is kicked, exactly like the certificate half and for the
+ * same reason — a node's first bring-up ends in an interactive sign-in,
+ * which outlives any RPC. Nothing about the node is done inline here.
+ * 
  * Origin allow-list: a LAN bind requires an explicit allow-list, so a
  * page loaded from some other origin cannot open a socket here with a
  * token it happened to learn. On bind-all=true the list contains
@@ -3446,7 +3479,7 @@ export function SetEditorSettings(s: settings$0.EditorSettings): $CancellablePro
  */
 export function SetNetworkSettings(s: network$0.Settings): $CancellablePromise<network$0.Settings> {
     return $Call.ByID(3915514446, s).then(($result: any) => {
-        return $$createType36($result);
+        return $$createType14($result);
     });
 }
 
@@ -3942,7 +3975,7 @@ export function UnsubscribePRUpdates(subscriptionID: string): $CancellablePromis
 
 export function UpdateContextSettingsProfile(update: app$0.ContextSettingsUpdate): $CancellablePromise<app$0.ContextSettingsProfile> {
     return $Call.ByID(1472386383, update).then(($result: any) => {
-        return $$createType25($result);
+        return $$createType26($result);
     });
 }
 
@@ -4887,29 +4920,29 @@ const $$createType10 = store$0.ProposedPlanComment.createFrom;
 const $$createType11 = app$0.ProjectDeletionResult.createFrom;
 const $$createType12 = settings$0.Settings.createFrom;
 const $$createType13 = app$0.PairingStatusView.createFrom;
-const $$createType14 = app$0.GeneratedCommitMessage.createFrom;
-const $$createType15 = app$0.AccessOverview.createFrom;
-const $$createType16 = app$0.AttachmentThumbnail.createFrom;
-const $$createType17 = store$0.ChannelMessage.createFrom;
-const $$createType18 = $Create.Array($$createType17);
-const $$createType19 = claudeconfig$0.Skill.createFrom;
-const $$createType20 = $Create.Array($$createType19);
-const $$createType21 = app$0.ClaudeSlashCommands.createFrom;
-const $$createType22 = app$0.CodexAccountUsage.createFrom;
-const $$createType23 = $Create.Nullable($$createType22);
-const $$createType24 = codexskills$0.CwdSkills.createFrom;
-const $$createType25 = app$0.ContextSettingsProfile.createFrom;
-const $$createType26 = app$0.DiffContextResult.createFrom;
-const $$createType27 = store$0.DiscussionDefinition.createFrom;
-const $$createType28 = app$0.Draft.createFrom;
-const $$createType29 = settings$0.EditorSettings.createFrom;
-const $$createType30 = git$0.GitStatus.createFrom;
-const $$createType31 = keybindings$0.LoadResult.createFrom;
-const $$createType32 = app$0.LocalImageData.createFrom;
-const $$createType33 = mcpstatus$0.ServerStatus.createFrom;
-const $$createType34 = provider$0.ModelInfo.createFrom;
-const $$createType35 = $Create.Array($$createType34);
-const $$createType36 = network$0.Settings.createFrom;
+const $$createType14 = network$0.Settings.createFrom;
+const $$createType15 = app$0.GeneratedCommitMessage.createFrom;
+const $$createType16 = app$0.AccessOverview.createFrom;
+const $$createType17 = app$0.AttachmentThumbnail.createFrom;
+const $$createType18 = store$0.ChannelMessage.createFrom;
+const $$createType19 = $Create.Array($$createType18);
+const $$createType20 = claudeconfig$0.Skill.createFrom;
+const $$createType21 = $Create.Array($$createType20);
+const $$createType22 = app$0.ClaudeSlashCommands.createFrom;
+const $$createType23 = app$0.CodexAccountUsage.createFrom;
+const $$createType24 = $Create.Nullable($$createType23);
+const $$createType25 = codexskills$0.CwdSkills.createFrom;
+const $$createType26 = app$0.ContextSettingsProfile.createFrom;
+const $$createType27 = app$0.DiffContextResult.createFrom;
+const $$createType28 = store$0.DiscussionDefinition.createFrom;
+const $$createType29 = app$0.Draft.createFrom;
+const $$createType30 = settings$0.EditorSettings.createFrom;
+const $$createType31 = git$0.GitStatus.createFrom;
+const $$createType32 = keybindings$0.LoadResult.createFrom;
+const $$createType33 = app$0.LocalImageData.createFrom;
+const $$createType34 = mcpstatus$0.ServerStatus.createFrom;
+const $$createType35 = provider$0.ModelInfo.createFrom;
+const $$createType36 = $Create.Array($$createType35);
 const $$createType37 = app$0.PRCIJobLogResult.createFrom;
 const $$createType38 = git$0.CIPipeline.createFrom;
 const $$createType39 = git$0.PRDetail.createFrom;
@@ -4968,11 +5001,11 @@ const $$createType91 = $Create.Array($$createType90);
 const $$createType92 = store$0.ChatBarFavorite.createFrom;
 const $$createType93 = $Create.Array($$createType92);
 const $$createType94 = $Create.Array($$createType8);
-const $$createType95 = $Create.Array($$createType27);
+const $$createType95 = $Create.Array($$createType28);
 const $$createType96 = app$0.ImportScanResult.createFrom;
 const $$createType97 = $Create.Array($$createType56);
 const $$createType98 = store$0.PagedItems.createFrom;
-const $$createType99 = $Create.Array($$createType33);
+const $$createType99 = $Create.Array($$createType34);
 const $$createType100 = git$0.ReviewThread.createFrom;
 const $$createType101 = $Create.Array($$createType100);
 const $$createType102 = provider$0.PendingInteractiveRequests.createFrom;

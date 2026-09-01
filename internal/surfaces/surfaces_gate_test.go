@@ -78,6 +78,12 @@ var listenerMethodCalls = map[string]bool{
 // instead, which is equally unavoidable and completely unambiguous.
 var listenerCompositeTypes = map[string]map[string]bool{
 	"net": {"ListenConfig": true},
+	// tsnet.Server's Listen and ListenTLS are called on a value, and both
+	// names are far too common to match blind — `Listen` alone would fire
+	// on every client-side helper in the tree. Constructing the server is
+	// the unavoidable, unambiguous step: it is the node, and nothing can
+	// bind a tailnet port without one.
+	"tailscale.com/tsnet": {"Server": true},
 }
 
 // routeRegistrationNames are the calls that add a pattern to a mux.

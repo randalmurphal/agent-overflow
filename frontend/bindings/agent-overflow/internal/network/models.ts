@@ -45,10 +45,32 @@ export class Settings {
     "externalKeyFile": string;
 
     /**
+     * TailnetEnabled asks this backend to join the owner's tailnet as its
+     * own node (docs/specs/remote-access.md §7). Off by default; turning
+     * it on is what makes the app reachable from outside the LAN without
+     * a public listener or a tunnel.
+     */
+    "tailnetEnabled": boolean;
+
+    /**
+     * TailnetControlURL is the coordination server the node registers
+     * with. Empty means the Tailscale service, which is what nearly every
+     * install wants; a self-hosted control plane is why it is settable.
+     */
+    "tailnetControlUrl": string;
+
+    /**
      * TLS is read-only status, filled by the app from what is actually
      * loaded. Ignored on Set — nothing here is a preference.
      */
     "tls": TLSStatus;
+
+    /**
+     * Tailnet is read-only status about the node, on the same terms as
+     * TLS: every field is observed, none is a preference, and the screen
+     * re-reads GetNetworkSettings rather than subscribing.
+     */
+    "tailnet": TailnetStatus;
 
     /**
      * URL is the http://host:port/?t=<ticket> URL the user can paste
@@ -102,8 +124,17 @@ export class Settings {
         if (!("externalKeyFile" in $$source)) {
             this["externalKeyFile"] = "";
         }
+        if (!("tailnetEnabled" in $$source)) {
+            this["tailnetEnabled"] = false;
+        }
+        if (!("tailnetControlUrl" in $$source)) {
+            this["tailnetControlUrl"] = "";
+        }
         if (!("tls" in $$source)) {
             this["tls"] = (new TLSStatus());
+        }
+        if (!("tailnet" in $$source)) {
+            this["tailnet"] = (new TailnetStatus());
         }
         if (!("url" in $$source)) {
             this["url"] = "";
@@ -123,13 +154,17 @@ export class Settings {
      */
     static createFrom($$source: any = {}): Settings {
         const $$createField2_0 = $$createType0;
-        const $$createField5_0 = $$createType1;
+        const $$createField7_0 = $$createType1;
+        const $$createField8_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("acmeDnsHook" in $$parsedSource) {
             $$parsedSource["acmeDnsHook"] = $$createField2_0($$parsedSource["acmeDnsHook"]);
         }
         if ("tls" in $$parsedSource) {
-            $$parsedSource["tls"] = $$createField5_0($$parsedSource["tls"]);
+            $$parsedSource["tls"] = $$createField7_0($$parsedSource["tls"]);
+        }
+        if ("tailnet" in $$parsedSource) {
+            $$parsedSource["tailnet"] = $$createField8_0($$parsedSource["tailnet"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }
@@ -206,6 +241,132 @@ export class TLSStatus {
     }
 }
 
+/**
+ * TailnetStatus is what the Network settings screen shows about the
+ * tailnet node. Read-only in both directions, like TLSStatus.
+ * 
+ * The state vocabulary is Tailscale's own, carried verbatim rather than
+ * mapped onto a local set. Mapping would mean a table that has to be
+ * extended before this backend can even describe a state its dependency
+ * added, and "the node reports a state this build does not have a
+ * sentence for" is better shown than swallowed.
+ */
+export class TailnetStatus {
+    /**
+     * Running is true when the node is on the tailnet and answering.
+     * Derived from State, and carried separately so the screen does not
+     * have to know which spelling means "up".
+     */
+    "running": boolean;
+
+    /**
+     * State is the node's backend state — "NeedsLogin", "Starting",
+     * "Running", "Stopped". Empty when the feature is off, which is not
+     * a state the node can be in.
+     */
+    "state": string;
+
+    /**
+     * AuthURL is the sign-in link to open while the node waits for the
+     * owner to approve it, and empty otherwise. Single use: it is
+     * published only while it is live, and cleared the moment the node
+     * joins.
+     */
+    "authUrl": string;
+
+    /**
+     * DNSName is the node's MagicDNS name — what the owner types to
+     * reach this backend from any of their devices.
+     */
+    "dnsName": string;
+
+    /**
+     * IPs are the node's tailnet addresses. Shown because a tailnet with
+     * MagicDNS turned off has nothing but these.
+     */
+    "ips": string[];
+
+    /**
+     * URL is the address to open on another device on the same tailnet,
+     * carrying a one-time page ticket like the LAN URL above.
+     * 
+     * There is deliberately no Insecure flag beside it. An http:// URL
+     * here is not the same act as an http:// URL on a LAN: every byte of
+     * it crosses an encrypted, authenticated WireGuard link between two
+     * devices the owner enrolled, so warning about it would teach the
+     * user to ignore a warning that does mean something on the LAN URL.
+     */
+    "url": string;
+
+    /**
+     * HTTPS is true when the node also answers TLS on its ts.net name,
+     * which needs HTTPS enabled in the tailnet's admin panel. False
+     * means the URL above is http:// and the reason is the tailnet's
+     * settings, not this backend's.
+     */
+    "https": boolean;
+
+    /**
+     * HasState is true when a node identity exists on disk. It is what
+     * makes "forget this node" offerable only when there is something to
+     * forget — and, while the feature is off, the only sign that this
+     * backend is still a device in the owner's tailnet admin panel.
+     */
+    "hasState": boolean;
+
+    /**
+     * LastError is the last node failure, verbatim. Cleared by the next
+     * success. Errors are user-facing state, not log entries.
+     */
+    "lastError": string;
+
+    /** Creates a new TailnetStatus instance. */
+    constructor($$source: Partial<TailnetStatus> = {}) {
+        if (!("running" in $$source)) {
+            this["running"] = false;
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("authUrl" in $$source)) {
+            this["authUrl"] = "";
+        }
+        if (!("dnsName" in $$source)) {
+            this["dnsName"] = "";
+        }
+        if (!("ips" in $$source)) {
+            this["ips"] = [];
+        }
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+        if (!("https" in $$source)) {
+            this["https"] = false;
+        }
+        if (!("hasState" in $$source)) {
+            this["hasState"] = false;
+        }
+        if (!("lastError" in $$source)) {
+            this["lastError"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TailnetStatus instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TailnetStatus {
+        const $$createField4_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("ips" in $$parsedSource) {
+            $$parsedSource["ips"] = $$createField4_0($$parsedSource["ips"]);
+        }
+        return new TailnetStatus($$parsedSource as Partial<TailnetStatus>);
+    }
+}
+
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
 const $$createType1 = TLSStatus.createFrom;
+const $$createType2 = TailnetStatus.createFrom;

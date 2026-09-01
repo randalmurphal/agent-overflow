@@ -3,5 +3,6 @@
 
 export {
     Settings,
-    TLSStatus
+    TLSStatus,
+    TailnetStatus
 } from "./models.js";

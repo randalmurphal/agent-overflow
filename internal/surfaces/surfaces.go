@@ -277,9 +277,9 @@ type Registry struct {
 // Listeners is every port this repository's code opens, plus the ones
 // its child processes open on its behalf.
 //
-// Verified against the tree on 2026-08-31: 9 listeners across 7
-// packages, one of them implicit — the count docs/specs/remote-access.md
-// §13 recorded on 2026-08-30, unchanged.
+// Verified against the tree on 2026-09-01: 10 listeners across 8
+// packages, one of them implicit. The tailnet node is the row added since
+// the count docs/specs/remote-access.md §13 recorded on 2026-08-30.
 var Listeners = []Listener{
 	{
 		Name:       "app transport",
@@ -315,6 +315,38 @@ var Listeners = []Listener{
 			"loopback bind rejects every DNS name except the configured " +
 			"canonical domain, and — once a call is authenticated — the " +
 			"per-call scope gate over the session's grants.",
+	},
+	{
+		Name:       "tailnet node",
+		Package:    "internal/tailnet",
+		Binding:    BindLANCapable,
+		Credential: CredPageSession,
+		Posture:    PostureAppOrigin,
+		Sites:      []string{"internal/tailnet/node.go"},
+		Why: "The same application as the transport row above, reached from " +
+			"the owner's own tailnet instead of the LAN. Off by default and " +
+			"lazily constructed: while the setting is false this package " +
+			"builds nothing, opens nothing and writes nothing. When it is " +
+			"on, an embedded userspace node (tsnet, netstack — no TUN and " +
+			"no privilege) accepts on a virtual address only devices the " +
+			"owner enrolled can route to, and hands the listener to " +
+			"internal/transport's ServeAuxiliary, so the credential, the " +
+			"origin allow-list, the Host guard and the per-call scope gate " +
+			"are the SAME objects the main bind uses — there is no second " +
+			"API and no second credential class. LAN-capable is the " +
+			"honest class: the peer is not on this machine, so everything " +
+			"about the surface has to hold against an off-host caller, and " +
+			"the transport's own rule that a non-loopback upgrade must " +
+			"name a live session applies unchanged (the peer address is " +
+			"the node's 100.64/10 tailnet IP). What the tailnet itself " +
+			"adds is transport-level: every byte is already encrypted and " +
+			"authenticated by WireGuard between two enrolled devices " +
+			"before this process sees it, which is why no TLS sniffer is " +
+			"installed on the cleartext listener. A SECOND listener on 443 " +
+			"is attached when the tailnet has HTTPS enabled, terminating a " +
+			"certificate tsnet obtains and renews for the node's own ts.net " +
+			"name; nothing in this repository mints, stores or presents " +
+			"that certificate.",
 	},
 	{
 		Name:       "--connect client stub",
@@ -716,6 +748,20 @@ var Origins = []Origin{
 			"the WebSocket and is rendered by bundle code — it is never " +
 			"served as a document at this origin, which is the property " +
 			"/design/ broke and TestAuthoredBytesNeverExecute now holds.",
+	},
+	{
+		Name:     "SPA origin (tailnet node)",
+		Listener: "tailnet node",
+		Author:   AuthorBuild,
+		Posture:  PostureAppOrigin,
+		Why: "The same embedded bundle from the same mux, reached at the " +
+			"node's own name instead of a LAN address. It is a DISTINCT " +
+			"browser origin all the same — a different authority means " +
+			"separate storage and a separate page cookie — which is why it " +
+			"gets a row rather than being folded into the transport's. " +
+			"Nothing about the bytes differs: the handler is the same " +
+			"object, so the Content-Security-Policy and the " +
+			"authored-content rule above hold here unchanged.",
 	},
 	{
 		Name:     "SPA origin (--connect stub)",

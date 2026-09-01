@@ -423,6 +423,13 @@ type App struct {
 	// App with no reconciler running, which is every fixture that never
 	// calls Start. See app_domaincert.go.
 	domainCert domainCertState
+	// tailnet owns whether this backend is a node on the owner's tailnet:
+	// the live node, the listeners it feeds the transport, and the one
+	// goroutine that reconciles them against the persisted preference.
+	// Zero value is an App with no reconciler and no node, which is every
+	// fixture that never calls Start and every install that leaves the
+	// feature off. See app_tailnet.go.
+	tailnet tailnetState
 	// providerExtraEnv is merged into every provider spawn's environment.
 	// Harness mode uses it to hand ao-mockprovider its control-channel
 	// address + token without exporting those credentials process-wide

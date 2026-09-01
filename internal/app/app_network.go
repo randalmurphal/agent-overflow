@@ -11,11 +11,13 @@ import (
 
 // GetNetworkSettings returns the persisted network preferences — the
 // bind toggle, the canonical domain, the DNS hook, the external
-// certificate pair — plus what only the running process knows: the
-// share URL, this launch's token, and the certificate status. Everything
-// server-derived is recomputed on every call, so a rebind or a renewal
-// reflects on the next read. The screen polls this while an issuance is
-// in flight; there is no push channel for it.
+// certificate pair, the tailnet toggle and its coordination server —
+// plus what only the running process knows: the share URLs, this launch's
+// token, the certificate status, and the tailnet node's status.
+// Everything server-derived is recomputed on every call, so a rebind, a
+// renewal or a node joining reflects on the next read. The screen polls
+// this while an issuance or a sign-in is in flight; there is no push
+// channel for it.
 //
 //ao:scope host
 func (a *App) GetNetworkSettings() (network.Settings, error) {
@@ -39,6 +41,11 @@ func (a *App) GetNetworkSettings() (network.Settings, error) {
 // app_domaincert.go, kicked at the end of this call, because a DNS-01
 // exchange outlives any RPC.
 //
+// The tailnet: the toggle and its coordination server are persisted and
+// the reconciler is kicked, exactly like the certificate half and for the
+// same reason — a node's first bring-up ends in an interactive sign-in,
+// which outlives any RPC. Nothing about the node is done inline here.
+//
 // Origin allow-list: a LAN bind requires an explicit allow-list, so a
 // page loaded from some other origin cannot open a socket here with a
 // token it happened to learn. On bind-all=true the list contains
@@ -58,11 +65,13 @@ func (a *App) SetNetworkSettings(s network.Settings) (network.Settings, error) {
 
 	prev := a.settings.Get().Network
 	next := settings.NetworkSettings{
-		BindAll:          s.BindAll,
-		CanonicalDomain:  s.CanonicalDomain,
-		ACMEDNSHook:      s.ACMEDNSHook,
-		ExternalCertFile: s.ExternalCertFile,
-		ExternalKeyFile:  s.ExternalKeyFile,
+		BindAll:           s.BindAll,
+		CanonicalDomain:   s.CanonicalDomain,
+		ACMEDNSHook:       s.ACMEDNSHook,
+		ExternalCertFile:  s.ExternalCertFile,
+		ExternalKeyFile:   s.ExternalKeyFile,
+		TailnetEnabled:    s.TailnetEnabled,
+		TailnetControlURL: s.TailnetControlURL,
 	}
 	if _, err := a.settings.SetNetwork(next); err != nil {
 		return network.Settings{}, fmt.Errorf("persist network settings: %w", err)
@@ -111,6 +120,12 @@ func (a *App) SetNetworkSettings(s network.Settings) (network.Settings, error) {
 	// act from the user's side without making them one call.
 	a.kickDomainCertificate()
 
+	// The tailnet half is the same arrangement for the same reason: the
+	// node's first bring-up ends in an interactive sign-in, so "turn it
+	// on" and "be on the tailnet" cannot be one call. The screen polls the
+	// status and shows the link.
+	a.kickTailnet()
+
 	return network.FromServerWithLAN(srv, a.networkSettingsFrom(stored), lanIP), nil
 }
 
@@ -157,9 +172,12 @@ func (a *App) networkSettingsFrom(stored settings.NetworkSettings) network.Setti
 		// OrEmpty so an unconfigured hook is `[]` on the wire rather than
 		// `null`: the field is a list the screen renders, and a client
 		// should not have to coalesce one absent value per read.
-		ACMEDNSHook:      slicesx.OrEmpty(stored.ACMEDNSHook),
-		ExternalCertFile: stored.ExternalCertFile,
-		ExternalKeyFile:  stored.ExternalKeyFile,
-		TLS:              a.domainCertStatus(),
+		ACMEDNSHook:       slicesx.OrEmpty(stored.ACMEDNSHook),
+		ExternalCertFile:  stored.ExternalCertFile,
+		ExternalKeyFile:   stored.ExternalKeyFile,
+		TailnetEnabled:    stored.TailnetEnabled,
+		TailnetControlURL: stored.TailnetControlURL,
+		TLS:               a.domainCertStatus(),
+		Tailnet:           a.tailnetStatus(),
 	}
 }

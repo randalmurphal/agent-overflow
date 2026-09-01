@@ -3,6 +3,7 @@ package settings
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"path/filepath"
 	"strings"
 )
@@ -45,7 +46,26 @@ type NetworkSettings struct {
 	// certificate authority.
 	ExternalCertFile string `json:"externalCertFile,omitempty"`
 	ExternalKeyFile  string `json:"externalKeyFile,omitempty"`
+
+	// TailnetEnabled asks this backend to join the owner's tailnet as
+	// its own node (docs/specs/remote-access.md §7, "Anywhere access").
+	// Off by default and lazily initialized: while it is false nothing
+	// is constructed, no state directory exists, and no goroutine runs.
+	// Turning it on is a network exposure change, which is why the RPC
+	// that writes this group demands a step-up proof.
+	TailnetEnabled bool `json:"tailnetEnabled,omitempty"`
+
+	// TailnetControlURL is the coordination server the node registers
+	// with. Empty means the Tailscale service, which is what nearly
+	// every install wants; a self-hosted control plane (Headscale) is
+	// the reason this is configurable at all. An absolute http(s) URL.
+	TailnetControlURL string `json:"tailnetControlUrl,omitempty"`
 }
+
+// WantsTailnet reports whether the tailnet node should be running. One
+// predicate so the reconciler, the status line and the forget refusal
+// cannot disagree about what "enabled" means.
+func (n NetworkSettings) WantsTailnet() bool { return n.TailnetEnabled }
 
 // WantsACME reports whether the backend should try to obtain and renew a
 // certificate for the canonical domain itself. One predicate, so the
@@ -136,6 +156,25 @@ func validateNetwork(n NetworkSettings) (NetworkSettings, error) {
 		}
 	}
 
+	n.TailnetControlURL = strings.TrimSpace(n.TailnetControlURL)
+	if n.TailnetControlURL != "" {
+		// Validated here rather than at bring-up, because a control URL
+		// the node cannot use leaves it parked waiting for a sign-in
+		// that never arrives — minutes after the write that caused it,
+		// with nothing connecting the two.
+		parsed, err := url.Parse(n.TailnetControlURL)
+		if err != nil {
+			return NetworkSettings{}, fmt.Errorf("network.tailnetControlUrl: %w", err)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return NetworkSettings{}, fmt.Errorf(
+				"network.tailnetControlUrl scheme must be http:// or https://, got %q", parsed.Scheme)
+		}
+		if parsed.Host == "" {
+			return NetworkSettings{}, fmt.Errorf("network.tailnetControlUrl is missing a host")
+		}
+	}
+
 	return n, nil
 }
 
@@ -145,11 +184,27 @@ func validateNetwork(n NetworkSettings) (NetworkSettings, error) {
 // host allowlist. Dropping is safe in both directions here: without a
 // domain the backend serves its self-signed certificate, which is what
 // it did before any of this was configured.
+//
+// The tailnet half is re-checked on its own, because it shares nothing
+// with the TLS half: a domain typo must not quietly take the node off
+// the tailnet. It drops WHOLE, enabled bit included, when the control
+// URL is the unusable value — an empty control URL means the public
+// coordination server, so keeping the toggle alone would register this
+// node somewhere the user did not name.
 func sanitizeNetwork(n NetworkSettings) NetworkSettings {
 	sanitized, err := validateNetwork(n)
 	if err == nil {
 		return sanitized
 	}
-	log.Printf("settings: dropping unusable network TLS configuration: %v", err)
-	return NetworkSettings{BindAll: n.BindAll}
+	log.Printf("settings: dropping unusable network configuration: %v", err)
+	kept := NetworkSettings{BindAll: n.BindAll}
+	tailnet, tailnetErr := validateNetwork(NetworkSettings{
+		TailnetEnabled:    n.TailnetEnabled,
+		TailnetControlURL: n.TailnetControlURL,
+	})
+	if tailnetErr == nil {
+		kept.TailnetEnabled = tailnet.TailnetEnabled
+		kept.TailnetControlURL = tailnet.TailnetControlURL
+	}
+	return kept
 }

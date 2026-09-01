@@ -42,9 +42,34 @@ domain with no hook and no file pair is a legitimate third state — somebody
 else's proxy terminates TLS in front — and it publishes the http URL,
 because from here nothing can tell what that proxy does.
 
+## The tailnet URL is a third answer, on its own terms
+
+`TailnetStatus` is the node's observed state as `internal/app`'s reconciler
+last read it, and `tailnetURL` mints the reachable address beside it —
+`https://<magicdns-name>` when the tailnet issued a certificate, else
+`http://<magicdns-name>:<port>`. Two things about it differ from everything
+above, and both are deliberate:
+
+- **There is no `Insecure` flag beside it.** That flag answers "would a
+  browser warn", and it is `Settings.Insecure`'s job for the LAN URL. A
+  tailnet address is reached over WireGuard, which authenticates and
+  encrypts the hop whether or not TLS sits on top; marking the cleartext
+  case insecure would tell the truth about the scheme and a lie about the
+  connection.
+- **It exists only while the node is RUNNING.** The URL carries a
+  single-use page ticket like every other share URL, so producing one for
+  a node nothing can reach would spend a ticket from a bounded book for a
+  link nobody can open. An install with the feature off spends none.
+
+The Tailscale STATE VOCABULARY is carried verbatim (`NeedsLogin`,
+`Starting`, `Running`, …) rather than mapped onto our own words. It is what
+the tailnet's own admin panel and CLI say, so a person comparing the two
+screens is comparing the same words, and a state we have not seen before
+still renders as itself instead of collapsing into "unknown".
+
 ## Layout
 
-- `network.go`: `Settings`, `BindHost`, `OriginPatterns`,
+- `network.go`: `Settings`, `TailnetStatus`, `BindHost`, `OriginPatterns`,
   `AppURLWithLAN`, `FromServer` / `FromServerWithLAN`,
   `DiscoverLocalLANIP`. `Interfaces` and `InterfaceAddrs` are
   exported `var` hooks so tests can stub the iface enumeration

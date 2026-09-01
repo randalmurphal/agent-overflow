@@ -56,6 +56,8 @@ export const SETTINGS_DEFAULTS = {
     acmeDnsHook: [],
     externalCertFile: "",
     externalKeyFile: "",
+    tailnetEnabled: false,
+    tailnetControlUrl: "",
   },
   retention: {
     days: 30,

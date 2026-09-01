@@ -506,6 +506,18 @@ export interface NetworkPersistedSettings {
    */
   externalCertFile: string;
   externalKeyFile: string;
+
+  /**
+   * When true, this backend joins the owner's tailnet as its own node, so
+   * it is reachable from their other devices with no public listener.
+   */
+  tailnetEnabled: boolean;
+
+  /**
+   * The coordination server the node registers with. Empty means the
+   * Tailscale service; a self-hosted control plane is why it is settable.
+   */
+  tailnetControlUrl: string;
 }
 
 export interface RetentionPersistedSettings {

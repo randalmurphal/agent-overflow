@@ -183,3 +183,105 @@ func TestAHandEditedFileLosesOnlyTheUnusableHalf(t *testing.T) {
 		t.Fatalf("the unusable TLS configuration survived load: %+v", loaded)
 	}
 }
+
+// The tailnet half persists through the same one write path, and its
+// control URL is validated where a person can be told rather than at
+// bring-up, minutes later, with nothing connecting the two.
+func TestTailnetPreferenceRoundTripsThroughTheOneWritePath(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.SetNetwork(NetworkSettings{
+		TailnetEnabled:    true,
+		TailnetControlURL: "  https://headscale.example/  ",
+	})
+	if err != nil {
+		t.Fatalf("SetNetwork: %v", err)
+	}
+	if !updated.Network.WantsTailnet() {
+		t.Fatal("the enabled toggle did not survive the write")
+	}
+	if updated.Network.TailnetControlURL != "https://headscale.example/" {
+		t.Fatalf("tailnetControlUrl = %q, want the trimmed spelling", updated.Network.TailnetControlURL)
+	}
+
+	reloaded := NewService(dir).Get().Network
+	if !reloaded.TailnetEnabled || reloaded.TailnetControlURL != "https://headscale.example/" {
+		t.Fatalf("reloaded tailnet preference = %+v", reloaded)
+	}
+
+	// Off by default, and an empty control URL means the public
+	// coordination server rather than an unset field nothing reads.
+	fresh := NewService(t.TempDir()).Get().Network
+	if fresh.WantsTailnet() || fresh.TailnetControlURL != "" {
+		t.Fatalf("a fresh install starts with %+v, want the feature off", fresh)
+	}
+}
+
+// A control URL a node could not register with is refused at the write,
+// because the alternative is a node parked waiting for a sign-in that
+// never arrives.
+func TestSetNetworkRefusesAnUnusableControlURL(t *testing.T) {
+	for _, url := range []string{
+		"headscale.example",
+		"ftp://headscale.example",
+		"https://",
+		"://nope",
+	} {
+		t.Run(url, func(t *testing.T) {
+			svc := NewService(t.TempDir())
+			if _, err := svc.SetNetwork(NetworkSettings{TailnetEnabled: true, TailnetControlURL: url}); err == nil {
+				t.Fatalf("SetNetwork accepted tailnetControlUrl %q", url)
+			}
+		})
+	}
+}
+
+// The tailnet half is independent of the TLS half in both directions: a
+// domain typo must not take the node off the tailnet, and an unusable
+// control URL drops the whole tailnet half rather than quietly
+// registering this node with a coordination server the user never named.
+func TestAHandEditedFileKeepsTheTailnetHalfSeparate(t *testing.T) {
+	t.Run("a bad domain keeps the tailnet preference", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{
+			"network": {
+				"canonicalDomain": "https://backend.example/",
+				"tailnetEnabled": true,
+				"tailnetControlUrl": "https://headscale.example/"
+			}
+		}`), 0o600); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		loaded := NewService(dir).Get().Network
+		if loaded.CanonicalDomain != "" {
+			t.Fatalf("the unusable domain survived load: %q", loaded.CanonicalDomain)
+		}
+		if !loaded.WantsTailnet() || loaded.TailnetControlURL != "https://headscale.example/" {
+			t.Fatalf("the tailnet half was dropped with the domain: %+v", loaded)
+		}
+	})
+
+	t.Run("a bad control URL drops the whole tailnet half", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{
+			"network": {
+				"bindAll": true,
+				"tailnetEnabled": true,
+				"tailnetControlUrl": "headscale.example"
+			}
+		}`), 0o600); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		loaded := NewService(dir).Get().Network
+		if !loaded.BindAll {
+			t.Fatal("the bind toggle was dropped along with the tailnet half")
+		}
+		if loaded.WantsTailnet() {
+			t.Fatal("the node would join the public coordination server instead of the one that was configured")
+		}
+		if loaded.TailnetControlURL != "" {
+			t.Fatalf("the unusable control URL survived load: %q", loaded.TailnetControlURL)
+		}
+	})
+}
