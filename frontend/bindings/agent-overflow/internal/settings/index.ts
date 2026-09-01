@@ -9,8 +9,6 @@ export {
     NetworkSettings,
     PromptOverride,
     ProviderEnvVar,
-    RemoteEndpoint,
-    RemoteEndpointSummary,
     RetentionSettings,
     Settings
 } from "./models.js";

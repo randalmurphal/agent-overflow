@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -24,6 +25,7 @@ import (
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/cdprelay"
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/harness/darwinbundle"
@@ -386,6 +388,20 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	}
 	logBootPhase("transport.assets", phaseStarted)
 
+	// The other machines this installation drives. Built here rather than
+	// during startup because the transport's routes for them are decided
+	// at construction, and the profile directory is known before anything
+	// opens: it is this installation's identity, not this launch's state.
+	//
+	// A boot with no resolvable config root attaches to nothing. That is
+	// a real state (a relocation mid-flight, a locked-down profile) and
+	// not a failure to abort on — the four admin methods answer it, the
+	// routes are absent, and the local backend still works.
+	attached := bootAttachedBackends()
+	if attached != nil {
+		appservice.SetAttachedBackends(appService.App, attached)
+	}
+
 	cfg := transport.Config{
 		Dispatcher:               dispatcher,
 		EventBus:                 bus,
@@ -448,6 +464,10 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// measureUserAgentSpecificMemory. Opt-in: COEP breaks remote
 		// subresources such as chat-markdown images.
 		CrossOriginIsolate: envTruthy(os.Getenv(diagenv.RendererDiag)),
+		// Nil when this boot keeps no pairings, which is what leaves the
+		// three carried route families unregistered rather than serving
+		// 404s from an empty set.
+		AttachedBackends: attachedBackendsSeam(attached),
 	}
 	// The embedded browser pane's Windows leg. Inside WSL the browser
 	// engine lives in the launcher process, reached over a tunnel the
@@ -1093,6 +1113,63 @@ func isolatedDevAssetWarning(devURL string) string {
 		" (FRONTEND_DEVSERVER_URL is set and --harness/--soak honors it). " +
 		"Every measurement from this instance — perf runs, memory samples, soak observations — " +
 		"is of the DEV bundle, not the shipped one. Unset FRONTEND_DEVSERVER_URL to measure the embedded build."
+}
+
+// deviceProfileDirName holds this installation's device identity: the one
+// key every backend knows it by, and one session file per backend it has
+// paired with.
+//
+// Under the app config root and NOT under --data-dir, which `--connect`
+// refuses to be combined with anyway (main_entry.go): a data dir is one
+// backend's database, while the device key is this installation's name on
+// every backend it has ever met.
+const deviceProfileDirName = "device"
+
+func deviceProfileDir() (string, error) {
+	root := bootSettingsDir()
+	if root == "" {
+		return "", errors.New("no config directory is resolvable, so this device has nowhere to keep its pairing")
+	}
+	return filepath.Join(root, deviceProfileDirName), nil
+}
+
+// deviceLabel is what this installation asks to be called in the owner's
+// device list on every backend it pairs with. The hostname is what the
+// person confirming the pairing recognises — the same string this backend
+// publishes as its OWN name — and a machine that will not tell us its name
+// gets a generic label rather than an empty row.
+func deviceLabel() string {
+	if host := appidentity.HostDisplayName(); host != "" {
+		return host
+	}
+	return "Agent Overflow desktop"
+}
+
+// bootAttachedBackends builds the set of other machines this installation
+// drives, or nil when there is nowhere to keep pairings.
+func bootAttachedBackends() *attachedbackends.Manager {
+	dir, err := deviceProfileDir()
+	if err != nil {
+		log.Printf("attached backends: %v", err)
+		return nil
+	}
+	manager, err := attachedbackends.New(dir, deviceLabel(), runtime.GOOS)
+	if err != nil {
+		log.Printf("attached backends: %v", err)
+		return nil
+	}
+	return manager
+}
+
+// attachedBackendsSeam hands the manager to the transport as an
+// interface. A typed nil in an interface is not nil, and the transport
+// registers its carried routes on exactly that test — so the conversion
+// has to happen where the nil is still visible as one.
+func attachedBackendsSeam(manager *attachedbackends.Manager) transport.AttachedBackends {
+	if manager == nil {
+		return nil
+	}
+	return manager
 }
 
 // buildAssetHandler returns the http.Handler that the transport mounts

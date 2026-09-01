@@ -70,6 +70,16 @@ type Session struct {
 	// Label is what this device asked to be called in the owner's device
 	// list.
 	Label string `json:"label,omitempty"`
+	// Nickname is what the person running THIS installation calls the
+	// backend, as distinct from BackendName, which is what the backend
+	// calls itself. Local, editable, and never sent anywhere: two
+	// machines that both answer "mac-mini" are told apart here.
+	//
+	// Kept in the session file rather than beside it because it belongs
+	// to the same thing the file names, and a rotation carries it (see
+	// Client.rotate, which copies the held session before replacing the
+	// credential fields).
+	Nickname string `json:"nickname,omitempty"`
 }
 
 // LoadSession reads one backend's stored session.

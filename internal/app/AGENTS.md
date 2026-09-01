@@ -362,6 +362,40 @@ Two shapes are worth knowing before editing:
   somebody else's phone would point that phone at this machine's bucket.
   The payload rides the URL FRAGMENT, which is never sent to a server.
 
+## The other machines this installation drives
+
+`app_backends.go` is the mirror image of the device-access surface: that
+one is "who may reach THIS backend", this one is "which other backends do
+I reach". Four methods — `ListBackends`, `AddBackend`, `RemoveBackend`,
+`RenameBackend` — all `//ao:scope host` and `//ao:route home`, all thin
+adapters over `internal/attachedbackends`.
+
+`host` scope is the whole access rule and needs no second one: host
+presence is the only key that opens a host method, and no session grant
+does. It matters more here than almost anywhere on the wire — a caller
+that could attach a backend could point this installation at a machine of
+its choosing, and a caller that could list them learns every computer this
+person works on. `home` route because they act on THIS backend's own
+profile directory; asked of an attached backend they would answer about
+that machine's attachments, which is a real thing to want one day and not
+what this surface is.
+
+**`AddBackend` returns before the pairing admits anything, and that is not
+a shortcut.** The confirmation window is ten minutes
+(`deviceclient.AwaitActivation`), longer than any timeout between here and
+the page, so the call answers the verification number a person has to
+compare and the wait runs on its own goroutine, reporting on the
+`backend:attach` channel. The same split the terminal ceremony makes
+between printing the number and waiting for it. The wait runs on `appCtx`,
+so a shutdown mid-wait ends it rather than leaving a pinned TLS transport
+open for ten minutes.
+
+A boot with no resolvable config root has no manager, and all four answer
+that as a plain refusal rather than panicking. The transport is handed a
+nil interface in that case (`attachedBackendsSeam` in `main.go` — a typed
+nil in an interface is not nil), so the carried routes are absent rather
+than serving 404s from an empty set.
+
 ## The canonical domain's certificate
 
 `app_domaincert.go` is the one place that decides WHERE this backend's

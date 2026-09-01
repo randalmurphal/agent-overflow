@@ -776,6 +776,59 @@ var Routes = []Route{
 			"owns the codec, so no method table or channel policy applies.",
 	},
 	{
+		Pattern:    "/ws/backend/",
+		Listener:   "app transport",
+		Credential: CredPageSession,
+		Posture:    PostureProxied,
+		Why: "One page socket carried to a machine that is not this one, " +
+			"registered only when Config.AttachedBackends is set. It is " +
+			"how a desktop drives several computers from one window " +
+			"without the page ever holding more than one credential: the " +
+			"page presents THIS listener's cookie, and the pinned device " +
+			"session for the far machine is attached inside this process " +
+			"and never reaches the browser. Narrower than /ws by one " +
+			"check, deliberately — the peer must be on this machine. An " +
+			"off-host client realizes the same seam by opening its own " +
+			"socket to each backend with its own paired session, so " +
+			"carrying it through here would lend a device this machine's " +
+			"credential for a machine it never paired with. Once carried " +
+			"the bytes are opaque: internal/backendproxy splices the 101 " +
+			"and no method table or channel policy applies on this side.",
+	},
+	{
+		Pattern:    "/bootstrap/",
+		Listener:   "app transport",
+		Credential: CredPageSession,
+		Posture:    PostureStructured,
+		Why: "One attached machine's manifest, answered with that " +
+			"machine's own reply narrowed to a closed list: what " +
+			"identifies its history store, what to call it, and which " +
+			"launch it is. Its wsUrl is REWRITTEN to name this listener, " +
+			"because that is where the page's socket goes and the only " +
+			"wsUrl the SPA accepts. The far side's harness bit, page " +
+			"marker and passkey availability describe the listener a page " +
+			"loaded from and are dropped rather than forwarded. Same three " +
+			"checks as the carried socket, and no ticket exchange: the " +
+			"page could not have reached this route without the cookie it " +
+			"already holds.",
+	},
+	{
+		Pattern:    "/backend/",
+		Listener:   "app transport",
+		Credential: CredTransferTicket,
+		Posture:    PostureProxied,
+		Why: "One attached machine's attachment bytes. The far side's " +
+			"admission is the single-use ticket already on the query, " +
+			"minted by a carried RPC, so this hop attaches no credential " +
+			"of its own — the same arrangement /attachments/ has on this " +
+			"listener and the same one internal/clientmode makes. What " +
+			"this listener contributes is which backend, as a path prefix " +
+			"that is stripped before the request crosses. The subtree " +
+			"carries the upstream's attachment routes and nothing else: a " +
+			"path under it naming anything else is a 404 rather than a " +
+			"hop.",
+	},
+	{
 		Pattern:    "/rpc",
 		Listener:   "app transport",
 		Credential: CredPageSession,

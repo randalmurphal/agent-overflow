@@ -11,8 +11,17 @@ before `Serve` by `main_connect.go`.
 
 - `clientmode.go` is the public surface: `Config`, `PairedUpstream`,
   `ParseConnectURL`, `Serve`, `Server`. The stub HTTP server, the
-  credential exchange, the WebSocket carrier, the attachment byte relay,
-  and the URL parser all live here.
+  credential exchange, the page-ticket mint, the manifest and the URL
+  parser live here.
+- The CARRY does not. `internal/backendproxy` owns the two proxies and
+  the manifest fetch, because the desktop's attached backends
+  (`internal/attachedbackends`) make the identical hop once per machine
+  and a duplicate of that code gets the credential half wrong. This
+  package builds one `backendproxy.Carrier` in `Serve` and calls
+  `CarryUpgrade`, `CarryTransfer` and `FetchBootstrap`; `PairedUpstream`
+  is an alias of the seam declared there. Admission stays HERE — the
+  origin rule and this stub's own cookie — because who may reach the hop
+  is the caller's question, not the carrier's.
 - `clientmode_test.go`: URL-parsing tests, shell-serving and manifest
   tests, the credential and origin rules on `/ws` and `/attachments/`,
   the drift guard between the relay's prefix and the backend's two route
@@ -65,16 +74,16 @@ could read. The flow mirrors a local boot exactly:
    ticket and sets this stub's own HttpOnly cookie for this origin. Every
    later request rides the cookie.
 4. `handleWS` checks `transport.OriginAllowed` and `Credential.Authenticate`,
-   then hands the request to a `httputil.ReverseProxy` that deletes the
-   local `Cookie` and `Origin` headers and attaches the upstream's own
-   credential for the hop: `Authorization: Bearer <upstream token>` in
-   token mode, and in paired mode a single-use `?ticket=` minted from
-   THIS request (see below).
+   then hands the request to `backendproxy.Carrier.CarryUpgrade`, which
+   deletes the local `Cookie` and `Origin` headers and attaches the
+   upstream's own credential for the hop: `Authorization: Bearer
+   <upstream token>` in token mode, and in paired mode a single-use
+   `?ticket=` minted from THIS request (see below).
 
 The hop REPLACES the query rather than forwarding it (the operator's
 endpoint owns it, and the page's own marker and client id mean nothing
 upstream), so anything the page must still be identified by has to be
-re-emitted explicitly. `upstreamQuery` does that for the two declared
+re-emitted explicitly. `backendproxy`'s `upstreamQuery` does that for the two declared
 client-identity parameters (`did`, `conn`), parsed and re-rendered
 through `transport.ParseClientIdentity` so only bounded values cross and
 an operator parameter of the same name wins. Without it the upstream
@@ -92,11 +101,11 @@ loopback or the LAN, the stub would otherwise be trusted for its topology
 alone — the same problem the WSL launcher has, in the same shape, which is
 why the mechanism lives in `internal/relaysession` and not twice.
 
-`Serve` builds a `relaysession.Source` against the upstream's
+`backendproxy.New` builds a `relaysession.Source` against the upstream's
 `/bootstrap.json` (`relaysession.BootstrapURL`, which is also what derives
-`upstreamBootstrapURL` for the revalidation probe — one derivation, so the
-endpoint this stub dials and the endpoint it asks for a credential can
-never name different backends). The proxy's `Rewrite` then deletes any
+the URL `FetchBootstrap` probes — one derivation, so the endpoint this
+stub dials and the endpoint it asks for a credential can never name
+different backends). The proxy's `Rewrite` then deletes any
 inbound `X-AO-Session` and sets the one this process fetched: a browser
 cannot put a header on an upgrade, but a local non-browser client holding
 this stub's cookie could, and a forwarded one would let it name a session
@@ -226,6 +235,8 @@ outage still lands its cookie and its retry costs no ticket.
   exchange, and the origin rule this package reuses rather than restates.
 - `internal/transport/server.go`: the in-process HTTP+WS server
   skipped on `--connect`.
+- `internal/backendproxy`: the hop itself, shared with the desktop's
+  attached backends.
 - `internal/relaysession`: the forwarded session credential, shared with
   the WSL launcher. Its package doc carries the full contract.
 - `internal/deviceclient`: the other side of `PairedUpstream` — the

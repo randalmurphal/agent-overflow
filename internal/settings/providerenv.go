@@ -172,7 +172,7 @@ func (s *Settings) setProviderEnvVars(providerKey string, vars []ProviderEnvVar)
 // variable's Value cleared. This is the projection GetSettings applies before
 // the list crosses the transport boundary: GetSettings is reachable from a
 // LAN-attached client, and a sensitive value is exactly the kind of material
-// the RemoteEndpoints token redaction exists to keep off that wire.
+// that must not cross that wire.
 //
 // The copy is deep enough to leave the Service's cached Settings untouched —
 // the slice shares backing memory with the cache, so clearing in place would

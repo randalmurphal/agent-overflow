@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/assetwatch"
+	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/claudeapp"
 	"agent-overflow/internal/codexapp"
@@ -133,7 +134,14 @@ type App struct {
 	discussionAppOnce sync.Once
 	discussionApp     *discussionapp.Service
 	// browser owns the built-in provider-neutral browser and its MCP bridge.
-	browser        appBrowserState
+	browser appBrowserState
+	// backends is the set of OTHER machines this installation has
+	// attached, carried on this backend's own listener
+	// (internal/attachedbackends). Nil in every boot that has no device
+	// profile directory to keep pairings in — a test fixture, and the
+	// harness — and every attached-backend method is a plain refusal
+	// then, never a panic.
+	backends       *attachedbackends.Manager
 	terminals      *terminal.Manager
 	attachments    *attachment.Store
 	workspaceFiles *workspacefiles.Searcher

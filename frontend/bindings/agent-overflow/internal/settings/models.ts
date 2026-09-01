@@ -412,105 +412,6 @@ export class ProviderEnvVar {
 }
 
 /**
- * RemoteEndpoint is one stored `--connect` target. The desktop binary
- * takes a URL+token from this list (or from --connect on the command
- * line) and points the Wails webview at the remote backend instead of
- * booting a local transport.
- * 
- * IDs are opaque strings the settings layer mints; the UI keys list
- * rows by ID so a rename/edit doesn't require re-targeting the
- * underlying record. LastUsedAt is updated by the settings UI's
- * "Connect" affordance — the settings layer doesn't observe runtime
- * connection state.
- * 
- * SECURITY: this struct is the on-disk persistence shape — it carries
- * the plaintext Token because the launcher needs it when the user
- * chooses to --connect. It MUST NOT be returned directly to the wire;
- * the bound App methods in app_remote.go project it onto
- * RemoteEndpointSummary (no Token field) before crossing the
- * transport boundary, with a single explicit GetRemoteEndpointToken
- * path for token retrieval. Adding a JSON tag here that hides Token
- * would break persistence; the protection lives at the wire shape
- * instead.
- */
-export class RemoteEndpoint {
-    "id": string;
-    "name": string;
-    "url": string;
-    "token": string;
-    "lastUsedAt"?: number;
-
-    /** Creates a new RemoteEndpoint instance. */
-    constructor($$source: Partial<RemoteEndpoint> = {}) {
-        if (!("id" in $$source)) {
-            this["id"] = "";
-        }
-        if (!("name" in $$source)) {
-            this["name"] = "";
-        }
-        if (!("url" in $$source)) {
-            this["url"] = "";
-        }
-        if (!("token" in $$source)) {
-            this["token"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new RemoteEndpoint instance from a string or object.
-     */
-    static createFrom($$source: any = {}): RemoteEndpoint {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new RemoteEndpoint($$parsedSource as Partial<RemoteEndpoint>);
-    }
-}
-
-/**
- * RemoteEndpointSummary is the token-redacted wire shape returned by
- * the bound `ListRemoteEndpoints` / `AddRemoteEndpoint` /
- * `UpdateRemoteEndpoint` App methods. The Token field is structurally
- * absent so a LAN-attached token-holder cannot harvest credentials for
- * other backends through the bulk list path — token retrieval goes
- * through the dedicated server-logged GetRemoteEndpointToken method.
- * 
- * Keeping the projection here (rather than at the App boundary) makes
- * it impossible for a future field on RemoteEndpoint that needs
- * special handling to slip onto the wire without going through this
- * type.
- */
-export class RemoteEndpointSummary {
-    "id": string;
-    "name": string;
-    "url": string;
-    "lastUsedAt"?: number;
-
-    /** Creates a new RemoteEndpointSummary instance. */
-    constructor($$source: Partial<RemoteEndpointSummary> = {}) {
-        if (!("id" in $$source)) {
-            this["id"] = "";
-        }
-        if (!("name" in $$source)) {
-            this["name"] = "";
-        }
-        if (!("url" in $$source)) {
-            this["url"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new RemoteEndpointSummary instance from a string or object.
-     */
-    static createFrom($$source: any = {}): RemoteEndpointSummary {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new RemoteEndpointSummary($$parsedSource as Partial<RemoteEndpointSummary>);
-    }
-}
-
-/**
  * RetentionSettings groups TTL cleanup preferences for the background
  * sweeper that prunes stale threads (and their on-disk side effects)
  * plus dated provider-event log files and bug-report bookmark files.
@@ -959,24 +860,6 @@ export class Settings {
     "gitlabSelfHostedHosts"?: string[];
 
     /**
-     * RemoteEndpoints stores the user's `--connect` targets: remote-
-     * hosted backends the desktop binary can attach to instead of
-     * booting a local transport. Persisted as a flat list keyed by
-     * stable IDs so the settings UI can rename / re-order without
-     * disturbing the connect commands the user has already shared.
-     * 
-     * SECURITY NOTE: this list contains ephemeral session tokens. They
-     * are stored in plaintext alongside settings.json (file lands at
-     * 0600, parent dir at 0700). That matches the threat model
-     * documented above — settings.json must not contain anything more
-     * sensitive than what a local-process attacker could already read
-     * out of running webviews. If the remote endpoints' tokens ever
-     * become long-lived bearer tokens, move this field to a
-     * keychain-backed store and remove the JSON persistence path.
-     */
-    "remoteEndpoints"?: RemoteEndpoint[];
-
-    /**
      * ProjectSortMode controls sidebar project ordering. One of
      * {"lastActivity", "createdAt", "manual"}. Persisted here rather
      * than in the webview's localStorage because localStorage is
@@ -1335,10 +1218,9 @@ export class Settings {
         const $$createField53_0 = $$createType9;
         const $$createField54_0 = $$createType10;
         const $$createField56_0 = $$createType0;
-        const $$createField57_0 = $$createType12;
-        const $$createField62_0 = $$createType0;
-        const $$createField64_0 = $$createType0;
-        const $$createField74_0 = $$createType13;
+        const $$createField61_0 = $$createType0;
+        const $$createField63_0 = $$createType0;
+        const $$createField73_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -1388,17 +1270,14 @@ export class Settings {
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
             $$parsedSource["gitlabSelfHostedHosts"] = $$createField56_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
-        if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField57_0($$parsedSource["remoteEndpoints"]);
-        }
         if ("spinnerCustomVerbs" in $$parsedSource) {
-            $$parsedSource["spinnerCustomVerbs"] = $$createField62_0($$parsedSource["spinnerCustomVerbs"]);
+            $$parsedSource["spinnerCustomVerbs"] = $$createField61_0($$parsedSource["spinnerCustomVerbs"]);
         }
         if ("spinnerDisabledAnimations" in $$parsedSource) {
-            $$parsedSource["spinnerDisabledAnimations"] = $$createField64_0($$parsedSource["spinnerDisabledAnimations"]);
+            $$parsedSource["spinnerDisabledAnimations"] = $$createField63_0($$parsedSource["spinnerDisabledAnimations"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField74_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField73_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }
@@ -1416,6 +1295,4 @@ const $$createType7 = ClaudeThinking.createFrom;
 const $$createType8 = NetworkSettings.createFrom;
 const $$createType9 = EditorSettings.createFrom;
 const $$createType10 = RetentionSettings.createFrom;
-const $$createType11 = RemoteEndpoint.createFrom;
-const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = windowgeom$0.Geometry.createFrom;
+const $$createType11 = windowgeom$0.Geometry.createFrom;

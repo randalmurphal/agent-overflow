@@ -56,28 +56,15 @@ func (a *App) GetSettings(ctx context.Context) (settings.Settings, error) {
 // redactedSettings is the projection every bound method returning a full
 // Settings value goes through.
 //
-// SECURITY: RemoteEndpoints[*].Token and the values of custom environment
-// variables flagged sensitive are cleared. A LAN-attached token-holder calling
-// GetSettings must not be able to harvest credentials — without this, a single
-// call enumerates every saved token, defeating the on-demand fetch model that
-// ListRemoteEndpoints + GetRemoteEndpointToken were designed to enforce.
-// Callers that need an actual token (the "Copy launch command" affordance)
-// fetch it through GetRemoteEndpointToken, which is a logged single-record
-// lookup; a sensitive environment value has no read path at all — the UI
-// overwrites it by re-entry.
+// SECURITY: the values of custom environment variables flagged sensitive
+// are cleared. A LAN-attached token-holder calling GetSettings must not be
+// able to harvest credentials — a sensitive environment value has no read
+// path at all, and the UI overwrites it by re-entry.
 //
-// Both fields are copied before clearing: settings.Service.Get returns a value
-// copy of Settings, but its slices share backing memory with the service's
+// The values are copied before clearing: settings.Service.Get returns a value
+// copy of Settings, but its maps share backing memory with the service's
 // cache, so clearing in place would corrupt every later reader.
 func redactedSettings(current settings.Settings) settings.Settings {
-	if len(current.RemoteEndpoints) > 0 {
-		redacted := make([]settings.RemoteEndpoint, len(current.RemoteEndpoints))
-		for i, ep := range current.RemoteEndpoints {
-			redacted[i] = ep
-			redacted[i].Token = ""
-		}
-		current.RemoteEndpoints = redacted
-	}
 	current.ClaudeCustomEnv = settings.RedactProviderEnvVars(current.ClaudeCustomEnv)
 	current.CodexCustomEnv = settings.RedactProviderEnvVars(current.CodexCustomEnv)
 	return current

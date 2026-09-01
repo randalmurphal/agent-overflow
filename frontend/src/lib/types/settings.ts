@@ -464,14 +464,6 @@ export interface Settings {
    */
   gitlabSelfHostedHosts: string[];
 
-  /**
-   * Phase F --connect target list. Optional in the wire shape because
-   * the Go side persists with `omitempty` — fresh installs have no
-   * remoteEndpoints key and TS callers should treat undefined as the
-   * empty list.
-   */
-  remoteEndpoints?: RemoteEndpointPersisted[];
-
   /** Sidebar project sort order. Persisted in Go settings for cross-restart durability. */
   projectSortMode: ProjectSortMode;
 
@@ -545,19 +537,6 @@ export interface NetworkPersistedSettings {
 export interface RetentionPersistedSettings {
   /** Age threshold in days. 0 disables the sweep. */
   days: number;
-}
-
-/**
- * RemoteEndpointPersisted mirrors settings.RemoteEndpoint from the Go
- * side. The `lastUsedAt` field is a Unix-seconds timestamp, omitted
- * when the endpoint has never been used.
- */
-export interface RemoteEndpointPersisted {
-  id: string;
-  name: string;
-  url: string;
-  token: string;
-  lastUsedAt?: number;
 }
 
 export interface ProviderStatus {

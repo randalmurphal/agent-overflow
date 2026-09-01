@@ -24,6 +24,7 @@ import (
 // does not emit this by itself", not "this cannot carry traffic".
 func eventChannelConstants() []eventchan.Channel {
 	return []eventchan.Channel{
+		eventchan.BackendAttach,
 		eventchan.BrowserCompanionState,
 		eventchan.BrowserHost,
 		eventchan.DiscussionMessage,

@@ -15,10 +15,7 @@ file, which is what the pre-database boot readers in `main.go` and
 - `settings.go`: `Settings` struct, `Load` / `Save`, the sparse
   JSON marshal/unmarshal, schema versioning (`CurrentSchemaVersion`).
 - `validate.go`: enum allow-lists (timestamp format, provider,
-  reasoning effort, text-generation provider) plus the
-  `ValidateRemoteEndpointURL` / `ValidateRemoteEndpointToken` helpers
-  used by both the App-level remote-endpoint mutators and the
-  `--connect` URL parser. Single `Validate` entry point for the
+  reasoning effort, text-generation provider). Single `Validate` entry point for the
   Settings struct as a whole. The generic list/string normalizers live
   here too (`dedupeTrimmed` and `truncateRuneSafe`) because each has
   callers in more than one feature file; `truncateRuneSafe` bounds a
@@ -144,9 +141,6 @@ file, which is what the pre-database boot readers in `main.go` and
     the settings UI's "Default" selection unrepresentable (the echo would
     match no `<option>` and the select would render blank). `"none"` is
     the explicit nothing; anything else is an id the frontend resolves.
-- `remote.go`: the `RemoteEndpoint` shape and its CRUD helpers
-  (`Add` / `Update` / `Delete` / `Touch`). Backs the `--connect`
-  target list the desktop binary's settings panel exposes.
 - `network.go`: `NetworkSettings` — how this backend is REACHED — plus
   the usual strict/lenient pair. It carries the LAN bind toggle, the
   listen port, the canonical domain, the DNS-01 hook argv, the external
@@ -346,8 +340,7 @@ Three rules, each with a test behind it:
   Every json field is either emitted or listed in `frontendDefaultsDenied`
   with a one-line reason (`TestFrontendDefaultsDenyListIsTotal`). Two kinds
   of reason live there: a field with no TypeScript counterpart at all
-  (`$schemaVersion`, `window`, `editor`) or a redacted one the store must
-  not materialize (`remoteEndpoints`), and a field the TS `Settings` type
+  (`$schemaVersion`, `window`, `editor`), and a field the TS `Settings` type
   declares OPTIONAL where absence is the meaning — the prompt/tool
   overrides and the Claude session axes, where "" or absent means "the
   provider decides". Materializing that second kind changes merge
@@ -399,16 +392,15 @@ Two rules follow, and both are load-bearing:
 
 ## Secrets on the wire
 
-Two fields hold material that must not cross the transport boundary in
-bulk: `RemoteEndpoints[*].Token` and the values of custom environment
-variables flagged `sensitive`. `GetSettings` is reachable from a
-LAN-attached client, so `redactedSettings` (app_settings.go) clears both
-on every read path.
+One kind of field holds material that must not cross the transport
+boundary in bulk: the values of custom environment variables flagged
+`sensitive`. `GetSettings` is reachable from a LAN-attached client, so
+`redactedSettings` (app_settings.go) clears them on every read path.
 
 That makes the generic patch path unsafe for those fields. A
 `GetSettings -> mutate -> Update` round trip would write the redaction
-back. `Service.Update` therefore REJECTS `remoteEndpoints`,
-`claudeCustomEnv`, and `codexCustomEnv`; each has dedicated mutators
+back. `Service.Update` therefore REJECTS `claudeCustomEnv` and
+`codexCustomEnv`; each has dedicated mutators
 that read the persisted value before writing. Any future field that
 gets redacted on read must follow the same pattern in the same commit.
 

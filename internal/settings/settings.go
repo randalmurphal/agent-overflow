@@ -386,22 +386,6 @@ type Settings struct {
 	// lowercase, deduped, and stripped of scheme/path on write.
 	GitLabSelfHostedHosts []string `json:"gitlabSelfHostedHosts,omitempty"`
 
-	// RemoteEndpoints stores the user's `--connect` targets: remote-
-	// hosted backends the desktop binary can attach to instead of
-	// booting a local transport. Persisted as a flat list keyed by
-	// stable IDs so the settings UI can rename / re-order without
-	// disturbing the connect commands the user has already shared.
-	//
-	// SECURITY NOTE: this list contains ephemeral session tokens. They
-	// are stored in plaintext alongside settings.json (file lands at
-	// 0600, parent dir at 0700). That matches the threat model
-	// documented above — settings.json must not contain anything more
-	// sensitive than what a local-process attacker could already read
-	// out of running webviews. If the remote endpoints' tokens ever
-	// become long-lived bearer tokens, move this field to a
-	// keychain-backed store and remove the JSON persistence path.
-	RemoteEndpoints []RemoteEndpoint `json:"remoteEndpoints,omitempty"`
-
 	// ProjectSortMode controls sidebar project ordering. One of
 	// {"lastActivity", "createdAt", "manual"}. Persisted here rather
 	// than in the webview's localStorage because localStorage is
@@ -772,28 +756,23 @@ func (s *Service) Get() Settings {
 // Update applies a partial patch to the current settings, persists the result
 // with sparse serialization, and returns the new full settings.
 //
-// The "remoteEndpoints" key is rejected at the patch boundary: applyPatch
-// merges top-level keys via wholesale assignment, so a caller doing
-// `GetSettings -> mutate one field -> Update(full struct)` would clobber
-// every saved endpoint's token with the redacted (empty) values returned
-// by GetSettings. Tokens are only mutated through the dedicated CRUD
-// helpers (AddRemoteEndpoint / UpdateRemoteEndpoint / DeleteRemoteEndpoint
-// / TouchRemoteEndpoint) which read the persisted token before writing.
-// This guard keeps a future caller — including a refactor or remote
-// loopback path — from regressing the contract.
+// The provider custom-environment keys are rejected at the patch boundary:
+// applyPatch merges top-level keys via wholesale assignment, so a caller
+// doing `GetSettings -> mutate one field -> Update(full struct)` would
+// persist the redaction GetSettings returned and destroy every sensitive
+// value. They are mutated through the dedicated helpers instead. This
+// guard keeps a future caller — including a refactor or remote loopback
+// path — from regressing the contract.
 func (s *Service) Update(patch map[string]any) (Settings, error) {
 	return s.update("", DeviceDesktop, patch)
 }
 
 func (s *Service) update(bucket string, class DeviceClass, patch map[string]any) (Settings, error) {
-	if _, ok := patch["remoteEndpoints"]; ok {
-		return Settings{}, fmt.Errorf("settings: use AddRemoteEndpoint / UpdateRemoteEndpoint / DeleteRemoteEndpoint to mutate remote endpoints")
-	}
 	for _, key := range []string{"claudeCustomEnv", "codexCustomEnv"} {
 		if _, ok := patch[key]; ok {
-			// Same trap as remoteEndpoints: GetSettings redacts sensitive
-			// values, so a read-mutate-write round trip through this path
-			// would persist the redaction and destroy them.
+			// GetSettings redacts sensitive values, so a read-mutate-write
+			// round trip through this path would persist the redaction and
+			// destroy them.
 			return Settings{}, fmt.Errorf("settings: use SetProviderEnvVar / DeleteProviderEnvVar to mutate %s", key)
 		}
 	}
@@ -979,7 +958,7 @@ func captureUnknownFields(raw []byte) map[string]json.RawMessage {
 // knownSettingsFieldNames returns the set of JSON field names the
 // Settings struct serializes. Computed by reflecting on the struct's
 // fields rather than marshalling DefaultSettings — `omitempty` fields
-// with zero defaults (e.g. RemoteEndpoints) would be missing from the
+// with zero defaults would be missing from the
 // marshalled view, which would mis-classify a user-written value as
 // "unknown" and double-publish it through unknownFields preservation.
 //
@@ -1074,9 +1053,9 @@ func (s *Service) writeSparse(current Settings) error {
 	}
 	data = append(data, '\n')
 
-	// Ensure the directory exists. 0700 because this struct now stores
-	// per-launch tokens (RemoteEndpoints[*].Token); even though the
-	// renamed temp file lands at 0600 itself, a 0755 parent would let
+	// Ensure the directory exists. 0700 because this struct stores
+	// provider environment values the user marked sensitive; even though
+	// the renamed temp file lands at 0600 itself, a 0755 parent would let
 	// other local accounts list the dir contents. MkdirAll is a no-op
 	// when dir already exists with looser perms — that's acceptable
 	// because the file's own 0600 still gates the contents.

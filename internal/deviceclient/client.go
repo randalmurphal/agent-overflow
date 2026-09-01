@@ -389,6 +389,29 @@ func (c *Client) AwaitActivation(ctx context.Context) error {
 	}
 }
 
+// SetNickname records what this installation calls the backend, or clears
+// it when the nickname is empty.
+//
+// Written through the client rather than by a caller editing the file,
+// because a rotation is replacing that same file whenever the credential
+// comes due: a write that raced one would either lose the nickname or
+// roll the credential back to a refresh secret the backend has already
+// spent. Taking the same lock rotate does makes the two orderly.
+func (c *Client) SetNickname(nickname string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.session.BackendID == "" {
+		return ErrNoSession
+	}
+	updated := c.session
+	updated.Nickname = nickname
+	if err := SaveSession(c.dir, updated); err != nil {
+		return err
+	}
+	c.session = updated
+	return nil
+}
+
 // Forget drops this backend's stored session. The device key survives — it
 // names the DEVICE, and the backend adopts its row by thumbprint when this
 // installation pairs again.

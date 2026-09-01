@@ -226,10 +226,12 @@ password. The token is regenerated on every launch, so closing and
 reopening the app rotates it; if you've shared a launch URL, restart to
 invalidate.
 
-Tokens for saved `--connect` endpoints are stored plaintext in the
-local settings file (the launcher needs to replay them when you click
-Connect). The Settings UI exposes them only behind explicit "Show" /
-"Copy" actions; bulk reads through `ListRemoteEndpoints` strip them.
+Other machines you attach to are stored as PAIRED DEVICE SESSIONS, not
+as saved tokens: one file per backend under the app config directory,
+each holding a rotating credential this installation renews and the
+certificate fingerprint it pinned when it paired. Nothing there is a
+bearer token you can copy, and nothing is ever handed to the page —
+the local backend carries the connection itself.
 
 ## Docs
 

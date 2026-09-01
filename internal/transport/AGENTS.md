@@ -9,7 +9,8 @@ walkthroughs live in
 
 The HTTP listener (embedded SPA, `/bootstrap.json`, `/healthz`, the `/ws`
 upgrade, the two `/attachments/` byte routes, `POST /rpc` for the `ao` CLI,
-and `/browser-cdp` where a pane host exists) plus any AUXILIARY listener a
+`/browser-cdp` where a pane host exists, and the three attached-backend
+subtrees where this installation has attached to other machines) plus any AUXILIARY listener a
 caller hands it (§ Auxiliary listeners), the JSON wire frame, token
 authentication, the per-connection authorization policy, per-peer request
 budgets on the credential surfaces, reflection-based RPC dispatch, a
@@ -659,6 +660,51 @@ reach it. A LAN peer that could open this route would be driving a real browser
 window on the user's desktop, which is why none of the three checks is
 optional. No `//ao:scope` annotation applies: this is not an RPC surface,
 so the per-call gate never sees it.
+
+## The attached-backend routes
+
+`/ws/backend/<id>`, `/bootstrap/<id>.json` and `/backend/<id>/attachments/…`
+(`attachedroutes.go`) are how ONE page drives several computers
+(`docs/specs/remote-access.md` §10). The desktop's answer is not a second
+window and not a cross-origin fetch: the local backend carries one socket per
+attached machine on its own listener, so every backend the page talks to is
+same-origin, the page holds exactly one credential, and the pinned device
+session for each remote machine never leaves this process. The phone realizes
+the same seam by opening those sockets itself, which is why the manifest
+PUBLISHES the URLs (`Bootstrap.Backends`) instead of the SPA composing them.
+
+Registered only when `Config.AttachedBackends` is set, and satisfied by
+`internal/attachedbackends`. This package asks that seam two questions —
+which profiles exist, and give me the carrier for this id — and nothing else.
+The hop behind it is `internal/backendproxy`, shared with `--connect`.
+
+Three checks, and they are one function (`attachedCarrier`) so the answer to
+"may this caller use another machine's credential" cannot differ between the
+routes: the loopback PEER, the live origin allow-list, and this listener's PAGE
+credential. Narrower than `/ws` by that first check, deliberately. An off-host
+client realizes this seam with its own paired session to each backend;
+carrying it through here would lend a device THIS machine's pinned credential
+for a machine it never paired with, and would make a revocation on the far
+backend mean nothing to the client actually driving it. Every refusal is 404,
+so an unattached backend, an unadmitted caller and an absent path are
+indistinguishable. `Bootstrap.Backends` is likewise emitted only for a request
+these routes would admit — a menu of doors that answer 404 is worse than no
+menu.
+
+`/bootstrap/<id>.json` is the one that is not a pure pipe: it answers the far
+side's manifest narrowed to `AttachedManifest`'s closed list (store identity,
+name, launch id) with `wsUrl` rewritten to name THIS listener, because that is
+where the page's socket goes and the only `wsUrl` the SPA accepts. The far
+side's `harness`, `pageMarker` and `passkeysAvailable` describe the listener a
+page loaded from and are dropped rather than forwarded. Reachability is
+published nowhere: probing every attached machine to answer one page load
+would make a boot as slow as the slowest sleeping laptop, and each socket is
+the only current answer anyway.
+
+No `//ao:scope` annotation applies to any of the three — they are not RPC
+surfaces. The four App methods that MANAGE the set are (`ListBackends`,
+`AddBackend`, `RemoveBackend`, `RenameBackend`: all `host` scope, all `home`
+route).
 
 ## Origin allow-list and peer locality
 

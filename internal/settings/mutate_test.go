@@ -66,42 +66,19 @@ func TestRejectedUpdateAnnouncesNothing(t *testing.T) {
 	}
 }
 
-// Remote endpoints are mutated through their own CRUD (Update rejects the
-// key), so they are the path most likely to be forgotten by a per-call-site
-// emit. The chokepoint covers them for free.
-func TestRemoteEndpointCRUDAnnouncesItsTier(t *testing.T) {
-	svc, seen := observedService(t)
-	endpoint, err := svc.AddRemoteEndpoint("home", "wss://example.test:1234", "0123456789abcdef")
-	if err != nil {
-		t.Fatalf("AddRemoteEndpoint: %v", err)
-	}
-	if len(*seen) != 1 || len((*seen)[0]) != 1 {
-		t.Fatalf("add announced %+v", *seen)
-	}
-	if got := (*seen)[0][0]; got.Tier != TierHost || !slices.Equal(got.Keys, []string{"remoteEndpoints"}) {
-		t.Fatalf("add announced %+v", got)
-	}
-	if err := svc.DeleteRemoteEndpoint(endpoint.ID); err != nil {
-		t.Fatalf("DeleteRemoteEndpoint: %v", err)
-	}
-	if len(*seen) != 2 {
-		t.Fatalf("delete announced %+v", *seen)
-	}
-}
-
-// The announcement names keys only. Tokens and sensitive environment values
-// are redacted on every read path, and a change set carrying values would be
+// The announcement names keys only. Sensitive environment values are
+// redacted on every read path, and a change set carrying values would be
 // the one place they left the backend in the clear.
 func TestChangeAnnouncementCarriesNoValues(t *testing.T) {
 	svc, seen := observedService(t)
 	const secret = "0123456789abcdef"
-	if _, err := svc.AddRemoteEndpoint("home", "wss://example.test:1234", secret); err != nil {
-		t.Fatalf("AddRemoteEndpoint: %v", err)
+	if _, err := svc.SetProviderEnvVar("claude", "MY_TOKEN", secret, true); err != nil {
+		t.Fatalf("SetProviderEnvVar: %v", err)
 	}
 	for _, change := range (*seen)[0] {
 		for _, key := range change.Keys {
 			if key == secret {
-				t.Fatalf("change set carried the token")
+				t.Fatalf("change set carried the value")
 			}
 		}
 	}

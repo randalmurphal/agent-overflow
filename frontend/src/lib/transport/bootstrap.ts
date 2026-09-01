@@ -98,6 +98,19 @@ export function pageServedOverLoopback(): boolean {
 //
 // It carries no credential. Everything here is a fact about the backend
 // the page just authenticated to.
+export interface AttachedBackend {
+  /** This backend's own address for the profile, and the id in every URL below. */
+  id: string;
+  /** What that machine calls itself. The identity a replica is keyed by. */
+  backendId?: string;
+  /** What to show a person: the owner's nickname, else the machine's name. */
+  name?: string;
+  /** Absolute, same-origin. A WebSocket needs a scheme. */
+  wsUrl: string;
+  /** A same-origin path, which is what a fetch takes. */
+  bootstrapUrl: string;
+}
+
 export interface Bootstrap {
   wsUrl: string;
   /**
@@ -124,6 +137,17 @@ export interface Bootstrap {
    * backend published none.
    */
   backendName?: string;
+  /**
+   * Every OTHER machine this installation has attached, each with the
+   * same-origin URLs this backend carries it on
+   * (internal/transport/attachedroutes.go). Absent when there are none,
+   * which reads as "this page talks to one backend" — the shape every
+   * client had before attaching existed.
+   *
+   * Reachability is deliberately absent: nothing is probed to answer a
+   * page load, and each socket is the only current answer.
+   */
+  backends?: AttachedBackend[];
   /**
    * The backend was booted as the agent test harness or the soak rig
    * (`--harness` / `--soak`), which is the only thing that arms the

@@ -86,6 +86,17 @@ type Bootstrap struct {
 	// too old to send it has no passkey surface either, so both answers
 	// lead a client to the same screen.
 	PasskeysAvailable bool `json:"passkeysAvailable,omitempty"`
+	// Backends is every machine this installation has attached, each with
+	// the same-origin URLs this listener carries it on
+	// (docs/specs/remote-access.md §10, and attachedroutes.go). Absent
+	// when there are none, which reads as "this page talks to one
+	// backend" — the shape every client had before attaching existed.
+	//
+	// Reachability is deliberately NOT here. Probing every attached
+	// machine to answer one page load would make a boot as slow as the
+	// slowest sleeping laptop; the SPA learns it from each socket, which
+	// is the only place it is ever current.
+	Backends []AttachedBackendEntry `json:"backends,omitempty"`
 }
 
 // MaxRetainedFormerSrvs caps how many retired http.Servers Rebind keeps
@@ -297,6 +308,12 @@ type Config struct {
 	// multiplexer whose peer is another AO process on this host, admitted
 	// by the same launch token and the same loopback rule as /ws.
 	CDPTunnel CDPTunnelEndpoint
+
+	// AttachedBackends is the set of other machines this installation has
+	// attached, carried same-origin on this listener. Optional — when nil
+	// the three attached-backend routes are not registered and the
+	// manifest carries no backends array. See attachedroutes.go.
+	AttachedBackends AttachedBackends
 
 	// ScopedTokens resolves an `ao` CLI credential to the caller scope it
 	// was minted for. The App owns the registry (a token lives exactly as
@@ -842,6 +859,17 @@ func (s *Server) buildHTTPServer() *http.Server {
 	}
 	if s.cfg.CDPTunnel != nil {
 		mux.HandleFunc(CDPTunnelPath, s.loopbackHostGuard(s.handleCDPTunnel))
+	}
+	// The attached-backend hops, registered only when this installation
+	// attaches to anything. Subtree patterns: the backend id is a path
+	// component the handlers read, and each is refused by the same three
+	// checks (attachedroutes.go). No rate limiter — every one of them
+	// demands the page credential this listener minted, so there is no
+	// request an unadmitted caller can repeat for free.
+	if s.cfg.AttachedBackends != nil {
+		mux.HandleFunc(AttachedWSPrefix, s.loopbackHostGuard(s.handleAttachedWS))
+		mux.HandleFunc(AttachedBootstrapPrefix, s.loopbackHostGuard(s.handleAttachedBootstrap))
+		mux.HandleFunc(AttachedTransferPrefix, s.loopbackHostGuard(s.handleAttachedTransfer))
 	}
 	assetH := s.cfg.AssetHandler
 	if assetH == nil {
@@ -1526,6 +1554,15 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.BackendIdentity != nil {
 		backendID, replicaGeneration = s.cfg.BackendIdentity()
 	}
+	// The attached machines, named only for a page that could actually
+	// use them: those routes demand this listener's page credential from
+	// a loopback peer, so listing them for anyone else would be a menu of
+	// doors that answer 404. The same condition the local session
+	// credential is planted under, for the same reason.
+	var attached []AttachedBackendEntry
+	if pageAuthed && loopback.PeerAddress(r.RemoteAddr) {
+		attached = s.attachedBackendEntries(r)
+	}
 	_ = json.NewEncoder(w).Encode(Bootstrap{
 		// Build the wsUrl from the request's Host header so a LAN
 		// client gets a LAN-reachable URL even though the server's
@@ -1541,6 +1578,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		BackendName:       s.cfg.BackendName,
 		ReplicaGeneration: replicaGeneration,
 		PasskeysAvailable: s.cfg.AuthEndpoints != nil && s.cfg.AuthEndpoints.PasskeysAvailable(),
+		Backends:          attached,
 	})
 }
 

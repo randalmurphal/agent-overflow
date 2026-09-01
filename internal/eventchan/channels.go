@@ -129,6 +129,14 @@ const (
 	BrowserHost           Channel = "browser:host"
 )
 
+// backend:* — how one attach ended. The RPC that starts a pairing returns
+// the verification number immediately and cannot wait for the owner of
+// the far machine to match it: that window is ten minutes. This channel
+// is the other half, and carries at most one frame per attach.
+const (
+	BackendAttach Channel = "backend:attach"
+)
+
 // session-import:* — one frame per session an import run finishes, plus
 // exactly one terminal frame. The frames name provider-home file paths,
 // which is why the registry keeps the channel loopback-only.

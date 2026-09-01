@@ -41,7 +41,7 @@ type MethodMeta struct {
 // dispatcher allow-list from this set; the Scope column is what
 // AuthorizeSessionMethod compares a session's grants against.
 var GeneratedMethods = []MethodMeta{
-	{Name: "AddRemoteEndpoint", ID: 893963951, Scope: "settings:write", Route: "home"},                               // main.App.AddRemoteEndpoint
+	{Name: "AddBackend", ID: 2629313140, Scope: "host", Route: "home"},                                               // main.App.AddBackend
 	{Name: "AppendUIRenderTraceBatch", ID: 2157691816, Scope: "host", Route: "home"},                                 // main.App.AppendUIRenderTraceBatch
 	{Name: "ArchiveProject", ID: 1352159878, Scope: "threads:operate", Route: "project"},                             // main.App.ArchiveProject
 	{Name: "ArchiveThread", ID: 3655608409, Scope: "threads:operate", Route: "thread"},                               // main.App.ArchiveThread
@@ -87,7 +87,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteProject", ID: 3379369923, Scope: "threads:operate", Route: "project"},                              // main.App.DeleteProject
 	{Name: "DeleteProposedPlanComment", ID: 554913120, Scope: "threads:operate", Route: "thread"},                    // main.App.DeleteProposedPlanComment
 	{Name: "DeleteProviderCustomEnvVar", ID: 784096448, Scope: "settings:write", Route: "home", StepUp: true},        // main.App.DeleteProviderCustomEnvVar
-	{Name: "DeleteRemoteEndpoint", ID: 3667944297, Scope: "settings:write", Route: "home"},                           // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974, Scope: "threads:operate", Route: "thread"},                                // main.App.DeleteThread
 	{Name: "DeleteUIState", ID: 1186757769, Scope: "session", Route: "home"},                                         // main.App.DeleteUIState
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin", Route: "home"},                               // main.App.DevicePairingStatus
@@ -136,7 +135,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetProviderStatuses", ID: 3829328996, Scope: "access:admin", Route: "home"},                              // main.App.GetProviderStatuses
 	{Name: "GetQueueState", ID: 3079581691, Scope: "threads:operate", Route: "thread"},                               // main.App.GetQueueState
 	{Name: "GetRateLimitsSnapshots", ID: 3325141610, Scope: "threads:read", Route: "home"},                           // main.App.GetRateLimitsSnapshots
-	{Name: "GetRemoteEndpointToken", ID: 3604571249, Scope: "host", Route: "home"},                                   // main.App.GetRemoteEndpointToken
 	{Name: "GetSettings", ID: 2554697378, Scope: "settings:read", Route: "home"},                                     // main.App.GetSettings
 	{Name: "GetSpinnerFiles", ID: 2622552651, Scope: "settings:read", Route: "home"},                                 // main.App.GetSpinnerFiles
 	{Name: "GetTerminalReplay", ID: 2329592604, Scope: "terminal:operate", Route: "home"},                            // main.App.GetTerminalReplay
@@ -198,6 +196,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListArchivedThreads", ID: 2451527188, Scope: "threads:read", Route: "all"},                               // main.App.ListArchivedThreads
 	{Name: "ListAttachments", ID: 1730798413, Scope: "threads:read", Route: "thread"},                                // main.App.ListAttachments
 	{Name: "ListAvailableEditors", ID: 2556802234, Scope: "host", Route: "home"},                                     // main.App.ListAvailableEditors
+	{Name: "ListBackends", ID: 130055792, Scope: "host", Route: "home"},                                              // main.App.ListBackends
 	{Name: "ListBranchCommits", ID: 352990129, Scope: "git:operate", Route: "thread"},                                // main.App.ListBranchCommits
 	{Name: "ListChatBarFavorites", ID: 2114948965, Scope: "settings:read", Route: "home"},                            // main.App.ListChatBarFavorites
 	{Name: "ListDiffReviewComments", ID: 3057473088, Scope: "threads:read", Route: "thread"},                         // main.App.ListDiffReviewComments
@@ -222,7 +221,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListRecentThreadItems", ID: 2604956482, Scope: "threads:read", Route: "thread"},                          // main.App.ListRecentThreadItems
 	{Name: "ListRecentTurns", ID: 1083162294, Scope: "threads:read", Route: "thread"},                                // main.App.ListRecentTurns
 	{Name: "ListReleases", ID: 397986043, Scope: "host", Route: "home"},                                              // main.App.ListReleases
-	{Name: "ListRemoteEndpoints", ID: 3443007043, Scope: "settings:write", Route: "home"},                            // main.App.ListRemoteEndpoints
 	{Name: "ListRunningBackgroundWork", ID: 3808352241, Scope: "threads:read", Route: "all"},                         // main.App.ListRunningBackgroundWork
 	{Name: "ListSubagentDescendants", ID: 1299118478, Scope: "threads:read", Route: "thread"},                        // main.App.ListSubagentDescendants
 	{Name: "ListTerminals", ID: 2445206506, Scope: "terminal:operate", Route: "thread"},                              // main.App.ListTerminals
@@ -268,9 +266,11 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RefreshTerminal", ID: 2618043580, Scope: "terminal:operate", Route: "home"},                              // main.App.RefreshTerminal
 	{Name: "RegenerateThreadTitle", ID: 3682640111, Scope: "threads:operate", Route: "thread"},                       // main.App.RegenerateThreadTitle
 	{Name: "RegisterQueueItem", ID: 1034543696, Scope: "threads:operate", Route: "thread"},                           // main.App.RegisterQueueItem
+	{Name: "RemoveBackend", ID: 3005272623, Scope: "host", Route: "home"},                                            // main.App.RemoveBackend
 	{Name: "RemoveOtherWorktree", ID: 2899196344, Scope: "git:operate", Route: "thread"},                             // main.App.RemoveOtherWorktree
 	{Name: "RemoveOtherWorktreeForProject", ID: 574548500, Scope: "git:operate", Route: "project"},                   // main.App.RemoveOtherWorktreeForProject
 	{Name: "RemoveProviderAccount", ID: 684418419, Scope: "access:admin", Route: "home"},                             // main.App.RemoveProviderAccount
+	{Name: "RenameBackend", ID: 1528076361, Scope: "host", Route: "home"},                                            // main.App.RenameBackend
 	{Name: "RenameProject", ID: 3728890856, Scope: "threads:operate", Route: "project"},                              // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435, Scope: "threads:operate", Route: "thread"},                                 // main.App.RenameThread
 	{Name: "RenewCanonicalDomainCert", ID: 95139518, Scope: "host", Route: "home"},                                   // main.App.RenewCanonicalDomainCert
@@ -330,7 +330,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SwitchThread", ID: 3897387725, Scope: "threads:operate", Route: "thread"},                                // main.App.SwitchThread
 	{Name: "SyncThreadWindow", ID: 3841902986, Scope: "threads:read", Route: "thread"},                               // main.App.SyncThreadWindow
 	{Name: "TerminateCodexBackgroundTerminal", ID: 870653875, Scope: "threads:operate", Route: "thread"},             // main.App.TerminateCodexBackgroundTerminal
-	{Name: "TouchRemoteEndpoint", ID: 2647456459, Scope: "settings:write", Route: "home"},                            // main.App.TouchRemoteEndpoint
 	{Name: "TriggerMcpAuth", ID: 1291217507, Scope: "settings:write", Route: "thread"},                               // main.App.TriggerMcpAuth
 	{Name: "TriggerWorkspaceMcpAuth", ID: 417766274, Scope: "settings:write", Route: "selected"},                     // main.App.TriggerWorkspaceMcpAuth
 	{Name: "UnarchiveProject", ID: 2561521885, Scope: "threads:operate", Route: "project"},                           // main.App.UnarchiveProject
@@ -344,7 +343,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UpdateNewThreadDefaults", ID: 595194384, Scope: "threads:operate", Route: "home"},                        // main.App.UpdateNewThreadDefaults
 	{Name: "UpdateProjectSortPositions", ID: 3717363955, Scope: "threads:operate", Route: "home"},                    // main.App.UpdateProjectSortPositions
 	{Name: "UpdateProposedPlanComment", ID: 2747956806, Scope: "threads:operate", Route: "thread"},                   // main.App.UpdateProposedPlanComment
-	{Name: "UpdateRemoteEndpoint", ID: 4268476031, Scope: "settings:write", Route: "home"},                           // main.App.UpdateRemoteEndpoint
 	{Name: "UpdateSettings", ID: 2894041249, Scope: "session", Route: "home"},                                        // main.App.UpdateSettings
 	{Name: "UpdateThreadBranch", ID: 2929723500, Scope: "threads:operate", Route: "selected"},                        // main.App.UpdateThreadBranch
 	{Name: "UpdateThreadContextSettings", ID: 2621473242, Scope: "threads:operate", Route: "thread"},                 // main.App.UpdateThreadContextSettings

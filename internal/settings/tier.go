@@ -86,11 +86,6 @@ var tierByKey = map[string]Tier{
 	// per-installation file. Retiered from device 2026-08-31 (phase-4
 	// design, docs/specs/remote-access.md §6).
 	"window": TierHost,
-	// The endpoint list holds plaintext session tokens (see the SECURITY
-	// NOTE on the field) and the token read is already host-scoped; a
-	// device-tier row would declare that a phone may edit it. Retiered
-	// from device 2026-08-31, same block.
-	"remoteEndpoints": TierHost,
 
 	// ---- user: the person's working preferences -------------------------
 	"confirmArchive":                   TierUser,
@@ -212,7 +207,7 @@ var defaultKeyValues = sync.OnceValue(func() map[string]string {
 // keyValues projects a Settings value onto its per-key JSON encoding, which is
 // what change detection compares. Marshalling produces independent strings, so
 // a probe taken before a mutation survives an in-place edit of the value it
-// was taken from (UpdateRemoteEndpoint assigns into the slice it was handed).
+// was taken from.
 func keyValues(current Settings) (map[string]string, error) {
 	encoded, err := json.Marshal(current)
 	if err != nil {

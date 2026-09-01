@@ -5,7 +5,6 @@
   import GeneralSettings from './GeneralSettings.svelte';
   import DevicesSection from './DevicesSection.svelte';
   import NetworkSection from './NetworkSection.svelte';
-  import RemoteEndpointsSection from './RemoteEndpointsSection.svelte';
   import WSLSection from './WSLSection.svelte';
   import ProviderSettings from './ProviderSettings.svelte';
   import PromptOverridesSettings from './PromptOverridesSettings.svelte';
@@ -177,7 +176,6 @@
             <NetworkSection />
             <DevicesSection />
             <WSLSection />
-            <RemoteEndpointsSection />
           </div>
         {:else if activeSection === 'observability'}
           <ObservabilitySettings />

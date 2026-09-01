@@ -48,6 +48,11 @@ func TestChannelPolicyEveryRowHasAWhy(t *testing.T) {
 // this list move together.
 var (
 	frozenLoopbackOnlyChannels = []string{
+		// Wave 7a: how one attach ended. Same posture as the four
+		// host-scoped methods it belongs to — attaching this installation
+		// to another machine is something only the person at this keyboard
+		// does, and the frame names a machine they work on.
+		"backend:attach",
 		"browser:companion-state", // local URLs and file paths
 		"browser:host",            // 2026-08-31: launcher pane directive, same posture as webview:trim
 		// Wave 4b: names the thread whose composer draft moved. Same posture

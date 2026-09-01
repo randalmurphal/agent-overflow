@@ -1,8 +1,8 @@
 // runMode tells the SPA whether the desktop binary booted a local
 // transport or attached to a remote one (`agent-overflow --connect`).
 // Settings panels that mutate local-only state — the LAN-bind toggle
-// (NetworkSection), the saved --connect endpoints (RemoteEndpointsSection) —
-// must hide / placeholder in client mode because their RPCs would
+// (NetworkSection) is the standing example — must hide / placeholder in
+// client mode because their RPCs would
 // otherwise edit the *remote* server's settings instead of the local
 // user's.
 //

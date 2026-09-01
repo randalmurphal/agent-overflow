@@ -7,6 +7,9 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as attachedbackends$0 from "../attachedbackends/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as flushqueue$0 from "../flushqueue/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -20,9 +23,6 @@ import * as highlight$0 from "../highlight/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as provider$0 from "../provider/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as settings$0 from "../settings/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as store$0 from "../store/models.js";
@@ -265,6 +265,18 @@ export class AccessSession {
 }
 
 /**
+ * AttachedBackend is one attached machine. Aliased to the canonical shape
+ * so the wire type and the stored one cannot drift.
+ */
+export const AttachedBackend = attachedbackends$0.Attached;
+
+/**
+ * AttachedBackend is one attached machine. Aliased to the canonical shape
+ * so the wire type and the stored one cannot drift.
+ */
+export type AttachedBackend = attachedbackends$0.Attached;
+
+/**
  * AttachmentThumbnail is the wire shape returned by GetAttachmentThumbnail.
  * Carries the encoded thumbnail bytes (base64) plus the actual output mime
  * type so the frontend can build a Blob without trusting the original
@@ -295,6 +307,16 @@ export class AttachmentThumbnail {
         return new AttachmentThumbnail($$parsedSource as Partial<AttachmentThumbnail>);
     }
 }
+
+/**
+ * BackendAttachment is what AddBackend answers.
+ */
+export const BackendAttachment = attachedbackends$0.Attachment;
+
+/**
+ * BackendAttachment is what AddBackend answers.
+ */
+export type BackendAttachment = attachedbackends$0.Attachment;
 
 /**
  * BackgroundWorkInventory is ListRunningBackgroundWork's answer: the
@@ -3599,22 +3621,6 @@ export class ReleaseSummary {
         return new ReleaseSummary($$parsedSource as Partial<ReleaseSummary>);
     }
 }
-
-/**
- * RemoteEndpointSummary is the wire shape returned by
- * ListRemoteEndpoints. Aliased to the canonical settings type so the
- * projection (and its token-redaction guarantee) lives next to the
- * stored RemoteEndpoint shape — see settings.RemoteEndpoint.Summary.
- */
-export const RemoteEndpointSummary = settings$0.RemoteEndpointSummary;
-
-/**
- * RemoteEndpointSummary is the wire shape returned by
- * ListRemoteEndpoints. Aliased to the canonical settings type so the
- * projection (and its token-redaction guarantee) lives next to the
- * stored RemoteEndpoint shape — see settings.RemoteEndpoint.Summary.
- */
-export type RemoteEndpointSummary = settings$0.RemoteEndpointSummary;
 
 /**
  * RetainedWorktree is a checkout the deletion left on disk, and why. Git

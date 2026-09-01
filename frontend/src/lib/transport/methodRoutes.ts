@@ -12,7 +12,7 @@
 export type MethodRoute = 'thread' | 'project' | 'home' | 'selected' | 'all';
 
 export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
-	893963951: 'home', // AddRemoteEndpoint
+	2629313140: 'home', // AddBackend
 	2157691816: 'home', // AppendUIRenderTraceBatch
 	1352159878: 'project', // ArchiveProject
 	3655608409: 'thread', // ArchiveThread
@@ -58,7 +58,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3379369923: 'project', // DeleteProject
 	554913120: 'thread', // DeleteProposedPlanComment
 	784096448: 'home', // DeleteProviderCustomEnvVar
-	3667944297: 'home', // DeleteRemoteEndpoint
 	1186337974: 'thread', // DeleteThread
 	1186757769: 'home', // DeleteUIState
 	604263015: 'home', // DevicePairingStatus
@@ -107,7 +106,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3829328996: 'home', // GetProviderStatuses
 	3079581691: 'thread', // GetQueueState
 	3325141610: 'home', // GetRateLimitsSnapshots
-	3604571249: 'home', // GetRemoteEndpointToken
 	2554697378: 'home', // GetSettings
 	2622552651: 'home', // GetSpinnerFiles
 	2329592604: 'home', // GetTerminalReplay
@@ -169,6 +167,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2451527188: 'all', // ListArchivedThreads
 	1730798413: 'thread', // ListAttachments
 	2556802234: 'home', // ListAvailableEditors
+	130055792: 'home', // ListBackends
 	352990129: 'thread', // ListBranchCommits
 	2114948965: 'home', // ListChatBarFavorites
 	3057473088: 'thread', // ListDiffReviewComments
@@ -193,7 +192,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2604956482: 'thread', // ListRecentThreadItems
 	1083162294: 'thread', // ListRecentTurns
 	397986043: 'home', // ListReleases
-	3443007043: 'home', // ListRemoteEndpoints
 	3808352241: 'all', // ListRunningBackgroundWork
 	1299118478: 'thread', // ListSubagentDescendants
 	2445206506: 'thread', // ListTerminals
@@ -239,9 +237,11 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2618043580: 'home', // RefreshTerminal
 	3682640111: 'thread', // RegenerateThreadTitle
 	1034543696: 'thread', // RegisterQueueItem
+	3005272623: 'home', // RemoveBackend
 	2899196344: 'thread', // RemoveOtherWorktree
 	574548500: 'project', // RemoveOtherWorktreeForProject
 	684418419: 'home', // RemoveProviderAccount
+	1528076361: 'home', // RenameBackend
 	3728890856: 'project', // RenameProject
 	727416435: 'thread', // RenameThread
 	95139518: 'home', // RenewCanonicalDomainCert
@@ -301,7 +301,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3897387725: 'thread', // SwitchThread
 	3841902986: 'thread', // SyncThreadWindow
 	870653875: 'thread', // TerminateCodexBackgroundTerminal
-	2647456459: 'home', // TouchRemoteEndpoint
 	1291217507: 'thread', // TriggerMcpAuth
 	417766274: 'selected', // TriggerWorkspaceMcpAuth
 	2561521885: 'project', // UnarchiveProject
@@ -315,7 +314,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	595194384: 'home', // UpdateNewThreadDefaults
 	3717363955: 'home', // UpdateProjectSortPositions
 	2747956806: 'thread', // UpdateProposedPlanComment
-	4268476031: 'home', // UpdateRemoteEndpoint
 	2894041249: 'home', // UpdateSettings
 	2929723500: 'selected', // UpdateThreadBranch
 	2621473242: 'thread', // UpdateThreadContextSettings

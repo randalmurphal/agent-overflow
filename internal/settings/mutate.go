@@ -98,10 +98,9 @@ func (s *Service) mutate(bucket string, class DeviceClass, apply func(current Se
 			}
 			current = sanitizeLoadedSettings(current)
 		}
-		// Probed BEFORE apply runs: apply is allowed to edit the value it is
-		// handed in place (UpdateRemoteEndpoint assigns into the endpoint
-		// slice), and a projection taken afterwards would compare the result
-		// against itself.
+		// Probed BEFORE apply runs: apply is allowed to edit the value it
+		// is handed in place, and a projection taken afterwards would
+		// compare the result against itself.
 		before, err := keyValues(current)
 		if err != nil {
 			return Settings{}, err

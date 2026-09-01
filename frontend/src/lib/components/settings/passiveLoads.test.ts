@@ -34,7 +34,6 @@ import { resetRunMode } from '../../../test/runMode';
 import { SCOPES } from '../../transport/scopes';
 import DevicesSection from './DevicesSection.svelte';
 import NetworkSection from './NetworkSection.svelte';
-import RemoteEndpointsSection from './RemoteEndpointsSection.svelte';
 import WSLSection, { resetWSLSectionCache } from './WSLSection.svelte';
 
 /** A device paired with full access holds every grantable scope — not `host`. */
@@ -86,7 +85,6 @@ function stubBindings() {
     // rather than gating it again is exactly the arrangement that has to
     // be asserted rather than assumed.
     passkeys: setBindingMock('ListPasskeys', async () => []),
-    endpoints: setBindingMock('ListRemoteEndpoints', async () => []),
     isWSL: setBindingMock('IsWSL', async () => true),
     distros: setBindingMock('ListWSLDistros', async () => [{ name: 'Ubuntu', default: true }]),
     distroPref: setBindingMock('GetWSLDistroPreference', async () => 'Ubuntu'),
@@ -176,26 +174,6 @@ describe('settings sections issue no passive RPC they were not granted', () => {
       // carrying a copy of the check.
       expect(bindings.passkeys).not.toHaveBeenCalled();
       expect(getByTestId('devices-section-unavailable')).toBeTruthy();
-    });
-  });
-
-  describe('RemoteEndpointsSection — saved launch targets are settings:write', () => {
-    it('lists them on the owner’s own screen', async () => {
-      render(RemoteEndpointsSection);
-      await waitFor(() => expect(bindings.endpoints).toHaveBeenCalled());
-    });
-
-    it('lists them for a device paired with FULL access', async () => {
-      await pairFullAccess();
-      render(RemoteEndpointsSection);
-      await waitFor(() => expect(bindings.endpoints).toHaveBeenCalled());
-    });
-
-    it('does not ask a view-only device’s session for them', async () => {
-      await pairViewOnly();
-      render(RemoteEndpointsSection);
-      await settle();
-      expect(bindings.endpoints).not.toHaveBeenCalled();
     });
   });
 

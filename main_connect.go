@@ -15,32 +15,12 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 
 	"agent-overflow/internal/clientmode"
 	"agent-overflow/internal/deviceclient"
 )
-
-// deviceProfileDirName holds this installation's device identity: the one
-// key every backend knows it by, and one session file per backend it has
-// paired with.
-//
-// Under the app config root and NOT under --data-dir, which `--connect`
-// refuses to be combined with anyway (main_entry.go): a data dir is one
-// backend's database, while the device key is this installation's name on
-// every backend it has ever met.
-const deviceProfileDirName = "device"
-
-func deviceProfileDir() (string, error) {
-	root := bootSettingsDir()
-	if root == "" {
-		return "", errors.New("no config directory is resolvable, so this device has nowhere to keep its pairing")
-	}
-	return filepath.Join(root, deviceProfileDirName), nil
-}
 
 // prepareConnection turns the `--connect` argument into the stub
 // configuration that attaches to it.
@@ -186,17 +166,6 @@ func backendDisplayName(name, endpoint string) string {
 		return endpoint
 	}
 	return name
-}
-
-// deviceLabel is what this installation asks to be called in the owner's
-// device list. The hostname is what the person confirming the pairing
-// recognises; a machine that will not tell us its name gets a generic
-// label rather than an empty row.
-func deviceLabel() string {
-	if host, err := os.Hostname(); err == nil && strings.TrimSpace(host) != "" {
-		return strings.TrimSpace(host)
-	}
-	return "Agent Overflow desktop"
 }
 
 // fatalConnect ends a `--connect` run with the reason and, where there is

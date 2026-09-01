@@ -209,15 +209,12 @@ export {
   // so a remote session's probe fails and the chip stays hidden there.
   ProbeDevServerURL,
 
-  // Remote endpoint storage. Token-redacted Summary on every read
-  // path; explicit GetRemoteEndpointToken for the copy-launch-command
-  // flow. See app_remote.go for the threat model.
-  ListRemoteEndpoints,
-  AddRemoteEndpoint,
-  UpdateRemoteEndpoint,
-  DeleteRemoteEndpoint,
-  TouchRemoteEndpoint,
-  GetRemoteEndpointToken,
+  // The other machines this installation drives. Host-scoped: attaching
+  // one is something only the person at this keyboard does.
+  ListBackends,
+  AddBackend,
+  RemoveBackend,
+  RenameBackend,
 
   // Provider detection
   GetProviderStatuses,
@@ -533,10 +530,11 @@ export {
   LoginPhase as ProviderLoginPhase,
   LoginState as ProviderLoginState,
 } from '../../../bindings/agent-overflow/internal/provideraccountapp/models.js';
+export { EditorSettings } from '../../../bindings/agent-overflow/internal/settings/models.js';
 export {
-  EditorSettings,
-  RemoteEndpoint,
-} from '../../../bindings/agent-overflow/internal/settings/models.js';
+  Attached as AttachedBackend,
+  Attachment as BackendAttachment,
+} from '../../../bindings/agent-overflow/internal/attachedbackends/models.js';
 export {
   ManagedProviderAccount,
   CodexAccountUsage,
@@ -548,7 +546,6 @@ export {
   GitStatusSubscriptionResult,
   MCPAuthInitResult,
   ReleaseSummary,
-  RemoteEndpointSummary,
   TerminalOpenOptions,
   ThreadMCPServer,
   BrowserCompanionAction,

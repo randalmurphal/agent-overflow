@@ -299,28 +299,10 @@ export const ProbeDevServerURL = dispatch('ProbeDevServerURL');
 export const ListAvailableEditors = dispatch('ListAvailableEditors');
 export const GetEditorSettings = dispatch('GetEditorSettings');
 export const SetEditorSettings = dispatch('SetEditorSettings');
-export const ListRemoteEndpoints = dispatch('ListRemoteEndpoints');
-export const AddRemoteEndpoint = dispatch('AddRemoteEndpoint');
-export const UpdateRemoteEndpoint = dispatch('UpdateRemoteEndpoint');
-export const DeleteRemoteEndpoint = dispatch('DeleteRemoteEndpoint');
-export const TouchRemoteEndpoint = dispatch('TouchRemoteEndpoint');
-export const GetRemoteEndpointToken = dispatch('GetRemoteEndpointToken');
-// RemoteEndpoint mirrors the Phase F generated class; tests stub the
-// list/add/update calls and read fields off the returned objects.
-export class RemoteEndpoint {
-  id: string;
-  name: string;
-  url: string;
-  token: string;
-  lastUsedAt?: number;
-  constructor(s: Partial<RemoteEndpoint> = {}) {
-    this.id = s.id ?? '';
-    this.name = s.name ?? '';
-    this.url = s.url ?? '';
-    this.token = s.token ?? '';
-    this.lastUsedAt = s.lastUsedAt;
-  }
-}
+export const ListBackends = dispatch('ListBackends');
+export const AddBackend = dispatch('AddBackend');
+export const RemoveBackend = dispatch('RemoveBackend');
+export const RenameBackend = dispatch('RenameBackend');
 // NetworkSettings is a class re-exported alongside the bindings; the
 // mock just needs a constructor-compatible stand-in so test code that
 // builds `new NetworkSettings({ bindAll })` doesn't try to load the

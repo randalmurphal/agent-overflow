@@ -761,6 +761,21 @@ var channelPolicies = []ChannelPolicy{
 			"answer RPCs are LocalOnly. Same class as provider:approval.",
 	},
 	{
+		Channel:   eventchan.BackendAttach,
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionDefault,
+		Scope:     ScopeHost,
+		Why: "How one attach ended, minutes after the RPC that started it " +
+			"returned. Scope host and loopback-only, matching the four " +
+			"AddBackend/ListBackends/RemoveBackend/RenameBackend methods it " +
+			"belongs to: attaching this installation to another machine is " +
+			"something only the person at this keyboard does, so the push " +
+			"and the pull are refused to the same callers. Retained rather " +
+			"than ephemeral because the page that asked may have reloaded " +
+			"during a ten-minute wait, and the frame is the only thing " +
+			"that says how it ended.",
+	},
+	{
 		Channel:   eventchan.BrowserCompanionState,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionEphemeral,

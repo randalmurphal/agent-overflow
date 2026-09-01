@@ -221,3 +221,44 @@ func TestForgetSession_KeepsTheDeviceKey(t *testing.T) {
 		t.Fatalf("ForgetSession twice: %v", err)
 	}
 }
+
+// TestNicknameSurvivesAndIsSeparateFromTheBackendsOwnName — a nickname is
+// what THIS installation calls a machine, and the machine goes on calling
+// itself whatever it calls itself. Two machines that both answer
+// "mac-mini" are told apart by nothing else.
+func TestNicknameSurvivesAndIsSeparateFromTheBackendsOwnName(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := EnrollDeviceKey(dir); err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	session := Session{
+		BackendID: "aaa", BackendName: "mac-mini", Endpoint: "https://mini.local:8443",
+		SessionID: "s1", Credential: "c1",
+	}
+	if err := SaveSession(dir, session); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	client, err := Open(dir, session)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := client.SetNickname("The Loft Mini"); err != nil {
+		t.Fatalf("set nickname: %v", err)
+	}
+	reloaded, err := LoadSession(dir, "aaa")
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Nickname != "The Loft Mini" {
+		t.Errorf("nickname = %q, want it persisted", reloaded.Nickname)
+	}
+	if reloaded.BackendName != "mac-mini" {
+		t.Errorf("BackendName = %q, want the machine's own name untouched", reloaded.BackendName)
+	}
+	if reloaded.Credential != "c1" {
+		t.Errorf("credential = %q, want a rename to touch nothing else", reloaded.Credential)
+	}
+	if held := client.Session(); held.Nickname != "The Loft Mini" {
+		t.Errorf("in-memory nickname = %q, want it updated in step", held.Nickname)
+	}
+}
