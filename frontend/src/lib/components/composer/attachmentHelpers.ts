@@ -11,28 +11,6 @@ export {
 } from '../../types/attachment';
 
 /**
- * Return the non-null data URL payload as base64 (without the
- * `data:mime/type;base64,` prefix). FileReader is promise-wrapped so
- * the upload flow can `await` cleanly.
- */
-export function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Failed to read file'));
-    reader.onload = () => {
-      const result = reader.result;
-      if (typeof result !== 'string') {
-        reject(new Error('Unexpected reader result'));
-        return;
-      }
-      const commaIdx = result.indexOf(',');
-      resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-/**
  * Sniff common image extensions so a file that lost its MIME type
  * during drag/drop can still pass the upload guard.
  */

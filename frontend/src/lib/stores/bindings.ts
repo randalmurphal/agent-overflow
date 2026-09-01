@@ -302,11 +302,17 @@ export {
   PostChannelMessage,
   ConcludeDiscussion,
 
-  // Composer enhancements
-  UploadAttachment,
+  // Composer enhancements.
+  //
+  // Attachment BYTES do not cross here: they ride HTTP, admitted by a
+  // single-use ticket one of the two Mint calls returns a relative URL
+  // for (lib/transport/attachmentTransfer.ts). GetAttachmentThumbnail is
+  // the deliberate exception — ~10-30 KB is not a large body, and a grid
+  // would pay a mint round trip per tile.
+  MintAttachmentUploadTicket,
+  MintAttachmentDownloadTicket,
   ListAttachments,
   DeleteAttachment,
-  GetAttachmentData,
   GetAttachmentThumbnail,
   GetLocalImageData,
   SaveDraft,

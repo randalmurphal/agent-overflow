@@ -9,6 +9,7 @@ import {
 import { createThreadPane } from '../../stores/thread.svelte';
 import { buildPane, makeItem, makeThread as makeTestThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import type { Attachment } from '../../types/attachment';
 import {
@@ -59,7 +60,7 @@ function installDraftMocks() {
   setBindingMock('ClearDraft', async () => {});
   setBindingMock('DeleteEmptyDraftThread', async () => false);
   setBindingMock('ListAttachments', async () => []);
-  setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
+  mockAttachmentDownload();
   setBindingMock('ListLiveBackgroundTasks', async () => []);
   setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   // The composer toolbar's MCP trigger holds the pane's MCP entity for as
@@ -179,7 +180,7 @@ describe('<Composer>', () => {
     setBindingMock('SendMessageWithOptions', async () => makeTestThread({ runtimeMode: 'full-access' }));
     setBindingMock('InterruptTurn', async () => {});
     setBindingMock('DeleteAttachment', async () => {});
-    setBindingMock('UploadAttachment', async (
+    mockAttachmentUpload(async (
       _threadId: string,
       filename: string,
       _mimeType: string,
@@ -289,7 +290,7 @@ describe('<Composer>', () => {
       projectPath: '/tmp/placeholder',
     });
     setBindingMock('CreateThread', async () => created);
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -309,7 +310,7 @@ describe('<Composer>', () => {
       'materialized-upload',
       'first.png',
       'image/png',
-      expect.any(String),
+      expect.any(Number),
     ));
     expect(draft.threadId).toBe('materialized-upload');
     expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['uploaded']);
@@ -327,7 +328,7 @@ describe('<Composer>', () => {
       isDraft: true,
     });
     const create = setBindingMock('CreateThread', async () => created);
-    const upload = setBindingMock('UploadAttachment', async () =>
+    const upload = mockAttachmentUpload(async () =>
       makeAttachment('should-not-upload'));
     const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => true);
 
@@ -362,7 +363,7 @@ describe('<Composer>', () => {
     });
     setBindingMock('CreateThread', async () => created);
     const save = setBindingMock('SaveDraft', async () => {});
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -382,7 +383,7 @@ describe('<Composer>', () => {
       created.id,
       'dropped.png',
       'image/png',
-      expect.any(String),
+      expect.any(Number),
     ));
     expect(draft.content).toBe('[Image #1]');
     expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['dropped']);
@@ -394,7 +395,7 @@ describe('<Composer>', () => {
   it('uploads a pasted image on a claude thread (control for the claude-tui gate)', async () => {
     const pane = await buildPane(makeTestThread({ provider: 'claude' }));
     const draft = await buildDraft();
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -411,7 +412,7 @@ describe('<Composer>', () => {
       'thread-1',
       'shot.png',
       'image/png',
-      expect.any(String),
+      expect.any(Number),
     ));
   });
 
@@ -422,7 +423,7 @@ describe('<Composer>', () => {
     // fails if the claude-tui attachment capability regresses to false.
     const pane = await buildPane(makeTestThread({ provider: 'claude-tui' }));
     const draft = await buildDraft();
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -439,7 +440,7 @@ describe('<Composer>', () => {
       'thread-1',
       'shot.png',
       'image/png',
-      expect.any(String),
+      expect.any(Number),
     ));
   });
 
@@ -449,7 +450,7 @@ describe('<Composer>', () => {
     // capability-gated provider preventDefault'd every paste, text included.
     const pane = await buildPane(makeTestThread({ provider: 'claude-tui' }));
     const draft = await buildDraft();
-    const upload = setBindingMock('UploadAttachment', async () =>
+    const upload = mockAttachmentUpload(async () =>
       makeAttachment('should-not-upload'));
 
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
@@ -479,7 +480,7 @@ describe('<Composer>', () => {
     const create = setBindingMock('CreateThread', async () => created);
     const save = setBindingMock('SaveDraft', async () => {});
     let nextId = 1;
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -497,11 +498,17 @@ describe('<Composer>', () => {
       new File(['png-two'], 'two.png', { type: 'image/png' }),
     ]));
 
-    await waitFor(() => expect(upload).toHaveBeenCalledTimes(2));
+    // Wait on the DRAFT rather than on the mint. A transfer is two hops
+    // now, so the second ticket being minted no longer implies the second
+    // record has landed — the ordering this test is about is still the
+    // upload loop's, which runs one file at a time.
+    await waitFor(() => expect(
+      draft.attachments.map((attachment) => attachment.id),
+    ).toEqual(['att-1', 'att-2']));
+    expect(upload).toHaveBeenCalledTimes(2);
     expect(create).toHaveBeenCalledTimes(1);
     expect(upload.mock.calls.map((call) => call[0])).toEqual([created.id, created.id]);
     expect(draft.content).toBe('[Image #1] [Image #2]');
-    expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-1', 'att-2']);
     await waitFor(() => {
       expect(save).toHaveBeenCalledWith(created.id, '[Image #1] [Image #2]', ['att-1', 'att-2'], [], null);
     });
@@ -523,7 +530,7 @@ describe('<Composer>', () => {
     const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => true);
     let releaseUpload: (() => void) | undefined;
     const uploadStarted = new Promise<void>((resolve) => {
-      setBindingMock('UploadAttachment', async (
+      mockAttachmentUpload(async (
         threadId: string,
         filename: string,
         mimeType: string,
@@ -580,7 +587,7 @@ describe('<Composer>', () => {
     setBindingMock('CreateThread', async () => created);
     let releaseUpload: (() => void) | undefined;
     const uploadStarted = new Promise<void>((resolve) => {
-      setBindingMock('UploadAttachment', async (
+      mockAttachmentUpload(async (
         threadId: string,
         filename: string,
         mimeType: string,
@@ -643,7 +650,7 @@ describe('<Composer>', () => {
     const save = setBindingMock('SaveDraft', async () => {});
     const deleteGate = deferred<boolean>();
     const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => deleteGate.promise);
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -674,7 +681,7 @@ describe('<Composer>', () => {
         replacement.id,
         'first.png',
         'image/png',
-        expect.any(String),
+        expect.any(Number),
       );
     });
     deleteGate.resolve(true);
@@ -703,7 +710,7 @@ describe('<Composer>', () => {
     });
     setBindingMock('CreateThread', async () => created);
     const save = setBindingMock('SaveDraft', async () => {});
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -733,7 +740,7 @@ describe('<Composer>', () => {
       created.id,
       'first.png',
       'image/png',
-      expect.any(String),
+      expect.any(Number),
     ));
 
     await fireEvent.click(getByLabelText('Remove first.png'));
@@ -1939,7 +1946,7 @@ describe('<Composer>', () => {
     const pane = await buildPane();
     const draft = await buildDraft();
     let nextId = 1;
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -3172,7 +3179,7 @@ describe('<Composer>', () => {
     it('refuses a pasted image without a toast', async () => {
       const pane = await buildPane(makeTestThread({ provider: 'claude' }));
       const draft = await buildDraft();
-      const upload = setBindingMock('UploadAttachment', async () => makeAttachment('uploaded'));
+      const upload = mockAttachmentUpload(async () => makeAttachment('uploaded'));
       await pairViewOnly();
 
       const { getByLabelText } = render(Composer, { props: { pane, draft } });

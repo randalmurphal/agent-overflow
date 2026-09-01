@@ -18,6 +18,7 @@ import ComposerControlledInputHarness from './ComposerControlledInputHarness.sve
 import { createComposerDraftStore, resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
 import { buildPane } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { mockAttachmentUpload } from '../../../test/mocks/attachmentTransfer';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
@@ -137,7 +138,7 @@ describe('composer textarea autosize (native)', () => {
 
   it('keeps the internal scroll position when a pasted image updates the controlled draft', async () => {
     const content = Array.from({ length: 80 }, (_, index) => `line ${index + 1}`).join('\n');
-    setBindingMock('UploadAttachment', async (threadId: string) => makeAttachment(threadId));
+    mockAttachmentUpload(async (threadId: string) => makeAttachment(threadId));
     const pane = await buildPane();
     const draft = createComposerDraftStore({ debounceMs: 0 });
     await draft.setThread('thread-1');

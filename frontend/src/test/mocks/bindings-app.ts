@@ -460,10 +460,10 @@ export const ConcludeDiscussion = dispatch('ConcludeDiscussion');
 
 
 // Composer enhancements
-export const UploadAttachment = dispatch('UploadAttachment');
+export const MintAttachmentUploadTicket = dispatch('MintAttachmentUploadTicket');
 export const ListAttachments = dispatch('ListAttachments');
 export const DeleteAttachment = dispatch('DeleteAttachment');
-export const GetAttachmentData = dispatch('GetAttachmentData');
+export const MintAttachmentDownloadTicket = dispatch('MintAttachmentDownloadTicket');
 export const GetAttachmentThumbnail = dispatch('GetAttachmentThumbnail');
 export const GetLocalImageData = dispatch('GetLocalImageData');
 export const SaveDraft = dispatch('SaveDraft');

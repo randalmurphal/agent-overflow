@@ -3,6 +3,7 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
 import type { Attachment } from '../../types/attachment';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 
 function makeAttachment(id: string, filename = `${id}.png`, size = 512): Attachment {
   return {
@@ -22,7 +23,7 @@ describe('<ComposerAttachmentRow>', () => {
     // Inline grid loads thumbnails; lightbox modal reloads full-size on click.
     // Stub both so any test path produces a usable preview.
     setBindingMock('GetAttachmentThumbnail', async () => ({ data: 'iVBORw0KGgo=', mimeType: 'image/png' }));
-    setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
+    mockAttachmentDownload();
   });
 
   it('renders nothing when empty and not dragging', () => {

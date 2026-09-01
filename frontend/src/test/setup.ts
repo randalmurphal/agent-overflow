@@ -4,6 +4,7 @@ import { afterEach, beforeEach } from 'vitest';
 import { cleanup } from '@testing-library/svelte';
 import { resetWailsMocks } from './mocks/wailsio-runtime';
 import { resetBindingMocks } from './mocks/bindings-app';
+import { resetAttachmentTransferMocks } from './mocks/attachmentTransfer';
 import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/threadStatuses.svelte';
 import { resetDiffReviewCommentsForTest } from '../lib/stores/diffReviewComments.svelte';
 import {
@@ -241,6 +242,7 @@ afterEach(() => {
   cleanup();
   resetWailsMocks();
   resetBindingMocks();
+  resetAttachmentTransferMocks();
   // The thread-statuses store holds the global active-turn registry
   // that backs the activity rail's working timer + sidebar pills. It's
   // $state-backed and shared across all panes, so test-to-test leaks

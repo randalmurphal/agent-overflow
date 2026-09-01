@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { mockAttachmentUpload } from '../../../test/mocks/attachmentTransfer';
 import type { Attachment } from '../../types/attachment';
 import { createComposerUploads, type UploadInsertionPoint } from './composerUploads.svelte';
 import { compressImageToFit } from './imageCompress';
@@ -46,7 +47,7 @@ describe('createComposerUploads', () => {
 
   it('does not spend an attachment slot on rejected files', async () => {
     const addAttachment = vi.fn();
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       _threadId: string,
       filename: string,
     ) => attachment(`att-${filename}`, filename));
@@ -73,7 +74,7 @@ describe('createComposerUploads', () => {
 
   it('keeps paste/drop insertion points scoped to each upload batch', async () => {
     const addAttachment = vi.fn();
-    setBindingMock('UploadAttachment', async (
+    mockAttachmentUpload(async (
       _threadId: string,
       filename: string,
     ) => attachment(`att-${filename}`, filename));
@@ -101,7 +102,7 @@ describe('createComposerUploads', () => {
     Object.defineProperty(oversized, 'size', { value: 20 * 1024 * 1024 });
     const compressed = new File(['small'], 'huge.webp', { type: 'image/webp' });
     vi.mocked(compressImageToFit).mockResolvedValue(compressed);
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       _threadId: string,
       filename: string,
     ) => attachment(`att-${filename}`, filename));
@@ -123,7 +124,7 @@ describe('createComposerUploads', () => {
     const oversized = new File(['big'], 'huge.png', { type: 'image/png' });
     Object.defineProperty(oversized, 'size', { value: 20 * 1024 * 1024 });
     vi.mocked(compressImageToFit).mockResolvedValue(null);
-    const upload = setBindingMock('UploadAttachment', async () => attachment('att-x'));
+    const upload = mockAttachmentUpload(async () => attachment('att-x'));
     const uploads = createComposerUploads({
       getThreadId: () => 'thread-1',
       addAttachment: vi.fn(),
@@ -137,7 +138,7 @@ describe('createComposerUploads', () => {
 
   it('does not attempt compression for images already within the limit', async () => {
     vi.mocked(compressImageToFit).mockResolvedValue(null);
-    setBindingMock('UploadAttachment', async (
+    mockAttachmentUpload(async (
       _threadId: string,
       filename: string,
     ) => attachment(`att-${filename}`, filename));
