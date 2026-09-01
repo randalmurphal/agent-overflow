@@ -11,14 +11,17 @@
   import Icon from '../primitives/Icon.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import ProviderAccountLimits from '../shared/ProviderAccountLimits.svelte';
+  import ProviderLoginFlow from '../accounts/ProviderLoginFlow.svelte';
   import type { ManagedProviderAccount } from '../../stores/bindings';
   import {
     getProviderAccountActions,
     getProviderAccountsFor,
+    getProviderLogin,
     isProviderAccountsLoading,
     isProviderCredentialOpInFlight,
+    isProviderLoginActive,
     loadProviderAccounts,
-    loginProviderAccount,
+    startProviderLogin,
     providerAccountActionLabel,
     providerAccountName,
     providerAccountOrgLabel,
@@ -41,6 +44,12 @@
   // refusal, so a disabled button and a rejected call can never disagree.
   let credentialOpInFlight = $derived(isProviderCredentialOpInFlight(provider));
   let pendingRemoval = $state<ManagedProviderAccount | null>(null);
+  // The flow panel renders for a live sign-in AND for one that ended badly,
+  // since a failure is what the user has to read before trying again.
+  let login = $derived(getProviderLogin(provider));
+  let showLoginFlow = $derived(
+    isProviderLoginActive(provider) || login.phase === 'failed',
+  );
 
   onMount(() => {
     void loadProviderAccounts();
@@ -72,7 +81,7 @@
   // resolves back to this same account by identity (email + organization), so
   // it keeps its usage history rather than becoming a second card.
   function cardAction(account: ManagedProviderAccount): () => void {
-    if (account.needsLogin) return () => void loginProviderAccount(provider);
+    if (account.needsLogin) return () => void startProviderLogin(provider);
     return () => void switchProviderAccount(provider, account);
   }
 </script>
@@ -89,11 +98,15 @@
       type="button"
       class={PRIMARY_BUTTON_CLASS}
       disabled={credentialOpInFlight}
-      onclick={() => void loginProviderAccount(provider)}
+      onclick={() => void startProviderLogin(provider)}
     >
-      {actions.loggingIn ? 'Waiting for login…' : 'Log in to another account'}
+      {actions.loggingIn ? 'Signing in…' : 'Log in to another account'}
     </button>
   </div>
+
+  {#if showLoginFlow}
+    <ProviderLoginFlow {provider} {login} />
+  {/if}
 
   {#if loading}
     <p class="mt-3 text-[0.71875rem] text-fg-hint">Loading accounts…</p>

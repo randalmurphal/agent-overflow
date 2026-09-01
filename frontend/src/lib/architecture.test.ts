@@ -74,6 +74,7 @@ const WORKFLOW_RUN_MAP_STORE = 'lib/stores/workflowRunMap.svelte.ts';
 const APPEARANCE_STORE = 'lib/stores/appearance.svelte.ts';
 const EDITORS_STORE = 'lib/stores/editors.svelte.ts';
 const BROWSER_COMPANION_STORE = 'lib/stores/browserCompanion.svelte.ts';
+const PROVIDER_ACCOUNTS_STORE = 'lib/stores/providerAccounts.svelte.ts';
 
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionSubscribe: owned(BROWSER_COMPANION_STORE, 'attachBrowserCompanion()'),
@@ -114,6 +115,21 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   GetThemeFiles: owned(APPEARANCE_STORE, 'loadAppearance()'),
   SetAppearance: owned(APPEARANCE_STORE, 'setAppearance()'),
   SetWindowBackgroundColor: owned(APPEARANCE_STORE, 'syncWindowBackground()'),
+  // The provider-account surface is one listing and one credential slot per
+  // provider, and every mutation on it invalidates the others. A component
+  // calling one of these directly would hold a listing the store never sees,
+  // or start a sign-in the panel showing sign-ins knows nothing about.
+  ListProviderAccounts: owned(PROVIDER_ACCOUNTS_STORE, 'runLoad()'),
+  SwitchProviderAccount: owned(PROVIDER_ACCOUNTS_STORE, 'switchProviderAccount()'),
+  RemoveProviderAccount: owned(PROVIDER_ACCOUNTS_STORE, 'removeProviderAccount()'),
+  RefreshProviderAccountUsage: owned(
+    PROVIDER_ACCOUNTS_STORE,
+    'refreshProviderAccountUsage()',
+  ),
+  StartProviderLogin: owned(PROVIDER_ACCOUNTS_STORE, 'startProviderLogin()'),
+  GetProviderLoginState: owned(PROVIDER_ACCOUNTS_STORE, 'hydrateProviderLogins()'),
+  SubmitProviderLoginCode: owned(PROVIDER_ACCOUNTS_STORE, 'submitProviderLoginCode()'),
+  CancelProviderLogin: owned(PROVIDER_ACCOUNTS_STORE, 'cancelProviderLogin()'),
   ListAvailableEditors: owned(EDITORS_STORE, 'startLoad()'),
   GetEditorSettings: owned(EDITORS_STORE, 'startLoad()'),
   SetEditorSettings: owned(EDITORS_STORE, 'setEditorPreference()'),

@@ -88,6 +88,11 @@ import {
   applyTodoUpdate,
   applyModelFallback,
 } from './eventsProvider';
+import {
+  applyProviderLogin,
+  hydrateProviderLogins,
+} from './providerAccounts.svelte';
+import type { ProviderLoginState } from './bindings';
 import { applyTerminalOutput, applyTerminalExit } from './eventsTerminal';
 import {
   applyQueueStateChanged,
@@ -241,6 +246,18 @@ export function setupEventListeners(): () => void {
     'provider:session_account',
     applyProviderSessionAccount,
   );
+  // provider:login — one provider sign-in's live state. The flow is driven
+  // from wherever the owner is, so this is how a screen that did not start it
+  // (a second window, the same device after a reload) follows one that is
+  // already running. The hydrate below is the other half: an ephemeral
+  // channel replays nothing, so a client that attached mid-flow asks.
+  const cancelProviderLoginState = wailsEventOn<ProviderLoginState>(
+    'provider:login',
+    applyProviderLogin,
+  );
+  void hydrateProviderLogins().catch((error) => {
+    console.warn('events: hydrate provider sign-in state failed', error);
+  });
   const cancelProviderAccountUsageError = wailsEventOn<ProviderAccountUsageErrorEvent>(
     'provider:account_usage_error',
     (evt) => {
@@ -535,6 +552,7 @@ export function setupEventListeners(): () => void {
     cancelModelFallback();
     cancelProviderStatus();
     cancelProviderAccount();
+    cancelProviderLoginState();
     cancelProviderSessionAccount();
     cancelProviderAccountUsageError();
     cancelSystemStats();

@@ -17,7 +17,12 @@ import { emitWailsEvent, wailsListenerCount, resetWailsMocks } from '../../../te
 const callLog: Array<{ fn: string; args: unknown[] }> = [];
 let cleanupEvents: (() => void) | null = null;
 
-vi.mock('../../stores/bindings', () => ({
+// importOriginal spread, never a bare factory: a factory listing only the RPCs
+// this suite drives turns every LATER export of the module into `undefined`
+// for it, and the failure lands in whichever store imports the new one next
+// (frontend/AGENTS.md § Testing).
+vi.mock('../../stores/bindings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/bindings')>()),
   OpenTerminal: vi.fn(async (threadID: string, opts: unknown) => {
     callLog.push({ fn: 'OpenTerminal', args: [threadID, opts] });
     return {

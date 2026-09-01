@@ -14,14 +14,17 @@
   import IconButton from '../primitives/IconButton.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import ProviderAccountLimits from '../shared/ProviderAccountLimits.svelte';
+  import ProviderLoginFlow from './ProviderLoginFlow.svelte';
   import type { ManagedProviderAccount } from '../../stores/bindings';
   import {
     getProviderAccountActions,
     getProviderAccountGroups,
+    getProviderLogin,
     isProviderAccountsLoading,
     isProviderCredentialOpInFlight,
+    isProviderLoginActive,
     loadProviderAccounts,
-    loginProviderAccount,
+    startProviderLogin,
     providerAccountActionLabel,
     providerAccountName,
     providerAccountOrgLabel,
@@ -30,6 +33,7 @@
   } from '../../stores/providerAccounts.svelte';
   import { getProviderRateLimits } from '../../stores/rateLimitsInfo.svelte';
   import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
+  import { PROVIDER_SETTINGS_ORDER } from '../../providers/catalog';
   import { hasScope } from '../../transport/scopes';
   import type { ProviderID } from '../../types/providers';
   import { isImeComposingEvent } from '../../utils/imeComposition';
@@ -81,6 +85,16 @@
 
   let rows: PickerRow[] = $derived(groups.flatMap((group) => group.rows));
 
+  // A sign-in started from a card in Settings shows here too, and vice versa:
+  // one flow, two windows onto it. Failed flows are included, because the
+  // reason is what the user needs before trying again.
+  let activeLogins = $derived(
+    PROVIDER_SETTINGS_ORDER.filter(
+      (provider) =>
+        isProviderLoginActive(provider) || getProviderLogin(provider).phase === 'failed',
+    ),
+  );
+
   // Fresh listing on every open — an account may have been switched from
   // Settings, or its quotas refreshed, since the last time this was up. Only
   // the LISTING is refetched: usage is whatever was last recorded, so opening
@@ -116,7 +130,7 @@
     // organization, same behaviour as the Settings card), so the picker stays
     // open for its result.
     if (account.needsLogin) {
-      await loginProviderAccount(provider);
+      await startProviderLogin(provider);
       return;
     }
     // Picking what is already active is a confirmation, not a no-op button.
@@ -179,6 +193,10 @@
       class="focus:outline-none"
       onkeydown={handleKeydown}
     >
+      {#each activeLogins as provider (provider)}
+        <ProviderLoginFlow {provider} login={getProviderLogin(provider)} />
+      {/each}
+
       {#if loading && rows.length === 0}
         <p class="px-2 py-3 text-[0.75rem] text-fg-muted" data-testid="account-switcher-loading">
           Loading accounts…

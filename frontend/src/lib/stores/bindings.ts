@@ -129,7 +129,14 @@ export {
   GetCodexAccountUsage,
   GetRateLimitsSnapshots,
   ListProviderAccounts,
-  LoginProviderAccount,
+  // A provider sign-in is a session, not one blocking call: it may be
+  // finished on a different device than the one that started it, so the
+  // link goes out and the answer comes back through four fast calls plus
+  // the `provider:login` push. See internal/provideraccountapp/loginsession.go.
+  StartProviderLogin,
+  GetProviderLoginState,
+  SubmitProviderLoginCode,
+  CancelProviderLogin,
   SwitchProviderAccount,
   RemoveProviderAccount,
   RefreshProviderAccountUsage,
@@ -515,6 +522,11 @@ export {
 export {
   ServerStatus as MCPServerStatus,
 } from '../../../bindings/agent-overflow/internal/mcpstatus/models.js';
+export {
+  LoginMethod as ProviderLoginMethod,
+  LoginPhase as ProviderLoginPhase,
+  LoginState as ProviderLoginState,
+} from '../../../bindings/agent-overflow/internal/provideraccountapp/models.js';
 export {
   EditorSettings,
   RemoteEndpoint,

@@ -306,11 +306,14 @@ func (m *Manager) CancelProviderLogin(providerName string) LoginState {
 		delete(m.logins, providerName)
 	}
 	m.loginMu.Unlock()
-	if run == nil {
-		return m.ProviderLoginState(providerName)
+	if run != nil {
+		run.cancel()
+		<-run.done
 	}
-	run.cancel()
-	<-run.done
+	// Idle even when nothing was running: a client dismissing the panel over a
+	// finished sign-in is telling us the retained outcome has been read, and
+	// leaving it would put a stale success or failure in front of whoever
+	// opens the surface next.
 	idle := IdleLoginState(providerName)
 	m.storeLoginState(idle)
 	m.publishLoginState(idle)

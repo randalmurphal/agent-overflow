@@ -12,7 +12,13 @@ import {
   isProviderAccountsLoading,
   isProviderCredentialOpInFlight,
   loadProviderAccounts,
-  loginProviderAccount,
+  applyProviderLogin,
+  cancelProviderLogin,
+  getProviderLogin,
+  hydrateProviderLogins,
+  isProviderLoginActive,
+  startProviderLogin,
+  submitProviderLoginCode,
   providerAccountActionLabel,
   providerAccountName,
   refreshProviderAccountUsage,
@@ -33,6 +39,7 @@ import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app
 import { setPageGrantsFromBootstrap } from '../transport/scopes';
 import { account, deferred } from '../../test/helpers/providerAccounts';
 import type { ManagedProviderAccount } from './bindings';
+import { ProviderLoginMethod, ProviderLoginPhase, ProviderLoginState } from './bindings';
 
 function toastMessages(): string[] {
   return getToasts().map((toast) => toast.message);
@@ -308,37 +315,192 @@ describe('switchProviderAccount', () => {
   });
 });
 
-describe('loginProviderAccount', () => {
-  it('reloads and reports success once a login completes', async () => {
-    let saved: ManagedProviderAccount[] = [];
-    setBindingMock('ListProviderAccounts', async () => saved);
-    const loginMock = setBindingMock('LoginProviderAccount', async () => {
-      saved = [account({ id: 'claude-a', displayName: 'Work', active: true })];
+// A sign-in is a session: Start returns as soon as there is a link to show,
+// and how it ended arrives later as state. These cover the three things the
+// two surfaces read off it — the live link, the code round trip, and the
+// terminal transition that reloads the listing.
+describe('startProviderLogin', () => {
+  it('holds the link the backend answered with and keeps the flow active', async () => {
+    setBindingMock('ListProviderAccounts', async () => []);
+    const startMock = setBindingMock('StartProviderLogin', async () =>
+      new ProviderLoginState({
+        provider: 'claude',
+        phase: ProviderLoginPhase.LoginPhaseAwaitingCode,
+        method: ProviderLoginMethod.LoginMethodRemote,
+        authorizeUrl: 'https://claude.ai/oauth/authorize?state=abc',
+      }),
+    );
+    await loadProviderAccounts();
+
+    await startProviderLogin('claude');
+
+    expect(startMock).toHaveBeenCalledWith('claude', expect.any(String));
+    expect(getProviderLogin('claude').authorizeUrl).toBe(
+      'https://claude.ai/oauth/authorize?state=abc',
+    );
+    expect(isProviderLoginActive('claude')).toBe(true);
+    // A live sign-in owns the provider's credential slot, so a switch or a
+    // removal must not start beside it.
+    expect(isProviderCredentialOpInFlight('claude')).toBe(true);
+  });
+
+  it('reports a start that never produced a link, and leaves the button usable', async () => {
+    setBindingMock('ListProviderAccounts', async () => []);
+    setBindingMock('StartProviderLogin', async () => {
+      throw new Error('claude binary not found');
     });
     await loadProviderAccounts();
 
-    await expect(loginProviderAccount('claude')).resolves.toBe(true);
+    await startProviderLogin('claude');
 
-    expect(loginMock).toHaveBeenCalledWith('claude');
+    expect(getProviderLogin('claude').phase).toBe(ProviderLoginPhase.LoginPhaseFailed);
+    expect(getProviderLogin('claude').error).toBe('Claude binary not found.');
+    expect(isProviderCredentialOpInFlight('claude')).toBe(false);
+  });
+});
+
+describe('applyProviderLogin', () => {
+  it('reloads the listing and reports success once the sign-in lands', async () => {
+    let saved: ManagedProviderAccount[] = [];
+    setBindingMock('ListProviderAccounts', async () => saved);
+    await loadProviderAccounts();
+    saved = [account({ id: 'claude-a', displayName: 'Work', active: true })];
+
+    applyProviderLogin(
+      new ProviderLoginState({
+        provider: 'claude',
+        phase: ProviderLoginPhase.LoginPhaseSucceeded,
+      }),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
     expect(getProviderAccountsFor('claude').map((a) => a.id)).toEqual(['claude-a']);
     expect(getProviderAccount('claude')?.accountId).toBe('claude-a');
     expect(toastMessages()).toContain('Claude account connected.');
+    // Succeeding closes the panel: there is nothing left for it to show.
+    expect(getProviderLogin('claude').phase).toBe(ProviderLoginPhase.LoginPhaseIdle);
     expect(isProviderCredentialOpInFlight('claude')).toBe(false);
   });
 
-  it('resolves false and surfaces the error when the login flow fails', async () => {
+  it('keeps a failed sign-in on screen with its reason', async () => {
     setBindingMock('ListProviderAccounts', async () => []);
-    setBindingMock('LoginProviderAccount', async () => {
-      throw new Error('browser never returned');
-    });
     await loadProviderAccounts();
 
-    await expect(loginProviderAccount('claude')).resolves.toBe(false);
+    applyProviderLogin(
+      new ProviderLoginState({
+        provider: 'claude',
+        phase: ProviderLoginPhase.LoginPhaseFailed,
+        error: 'Request failed with status code 400',
+      }),
+    );
 
-    expect(toastMessages()).toContain('Browser never returned.');
-    // The flag clears on the failure path too, so the button comes back.
+    expect(getProviderLogin('claude').error).toBe('Request failed with status code 400');
+    expect(isProviderLoginActive('claude')).toBe(false);
     expect(isProviderCredentialOpInFlight('claude')).toBe(false);
-    await expect(loginProviderAccount('claude')).resolves.toBe(false);
+  });
+
+  it('ignores a frame for a provider it does not track', async () => {
+    setBindingMock('ListProviderAccounts', async () => []);
+    await loadProviderAccounts();
+
+    applyProviderLogin({ provider: 'nope', phase: 'starting' } as never);
+
+    expect(getProviderLogin('claude').phase).toBe(ProviderLoginPhase.LoginPhaseIdle);
+  });
+});
+
+describe('submitProviderLoginCode', () => {
+  it('adopts the state the submission answered with', async () => {
+    const submitMock = setBindingMock('SubmitProviderLoginCode', async () =>
+      new ProviderLoginState({
+        provider: 'claude',
+        phase: ProviderLoginPhase.LoginPhaseVerifying,
+      }),
+    );
+
+    await submitProviderLoginCode('claude', 'code#state');
+
+    expect(submitMock).toHaveBeenCalledWith('claude', 'code#state');
+    expect(getProviderLogin('claude').phase).toBe(ProviderLoginPhase.LoginPhaseVerifying);
+  });
+
+  it('puts a refused code in the flow rather than in a toast over it', async () => {
+    applyProviderLogin(
+      new ProviderLoginState({
+        provider: 'claude',
+        phase: ProviderLoginPhase.LoginPhaseAwaitingCode,
+        authorizeUrl: 'https://claude.ai/oauth/authorize',
+      }),
+    );
+    setBindingMock('SubmitProviderLoginCode', async () => {
+      throw new Error('that is not the whole code');
+    });
+
+    await submitProviderLoginCode('claude', 'half');
+
+    expect(getProviderLogin('claude').error).toBe('That is not the whole code.');
+    // The link the user is holding survives a refusal about the code.
+    expect(getProviderLogin('claude').authorizeUrl).toBe('https://claude.ai/oauth/authorize');
+    expect(toastMessages()).toEqual([]);
+  });
+});
+
+describe('hydrateProviderLogins', () => {
+  it('rejoins a sign-in that is still running', async () => {
+    setPageGrantsFromBootstrap(false);
+    setBindingMock('GetProviderLoginState', async (provider: never) =>
+      new ProviderLoginState({
+        provider: provider as unknown as string,
+        phase:
+          provider === ('codex' as never)
+            ? ProviderLoginPhase.LoginPhaseAwaitingCode
+            : ProviderLoginPhase.LoginPhaseIdle,
+        userCode: 'ABCD-EFGH',
+      }),
+    );
+
+    await hydrateProviderLogins();
+
+    expect(getProviderLogin('codex').userCode).toBe('ABCD-EFGH');
+    expect(isProviderLoginActive('claude')).toBe(false);
+  });
+
+  // The backend retains a terminal state so the last transition is never
+  // lost. A client arriving long afterwards must not open a panel about a
+  // sign-in nobody is watching.
+  it('does not adopt a sign-in that already ended', async () => {
+    setPageGrantsFromBootstrap(false);
+    setBindingMock('GetProviderLoginState', async (provider: never) =>
+      new ProviderLoginState({
+        provider: provider as unknown as string,
+        phase: ProviderLoginPhase.LoginPhaseFailed,
+        error: 'an hour ago',
+      }),
+    );
+
+    await hydrateProviderLogins();
+
+    expect(getProviderLogin('claude').phase).toBe(ProviderLoginPhase.LoginPhaseIdle);
+  });
+});
+
+describe('cancelProviderLogin', () => {
+  it('clears the panel before the backend answers, then tells the backend', async () => {
+    const cancelMock = setBindingMock('CancelProviderLogin', async () => undefined);
+    applyProviderLogin(
+      new ProviderLoginState({
+        provider: 'codex',
+        phase: ProviderLoginPhase.LoginPhaseAwaitingCode,
+        userCode: 'ABCD-EFGH',
+      }),
+    );
+
+    await cancelProviderLogin('codex');
+
+    expect(cancelMock).toHaveBeenCalledWith('codex');
+    expect(getProviderLogin('codex').phase).toBe(ProviderLoginPhase.LoginPhaseIdle);
+    expect(isProviderCredentialOpInFlight('codex')).toBe(false);
   });
 });
 
