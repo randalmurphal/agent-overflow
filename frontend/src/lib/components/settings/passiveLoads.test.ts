@@ -54,9 +54,28 @@ function stubBindings() {
         lastError: '',
         selfSignedFingerprint: '',
       },
+      tailnetEnabled: false,
+      tailnetControlUrl: '',
+      tailnet: {
+        running: false,
+        state: '',
+        authUrl: '',
+        dnsName: '',
+        ips: [],
+        url: '',
+        https: false,
+        hasState: false,
+        lastError: '',
+      },
       url: 'http://127.0.0.1:54321/?t=t',
       token: 't',
     })),
+    // The tailnet's own RPC is host-scoped like the read beside it, and
+    // it DELETES this backend's node identity — so it is here to assert
+    // it never fires from a mount, on any screen.
+    forgetTailnet: setBindingMock('ForgetTailnetNode', async () => {
+      throw new Error('ForgetTailnetNode must never be called by a passive load');
+    }),
     overview: setBindingMock('GetAccessOverview', async () => ({ devices: [] })),
     endpoints: setBindingMock('ListRemoteEndpoints', async () => []),
     isWSL: setBindingMock('IsWSL', async () => true),
@@ -94,6 +113,9 @@ describe('settings sections issue no passive RPC they were not granted', () => {
     it('loads it on the owner’s own screen', async () => {
       render(NetworkSection);
       await waitFor(() => expect(bindings.network).toHaveBeenCalled());
+      // The tailnet block rides that one read. Nothing about it is a
+      // second passive call, and its destructive action is not one at all.
+      expect(bindings.forgetTailnet).not.toHaveBeenCalled();
     });
 
     it('does not ask for it from a device paired with FULL access', async () => {
@@ -101,15 +123,18 @@ describe('settings sections issue no passive RPC they were not granted', () => {
       render(NetworkSection);
       await settle();
       expect(bindings.network).not.toHaveBeenCalled();
+      expect(bindings.forgetTailnet).not.toHaveBeenCalled();
     });
 
     it('says why, rather than rendering a control that cannot work', async () => {
       await pairViewOnly();
-      const { getByTestId, queryByLabelText } = render(NetworkSection);
+      const { getByTestId, queryByLabelText, queryByTestId } = render(NetworkSection);
       await settle();
       expect(bindings.network).not.toHaveBeenCalled();
+      expect(bindings.forgetTailnet).not.toHaveBeenCalled();
       expect(getByTestId('network-section-local-only')).toBeTruthy();
       expect(queryByLabelText('Application URL')).toBeNull();
+      expect(queryByTestId('network-tailnet-editor')).toBeNull();
     });
   });
 

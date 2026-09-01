@@ -12,16 +12,46 @@ interface MockTLSStatus {
   selfSignedFingerprint: string;
 }
 
+interface MockTailnetStatus {
+  running: boolean;
+  state: string;
+  authUrl: string;
+  dnsName: string;
+  ips: string[];
+  url: string;
+  https: boolean;
+  hasState: boolean;
+  lastError: string;
+}
+
 interface MockNetworkSettings {
   bindAll: boolean;
   canonicalDomain: string;
   acmeDnsHook: string[];
   externalCertFile: string;
   externalKeyFile: string;
+  tailnetEnabled: boolean;
+  tailnetControlUrl: string;
   tls: MockTLSStatus;
+  tailnet: MockTailnetStatus;
   url: string;
   token: string;
   insecure?: boolean;
+}
+
+function tailnetStatus(overrides: Partial<MockTailnetStatus> = {}): MockTailnetStatus {
+  return {
+    running: false,
+    state: '',
+    authUrl: '',
+    dnsName: '',
+    ips: [],
+    url: '',
+    https: false,
+    hasState: false,
+    lastError: '',
+    ...overrides,
+  };
 }
 
 function tlsStatus(overrides: Partial<MockTLSStatus> = {}): MockTLSStatus {
@@ -42,7 +72,10 @@ function networkSettings(overrides: Partial<MockNetworkSettings> = {}): MockNetw
     acmeDnsHook: [],
     externalCertFile: '',
     externalKeyFile: '',
+    tailnetEnabled: false,
+    tailnetControlUrl: '',
     tls: tlsStatus(),
+    tailnet: tailnetStatus(),
     url: 'http://127.0.0.1:54321/?t=test-token',
     token: 'test-token',
     insecure: false,

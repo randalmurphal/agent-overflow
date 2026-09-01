@@ -148,6 +148,13 @@ export {
   SetNetworkSettings,
   RenewCanonicalDomainCert,
 
+  // The tailnet node rides the same two calls: the toggle and its
+  // coordination server are fields on the network record, so turning it
+  // on is one step-up-gated write. ForgetTailnetNode is the separate act
+  // that deletes the node's identity, and the backend refuses it until
+  // the feature is off.
+  ForgetTailnetNode,
+
   // Device access (Settings → Network → Devices): the paired-device
   // list, the pairing lifecycle, and revocation. Every one needs
   // `access:admin`; MintDevicePairing also needs a host-presence proof,

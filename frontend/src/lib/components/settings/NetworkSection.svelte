@@ -3,6 +3,7 @@
     GetNetworkSettings,
     SetNetworkSettings,
     RenewCanonicalDomainCert,
+    ForgetTailnetNode,
     NetworkSettings,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
@@ -12,6 +13,7 @@
   import { hasScope } from '../../transport/scopes';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import NetworkDomainEditor from './NetworkDomainEditor.svelte';
+  import NetworkTailnetEditor from './NetworkTailnetEditor.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
@@ -73,6 +75,8 @@
       acmeDnsHook: current.acmeDnsHook,
       externalCertFile: current.externalCertFile,
       externalKeyFile: current.externalKeyFile,
+      tailnetEnabled: current.tailnetEnabled,
+      tailnetControlUrl: current.tailnetControlUrl,
       url: '',
       token: '',
       ...patch,
@@ -121,6 +125,36 @@
     }
   }
 
+  async function saveTailnet(draft: { enabled: boolean; controlURL: string }): Promise<void> {
+    if (!settings || saving) return;
+    saving = true;
+    const previous = settings;
+    try {
+      settings = await SetNetworkSettings(
+        writeRequest(previous, {
+          tailnetEnabled: draft.enabled,
+          tailnetControlUrl: draft.controlURL.trim(),
+        }),
+      );
+    } catch (err) {
+      addToast('error', `Failed to update tailnet settings: ${errString(err)}`);
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function forgetTailnetNode(): Promise<void> {
+    if (!settings || saving) return;
+    saving = true;
+    try {
+      settings = await ForgetTailnetNode();
+    } catch (err) {
+      addToast('error', `Failed to forget this node: ${errString(err)}`);
+    } finally {
+      saving = false;
+    }
+  }
+
   async function renewCertificate(): Promise<void> {
     if (!settings || saving) return;
     saving = true;
@@ -152,6 +186,16 @@
   // interval never elapses and the screen re-reads as fast as the RPC
   // returns.
   let renewing = $derived(settings?.tls.renewing ?? false);
+
+  // The tailnet has the same shape and no push channel either: joining
+  // ends in a sign-in the owner completes in a browser, so the only way
+  // this screen learns the node came up is to ask again. Bounded by the
+  // pane being open — an enabled node that never joins stops being polled
+  // the moment the user navigates away.
+  let awaitingTailnet = $derived(
+    (settings?.tailnetEnabled ?? false) && !(settings?.tailnet.running ?? false),
+  );
+  let polling = $derived(renewing || awaitingTailnet);
 
   // Which of the three the URL is, read off the URL itself rather than
   // off the certificate status: which host and scheme it came out as is
@@ -188,7 +232,7 @@
   });
 
   $effect(() => {
-    if (!renewing || localOnly) return;
+    if (!polling || localOnly) return;
     pollTimer = setInterval(() => void load(), TLS_POLL_MS);
     return () => {
       if (pollTimer) clearInterval(pollTimer);
@@ -247,6 +291,13 @@
       busy={saving}
       onsave={saveDomain}
       onrenew={renewCertificate}
+    />
+
+    <NetworkTailnetEditor
+      {settings}
+      busy={saving}
+      onsave={saveTailnet}
+      onforget={forgetTailnetNode}
     />
 
     <section>
