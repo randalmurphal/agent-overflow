@@ -671,6 +671,22 @@ export class Project {
     "updatedAt": number;
     "archived": boolean;
 
+    /**
+     * RemoteURL and RootCommit are the checkout's DERIVED repository
+     * identity, computed by the backend that owns the disk: the `origin`
+     * remote exactly as git reports it, and the lexicographically smallest
+     * root commit of HEAD. They exist so a client attached to several
+     * backends can recognise the same repository checked out on two
+     * machines as one project. Nothing here normalises the URL — the
+     * client owns that, because it is the side doing the matching.
+     * 
+     * Empty is a first-class value, never an error: a non-git directory, a
+     * repository with no origin, an unborn HEAD, and every row written
+     * before migration v79 all read as "not known".
+     */
+    "remoteURL"?: string;
+    "rootCommit"?: string;
+
     /** Creates a new Project instance. */
     constructor($$source: Partial<Project> = {}) {
         if (!("id" in $$source)) {

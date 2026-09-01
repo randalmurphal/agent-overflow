@@ -102,6 +102,19 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   gaining origin/HEAD or an origin remote is seen immediately.
   `InvalidateForgeCache` drops these entries alongside the
   classification derived from them.
+- `repo_identity.go`: `RepoIdentity`, the pair of facts that name the
+  REPOSITORY a checkout is of rather than the directory it sits in —
+  the `origin` remote (through `originRemote`, so it shares the
+  repo-meta TTL cache above) and the lexicographically smallest root
+  commit of `HEAD`. The sort matters: a repository can have several
+  roots and `rev-list` orders them by traversal, which differs with the
+  checked-out branch, so sorting is what makes two machines answer the
+  same string for the same repository. No error return, same posture as
+  `OriginRemoteURL`: not-a-repo, unborn HEAD, and git failure are all
+  `""`. The root read is deliberately uncached — it is asked at project
+  creation and once per boot, and a rewritten history must not be
+  served from a stale window. Consumers: `store.Project.remote_url` /
+  `root_commit` (migration v79) via `internal/projectapp`.
 - `status_pr_cache.go`: open-PR lookup cache used by `Status` /
   `StatusFast`; `InvalidatePRCache` lives here too. A failed forge
   lookup keeps serving the branch's last successfully-read PR next to

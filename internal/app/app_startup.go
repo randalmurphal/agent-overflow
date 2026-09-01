@@ -102,6 +102,21 @@ func (a *App) Start(ctx context.Context) error {
 	// rolled back leaves nothing behind.
 	a.startSystemStatsSampler()
 
+	// Fill in the repository identity of projects that have none, so a
+	// client attached to several backends can recognise the same repo
+	// checked out on two machines. In a goroutine because each
+	// unidentified row costs a `git rev-list` (and, on a cold repo-meta
+	// cache, a `git remote get-url`), and a user with many projects would
+	// otherwise wait for them before the window paints. Bounded by
+	// construction: one pass, one derivation per unidentified row, and
+	// nothing to do at all on every boot after the first. See
+	// app_projects.go.
+	//
+	// NOT behind the activation gate. Its whole effect is two TEXT columns
+	// in SQLite, which is inside the snapshot boundary — restoring the
+	// database undoes it — and the git reads it makes take no action.
+	go a.backfillProjectIdentity()
+
 	// Assert the persisted keep-awake state. Synchronous and cheap (one
 	// D-Bus round trip at most, nothing at all when the setting is off),
 	// and it must run on the boot path rather than lazily: the whole

@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 
 	"agent-overflow/internal/projectapp"
@@ -17,6 +18,7 @@ func (a *App) projectApplication() *projectapp.Service {
 		a.projectApp = projectapp.New(projectapp.Deps{
 			Store:     a.store,
 			Workspace: appProjectWorkspace{app: a},
+			Identity:  a.repoIdentity,
 		})
 	})
 	return a.projectApp
@@ -27,6 +29,29 @@ type appProjectWorkspace struct{ app *App }
 func (w appProjectWorkspace) FindWorktree(projectPath, candidate string) (string, bool, error) {
 	worktree, ok, err := w.app.findWorktree(projectPath, candidate)
 	return worktree.Path, ok, err
+}
+
+// repoIdentity derives a checkout's repository identity for projectapp.
+// Resolved through gitCore() at call time rather than captured when the
+// service is built, so the shared Core — and with it the repo-meta TTL cache
+// the origin read rides — is the one the rest of the app uses.
+func (a *App) repoIdentity(path string) (remoteURL, rootCommit string) {
+	return a.gitCore().RepoIdentity(path)
+}
+
+// backfillProjectIdentity derives the repository identity of every project row
+// that has none, and announces each row it moved so a client that already
+// loaded its sidebar converges without a refresh.
+//
+// One pass per boot, one derivation per unidentified row, no polling: after
+// the first boot following the v79 upgrade there is nothing left to do and the
+// pass reads the project list and stops.
+func (a *App) backfillProjectIdentity() {
+	if err := a.projectApplication().BackfillIdentity(func(row store.Project) {
+		a.broadcastProjectRow(triage.ProjectActionFull, row)
+	}); err != nil {
+		log.Printf("project identity backfill: %v", err)
+	}
 }
 
 // ListProjects returns projects with a lightweight thread count per

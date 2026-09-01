@@ -18,6 +18,12 @@ type Deps struct {
 	Store     *store.Store
 	Now       func() time.Time
 	Workspace WorkspaceResolver
+	// Identity derives a checkout's repository identity — the `origin`
+	// remote as git reports it, and the smallest root commit of HEAD.
+	// `internal/app` supplies the git-backed implementation; nil means the
+	// service answers "not known" for every path, which is what keeps
+	// project policy testable without a git subprocess.
+	Identity func(path string) (remoteURL, rootCommit string)
 }
 
 // WorkspaceResolver returns git's canonical spelling for a registered
@@ -37,6 +43,17 @@ func New(deps Deps) *Service {
 		deps.Now = time.Now
 	}
 	return &Service{deps: deps}
+}
+
+// repoIdentity asks the injected deriver what repository a path is a checkout
+// of. Nil-safe: with no deriver wired the answer is "not known", the same
+// value a non-git directory produces, so no caller needs a second shape for
+// "identity is unavailable here".
+func (s *Service) repoIdentity(path string) (remoteURL, rootCommit string) {
+	if s == nil || s.deps.Identity == nil {
+		return "", ""
+	}
+	return s.deps.Identity(path)
 }
 
 func (s *Service) database(action string) (*store.Store, error) {
@@ -108,14 +125,20 @@ func (s *Service) Create(path string) (store.Project, error) {
 	}
 
 	now := s.deps.Now().UnixMilli()
+	remoteURL, rootCommit := s.repoIdentity(abs)
 	project := store.Project{
 		// Globally unique by construction: a client attached to more than
 		// one backend keys projects by this string (internal/entityid).
-		ID:        entityid.New(),
-		Path:      abs,
-		Name:      filepath.Base(abs),
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:   entityid.New(),
+		Path: abs,
+		Name: filepath.Base(abs),
+		// Derived at the one moment the row is written, so a project is
+		// identified from its first appearance in a client's sidebar
+		// rather than only after the next boot's backfill.
+		RemoteURL:  remoteURL,
+		RootCommit: rootCommit,
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 	// The stored row, not the one built above: the slug is generated inside
 	// the insert, so the local copy has an empty one.

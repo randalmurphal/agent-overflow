@@ -1444,6 +1444,25 @@ ALTER TABLE threads ADD COLUMN created_head_commit TEXT NOT NULL DEFAULT '';`,
 		// backup flags decide.
 		SQL: passkeysV78SQL,
 	},
+	{
+		Version: 79,
+		Name:    "project_identity",
+		// A project's DERIVED repository identity, computed by the backend
+		// that owns the checkout. `remote_url` is the `origin` remote
+		// exactly as git reports it — unnormalised, because the client
+		// attached to several backends is the side that matches them and
+		// owns the normalisation. `root_commit` is the lexicographically
+		// smallest root of HEAD, which is what lets a repository with no
+		// remote (or several roots) still answer the same on every machine.
+		//
+		// Empty is a first-class value: a non-git directory, a repository
+		// with no origin, an unborn HEAD, and every pre-migration row all
+		// read as "not known", and no caller may treat empty as an error.
+		// Two plain ADD COLUMNs, no CHECK, so the FK-parent `projects`
+		// table is not rebuilt.
+		SQL: `ALTER TABLE projects ADD COLUMN remote_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE projects ADD COLUMN root_commit TEXT NOT NULL DEFAULT '';`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

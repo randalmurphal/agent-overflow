@@ -29,6 +29,7 @@ var (
 	}
 	projectAppWrites = []string{
 		"Archive",
+		"BackfillIdentity",
 		"Create",
 		"EnsureForWorkspace",
 		"Rename",

@@ -531,6 +531,19 @@ type Project struct {
 	CreatedAt    int64  `json:"createdAt"`
 	UpdatedAt    int64  `json:"updatedAt"`
 	Archived     bool   `json:"archived"`
+	// RemoteURL and RootCommit are the checkout's DERIVED repository
+	// identity, computed by the backend that owns the disk: the `origin`
+	// remote exactly as git reports it, and the lexicographically smallest
+	// root commit of HEAD. They exist so a client attached to several
+	// backends can recognise the same repository checked out on two
+	// machines as one project. Nothing here normalises the URL — the
+	// client owns that, because it is the side doing the matching.
+	//
+	// Empty is a first-class value, never an error: a non-git directory, a
+	// repository with no origin, an unborn HEAD, and every row written
+	// before migration v79 all read as "not known".
+	RemoteURL  string `json:"remoteURL,omitempty"`
+	RootCommit string `json:"rootCommit,omitempty"`
 }
 
 // Item represents a persisted timeline entry.

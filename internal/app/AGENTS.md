@@ -500,6 +500,11 @@ RPCs, while taking no action of its own.
   probes, the idle-session reaper, the retention sweep (which deletes attachment
   FILES), the ACME reconciler, the tailnet node, and workflow autoresume plus the
   scheduler. Serving RPCs while parked is CORRECT; that is what "prepared" means.
+- **A git READ is not an action.** `backfillProjectIdentity` runs unparked, in
+  its own goroutine, because its whole effect is two TEXT columns in SQLite —
+  inside the snapshot boundary — and `git remote get-url` / `git rev-list`
+  change nothing. The rule is about what a rollback cannot undo, not about
+  whether a subprocess was spawned.
 - **`startWorkflowAutomation` is split out of `initWorkflowEngine`** for that
   reason: the engine must exist for RPCs to answer, and only the autoresume
   sweep and the scheduler are unattended. `startWorkflowEngineForTest` calls

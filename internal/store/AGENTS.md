@@ -121,7 +121,10 @@ transactions.
     wrote, read back by id inside the same transaction. Returning none
     is the ordinary answer: the caller writes on every UI attach and the
     observed branch usually already matches.
-- `projects.go` — projects table (threads carry a `project_id` FK).
+- `projects.go` — projects table (threads carry a `project_id` FK). Also
+  `ListAllProjects` (archived rows included, which `ListProjects` hides) and
+  `UpdateProjectIdentity`, the one project write that deliberately does NOT
+  bump `updated_at`. See "Recent schema changes (v79)".
 - `project_worktree_setup.go` — the `projects.worktree_setup` JSON column
   (migration v46): the project's worktree setup recipe, read and written
   whole. `ProjectWorktreeSetup` decodes STRICTLY and reports a corrupt blob as
@@ -994,6 +997,33 @@ an empty `provider_turn_id`.
   COLUMN with no CHECK — free-form text, and the table is nobody's FK parent —
   so no rebuild; a future `work_items` rebuild must carry it, like every other
   column added since v39.
+
+## Recent schema changes (v79) — derived project identity
+
+- `projects.remote_url` and `projects.root_commit` (both `TEXT NOT NULL
+  DEFAULT ''`) name the REPOSITORY a project is a checkout of, so a client
+  attached to several backends can recognise the same repo cloned on two
+  machines as one project. Spec: `docs/specs/remote-access.md` §10, wave 7d.
+- **Derived, never declared.** `internal/git`'s `Core.RepoIdentity` computes
+  them from the checkout: the `origin` remote as git reports it, and the
+  LEXICOGRAPHICALLY SMALLEST root of `HEAD` (a repository can have several
+  roots, and sorting is what makes every machine answer the same string).
+  Written by the backend that owns the disk, at project creation
+  (`projectapp.Service.Create`, the workspace-ensure path) and once per boot
+  by `projectapp.Service.BackfillIdentity` for rows that have neither.
+- **The URL is stored raw.** Normalisation (scheme, user, `.git`, host case,
+  the SSH alias form) belongs to the client doing the matching; a backend that
+  pre-chewed it would only add a second, disagreeing dialect.
+- Empty is a first-class value, never an error: a non-git directory, a repo
+  with no origin, an unborn HEAD, and every pre-v79 row all read as "not
+  known". Two plain `ADD COLUMN`s, no CHECK, so the FK-parent `projects` table
+  is not rebuilt.
+- **`UpdateProjectIdentity` does not touch `updated_at`,** and that is the
+  point rather than an oversight. `updated_at` feeds the sidebar's "latest
+  activity" ordering; identity is metadata the backend derived on its own
+  initiative, so a boot backfill that stamped it would reshuffle every project
+  in the list for no reason the user could see
+  (`TestUpdateProjectIdentityLeavesUpdatedAtAlone`).
 
 ## Recent schema changes (v78) — passkeys
 
