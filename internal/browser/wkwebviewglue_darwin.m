@@ -37,6 +37,8 @@ static const char kAODownloadIDKey;
 static const char kAODownloadPageKey;
 static const char kAODownloadProfileKey;
 static const char kAODownloadPathKey;
+static const char kAOBackgroundKey;
+static const char kAOClipKey;
 static int kAOObserverContext;
 
 // ao_dup copies a UTF-8 string into malloc'd memory the Go half owns from that
@@ -68,11 +70,18 @@ static uint64_t ao_view_profile_id(id view) {
 //   └── contentView (Wails' plain NSView)
 //       ├── park view : 1x1, layer-masked, BELOW everything  (hidden pages)
 //       ├── the Wails SPA WKWebView (unchanged, still live)
-//       └── the presented page, ABOVE everything
+//       └── one clip view PER PRESENTED PAGE, ABOVE everything
+//           └── that page, at the FULL rect's size
 //
 // Order matters: the park view is added beneath the existing subviews so the
-// SPA paints over its 1px footprint and it can never take a click, and the
-// presented page is added on top so it sits above the SPA.
+// SPA paints over its 1px footprint and it can never take a click, and clip
+// views are added on top so presented pages sit above the SPA.
+//
+// The clip views are per page because presentation is per THREAD: the Manager
+// syncs one thread's pane at a time, so two threads with a visible pane each
+// have a page presented at the same moment, at different rects. Anything
+// shared between them (one container, one "the presented view" pointer) would
+// let the second pane move or hide the first.
 //
 // This is the WKWebView analogue of the Linux 1x1 clipping GtkScrolledWindow.
 // An off-window WKWebView is the trap it avoids: WebKit only guarantees layout
@@ -82,7 +91,21 @@ static uint64_t ao_view_profile_id(id view) {
 
 static NSView *ao_host = nil;
 static NSView *ao_park = nil;
-static NSView *ao_presented = nil;
+
+// ao_view_clip answers the container that crops one page, or nil for a page
+// that has never been presented. A native view cannot be cropped by the DOM,
+// so a pane scrolled half behind the sidebar is cropped HERE: the container
+// takes the clip rect while the page view keeps the FULL rect's size inside
+// it, because a page must not relayout just because part of it stopped being
+// visible.
+//
+// The container is associated with the page view, so it is per page (see the
+// tree above) and dies with it — unlike ao_park, which is the process's one
+// permanent host. Presented-ness is read off the same pair rather than from a
+// static, which is what lets two threads present at once.
+static NSView *ao_view_clip(NSView *view) {
+  return (NSView *)objc_getAssociatedObject(view, &kAOClipKey);
+}
 
 int ao_wkv_supported(void) {
   @autoreleasepool {
@@ -133,6 +156,11 @@ void ao_wkv_host_park(void *view, int slot, int width, int height) {
     if ([v superview] == ao_park) {
       return;
     }
+    // Parking gives up the presented slot whether or not hide ran first: a
+    // container emptied of its page must never keep painting the pane's
+    // background colour over the SPA. A page that was never presented has no
+    // container, and this is a message to nil.
+    [ao_view_clip(v) setHidden:YES];
     ao_wkv_host_unpark(view);
     [ao_park addSubview:v];
   }
@@ -145,30 +173,128 @@ void ao_wkv_host_unpark(void *view) {
     }
     NSView *v = (NSView *)view;
     NSView *parent = [v superview];
-    if (parent != nil && (parent == ao_park || parent == ao_host)) {
+    if (parent != nil &&
+        (parent == ao_park || parent == ao_host || parent == ao_view_clip(v))) {
       [v removeFromSuperview];
     }
   }
 }
 
-void ao_wkv_host_present(void *view, double x, double y, double width,
-                         double height, double vw, double vh) {
+// ao_clip_for answers one page's clipping container, creating it on first
+// present and re-attaching it if it ever lost its superview. The association
+// owns it; ao_wkv_view_close is what takes it down, because a per-page view
+// left in the host would both leak and keep painting.
+static NSView *ao_clip_for(NSView *view) {
+  if (ao_host == nil) {
+    return nil;
+  }
+  NSView *clip = ao_view_clip(view);
+  if (clip == nil) {
+    clip = [[[NSView alloc] initWithFrame:NSMakeRect(0, 0, 1, 1)] autorelease];
+    [clip setWantsLayer:YES];
+    // The masked layer is what actually crops a WKWebView — the exact
+    // mechanism the 1x1 park view has always used. clipsToBounds is asked for
+    // as well because the macOS 14 SDK made it an explicit property that
+    // defaults to NO, rather than behaviour implied by the view's geometry.
+    [[clip layer] setMasksToBounds:YES];
+    if (@available(macOS 14.0, *)) {
+      [clip setClipsToBounds:YES];
+    }
+    // Hidden until the page is actually inside it: an empty container carrying
+    // the pane's background colour would paint over the SPA.
+    [clip setHidden:YES];
+    // The association is the retain that keeps it alive past this pool.
+    objc_setAssociatedObject(view, &kAOClipKey, clip, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  }
+  if ([clip superview] != ao_host) {
+    [ao_host addSubview:clip positioned:NSWindowAbove relativeTo:nil];
+  }
+  return clip;
+}
+
+// ao_release_clip takes one page's container down for good. Called from
+// ao_wkv_view_close AFTER the page view has been unparked out of it, so the
+// container holds nothing: dropping the association then releases it, and
+// removing it from the host is what stops it painting and what breaks the
+// host's own retain.
+static void ao_release_clip(NSView *view) {
+  NSView *clip = ao_view_clip(view);
+  if (clip == nil) {
+    return;
+  }
+  [clip removeFromSuperview];
+  objc_setAssociatedObject(view, &kAOClipKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+// ao_bg_color turns the packed 0xRRGGBB the Go half parsed into an NSColor.
+// Negative means "no colour", which restores the engine default.
+static NSColor *ao_bg_color(int bg) {
+  if (bg < 0) {
+    return nil;
+  }
+  return [NSColor colorWithSRGBRed:(CGFloat)((bg >> 16) & 0xFF) / 255.0
+                             green:(CGFloat)((bg >> 8) & 0xFF) / 255.0
+                              blue:(CGFloat)(bg & 0xFF) / 255.0
+                             alpha:1.0];
+}
+
+// ao_apply_background paints the pane's resolved colour where the page has not
+// presented yet, so a strip exposed by a resize matches the pane instead of
+// flashing the engine default. Three surfaces need it: WKWebView's own
+// under-page colour (macOS 12, what WebKit paints outside the drawn content)
+// and both layers, because the web content arrives on a remote layer that can
+// lag the view's own frame by a frame or two — the clip container is the thing
+// behind that gap.
+//
+// Applied only when it CHANGED. A pane rect arrives once per changed frame
+// while the user drags, and dirtying two layer backgrounds on every one of
+// those frames is work nobody asked for. One stamp covers both surfaces
+// because the container is this page's own and is created with no colour at
+// all, so the two can never disagree.
+static void ao_apply_background(WKWebView *view, NSView *clip, int bg) {
+  NSNumber *previous = objc_getAssociatedObject(view, &kAOBackgroundKey);
+  if (previous != nil && [previous intValue] == bg) {
+    return;
+  }
+  objc_setAssociatedObject(view, &kAOBackgroundKey, [NSNumber numberWithInt:bg],
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  NSColor *color = ao_bg_color(bg);
+  CGColorRef cg = color == nil ? NULL : [color CGColor];
+  if (@available(macOS 12.0, *)) {
+    [view setUnderPageBackgroundColor:color];
+  }
+  if ([view layer] != nil) {
+    [[view layer] setBackgroundColor:cg];
+  }
+  if ([clip layer] != nil) {
+    [[clip layer] setBackgroundColor:cg];
+  }
+}
+
+void ao_wkv_host_present(void *view, double x, double y, double width, double height,
+                         double clip_x, double clip_y, double clip_width, double clip_height,
+                         double vw, double vh, int bg) {
   @autoreleasepool {
     if (ao_host == nil || view == NULL) {
       return;
     }
     NSView *v = (NSView *)view;
-    if (ao_presented != nil && ao_presented != v) {
-      // Backstop only — the Manager hides every other page before it shows
-      // one. Clearing the pointer is not enough here: the evicted view is
-      // still a full-size subview of the host, so it must stop painting too.
-      NSView *evicted = ao_presented;
-      ao_presented = nil;
-      [evicted setHidden:YES];
+    NSView *clip = ao_clip_for(v);
+    if (clip == nil) {
+      return;
     }
-    if ([v superview] != ao_host) {
+    if ([v superview] != clip) {
       ao_wkv_host_unpark(view);
-      [ao_host addSubview:v positioned:NSWindowAbove relativeTo:nil];
+      [clip addSubview:v positioned:NSWindowAbove relativeTo:nil];
+    }
+    // A caller with no clip means "unclipped" (the Manager normalizes an
+    // unclipped pane to clip == rect, and never presents an empty
+    // intersection). Never crop everything away over a missing pair.
+    if (!(clip_width > 0.0) || !(clip_height > 0.0)) {
+      clip_x = x;
+      clip_y = y;
+      clip_width = width;
+      clip_height = height;
     }
     NSRect bounds = [ao_host bounds];
     // CSS pixels -> host points by proportion (see header). The host view and
@@ -180,28 +306,71 @@ void ao_wkv_host_present(void *view, double x, double y, double width,
     CGFloat sy = (vh > 0.0 && bounds.size.height > 0.0)
                      ? bounds.size.height / (CGFloat)vh
                      : 1.0;
+    // Both rects are in the SPA's TOP-LEFT coordinates, so fy / cy are
+    // distances from the host's top edge and grow downwards.
     CGFloat fx = (CGFloat)x * sx;
     CGFloat fy = (CGFloat)y * sy;
     CGFloat fw = (CGFloat)width * sx;
     CGFloat fh = (CGFloat)height * sy;
-    // The rect arrives in the SPA's top-left coordinates. AppKit's content view
-    // is bottom-left unless it says otherwise, so the flip is asked for rather
-    // than assumed.
-    CGFloat originY = [ao_host isFlipped] ? fy : bounds.size.height - (fy + fh);
-    [v setFrame:NSMakeRect(fx, originY, fw, fh)];
+    CGFloat cx = (CGFloat)clip_x * sx;
+    CGFloat cy = (CGFloat)clip_y * sy;
+    CGFloat cw = (CGFloat)clip_width * sx;
+    CGFloat ch = (CGFloat)clip_height * sy;
+    // AppKit's content view is bottom-left unless it says otherwise, so the
+    // flip is asked for rather than assumed. The container takes the clip
+    // rect, exactly where the whole view used to go.
+    CGFloat clipOriginY = [ao_host isFlipped] ? cy : bounds.size.height - (cy + ch);
+    [clip setFrame:NSMakeRect(cx, clipOriginY, cw, ch)];
+    // The page view keeps the FULL rect's size, placed inside the container.
+    // Horizontally that is just the offset between the two left edges. The
+    // derivation vertically, with H the host's height:
+    //
+    //   host NOT flipped (bottom-left, the AppKit default)
+    //     view origin in host  = H - (fy + fh)
+    //     clip origin in host  = H - (cy + ch)
+    //     child y              = (H - (fy + fh)) - (H - (cy + ch))
+    //                          = (cy + ch) - (fy + fh)
+    //   host flipped (top-left), container still bottom-left
+    //     distance from the clip's TOP to the view's top = fy - cy
+    //     child y = ch - (fy - cy) - fh = (cy + ch) - (fy + fh)
+    //
+    // Both collapse to the same expression: the gap between the clip's bottom
+    // edge and the rect's bottom edge. The container is a plain NSView we
+    // allocate here, so it is never flipped — but it is asked anyway, for the
+    // same reason the host is.
+    CGFloat childY = [clip isFlipped] ? (fy - cy) : (cy + ch) - (fy + fh);
+    [v setFrame:NSMakeRect(fx - cx, childY, fw, fh)];
+    ao_apply_background((WKWebView *)v, clip, bg);
     [v setHidden:NO];
-    ao_presented = v;
+    [clip setHidden:NO];
   }
 }
 
 void ao_wkv_host_hide(void *view) {
-  if (view != NULL && ao_presented == (NSView *)view) {
-    ao_presented = nil;
+  @autoreleasepool {
+    if (view == NULL) {
+      return;
+    }
+    // Only this page's container. The caller parks the view out of it
+    // immediately afterwards, and an emptied container would otherwise keep
+    // painting the pane's background colour over the SPA — while another
+    // thread's presented pane is left exactly as it was.
+    [ao_view_clip((NSView *)view) setHidden:YES];
   }
 }
 
 int ao_wkv_host_presented(void *view) {
-  return (view != NULL && ao_presented == (NSView *)view) ? 1 : 0;
+  @autoreleasepool {
+    if (view == NULL) {
+      return 0;
+    }
+    NSView *v = (NSView *)view;
+    NSView *clip = ao_view_clip(v);
+    // Presented IS the state present leaves behind: the page inside its own
+    // showing container. Parking takes the view out of it and hiding hides the
+    // container, so both answer 0 without any bookkeeping of their own.
+    return (clip != nil && [v superview] == clip && ![clip isHidden] && ![v isHidden]) ? 1 : 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -750,10 +919,12 @@ void ao_wkv_view_close(void *view) {
       return;
     }
     WKWebView *v = (WKWebView *)view;
-    if (ao_presented == (NSView *)v) {
-      ao_presented = nil;
-    }
     ao_wkv_host_unpark(view);
+    // Unpark first, then the container: it holds nothing by that point, so
+    // dropping the association releases it for good. A per-page view left in
+    // the host would keep painting the pane's background over the SPA and
+    // accumulate one leaked view per page ever presented.
+    ao_release_clip((NSView *)v);
     [v stopLoading];
     [v setNavigationDelegate:nil];
     [v setUIDelegate:nil];

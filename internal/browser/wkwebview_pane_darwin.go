@@ -20,7 +20,40 @@ import (
 // recorded rect and SetPageBounds on an already-presented page repositions
 // it. Both are deduped under e.mu — bookkeeping only, the AppKit call
 // happens after the lock is released (the same locking rule the Linux
-// engine states).
+// engine states). The dedupe compares the WHOLE PaneRect, so a rect that
+// moved only its clip or its background colour still reaches AppKit, and one
+// that changed nothing still costs no main-thread dispatch.
+
+// wkNoBackground is what a pane with no resolved colour reports to the
+// Objective-C half, which then leaves the engine default in place.
+const wkNoBackground = -1
+
+// wkBackgroundCode turns PaneRect.Background into the packed 0xRRGGBB the host
+// takes. Only "#rrggbb" is a colour: the value reaches an NSColor and a layer,
+// so anything else (empty, rgb(), a name, a short hex) is "no colour" rather
+// than a half-parsed one. Byte-wise and allocation-free — this runs on every
+// changed pane frame while a pane is dragged.
+func wkBackgroundCode(value string) int {
+	if len(value) != 7 || value[0] != '#' {
+		return wkNoBackground
+	}
+	code := 0
+	for i := 1; i < 7; i++ {
+		var digit int
+		switch c := value[i]; {
+		case c >= '0' && c <= '9':
+			digit = int(c - '0')
+		case c >= 'a' && c <= 'f':
+			digit = int(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			digit = int(c-'A') + 10
+		default:
+			return wkNoBackground
+		}
+		code = code<<4 | digit
+	}
+	return code
+}
 
 // wkPaneState is the desired presentation of one page, plus what was last
 // pushed to AppKit so an unchanged sync costs no main-thread dispatch.

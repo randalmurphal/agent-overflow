@@ -49,6 +49,33 @@ func TestNativeEngineRefusesToStartBeforeTheWindowExists(t *testing.T) {
 	engine.Interrupt()
 }
 
+// The pane background is the one piece of the present path that is pure Go, and
+// its failure mode is silent: a mis-parsed colour paints the wrong background
+// behind a page rather than raising anything.
+func TestPaneBackgroundCodeParsesOnlyRRGGBB(t *testing.T) {
+	for value, want := range map[string]int{
+		"#000000": 0x000000,
+		"#ffffff": 0xffffff,
+		"#1a1B26": 0x1a1b26,
+		"#0a0b0c": 0x0a0b0c,
+		// Everything that is not exactly #rrggbb is "no colour", never a
+		// partially parsed one.
+		"":           wkNoBackground,
+		"#fff":       wkNoBackground,
+		"1a1b26":     wkNoBackground,
+		"#1a1b2":     wkNoBackground,
+		"#1a1b26 ":   wkNoBackground,
+		" #1a1b26":   wkNoBackground,
+		"#1a1b2g":    wkNoBackground,
+		"#12345678":  wkNoBackground,
+		"rgb(0,0,0)": wkNoBackground,
+	} {
+		if got := wkBackgroundCode(value); got != want {
+			t.Fatalf("wkBackgroundCode(%q) = %#x, want %#x", value, got, want)
+		}
+	}
+}
+
 func TestNativeEngineRefusesProfilesWhileStopped(t *testing.T) {
 	engine := newNativeEngine(t.TempDir(), ManagerOptions{
 		NativeWindow: func() unsafe.Pointer { return nil },

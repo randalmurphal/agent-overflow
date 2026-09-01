@@ -46,15 +46,32 @@ void ao_wkv_host_unpark(void *view);
 // The rect is in the SPA's CSS pixels with (vw, vh) its viewport size; the
 // host scales by its own bounds over that viewport, so webview zoom and DPI
 // need no scale factor on either side. vw <= 0 presents unscaled.
-void ao_wkv_host_present(void *view, double x, double y, double width,
-                         double height, double vw, double vh);
+//
+// (clip_x, clip_y, clip_width, clip_height) is the VISIBLE intersection of
+// that rect, in the same units: the view keeps the FULL rect's size — a page
+// must not relayout because it scrolled half behind the sidebar — and the
+// page's OWN clipping container, created here on first present, crops what is
+// presented. Per page, because two threads with a visible pane each present a
+// page at the same moment. An absent clip pair means unclipped, which presents
+// exactly as it did before clipping existed.
+//
+// bg is the pane's resolved background as packed 0xRRGGBB, or negative for
+// none. It is painted where the page has not presented yet, so a strip
+// exposed by a resize matches the pane instead of the engine default.
+void ao_wkv_host_present(void *view, double x, double y, double width, double height,
+                         double clip_x, double clip_y, double clip_width, double clip_height,
+                         double vw, double vh, int bg);
 
-// ao_wkv_host_hide gives up the presented slot without tearing anything down.
-// The caller parks the view immediately afterwards, as on Linux.
+// ao_wkv_host_hide stops presenting THIS view without tearing anything down:
+// its clip container is hidden and no other page's presentation is touched.
+// The caller parks the view immediately afterwards, as on Linux. The container
+// itself lives until the page closes, so re-showing costs no view surgery.
 void ao_wkv_host_hide(void *view);
 
-// ao_wkv_host_presented reports whether this view is the presented one, which
-// is what decides whether a dialog or file picker is shown or answered.
+// ao_wkv_host_presented reports whether this view is currently presented, which
+// is what decides whether a dialog or file picker is shown or answered. It is
+// read off the view tree — the page inside its own showing container — so it
+// needs no bookkeeping of its own and stays right for every page at once.
 int ao_wkv_host_presented(void *view);
 
 // ---- website data store --------------------------------------------------

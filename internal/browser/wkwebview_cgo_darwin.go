@@ -319,11 +319,19 @@ func wkParkView(view unsafe.Pointer, slot, width, height int) {
 	wkDo(func() { C.ao_wkv_host_park(view, C.int(slot), C.int(width), C.int(height)) })
 }
 
+// wkPresentView moves the view over the pane's rect, cropped to the rect's
+// visible intersection and carrying the pane's background colour. The colour is
+// parsed HERE rather than on the main thread: the Objective-C half takes the
+// packed value and never a string.
 func wkPresentView(view unsafe.Pointer, rect PaneRect) error {
+	background := C.int(wkBackgroundCode(rect.Background))
 	if !wkDo(func() {
 		C.ao_wkv_host_present(view, C.double(rect.X), C.double(rect.Y),
 			C.double(rect.Width), C.double(rect.Height),
-			C.double(rect.ViewportWidth), C.double(rect.ViewportHeight))
+			C.double(rect.ClipX), C.double(rect.ClipY),
+			C.double(rect.ClipWidth), C.double(rect.ClipHeight),
+			C.double(rect.ViewportWidth), C.double(rect.ViewportHeight),
+			background)
 	}) {
 		return errWKUnavailable
 	}
