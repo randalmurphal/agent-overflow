@@ -67,10 +67,43 @@ the tailnet's own admin panel and CLI say, so a person comparing the two
 screens is comparing the same words, and a state we have not seen before
 still renders as itself instead of collapsing into "unknown".
 
+## Two records, and what the second leaves out
+
+`Settings` is read by two kinds of caller and only one of them is at the
+machine. `GetNetworkSettings` answers `access:admin` — managing how a
+backend is exposed is what a paired admin device is FOR, and gating the
+read on host presence made Settings → Network unreachable from every
+device the owner had paired. So there are two builders, and which one runs
+is `internal/app`'s pick from the per-call proof:
+
+- `FromServer` / `FromServerWithLAN` — the caller is at the machine.
+- `FromServerRedacted` — everybody else. Four fields are left empty:
+  `Token` (this LAUNCH's credential, which would let its holder attach as
+  the backend's own local channel), `URL` and `Tailnet.URL` (each carrying
+  a one-time page ticket), and `Insecure`, which describes a URL that is
+  not there.
+
+**Withholding is done by never MINTING, and the function takes no
+`*transport.Server` so it cannot.** Building the full record and clearing
+it afterwards would spend the same tickets out of a book of sixteen, so
+each remote read of the screen would evict the URL the owner had just
+copied at their own. `FromServerWithLAN` is written the other way round —
+it STARTS from the redacted record and fills in — so the withheld set is
+declared once and a fifth server-derived field cannot be added on one path
+only.
+
+**`Tailnet.AuthURL` deliberately travels.** It looks like the two URLs
+that do not: single use, and a link. It is the tailscale sign-in link the
+node publishes while it waits to be approved, which is exactly what a
+remote owner needs in order to approve this machine — withholding it would
+leave them able to enable the feature and unable to finish it. It is not a
+page ticket and it is not ours to mint.
+
 ## Layout
 
 - `network.go`: `Settings`, `TailnetStatus`, `BindHost`, `OriginPatterns`,
-  `AppURLWithLAN`, `FromServer` / `FromServerWithLAN`,
+  `AppURLWithLAN`, `FromServer` / `FromServerWithLAN` /
+  `FromServerRedacted`,
   `DiscoverLocalLANIP`. `Interfaces` and `InterfaceAddrs` are
   exported `var` hooks so tests can stub the iface enumeration
   without depending on the host's real network configuration.

@@ -156,6 +156,30 @@ bound method. That parameter is **stripped from the generated TS bindings**, so
 adding one changes no wire signature and no method ID — but regenerate both
 `methodgen` and the Wails bindings anyway, since the doc comment travels.
 
+## The answer is narrowed too, not only the call
+
+The rechecks above decide whether a call HAPPENS. `app_network.go`'s
+`networkSettingsForCaller` / `networkSettingsForCallerWithLAN` decide what one
+that happened may CARRY BACK, from the same per-call proof.
+
+- **Why there is a second axis at all.** `GetNetworkSettings` is
+  `access:admin`, because managing how a backend is exposed is what a paired
+  admin device is for — a `host` annotation refused every one of them and left
+  Settings → Network reachable from nowhere but the machine. But two fields of
+  its answer are host-only whatever the grant: this launch's token, and the
+  ticket-bearing share URLs. Widening the CALL and narrowing the ANSWER is one
+  change, not a compromise between two.
+- **One helper pair, and every method returning a `network.Settings` goes
+  through it.** Including the two that are still `host`-scoped, where the gate
+  already refused the off-host caller. One rule wherever the shape leaves the
+  process beats a per-method judgement about whether some other check happened
+  to cover it — and `SetNetworkSettings` is why: it is step-up reachable from a
+  paired device, and its RETURN carried the launch token there until this
+  existed. Two callers deliberately keep the full builder and say so at their
+  call sites (`pairingPageURL`, `ServeEndpoints`).
+- **The withholding itself lives in `internal/network`**, not here, and it
+  works by never minting rather than by blanking — see that package's guide.
+
 ## Settings answer per caller
 
 `GetSettings` and `UpdateSettings` are still one method each on one service,

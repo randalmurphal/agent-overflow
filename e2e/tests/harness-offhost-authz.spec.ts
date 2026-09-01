@@ -1,5 +1,6 @@
 // Off-host authorization: what a paired device reaches over a LAN bind,
-// and what stays refused whatever it holds.
+// what stays refused whatever it holds, and what a call it IS allowed to
+// make leaves out of its answer.
 //
 // WHY THIS FILE EXISTS AT ALL. Every other harness peer in this suite —
 // the TS client, the SPA under Playwright, `bin/ao-harness` — reaches the
@@ -38,6 +39,7 @@ import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {
   UNENUMERABLE,
   WireClient,
+  answered,
   mintLink,
   nonLoopbackIPv4,
   pairDeviceOverWire,
@@ -69,7 +71,7 @@ test.describe('off-host authorization', () => {
     await harness?.close();
   });
 
-  test('a paired device reads; host tooling and host-scoped calls stay refused', async () => {
+  test('a paired device reads; host tooling and host-scoped calls stay refused; credentials stay home', async () => {
     // The production LAN-bind path: rebinds to 0.0.0.0 on the same port and
     // installs the WS origin allow-list.
     const settings = await harness.rpc<{ bindAll: boolean; url: string }>('SetNetworkSettings', {
@@ -165,6 +167,33 @@ test.describe('off-host authorization', () => {
         const outcome = await remote.call(method, ...params);
         expect(outcome.ok, `${method} must answer a paired device`).toBe(true);
       }
+
+      // (d) Answered, and REDACTED. Managing how a backend is exposed is
+      // what an `access:admin` device is for, so Settings → Network reads
+      // for this peer — but the credential half of that record does not
+      // travel: this launch's token would let the holder attach as the
+      // backend's own local channel, and both share URLs carry one-time
+      // page tickets out of a bounded book. Read off the wire rather than
+      // off the screen, because the screen is not what would leak.
+      const record = answered(
+        await remote.call('GetNetworkSettings'),
+        'an access:admin device must read the network settings',
+      ) as {
+        bindAll: boolean;
+        token: string;
+        url: string;
+        tailnet: { url: string };
+        insecure: boolean;
+      };
+      expect(record.token, "this launch's token must not reach an off-host device").toBe('');
+      expect(record.url, 'the ticketed share URL must not reach an off-host device').toBe('');
+      expect(record.tailnet.url, 'the ticketed tailnet URL must not reach an off-host device').toBe(
+        '',
+      );
+      expect(record.insecure, 'a record with no URL describes no URL').toBe(false);
+      // The settings the device came for are all there — the point of
+      // widening the read is that the screen WORKS from a phone.
+      expect(record.bindAll, 'the LAN bind this test turned on must be reported').toBe(true);
 
       // The same host tooling on the same server, from loopback: proof that
       // (a) is the peer's locality rather than a method that stopped

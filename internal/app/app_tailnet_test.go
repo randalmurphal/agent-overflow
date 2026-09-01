@@ -36,7 +36,7 @@ func newTailnetTestApp(t *testing.T) (*App, string) {
 func TestTailnetIsOffByDefaultAndBuildsNothing(t *testing.T) {
 	app, root := newTailnetTestApp(t)
 
-	got, err := app.GetNetworkSettings()
+	got, err := app.GetNetworkSettings(atTheMachine())
 	if err != nil {
 		t.Fatalf("GetNetworkSettings: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestTailnetIsOffByDefaultAndBuildsNothing(t *testing.T) {
 func TestSetNetworkSettingsCarriesTheTailnetPreference(t *testing.T) {
 	app, _ := newTailnetTestApp(t)
 
-	saved, err := app.SetNetworkSettings(network.Settings{
+	saved, err := app.SetNetworkSettings(atTheMachine(), network.Settings{
 		TailnetEnabled:    true,
 		TailnetControlURL: "https://headscale.example/",
 	})
@@ -83,7 +83,7 @@ func TestSetNetworkSettingsCarriesTheTailnetPreference(t *testing.T) {
 		t.Fatalf("the write answered %+v", saved)
 	}
 
-	read, err := app.GetNetworkSettings()
+	read, err := app.GetNetworkSettings(atTheMachine())
 	if err != nil {
 		t.Fatalf("GetNetworkSettings: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestSetNetworkSettingsCarriesTheTailnetPreference(t *testing.T) {
 
 	// An unusable coordination server is refused at the write, where the
 	// person who typed it is still looking at it.
-	if _, err := app.SetNetworkSettings(network.Settings{
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{
 		TailnetEnabled:    true,
 		TailnetControlURL: "headscale.example",
 	}); err == nil {
@@ -118,7 +118,7 @@ func TestForgetTailnetNodeRefusesWhileEnabled(t *testing.T) {
 	if _, err := app.settings.SetNetwork(settings.NetworkSettings{TailnetEnabled: true}); err != nil {
 		t.Fatalf("enable: %v", err)
 	}
-	if _, err := app.ForgetTailnetNode(); err == nil {
+	if _, err := app.ForgetTailnetNode(atTheMachine()); err == nil {
 		t.Fatal("ForgetTailnetNode ran while the feature was enabled")
 	}
 	if _, err := os.Stat(tailnet.StateDir(root)); err != nil {
@@ -133,7 +133,7 @@ func TestForgetTailnetNodeRemovesTheIdentityOnceDisabled(t *testing.T) {
 	app, root := newTailnetTestApp(t)
 	seedTailnetState(t, root)
 
-	before, err := app.GetNetworkSettings()
+	before, err := app.GetNetworkSettings(atTheMachine())
 	if err != nil {
 		t.Fatalf("GetNetworkSettings: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestForgetTailnetNodeRemovesTheIdentityOnceDisabled(t *testing.T) {
 		t.Fatal("a node identity on disk is not reported, so the forget affordance would never appear")
 	}
 
-	after, err := app.ForgetTailnetNode()
+	after, err := app.ForgetTailnetNode(atTheMachine())
 	if err != nil {
 		t.Fatalf("ForgetTailnetNode: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestForgetTailnetNodeRemovesTheIdentityOnceDisabled(t *testing.T) {
 
 	// Idempotent, so the button does not have to be disabled the instant
 	// it is pressed.
-	if _, err := app.ForgetTailnetNode(); err != nil {
+	if _, err := app.ForgetTailnetNode(atTheMachine()); err != nil {
 		t.Errorf("a second forget: %v", err)
 	}
 }
@@ -172,7 +172,7 @@ func TestTailnetFailuresAreUserFacingState(t *testing.T) {
 
 	app.reconcileTailnet()
 
-	got, err := app.GetNetworkSettings()
+	got, err := app.GetNetworkSettings(atTheMachine())
 	if err != nil {
 		t.Fatalf("GetNetworkSettings: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestTailnetFailuresAreUserFacingState(t *testing.T) {
 		t.Fatalf("disable: %v", err)
 	}
 	app.reconcileTailnet()
-	got, err = app.GetNetworkSettings()
+	got, err = app.GetNetworkSettings(atTheMachine())
 	if err != nil {
 		t.Fatalf("GetNetworkSettings: %v", err)
 	}

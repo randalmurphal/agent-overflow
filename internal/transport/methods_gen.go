@@ -111,7 +111,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetMcpServerStatus", ID: 4139359668, Scope: "settings:write"},                         // main.App.GetMcpServerStatus
 	{Name: "GetMergeConflictFile", ID: 3176695009, Scope: "git:operate"},                          // main.App.GetMergeConflictFile
 	{Name: "GetModelsForProvider", ID: 1632984917, Scope: "threads:operate"},                      // main.App.GetModelsForProvider
-	{Name: "GetNetworkSettings", ID: 1026796858, Scope: "host"},                                   // main.App.GetNetworkSettings
+	{Name: "GetNetworkSettings", ID: 1026796858, Scope: "access:admin"},                           // main.App.GetNetworkSettings
 	{Name: "GetPRCIJobLog", ID: 2411810578, Scope: "git:operate"},                                 // main.App.GetPRCIJobLog
 	{Name: "GetPRCIJobs", ID: 2370852281, Scope: "git:operate"},                                   // main.App.GetPRCIJobs
 	{Name: "GetPRCommitDiff", ID: 1737292419, Scope: "git:operate"},                               // main.App.GetPRCommitDiff

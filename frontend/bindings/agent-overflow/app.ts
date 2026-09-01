@@ -1172,12 +1172,22 @@ export function GetModelsForProvider(providerName: string): $CancellablePromise<
  * GetNetworkSettings returns the persisted network preferences — the
  * bind toggle, the canonical domain, the DNS hook, the external
  * certificate pair, the tailnet toggle and its coordination server —
- * plus what only the running process knows: the share URLs, this launch's
- * token, the certificate status, and the tailnet node's status.
- * Everything server-derived is recomputed on every call, so a rebind, a
- * renewal or a node joining reflects on the next read. The screen polls
- * this while an issuance or a sign-in is in flight; there is no push
- * channel for it.
+ * plus what only the running process knows: the certificate status, the
+ * tailnet node's status, and — for a caller at the machine — the share
+ * URLs and this launch's token. Everything server-derived is recomputed on
+ * every call, so a rebind, a renewal or a node joining reflects on the
+ * next read. The screen polls this while an issuance or a sign-in is in
+ * flight; there is no push channel for it.
+ * 
+ * `access:admin` rather than `host`, and the two halves of that decision
+ * are separate. WHO may read it: managing how a backend is exposed is what
+ * a paired admin device is for, and a `host` annotation refused every one
+ * of them — leaving Settings → Network unreachable from any device that
+ * was not the machine itself. WHAT they read: the credential half is
+ * withheld from a caller that is not host-present, which
+ * network.FromServerRedacted argues field by field. The bind toggle, the
+ * domain, the certificate status and the tailnet node — including its
+ * sign-in link — are what remote administration needs, and they travel.
  */
 export function GetNetworkSettings(): $CancellablePromise<network$0.Settings> {
     return $Call.ByID(1026796858).then(($result: any) => {
@@ -3579,6 +3589,10 @@ export function SetEditorSettings(s: settings$0.EditorSettings): $CancellablePro
  * token it happened to learn. On bind-all=true the list contains
  * loopback variants plus the discovered LAN IP; a canonical domain adds
  * its own https origins on either bind.
+ * 
+ * The answer it returns is picked for the caller on the same terms as
+ * GetNetworkSettings: this call is step-up reachable from a paired device,
+ * and its return carried the launch token to it until that pick existed.
  */
 export function SetNetworkSettings(s: network$0.Settings): $CancellablePromise<network$0.Settings> {
     return $Call.ByID(3915514446, s).then(($result: any) => {

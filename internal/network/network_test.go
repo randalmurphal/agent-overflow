@@ -3,7 +3,11 @@ package network
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -309,5 +313,123 @@ func TestShareURLFollowsTheCertificate(t *testing.T) {
 	midChange := FromServerWithLAN(srv, renamed, "192.168.1.10")
 	if !strings.HasPrefix(midChange.URL, "http://192.168.1.10:") {
 		t.Fatalf("URL = %q, want the LAN address while the new name has no certificate", midChange.URL)
+	}
+}
+
+// mintTicket hands out one one-time page ticket from the server's book.
+func mintTicket(t *testing.T, srv *transport.Server) string {
+	t.Helper()
+	ticket, err := srv.MintPageTicket()
+	if err != nil {
+		t.Fatalf("MintPageTicket: %v", err)
+	}
+	return ticket
+}
+
+// ticketOutstanding presents ticket at the bootstrap exchange and reports
+// whether the book still held it. A live ticket buys the manifest; one the
+// book evicted is refused with the same unfingerprintable 404 a bad
+// credential gets. Spends the ticket either way, which is what single use
+// means.
+func ticketOutstanding(t *testing.T, srv *transport.Server, ticket string) bool {
+	t.Helper()
+	resp, err := http.Get(fmt.Sprintf("http://%s%s?%s=%s",
+		srv.Addr(), transport.BootstrapPath, transport.PageTicketParam, ticket))
+	if err != nil {
+		t.Fatalf("bootstrap exchange: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode != http.StatusNotFound
+}
+
+// tailnetJoined is a node up and reachable, which is the state that makes
+// the second share URL mint a ticket of its own.
+func tailnetJoined() Settings {
+	return Settings{
+		BindAll:         true,
+		ListenPort:      4321,
+		CanonicalDomain: "backend.example",
+		ACMEDNSHook:     []string{"dnstool", "--zone", "example.com"},
+		TailnetEnabled:  true,
+		TLS:             TLSStatus{Serving: TLSServingSelfSigned, SelfSignedFingerprint: "sha256:beef"},
+		Tailnet: TailnetStatus{
+			Running: true,
+			State:   "Running",
+			AuthURL: "https://login.tailscale.com/a/0123456789abcdef",
+			DNSName: "node.example.ts.net",
+			IPs:     []string{"100.96.5.42"},
+		},
+	}
+}
+
+// The redacted record mints NOTHING, which is the mechanism and not a
+// detail: withholding by building the full record and then clearing it
+// would spend the same one-time page tickets out of a book of sixteen, so
+// every remote read of the settings screen would evict the share URL the
+// owner had just copied at their own.
+//
+// Observed through that book, because minting leaves its trace nowhere
+// else — and paired with the control that proves the observation reads
+// something, since "the ticket survived" is also what a broken instrument
+// says.
+func TestRedactedRecordSpendsNoTicket(t *testing.T) {
+	srv := shareURLServer(t)
+	srv.MarkReady()
+	configured := tailnetJoined()
+
+	// Four books' worth of renders. One mint anywhere in that many passes
+	// evicts the ticket minted first.
+	const renders = 64
+
+	survivor := mintTicket(t, srv)
+	for i := 0; i < renders; i++ {
+		out := FromServerRedacted(configured)
+		if out.Token != "" || out.URL != "" || out.Tailnet.URL != "" || out.Insecure {
+			t.Fatalf("redacted record carries a server-derived field: %+v", out)
+		}
+	}
+	if !ticketOutstanding(t, srv, survivor) {
+		t.Fatal("a redacted render evicted an outstanding ticket, so it minted one")
+	}
+
+	doomed := mintTicket(t, srv)
+	for i := 0; i < renders; i++ {
+		_ = FromServerWithLAN(srv, configured, "192.168.1.10")
+	}
+	if ticketOutstanding(t, srv, doomed) {
+		t.Fatal("the full render evicted nothing, so the survival above proves nothing")
+	}
+}
+
+// What the redaction KEEPS is everything remote administration is for. The
+// tailnet's sign-in link is the one worth naming: it is a URL, it is
+// single use, and it sits beside two that are withheld — but it is what a
+// remote owner opens to APPROVE this machine, so losing it would leave
+// them able to enable the feature and unable to finish it.
+func TestRedactedRecordKeepsWhatRemoteAdministrationNeeds(t *testing.T) {
+	configured := tailnetJoined()
+	out := FromServerRedacted(configured)
+
+	want := configured
+	want.URL = ""
+	want.Token = ""
+	want.Insecure = false
+	want.Tailnet.URL = ""
+	if !reflect.DeepEqual(out, want) {
+		t.Fatalf("redacted record\n got %+v\nwant %+v", out, want)
+	}
+	if out.Tailnet.AuthURL != configured.Tailnet.AuthURL {
+		t.Errorf("AuthURL = %q, want the tailscale sign-in link to travel", out.Tailnet.AuthURL)
+	}
+}
+
+// A nil server is the redacted record exactly, which is what keeps the
+// withheld set declared once: FromServerWithLAN starts from it and fills
+// in, so a fifth server-derived field cannot be added on one path only.
+func TestFromServerWithoutAServerIsTheRedactedRecord(t *testing.T) {
+	configured := tailnetJoined()
+	if got, want := FromServerWithLAN(nil, configured, "192.168.1.10"), FromServerRedacted(configured); !reflect.DeepEqual(got, want) {
+		t.Fatalf("nil-server record\n got %+v\nwant %+v", got, want)
 	}
 }

@@ -36,7 +36,7 @@ func TestSetNetworkSettings_MovesTheListenerToTheChosenPort(t *testing.T) {
 		t.Skip("the probe port collided with the bound one; nothing to move")
 	}
 
-	got, err := app.SetNetworkSettings(network.Settings{ListenPort: chosen})
+	got, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: chosen})
 	if err != nil {
 		t.Fatalf("SetNetworkSettings: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestSetNetworkSettings_ChangesPortAndBindTogether(t *testing.T) {
 	app, srv := newNetworkTestApp(t)
 	chosen := freeLoopbackPort(t)
 
-	if _, err := app.SetNetworkSettings(network.Settings{BindAll: true, ListenPort: chosen}); err != nil {
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: true, ListenPort: chosen}); err != nil {
 		t.Fatalf("SetNetworkSettings: %v", err)
 	}
 	host, port, err := net.SplitHostPort(srv.Addr())
@@ -88,11 +88,11 @@ func TestSetNetworkSettings_ChangesPortAndBindTogether(t *testing.T) {
 func TestSetNetworkSettings_ClearingThePortLeavesTheListenerAlone(t *testing.T) {
 	app, srv := newNetworkTestApp(t)
 	chosen := freeLoopbackPort(t)
-	if _, err := app.SetNetworkSettings(network.Settings{ListenPort: chosen}); err != nil {
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: chosen}); err != nil {
 		t.Fatalf("SetNetworkSettings pinning: %v", err)
 	}
 
-	got, err := app.SetNetworkSettings(network.Settings{ListenPort: 0})
+	got, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: 0})
 	if err != nil {
 		t.Fatalf("SetNetworkSettings clearing: %v", err)
 	}
@@ -118,14 +118,14 @@ func TestSetNetworkSettings_RecordsTheBoundPortWhenTheOperatorTouchesIt(t *testi
 	if chosen == portFromAddr(srv.Addr()) {
 		t.Skip("the probe port collided with the bound one; nothing to move")
 	}
-	if _, err := app.SetNetworkSettings(network.Settings{ListenPort: chosen}); err != nil {
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: chosen}); err != nil {
 		t.Fatalf("SetNetworkSettings pinning: %v", err)
 	}
 	if len(recorded) != 1 || recorded[0] != chosen {
 		t.Fatalf("recorded = %v, want one entry naming the new port %d", recorded, chosen)
 	}
 
-	if _, err := app.SetNetworkSettings(network.Settings{ListenPort: 0}); err != nil {
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: 0}); err != nil {
 		t.Fatalf("SetNetworkSettings clearing: %v", err)
 	}
 	if len(recorded) != 2 || recorded[1] != chosen {
@@ -140,7 +140,7 @@ func TestSetNetworkSettings_LeavesTheCacheAloneForAnUnrelatedSave(t *testing.T) 
 	var recorded []int
 	app.boundPortRecorder = func(port int) { recorded = append(recorded, port) }
 
-	if _, err := app.SetNetworkSettings(network.Settings{CanonicalDomain: "ao.example.com"}); err != nil {
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{CanonicalDomain: "ao.example.com"}); err != nil {
 		t.Fatalf("SetNetworkSettings: %v", err)
 	}
 	if len(recorded) != 0 {
@@ -166,7 +166,7 @@ func TestSetNetworkSettings_PortRebindFailureRollsBack(t *testing.T) {
 	var recorded []int
 	app.boundPortRecorder = func(port int) { recorded = append(recorded, port) }
 
-	if _, err := app.SetNetworkSettings(network.Settings{ListenPort: taken}); err == nil {
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: taken}); err == nil {
 		t.Fatal("SetNetworkSettings accepted a port another process holds")
 	}
 	if bound := portFromAddr(srv.Addr()); bound != before {
@@ -188,7 +188,7 @@ func TestSetNetworkSettings_RefusesAnUnusablePort(t *testing.T) {
 	before := portFromAddr(srv.Addr())
 
 	for _, port := range []int{-1, settings.MaxListenPort + 1} {
-		if _, err := app.SetNetworkSettings(network.Settings{ListenPort: port}); err == nil {
+		if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: port}); err == nil {
 			t.Errorf("SetNetworkSettings accepted listenPort %d", port)
 		}
 	}
@@ -203,7 +203,7 @@ func TestSetNetworkSettings_ToleratesNoBoundPortRecorder(t *testing.T) {
 	app, _ := newNetworkTestApp(t)
 	app.boundPortRecorder = nil
 
-	if _, err := app.SetNetworkSettings(network.Settings{ListenPort: freeLoopbackPort(t)}); err != nil {
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{ListenPort: freeLoopbackPort(t)}); err != nil {
 		t.Fatalf("SetNetworkSettings with no recorder installed: %v", err)
 	}
 }

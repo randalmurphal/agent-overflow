@@ -1,8 +1,15 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import { cleanup, render, fireEvent, waitFor } from '@testing-library/svelte';
 import NetworkSection from './NetworkSection.svelte';
 import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { setRunMode, resetRunMode } from '../../../test/runMode';
+import { pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
+import { SCOPES } from '../../transport/scopes';
+
+/** A device paired with full access holds every grantable scope — not `host`. */
+function pairFullAccess(): Promise<void> {
+  return pairWithScopes(SCOPES);
+}
 
 interface MockTLSStatus {
   serving: string;
@@ -87,11 +94,19 @@ describe('<NetworkSection>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetRunMode();
+    resetToLocalPage();
   });
 
   afterEach(() => {
+    // Unmount FIRST. A paired session outlives the global setup's locality
+    // pin and WINS over it, so a case that staged one owes every later case
+    // the owner's own screen back — but flipping the grant set under a
+    // still-mounted section would re-run its load against binding mocks
+    // that are already gone.
+    cleanup();
     resetBindingMocks();
     resetRunMode();
+    resetToLocalPage();
   });
 
   it('renders the toggle in the loaded state', async () => {
@@ -194,20 +209,80 @@ describe('<NetworkSection>', () => {
     });
   });
 
-  it('hides the toggle and renders a placeholder in --connect (client) mode', async () => {
+  it('edits the attached backend in --connect (client) mode, and says whose it is', async () => {
     setRunMode('client');
-    // The component should never call GetNetworkSettings in client
-    // mode — the RPC would query the *remote* server's bind preference
-    // and rendering it here would be misleading.
-    const getMock = setBindingMock('GetNetworkSettings', async () => ({
-      bindAll: true,
-      url: 'http://remote-backend:1234',
-      token: 'should-not-render',
-    }));
+    // Client mode is not a load gate. A `--connect` window is attached to
+    // a backend, and managing that backend's exposure is the point of the
+    // mode — what the mode changes is only the sentence naming whose
+    // settings these are.
+    const getMock = setBindingMock('GetNetworkSettings', async () =>
+      networkSettings({ bindAll: true, url: 'http://192.168.1.10:54321/?t=test-token' }),
+    );
 
-    const { findByText, queryByRole } = render(NetworkSection);
-    await findByText(/Network binding can only be edited from your local install/i);
+    const { findByRole, findByText, findByLabelText } = render(NetworkSection);
+    await findByLabelText('Application URL');
+    await findByText(/These settings belong to the backend this window is attached to/i);
+    expect(await findByRole('switch', { name: 'Toggle remote access' })).toBeTruthy();
+    expect(getMock).toHaveBeenCalled();
+  });
+
+  it('says where the share URL is instead of offering a dead Copy button', async () => {
+    // A paired admin device off the host: the backend answers the whole
+    // record except this launch's token and both ticket-bearing URLs
+    // (internal/network.FromServerRedacted). An empty input beside a
+    // disabled Copy is a control that cannot work; a sentence is not.
+    await pairFullAccess();
+    setBindingMock('GetNetworkSettings', async () =>
+      networkSettings({
+        bindAll: true,
+        canonicalDomain: 'ao.example.com',
+        url: '',
+        token: '',
+        insecure: false,
+        tailnet: tailnetStatus({ state: 'NeedsLogin', authUrl: 'https://login.example/a/abc' }),
+      }),
+    );
+
+    const { findByTestId, queryAllByRole, queryByLabelText, queryByRole } = render(NetworkSection);
+    const explanation = await findByTestId('share-url-host-only');
+    // Collapsed, because the template wraps the sentence across lines.
+    expect(explanation.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      "The share URL and this launch's connection token are only shown at the computer running Agent Overflow.",
+    );
+    expect(queryByLabelText('Application URL')).toBeNull();
+    // The only Copy left is the tailnet sign-in link's, which is exactly
+    // the URL the redaction KEEPS: it is what a remote owner opens to
+    // approve this machine, not a page ticket.
+    const copies = queryAllByRole('button', { name: 'Copy' });
+    expect(copies).toHaveLength(1);
+    expect(copies[0].getAttribute('data-testid')).toBe('network-tailnet-auth-copy');
+    // The rest of the screen is exactly what the device was granted the
+    // scope for, so it must still be there.
+    expect(queryByRole('switch', { name: 'Toggle remote access' })).not.toBeNull();
+  });
+
+  it('renders no plaintext warning against a withheld payload', async () => {
+    // `insecure` describes a URL, and a redacted record has none. The
+    // backend clears the flag; the branch it lives in cannot render here
+    // either, which is what makes it structural rather than a promise.
+    await pairFullAccess();
+    setBindingMock('GetNetworkSettings', async () =>
+      networkSettings({ bindAll: true, url: '', token: '', insecure: true }),
+    );
+
+    const { findByTestId, queryByTestId } = render(NetworkSection);
+    await findByTestId('share-url-host-only');
+    expect(queryByTestId('insecure-url-warning')).toBeNull();
+  });
+
+  it('tells a device without the grant where the settings live, and asks for nothing', async () => {
+    await pairViewOnly();
+    const getMock = setBindingMock('GetNetworkSettings', async () => networkSettings());
+
+    const { findByText, queryByRole, queryByTestId } = render(NetworkSection);
+    await findByText(/was not granted the access that manages it/i);
     expect(queryByRole('switch', { name: 'Toggle remote access' })).toBeNull();
+    expect(queryByTestId('share-url-host-only')).toBeNull();
     expect(getMock).not.toHaveBeenCalled();
   });
 

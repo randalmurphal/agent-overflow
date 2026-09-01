@@ -18,30 +18,34 @@
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
-  import { INPUT_CLASS, SECONDARY_BUTTON_CLASS } from './styles';
+  import { INPUT_CLASS, SECONDARY_BUTTON_CLASS, SECTION_PROSE_CLASS } from './styles';
 
   // Two independent axes, resolved the way EditorSection resolves the same
   // pair — a surface that needs both asks both (transport/AGENTS.md).
   //
-  // `clientMode` is a process-boot fact: in `--connect` mode the SPA is
-  // attached to a remote backend, so GetNetworkSettings /
-  // SetNetworkSettings would query and mutate the *remote* server's bind
-  // preference, which both isn't actionable from here (the user can't
-  // restart the remote process to apply the rebind) and is misleading —
-  // the URL printed below would point at the remote machine, not the local
-  // one.
+  // `access:admin` is authorization, and it is the ONE thing that decides
+  // whether this section loads. Managing how a backend is exposed is what
+  // a paired admin device is for: `GetNetworkSettings` answers that grant,
+  // and its step-up-gated write answers a passkey assertion, so a phone the
+  // owner paired with full access reads and edits this. A device without
+  // the grant gets the arm below instead of a refusal — the load is
+  // PASSIVE, fired because a pane mounted, so it has nobody to report a
+  // refusal to (stores/AGENTS.md § A PASSIVE load asks before it fires;
+  // the burst was found by the harness, 2026-08-31).
   //
-  // `host` is authorization, and it is the one no session is ever granted:
-  // the bind preference is a fact about THE MACHINE, so `GetNetworkSettings`
-  // carries `//ao:scope host` and is refused for every paired device,
-  // view-only and full alike. Without this arm the load fired on mount and
-  // the refusal came back as `Failed to load network settings` — a passive
-  // load reporting to nobody, which is exactly the burst the view-only
-  // rule exists to prevent (stores/AGENTS.md § A PASSIVE load asks before
-  // it fires; found by the harness, 2026-08-31).
+  // `clientMode` is a process-boot fact and is NOT a load gate. In
+  // `--connect` mode the SPA is attached to another backend, and managing
+  // that backend's exposure from here is the point of the mode rather than
+  // a mistake; all it changes is that the header says whose settings these
+  // are.
+  //
+  // `host` is neither. It decides only what the BACKEND put in the payload:
+  // this launch's token and both ticket-bearing share URLs are withheld
+  // from a caller that is not at the machine, which `shareURLWithheld`
+  // below reads off the answer rather than re-deriving.
   const clientMode = isClientMode();
-  let noHost = $derived(!hasScope('host'));
-  let localOnly = $derived(clientMode || noHost);
+  let noAdmin = $derived(!hasScope('access:admin'));
+  let onHost = $derived(hasScope('host'));
 
   let settings = $state<NetworkSettings | null>(null);
   let saving = $state(false);
@@ -56,7 +60,7 @@
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
   async function load(): Promise<void> {
-    if (localOnly) return;
+    if (noAdmin) return;
     try {
       const result = await GetNetworkSettings();
       settings = result;
@@ -216,6 +220,17 @@
   );
   let polling = $derived(renewing || awaitingTailnet);
 
+  // The backend withholds this launch's token and both ticket-bearing
+  // share URLs from a caller that is not at the machine
+  // (internal/network.FromServerRedacted). Read off what it ANSWERED
+  // rather than re-derived here: a second copy of that rule is one that
+  // can disagree with the payload it is describing. Host presence is in
+  // the conjunction so the owner's own screen keeps the field it always
+  // had, whatever a transport that is not serving yet answers with.
+  let shareURLWithheld = $derived(
+    !onHost && settings !== null && settings.url === '' && settings.token === '',
+  );
+
   // Which of the three the URL is, read off the URL itself rather than
   // off the certificate status: which host and scheme it came out as is
   // the backend's decision (network.AppURLWithLAN), and describing it
@@ -251,7 +266,7 @@
   });
 
   $effect(() => {
-    if (!polling || localOnly) return;
+    if (!polling || noAdmin) return;
     pollTimer = setInterval(() => void load(), TLS_POLL_MS);
     return () => {
       if (pollTimer) clearInterval(pollTimer);
@@ -262,20 +277,20 @@
 
 <div
   class="flex flex-col gap-6"
-  data-testid={localOnly ? 'network-section-local-only' : undefined}
+  data-testid={noAdmin ? 'network-section-local-only' : undefined}
 >
   <section>
     <SettingsHeader title="Network Binding">
       {#snippet details()}
-        {#if clientMode}
-          Network binding can only be edited from your local install. This window is
-          attached to a remote backend, so changes here would update the remote
-          machine's bind preference, not yours.
-        {:else if noHost}
+        {#if noAdmin}
           Network binding belongs to the machine running Agent Overflow. This device
-          reached it over the network, so the bind preference and the share URL are
-          shown and changed there.
+          was not granted the access that manages it, so the bind preference and the
+          share URL are shown and changed there.
         {:else}
+          {#if clientMode}
+            These settings belong to the backend this window is attached to, not to
+            the machine you are sitting at.
+          {/if}
           By default the server binds to
           <code class="font-mono text-[0.6875rem]">127.0.0.1</code> so only this machine can
           reach it. Toggle on to listen on every network interface — other devices on
@@ -286,7 +301,7 @@
         {/if}
       {/snippet}
     </SettingsHeader>
-    {#if !localOnly}
+    {#if !noAdmin}
       <div class="flex flex-col gap-1">
         <SettingsField
           label="Allow remote access"
@@ -307,7 +322,7 @@
     {/if}
   </section>
 
-  {#if !localOnly && settings}
+  {#if !noAdmin && settings}
     <NetworkDomainEditor
       {settings}
       busy={saving}
@@ -323,42 +338,55 @@
     />
 
     <section>
-      <SettingsHeader title="Share URL" description={shareURLDescription} />
+      {#if shareURLWithheld}
+        <!-- No input and no Copy button: there is nothing to copy, and a
+             dead control is worse than a sentence saying where the thing
+             is. The warning below lives inside the other branch for the
+             same reason — it describes a URL, so it cannot render where
+             there is none. -->
+        <SettingsHeader title="Share URL" />
+        <p class={SECTION_PROSE_CLASS} data-testid="share-url-host-only">
+          The share URL and this launch's connection token are only shown at the
+          computer running Agent Overflow.
+        </p>
+      {:else}
+        <SettingsHeader title="Share URL" description={shareURLDescription} />
 
-      <div class="flex items-center gap-2">
-        <input
-          type="text"
-          readonly
-          value={settings.url}
-          aria-label="Application URL"
-          class="{INPUT_CLASS} flex-1 min-w-0 font-mono"
-        />
-        <button
-          type="button"
-          onclick={copyURL}
-          disabled={!settings.url}
-          class={SECONDARY_BUTTON_CLASS}
-        >
-          {#if copyState === 'copied'}
-            Copied
-          {:else if copyState === 'failed'}
-            Copy failed
-          {:else}
-            Copy
-          {/if}
-        </button>
-      </div>
-
-      {#if settings.insecure}
-        <div class="mt-3" data-testid="insecure-url-warning">
-          <SettingsCallout tone="warn">
-            The URL above is plaintext over LAN — the ticket on it, and everything
-            the device sends once it has paired, travel in the clear where any
-            device on this network can read them. Front the bind with Tailscale
-            Serve, an SSH tunnel, or a reverse proxy with TLS before sharing on an
-            untrusted network.
-          </SettingsCallout>
+        <div class="flex items-center gap-2">
+          <input
+            type="text"
+            readonly
+            value={settings.url}
+            aria-label="Application URL"
+            class="{INPUT_CLASS} flex-1 min-w-0 font-mono"
+          />
+          <button
+            type="button"
+            onclick={copyURL}
+            disabled={!settings.url}
+            class={SECONDARY_BUTTON_CLASS}
+          >
+            {#if copyState === 'copied'}
+              Copied
+            {:else if copyState === 'failed'}
+              Copy failed
+            {:else}
+              Copy
+            {/if}
+          </button>
         </div>
+
+        {#if settings.insecure}
+          <div class="mt-3" data-testid="insecure-url-warning">
+            <SettingsCallout tone="warn">
+              The URL above is plaintext over LAN — the ticket on it, and everything
+              the device sends once it has paired, travel in the clear where any
+              device on this network can read them. Front the bind with Tailscale
+              Serve, an SSH tunnel, or a reverse proxy with TLS before sharing on an
+              untrusted network.
+            </SettingsCallout>
+          </div>
+        {/if}
       {/if}
     </section>
   {/if}

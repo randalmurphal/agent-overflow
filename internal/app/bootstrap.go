@@ -82,6 +82,11 @@ func HasEnrolledDevice(a *App) (bool, error) { return a.hasEnrolledDevice() }
 // through network.FromServer — so the address printed on a serve console
 // and the address shown in Settings → Network are produced by one
 // formatter and cannot drift.
+//
+// The FULL variant deliberately, and it needs no host-present pick: this
+// writes to the console of the process itself, which is the machine. The
+// pick GetNetworkSettings applies is about a caller across a network, and
+// there is no caller here.
 func ServeEndpoints(a *App, srv *transport.Server) network.Settings {
 	return network.FromServer(srv, a.persistedNetworkSettings())
 }

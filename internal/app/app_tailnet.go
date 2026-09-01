@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -468,7 +469,7 @@ func tailnetStateExists(configRoot string) bool {
 // argument RenewCanonicalDomainCert makes.
 //
 //ao:scope host
-func (a *App) ForgetTailnetNode() (network.Settings, error) {
+func (a *App) ForgetTailnetNode(ctx context.Context) (network.Settings, error) {
 	if a.settings == nil {
 		return network.Settings{}, fmt.Errorf("settings service unavailable")
 	}
@@ -495,5 +496,5 @@ func (a *App) ForgetTailnetNode() (network.Settings, error) {
 		return network.Settings{}, err
 	}
 	a.clearTailnetFailure()
-	return network.FromServer(a.transportServer.Load(), a.persistedNetworkSettings()), nil
+	return a.networkSettingsForCaller(ctx, a.persistedNetworkSettings()), nil
 }

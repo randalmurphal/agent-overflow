@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 
 	"agent-overflow/internal/network"
@@ -9,19 +10,66 @@ import (
 	"agent-overflow/internal/transport"
 )
 
+// networkSettingsForCaller is the ONE place the host-present redaction is
+// applied, and every bound method that hands a network.Settings back to a
+// caller goes through it or through its WithLAN sibling below.
+//
+// The pick reads the proof the transport resolved for THIS call
+// (internal/transport/connstate.go), never a second question asked here:
+// one call, one answer, and the same answer the per-RPC gate compared. A
+// context nothing installed a proof on answers the zero proof and lands on
+// the redacted branch, which is both the safe default and the honest one —
+// an in-process caller proved nothing about a peer.
+//
+// It is applied on the host-scoped methods too, where the gate has already
+// refused every off-host caller. One rule wherever this shape leaves the
+// process beats a per-method judgement about whether some other check
+// happened to cover it; the two remaining callers of the full variant are
+// deliberate and say so at their call sites (pairingPageURL in
+// app_access.go, ServeEndpoints in bootstrap.go).
+func (a *App) networkSettingsForCaller(ctx context.Context, s network.Settings) network.Settings {
+	if !transport.CallerProofFromContext(ctx).HostPresent {
+		return network.FromServerRedacted(s)
+	}
+	return network.FromServer(a.transportServer.Load(), s)
+}
+
+// networkSettingsForCallerWithLAN is the same pick for SetNetworkSettings,
+// which discovered the LAN IP once for its origin allow-list and must not
+// discover it a second time — the URL it reports and the origin it allows
+// have to name the same address (internal/network/AGENTS.md).
+func (a *App) networkSettingsForCallerWithLAN(
+	ctx context.Context, srv *transport.Server, s network.Settings, lanIP string,
+) network.Settings {
+	if !transport.CallerProofFromContext(ctx).HostPresent {
+		return network.FromServerRedacted(s)
+	}
+	return network.FromServerWithLAN(srv, s, lanIP)
+}
+
 // GetNetworkSettings returns the persisted network preferences — the
 // bind toggle, the canonical domain, the DNS hook, the external
 // certificate pair, the tailnet toggle and its coordination server —
-// plus what only the running process knows: the share URLs, this launch's
-// token, the certificate status, and the tailnet node's status.
-// Everything server-derived is recomputed on every call, so a rebind, a
-// renewal or a node joining reflects on the next read. The screen polls
-// this while an issuance or a sign-in is in flight; there is no push
-// channel for it.
+// plus what only the running process knows: the certificate status, the
+// tailnet node's status, and — for a caller at the machine — the share
+// URLs and this launch's token. Everything server-derived is recomputed on
+// every call, so a rebind, a renewal or a node joining reflects on the
+// next read. The screen polls this while an issuance or a sign-in is in
+// flight; there is no push channel for it.
 //
-//ao:scope host
-func (a *App) GetNetworkSettings() (network.Settings, error) {
-	return network.FromServer(a.transportServer.Load(), a.persistedNetworkSettings()), nil
+// `access:admin` rather than `host`, and the two halves of that decision
+// are separate. WHO may read it: managing how a backend is exposed is what
+// a paired admin device is for, and a `host` annotation refused every one
+// of them — leaving Settings → Network unreachable from any device that
+// was not the machine itself. WHAT they read: the credential half is
+// withheld from a caller that is not host-present, which
+// network.FromServerRedacted argues field by field. The bind toggle, the
+// domain, the certificate status and the tailnet node — including its
+// sign-in link — are what remote administration needs, and they travel.
+//
+//ao:scope access:admin
+func (a *App) GetNetworkSettings(ctx context.Context) (network.Settings, error) {
+	return a.networkSettingsForCaller(ctx, a.persistedNetworkSettings()), nil
 }
 
 // SetNetworkSettings persists the network preferences and applies the
@@ -52,9 +100,13 @@ func (a *App) GetNetworkSettings() (network.Settings, error) {
 // loopback variants plus the discovered LAN IP; a canonical domain adds
 // its own https origins on either bind.
 //
+// The answer it returns is picked for the caller on the same terms as
+// GetNetworkSettings: this call is step-up reachable from a paired device,
+// and its return carried the launch token to it until that pick existed.
+//
 //ao:scope settings:write
 //ao:stepup
-func (a *App) SetNetworkSettings(s network.Settings) (network.Settings, error) {
+func (a *App) SetNetworkSettings(ctx context.Context, s network.Settings) (network.Settings, error) {
 	if a.settings == nil {
 		return network.Settings{}, fmt.Errorf("settings service unavailable")
 	}
@@ -151,7 +203,7 @@ func (a *App) SetNetworkSettings(s network.Settings) (network.Settings, error) {
 	// status and shows the link.
 	a.kickTailnet()
 
-	return network.FromServerWithLAN(srv, a.networkSettingsFrom(stored), lanIP), nil
+	return a.networkSettingsForCallerWithLAN(ctx, srv, a.networkSettingsFrom(stored), lanIP), nil
 }
 
 // RenewCanonicalDomainCert asks the reconciler to check the canonical
@@ -169,7 +221,7 @@ func (a *App) SetNetworkSettings(s network.Settings) (network.Settings, error) {
 // gate the retry of an act that was already proved.
 //
 //ao:scope host
-func (a *App) RenewCanonicalDomainCert() (network.Settings, error) {
+func (a *App) RenewCanonicalDomainCert(ctx context.Context) (network.Settings, error) {
 	if a.settings == nil {
 		return network.Settings{}, fmt.Errorf("settings service unavailable")
 	}
@@ -180,7 +232,7 @@ func (a *App) RenewCanonicalDomainCert() (network.Settings, error) {
 	if !a.kickDomainCertificate() {
 		return network.Settings{}, fmt.Errorf("the certificate reconciler is not running")
 	}
-	return network.FromServer(a.transportServer.Load(), a.networkSettingsFrom(stored)), nil
+	return a.networkSettingsForCaller(ctx, a.networkSettingsFrom(stored)), nil
 }
 
 // recordBoundPort tells the executable where this listener ended up, when

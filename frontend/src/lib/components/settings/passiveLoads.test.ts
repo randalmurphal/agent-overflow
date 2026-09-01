@@ -18,7 +18,10 @@
 //
 // A section gated on the wrong one is wrong in a direction a single
 // view-only case cannot see, so the full-access device is asserted
-// positively: it MUST still load what it holds.
+// positively: it MUST still load what it holds. NetworkSection is the
+// worked example in both directions: it was gated on `host`, which
+// refused the owner's own phone from a screen that exists to manage
+// remote access, and it is gated on `access:admin` now.
 //
 // Every case asserts both directions. A guard that never fires would pass
 // the negative while having broken the owner's own screen.
@@ -70,9 +73,10 @@ function stubBindings() {
       url: 'http://127.0.0.1:54321/?t=t',
       token: 't',
     })),
-    // The tailnet's own RPC is host-scoped like the read beside it, and
-    // it DELETES this backend's node identity — so it is here to assert
-    // it never fires from a mount, on any screen.
+    // The tailnet's own RPC is host-scoped, and it DELETES this backend's
+    // node identity — so it is here to assert it never fires from a mount,
+    // on any screen, including the admin device that may now read beside
+    // it.
     forgetTailnet: setBindingMock('ForgetTailnetNode', async () => {
       throw new Error('ForgetTailnetNode must never be called by a passive load');
     }),
@@ -114,7 +118,7 @@ describe('settings sections issue no passive RPC they were not granted', () => {
     resetWSLSectionCache();
   });
 
-  describe('NetworkSection — the bind preference is a fact about the machine', () => {
+  describe('NetworkSection — managing exposure is access:admin', () => {
     it('loads it on the owner’s own screen', async () => {
       render(NetworkSection);
       await waitFor(() => expect(bindings.network).toHaveBeenCalled());
@@ -123,11 +127,12 @@ describe('settings sections issue no passive RPC they were not granted', () => {
       expect(bindings.forgetTailnet).not.toHaveBeenCalled();
     });
 
-    it('does not ask for it from a device paired with FULL access', async () => {
+    it('loads it for a device paired with FULL access, which holds the scope', async () => {
       await pairFullAccess();
       render(NetworkSection);
-      await settle();
-      expect(bindings.network).not.toHaveBeenCalled();
+      await waitFor(() => expect(bindings.network).toHaveBeenCalled());
+      // Reading the settings is the grant. Deleting the node identity is
+      // not, and no mount may reach for it whatever the device holds.
       expect(bindings.forgetTailnet).not.toHaveBeenCalled();
     });
 
@@ -155,7 +160,8 @@ describe('settings sections issue no passive RPC they were not granted', () => {
       render(DevicesSection);
       await waitFor(() => expect(bindings.overview).toHaveBeenCalled());
       await waitFor(() => expect(bindings.passkeys).toHaveBeenCalled());
-      // …and still does not reach for the machine fact alongside it.
+      // …and still does not reach for the section beside it, which holds
+      // the same grant and loads itself.
       expect(bindings.network).not.toHaveBeenCalled();
     });
 

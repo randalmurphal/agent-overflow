@@ -320,6 +320,32 @@ test.describe.serial('remote device lifecycle', () => {
   });
 
   // -------------------------------------------------------------------
+  // 1b. Settings → Network from the phone. Second in EXECUTION order
+  //     because it needs the device the case above paired, still full
+  //     access and still attached — the case below revokes it.
+  // -------------------------------------------------------------------
+  test('a full-access device manages the backend’s exposure, without being handed its credentials', async () => {
+    await phone.getByTestId('sidebar-settings-button').click();
+    await expect(phone.getByRole('tablist', { name: 'Settings Sections' })).toBeVisible();
+    await phone.getByRole('tab', { name: 'Network' }).click();
+
+    // It LOADS, which is the whole widening: read as `host`, this section
+    // drew its unavailable arm for every paired device — the owner's own
+    // phone included — and Settings → Network was reachable from nowhere
+    // but the machine. `access:admin` is what it answers now.
+    await expect(phone.getByRole('switch', { name: 'Toggle remote access' })).toBeVisible();
+    await expect(phone.getByTestId('network-section-local-only')).toHaveCount(0);
+
+    // And the credential half is not in what it loaded: no share URL field
+    // and no Copy beside it, one sentence saying where they are. The wire
+    // form of the same claim — that the bytes never left the machine — is
+    // harness-offhost-authz.spec.ts; this is what the person sees.
+    await expect(phone.getByTestId('share-url-host-only')).toBeVisible();
+    await expect(phone.getByLabel('Application URL')).toHaveCount(0);
+    await expect(phone.getByTestId('insecure-url-warning')).toHaveCount(0);
+  });
+
+  // -------------------------------------------------------------------
   // 2. Revocation is absolute, end to end.
   // -------------------------------------------------------------------
   test('revoking ends the live socket for good, and a second revoke says nothing was live', async () => {
@@ -435,10 +461,10 @@ test.describe.serial('remote device lifecycle', () => {
     // below races the very loads it is about and passes whenever it wins
     // (which it did, two runs in three).
     //
-    // Neither section is a control this device could use: the bind
-    // preference belongs to the machine being configured (`host`, which no
-    // session is ever granted), and the device list is `access:admin`,
-    // which view-only is not. Both must say so from what they were
+    // Neither section is a control this device could use: both are
+    // `access:admin`, which view-only is not — the same grant that let the
+    // full-access phone read the network settings two cases up is the one
+    // this device does not hold. Both must say so from what they were
     // granted, not discover it from a refusal.
     await expect(phone.getByTestId('network-section-local-only')).toBeVisible();
     await expect(phone.getByTestId('devices-section-unavailable')).toBeVisible();

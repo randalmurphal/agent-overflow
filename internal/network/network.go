@@ -360,6 +360,10 @@ func ticketedURL(srv *transport.Server, scheme, authority string) (string, bool)
 // safe to share). The caller supplies everything a user chose — the bind
 // toggle, the domain, the hook, the external pair — and the observed TLS
 // status, since only the app knows what is actually loaded.
+//
+// This is the form for a caller at the machine. FromServerRedacted below
+// is the form for every other caller, and argues field by field what the
+// difference is.
 func FromServer(srv *transport.Server, s Settings) Settings {
 	lanIP := ""
 	if s.BindAll {
@@ -368,15 +372,57 @@ func FromServer(srv *transport.Server, s Settings) Settings {
 	return FromServerWithLAN(srv, s, lanIP)
 }
 
-// FromServerWithLAN is the primitive form used by callers that
-// already know which LAN IP to embed in the URL (post-rebind, where
-// the IP was computed once for both the allow-list and the URL).
-func FromServerWithLAN(srv *transport.Server, s Settings, lanIP string) Settings {
+// FromServerRedacted builds the wire record for a caller that is NOT at
+// this machine: everything a remote owner needs in order to read and
+// change how this backend is exposed, with the four server-derived fields
+// left empty.
+//
+// Redaction by never MINTING, not by blanking afterwards, which is why
+// there is deliberately no *transport.Server parameter: nothing this
+// function can produce needs one, so nothing it can produce can spend a
+// ticket. Two of the withheld fields are one-time page tickets drawn from
+// a book of sixteen, so building the full record and then clearing it
+// would spend the owner's own supply — evicting the URL they just copied
+// at their own screen — to hand the remote caller nothing.
+//
+// What is withheld, and why each:
+//
+//   - Token is this LAUNCH's session credential. A device holding it can
+//     attach as the backend's own local channel: unattributed, and
+//     withdrawable only by restarting the process. It is the one field
+//     here that must never leave the machine.
+//   - URL and Tailnet.URL each carry a one-time page ticket. Neither
+//     grants anything on its own — a ticket loads the page and nothing
+//     more — but both are drawn from that bounded book, and both are
+//     addresses this caller already knows how to reach.
+//   - Insecure describes the URL above, and there is no URL.
+//
+// What is KEPT is what remote administration is FOR: the bind toggle, the
+// port, the canonical domain, the DNS hook argv, the external certificate
+// pair, the tailnet toggle and its control URL, and both read-only status
+// blocks. Tailnet.AuthURL in particular stays — it is the tailscale
+// sign-in link the node publishes while it waits to be approved, which is
+// precisely what a remote owner needs in order to approve it, and it is
+// not a page ticket.
+func FromServerRedacted(s Settings) Settings {
 	out := s
 	out.URL = ""
 	out.Token = ""
 	out.Insecure = false
 	out.Tailnet.URL = ""
+	return out
+}
+
+// FromServerWithLAN is the primitive form used by callers that
+// already know which LAN IP to embed in the URL (post-rebind, where
+// the IP was computed once for both the allow-list and the URL).
+//
+// It starts from the redacted record so the withheld set is declared
+// once: a fifth server-derived field is added by clearing it there and
+// filling it here, and a server this process does not have yet leaves the
+// caller with exactly what an off-host caller would have seen.
+func FromServerWithLAN(srv *transport.Server, s Settings, lanIP string) Settings {
+	out := FromServerRedacted(s)
 	if srv == nil {
 		return out
 	}

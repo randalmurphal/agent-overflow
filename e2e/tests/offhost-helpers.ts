@@ -51,6 +51,22 @@ export type RpcOutcome =
   | { ok: false; error: { code: string; message: string; scope?: string } };
 
 /**
+ * Assert an RPC was ANSWERED, and hand back the payload already narrowed.
+ *
+ * `expect(outcome.ok).toBe(true)` reads well and narrows nothing, so a spec
+ * that then wants the payload is reaching into a union half the compiler
+ * still believes could be the refusal — which is a typecheck failure at
+ * the one moment a wire-level assertion becomes interesting. Going through
+ * here keeps the message and returns the branch, and a refusal reports its
+ * own reason instead of `false !== true`.
+ */
+export function answered(outcome: RpcOutcome, why: string): unknown {
+  expect(outcome.ok ? '' : `${outcome.error.code}: ${outcome.error.message}`, why).toBe('');
+  if (!outcome.ok) throw new Error(outcome.error.message);
+  return outcome.result;
+}
+
+/**
  * One WebSocket speaking the transport wire, reporting the raw outcome so a
  * refusal can be asserted as a frame rather than as a thrown message.
  *

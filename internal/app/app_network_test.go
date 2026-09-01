@@ -5,15 +5,28 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/identity"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 )
+
+// atTheMachine is the ctx a bound method sees for a call made from THIS
+// machine — the embedded webview, the harness, `ao-harness`, `--connect`
+// on the same host. Every case below that reads a URL or a token needs it:
+// the credential half of network.Settings is withheld from a caller that
+// is not host-present, and a bare context.Background() carries the zero
+// proof, which is that caller (app_network.go networkSettingsForCaller).
+func atTheMachine() context.Context {
+	return callFrom("", true)
+}
 
 // newNetworkTestApp wires the minimum App + transport + dispatcher
 // needed for GetNetworkSettings / SetNetworkSettings tests. The
@@ -57,7 +70,7 @@ func startTestTransportServer(t *testing.T) *transport.Server {
 func TestGetNetworkSettings_DefaultsToLoopback(t *testing.T) {
 	app, srv := newNetworkTestApp(t)
 
-	got, err := app.GetNetworkSettings()
+	got, err := app.GetNetworkSettings(atTheMachine())
 	if err != nil {
 		t.Fatalf("GetNetworkSettings: %v", err)
 	}
@@ -90,7 +103,7 @@ func TestSetNetworkSettings_TogglesAndPersistsBindAll(t *testing.T) {
 	app, srv := newNetworkTestApp(t)
 	originalPort := portFromAddr(srv.Addr())
 
-	got, err := app.SetNetworkSettings(network.Settings{BindAll: true})
+	got, err := app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: true})
 	if err != nil {
 		t.Fatalf("SetNetworkSettings(true): %v", err)
 	}
@@ -117,7 +130,7 @@ func TestSetNetworkSettings_TogglesAndPersistsBindAll(t *testing.T) {
 	}
 
 	// Toggle back; verify rebind to loopback.
-	got, err = app.SetNetworkSettings(network.Settings{BindAll: false})
+	got, err = app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: false})
 	if err != nil {
 		t.Fatalf("SetNetworkSettings(false): %v", err)
 	}
@@ -147,7 +160,7 @@ func TestNetworkSettings_InsecureFlag(t *testing.T) {
 
 	// Default: loopback bind. http:// but not insecure (it stays on
 	// the same machine).
-	got, err := app.GetNetworkSettings()
+	got, err := app.GetNetworkSettings(atTheMachine())
 	if err != nil {
 		t.Fatalf("GetNetworkSettings: %v", err)
 	}
@@ -158,7 +171,7 @@ func TestNetworkSettings_InsecureFlag(t *testing.T) {
 	// Toggle to LAN bind: still http://, now Insecure. Skip the
 	// test if no LAN IP discoverable (CI sandbox); we only assert
 	// when the URL actually contains a non-loopback host.
-	got, err = app.SetNetworkSettings(network.Settings{BindAll: true})
+	got, err = app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: true})
 	if err != nil {
 		t.Fatalf("SetNetworkSettings(true): %v", err)
 	}
@@ -170,7 +183,7 @@ func TestNetworkSettings_InsecureFlag(t *testing.T) {
 	}
 
 	// Toggle back: Insecure clears.
-	got, err = app.SetNetworkSettings(network.Settings{BindAll: false})
+	got, err = app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: false})
 	if err != nil {
 		t.Fatalf("SetNetworkSettings(false): %v", err)
 	}
@@ -187,7 +200,7 @@ func TestSetNetworkSettings_NoOpWhenUnchanged(t *testing.T) {
 	app, srv := newNetworkTestApp(t)
 	originalAddr := srv.Addr()
 
-	if _, err := app.SetNetworkSettings(network.Settings{BindAll: false}); err != nil {
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: false}); err != nil {
 		t.Fatalf("SetNetworkSettings(false) on default: %v", err)
 	}
 	if srv.Addr() != originalAddr {
@@ -204,7 +217,7 @@ func TestSetNetworkSettings_AppliesTheCanonicalDomainLive(t *testing.T) {
 	app, srv := newNetworkTestApp(t)
 	addr := srv.Addr()
 
-	got, err := app.SetNetworkSettings(network.Settings{
+	got, err := app.SetNetworkSettings(atTheMachine(), network.Settings{
 		CanonicalDomain: "  Backend.Example  ",
 		ACMEDNSHook:     []string{"dns-hook", "--zone", "example"},
 	})
@@ -233,7 +246,7 @@ func TestSetNetworkSettings_AppliesTheCanonicalDomainLive(t *testing.T) {
 	}
 
 	// Clearing the domain withdraws the name from the listener too.
-	if _, err := app.SetNetworkSettings(network.Settings{}); err != nil {
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{}); err != nil {
 		t.Fatalf("SetNetworkSettings(clear): %v", err)
 	}
 	if srv.CanonicalHost() != "" {
@@ -246,7 +259,7 @@ func TestSetNetworkSettings_AppliesTheCanonicalDomainLive(t *testing.T) {
 func TestSetNetworkSettings_RefusesADomainThatCannotBeServed(t *testing.T) {
 	app, srv := newNetworkTestApp(t)
 
-	if _, err := app.SetNetworkSettings(network.Settings{CanonicalDomain: "https://backend.example/"}); err == nil {
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{CanonicalDomain: "https://backend.example/"}); err == nil {
 		t.Fatal("a URL was accepted as the canonical domain")
 	}
 	if srv.CanonicalHost() != "" {
@@ -263,11 +276,11 @@ func TestSetNetworkSettings_RefusesADomainThatCannotBeServed(t *testing.T) {
 func TestRenewCanonicalDomainCert_RefusesWithNoDomain(t *testing.T) {
 	app, _ := newNetworkTestApp(t)
 
-	if _, err := app.RenewCanonicalDomainCert(); err == nil {
+	if _, err := app.RenewCanonicalDomainCert(atTheMachine()); err == nil {
 		t.Fatal("a renewal was accepted with no canonical domain configured")
 	}
 
-	if _, err := app.SetNetworkSettings(network.Settings{
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{
 		CanonicalDomain: "backend.example",
 		ACMEDNSHook:     []string{"dns-hook"},
 	}); err != nil {
@@ -276,7 +289,7 @@ func TestRenewCanonicalDomainCert_RefusesWithNoDomain(t *testing.T) {
 	// The reconciler is started by Start, which this fixture does not
 	// run, so the call reports that rather than pretending it queued
 	// work nothing will pick up.
-	if _, err := app.RenewCanonicalDomainCert(); err == nil {
+	if _, err := app.RenewCanonicalDomainCert(atTheMachine()); err == nil {
 		t.Fatal("a renewal was accepted with no reconciler running")
 	}
 }
@@ -327,7 +340,7 @@ func TestSetNetworkSettings_TransportUnavailable(t *testing.T) {
 	app := &App{settings: settings.NewService(t.TempDir())}
 	prev := app.settings.Get().Network.BindAll
 
-	if _, err := app.SetNetworkSettings(network.Settings{BindAll: true}); err == nil {
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: true}); err == nil {
 		t.Fatalf("SetNetworkSettings without transport should error")
 	}
 
@@ -354,7 +367,7 @@ func TestSetNetworkSettings_BindAllTrueFalseTrueCycle(t *testing.T) {
 	}
 
 	for i, exp := range expectations {
-		got, err := app.SetNetworkSettings(network.Settings{BindAll: exp.bindAll})
+		got, err := app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: exp.bindAll})
 		if err != nil {
 			t.Fatalf("step %d SetNetworkSettings(%v): %v", i, exp.bindAll, err)
 		}
@@ -410,7 +423,7 @@ func TestSetNetworkSettings_RebindFailureRollsBack(t *testing.T) {
 	}
 	defer blocker.Close()
 
-	if _, err := app.SetNetworkSettings(network.Settings{BindAll: true}); err == nil {
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: true}); err == nil {
 		t.Fatalf("SetNetworkSettings expected to fail when target addr is held")
 	}
 
@@ -419,5 +432,217 @@ func TestSetNetworkSettings_RebindFailureRollsBack(t *testing.T) {
 	}
 	if got := srv.Addr(); got != preAddr {
 		t.Fatalf("transport addr changed despite failed rebind: pre=%q post=%q", preAddr, got)
+	}
+}
+
+// ---------------------------------------------------------------------
+// The credential half does not leave the machine.
+//
+// GetNetworkSettings answers `access:admin`, which is what makes
+// Settings → Network reachable from a paired admin device at all — the
+// `host` annotation it carried before refused every one of them. What that
+// device must NOT be handed is this launch's token (a holder attaches as
+// the backend's own local channel: unattributed, and withdrawable only by
+// restarting the process) or either ticket-bearing share URL.
+// ---------------------------------------------------------------------
+
+// offHostAdminApp is an identity-wired App on a live transport, plus a
+// paired session holding the two grants this surface is reached through.
+func offHostAdminApp(t *testing.T) (*App, store.Session) {
+	t.Helper()
+	app := identityApp(t)
+	app.SetTransportServer(startTestTransportServer(t))
+	session := pairSessionWithScopes(t, app, "thumb-network-admin", []identity.Scope{
+		identity.ScopeAccessAdmin,
+		identity.ScopeSettingsWrite,
+	})
+	// The precondition the rest of the file rests on: the gate ADMITS this
+	// device's read. Were GetNetworkSettings still `host`, every assertion
+	// below would be about an answer nobody could ask for.
+	if refusal := transport.AuthorizeSessionMethod(
+		session.Scopes, "GetNetworkSettings", transport.CallerProof{},
+	); refusal != nil {
+		t.Fatalf("an access:admin session is refused GetNetworkSettings: %+v", refusal)
+	}
+	return app, session
+}
+
+// withheldFrom is the whole redaction stated once: the full record with
+// the four server-derived fields cleared. Comparing against it — rather
+// than against a list of fields somebody remembered — is what makes a
+// field added later fail here instead of travelling silently.
+func withheldFrom(full network.Settings) network.Settings {
+	want := full
+	want.URL = ""
+	want.Token = ""
+	want.Insecure = false
+	want.Tailnet.URL = ""
+	return want
+}
+
+func TestGetNetworkSettingsWithholdsCredentialsFromAnOffHostAdmin(t *testing.T) {
+	app, session := offHostAdminApp(t)
+
+	// A configuration worth reading remotely, written from the machine.
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{
+		BindAll:         true,
+		CanonicalDomain: "backend.example",
+		ACMEDNSHook:     []string{"dnstool", "--zone", "example.com"},
+	}); err != nil {
+		t.Fatalf("SetNetworkSettings: %v", err)
+	}
+
+	atMachine, err := app.GetNetworkSettings(atTheMachine())
+	if err != nil {
+		t.Fatalf("GetNetworkSettings (host): %v", err)
+	}
+	if atMachine.Token == "" {
+		t.Fatal("the owner's own screen was not given this launch's token")
+	}
+	if atMachine.URL == "" {
+		t.Fatal("the owner's own screen was not given a share URL")
+	}
+
+	remote, err := app.GetNetworkSettings(callFrom(session.ID, false))
+	if err != nil {
+		t.Fatalf("GetNetworkSettings (off-host admin): %v", err)
+	}
+	if remote.Token != "" {
+		t.Errorf("Token = %q reached a device that is not this machine", remote.Token)
+	}
+	if remote.URL != "" {
+		t.Errorf("URL = %q reached a device that is not this machine", remote.URL)
+	}
+	if remote.Tailnet.URL != "" {
+		t.Errorf("Tailnet.URL = %q reached a device that is not this machine", remote.Tailnet.URL)
+	}
+	if remote.Insecure {
+		t.Error("Insecure is set on a record carrying no URL to describe")
+	}
+
+	// Everything else is what the screen exists to show and change.
+	if !remote.BindAll || remote.CanonicalDomain != "backend.example" {
+		t.Fatalf("the remote admin lost the settings it came for: %+v", remote)
+	}
+	if want := withheldFrom(atMachine); !reflect.DeepEqual(remote, want) {
+		t.Fatalf("redacted record\n got %+v\nwant %+v", remote, want)
+	}
+}
+
+// The tailnet's sign-in link travels, and it is the field most likely to
+// be swept up by a blunter rule: it is a URL, it is single use, and it
+// looks like the two that are withheld. It is not a page ticket — it is
+// the link the owner opens to APPROVE this machine, so withholding it
+// would leave a remote owner able to enable the feature and unable to
+// finish it.
+func TestRedactionKeepsTheTailnetSignInLink(t *testing.T) {
+	app, session := offHostAdminApp(t)
+
+	staged := network.Settings{
+		TailnetEnabled: true,
+		Tailnet: network.TailnetStatus{
+			State:   "NeedsLogin",
+			AuthURL: "https://login.tailscale.com/a/0123456789abcdef",
+			URL:     "http://node.example.ts.net:1234/?t=a-page-ticket",
+		},
+	}
+
+	remote := app.networkSettingsForCaller(callFrom(session.ID, false), staged)
+	if remote.Tailnet.AuthURL != staged.Tailnet.AuthURL {
+		t.Errorf("AuthURL = %q, want the sign-in link to travel", remote.Tailnet.AuthURL)
+	}
+	if remote.Tailnet.State != "NeedsLogin" {
+		t.Errorf("State = %q, want the node's own word for what it is doing", remote.Tailnet.State)
+	}
+	if remote.Tailnet.URL != "" {
+		t.Errorf("Tailnet.URL = %q, want the ticketed address withheld", remote.Tailnet.URL)
+	}
+}
+
+// The leak this closed. SetNetworkSettings is step-up reachable from a
+// paired device (it carries //ao:stepup, and a passkey assertion is a
+// proof a remote owner can produce), and its RETURN carried the launch
+// token to that device — so the write a phone made handed it the one
+// credential the read is careful never to.
+func TestSetNetworkSettingsWithholdsCredentialsFromAnOffHostAdmin(t *testing.T) {
+	app, session := offHostAdminApp(t)
+
+	// The remote owner's own step-up proof, which is what reaches this
+	// method from a device that is not the machine.
+	written, err := app.SetNetworkSettings(callSteppedUp(session.ID), network.Settings{
+		BindAll:         true,
+		CanonicalDomain: "backend.example",
+	})
+	if err != nil {
+		t.Fatalf("SetNetworkSettings (off-host admin): %v", err)
+	}
+	if written.Token != "" {
+		t.Errorf("Token = %q rode the write's answer to a device that is not this machine", written.Token)
+	}
+	if written.URL != "" {
+		t.Errorf("URL = %q rode the write's answer to a device that is not this machine", written.URL)
+	}
+	if written.Tailnet.URL != "" {
+		t.Errorf("Tailnet.URL = %q rode the write's answer off-host", written.Tailnet.URL)
+	}
+	// The write still ANSWERED with what it did, or the screen has nothing
+	// to paint the result from.
+	if !written.BindAll || written.CanonicalDomain != "backend.example" {
+		t.Fatalf("the write's answer lost what it wrote: %+v", written)
+	}
+
+	// The same write from the machine still carries both, so the case
+	// above is the redaction and not a regression in the write itself.
+	atMachine, err := app.SetNetworkSettings(atTheMachine(), network.Settings{
+		BindAll:         true,
+		CanonicalDomain: "backend.example",
+	})
+	if err != nil {
+		t.Fatalf("SetNetworkSettings (host): %v", err)
+	}
+	if atMachine.Token == "" || atMachine.URL == "" {
+		t.Fatalf("the owner's own screen lost the share panel: %+v", atMachine)
+	}
+}
+
+// ForgetTailnetNode and RenewCanonicalDomainCert return the same shape and
+// go through the same pick. Both are `host`-scoped, so the gate already
+// refuses an off-host session — this is the belt to that braces, and the
+// reason the rule is applied wherever the shape leaves the process rather
+// than per method.
+func TestEveryNetworkSettingsAnswerGoesThroughThePick(t *testing.T) {
+	app, session := offHostAdminApp(t)
+	remote := callFrom(session.ID, false)
+	// The config root the reconciler would have been handed at boot, so
+	// ForgetTailnetNode reaches its answer rather than refusing for want of
+	// a directory. Its goroutine stays unstarted: nothing here needs a node.
+	app.tailnet.mu.Lock()
+	app.tailnet.dir = t.TempDir()
+	app.tailnet.mu.Unlock()
+
+	if _, err := app.SetNetworkSettings(atTheMachine(), network.Settings{
+		CanonicalDomain: "backend.example",
+		ACMEDNSHook:     []string{"dnstool"},
+	}); err != nil {
+		t.Fatalf("SetNetworkSettings: %v", err)
+	}
+
+	// The reconciler is not running in this fixture, so the renewal
+	// refuses before it formats anything — which is why the pick is
+	// asserted through the formatter it shares rather than through a
+	// return this fixture cannot produce.
+	if _, err := app.RenewCanonicalDomainCert(remote); err == nil {
+		t.Fatal("a renewal was accepted with no reconciler running")
+	}
+
+	forgotten, err := app.ForgetTailnetNode(remote)
+	if err != nil {
+		t.Fatalf("ForgetTailnetNode: %v", err)
+	}
+	if forgotten.Token != "" || forgotten.URL != "" || forgotten.Tailnet.URL != "" {
+		t.Fatalf("ForgetTailnetNode answered an off-host caller with credentials: %+v", forgotten)
+	}
+	if forgotten.CanonicalDomain != "backend.example" {
+		t.Fatalf("the answer lost the settings beside them: %+v", forgotten)
 	}
 }

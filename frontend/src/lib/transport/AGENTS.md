@@ -307,7 +307,15 @@ remote browser alike. Protocol and authz rules:
   read the absence off the wire (2026-08-31). `host` is the scope to be
   careful with here: it refuses EVERY paired device, full access
   included, so it is the right gate for a fact about the MACHINE and the
-  wrong one for a capability.
+  wrong one for a capability. `NetworkSection.svelte` is the worked
+  example of getting that wrong: managing how a backend is exposed is a
+  CAPABILITY the owner grants a device (`access:admin`), and gating the
+  read on `host` made Settings → Network unreachable from every phone the
+  owner had paired — including from the screen whose whole subject is
+  remote access. What is genuinely host-only there is not the settings but
+  two FIELDS of the answer, and withholding those is the backend's job
+  (`internal/network.FromServerRedacted`), read off the payload rather than
+  re-derived here.
 
   Notified at the two moments the answer can move — the manifest
   resolving, and `redialAfterPairing` — and polled never. Nothing clears
@@ -559,9 +567,13 @@ None of them is a capability — that axis is `scopes.ts` above:
   different mode means a different process boot — and because it must
   answer synchronously, before any fetch resolves. It survives the ticket
   scrub, which removes only the ticket parameter. Settings panels that mutate LOCAL-ONLY state
-  (the LAN-bind toggle, the saved `--connect` endpoints) hide or
+  (the saved `--connect` endpoints) hide or
   placeholder in `client` mode, or their RPCs would edit the remote
-  server's settings instead of the user's.
+  server's settings instead of the user's. The LAN-bind toggle is
+  deliberately NOT one of them any more: managing the exposure of the
+  backend a `--connect` window is attached to is what that window is for,
+  so `NetworkSection.svelte` loads and edits in `client` mode and the mode
+  only decides the sentence naming whose settings they are.
 
   It carries NOTHING about authorization, and the split is load-bearing
   in both directions: run mode answers "whose settings would this RPC

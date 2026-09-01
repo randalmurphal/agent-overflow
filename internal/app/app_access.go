@@ -611,6 +611,11 @@ func (a *App) pairingPageURL() (pageURL, endpoint string, err error) {
 	if srv == nil {
 		return "", "", fmt.Errorf("access: transport server unavailable")
 	}
+	// The FULL variant deliberately, on a call a remote admin device can
+	// make: minting a link IS handing out an address plus its one-time
+	// page ticket, so withholding the URL here would withhold the answer.
+	// What the redacted variant protects — this launch's token — never
+	// enters a pairing payload.
 	settings := network.FromServer(srv, a.persistedNetworkSettings())
 	if settings.URL == "" {
 		return "", "", fmt.Errorf("access: the transport has no page URL to pair against yet")

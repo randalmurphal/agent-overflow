@@ -28,7 +28,11 @@ directory.
   before merging any bound-signature change.
 - `tests/*-helpers.ts` and `tests/probe-wire.ts` hold the wire builders
   and seeds their spec families share. Put a new provider wire shape
-  there, not inline in one spec.
+  there, not inline in one spec. `offhost-helpers.ts` also owns
+  `answered(outcome, why)`: a wire-level spec that wants the PAYLOAD of a
+  call needs the outcome union narrowed, and `expect(outcome.ok).toBe(true)`
+  narrows nothing, so reading `.result` after it fails the launcher's
+  typecheck rather than the assertion.
 - `rigs/` holds self-driving perf measurement rigs (storm, churn,
   heapsoak, coldload). They are operator tools outside every gate, and
   [rigs/README.md](rigs/README.md) has the clone-root venue, the scenario
