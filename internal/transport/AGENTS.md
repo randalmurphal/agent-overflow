@@ -9,7 +9,8 @@ walkthroughs live in
 
 The HTTP listener (embedded SPA, `/bootstrap.json`, `/healthz`, the `/ws`
 upgrade, and
-`POST /rpc` for the `ao` CLI), the JSON wire frame, token authentication, the
+`POST /rpc` for the `ao` CLI) plus any AUXILIARY listener a caller hands it
+(§ Auxiliary listeners), the JSON wire frame, token authentication, the
 per-connection authorization policy, per-peer request budgets on the credential
 surfaces, reflection-based RPC dispatch, a per-channel bounded ring for event
 replay on reconnect, and the live-session registry that lets a revocation reach
@@ -40,7 +41,9 @@ cookie names and the origin allow-list all derive from.
   the ephemeral fallback, a rebind, its close-and-retry and its rollback all
   produce the same wrapped listener. A bind that skipped the wrap would silently
   drop TLS on exactly the paths a user reaches by toggling LAN access, and a
-  pinning client reads that as the backend disappearing.
+  pinning client reads that as the backend disappearing. An auxiliary listener
+  is ACCEPTED rather than created, so it does not go through here and gets no
+  sniff wrapper — argued in the next section.
 - **Uniform on every bind.** Loopback and LAN behave identically; no mode decides
   when TLS is available.
 - **Classification runs off the accept loop**, one goroutine per connection,
@@ -71,6 +74,41 @@ cookie names and the origin allow-list all derive from.
   non-nil source holding no certificate YET still installs it and refuses
   handshakes until one arrives, because certificates arrive and renew while the
   process runs.
+
+## Auxiliary listeners
+
+`auxlistener.go` serves a listener the CALLER acquired, with this server's
+routes, credentials, Host and Origin rules, per-RPC scope gate and session
+registry (spec §7, "Multi-listener, one session store"). `internal/tailnet` is
+the caller it exists for: a netstack listener on the owner's tailnet, no second
+API, no second credential class, no route that exists on one listener and not
+the other. A revocation lands on both in the same instant because both consult
+the one live-session registry.
+
+- **The caller owns the listener.** This package accepts on it and stops when
+  told to. It never binds one, never rebinds one, and never reopens one that
+  failed; whatever produced it decides when it exists.
+- **Per-listener isolation.** An accept loop that ends reports to the CALLER's
+  sink, never `Server.ServeErr`, and never touches the main listener. The spec
+  names the failure: one integration failing to start degrades that listener
+  only, and putting it on the shared channel would make a tailnet that could
+  not accept read as the app's own transport dying.
+- **Its own `*http.Server`, not the active one.** `Rebind` retires the active
+  server and shuts it down, and `http.Server.Shutdown` closes every listener it
+  is serving — so an auxiliary attached to the active server would be closed by
+  an unrelated LAN-bind toggle, symptom-free except that the tailnet stopped
+  answering. Same `buildHTTPServer`, so the handler, timeouts and connection
+  context are the same object graph; a different instance so its lifetime is
+  its own.
+- **No TLS sniffing, deliberately.** A tailnet listener's bytes were already
+  encrypted and authenticated by WireGuard before this package saw them, and
+  the node's own HTTPS listener arrives here having ALREADY terminated TLS.
+  Either way the first byte is not ours to classify.
+- **Nothing about admission is relaxed.** `r.RemoteAddr` on a tailnet listener
+  is the peer's real `100.64/10` address, so the off-host rule below applies
+  unchanged: a non-loopback peer must name a live session. That is the property
+  the whole arrangement rests on, and `internal/tailnet`'s two-node integration
+  test exercises it against a peer nothing faked.
 
 ## Every new App method is also a wire RPC, so annotate it
 
@@ -391,10 +429,11 @@ host's own clients are unaffected.
 must keep loading the page, because the person holding it has to be able to
 act — and what they see is the SPA's pairing prompt, not an outage
 (`frontend/src/lib/transport/AGENTS.md`). `wsadmission_test.go` pins the matrix,
-and its fixture is the one way this package produces a non-loopback peer: the
-same `*http.Server` served over a second listener whose accepted connections
-report a LAN address, which is exactly what net/http copies into
-`Request.RemoteAddr`.
+and its `remotePeerListener` is the one way this package produces a non-loopback
+peer: a listener whose accepted connections report a LAN address, which is
+exactly what net/http copies into `Request.RemoteAddr`. `auxlistener_test.go`
+reuses it rather than growing a second, so an auxiliary listener is proven to
+apply the same matrix.
 
 Both credentialled entry points answer a refused credential with
 `http.NotFound`: `/bootstrap.json` (`handleBootstrap`) and the `/ws` upgrade
@@ -571,6 +610,16 @@ through a proxy on this machine that terminates TLS and forwards to the loopback
 bind, which sends the domain in the Host header — while every other DNS name is
 still refused. It is a host admission and never an authorization; every
 credential check downstream is unchanged.
+
+An auxiliary listener adds its own names the same way
+(`SetAuxiliaryHosts` / `AuxiliaryHosts`): the tailnet node's MagicDNS name and
+its tailnet addresses, set only once a listener exists on it and cleared the
+moment that listener goes away, so the guard never admits a name nothing is
+serving. Both lists are compared after `hostLabel` folds the header to one
+spelling (port stripped, IPv6 brackets removed, lowercased), because a Host
+header is written by the client and `Node.ts.net:443` is the same name as
+`node.ts.net`. Same rule as the canonical domain: names go INSIDE the guard,
+and the guard never switches off.
 
 **Peer locality is `loopback.PeerAddress(r.RemoteAddr)`**, captured before the
 upgrade and reused for the host-tooling receiver refusal, the step-up proof,

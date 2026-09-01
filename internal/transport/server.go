@@ -369,6 +369,18 @@ type Server struct {
 	// reason: both are read per request and written from a settings call.
 	canonicalHost string
 
+	// auxHosts are the extra Host header names the guard admits because
+	// an AUXILIARY LISTENER is addressed by them — the tailnet node's
+	// MagicDNS name and its tailnet addresses. Rotated by
+	// SetAuxiliaryHosts, cleared when that listener goes away. Guarded by
+	// mu for the same reason as the two names above it.
+	auxHosts []string
+
+	// auxListeners are the caller-owned listeners currently attached
+	// (auxlistener.go). Guarded by mu; Shutdown detaches whatever is
+	// still here.
+	auxListeners []*AuxListener
+
 	// formerSrvs are http.Servers retired by Rebind that are still
 	// draining hijacked WS connections. We keep them around so existing
 	// clients keep working after the bind toggle, and Close them on
@@ -764,7 +776,7 @@ func (s *Server) loopbackHostGuard(next http.HandlerFunc) http.HandlerFunc {
 		// origin-validation story for /ws; HTTP /bootstrap.json on LAN
 		// must be reachable from any LAN host the user shares.
 		if s.boundToLoopback() {
-			if !loopback.HostHeader(r.Host) && !s.hostIsCanonical(r.Host) {
+			if !loopback.HostHeader(r.Host) && !s.hostAdmitted(r.Host) {
 				http.NotFound(w, r)
 				return
 			}
@@ -782,18 +794,81 @@ func (s *Server) boundToLoopback() bool {
 	return addr == "" || loopback.EndpointAuthority(addr)
 }
 
-// hostIsCanonical reports whether an HTTP Host header names the
-// configured canonical domain, with or without a port. Never true when
-// no domain is configured, so the default posture is unchanged.
-func (s *Server) hostIsCanonical(host string) bool {
-	canonical := s.currentCanonicalHost()
-	if canonical == "" || host == "" {
+// hostAdmitted reports whether an HTTP Host header names something this
+// backend answers to besides the loopback spellings: the configured
+// canonical domain, or a name an attached AUXILIARY LISTENER is reached
+// by. Never true when neither is configured, so the default posture is
+// unchanged.
+//
+// Both are HOST admissions and nothing more. They decide which Host
+// header is answered, never who is authorized: every credential check,
+// the origin allow-list and the per-call scope gate are identical for a
+// request that arrived on one of these names.
+func (s *Server) hostAdmitted(host string) bool {
+	name := hostLabel(host)
+	if name == "" {
 		return false
+	}
+	s.mu.Lock()
+	canonical, aux := s.canonicalHost, s.auxHosts
+	s.mu.Unlock()
+	if canonical != "" && name == canonical {
+		return true
+	}
+	for _, candidate := range aux {
+		if name == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// hostLabel folds a Host header to the one spelling the comparisons
+// above are made against: no port, no trailing root dot, lower case. An
+// empty or unusable header answers empty, which matches no configured
+// name.
+func hostLabel(host string) string {
+	if host == "" {
+		return ""
 	}
 	if name, _, err := net.SplitHostPort(host); err == nil {
 		host = name
 	}
-	return strings.EqualFold(strings.TrimSuffix(host, "."), canonical)
+	return normalizeCanonicalHost(host)
+}
+
+// SetAuxiliaryHosts rotates the Host header names admitted because an
+// auxiliary listener answers to them — for the tailnet node, its MagicDNS
+// name and its tailnet addresses. Passing nil or an empty slice removes
+// them, which is what a node going away must do: a name that stays
+// admitted after the listener behind it is gone is an admission nobody
+// can reach and nobody meant to keep.
+//
+// Like SetCanonicalHost, this binds no listener and closes no socket.
+func (s *Server) SetAuxiliaryHosts(names []string) {
+	normalized := make([]string, 0, len(names))
+	for _, name := range names {
+		folded := hostLabel(name)
+		if folded == "" {
+			continue
+		}
+		normalized = append(normalized, folded)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(normalized) == 0 {
+		s.auxHosts = nil
+		return
+	}
+	s.auxHosts = normalized
+}
+
+// AuxiliaryHosts returns the live extra Host names, for a caller that
+// reports what this listener currently answers to.
+func (s *Server) AuxiliaryHosts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.auxHosts...)
 }
 
 // SetCanonicalHost rotates the one DNS name this backend answers to
@@ -886,6 +961,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 				log.Printf("transport: close former http server: %v", err)
 			}
 		}
+		// Auxiliary listeners run on http.Servers neither list holds, so
+		// they are detached here — before the wait below, which would
+		// otherwise sit on serve goroutines nothing had told to stop.
+		s.closeAuxListeners()
 		if s.cfg.EventBus != nil {
 			s.cfg.EventBus.Close()
 		}
