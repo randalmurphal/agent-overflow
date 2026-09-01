@@ -82,13 +82,44 @@ type hostPage struct {
 	// completion handler can diff out this controller's own child HWND.
 	beforeChildren []uintptr
 
-	controller  *iCoreWebView2Controller
+	controller *iCoreWebView2Controller
+	// controller2 is the same object through ICoreWebView2Controller2,
+	// which is where the default background colour lives. Nil on a runtime
+	// too old to have the interface; the pane still works, it just keeps
+	// the engine's white.
+	controller2 *iCoreWebView2Controller2
 	view        *iCoreWebView2
 	child       uintptr
-	failHandler *iProcessFailedHandler
+	// container is the page's clip window: an intermediate child of the
+	// host that the controller's own window lives inside. Positioning it at
+	// the VISIBLE rect while the controller keeps the FULL rect is what
+	// crops a pane running under the sidebar instead of hiding it or
+	// letting it overhang. Zero when the controller's child window could
+	// not be identified, in which case the pane falls back to the
+	// unclipped, directly-parented behaviour.
+	container uintptr
+	// bg is the last colour actually applied, so a bounds directive — which
+	// arrives on every scroll and resize — pays for a COM call only when
+	// the pane surface's colour really changed.
+	bg string
+	// bgUnsupported records that this page has already logged a missing
+	// ICoreWebView2Controller2, so an old runtime costs one line, not one
+	// per bounds directive.
+	bgUnsupported bool
+	failHandler   *iProcessFailedHandler
 	// pendingHandlers keeps every COM callback object this page handed to
 	// WebView2 alive for as long as WebView2 can invoke it.
 	pendingHandlers []any
+}
+
+// raiseTarget is the window that must sit on top of the host's child
+// z-order for this page to be visible: the clip container when there is
+// one, otherwise the controller's own child window.
+func (p *hostPage) raiseTarget() uintptr {
+	if p.container != 0 {
+		return p.container
+	}
+	return p.child
 }
 
 // envCreateTimeout bounds the cold environment create. WebView2 launching
@@ -161,44 +192,29 @@ func (h *Host) Apply(directive Directive) {
 	case OpCreate:
 		h.create(directive)
 	case OpBounds:
-		h.withPage(directive.PageID, func(page *hostPage) {
-			// The rect arrives in the SPA's CSS pixels together with the
-			// viewport it was measured in; the client area is the same
-			// surface in physical pixels, so the proportion IS the whole
-			// DPI-and-zoom answer. A missing viewport means client pixels.
-			sx, sy := 1.0, 1.0
-			if directive.VW > 0 && directive.VH > 0 {
-				if cw, ch, ok := clientSize(h.config.HostWindow()); ok && cw > 0 && ch > 0 {
-					sx = float64(cw) / directive.VW
-					sy = float64(ch) / directive.VH
-				}
-			}
-			bounds := rect{
-				Left:   int32(directive.X * sx),
-				Top:    int32(directive.Y * sy),
-				Right:  int32((directive.X + directive.W) * sx),
-				Bottom: int32((directive.Y + directive.H) * sy),
-			}
-			if err := page.controller.putBounds(bounds); err != nil {
-				h.config.Logf("browser host: page %s bounds: %v", page.id, err)
-			}
-		})
+		h.withPage(directive.PageID, func(page *hostPage) { h.applyBounds(page, directive) })
 	case OpShow:
 		h.withPage(directive.PageID, func(page *hostPage) {
 			if err := page.controller.putIsVisible(true); err != nil {
 				h.config.Logf("browser host: page %s show: %v", page.id, err)
 				return
 			}
+			// The container tracks visibility too. It is not decoration: a
+			// shown container with nothing in it is an invisible window
+			// swallowing every click over its rectangle, which is exactly
+			// what a hidden pane must not do.
+			showWindow(page.container, true)
 			// Every show re-raises: Wails' own recovery path can recreate
 			// the SPA controller, which would land it above the pane
 			// again, and a raise is cheap.
-			raiseChild(page.child)
+			raiseChild(page.raiseTarget())
 		})
 	case OpHide:
 		h.withPage(directive.PageID, func(page *hostPage) {
 			if err := page.controller.putIsVisible(false); err != nil {
 				h.config.Logf("browser host: page %s hide: %v", page.id, err)
 			}
+			showWindow(page.container, false)
 		})
 	case OpDevTools:
 		h.withPage(directive.PageID, func(page *hostPage) {
@@ -213,6 +229,83 @@ func (h *Host) Apply(directive Directive) {
 	case OpClearData:
 		h.clearData(directive.PageID)
 	}
+}
+
+// applyBounds positions one page and paints its surface colour. Runs on
+// the UI thread.
+//
+// The rect arrives in the SPA's CSS pixels together with the viewport it
+// was measured in; the client area is the same surface in physical pixels,
+// so the proportion IS the whole DPI-and-zoom answer. A missing viewport
+// means client pixels. BOTH rects are scaled by that one factor pair — a
+// clip scaled differently from the rect it crops would slide across the
+// page as the window resized.
+func (h *Host) applyBounds(page *hostPage, directive Directive) {
+	sx, sy := 1.0, 1.0
+	if directive.VW > 0 && directive.VH > 0 {
+		if cw, ch, ok := clientSize(h.config.HostWindow()); ok && cw > 0 && ch > 0 {
+			sx = float64(cw) / directive.VW
+			sy = float64(ch) / directive.VH
+		}
+	}
+	layout := resolvePaneLayout(directive, sx, sy)
+
+	bounds := layout.Controller
+	if page.container == 0 {
+		// No container: the controller is still a direct child of the host,
+		// so its bounds are host-relative and there is nothing to clip
+		// against. Position the full rect and let it overhang, which is the
+		// behaviour that shipped before clipping existed.
+		bounds = rect{
+			Left:   layout.Container.Left + layout.Controller.Left,
+			Top:    layout.Container.Top + layout.Controller.Top,
+			Right:  layout.Container.Left + layout.Controller.Right,
+			Bottom: layout.Container.Top + layout.Controller.Bottom,
+		}
+	} else {
+		// Container first, then the controller inside it: moving the crop
+		// before its content means a growing pane never shows a frame of
+		// content outside the new clip.
+		moveWindow(page.container, layout.Container)
+	}
+	if err := page.controller.putBounds(bounds); err != nil {
+		h.config.Logf("browser host: page %s bounds: %v", page.id, err)
+	}
+	h.applyBackground(page, directive.Bg)
+}
+
+// applyBackground sets the controller's default background colour when it
+// changed. Bounds directives arrive on every scroll and resize, so the
+// comparison is what keeps this off the hot path.
+//
+// An empty Bg leaves whatever is already set, including the engine
+// default: the wire contract says "leave the engine default", and a pane
+// that has been told a colour once should not lose it because a later
+// directive omitted one.
+func (h *Host) applyBackground(page *hostPage, bg string) {
+	if bg == "" || bg == page.bg {
+		return
+	}
+	if page.controller2 == nil {
+		if !page.bgUnsupported {
+			page.bgUnsupported = true
+			h.config.Logf("browser host: page %s: installed WebView2 runtime has no "+
+				"ICoreWebView2Controller2; pane background colour is unavailable", page.id)
+		}
+		return
+	}
+	color, ok := parsePaneColor(bg)
+	if !ok {
+		// Validate already refused every other spelling; reaching here
+		// would mean the two halves of that rule drifted apart.
+		h.config.Logf("browser host: page %s: ignoring unparseable background %q", page.id, bg)
+		return
+	}
+	if err := page.controller2.putDefaultBackgroundColor(color); err != nil {
+		h.config.Logf("browser host: page %s background %s: %v", page.id, bg, err)
+		return
+	}
+	page.bg = bg
 }
 
 // Close tears every controller down. The environment itself is released
@@ -253,12 +346,21 @@ func (h *Host) closePages(match func(*hostPage) bool) {
 			if page.view != nil {
 				page.view.release()
 			}
+			if page.controller2 != nil {
+				page.controller2.release()
+				page.controller2 = nil
+			}
 			if page.controller != nil {
 				if err := page.controller.close(); err != nil {
 					h.config.Logf("browser host: close page %s: %v", page.id, err)
 				}
 				page.controller.release()
 			}
+			// After the controller, always: closing it destroys the window
+			// inside the container, and a container that outlives its page
+			// is an invisible window eating every click over its rectangle.
+			destroyWindow(page.container)
+			page.container = 0
 		}
 	})
 	for _, page := range closing {
@@ -652,18 +754,34 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 		return
 	}
 	page.controller = controller
+	// ICoreWebView2Controller2 is the whole background-colour surface.
+	// Querying once here keeps every bounds directive off QueryInterface;
+	// a nil result is reported the first time a colour is actually asked
+	// for, not now, so a runtime that never sees a Bg stays quiet.
+	page.controller2 = controller.queryController2()
 
 	// Pages start hidden. browser_visibility is what presents one.
 	if err := controller.putIsVisible(false); err != nil {
 		h.config.Logf("browser host: page %s initial hide: %v", page.id, err)
 	}
 
+	// The child diff MUST be taken before the container is created:
+	// creating it would add a second new child of the host and make the
+	// diff ambiguous.
 	page.child = newChildWindow(page.beforeChildren, childWindows(hwnd))
 	page.beforeChildren = nil
 	if page.child == 0 {
-		h.config.Logf("browser host: page %s child window not identified; the pane may render behind the app", page.id)
-	} else {
+		h.config.Logf("browser host: page %s child window not identified; "+
+			"the pane may render behind the app and cannot be clipped", page.id)
+	} else if err := h.attachClipContainer(page, hwnd); err != nil {
+		// Clipping is a presentation refinement, not a precondition: a
+		// pane that overhangs is worse-looking than one that crops, and
+		// far better than no pane. applyBounds falls back to host-relative
+		// bounds whenever container is zero.
+		h.config.Logf("browser host: page %s clip container: %v; pane will not clip", page.id, err)
 		raiseChild(page.child)
+	} else {
+		raiseChild(page.container)
 	}
 
 	view, err := controller.coreWebView2()
@@ -709,6 +827,27 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 	}
 }
 
+// attachClipContainer creates the page's clip window and moves the
+// controller into it through put_ParentWindow — WebView2's own reparent,
+// so its cached parent (which Chromium places select dropdowns and IME
+// candidate windows from) moves with the window. Runs on the UI thread.
+//
+// On failure the container is destroyed rather than left behind: a
+// container the controller never entered is an invisible window that eats
+// every click over its rectangle.
+func (h *Host) attachClipContainer(page *hostPage, hwnd uintptr) error {
+	container, err := createClipContainer(hwnd)
+	if err != nil {
+		return err
+	}
+	if err := page.controller.putParentWindow(container); err != nil {
+		destroyWindow(container)
+		return err
+	}
+	page.container = container
+	return nil
+}
+
 func (h *Host) dropPage(pageID string) {
 	h.mu.Lock()
 	delete(h.pages, pageID)
@@ -748,6 +887,10 @@ func (h *Host) discardCreated(page *hostPage, detail string) {
 		page.view.release()
 		page.view = nil
 	}
+	if page.controller2 != nil {
+		page.controller2.release()
+		page.controller2 = nil
+	}
 	if page.controller != nil {
 		if err := page.controller.close(); err != nil {
 			h.config.Logf("browser host: page %s discard: %v", page.id, err)
@@ -755,6 +898,8 @@ func (h *Host) discardCreated(page *hostPage, detail string) {
 		page.controller.release()
 		page.controller = nil
 	}
+	destroyWindow(page.container)
+	page.container = 0
 	h.config.Report(page.id, ReportCreateFailed, TruncateDetail(detail))
 }
 

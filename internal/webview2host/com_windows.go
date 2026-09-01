@@ -282,7 +282,8 @@ type iCoreWebView2Controller struct {
 	vtbl *iCoreWebView2ControllerVtbl
 }
 
-type rect struct{ Left, Top, Right, Bottom int32 }
+// rect (the Win32 RECT shape put_Bounds takes) is declared in
+// panelayout.go, with the pure layout arithmetic that produces it.
 
 func (c *iCoreWebView2Controller) addRef() {
 	_, _, _ = c.vtbl.AddRef.Call(uintptr(unsafe.Pointer(c)))
@@ -309,6 +310,16 @@ func (c *iCoreWebView2Controller) putIsVisible(visible bool) error {
 	return hresult(hr)
 }
 
+// putParentWindow reparents the controller through WebView2's own API so
+// its cached parent moves with the window. A raw SetParent on the child
+// HWND leaves that cache pointing at the old parent, and Chromium places
+// select dropdowns and IME candidate windows from it — they would open
+// offset by the new parent's origin.
+func (c *iCoreWebView2Controller) putParentWindow(hwnd uintptr) error {
+	hr, _, _ := c.vtbl.PutParentWindow.Call(uintptr(unsafe.Pointer(c)), hwnd)
+	return hresult(hr)
+}
+
 func (c *iCoreWebView2Controller) close() error {
 	hr, _, _ := c.vtbl.Close.Call(uintptr(unsafe.Pointer(c)))
 	return hresult(hr)
@@ -324,6 +335,71 @@ func (c *iCoreWebView2Controller) coreWebView2() (*iCoreWebView2, error) {
 		return nil, err
 	}
 	return view, nil
+}
+
+// ---------------------------------------------------------------------
+// ICoreWebView2Controller2
+// ---------------------------------------------------------------------
+
+// iCoreWebView2Controller2Vtbl is the flattened chain through
+// ICoreWebView2Controller2. Slots 0-25 are byte-for-byte
+// iCoreWebView2ControllerVtbl above (IUnknown plus ICoreWebView2
+// Controller's 23 methods, get_IsVisible .. get_CoreWebView2); the
+// derived interface appends exactly its own two, in IDL declaration
+// order:
+//
+//	[propget] HRESULT DefaultBackgroundColor([out, retval] COREWEBVIEW2_COLOR* value);
+//	[propput] HRESULT DefaultBackgroundColor([in] COREWEBVIEW2_COLOR value);
+//
+// from WebView2.1.0.2903.40.idl line 7346, cross-checked against the
+// wails fork's edge.ICoreWebView2Controller2.
+type iCoreWebView2Controller2Vtbl struct {
+	iCoreWebView2ControllerVtbl
+	GetDefaultBackgroundColor comProc
+	PutDefaultBackgroundColor comProc
+}
+
+type iCoreWebView2Controller2 struct {
+	vtbl *iCoreWebView2Controller2Vtbl
+}
+
+// iidController2 is {c979903e-d4ca-4228-92eb-47ee3fa96eab}, the IID the
+// pinned SDK IDL gives ICoreWebView2Controller2 (runtime 90+).
+var iidController2 = windows.GUID{
+	Data1: 0xc979903e, Data2: 0xd4ca, Data3: 0x4228,
+	Data4: [8]byte{0x92, 0xeb, 0x47, 0xee, 0x3f, 0xa9, 0x6e, 0xab},
+}
+
+// queryController2 returns nil on a runtime old enough to lack the
+// interface. The caller logs once and keeps the engine default: a pane
+// whose freshly exposed strips flash white is worse-looking, not broken,
+// and failing a bounds directive over it would be.
+func (c *iCoreWebView2Controller) queryController2() *iCoreWebView2Controller2 {
+	var result *iCoreWebView2Controller2
+	_, _, _ = c.vtbl.QueryInterface.Call(
+		uintptr(unsafe.Pointer(c)),
+		uintptr(unsafe.Pointer(&iidController2)),
+		uintptr(unsafe.Pointer(&result)),
+	)
+	return result
+}
+
+func (c *iCoreWebView2Controller2) release() {
+	_, _, _ = c.vtbl.Release.Call(uintptr(unsafe.Pointer(c)))
+}
+
+// putDefaultBackgroundColor sets the color WebView2 paints under all web
+// content — before the first navigation, between navigations, and behind
+// any part of a page that has not presented yet.
+//
+// The argument is a COREWEBVIEW2_COLOR BY VALUE, not a pointer. See
+// paneColor.word for why a 4-byte struct travels as one register word.
+func (c *iCoreWebView2Controller2) putDefaultBackgroundColor(color paneColor) error {
+	hr, _, _ := c.vtbl.PutDefaultBackgroundColor.Call(
+		uintptr(unsafe.Pointer(c)),
+		uintptr(color.word()),
+	)
+	return hresult(hr)
 }
 
 // ---------------------------------------------------------------------

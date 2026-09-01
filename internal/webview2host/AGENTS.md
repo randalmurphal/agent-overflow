@@ -20,6 +20,7 @@ The package is deliberately split by what can be tested off Windows:
 | `cdpframe.go` | all | tunnel frame codec and its bounds |
 | `cdptunnel.go` | all | `CDPTunnel`: dials the backend, relays loopback CDP |
 | `targetinfo.go` | all | `ParseTargetID` |
+| `panelayout.go` | all | `rect`, `resolvePaneLayout` (the clip/controller split), `paneColor` + `parsePaneColor` |
 | `host_windows.go` | windows | `Host`: environment, controllers, directive execution |
 | `com_windows.go`, `envoptions_windows.go`, `winapi_windows.go` | windows | the hand-written COM and Win32 surface |
 
@@ -36,8 +37,8 @@ disk and a page the host creates OS windows for.
 | Op | Addresses | Host does | Answers with |
 |---|---|---|---|
 | `create` | PageID + ProfileID | hidden controller on that named profile | `created` (CDP targetId) / `create-failed` |
-| `bounds` | PageID | scales the CSS-pixel rect by client size / viewport, `put_Bounds` | — |
-| `show` / `hide` | PageID | `put_IsVisible`; every show re-raises the child | — |
+| `bounds` | PageID | scales the CSS-pixel rect AND its clip by client size / viewport, moves the clip container, `put_Bounds` relative to it, applies a changed `Bg` | — |
+| `show` / `hide` | PageID | `put_IsVisible` + the container's own show/hide; every show re-raises the container | — |
 | `devtools` | PageID | `OpenDevToolsWindow` | — |
 | `close` | PageID | destroys one controller | `closed` |
 | `close-profile` | ProfileID | destroys every controller on that profile | `closed` per page |
@@ -142,12 +143,55 @@ the host window's child z-order, so it is invisible under the SPA's own
 WebView2 with no error to explain it. WebView2 does not expose the child
 HWND, so the host snapshots the parent's child list immediately before
 `CreateCoreWebView2ControllerWithOptions` and diffs it in the completion
-handler, then calls `SetWindowPos(child, HWND_TOP, ...)`. Every `show`
+handler, then raises with `SetWindowPos(..., HWND_TOP, ...)`. Every `show`
 re-raises, because Wails' renderer-hang recovery can recreate the SPA
 controller above the pane.
 
 Both are from the 2026-08-31 spike; its evidence lives in
 `/tmp/spike-webview2-dual/VERDICTS.md` while that tree exists.
+
+## The clip container
+
+A pane running under the sidebar must show its visible half, not hide and
+not overhang. WebView2 has no clip rect, so each page gets an intermediate
+child window of the host — `AgentOverflowBrowserPaneClip`, `WS_CHILD |
+WS_CLIPCHILDREN | WS_CLIPSIBLINGS`, NULL background brush — and the
+controller's identified child HWND is `SetParent`ed into it. `bounds` then
+positions the container at the scaled CLIP rect and the controller at the
+scaled FULL rect *relative to the container*, so the page keeps its layout
+size and only its presentation is cropped.
+
+Four things are load-bearing:
+
+- **The child diff comes first.** Creating the container adds a second new
+  child of the host; taking the diff after it would make the controller's
+  own HWND unidentifiable.
+- **NULL background brush.** With a brush, `DefWindowProc`'s erase would
+  flash the container's colour through the pane on every move.
+- **Rounding is OUTWARD on every edge, from one scale pair.** Both rects
+  scale by the same `sx`/`sy`, container edges floor left/top and ceil
+  right/bottom, and the controller's offset is derived from those same
+  rounded numbers (`resolvePaneLayout`, unit-tested off Windows). Rounding
+  the two rectangles independently lets a fractional scale shave a 1px
+  sliver off a SHARED edge, which reads as a hairline of launcher
+  background across the page.
+- **Close destroys it, after the controller closes.** A leaked container is
+  an invisible window that swallows every click over its rectangle.
+
+The container is not a precondition. If the child HWND cannot be
+identified, or the window cannot be created, the page keeps the older
+directly-parented behaviour: host-relative bounds, no clipping. An
+overhanging pane is worse-looking; no pane is broken.
+
+**Background colour** is `ICoreWebView2Controller2::
+put_DefaultBackgroundColor`, QueryInterface'd once at create. It is
+applied on `bounds` only when `Bg` changed, because bounds arrive on every
+scroll. `COREWEBVIEW2_COLOR` is `{A,R,G,B}` bytes passed BY VALUE — on
+win64 a 4-byte struct rides the low half of one register word,
+little-endian, so `A` is the least significant byte (`paneColor.word`).
+Alpha is always 255: WebView2 rejects every alpha but 0 and 255 with
+`E_INVALIDARG`. A runtime without the interface logs once per page and
+keeps the engine default; it never fails the bounds.
 
 ## Threading
 
