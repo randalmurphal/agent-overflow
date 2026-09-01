@@ -440,10 +440,15 @@ type App struct {
 	// fixture that never calls Start and every install that leaves the
 	// feature off. See app_tailnet.go.
 	tailnet tailnetState
-	// providerExtraEnv is merged into every provider spawn's environment.
-	// Harness mode uses it to hand ao-mockprovider its control-channel
-	// address + token without exporting those credentials process-wide
-	// (terminals, git hooks, and other children must not inherit them).
+	// providerExtraEnv is merged into the environment of every provider
+	// spawn something outside the process has to STEER: sessions
+	// (sessionProcessEnv) and account sign-ins (Deps.LoginSpawnEnv on the
+	// provider-account manager). Harness mode uses it to hand
+	// ao-mockprovider its control-channel address + token without exporting
+	// those credentials process-wide (terminals, git hooks, and other
+	// children must not inherit them). Account PROBES are deliberately out:
+	// a probe is one invocation with no behaviour to command, so a control
+	// registration for one is a mock nothing addresses.
 	// Set once before Start; never mutated afterwards.
 	providerExtraEnv map[string]string
 	// cliBinDir is the directory holding the canonical-name link to this

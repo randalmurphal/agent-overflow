@@ -50,7 +50,14 @@ type Deps struct {
 	CurrentSettings func() settings.Settings
 	ProviderBinary  func(providerName string) string
 	OpenBrowser     func(context.Context, string) error
-	HTTPClient      func() *http.Client
+	// LoginSpawnEnv is the boot-mode environment a sign-in spawn carries on
+	// top of the user's configured provider environment. Empty (or nil) in
+	// production. A harness boot puts the mock-control address and token
+	// here, so a test can steer a sign-in the way it steers a session —
+	// which matters because a device-code flow finishes on another screen
+	// and has no other way to be finished.
+	LoginSpawnEnv func() map[string]string
+	HTTPClient    func() *http.Client
 	Sessions        SessionGateway
 	Probes          ProbeInvalidator
 	RateLimits      RateLimitSink

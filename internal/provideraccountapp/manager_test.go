@@ -1,10 +1,12 @@
 package provideraccountapp
 
 import (
+	"maps"
 	"testing"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
+	"agent-overflow/internal/settings"
 )
 
 func newTestManager(t *testing.T) (*Manager, *provideraccounts.Store, *provideraccounts.Credentials) {
@@ -55,4 +57,54 @@ func TestManagerSelectionLeaseOrdersActivationWrite(t *testing.T) {
 		t.Fatal("activation write lock remained held after selection lease release")
 	}
 	manager.mu.Unlock()
+}
+
+// A sign-in spawn stacks three layers, and the order is the whole point: the
+// user's configuration picks which backend the person authenticates against,
+// the boot-mode layer is a contract settings must not be able to reconfigure,
+// and the home pin outranks both because the credential must land somewhere
+// the adoption epilogue can still decide about.
+func TestLoginSpawnEnvStacksConfigurationUnderBootModeUnderThePin(t *testing.T) {
+	manager := NewManager(Deps{
+		CurrentSettings: func() settings.Settings {
+			return settings.Settings{ClaudeCustomEnv: []settings.ProviderEnvVar{
+				{Name: "ANTHROPIC_BASE_URL", Value: "https://backend.example.test"},
+				{Name: "SHARED", Value: "configured"},
+			}}
+		},
+		LoginSpawnEnv: func() map[string]string {
+			return map[string]string{"SHARED": "boot", "AO_HARNESS_CONTROL": "127.0.0.1:1"}
+		},
+	})
+
+	env := manager.providerLoginEnv(string(provider.Claude), map[string]string{"CLAUDE_CONFIG_DIR": "/pinned", "SHARED": "pin"})
+	for name, want := range map[string]string{
+		"ANTHROPIC_BASE_URL": "https://backend.example.test",
+		"AO_HARNESS_CONTROL": "127.0.0.1:1",
+		"CLAUDE_CONFIG_DIR":  "/pinned",
+		"SHARED":             "pin",
+	} {
+		if env[name] != want {
+			t.Errorf("%s = %q, want %q", name, env[name], want)
+		}
+	}
+}
+
+// With nothing to inject the sign-in environment is the probe's, so the one
+// merge rule stays one rule rather than two that agree by coincidence.
+func TestLoginSpawnEnvWithoutABootLayerIsTheProbeEnvironment(t *testing.T) {
+	manager := NewManager(Deps{
+		CurrentSettings: func() settings.Settings {
+			return settings.Settings{CodexCustomEnv: []settings.ProviderEnvVar{
+				{Name: "OPENAI_BASE_URL", Value: "https://backend.example.test"},
+			}}
+		},
+	})
+
+	pins := map[string]string{"CODEX_HOME": "/pinned"}
+	got := manager.providerLoginEnv(string(provider.Codex), pins)
+	want := manager.providerProbeEnv(string(provider.Codex), pins)
+	if !maps.Equal(got, want) {
+		t.Fatalf("providerLoginEnv = %v, want the probe environment %v", got, want)
+	}
 }

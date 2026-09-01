@@ -115,6 +115,18 @@ func TestSignInPinsTheFileCredentialStore(t *testing.T) {
 	}
 }
 
+// The isolated home is the whole reason a sign-in is safe to abandon, so a
+// caller that forgot it is refused rather than pointed at the canonical one.
+func TestStartLoginRefusesWithoutAnIsolatedHome(t *testing.T) {
+	fake := newCodexLoginFake(t)
+	if _, err := StartLogin(t.Context(), LoginConfig{
+		Binary: fake.binary,
+		Env:    map[string]string{"CODEX_API_KEY": "unused"},
+	}); err == nil {
+		t.Fatal("StartLogin without CODEX_HOME succeeded")
+	}
+}
+
 // The one notification a sign-in client depends on is named at the call site;
 // everything else in the catalogue is opted out, account/updated included.
 func TestSignInSubscribesOnlyToTheCompletionNotification(t *testing.T) {

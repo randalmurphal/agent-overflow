@@ -405,6 +405,7 @@ func (m *Manager) openClaudeLoginFlow(
 		session, err := claude.StartLogin(ctx, claude.LoginConfig{
 			Binary:    run.attempt.binary,
 			ConfigDir: run.attempt.home.Path,
+			Env:       m.providerLoginEnv(run.provider, nil),
 		})
 		if err != nil {
 			return loginFlow{}, "", err
@@ -450,7 +451,9 @@ func (m *Manager) openCodexLoginFlow(
 	if run.codex == nil {
 		session, err := codex.StartLogin(ctx, codex.LoginConfig{
 			Binary: run.attempt.binary,
-			Env:    map[string]string{"CODEX_HOME": run.attempt.home.Path},
+			Env: m.providerLoginEnv(run.provider, map[string]string{
+				"CODEX_HOME": run.attempt.home.Path,
+			}),
 		})
 		if err != nil {
 			return loginFlow{}, "", err

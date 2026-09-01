@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,6 +61,12 @@ type LoginConfig struct {
 	// credential into. Required: this flow must never land in the canonical
 	// home, because the adoption epilogue decides which slot it belongs in.
 	ConfigDir string
+	// Env is the rest of the environment this invocation runs with, the same
+	// map an account probe takes. It matters for the same reason it matters
+	// there: an ANTHROPIC_BASE_URL that changes which backend answers must
+	// change which backend the person signs in TO, or the account adopted is
+	// not the account they authenticated. ConfigDir is applied over it.
+	Env map[string]string
 }
 
 // LoginURLs are the two addresses one flow hands back. They carry the SAME
@@ -129,10 +136,13 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 	// directory, so a kill mid-exchange abandons a brand-new grant. It cannot
 	// brick a saved account the way killing an account PROBE can, which is
 	// what GracefulCancel exists for.
+	env := make(map[string]string, len(cfg.Env)+1)
+	maps.Copy(env, cfg.Env)
+	env["CLAUDE_CONFIG_DIR"] = cfg.ConfigDir
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
 		Binary:   binary,
 		Args:     loginArgs(),
-		Env:      map[string]string{"CLAUDE_CONFIG_DIR": cfg.ConfigDir},
+		Env:      env,
 		UnsetEnv: []string{"CLAUDE_SECURESTORAGE_CONFIG_DIR"},
 		Provider: "claude",
 	})

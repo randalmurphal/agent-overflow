@@ -17,6 +17,7 @@ const mockLoginScript = `#!/bin/bash
 printf '%s\n' "$*" > "$AO_LOGIN_ARGV"
 printf '%s\n' "$CLAUDE_CONFIG_DIR" >> "$AO_LOGIN_ARGV"
 printf '%s\n' "${CLAUDE_SECURESTORAGE_CONFIG_DIR-<unset>}" >> "$AO_LOGIN_ARGV"
+printf '%s\n' "${ANTHROPIC_BASE_URL-<unset>}" >> "$AO_LOGIN_ARGV"
 auth=0
 while IFS= read -r line; do
   if [ -n "$AO_LOGIN_LOG" ]; then printf '%s\n' "$line" >> "$AO_LOGIN_LOG"; fi
@@ -92,6 +93,21 @@ func (f *loginFake) start(t *testing.T) *LoginSession {
 	return session
 }
 
+// capture is the fake's argv-and-environment record: argv, CLAUDE_CONFIG_DIR,
+// CLAUDE_SECURESTORAGE_CONFIG_DIR, ANTHROPIC_BASE_URL, in that order.
+func (f *loginFake) capture(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile(f.argvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("capture = %q", data)
+	}
+	return lines
+}
+
 func (f *loginFake) requests(t *testing.T) []string {
 	t.Helper()
 	data, err := os.ReadFile(f.logPath)
@@ -118,14 +134,7 @@ func TestStartLoginUsesTheHeadlessControlChannelArgvAndIsolatedHome(t *testing.T
 		t.Fatalf("Authenticate: %v", err)
 	}
 
-	data, err := os.ReadFile(fake.argvPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("capture = %q", data)
-	}
+	lines := fake.capture(t)
 	wantArgv := "-p --input-format stream-json --output-format stream-json --verbose"
 	if lines[0] != wantArgv {
 		t.Errorf("argv = %q, want %q", lines[0], wantArgv)
@@ -135,6 +144,39 @@ func TestStartLoginUsesTheHeadlessControlChannelArgvAndIsolatedHome(t *testing.T
 	}
 	if lines[2] != "<unset>" {
 		t.Errorf("CLAUDE_SECURESTORAGE_CONFIG_DIR = %q, want it cleared", lines[2])
+	}
+}
+
+// A sign-in runs with the same environment an account probe does, because the
+// environment picks which backend answers: signing in against the default one
+// and then adopting whoever a custom ANTHROPIC_BASE_URL reports is two
+// different accounts wearing one row.
+func TestStartLoginCarriesTheConfiguredEnvironmentUnderTheHomePin(t *testing.T) {
+	fake := newLoginFake(t)
+	session, err := StartLogin(t.Context(), LoginConfig{
+		Binary:    fake.binary,
+		ConfigDir: fake.configDir,
+		Env: map[string]string{
+			"ANTHROPIC_BASE_URL": "https://backend.example.test",
+			// The pin outranks whatever the caller's map says, so a stale
+			// value here can never land a credential in the canonical home.
+			"CLAUDE_CONFIG_DIR": "/should/not/win",
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	if _, err := session.Authenticate(t.Context()); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	lines := fake.capture(t)
+	if lines[1] != fake.configDir {
+		t.Errorf("CLAUDE_CONFIG_DIR = %q, want the pin %q", lines[1], fake.configDir)
+	}
+	if lines[3] != "https://backend.example.test" {
+		t.Errorf("ANTHROPIC_BASE_URL = %q, want the configured value", lines[3])
 	}
 }
 

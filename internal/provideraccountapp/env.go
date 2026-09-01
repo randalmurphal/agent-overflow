@@ -2,6 +2,7 @@ package provideraccountapp
 
 import (
 	"log"
+	"maps"
 	"os"
 
 	"agent-overflow/internal/provider"
@@ -81,6 +82,33 @@ func (m *Manager) providerProbeEnv(providerName string, pins map[string]string) 
 // home pins for the few root leaf probes that add provider-specific hooks.
 func (m *Manager) ProbeEnv(providerName string, pins map[string]string) map[string]string {
 	return m.providerProbeEnv(providerName, pins)
+}
+
+// providerLoginEnv is providerProbeEnv with the boot-mode layer a sign-in
+// spawn carries between the user's configuration and the pins. It exists
+// because a sign-in is the one provider process besides a session with a
+// lifecycle something outside it has to steer, which is what Deps.LoginSpawnEnv
+// hands it the address of; a probe is one shot and has nothing to steer.
+//
+// Precedence is custom < boot mode < pins, the same ladder sessionProcessEnv
+// uses and for the same reasons: a deliberate user override outranks AO's
+// defaults, a boot contract outranks a preference, and the pin naming the
+// isolated login home outranks everything because the flow must not land in
+// the canonical one.
+func (m *Manager) providerLoginEnv(providerName string, pins map[string]string) map[string]string {
+	var boot map[string]string
+	if m.deps.LoginSpawnEnv != nil {
+		boot = m.deps.LoginSpawnEnv()
+	}
+	if len(boot) == 0 {
+		return m.providerProbeEnv(providerName, pins)
+	}
+	custom := m.providerCustomEnv(providerName)
+	merged := make(map[string]string, len(custom)+len(boot)+len(pins))
+	maps.Copy(merged, custom)
+	maps.Copy(merged, boot)
+	maps.Copy(merged, pins)
+	return merged
 }
 
 // claudeProbeConfig is the ONE constructor for a Claude probe invocation:

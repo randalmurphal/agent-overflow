@@ -40,9 +40,13 @@ const (
 type LoginConfig struct {
 	Binary  string
 	WorkDir string
-	// Env carries CODEX_HOME pointed at the isolated login home. Required for
-	// the same reason Claude's config dir is: a sign-in must not land in the
-	// canonical home before the adoption epilogue has decided where it goes.
+	// Env is the environment this invocation runs with, the same map an
+	// account probe takes, and it must carry CODEX_HOME pointed at the
+	// isolated login home. Required for the same reason Claude's config dir
+	// is: a sign-in must not land in the canonical home before the adoption
+	// epilogue has decided where it goes. The rest of the map matters for the
+	// reason it matters to a probe — the environment picks which backend
+	// answers, and the account adopted must be the one authenticated.
 	Env map[string]string
 }
 
@@ -126,6 +130,9 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 	binary := strings.TrimSpace(cfg.Binary)
 	if binary == "" {
 		binary = "codex"
+	}
+	if strings.TrimSpace(cfg.Env["CODEX_HOME"]) == "" {
+		return nil, errors.New("codex: sign-in requires an isolated CODEX_HOME")
 	}
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
 		Binary:   binary,

@@ -183,6 +183,7 @@ func newProviderAccountManager(app *App) *provideraccountapp.Manager {
 		CurrentSettings: app.currentSettings,
 		ProviderBinary:  app.providerBinaryPath,
 		OpenBrowser:     func(ctx context.Context, rawURL string) error { return externalurl.Open(ctx, rawURL) },
+		LoginSpawnEnv:   func() map[string]string { return app.providerExtraEnv },
 		HTTPClient:      app.rateLimitProbeClient,
 		Sessions:        providerAccountSessionGateway{app: app},
 		Probes:          providerAccountProbeInvalidator{app: app},
