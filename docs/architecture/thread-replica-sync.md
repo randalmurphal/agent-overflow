@@ -517,6 +517,13 @@ want durable replicas.
   window. That fires at flush rate for every background and workflow
   thread, most of which the replica has never held, so the drop
   short-circuits on the mirror before it opens a transaction.
+  Since `provider:item_event` became entity-filtered the drop only
+  reaches threads this client watches, so a thread with neither a pane
+  nor a live-tail registration keeps its envelope while it streams
+  elsewhere. Nothing is needed for that: the entry's attested stamp
+  still predates the writes, so the next open answers `stale` and gets
+  a replacing page — the understate rule (§3.4) covering a wider case
+  than it was written for.
 - **Desktop threat model note**: in the embedded webview the replica
   sits in the same OS-user boundary as the SQLite store itself, so v1
   plaintext adds no exposure. Encryption-at-rest becomes load-bearing

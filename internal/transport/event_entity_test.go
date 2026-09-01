@@ -20,7 +20,11 @@ func entityFilteredChannel(t *testing.T) string {
 	return names[0]
 }
 
-const wildcardChannel = "provider:item_event"
+// A registered, thread-keyed channel that is NOT in the EntityFiltered
+// column — the control arm every narrowing test needs. thread:updated is
+// the sidebar's convergence channel and is wildcard for exactly the reason
+// these tests assert: it is read for threads no pane is showing.
+const wildcardChannel = "thread:updated"
 
 // TestSubscriberWatchesWildcardUntilFirstFrame pins the property every
 // non-SPA client in the tree depends on: a subscriber that never had a

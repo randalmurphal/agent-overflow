@@ -576,32 +576,34 @@ var channelPolicies = []ChannelPolicy{
 			"paths or identity. Keyed per thread.",
 	},
 	{
-		Channel:   eventchan.ProviderItemEvent,
-		Audience:  AudienceAny,
-		Retention: RetentionDefault,
-		Scope:     ScopeThreadsRead,
+		Channel:        eventchan.ProviderItemEvent,
+		Audience:       AudienceAny,
+		Retention:      RetentionDefault,
+		Scope:          ScopeThreadsRead,
+		EntityFiltered: true,
 		Why: "The main transcript stream; a remote viewer that cannot see it " +
 			"has no product. Pinned remote-visible by " +
 			"TestEventVisibleToOrigin. Keyed by thread/item — never " +
 			"latest-only. " +
-			"NOT EntityFiltered, and the reason is a finding rather than an " +
-			"omission (wave 6d sweep): six frontend consumers read this " +
-			"channel for threads with NO pane, and three of them are the " +
-			"off-pane surfaces the narrowing would exist to leave alone. " +
-			"threadStatuses.projectThreadItem drives the sidebar's error, " +
-			"interrupted and Plan ready badges, and its own comment says the " +
-			"pill exists \"so an off-pane user doesn't have to open the " +
-			"thread\"; eventsThreadRows.syncThreadActivity is one of the three " +
-			"sidebar-ordering bumps; eventsThreadRows.syncProposedPlanStatus " +
-			"patches hasActionableProposedPlan onto the sidebar row. The other " +
-			"three are structural: discussionLiveTail routes participant child " +
-			"threads that have no pane BY CONSTRUCTION, " +
-			"workspaceChangeLock states in a comment that it must not filter " +
-			"on threadId because \"the busy thread may be one this client has " +
-			"never mounted\", and eventsItemStream evicts threadItemCache and " +
-			"the IndexedDB replica window for exactly the INACTIVE threads. " +
-			"Narrowing this channel needs those six re-homed onto wildcard " +
-			"channels first; it is not a filter decision.",
+			"EntityFiltered since wave 6d2, and the membership rule holds " +
+			"only because the off-pane consumers the 6d sweep found were " +
+			"re-homed onto wildcard carriers first: the sidebar's Failed " +
+			"badge rides thread:error_notice, its Plan ready badge and the " +
+			"user_text sidebar bump ride thread:updated (a `full` row and a " +
+			"`updatedAt` patch respectively), and the workspace-change lock " +
+			"reads provider:background_tasks_changed, which now fires on " +
+			"Claude's exit / drain / orphan-recovery transitions too. What " +
+			"still reads this channel is pane-lifetime or watched-thread " +
+			"scoped: the send-queue flush confirm, the proposedPlans warm " +
+			"cache (a warm-path optimization — both plan surfaces RPC-load " +
+			"on mount), the activity rail's background controller, and " +
+			"discussionLiveTail's participant child threads, which have no " +
+			"pane but ARE contributed to the watched set by their routing " +
+			"table. The one deliberate degradation is eventsItemStream's " +
+			"eviction branch: an unwatched thread stops having its warm " +
+			"cache and replica window evicted mid-stream, and instead " +
+			"validates on read — the next open stamps the window and " +
+			"SyncThreadWindow answers stale with a replacing page.",
 	},
 	{
 		Channel:   eventchan.ProviderModelFallback,

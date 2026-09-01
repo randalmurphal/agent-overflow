@@ -22,7 +22,10 @@ import { FakeCtor, flushMicrotasks, MockWebSocket } from '../../test/helpers/moc
 const bootstrap = async () => ({ wsUrl: 'ws://example/ws', token: 'test-token' });
 
 const FILTERED = ENTITY_FILTERED_CHANNELS[0]!;
-const UNFILTERED = 'provider:item_event';
+// Any channel absent from that list; thread:updated is the one the
+// filtered channels re-homed their off-pane consumers onto, so it is
+// deliberately wildcard and will stay that way.
+const UNFILTERED = 'thread:updated';
 
 async function connectedClient() {
   MockWebSocket.reset();

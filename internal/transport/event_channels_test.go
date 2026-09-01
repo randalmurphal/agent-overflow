@@ -127,15 +127,19 @@ var (
 		"workflow:definitions-changed",
 		"workflow:engine-state", // 2026-08-25 pass
 	}
-	// Wave 6d. Membership means a watching connection stops receiving the
-	// channel for threads it did not name, so a row joining this list is a
-	// claim that NOTHING off-pane reads it — established by sweeping the
-	// frontend consumers, never by the channel's name. Both members are
-	// span cache-warmers whose absence costs a highlight RPC and nothing
-	// else. provider:item_event is deliberately absent; its row says why.
+	// Wave 6d, extended in 6d2. Membership means a watching connection
+	// stops receiving the channel for threads it did not name, so a row
+	// joining this list is a claim that NOTHING off-pane reads it —
+	// established by sweeping the frontend consumers, never by the
+	// channel's name. The two highlight rows are span cache-warmers whose
+	// absence costs a highlight RPC and nothing else. provider:item_event
+	// joined once its six off-pane consumers were re-homed onto wildcard
+	// carriers (thread:error_notice, thread:updated,
+	// provider:background_tasks_changed); its row names them.
 	frozenEntityFilteredChannels = []string{
 		"highlight:diff_seed",
 		"highlight:seed",
+		"provider:item_event",
 	}
 )
 

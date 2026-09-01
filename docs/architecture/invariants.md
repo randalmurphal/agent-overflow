@@ -324,7 +324,12 @@ and `app_flush_queue_test.go::TestDispatchFlush_EchoLandsAfterRowsThatArrivedFir
 **Rule.** Every timeline row that lands in SQLite goes through
 `Router.persistItem`. The same function handles `parent_id` cycle
 guards, store upsert, canonical `provider:item_event` emission, and the
-persisted-items counter.
+persisted-items counter. Row-shaped facts that also need a WILDCARD
+carrier — because `provider:item_event` is entity-filtered and a client
+not watching the thread never sees the row — hang off the same
+chokepoint rather than off their callers: `thread:error_notice` on an
+`error` row, the `thread:updated` `updatedAt` patch on an
+activity-counting `user_text` row.
 
 **Rationale.** Split write/emit paths are how "item appears in DB but
 not on screen" (or vice versa) bugs happen. Centralizing the two
@@ -628,6 +633,15 @@ LiveTodoPanel pull-up, workspace-change lock) calls
 `getActiveTurn(pane.threadId)` directly: no per-pane shim, no
 parallel state slice. No code path rehydrates the registry from
 SQLite or item state.
+
+The store now enforces this structurally: it has no item-shaped entry
+point left. `projectThreadItem` was deleted when
+`provider:item_event` became entity-filtered — a store that reads a
+per-thread stream a client only receives for the threads it watches
+would answer differently on two clients — so the only badge inputs
+are the typed projections (`projectThreadError`,
+`projectReaderMessageSent`, the turn and approval ones), and an item
+row cannot reach the working predicate to be wrong about it.
 
 **Test.** Frontend test: simulate a stuck `tool_call` row + empty
 registry; assert the working indicator is hidden. Regression test

@@ -1003,6 +1003,16 @@ forward-skip heuristic, and a thread with a consumer needs a source in
 `frontend/src/lib/stores/watchedThreads.ts`. Adding a row means auditing every
 consumer of that channel for one that reads it for a thread with no surface.
 
+**That audit is the work, and it is not always a no.** `provider:item_event`
+had six such consumers and joined the column anyway, by RE-HOMING them onto
+wildcard carriers rather than by widening the filter: the sidebar's Failed
+badge onto `thread:error_notice` (a channel that exists for this), its Plan
+ready badge and the user_text sidebar bump onto `thread:updated` (a `full`
+row and an `updatedAt` patch), and the workspace-change lock onto
+`provider:background_tasks_changed`. So the question a candidate row asks is
+"what does the off-pane consumer actually need, and what is the cheapest
+wildcard frame that says it" — never "can we live without the consumer".
+
 ## Wire frames and the gap marker
 
 `frame.go` is the frame catalog: `ClientFrame` and `ServerFrame` document every

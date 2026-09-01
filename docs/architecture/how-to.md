@@ -293,16 +293,25 @@ Only add a new channel when:
 
 1. **Define the event payload struct.** In `internal/provider/types.go`
    or a triage-package types file, add a new Go struct with JSON tags.
-2. **Router method.** Add `Router.emitFooBar` in `router.go` that
-   calls `app.Event.Emit` (via the router's emitter seam) on the new
-   channel name.
-3. **Wire through `app_emit.go`.** `App.emitWithReplay` is the single
-   emit path that also mirrors into the replay log. The new channel
-   flows through it.
-4. **Frontend listener.** Add `wailsEventOn('provider:foo_bar', ...)`
+2. **Name the channel once.** Add the constant to
+   `internal/eventchan/channels.go`. Nothing else may spell the string.
+3. **Register the policy row.** Add it to the table in
+   `internal/transport/event_channels.go` — audience, retention, scope,
+   whether it is `EntityFiltered`, and a `Why` a reviewer can check. The
+   package's tests fail the build without a row.
+   Read [`internal/transport/AGENTS.md`](../../internal/transport/AGENTS.md)
+   before picking the columns; `EntityFiltered` in particular means every
+   consumer must be pane-scoped or watched-thread-scoped, and that audit
+   is the work.
+4. **Add it to the harness roll call.** `cmd/ao-harness/channels.go`
+   names the constants `ao-harness events` can tail;
+   `TestKnownChannelsCoversTheEventChannelRegistry` fails without it.
+5. **Router method.** Add `Router.emitFooBar` in `router.go` that calls
+   the router's `r.emit` seam with the new constant.
+6. **Frontend listener.** Add `wailsEventOn('provider:foo_bar', ...)`
    in `frontend/src/lib/stores/events.ts`. Route to the appropriate
-   per-pane handler.
-5. **Test.** Router test for the emit path + frontend test for the
+   per-pane handler, and cancel it in the same teardown.
+7. **Test.** Router test for the emit path + frontend test for the
    listener. The replay log should also record the new channel, so
    verify the replay hook picks it up.
 

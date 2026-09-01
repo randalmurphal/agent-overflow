@@ -113,6 +113,22 @@ stops waking readers.
   merges the named fields onto the cached row. The initiator's own echo is
   the same row its RPC returned, so an optimistic apply and the event
   settle on identical bytes.
+
+  It is also the wildcard carrier for two sidebar facts the narrowed
+  transcript stream can no longer deliver. A `full` row lands whenever a
+  proposed-plan write moves the derived `hasActionableProposedPlan`
+  column — which is the ONLY source of the Plan ready pill, since the live
+  mirror in `threadStatuses` was deleted. And a `patch` carrying
+  `updatedAt` — and only `updatedAt` — is the user_text sidebar bump: it is
+  applied WITHOUT a cached row (the other patch fields are not), routed to
+  `syncThreadActivity`'s keyed live-activity box rather than merged into the
+  row, and it clears the thread's error / interrupted badge.
+- `thread:error_notice` is the third sidebar fact off the same cliff: the
+  Failed pill. `{threadId, itemId}` and nothing else — the error PROSE is
+  still an item row on the narrowed stream, because prose is only readable
+  in a thread you have open, while the badge is read on threads you do not.
+  One emit site, on the error persist, and `api_error` (the inline retry
+  banner, whose turn may still succeed) deliberately does not produce one.
 - `project:updated` is the same contract one level up, handled by
   `eventsProjectRows.ts`: one event per persisted project-row change, the same
   `full` / `listed` / `unlisted` / `deleted` vocabulary, and the same

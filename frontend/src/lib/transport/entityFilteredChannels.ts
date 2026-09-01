@@ -24,6 +24,7 @@
 export const ENTITY_FILTERED_CHANNELS: readonly string[] = [
   'highlight:diff_seed',
   'highlight:seed',
+  'provider:item_event',
 ];
 
 const entityFilteredSet = new Set(ENTITY_FILTERED_CHANNELS);
