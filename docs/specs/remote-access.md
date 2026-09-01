@@ -2067,6 +2067,21 @@ picker's "Local (with changes)" becomes "Base (with changes)" so one
 word means one thing in the strip), Settings "Systems", the machine
 chip. 7d: project identity and merged entries.
 
+**7a LANDED 2026-09-01 (842d78e5).** Route column + generated TS mirror
+(155 thread, 21 project, 153 home, 38 selected, 6 all; 59 methods keyed
+by workflow item, automation, terminal or subscription ids are parked
+`home` in the table and resolved by the client's index instead);
+`backendName` on hello and manifest; `internal/backendproxy` extracted
+from `clientmode`; the attached routes `/ws/backend/<id>`,
+`/bootstrap/<id>.json`, `/backend/<id>/attachments/…`. One narrowing
+beyond the plan: the attached routes and the manifest's `backends`
+list answer **loopback pages only**, so a remote page never borrows
+this machine's pinned credentials for a backend it did not pair with,
+and a revocation on the far backend stays visible to the client that
+drives it. `AddBackend` returns the verification number and the
+confirmation wait announces itself on `backend:attach`. The
+`remoteEndpoints` list and its plaintext token RPC are deleted.
+
 Path links and open-in-editor from a UI that is not on the thread's
 host default to copy/preview, with "open on <machine>" as the explicit
 secondary. The recommended posture for real remote editing is the
