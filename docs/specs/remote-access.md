@@ -1844,6 +1844,33 @@ frame.**
 - **Snapshot and attachment transfers ride HTTP**, not the WS, so large
   bodies never block the event socket or inflate the replay ring.
 
+  Attachments: LANDED 2026-09-01 (wave 6b, 7 commits ending 0a2188be).
+  `UploadAttachment` / `GetAttachmentData` deleted as RPCs; bytes cross
+  on `GET /attachments/{threadID}/{attachmentID}` and
+  `PUT /attachments/upload` (`internal/transport/attachmentroutes.go`),
+  each admitted by a single-use subject-bound ticket minted by a
+  scope-gated RPC (`MintAttachmentDownloadTicket` re-checks thread
+  ownership at the mint AND at open; `MintAttachmentUploadTicket` fixes
+  filename/type/exact byte count in the ticket so the PUT contributes
+  bytes and nothing else). Two ticket books (download/upload, 30 s TTL,
+  64 outstanding each); tickets are consumed at the first byte, so the
+  transfer itself rides a per-request 5-minute deadline
+  (`AttachmentTransferWindow`, shared with the `--connect` stub's
+  relay). The routes carry no cookie, no Origin requirement, answer 404
+  for every refusal, and are deliberately not rate-limited (admission
+  is already a bounded-issuance token; argued in the transport guide).
+  The attachment store streams end to end (declared-length contract,
+  12-byte signature peek, 32 KiB copy buffer — a 10 MiB image is never
+  a `[]byte` or a base64 string on either side). Thumbnails STAY an
+  RPC by decision (~10-30 KB, grid path, a ticket round trip per tile
+  costs more than the frame). The `--connect` stub relays
+  `/attachments/` under its own page credential, attaching no upstream
+  credential (the routes accept none) and never rewriting the URL.
+  **Resumable upload is deliberately deferred to the phone waves**:
+  uploads are single-shot PUT (bodies ≤ 10 MiB, composer compresses
+  first), and a failed upload re-mints and re-PUTs. Snapshot fetches
+  over HTTP remain open (they ride RPC today).
+
 **Initial wire budgets** — starting targets, revised by measurement,
 never by feel; a harness scenario counts actual bytes on the wire and
 fails on regression:
@@ -2282,7 +2309,8 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    login"). Open in this phase: release signing (parked to the final
    discussion slot by 2026-09-01 ruling).
 6. **Phone preparation.** Subscription narrowing, buffered deltas, scope
-   leases, reduced snapshots, attachment flows, push senders +
+   leases, reduced snapshots, attachment flows (LANDED 2026-09-01,
+   wave 6b — §14 "Snapshot and attachment transfers"), push senders +
    notification semantics + deep links. The Capacitor shell itself
    (same SPA + native plugins, §9) is scaffolded here, including the
    native WebSocket bridge (the phone's only transport, §9) and
