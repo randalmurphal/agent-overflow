@@ -143,7 +143,7 @@
 
     <SettingsField
       label="DNS update command"
-      hint="Publishes the record Let's Encrypt checks. Agent Overflow runs it with set or clear, the record name, and the value appended. There is no shell, so write sh -c '…' if you need one. Leave it blank to obtain no certificate."
+      hint="Publishes the record Let's Encrypt checks. Agent Overflow runs it with set or clear, the record name, and the value appended. There is no shell, so write sh -c '…' if you need one. Leave it blank if you are not using Let's Encrypt."
       htmlFor="network-dns-hook"
       stacked
     >
