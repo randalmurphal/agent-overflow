@@ -295,6 +295,13 @@ and the launcher on the same validation function instead of a bypass. `upgrade`
 hands coder/websocket `InsecureSkipVerify: true` precisely because this package
 has already made the decision, so one rule holds on loopback and LAN alike.
 
+The TLS state, and deliberately not the `X-Forwarded-Proto` header that the
+manifest's socket URL reads (`requestIsHTTPS`). The two are the same question
+with different stakes: a wrong scheme on `wsUrl` produces a URL the browser
+cannot connect to, while a wrong scheme here would let a caller widen an
+allow-list by describing itself. A deployment behind a TLS-terminating proxy
+therefore still allow-lists its origin explicitly.
+
 ### `/pageurl`: a ticket is spent, and some clients navigate twice
 
 `PageURLPath` answers a fresh page URL to a caller that already holds the

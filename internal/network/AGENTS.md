@@ -15,6 +15,18 @@ upgrade). So the URL is how a device REACHES this backend, not how it
 gets in — which is also why the one-time ticket on it buys less than
 its shape suggests: it loads the page, and nothing else.
 
+**The listener speaks TLS and this URL still does not, and that is not
+an oversight.** The transport terminates TLS on the same port when the
+boot resolved a certificate (`internal/transport/AGENTS.md`, § Same-port
+TLS), but the certificate is self-signed: a BROWSER cannot pin it and
+would meet a trust warning, so the URL this package formats stays
+`http://` and `Insecure` stays true for a LAN bind — the bytes a browser
+exchanges really are readable on that network. The TLS half is for
+clients that own their own TLS configuration and pin the fingerprint the
+pairing payload carried, which is a later wave's client. Do not derive
+`URL` or `Insecure` from "a certificate exists"; the question is whether
+the CLIENT can pin, and no browser can.
+
 ## Layout
 
 - `network.go`: `Settings`, `BindHost`, `OriginPatterns`,

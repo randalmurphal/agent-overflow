@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -267,6 +268,25 @@ type Config struct {
 	// visible reconnect.
 	MaxRemoteConnLifetime time.Duration
 
+	// TLSCertificate, when non-nil, makes this server terminate TLS
+	// in-app on the SAME port it serves cleartext on: an accepted
+	// connection that opens with a TLS handshake record is handed to
+	// crypto/tls, and anything else is the plain HTTP this server always
+	// spoke (tlssniff.go). Uniform on every bind — loopback and LAN,
+	// boot and rebind alike — so there is no mode in which a client that
+	// pinned this certificate finds it missing.
+	//
+	// Nil (the default, and what every caller that has no certificate
+	// passes) leaves the listener plain, at no cost: the sniff wrapper
+	// is not installed at all.
+	//
+	// The certificate is self-signed and nothing trusts it. It exists so
+	// a client that owns its TLS configuration can pin the fingerprint
+	// the pairing payload carried (docs/specs/remote-access.md §7). A
+	// browser cannot pin, so the share URL this server hands out stays
+	// http:// and a browser keeps reaching the cleartext half.
+	TLSCertificate *tls.Certificate
+
 	// OriginPatterns is the WS origin allow-list. Empty (default) uses
 	// InsecureSkipVerify — appropriate for loopback. Phase E (LAN bind
 	// toggle) populates this with the configured remote origins.
@@ -363,6 +383,12 @@ type Server struct {
 	// replay checkpoint). Opaque and non-credential: it is published in
 	// the manifest precisely so nothing else has to be.
 	launchID string
+
+	// tlsConfig is what an accepted TLS connection is served with, built
+	// once in New from Config.TLSCertificate and nil when there is none.
+	// Immutable afterwards, and shared by every bind: a Rebind changes
+	// which address answers, never which certificate answers there.
+	tlsConfig *tls.Config
 
 	// csp is the one Content-Security-Policy every response on this
 	// server carries, resolved from Config.DevAssetProxy in New and
@@ -480,6 +506,7 @@ func New(cfg Config) (*Server, error) {
 		cred:           cred,
 		launchID:       launchID,
 		csp:            csp,
+		tlsConfig:      serverTLSConfig(cfg.TLSCertificate),
 		originPatterns: originPatterns,
 		serveErr:       make(chan error, 1),
 		sessionConns:   newSessionConns(),
@@ -542,7 +569,7 @@ func (s *Server) start() error {
 // main.go uses that to re-persist the pinned port.
 func (s *Server) listen() (net.Listener, error) {
 	addr := net.JoinHostPort(s.cfg.BindAddr, strconv.Itoa(s.cfg.Port))
-	listener, err := net.Listen("tcp", addr)
+	listener, err := s.bindListener(addr)
 	if err == nil {
 		return listener, nil
 	}
@@ -552,12 +579,28 @@ func (s *Server) listen() (net.Listener, error) {
 
 	ephemeral := net.JoinHostPort(s.cfg.BindAddr, "0")
 	log.Printf("transport: listen %s: %v — retrying on an ephemeral port", addr, err)
-	listener, retryErr := net.Listen("tcp", ephemeral)
+	listener, retryErr := s.bindListener(ephemeral)
 	if retryErr != nil {
 		return nil, fmt.Errorf("transport: listen %s: %w (after %s: %v)", ephemeral, retryErr, addr, err)
 	}
 	log.Printf("transport: bound %s instead of %s", listener.Addr(), addr)
 	return listener, nil
+}
+
+// bindListener is the ONE place this server acquires a listener: the
+// bind plus the same-port TLS wrap when a certificate is configured
+// (tlssniff.go). Every path that binds goes through it — boot, the
+// ephemeral fallback, a rebind, the rebind's close-and-retry, and its
+// rollback — so a listener that terminated TLS cannot be replaced by one
+// that quietly does not. A client pinning the certificate would read
+// that as the backend disappearing, and only on the paths a user reaches
+// by toggling LAN access.
+func (s *Server) bindListener(addr string) (net.Listener, error) {
+	inner, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return sniffTLS(inner, s.tlsConfig, s.cfg.HTTPReadHeaderTimeout), nil
 }
 
 // portUnavailable reports whether a bind error is attributable to the
@@ -1295,10 +1338,45 @@ func deriveWSURL(r *http.Request) string {
 		host = "127.0.0.1"
 	}
 	scheme := "ws"
-	if r.TLS != nil {
+	if requestIsHTTPS(r) {
 		scheme = "wss"
 	}
 	return fmt.Sprintf("%s://%s/ws", scheme, strings.TrimSpace(host))
+}
+
+// ForwardedProtoHeader is the de-facto header a TLS-terminating proxy
+// uses to say what scheme the client actually spoke. Exported so the
+// one test that has to send it, and any future reader, name the same
+// string this one does.
+const ForwardedProtoHeader = "X-Forwarded-Proto"
+
+// requestIsHTTPS reports whether the page that will use this manifest
+// was served over TLS — by this server, or by a proxy that terminated it
+// (docs/specs/remote-access.md §7, "Termination by someone else's
+// proxy").
+//
+// The forwarded header is honored HERE and nowhere else. A page served
+// as https: and handed a ws:// socket URL is refused by the browser as
+// mixed content, so the scheme has to follow the page rather than the
+// listener; a caller that sets the header on a request nobody proxied
+// only hands ITSELF a URL that will not connect. That is the whole
+// consequence, which is why this reads a caller-supplied header while
+// the authorization checks beside it refuse to: `OriginAllowed` still
+// derives its scheme from the TLS state alone, so a proxied deployment
+// needs its origin allow-listed explicitly rather than talking its way
+// past the check with a header. The Secure cookie flag stays on r.TLS
+// for the same reason plus one of its own (see pageCookie).
+//
+// Only the declared spelling `https` promotes the scheme. `http` is the
+// other value a proxy is allowed to send and means what this server
+// already assumed; everything else — the comma-joined list a chain of
+// proxies produces, a scheme nobody declared — is ignored rather than
+// guessed at, and lands on that same cleartext answer.
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get(ForwardedProtoHeader)), "https")
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {

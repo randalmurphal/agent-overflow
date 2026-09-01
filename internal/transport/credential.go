@@ -171,11 +171,15 @@ func (c *Credential) Exchange(w http.ResponseWriter, r *http.Request) bool {
 //   - No Domain: host-only, so the cookie never widens to sibling hosts.
 //   - No Expires/Max-Age: a session cookie, matching a token that is
 //     minted per launch and never persisted.
-//   - Secure only under TLS: a loopback bind is plain http, and a Secure
-//     cookie there would simply never be stored. r.TLS is the only
-//     trustworthy signal — a forwarded-proto header is caller-supplied,
-//     and a proxy that terminates TLS still reaches a browser that
-//     accepts a non-Secure cookie over https.
+//   - Secure only under TLS: a request that arrived on the listener's
+//     cleartext half would simply never store a Secure cookie. r.TLS is
+//     the signal, and NOT the forwarded-proto header that deriveWSURL
+//     reads (requestIsHTTPS says why the two differ): a caller-supplied
+//     header is tolerable where being wrong produces a URL that does not
+//     connect, and not where being wrong produces a credential the
+//     browser drops. A proxy that terminates TLS also still reaches a
+//     browser that accepts a non-Secure cookie over https, so honoring
+//     it here would buy nothing either.
 func (c *Credential) pageCookie(r *http.Request) *http.Cookie {
 	return &http.Cookie{
 		Name:     pageCookieName(r.Host),

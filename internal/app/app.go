@@ -406,6 +406,18 @@ type App struct {
 	// (it returns $HOME/Library/Application Support), which env overrides
 	// can't redirect.
 	dataDirOverride string
+	// certFingerprint is the fingerprint of the TLS certificate the
+	// transport listener presents (internal/servercert), carried on every
+	// pairing link this backend mints so a client that owns its own TLS
+	// configuration can pin it. Empty when the boot resolved no
+	// certificate, which mints links exactly as before: the payload's
+	// field is omitted and the device pairs on proof-of-possession plus
+	// the verification number, never on channel secrecy.
+	//
+	// A boot input like dataDirOverride, written before the transport
+	// serves and never after, so the RPC goroutines that read it cannot
+	// race the write.
+	certFingerprint string
 	// providerExtraEnv is merged into every provider spawn's environment.
 	// Harness mode uses it to hand ao-mockprovider its control-channel
 	// address + token without exporting those credentials process-wide

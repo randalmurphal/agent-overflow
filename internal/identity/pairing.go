@@ -105,15 +105,19 @@ type PairingPayload struct {
 	Token string `json:"token"`
 	// CertFingerprint is the backend's TLS certificate fingerprint, which a
 	// native client pins for the redemption exchange and from then on (§4
-	// step 6, §7).
+	// step 6, §7). "sha256:<lowercase hex>" over the DER of the leaf, as
+	// internal/servercert renders it.
 	//
-	// RESERVED. Phase 5 terminates TLS in-app and fills this; every link
-	// minted before then carries an empty value, which is the
-	// trust-on-first-use path the spec already describes for the
+	// This package is fingerprint-AGNOSTIC: it carries whatever the
+	// minting surface handed it and compares nothing. Only the boot knows
+	// which certificate its listener presents (internal/app's
+	// MintDevicePairing reads it from there), so a value invented here
+	// would be a second answer to a question this package cannot see.
+	//
+	// Empty is still a valid link, and still the shape a browser gets: it
+	// is the trust-on-first-use path the spec describes for the
 	// typed-code case — safe on proof-of-possession plus the verification
-	// number, never on channel secrecy. It is declared now so the payload
-	// shape does not move when phase 5 lands, and so a device built
-	// against this version already knows the field exists.
+	// number, never on channel secrecy.
 	CertFingerprint string `json:"certFingerprint,omitempty"`
 }
 
@@ -167,8 +171,10 @@ type PairingRequest struct {
 	// invitation are this field, not a second flow — PairingAccess is the
 	// device-pairing surface's name for the two choices it offers.
 	Scopes []Scope
-	// CertFingerprint is the reserved phase-5 field (see PairingPayload).
-	// Empty today on every path.
+	// CertFingerprint is what the redeemed device pins for this backend's
+	// TLS (see PairingPayload). Supplied by the minting surface, which is
+	// the only layer that knows which certificate the listener presents;
+	// empty is a link that names none.
 	CertFingerprint string
 }
 

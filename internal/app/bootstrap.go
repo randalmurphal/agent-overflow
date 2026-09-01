@@ -35,6 +35,13 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 // SetDataDirOverride installs the executable's --data-dir boot input.
 func SetDataDirOverride(a *App, dataDir string) { a.dataDirOverride = dataDir }
 
+// SetCertFingerprint installs the fingerprint of the TLS certificate the
+// transport terminates with, which every pairing link then carries. The
+// boot resolves the certificate and the listener from one value, so the
+// string a device is told to pin is the string that listener presents.
+// Call before the transport serves.
+func SetCertFingerprint(a *App, fingerprint string) { a.certFingerprint = fingerprint }
+
 // EnsurePrivateDir applies the same ownership and mode rules used by App
 // startup to a bootstrap-owned data directory.
 func EnsurePrivateDir(path string) error { return ensureAppPrivateDir(path) }

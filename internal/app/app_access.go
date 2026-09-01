@@ -185,6 +185,12 @@ func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, erro
 		// size"). The narrowing is real now that the per-RPC gate enforces
 		// what each scope permits.
 		Scopes: grants,
+		// What a client that owns its own TLS configuration pins for this
+		// backend (§7, "Domainless TLS for Go-native clients"). Empty when
+		// the boot resolved no certificate, which is the trust-on-first-use
+		// path the spec already describes for the typed-code case and what
+		// every link carried before this existed.
+		CertFingerprint: a.certFingerprint,
 	})
 	if err != nil {
 		return PairingInvite{}, err
@@ -196,6 +202,10 @@ func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, erro
 		BackendName: backendDisplayName(),
 		Endpoint:    endpoint,
 		Token:       link.Token,
+		// Read back off the minted row rather than from the field above,
+		// so the value the device is told to pin and the value the
+		// redemption is recorded against cannot be two different strings.
+		CertFingerprint: link.Link.CertFingerprint,
 	}.Encode()
 	if err != nil {
 		return PairingInvite{}, err

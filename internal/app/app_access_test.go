@@ -223,6 +223,55 @@ func TestMintDevicePairing_HandsTheDeviceALoadablePageAndAFragmentPayload(t *tes
 	}
 }
 
+// TestMintDevicePairing_CarriesTheBackendCertificateFingerprint — a
+// Go-native client pins the backend's TLS from the pairing payload
+// (docs/specs/remote-access.md §7), so the fingerprint the boot resolved
+// has to reach both the payload the device reads and the row the
+// redemption is recorded against. A boot that resolved none mints exactly
+// the link it always did.
+func TestMintDevicePairing_CarriesTheBackendCertificateFingerprint(t *testing.T) {
+	app := accessApp(t)
+	const fingerprint = "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
+	SetCertFingerprint(app, fingerprint)
+
+	invite, err := app.MintDevicePairing(string(identity.DevicePhone), "")
+	if err != nil {
+		t.Fatalf("MintDevicePairing: %v", err)
+	}
+	_, encoded, found := strings.Cut(invite.URL, pairingFragmentPrefix)
+	if !found {
+		t.Fatalf("the invite URL carries no pairing fragment: %s", invite.URL)
+	}
+	payload, err := identity.DecodePairingPayload(encoded)
+	if err != nil {
+		t.Fatalf("decode the pairing payload: %v", err)
+	}
+	if payload.CertFingerprint != fingerprint {
+		t.Errorf("payload certFingerprint = %q, want %q", payload.CertFingerprint, fingerprint)
+	}
+	link, err := app.store.GetPairingLink(invite.LinkID)
+	if err != nil {
+		t.Fatalf("GetPairingLink: %v", err)
+	}
+	if link.CertFingerprint != payload.CertFingerprint {
+		t.Errorf("the stored link pins %q while the payload says %q", link.CertFingerprint, payload.CertFingerprint)
+	}
+
+	bare := accessApp(t)
+	bareInvite, err := bare.MintDevicePairing(string(identity.DevicePhone), "")
+	if err != nil {
+		t.Fatalf("MintDevicePairing without a certificate: %v", err)
+	}
+	_, bareEncoded, _ := strings.Cut(bareInvite.URL, pairingFragmentPrefix)
+	barePayload, err := identity.DecodePairingPayload(bareEncoded)
+	if err != nil {
+		t.Fatalf("decode the pairing payload: %v", err)
+	}
+	if barePayload.CertFingerprint != "" {
+		t.Errorf("a backend with no certificate named %q", barePayload.CertFingerprint)
+	}
+}
+
 // TestMintDevicePairing_RefusesAClassItDoesNotPair — a peer backend is
 // enrolled through the federation flow with its own trust decisions;
 // admitting one here would give it the posture of an owner's own device.

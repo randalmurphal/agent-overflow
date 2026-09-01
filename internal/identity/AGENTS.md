@@ -249,10 +249,16 @@ keeping:
   `internal/app` does (`TestObserveScopesAreTheObserveTier`). Narrowing a
   device that is already paired is a new link, and its old session keeps
   what it holds until it is revoked.
-- **`PairingPayload.CertFingerprint` is reserved and unread.** Phase 5
-  fills it when TLS exists. It is in the shape now so the QR a device
-  scanned before that phase is not a payload version older clients cannot
-  parse.
+- **`PairingPayload.CertFingerprint` is carried, never decided.** The
+  minting surface supplies it (`internal/app`'s `MintDevicePairing`, from
+  `internal/servercert`), `MintPairingLink` copies it onto the row, and the
+  payload repeats it; this package compares nothing and invents nothing,
+  because only the boot knows which certificate its listener presents. An
+  EMPTY value is a normal link, not a missing one: it is every browser's
+  link and every link a boot with no certificate mints, and it lands on
+  the trust-on-first-use path the spec describes for the typed-code case —
+  safe on proof-of-possession plus the verification number, never on
+  channel secrecy.
 
 ## Rotating refresh, and what "reuse" costs
 

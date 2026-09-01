@@ -287,18 +287,25 @@ var Listeners = []Listener{
 		Binding:    BindLANCapable,
 		Credential: CredPageSession,
 		Posture:    PostureAppOrigin,
-		Sites:      []string{"internal/transport/server.go", "internal/transport/server_rebind.go"},
+		Sites:      []string{"internal/transport/server.go"},
 		Why: "The whole application. Everything the app can do to the " +
 			"machine is reachable through the WebSocket this listener " +
 			"upgrades, so it is the only surface here whose credential " +
 			"is proportionate by construction rather than by being small. " +
 			"LAN-capable because Rebind moves it to a routable address at " +
-			"the user's request; the three binds in server_rebind.go are " +
-			"one logical listener changing address (new, retry, rollback), " +
-			"and the two in server.go are the boot bind and its ephemeral " +
-			"fallback. Three checks run ahead of the credential: an Origin " +
-			"allow-list derived from the request's own authority, a " +
-			"Host-header guard that rejects non-loopback names while in " +
+			"the user's request; every bind — boot, ephemeral fallback, " +
+			"rebind, rebind retry, rollback — goes through one helper in " +
+			"server.go, so the address can change without the posture " +
+			"changing with it. It terminates TLS on that SAME port when " +
+			"the boot resolved a certificate (internal/servercert): the " +
+			"first byte of a connection decides, so a client that pinned " +
+			"the self-signed certificate the pairing payload named gets " +
+			"an encrypted channel while a browser, which cannot pin, " +
+			"keeps the cleartext one. TLS here is CONFIDENTIALITY, never " +
+			"authorization — the credential below is unchanged by which " +
+			"half a request arrived on. Three checks run ahead of it: an " +
+			"Origin allow-list derived from the request's own authority, " +
+			"a Host-header guard that rejects non-loopback names while in " +
 			"loopback mode, and — once a call is authenticated — the " +
 			"per-call scope gate over the session's grants.",
 	},

@@ -42,7 +42,7 @@ func TestPairingLinkRoundTrips(t *testing.T) {
 		t.Fatalf("a fresh link reported itself redeemed/settled: %+v", got)
 	}
 	if got.CertFingerprint != "" {
-		t.Fatalf("cert fingerprint = %q, want empty until phase 5 fills it", got.CertFingerprint)
+		t.Fatalf("cert fingerprint = %q, want none for a link minted without one", got.CertFingerprint)
 	}
 }
 

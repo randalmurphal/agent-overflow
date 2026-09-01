@@ -19,10 +19,42 @@ IDs are FNV-1a 32-bit of `<package>.<typeName>.<methodName>`, matching Wails'
 is in-memory only: a network jitter buffer, not a history store (root
 `AGENTS.md` principle 3).
 
-Not owned here: the receiver (the dispatcher takes an `any` and reflects), TLS
-(local binds are plain `ws://`, and public exposure goes behind Tailscale Serve,
-an SSH tunnel, or a reverse proxy), and where the listen port comes from
-(`Config.Port` is injected, never read from a file here).
+Not owned here: the receiver (the dispatcher takes an `any` and reflects), the
+CERTIFICATE it terminates TLS with (`Config.TLSCertificate` is injected by the
+boot from `internal/servercert`, and nothing here mints, persists or fingerprints
+one), and where the listen port comes from (`Config.Port` is injected, never read
+from a file here).
+
+## Same-port TLS
+
+With a certificate configured, this listener answers a TLS client and a cleartext
+one on the ONE address it binds (`tlssniff.go`): the first byte classifies —
+`0x16` is a TLS handshake record and no HTTP request line starts with it — and a
+TLS connection is handed to `tls.Server` while everything else is the plain HTTP
+this server always spoke. A second https port was the alternative and would have
+made the pinned endpoint a different authority from the one the share URL, the
+cookie names and the origin allow-list all derive from.
+
+- **`bindListener` (server.go) is the ONE place a listener is created**, so boot,
+  the ephemeral fallback, a rebind, its close-and-retry and its rollback all
+  produce the same wrapped listener. A bind that skipped the wrap would silently
+  drop TLS on exactly the paths a user reaches by toggling LAN access, and a
+  pinning client reads that as the backend disappearing.
+- **Uniform on every bind.** Loopback and LAN behave identically; no mode decides
+  when TLS is available.
+- **Classification runs off the accept loop**, one goroutine per connection,
+  bounded by `HTTPReadHeaderTimeout` — the same budget net/http would have given
+  the first byte of that request. Inline, one peer that connected and said
+  nothing would hold up every other client for that window, repeatedly, at no
+  cost to itself.
+- **What the TLS half buys is confidentiality, not authorization.** The
+  certificate is self-signed and nothing trusts it; its value is that the pairing
+  payload carries its fingerprint, so a client that owns its own TLS configuration
+  pins these exact bytes (spec §7, "Domainless TLS for Go-native clients"). A
+  browser cannot pin, so `network.Settings.URL` stays `http://` and `Insecure`
+  stays true for a LAN bind. Every credential check is the same on both halves.
+- `nil` `Config.TLSCertificate` installs no wrapper at all, which is what every
+  boot without a certificate and every test that does not ask for one runs on.
 
 ## Every new App method is also a wire RPC, so annotate it
 
@@ -296,8 +328,12 @@ drift-guard test (`internal/wsllauncher`, `internal/harnessclient`).
 
 Cookie attributes are argued where they are set (`pageCookie`): HttpOnly always,
 so page script cannot read the credential back; SameSite=Strict; `Path=/`;
-host-only; session lifetime, matching a per-launch token; and Secure only under
-real TLS, since a Secure cookie on a plain loopback bind would never be stored.
+host-only; session lifetime, matching a per-launch token; and Secure only when
+`r.TLS` is set, since a Secure cookie planted over the listener's cleartext half
+would never be stored. That is `r.TLS` and never `X-Forwarded-Proto`, which the
+manifest's socket scheme DOES read (`requestIsHTTPS`): a header a caller can set
+about itself is safe where the worst outcome is a URL that will not connect, and
+not where the outcome is a credential the browser silently drops.
 The name carries the listen port because cookies are scoped by host and path but
 **not** by port — two backends on one host (the app and a harness instance, an
 app and a `--connect` stub) would otherwise overwrite each other's.
@@ -472,7 +508,11 @@ one) and passes to the credential and peer rules. A request *with* an `Origin`
 passes only when it names the authority this request was addressed to — scheme
 from the TLS state, authority from the `Host` header, so the answer stays true
 across a rebind, a port change, and every spelling of loopback — or matches a
-pattern the LAN bind adds. `internal/network.OriginPatterns` produces those
+pattern the LAN bind adds. The TLS state, deliberately, not `requestIsHTTPS`: a
+caller-supplied header must not widen an authorization check, so a deployment
+behind a TLS-terminating proxy allow-lists its origin explicitly rather than
+talking its way past this one (the spec calls a reverse proxy unsupported until
+phase 3's model lands, not silently degraded). `internal/network.OriginPatterns` produces those
 patterns and this package enforces them. Read the list live, through
 `currentOriginPatterns()` per request rather than `Config.OriginPatterns`, since
 `SetOriginPatterns` and `Rebind` rotate it under `mu`. Sockets already upgraded

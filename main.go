@@ -31,6 +31,7 @@ import (
 	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/provider/claudetui"
+	"agent-overflow/internal/servercert"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/shellenv"
 	"agent-overflow/internal/transport"
@@ -369,6 +370,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	if cfg.CrossOriginIsolate {
 		log.Printf("transport: renderer diag mode — cross-origin isolation headers on (remote subresources will not load)")
 	}
+	applyServerCertificate(&cfg, appService)
 	if listenAddr != "" {
 		host, port, err := splitListenAddr(listenAddr)
 		if err != nil {
@@ -435,6 +437,44 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	log.Printf("transport: serving on %s", srv.Addr())
 	logBootPhase("transport.start", phaseStarted)
 	return srv
+}
+
+// applyServerCertificate resolves this install's self-signed TLS
+// certificate and hands it to the two halves that need it: the listener
+// terminates TLS with it on the port it already binds, and every pairing
+// link this backend mints carries its fingerprint so a client that owns
+// its own TLS configuration pins it (docs/specs/remote-access.md §7).
+//
+// One resolution feeding both, deliberately: the string a device is told
+// to pin and the certificate that listener presents can then never be two
+// different things.
+//
+// Best-effort, also deliberately. With no resolvable config directory
+// there is nowhere to keep a certificate that survives a restart, and one
+// re-minted every boot would un-pin every paired device each time — worse
+// than not offering TLS at all. Boot continues on the cleartext half,
+// which is what every browser uses regardless.
+func applyServerCertificate(cfg *transport.Config, appService *App) {
+	dir := bootSettingsDir()
+	if dir == "" {
+		log.Print("transport: no config directory resolved — serving cleartext only, so no client can pin this backend")
+		return
+	}
+	material, err := servercert.Load(dir)
+	if err != nil {
+		log.Printf("transport: %v — serving cleartext only, so no client can pin this backend", err)
+		return
+	}
+	cfg.TLSCertificate = &material.Certificate
+	appservice.SetCertFingerprint(appService.App, material.Fingerprint)
+	if material.Minted {
+		// The replacement case logs its own reason inside servercert,
+		// because a fingerprint change un-pins paired devices and must be
+		// loud wherever Load is called from.
+		log.Printf("transport: minted this install's TLS certificate; fingerprint %s", material.Fingerprint)
+		return
+	}
+	log.Printf("transport: TLS certificate fingerprint %s", material.Fingerprint)
 }
 
 // runHeadless is the Phase D entry point used by the Windows-side

@@ -411,8 +411,12 @@ func TestPairingPayloadRoundTripsAndRefusesAnUnknownVersion(t *testing.T) {
 	if decoded != payload {
 		t.Fatalf("payload did not round-trip: %+v", decoded)
 	}
+	// A payload built without a fingerprint carries none: this package
+	// never invents one, because only the boot knows which certificate
+	// its listener presents. An empty field is the browser's link and the
+	// trust-on-first-use path, not a placeholder.
 	if decoded.CertFingerprint != "" {
-		t.Fatalf("cert fingerprint = %q, want the reserved field empty", decoded.CertFingerprint)
+		t.Fatalf("cert fingerprint = %q, want none for a payload that named none", decoded.CertFingerprint)
 	}
 
 	future := payload

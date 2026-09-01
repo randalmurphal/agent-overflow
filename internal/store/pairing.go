@@ -38,11 +38,13 @@ type PairingLink struct {
 	BindingClass string `json:"bindingClass"`
 	DeviceClass  string `json:"deviceClass"`
 	// CertFingerprint is the backend TLS certificate a native client pins
-	// from the first byte of redemption (§4 step 6, §7). Reserved: phase 5
-	// fills it, and until then it is empty on every row, which is the
-	// trust-on-first-use path the spec already describes for the typed-code
-	// case. It lives in the row rather than only in the payload so the
-	// value a link was minted with survives the link.
+	// from the first byte of redemption (§4 step 6, §7). Written by the
+	// minting surface, which is the only layer that knows which
+	// certificate the listener presents; empty is a link that names none —
+	// every browser link, and every link a boot with no certificate mints
+	// — which is the trust-on-first-use path the spec already describes
+	// for the typed-code case. It lives in the row rather than only in the
+	// payload so the value a link was minted with survives the link.
 	CertFingerprint string `json:"certFingerprint,omitempty"`
 	CreatedAt       int64  `json:"createdAt"`
 	ExpiresAt       int64  `json:"expiresAt"`
