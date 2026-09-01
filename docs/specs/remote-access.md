@@ -851,8 +851,32 @@ must stay on the wire) — the codec split is the mechanism instead.
 `workflowPaused` joined the refused-from-patch class. `settings.json`
 writes now happen only when a host key moves. A store-less Service
 keeps every tier in the file, which the pre-database boot readers
-(bind address, window geometry) depend on. Still open in phase 4:
-device-class defaults (the seam exists; the class table is phase 6).
+(bind address, window geometry) depend on.
+
+Device-class defaults LANDED 2026-09-01 (wave 6c, phone phase): the
+class table (`internal/settings/classdefaults.go`) resolves a
+device-tier read as Default < class row < the bucket's own writes, AT
+READ and never written into a bucket, so a device that never wrote a
+key tracks a future table change with no migration. Phone is the only
+populated row — `lowPowerMode: true`, exactly what this section
+commits — and the table is total over the declared classes with the
+empty rows pinned as decisions. A written key outranks the class
+(including writing the class default's opposite; the mutate pre-read
+is class-resolved so the opposite registers as a change), and clearing
+a key returns to the CLASS default. `settings.DeviceClass` mirrors
+`identity.DeviceClass` rather than importing it (settings stays
+dependency-free for the pre-database boot readers) with a
+both-directions drift test in `internal/app`; `Service.For(bucket)`
+became `For(bucket, class)` so a bucket and its class travel as one
+answer, resolved together in `settingsCaller` /
+`uiStateScreen` — a paired device's class comes off its device row,
+the local page channel and sessionless callers are desktop, and an
+unreadable class falls back to desktop (safe while desktop's row is
+empty, asserted in a test). Store-less services apply no class row:
+pre-database the file IS the screen's write, and a class row on top
+would outrank it. Open upstream: nothing validates that a phone
+pairing actually declares class `phone` (`MintDevicePairing` takes the
+caller's word); revisit when the phone shell's pairing surface lands.
 
 LANDED 2026-08-31 (wave 7b), the floor half: `session` is a declared
 scope value in both vocabularies' senses at once — transport declares
@@ -2338,8 +2362,8 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 4. **Settings storage.** Host JSON / user+device in `ui_state`,
    migrations, per-class defaults. Tiered residency: LANDED 2026-08-31
    (wave 7a — §6). The session floor and view-only pairing: LANDED
-   2026-08-31 (wave 7b — §6). Open: device-class defaults (phase 6
-   supplies the class table).
+   2026-08-31 (wave 7b — §6). Device-class defaults: LANDED 2026-09-01
+   (wave 6c — §6). **Phase 4 is complete.**
 5. **Serve mode, endpoint, TLS, tsnet, passkeys, remote update with
    rollback, provider remote re-auth.** DPoP mandatory here (the token
    endpoint accepts thumbprints from phase 2 so nothing reworks).
