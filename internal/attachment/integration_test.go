@@ -374,9 +374,9 @@ func TestIntegration_DeleteMissingIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestIntegration_GetAttachmentDataRoundTrip pushes bytes through Upload,
-// then pulls them back via ReadBytes and asserts byte-for-byte equality.
-func TestIntegration_GetAttachmentDataRoundTrip(t *testing.T) {
+// TestIntegration_ReadBytesRoundTrip pushes bytes through Upload, then
+// pulls them back via ReadBytes and asserts byte-for-byte equality.
+func TestIntegration_ReadBytesRoundTrip(t *testing.T) {
 	attStore, meta, _ := integrationStores(t)
 	integrationSeedThread(t, meta, "thread-rt")
 

@@ -27,9 +27,9 @@ type TerminalChip struct {
 	CreatedAt int64  `json:"createdAt"`
 }
 
-// Draft is the composer draft state. AttachmentIDs reference rows inserted
-// by UploadAttachment; terminal chips are snippets captured from the
-// terminal drawer. SourceProposedPlan, when non-nil, links the draft to a
+// Draft is the composer draft state. AttachmentIDs reference rows the
+// attachment upload route inserted; terminal chips are snippets captured
+// from the terminal drawer. SourceProposedPlan, when non-nil, links the draft to a
 // proposed plan in another thread — set by "Implement plan in new thread"
 // so the eventual send carries the linkage that marks the original plan
 // Accepted.

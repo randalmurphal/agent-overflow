@@ -1000,8 +1000,9 @@ func maxQueueLength() int { return queueMaxLength }
 
 // maxQueueMessageBytes caps the in-flight message text per queue
 // entry. Chat-shaped messages comfortably fit; the cap protects
-// against a 16 MiB-frame DoS vector. Attachments ride the existing
-// UploadAttachment path and are not subject to this cap.
+// against a 16 MiB-frame DoS vector. Attachments never reach this cap
+// because they never reach this socket: they cross on their own HTTP
+// route, and a queue entry carries only their ids.
 const queueMaxMessageBytes = 512 * 1024 // 512 KiB
 
 func maxQueueMessageBytes() int { return queueMaxMessageBytes }
