@@ -1241,6 +1241,57 @@ The update carries an id the client correlates through its reconnect,
 so "update succeeded" means the new version answered, not that the
 old one stopped.
 
+**Wave 8h1 LANDED 2026-09-01 (6e89bdbf..baa35c54): the supervisor
+core.** t3code's server-updates architecture in one Go binary:
+`agent-overflow supervise` (the process the service manager owns)
+decides which version runs and spawns `serve` as its child; the unit
+`serviceinstall` writes now names `supervise`, with a drift test
+pinning the spelling. `internal/supervise` owns the JSON-lines
+protocol over one inherited pipe pair (fds 3/4, marked by
+`AO_SERVICE_CHANNEL` — an absent marker means "no supervisor" and is
+never an error, so a bare `serve` is untouched forever), the durable
+`service-state.json` whose five-row selection table lives in ONE
+function (invalid state FAILS CLOSED: exit non-zero, start nothing),
+the immutable `versions/<v>/` layout, and the SQLite-triple snapshot
+taken only between child stop and trial start, restored marker-first
+(marker fsynced → live triple removed → manifest's exact set copied
+back → dir synced → marker cleared; `ResumeRestore` runs before the
+state file is even read). The supervisor loop is ONE goroutine, one
+select — no lock exists and none must. Two of its rules were bugs its
+own tests caught first: the child's exit is a FACT (closed channel +
+field), not a one-shot message, or a crashed trial wedges the
+supervisor in exactly the case rollback exists for; and the message
+channel closing is the SAME event as the exit, so that select arm is
+disabled on close and the exit status supplies the settled reason.
+Ordering rules that are the mechanism: preflight
+(`__service-preflight` in the target's own process) before anything
+durable; commit written durably BEFORE the commit frame; the trial
+attempt counted durably BEFORE the spawn (TrialAttemptLimit=2 — an
+unbounded retry would brick an unattended host, an addition over
+t3code, which has no bound). The child half: `main_serve_supervisor.go`
+reads the opening frame synchronously before the App exists, because
+the frame decides whether the App boots with its activation gate
+closed; `finishServeSupervision` runs on its own goroutine so the
+SIGTERM wait stays live; a trial reports prepared → awaits commit →
+activates, and a non-trial boot publishes the PRECEDING update's
+outcome — including a rollback, which only the version that came back
+can report. The activation gate (`internal/app/app_activation.go`) is
+one gate, zero-value OPEN; the parked set is every subsystem whose
+work a database restore could not undo (probes, rate-limit loops,
+reaper, retention, git fetch, cert/tailnet reconcilers, workflow
+automation — membership rule: "would restoring the database undo
+it?"). `ParkUnattendedWork` / `ActivateUnattendedWork` /
+`SetServiceUpdateRequester` are bootstrap-boundary functions, not App
+methods, because an exported App method IS a wire RPC;
+`serviceUpdateRequest` stays unexported until W8h2 puts the step-up
+gate in front of it. `service update <version>` is the LOCAL path
+(preflight → stop unit → stage → adopt → save → start); the REMOTE
+trigger is W8h2, blocked on the release-signing decision.
+`internal/atomicfile` gained the directory-fsync half of durability
+(own commit) — every existing caller was exposed. Tests drive
+scripted fake children over the real protocol on the real
+descriptors, HOME detached; race-clean at -count=3.
+
 ### Provider accounts and remote login
 
 Provider credentials live in each backend's provider homes, so
