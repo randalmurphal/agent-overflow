@@ -18,6 +18,7 @@
 // the registration is the shipped `PasskeysBlock.svelte` button; the
 // sign-in is the shipped `TransportStatusBanner` button calling
 // `deviceSession.signInWithPasskey`; the step-up retry is the shipped
+// interception in `transport/wsClient.ts` running the shipped ceremony in
 // `transport/stepUp.ts`. The only substituted part is the AUTHENTICATOR,
 // which is Chromium's CDP virtual one — a platform authenticator cannot
 // be driven by a test on any operating system, so that substitution is
@@ -52,8 +53,10 @@
 // PERSIST to the settings file and rebind the listener, and
 // `harness.reset()` undoes neither. It also owns its BROWSERS, because a
 // host-resolver rule is a process-wide launch argument and the two legs
-// need different ones. The four cases are one choreography on one
-// credential, so they run `.serial` and carry state forward.
+// need different ones. The five cases are one choreography on one
+// credential, so they run `.serial` and carry state forward — and the
+// removal is last, because every case before it needs the credential the
+// removal takes away.
 //
 // WHAT STAYS LIVE-ONLY: a real platform authenticator (Touch ID, Windows
 // Hello), a real cross-device CTAP-hybrid QR flow, a real synced
@@ -126,8 +129,14 @@ interface AccessAuditEntry {
   peer?: string;
 }
 
+interface PendingPairing {
+  linkId: string;
+  redeemed?: boolean;
+}
+
 interface AccessOverview {
   devices: AccessDevice[];
+  pendingPairings?: PendingPairing[];
   audit?: AccessAuditEntry[];
 }
 
@@ -542,10 +551,11 @@ test.describe.serial('passkey lifecycle', () => {
   // -------------------------------------------------------------------
   test('the remote session satisfies a step-up gate no standing grant can open', async () => {
     // Registering another credential is the step-up-gated call driven
-    // here, because it is the ONE call the shipped UI wraps in
-    // `withStepUp` (`transport/stepUp.ts` has exactly one caller) and
-    // because no standing grant opens it: `BeginPasskeyRegistration`
-    // ISSUES a way in, so `access:admin` alone is refused.
+    // here, because no standing grant opens it: `BeginPasskeyRegistration`
+    // ISSUES a way in, so `access:admin` alone is refused. Nothing at the
+    // call site asks for the ceremony — the transport runs it for
+    // whatever the backend refuses — which is what case 4 then proves on
+    // a surface that has never heard of a passkey.
     await openNetworkSettings(remotePage);
     await expect(remotePage.getByTestId('passkeys-block')).toBeVisible();
     await expect(remotePage.getByTestId('passkey-row')).toHaveCount(1);
@@ -623,7 +633,90 @@ test.describe.serial('passkey lifecycle', () => {
   });
 
   // -------------------------------------------------------------------
-  // 4. Removal, which is not a revocation.
+  // 4. The same gate, on a surface that has never heard of a passkey.
+  // -------------------------------------------------------------------
+  test('a gated call on an ordinary surface prompts and lands, with nothing wired at its call site', async () => {
+    // WHY A SECOND STEP-UP CASE. Case 3's call is the one the passkey
+    // block makes, so it could pass while every OTHER gated surface —
+    // minting a pairing link, MCP config writes, provider custom env,
+    // worktree-setup recipes, the host-tier settings keys — stayed
+    // unreachable from a phone. That was the shipped state until the
+    // ceremony moved behind one interception in the transport, and it was
+    // invisible from the owner's own screen, where host presence
+    // satisfies the gate and no ceremony ever runs.
+    //
+    // `MintDevicePairing` is the surface driven here because it is a
+    // DIFFERENT scope (`access:admin` rather than the passkey block's
+    // own), it is `//ao:stepup`, and `PairDeviceModal.svelte` calls it
+    // plainly — there is no passkey code anywhere in that component.
+    const beforeAudit = ((await harness.rpc<AccessOverview>('GetAccessOverview')).audit ?? [])
+      .filter((entry) => entry.event === 'passkey-step-up').length;
+
+    // A fresh window over the wire, so the frames below are this act's.
+    remoteSurfaced.rpcReplies.length = 0;
+    remoteSurfaced.refusals.length = 0;
+    remoteSurfaced.errorToasts.length = 0;
+
+    await remotePage.getByRole('button', { name: 'Pair a device' }).click();
+    await remotePage.getByRole('button', { name: 'Phone or tablet' }).click();
+
+    // The mint LANDED: the modal is showing the link it answered with,
+    // which it only reaches on a resolved call.
+    const link = remotePage.getByLabel('Pairing link');
+    await expect(link).toBeVisible({ timeout: REGISTER_MS });
+    expect(await link.inputValue(), 'a pairing link carries its payload in the fragment').toContain(
+      '#pair=',
+    );
+
+    // The mechanism, off the wire: refused for want of a proof, one
+    // ceremony verified by this backend, the same call accepted.
+    expect(
+      remoteSurfaced.rpcReplies.filter((name) => name === 'MintDevicePairing'),
+      'one button press, two replies: the refusal and the retry that carried the proof',
+    ).toEqual(['MintDevicePairing', 'MintDevicePairing']);
+    expect(
+      remoteSurfaced.rpcReplies.filter((name) => name === 'FinishPasskeyStepUp'),
+      'the proof is a ceremony this backend verified, not a flag the client set',
+    ).toEqual(['FinishPasskeyStepUp']);
+    expect(
+      appRefusals(remoteSurfaced),
+      'exactly one refusal: a second would mean the retry went out unarmed',
+    ).toEqual(['MintDevicePairing step_up_required:']);
+    expect(
+      remoteSurfaced.errorToasts,
+      'a call that went through on the retry surfaces nothing',
+    ).toEqual([]);
+
+    // The host's own record: the link exists, and the proof that admitted
+    // it was audited as its own event.
+    const overview = await harness.rpc<AccessOverview>('GetAccessOverview');
+    expect(
+      overview.pendingPairings ?? [],
+      'the mint reached the store, not just the screen',
+    ).toHaveLength(1);
+    expect(
+      (overview.audit ?? []).filter((entry) => entry.event === 'passkey-step-up').length,
+      'one gated call, one more audited proof',
+    ).toBe(beforeAudit + 1);
+
+    // Leave the instance as case 5 expects it: the link is spent here
+    // rather than left pending, and cancelling it is not step-up gated —
+    // taking access away never is. The row is asserted PRESENT first, so
+    // its absence afterwards is the cancel rather than a section that
+    // never showed it.
+    // Scoped to the dialog: the pending row behind it offers the same
+    // control, which is the point of the row rather than an ambiguity to
+    // work around.
+    await expect(remotePage.getByTestId('pending-pairing')).toHaveCount(1);
+    await remotePage
+      .getByRole('dialog', { name: 'Pair a device' })
+      .getByRole('button', { name: 'Cancel link' })
+      .click();
+    await expect(remotePage.getByTestId('pending-pairing')).toHaveCount(0);
+  });
+
+  // -------------------------------------------------------------------
+  // 5. Removal, which is not a revocation.
   // -------------------------------------------------------------------
   test('removing a passkey takes the credential away and signs no device out', async () => {
     const before = await harness.rpc<AccessOverview>('GetAccessOverview');
@@ -638,7 +731,7 @@ test.describe.serial('passkey lifecycle', () => {
 
     // A fresh window: case 3 stopped at a browser limit and the block
     // said so, and this act's claim is about what happens after the
-    // removal.
+    // removal. Case 4 left nothing pending.
     remoteSurfaced.errorToasts.length = 0;
     remoteSurfaced.consoleErrors.length = 0;
 
