@@ -62,7 +62,7 @@ this package. `grep -rn 'appimage\.'` is the current list.
 
 - `provider.BuildEnvironment` / `provider.FilterEnvironment` is the
   chokepoint for the whole provider side: sessions, probes,
-  `claude.Login`, both MCP-status fetchers, `claudetui`, and
+  `claude.StartLogin`, both MCP-status fetchers, `claudetui`, and
   `textgen.ExecCLI` all reach the scrub through it and must not assemble
   their own environment instead.
 - Windows/WSL launcher paths (`cmd/agent-overflow-windows`,

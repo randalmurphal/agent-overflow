@@ -53,6 +53,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ProviderCompacting,
 		eventchan.ProviderFastMode,
 		eventchan.ProviderItemEvent,
+		eventchan.ProviderLogin,
 		eventchan.ProviderModelFallback,
 		eventchan.ProviderQueueFlushed,
 		eventchan.ProviderQueueRestored,

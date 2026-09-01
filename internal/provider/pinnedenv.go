@@ -18,7 +18,7 @@ import "strings"
 //	CLAUDE_CONFIG_DIR   — cleared by claude.NewSession (session.go),
 //	                      claude.ProbeAccount (probe.go), and the MCP status
 //	                      fetcher (mcpstatus.go); set to a temporary home by
-//	                      claude.Login and the inactive-account probes.
+//	                      claude.StartLogin and the inactive-account probes.
 //	CLAUDE_SECURESTORAGE_CONFIG_DIR
 //	                    — cleared everywhere CLAUDE_CONFIG_DIR is. Claude
 //	                      ≥2.1.220 keys its secure-storage (Keychain service)
@@ -105,7 +105,7 @@ import "strings"
 //	CODEX_HOME          — cleared by codex.NewSession (session.go),
 //	                      ProbeAccount / ProbeIdentity, the model catalog
 //	                      fetcher, and the MCP status fetcher; set to a
-//	                      temporary home by codex.Login and the
+//	                      temporary home by codex.StartLogin and the
 //	                      inactive-account probes.
 //
 // CLAUDE_CODE_ENABLE_TODO_TOOLS is set WITHOUT being reserved, on purpose:

@@ -231,7 +231,7 @@ every App plus Harness method. Use `ao-harness rpc --list` for that full list.
 | `HarnessClearScenarios()` / `HarnessListScenarios()` | Drop rules / list library + active rules. |
 | `HarnessListMocks()` | Registered mock processes in spawn order, dead ones pruned by a PID probe (30s grace so a just-exited mock's terminal reports still land). Each row carries `openGate` (the `waitSignal` gate the mock is currently blocked on, empty when none) and `pendingAdvances` (advances buffered for gates that have not opened yet), the state a stuck `advance` await is diagnosed from. |
 | `HarnessClearThreadProviderCursor(threadId)` | Fault injection for an idle thread: clear AO's durable provider cursor without touching the mock process or transcript, so recovery must choose a fresh thread. Refuses an active turn or an already-empty cursor. |
-| `HarnessMockCommand(mockId, cmd)` | Drive a live mock: `advance` (release a `waitSignal`/`stall` gate), `emit` (inject wire lines, `${VAR}`-substituted), `exit` (code). |
+| `HarnessMockCommand(mockId, cmd)` | Drive a live mock: `advance` (release a `waitSignal`/`stall` gate), `emit` (inject wire lines, `${VAR}`-substituted), `exit` (code), `login_complete` (settle a Codex device-code sign-in; `error` empty succeeds and writes the credential, set fails with that text). |
 | `HarnessRecordStart(name, threadId)` / `HarnessRecordStop()` | Capture a replay bundle: DB snapshot at start + the event-log slice recorded until stop. Start requires the thread to be idle (no turn in flight) so the snapshot/event boundary is exact; a failed stop discards the recording and frees the name. |
 | `HarnessReplayBundle(name, opts)` | Restore a bundle's DB snapshot and replay its events with original timing. Refused while another replay is active (checked before the destructive restore). |
 | `HarnessListBundles()` | Enumerate saved bundles. |
@@ -376,8 +376,17 @@ downgrades the version the mock claims (Codex `initialize` userAgent,
 Claude `system/init.claude_code_version`), which is what every
 per-method version gate reads; the default is above every gate, so this
 is the only way a spec exercises a gate's fails-closed branch. It does
-not reach `--version`, the account probe, or one-shot text generation.
-Those invocations answer and exit before a scenario loads.
+not reach `--version`, the account probe, one-shot text generation, or
+the Claude sign-in. Those invocations answer and exit before a scenario
+loads.
+
+A Codex sign-in is the exception among those: its argv is a plain
+`app-server`, so it reaches the ordinary adapter and DOES register on
+the control channel. That is deliberate — the device-code flow finishes
+on a screen this process cannot reach, so `login_complete` is the only
+way a test can finish one — and it is why the boot-mode provider
+environment reaches sign-in spawns as well as sessions. Account probes
+stay out: one invocation, no behaviour to command.
 
 An unbounded `repeat` must contain a pacing step among its direct
 children (`delayMs > 0`, `stall`, `waitSignal`, `approval`, or an `emit`

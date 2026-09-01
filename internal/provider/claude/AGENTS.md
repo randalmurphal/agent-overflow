@@ -87,7 +87,21 @@ not a preference.
 The CLI owns OAuth for the parser and session path. Nothing that talks
 to the subprocess touches credentials.
 
-- `ratelimits_probe.go` is the one exception: it reads the OAuth bearer
+- `login.go` is the one place that DRIVES an OAuth exchange, and it
+  still writes no credential itself: the CLI does, into an isolated
+  `CLAUDE_CONFIG_DIR` the caller cut, and the account layer decides
+  where it goes from there. It runs on the headless control channel
+  rather than `claude auth login`, because that command owns the browser
+  and the URL and reports completion only by exiting — unusable on a
+  host with no browser, and worse than unusable for a person signing in
+  from a phone. Three rules bite: one flow is live at a time and a new
+  `claude_authenticate` supersedes the previous one; ONE rejected
+  callback burns the flow, so the recovery is a fresh link and never a
+  re-prompt; and `claude_oauth_wait_for_completion` pends unbounded with
+  no keepalive, so the deadline is ours and a supersede must abandon the
+  wait rather than leak the goroutine holding it. Wire shapes:
+  `docs/references/claude-wire.md` § The sign-in control channel.
+- `ratelimits_probe.go` is the other exception: it reads the OAuth bearer
   out of a selected native credential path to query Anthropic's OAuth
   usage endpoint (Claude only emits `utilization` on the wire above the
   warning band). It is read-only on the credential file and never writes

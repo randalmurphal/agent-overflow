@@ -1,9 +1,17 @@
 # Provider-account Manager extraction
 
-The Wails surface has five methods: `ListProviderAccounts`,
-`LoginProviderAccount`, `SwitchProviderAccount`, `RemoveProviderAccount`, and
-`RefreshProviderAccountUsage`. The migration keeps those exact root receivers,
-DTOs, comments, RPC hashes, and `//ao:scope access:admin` annotations.
+The Wails surface at the time of this extraction had five methods:
+`ListProviderAccounts`, `LoginProviderAccount`, `SwitchProviderAccount`,
+`RemoveProviderAccount`, and `RefreshProviderAccountUsage`. The migration keeps
+those exact root receivers, DTOs, comments, RPC hashes, and
+`//ao:scope access:admin` annotations.
+
+Since then `LoginProviderAccount` has been REPLACED — remote access needed a
+sign-in that a person away from the machine can finish, and a blocking call
+cannot describe one. The four methods that took its place
+(`StartProviderLogin`, `GetProviderLoginState`, `SubmitProviderLoginCode`,
+`CancelProviderLogin`) live on the same receiver under the same scope; the
+shape is `internal/provideraccountapp/loginsession.go`.
 
 ## Ownership cut
 

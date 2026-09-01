@@ -148,7 +148,7 @@ Authoritative method list from
 | `thread/settings/updated` | Codex's authoritative config echo. Reconciled into the session's observed snapshot; emits nothing. |
 | `skills/changed` | Side channel. An EMPTY struct upstream (no cwd, no scope, no name), so the whole `internal/codexskills` cache is dropped rather than narrowed. |
 | `account/rateLimits/updated` | Account-wide quota snapshot. Surfaced as `EventRateLimits` / `provider:usage action:"rate_limits"`. |
-| `account/updated`, `account/login/completed` | Recognised, no event. |
+| `account/updated`, `account/login/completed` | Recognised, no event. A SESSION never signs in, so neither is acted on there; the sign-in connection is a separate process that opts out of everything except `account/login/completed` and settles on it. See §Account sign-in. |
 | `model/rerouted` | Model reroute notice (Codex fell back to a different model). |
 | `model/verification` | Model-verification warning row. |
 | `model/safetyBuffering/updated` | Response held while OpenAI reviews the turn. Emits a notification row on the show edge only. |
@@ -1696,6 +1696,105 @@ parent `spawn_agent` item when it has seen the child `thread/started`;
 triage falls back to receiver-thread matching for legacy unnamed flows.
 Parent transcript completions are written from explicit `wait_agent`
 completion or `EventSubagentNotification`.
+
+---
+
+## Account sign-in
+
+`account/login/start` in two variants of one RPC, on an app-server spawned for
+nothing else. Both complete on the same notification. Client:
+`internal/provider/codex/login.go`.
+
+The connection is an ordinary `app-server` — same argv as a session — with
+`CODEX_HOME` pointed at an isolated login home and
+`cli_auth_credentials_store="file"` pinned, so the credential lands as a file
+the account layer can move rather than in a keyring AO cannot. `initialize`
+opts out of every notification except `account/login/completed`;
+`account/updated` (which follows a success with `{authMode, planType}`) is
+deliberately among the opt-outs, because the adoption epilogue probes the login
+home for identity and that answer is authoritative.
+
+**Only one login runs per process.** Starting a second supersedes the first,
+which is why a client that offers both variants cancels before switching.
+
+### `account/login/start {type:"chatgpt"}`
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"account/login/start",
+ "params":{"type":"chatgpt","codexStreamlinedLogin":false}}
+```
+
+```json
+{"id":2,"result":{"type":"chatgpt","loginId":"…","authUrl":"https://auth.openai.com/…"}}
+```
+
+`authUrl` completes on a loopback listener THIS app-server bound, so it is
+finishable only by a browser on this machine. Showing it to another device
+produces a page that can never come back.
+
+### `account/login/start {type:"chatgptDeviceCode"}`
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"account/login/start",
+ "params":{"type":"chatgptDeviceCode"}}
+```
+
+```json
+{"id":2,"result":{"type":"chatgptDeviceCode","loginId":"…",
+                  "verificationUrl":"https://…","userCode":"XXXX-XXXX"}}
+```
+
+`verificationUrl` is CONSTANT and carries no code, so it is only useful shown
+beside `userCode`. This is the variant for a person who is not at the machine.
+
+**The discriminant's casing is exact.** Upstream matches the string literally
+and answers a wrong spelling by listing every variant it knows, which reads as
+a protocol failure rather than as the typo it is.
+
+**There is no expiry field on the wire.** A countdown has to come from the
+client, and the value used is upstream's own device-code `max_wait`
+(15 minutes) — a user watching a timer that outlives the code is worse than no
+timer.
+
+### `account/login/completed`
+
+```json
+{"method":"account/login/completed",
+ "params":{"loginId":"…","success":true}}
+```
+
+Failure carries `success:false` and an `error` string.
+
+**`loginId` is not bookkeeping.** A superseded or cancelled login emits a
+FAILED completion for its OWN id, so a client that ignored the correlation
+would report the previous login's failure as the current one's.
+
+### `account/login/cancel`
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"account/login/cancel","params":{"loginId":"…"}}
+```
+
+Answers `{"status":"canceled"}` or `{"status":"notFound"}`. `notFound` is a
+real outcome, not an error: after our own cancel, or after the login already
+settled, there is nothing left to cancel and that is what was wanted.
+Cancelling makes upstream emit the FAILED completion described above — the
+frame is real, it is just not news.
+
+Closing the process is what actually guarantees a cancelled sign-in stops: the
+device-code poll and the browser flow's listener both live in that child, and
+the login home goes with it.
+
+### Responses omit `jsonrpc`
+
+Same as everywhere else on this app-server (§The two critical differences from
+Claude), and it bites harder here because a login client is a small decoder
+written on its own: nothing on this path may REQUIRE the field. Decoding
+leniently is the contract, not a tolerance.
+
+Error responses carry provider-controlled text on a path holding OAuth state,
+so the numeric code is what the client surfaces. It is enough to tell a
+wrong-shape request from a refused one.
 
 ---
 
