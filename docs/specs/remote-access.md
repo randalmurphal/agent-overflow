@@ -1591,6 +1591,41 @@ Prerequisite sweep, valuable standalone:
   assistant deltas, background scope leases (client reports visibility +
   interested scopes with TTL; backend skips unleased work, generalizing
   `HasRemoteClient`), `afterSeq`-with-snapshot-fallback resume.
+
+  Subscription narrowing LANDED 2026-09-01 (wave 6d, phone phase), by
+  ENTITY rather than by channel. A new `watch` wire frame
+  (`{"type":"watch","threads":[...]}`, absolute and idempotent, empty
+  array = "no panes open", never-sent = wildcard, max 256 ids) narrows
+  only the channels the registry marks `EntityFiltered` — a third
+  orthogonal filter beside audience and scope. The entity key is
+  derived ONCE per emit (`internal/app`'s funnel shares the derivation
+  with the NDJSON replay log) and rides `transport.Event`; delivery
+  AND replay withhold foreign-entity frames BEFORE gap accounting, so
+  a withheld frame is never a loss, and the SPA exempts exactly these
+  channels from its forward-skip resync heuristic while a filter is
+  armed (TS list drift-guarded against the Go table in both
+  directions). Explicit `gap:true` markers keep full meaning. Watch is
+  deliberately NOT the `subscribe` frame: channel-subscribe stays a
+  bridge-client mechanism, which is what keeps
+  `ChannelSubscriberCount`'s "no connected launcher subscriber"
+  diagnostic sound. The watched set is composed from surface
+  EXISTENCE only — every open pane foreground or background, plus the
+  discussion live-tail roster's pane-less child threads — never from
+  visibility or focus; pane open sends the union ahead of the mount so
+  the history load and the narrowed pushes cannot race (same-socket
+  frame ordering is the seam). Two channels are entity-filtered
+  today: `highlight:diff_seed` and `highlight:seed`, the large-payload
+  cache warmers whose designed fallback is the highlight RPC. The
+  central finding: **`provider:item_event` is NOT narrowable yet** —
+  six off-pane consumers read it for threads with no pane (sidebar
+  error/interrupted/Plan badges, activity ordering bumps, proposed-plan
+  status, discussion child routing, the workspace change lock, and the
+  inactive-thread cache eviction), argued on its policy row. Narrowing
+  the transcript stream requires re-homing those six onto
+  low-frequency channels first — that re-home is the open design item
+  for the phone client, which cannot afford every thread's transcript.
+  One accepted loss: a content-addressed highlight cache hit across
+  threads now pays an RPC.
 - **Push**: senders run in the backend, outbound-only. Constraint to
   resolve before shipping to anyone but the owner: APNs/FCM require the
   *app vendor's* signing key, which cannot ship inside distributed
@@ -2373,7 +2408,10 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    LANDED 2026-09-01 (wave 8i — §7 "Provider accounts and remote
    login"). Open in this phase: release signing (parked to the final
    discussion slot by 2026-09-01 ruling).
-6. **Phone preparation.** Subscription narrowing, buffered deltas, scope
+6. **Phone preparation.** Subscription narrowing (LANDED 2026-09-01,
+   wave 6d — §9 "Phone-era efficiency": the watch frame + entity
+   filter on the two highlight channels; `provider:item_event` awaits
+   the six-consumer re-home named there), buffered deltas, scope
    leases, reduced snapshots, attachment flows (LANDED 2026-09-01,
    wave 6b — §14 "Snapshot and attachment transfers"), push senders +
    notification semantics + deep links (notification mapping,
