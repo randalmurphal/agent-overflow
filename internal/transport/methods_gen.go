@@ -43,12 +43,12 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "BeginPasskeyStepUp", ID: 3214812657, Scope: "session"},                                // main.App.BeginPasskeyStepUp
 	{Name: "BookmarkUIRenderTrace", ID: 1374242488, Scope: "host"},                                // main.App.BookmarkUIRenderTrace
 	{Name: "BrowseDirectory", ID: 320967638, Scope: "host"},                                       // main.App.BrowseDirectory
-	{Name: "BrowserCompanionDo", ID: 197228034, Scope: "terminal:operate"},                        // main.App.BrowserCompanionDo
-	{Name: "BrowserCompanionPaneAttach", ID: 205254296, Scope: "terminal:operate"},                // main.App.BrowserCompanionPaneAttach
-	{Name: "BrowserCompanionPaneDetach", ID: 3255514830, Scope: "terminal:operate"},               // main.App.BrowserCompanionPaneDetach
-	{Name: "BrowserCompanionPaneRect", ID: 2491183339, Scope: "terminal:operate"},                 // main.App.BrowserCompanionPaneRect
-	{Name: "BrowserCompanionRevealPageFile", ID: 535837959, Scope: "terminal:operate"},            // main.App.BrowserCompanionRevealPageFile
-	{Name: "BrowserCompanionThreadState", ID: 1485125416, Scope: "terminal:operate"},              // main.App.BrowserCompanionThreadState
+	{Name: "BrowserCompanionDo", ID: 197228034, Scope: "host"},                                    // main.App.BrowserCompanionDo
+	{Name: "BrowserCompanionPaneAttach", ID: 205254296, Scope: "host"},                            // main.App.BrowserCompanionPaneAttach
+	{Name: "BrowserCompanionPaneDetach", ID: 3255514830, Scope: "host"},                           // main.App.BrowserCompanionPaneDetach
+	{Name: "BrowserCompanionPaneRect", ID: 2491183339, Scope: "host"},                             // main.App.BrowserCompanionPaneRect
+	{Name: "BrowserCompanionRevealPageFile", ID: 535837959, Scope: "host"},                        // main.App.BrowserCompanionRevealPageFile
+	{Name: "BrowserCompanionThreadState", ID: 1485125416, Scope: "host"},                          // main.App.BrowserCompanionThreadState
 	{Name: "BrowserHostReport", ID: 2848608143, Scope: "host"},                                    // main.App.BrowserHostReport
 	{Name: "CancelDevicePairing", ID: 2608316491, Scope: "access:admin"},                          // main.App.CancelDevicePairing
 	{Name: "CancelProviderLogin", ID: 341374423, Scope: "access:admin"},                           // main.App.CancelProviderLogin

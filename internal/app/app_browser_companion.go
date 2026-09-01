@@ -34,7 +34,7 @@ func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
 // thread already has live pages — this is the hydration read behind the chat
 // header's browser chip and the pane-reopen reconcile.
 //
-//ao:scope terminal:operate
+//ao:scope host
 func (a *App) BrowserCompanionThreadState(threadID string) (appbrowser.CompanionEvent, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
@@ -52,7 +52,7 @@ func (a *App) BrowserCompanionThreadState(threadID string) (appbrowser.Companion
 // never leave a browser view painted over a window that no longer renders
 // the pane under it.
 //
-//ao:scope terminal:operate
+//ao:scope host
 func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (appbrowser.CompanionSubscription, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionSubscription{}, fmt.Errorf("browser manager unavailable")
@@ -74,7 +74,7 @@ func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (
 	return result, nil
 }
 
-//ao:scope terminal:operate
+//ao:scope host
 func (a *App) BrowserCompanionPaneDetach(paneID string) error {
 	if a.browser.manager != nil {
 		a.browser.manager.DetachPane(paneID)
@@ -85,7 +85,7 @@ func (a *App) BrowserCompanionPaneDetach(paneID string) error {
 // BrowserCompanionPaneRect reports where the mounted pane's host rect sits,
 // coalesced to one call per changed frame by the frontend.
 //
-//ao:scope terminal:operate
+//ao:scope host
 func (a *App) BrowserCompanionPaneRect(paneID string, rect appbrowser.PaneRect) error {
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
@@ -98,7 +98,7 @@ func (a *App) BrowserCompanionPaneRect(paneID string, rect appbrowser.PaneRect) 
 // chat and mail apps — which accept file drops but not a pasted file object.
 // Remote pages have no file to reveal.
 //
-//ao:scope terminal:operate
+//ao:scope host
 func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, pageID string) error {
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
@@ -110,7 +110,7 @@ func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, page
 	return a.browser.manager.RevealPageFile(ctx, access, pageID)
 }
 
-//ao:scope terminal:operate
+//ao:scope host
 func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action BrowserCompanionAction) (appbrowser.CompanionEvent, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")

@@ -764,10 +764,14 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.BrowserCompanionState,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionEphemeral,
-		Scope:     ScopeTerminalOperate,
+		Scope:     ScopeHost,
 		Why: "Per-thread live page titles and URLs, including file paths. " +
 			"BrowserCompanionThreadState returns a complete snapshot, so " +
-			"replay is unnecessary.",
+			"replay is unnecessary. Scope host, matching the six " +
+			"BrowserCompanion* RPCs: the pane is a NATIVE view this machine " +
+			"paints and has no remote form (embedded-browser spec §9), so " +
+			"the push and the pull that return the same payload are refused " +
+			"to the same callers — no session grant opens either.",
 	},
 	{
 		Channel:   eventchan.BrowserHost,

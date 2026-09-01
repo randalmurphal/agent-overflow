@@ -122,7 +122,7 @@ describe('view-only sessions issue no passive operate RPCs', () => {
     expect(bindings.worktreeSetup).not.toHaveBeenCalled();
   });
 
-  it('does not read the browser companion snapshot without terminal:operate', async () => {
+  it('does not read the browser companion snapshot off the host', async () => {
     await pairViewOnly();
     hydrateBrowserCompanionState(THREAD);
     await settle();
