@@ -2082,6 +2082,25 @@ drives it. `AddBackend` returns the verification number and the
 confirmation wait announces itself on `backend:attach`. The
 `remoteEndpoints` list and its plaintext token RPC are deleted.
 
+**7b LANDED 2026-09-01.** `transport/backends.ts` holds one entry per
+attached backend (the home entry wraps the existing `wsClient`;
+attachment is eager, and the list's source is one injectable function
+fed by the manifest today and by client-local storage on the phone).
+`resolveTransport(backendId?)` is one Map lookup; a client with one
+connection takes a fast path in `Call.ByID` and pays nothing. Route
+resolution: a one-call pin (`withBackendTarget`, drained at dispatch)
+for path-argument and subscription calls, then the id-family index for
+workflow items, automations and terminals, then the generated table;
+`all` fans out and merges in one place (arrays concatenate in attach
+order, id-keyed objects shallow-merge, a failed backend's share is
+dropped and recorded on its entry). `selected` resolves focused thread
+→ draft choice → home. Identity, scopes (`onHost` is home's alone),
+transport status, replica session, `appStorage` bucket and the device
+session slot are per backend; the workspace key is `${backendId} ${path}`
+so the change lock and git status cannot cross machines. Settings,
+system stats and provider accounts stay home-only reads until a
+surface needs otherwise.
+
 Path links and open-in-editor from a UI that is not on the thread's
 host default to copy/preview, with "open on <machine>" as the explicit
 secondary. The recommended posture for real remote editing is the
