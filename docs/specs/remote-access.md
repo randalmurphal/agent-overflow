@@ -1602,6 +1602,47 @@ Prerequisite sweep, valuable standalone:
   or failing, and the WSL launcher's "update didn't apply" notice.
   The handled-elsewhere retraction applies to local OS notifications
   the same as to push.
+
+  LANDED 2026-09-01 (wave 6a, phone phase): the event→notification
+  mapping and the preference gate, desktop-first. `internal/notify`
+  gained a PURE mapping half (`mapping.go`): the four moments (turn
+  complete, approval needed, error, provider signed out) as functions
+  over deliberately under-informed input types, so redaction is a type
+  shape rather than a filter — a body can only be one of the package's
+  fixed phrases plus a clipped tool name, and a title is the thread's
+  own label (80 runes, `SummaryLine` drops non-printing runes and
+  collapses whitespace). Every moment derives a STABLE id from what it
+  is about (`thread:<id>`, `approval:<thread>:<request>`,
+  `provider-auth:<provider>`); a later send replaces in place and the
+  ending transition retracts (`Send.Retract`, id+kind only,
+  `ValidateSend` holds retractions to that narrower contract). Turn
+  complete / failed / provider-exit share one id per thread — a thread
+  stops once — and thread resume is the retraction moment; approvals
+  are per request; provider auth is per provider, mapped on the EDGE
+  (the unauthenticated status is a level, re-emitted on every status
+  read). The tap is on `emit` itself
+  (`app_notification_mapping.go`), not the six emitters, projecting
+  synchronously and dispatching on a serial queue (order is the
+  retraction contract); the thread-title SQLite read runs on the
+  queue, and shutdown drains it before the store closes. `notifyOS` is
+  the one preference gate (five device-tier keys, §6, all default ON;
+  read from the backend machine's own screen via
+  `settings.Service.BackendScreen()`); a RETRACTION IS NEVER GATED, so
+  a toggle flipped mid-flight cannot strand an alert. Presenters
+  (desktop + Windows launcher) pass the stable id through verbatim and
+  branch on retract — `UpdateNotification` to replace,
+  `RemoveDeliveredNotification` to withdraw (the vendored
+  `RemoveNotification` is a nil stub on macOS; Windows retraction
+  degrades silently by design, wintoast has no removal call).
+  `Target.BackendID` (the §9 deep-link attribution half) rides every
+  presentation on every kind, orthogonal to the one-id route rule, and
+  the SPA's activation parser carries it. The two legacy senders
+  (workflow attention, WSL update notice) now ride typed kinds with
+  stable ids under the master switch only. Out-of-band `claude login`
+  does not clear the signed-out alert (the retraction rides
+  `provider:login` succeeded) — accepted for this wave; push senders,
+  the phone presenter, and remote-raised native notifications stay
+  open here.
 - **Approval policy**: pending approvals need a TTL / abandon policy so
   a turn does not hang forever holding a workspace when no device
   answers; approving from a notification is not allowed (app-open, and
@@ -2311,7 +2352,10 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 6. **Phone preparation.** Subscription narrowing, buffered deltas, scope
    leases, reduced snapshots, attachment flows (LANDED 2026-09-01,
    wave 6b — §14 "Snapshot and attachment transfers"), push senders +
-   notification semantics + deep links. The Capacitor shell itself
+   notification semantics + deep links (notification mapping,
+   preference gate, retraction, and desktop presenters: LANDED
+   2026-09-01, wave 6a — §9 "Desktop notifications ride the same event
+   mapping"; push senders stay gated on the signing discussion). The Capacitor shell itself
    (same SPA + native plugins, §9) is scaffolded here, including the
    native WebSocket bridge (the phone's only transport, §9) and
    bundle sync from the backend with rollback (§9); store builds
