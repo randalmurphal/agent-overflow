@@ -50,12 +50,15 @@
 // honest recovery is to let that happen and pair again.
 
 import { enrollDeviceKey, mintDeviceProof } from './deviceKey';
+import { answerChallenge, type PasskeyChallenge } from './passkey';
 
 // Mirrors internal/transport/authroutes.go. Names, not policy: the
 // backend decides what they mean.
 const AUTH_PAIR_PATH = '/auth/pair';
 const AUTH_TOKEN_PATH = '/auth/token';
 const AUTH_TICKET_PATH = '/auth/ticket';
+const AUTH_PASSKEY_BEGIN_PATH = '/auth/passkey/begin';
+const AUTH_PASSKEY_FINISH_PATH = '/auth/passkey/finish';
 const SESSION_CREDENTIAL_HEADER = 'X-AO-Session';
 const DEVICE_KEY_HEADER = 'X-AO-Device-Key';
 
@@ -411,6 +414,74 @@ export async function redeemPairing(
     verificationNumber: body.verificationNumber ?? '',
     sessionId: body.sessionId,
   };
+}
+
+/**
+ * Sign this device in with a passkey: no link, no code, no confirmation.
+ *
+ * It lives beside redemption rather than in ./passkey.ts because what it
+ * produces is the same thing redemption produces — a stored session pair
+ * on this origin — and one storage writer is what keeps the two from
+ * disagreeing about what a paired browser holds. ./passkey.ts owns the
+ * ceremony, which is the part that has nothing to do with sessions.
+ *
+ * The device enrolment is identical too, and for a reason worth keeping in
+ * view: a passkey proves the PERSON, while the device row is what a
+ * revocation reaches, so a sign-in still generates (or re-presents) this
+ * origin's key and proves it on the finish. A session with no device row
+ * would be one nothing could withdraw.
+ *
+ * Unlike pairing there is no verification number and no waiting: the
+ * assertion is a signature by a key the owner registered from a surface
+ * that already held admin, so the session it mints is live on arrival.
+ */
+export async function signInWithPasskey(
+  label: string,
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  const begun = await fetcher(AUTH_PASSKEY_BEGIN_PATH, { method: 'POST' });
+  const challenge = (await begun.json().catch(() => ({}))) as
+    | (PasskeyChallenge & { reason?: string })
+    | undefined;
+  if (!begun.ok || !challenge?.ceremonyId) {
+    throw new PairingRefusedError(begun.status, challenge?.reason ?? '');
+  }
+  const response = await answerChallenge(challenge, 'get');
+  // Enrolled AFTER the assertion, so a person who dismissed the prompt
+  // leaves no key behind on a browser that never signed in.
+  const proof = (await enrollDeviceKey())
+    ? await mintDeviceProof('POST', AUTH_PASSKEY_FINISH_PATH)
+    : null;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (proof !== null) headers[DEVICE_KEY_HEADER] = proof;
+  const res = await fetcher(AUTH_PASSKEY_FINISH_PATH, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      ceremonyId: challenge.ceremonyId,
+      // Raw JSON, forwarded unread: the backend's WebAuthn library owns
+      // every member and a shape mirrored here would be a second
+      // definition of the specification's.
+      response: JSON.parse(response) as unknown,
+      keyThumbprint: proof === null ? deviceKeyThumbprint() : '',
+      label,
+      platform: navigator.platform || '',
+    }),
+  });
+  const body = await readGrant(res);
+  if (!res.ok || !body.sessionId || !body.credential) {
+    throw new PairingRefusedError(res.status, body.reason ?? '');
+  }
+  storeSession({
+    sessionId: body.sessionId,
+    credential: body.credential,
+    expiresAtMs: body.expiresAtMs ?? 0,
+    refreshSecret: body.refreshSecret,
+    refreshExpiresAtMs: body.refreshExpiresAtMs,
+    label,
+    scopes: grantedScopesFrom(body),
+    proofKind: proof === null ? 'bearer' : 'key',
+  });
 }
 
 /**

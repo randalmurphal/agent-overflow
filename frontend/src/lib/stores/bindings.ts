@@ -169,6 +169,19 @@ export {
   RestoreAccessDevice,
   ForgetAccessDevice,
 
+  // Passkeys, on the same `access:admin` surface. Registration is
+  // additionally step-up gated, because it issues something that admits a
+  // future caller; the two ceremony calls below are the FLOOR, since they
+  // are how a session satisfies that gate rather than something it is
+  // granted. Signing IN has no binding at all — its caller holds no
+  // session, so it is an HTTP route (transport/deviceSession.ts).
+  BeginPasskeyRegistration,
+  FinishPasskeyRegistration,
+  ListPasskeys,
+  DeletePasskey,
+  BeginPasskeyStepUp,
+  FinishPasskeyStepUp,
+
   // WSL distro switcher — exposed only when the backend is running
   // inside a WSL distribution spawned by the Windows launcher. The
   // setter mutates %APPDATA%\agent-overflow\wsl.json so the next
@@ -554,6 +567,9 @@ export type {
   PairingInvite,
   PairingStatusView,
   DeviceRevocationResult,
+  PasskeySummary,
+  PasskeyChallengeResult,
+  PasskeyStepUpGrant,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 export {
   Distro as WSLDistro,

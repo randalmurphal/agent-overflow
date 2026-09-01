@@ -77,6 +77,11 @@ function stubBindings() {
       throw new Error('ForgetTailnetNode must never be called by a passive load');
     }),
     overview: setBindingMock('GetAccessOverview', async () => ({ devices: [] })),
+    // The passkeys block lives inside DevicesSection's granted branch, so
+    // it is the same passive load one level down — and mounting it there
+    // rather than gating it again is exactly the arrangement that has to
+    // be asserted rather than assumed.
+    passkeys: setBindingMock('ListPasskeys', async () => []),
     endpoints: setBindingMock('ListRemoteEndpoints', async () => []),
     isWSL: setBindingMock('IsWSL', async () => true),
     distros: setBindingMock('ListWSLDistros', async () => [{ name: 'Ubuntu', default: true }]),
@@ -142,12 +147,14 @@ describe('settings sections issue no passive RPC they were not granted', () => {
     it('loads the overview on the owner’s own screen', async () => {
       render(DevicesSection);
       await waitFor(() => expect(bindings.overview).toHaveBeenCalled());
+      await waitFor(() => expect(bindings.passkeys).toHaveBeenCalled());
     });
 
     it('loads it for a device paired with FULL access, which holds the scope', async () => {
       await pairFullAccess();
       render(DevicesSection);
       await waitFor(() => expect(bindings.overview).toHaveBeenCalled());
+      await waitFor(() => expect(bindings.passkeys).toHaveBeenCalled());
       // …and still does not reach for the machine fact alongside it.
       expect(bindings.network).not.toHaveBeenCalled();
     });
@@ -158,6 +165,10 @@ describe('settings sections issue no passive RPC they were not granted', () => {
       await settle();
       expect(bindings.overview).not.toHaveBeenCalled();
       expect(bindings.network).not.toHaveBeenCalled();
+      // The block never mounted, so its load never fired. That is the
+      // whole reason it is nested inside the granted branch rather than
+      // carrying a copy of the check.
+      expect(bindings.passkeys).not.toHaveBeenCalled();
       expect(getByTestId('devices-section-unavailable')).toBeTruthy();
     });
   });

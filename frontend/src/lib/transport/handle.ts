@@ -40,6 +40,12 @@ export interface TransportHandle {
   readonly origin: EventOrigin;
   callByID(methodId: number, args: unknown[]): Promise<unknown>;
   callByName(method: string, args: unknown[]): Promise<unknown>;
+  /**
+   * Attach a single-use step-up proof to the first call `run` issues.
+   * Scoped to the callback because presenting the token spends it; see
+   * ./wsClient.ts, and ./stepUp.ts for the one caller.
+   */
+  withStepUpToken<T>(token: string, run: () => T): T;
   subscribe(channel: string, handler: (data: unknown) => void): () => void;
 }
 
@@ -60,6 +66,9 @@ const attached: TransportHandle = {
   },
   callByName(method: string, args: unknown[]): Promise<unknown> {
     return wsClient.callByName(method, args);
+  },
+  withStepUpToken<T>(token: string, run: () => T): T {
+    return wsClient.withStepUpToken(token, run);
   },
   subscribe(channel: string, handler: (data: unknown) => void): () => void {
     return wsClient.subscribe(channel, handler);

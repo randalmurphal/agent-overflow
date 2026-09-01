@@ -20,6 +20,7 @@
 
 import { setPageGrantsFromBootstrap } from './scopes';
 import { setHarnessPageMarkerFromBootstrap, setHarnessSessionFromBootstrap } from './harnessMode';
+import { setPasskeysAvailableFromBootstrap } from './passkey';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { clampString } from './frames';
 import { hasPairedSession, pairedSessionHeaders, renewPairedSession } from './deviceSession';
@@ -124,6 +125,16 @@ export interface Bootstrap {
    */
   harness?: boolean;
   pageMarker?: string;
+  /**
+   * The backend has a canonical domain, so it can run passkey ceremonies
+   * (internal/app/app_passkey.go — WebAuthn requires a domain and refuses
+   * an address, so a backend without one has no relying party to be).
+   *
+   * Manifest rather than hello, because the page that most needs it is the
+   * one whose socket this backend will not open: a browser that has never
+   * paired sees no hello at all, and a passkey is exactly how it gets in.
+   */
+  passkeysAvailable?: boolean;
 }
 
 // defaultBootstrap fetches /bootstrap.json from this page's own origin,
@@ -229,6 +240,7 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   // latch below, which reads it at arm time.
   setPageGrantsFromBootstrap(data.remote);
   setHarnessPageMarkerFromBootstrap(data.pageMarker);
+  setPasskeysAvailableFromBootstrap(data.passkeysAvailable === true);
   // The harness bridge registers its page synchronously when this latch
   // flips. Publish the marker first so that first-load registration cannot
   // race with the waiter callback.

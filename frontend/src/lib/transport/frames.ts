@@ -86,6 +86,20 @@ export interface ClientRPCFrame {
   methodId?: number;
   method?: string;
   params: unknown[];
+  /**
+   * A step-up proof for THIS call: the single-use token
+   * `FinishPasskeyStepUp` minted for this session.
+   *
+   * On the frame rather than in `params` because it is a property of the
+   * presentation and not an argument of the method — the gate reads it
+   * before dispatch, and no method signature changes to accept one.
+   *
+   * **Presenting it SPENDS it**, whatever the call answers. So it is
+   * attached to exactly one frame, never retained, and never replayed:
+   * ./stepUp.ts arms the slot and the frame writer drains it in the same
+   * synchronous step.
+   */
+  stepUpToken?: string;
 }
 
 export interface ClientReplayFrame {

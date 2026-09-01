@@ -31,12 +31,26 @@
   // un-latches (one attempt, user-initiated); the countdown does not,
   // because no attempt is scheduled.
 
+  // A passkey is the one recovery either terminal state has that does not
+  // need somebody at the other computer, so this banner is where it is
+  // offered — a browser that has never paired, or one whose session family
+  // ended, both arrive here and both are exactly who a registered
+  // credential is for (docs/specs/remote-access.md §4 "Passkeys"). It
+  // re-attaches through the SAME redial pairing uses rather than a second
+  // recovery path; nothing about the ladder changes.
   import { fade } from 'svelte/transition';
   import {
     connectionRefusalMessage,
     isTerminalConnectionStatus,
   } from '../../transport/connectionRefusal';
-  import { getTransportStatus, retryTransport } from '../../stores/transportStatus.svelte';
+  import { PasskeyAbandonedError, passkeysUsable } from '../../transport/passkey';
+  import { signInWithPasskey } from '../../transport/deviceSession';
+  import { errString } from '../../utils/errors';
+  import {
+    getTransportStatus,
+    redialAfterSignIn,
+    retryTransport,
+  } from '../../stores/transportStatus.svelte';
 
   // Tick once per second so the countdown stays in sync. We only mount
   // when the banner is visible; on a steady-state connection the
@@ -133,6 +147,31 @@
   function handleRetry(): void {
     retryTransport();
   }
+
+  // Offered only where it can work: a terminal state (the ladder has
+  // stopped, so there is something to recover FROM), a backend with a
+  // domain, and a page that can hold a credential.
+  let signInOffered = $derived(isTerminalConnectionStatus(snapshot.status) && passkeysUsable());
+  let signingIn = $state(false);
+  let signInError = $state('');
+
+  async function handleSignIn(): Promise<void> {
+    if (signingIn) return;
+    signingIn = true;
+    signInError = '';
+    try {
+      await signInWithPasskey(navigator.platform || 'Browser');
+      // Awaited, for the reason main.ts awaits it after pairing: the app
+      // is already mounted here, and its stores re-acquire on the
+      // reconnect this settles.
+      await redialAfterSignIn();
+    } catch (err) {
+      // A dismissed prompt is not a failure; the banner simply stays.
+      if (!(err instanceof PasskeyAbandonedError)) signInError = errString(err);
+    } finally {
+      signingIn = false;
+    }
+  }
 </script>
 
 <!-- Overlay pattern: the banner is absolutely positioned at the top of the
@@ -159,7 +198,18 @@
     data-status={snapshot.status}
     class="absolute inset-x-0 top-0 z-50 border-b {bannerClasses} px-4 py-1.5 flex items-center gap-2 text-xs"
   >
-    <p class="flex-1 line-clamp-1" title={message}>{message}</p>
+    <p class="flex-1 line-clamp-1" title={signInError || message}>{signInError || message}</p>
+    {#if signInOffered}
+      <button
+        type="button"
+        onclick={() => void handleSignIn()}
+        disabled={signingIn}
+        data-testid="transport-status-passkey"
+        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-60"
+      >
+        Sign in with a passkey
+      </button>
+    {/if}
     {#if snapshot.status !== 'connected'}
       <button
         type="button"

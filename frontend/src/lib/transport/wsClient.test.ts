@@ -265,6 +265,50 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it('puts a step-up token on the armed call and on no other', async () => {
+    // The token is SPENT by being presented, so which frame carries it is
+    // the whole contract: the armed call, never the one issued after the
+    // arming callback returned, and never a second call inside it.
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    // Never answered; close() below settles them. The catch is what keeps
+    // that from surfacing as an unhandled rejection.
+    const swallow = () => {};
+    client.withStepUpToken('one-shot', () => {
+      client.callByName('Armed', []).catch(swallow);
+      client.callByName('Second', []).catch(swallow);
+    });
+    client.callByName('Later', []).catch(swallow);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    const rpcs = ws.sent.filter((f) => f.type === 'rpc');
+    expect(rpcs.map((f) => f.method)).toEqual(['Armed', 'Second', 'Later']);
+    expect(rpcs.map((f) => f.stepUpToken)).toEqual(['one-shot', undefined, undefined]);
+
+    client.close();
+  });
+
+  it('leaves the slot empty when the armed callback issues no call', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.withStepUpToken('unspent', () => {
+      // Nothing. A slot that stayed armed here would put somebody's proof
+      // on whatever background load dispatched next.
+    });
+    client.callByName('Innocent', []).catch(() => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    const rpc = ws.sent.find((f) => f.type === 'rpc')!;
+    expect(rpc).toMatchObject({ method: 'Innocent' });
+    expect(rpc.stepUpToken).toBeUndefined();
+
+    client.close();
+  });
+
   it('rejects with TransportError on a server-side FrameError', async () => {
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
 

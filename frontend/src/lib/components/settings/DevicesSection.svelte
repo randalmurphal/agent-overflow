@@ -2,8 +2,9 @@
   // Settings → Network → Devices: which devices hold a credential on this
   // backend, the pairing flow that adds one (PairDeviceModal), and the
   // revocations that take one away — plus restore and forget, the two
-  // ways out of a revoked row. Wire: the nine `access:admin` RPCs
-  // (internal/app/app_access.go).
+  // ways out of a revoked row, and the passkeys block below them. Wire:
+  // the `access:admin` surface (internal/app/app_access.go, and
+  // app_passkey.go for the block).
   //
   // The local page channel — the backend's own window, whatever relays it
   // — renders as "This computer" with no revoke control: the backend
@@ -36,6 +37,7 @@
   import { isClientMode } from '../../transport/runMode';
   import { hasScope, isViewOnlyGrantSet } from '../../transport/scopes';
   import PairDeviceModal from './PairDeviceModal.svelte';
+  import PasskeysBlock from './PasskeysBlock.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import { GHOST_BUTTON_CLASS } from './styles';
 
@@ -43,8 +45,8 @@
   // --connect mode the RPCs are refused as local-only, so the section
   // renders a pointer instead of controls that can only fail.
   const clientMode = isClientMode();
-  // The other axis, and the one a paired device lands on. The nine RPCs
-  // below carry `//ao:scope access:admin`, which full access holds and
+  // The other axis, and the one a paired device lands on. Every RPC on
+  // this screen carries `//ao:scope access:admin`, which full access holds and
   // view-only does not — so a view-only device's mount fired
   // `GetAccessOverview` and got `Failed to load devices` back, a passive
   // load discovering a refusal it could have asked about (stores/AGENTS.md
@@ -462,6 +464,12 @@
         </div>
       {/each}
     </div>
+
+    <!-- Inside the granted branch on purpose: the block's own load is
+         `access:admin` like every RPC on this screen, and mounting it
+         only here is what keeps that a structural fact rather than a
+         second copy of the check. -->
+    <PasskeysBlock />
 
     {#if audit.length > 0}
       <div class="mt-3">

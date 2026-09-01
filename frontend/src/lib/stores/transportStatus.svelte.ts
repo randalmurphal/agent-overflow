@@ -205,6 +205,21 @@ export function retryTransport(): void {
   wsClient.triggerReconnect();
 }
 
+/**
+ * Re-attach after this browser acquired a session it did not have — a
+ * passkey sign-in from the terminal-refusal banner, the same way the
+ * pairing screen re-attaches after redemption.
+ *
+ * Deliberately the SAME call rather than a second recovery path: the
+ * socket that is up (or latched) predates the credential and would carry
+ * the wrong identity, and the awaited settle is what stops the boot
+ * fan-out being issued against a transport mid-transition
+ * (transport/AGENTS.md § redialAfterPairing is AWAITED).
+ */
+export function redialAfterSignIn(): Promise<void> {
+  return wsClient.redialAfterPairing();
+}
+
 /** Test-only helper. Tears down the subscription so a subsequent test
  * can re-seed the singleton from a fresh wsClient. */
 export function resetTransportStatusForTest(): void {

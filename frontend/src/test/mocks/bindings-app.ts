@@ -252,6 +252,12 @@ export const RevokeAccessDevice = dispatch('RevokeAccessDevice');
 export const RevokeAccessSession = dispatch('RevokeAccessSession');
 export const RestoreAccessDevice = dispatch('RestoreAccessDevice');
 export const ForgetAccessDevice = dispatch('ForgetAccessDevice');
+export const BeginPasskeyRegistration = dispatch('BeginPasskeyRegistration');
+export const FinishPasskeyRegistration = dispatch('FinishPasskeyRegistration');
+export const ListPasskeys = dispatch('ListPasskeys');
+export const DeletePasskey = dispatch('DeletePasskey');
+export const BeginPasskeyStepUp = dispatch('BeginPasskeyStepUp');
+export const FinishPasskeyStepUp = dispatch('FinishPasskeyStepUp');
 
 // WSL distro switcher (Settings → Network → WSL Distro section).
 // IsWSL gates whether the section renders at all; the other three

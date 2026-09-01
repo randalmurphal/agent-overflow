@@ -105,6 +105,50 @@ remote browser alike. Protocol and authz rules:
   (remote-access spec §10). Resolution is one call and no allocation, and
   the origin object is rebuilt only when the identity moves, so a
   streaming channel does not mint one per frame.
+- `passkey.ts` is the browser half of the three ceremonies, and it owns
+  ONE thing: the impedance mismatch. WebAuthn's JSON dialect spells every
+  binary member base64url and the DOM API speaks `ArrayBuffer`, so options
+  are walked in and credentials rebuilt out — by hand, because
+  `parseCreationOptionsFromJSON` / `toJSON` are recent enough that a phone
+  one version behind has them ABSENT, which is a TypeError rather than a
+  degraded feature (the `crypto.randomUUID` class again). The decode is
+  keyed on the spec's closed set of member NAMES, never on what looks
+  base64url: a shape-based walker corrupts the next field that happens to
+  match. Nothing here decides anything — which account, which session, and
+  whether an assertion is good enough are `internal/identity`'s.
+
+  `passkeysUsable()` is the gate every surface asks, and it is the AND of
+  two facts: this backend published a canonical domain (the manifest's
+  `passkeysAvailable` — from the MANIFEST, because the page that most
+  needs the answer is one whose socket the backend will not open, so there
+  is no hello to read), and this page has `navigator.credentials` at all.
+  A plain-HTTP LAN page has neither that nor `crypto.subtle`, which is
+  spec §15 constraint 6 as a runtime test: everything keeps working
+  exactly as it did, minus the affordance.
+
+  A dismissed prompt is `PasskeyAbandonedError` and not a failure. The DOM
+  answers `NotAllowedError` for "the person said no" and "the
+  authenticator declined" alike and refuses to say which, so neither does
+  this — and a surface that reports it as an error accuses somebody of a
+  fault they did not commit.
+- `stepUp.ts` is how a device that is not the computer satisfies a
+  `step_up_required` refusal. `withStepUp(call)` runs the call, and on
+  that one refusal runs a ceremony and runs the call ONCE more with the
+  token armed.
+
+  **A retry, never an interceptor.** The ceremony puts a biometric prompt
+  on somebody's screen, so it is wrapped around an action they pressed a
+  button for — a prompt raised by a pane mounting or a background refresh
+  is one nobody asked for and nobody can attribute. Putting this at the
+  transport door would do exactly that.
+
+  Exactly one retry and no loop: a second refusal after a proof was
+  accepted means the call was refused for a different reason, and asking
+  for another touch trains somebody to approve prompts that do not work.
+  It rethrows the ORIGINAL refusal when there is nothing to try (no
+  passkey on this page, prompt dismissed), because what happened from
+  where the person sits is that the change did not go through, and
+  `scopeRefusal.ts` owns that sentence.
 - `frames.ts` is the TypeScript mirror of `internal/transport/frame.go`.
   Change one and change the other in the same commit. Frames evolve
   ADDITIVELY: a new optional field or a new frame type is safe because
@@ -202,7 +246,12 @@ remote browser alike. Protocol and authz rules:
   sibling to `authReason.ts`'s credential half. Kept apart because the
   remedies differ in kind: one says "sign in again", the other says "you
   are signed in and were not granted this", and a module branching on
-  both would offer to re-pair somebody whose pairing is fine. The
+  both would offer to re-pair somebody whose pairing is fine. The step-up
+  refusal has TWO sentences and picks between them per refusal rather than
+  once, because the canonical domain is a live setting: where passkeys are
+  usable the remedy is a touch, where they are not it is being at the
+  computer, and naming a passkey nobody can register sends somebody
+  nowhere. The
   backend puts the missing capability in a wire FIELD (`scope`, on
   `scope_required`) because a method error's prose is redacted for a
   non-loopback caller — the field is the whole answer that survives. It
@@ -303,6 +352,21 @@ remote browser alike. Protocol and authz rules:
   reason: the socket opened under the pairing screen predates the
   credential and carries the wrong identity — and because the grants the
   credential arrived with are what `scopes.ts` re-reads there.
+
+  `signInWithPasskey` lives HERE rather than in `passkey.ts` on the
+  one-writer rule: what it produces is what redemption produces — a
+  stored session pair on this origin — and a second storage writer is how
+  a passkey-signed browser and a paired one would come to present
+  differently on the next dial. It enrolls the device key too, because a
+  passkey proves the PERSON while the device row is what a revocation
+  reaches, so a session with no device row would be one nothing can
+  withdraw. Unlike pairing there is no verification number and no probe:
+  the assertion IS the confirmation, so the session is live on arrival.
+  Both of its surfaces re-attach through the same `redialAfterPairing` —
+  `PairingScreen` for a person holding a link who would rather use their
+  passkey, and `shared/TransportStatusBanner.svelte` for the case that
+  has no link at all, where a terminal `pairing-required` or
+  `unauthorized` state is precisely who a registered credential is for.
 
   **`redialAfterPairing` is AWAITED, and the app mounts on the other
   side of it.** It resolves when the transport has had its chance —

@@ -658,6 +658,11 @@ export class WSClient {
   // wait — so the queue holds only what to re-send, never a second
   // settlement path.
   private readonly retryQueue: ClientRPCFrame[] = [];
+  // The step-up token the NEXT dispatched RPC carries, and no other. Held
+  // only for the synchronous span of withStepUpToken below, because the
+  // token is spent by the presentation and a slot that outlived one call
+  // would spend it on whatever came next.
+  private stepUpToken: string | null = null;
   private readonly subscribers = new Map<string, Set<EventHandler>>();
   private readonly statusHandlers = new Set<StatusHandler>();
   private readonly helloHandlers = new Set<HelloHandler>();
@@ -767,6 +772,27 @@ export class WSClient {
   // generated bindings always use ByID.
   callByName(method: string, args: unknown[]): Promise<unknown> {
     return this.dispatchRPC({ method, params: args });
+  }
+
+  // withStepUpToken attaches `token` to the first RPC `run` issues, and to
+  // no other call from anywhere.
+  //
+  // Scoped to a callback rather than exposed as an arm/disarm pair for one
+  // reason: presenting a step-up token SPENDS it, so a slot left armed
+  // across an await would put somebody's freshly proved touch on whatever
+  // background load happened to dispatch next. `run` is invoked
+  // synchronously, dispatchRPC builds its frame synchronously, and the
+  // `finally` clears anything a run that issued no call left behind.
+  //
+  // A second call inside one `run` therefore gets nothing, which is the
+  // right answer: one proof, one call (internal/transport/frame.go).
+  withStepUpToken<T>(token: string, run: () => T): T {
+    this.stepUpToken = token;
+    try {
+      return run();
+    } finally {
+      this.stepUpToken = null;
+    }
   }
 
   // subscribe registers a handler for `channel`. Returns the
@@ -1119,6 +1145,16 @@ export class WSClient {
       // method.
       if (typeof spec.methodId === 'number' && spec.methodId !== 0) frame.methodId = spec.methodId;
       if (typeof spec.method === 'string') frame.method = spec.method;
+      // Drained HERE, at frame construction, rather than at send: this
+      // executor runs synchronously inside the arming call, so the token
+      // lands on the call that armed it and on no later one. Draining at
+      // send would leave it in the slot across an await, where the next
+      // RPC any surface issues could take it — and presenting it is what
+      // spends it.
+      if (this.stepUpToken !== null) {
+        frame.stepUpToken = this.stepUpToken;
+        this.stepUpToken = null;
+      }
       // Allowlist resolved HERE, once, so a call that will never be
       // retried does not pin its params for the RPC's lifetime.
       const retry = matchesRetryAllowlist(this.retryAllowlist, spec) ? frame : null;

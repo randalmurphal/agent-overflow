@@ -1,4 +1,5 @@
 import { TransportError } from './wsClient';
+import { passkeysUsable } from './passkey';
 import { isScope, type Scope } from './scopes';
 
 /**
@@ -98,13 +99,37 @@ export const SESSION_REFUSAL: ScopeRefusalPresentation = {
 
 /**
  * The step-up refusal. Its own presentation rather than a shade of the
- * one above, because no grant can satisfy it: the remedy is to be at the
- * computer, not to be given something.
+ * one above, because no grant can satisfy it: the remedy is to prove
+ * somebody is present, not to be given something.
  */
 export const STEP_UP_REFUSAL: ScopeRefusalPresentation = {
   title: 'That change can only be made at the computer running Agent Overflow.',
   hint: 'Open Agent Overflow there and make it from that screen.',
 };
+
+/**
+ * The same refusal where a passkey is the second proof (./passkey.ts).
+ *
+ * Reaching it means the ceremony did not finish — ./stepUp.ts runs one
+ * automatically and retries — so the sentence names the touch rather than
+ * the machine. Keeping both is the honest arrangement: on a backend with
+ * no canonical domain there IS no second proof, and telling somebody to
+ * use a passkey they cannot register sends them nowhere.
+ */
+export const STEP_UP_PASSKEY_REFUSAL: ScopeRefusalPresentation = {
+  title: 'That change needs you to confirm it is you.',
+  hint: 'Try again and confirm with your passkey, or make the change at the computer running Agent Overflow.',
+};
+
+/**
+ * Which step-up sentence this backend can honestly show, asked per
+ * refusal rather than resolved once: the canonical domain is a live
+ * setting, so a page open across the change would otherwise keep naming
+ * a remedy that stopped (or started) existing.
+ */
+function stepUpRefusal(): ScopeRefusalPresentation {
+  return passkeysUsable() ? STEP_UP_PASSKEY_REFUSAL : STEP_UP_REFUSAL;
+}
 
 /** Whether this call was refused for want of a capability. */
 export function isScopeRefusal(err: unknown): err is TransportError {
@@ -125,7 +150,7 @@ export function presentScope(scope: string | undefined | null): ScopeRefusalPres
   if (!isScope(scope)) return UNKNOWN_SCOPE_REFUSAL;
   if (scope === 'host') {
     // Not a grant, so the grant hint would be a false instruction.
-    return STEP_UP_REFUSAL;
+    return stepUpRefusal();
   }
   if (scope === 'session') return SESSION_REFUSAL;
   return {
@@ -140,7 +165,7 @@ export function presentScope(scope: string | undefined | null): ScopeRefusalPres
  * reporting an ordinary method failure as a permissions problem.
  */
 export function scopeRefusalPresentation(err: unknown): ScopeRefusalPresentation | null {
-  if (isStepUpRefusal(err)) return STEP_UP_REFUSAL;
+  if (isStepUpRefusal(err)) return stepUpRefusal();
   if (isScopeRefusal(err)) return presentScope(err.scope);
   return null;
 }

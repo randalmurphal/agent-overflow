@@ -14,11 +14,13 @@
   import MicroLabel from '../primitives/MicroLabel.svelte';
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import { presentAuthReason } from '../../transport/authReason';
+  import { PasskeyAbandonedError, passkeysUsable } from '../../transport/passkey';
   import {
     PairingRefusedError,
     endpointMatchesOrigin,
     probeActivation,
     redeemPairing,
+    signInWithPasskey,
     type PairingPayload,
   } from '../../transport/deviceSession';
 
@@ -107,6 +109,46 @@
     }
   }
 
+  // The other way in, when this backend has a passkey to offer: no link
+  // to open, no number to compare, no waiting. A valid assertion is a
+  // signature by a key the owner registered from a surface that already
+  // held admin, so the session it mints is live on arrival and the screen
+  // goes straight to `ready` — the same hand-off pairing takes, so the
+  // redial main.ts awaits is not forked.
+  const passkeyOffered = passkeysUsable();
+  // Which way in succeeded, for the one word the ready state shows. The
+  // two outcomes are genuinely different — one enrolled a device the owner
+  // confirmed, the other signed in as the owner — and calling both
+  // "Paired" would describe the second one wrongly.
+  let signedInWithPasskey = $state(false);
+
+  async function signIn(): Promise<void> {
+    if (stage.at !== 'intro') return;
+    stage = { at: 'redeeming' };
+    try {
+      await signInWithPasskey(label.trim() || suggestLabel());
+      signedInWithPasskey = true;
+      stage = { at: 'ready' };
+      setTimeout(onDone, 700);
+    } catch (err) {
+      if (err instanceof PasskeyAbandonedError) {
+        // Nothing went wrong. Back to where they were, with no message.
+        stage = { at: 'intro' };
+        return;
+      }
+      if (err instanceof PairingRefusedError) {
+        const shown = presentAuthReason(err.reason);
+        stage = { at: 'failed', title: shown.title, hint: shown.hint };
+        return;
+      }
+      stage = {
+        at: 'failed',
+        title: 'Signing in did not go through.',
+        hint: 'Check that this device is on the same network, then try again.',
+      };
+    }
+  }
+
   function scheduleProbe(deadline: number): void {
     probeTimer = setTimeout(async () => {
       probeTimer = null;
@@ -142,7 +184,7 @@
       <MicroLabel as="p" class="text-fg-hint">Agent Overflow</MicroLabel>
       <h1 class="text-lg font-semibold text-text-primary">
         {#if stage.at === 'ready'}
-          Paired
+          {signedInWithPasskey ? 'Signed in' : 'Paired'}
         {:else if stage.at === 'failed'}
           {stage.title}
         {:else if stage.at === 'waiting'}
@@ -179,6 +221,16 @@
           />
         </label>
         <Button type="submit" variant="primary" size="md">Pair</Button>
+        {#if passkeyOffered}
+          <!-- The other way in, for a person who already registered a
+               passkey: no number to compare, because the assertion is the
+               confirmation. Offered beside pairing rather than instead of
+               it — a first device has no passkey yet, and that is the case
+               a link exists for. -->
+          <Button variant="ghost" size="md" onclick={() => void signIn()}>
+            Sign in with a passkey
+          </Button>
+        {/if}
       </form>
     {:else if stage.at === 'redeeming'}
       <SteppedSpinner size={16} />

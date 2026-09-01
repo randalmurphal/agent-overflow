@@ -75,6 +75,10 @@ describe('<DevicesSection>', () => {
     resetBindingMocks();
     resetRunMode();
     setBindingMock('GetNetworkSettings', async () => ({ bindAll: false, url: '', token: '' }));
+    // The passkeys block mounts inside the granted branch and loads its
+    // own list, so every case here reaches it. Empty: what it renders is
+    // PasskeysBlock.test.ts's subject, not this file's.
+    setBindingMock('ListPasskeys', async () => []);
   });
 
   afterEach(() => {

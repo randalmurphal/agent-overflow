@@ -6,7 +6,7 @@
 // unchanged through phase 5 is the regression test that the class still
 // works. The signing device is deviceSessionKeyed.test.ts, which brings
 // its own IndexedDB.
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   PairingRefusedError,
   clearPairedSession,
@@ -17,6 +17,7 @@ import {
   parsePairingFragment,
   probeActivation,
   redeemPairing,
+  signInWithPasskey,
   type PairingPayload,
 } from './deviceSession';
 
@@ -240,5 +241,100 @@ describe('clearPairedSession', () => {
     clearPairedSession();
     expect(hasPairedSession()).toBe(false);
     expect(deviceKeyThumbprint()).toBe(key);
+  });
+});
+
+describe('signInWithPasskey', () => {
+  // The keyless path, like everything else in this file: happy-dom has no
+  // IndexedDB, so the device enrolls with a bare identifier. What the
+  // sign-in is asserted to do is store the SAME thing pairing stores —
+  // one writer, one shape, or a passkey-signed browser and a paired one
+  // would present differently on the next dial.
+  const credential = {
+    id: 'cred-id',
+    rawId: new Uint8Array([1, 2]).buffer,
+    type: 'public-key',
+    authenticatorAttachment: 'platform',
+    getClientExtensionResults: () => ({}),
+    response: {
+      clientDataJSON: new Uint8Array([3]).buffer,
+      authenticatorData: new Uint8Array([4]).buffer,
+      signature: new Uint8Array([5]).buffer,
+      userHandle: new Uint8Array([6]).buffer,
+    },
+  };
+
+  function installAuthenticator(answer: unknown = credential): void {
+    Object.defineProperty(window, 'PublicKeyCredential', {
+      configurable: true,
+      value: function PublicKeyCredential() {},
+    });
+    Object.defineProperty(navigator, 'credentials', {
+      configurable: true,
+      value: {
+        create: () => Promise.resolve(answer),
+        get: () =>
+          answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer),
+      },
+    });
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'PublicKeyCredential');
+    Reflect.deleteProperty(navigator, 'credentials');
+  });
+
+  it('stores the session the finish granted, with no confirmation step', async () => {
+    installAuthenticator();
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ceremonyId: 'cer-1', options: { challenge: 'AQID' } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(grantResponse({ scopes: ['threads:read'] }));
+
+    await signInWithPasskey('Phone', fetcher as unknown as typeof fetch);
+
+    expect(fetcher.mock.calls[0]![0]).toBe('/auth/passkey/begin');
+    const finish = fetcher.mock.calls[1]!;
+    expect(finish[0]).toBe('/auth/passkey/finish');
+    const body = JSON.parse((finish[1] as RequestInit).body as string) as Record<string, unknown>;
+    expect(body.ceremonyId).toBe('cer-1');
+    expect(body.label).toBe('Phone');
+    // A device row is what a revocation reaches, so the sign-in still
+    // enrolls one. Keyless here, so it presents the bare identifier.
+    expect(body.keyThumbprint).toBe(deviceKeyThumbprint());
+    // Pairing waits for the owner to confirm a number; a passkey
+    // assertion IS the confirmation, so the session is live on arrival.
+    expect(hasPairedSession()).toBe(true);
+  });
+
+  it('spends the ceremony before it enrolls anything', async () => {
+    installAuthenticator(new DOMException('dismissed', 'NotAllowedError'));
+    const fetcher = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ ceremonyId: 'cer-1', options: { challenge: 'AQID' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(signInWithPasskey('Phone', fetcher as unknown as typeof fetch)).rejects.toThrow();
+    // No finish, and nothing stored: a dismissed prompt leaves this
+    // browser exactly as it was.
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(hasPairedSession()).toBe(false);
+  });
+
+  it('carries a refused begin through as the typed refusal it is', async () => {
+    installAuthenticator();
+    const fetcher = vi.fn().mockResolvedValueOnce(refusal('passkey_unavailable'));
+
+    await expect(
+      signInWithPasskey('Phone', fetcher as unknown as typeof fetch),
+    ).rejects.toMatchObject({ reason: 'passkey_unavailable' });
+    expect(hasPairedSession()).toBe(false);
   });
 });
