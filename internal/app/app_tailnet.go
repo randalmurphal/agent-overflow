@@ -58,6 +58,15 @@ const (
 type tailnetState struct {
 	mu sync.Mutex
 
+	// lifecycle serializes node transitions across goroutines: the
+	// reconciler holds it for a whole pass, and ForgetTailnetNode holds
+	// it across stop-and-delete. Without it, a forget that checked the
+	// setting could interleave with a bring-up still running from a pass
+	// that read the setting's previous value, and the deletion would
+	// race the files that bring-up is writing. Separate from mu, which
+	// guards field access only and is never held across a node call.
+	lifecycle sync.Mutex
+
 	// dir is the config root the node's state directory lives under.
 	// Empty means the loop never started.
 	dir string
@@ -163,6 +172,9 @@ func (a *App) tailnetEvents() <-chan struct{} {
 // reconcileTailnet makes the live node match the persisted preference and
 // answers how long to wait before looking again.
 func (a *App) reconcileTailnet() time.Duration {
+	a.tailnet.lifecycle.Lock()
+	defer a.tailnet.lifecycle.Unlock()
+
 	cfg := a.currentSettings().Network
 
 	a.tailnet.mu.Lock()
@@ -468,6 +480,13 @@ func (a *App) ForgetTailnetNode() (network.Settings, error) {
 	if root == "" {
 		return network.Settings{}, fmt.Errorf("no configuration directory, so there is no node state to remove")
 	}
+	// The lifecycle lock keeps this from interleaving with a reconcile
+	// pass that is still bringing a node up from the setting's previous
+	// value — without it, the deletion below could race the files that
+	// bring-up is writing, and the forgotten directory would reappear
+	// holding a fresh identity.
+	a.tailnet.lifecycle.Lock()
+	defer a.tailnet.lifecycle.Unlock()
 	// Belt and braces against a node that outlived a disable: closing an
 	// already-closed node is a no-op, and deleting state under a live one
 	// is the failure this refuses.

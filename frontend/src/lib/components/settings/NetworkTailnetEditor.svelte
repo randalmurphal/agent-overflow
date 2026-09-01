@@ -234,6 +234,8 @@
       <div class="flex items-center gap-2">
         <a
           href={tailnet.authUrl}
+          target="_blank"
+          rel="noopener noreferrer"
           class="{INPUT_CLASS} flex-1 min-w-0 truncate font-mono text-accent"
           data-testid="network-tailnet-auth-link"
         >

@@ -284,4 +284,25 @@ func TestAHandEditedFileKeepsTheTailnetHalfSeparate(t *testing.T) {
 			t.Fatalf("the unusable control URL survived load: %q", loaded.TailnetControlURL)
 		}
 	})
+
+	t.Run("a bad control URL keeps the domain half", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{
+			"network": {
+				"canonicalDomain": "backend.example",
+				"acmeDnsHook": ["update-dns"],
+				"tailnetEnabled": true,
+				"tailnetControlUrl": "headscale.example"
+			}
+		}`), 0o600); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		loaded := NewService(dir).Get().Network
+		if loaded.CanonicalDomain != "backend.example" || len(loaded.ACMEDNSHook) != 1 {
+			t.Fatalf("the domain half was dropped with the tailnet half: %+v", loaded)
+		}
+		if loaded.WantsTailnet() || loaded.TailnetControlURL != "" {
+			t.Fatalf("the unusable tailnet half survived load: %+v", loaded)
+		}
+	})
 }

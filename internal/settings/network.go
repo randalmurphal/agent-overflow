@@ -185,12 +185,13 @@ func validateNetwork(n NetworkSettings) (NetworkSettings, error) {
 // domain the backend serves its self-signed certificate, which is what
 // it did before any of this was configured.
 //
-// The tailnet half is re-checked on its own, because it shares nothing
-// with the TLS half: a domain typo must not quietly take the node off
-// the tailnet. It drops WHOLE, enabled bit included, when the control
-// URL is the unusable value — an empty control URL means the public
-// coordination server, so keeping the toggle alone would register this
-// node somewhere the user did not name.
+// Each independent half is re-checked on its own, because they share
+// nothing: a domain typo must not quietly take the node off the tailnet,
+// and a control-URL typo must not quietly drop a working certificate
+// setup. A half drops WHOLE when its value is unusable — for the
+// tailnet, enabled bit included, since an empty control URL means the
+// public coordination server and keeping the toggle alone would register
+// this node somewhere the user did not name.
 func sanitizeNetwork(n NetworkSettings) NetworkSettings {
 	sanitized, err := validateNetwork(n)
 	if err == nil {
@@ -198,11 +199,21 @@ func sanitizeNetwork(n NetworkSettings) NetworkSettings {
 	}
 	log.Printf("settings: dropping unusable network configuration: %v", err)
 	kept := NetworkSettings{BindAll: n.BindAll}
-	tailnet, tailnetErr := validateNetwork(NetworkSettings{
+	if tls, tlsErr := validateNetwork(NetworkSettings{
+		CanonicalDomain:  n.CanonicalDomain,
+		ACMEDNSHook:      n.ACMEDNSHook,
+		ExternalCertFile: n.ExternalCertFile,
+		ExternalKeyFile:  n.ExternalKeyFile,
+	}); tlsErr == nil {
+		kept.CanonicalDomain = tls.CanonicalDomain
+		kept.ACMEDNSHook = tls.ACMEDNSHook
+		kept.ExternalCertFile = tls.ExternalCertFile
+		kept.ExternalKeyFile = tls.ExternalKeyFile
+	}
+	if tailnet, tailnetErr := validateNetwork(NetworkSettings{
 		TailnetEnabled:    n.TailnetEnabled,
 		TailnetControlURL: n.TailnetControlURL,
-	})
-	if tailnetErr == nil {
+	}); tailnetErr == nil {
 		kept.TailnetEnabled = tailnet.TailnetEnabled
 		kept.TailnetControlURL = tailnet.TailnetControlURL
 	}
