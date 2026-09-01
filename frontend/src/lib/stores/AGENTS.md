@@ -157,6 +157,14 @@ the row:
   outright — the same rewind, reached when the drain happened to finish
   first.
 
+Reasoning-tail rows (`thinking`, `compaction_reasoning`) publish only
+the last `THINKING_TAIL_RUNES` of the cursor, so past that length the
+same trailing producers hand back a summary that is an INTERIOR slice of
+`received`, never a prefix. The chokepoint tests containment for those
+kinds; a prefix-only test disposed the smoother on every wholesale commit
+mid-drain and left a permanent hole in the live tail until reload
+(2026-09-01).
+
 Disposing is correct only when the incoming summary genuinely DIVERGES;
 then it must win the row, so the visible text snaps rather than
 truncates.
