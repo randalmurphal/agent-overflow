@@ -342,6 +342,26 @@ const (
 	// presented again, and the family revocation that answered it. The one
 	// event in this set that is evidence rather than bookkeeping.
 	AuditRefreshReuseDetected AuditEvent = "refresh-reuse-detected"
+	// AuditPasskeyRegistered records one credential being enrolled, with
+	// the RP ID it was bound to — which is what makes a later "this passkey
+	// can no longer be presented" line explicable after a domain change.
+	AuditPasskeyRegistered AuditEvent = "passkey-registered"
+	// AuditPasskeyRemoved records a credential being deleted. No session
+	// ends with it; a session a passkey minted is revoked like any other.
+	AuditPasskeyRemoved AuditEvent = "passkey-removed"
+	// AuditPasskeySignedIn records a device signing in with a passkey and
+	// the session it was given. The counterpart of pairing-redeemed, minus
+	// the confirmation step a passkey does not need.
+	AuditPasskeySignedIn AuditEvent = "passkey-signed-in"
+	// AuditPasskeyStepUp records a step-up proven by a passkey rather than
+	// by host presence, so the log says which of the two answered a
+	// catastrophic call.
+	AuditPasskeyStepUp AuditEvent = "passkey-step-up"
+	// AuditPasskeyRefused records a ceremony this backend declined,
+	// carrying the typed Reason. Which STEP of the ceremony failed is in
+	// the server log, not here: the log is a record of what was admitted
+	// and withdrawn, not a debugger.
+	AuditPasskeyRefused AuditEvent = "passkey-refused"
 )
 
 // AuditEvents is every declared event kind.
@@ -353,4 +373,6 @@ var AuditEvents = []AuditEvent{
 	AuditPairingLinkMinted, AuditPairingRedeemed, AuditPairingConfirmed,
 	AuditPairingCanceled, AuditPairingRefused,
 	AuditSessionRefreshed, AuditRefreshRefused, AuditRefreshReuseDetected,
+	AuditPasskeyRegistered, AuditPasskeyRemoved, AuditPasskeySignedIn,
+	AuditPasskeyStepUp, AuditPasskeyRefused,
 }

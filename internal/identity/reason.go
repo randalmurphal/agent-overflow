@@ -114,6 +114,34 @@ const (
 	// case 4). It is also what a device with a cleared IndexedDB gets, and
 	// the client-side hint says so.
 	ReasonProofDowngraded
+	// ReasonPasskeyUnavailable means no passkey ceremony can run at all:
+	// this backend has no canonical domain, so it has no RP ID, and a
+	// credential must be bound to a domain name rather than to an address
+	// (passkey.go).
+	//
+	// Its own code because it is the one refusal in this set that says
+	// nothing about the request. Nothing the caller holds is wrong, and no
+	// retry helps — the remedy is on the owner's Settings → Network screen.
+	ReasonPasskeyUnavailable
+	// ReasonPasskeyChallengeUnknown means the ceremony id names no
+	// outstanding challenge: it was already finished, it expired, or it was
+	// begun for a different ceremony than the one being finished.
+	//
+	// The three answer the same thing on purpose, the way a spent pairing
+	// token and one that never existed do. All three mean "start the
+	// ceremony again", which is what the surface does.
+	ReasonPasskeyChallengeUnknown
+	// ReasonPasskeyRefused means the authenticator's response did not
+	// verify against the challenge.
+	//
+	// One code for the library's whole taxonomy, deliberately. Its dozen
+	// error types name which STEP of the ceremony failed — a challenge that
+	// did not match, an origin that did not match, a signature that did not
+	// verify, a backup-eligibility flag inconsistent with the record — and
+	// none of them names a different remedy for the person holding the
+	// authenticator. The step is written to the server log, where a
+	// developer can read it, rather than to a caller who cannot act on it.
+	ReasonPasskeyRefused
 )
 
 // reasonCodes maps each Reason to its stable wire spelling, indexed by
@@ -138,6 +166,10 @@ var reasonCodes = [...]string{
 	ReasonProofReplayed:       "proof_replayed",
 	ReasonProofNotBound:       "proof_not_bound",
 	ReasonProofDowngraded:     "proof_downgraded",
+
+	ReasonPasskeyUnavailable:      "passkey_unavailable",
+	ReasonPasskeyChallengeUnknown: "passkey_challenge_unknown",
+	ReasonPasskeyRefused:          "passkey_refused",
 }
 
 // Code returns the stable wire spelling. An out-of-range value — only

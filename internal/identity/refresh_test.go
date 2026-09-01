@@ -217,7 +217,8 @@ func TestBrowserClassGetsAShortWindow(t *testing.T) {
 		t.Fatalf("browser refresh window %s is not shorter than %s", browser.Refresh, native.Refresh)
 	}
 	if !browser.Renewable() {
-		t.Fatal("the browser class is not renewable; passkey gating is phase 5, rotation is now")
+		t.Fatal("the browser class is not renewable; rotation is the control on a live family, and " +
+			"a passkey is what re-authenticates one that ended — never an extra gate on renewal")
 	}
 	local := PolicyFor(DeviceDesktop, BindingLoopbackOnly)
 	if local.Renewable() {

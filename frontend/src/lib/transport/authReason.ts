@@ -37,6 +37,9 @@ export const AUTH_REASON_CODES = [
   'proof_replayed',
   'proof_not_bound',
   'proof_downgraded',
+  'passkey_unavailable',
+  'passkey_challenge_unknown',
+  'passkey_refused',
 ] as const;
 
 export type AuthReasonCode = (typeof AUTH_REASON_CODES)[number];
@@ -171,6 +174,33 @@ const PRESENTATIONS: Record<AuthReasonCode, AuthReasonPresentation> = {
   proof_downgraded: {
     title: "This device's security key is no longer available.",
     hint: 'Its stored key was cleared. Pair this device again to make a new one.',
+    retryable: false,
+  },
+  // Nothing about the request is wrong: this backend has no domain name,
+  // and a passkey is bound to one. The remedy is on the owner's own
+  // settings screen and nowhere near this device, so the hint names it
+  // and `retryable` is false — retrying cannot configure a domain.
+  passkey_unavailable: {
+    title: 'Passkeys are not set up on this backend.',
+    hint: 'Set a domain name under Settings → Network on the computer, then try again.',
+    retryable: false,
+  },
+  // The challenge was already answered, or it ran out. Every challenge is
+  // single-use and short-lived, so this is what a stale tab or a second
+  // submission gets. Starting over always works, which is why the hint
+  // says so plainly rather than suggesting anything is wrong.
+  passkey_challenge_unknown: {
+    title: 'That passkey prompt is no longer valid.',
+    hint: 'Start the passkey prompt again.',
+    retryable: false,
+  },
+  // The authenticator answered and the answer did not verify. One
+  // sentence for the library's whole taxonomy on purpose: which step
+  // failed is a developer's question, and the person holding the
+  // authenticator does the same thing either way.
+  passkey_refused: {
+    title: 'That passkey could not be verified.',
+    hint: 'Try again with the passkey you registered for this backend.',
     retryable: false,
   },
 };

@@ -27,13 +27,16 @@ const (
 
 	// browserAccessTTL is the short window the spec names for the browser
 	// class. A browser profile is the only client with a script-execution
-	// surface, and it is the class whose re-auth becomes a passkey prompt
-	// in phase 5, so it renews often on purpose.
+	// surface, so it renews often on purpose.
 	browserAccessTTL = 15 * time.Minute
 	// browserRefreshTTL keeps a browser signed in across a working day and
-	// no further. Phase 5 gates its renewal on a passkey where one is
-	// available; until then it rotates on the same rule as every other
-	// class (§4, and see refresh.go).
+	// no further.
+	//
+	// Renewal is NOT passkey-gated, for any class. Rotation is the control
+	// on a live family (refresh.go), and a passkey is what a browser
+	// re-authenticates with once that family has ENDED — a fresh sign-in
+	// with no code to type, rather than an extra prompt on a renewal that
+	// is already single-use (passkey.go).
 	browserRefreshTTL = 12 * time.Hour
 
 	// nativeAccessTTL / nativeRefreshTTL cover desktop, phone, CLI, and

@@ -291,8 +291,9 @@ device class: every `loopback-only` session gets a short access window and
 NO refresh secret at all, because it is re-minted at boot and one that
 renewed itself would outlive the process it was minted to serve. The
 browser class gets the shortest renewable pair of the rest — it is the one
-class with a script-execution surface. Passkey re-auth on renewal is phase
-5; rotation is now.
+class with a script-execution surface. Renewal is NOT passkey-gated for
+any class: rotation is the control on a LIVE family, and a passkey is what
+re-authenticates one that has ENDED (below).
 
 `issueFor` is the only function in this package that builds a `TokenSet`.
 Every issuance path — pairing, renewal, the local channel — goes through
@@ -325,6 +326,98 @@ Idempotent in both halves: the DEVICE is resolved by `devices.channel`
 re-signed while it is live, re-minted when it is not. A revoked channel
 device is an error rather than a re-mint — re-minting around it would make
 the one revocation a host-local surface can perform unenforceable.
+
+## Passkeys: pairing bootstraps, a passkey hardens
+
+`passkey.go`, over `github.com/go-webauthn/webauthn`. Rows in migration
+v78. Nothing pairing does stopped working, and a device that never
+registers one never touches this file. What a registered credential buys
+is three things pairing cannot do alone: a browser this backend has never
+seen signs in with no code to type, a browser whose session family ended
+re-authenticates itself, and a REMOTE owner satisfies step-up — which
+until this wave was host presence and nothing else.
+
+**The library owns the cryptography; four things it does NOT own are
+this file's.** Each is a hole the library documents rather than closes:
+
+- **Single use of a challenge.** `SessionData` replay is ACCEPTED —
+  hand the library the same session twice and it verifies the same
+  assertion twice. The in-memory ceremony book is the single-use half,
+  and it deletes an entry on the FIRST finish attempt, success or
+  failure. A failed finish that left the challenge answerable would let
+  a caller try responses against one challenge until one verified.
+- **Expiry.** The default `Timeouts` config stamps a zero `Expires` and
+  performs no check at all, so every configuration this file builds sets
+  `Timeouts.{Login,Registration}.Enforce`. The book expires entries too;
+  both are wanted, because one bounds the memory and the other bounds
+  what the cryptography will accept.
+- **The relying party.** `SessionData.RelyingPartyID` and `Origin`
+  OVERRIDE the configuration at finish, so a value a request could
+  influence would be a request choosing what it is verified against.
+  Neither is ever set from a response: the whole `RelyingParty` is
+  resolved once at BEGIN, pinned in the book beside the challenge, and
+  the finish rebuilds its configuration from that record. A domain
+  changed mid-ceremony therefore refuses the ceremony instead of
+  silently verifying it under a name the challenge was never issued for.
+- **The purpose.** A challenge records which of the three ceremonies it
+  was begun for, and a finish that names a different one is refused. The
+  two discoverable ceremonies are byte-identical on the wire and mint
+  very different things.
+
+**A passkey is not a device.** One synced credential appears on every
+phone a person owns, so credentials hang off the ACCOUNT and the DEVICE a
+sign-in produces is resolved separately, from the device-key proof the
+finish carries — through the same `enrollmentFor` pairing redemption
+uses, with the same adoption rules (`resolvePasskeyDevice`). That proof
+is REQUIRED: the passkey proves the person, and the device row is what a
+revocation reaches, so a session with no device row is one nothing can
+withdraw. `devices.passkey_credential_id` has existed since v75 and stays
+unused.
+
+**A valid assertion mints a LIVE session, with no confirmation step.**
+Pairing needs one because a link is a secret somebody could read over a
+shoulder; a passkey assertion is a signature by a key the owner
+registered from a surface that already held admin, and there is nothing a
+second screen could add. It goes through `Mint` and `issueFor` like every
+other issuance — the mint chokepoint gate above covers it for free — and
+grants full access, because narrowing a device is still a pairing link.
+
+**Registration runs only from an already-authenticated surface.** It is
+not a way in; it is a way to make the next way in stronger, which is what
+lets the sign-in ceremony trust what it enrolled. The account's WebAuthn
+handle is minted lazily on the first ceremony it ever runs, never
+backfilled: a handle no authenticator has seen is 32 bytes of nothing.
+
+**Step-up mints a token, never standing.** `FinishPasskeyStepUp` produces
+a single-use, two-minute token BOUND to the session that asked, and
+`SpendStepUpToken` consumes it whether or not it matched — a token
+surviving a wrong-session attempt would let session ids be probed. Two
+checks are made here rather than trusted from the ceremony: the
+assertion's OWN `UserVerified` flag (the stored credential's UV bit
+LATCHES, so the record answers a question about the enrollment), and that
+the credential's account is the asking session's. Host presence remains a
+valid proof; the passkey is a second one.
+
+**The counter is evidence, never a verdict.** `Authenticator.UpdateCounter`
+never errors; a stalled counter only raises `CloneWarning`, and
+authenticators that keep no counter at all report `{0,0}` forever. The
+bit is persisted and surfaced as an anomaly, and the sign-in proceeds.
+
+**Refusals switch on `(*protocol.Error).Type`, never `errors.Is`.** The
+exported sentinels are COPIED by `WithDetails`, so `errors.Is` against
+them is always false. Every library refusal maps to one reason,
+`passkey_refused`: the library's dozen types name which STEP failed and
+none of them names a different remedy for the person holding the
+authenticator. The step, the `Details` and the `DevInfo` go to the server
+log.
+
+**Tests drive a soft authenticator** (`passkeysoft_test.go`), not
+captured vectors. Captured vectors pin what one browser did once and
+cannot be asked what happens when a counter stalls, when a person
+declines to verify, or when a credential meets the wrong relying party —
+which are exactly the cases this file makes decisions about. Real
+platform authenticators, cross-device CTAP-hybrid, and browser-specific
+prompt behavior stay live-only by construction.
 
 ## Recovery codes
 

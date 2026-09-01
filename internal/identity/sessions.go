@@ -72,6 +72,24 @@ type Sessions struct {
 	// local and deliberately not persisted; the file argues both the bound
 	// and what a restart costs.
 	proofs *proofReplay
+
+	// passkeyMu guards the three passkey fields below. A lock of its own
+	// rather than `mu`, because `mu` is held on the per-RPC fast path and
+	// must never be waiting behind a ceremony book being scanned.
+	passkeyMu sync.Mutex
+	// relyingParty resolves what a passkey ceremony runs under, from the
+	// boot's live network settings (passkey.go). Nil until the boot calls
+	// SetRelyingParty, and a nil resolver means every passkey surface
+	// refuses rather than guessing a domain.
+	relyingParty func() RelyingParty
+	// ceremonies is the outstanding-challenge book: bounded, expiring, and
+	// single-use. The library accepts SessionData replay, so this map is
+	// the only thing that makes a challenge answerable once.
+	ceremonies map[string]passkeyCeremony
+	// stepUps holds proven step-ups waiting to be spent, each bound to the
+	// session that proved it. Process-local and short-lived on purpose: a
+	// step-up that survived a restart would be standing elevation.
+	stepUps map[string]stepUpGrant
 }
 
 // liveSweepThreshold is when the fast path drops expired entries. Below it
@@ -91,12 +109,14 @@ func NewSessions(st *store.Store, backendID string) (*Sessions, error) {
 		return nil, errors.New("identity: a backend id is required")
 	}
 	return &Sessions{
-		store:     st,
-		backendID: backendID,
-		now:       time.Now,
-		live:      make(map[string]store.Session),
-		keys:      make(map[string][]byte),
-		proofs:    newProofReplay(),
+		store:      st,
+		backendID:  backendID,
+		now:        time.Now,
+		live:       make(map[string]store.Session),
+		keys:       make(map[string][]byte),
+		proofs:     newProofReplay(),
+		ceremonies: make(map[string]passkeyCeremony),
+		stepUps:    make(map[string]stepUpGrant),
 	}, nil
 }
 
