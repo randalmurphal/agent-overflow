@@ -86,10 +86,11 @@ func (a *App) BrowserCompanionPaneRect(paneID string, rect appbrowser.PaneRect) 
 	return a.browser.manager.SetPaneRect(paneID, rect)
 }
 
-// BrowserCompanionCopyPageFile puts the local file a companion page is
-// displaying onto the OS clipboard as a file object, so pasting it into a chat
-// or mail client attaches the file itself. Remote pages have no file to copy.
-func (a *App) BrowserCompanionCopyPageFile(ctx context.Context, threadID, pageID string) error {
+// BrowserCompanionRevealPageFile opens the OS file manager with the local
+// file a companion page is displaying selected, so it can be dragged into
+// chat and mail apps — which accept file drops but not a pasted file object.
+// Remote pages have no file to reveal.
+func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, pageID string) error {
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
 	}
@@ -97,7 +98,7 @@ func (a *App) BrowserCompanionCopyPageFile(ctx context.Context, threadID, pageID
 	if err != nil {
 		return err
 	}
-	return a.browser.manager.CopyPageFileToClipboard(ctx, access, pageID)
+	return a.browser.manager.RevealPageFile(ctx, access, pageID)
 }
 
 func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action BrowserCompanionAction) (appbrowser.CompanionEvent, error) {

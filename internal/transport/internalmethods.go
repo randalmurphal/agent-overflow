@@ -129,9 +129,8 @@ var LocalOnlyMethods = map[string]bool{
 	"BrowserCompanionPaneAttach": true,
 	"BrowserCompanionPaneDetach": true,
 	"BrowserCompanionPaneRect":   true,
-	// CopyPageFile writes to the host OS clipboard (and stages onto the
-	// Windows volume under WSL).
-	"BrowserCompanionCopyPageFile": true,
+	// RevealPageFile spawns the host OS file manager on a local path.
+	"BrowserCompanionRevealPageFile": true,
 	"WriteThreadWorkspaceFile":     true,
 	"GitPush":                      true,
 	"GitStatusSubscribe":           true,

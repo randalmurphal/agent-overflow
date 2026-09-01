@@ -142,7 +142,7 @@ controller exactly as it drives a Chrome tab. Only LIFETIME differs.
   navigates a live pane to ERR_FILE_NOT_FOUND (2026-08-31). Inbound: every
   file URL the Manager sees back from this engine — the `fetch`-interceptor
   authority check in `navigationAllowed`, an address-bar paste in
-  `NavigateCompanion`, the page address `CopyPageFileToClipboard` resolves —
+  `NavigateCompanion`, the page address `RevealPageFile` resolves —
   is renderer-form, and must come back through
   `BackendFilePath` (`windowsPathFromFileURL` → `wslpath -u`) before being
   authorized against workspace paths. Skipping the inverse made the

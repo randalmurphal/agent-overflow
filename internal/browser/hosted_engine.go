@@ -286,7 +286,7 @@ func (e *hostedEngine) ClearSiteData(ctx context.Context) error {
 // read. The backend's paths are WSL paths that do not exist on Windows;
 // `wslpath -w` translates them to the `\\wsl.localhost\<distro>\...` UNC
 // view (or a drive path for /mnt/<letter>), which is the same boundary
-// the clipboard copy-file feature already crosses in the other direction.
+// the show-in-folder reveal crosses in the other direction.
 func (e *hostedEngine) FileURL(ctx context.Context, path string) (string, error) {
 	converted, err := windowsPathFor(ctx, path)
 	if err != nil {

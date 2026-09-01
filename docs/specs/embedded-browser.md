@@ -322,9 +322,14 @@ must read them.
   engine's menu via delegates).
 - Encrypted site-data checkpoints (§4).
 
-Kept: `CopyPageFileToClipboard` and its WSL staging pipeline (feature:
-paste a `file://` page's file into Teams), exposed as an AO item on
-the engine context menu for file pages + the toolbar button. The Globe
+Kept, then reshaped (2026-09-01): `CopyPageFileToClipboard` became
+`RevealPageFile` — the pane's file-page toolbar button now opens the OS
+file manager with the file selected instead of writing a file object to
+the clipboard. Live verification showed Teams refuses a pasted file
+object no matter which clipboard formats carry it (bare `CF_HDROP`,
+virtual-file `FileGroupDescriptorW`/`FileContents`, even Explorer's own
+copy), while a drag from Explorer — including `\\wsl.localhost` paths —
+attaches fine. The WSL staging pipeline went with the copy. The Globe
 reopen chip and `BrowserCompanionThreadState` hydration survive
 (thread browser state still exists). The MCP server, Access model,
 bounds, and artifact quota code survive untouched.
@@ -385,7 +390,7 @@ the streamed pane.
 - Live verification checklist (user, per platform — run it in the real
   app, or on the isolated instance the gate above opens): audio/video,
   site context menu on a custom-menu test page, file upload, download,
-  dialogs, clipboard both directions, copy-file-to-Teams, devtools,
+  dialogs, clipboard both directions, show-in-folder reveal, devtools,
   HiDPI crispness, overlay clip behavior, workspace login isolation.
 
 ## 11. Delegation plan

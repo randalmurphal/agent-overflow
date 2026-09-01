@@ -31,11 +31,11 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "BackgroundClaudeTask", ID: 2098425262},                 // main.App.BackgroundClaudeTask
 	{Name: "BookmarkUIRenderTrace", ID: 1374242488},                // main.App.BookmarkUIRenderTrace
 	{Name: "BrowseDirectory", ID: 320967638},                       // main.App.BrowseDirectory
-	{Name: "BrowserCompanionCopyPageFile", ID: 2556357179},         // main.App.BrowserCompanionCopyPageFile
 	{Name: "BrowserCompanionDo", ID: 197228034},                    // main.App.BrowserCompanionDo
 	{Name: "BrowserCompanionPaneAttach", ID: 205254296},            // main.App.BrowserCompanionPaneAttach
 	{Name: "BrowserCompanionPaneDetach", ID: 3255514830},           // main.App.BrowserCompanionPaneDetach
 	{Name: "BrowserCompanionPaneRect", ID: 2491183339},             // main.App.BrowserCompanionPaneRect
+	{Name: "BrowserCompanionRevealPageFile", ID: 535837959},        // main.App.BrowserCompanionRevealPageFile
 	{Name: "BrowserCompanionThreadState", ID: 1485125416},          // main.App.BrowserCompanionThreadState
 	{Name: "BrowserHostReport", ID: 2848608143},                    // main.App.BrowserHostReport
 	{Name: "CancelSessionImport", ID: 2562316972},                  // main.App.CancelSessionImport

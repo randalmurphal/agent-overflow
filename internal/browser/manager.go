@@ -75,9 +75,9 @@ type Manager struct {
 	// Production leaves it nil; the managed-Chrome integration test uses the
 	// signal instead of polling on wall-clock sleeps.
 	pageAdopted func()
-	// copyFileToOSClipboard is the test seam over the production subprocess
-	// hand-off in companion_clipboard.go. Production leaves it nil.
-	copyFileToOSClipboard func(ctx context.Context, path string) error
+	// revealFileInFileManager is the test seam over the production subprocess
+	// hand-off in companion_reveal.go. Production leaves it nil.
+	revealFileInFileManager func(ctx context.Context, path string) error
 }
 
 type ManagerOptions struct {

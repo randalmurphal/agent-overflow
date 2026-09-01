@@ -87,7 +87,7 @@ export {
   BrowserCompanionPaneAttach,
   BrowserCompanionPaneDetach,
   BrowserCompanionPaneRect,
-  BrowserCompanionCopyPageFile,
+  BrowserCompanionRevealPageFile,
   GetContextSettings,
 
   // Custom provider environment. Dedicated mutators rather than

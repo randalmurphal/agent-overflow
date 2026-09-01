@@ -205,15 +205,6 @@ export function BrowseDirectory(path: string): $CancellablePromise<dirbrowse$0.L
     });
 }
 
-/**
- * BrowserCompanionCopyPageFile puts the local file a companion page is
- * displaying onto the OS clipboard as a file object, so pasting it into a chat
- * or mail client attaches the file itself. Remote pages have no file to copy.
- */
-export function BrowserCompanionCopyPageFile(threadID: string, pageID: string): $CancellablePromise<void> {
-    return $Call.ByID(2556357179, threadID, pageID);
-}
-
 export function BrowserCompanionDo(threadID: string, action: app$0.BrowserCompanionAction): $CancellablePromise<browser$0.CompanionEvent> {
     return $Call.ByID(197228034, threadID, action).then(($result: any) => {
         return $$createType3($result);
@@ -243,6 +234,16 @@ export function BrowserCompanionPaneDetach(paneID: string): $CancellablePromise<
  */
 export function BrowserCompanionPaneRect(paneID: string, rect: browser$0.PaneRect): $CancellablePromise<void> {
     return $Call.ByID(2491183339, paneID, rect);
+}
+
+/**
+ * BrowserCompanionRevealPageFile opens the OS file manager with the local
+ * file a companion page is displaying selected, so it can be dragged into
+ * chat and mail apps — which accept file drops but not a pasted file object.
+ * Remote pages have no file to reveal.
+ */
+export function BrowserCompanionRevealPageFile(threadID: string, pageID: string): $CancellablePromise<void> {
+    return $Call.ByID(535837959, threadID, pageID);
 }
 
 /**

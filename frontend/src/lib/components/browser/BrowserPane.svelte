@@ -1,7 +1,7 @@
 <script lang="ts">
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ArrowRight from '@lucide/svelte/icons/arrow-right';
-  import Copy from '@lucide/svelte/icons/copy';
+  import FolderOpen from '@lucide/svelte/icons/folder-open';
   import Plus from '@lucide/svelte/icons/plus';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import SquareCode from '@lucide/svelte/icons/square-code';
@@ -14,8 +14,8 @@
   } from '../../stores/browserCompanion.svelte';
   import {
     BrowserCompanionAction,
-    BrowserCompanionCopyPageFile,
     BrowserCompanionDo,
+    BrowserCompanionRevealPageFile,
   } from '../../stores/bindings';
   import Icon from '../primitives/Icon.svelte';
   import { errString } from '../../utils/errors';
@@ -230,12 +230,12 @@
     }
   }
 
-  async function copyPageFile(): Promise<void> {
+  async function revealPageFile(): Promise<void> {
     const threadId = ctx.threadId;
     if (!threadId || !activePageId) return;
     error = '';
     try {
-      await BrowserCompanionCopyPageFile(threadId, activePageId);
+      await BrowserCompanionRevealPageFile(threadId, activePageId);
     } catch (err) {
       error = errString(err);
     }
@@ -383,10 +383,10 @@
     {#if activeIsLocalFile}
       <button
         class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
-        aria-label="Copy file to clipboard"
-        title="Copy file to clipboard"
-        onclick={() => void copyPageFile()}
-      ><Icon icon={Copy} size={13} /></button>
+        aria-label="Show in folder"
+        title="Show in folder"
+        onclick={() => void revealPageFile()}
+      ><Icon icon={FolderOpen} size={13} /></button>
     {/if}
     <button
       class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
