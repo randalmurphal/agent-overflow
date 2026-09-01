@@ -217,6 +217,13 @@ export interface RateLimitsSnapshot {
   accountId?: string;
   limits: RateLimitEntry[];
   updatedAt: number;
+  /**
+   * The reading is the provider's whole answer for this account, so a stored
+   * limit it omits no longer exists. Absent on partial readings (a
+   * single-window wire event, Claude's header fallback, a Codex per-bucket
+   * notification) and on the cached union the backend persists.
+   */
+  complete?: boolean;
 }
 
 export interface UsageEvent {

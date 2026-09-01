@@ -28,9 +28,9 @@ func normalizeRateLimitsMeta(params json.RawMessage, now time.Time) json.RawMess
 }
 
 func buildRateLimitsSnapshot(params json.RawMessage, updatedAt int64) (provider.RateLimitsSnapshot, bool) {
-	limits := extractFlatRateLimitEntries(params)
+	limits, complete := extractFlatRateLimitEntries(params)
 	if len(limits) == 0 {
-		limits = extractCodexRateLimitEntries(params)
+		limits, complete = extractCodexRateLimitEntries(params)
 	}
 	if len(limits) == 0 {
 		return provider.RateLimitsSnapshot{}, false
@@ -47,19 +47,23 @@ func buildRateLimitsSnapshot(params json.RawMessage, updatedAt int64) (provider.
 		Provider:  string(provider.Codex),
 		Limits:    limits,
 		UpdatedAt: updatedAt,
+		Complete:  complete,
 	}, true
 }
 
 // extractFlatRateLimitEntries handles a self-describing
 // `{"limits":[{...RateLimitEntry...}]}` envelope — our own normalized
 // shape, used when a previously-emitted snapshot is replayed through
-// the parser (e.g. for tests round-tripping the wire).
-func extractFlatRateLimitEntries(params json.RawMessage) []provider.RateLimitEntry {
+// the parser (e.g. for tests round-tripping the wire). The replayed
+// snapshot carries its own completeness, so a round trip cannot turn a
+// per-bucket notification into the account's whole answer.
+func extractFlatRateLimitEntries(params json.RawMessage) ([]provider.RateLimitEntry, bool) {
 	var payload struct {
-		Limits []provider.RateLimitEntry `json:"limits"`
+		Limits   []provider.RateLimitEntry `json:"limits"`
+		Complete bool                      `json:"complete"`
 	}
 	if err := json.Unmarshal(params, &payload); err != nil {
-		return nil
+		return nil, false
 	}
 
 	limits := make([]provider.RateLimitEntry, 0, len(payload.Limits))
@@ -69,7 +73,7 @@ func extractFlatRateLimitEntries(params json.RawMessage) []provider.RateLimitEnt
 		}
 		limits = append(limits, entry)
 	}
-	return limits
+	return limits, payload.Complete
 }
 
 // extractCodexRateLimitEntries parses the v2 wire shape. The
@@ -78,10 +82,14 @@ func extractFlatRateLimitEntries(params json.RawMessage) []provider.RateLimitEnt
 // per-bucket `rateLimitsByLimitId` map; `account/rateLimits/updated`
 // notifications carry one bucket in `rateLimits`. Preserve every map entry so
 // account settings can render provider-added quotas without a client release.
-func extractCodexRateLimitEntries(params json.RawMessage) []provider.RateLimitEntry {
+//
+// Only the map is the account's whole answer. The single-bucket `rateLimits`
+// envelope is one quota's update and must never prune the others, so it
+// reports complete=false.
+func extractCodexRateLimitEntries(params json.RawMessage) ([]provider.RateLimitEntry, bool) {
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(params, &payload); err != nil {
-		return nil
+		return nil, false
 	}
 
 	if byID, ok := payload["rateLimitsByLimitId"]; ok {
@@ -97,16 +105,16 @@ func extractCodexRateLimitEntries(params json.RawMessage) []provider.RateLimitEn
 				limits = append(limits, flattenRateLimitEntryWithDefault(entries[key], key)...)
 			}
 			if len(limits) > 0 {
-				return limits
+				return limits, true
 			}
 		}
 	}
 
 	if entry, ok := payload["rateLimits"]; ok {
-		return flattenRateLimitEntry(entry)
+		return flattenRateLimitEntry(entry), false
 	}
 
-	return nil
+	return nil, false
 }
 
 // flattenRateLimitEntry expands one RateLimitSnapshot envelope into

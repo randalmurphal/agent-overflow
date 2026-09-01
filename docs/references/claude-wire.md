@@ -39,7 +39,7 @@ The CLI emits newline-delimited JSON. Every line has a top-level
 | `stream_event` | `parseStreamEvent` | Incremental deltas (requires `include_partial_messages:true`). |
 | `result` | `parseResult` | **Turn-complete signal.** One per CLI turn. |
 | `control_request` | `parseControlRequest` | Bidirectional. Inbound: `can_use_tool`, `exit_plan_mode`. Outbound (client → CLI): `interrupt`, `stop_task`, `set_permission_mode`, `mcp_set_servers`, `mcp_authenticate`, `mcp_oauth_callback_url`, `mcp_status`. |
-| `rate_limit_event` | `parseRateLimitEvent` | Rate limit state changes. |
+| `rate_limit_event` | `parseRateLimitEvent` | Rate limit state changes. The quota numbers AO renders come from [`/api/oauth/usage`](#apioauthusage), not from this envelope. |
 | `command_lifecycle` | `parseCommandLifecycle` | Delivery ack for a user message written to stdin, keyed by the client-minted `uuid`. See [§command_lifecycle](#command_lifecycle-stdin-message-delivery-acks-verified-21219). |
 
 Unknown `type` values are dropped silently by the dispatcher, logged
@@ -3440,6 +3440,88 @@ snapshot, preserve last-known good in the global store) from explicit
 `0.0` (a real "0% used" reading). Don't synthesize 0% when the field is
 missing: the empty ring would be visually identical to "no data" and
 could clobber a previously-known good reading.
+
+### `unifiedWindows` (claude 2.1.257, observed 2026-09-01)
+
+The steady-state envelope now carries every window in one object, and
+still has no top-level `utilization`:
+
+```json
+{"type": "rate_limit_event",
+ "rate_limit_info": {
+   "status": "allowed",
+   "resetsAt": 1788316200,
+   "rateLimitType": "five_hour",
+   "overageStatus": "rejected",
+   "overageDisabledReason": "org_level_disabled",
+   "isUsingOverage": false,
+   "unifiedWindows": {
+     "five_hour": {"utilization": 0.12, "resetsAt": 1788316200},
+     "seven_day": {"utilization": 0.02, "resetsAt": 1788782400},
+     "seven_day_overage_included": {"utilization": 0.04, "resetsAt": 1788782400}
+   }
+ }}
+```
+
+Utilization is a FRACTION here (0.12 = 12%), matching the top-level field.
+Each of the three windows is optional: the installed binary builds this
+object by spreading only the windows the usage response returned, so
+`seven_day_overage_included` comes and goes between consecutive events.
+
+`parseRateLimitEvent` does not read it, so on this release every
+steady-state `rate_limit_event` is dropped and the polled `/api/oauth/usage`
+probe is the only source of Claude quota numbers. That is correct but
+lossy — these events land on every turn.
+
+---
+
+## `/api/oauth/usage`
+
+Not a stdio message: the HTTPS endpoint `ProbeRateLimits` reads with the
+OAuth bearer from `~/.claude/.credentials.json`. It is the only source of
+model-scoped quota, so it backs every ring AO renders. Observed on
+2026-09-01:
+
+```json
+{"limits": [
+  {"kind": "session", "group": "session", "percent": 12,
+   "resets_at": "2026-09-02T02:29:59.946269+00:00", "is_active": true,
+   "scope": null},
+  {"kind": "weekly_all", "group": "weekly", "percent": 3,
+   "resets_at": "2026-09-07T11:59:59.946290+00:00", "is_active": false,
+   "scope": null},
+  {"kind": "weekly_scoped", "group": "weekly", "percent": 4,
+   "resets_at": "2026-09-07T11:59:59.946466+00:00", "is_active": false,
+   "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}}
+]}
+```
+
+`percent` is 0-100 here, unlike the wire's 0-1 `utilization`. `group` gives
+the window (`session` 5h, `weekly` 7d, plus `daily` / `monthly`), `kind` plus
+the scope's model or surface gives the limit id (`weekly_scoped:fable`), and
+`resets_at` drifts by a second or two between reads — hence the merge's
+one-minute boundary tolerance. `scope.model.id` is currently null, so the id
+falls back to the slugged display name.
+
+**A bucket is absent when it has nothing to report.** The array lists the
+limits that apply right now, and an older release of the same endpoint
+modelled every window as optional-and-nullable
+(`Utilization.seven_day_opus?: RateLimit | null` in the CLI's
+`src/services/api/usage.ts`), with the CLI skipping the row rather than
+rendering a zero. A mid-window reset therefore does not produce
+`weekly_scoped: 0` — it produces no `weekly_scoped` entry at all.
+
+Consumers must treat absence as "no such limit right now", never as "keep the
+last value": on 2026-09-01 an additive merge left a Fable weekly row reading
+90% while session and all-models correctly showed the post-reset 0%, and it
+would have stayed there until Fable usage resumed. `RateLimitsSnapshot.Complete`
+marks this reading as the whole answer so the merge can drop what it omits;
+the header fallback below never sets it.
+
+The response also carries the legacy `Anthropic-Ratelimit-Unified-{5h,7d}-*`
+headers, which `parseRateLimitsFromHeaders` reads only when the body fails to
+parse. Those headers cover the two unified windows and nothing else, so a
+snapshot built from them is never complete.
 
 ---
 

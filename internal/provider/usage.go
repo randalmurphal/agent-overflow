@@ -311,4 +311,18 @@ type RateLimitsSnapshot struct {
 	AccountID string           `json:"accountId,omitempty"`
 	Limits    []RateLimitEntry `json:"limits"`
 	UpdatedAt int64            `json:"updatedAt"`
+	// Complete reports that Limits is the provider's WHOLE answer for this
+	// account, so a cached limit the reading omits no longer exists and must
+	// be dropped rather than kept at its last value. Only a source that reads
+	// every bucket in one response may set it: Claude's OAuth usage endpoint
+	// and Codex's `rateLimitsByLimitId` map. A single-window wire event, a
+	// per-bucket notification, or a reading that had to skip a malformed
+	// limit is PARTIAL and leaves this false, so the merge only updates the
+	// windows it names.
+	//
+	// A provider drops a bucket from its answer when the bucket has no usage,
+	// which is exactly what a mid-window reset produces: without this flag an
+	// additive merge kept the pre-reset percentage forever (2026-09-01, a
+	// Fable weekly row frozen at 90% while session and all-models read 0%).
+	Complete bool `json:"complete,omitempty"`
 }
