@@ -79,14 +79,14 @@ const goldenSystemdUnit = `[Unit]
 Description=Agent Overflow backend
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=/home/ada/.local/bin/agent-overflow serve
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=120
-StartLimitBurst=5
 
 [Install]
 WantedBy=default.target

@@ -43,14 +43,14 @@ func (m *systemdManager) UnitContents() (string, error) {
 Description=Agent Overflow backend
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=` + strings.Join(args, " ") + `
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=120
-StartLimitBurst=5
 
 [Install]
 WantedBy=default.target
