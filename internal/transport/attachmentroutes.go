@@ -101,9 +101,14 @@ const attachmentTicketTTL = 30 * time.Second
 // mints without ever transferring can, and is what the bound is for.
 const maxOutstandingAttachmentTickets = 64
 
-// attachmentTransferWindow is how long one attachment body may take, in
+// AttachmentTransferWindow is how long one attachment body may take, in
 // either direction. It replaces the server's own HTTPReadTimeout /
 // HTTPWriteTimeout for these two routes only, per request.
+//
+// Exported because the `--connect` stub relays these same bytes through
+// its own http.Server, which has the same 60s defaults for the same
+// reasons and would otherwise cut a transfer the backend was willing to
+// finish. One number, two servers.
 //
 // The default 60s is right for an RPC and wrong for bytes: 10 MiB inside
 // it demands a sustained ~170 KB/s, which a phone on a weak connection
@@ -114,7 +119,7 @@ const maxOutstandingAttachmentTickets = 64
 // place here would therefore have been a NEW way for a large attachment
 // to fail. Five minutes puts the floor at ~35 KB/s and still bounds a
 // connection that has stopped making progress.
-const attachmentTransferWindow = 5 * time.Minute
+const AttachmentTransferWindow = 5 * time.Minute
 
 // AttachmentContent is one attachment opened for streaming, as the app
 // side hands it over.
@@ -409,7 +414,7 @@ func (s *Server) handleAttachmentUpload(w http.ResponseWriter, r *http.Request) 
 // own timeout still applies, which is the behavior without this call.
 func extendAttachmentDeadline(w http.ResponseWriter, read bool) {
 	controller := http.NewResponseController(w)
-	deadline := time.Now().Add(attachmentTransferWindow)
+	deadline := time.Now().Add(AttachmentTransferWindow)
 	var err error
 	if read {
 		err = controller.SetReadDeadline(deadline)

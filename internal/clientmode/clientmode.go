@@ -154,6 +154,10 @@ type Server struct {
 	// the upstream credential on the way out. Built once at Serve time.
 	wsProxy *httputil.ReverseProxy
 
+	// byteProxy carries attachment bodies to the upstream's transfer
+	// routes, path and query untouched. Built once at Serve time.
+	byteProxy *httputil.ReverseProxy
+
 	// session is the upstream backend's local page-channel credential,
 	// forwarded on every carried upgrade so the hop names a session
 	// instead of being trusted for arriving over loopback. Best-effort:
@@ -230,12 +234,14 @@ func ParseConnectURL(raw string) (Config, error) {
 // bound — caller can read AppURL() to discover the resolved address
 // and hand it to the Wails webview.
 //
-// Three routes, all on one loopback origin: the SPA bundle,
-// /bootstrap.json (which exchanges this stub's one-time page ticket for
-// its HttpOnly cookie and reports the upstream's verdict on the
-// configured token — see handleBootstrap), and /ws, which carries the
-// SPA's WebSocket to the upstream with the upstream credential attached
-// here rather than in the page (see handleWS).
+// Four routes, all on one origin: the SPA bundle, /bootstrap.json (which
+// exchanges this stub's one-time page ticket for its HttpOnly cookie and
+// reports the upstream's verdict on the configured token — see
+// handleBootstrap), /ws, which carries the SPA's WebSocket to the upstream
+// with the upstream credential attached here rather than in the page (see
+// handleWS), and /attachments/, which carries attachment BODIES the same
+// way but attaches nothing, because their admission is a single-use ticket
+// the page already holds (see handleAttachmentTransfer).
 //
 // Still no RPC dispatch, no event bus, no method table: the proxy is a
 // byte carrier that adds one header, not a second backend.
@@ -309,6 +315,10 @@ func Serve(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("clientmode: build websocket proxy: %w", err)
 	}
+	byteProxy, err := newByteProxy(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("clientmode: build attachment proxy: %w", err)
+	}
 	cred, err := transport.NewCredential("")
 	if err != nil {
 		return nil, fmt.Errorf("clientmode: mint page credential: %w", err)
@@ -333,6 +343,7 @@ func Serve(cfg Config) (*Server, error) {
 		remote:               !loopback.EndpointAuthority(parsedWSURL.Host),
 		upstreamBootstrapURL: upstreamBootstrap,
 		wsProxy:              wsProxy,
+		byteProxy:            byteProxy,
 		session:              session,
 		probeClient:          upstreamClient,
 	}
@@ -350,6 +361,7 @@ func Serve(cfg Config) (*Server, error) {
 	mux.Handle("/", withSecurityHeaders(http.FileServerFS(cfg.Assets)))
 	mux.HandleFunc("/bootstrap.json", s.handleBootstrap)
 	mux.HandleFunc("/ws", s.handleWS)
+	mux.HandleFunc(attachmentPrefix, s.handleAttachmentTransfer)
 
 	// loopbackOnly wraps every route with a Host-header check so a site
 	// whose DNS resolves to 127.0.0.1 cannot navigate the user's browser
@@ -531,6 +543,117 @@ type upgradeTicketKey struct{}
 func upgradeTicket(ctx context.Context) string {
 	ticket, _ := ctx.Value(upgradeTicketKey{}).(string)
 	return ticket
+}
+
+// attachmentPrefix is the subtree both of the upstream's attachment byte
+// routes live under, and the only pattern this stub needs for them.
+//
+// A literal rather than a slice of the transport's own constants, because
+// the surfaces gate reads registrations out of the source and a selector
+// expression tells it nothing. What keeps the two in step is a test —
+// TestAttachmentPrefixCoversTheTransportRoutes — rather than a shared
+// symbol the gate cannot follow.
+const attachmentPrefix = "/attachments/"
+
+// handleAttachmentTransfer carries one attachment body between the page
+// and the upstream (internal/transport/attachmentroutes.go).
+//
+// Two credentials meet here and neither crosses, which is the same
+// sentence /ws gets and for the same reason. The PAGE's credential admits
+// the request to this stub and stops here: without it a LAN peer that can
+// reach this listener could use it to reach the upstream's routes, and a
+// stub that relayed for anyone would be worth more to a caller than the
+// stub's own surface is. The UPSTREAM's admission is the single-use
+// TICKET already on the query, which the page obtained through a carried
+// RPC — this hop attaches no credential of its own, unlike /ws, because
+// the byte routes deliberately accept none.
+//
+// The URL passes through untouched. The path names the attachment and the
+// query carries the ticket; both were minted by the upstream, for the
+// upstream, and rewriting either would only be a way to get them wrong.
+func (s *Server) handleAttachmentTransfer(w http.ResponseWriter, r *http.Request) {
+	if !transport.OriginAllowed(r, nil) || !s.cred.Authenticate(r) {
+		http.NotFound(w, r)
+		return
+	}
+	// The same window the backend gives itself. Without this the stub's
+	// own 60s read and write timeouts would cut a transfer the upstream
+	// was willing to finish, and the page would see the hop fail rather
+	// than the backend refuse.
+	controller := http.NewResponseController(w)
+	deadline := time.Now().Add(transport.AttachmentTransferWindow)
+	if err := controller.SetReadDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		log.Printf("clientmode: extend attachment read deadline: %v", err)
+	}
+	if err := controller.SetWriteDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		log.Printf("clientmode: extend attachment write deadline: %v", err)
+	}
+	s.byteProxy.ServeHTTP(w, r)
+}
+
+// newByteProxy builds the attachment relay.
+//
+// It is a second ReverseProxy rather than a branch inside the WebSocket
+// one because the two hops agree on almost nothing: this one preserves
+// the path, forwards no credential, carries a body in both directions and
+// never expects a 101. Sharing a Rewrite between them would mean a
+// conditional in the one function where a mistake attaches a credential to
+// the wrong request.
+func newByteProxy(cfg Config) (*httputil.ReverseProxy, error) {
+	target, err := upstreamHTTPTarget(cfg.WSURL)
+	if err != nil {
+		return nil, err
+	}
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.Out.URL.Scheme = target.Scheme
+			pr.Out.URL.Host = target.Host
+			// Host cleared so the request names the upstream, which is
+			// what the upstream's own loopback host guard expects when it
+			// is reached through a tunnel.
+			pr.Out.Host = ""
+			// Nothing this stub or this browser holds means anything
+			// upstream, and a forwarded credential would let a local
+			// client that is not a browser name one it did not obtain.
+			// The ticket on the query is the whole admission.
+			pr.Out.Header.Del("Cookie")
+			pr.Out.Header.Del("Origin")
+			pr.Out.Header.Del("Authorization")
+			pr.Out.Header.Del(relaysession.Header)
+		},
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			// An unreachable upstream is the SPA's ordinary outage; the
+			// composer's own failure path reports it. Same shape the
+			// upgrade relay answers with.
+			log.Printf("clientmode: attachment proxy: %v", err)
+			http.Error(w, "backend unreachable", http.StatusServiceUnavailable)
+		},
+	}
+	if cfg.Paired != nil {
+		proxy.Transport = cfg.Paired.RoundTripper()
+	}
+	return proxy, nil
+}
+
+// upstreamHTTPTarget maps the configured ws:// or wss:// endpoint onto the
+// http:// or https:// origin the same backend answers on. Shared by both
+// proxies so a scheme this stub accepts in one hop cannot be one it
+// rejects in the other.
+func upstreamHTTPTarget(wsURL string) (url.URL, error) {
+	parsed, err := url.Parse(wsURL)
+	if err != nil {
+		return url.URL{}, fmt.Errorf("parse ws url: %w", err)
+	}
+	target := *parsed
+	switch parsed.Scheme {
+	case "ws":
+		target.Scheme = "http"
+	case "wss":
+		target.Scheme = "https"
+	default:
+		return url.URL{}, fmt.Errorf("unsupported scheme %q", parsed.Scheme)
+	}
+	return target, nil
 }
 
 // bootstrapProbeTimeout bounds one upstream credential probe. The SPA
@@ -795,18 +918,9 @@ func readIndexHTML(assets fs.FS) ([]byte, error) {
 // server's write deadline (net/http hijackLocked), so the stub's request
 // timeouts cannot cut a healthy long-lived socket.
 func newWSProxy(cfg Config, session *relaysession.Source) (*httputil.ReverseProxy, error) {
-	parsed, err := url.Parse(cfg.WSURL)
+	target, err := upstreamHTTPTarget(cfg.WSURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse ws url: %w", err)
-	}
-	target := *parsed
-	switch parsed.Scheme {
-	case "ws":
-		target.Scheme = "http"
-	case "wss":
-		target.Scheme = "https"
-	default:
-		return nil, fmt.Errorf("unsupported scheme %q", parsed.Scheme)
+		return nil, err
 	}
 	if target.Path == "" || target.Path == "/" {
 		target.Path = "/ws"

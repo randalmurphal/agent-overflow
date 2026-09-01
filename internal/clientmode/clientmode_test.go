@@ -1300,3 +1300,119 @@ func TestHandleWS_PairedTicketFailureIsTransient(t *testing.T) {
 		t.Errorf("a failing mint still handed out %d tickets", paired.tickets.Load())
 	}
 }
+
+// TestAttachmentPrefixCoversTheTransportRoutes is the drift guard between
+// this stub's ONE subtree pattern and the two literal patterns the backend
+// registers. The surfaces gate reads registrations out of the source, so
+// the stub cannot register transport.AttachmentDownloadPath directly and
+// the two spellings have to be held together by a test instead.
+func TestAttachmentPrefixCoversTheTransportRoutes(t *testing.T) {
+	for _, pattern := range []string{transport.AttachmentDownloadPath, transport.AttachmentUploadPath} {
+		path := pattern
+		if space := strings.IndexByte(pattern, ' '); space >= 0 {
+			path = pattern[space+1:]
+		}
+		if !strings.HasPrefix(path, attachmentPrefix) {
+			t.Fatalf("backend route %q is outside %q, so the stub would 404 it while the embedded webview served it",
+				pattern, attachmentPrefix)
+		}
+	}
+}
+
+// TestHandleAttachmentTransfer_CarriesBytesWithoutACredential is the byte
+// relay's whole contract. The page's cookie admits the request and stops
+// here; the ticket already on the query is the upstream's admission, so
+// this hop attaches nothing — and the URL crosses untouched, because both
+// halves of it were minted by the upstream for the upstream.
+func TestHandleAttachmentTransfer_CarriesBytesWithoutACredential(t *testing.T) {
+	type observed struct {
+		method string
+		path   string
+		query  string
+		auth   string
+		cookie string
+		origin string
+		body   string
+	}
+	seen := make(chan observed, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bootstrap.json" {
+			_, _ = w.Write([]byte(`{"wsUrl":"ws://upstream-perspective/ws"}`))
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		seen <- observed{
+			method: r.Method,
+			path:   r.URL.Path,
+			query:  r.URL.RawQuery,
+			auth:   r.Header.Get("Authorization"),
+			cookie: r.Header.Get("Cookie"),
+			origin: r.Header.Get("Origin"),
+			body:   string(body),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"att-1"}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	srv := serveStub(t, Config{WSURL: "ws://" + upstream.Listener.Addr().String() + "/ws", Token: "upstream-token"})
+	cookie := exchangeStubCookie(t, srv)
+
+	req, err := http.NewRequest(http.MethodPut,
+		"http://"+srv.Addr()+"/attachments/upload?ticket=minted-upstream", strings.NewReader("PNGBYTES"))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Cookie", cookie.Name+"="+cookie.Value)
+	req.Header.Set("Origin", "http://"+srv.Addr())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT through stub: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	got := <-seen
+	if got.method != http.MethodPut || got.path != "/attachments/upload" || got.query != "ticket=minted-upstream" {
+		t.Fatalf("upstream saw %s %s?%s; the URL must cross untouched", got.method, got.path, got.query)
+	}
+	if got.body != "PNGBYTES" {
+		t.Fatalf("upstream body = %q", got.body)
+	}
+	if got.auth != "" || got.cookie != "" || got.origin != "" {
+		t.Fatalf("the hop forwarded a credential or an origin: %+v", got)
+	}
+}
+
+// TestHandleAttachmentTransfer_RefusesWithoutThePageCredential: the stub
+// is LAN-capable, so a relay anyone could drive would be a way to reach
+// the backend's transfer routes from a peer that never loaded the page.
+func TestHandleAttachmentTransfer_RefusesWithoutThePageCredential(t *testing.T) {
+	reached := make(chan struct{}, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bootstrap.json" {
+			_, _ = w.Write([]byte(`{"wsUrl":"ws://upstream-perspective/ws"}`))
+			return
+		}
+		reached <- struct{}{}
+	}))
+	t.Cleanup(upstream.Close)
+
+	srv := serveStub(t, Config{WSURL: "ws://" + upstream.Listener.Addr().String() + "/ws", Token: "upstream-token"})
+
+	resp, err := http.Get("http://" + srv.Addr() + "/attachments/thr-1/att-1?ticket=minted-upstream")
+	if err != nil {
+		t.Fatalf("GET through stub: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	select {
+	case <-reached:
+		t.Fatal("the hop relayed a request that carried no page credential")
+	default:
+	}
+}

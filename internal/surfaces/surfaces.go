@@ -794,6 +794,28 @@ var Routes = []Route{
 			"the page's stops at the stub, the upstream's never reaches the " +
 			"page.",
 	},
+	{
+		Pattern:    "/attachments/",
+		Listener:   "--connect client stub",
+		Credential: CredPageSession,
+		Posture:    PostureProxied,
+		Why: "Attachment bodies, in both directions, for a page this stub " +
+			"serves. One subtree pattern covers both upstream byte routes, " +
+			"because this hop does not read the URL — the path names the " +
+			"attachment and the query carries the ticket, both minted by the " +
+			"upstream for the upstream, and rewriting either would only be a " +
+			"way to get them wrong. The credential listed is the one checked " +
+			"HERE and it stops here: without it a peer that can reach this " +
+			"LAN-capable listener would have a relay to the backend's " +
+			"transfer routes, which is worth more to a caller than this " +
+			"stub's own surface. Unlike /ws this hop attaches NO upstream " +
+			"credential, because the routes it reaches accept none — the " +
+			"single-use ticket already on the query is the whole admission, " +
+			"and it was obtained through a carried RPC that the upstream's " +
+			"scope gate authorized. The per-request timeouts are widened to " +
+			"the backend's own transfer window so a hop cannot cut a body " +
+			"the backend would have finished.",
+	},
 
 	// internal/harness/control — the mock-provider control plane.
 	{
