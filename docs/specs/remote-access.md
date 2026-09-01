@@ -904,6 +904,18 @@ taken, `--reset-transport-port` to clear). What remains is the
 flags. Durable sessions remove re-pairing after restarts; origin
 stability keeps browser storage attached.
 
+LANDED 2026-09-01 (wave 8g, c06a77e3): `network.listenPort` in
+Settings → Network (0 = automatic, the pin-cache behavior). Precedence
+`--listen` > saved port > cache; the saved port deliberately takes NO
+ephemeral fallback — every share URL and stored endpoint names it, so
+an unbindable saved port is a loud boot failure naming the setting and
+both ways out. Clearing back to 0 does not move the listener (it means
+"stop pinning", and the cache re-pin makes the next boot agree). The
+editor states the true costs: a changed port changes the share URL,
+browsers re-sign-in and lose origin storage, and a paired Go client
+keeps dialing the old port until re-paired (it stores its endpoint
+verbatim and never rediscovers).
+
 ### LAN access without a tailnet
 
 The always-on home machine is a first-class case, not a degraded one:
@@ -1136,6 +1148,53 @@ launcher) with a stated headless credential-storage posture. Keychains
 frequently cannot unlock without a login session, so the signing key,
 provider credentials, and tsnet state need a defined at-rest strategy
 for unattended boot.
+
+**Wave 8g LANDED 2026-09-01 (c20d2cdc..5e5248c3): serve mode, the
+headless artifact, the service verb.** Operator doc:
+`docs/architecture/serve-mode.md`. The `serve` verb is a BOOT MODE
+recognized before the aocli verb table (it needs the embed FS and the
+boot graph; a callback into the CLI package would invert the
+dependency), refused in-session like every boot, with mode-selecting
+flags refused as contradictions. `runServe` = the headless shape plus:
+persisted network settings honored (`--listen` still wins),
+`RequireReadyForBootstrap` so a remote browser never loads against a
+half-open store, endpoints printed through the same
+`network.FromServer` formatter Settings → Network reads, and a
+startup failure keeps serving the terminal bootstrap failure rather
+than restart-looping under a service manager. **Credential posture:**
+serve sets the same file-keychain pin the mocked boots use, for the
+opposite reason — an unattended host has no login session to unlock a
+keychain, so provider credentials and the browser state key live in
+0600 files under the config root; everything else already did.
+**First-device enrollment:** a fresh serve host has no owner surface,
+so when stdin is a TTY and no unrevoked non-channel device exists, the
+console becomes one — mint (browser class, full access; a view-only
+first device could not enroll a second), print the link, poll
+redemption, show the verification number, y/N confirm — through the
+same four bound methods the settings screen calls, no identity rule
+touched (an in-process call is the host-present caller app_authz.go
+already admits). Revoked rows deliberately do not count as enrolled,
+or revoking your last device would lock a screenless host out
+permanently. Non-TTY with no devices logs the remedy and keeps
+serving. **Headless artifact:** `agent-overflow-headless-linux-amd64`
+(-tags production,nogui — zero GTK/WebKit, verified by ldd), built in
+build-release.sh with the WSL payload's exact flags; `make go-build`
+compiles the nogui half every run as the rot guard. Adding it exposed
+a real updater defect, fixed: the library's default asset matcher
+substring-matches platform+arch, so every Linux desktop install would
+have been offered the headless binary as its next update.
+`matchReleaseAsset` matches exact artifact names, shared by both
+provider halves, with a test that reads the names back out of
+build-release.sh. **Service verb:** `agent-overflow service
+install|uninstall|status` (aocli — a pure CLI job), writing a systemd
+user unit / launchd LaunchAgent with Restart=on-failure semantics,
+all execution behind an injected Runner (tests never reach a real
+manager; both formats golden-tested via a GOOS parameter), uninstall
+removes only the unit, Windows refused naming the WSL launcher as the
+supervisor. No linger enabled; `loginctl enable-linger` is
+documented, not run. Darwin ships no headless artifact — serve runs
+in the regular binary there and never opens a window. Serve does not
+self-update; W8h owns that.
 
 **Session lifecycle on an unattended host.** LANDED 2026-08-31
 (b809e997). `ArchiveThread` closes the thread's provider session — the
