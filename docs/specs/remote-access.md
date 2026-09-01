@@ -866,6 +866,34 @@ and the Secure cookie flag stay on `r.TLS`. The pairing payload's
 CLIENT (desktop attach + CLI) is the next wave; browsers keep the
 cleartext half and `network.Settings.URL` stays `http://`.
 
+**Wave 8c LANDED 2026-08-31 (23c3003d): the Go-native pinned client.**
+`internal/deviceclient` is the paired device in Go: enrollment-only key
+mint (ECDSA P-256, PKCS#8 0600), per-request JWS proofs matching
+`deviceproof.go`, pairing-link decode (URL, `#pair=` fragment, or bare
+payload), redemption + terminal verification-number ceremony
+(`main_connect.go`; the number is in the `/auth/pair` RESPONSE, derived
+from the key the device just proved), activation polling via ticket
+mints, rotating session store (single-flight, store-before-use, never
+retry an unread exchange; every ended-session refusal collapses to one
+re-pair remedy), and the pinned dial —
+`InsecureSkipVerify+VerifyPeerCertificate` equality against the leaf's
+`servercert.Fingerprint`, http→https promotion iff a fingerprint is
+present, WebPKI when none (no encrypted-but-unverified state).
+`--connect` resolves three forms by structure (ws:// endpoint → today's
+same-host attach unchanged; `#` → pairing link; else stored profile,
+then bare payload). A paired `clientmode` stub carries the upgrade with
+a fresh single-use `?ticket=` per handshake over the pinned transport
+(the ticket is the whole admission; the header arm deliberately does
+not stand in for the launch credential), probes `/bootstrap.json` with
+session + per-request proof, and preflights one ticket before the
+window exists so a removed device is a terminal sentence, not a
+reconnect loop. Wire spellings pinned by drift tests
+(`wire_drift_test.go`, 8 rows + a real redemption round-trip);
+`/bootstrap.json` and `/ws` are exported constants
+(`transport.BootstrapPath`/`WSPath`) shared by every restating package.
+Five app-level integration tests drive pair→confirm→pinned-wss→RPC,
+view-only grants, fingerprint mismatch, revocation, and refresh reuse.
+
 Two supported paths; others are documented escape hatches, not built:
 
 1. **Owned domain + DNS-01**. DNS record → LAN IP (public DNS may hold
