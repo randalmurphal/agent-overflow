@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/harnessrpc"
 	"agent-overflow/internal/keybindings"
@@ -38,12 +39,14 @@ type HarnessPaths struct {
 	AssetsDigest    string
 	ShutdownTimeout time.Duration
 	TerminateSelf   func() error
+	Window          harnessrpc.WindowController
 }
 
 func NewHarness(app *App, paths HarnessPaths) *harnessrpc.Harness {
 	host := &harnessHost{app: app, dataDir: paths.DataDir}
 	return harnessrpc.New(harnessrpc.Config{
 		Host:            host,
+		Window:          paths.Window,
 		Version:         app.version,
 		BuildStamp:      paths.BuildStamp,
 		DataRoot:        paths.DataRoot,
@@ -109,6 +112,63 @@ func (h *harnessHost) BrowserPressKey(threadID, pageID string, chord keybindings
 		return err
 	}
 	return h.app.browser.manager.HarnessPressKey(context.Background(), access, pageID, chord)
+}
+
+func (h *harnessHost) BrowserScroll(threadID, pageID string, x, y float64) error {
+	if h.app.browser.manager == nil {
+		return errors.New("browser manager unavailable")
+	}
+	access, err := h.app.browserAccess(threadID)
+	if err != nil {
+		return err
+	}
+	_, err = h.app.browser.manager.Scroll(context.Background(), access, pageID, "", x, y)
+	return err
+}
+
+func (h *harnessHost) BrowserScreenshot(threadID, pageID string) ([]byte, error) {
+	if h.app.browser.manager == nil {
+		return nil, errors.New("browser manager unavailable")
+	}
+	access, err := h.app.browserAccess(threadID)
+	if err != nil {
+		return nil, err
+	}
+	manager := h.app.browser.manager
+	previous := manager.CompanionState(access)
+	mount, err := manager.AttachPane(access)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if previous.Visible != nil && *previous.Visible {
+			visible := true
+			_, _ = manager.Visibility(context.Background(), access, &visible, previous.ActivePageID)
+		} else {
+			if previous.ActivePageID != "" {
+				_ = manager.ActivateCompanionPage(access, previous.ActivePageID)
+			}
+			visible := false
+			_, _ = manager.Visibility(context.Background(), access, &visible, "")
+		}
+		manager.DetachPane(mount.ID)
+	}()
+	// A native page with no mounted UI pane is deliberately parked at 1x1.
+	// Give the diagnostic a deterministic CSS rect so its capture remains
+	// meaningful even when a shell driver, rather than the frontend, invokes it.
+	if err := manager.SetPaneRect(mount.ID, appbrowser.PaneRect{
+		X: 20, Y: 80, Width: 900, Height: 600,
+		ClipX: 20, ClipY: 80, ClipWidth: 900, ClipHeight: 600,
+		ViewportWidth: 1280, ViewportHeight: 800,
+		Visible: true, Background: "#ffffff",
+	}); err != nil {
+		return nil, err
+	}
+	visible := true
+	if _, err := manager.Visibility(context.Background(), access, &visible, pageID); err != nil {
+		return nil, err
+	}
+	return manager.Screenshot(context.Background(), access, appbrowser.ScreenshotOptions{PageID: pageID})
 }
 
 func (h *harnessHost) CreateProject(path string) (store.Project, error) {

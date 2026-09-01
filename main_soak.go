@@ -143,7 +143,7 @@ func runSoak(flags cliFlags) {
 	appService, nativeWindow := newIsolatedProviderApp(paths, isolationOptions{
 		RealBrowserEngine: realBrowserEngineRequested(flags),
 	})
-	h := newHarness(appService, paths)
+	h := newHarness(appService, paths, nativeWindow)
 	// Before App.Start, exactly as in harness mode: the control server
 	// publishes its address/token through providerExtraEnv (write-once
 	// before Start) and the autopilot's first send spawns a mock that

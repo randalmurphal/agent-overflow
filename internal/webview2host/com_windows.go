@@ -320,16 +320,6 @@ func (c *iCoreWebView2Controller) putIsVisible(visible bool) error {
 	return hresult(hr)
 }
 
-// putParentWindow reparents the controller through WebView2's own API so
-// its cached parent moves with the window. A raw SetParent on the child
-// HWND leaves that cache pointing at the old parent, and Chromium places
-// select dropdowns and IME candidate windows from it — they would open
-// offset by the new parent's origin.
-func (c *iCoreWebView2Controller) putParentWindow(hwnd uintptr) error {
-	hr, _, _ := c.vtbl.PutParentWindow.Call(uintptr(unsafe.Pointer(c)), hwnd)
-	return hresult(hr)
-}
-
 func (c *iCoreWebView2Controller) close() error {
 	hr, _, _ := c.vtbl.Close.Call(uintptr(unsafe.Pointer(c)))
 	return hresult(hr)

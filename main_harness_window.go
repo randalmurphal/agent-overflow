@@ -13,12 +13,14 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	appservice "agent-overflow/internal/app"
+	"agent-overflow/internal/harnessrpc"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/windowgeom"
 
@@ -59,7 +61,11 @@ func runWindowedShell(appService *App, srv *transport.Server, title string, nati
 		// (it wins selection first) and on WSL (the launcher-hosted engine
 		// wins before the native one).
 		withWindow: func(getWindow func() *application.WebviewWindow) {
-			nativeWindow.publish(nativeWindowPointer(getWindow))
+			nativeWindow.publish(
+				nativeWindowPointer(getWindow),
+				func() (harnessrpc.WindowState, error) { return harnessWindowState(getWindow()) },
+				func(command harnessrpc.WindowCommand) error { return driveHarnessWindow(getWindow(), command) },
+			)
 		},
 		// Raw URL on purpose: webviewShell.run threads the client id on
 		// (its `withClientID`), and it is the one place that rule lives for
@@ -77,6 +83,66 @@ func runWindowedShell(appService *App, srv *transport.Server, title string, nati
 	runErr := shell.run()
 	shutdownHeadless(appService, srv)
 	return runErr
+}
+
+func harnessWindowState(window *application.WebviewWindow) (harnessrpc.WindowState, error) {
+	if window == nil {
+		return harnessrpc.WindowState{}, errors.New("native window has not been created")
+	}
+	bounds := window.Bounds()
+	screen, err := window.GetScreen()
+	if err != nil {
+		return harnessrpc.WindowState{}, err
+	}
+	if screen == nil {
+		return harnessrpc.WindowState{}, errors.New("native window has no screen")
+	}
+	return harnessrpc.WindowState{
+		Bounds:     harnessWindowRect(bounds),
+		Maximized:  window.IsMaximised(),
+		Fullscreen: window.IsFullscreen(),
+		Minimized:  window.IsMinimised(),
+		Screen: harnessrpc.WindowScreen{
+			ID:               screen.ID,
+			Bounds:           harnessWindowRect(screen.Bounds),
+			WorkArea:         harnessWindowRect(screen.WorkArea),
+			PhysicalWorkArea: harnessWindowRect(screen.PhysicalWorkArea),
+			ScaleFactor:      screen.ScaleFactor,
+		},
+	}, nil
+}
+
+func driveHarnessWindow(window *application.WebviewWindow, command harnessrpc.WindowCommand) error {
+	if window == nil {
+		return errors.New("native window has not been created")
+	}
+	if command.Bounds != nil {
+		bounds := *command.Bounds
+		window.SetBounds(application.Rect{X: bounds.X, Y: bounds.Y, Width: bounds.Width, Height: bounds.Height})
+		return nil
+	}
+
+	switch command.Action {
+	case "maximize":
+		window.Maximise()
+	case "unmaximize":
+		window.UnMaximise()
+	case "fullscreen":
+		window.Fullscreen()
+	case "unfullscreen":
+		window.UnFullscreen()
+	case "minimize":
+		window.Minimise()
+	case "unminimize":
+		window.UnMinimise()
+	default:
+		return errors.New("unknown window action: use maximize, unmaximize, fullscreen, unfullscreen, minimize, or unminimize")
+	}
+	return nil
+}
+
+func harnessWindowRect(rect application.Rect) harnessrpc.WindowRect {
+	return harnessrpc.WindowRect{X: rect.X, Y: rect.Y, Width: rect.Width, Height: rect.Height}
 }
 
 // quitOnSignal turns SIGINT/SIGTERM into an ordinary window close, so

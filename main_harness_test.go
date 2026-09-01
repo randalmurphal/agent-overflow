@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"agent-overflow/internal/diagenv"
+	"agent-overflow/internal/harnessrpc"
 )
 
 func TestParseFlagsHarnessRequiresDataDir(t *testing.T) {
@@ -354,14 +355,27 @@ func TestIsolatedNativeWindowAnswersNilUntilPublished(t *testing.T) {
 		t.Fatal("an unpublished window cell returned a pointer")
 	}
 	var handle int
-	window.publish(func() unsafe.Pointer { return unsafe.Pointer(&handle) })
+	wantState := harnessrpc.WindowState{Bounds: harnessrpc.WindowRect{Width: 1100, Height: 720}}
+	var gotCommand harnessrpc.WindowCommand
+	window.publish(
+		func() unsafe.Pointer { return unsafe.Pointer(&handle) },
+		func() (harnessrpc.WindowState, error) { return wantState, nil },
+		func(command harnessrpc.WindowCommand) error { gotCommand = command; return nil },
+	)
 	if window.pointer() != unsafe.Pointer(&handle) {
 		t.Fatal("the published window handle did not reach the getter")
+	}
+	if got, err := window.State(); err != nil || got != wantState {
+		t.Fatalf("published window state = %+v, %v; want %+v", got, err, wantState)
+	}
+	wantCommand := harnessrpc.WindowCommand{Action: "maximize"}
+	if err := window.Command(wantCommand); err != nil || gotCommand != wantCommand {
+		t.Fatalf("published window command = %+v, %v; want %+v", gotCommand, err, wantCommand)
 	}
 	// A windowed boot whose window has not materialized yet answers nil
 	// through the published getter, which is the ordinary case between
 	// app.Run and ApplicationStarted.
-	window.publish(func() unsafe.Pointer { return nil })
+	window.publish(func() unsafe.Pointer { return nil }, nil, nil)
 	if window.pointer() != nil {
 		t.Fatal("a published getter answering nil did not surface as nil")
 	}

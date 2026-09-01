@@ -102,7 +102,7 @@ func runHarness(flags cliFlags) {
 	appService, nativeWindow := newIsolatedProviderApp(paths, isolationOptions{
 		RealBrowserEngine: realBrowserEngineRequested(flags),
 	})
-	h := newHarness(appService, paths)
+	h := newHarness(appService, paths, nativeWindow)
 	// The control server must listen before App.Start: it publishes its
 	// address/token through App.providerExtraEnv (write-once before
 	// Start), and the first session start could spawn a mock that needs
@@ -251,8 +251,8 @@ func realBrowserEngineRequested(flags cliFlags) bool {
 	return true
 }
 
-// isolatedNativeWindow is the desktop window an isolated WINDOWED boot
-// hands the in-process browser engine.
+// isolatedNativeWindow is the desktop window an isolated WINDOWED boot hands
+// both the in-process browser engine and the harness's native-window RPCs.
 //
 // It exists because an isolated boot inverts the desktop boot's order: the
 // backend is started and marked ready BEFORE any window is created, while
@@ -261,19 +261,27 @@ func realBrowserEngineRequested(flags cliFlags) bool {
 // reads whether a getter exists (webkit_engine_linux.go / the darwin twin
 // check `opts.NativeWindow == nil`), and the window POINTER is resolved
 // lazily, when the first browser tool call starts the engine. So the
-// getter is installed empty here and filled by runWindowedShell, which
-// cannot run until long after Start returned.
+// getter/controller cell is installed empty here and filled by
+// runWindowedShell, which cannot run until long after Start returned.
 type isolatedNativeWindow struct {
-	mu     sync.Mutex
-	handle func() unsafe.Pointer
+	mu      sync.Mutex
+	handle  func() unsafe.Pointer
+	state   func() (harnessrpc.WindowState, error)
+	command func(harnessrpc.WindowCommand) error
 }
 
 // publish installs the live window accessor. Called once, by the windowed
 // shell, before the app loop starts.
-func (w *isolatedNativeWindow) publish(handle func() unsafe.Pointer) {
+func (w *isolatedNativeWindow) publish(
+	handle func() unsafe.Pointer,
+	state func() (harnessrpc.WindowState, error),
+	command func(harnessrpc.WindowCommand) error,
+) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.handle = handle
+	w.state = state
+	w.command = command
 }
 
 // pointer is the getter the App holds. nil means "no window" — a headless
@@ -289,7 +297,29 @@ func (w *isolatedNativeWindow) pointer() unsafe.Pointer {
 	return handle()
 }
 
-func newHarness(app *App, paths harnessPaths) *harnessrpc.Harness {
+func (w *isolatedNativeWindow) State() (harnessrpc.WindowState, error) {
+	w.mu.Lock()
+	state := w.state
+	w.mu.Unlock()
+	if state == nil {
+		return harnessrpc.WindowState{}, errors.New("native window unavailable: start the harness with --window")
+	}
+	return state()
+}
+
+func (w *isolatedNativeWindow) Command(command harnessrpc.WindowCommand) error {
+	w.mu.Lock()
+	drive := w.command
+	w.mu.Unlock()
+	if drive == nil {
+		return errors.New("native window unavailable: start the harness with --window")
+	}
+	return drive(command)
+}
+
+var _ harnessrpc.WindowController = (*isolatedNativeWindow)(nil)
+
+func newHarness(app *App, paths harnessPaths, window harnessrpc.WindowController) *harnessrpc.Harness {
 	return appservice.NewHarness(app.App, appservice.HarnessPaths{
 		DataRoot:        paths.DataRoot,
 		DataDir:         paths.DataDir,
@@ -301,6 +331,7 @@ func newHarness(app *App, paths harnessPaths) *harnessrpc.Harness {
 		AssetsDigest:    paths.AssetsDigest,
 		ShutdownTimeout: headlessShutdownTimeout,
 		TerminateSelf:   terminateSelf,
+		Window:          window,
 	})
 }
 

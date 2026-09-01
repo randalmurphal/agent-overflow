@@ -156,16 +156,18 @@ A pane running under the sidebar must show its visible half, not hide and
 not overhang. WebView2 has no clip rect, so each page gets an intermediate
 child window of the host — `AgentOverflowBrowserPaneClip`, `WS_CHILD |
 WS_CLIPCHILDREN | WS_CLIPSIBLINGS`, NULL background brush — and the
-controller's identified child HWND is `SetParent`ed into it. `bounds` then
-positions the container at the scaled CLIP rect and the controller at the
+container is passed as the controller's parent when the controller is created.
+Never reparent a live controller: WebView2 can leave its compositor presenting
+stale/blank strips while the document scrolls after a parent change. `bounds`
+then positions the container at the scaled CLIP rect and the controller at the
 scaled FULL rect *relative to the container*, so the page keeps its layout
 size and only its presentation is cropped.
 
 Four things are load-bearing:
 
-- **The child diff comes first.** Creating the container adds a second new
-  child of the host; taking the diff after it would make the controller's
-  own HWND unidentifiable.
+- **The controller is born under its final parent.** The host-child diff/raise
+  path exists only when container creation failed and the controller must fall
+  back to a direct host child.
 - **NULL background brush.** With a brush, `DefWindowProc`'s erase would
   flash the container's colour through the pane on every move.
 - **Rounding is OUTWARD on every edge, from one scale pair.** Both rects
@@ -175,13 +177,14 @@ Four things are load-bearing:
   the two rectangles independently lets a fractional scale shave a 1px
   sliver off a SHARED edge, which reads as a hairline of launcher
   background across the page.
-- **Close destroys it, after the controller closes.** A leaked container is
-  an invisible window that swallows every click over its rectangle.
+- **Close destroys it, after the controller closes.** An in-flight create keeps
+  its parent alive until its completion closes the raced controller. A leaked
+  container is an invisible window that swallows every click over its rectangle.
 
-The container is not a precondition. If the child HWND cannot be
-identified, or the window cannot be created, the page keeps the older
-directly-parented behaviour: host-relative bounds, no clipping. An
-overhanging pane is worse-looking; no pane is broken.
+The container is not a precondition. If its window cannot be created, the page
+keeps the older directly-parented behaviour: host-relative bounds, no clipping.
+Failure to identify that fallback controller's child HWND only means it cannot
+be explicitly raised. An overhanging pane is worse-looking; no pane is broken.
 
 **Background colour** is `ICoreWebView2Controller2::
 put_DefaultBackgroundColor`, QueryInterface'd once at create. It is

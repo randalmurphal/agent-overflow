@@ -85,6 +85,8 @@ type hostPage struct {
 	// beforeChildren is the host's child-window list captured
 	// immediately before CreateCoreWebView2ControllerWithOptions, so the
 	// completion handler can diff out this controller's own child HWND.
+	// Used only by the unclipped fallback: the normal path creates the
+	// controller under its final clip container and raises that container.
 	beforeChildren []uintptr
 
 	controller *iCoreWebView2Controller
@@ -99,9 +101,9 @@ type hostPage struct {
 	// host that the controller's own window lives inside. Positioning it at
 	// the VISIBLE rect while the controller keeps the FULL rect is what
 	// crops a pane running under the sidebar instead of hiding it or
-	// letting it overhang. Zero when the controller's child window could
-	// not be identified, in which case the pane falls back to the
-	// unclipped, directly-parented behaviour.
+	// letting it overhang. Zero when the container could not be created, in
+	// which case the pane falls back to the unclipped, directly-parented
+	// behaviour.
 	container uintptr
 	// bg is the last colour actually applied, so a bounds directive — which
 	// arrives on every scroll and resize — pays for a COM call only when
@@ -362,12 +364,16 @@ func (h *Host) closePages(match func(*hostPage) bool) {
 					h.config.Logf("browser host: close page %s: %v", page.id, err)
 				}
 				page.controller.release()
+				// After the controller, always: closing it destroys the window
+				// inside the container, and a container that outlives its page
+				// is an invisible window eating every click over its rectangle.
+				destroyWindow(page.container)
+				page.container = 0
 			}
-			// After the controller, always: closing it destroys the window
-			// inside the container, and a container that outlives its page
-			// is an invisible window eating every click over its rectangle.
-			destroyWindow(page.container)
-			page.container = 0
+			// A container with no controller is the parent of an asynchronous
+			// create still in flight. Its completion owns both the controller
+			// and container after observing that this page was unregistered;
+			// destroying the parent now destabilizes the WebView2 create itself.
 		}
 	})
 	for _, page := range closing {
@@ -689,43 +695,57 @@ func (h *Host) create(directive Directive) {
 
 	hwnd := h.config.HostWindow()
 	if hwnd == 0 {
-		h.dropPage(page.id)
-		h.config.Report(directive.PageID, ReportCreateFailed, "launcher window is not available")
+		h.failUncreated(page, "launcher window is not available")
 		return
 	}
 
 	h.config.OnMain(func() {
+		// close/close-profile may have retired the page while this UI-thread
+		// hop was queued. Do not start a controller whose id is already
+		// settled and may already have been reused by a newer create.
+		if !h.pageRegistered(page) {
+			return
+		}
 		options, err := env10.createControllerOptions()
 		if err != nil {
-			h.dropPage(page.id)
-			h.config.Report(page.id, ReportCreateFailed, TruncateDetail("controller options: "+err.Error()))
+			h.failUncreated(page, "controller options: "+err.Error())
 			return
 		}
 		defer options.release()
 		if err := options.putProfileName(directive.ProfileID); err != nil {
-			h.dropPage(page.id)
-			h.config.Report(page.id, ReportCreateFailed, TruncateDetail("profile name: "+err.Error()))
+			h.failUncreated(page, "profile name: "+err.Error())
 			return
 		}
 		if err := options.putInPrivate(directive.Ephemeral); err != nil {
-			h.dropPage(page.id)
-			h.config.Report(page.id, ReportCreateFailed, TruncateDetail("inprivate: "+err.Error()))
+			h.failUncreated(page, "inprivate: "+err.Error())
 			return
 		}
 
-		// Snapshot the host's children so the completion handler can
-		// diff out this controller's own child HWND. WebView2 does not
-		// expose it, and without it the pane cannot be raised.
-		page.beforeChildren = childWindows(hwnd)
+		// Create the final parent BEFORE the controller. Reparenting a live
+		// windowed WebView2 controller can leave its compositor presenting
+		// stale/blank strips while the document scrolls. Passing the clip
+		// container to controller creation gives Chromium one stable parent
+		// for the controller's whole lifetime.
+		parent := hwnd
+		container, err := createClipContainer(hwnd)
+		if err != nil {
+			// Clipping is a presentation refinement, not a precondition. Keep
+			// the older direct-parent path and identify its child so it can be
+			// raised over the SPA controller.
+			h.config.Logf("browser host: page %s clip container: %v; pane will not clip", page.id, err)
+			page.beforeChildren = childWindows(hwnd)
+		} else {
+			page.container = container
+			parent = container
+		}
 
 		handler := newControllerCompletedHandler(func(hr uintptr, controller *iCoreWebView2Controller) {
 			h.controllerCompleted(page, hwnd, hr, controller)
 		})
 		page.pendingHandlers = append(page.pendingHandlers, handler)
 
-		if err := env10.createControllerWithOptions(hwnd, options, handler); err != nil {
-			h.dropPage(page.id)
-			h.config.Report(page.id, ReportCreateFailed, TruncateDetail("create controller: "+err.Error()))
+		if err := env10.createControllerWithOptions(parent, options, handler); err != nil {
+			h.failUncreated(page, "create controller: "+err.Error())
 		}
 	})
 }
@@ -739,13 +759,11 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 		// though the mismatch is the ENVIRONMENT's. If it ever appears,
 		// suspect a collapsed user data folder (see EnvOverrideNames)
 		// before suspecting the argument rule.
-		h.dropPage(page.id)
-		h.config.Report(page.id, ReportCreateFailed, TruncateDetail(err.Error()))
+		h.failUncreated(page, err.Error())
 		return
 	}
 	if controller == nil {
-		h.dropPage(page.id)
-		h.config.Report(page.id, ReportCreateFailed, "controller completed with no controller")
+		h.failUncreated(page, "controller completed with no controller")
 		return
 	}
 	controller.addRef()
@@ -758,6 +776,8 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 			h.config.Logf("browser host: page %s close raced controller: %v", page.id, err)
 		}
 		controller.release()
+		destroyWindow(page.container)
+		page.container = 0
 		return
 	}
 	page.controller = controller
@@ -772,23 +792,22 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 		h.config.Logf("browser host: page %s initial hide: %v", page.id, err)
 	}
 
-	// The child diff MUST be taken before the container is created:
-	// creating it would add a second new child of the host and make the
-	// diff ambiguous.
-	page.child = newChildWindow(page.beforeChildren, childWindows(hwnd))
-	page.beforeChildren = nil
-	if page.child == 0 {
-		h.config.Logf("browser host: page %s child window not identified; "+
-			"the pane may render behind the app and cannot be clipped", page.id)
-	} else if err := h.attachClipContainer(page, hwnd); err != nil {
-		// Clipping is a presentation refinement, not a precondition: a
-		// pane that overhangs is worse-looking than one that crops, and
-		// far better than no pane. applyBounds falls back to host-relative
-		// bounds whenever container is zero.
-		h.config.Logf("browser host: page %s clip container: %v; pane will not clip", page.id, err)
-		raiseChild(page.child)
-	} else {
+	if page.container != 0 {
+		// Normal path: the container was the controller's parent from its
+		// creation call, so no live WebView2 window is ever reparented.
 		raiseChild(page.container)
+	} else {
+		// Container creation failed before the controller started. The
+		// controller is a direct child of the host, so identify and raise it
+		// over the SPA's own WebView2.
+		page.child = newChildWindow(page.beforeChildren, childWindows(hwnd))
+		page.beforeChildren = nil
+		if page.child == 0 {
+			h.config.Logf("browser host: page %s child window not identified; "+
+				"the pane may render behind the app and cannot be clipped", page.id)
+		} else {
+			raiseChild(page.child)
+		}
 	}
 
 	view, err := controller.coreWebView2()
@@ -841,31 +860,22 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 	}
 }
 
-// attachClipContainer creates the page's clip window and moves the
-// controller into it through put_ParentWindow — WebView2's own reparent,
-// so its cached parent (which Chromium places select dropdowns and IME
-// candidate windows from) moves with the window. Runs on the UI thread.
-//
-// On failure the container is destroyed rather than left behind: a
-// container the controller never entered is an invisible window that eats
-// every click over its rectangle.
-func (h *Host) attachClipContainer(page *hostPage, hwnd uintptr) error {
-	container, err := createClipContainer(hwnd)
-	if err != nil {
-		return err
-	}
-	if err := page.controller.putParentWindow(container); err != nil {
-		destroyWindow(container)
-		return err
-	}
-	page.container = container
-	return nil
-}
-
-func (h *Host) dropPage(pageID string) {
+// failUncreated settles a create that failed on the UI thread and tears down
+// the clip container that may already have become its final parent. The exact
+// pointer comparison keeps a late callback from deleting or reporting failure
+// for a newer page that reused the same id after this one was closed.
+func (h *Host) failUncreated(page *hostPage, detail string) {
 	h.mu.Lock()
-	delete(h.pages, pageID)
+	mine := h.pages[page.id] == page
+	if mine {
+		delete(h.pages, page.id)
+	}
 	h.mu.Unlock()
+	destroyWindow(page.container)
+	page.container = 0
+	if mine {
+		h.config.Report(page.id, ReportCreateFailed, TruncateDetail(detail))
+	}
 }
 
 // pageRegistered reports whether page is still the registry's entry for

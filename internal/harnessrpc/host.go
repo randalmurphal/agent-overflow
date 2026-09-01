@@ -42,6 +42,11 @@ type Host interface {
 	// through the window's own event path, as if the user had clicked into
 	// the page and typed it. Refused on engines with no native view.
 	BrowserPressKey(threadID, pageID string, chord keybindings.Accelerator) error
+	// BrowserScroll and BrowserScreenshot drive the production browser page
+	// directly so native-engine rendering can be checked without a provider
+	// turn or OS-level input synthesis.
+	BrowserScroll(threadID, pageID string, x, y float64) error
+	BrowserScreenshot(threadID, pageID string) ([]byte, error)
 	CreateProject(path string) (store.Project, error)
 	CreateThread(ThreadOptions) (store.Thread, error)
 	ArchiveThread(threadID string) error

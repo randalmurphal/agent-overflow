@@ -210,7 +210,7 @@ require (
 
 tool github.com/wailsapp/wails/v3/cmd/wails3
 
-// Fork pin: branch ao-beta-memory-trim, six patches on top of the
+// Fork pin: branch ao-beta-memory-trim, nine patch groups on top of the
 // upstream v3.0.0-beta.4 tag. Only ONE replace is needed now: upstream
 // folded the separate wails/webview2 module into v3/internal/webview2
 // (#5711, alpha2.114), so the second pin that used to carry the suspend
@@ -264,8 +264,18 @@ tool github.com/wailsapp/wails/v3/cmd/wails3
 //     creation never completes — now genuinely posted. Unpatched 0/2
 //     (panic), patched 8/8 recovered ~3s on the wails-pr6002-matrix rig.
 //
+//  8. WebviewWindow.CallDevToolsProtocolMethod (2d9e02219): exposes the
+//     embedded WebView2 page's protocol session through the application
+//     layer for AO's browser integration.
+//
+//  9. macOS outer-frame + DIP geometry (dae7e8f74): creation treats Wails
+//     width/height as the NSWindow's outer frame instead of content size,
+//     and GetScreen resolves raw Retina NSScreen values through the laid-out
+//     screen cache. This prevents title-bar growth on every restore and 2x
+//     display records that break maximize placement.
+//
 // Dropped at the beta.4 rebase — both landed upstream: the mixed-DPI
 // monitor-scale-detection re-enable (#5732 -> PR #5734) and the host
 // rasterization-scale stand-down (PR #5761, which generalised it to
 // visual hosting). Do not re-add them.
-replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260825150712-2d9e0221958f
+replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260901164027-dae7e8f7452d

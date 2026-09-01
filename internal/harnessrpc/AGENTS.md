@@ -16,7 +16,7 @@ stateful composition with the production app through `Host`.
 
 ## Wire and lifecycle invariants
 
-- `Harness` has exactly 32 exported `Harness*` methods. Root registers the
+- `Harness` has exactly 37 exported `Harness*` methods. Root registers the
   receiver with `Package: "main"`, `TypeName: "Harness"`, and `LocalOnly:
   true`; do not add exported lifecycle helpers to the receiver.
 - Keep method names and JSON tags stable. `transport_registration_test.go`
@@ -26,6 +26,9 @@ stateful composition with the production app through `Host`.
   it on App before startup. Never publish the token process-wide.
 - Store and replay-manager access is dynamic through `Host`: the receiver is
   constructed before `App.Start` initializes either one.
+- Native-window access is dynamic through `Config.Window`: windowed boots fill
+  the controller only when the Wails shell is constructed; headless boots
+  return a named `--window` refusal.
 - Every dynamic event and replay frame crosses `Host.Emit`, whose `internal/app` adapter
   calls `App.emit`; never write directly to the transport bus here.
 - After restoring a replay snapshot, publish the returned store identity
