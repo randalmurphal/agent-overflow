@@ -91,6 +91,14 @@ missing value over one that skips. Two rules keep the evidence real:
 - **Assert the precondition your assertion depends on.** A surface that
   is supposed to overflow, a fixture that is supposed to have two rows: a
   drifted fixture should fail rather than quietly stop testing anything.
+- **An assertion that nothing happened waits for the thing that would
+  have.** Emptiness is true before the work starts, so a spec that checks
+  it without first waiting on a SETTLED rendered state is racing what it
+  is about, and wins often enough to look green — two runs in three, for
+  "a view-only device spends no refusal", which was passing over four
+  real refusals (2026-08-31). Wait on the state the guarded path
+  produces, and assert the capture itself saw traffic, so a broken probe
+  reads as a failure rather than as a clean bill.
 - **Ask the harness RPC, not the production reader, for a negative.**
   `App.ListThreads` hides the item-less draft row several bugs create, so
   "no row exists" goes through `HarnessListThreadRows`. Turn liveness
