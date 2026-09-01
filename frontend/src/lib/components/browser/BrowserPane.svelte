@@ -228,8 +228,8 @@
   </div>
 
   <div class="flex h-10 shrink-0 items-center gap-1 border-b border-border-subtle bg-surface-1 px-2">
-    <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="Back" onclick={() => void act('back')}><Icon icon={ArrowLeft} size={14} /></button>
-    <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="Forward" onclick={() => void act('forward')}><Icon icon={ArrowRight} size={14} /></button>
+    <button class="rounded p-1.5 text-fg-muted enabled:hover:bg-surface-2 enabled:hover:text-fg disabled:opacity-35" aria-label="Back" disabled={!activePage?.canGoBack} onclick={() => void act('back')}><Icon icon={ArrowLeft} size={14} /></button>
+    <button class="rounded p-1.5 text-fg-muted enabled:hover:bg-surface-2 enabled:hover:text-fg disabled:opacity-35" aria-label="Forward" disabled={!activePage?.canGoForward} onclick={() => void act('forward')}><Icon icon={ArrowRight} size={14} /></button>
     <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="Reload" onclick={() => void act('reload')}><Icon icon={RefreshCw} size={13} /></button>
     <input
       class="h-7 min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-0 px-2 text-[0.75rem] text-fg outline-none focus:border-accent/60"

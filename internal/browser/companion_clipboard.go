@@ -39,9 +39,18 @@ func (m *Manager) CopyPageFileToClipboard(ctx context.Context, access Access, pa
 	if err != nil {
 		return err
 	}
-	path, err := localFilePathForPageURL(p.cachedInfo().URL)
+	pageURL := p.cachedInfo().URL
+	path, err := localFilePathForPageURL(pageURL)
 	if err != nil {
 		return err
+	}
+	if engine, ok := m.engine.(engineFileURL); ok {
+		// The page's address is in the RENDERER's form (file:///C:/...,
+		// file://wsl.localhost/...); resolve the backend path behind it
+		// before touching the filesystem.
+		if path, err = engine.BackendFilePath(ctx, pageURL); err != nil {
+			return err
+		}
 	}
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {

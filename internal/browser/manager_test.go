@@ -92,12 +92,22 @@ func TestFakeEngineHistoryWalksBackAndForward(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open on the fake engine: %v", err)
 	}
-	if _, err := manager.Open(t.Context(), access, "https://example.test/second", OpenOptions{PageID: info.ID}); err != nil {
+	if info.CanGoBack || info.CanGoForward {
+		t.Fatalf("first page reports history to walk: %#v", info)
+	}
+	second, err := manager.Open(t.Context(), access, "https://example.test/second", OpenOptions{PageID: info.ID})
+	if err != nil {
 		t.Fatalf("second navigation: %v", err)
+	}
+	if !second.CanGoBack || second.CanGoForward {
+		t.Fatalf("second page misreports history state: %#v", second)
 	}
 	back, err := manager.History(t.Context(), access, info.ID, "back")
 	if err != nil || back.URL != "https://example.test/first" {
 		t.Fatalf("back = %#v, %v", back, err)
+	}
+	if back.CanGoBack || !back.CanGoForward {
+		t.Fatalf("walked-back page misreports history state: %#v", back)
 	}
 	forward, err := manager.History(t.Context(), access, info.ID, "forward")
 	if err != nil || forward.URL != "https://example.test/second" {

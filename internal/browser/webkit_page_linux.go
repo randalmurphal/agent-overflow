@@ -184,6 +184,10 @@ func (p *webkitPage) Navigate(ctx context.Context, url string) error {
 	return p.awaitLoad(ctx)
 }
 
+func (p *webkitPage) HistoryState(context.Context) (bool, bool, error) {
+	return webkitCanGo(p.view, false), webkitCanGo(p.view, true), nil
+}
+
 func (p *webkitPage) History(ctx context.Context, action string) error {
 	switch action {
 	case "back":

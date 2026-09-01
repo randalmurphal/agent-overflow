@@ -209,6 +209,10 @@ func (p *wkPage) load(target string) error {
 	return wkLoadFile(p.view, path, filepath.Dir(path))
 }
 
+func (p *wkPage) HistoryState(context.Context) (bool, bool, error) {
+	return wkCanGo(p.view, false), wkCanGo(p.view, true), nil
+}
+
 func (p *wkPage) History(ctx context.Context, action string) error {
 	switch action {
 	case "back":

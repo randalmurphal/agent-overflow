@@ -88,6 +88,14 @@ export class PageInfo {
     "selected"?: boolean;
     "lastOpened"?: string;
 
+    /**
+     * CanGoBack / CanGoForward mirror the page's session history so the
+     * companion toolbar can disable a button instead of offering a click
+     * that can only error.
+     */
+    "canGoBack": boolean;
+    "canGoForward": boolean;
+
     /** Creates a new PageInfo instance. */
     constructor($$source: Partial<PageInfo> = {}) {
         if (!("id" in $$source)) {
@@ -98,6 +106,12 @@ export class PageInfo {
         }
         if (!("title" in $$source)) {
             this["title"] = "";
+        }
+        if (!("canGoBack" in $$source)) {
+            this["canGoBack"] = false;
+        }
+        if (!("canGoForward" in $$source)) {
+            this["canGoForward"] = false;
         }
 
         Object.assign(this, $$source);

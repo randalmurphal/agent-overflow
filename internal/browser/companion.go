@@ -59,6 +59,17 @@ func (p *managedPage) setInfo(info PageInfo) {
 	p.metaMu.Unlock()
 }
 
+// setHistoryState updates only the back/forward flags and reports whether
+// anything changed, so the async refresh behind an engine info event emits
+// no state push when the answer is the one already shown.
+func (p *managedPage) setHistoryState(canGoBack, canGoForward bool) bool {
+	p.metaMu.Lock()
+	changed := p.info.CanGoBack != canGoBack || p.info.CanGoForward != canGoForward
+	p.info.CanGoBack, p.info.CanGoForward = canGoBack, canGoForward
+	p.metaMu.Unlock()
+	return changed
+}
+
 func (p *managedPage) setLabel(label string) PageInfo {
 	p.metaMu.Lock()
 	p.info.Label = label
@@ -141,8 +152,34 @@ func (m *Manager) updatePageInfo(handle, url, title string) {
 	if found == nil {
 		return
 	}
-	found.setInfo(PageInfo{ID: found.id, URL: truncateUTF8(url, maxBrowserURLBytes), Title: truncateUTF8(title, maxBrowserTitleBytes)})
+	previous := found.cachedInfo()
+	found.setInfo(PageInfo{
+		ID:    found.id,
+		URL:   truncateUTF8(url, maxBrowserURLBytes),
+		Title: truncateUTF8(title, maxBrowserTitleBytes),
+		// The engine event carries no history state; keep what is shown
+		// and let the async refresh below correct it.
+		CanGoBack: previous.CanGoBack, CanGoForward: previous.CanGoForward,
+	})
 	m.emitThreadState(found.owner)
+	go m.refreshHistoryState(found)
+}
+
+// refreshHistoryState re-reads one page's back/forward availability after an
+// engine announced a navigation, off the engine's event goroutine — the read
+// is a driver round trip, and blocking the event dispatcher on it could
+// deadlock an engine whose events and commands share a loop. A late answer
+// only ever disables a button one push later; the next state emission wins.
+func (m *Manager) refreshHistoryState(p *managedPage) {
+	ctx, cancel := operationContext(context.Background(), p.driver.Lifetime(), operationTimeout)
+	defer cancel()
+	back, forward, err := p.driver.HistoryState(ctx)
+	if err != nil {
+		return
+	}
+	if p.setHistoryState(back, forward) {
+		m.emitThreadState(p.owner)
+	}
 }
 
 func (m *Manager) CompanionState(access Access) CompanionEvent {

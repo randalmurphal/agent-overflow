@@ -95,13 +95,22 @@ func operationContext(caller, pageCtx context.Context, timeout time.Duration) (c
 	return ctx, func() { stop(); cancel() }
 }
 
-// pageInfo reads and bounds one page's live URL and title.
+// pageInfo reads and bounds one page's live URL, title, and history state.
 func (m *Manager) pageInfo(ctx context.Context, p *managedPage) (PageInfo, error) {
 	location, title, err := p.driver.Info(ctx)
 	if err != nil {
 		return PageInfo{}, err
 	}
-	return PageInfo{ID: p.id, URL: truncateUTF8(location, maxBrowserURLBytes), Title: truncateUTF8(title, maxBrowserTitleBytes)}, nil
+	back, forward, err := p.driver.HistoryState(ctx)
+	if err != nil {
+		return PageInfo{}, err
+	}
+	return PageInfo{
+		ID:        p.id,
+		URL:       truncateUTF8(location, maxBrowserURLBytes),
+		Title:     truncateUTF8(title, maxBrowserTitleBytes),
+		CanGoBack: back, CanGoForward: forward,
+	}, nil
 }
 
 func truncateUTF8(value string, limit int) string {

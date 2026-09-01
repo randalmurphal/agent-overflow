@@ -189,6 +189,12 @@ func (p *fakePage) Navigate(_ context.Context, rawURL string) error {
 	return nil
 }
 
+func (p *fakePage) HistoryState(context.Context) (bool, bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.index > 0, p.index+1 < len(p.history), nil
+}
+
 func (p *fakePage) History(_ context.Context, action string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

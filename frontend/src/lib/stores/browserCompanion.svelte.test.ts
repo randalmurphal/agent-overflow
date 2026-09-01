@@ -9,6 +9,8 @@ import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.
 import { createPane, resetPanesForTest } from './panes.svelte';
 import { makeThread } from '../../test/helpers/chat';
 
+const page = (url: string, title: string) => ({ id: 'page-1', url, title, canGoBack: false, canGoForward: false });
+
 describe('browser companion state routing', () => {
   beforeEach(() => {
     resetBrowserCompanionForTest();
@@ -26,7 +28,7 @@ describe('browser companion state routing', () => {
       threadId: 'thread-browser',
       activePageId: 'page-1',
       visible: true,
-      pages: [{ id: 'page-1', url: 'file:///repo/demo.html', title: 'Demo' }],
+      pages: [page('file:///repo/demo.html', 'Demo')],
     });
     expect(companionForSource('main', 'browser')).toEqual({
       paneId: 'browser-main',
@@ -42,7 +44,7 @@ describe('browser companion state routing', () => {
     applyBrowserCompanionState({
       kind: 'state',
       threadId: 'other-thread',
-      pages: [{ id: 'page-1', url: 'https://example.com', title: 'Example' }],
+      pages: [page('https://example.com', 'Example')],
     });
     expect(companionForSource('main', 'browser')).toBeNull();
   });
@@ -52,7 +54,7 @@ describe('browser companion state routing', () => {
       kind: 'state',
       threadId: 'returning-thread',
       visible: true,
-      pages: [{ id: 'page-1', url: 'https://example.com', title: 'Example' }],
+      pages: [page('https://example.com', 'Example')],
     });
     createPane('main').replaceThread(makeThread({ id: 'returning-thread' }));
     reconcileBrowserCompanionForPane('main', 'returning-thread');
@@ -65,7 +67,7 @@ describe('browser companion state routing', () => {
       threadId: 'thread-browser',
       activePageId: 'page-1',
       visible: true,
-      pages: [{ id: 'page-1', url: 'https://example.com', title: 'Example' }],
+      pages: [page('https://example.com', 'Example')],
     });
     expect(companionForSource('main', 'browser')?.kind).toBe('browser');
 
@@ -74,7 +76,7 @@ describe('browser companion state routing', () => {
       threadId: 'thread-browser',
       activePageId: 'page-1',
       visible: false,
-      pages: [{ id: 'page-1', url: 'https://example.com', title: 'Example' }],
+      pages: [page('https://example.com', 'Example')],
     });
     expect(companionForSource('main', 'browser')).toBeNull();
 
@@ -84,7 +86,7 @@ describe('browser companion state routing', () => {
       threadId: 'thread-browser',
       activePageId: 'page-1',
       visible: false,
-      pages: [{ id: 'page-1', url: 'https://example.com/next', title: 'Next' }],
+      pages: [page('https://example.com/next', 'Next')],
     });
     expect(companionForSource('main', 'browser')).toBeNull();
 
@@ -93,7 +95,7 @@ describe('browser companion state routing', () => {
       threadId: 'thread-browser',
       activePageId: 'page-1',
       visible: true,
-      pages: [{ id: 'page-1', url: 'https://example.com/next', title: 'Next' }],
+      pages: [page('https://example.com/next', 'Next')],
     });
     expect(companionForSource('main', 'browser')?.kind).toBe('browser');
   });
@@ -104,7 +106,7 @@ describe('browser companion state routing', () => {
       threadId: 'thread-browser',
       activePageId: 'page-1',
       visible: false,
-      pages: [{ id: 'page-1', url: 'https://example.com', title: 'Example' }],
+      pages: [page('https://example.com', 'Example')],
     });
     expect(companionForSource('main', 'browser')).toBeNull();
 
@@ -113,7 +115,7 @@ describe('browser companion state routing', () => {
       threadId: 'thread-browser',
       activePageId: 'page-1',
       visible: true,
-      pages: [{ id: 'page-1', url: 'https://example.com', title: 'Example' }],
+      pages: [page('https://example.com', 'Example')],
     });
     expect(companionForSource('main', 'browser')?.kind).toBe('browser');
   });

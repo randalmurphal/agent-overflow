@@ -132,6 +132,10 @@ type pageDriver interface {
 	Navigate(ctx context.Context, url string) error
 	// History runs one of back, forward, reload, or stop.
 	History(ctx context.Context, action string) error
+	// HistoryState answers whether the session history holds an entry
+	// behind / ahead of the current one — what the companion toolbar's
+	// back/forward buttons render as their enabled state.
+	HistoryState(ctx context.Context) (canGoBack, canGoForward bool, err error)
 	// PageStatus samples the load state a wait condition is evaluated against.
 	PageStatus(ctx context.Context) (pageStatus, error)
 	// NavigationMark captures the page's current navigation identity, so a

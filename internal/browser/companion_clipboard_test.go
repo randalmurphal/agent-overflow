@@ -77,6 +77,55 @@ func TestCopyPageFileResolvesTheDisplayedFileAndRefusesTheRest(t *testing.T) {
 	}
 }
 
+// rendererFSEngine is a stub whose renderer addresses files on a different
+// machine: URLs carry the host "renderer.host" and map onto base.
+type rendererFSEngine struct {
+	browserEngine
+	base string
+}
+
+func (e rendererFSEngine) FileURL(_ context.Context, path string) (string, error) {
+	return "file://renderer.host" + filepath.ToSlash(strings.TrimPrefix(path, e.base)), nil
+}
+
+func (e rendererFSEngine) BackendFilePath(_ context.Context, rawURL string) (string, error) {
+	rest, ok := strings.CutPrefix(rawURL, "file://renderer.host/")
+	if !ok {
+		return "", context.Canceled
+	}
+	return filepath.Join(e.base, filepath.FromSlash(rest)), nil
+}
+
+// A page's address on the hosted engine is in the RENDERER's form; the
+// clipboard copy must resolve the backend path through the engine seam
+// rather than stat the URL's path (live incident 2026-08-31).
+func TestCopyPageFileResolvesRendererFormURLsThroughTheEngine(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "report.pdf")
+	if err := os.WriteFile(real, []byte("%PDF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &managedPage{id: "page", owner: "thread", ctx: context.Background()}
+	var copied string
+	m := &Manager{
+		engine:   rendererFSEngine{base: dir},
+		scopes:   map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{p.id: p}}},
+		sessions: map[string]SessionInfo{"thread": {ActivePageID: p.id}},
+		copyFileToOSClipboard: func(_ context.Context, path string) error {
+			copied = path
+			return nil
+		},
+	}
+	access := Access{ThreadID: "thread", Workspace: "/repo"}
+	p.setInfo(PageInfo{ID: p.id, URL: "file://renderer.host/report.pdf"})
+	if err := m.CopyPageFileToClipboard(context.Background(), access, p.id); err != nil {
+		t.Fatalf("copy = %v", err)
+	}
+	if resolved, _ := filepath.EvalSymlinks(real); copied != resolved {
+		t.Fatalf("copied %q, want the seam-resolved %q", copied, resolved)
+	}
+}
+
 func TestWindowsClipboardCommandQuotesForPowerShell(t *testing.T) {
 	command, err := windowsClipboardCommand(`C:\Users\r\AppData\Local\Temp\agent-overflow-clipboard\it's [1].pdf`)
 	if err != nil {

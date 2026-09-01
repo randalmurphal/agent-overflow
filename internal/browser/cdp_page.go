@@ -220,6 +220,14 @@ func (p *cdpPage) Info(ctx context.Context) (string, string, error) {
 	return location, title, nil
 }
 
+func (p *cdpPage) HistoryState(ctx context.Context) (bool, bool, error) {
+	current, entries, err := page.GetNavigationHistory().Do(targetCommandContext(ctx))
+	if err != nil {
+		return false, false, fmt.Errorf("browser: read history state: %w", err)
+	}
+	return current > 0, int(current)+1 < len(entries), nil
+}
+
 func (p *cdpPage) Navigate(ctx context.Context, url string) error {
 	if err := chromedp.Run(ctx, chromedp.Navigate(url)); err != nil {
 		return fmt.Errorf("browser: navigate: %w", err)

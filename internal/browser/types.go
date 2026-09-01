@@ -49,6 +49,11 @@ type PageInfo struct {
 	Title      string `json:"title"`
 	Selected   bool   `json:"selected,omitempty"`
 	LastOpened string `json:"lastOpened,omitempty"`
+	// CanGoBack / CanGoForward mirror the page's session history so the
+	// companion toolbar can disable a button instead of offering a click
+	// that can only error.
+	CanGoBack    bool `json:"canGoBack"`
+	CanGoForward bool `json:"canGoForward"`
 }
 
 type Snapshot struct {
