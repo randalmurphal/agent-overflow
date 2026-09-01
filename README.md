@@ -91,6 +91,12 @@ local artifact path still works when you want to bypass download mode:
 ./scripts/install.sh --wsl ./dist/release/0.0.1/agent-overflow-wsl-amd64.exe
 ```
 
+A release also carries `agent-overflow-headless-linux-amd64`, the same backend
+built without GTK or WebKit, for a machine you reach from elsewhere rather than
+sit at. It is not an `install.sh` target — it wants no desktop entry and no
+icon; copy it onto `PATH` and run `agent-overflow serve`. See
+[serve-mode.md](docs/architecture/serve-mode.md).
+
 The installer download path has a local smoke test:
 
 ```sh

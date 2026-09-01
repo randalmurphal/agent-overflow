@@ -63,15 +63,7 @@ func (a *Service) Configure(handle *updater.Updater, config Config) error {
 		config.HTTPClient = &http.Client{}
 	}
 
-	providerConfig := github.Config{
-		Repository:    config.Repository,
-		ChecksumAsset: config.ChecksumAsset,
-		HTTPClient:    config.HTTPClient,
-	}
-	if config.BaseURL != "" {
-		providerConfig.BaseURL = config.BaseURL
-	}
-	provider, err := github.New(providerConfig)
+	provider, err := newGitHubProvider(config.Repository, config.ChecksumAsset, config.BaseURL, config.HTTPClient)
 	if err != nil {
 		return fmt.Errorf("github provider: %w", err)
 	}
@@ -178,7 +170,7 @@ func newTargetableProvider(inner updater.Provider, repo, checksumAsset string, r
 		req:           req,
 		baseURL:       defaultGitHubAPIBase,
 		httpClient:    httpClient,
-		matcher:       github.DefaultAssetMatcher,
+		matcher:       matchReleaseAsset,
 	}
 }
 

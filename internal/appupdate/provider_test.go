@@ -17,7 +17,6 @@ import (
 	"agent-overflow/internal/eventchan"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
-	"github.com/wailsapp/wails/v3/pkg/updater/providers/github"
 )
 
 // testValidDigestHex is a syntactically valid 64-hex-char (32-byte) sha256
@@ -26,9 +25,9 @@ const testValidDigestHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123
 
 const testRepo = "owner/repo"
 
-// platformAssetName matches DefaultAssetMatcher on whatever GOOS/GOARCH the test
-// runs on: the literal tokens are embedded, so the matcher's substring check
-// (and arch aliasing) always finds it.
+// platformAssetName is the release artifact for whatever GOOS/GOARCH the test
+// runs on, spelled the way matchReleaseAsset requires: the product prefix, the
+// exact platform and arch tokens, and a shipped extension.
 var platformAssetName = "agent-overflow-" + runtime.GOOS + "-" + runtime.GOARCH + ".zip"
 
 // wslAssetName is the asset the headless WSL backend targets: a Windows binary
@@ -191,7 +190,7 @@ func newTestTargetableFor(srv *httptest.Server, current, platform, arch string) 
 		req:           updater.CheckRequest{CurrentVersion: current, Platform: platform, Arch: arch},
 		baseURL:       srv.URL,
 		httpClient:    srv.Client(),
-		matcher:       github.DefaultAssetMatcher,
+		matcher:       matchReleaseAsset,
 	}
 }
 
@@ -327,7 +326,7 @@ func TestTargetableProviderResolveTagAllowsDowngrade(t *testing.T) {
 }
 
 func TestTargetableProviderResolveTagRejectsInvalidTag(t *testing.T) {
-	tp := &targetableProvider{repo: testRepo, checksumAsset: "SHASUMS256", matcher: github.DefaultAssetMatcher}
+	tp := &targetableProvider{repo: testRepo, checksumAsset: "SHASUMS256", matcher: matchReleaseAsset}
 	if _, err := tp.resolveTag(context.Background(), "../etc/passwd", platformRequest()); err == nil {
 		t.Fatal("expected resolveTag to reject an unsafe tag, got nil error")
 	}
@@ -578,14 +577,9 @@ func TestDownloadUpdateRejectedWhileBusy(t *testing.T) {
 // mock GitHub server, so service-level updater methods can be driven end to end.
 func newUpdaterApp(t *testing.T, srv *httptest.Server, current string) (*Service, *targetableProvider) {
 	t.Helper()
-	gh, err := github.New(github.Config{
-		Repository:    testRepo,
-		ChecksumAsset: "SHASUMS256",
-		BaseURL:       srv.URL,
-		HTTPClient:    srv.Client(),
-	})
+	gh, err := newGitHubProvider(testRepo, "SHASUMS256", srv.URL, srv.Client())
 	if err != nil {
-		t.Fatalf("github.New: %v", err)
+		t.Fatalf("newGitHubProvider: %v", err)
 	}
 	req := updater.CheckRequest{CurrentVersion: current, Platform: runtime.GOOS, Arch: runtime.GOARCH}
 	tp := newTargetableProvider(gh, testRepo, "SHASUMS256", req, srv.Client())

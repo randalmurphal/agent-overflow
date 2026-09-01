@@ -26,6 +26,36 @@ framework-independent updater library, but it must not import
 - Update lifecycle events must flow through `eventchan`; do not add a direct
   transport or Wails application dependency.
 
+## Asset names are matched exactly
+
+`matchReleaseAsset` (`assetmatch.go`) replaces the updater library's
+`DefaultAssetMatcher`, which accepts any asset whose name CONTAINS the platform
+and arch tokens and returns the first one it finds. That is safe only while
+every artifact in a release happens to be disjoint under substring matching,
+which is a property of today's list rather than a rule. Adding
+`agent-overflow-headless-linux-amd64` broke it: the name contains "linux" and
+"amd64", sorts ahead of `agent-overflow-linux-amd64`, and every Linux desktop
+install would have taken the windowless serve binary as its next update and
+then opened no window, with nothing reporting a mismatch.
+
+So an asset is a target's iff its name is `agent-overflow-<platform>-<arch>`
+plus one of `releaseAssetExtensions`. Consequences for anyone editing here:
+
+- A NEW release artifact is named with its qualifier in the middle
+  (`agent-overflow-<qualifier>-<platform>-<arch>`), which is what keeps it out
+  of every target's match.
+- A new artifact EXTENSION is added to `releaseAssetExtensions` deliberately.
+  An unlisted one is refused, not guessed at.
+- `platform` is not `runtime.GOOS`. The WSL backend targets `wsl`.
+- Both halves of the provider pair take the matcher from
+  `newGitHubProvider`, and fixtures build providers through it too, so a test
+  cannot exercise a matcher the app does not ship.
+
+`TestReleaseAssetMatcherAgreesWithTheReleaseScript` reads the artifact names
+out of `scripts/build-release.sh` and fails if any target resolves to the wrong
+one, to nothing, or to an artifact another target also claims — so a colliding
+name fails at the commit that adds it rather than in somebody's install.
+
 ## Verification
 
 Tests use mock GitHub servers and fake hosts. They must never contact GitHub or

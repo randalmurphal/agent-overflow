@@ -97,11 +97,30 @@ endif
 # Use these targets for Go verification instead of bare `go build` / `go test`.
 # On Darwin, the exported CGO flags keep Wails Objective-C objects and the final
 # binary on the same macOS deployment target, avoiding noisy linker warnings.
+#
+# The second pass compiles the `nogui` half. That tag selects a whole
+# alternative file set (`main_nogui.go`, `internal/app/app_startup.go`'s
+# windowless branch, and every `!nogui` desktop file's absence), and TWO
+# shipping artifacts are built with it: the Windows launcher's WSL payload and
+# the headless Linux binary serve mode runs on. Nothing else in the default
+# gates compiles it, so a `!nogui` file gaining a symbol the nogui half does
+# not define breaks only the release build, at release time.
+#
+# It lives here rather than in `check` because `make go-build` is the target
+# the repo's own per-task checklist names, and `check`, `verify` and
+# `scripts/release-check.sh` all reach it from here. Cost, measured on an idle
+# WSL host: ~3s on top of go-build's ~7s warm (most packages have an identical
+# file set under both tag sets, so the build cache answers them outright), ~35s
+# from a cold cache. `TestGoBuildCompilesTheNoguiHalf` fails if this pass is
+# removed.
 go-build:
 	@set -e; \
 	packages=$$(go list -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' $(GO_PACKAGE_ROOTS) | sed '/^$$/d'); \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
-	go build $$packages
+	go build $$packages; \
+	nogui=$$(go list -tags nogui -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' $(GO_PACKAGE_ROOTS) | sed '/^$$/d'); \
+	if [ -z "$$nogui" ]; then echo "ERROR: no Go packages found for the nogui build"; exit 1; fi; \
+	go build -tags nogui $$nogui
 
 go-test:
 	@set -e; \

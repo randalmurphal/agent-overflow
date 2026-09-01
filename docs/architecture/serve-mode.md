@@ -211,10 +211,35 @@ one, restrict it as one, and do not put it on a share other accounts can
 read. A full-disk-encrypted host protects it at rest; a running one
 protects it with file permissions and nothing else.
 
-## Platforms
+## Platforms and the headless binary
 
 | Platform | How serve runs |
 |---|---|
-| Linux | The ordinary binary, or a build with `-tags nogui` that links no GTK or WebKit at all. |
-| macOS | The ordinary binary. `serve` never opens a window, so there is nothing a separate headless build would save. |
-| Windows | Not directly. The Windows install is a launcher hosting a Linux backend inside WSL, and that launcher is already the supervisor. |
+| Linux | `agent-overflow-headless-linux-amd64`, or the ordinary `agent-overflow-linux-amd64`. |
+| macOS | The ordinary binary. There is no separate headless macOS artifact and there is not going to be one: `serve` never opens a window, and the desktop build's frameworks are already present on every Mac. |
+| Windows | Not directly. The Windows install is a launcher hosting a Linux backend inside WSL, and that launcher is already the supervisor for that backend. |
+
+The Linux **headless** artifact is the same source built with
+`-tags production,nogui`: it links no GTK and no WebKit, so it installs on a
+server that has neither, and `ldd` on it names no desktop library. That is the
+same tag set the Windows launcher's WSL payload is built with — that binary is
+this binary. `make go-build` compiles the tag on every run so it cannot rot
+between releases.
+
+Both Linux binaries serve identically. The ordinary one additionally links a
+webview it never opens under `serve`, which costs disk and a handful of shared
+library dependencies you would have to install. Use the headless one on a
+server; use whichever you already have on a workstation.
+
+It is a single file with nothing beside it. Put it on `PATH`
+(`~/.local/bin/agent-overflow` is the conventional spot) and it is installed.
+`scripts/install.sh` is for the DESKTOP artifacts — it writes a desktop entry
+and an icon, which a server has no use for — so it is not the route here.
+
+**Serve mode does not self-update.** The in-app updater is wired by the desktop
+boot and by the WSL launcher's backend, and `serve` is neither, so it stays
+unconfigured on both Linux binaries. Update a serve host by replacing the file
+and restarting the service. That is also why a desktop install can never be
+handed the headless artifact by accident: release assets are matched by exact
+name rather than by looking for "linux" somewhere in one
+(`internal/appupdate/assetmatch.go`).
