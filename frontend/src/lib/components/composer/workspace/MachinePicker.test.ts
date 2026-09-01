@@ -128,6 +128,28 @@ describe('<MachinePicker>', () => {
     expect(selectedBackend()).toBe('laptop');
   });
 
+  it('flips to the SAME repository on the chosen machine when the entry spans it', async () => {
+    stageBackend();
+    const homeRepo = makeProject({ id: 'p-home', path: '/home/me/app', name: 'app', remoteURL: 'git@github.com:me/app.git' });
+    const laptopRepo = makeProject({ id: 'p-laptop', path: '/Users/me/app', name: 'app', remoteURL: 'https://github.com/me/app' });
+    const laptopOther = makeProject({ id: 'p-other', path: '/Users/me/other', name: 'other', remoteURL: 'https://github.com/me/other' });
+    // The other project sorts first on the laptop; the sibling must still win.
+    await seedProjects([homeRepo, laptopOther, laptopRepo]);
+    noteProject('p-laptop', 'laptop');
+    noteProject('p-other', 'laptop');
+    const pane = buildPlaceholderPane(homeRepo);
+    const defaults = setBindingMock('GetThreadDefaults', async () => ({ provider: 'claude', model: 'm' }));
+
+    const { getByTestId, findByRole } = render(MachinePicker, { props: { pane } });
+    await fireEvent.click(getByTestId('machine-picker-trigger'));
+    await fireEvent.click(await findByRole('menuitem', { name: /Laptop/ }));
+
+    await waitFor(() => {
+      expect(defaults).toHaveBeenCalledTimes(1);
+      expect(pane.thread?.projectId).toBe('p-laptop');
+    });
+  });
+
   it('says so, and moves nothing, when the chosen machine has no project yet', async () => {
     stageBackend();
     await seedProjects([makeProject()]);

@@ -572,6 +572,15 @@ export interface Project {
   path: string;
   name: string;
   color?: string;
+  /**
+   * Derived repository identity, computed by the backend that owns the
+   * checkout (remote-access §10, wave 7d): the `origin` remote as git
+   * reports it, and the smallest root commit of HEAD. Both absent for a
+   * directory that is not a repository. The client merges projects across
+   * backends by `utils/repoKey.ts`, never by path.
+   */
+  remoteURL?: string;
+  rootCommit?: string;
   sortPosition: number;
   createdAt: number;
   updatedAt: number;

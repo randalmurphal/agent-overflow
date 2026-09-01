@@ -8,8 +8,10 @@
   import type { ProjectWithCounts, Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
+    entryIdFor,
     getProjectLiveActivityAt,
     getProjects,
+    projectEntries,
     refreshProjects,
     updateProjectLocal,
   } from '../../stores/projects.svelte';
@@ -63,14 +65,15 @@
   // uses the same lowercase form.
   let query = $derived(getThreadFilterQuery().trim().toLowerCase());
 
-  // Threads grouped by project id (filtered by search when active).
-  // Project-less threads (no projectId) have no sidebar surface and are
-  // skipped here.
+  // Threads grouped by sidebar ENTRY (filtered by search when active): a
+  // repo checked out on two attached machines is one entry, and both
+  // machines' threads sit under it. Project-less threads (no projectId)
+  // have no sidebar surface and are skipped here.
   let threadsByProject = $derived.by(() => {
     const out = new Map<string, Thread[]>();
     for (const t of getThreads()) {
       if (t.archived) continue;
-      const key = t.projectId ?? '';
+      const key = t.projectId ? entryIdFor(t.projectId) : '';
       if (!key) continue;
       if (!threadMatchesQuery(t, query)) continue;
       const bucket = out.get(key);
@@ -94,7 +97,7 @@
   let prevVisibleProjects: ProjectWithCounts[] = [];
   let visibleProjects = $derived.by(() => {
     const mode = getProjectSortMode();
-    const entries = getProjects()
+    const entries = projectEntries()
       .filter((p) => !p.project.archived)
       .filter((p) => {
         if (!query) return true;

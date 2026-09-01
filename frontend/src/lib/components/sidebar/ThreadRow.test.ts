@@ -30,7 +30,9 @@ import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { emitItemEventUpsert } from '../../../test/helpers/chat';
 import { THREAD_ROW_DRAG_MIME } from '../../utils/threadDragPayload';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transport/entityIndex';
+import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
+import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -1110,5 +1112,74 @@ describe('<ThreadRow> on an unreachable machine', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
     expect(getByTestId('thread-row')).not.toHaveAttribute('data-machine-unreachable');
+  });
+});
+
+describe('<ThreadRow> machine chip', () => {
+  // Wave 7d: the chip shares the worktree chip's slot and appears only
+  // when the row's project spans more than one machine.
+  const HOME_UUID = '11111111-2222-4333-8444-555555555555';
+
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+    resetKeybindingsStore();
+    resetKeyboardModifiersForTest();
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+    resetProjectsForTest();
+    __resetBackendIdentityForTest();
+    setBackendIdentityFromBootstrap(HOME_UUID, 1, 'Desk');
+  });
+
+  afterEach(() => {
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+    resetProjectsForTest();
+    __resetBackendIdentityForTest();
+  });
+
+  async function seedRepoOnBothMachines(): Promise<void> {
+    stageBackend();
+    setBindingMock('ListProjects', async () => [
+      { project: { id: 'p-home', path: '/home/me/app', name: 'app', remoteURL: 'git@github.com:me/app.git', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+      { project: { id: 'p-laptop', path: '/Users/me/app', name: 'app', remoteURL: 'https://github.com/me/app', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+    ]);
+    await refreshProjects();
+    noteProject('p-laptop', 'laptop');
+  }
+
+  it('names the machine beside the worktree when the project spans two', async () => {
+    await seedRepoOnBothMachines();
+    noteThread('thread-1', 'laptop');
+    const thread = makeThread({ projectId: 'p-laptop', worktreePath: '/Users/me/app-wt' });
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(getByTestId('thread-row-machine-name').textContent?.trim()).toBe('Laptop');
+    expect(getByTestId('thread-row-worktree-name').textContent?.trim()).toBe('app-wt');
+  });
+
+  it('renders the chip alone for a base-checkout thread, and home by its own name', async () => {
+    await seedRepoOnBothMachines();
+    const thread = makeThread({ projectId: 'p-home' });
+    const pane = createThreadPane();
+    const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(getByTestId('thread-row-machine-name').textContent?.trim()).toBe('Desk');
+    expect(queryByTestId('thread-row-worktree-label')).toBeNull();
+  });
+
+  it('shows nothing when the project lives on one machine', async () => {
+    stageBackend();
+    setBindingMock('ListProjects', async () => [
+      { project: { id: 'p-home', path: '/home/me/app', name: 'app', remoteURL: 'git@github.com:me/app.git', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+    ]);
+    await refreshProjects();
+    const thread = makeThread({ projectId: 'p-home' });
+    const pane = createThreadPane();
+    const { queryByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(queryByTestId('thread-row-worktree')).toBeNull();
   });
 });

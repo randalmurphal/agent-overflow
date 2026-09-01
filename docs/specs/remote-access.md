@@ -2127,6 +2127,33 @@ staging a second is a harness change 7d will need anyway; the wave is
 proved by component suites over a staged second backend
 (`test/helpers/backends.ts`).
 
+**7d design (2026-09-01).** Identity is derived, never declared: a
+project row carries `remoteURL` (the `origin` remote as git reports
+it) and `rootCommit` (the lexicographically smallest root of `HEAD`,
+so a repo with several roots answers the same on every machine), both
+computed by the backend that owns the checkout at creation (the
+`CreateProject` RPC and the workspace-ensure path alike) and backfilled
+once per boot for rows that have neither, each backfilled row
+announced as a `project:updated` `full` frame so a client that loaded
+first converges. The CLIENT merges: `utils/repoKey.ts` normalises the
+URL (scheme, user, `.git`, case of the host, the SSH alias form) and
+falls back to `commit:<rootCommit>`, and the projects store groups
+rows by that key only while more than one backend is attached, so a
+single-backend app computes nothing. A merged entry renders once in
+the sidebar under its home member (else its first member), with every
+member's threads beneath it; the project picker lists the entry, and
+the machine picker becomes a TARGET choice, flipping the draft to the
+sibling on the chosen machine. The machine chip renders in the
+worktree chip's slot only for threads of a project that spans more
+than one backend. Manual sort and the reorder RPC keep acting on
+home's rows; a member on another machine follows its entry. Link and
+split as a settings action are DEFERRED: derived identity covers the
+repo case, and a manual override needs persistence and a surface of
+its own — it is listed under the open items until a case that needs it
+appears. A remote re-pointed after creation keeps its stored identity
+until the next boot's backfill does not touch it (both fields are set);
+recomputing on `InvalidateForgeCache` is the residual.
+
 Path links and open-in-editor from a UI that is not on the thread's
 host default to copy/preview, with "open on <machine>" as the explicit
 secondary. The recommended posture for real remote editing is the

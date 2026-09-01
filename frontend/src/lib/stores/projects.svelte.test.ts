@@ -1,16 +1,25 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addProjectLocal,
+  entryIdFor,
   getProject,
+  getProjectLabelText,
   getProjectLiveActivityAt,
   getProjects,
   isLoaded,
+  projectEntries,
+  projectMembers,
+  projectSiblingOn,
+  projectSpansBackends,
   refreshProjects,
   removeProjectLocal,
   resetProjectsForTest,
   touchProjectActivity,
   updateProjectLocal,
 } from './projects.svelte';
+import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { __resetEntityIndexForTest, noteProject } from '../transport/entityIndex';
+import { HOME_BACKEND } from '../transport/backendKey';
 import type { Project, ProjectWithCounts } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 
@@ -137,5 +146,68 @@ describe('projects store', () => {
 
       expect(getProject('a')?.lastActive).toBe(500);
     });
+  });
+});
+
+describe('projects store — merged entries (wave 7d)', () => {
+  const home = () => makeProject('p-home', { name: 'app', path: '/home/me/app', remoteURL: 'git@github.com:me/app.git' });
+  const laptop = () => makeProject('p-laptop', { name: 'app', path: '/Users/me/app', remoteURL: 'https://github.com/me/app' });
+  const solo = () => makeProject('p-solo', { name: 'solo', path: '/Users/me/solo', remoteURL: 'https://github.com/me/solo' });
+
+  beforeEach(() => {
+    resetProjectsForTest();
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+  });
+
+  afterEach(() => {
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+  });
+
+  async function load(rows: ProjectWithCounts[]): Promise<void> {
+    setBindingMock('ListProjects', async () => rows);
+    await refreshProjects();
+  }
+
+  it('is the list itself, same identity, on a single-backend page', async () => {
+    await load([wrap(home(), 2), wrap(laptop(), 1)]);
+    expect(projectEntries()).toBe(getProjects());
+    expect(projectSpansBackends('p-home')).toBe(false);
+    expect(projectMembers('p-home')).toHaveLength(1);
+  });
+
+  it('merges one repository across two machines under its home member, summing counts', async () => {
+    stageBackend();
+    // Attach order puts the laptop row first; home still represents.
+    await load([{ ...wrap(laptop(), 1), lastActive: 500 }, { ...wrap(home(), 2), lastActive: 100 }, wrap(solo(), 1)]);
+    noteProject('p-laptop', 'laptop');
+    noteProject('p-solo', 'laptop');
+
+    const entries = projectEntries();
+    expect(entries.map((e) => e.project.id)).toEqual(['p-home', 'p-solo']);
+    expect(entries[0].threadCount).toBe(3);
+    expect(entries[0].lastActive).toBe(500);
+    expect(entryIdFor('p-laptop')).toBe('p-home');
+    expect(projectSpansBackends('p-laptop')).toBe(true);
+    expect(projectSpansBackends('p-solo')).toBe(false);
+    expect(projectMembers('p-laptop').map((m) => m.project.id)).toEqual(['p-home', 'p-laptop']);
+    expect(projectSiblingOn('p-home', 'laptop')?.project.id).toBe('p-laptop');
+    expect(projectSiblingOn('p-solo', HOME_BACKEND)).toBeUndefined();
+  });
+
+  it('does not treat two members of one repo as a name collision', async () => {
+    stageBackend();
+    await load([wrap(home()), wrap(laptop())]);
+    noteProject('p-laptop', 'laptop');
+    expect(getProjectLabelText('p-home')).toBe('app');
+    expect(getProjectLabelText('p-laptop')).toBe('app');
+  });
+
+  it('never merges rows that carry no identity', async () => {
+    stageBackend();
+    await load([wrap(makeProject('a', { name: 'x' })), wrap(makeProject('b', { name: 'x' }))]);
+    noteProject('b', 'laptop');
+    expect(projectEntries()).toHaveLength(2);
   });
 });

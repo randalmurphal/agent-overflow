@@ -206,11 +206,23 @@ stops waking readers.
   and a removal detaches the socket as well as forgetting the descriptor.
   All four RPCs are `host`: a `--connect` window and every paired device
   see an explanation, and the passive load asks `hasScope('host')` first.
+- A project is a REPOSITORY, and the same repository on two attached
+  machines is one sidebar entry (`projects.svelte.ts`, wave 7d). The rows
+  stay as the backends sent them; `projectEntries()` is the merged VIEW,
+  keyed by `utils/repoKey.ts` (the normalised `origin` URL, else the root
+  commit — never a path, which names a different checkout on every
+  machine) and computed only while `hasMultipleBackends()`, so a
+  single-backend page gets the list itself back. An entry is represented
+  by its home member (else its first), `entryIdFor` maps any member to it,
+  `projectMembers` / `projectSpansBackends` / `projectSiblingOn` answer the
+  target questions, and the name-disambiguation labels run over entries so
+  two members of one repo are not a collision. Rename, colour and manual
+  sort act on the representative row only.
 - `attachedBackends.svelte.ts` is also where the UI's per-backend
   vocabulary lives: `backendDisplayName` (home by its hello name),
   `backendReachable` (that backend's status box is `connected`),
-  `threadMachine` (row id, then project, then home — until wave 7d a
-  project IS a machine choice) and `threadMachineUnreachable`, which never
+  `threadMachine` (row id, then project, then home) and
+  `threadMachineUnreachable`, which never
   answers true for home because the page's own outage is the transport
   banner's job, and answers false outright on a single-backend page so the
   sidebar and composer pay nothing until a second machine exists.

@@ -4,12 +4,11 @@
   // one backend is attached (spec §10, 2026-09-01 ruling), so a
   // single-backend app never sees it.
   //
-  // In this wave a project lives on exactly one machine, so the machine
-  // FOLLOWS the project: the label names the owner of the pane's project,
-  // and picking another machine flips the draft to that machine's first
-  // project (wave 7d's merged entries turn this into a target choice
-  // within one project). An unreachable machine stays in the list, dimmed,
-  // and cannot be picked — never a silent failover elsewhere.
+  // The label names the machine that owns the pane's project. Picking
+  // another machine flips the draft to the SAME repository there when the
+  // entry spans it (a target choice, wave 7d), else to that machine's
+  // first project. An unreachable machine stays in the list, dimmed, and
+  // cannot be picked — never a silent failover elsewhere.
   //
   // Lock policy mirrors ProjectPicker: interactive while the pane shows a
   // draft; a static label once the thread has messages, because a thread
@@ -25,7 +24,7 @@
   import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
-  import { getProjects } from '../../../stores/projects.svelte';
+  import { getProjects, projectSiblingOn } from '../../../stores/projects.svelte';
   import { flipPaneDraftPlaceholder } from '../../../stores/threadCreation.svelte';
   import { setPaneBackend, setSelectedBackend } from '../../../stores/selectedBackend.svelte';
   import {
@@ -77,6 +76,8 @@
 
   async function selectMachine(key: BackendKey): Promise<void> {
     if (isLocked || switching) return;
+    const thread = pane.thread;
+    if (!thread) return;
     if (key === activeKey) {
       closeMenu();
       return;
@@ -85,8 +86,11 @@
     try {
       const entry = attachedBackendEntry(key);
       if (!entry) throw new Error('That machine is no longer attached');
-      const project = getProjects().find(
-        (pwc) => (projectBackend(pwc.project.id) ?? HOME_BACKEND) === key,
+      // The same repo on the chosen machine when the entry spans it (a
+      // TARGET choice, wave 7d); else that machine's first project.
+      const project = (
+        (thread.projectId ? projectSiblingOn(thread.projectId, key) : undefined)
+        ?? getProjects().find((pwc) => (projectBackend(pwc.project.id) ?? HOME_BACKEND) === key)
       )?.project;
       if (!project) {
         addToast('info', `${backendDisplayName(entry)} has no projects yet`);

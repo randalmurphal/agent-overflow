@@ -27,7 +27,7 @@
   import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
-  import { getProject, getProjects } from '../../../stores/projects.svelte';
+  import { getProject, projectEntries, projectSpansBackends } from '../../../stores/projects.svelte';
   import {
     flipPaneDraftPlaceholder,
   } from '../../../stores/threadCreation.svelte';
@@ -64,12 +64,14 @@
     if (!activeProjectId) return '';
     return getProject(activeProjectId)?.project.name ?? '';
   });
-  let projects = $derived(getProjects());
+  // One row per repository: a repo on two machines is one choice here and
+  // a target choice in the machine picker beside it.
+  let projects = $derived(projectEntries());
   // With several machines attached, two projects may share a name and
   // even a path; the row says which machine before it says where.
   let multiMachine = $derived(hasMultipleBackends());
   function projectDescription(projectId: string, path: string): string {
-    if (!multiMachine) return path;
+    if (!multiMachine || projectSpansBackends(projectId)) return path;
     const entry = attachedBackendEntry(projectBackend(projectId) ?? HOME_BACKEND);
     return entry ? `${backendDisplayName(entry)} · ${path}` : path;
   }

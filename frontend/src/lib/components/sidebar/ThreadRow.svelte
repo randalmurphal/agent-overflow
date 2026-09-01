@@ -8,7 +8,14 @@
   import { clearSidebarCursor, getSidebarCursorThreadId } from '../../stores/sidebarCursor.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById, getThreadLiveActivityAt } from '../../stores/threads.svelte';
-  import { threadMachineUnreachable } from '../../stores/attachedBackends.svelte';
+  import {
+    attachedBackendEntry,
+    backendDisplayName,
+    threadMachine,
+    threadMachineUnreachable,
+  } from '../../stores/attachedBackends.svelte';
+  import { projectSpansBackends } from '../../stores/projects.svelte';
+  import MonitorIcon from '@lucide/svelte/icons/monitor';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { openThreadFromNavigation, openThreadInNewPane, openThreadInPane } from '../../stores/panes.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -322,7 +329,17 @@
   // never dimmed here: its drop is the transport banner's.
   let machineUnreachable = $derived(threadMachineUnreachable(thread.id, thread.projectId));
   let worktreeName = $derived(pathBasename(thread.worktreePath));
-  let showWorktreeMeta = $derived(!editing && Boolean(thread.worktreePath && worktreeName));
+  // The machine chip shares the worktree chip's slot and appears only when
+  // the row's project spans more than one machine (spec §10, wave 7d):
+  // under an entry with one target the machine is implied.
+  let machineName = $derived.by(() => {
+    if (!thread.projectId || !projectSpansBackends(thread.projectId)) return '';
+    const entry = attachedBackendEntry(threadMachine(thread.id, thread.projectId));
+    return entry ? backendDisplayName(entry) : '';
+  });
+  let showWorktreeMeta = $derived(
+    !editing && (Boolean(thread.worktreePath && worktreeName) || machineName !== ''),
+  );
   const WORKTREE_META_OFFSET_PX = 14;
   let worktreeIndentPx = $derived(rowPaddingLeftPx + WORKTREE_META_OFFSET_PX);
   let worktreeRightPaddingPx = $derived(52);
@@ -515,22 +532,36 @@
     <div
       class="relative -mt-1.5 flex h-3.5 items-center text-[0.625rem] leading-none text-fg-hint"
       style="padding-left: {worktreeIndentPx}px; padding-right: {worktreeRightPaddingPx}px"
-      title="Worktree: {thread.worktreePath}"
-      aria-label="Worktree {worktreeName}"
+      title={worktreeName ? `Worktree: ${thread.worktreePath}` : `Machine: ${machineName}`}
+      aria-label={worktreeName ? `Worktree ${worktreeName}` : `Machine ${machineName}`}
       data-testid="thread-row-worktree"
     >
-      <span
-        class="inline-flex min-w-0 max-w-full items-center gap-1 px-1 py-0 text-fg-hint"
-        data-testid="thread-row-worktree-label"
-      >
-        <Icon icon={FolderGit2} size={10} strokeWidth={1.8} class="shrink-0 opacity-85" />
+      {#if machineName}
         <span
-          class="min-w-0 truncate font-mono text-[0.625rem]"
-          data-testid="thread-row-worktree-name"
+          class="inline-flex min-w-0 max-w-full shrink-0 items-center gap-1 px-1 py-0 text-fg-hint"
+          data-testid="thread-row-machine"
+          title="Machine: {machineName}"
         >
-          {worktreeName}
+          <Icon icon={MonitorIcon} size={10} strokeWidth={1.8} class="shrink-0 opacity-85" />
+          <span class="min-w-0 truncate text-[0.625rem]" data-testid="thread-row-machine-name">
+            {machineName}
+          </span>
         </span>
-      </span>
+      {/if}
+      {#if worktreeName}
+        <span
+          class="inline-flex min-w-0 max-w-full items-center gap-1 px-1 py-0 text-fg-hint"
+          data-testid="thread-row-worktree-label"
+        >
+          <Icon icon={FolderGit2} size={10} strokeWidth={1.8} class="shrink-0 opacity-85" />
+          <span
+            class="min-w-0 truncate font-mono text-[0.625rem]"
+            data-testid="thread-row-worktree-name"
+          >
+            {worktreeName}
+          </span>
+        </span>
+      {/if}
     </div>
   {/if}
 </div>

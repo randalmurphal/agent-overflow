@@ -63,11 +63,13 @@ the same shape.
 `workspace/ComposerWorkspaceStrip.svelte` is "where am I" for the draft:
 machine, project, checkout, branch. `MachinePicker.svelte` leads it and
 mounts only while `hasMultipleBackends()`, so a single-backend app has no
-trace of it. Until wave 7d a project lives on exactly one machine, so the
-picker's label is the owner of the pane's project and choosing another
-machine flips the draft to that machine's first project; it stages the
-pane's backend BEFORE the flip because the flip's own RPCs take the
-`selected` route. An unreachable machine stays listed, dimmed and
+trace of it. The picker's label is the machine that owns the pane's
+project; choosing another machine flips the draft to the SAME repository
+there when the sidebar entry spans it (`projectSiblingOn`), else to that
+machine's first project. It stages the pane's backend BEFORE the flip
+because the flip's own RPCs take the `selected` route. The project picker
+beside it lists merged ENTRIES, one per repository, so a repo on two
+machines is one project choice and one machine choice. An unreachable machine stays listed, dimmed and
 disabled — never a silent failover. The same answer drives the composer's
 disabled reason (`unreachableTarget` in `composerInputState.ts`) and the
 dimmed sidebar row, all from `stores/attachedBackends.svelte.ts`.
