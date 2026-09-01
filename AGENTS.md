@@ -23,7 +23,7 @@ shared UX. Optimized for performance, memory efficiency, and minimal code.
 
 ## Commands
 
-Requires Go 1.26.2+, Node 24+, and pnpm 10+. On Linux, install
+Requires Go 1.26.6+, Node 24+, and pnpm 10+. On Linux, install
 `libgtk-4-dev`, `libwebkitgtk-6.0-dev`, `pkg-config`, and `gcc` before
 `make install` (the GTK4 / WebKitGTK 6.0 stack ships on Ubuntu 23.04+ /
 Debian 13+).
