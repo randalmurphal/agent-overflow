@@ -297,11 +297,18 @@ The default is now the JSON-RPC MethodNotFound error, which means the
 methods the app calls as a matter of course need real answers or the
 DEFAULT harness experience breaks rather than only the optional
 surfaces. `handleReadRequest` covers those (`account/read`,
-`account/usage/read`, `thread/read`, `thread/turns/list`,
-`thread/settings/update`, `skills/list`, `config/read`,
-`mcpServerStatus/list`, `thread/backgroundTerminals/list`), each with
+`account/rateLimits/read`, `account/usage/read`, `thread/read`,
+`thread/turns/list`, `thread/settings/update`, `skills/list`,
+`config/read`, `mcpServerStatus/list`,
+`thread/backgroundTerminals/list`), each with
 the minimum the app's own decoder needs and nothing invented beyond it
 (a terminating cursor, a `thread.status.type`, an account with a plan).
+`account/rateLimits/read` is the ACCOUNT PROBE's only call, so its
+absence failed every identity read the app makes — adoption after a
+sign-in most visibly, with a JSON-RPC method name in the user's face.
+It reports a plan and NO window: a window carries an absolute
+`resetsAt`, and a hardcoded one is either already in the past or a date
+this file outlives.
 Genuinely optional or newer surfaces (`thread/compact/start`,
 `review/start`, `config/batchWrite`, `config/mcpServer/reload`,
 `mcpServer/oauth/login`, background-terminal `terminate`/`clean`) stay

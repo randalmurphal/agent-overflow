@@ -215,6 +215,23 @@ func TestCodexDeviceSignInMockCompletesOnTheControlTrigger(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, "auth.json")); err != nil {
 		t.Fatalf("a completed sign-in wrote no credential: %v", err)
 	}
+
+	// What the coordinator does next is probe that home for an identity, and
+	// the probe's one call is account/rateLimits/read. The mock answered it
+	// -32601 until this wave, which made every adoption fail with a method
+	// name in the user's face — a whole harness sign-in that could not finish
+	// for a reason no sign-in code owned.
+	info, err := codex.ProbeAccount(t.Context(), codex.ProbeConfig{
+		Binary:  mockBin,
+		WorkDir: t.TempDir(),
+		Env:     map[string]string{"CODEX_HOME": home},
+	})
+	if err != nil {
+		t.Fatalf("ProbeAccount after sign-in: %v", err)
+	}
+	if info.SubscriptionType == "" {
+		t.Fatalf("ProbeAccount = %+v, want the plan the probe reads identity from", info)
+	}
 }
 
 func TestCodexDeviceSignInMockSurfacesAFailedCompletion(t *testing.T) {
