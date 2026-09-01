@@ -183,32 +183,47 @@ that happened may CARRY BACK, from the same per-call proof.
 ## Settings answer per caller
 
 `GetSettings` and `UpdateSettings` are still one method each on one service,
-but the DEVICE tier is resolved from the connection: `settingsBucket`
+but the DEVICE tier is resolved from the connection: `uiStateScreen`
 (`app_uistate.go`) derives the caller's `ui_state` bucket exactly as
-`uiStateScope` does, and `settings.Service.For(bucket)` is the service seen
-from there (`internal/settings/residency.go`). Two screens on one backend read
-two font sizes and one shared set of confirmations.
+`uiStateScope` does — it is the same function — plus the CLASS of screen
+behind it, and `settings.Service.For(bucket, class)` is the service seen from
+there (`internal/settings/residency.go`). Two screens on one backend read two
+font sizes and one shared set of confirmations, and a paired phone that never
+touched `lowPowerMode` reads it on.
 
+- **`settingsCaller(ctx)` is the ONLY way this package builds a per-connection
+  settings view.** Both halves come from one derivation, so a bucket can never
+  be paired with another screen's class — the failure that would look exactly
+  like a phone whose owner changed the setting. A second derivation site is
+  the thing to refuse in review.
 - **A connection with no bucket is not an error here**, which is the one
   difference from `uiStateScope`. `GetUIState` with no bucket has nothing to
-  answer with; settings always have an answer — the device defaults — and a
+  answer with; settings always have an answer — the class defaults — and a
   background saga asking for settings must get them. A session the core
   REFUSES still errors, because that refusal is about the credential.
+- **Only a paired device carries a class of its own.** A local page-channel
+  screen and a sessionless caller both resolve as `desktop`, whose class row
+  is empty — the local channel's device row describes the CHANNEL, which
+  several distinct screens share, so its class could not describe any one of
+  them, and the channel is loopback-bound so no phone reaches that branch.
+  `settingsDeviceClass` converts the row's string and answers `desktop` for an
+  unreadable one.
 - **A backend-initiated device write attributes to the caller when there is
   one.** `recentWorkspaces` is written from thread creation, so the create
-  paths carry `SettingsBucket` down to `threadapp`; `callerSettingsBucket` is
-  the non-failing variant they use, because losing the attribution is not
-  worth failing the create. A genuinely caller-less write lands on the backend
-  machine's own screen rather than being dropped.
+  paths carry `SettingsBucket` and `SettingsClass` down to `threadapp` as a
+  pair; `callerSettingsScreen` is the non-failing variant they use, because
+  losing the attribution is not worth failing the create. A genuinely
+  caller-less write lands on the backend machine's own screen rather than
+  being dropped.
 - **A writer that reaches `ui_state` around the settings service owes it
   `InvalidateTierCache`.** There is exactly one — the harness reset's
   `ClearUIState` — and `harnessHost.ClearUIState` makes the call.
 - **Backend code that acts on THIS machine's screen reads
-  `settings.Service.BackendScreen()`, not `For("")`.** `For("")` answers device
-  DEFAULTS, which for a screen-facing preference means silently ignoring what
-  the user set on the very screen being acted on. There is one such caller —
-  the OS-notification gate — and a key with no screen behind it does not belong
-  in the device tier at all.
+  `settings.Service.BackendScreen()`, not `For("", …)`.** A bucket-less caller
+  answers class DEFAULTS, which for a screen-facing preference means silently
+  ignoring what the user set on the very screen being acted on. There is one
+  such caller — the OS-notification gate — and a key with no screen behind it
+  does not belong in the device tier at all.
 
 ## Notifications map from the event funnel
 

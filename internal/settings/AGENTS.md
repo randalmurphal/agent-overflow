@@ -209,11 +209,54 @@ file, which is what the pre-database boot readers in `main.go` and
   because an unplaced key is one that silently stops announcing itself —
   and since phase 4 an unplaced key is also one with no home, because
   this map is the STORAGE routing table. Placing a key is now two
-  decisions in one: who may write it, and where it lives.
+  decisions in one: who may write it, and where it lives. A DEVICE-tier
+  key is additionally eligible for a per-class default (`classdefaults.go`);
+  a key of any other tier is not, and the guard there says so.
+- `classdefaults.go`: the DEVICE-CLASS layer between `DefaultSettings` and a
+  screen's own writes (`docs/specs/remote-access.md` §6). `classDefaults` is a
+  table from `DeviceClass` to the device-tier keys that class starts from,
+  total over the five declared classes; today only `phone` is populated, with
+  the one default §6 commits to (`lowPowerMode: true`). Four rules with tests
+  behind them:
+  - **The order is `DefaultSettings` < the class row < the bucket's own
+    rows**, applied in that order by `getFor` and by `mutate`'s pre-read. A
+    device's own write always outranks its class, INCLUDING the class
+    default's opposite — and that only works because `mutate` probes the
+    class-resolved value, or a phone patching `lowPowerMode` to false would
+    move nothing, persist nothing, and read back as true.
+  - **Resolved at read, never written.** No class value ever reaches
+    `SetUIState`, so a device that never wrote the key TRACKS a later change
+    to the table with no migration. It is also what makes CLEARING coherent:
+    the only clear that exists is dropping the bucket's row (`DeleteUIState`
+    reaches these rows — they share the bucket, spelled as the settings JSON
+    key), and the read then falls through to the class's row, not the global
+    default. A phone that resets `lowPowerMode` is asking for "whatever a
+    phone gets".
+  - **Only device-tier keys may appear.** A host or user key here would be a
+    per-screen answer to a question about the machine or the person, and
+    `applyRows` would drop it silently;
+    `TestEveryClassDefaultNamesADeviceTierKey` fails instead. The empty rows
+    are decisions too, and `TestClassDefaultsCoverEveryDeclaredClass` fails
+    when a new class arrives without one.
+  - **`DeviceClass` MIRRORS `identity.DeviceClass` as plain strings rather
+    than importing it**, keeping this package free of a database dependency
+    (the same rule as the `internal/provider` and `internal/spinner` tables
+    below). The caller converts; `internal/app` holds both packages and pins
+    them together in
+    `TestSettingsDeviceClassesMirrorTheIdentityVocabulary`, which fails in
+    both directions.
 - `residency.go`: the three homes. `AttachTierStore` wires the `ui_state`
-  table and seeds it from the file; `Service.For(bucket)` is the service
-  seen from one connection, with the device tier resolved out of THAT
-  caller's bucket. Storage format is one row per key, spelled exactly as
+  table and seeds it from the file; `Service.For(bucket, class)` is the
+  service seen from one connection, with the device tier resolved out of THAT
+  caller's bucket over THAT caller's class defaults. The class is a parameter
+  rather than a second method because a bucket and a class are two halves of
+  one answer to "which screen is this?", and the two travelling apart is
+  exactly how a paired phone ends up reading desktop defaults out of its own
+  bucket. A caller that genuinely cannot name the screen passes
+  `DeviceDesktop`, which is what every device resolved as before the table
+  existed. A STORE-LESS service applies neither layer: the device tier still
+  lives in the file there, so the file IS the screen's write and a class row
+  over the top would outrank it. Storage format is one row per key, spelled exactly as
   the settings JSON key, holding the JSON encoding of the typed value —
   the store stays opaque, and typed validation happens here before the
   write. The non-collision argument against the frontend's own
@@ -224,7 +267,8 @@ file, which is what the pre-database boot readers in `main.go` and
   binds to the bucket `AttachTierStore` was given, for backend code that acts
   on the BACKEND MACHINE's own screen and can say so — today the OS-notification
   gate, which presents there in-process on macOS and Linux and through the
-  Windows launcher on WSL. It is not "the device tier, globally"; a key with no
+  Windows launcher on WSL. It binds class `desktop` with it, because that is
+  what that screen is. It is not "the device tier, globally"; a key with no
   screen behind it does not belong in the device tier at all.
 - `gendefaults.go` + `gendefaults/`: the generator that makes
   `DefaultSettings` the SINGLE source of settings defaults. It reflects
@@ -263,6 +307,13 @@ file, which is what the pre-database boot readers in `main.go` and
   host-side sender resolves them against the backend machine's own bucket
   (`Service.BackendScreen`) exactly as an attached client resolves them
   against its own.
+  A DEVICE-tier field may also want a different default on some kinds of
+  screen. That is `classDefaults` in `classdefaults.go`, and it is a
+  separate decision from `DefaultSettings`: the global default is what a
+  screen with no class gets, the class row is what THAT kind of screen
+  starts from, and neither is written into a bucket. Add a row only when
+  the difference is a property of the hardware rather than of the
+  person's taste — the phone's `lowPowerMode` is the shape to match.
   A field whose intended default is the Go zero value stays OUT of
   `DefaultSettings`. That is what makes an absent key read as the
   default for every settings file written before the field existed.
