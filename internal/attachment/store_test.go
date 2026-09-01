@@ -1,7 +1,9 @@
 package attachment
 
 import (
-	"encoding/base64"
+	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -48,7 +50,7 @@ func seedThread(t *testing.T, meta *store.Store, id string) {
 	}
 }
 
-func pngData(t *testing.T) string {
+func pngData(t *testing.T) []byte {
 	t.Helper()
 	// 1x1 PNG (real header).
 	payload := []byte{
@@ -58,12 +60,20 @@ func pngData(t *testing.T) string {
 		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
 		0x89,
 	}
-	return base64.StdEncoding.EncodeToString(payload)
+	return payload
 }
 
-func jpegData(t *testing.T) string {
+func jpegData(t *testing.T) []byte {
 	t.Helper()
-	return base64.StdEncoding.EncodeToString([]byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10})
+	return []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10}
+}
+
+// uploadBytes is the tests' spelling of the streaming Upload for a payload
+// they already hold in memory. Every test that is not ABOUT the streaming
+// contract goes through it, so the length agreement — Upload's whole
+// premise — is stated once rather than at forty call sites.
+func uploadBytes(s *Store, threadID, filename, mimeType string, data []byte, createdAt int64) (store.Attachment, error) {
+	return s.Upload(threadID, filename, mimeType, int64(len(data)), bytes.NewReader(data), createdAt)
 }
 
 func TestNewStoreRejectsMissingRoot(t *testing.T) {
@@ -130,7 +140,7 @@ func TestUploadAndReadRoundTrip(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "t1")
 
-	record, err := attStore.Upload("t1", "pic.png", "image/png", pngData(t), 1000)
+	record, err := uploadBytes(attStore, "t1", "pic.png", "image/png", pngData(t), 1000)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -181,7 +191,7 @@ func TestUploadInfersMimeFromFilename(t *testing.T) {
 	seedThread(t, meta, "t1")
 
 	// No mime type provided — should infer from extension.
-	record, err := attStore.Upload("t1", "chart.jpg", "", jpegData(t), 0)
+	record, err := uploadBytes(attStore, "t1", "chart.jpg", "", jpegData(t), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -194,7 +204,7 @@ func TestUploadRejectsMismatchedImagePayload(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "t1")
 
-	_, err := attStore.Upload("t1", "pic.png", "image/png", jpegData(t), 0)
+	_, err := uploadBytes(attStore, "t1", "pic.png", "image/png", jpegData(t), 0)
 	if err == nil || !strings.Contains(err.Error(), "payload does not match image/png") {
 		t.Fatalf("expected payload mismatch error, got %v", err)
 	}
@@ -204,7 +214,7 @@ func TestUploadRejectsDisallowedMime(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "t1")
 
-	_, err := attStore.Upload("t1", "evil.exe", "application/x-msdownload", pngData(t), 0)
+	_, err := uploadBytes(attStore, "t1", "evil.exe", "application/x-msdownload", pngData(t), 0)
 	if err == nil {
 		t.Fatal("expected mime rejection")
 	}
@@ -223,30 +233,147 @@ func TestUploadRejectsOversize(t *testing.T) {
 	seedThread(t, meta, "t1")
 
 	big := make([]byte, 128)
-	encoded := base64.StdEncoding.EncodeToString(big)
-	_, err = attStore.Upload("t1", "pic.png", "image/png", encoded, 0)
+	_, err = uploadBytes(attStore, "t1", "pic.png", "image/png", big, 0)
 	if err == nil || !strings.Contains(err.Error(), "exceeds limit") {
 		t.Fatalf("expected size-limit error, got %v", err)
 	}
+}
+
+// TestUploadCapsABodyThatOverruns pins the bound INSIDE Upload rather than
+// at its caller: a body that keeps going past the store's own limit is cut
+// off and refused, so a caller that forgot its own cap still cannot make
+// this store write past MaxSize.
+func TestUploadCapsABodyThatOverruns(t *testing.T) {
+	meta, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { meta.Close() })
+	root := t.TempDir()
+	attStore, err := NewStore(Config{RootDir: root, MaxSize: 64}, meta)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	seedThread(t, meta, "t1")
+
+	// Declares a size the store accepts, then hands over ten times that
+	// many bytes.
+	payload := append(pngData(t), make([]byte, 640)...)
+	_, err = attStore.Upload("t1", "pic.png", "image/png", 32, bytes.NewReader(payload), 0)
+	if err == nil || !strings.Contains(err.Error(), "declared") {
+		t.Fatalf("expected a length disagreement, got %v", err)
+	}
+	assertNoStoredBytes(t, attStore, meta, "t1")
 }
 
 func TestUploadRejectsEmptyPayload(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "t1")
 
-	_, err := attStore.Upload("t1", "pic.png", "image/png", "", 0)
+	_, err := uploadBytes(attStore, "t1", "pic.png", "image/png", nil, 0)
 	if err == nil {
 		t.Fatal("expected empty payload rejection")
 	}
 }
 
-func TestUploadRejectsBadBase64(t *testing.T) {
+// TestUploadRejectsShortBody pins the length agreement in the direction a
+// dropped connection produces: the declared size is what the metadata row
+// records, so a body that stops early must fail rather than land a row
+// whose Size is a lie about the file beside it.
+func TestUploadRejectsShortBody(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "t1")
 
-	_, err := attStore.Upload("t1", "pic.png", "image/png", "!!!not-base64!!!", 0)
-	if err == nil {
-		t.Fatal("expected base64 decode error")
+	payload := pngData(t)
+	_, err := attStore.Upload("t1", "pic.png", "image/png", int64(len(payload))+8, bytes.NewReader(payload), 0)
+	if err == nil || !strings.Contains(err.Error(), "declared") {
+		t.Fatalf("expected a length disagreement, got %v", err)
+	}
+	assertNoStoredBytes(t, attStore, meta, "t1")
+}
+
+// TestUploadRejectsMidStreamFailure covers the failure a network body has
+// and an in-memory one does not: the reader errors part-way, after the
+// signature already validated and bytes are already on disk.
+func TestUploadRejectsMidStreamFailure(t *testing.T) {
+	attStore, meta := newTestStores(t)
+	seedThread(t, meta, "t1")
+
+	// Longer than the copy buffer, so the signature peek is satisfied from
+	// bytes already read and the failure lands during the copy — after the
+	// staging file exists and has content in it, which is the state the
+	// deferred cleanup is for.
+	prefix := append(pngData(t), make([]byte, 2*copyBufferSize)...)
+	body := io.MultiReader(bytes.NewReader(prefix), errReader{})
+	_, err := attStore.Upload("t1", "pic.png", "image/png", int64(len(prefix))+1024, body, 0)
+	if err == nil || !strings.Contains(err.Error(), "write payload") {
+		t.Fatalf("expected the read failure to surface, got %v", err)
+	}
+	assertNoStoredBytes(t, attStore, meta, "t1")
+}
+
+// errReader fails every read, standing in for a connection that dropped
+// mid-transfer.
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errors.New("body went away") }
+
+// assertNoStoredBytes checks that a refused upload left neither a metadata
+// row nor a file — including the .tmp staging file, which is the one a
+// streaming write can leave behind and a single os.WriteFile could not.
+func assertNoStoredBytes(t *testing.T, attStore *Store, meta *store.Store, threadID string) {
+	t.Helper()
+	list, err := meta.ListAttachments(threadID)
+	if err != nil {
+		t.Fatalf("ListAttachments: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("expected no metadata rows after a refused upload, got %d", len(list))
+	}
+	entries, err := os.ReadDir(filepath.Join(attStore.root, threadID))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no files after a refused upload, got %+v", entries)
+	}
+}
+
+// TestOpenThreadStreamsStoredBytes is the read half: the handle hands back
+// exactly what Upload stored, and refuses a cross-thread id on the same
+// terms ReadThreadBytes does.
+func TestOpenThreadStreamsStoredBytes(t *testing.T) {
+	attStore, meta := newTestStores(t)
+	seedThread(t, meta, "t1")
+	seedThread(t, meta, "t2")
+
+	payload := pngData(t)
+	record, err := uploadBytes(attStore, "t1", "pic.png", "image/png", payload, 0)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	content, err := attStore.OpenThread("t1", record.ID)
+	if err != nil {
+		t.Fatalf("OpenThread: %v", err)
+	}
+	defer content.File.Close()
+	if content.Record.ID != record.ID {
+		t.Fatalf("Record.ID = %q, want %q", content.Record.ID, record.ID)
+	}
+	if content.ModTime.IsZero() {
+		t.Fatal("ModTime is zero; a conditional request would have nothing to compare")
+	}
+	got, err := io.ReadAll(content.File)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("streamed %d bytes, stored %d", len(got), len(payload))
+	}
+
+	if _, err := attStore.OpenThread("t2", record.ID); err == nil {
+		t.Fatal("expected a cross-thread id to be refused")
 	}
 }
 
@@ -254,7 +381,7 @@ func TestUploadRequiresThreadID(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "t1")
 
-	_, err := attStore.Upload("   ", "pic.png", "image/png", pngData(t), 0)
+	_, err := uploadBytes(attStore, "   ", "pic.png", "image/png", pngData(t), 0)
 	if err == nil {
 		t.Fatal("expected thread id required")
 	}
@@ -263,7 +390,7 @@ func TestUploadRequiresThreadID(t *testing.T) {
 func TestUploadRollsBackOnMetaFailure(t *testing.T) {
 	attStore, _ := newTestStores(t)
 	// No thread seeded — insert will fail due to FK.
-	_, err := attStore.Upload("missing-thread", "pic.png", "image/png", pngData(t), 0)
+	_, err := uploadBytes(attStore, "missing-thread", "pic.png", "image/png", pngData(t), 0)
 	if err == nil {
 		t.Fatal("expected FK failure")
 	}
@@ -286,7 +413,7 @@ func TestUploadRollsBackOnMetaFailure(t *testing.T) {
 func TestUploadNoTmpLeakOnMetaFailure(t *testing.T) {
 	attStore, _ := newTestStores(t)
 
-	_, err := attStore.Upload("missing-thread", "pic.png", "image/png", pngData(t), 0)
+	_, err := uploadBytes(attStore, "missing-thread", "pic.png", "image/png", pngData(t), 0)
 	if err == nil {
 		t.Fatal("expected FK failure")
 	}
@@ -332,7 +459,7 @@ func TestUploadFilenameFuzz(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			record, err := attStore.Upload("t1", tc.filename, tc.mime, pngData(t), 0)
+			record, err := uploadBytes(attStore, "t1", tc.filename, tc.mime, pngData(t), 0)
 			if err != nil {
 				// Rejected — acceptable. No orphan files should exist.
 				return
@@ -359,7 +486,7 @@ func TestUploadSuccessfulEndStateHasNoTmpFile(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "t1")
 
-	record, err := attStore.Upload("t1", "pic.png", "image/png", pngData(t), 0)
+	record, err := uploadBytes(attStore, "t1", "pic.png", "image/png", pngData(t), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -384,7 +511,7 @@ func TestPathForThreadReturnsOwnedPath(t *testing.T) {
 	seedThread(t, meta, "t1")
 	seedThread(t, meta, "t2")
 
-	record, err := attStore.Upload("t1", "pic.png", "image/png", pngData(t), 0)
+	record, err := uploadBytes(attStore, "t1", "pic.png", "image/png", pngData(t), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -435,7 +562,7 @@ func TestUploadFileWriteFailureLeavesNoRow(t *testing.T) {
 		_ = os.Chmod(threadDir, 0o755)
 	})
 
-	_, err := attStore.Upload("t1", "pic.png", "image/png", pngData(t), 0)
+	_, err := uploadBytes(attStore, "t1", "pic.png", "image/png", pngData(t), 0)
 	if err == nil {
 		t.Fatal("expected upload to fail when dir is read-only")
 	}
@@ -453,7 +580,7 @@ func TestDeleteRemovesDiskAndRow(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "t1")
 
-	record, err := attStore.Upload("t1", "pic.png", "image/png", pngData(t), 0)
+	record, err := uploadBytes(attStore, "t1", "pic.png", "image/png", pngData(t), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -489,13 +616,13 @@ func TestListReturnsPerThread(t *testing.T) {
 	seedThread(t, meta, "t1")
 	seedThread(t, meta, "t2")
 
-	if _, err := attStore.Upload("t1", "a.png", "image/png", pngData(t), 1); err != nil {
+	if _, err := uploadBytes(attStore, "t1", "a.png", "image/png", pngData(t), 1); err != nil {
 		t.Fatalf("upload a: %v", err)
 	}
-	if _, err := attStore.Upload("t1", "b.png", "image/png", pngData(t), 2); err != nil {
+	if _, err := uploadBytes(attStore, "t1", "b.png", "image/png", pngData(t), 2); err != nil {
 		t.Fatalf("upload b: %v", err)
 	}
-	if _, err := attStore.Upload("t2", "c.png", "image/png", pngData(t), 3); err != nil {
+	if _, err := uploadBytes(attStore, "t2", "c.png", "image/png", pngData(t), 3); err != nil {
 		t.Fatalf("upload c: %v", err)
 	}
 
@@ -529,7 +656,7 @@ func TestUploadSanitisesThreadIDToPreventEscape(t *testing.T) {
 	threadID := "../../evil"
 	seedThread(t, meta, threadID)
 
-	record, err := attStore.Upload(threadID, "evil.png", "image/png", pngData(t), 0)
+	record, err := uploadBytes(attStore, threadID, "evil.png", "image/png", pngData(t), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}

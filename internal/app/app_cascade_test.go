@@ -1,7 +1,7 @@
 package app
 
 import (
-	"encoding/base64"
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -95,11 +95,12 @@ func populateThreadForCascade(t *testing.T, app *App, thread store.Thread) []str
 	// 2 attachments on disk + in DB.
 	var paths []string
 	for i := 0; i < 2; i++ {
-		b64 := base64.StdEncoding.EncodeToString([]byte{
+		payload := []byte{
 			0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
 			0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-		})
-		record, err := app.attachments.Upload(thread.ID, "img.png", "image/png", b64, time.Now().UnixMilli())
+		}
+		record, err := app.attachments.Upload(thread.ID, "img.png", "image/png",
+			int64(len(payload)), bytes.NewReader(payload), time.Now().UnixMilli())
 		if err != nil {
 			t.Fatalf("Upload %d: %v", i, err)
 		}

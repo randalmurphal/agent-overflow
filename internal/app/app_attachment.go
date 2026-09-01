@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"time"
@@ -16,7 +17,11 @@ func (a *App) UploadAttachment(threadID, filename, mimeType, dataB64 string) (st
 	if a.attachments == nil {
 		return store.Attachment{}, fmt.Errorf("attachment store not initialized")
 	}
-	return a.attachments.Upload(threadID, filename, mimeType, dataB64, time.Now().UnixMilli())
+	data, err := base64.StdEncoding.DecodeString(dataB64)
+	if err != nil {
+		return store.Attachment{}, fmt.Errorf("attachment: decode base64: %w", err)
+	}
+	return a.attachments.Upload(threadID, filename, mimeType, int64(len(data)), bytes.NewReader(data), time.Now().UnixMilli())
 }
 
 // ListAttachments returns every attachment metadata row for a thread.

@@ -1,7 +1,7 @@
 package app
 
 import (
-	"encoding/base64"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -266,11 +266,12 @@ func TestRevertAndResendKeepsAttachments(t *testing.T) {
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-attach")
 
-	pngHeader := base64.StdEncoding.EncodeToString([]byte{
+	pngHeader := []byte{
 		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
 		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-	})
-	record, err := app.attachments.Upload(thread.ID, "shot.png", "image/png", pngHeader, time.Now().UnixMilli())
+	}
+	record, err := app.attachments.Upload(thread.ID, "shot.png", "image/png",
+		int64(len(pngHeader)), bytes.NewReader(pngHeader), time.Now().UnixMilli())
 	if err != nil {
 		t.Fatalf("upload attachment: %v", err)
 	}

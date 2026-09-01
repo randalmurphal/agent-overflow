@@ -2,7 +2,6 @@ package attachment
 
 import (
 	"bytes"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -79,9 +78,9 @@ func TestIntegration_UploadValidImage(t *testing.T) {
 	integrationSeedThread(t, meta, "thread-png")
 
 	payload := realPNGBytes()
-	record, err := attStore.Upload(
+	record, err := uploadBytes(attStore,
 		"thread-png", "hero.png", "image/png",
-		base64.StdEncoding.EncodeToString(payload), 1_700_000_000_000,
+		payload, 1_700_000_000_000,
 	)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -121,9 +120,9 @@ func TestIntegration_UploadInvalidMime(t *testing.T) {
 	integrationSeedThread(t, meta, "thread-mime")
 
 	payload := realPNGBytes()
-	_, err := attStore.Upload(
+	_, err := uploadBytes(attStore,
 		"thread-mime", "install.sh", "application/x-shellscript",
-		base64.StdEncoding.EncodeToString(payload), 0,
+		payload, 0,
 	)
 	if err == nil {
 		t.Fatal("expected rejection for disallowed mime")
@@ -144,13 +143,13 @@ func TestIntegration_UploadOverSizeLimit(t *testing.T) {
 	attStore, meta, rootDir := integrationStores(t)
 	integrationSeedThread(t, meta, "thread-huge")
 
-	// 11MiB of PNG-header-prefixed bytes. The size check runs after base64
-	// decoding, so we don't need to worry about encoding overhead.
+	// 11MiB of PNG-header-prefixed bytes. The declared length is refused
+	// before a byte of the body is read, so nothing is ever staged.
 	oversize := make([]byte, 11*1024*1024)
 	copy(oversize, realPNGBytes())
-	_, err := attStore.Upload(
+	_, err := uploadBytes(attStore,
 		"thread-huge", "big.png", "image/png",
-		base64.StdEncoding.EncodeToString(oversize), 0,
+		oversize, 0,
 	)
 	if err == nil {
 		t.Fatal("expected oversize rejection")
@@ -166,13 +165,13 @@ func TestIntegration_UploadOverSizeLimit(t *testing.T) {
 }
 
 // TestIntegration_UploadEmptyBuffer documents the contract: an empty payload
-// is explicitly rejected with "payload is empty". An empty base64 string
-// trips the same check.
+// is explicitly rejected with "payload is empty". A nil body declaring zero
+// bytes trips the same check.
 func TestIntegration_UploadEmptyBuffer(t *testing.T) {
 	attStore, meta, _ := integrationStores(t)
 	integrationSeedThread(t, meta, "thread-empty")
 
-	_, err := attStore.Upload("thread-empty", "zero.png", "image/png", "", 0)
+	_, err := uploadBytes(attStore, "thread-empty", "zero.png", "image/png", nil, 0)
 	if err == nil {
 		t.Fatal("expected rejection of empty payload")
 	}
@@ -188,9 +187,9 @@ func TestIntegration_UploadPathTraversalInFilename(t *testing.T) {
 	attStore, meta, rootDir := integrationStores(t)
 	integrationSeedThread(t, meta, "thread-trav")
 
-	record, err := attStore.Upload(
+	record, err := uploadBytes(attStore,
 		"thread-trav", "../../../etc/passwd.png", "image/png",
-		base64.StdEncoding.EncodeToString(realPNGBytes()), 0,
+		realPNGBytes(), 0,
 	)
 	if err != nil {
 		t.Fatalf("Upload (should have been accepted with neutered path): %v", err)
@@ -217,13 +216,13 @@ func TestIntegration_UploadWithDuplicateFilenames(t *testing.T) {
 	integrationSeedThread(t, meta, "thread-dup")
 
 	payload := realPNGBytes()
-	first, err := attStore.Upload("thread-dup", "shared.png", "image/png",
-		base64.StdEncoding.EncodeToString(payload), 1)
+	first, err := uploadBytes(attStore, "thread-dup", "shared.png", "image/png",
+		payload, 1)
 	if err != nil {
 		t.Fatalf("first Upload: %v", err)
 	}
-	second, err := attStore.Upload("thread-dup", "shared.png", "image/png",
-		base64.StdEncoding.EncodeToString(payload), 2)
+	second, err := uploadBytes(attStore, "thread-dup", "shared.png", "image/png",
+		payload, 2)
 	if err != nil {
 		t.Fatalf("second Upload: %v", err)
 	}
@@ -266,9 +265,9 @@ func TestIntegration_UploadRollbackOnDiskFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(threadDir, 0o755) })
 
-	_, err := attStore.Upload(
+	_, err := uploadBytes(attStore,
 		"thread-ro", "pic.png", "image/png",
-		base64.StdEncoding.EncodeToString(realPNGBytes()), 0,
+		realPNGBytes(), 0,
 	)
 	if err == nil {
 		t.Fatal("expected write failure when thread dir is read-only")
@@ -296,14 +295,14 @@ func TestIntegration_ListAttachmentsScopedToThread(t *testing.T) {
 	integrationSeedThread(t, meta, "thread-a")
 	integrationSeedThread(t, meta, "thread-b")
 
-	data := base64.StdEncoding.EncodeToString(realPNGBytes())
+	data := realPNGBytes()
 	for i := 0; i < 3; i++ {
-		if _, err := attStore.Upload("thread-a", fmt.Sprintf("a%d.png", i), "image/png", data, int64(i)); err != nil {
+		if _, err := uploadBytes(attStore, "thread-a", fmt.Sprintf("a%d.png", i), "image/png", data, int64(i)); err != nil {
 			t.Fatalf("upload a%d: %v", i, err)
 		}
 	}
 	for i := 0; i < 2; i++ {
-		if _, err := attStore.Upload("thread-b", fmt.Sprintf("b%d.png", i), "image/png", data, int64(i)); err != nil {
+		if _, err := uploadBytes(attStore, "thread-b", fmt.Sprintf("b%d.png", i), "image/png", data, int64(i)); err != nil {
 			t.Fatalf("upload b%d: %v", i, err)
 		}
 	}
@@ -336,8 +335,8 @@ func TestIntegration_DeleteRemovesFileAndRow(t *testing.T) {
 	attStore, meta, rootDir := integrationStores(t)
 	integrationSeedThread(t, meta, "thread-del")
 
-	record, err := attStore.Upload("thread-del", "bye.png", "image/png",
-		base64.StdEncoding.EncodeToString(realPNGBytes()), 0)
+	record, err := uploadBytes(attStore, "thread-del", "bye.png", "image/png",
+		realPNGBytes(), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -382,8 +381,8 @@ func TestIntegration_GetAttachmentDataRoundTrip(t *testing.T) {
 	integrationSeedThread(t, meta, "thread-rt")
 
 	payload := realPNGBytes()
-	record, err := attStore.Upload("thread-rt", "rt.png", "image/png",
-		base64.StdEncoding.EncodeToString(payload), 0)
+	record, err := uploadBytes(attStore, "thread-rt", "rt.png", "image/png",
+		payload, 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -409,8 +408,8 @@ func TestIntegration_AttachmentCascadeOnThreadDelete(t *testing.T) {
 	attStore, meta, rootDir := integrationStores(t)
 	integrationSeedThread(t, meta, "thread-cascade")
 
-	record, err := attStore.Upload("thread-cascade", "x.png", "image/png",
-		base64.StdEncoding.EncodeToString(realPNGBytes()), 0)
+	record, err := uploadBytes(attStore, "thread-cascade", "x.png", "image/png",
+		realPNGBytes(), 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -460,11 +459,11 @@ func TestIntegration_ConcurrentUploadsSameThread(t *testing.T) {
 			defer wg.Done()
 			payload := realPNGBytes()
 			payload = append(payload, byte(i))
-			record, err := attStore.Upload(
+			record, err := uploadBytes(attStore,
 				"thread-conc",
 				fmt.Sprintf("conc-%d.png", i),
 				"image/png",
-				base64.StdEncoding.EncodeToString(payload),
+				payload,
 				int64(i),
 			)
 			if err != nil {
@@ -517,8 +516,8 @@ func TestIntegration_AttachmentDataIsUnmodified(t *testing.T) {
 		payload = append(payload, byte(i))
 	}
 
-	record, err := attStore.Upload("thread-verbatim", "verbatim.png", "image/png",
-		base64.StdEncoding.EncodeToString(payload), 0)
+	record, err := uploadBytes(attStore, "thread-verbatim", "verbatim.png", "image/png",
+		payload, 0)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
