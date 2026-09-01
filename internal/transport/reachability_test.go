@@ -200,8 +200,13 @@ func TestStepUpMethodsAreTheSpecSet(t *testing.T) {
 		"SetWSLDistroPreference":       "WSL distro preference",
 		"SetProjectWorktreeSetup":      "worktree-setup recipe write: stores argv that runs unattended on every worktree cut",
 		"BeginPasskeyRegistration":     "registering a credential that admits a future caller, on the same argument as minting a pairing link",
-		"FinishPasskeyRegistration":    "registering a credential that admits a future caller, on the same argument as minting a pairing link",
 	}
+	// FinishPasskeyRegistration is deliberately absent, and it is the one
+	// omission in this table worth stating rather than inferring: it is
+	// unreachable without a ceremony handle that only a step-up-proven
+	// begin mints, so the registration IS proved — once, which is the
+	// granularity. Its own doc comment carries the rest of the argument,
+	// including why a second proof made a remote registration fail.
 	got := map[string]bool{}
 	for _, method := range GeneratedMethods {
 		if method.StepUp {

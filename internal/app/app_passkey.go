@@ -133,7 +133,11 @@ func StepUpProof(a *App, sessionID, token string) bool {
 //
 //   - registering and removing a credential are ACCESS administration,
 //     beside the pairing and revocation calls, and carry the same
-//     `access:admin` scope so the surface moves as a unit;
+//     `access:admin` scope so the surface moves as a unit. One of them
+//     also carries //ao:stepup: the BEGIN, which is what a registration
+//     costs a proof for. The finish rides that same proof through the
+//     ceremony handle, and its doc comment argues why a second would be
+//     worse than nothing;
 //   - proving step-up is the FLOOR, because a session that cannot ask to
 //     prove itself can never satisfy the gate that just refused it.
 //
@@ -223,8 +227,23 @@ func (a *App) BeginPasskeyRegistration(label string) (PasskeyChallengeResult, er
 // The account is the one the BEGIN named and never one the response could
 // claim, which is the session core's rule; this method only carries bytes.
 //
+// Deliberately NO //ao:stepup, and the argument is the ceremony's own
+// shape: this call is unreachable without a ceremony id, and the only
+// thing that mints one is a BeginPasskeyRegistration that already passed
+// step-up. That handle is in-memory, single-use, expires in
+// identity.PasskeyCeremonyTTL, and cannot be answered without a signature
+// over its challenge — so one proof per registration is the granularity,
+// and a second would guard nothing the first does not.
+//
+// It is also actively harmful, which is how the omission was found. A
+// REMOTE registration proves step-up with a passkey, and by the time the
+// finish runs, the credential the authenticator just created is
+// discoverable and NOT yet registered here — so the second ceremony can
+// be answered by the one credential this backend cannot verify, and the
+// registration fails on its own success (`e2e/tests/harness-passkey-
+// lifecycle.spec.ts`). Registering remotely also cost two prompts.
+//
 //ao:scope access:admin
-//ao:stepup
 func (a *App) FinishPasskeyRegistration(ceremonyID string, response json.RawMessage) (PasskeySummary, error) {
 	state, err := a.accessState()
 	if err != nil {

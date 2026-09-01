@@ -227,10 +227,12 @@ are facts about this process rather than about a row:
 Every method carries `//ao:scope access:admin`, which is what keeps the
 set together: one annotation, so the surface moves as a unit. Two of them
 add `//ao:stepup`, and they are the two that ISSUE: minting a pairing
-link, and registering a passkey. A standing grant must not make either —
-a session that could mint could enroll its way around its own revocation,
-and a session that could register a credential could do the same thing
-with a different kind of key. The rest
+link, and BEGINNING a passkey registration. A standing grant must not
+make either — a session that could mint could enroll its way around its
+own revocation, and a session that could register a credential could do
+the same thing with a different kind of key. The FINISH deliberately
+carries no second proof; `app_passkey.go`'s doc comment argues why one
+would guard nothing and break a remote registration. The rest
 answer a device the owner granted `access:admin`, which is what makes
 revoking a lost phone from the other phone possible.
 Minting ISSUES a credential, revoking withdraws

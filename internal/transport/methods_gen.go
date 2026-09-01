@@ -81,7 +81,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteUIState", ID: 1186757769, Scope: "session"},                                     // main.App.DeleteUIState
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin"},                           // main.App.DevicePairingStatus
 	{Name: "DownloadUpdate", ID: 115027584, Scope: "host"},                                        // main.App.DownloadUpdate
-	{Name: "FinishPasskeyRegistration", ID: 1601396603, Scope: "access:admin", StepUp: true},      // main.App.FinishPasskeyRegistration
+	{Name: "FinishPasskeyRegistration", ID: 1601396603, Scope: "access:admin"},                    // main.App.FinishPasskeyRegistration
 	{Name: "FinishPasskeyStepUp", ID: 1569276637, Scope: "session"},                               // main.App.FinishPasskeyStepUp
 	{Name: "ForgetAccessDevice", ID: 516065248, Scope: "access:admin"},                            // main.App.ForgetAccessDevice
 	{Name: "ForgetTailnetNode", ID: 767560289, Scope: "host"},                                     // main.App.ForgetTailnetNode

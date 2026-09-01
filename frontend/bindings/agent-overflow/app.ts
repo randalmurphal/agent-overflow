@@ -677,6 +677,22 @@ export function DownloadUpdate(tag: string): $CancellablePromise<void> {
  * 
  * The account is the one the BEGIN named and never one the response could
  * claim, which is the session core's rule; this method only carries bytes.
+ * 
+ * Deliberately NO //ao:stepup, and the argument is the ceremony's own
+ * shape: this call is unreachable without a ceremony id, and the only
+ * thing that mints one is a BeginPasskeyRegistration that already passed
+ * step-up. That handle is in-memory, single-use, expires in
+ * identity.PasskeyCeremonyTTL, and cannot be answered without a signature
+ * over its challenge — so one proof per registration is the granularity,
+ * and a second would guard nothing the first does not.
+ * 
+ * It is also actively harmful, which is how the omission was found. A
+ * REMOTE registration proves step-up with a passkey, and by the time the
+ * finish runs, the credential the authenticator just created is
+ * discoverable and NOT yet registered here — so the second ceremony can
+ * be answered by the one credential this backend cannot verify, and the
+ * registration fails on its own success (`e2e/tests/harness-passkey-
+ * lifecycle.spec.ts`). Registering remotely also cost two prompts.
  */
 export function FinishPasskeyRegistration(ceremonyID: string, response: json$0.RawMessage): $CancellablePromise<app$0.PasskeySummary> {
     return $Call.ByID(1601396603, ceremonyID, response).then(($result: any) => {

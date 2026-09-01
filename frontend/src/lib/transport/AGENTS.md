@@ -149,6 +149,18 @@ remote browser alike. Protocol and authz rules:
   passkey on this page, prompt dismissed), because what happened from
   where the person sits is that the change did not go through, and
   `scopeRefusal.ts` owns that sentence.
+
+  **A multi-call ceremony is wrapped ONCE, around the call that starts
+  it.** `PasskeysBlock.svelte` wraps only `BeginPasskeyRegistration`; the
+  finish rides the single-use, minutes-long handle the begin returned, so
+  it is already proved and a second wrap would guard nothing. It would
+  also break the case it looks like it protects: the second ceremony's
+  `get()` is answered by the credential the authenticator just created
+  and the backend has not stored yet, so a REMOTE registration fails on
+  its own success. The backend agrees by carrying no `//ao:stepup` there
+  (`internal/transport/AGENTS.md`), and the two must move together —
+  wrapping a call the gate does not refuse costs a prompt that changes
+  nothing.
 - `frames.ts` is the TypeScript mirror of `internal/transport/frame.go`.
   Change one and change the other in the same commit. Frames evolve
   ADDITIVELY: a new optional field or a new frame type is safe because

@@ -147,13 +147,23 @@ The two non-grants:
   authority its NAME decides would be an ungated surface.
 
 `//ao:stepup` marks the calls §4 requires a fresh per-call proof for: minting a
-pairing link, registering a passkey, network bind / exposure changes, provider
-custom-env writes, MCP config writes, the WSL distro preference, and
-worktree-setup recipe writes (stored argv that runs unattended on every worktree
-cut).
+pairing link, BEGINNING a passkey registration, network bind / exposure
+changes, provider custom-env writes, MCP config writes, the WSL distro
+preference, and worktree-setup recipe writes (stored argv that runs unattended
+on every worktree cut).
 `TestStepUpMethodsAreTheSpecSet` pins that list, because a dropped directive
 turns a mandatory proof into an ambient standing grant and nothing else in the
 tree would notice.
+
+**A multi-call ceremony is proved ONCE, at the call that starts it.**
+`FinishPasskeyRegistration` deliberately carries no directive: it is
+unreachable without the in-memory, single-use, minutes-long ceremony handle
+that only a step-up-proven begin mints, so the registration IS proved and a
+second proof would guard nothing the first does not. It is also worse than
+nothing — the second ceremony gets answered by the credential the
+authenticator just created and this backend has not stored yet, so a REMOTE
+registration failed on its own success. The test's `want` map says so where
+the absence is, since an omission reads as an oversight otherwise.
 
 `internalmethods.go` holds `InternalServiceMethods`: Wails framework hooks and
 `//wails:ignore` methods, never registered, as defense in depth beside the

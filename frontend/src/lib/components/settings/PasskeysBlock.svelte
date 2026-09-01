@@ -64,11 +64,14 @@
     return 'This device';
   }
 
-  // Both halves are step-up gated, so both go through withStepUp: on the
-  // owner's own screen host presence satisfies it and nothing prompts, and
-  // on a remote device an EXISTING passkey proves it. The first one is
-  // therefore registered at the computer, which is the intended shape —
-  // registration is not a way in, it is what a later way in trusts.
+  // Only the BEGIN is step-up gated, so only it goes through withStepUp:
+  // on the owner's own screen host presence satisfies it and nothing
+  // prompts, and on a remote device an EXISTING passkey proves it. The
+  // finish rides the ceremony handle that begin returned, which is
+  // single-use and short-lived — one proof per registration is the
+  // granularity, and a second would ask the authenticator to assert with
+  // the credential it just created and the backend has not stored yet
+  // (internal/app/app_passkey.go argues it).
   async function register(): Promise<void> {
     if (acting || !usable) return;
     acting = true;
@@ -79,8 +82,9 @@
         { ceremonyId: challenge.ceremonyId, options: challenge.options },
         'create',
       );
-      const added = await withStepUp(() =>
-        FinishPasskeyRegistration(challenge.ceremonyId, JSON.parse(response) as unknown),
+      const added = await FinishPasskeyRegistration(
+        challenge.ceremonyId,
+        JSON.parse(response) as unknown,
       );
       addToast('success', `Added a passkey for ${added.label}.`);
       await load();
@@ -152,7 +156,7 @@
           otherwise have to be made here. Removing one does not sign any device out — revoke
           the device for that.
         {:else}
-          Passkeys need a domain name for this backend. Set one under Application URL above,
+          Passkeys need a domain name for this backend. Set one under Domain and HTTPS above,
           then add a passkey here.
         {/if}
       </p>
