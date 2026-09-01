@@ -364,6 +364,21 @@ remote browser alike. Protocol and authz rules:
   bring `fake-indexeddb` and cover the signing one. Both must keep
   passing — the phase added a presentation, it did not replace one.
 
+  **`crypto.subtle` is not the only thing missing on that page, and it is
+  the only one anybody remembered.** Secure context also gates
+  `crypto.randomUUID` and `navigator.clipboard`, and an absent property is
+  a TypeError when called, not a degraded feature. `wsClient.generateId`
+  minted the id of every RPC through `crypto.randomUUID`, so a device that
+  paired perfectly threw on the first call of the boot fan-out and rendered
+  a BLANK page — no error surface, because the code that draws one had not
+  mounted (2026-08-31, found by the harness). Random ids now come from
+  `utils/randomId.ts`, which falls back to `crypto.getRandomValues` — NOT
+  secure-context gated, so the answer stays a CSPRNG — and architecture
+  rule 6 fails the build on a bare `crypto.randomUUID` anywhere else.
+  `crypto.getRandomValues` and plain `fetch`/`WebSocket` are fine; anything
+  else reached from module scope or from boot needs the same question
+  asked, and the answer is a runtime feature test, never a build flag.
+
 The connection's opening frame is the OTHER identity source, alongside
 the manifest. `wsClient` records it as `TransportHello` and
 `stores/transportStatus.svelte.ts` mirrors it into runes. Read it through

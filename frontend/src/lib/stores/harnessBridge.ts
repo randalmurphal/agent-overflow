@@ -60,6 +60,7 @@ import { harnessPageMarker, whenHarnessSession } from '../transport/harnessMode'
 import { hasScope } from '../transport/scopes';
 import { wailsEventOn } from './wailsEvents';
 import { onTransportStatusChange } from './transportStatus.svelte';
+import { randomId } from '../utils/randomId';
 
 interface UIQueryEvent {
 	id?: unknown;
@@ -73,10 +74,7 @@ let bridgeModule: Promise<BridgeModule> | null = null;
 
 // Immutable for this document lifetime. Re-installing the bridge after a
 // reconnect must not let a stale page identity answer a newer page's query.
-const FRONTEND_PAGE_ID = (() => {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  return `page-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
-})();
+const FRONTEND_PAGE_ID = randomId();
 
 /** Test seam for constructing a targeted synthetic event. */
 export function __frontendPageIDForTest(): string {

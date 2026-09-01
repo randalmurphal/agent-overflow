@@ -1,7 +1,8 @@
-// Who this screen is, as the backend sees it. Leaf module: imports nothing,
-// because both the transport client (which puts the identity on the WebSocket
-// upgrade URL) and the UI-state store (which scopes its preference bucket by
-// it) need it, and the transport cannot import a store.
+// Who this screen is, as the backend sees it. Near-leaf module: its only
+// import is the app's random-identifier mint, because both the transport
+// client (which puts the identity on the WebSocket upgrade URL) and the
+// UI-state store (which scopes its preference bucket by it) need this
+// module, and the transport cannot import a store.
 //
 // Two ids, mirroring transport.ClientIdentity on the Go side:
 //
@@ -15,6 +16,8 @@
 //
 // Both are opaque; the backend bounds them to 8..64 chars of [A-Za-z0-9-] and
 // treats anything else as no identity at all.
+
+import { randomId } from '../utils/randomId';
 
 const CLIENT_ID_CACHE_KEY = 'agent-overflow:uistate:clientId';
 
@@ -44,17 +47,11 @@ function writeLocal(key: string, value: string): void {
   }
 }
 
-function mintId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  // Non-crypto fallback for environments without crypto.randomUUID (older
-  // happy-dom builds in tests). These ids name a preference bucket and a
-  // connection, not a credential, so Math.random-grade uniqueness is fine.
-  let out = '';
-  for (let i = 0; i < 32; i++) out += Math.floor(Math.random() * 16).toString(16);
-  return out;
-}
+// Both ids come from the app's one mint. The environments without
+// `crypto.randomUUID` are real and shipped — a plain-HTTP LAN page above
+// all — and `utils/randomId` is where that is answered once, with a
+// CSPRNG, rather than per call site with whatever each one remembered.
+const mintId = randomId;
 
 /**
  * Resolve the durable device id: the `cid` query parameter wins (that is how a

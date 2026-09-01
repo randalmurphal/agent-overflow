@@ -91,7 +91,7 @@ bug ([`stores/AGENTS.md`](src/lib/stores/AGENTS.md)).
 
 ## Rules with structural tests
 
-`src/lib/architecture.test.ts` enforces five. Each carries a shrink-only
+`src/lib/architecture.test.ts` enforces six. Each carries a shrink-only
 allowlist: an exception that has been fixed must be deleted, and an entry
 that no longer offends fails too.
 
@@ -114,6 +114,11 @@ that no longer offends fails too.
 5. An event-driven refresh uses `utils/refreshScheduler.ts`. A trailing
    debounce is postponed forever while events arrive closer together than
    its delay, and two of the three offenders gated workspace mutation.
+6. Random identifiers come from `utils/randomId.ts`. `crypto.randomUUID`
+   is SECURE-CONTEXT ONLY and a plain-HTTP LAN page is a shipped context,
+   where the property is absent and the call throws — in `wsClient`'s
+   `generateId` that was a blank page on the first RPC of the boot
+   fan-out, not a degraded feature.
 
 `src/lib/themeTokens.test.ts` enforces the token layer over all of
 `src/`: no raw Tailwind palette or black/white utilities, no default

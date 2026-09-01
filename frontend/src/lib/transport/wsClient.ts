@@ -52,6 +52,7 @@ import {
 import { getConnectionId, getDeviceId } from './clientIdentity';
 import { hasPairedSession, mintDialTicket } from './deviceSession';
 import { refreshGrantedScopes } from './scopes';
+import { randomId } from '../utils/randomId';
 
 /**
  * Append this screen's identity to the upgrade URL. Kept as a function rather
@@ -2301,12 +2302,15 @@ function storeNotificationActivationSeq(scope: string, seq: number): void {
   }
 }
 
-// generateId returns a random request id via crypto.randomUUID. Every
-// environment we run in (modern browsers, happy-dom, the Wails webview)
-// ships randomUUID; matches the project precedent in
-// frontend/src/lib/components/primitives/Modal.svelte.
+// generateId returns a random request id. Through `utils/randomId`, never
+// `crypto.randomUUID` directly: that API is SECURE-CONTEXT ONLY, and a
+// plain-HTTP LAN page is a shipped context for this client
+// (docs/specs/remote-access.md §15 constraint 6). Calling it there throws,
+// and since this mints the id of every RPC, the throw landed on the first
+// call of the boot fan-out and left a freshly paired browser staring at a
+// blank page.
 function generateId(): string {
-  return crypto.randomUUID();
+  return randomId();
 }
 
 // createWSClient is the test entry point. Production code uses the

@@ -252,6 +252,36 @@ const EVENT_SUBSCRIPTION_IMPORTS = ['wailsEventOn', 'onItemUpsert'] as const;
 const DEBOUNCED_EVENT_REFRESH_ALLOWLIST: Record<string, string> = {};
 
 // ---------------------------------------------------------------------------
+// Rule 6 — random identifiers come from the one mint.
+//
+// `crypto.randomUUID` is a SECURE-CONTEXT API. A plain-HTTP LAN page is a
+// shipped context for this app (docs/specs/remote-access.md §15 constraint 6:
+// a phone reaching the desk over the LAN has no https and gets no secure
+// context), and there the property is not merely restricted — it is ABSENT,
+// so a call is a TypeError.
+//
+// That is a boot-time crash, not a degraded feature, which is why this one
+// API gets a rule while its secure-context siblings do not. `wsClient`'s
+// `generateId` mints the id of every RPC, so the throw landed on the first
+// call of the boot fan-out and a freshly paired browser rendered a blank
+// page — no error surface, because the code that would have drawn one had
+// not mounted (found by the harness, 2026-08-31). `crypto.subtle` is absent
+// on the same page and is fine: `transport/deviceKey.ts` feature-tests it
+// and the device enrols with a bearer identifier instead. `navigator.clipboard`
+// is absent too, and fails a CLICK rather than a launch.
+//
+// `lib/utils/randomId.ts` is the one place the fallback is written, and it
+// falls back to `crypto.getRandomValues` — which is NOT secure-context gated,
+// so the answer stays a CSPRNG rather than `Math.random` on the pages that
+// need it most. The allowlist is empty and stays that way: a second call site
+// is a second remembered answer, and the last four were four different ones.
+const RANDOM_ID_OWNER = 'lib/utils/randomId.ts';
+// A CALL, not the word: the comments at the converted call sites name the API
+// they no longer reach for, and must not read as offenders.
+const RANDOM_UUID_CALL = /\brandomUUID\s*\(/;
+const RANDOM_ID_ALLOWLIST: Record<string, string> = {};
+
+// ---------------------------------------------------------------------------
 
 interface ParsedImport {
   /** Module specifier as written. */
@@ -343,6 +373,7 @@ describe('architecture', () => {
       path: repoPath(file),
       imports: parseImports(text),
       callsEventsOn: EVENTS_ON_CALL.test(text),
+      callsRandomUUID: RANDOM_UUID_CALL.test(text),
       inStores: file.startsWith(STORES_DIR + sep),
     };
   });
@@ -498,6 +529,24 @@ describe('architecture', () => {
       `Drive the refresh with ${REFRESH_SCHEDULER_MODULE}, whose absolute deadline fires`
       + ' under a stream that never goes quiet. Plain debounce stays correct only for a'
       + ' quiet-edge persist that nothing reads mid-burst.',
+    );
+  });
+
+  it('keeps random identifiers on the secure-context-safe mint', () => {
+    const offenders = new Map<string, string[]>();
+    for (const source of sources) {
+      if (source.path === RANDOM_ID_OWNER) continue;
+      if (!source.callsRandomUUID) continue;
+      offenders.set(source.path, [
+        'calls crypto.randomUUID(), which is absent on a plain-HTTP LAN page and throws there',
+      ]);
+    }
+    expectAllowlistExact(
+      offenders,
+      RANDOM_ID_ALLOWLIST,
+      'New violations.',
+      `Call randomId() from ${RANDOM_ID_OWNER}, which falls back to crypto.getRandomValues`
+      + ' on the pages where crypto.randomUUID does not exist.',
     );
   });
 

@@ -12,6 +12,7 @@
   import { fade, scale } from 'svelte/transition';
   import { focusTrap } from '../../utils/focusTrap';
   import { hasOpenPopoverOwnedBy } from '../../utils/popoverOwnership';
+  import { randomId } from '../../utils/randomId';
 
   type Width = 'sm' | 'md' | 'lg' | 'xl';
   type Padding = 'none' | 'tight' | 'comfortable' | 'loose';
@@ -93,8 +94,9 @@
   let panelEl: HTMLDivElement | undefined = $state(undefined);
 
   // Stable id keeps aria-labelledby wired even if the title prop changes.
-  // crypto.randomUUID is available everywhere we run (happy-dom included).
-  const titleId = `modal-title-${crypto.randomUUID().slice(0, 8)}`;
+  // Through utils/randomId: crypto.randomUUID is secure-context only and
+  // throws on the plain-HTTP LAN page this app also serves.
+  const titleId = `modal-title-${randomId().slice(0, 8)}`;
 
   // Prefer aria-labelledby when title is present; otherwise fall back
   // to aria-label. One or the other must be set — dialogs without any
