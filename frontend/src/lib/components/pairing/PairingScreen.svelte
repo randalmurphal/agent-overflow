@@ -15,6 +15,7 @@
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import { presentAuthReason } from '../../transport/authReason';
   import { PasskeyAbandonedError, passkeysUsable } from '../../transport/passkey';
+  import { suggestDeviceLabel } from '../../utils/deviceLabel';
   import {
     PairingRefusedError,
     endpointMatchesOrigin,
@@ -60,25 +61,12 @@
         }
       : { at: 'intro' },
   );
-  let label = $state(suggestLabel());
+  let label = $state(suggestDeviceLabel());
   let probeTimer: ReturnType<typeof setTimeout> | null = null;
 
   const backendName = $derived(
     payload === null ? '' : payload.backendName || new URL(payload.endpoint).host,
   );
-
-  // A readable default the person can keep: what kind of screen this is,
-  // guessed from the browser's own description of itself.
-  function suggestLabel(): string {
-    const ua = navigator.userAgent;
-    if (/iPad/.test(ua)) return 'iPad';
-    if (/iPhone/.test(ua)) return 'iPhone';
-    if (/Android/.test(ua)) return 'Android phone';
-    if (/Mac/.test(ua)) return 'Mac browser';
-    if (/Windows/.test(ua)) return 'Windows browser';
-    if (/Linux/.test(ua)) return 'Linux browser';
-    return 'Browser';
-  }
 
   async function pair(): Promise<void> {
     if (stage.at !== 'intro' || payload === null) return;
@@ -92,7 +80,7 @@
     }
     stage = { at: 'redeeming' };
     try {
-      const outcome = await redeemPairing(payload, label.trim() || suggestLabel());
+      const outcome = await redeemPairing(payload, label.trim() || suggestDeviceLabel());
       stage = { at: 'waiting', verificationNumber: outcome.verificationNumber };
       scheduleProbe(Date.now() + PROBE_DEADLINE_MS);
     } catch (err) {
@@ -126,7 +114,7 @@
     if (stage.at !== 'intro') return;
     stage = { at: 'redeeming' };
     try {
-      await signInWithPasskey(label.trim() || suggestLabel());
+      await signInWithPasskey(label.trim() || suggestDeviceLabel());
       signedInWithPasskey = true;
       stage = { at: 'ready' };
       setTimeout(onDone, 700);

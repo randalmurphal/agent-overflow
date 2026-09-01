@@ -27,6 +27,7 @@
   import { relativeTime } from '../../utils/format';
   import { answerChallenge, PasskeyAbandonedError, passkeysUsable } from '../../transport/passkey';
   import { withStepUp } from '../../transport/stepUp';
+  import { suggestDeviceLabel } from '../../utils/deviceLabel';
 
   // Whether this backend can register one at all: it needs a canonical
   // domain to be a relying party under, and this page needs a secure
@@ -50,20 +51,6 @@
     }
   }
 
-  // A readable default the person can keep, from the browser's own
-  // description of itself — the same guess the pairing screen makes,
-  // because it is answering the same question about the same machine.
-  function suggestLabel(): string {
-    const ua = navigator.userAgent;
-    if (/iPad/.test(ua)) return 'iPad';
-    if (/iPhone/.test(ua)) return 'iPhone';
-    if (/Android/.test(ua)) return 'Android phone';
-    if (/Mac/.test(ua)) return 'Mac';
-    if (/Windows/.test(ua)) return 'Windows PC';
-    if (/Linux/.test(ua)) return 'Linux PC';
-    return 'This device';
-  }
-
   // Only the BEGIN is step-up gated, so only it goes through withStepUp:
   // on the owner's own screen host presence satisfies it and nothing
   // prompts, and on a remote device an EXISTING passkey proves it. The
@@ -76,7 +63,7 @@
     if (acting || !usable) return;
     acting = true;
     try {
-      const label = suggestLabel();
+      const label = suggestDeviceLabel();
       const challenge = await withStepUp(() => BeginPasskeyRegistration(label));
       const response = await answerChallenge(
         { ceremonyId: challenge.ceremonyId, options: challenge.options },
@@ -153,8 +140,8 @@
       <p class="text-[0.71875rem] leading-snug text-fg-muted">
         {#if usable}
           A passkey signs a browser in without a pairing link, and confirms changes that
-          otherwise have to be made here. Removing one does not sign any device out — revoke
-          the device for that.
+          otherwise need you at the computer running Agent Overflow. Removing one does not
+          sign any device out. Revoke the device for that.
         {:else}
           Passkeys need a domain name for this backend. Set one under Domain and HTTPS above,
           then add a passkey here.
