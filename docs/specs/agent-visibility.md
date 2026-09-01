@@ -73,8 +73,11 @@ launch, how do progress and terminal signals arrive, which controls exist
   when the source thread changes, closes itself when the scoped row is
   gone on restore (Q5).
 - Background section lists every node that is backgrounded or descends
-  from one, indented by depth; click opens the pane and scrolls the
-  timeline to the card. Forks appear without a kill button (Q8).
+  from one, indented by depth; a row click opens the pane and scrolls the
+  timeline to the card. The row's explicit open button opens the pane
+  only — the timeline jump is explicit navigation and releases
+  bottom-follow, which a reader pinned to a streaming tail did not ask
+  for (2026-08-31). Forks appear without a kill button (Q8).
 - Background action: icon button on a running inline agent or Bash row
   (Claude only: `background_tasks` control_request by `tool_use_id`);
   no keyboard shortcut (Q9). Claude stops forwarding the node through the

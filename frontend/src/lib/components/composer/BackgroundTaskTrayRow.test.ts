@@ -209,8 +209,12 @@ describe('<BackgroundTaskTrayRow>', () => {
 });
 
 describe('<BackgroundTaskTrayRow> open affordance (agent-visibility)', () => {
-  it('fires onOpen from the row body and the open button, but not from Stop', async () => {
+  it('fires onOpen from the row body, onOpenPane from the open button, neither from Stop', async () => {
+    // The split is the fix for a pinned reader losing bottom-follow: the row
+    // click jumps the timeline (explicit navigation, releases the pin), the
+    // open button only opens the companion and must not carry the jump.
     const onOpen = vi.fn();
+    const onOpenPane = vi.fn();
     const onStop = vi.fn();
     const anchor = makeItem({
       id: 'L1',
@@ -227,6 +231,7 @@ describe('<BackgroundTaskTrayRow> open affordance (agent-visibility)', () => {
         provider: 'claude' as ProviderID,
         onStop,
         onOpen,
+        onOpenPane,
       },
     });
     const row = getByTestId('background-task-tray-row');
@@ -235,11 +240,14 @@ describe('<BackgroundTaskTrayRow> open affordance (agent-visibility)', () => {
 
     await fireEvent.click(row);
     expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onOpenPane).not.toHaveBeenCalled();
     await fireEvent.click(getByTestId('background-task-tray-row-open'));
-    expect(onOpen).toHaveBeenCalledTimes(2);
+    expect(onOpenPane).toHaveBeenCalledTimes(1);
+    expect(onOpen).toHaveBeenCalledTimes(1);
     await fireEvent.click(getByTestId('background-task-tray-row-stop'));
     expect(onStop).toHaveBeenCalledTimes(1);
-    expect(onOpen).toHaveBeenCalledTimes(2);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onOpenPane).toHaveBeenCalledTimes(1);
   });
 
   it('hides the open button on a plain command row (no agent pane to open), keeping the row-click scroll', async () => {
@@ -253,6 +261,9 @@ describe('<BackgroundTaskTrayRow> open affordance (agent-visibility)', () => {
         provider: 'claude' as ProviderID,
         onStop: vi.fn(),
         onOpen,
+        // Supplied, so the button's absence below is the Bash gate and not
+        // just a missing handler.
+        onOpenPane: vi.fn(),
       },
     });
     expect(queryByTestId('background-task-tray-row-open')).toBeNull();
