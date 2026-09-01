@@ -1434,6 +1434,16 @@ ALTER TABLE threads ADD COLUMN created_head_commit TEXT NOT NULL DEFAULT '';`,
 		// stronger form enforceable.
 		SQL: deviceProofKindV77SQL,
 	},
+	{
+		Version: 78,
+		Name:    "passkeys",
+		// The owner's passkey credentials and the WebAuthn user handle
+		// they register against. See the const's doc comment for why the
+		// handle is a column on `users`, why credentials hang off the
+		// account rather than off a device row, and what the counter and
+		// backup flags decide.
+		SQL: passkeysV78SQL,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

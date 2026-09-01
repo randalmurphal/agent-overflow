@@ -11,10 +11,11 @@ never migrated.
 **One family is exempt and it is the only one**: the identity tables
 (`users`, `devices`, `sessions`, `signing_keys`, `recovery_codes`,
 `auth_audit`, migration v75; `pairing_links` and `refresh_secrets`,
-migration v76) are authoritative. They cannot be rebuilt from a provider
-session file, and dropping a stale row means someone is locked out. See
-"Recent schema changes (v75)" and "(v76)" below before touching any
-sweep, prune, or restore path that walks tables generically.
+migration v76; `passkeys`, migration v78) are authoritative. They cannot
+be rebuilt from a provider session file, and dropping a stale row means
+someone is locked out. See "Recent schema changes (v75)", "(v76)" and
+"(v78)" below before touching any sweep, prune, or restore path that
+walks tables generically.
 
 - `docs/architecture/schema.md`: table-by-table reference and the index
   list. Update it when you add a table, column, or index.
@@ -991,6 +992,67 @@ an empty `provider_turn_id`.
   COLUMN with no CHECK — free-form text, and the table is nobody's FK parent —
   so no rebuild; a future `work_items` rebuild must carry it, like every other
   column added since v39.
+
+## Recent schema changes (v78) — passkeys
+
+One table plus one column (`migration_v78_passkeys.go`, accessors in
+`passkeys.go`): `passkeys`, `users.webauthn_user_handle`. Spec:
+`docs/specs/remote-access.md` §4, "Passkeys". Same
+authoritative-not-cache rule as v75 — every bullet there applies here
+unchanged, because a dropped credential is a sign-in method somebody no
+longer has.
+
+- **A passkey belongs to an ACCOUNT, not to a device.** One synced
+  authenticator appears on every phone a person owns and a hardware key
+  moves between machines in a pocket, so binding a credential to a device
+  row would either name the wrong device or accumulate one row per
+  surface. `devices.passkey_credential_id` has existed since v75 and
+  stays unused; the device row a passkey sign-in mints is a separate
+  fact, resolved the way pairing resolves it.
+- **`users.webauthn_user_handle` is minted lazily, never backfilled.**
+  NULL means no ceremony has run for that account. Filling it in SQL
+  would hand every existing account a handle no authenticator can ever
+  present. `EnsureUserWebAuthnHandle` takes the bytes from its caller and
+  writes them with `WHERE webauthn_user_handle IS NULL`, then reads back,
+  so a racing loser gets the winner's handle rather than a conflict — the
+  `EnsureOwnerUser` shape. `UserByWebAuthnHandle` guards an empty lookup
+  itself: NULL-vs-empty confusion in a future rewrite must not resolve
+  every handle-less account.
+- **`credential_id` is stored raw and uniquely indexed.** It is what an
+  assertion arrives naming, so it is the lookup key, and the index is
+  global rather than per-user: one authenticator credential names at most
+  one account. BLOB rather than an encoding, because every re-encoding is
+  a way for two spellings of one credential to exist.
+- **`clone_warning` is persisted and surfaced, never acted on.** A
+  counter that fails to advance is FLAGGED, and the `{0,0}` case is every
+  platform authenticator that keeps no counter at all. Refusing would
+  sign a person out of a working key on evidence that is routinely
+  absent. `RecordPasskeyAssertion` writes the counter and the verdict in
+  one statement so the two cannot disagree.
+- **`backup_eligible` and `user_verified` LATCH; `backup_state` does
+  not.** Eligibility and the enrollment verification are facts decided at
+  registration — an assertion claiming a different one is a different
+  credential — so `RecordPasskeyAssertion` deliberately writes neither.
+  Backup STATE is the live one and rides every assertion.
+- **`rp_id` records the domain a credential was registered under, and a
+  row whose RP ID moved is still LISTED.** A passkey is bound to its RP
+  ID by the authenticator and can never assert to another one, so a
+  backend whose canonical domain changed holds rows that are dead. A list
+  that silently omitted them would leave someone deleting credentials
+  they cannot see.
+- **`DeletePasskey` is scoped by user AND id, and is idempotent.**
+  Deleting nothing is `false`, never an error — the same answer a second
+  delete gets — because the caller's question is "is it gone", and one
+  account must not be able to remove another's credential by naming its
+  id.
+- **A corrupt `transports` blob is an ERROR.** Substituting an empty hint
+  set would hide the corruption for the credential's lifetime, the same
+  refusal `ThreadLiveTodo` and `ProjectWorktreeSetup` make. Nothing
+  authorizes on transports; they are advisory.
+- **The table cascades from `users`**, like `pairing_links`: it is not a
+  record of what happened (`auth_audit` is, and deliberately does not
+  cascade), so a deleted account must not leave credentials naming a user
+  id nothing resolves.
 
 ## Recent schema changes (v76) — pairing links and rotating refresh
 
