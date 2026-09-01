@@ -60,6 +60,25 @@ export function formatTimeOfDay(timestampMs: number): string {
   return TIME_OF_DAY_FORMAT.format(timestampMs);
 }
 
+// Hoisted for the same reason as the clock formatter above.
+const CALENDAR_DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
+  year: 'numeric',
+  month: 'short',
+  day: 'numeric',
+});
+
+/**
+ * Format a Unix timestamp (milliseconds) as a calendar date (e.g.
+ * "10 Jun 2027") for values that are months away and where the time of
+ * day carries no meaning — a certificate's expiry is the one caller.
+ * Non-finite input renders "Invalid Date" rather than throwing, matching
+ * formatTimeOfDay.
+ */
+export function formatCalendarDate(timestampMs: number): string {
+  if (!Number.isFinite(timestampMs)) return 'Invalid Date';
+  return CALENDAR_DATE_FORMAT.format(timestampMs);
+}
+
 /**
  * Format a token count for display (e.g., 1500 -> "1.5k", 2000000 -> "2.0M",
  * 11776335004 -> "11.8B").

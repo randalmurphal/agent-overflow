@@ -68,6 +68,12 @@ func newPairedBackend(t *testing.T) *pairedBackend {
 		t.Fatalf("servercert.Load: %v", err)
 	}
 	SetCertFingerprint(app, material.Fingerprint)
+	// The listener resolves its certificate per handshake out of this
+	// holder, exactly as the boot's does — the fixture publishes the
+	// self-signed half and nothing else, which is what a backend with no
+	// canonical domain serves.
+	certificateSource := transport.NewCertificateSource()
+	certificateSource.SetSelfSigned(&material.Certificate)
 
 	dispatcher := transport.NewDispatcher()
 	// The same FQN labels the boot registers under, because a method's id
@@ -85,10 +91,10 @@ func newPairedBackend(t *testing.T) *pairedBackend {
 	app.SetEventBus(bus)
 
 	srv, err := transport.New(transport.Config{
-		Dispatcher:     dispatcher,
-		EventBus:       bus,
-		Token:          "launch-credential-under-test",
-		TLSCertificate: &material.Certificate,
+		Dispatcher:   dispatcher,
+		EventBus:     bus,
+		Token:        "launch-credential-under-test",
+		Certificates: certificateSource,
 		BackendIdentity: func() (string, string) {
 			return BackendIdentity(app)
 		},

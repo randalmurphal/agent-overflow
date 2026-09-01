@@ -2,13 +2,16 @@
   import {
     GetNetworkSettings,
     SetNetworkSettings,
+    RenewCanonicalDomainCert,
     NetworkSettings,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
+  import { tokenizeCommandLine } from '../../utils/shellArgv';
   import { isClientMode } from '../../transport/runMode';
   import { hasScope } from '../../transport/scopes';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
+  import NetworkDomainEditor from './NetworkDomainEditor.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
@@ -42,6 +45,13 @@
   let copyState = $state<'idle' | 'copied' | 'failed'>('idle');
   let copyTimeout: ReturnType<typeof setTimeout> | null = null;
 
+  // How often the screen re-reads while the backend says it is working
+  // on a certificate. There is no push channel for this: a DNS-01
+  // exchange is a minutes-long, once-in-a-while event, so one read every
+  // few seconds costs less than a channel that would idle forever.
+  const TLS_POLL_MS = 3000;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
   async function load(): Promise<void> {
     if (localOnly) return;
     try {
@@ -52,6 +62,23 @@
     }
   }
 
+  // SetNetworkSettings writes the whole persisted record, so every caller
+  // sends the fields it is not changing as well. Sending only the edited
+  // one erased the rest: toggling the bind used to clear a configured
+  // domain, which un-served its certificate on the next boot.
+  function writeRequest(current: NetworkSettings, patch: Partial<NetworkSettings>): NetworkSettings {
+    return new NetworkSettings({
+      bindAll: current.bindAll,
+      canonicalDomain: current.canonicalDomain,
+      acmeDnsHook: current.acmeDnsHook,
+      externalCertFile: current.externalCertFile,
+      externalKeyFile: current.externalKeyFile,
+      url: '',
+      token: '',
+      ...patch,
+    });
+  }
+
   async function toggleBindAll(next: boolean): Promise<void> {
     if (!settings || saving) return;
     saving = true;
@@ -60,13 +87,47 @@
     // the rebind round-trips. Any error path restores `previous`.
     settings = { ...settings, bindAll: next } as NetworkSettings;
     try {
-      const updated = await SetNetworkSettings(
-        new NetworkSettings({ bindAll: next, url: '', token: '' }),
-      );
-      settings = updated;
+      settings = await SetNetworkSettings(writeRequest(previous, { bindAll: next }));
     } catch (err) {
       settings = previous;
       addToast('error', `Failed to update network settings: ${errString(err)}`);
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function saveDomain(draft: {
+    canonicalDomain: string;
+    dnsHook: string;
+    externalCertFile: string;
+    externalKeyFile: string;
+  }): Promise<void> {
+    if (!settings || saving) return;
+    saving = true;
+    const previous = settings;
+    try {
+      settings = await SetNetworkSettings(
+        writeRequest(previous, {
+          canonicalDomain: draft.canonicalDomain.trim(),
+          acmeDnsHook: tokenizeCommandLine(draft.dnsHook),
+          externalCertFile: draft.externalCertFile.trim(),
+          externalKeyFile: draft.externalKeyFile.trim(),
+        }),
+      );
+    } catch (err) {
+      addToast('error', `Failed to update network settings: ${errString(err)}`);
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function renewCertificate(): Promise<void> {
+    if (!settings || saving) return;
+    saving = true;
+    try {
+      settings = await RenewCanonicalDomainCert();
+    } catch (err) {
+      addToast('error', `Failed to check the certificate: ${errString(err)}`);
     } finally {
       saving = false;
     }
@@ -86,10 +147,52 @@
     }, 1500);
   }
 
+  // Derived, not read off `settings` inside the poll effect: a re-read
+  // that answers the same thing must not restart the timer, or the
+  // interval never elapses and the screen re-reads as fast as the RPC
+  // returns.
+  let renewing = $derived(settings?.tls.renewing ?? false);
+
+  // Which of the three the URL is, read off the URL itself rather than
+  // off the certificate status: which host and scheme it came out as is
+  // the backend's decision (network.AppURLWithLAN), and describing it
+  // from a second set of inputs is how the sentence and the field
+  // disagree.
+  let shareURLDescription = $derived.by(() => {
+    const ticket =
+      ' Each copy carries a one-time ticket that only loads the page: the device still has to pair.';
+    const url = settings?.url ?? '';
+    if (url.startsWith('https://')) {
+      return (
+        'Copy this URL into a browser on another device. It uses the domain you configured, so the browser opens it over HTTPS with no warning.' +
+        ticket
+      );
+    }
+    if (settings?.bindAll) {
+      return (
+        "Copy this URL into a browser on another device to open Agent Overflow remotely. With LAN binding on, the URL points at this machine's private IP." +
+        ticket
+      );
+    }
+    return (
+      'Copy this URL into a browser on another device. While the server is on loopback, only this machine resolves the URL.' +
+      ticket
+    );
+  });
+
   $effect(() => {
     void load();
     return () => {
       if (copyTimeout) clearTimeout(copyTimeout);
+    };
+  });
+
+  $effect(() => {
+    if (!renewing || localOnly) return;
+    pollTimer = setInterval(() => void load(), TLS_POLL_MS);
+    return () => {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = null;
     };
   });
 </script>
@@ -113,9 +216,10 @@
           By default the server binds to
           <code class="font-mono text-[0.6875rem]">127.0.0.1</code> so only this machine can
           reach it. Toggle on to listen on every network interface — other devices on
-          your LAN can then open the URL below in a browser. The traffic is plain
-          <code class="font-mono text-[0.6875rem]">ws://</code>; for exposure beyond a
-          trusted LAN, route through Tailscale Serve or an SSH tunnel.
+          your LAN can then open the URL below in a browser. Without a certificate the
+          traffic is plain <code class="font-mono text-[0.6875rem]">ws://</code>; give
+          this backend a domain below, or route through Tailscale Serve or an SSH
+          tunnel, before using it beyond a trusted LAN.
         {/if}
       {/snippet}
     </SettingsHeader>
@@ -138,14 +242,15 @@
   </section>
 
   {#if !localOnly && settings}
+    <NetworkDomainEditor
+      {settings}
+      busy={saving}
+      onsave={saveDomain}
+      onrenew={renewCertificate}
+    />
+
     <section>
-      <SettingsHeader
-        title="Share URL"
-        description={(settings.bindAll
-          ? "Copy this URL into a browser on another device to open Agent Overflow remotely. With LAN binding on, the URL points at this machine's private IP."
-          : 'Copy this URL into a browser on another device. While the server is on loopback, only this machine resolves the URL.') +
-          ' Each copy carries a one-time ticket that only loads the page: the device still has to pair.'}
-      />
+      <SettingsHeader title="Share URL" description={shareURLDescription} />
 
       <div class="flex items-center gap-2">
         <input

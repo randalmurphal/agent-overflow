@@ -52,6 +52,10 @@ export const SETTINGS_DEFAULTS = {
   observabilityEventLogEnabled: false,
   network: {
     bindAll: false,
+    canonicalDomain: "",
+    acmeDnsHook: [],
+    externalCertFile: "",
+    externalKeyFile: "",
   },
   retention: {
     days: 30,

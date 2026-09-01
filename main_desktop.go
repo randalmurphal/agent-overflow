@@ -286,7 +286,7 @@ func runDesktop(listenAddr string) {
 			// URL. Repeating it here only added a second wording for one
 			// failure, and a fatalf that skipped the transport shutdown
 			// the shell's error return runs.
-			srv = bootTransport(appService, listenAddr, bootTransportOptions{LoadPersistedBindAll: true})
+			srv = bootTransport(appService, listenAddr, bootTransportOptions{LoadPersistedNetwork: true})
 		},
 		pageURL: func() string {
 			if srv == nil {

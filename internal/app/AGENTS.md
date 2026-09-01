@@ -241,6 +241,49 @@ Two shapes are worth knowing before editing:
   somebody else's phone would point that phone at this machine's bucket.
   The payload rides the URL FRAGMENT, which is never sent to a server.
 
+## The canonical domain's certificate
+
+`app_domaincert.go` is the one place that decides WHERE this backend's
+domain certificate comes from and WHEN it is obtained. `internal/acmecert`
+knows how to order one and `internal/transport` knows how to present one;
+neither knows about settings, a schedule, or the other's existence, and
+this file is the seam.
+
+- **One goroutine, one loop, one status.** `startDomainCertificateLoop`
+  runs `reconcileDomainCertificate` and sleeps on the wait it returns.
+  Boot, `SetNetworkSettings`, and `RenewCanonicalDomainCert` all KICK it
+  and read the status it left behind; none of them does certificate work
+  inline. That is not tidiness — a DNS-01 exchange waits on record
+  propagation and outlives any RPC timeout the frontend has (60s), and a
+  renewal three months from now has no call to attach to at all. The
+  screen polls `GetNetworkSettings` while `tls.renewing` is set.
+- **The branch order IS the policy**, and it is the settings file's
+  precedence made executable: no domain clears the slot; an external
+  cert/key pair is loaded and nothing is ordered; a hook orders and
+  renews; anything else clears. The fourth branch is a real deployment,
+  not a fallthrough — a domain with neither hook nor pair is somebody
+  else's proxy terminating TLS in front of us.
+- **A failure keeps the certificate that is serving.** Backoff runs
+  between `domainCertRetryFloor` and `domainCertRetryCeiling` because a
+  broken DNS hook is usually still broken in five minutes and a CA counts
+  failed orders against a rate limit. The error is verbatim, names its
+  stage, and is cleared by the next success — user-facing state, not a
+  log line (root `AGENTS.md` principle 5).
+- **The external pair is re-read only when its bytes could have changed**,
+  keyed on a `(size, modtime)` stamp. Deliberately not a filesystem watch:
+  an outside tool renews monthly at most, and a watch costs a descriptor
+  plus a wake-up per unrelated write in that directory.
+- **`RenewCanonicalDomainCert` carries `//ao:scope host` and NO
+  `//ao:stepup`.** It takes no argument and changes no configuration — it
+  re-runs what the daily timer would have run anyway, against settings
+  that were themselves written through the step-up-gated
+  `SetNetworkSettings`. Demanding a second proof would gate the RETRY of
+  an act that was already proved.
+- **Tests reach no network and no real CA.** The order flow is driven
+  through `acmecert`'s narrow `CA` interface; what is live-only is a real
+  Let's Encrypt issuance, and the "Check certificate now" button is how
+  that gets checked.
+
 ## Tests
 
 Application tests stay beside the shell. `main_test.go` changes their working

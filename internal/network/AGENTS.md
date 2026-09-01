@@ -15,17 +15,32 @@ upgrade). So the URL is how a device REACHES this backend, not how it
 gets in — which is also why the one-time ticket on it buys less than
 its shape suggests: it loads the page, and nothing else.
 
-**The listener speaks TLS and this URL still does not, and that is not
-an oversight.** The transport terminates TLS on the same port when the
-boot resolved a certificate (`internal/transport/AGENTS.md`, § Same-port
-TLS), but the certificate is self-signed: a BROWSER cannot pin it and
-would meet a trust warning, so the URL this package formats stays
-`http://` and `Insecure` stays true for a LAN bind — the bytes a browser
-exchanges really are readable on that network. The TLS half is for
-clients that own their own TLS configuration and pin the fingerprint the
-pairing payload carried, which is a later wave's client. Do not derive
-`URL` or `Insecure` from "a certificate exists"; the question is whether
-the CLIENT can pin, and no browser can.
+**Whether this URL says `https://` is decided by what a BROWSER can
+verify, never by whether a certificate exists.** The transport terminates
+TLS on the same port whenever it holds any certificate
+(`internal/transport/AGENTS.md`, § Same-port TLS), and the self-signed one
+is always there — but a browser cannot pin it and would meet a trust
+warning, so for a self-signed-only backend the URL stays `http://` and
+`Insecure` stays true on a LAN bind. That certificate is for clients that
+own their own TLS configuration and pin the fingerprint the pairing
+payload carried (`internal/deviceclient`).
+
+The one case that flips is a CANONICAL DOMAIN with a certificate actually
+loaded for it — an ACME issuance or the user's own file pair. Then the
+URL is `https://<domain>[:port]/?t=…` (the port is dropped when it is 443)
+and `Insecure` is false, because a trust store accepts those bytes under
+that name.
+
+`AppURLWithLAN` decides that by asking the LISTENER
+(`transport.Server.ServesDomain(name)`), never the settings and never the
+`TLSStatus` beside them. The name is part of the question: a user who just
+changed their domain has a settings record naming the new one while the
+old certificate is still what is loaded, and both a bare "a certificate
+exists" test and the observed `Serving` string answer yes there — which
+publishes an https URL nothing can complete a handshake on. A canonical
+domain with no hook and no file pair is a legitimate third state — somebody
+else's proxy terminates TLS in front — and it publishes the http URL,
+because from here nothing can tell what that proxy does.
 
 ## Layout
 
@@ -58,8 +73,13 @@ the CLIENT can pin, and no browser can.
 - Do NOT call `DiscoverLocalLANIP` more than once per Set flow. The
   origin allow-list and the URL must use the *same* discovered IP
   or the user can see a URL their browser can't reach without an
-  origin failure. Use `OriginPatterns(bindAll, lanIP)` +
-  `AppURLWithLAN(srv, bindAll, lanIP)`.
+  origin failure. Use `OriginPatterns(bindAll, lanIP, domain)` +
+  `AppURLWithLAN(srv, settings, lanIP)`.
 - Do NOT change the JSON tags on `Settings` without a coordinated
   frontend change. The SPA's hand-maintained TS mirror plus the
   Wails-generated bindings both rely on the shape.
+- Do NOT derive `URL` or `Insecure` from the `TLS` status field. It is
+  what the settings screen DISPLAYS; the listener is what a browser
+  connects to, and `Server.ServesDomain` is the only question worth
+  asking. Two sources for one fact disagree exactly during the seconds a
+  domain is being changed.

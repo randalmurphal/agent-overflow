@@ -1,8 +1,14 @@
 package network
 
 import (
+	"context"
+	"crypto/tls"
 	"net"
+	"strings"
 	"testing"
+	"time"
+
+	"agent-overflow/internal/transport"
 )
 
 // TestBindHost_BranchesOnFlag locks the bind-host mapping so a
@@ -19,10 +25,11 @@ func TestBindHost_BranchesOnFlag(t *testing.T) {
 
 // TestOriginPatterns_LoopbackIsNil documents the InsecureSkipVerify
 // case: on loopback, the upgrader sees nil and waives the origin
-// check. LAN bind tightens this to an explicit allow-list so a
-// stray browser tab can't WebSocket-hijack a leaked token.
+// check. LAN bind tightens this to an explicit allow-list, so a page
+// loaded from some other origin cannot open a socket with a token it
+// happened to learn.
 func TestOriginPatterns_LoopbackIsNil(t *testing.T) {
-	if got := OriginPatterns(false, ""); got != nil {
+	if got := OriginPatterns(false, "", ""); got != nil {
 		t.Fatalf("loopback patterns should be nil, got %v", got)
 	}
 }
@@ -33,7 +40,7 @@ func TestOriginPatterns_LoopbackIsNil(t *testing.T) {
 // the toggle would be useless. Without the loopback entries, opening
 // the URL on this same machine would also fail.
 func TestOriginPatterns_BindAllIncludesLAN(t *testing.T) {
-	patterns := OriginPatterns(true, "192.168.1.10")
+	patterns := OriginPatterns(true, "192.168.1.10", "")
 	want := []string{"http://127.0.0.1:*", "http://localhost:*", "http://192.168.1.10:*"}
 	if len(patterns) != len(want) {
 		t.Fatalf("bind-all patterns = %v, want %v", patterns, want)
@@ -50,7 +57,7 @@ func TestOriginPatterns_BindAllIncludesLAN(t *testing.T) {
 // reachable in this branch (the URL falls back to loopback upstream)
 // but at least the loopback origins still work.
 func TestOriginPatterns_BindAllNoLAN(t *testing.T) {
-	patterns := OriginPatterns(true, "")
+	patterns := OriginPatterns(true, "", "")
 	want := []string{"http://127.0.0.1:*", "http://localhost:*"}
 	if len(patterns) != len(want) {
 		t.Fatalf("bind-all patterns (no LAN) = %v, want %v", patterns, want)
@@ -58,6 +65,38 @@ func TestOriginPatterns_BindAllNoLAN(t *testing.T) {
 	for i, p := range patterns {
 		if p != want[i] {
 			t.Fatalf("bind-all patterns[%d] = %q, want %q", i, p, want[i])
+		}
+	}
+}
+
+// A canonical domain names its own origins on either bind. The
+// port-bearing spelling is the one that matters when something in front
+// terminates TLS: the page's origin is https://<domain> and the request
+// reaching this backend is cleartext, so the authority it computes for
+// itself would not match.
+func TestOriginPatterns_CanonicalDomainOnEitherBind(t *testing.T) {
+	loopbackBind := OriginPatterns(false, "", "backend.example")
+	want := []string{"https://backend.example", "https://backend.example:*"}
+	if len(loopbackBind) != len(want) {
+		t.Fatalf("loopback patterns = %v, want %v", loopbackBind, want)
+	}
+	for i, pattern := range loopbackBind {
+		if pattern != want[i] {
+			t.Fatalf("loopback patterns[%d] = %q, want %q", i, pattern, want[i])
+		}
+	}
+
+	lanBind := OriginPatterns(true, "192.168.1.10", "backend.example")
+	wantLAN := []string{
+		"http://127.0.0.1:*", "http://localhost:*", "http://192.168.1.10:*",
+		"https://backend.example", "https://backend.example:*",
+	}
+	if len(lanBind) != len(wantLAN) {
+		t.Fatalf("LAN patterns = %v, want %v", lanBind, wantLAN)
+	}
+	for i, pattern := range lanBind {
+		if pattern != wantLAN[i] {
+			t.Fatalf("LAN patterns[%d] = %q, want %q", i, pattern, wantLAN[i])
 		}
 	}
 }
@@ -198,5 +237,77 @@ func TestDiscoverLocalLANIP_SkipsLoopbackAndDown(t *testing.T) {
 
 	if got := DiscoverLocalLANIP(); got != "" {
 		t.Fatalf("loopback/down iface should yield empty result, got %q", got)
+	}
+}
+
+// shareURLServer is a live transport server on loopback, which is all
+// the URL renderer needs: an address, a token, and a ticket book.
+func shareURLServer(t *testing.T) *transport.Server {
+	t.Helper()
+	srv, err := transport.New(transport.Config{
+		Dispatcher:   transport.NewDispatcher(),
+		EventBus:     transport.NewEventBus(8),
+		Token:        "share-url-token",
+		Certificates: transport.NewCertificateSource(),
+	})
+	if err != nil {
+		t.Fatalf("transport.New: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("transport.Start: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+	return srv
+}
+
+// The share URL follows the certificate, not the configuration: a domain
+// with no certificate for it is a name this backend cannot serve over
+// HTTPS, and handing the user an https:// URL for it would produce a
+// browser error rather than a page.
+func TestShareURLFollowsTheCertificate(t *testing.T) {
+	srv := shareURLServer(t)
+	_, port, err := net.SplitHostPort(srv.Addr())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+
+	configured := Settings{BindAll: true, CanonicalDomain: "backend.example"}
+	withoutCert := FromServerWithLAN(srv, configured, "192.168.1.10")
+	if !strings.HasPrefix(withoutCert.URL, "http://192.168.1.10:") {
+		t.Fatalf("URL = %q, want the LAN address while no certificate is loaded", withoutCert.URL)
+	}
+	if !withoutCert.Insecure {
+		t.Fatal("a cleartext LAN URL is not flagged insecure")
+	}
+
+	srv.Certificates().SetDomain("backend.example", &tls.Certificate{})
+	withCert := FromServerWithLAN(srv, configured, "192.168.1.10")
+	wantPrefix := "https://backend.example:" + port + "/?" + transport.PageTicketParam + "="
+	if !strings.HasPrefix(withCert.URL, wantPrefix) {
+		t.Fatalf("URL = %q, want %q...", withCert.URL, wantPrefix)
+	}
+	if withCert.Insecure {
+		t.Fatal("an https URL is flagged insecure")
+	}
+	// Still a one-time ticket per render, exactly as the other two
+	// spellings: a share panel read twice hands out two openable URLs.
+	if again := FromServerWithLAN(srv, configured, "192.168.1.10"); again.URL == withCert.URL {
+		t.Fatalf("two renders handed out the same URL: %q", withCert.URL)
+	}
+
+	// The seconds after a domain is CHANGED are the case a bare "is a
+	// certificate loaded" test gets wrong: the settings name the new
+	// domain while the listener still holds the old certificate, and an
+	// https URL for a name nothing answers on is a browser error rather
+	// than a page.
+	renamed := configured
+	renamed.CanonicalDomain = "other.example"
+	midChange := FromServerWithLAN(srv, renamed, "192.168.1.10")
+	if !strings.HasPrefix(midChange.URL, "http://192.168.1.10:") {
+		t.Fatalf("URL = %q, want the LAN address while the new name has no certificate", midChange.URL)
 	}
 }

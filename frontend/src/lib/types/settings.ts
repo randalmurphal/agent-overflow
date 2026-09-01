@@ -484,6 +484,28 @@ export interface Settings {
 export interface NetworkPersistedSettings {
   /** When true, the transport server binds to 0.0.0.0 instead of 127.0.0.1. */
   bindAll: boolean;
+
+  /**
+   * The one HTTPS name this backend answers to: a bare hostname, no
+   * scheme, no port, no path. Empty means the backend is reached by
+   * address only.
+   */
+  canonicalDomain: string;
+
+  /**
+   * argv of the command that publishes and removes the DNS-01 challenge
+   * record. Run as `<argv...> set|clear <fqdn> <value>`. Empty means the
+   * backend never orders a certificate.
+   */
+  acmeDnsHook: string[];
+
+  /**
+   * Absolute paths to a certificate this backend did not obtain. Both or
+   * neither; the pair is served for the canonical domain and stops the
+   * backend ordering one of its own.
+   */
+  externalCertFile: string;
+  externalKeyFile: string;
 }
 
 export interface RetentionPersistedSettings {

@@ -124,6 +124,13 @@ func validateSettings(current Settings) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
+	// The generic patch path cannot CHANGE this key (update refuses it),
+	// but it does re-validate the whole struct, so the rules stay stated
+	// in one place rather than only on the SetNetwork path.
+	current.Network, err = validateNetwork(current.Network)
+	if err != nil {
+		return Settings{}, err
+	}
 
 	current.PaneDensity = strings.TrimSpace(current.PaneDensity)
 	if err := validateOption("paneDensity", current.PaneDensity, allowedPaneDensities); err != nil {
@@ -339,6 +346,7 @@ func sanitizeLoadedSettings(current Settings) Settings {
 	)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
 	current.GitLabSelfHostedHosts = sanitizeGitLabHosts(current.GitLabSelfHostedHosts)
+	current.Network = sanitizeNetwork(current.Network)
 	current.ClaudeHiddenModels = dedupeTrimmed(current.ClaudeHiddenModels, MaxHiddenModels)
 	current.CodexHiddenModels = dedupeTrimmed(current.CodexHiddenModels, MaxHiddenModels)
 	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)

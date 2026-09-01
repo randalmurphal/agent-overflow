@@ -20,10 +20,11 @@ is in-memory only: a network jitter buffer, not a history store (root
 `AGENTS.md` principle 3).
 
 Not owned here: the receiver (the dispatcher takes an `any` and reflects), the
-CERTIFICATE it terminates TLS with (`Config.TLSCertificate` is injected by the
-boot from `internal/servercert`, and nothing here mints, persists or fingerprints
-one), and where the listen port comes from (`Config.Port` is injected, never read
-from a file here).
+CERTIFICATES it terminates TLS with (`Config.Certificates` is injected by the
+boot; `internal/servercert` mints the self-signed one and `internal/acmecert`
+obtains the domain one, and nothing here mints, persists, renews or fingerprints
+either), and where the listen port comes from (`Config.Port` is injected, never
+read from a file here).
 
 ## Same-port TLS
 
@@ -47,14 +48,29 @@ cookie names and the origin allow-list all derive from.
   the first byte of that request. Inline, one peer that connected and said
   nothing would hold up every other client for that window, repeatedly, at no
   cost to itself.
-- **What the TLS half buys is confidentiality, not authorization.** The
-  certificate is self-signed and nothing trusts it; its value is that the pairing
-  payload carries its fingerprint, so a client that owns its own TLS configuration
-  pins these exact bytes (spec §7, "Domainless TLS for Go-native clients"). A
-  browser cannot pin, so `network.Settings.URL` stays `http://` and `Insecure`
-  stays true for a LAN bind. Every credential check is the same on both halves.
-- `nil` `Config.TLSCertificate` installs no wrapper at all, which is what every
-  boot without a certificate and every test that does not ask for one runs on.
+- **Which certificate answers is decided per handshake, by SNI**
+  (`certsource.go`). `CertificateSource` holds two swappable slots. A
+  ClientHello naming the configured canonical domain gets the DOMAIN
+  certificate — an ACME issuance or the user's own file pair, both installed by
+  `internal/app`'s reconciler; every other handshake, SNI-less ones included,
+  gets the SELF-SIGNED one. That default is the mechanism, not a fallback: a
+  pinning client's SNI is whatever address it paired on, and answering it with
+  a domain certificate reads as the backend having been replaced. Both slots
+  swap live, so a renewal takes effect on the next handshake with no rebind and
+  no dropped socket.
+- **What the self-signed half buys is confidentiality, not authorization.**
+  Nothing trusts it; its value is that the pairing payload carries its
+  fingerprint, so a client that owns its own TLS configuration pins these exact
+  bytes (spec §7, "Domainless TLS for Go-native clients"). A browser cannot pin,
+  so `network.Settings.URL` stays `http://` and `Insecure` stays true for a LAN
+  bind — **unless** a domain certificate is loaded, which is the one case a
+  browser gets `https://` and no warning. Every credential check is the same on
+  every half.
+- `nil` `Config.Certificates` installs no wrapper at all, which is what every
+  boot without a certificate and every test that does not ask for one runs on. A
+  non-nil source holding no certificate YET still installs it and refuses
+  handshakes until one arrives, because certificates arrive and renew while the
+  process runs.
 
 ## Every new App method is also a wire RPC, so annotate it
 
@@ -537,11 +553,24 @@ gap — same-site ignores ports. `upgrade` therefore hands coder/websocket
 `InsecureSkipVerify: true` and owns the decision itself, so one rule applies on
 loopback and LAN alike.
 
-Whether that list is empty is also this package's LAN switch for the
-`loopbackHostGuard` on `/bootstrap.json`, `/ws`, and `/rpc`: 404s any Host
-header that is not a loopback name (`loopback.HostHeader` accepts only
-`127.0.0.1`, `localhost`, and `::1`, and refuses every DNS name — including one
-that resolves to 127.0.0.1, which is the case it exists for).
+**The `loopbackHostGuard` on `/bootstrap.json`, `/ws`, `/healthz` and `/rpc` is a
+separate rule, and its mode signal is the BIND ADDRESS.** While the live listen
+address is loopback it 404s any Host header that is not a loopback name
+(`loopback.HostHeader` accepts only `127.0.0.1`, `localhost`, and `::1`, and
+refuses every DNS name — including one that resolves to 127.0.0.1, which is the
+case it exists for). It read the origin allow-list's emptiness until wave 8d, and
+that was the wrong signal twice: a boot honouring a PERSISTED LAN preference set
+no patterns, so every LAN client got a 404 until the user toggled the setting
+again, and adding a canonical domain's origins would have switched the guard off
+for every OTHER name as a side effect of naming one.
+
+A configured canonical domain (`Config.CanonicalHost` / `SetCanonicalHost`) adds
+exactly ONE accepted name and stays INSIDE the guard rather than switching it
+off. That is what naming a backend buys: it answers to its name — including
+through a proxy on this machine that terminates TLS and forwards to the loopback
+bind, which sends the domain in the Host header — while every other DNS name is
+still refused. It is a host admission and never an authorization; every
+credential check downstream is unchanged.
 
 **Peer locality is `loopback.PeerAddress(r.RemoteAddr)`**, captured before the
 upgrade and reused for the host-tooling receiver refusal, the step-up proof,

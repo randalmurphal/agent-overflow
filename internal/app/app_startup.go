@@ -152,6 +152,14 @@ func (a *App) Start(ctx context.Context) error {
 	// harness mode. See app_git_background_fetch.go.
 	a.startBackgroundGitFetch()
 
+	// Serve the canonical domain's certificate, and keep serving it: the
+	// loop loads what is on disk, orders one when the user configured
+	// issuance and there is none (or it is inside the renewal window),
+	// and publishes each result into the listener's certificate source
+	// without a rebind. Does nothing at all when no domain is configured,
+	// which is the default. See app_domaincert.go.
+	a.startDomainCertificateLoop(dbDir)
+
 	return nil
 }
 

@@ -147,6 +147,24 @@ file, which is what the pre-database boot readers in `main.go` and
 - `remote.go`: the `RemoteEndpoint` shape and its CRUD helpers
   (`Add` / `Update` / `Delete` / `Touch`). Backs the `--connect`
   target list the desktop binary's settings panel exposes.
+- `network.go`: `NetworkSettings` — how this backend is REACHED — plus
+  the usual strict/lenient pair. It carries the LAN bind toggle, the
+  canonical domain, the DNS-01 hook argv, and the external cert/key
+  pair (`docs/specs/remote-access.md` §7). Four rules the validator
+  enforces, each because the alternative is a backend that cannot
+  serve what it claims: a domain is a bare hostname
+  (`validateBareHostname`, the same rule the GitLab host allowlist
+  uses — reused rather than restated, because "is this a hostname" has
+  one answer), a hook
+  without a domain is refused because there is nothing to order a
+  certificate FOR, the external pair is both-or-neither and absolute
+  paths only, and the pair is refused without a domain because SNI is
+  what selects it. A domain with NEITHER a hook nor a pair is
+  deliberately allowed: that is the deployment where something else
+  terminates TLS in front. The lenient path drops the whole domain half
+  and keeps `BindAll`, because a hand-edited half-configuration is one
+  the reconciler could act on wrongly, while the bind toggle is
+  independent of all of it.
 - `mutate.go`: the SINGLE persisted-write path. Every mutator in this
   package (`Update`, `AddRecentWorkspace`, the remote-endpoint CRUD, the
   provider-environment CRUD) is a closure handed to `Service.mutate`,

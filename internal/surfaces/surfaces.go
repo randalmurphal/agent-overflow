@@ -301,12 +301,19 @@ var Listeners = []Listener{
 			"first byte of a connection decides, so a client that pinned " +
 			"the self-signed certificate the pairing payload named gets " +
 			"an encrypted channel while a browser, which cannot pin, " +
-			"keeps the cleartext one. TLS here is CONFIDENTIALITY, never " +
-			"authorization — the credential below is unchanged by which " +
-			"half a request arrived on. Three checks run ahead of it: an " +
-			"Origin allow-list derived from the request's own authority, " +
-			"a Host-header guard that rejects non-loopback names while in " +
-			"loopback mode, and — once a call is authenticated — the " +
+			"keeps the cleartext one. WHICH certificate answers is per " +
+			"handshake: a request whose SNI names the user's canonical " +
+			"domain is served that domain's certificate — obtained by " +
+			"internal/acmecert over DNS-01, or the external pair the user " +
+			"configured — and everything else is served the self-signed " +
+			"one, so a browser reaches the same listener over real HTTPS " +
+			"without un-pinning any paired client. TLS here is " +
+			"CONFIDENTIALITY, never authorization — the credential below " +
+			"is unchanged by which half a request arrived on. Three " +
+			"checks run ahead of it: an Origin allow-list derived from " +
+			"the request's own authority, a Host-header guard that on a " +
+			"loopback bind rejects every DNS name except the configured " +
+			"canonical domain, and — once a call is authenticated — the " +
 			"per-call scope gate over the session's grants.",
 	},
 	{

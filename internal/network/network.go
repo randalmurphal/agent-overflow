@@ -21,6 +21,27 @@ type Settings struct {
 	// 127.0.0.1.
 	BindAll bool `json:"bindAll"`
 
+	// CanonicalDomain is the one HTTPS name this backend answers to
+	// (docs/specs/remote-access.md §7). Bare hostname, no scheme, no
+	// port. Empty means the backend is reached by address only.
+	CanonicalDomain string `json:"canonicalDomain"`
+
+	// ACMEDNSHook is the argv of the command that publishes and removes
+	// the DNS-01 challenge record. Empty means this backend never orders
+	// a certificate — the name is served by whatever terminates in front
+	// of it, or not over TLS at all.
+	ACMEDNSHook []string `json:"acmeDnsHook"`
+
+	// ExternalCertFile / ExternalKeyFile are absolute paths to a
+	// certificate this backend did not obtain. Both or neither. The pair
+	// wins over issuance: with it set, nothing is ordered.
+	ExternalCertFile string `json:"externalCertFile"`
+	ExternalKeyFile  string `json:"externalKeyFile"`
+
+	// TLS is read-only status, filled by the app from what is actually
+	// loaded. Ignored on Set — nothing here is a preference.
+	TLS TLSStatus `json:"tls"`
+
 	// URL is the http://host:port/?t=<ticket> URL the user can paste
 	// into a remote browser. The `t` is a ONE-TIME page ticket, spent
 	// by that browser's first bootstrap exchange for a cookie, so a
@@ -40,13 +61,62 @@ type Settings struct {
 	Token string `json:"token"`
 
 	// Insecure is true when the URL above traverses an untrusted
-	// network in cleartext. Today that's any LAN bind: the URL is
-	// http://, so the ticket on it and every byte the paired device
+	// network in cleartext. That is any LAN bind whose URL is still
+	// http://: the ticket on it and every byte the paired device
 	// exchanges afterwards are readable by anything on the same
 	// Wi-Fi. The frontend renders a warning banner when Insecure is
 	// true so the user knows to front the bind with Tailscale Serve,
-	// an SSH tunnel, or a reverse proxy before sharing.
+	// an SSH tunnel, or a reverse proxy before sharing. A URL that came
+	// out https:// — which happens only when a certificate for the
+	// canonical domain is actually loaded — is not flagged.
 	Insecure bool `json:"insecure"`
+}
+
+// The values TLSStatus.Serving takes. They answer one question — what
+// does this listener present for the canonical domain — and the UI
+// renders each as its own sentence.
+const (
+	// TLSServingNone: no certificate at all. The listener answers
+	// cleartext only and nothing can pin it.
+	TLSServingNone = "none"
+	// TLSServingSelfSigned: the install's own certificate, which a
+	// paired Go client pins by fingerprint and no browser accepts.
+	TLSServingSelfSigned = "self-signed"
+	// TLSServingACME: a certificate this backend obtained for the
+	// canonical domain and renews.
+	TLSServingACME = "acme"
+	// TLSServingExternal: the user's own certificate files.
+	TLSServingExternal = "external"
+)
+
+// TLSStatus is what the Network settings screen shows about the
+// certificate half. Read-only in both directions: every field is
+// observed, none is a preference, and there is no push channel — the
+// screen re-reads GetNetworkSettings.
+type TLSStatus struct {
+	// Serving is one of the constants above.
+	Serving string `json:"serving"`
+
+	// NotAfter is when the certificate for the canonical domain expires,
+	// in unix milliseconds. Zero when none is loaded. The self-signed
+	// certificate's expiry is deliberately not reported here: it is ten
+	// years out and nothing renews it.
+	NotAfter int64 `json:"notAfter"`
+
+	// Renewing is true while an issuance or renewal is in flight. The
+	// screen polls while it is set, which is why issuance is not an RPC
+	// that blocks — a DNS-01 round trip outlives any call timeout.
+	Renewing bool `json:"renewing"`
+
+	// LastError is the last issuance or load failure, verbatim and
+	// naming its stage. Cleared by the next success. Errors are
+	// user-facing state, not log entries.
+	LastError string `json:"lastError"`
+
+	// SelfSignedFingerprint is the `sha256:<hex>` a paired Go client
+	// pins, the same string the pairing payload carries. Shown so the
+	// two can be compared by eye when a pin is refused.
+	SelfSignedFingerprint string `json:"selfSignedFingerprint"`
 }
 
 // BindHost returns the bind interface for the given LAN toggle.
@@ -75,16 +145,31 @@ func BindHost(bindAll bool) string {
 // On LAN bind the list adds the spellings a shared URL can legitimately
 // be opened under: the loopback aliases and the discovered LAN IP. A
 // browser tab from any other origin still cannot open a socket here.
-func OriginPatterns(bindAll bool, lanIP string) []string {
-	if !bindAll {
-		return nil
+//
+// A canonical domain adds its https origins whatever the bind is, and
+// the port-bearing spelling is the load-bearing one: a page served at
+// https://<domain> through something that terminates TLS in front of
+// this backend reaches the socket over cleartext, so the request
+// authority this server computes is http://<domain> and would not match
+// the page's own origin. Naming the origin is how that deployment is
+// answered rather than half-broken. It does NOT relax the Host guard —
+// that reads the bind address and the canonical name, not this list.
+func OriginPatterns(bindAll bool, lanIP, canonicalDomain string) []string {
+	var patterns []string
+	if bindAll {
+		patterns = append(patterns,
+			"http://127.0.0.1:*",
+			"http://localhost:*",
+		)
+		if lanIP != "" {
+			patterns = append(patterns, fmt.Sprintf("http://%s:*", lanIP))
+		}
 	}
-	patterns := []string{
-		"http://127.0.0.1:*",
-		"http://localhost:*",
-	}
-	if lanIP != "" {
-		patterns = append(patterns, fmt.Sprintf("http://%s:*", lanIP))
+	if canonicalDomain != "" {
+		patterns = append(patterns,
+			fmt.Sprintf("https://%s", canonicalDomain),
+			fmt.Sprintf("https://%s:*", canonicalDomain),
+		)
 	}
 	return patterns
 }
@@ -93,64 +178,105 @@ func OriginPatterns(bindAll bool, lanIP string) []string {
 // the discovery function isn't called twice in a Set flow (once for
 // the allow-list, once for the URL).
 //
-// Both branches carry a freshly minted one-time page ticket: the
-// loopback one from Server.AppURL, the LAN one minted here because only
-// this function knows the interface address to name. Each render of the
-// share panel therefore hands out a URL that opens one browser session
-// — a second device needs the panel read again.
-func AppURLWithLAN(srv *transport.Server, bindAll bool, lanIP string) string {
-	loopback := srv.AppURL()
-	if !bindAll {
-		return loopback
+// Three renderings, in order of what the user can actually paste
+// somewhere useful: the canonical domain when this backend holds a
+// certificate for it (real HTTPS, which is the only form a browser
+// opens without a trust warning), the LAN IP, then loopback.
+//
+// The https branch asks the LISTENER whether it can complete a handshake
+// for that exact name (Server.ServesDomain), not the observed TLS status
+// beside it. The two agree in the settled state and differ in the one
+// that matters: a user who just changed their domain has a settings
+// record naming the new one while the old certificate is still what is
+// loaded, and publishing https:// for a name nothing answers on is worse
+// than publishing the http:// URL that works.
+//
+// Every branch carries a freshly minted one-time page ticket: the
+// loopback one from Server.AppURL, the others minted here because only
+// this function knows the authority to name. Each render of the share
+// panel therefore hands out a URL that opens one browser session — a
+// second device needs the panel read again.
+func AppURLWithLAN(srv *transport.Server, s Settings, lanIP string) string {
+	loopbackURL := srv.AppURL()
+	if s.CanonicalDomain != "" && srv.ServesDomain(s.CanonicalDomain) {
+		if url, ok := ticketedURL(srv, "https", authorityFor(srv, s.CanonicalDomain, "443")); ok {
+			return url
+		}
 	}
-	addr := srv.Addr()
-	_, port, err := net.SplitHostPort(addr)
+	if !s.BindAll || lanIP == "" {
+		// Couldn't find a LAN-reachable address, or none was asked for
+		// — surface the loopback URL so the user at least gets
+		// something they can paste into a local browser, and the UI can
+		// hint that LAN discovery failed via the BindAll=true flag.
+		return loopbackURL
+	}
+	_, port, err := net.SplitHostPort(srv.Addr())
 	if err != nil {
-		return loopback
+		return loopbackURL
 	}
-	if lanIP == "" {
-		// Couldn't find a LAN-reachable address — surface the
-		// loopback URL so the user at least gets something they can
-		// paste into a local browser, and the UI can hint that LAN
-		// discovery failed via the BindAll=true flag.
-		return loopback
+	if url, ok := ticketedURL(srv, "http", net.JoinHostPort(lanIP, port)); ok {
+		return url
 	}
-	ticket, err := srv.MintPageTicket()
-	if err != nil {
-		return loopback
-	}
-	return fmt.Sprintf("http://%s:%s/?%s=%s", lanIP, port, transport.PageTicketParam, ticket)
+	return loopbackURL
 }
 
-// FromServer builds a Settings record for the given bind-all flag
-// using the live transport server (addr + token). Caller is expected
-// to provide the persisted BindAll value; the URL / Token / Insecure
-// fields are server-derived.
-func FromServer(srv *transport.Server, bindAll bool) Settings {
+// authorityFor spells host[:port] for a URL, dropping the port when it
+// is the scheme's default — a domain fronted on 443 reads as the name
+// alone, which is what the user would type.
+func authorityFor(srv *transport.Server, host, defaultPort string) string {
+	_, port, err := net.SplitHostPort(srv.Addr())
+	if err != nil || port == "" || port == defaultPort {
+		return host
+	}
+	return net.JoinHostPort(host, port)
+}
+
+// ticketedURL mints the one-time page ticket and renders the URL, or
+// reports false so the caller can fall back to one that already has a
+// ticket on it.
+func ticketedURL(srv *transport.Server, scheme, authority string) (string, bool) {
+	ticket, err := srv.MintPageTicket()
+	if err != nil {
+		return "", false
+	}
+	return fmt.Sprintf("%s://%s/?%s=%s", scheme, authority, transport.PageTicketParam, ticket), true
+}
+
+// FromServer builds the wire record from the persisted half plus what
+// the live transport server derives (URL, token, and whether that URL is
+// safe to share). The caller supplies everything a user chose — the bind
+// toggle, the domain, the hook, the external pair — and the observed TLS
+// status, since only the app knows what is actually loaded.
+func FromServer(srv *transport.Server, s Settings) Settings {
 	lanIP := ""
-	if bindAll {
+	if s.BindAll {
 		lanIP = DiscoverLocalLANIP()
 	}
-	return FromServerWithLAN(srv, bindAll, lanIP)
+	return FromServerWithLAN(srv, s, lanIP)
 }
 
 // FromServerWithLAN is the primitive form used by callers that
 // already know which LAN IP to embed in the URL (post-rebind, where
 // the IP was computed once for both the allow-list and the URL).
-func FromServerWithLAN(srv *transport.Server, bindAll bool, lanIP string) Settings {
-	out := Settings{BindAll: bindAll}
+func FromServerWithLAN(srv *transport.Server, s Settings, lanIP string) Settings {
+	out := s
+	out.URL = ""
+	out.Token = ""
+	out.Insecure = false
 	if srv == nil {
 		return out
 	}
 	out.Token = srv.Token()
-	out.URL = AppURLWithLAN(srv, bindAll, lanIP)
-	// LAN bind URLs are http:// today — the token traverses the
-	// network in cleartext. Surface that to the UI so the user sees
-	// a clear "front this with Tailscale / SSH tunnel" warning
-	// before sharing the URL on an untrusted network. Loopback URLs
-	// are also http:// but stay on the same machine, so they aren't
-	// flagged.
-	if bindAll && strings.HasPrefix(out.URL, "http://") {
+	out.URL = AppURLWithLAN(srv, s, lanIP)
+	// A LAN bind whose URL is http:// carries the token and every later
+	// byte in cleartext. Surface that to the UI so the user sees a clear
+	// "front this with Tailscale / SSH tunnel" warning before sharing
+	// the URL on an untrusted network. Loopback URLs are also http://
+	// but stay on the same machine, so they aren't flagged — and an
+	// https:// URL is only ever produced when a certificate for the
+	// canonical domain is loaded, which is the case this exists to stop
+	// warning about.
+	if s.BindAll && strings.HasPrefix(out.URL, "http://") {
 		out.Insecure = true
 	}
 	return out

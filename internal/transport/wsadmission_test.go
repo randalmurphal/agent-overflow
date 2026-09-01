@@ -145,7 +145,7 @@ func newAdmissionFixtureWith(t *testing.T, mutate func(*Config)) *admissionFixtu
 	// exactly as the bound listener classifies it — a paired client and a
 	// cleartext browser reach one address in production, and a fixture
 	// that assumed TLS would not exercise that.
-	if tlsConfig := serverTLSConfig(cfg.TLSCertificate); tlsConfig != nil {
+	if tlsConfig := serverTLSConfig(cfg.Certificates); tlsConfig != nil {
 		secure, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatalf("listen for the remote TLS leg: %v", err)
@@ -226,7 +226,9 @@ func TestUpgradeAdmitsAPairedDeviceOffHostOverPinnedTLS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mint a certificate: %v", err)
 	}
-	f := newAdmissionFixtureWith(t, func(cfg *Config) { cfg.TLSCertificate = &material.Certificate })
+	source := NewCertificateSource()
+	source.SetSelfSigned(&material.Certificate)
+	f := newAdmissionFixtureWith(t, func(cfg *Config) { cfg.Certificates = source })
 
 	ticket, err := f.srv.wsTickets.mint(admissionSessionID)
 	if err != nil {

@@ -70,9 +70,16 @@ type tlsSniffListener struct {
 	acceptErr error
 }
 
-// serverTLSConfig turns the configured certificate into what an accepted
-// TLS connection is served with. Nil in, nil out: no certificate means
-// no TLS half, and the sniff wrapper is never installed.
+// serverTLSConfig turns the configured certificate source into what an
+// accepted TLS connection is served with. Nil in, nil out: no source
+// means no TLS half, and the sniff wrapper is never installed.
+//
+// Resolution is PER HANDSHAKE (GetCertificate) rather than a fixed
+// Certificates slice, which is what lets a certificate arrive, renew or
+// be replaced while the listener keeps running. A source that holds
+// nothing yet is still a source: the wrapper installs, and the first
+// handshake before a certificate lands is refused cleanly rather than
+// requiring a restart once one does.
 //
 // The two settings are the protocol constraints this SERVER has, which
 // is why they live here rather than with whoever minted the certificate:
@@ -85,14 +92,14 @@ type tlsSniffListener struct {
 //   - TLS 1.2 floor. Everything that pins this certificate is a current
 //     Go process or engine; older peers would fail on the certificate
 //     itself long before the protocol version mattered.
-func serverTLSConfig(cert *tls.Certificate) *tls.Config {
-	if cert == nil {
+func serverTLSConfig(source *CertificateSource) *tls.Config {
+	if source == nil {
 		return nil
 	}
 	return &tls.Config{
-		Certificates: []tls.Certificate{*cert},
-		MinVersion:   tls.VersionTLS12,
-		NextProtos:   []string{"http/1.1"},
+		GetCertificate: source.certificateFor,
+		MinVersion:     tls.VersionTLS12,
+		NextProtos:     []string{"http/1.1"},
 	}
 }
 

@@ -195,6 +195,92 @@ func TestSetNetworkSettings_NoOpWhenUnchanged(t *testing.T) {
 	}
 }
 
+// The domain is applied to the live listener in the same call that
+// persists it: the Host header carrying that name is answered, and the
+// page origins under it may open a socket. Neither waits for a restart,
+// and neither is a rebind — an open connection must survive a user
+// typing their domain into the settings screen.
+func TestSetNetworkSettings_AppliesTheCanonicalDomainLive(t *testing.T) {
+	app, srv := newNetworkTestApp(t)
+	addr := srv.Addr()
+
+	got, err := app.SetNetworkSettings(network.Settings{
+		CanonicalDomain: "  Backend.Example  ",
+		ACMEDNSHook:     []string{"dns-hook", "--zone", "example"},
+	})
+	if err != nil {
+		t.Fatalf("SetNetworkSettings: %v", err)
+	}
+	if got.CanonicalDomain != "backend.example" {
+		t.Fatalf("canonicalDomain = %q, want the stored spelling", got.CanonicalDomain)
+	}
+	if srv.CanonicalHost() != "backend.example" {
+		t.Fatalf("the listener answers to %q, want backend.example", srv.CanonicalHost())
+	}
+	if srv.Addr() != addr {
+		t.Fatalf("a domain edit rebound the listener: %q -> %q", addr, srv.Addr())
+	}
+	if !app.settings.Get().Network.WantsACME() {
+		t.Fatal("the stored settings do not describe a backend that wants issuance")
+	}
+	// Nothing was issued, so the share URL is unchanged and the status
+	// says what is actually presented rather than what was configured.
+	if !strings.Contains(got.URL, "127.0.0.1") {
+		t.Fatalf("URL = %q, want the loopback address while no certificate is loaded", got.URL)
+	}
+	if got.TLS.Serving != network.TLSServingNone {
+		t.Fatalf("serving = %q, want %q", got.TLS.Serving, network.TLSServingNone)
+	}
+
+	// Clearing the domain withdraws the name from the listener too.
+	if _, err := app.SetNetworkSettings(network.Settings{}); err != nil {
+		t.Fatalf("SetNetworkSettings(clear): %v", err)
+	}
+	if srv.CanonicalHost() != "" {
+		t.Fatalf("the listener still answers to %q after the domain was cleared", srv.CanonicalHost())
+	}
+}
+
+// A refused domain never reaches the listener, and never reaches the
+// file either: one write path, one set of rules.
+func TestSetNetworkSettings_RefusesADomainThatCannotBeServed(t *testing.T) {
+	app, srv := newNetworkTestApp(t)
+
+	if _, err := app.SetNetworkSettings(network.Settings{CanonicalDomain: "https://backend.example/"}); err == nil {
+		t.Fatal("a URL was accepted as the canonical domain")
+	}
+	if srv.CanonicalHost() != "" {
+		t.Fatalf("the listener took %q from a refused write", srv.CanonicalHost())
+	}
+	if app.settings.Get().Network.CanonicalDomain != "" {
+		t.Fatal("a refused write still persisted the domain")
+	}
+}
+
+// The manual button is a kick, not a synchronous issuance: it answers
+// with the current status and refuses only what it can answer for
+// immediately.
+func TestRenewCanonicalDomainCert_RefusesWithNoDomain(t *testing.T) {
+	app, _ := newNetworkTestApp(t)
+
+	if _, err := app.RenewCanonicalDomainCert(); err == nil {
+		t.Fatal("a renewal was accepted with no canonical domain configured")
+	}
+
+	if _, err := app.SetNetworkSettings(network.Settings{
+		CanonicalDomain: "backend.example",
+		ACMEDNSHook:     []string{"dns-hook"},
+	}); err != nil {
+		t.Fatalf("SetNetworkSettings: %v", err)
+	}
+	// The reconciler is started by Start, which this fixture does not
+	// run, so the call reports that rather than pretending it queued
+	// work nothing will pick up.
+	if _, err := app.RenewCanonicalDomainCert(); err == nil {
+		t.Fatal("a renewal was accepted with no reconciler running")
+	}
+}
+
 // TestNetworkFromServer_LoopbackUsesAppURL pins the URL output for the
 // default loopback bind: it is Server.AppURL's, so the user sees the
 // same address however settings is queried.
@@ -204,8 +290,8 @@ func TestSetNetworkSettings_NoOpWhenUnchanged(t *testing.T) {
 // openable URLs rather than one that a second reader finds spent.
 func TestNetworkFromServer_LoopbackUsesAppURL(t *testing.T) {
 	_, srv := newNetworkTestApp(t)
-	first := network.FromServer(srv, false).URL
-	second := network.FromServer(srv, false).URL
+	first := network.FromServer(srv, network.Settings{}).URL
+	second := network.FromServer(srv, network.Settings{}).URL
 	if originOf(t, first) != originOf(t, srv.AppURL()) {
 		t.Fatalf("loopback URL = %q, want the server's own origin", first)
 	}

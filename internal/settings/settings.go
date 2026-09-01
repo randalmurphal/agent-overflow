@@ -14,17 +14,6 @@ import (
 	"agent-overflow/internal/windowgeom"
 )
 
-// NetworkSettings groups LAN-bind preferences for the embedded
-// transport server. Persisted as a nested object so the JSON shape
-// stays stable when more network fields land (origin allow-list,
-// TLS hints, etc.).
-type NetworkSettings struct {
-	// BindAll, when true, asks the transport server to listen on
-	// 0.0.0.0 so other devices on the LAN can reach the app. Default
-	// false keeps the bind on 127.0.0.1 — the safe loopback behaviour.
-	BindAll bool `json:"bindAll"`
-}
-
 // EditorSettings groups the open-in-editor preferences. Lives in its
 // own nested object so future fields (custom argv template, last-used
 // editor for analytics, etc.) can land without reshuffling the
@@ -800,12 +789,21 @@ func (s *Service) update(bucket string, patch map[string]any) (Settings, error) 
 
 // SetNetwork persists the network exposure preference. It is the ONE
 // write path for the "network" key, which Update refuses: the key
-// changes what the transport listens on, so it belongs to the
-// step-up-annotated SetNetworkSettings RPC, and a generic settings
-// patch must not carry the same change past that requirement.
+// changes what the transport listens on, what name it answers to, and
+// which certificate it presents, so it belongs to the step-up-annotated
+// SetNetworkSettings RPC, and a generic settings patch must not carry
+// the same change past that requirement.
+//
+// Validation happens HERE rather than in the caller: this is the one
+// write path, so a value that reached the file could only have come
+// through it.
 func (s *Service) SetNetwork(n NetworkSettings) (Settings, error) {
+	validated, err := validateNetwork(n)
+	if err != nil {
+		return Settings{}, fmt.Errorf("settings: validate: %w", err)
+	}
 	return s.mutate("", func(current Settings) (Settings, error) {
-		current.Network = n
+		current.Network = validated
 		return current, nil
 	})
 }

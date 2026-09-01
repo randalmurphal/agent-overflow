@@ -194,10 +194,11 @@ export class EditorSettings {
 }
 
 /**
- * NetworkSettings groups LAN-bind preferences for the embedded
- * transport server. Persisted as a nested object so the JSON shape
- * stays stable when more network fields land (origin allow-list,
- * TLS hints, etc.).
+ * NetworkSettings groups everything about how the embedded transport
+ * server is reached: which addresses it listens on, and what name and
+ * certificate it answers to (docs/specs/remote-access.md §7). Persisted
+ * as one nested object, so the whole group is one settings key with one
+ * write path.
  */
 export class NetworkSettings {
     /**
@@ -206,6 +207,40 @@ export class NetworkSettings {
      * false keeps the bind on 127.0.0.1 — the safe loopback behaviour.
      */
     "bindAll": boolean;
+
+    /**
+     * CanonicalDomain is the one HTTPS name this backend answers to: a
+     * bare hostname, no scheme, no port, no path. Setting it does three
+     * things at once — the Host header carrying that name is accepted,
+     * `https://<domain>` joins the WebSocket origin allow-list, and the
+     * share URL becomes that name instead of an IP. Whether a
+     * certificate for it exists is a separate question: the domain may
+     * be terminated in front of the backend by somebody else's proxy,
+     * which is a path the spec answers rather than refuses.
+     */
+    "canonicalDomain"?: string;
+
+    /**
+     * ACMEDNSHook is the command that publishes and removes the DNS-01
+     * challenge record, stored as argv (never a shell line). The backend
+     * runs it as `<argv...> set <fqdn> <value>` and
+     * `<argv...> clear <fqdn> <value>`; see internal/acmecert. A hook
+     * plus a canonical domain is what turns issuance on. Empty means the
+     * backend never orders a certificate.
+     */
+    "acmeDnsHook"?: string[];
+
+    /**
+     * ExternalCertFile and ExternalKeyFile are the escape hatch for a
+     * certificate this backend did not obtain: a private CA, a corporate
+     * PKI, or a copy renewed by a tool the user already runs. Absolute
+     * paths to two PEM files. The pair WINS over ACME — when both are
+     * set the backend serves them and never orders anything — so the
+     * user who already has a certificate is not made to prove it to a
+     * certificate authority.
+     */
+    "externalCertFile"?: string;
+    "externalKeyFile"?: string;
 
     /** Creates a new NetworkSettings instance. */
     constructor($$source: Partial<NetworkSettings> = {}) {
@@ -220,7 +255,11 @@ export class NetworkSettings {
      * Creates a new NetworkSettings instance from a string or object.
      */
     static createFrom($$source: any = {}): NetworkSettings {
+        const $$createField2_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("acmeDnsHook" in $$parsedSource) {
+            $$parsedSource["acmeDnsHook"] = $$createField2_0($$parsedSource["acmeDnsHook"]);
+        }
         return new NetworkSettings($$parsedSource as Partial<NetworkSettings>);
     }
 }

@@ -139,9 +139,14 @@ export {
   SetUIState,
   DeleteUIState,
 
-  // Network bindings (LAN-bind toggle for the embedded transport).
+  // Network bindings (LAN-bind toggle, canonical domain and its
+  // certificate, for the embedded transport). RenewCanonicalDomainCert
+  // kicks the reconciler and returns immediately: obtaining a
+  // certificate outlives an RPC, so the screen polls
+  // GetNetworkSettings while `tls.renewing` is set.
   GetNetworkSettings,
   SetNetworkSettings,
+  RenewCanonicalDomainCert,
 
   // Device access (Settings → Network → Devices): the paired-device
   // list, the pairing lifecycle, and revocation. Every one needs

@@ -573,8 +573,9 @@ func pairingDeadline(link store.PairingLink) int64 {
 // pairingPageURL assembles the page URL a pairing link points at, and the
 // bare origin the payload names as its redemption endpoint.
 //
-// Host rule: the LAN share URL when the listener is bound wide, the
-// loopback URL otherwise — network.FromServer is the same primitive
+// Host rule: the canonical domain when a certificate for it is loaded,
+// the LAN share URL when the listener is bound wide, the loopback URL
+// otherwise — network.FromServer is the same primitive
 // GetNetworkSettings answers with, so the address on a pairing link and
 // the address in the share panel can never disagree. Both carry a freshly
 // minted one-time page ticket, which is what lets a device holding no
@@ -588,7 +589,7 @@ func (a *App) pairingPageURL() (pageURL, endpoint string, err error) {
 	if srv == nil {
 		return "", "", fmt.Errorf("access: transport server unavailable")
 	}
-	settings := network.FromServer(srv, a.currentSettings().Network.BindAll)
+	settings := network.FromServer(srv, a.persistedNetworkSettings())
 	if settings.URL == "" {
 		return "", "", fmt.Errorf("access: the transport has no page URL to pair against yet")
 	}

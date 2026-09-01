@@ -43,6 +43,17 @@ function stubBindings() {
   return {
     network: setBindingMock('GetNetworkSettings', async () => ({
       bindAll: false,
+      canonicalDomain: '',
+      acmeDnsHook: [],
+      externalCertFile: '',
+      externalKeyFile: '',
+      tls: {
+        serving: 'self-signed',
+        notAfter: 0,
+        renewing: false,
+        lastError: '',
+        selfSignedFingerprint: '',
+      },
       url: 'http://127.0.0.1:54321/?t=t',
       token: 't',
     })),

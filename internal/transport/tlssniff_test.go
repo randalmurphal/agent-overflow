@@ -26,17 +26,28 @@ import (
 // payload carries.
 func tlsFixture(t *testing.T, mutate func(*Config)) (*Server, servercert.Material) {
 	t.Helper()
+	srv, material, _ := tlsFixtureWithSource(t, mutate)
+	return srv, material
+}
+
+// tlsFixtureWithSource is the same fixture keeping the live source, for
+// the tests about what happens when a certificate CHANGES under a
+// running listener.
+func tlsFixtureWithSource(t *testing.T, mutate func(*Config)) (*Server, servercert.Material, *CertificateSource) {
+	t.Helper()
 	material, err := servercert.Load(t.TempDir())
 	if err != nil {
 		t.Fatalf("mint a certificate: %v", err)
 	}
+	source := NewCertificateSource()
+	source.SetSelfSigned(&material.Certificate)
 	srv := newServerFixtureWith(t, func(cfg *Config) {
-		cfg.TLSCertificate = &material.Certificate
+		cfg.Certificates = source
 		if mutate != nil {
 			mutate(cfg)
 		}
 	}).srv
-	return srv, material
+	return srv, material, source
 }
 
 // pinnedTLSConfig is what a Go-native client does with the fingerprint

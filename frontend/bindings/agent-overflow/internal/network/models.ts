@@ -22,6 +22,35 @@ export class Settings {
     "bindAll": boolean;
 
     /**
+     * CanonicalDomain is the one HTTPS name this backend answers to
+     * (docs/specs/remote-access.md §7). Bare hostname, no scheme, no
+     * port. Empty means the backend is reached by address only.
+     */
+    "canonicalDomain": string;
+
+    /**
+     * ACMEDNSHook is the argv of the command that publishes and removes
+     * the DNS-01 challenge record. Empty means this backend never orders
+     * a certificate — the name is served by whatever terminates in front
+     * of it, or not over TLS at all.
+     */
+    "acmeDnsHook": string[];
+
+    /**
+     * ExternalCertFile / ExternalKeyFile are absolute paths to a
+     * certificate this backend did not obtain. Both or neither. The pair
+     * wins over issuance: with it set, nothing is ordered.
+     */
+    "externalCertFile": string;
+    "externalKeyFile": string;
+
+    /**
+     * TLS is read-only status, filled by the app from what is actually
+     * loaded. Ignored on Set — nothing here is a preference.
+     */
+    "tls": TLSStatus;
+
+    /**
      * URL is the http://host:port/?t=<ticket> URL the user can paste
      * into a remote browser. The `t` is a ONE-TIME page ticket, spent
      * by that browser's first bootstrap exchange for a cookie, so a
@@ -45,12 +74,14 @@ export class Settings {
 
     /**
      * Insecure is true when the URL above traverses an untrusted
-     * network in cleartext. Today that's any LAN bind: the URL is
-     * http://, so the ticket on it and every byte the paired device
+     * network in cleartext. That is any LAN bind whose URL is still
+     * http://: the ticket on it and every byte the paired device
      * exchanges afterwards are readable by anything on the same
      * Wi-Fi. The frontend renders a warning banner when Insecure is
      * true so the user knows to front the bind with Tailscale Serve,
-     * an SSH tunnel, or a reverse proxy before sharing.
+     * an SSH tunnel, or a reverse proxy before sharing. A URL that came
+     * out https:// — which happens only when a certificate for the
+     * canonical domain is actually loaded — is not flagged.
      */
     "insecure": boolean;
 
@@ -58,6 +89,21 @@ export class Settings {
     constructor($$source: Partial<Settings> = {}) {
         if (!("bindAll" in $$source)) {
             this["bindAll"] = false;
+        }
+        if (!("canonicalDomain" in $$source)) {
+            this["canonicalDomain"] = "";
+        }
+        if (!("acmeDnsHook" in $$source)) {
+            this["acmeDnsHook"] = [];
+        }
+        if (!("externalCertFile" in $$source)) {
+            this["externalCertFile"] = "";
+        }
+        if (!("externalKeyFile" in $$source)) {
+            this["externalKeyFile"] = "";
+        }
+        if (!("tls" in $$source)) {
+            this["tls"] = (new TLSStatus());
         }
         if (!("url" in $$source)) {
             this["url"] = "";
@@ -76,7 +122,90 @@ export class Settings {
      * Creates a new Settings instance from a string or object.
      */
     static createFrom($$source: any = {}): Settings {
+        const $$createField2_0 = $$createType0;
+        const $$createField5_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("acmeDnsHook" in $$parsedSource) {
+            $$parsedSource["acmeDnsHook"] = $$createField2_0($$parsedSource["acmeDnsHook"]);
+        }
+        if ("tls" in $$parsedSource) {
+            $$parsedSource["tls"] = $$createField5_0($$parsedSource["tls"]);
+        }
         return new Settings($$parsedSource as Partial<Settings>);
     }
 }
+
+/**
+ * TLSStatus is what the Network settings screen shows about the
+ * certificate half. Read-only in both directions: every field is
+ * observed, none is a preference, and there is no push channel — the
+ * screen re-reads GetNetworkSettings.
+ */
+export class TLSStatus {
+    /**
+     * Serving is one of the constants above.
+     */
+    "serving": string;
+
+    /**
+     * NotAfter is when the certificate for the canonical domain expires,
+     * in unix milliseconds. Zero when none is loaded. The self-signed
+     * certificate's expiry is deliberately not reported here: it is ten
+     * years out and nothing renews it.
+     */
+    "notAfter": number;
+
+    /**
+     * Renewing is true while an issuance or renewal is in flight. The
+     * screen polls while it is set, which is why issuance is not an RPC
+     * that blocks — a DNS-01 round trip outlives any call timeout.
+     */
+    "renewing": boolean;
+
+    /**
+     * LastError is the last issuance or load failure, verbatim and
+     * naming its stage. Cleared by the next success. Errors are
+     * user-facing state, not log entries.
+     */
+    "lastError": string;
+
+    /**
+     * SelfSignedFingerprint is the `sha256:<hex>` a paired Go client
+     * pins, the same string the pairing payload carries. Shown so the
+     * two can be compared by eye when a pin is refused.
+     */
+    "selfSignedFingerprint": string;
+
+    /** Creates a new TLSStatus instance. */
+    constructor($$source: Partial<TLSStatus> = {}) {
+        if (!("serving" in $$source)) {
+            this["serving"] = "";
+        }
+        if (!("notAfter" in $$source)) {
+            this["notAfter"] = 0;
+        }
+        if (!("renewing" in $$source)) {
+            this["renewing"] = false;
+        }
+        if (!("lastError" in $$source)) {
+            this["lastError"] = "";
+        }
+        if (!("selfSignedFingerprint" in $$source)) {
+            this["selfSignedFingerprint"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TLSStatus instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TLSStatus {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TLSStatus($$parsedSource as Partial<TLSStatus>);
+    }
+}
+
+// Private type creation functions
+const $$createType0 = $Create.Array($Create.Any);
+const $$createType1 = TLSStatus.createFrom;

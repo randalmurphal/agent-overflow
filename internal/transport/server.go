@@ -268,29 +268,39 @@ type Config struct {
 	// visible reconnect.
 	MaxRemoteConnLifetime time.Duration
 
-	// TLSCertificate, when non-nil, makes this server terminate TLS
-	// in-app on the SAME port it serves cleartext on: an accepted
-	// connection that opens with a TLS handshake record is handed to
-	// crypto/tls, and anything else is the plain HTTP this server always
-	// spoke (tlssniff.go). Uniform on every bind — loopback and LAN,
-	// boot and rebind alike — so there is no mode in which a client that
-	// pinned this certificate finds it missing.
+	// Certificates, when non-nil, makes this server terminate TLS in-app
+	// on the SAME port it serves cleartext on: an accepted connection
+	// that opens with a TLS handshake record is handed to crypto/tls, and
+	// anything else is the plain HTTP this server always spoke
+	// (tlssniff.go). Uniform on every bind — loopback and LAN, boot and
+	// rebind alike — so there is no mode in which a client that pinned
+	// this backend's certificate finds it missing.
 	//
-	// Nil (the default, and what every caller that has no certificate
-	// passes) leaves the listener plain, at no cost: the sniff wrapper
-	// is not installed at all.
+	// Nil (the default, and what every caller that terminates no TLS
+	// passes) leaves the listener plain, at no cost: the sniff wrapper is
+	// not installed at all. A non-nil source holding NO certificate yet
+	// still installs it, because certificates arrive and renew while the
+	// process runs and a listener that had to be rebound to notice would
+	// drop every connection each time one did.
 	//
-	// The certificate is self-signed and nothing trusts it. It exists so
-	// a client that owns its TLS configuration can pin the fingerprint
-	// the pairing payload carried (docs/specs/remote-access.md §7). A
-	// browser cannot pin, so the share URL this server hands out stays
-	// http:// and a browser keeps reaching the cleartext half.
-	TLSCertificate *tls.Certificate
+	// The source decides which certificate answers a given handshake
+	// (certsource.go): the self-signed one a paired client pinned, or the
+	// canonical domain's, by SNI. Nothing here mints, renews or persists
+	// either — internal/servercert and internal/acmecert do, and
+	// internal/app installs what they produce.
+	Certificates *CertificateSource
 
 	// OriginPatterns is the WS origin allow-list. Empty (default) uses
 	// InsecureSkipVerify — appropriate for loopback. Phase E (LAN bind
 	// toggle) populates this with the configured remote origins.
 	OriginPatterns []string
+
+	// CanonicalHost is the one DNS name this backend answers to besides
+	// the loopback spellings: the user's configured canonical domain
+	// (docs/specs/remote-access.md §7). Empty is the default and means
+	// "loopback names only" — see loopbackHostGuard for what accepting a
+	// name costs and why exactly one is accepted rather than all of them.
+	CanonicalHost string
 
 	// RequireReadyForBootstrap makes /bootstrap.json return 503 until
 	// MarkReady is called. Default false preserves the normal desktop
@@ -353,6 +363,12 @@ type Server struct {
 	// for loopback (no browser origin to compare against). Guarded by mu.
 	originPatterns []string
 
+	// canonicalHost is the live copy of Config.CanonicalHost, lower-cased
+	// once, rotated by SetCanonicalHost when the user changes the domain.
+	// Guarded by mu, like the allow-list beside it and for the same
+	// reason: both are read per request and written from a settings call.
+	canonicalHost string
+
 	// formerSrvs are http.Servers retired by Rebind that are still
 	// draining hijacked WS connections. We keep them around so existing
 	// clients keep working after the bind toggle, and Close them on
@@ -385,9 +401,11 @@ type Server struct {
 	launchID string
 
 	// tlsConfig is what an accepted TLS connection is served with, built
-	// once in New from Config.TLSCertificate and nil when there is none.
-	// Immutable afterwards, and shared by every bind: a Rebind changes
-	// which address answers, never which certificate answers there.
+	// once in New from Config.Certificates and nil when there is no
+	// source at all. The struct is immutable afterwards and shared by
+	// every bind — a Rebind changes which address answers — but the
+	// certificate it resolves is read per handshake out of the source, so
+	// a renewal or a first issuance takes effect WITHOUT a rebind.
 	tlsConfig *tls.Config
 
 	// csp is the one Content-Security-Policy every response on this
@@ -506,8 +524,9 @@ func New(cfg Config) (*Server, error) {
 		cred:           cred,
 		launchID:       launchID,
 		csp:            csp,
-		tlsConfig:      serverTLSConfig(cfg.TLSCertificate),
+		tlsConfig:      serverTLSConfig(cfg.Certificates),
 		originPatterns: originPatterns,
+		canonicalHost:  normalizeCanonicalHost(cfg.CanonicalHost),
 		serveErr:       make(chan error, 1),
 		sessionConns:   newSessionConns(),
 		bootstrapLimit: newRateLimiter("/bootstrap.json", bootstrapRateLimit),
@@ -642,17 +661,18 @@ func matchesErrno(err error, errnos []syscall.Errno) bool {
 // keeps draining hijacked WS connections.
 //
 // Loopback paths (/bootstrap.json, /ws) are wrapped in a Host-header
-// guard that fires when the live origin allow-list is empty (loopback
-// mode). Loopback binding is not by itself a boundary: a foreign origin
-// whose DNS name resolves to 127.0.0.1 can navigate the user to
+// guard that fires while the live LISTEN ADDRESS is loopback. Loopback
+// binding is not by itself a boundary: a foreign origin whose DNS name
+// resolves to 127.0.0.1 can navigate the user to
 // http://that.name:<our-port>/bootstrap.json, and the request arrives
 // over the loopback interface like any other, carrying that name as its
 // Host and its origin as the document's. Requiring a loopback Host
 // (loopback.HostHeader, which refuses names precisely for this) makes
 // the guard about who is asking rather than about which interface the
-// packets crossed. On LAN bind (origin allow-list non-empty) it is a
-// pass-through — origin validation already covers the WS handshake, and
-// HTTP callers from the LAN reach the server by its LAN host.
+// packets crossed. The one exception is the configured canonical
+// domain. On LAN bind it is a pass-through — origin validation already
+// covers the WS handshake, and HTTP callers from the LAN reach the
+// server by its LAN host. See loopbackHostGuard.
 func (s *Server) buildHTTPServer() *http.Server {
 	mux := http.NewServeMux()
 	// Rate limiting sits OUTSIDE the host guard on the three credential
@@ -713,28 +733,97 @@ func (s *Server) buildHTTPServer() *http.Server {
 
 // loopbackHostGuard returns a wrapper that rejects non-loopback Host
 // headers when the server is in loopback mode (origin allow-list
-// empty). This is a DNS-rebinding defence: without it, a hostile site
-// resolving to 127.0.0.1 could probe /bootstrap.json and harvest the
-// token. Returns 404 (not 403) so a LAN scanner can't fingerprint the
+// empty). This is a DNS-rebinding defence: without it, any site whose
+// DNS name resolves to 127.0.0.1 could navigate a browser at
+// /bootstrap.json under that name and read the answer as same-origin.
+// Returns 404 (not 403) so a LAN scanner can't fingerprint the
 // agent-overflow server vs an arbitrary 127.0.0.1 service.
 //
-// The mode check reads the live origin allow-list under mu so a
-// post-Rebind LAN bind reaches this function with patterns set and
-// stops gating on Host. Rebinding back to loopback re-enables the
-// guard for the next request.
+// The mode check reads the live LISTEN ADDRESS under mu, so a
+// post-Rebind LAN bind stops gating on Host and rebinding back to
+// loopback re-enables the guard for the next request. It read the origin
+// allow-list's emptiness until wave 8d, which was the same answer for
+// every bind the app performed and the WRONG one twice: a boot that
+// honored a persisted LAN preference set no patterns at all, so every
+// LAN client was answered 404 until the user toggled the setting again,
+// and a canonical domain's origins would have switched the guard off for
+// every OTHER name as a side effect of naming one. The bind address is
+// what "is this listener shared with the network" always meant.
+//
+// A CONFIGURED CANONICAL DOMAIN adds exactly ONE accepted name, and
+// stays inside the guard rather than switching it off. That is the whole
+// point of naming it: a backend the user has named must answer to that
+// name — including through a proxy on this machine that terminates TLS
+// and forwards to the loopback bind, which sends the domain in the Host
+// header and was refused before there was a name to compare it against —
+// while every OTHER DNS name is still refused, which is the rebinding
+// defence above. See SetCanonicalHost.
 func (s *Server) loopbackHostGuard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Only enforce in loopback mode. LAN bind has its own
+		// Only enforce on a loopback bind. A LAN bind has its own
 		// origin-validation story for /ws; HTTP /bootstrap.json on LAN
 		// must be reachable from any LAN host the user shares.
-		if len(s.currentOriginPatterns()) == 0 {
-			if !loopback.HostHeader(r.Host) {
+		if s.boundToLoopback() {
+			if !loopback.HostHeader(r.Host) && !s.hostIsCanonical(r.Host) {
 				http.NotFound(w, r)
 				return
 			}
 		}
 		next(w, r)
 	}
+}
+
+// boundToLoopback reports whether the live listen address is one only
+// this machine can reach. An unresolved address (before Start) answers
+// true: the strict branch is the safe one, and no request can arrive on
+// a listener that does not exist.
+func (s *Server) boundToLoopback() bool {
+	addr := s.Addr()
+	return addr == "" || loopback.EndpointAuthority(addr)
+}
+
+// hostIsCanonical reports whether an HTTP Host header names the
+// configured canonical domain, with or without a port. Never true when
+// no domain is configured, so the default posture is unchanged.
+func (s *Server) hostIsCanonical(host string) bool {
+	canonical := s.currentCanonicalHost()
+	if canonical == "" || host == "" {
+		return false
+	}
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		host = name
+	}
+	return strings.EqualFold(strings.TrimSuffix(host, "."), canonical)
+}
+
+// SetCanonicalHost rotates the one DNS name this backend answers to
+// besides the loopback spellings, without binding a new listener — the
+// same shape as SetOriginPatterns, and normally called with it. Empty
+// clears the name, which returns the Host guard to loopback-only.
+//
+// The name is a HOST admission and nothing more: it decides which Host
+// header is answered, never who is authorized. Every credential check
+// downstream is unchanged.
+func (s *Server) SetCanonicalHost(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.canonicalHost = normalizeCanonicalHost(name)
+}
+
+// CanonicalHost returns the live canonical domain, or empty.
+func (s *Server) CanonicalHost() string { return s.currentCanonicalHost() }
+
+func (s *Server) currentCanonicalHost() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.canonicalHost
+}
+
+// normalizeCanonicalHost folds a configured name to the one spelling
+// comparisons are made against: trimmed, lower-cased, no trailing root
+// dot. Done once at the write rather than per request.
+func normalizeCanonicalHost(name string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
 }
 
 // serve runs srv.Serve(listener) on a tracked goroutine. The first
@@ -846,6 +935,28 @@ func (s *Server) Addr() string {
 // clients that are not browsers. A browser never receives it: it holds
 // the page cookie instead (see credential.go).
 func (s *Server) Token() string { return s.cred.Token() }
+
+// Certificates returns the certificate source this listener resolves
+// every TLS handshake through, or nil for a boot that terminates no TLS.
+//
+// It is how the half of the process that ACQUIRES certificates reaches
+// the half that PRESENTS them without either importing the other: the
+// boot installs the self-signed one, and internal/app installs the
+// canonical domain's whenever an issuance, a renewal or a settings
+// change produces one. Handing back the live source rather than a setter
+// per slot keeps a single object owning "what this listener presents".
+func (s *Server) Certificates() *CertificateSource { return s.cfg.Certificates }
+
+// ServesDomain reports whether this listener can complete a handshake for
+// the given name right now. Answers false for a boot that terminates no
+// TLS, so a caller does not have to nil-check the source. The share URL
+// asks before it says https://.
+func (s *Server) ServesDomain(name string) bool {
+	if s.cfg.Certificates == nil {
+		return false
+	}
+	return s.cfg.Certificates.ServesDomain(name)
+}
 
 // LaunchID returns the opaque identifier for this boot that the manifest
 // publishes. Not a credential.

@@ -418,6 +418,11 @@ type App struct {
 	// serves and never after, so the RPC goroutines that read it cannot
 	// race the write.
 	certFingerprint string
+	// domainCert owns the canonical domain's certificate: what is loaded,
+	// what failed, and the one goroutine that renews it. Zero value is an
+	// App with no reconciler running, which is every fixture that never
+	// calls Start. See app_domaincert.go.
+	domainCert domainCertState
 	// providerExtraEnv is merged into every provider spawn's environment.
 	// Harness mode uses it to hand ao-mockprovider its control-channel
 	// address + token without exporting those credentials process-wide

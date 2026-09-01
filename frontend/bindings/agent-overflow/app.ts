@@ -1049,10 +1049,13 @@ export function GetModelsForProvider(providerName: string): $CancellablePromise<
 }
 
 /**
- * GetNetworkSettings returns the current persisted bind-all
- * preference plus the server-derived URL and token. The URL and
- * token are recomputed on every call so a rebind (e.g. via
- * SetNetworkSettings) reflects immediately on the next read.
+ * GetNetworkSettings returns the persisted network preferences — the
+ * bind toggle, the canonical domain, the DNS hook, the external
+ * certificate pair — plus what only the running process knows: the
+ * share URL, this launch's token, and the certificate status. Everything
+ * server-derived is recomputed on every call, so a rebind or a renewal
+ * reflects on the next read. The screen polls this while an issuance is
+ * in flight; there is no push channel for it.
  */
 export function GetNetworkSettings(): $CancellablePromise<network$0.Settings> {
     return $Call.ByID(1026796858).then(($result: any) => {
@@ -3011,6 +3014,27 @@ export function RenameThread(id: string, title: string): $CancellablePromise<voi
     return $Call.ByID(727416435, id, title);
 }
 
+/**
+ * RenewCanonicalDomainCert asks the reconciler to check the canonical
+ * domain's certificate now: load an external pair that changed, or order
+ * one when there is none or it is inside the renewal window. Returns
+ * immediately with the current status — the work happens on the
+ * reconciler's goroutine and the screen polls GetNetworkSettings while
+ * `tls.renewing` is set, because a DNS-01 exchange takes minutes and no
+ * RPC may wait that long.
+ * 
+ * No step-up: this call carries no argument and changes no
+ * configuration — it re-runs what the daily timer would have run anyway,
+ * against settings that were themselves written through the
+ * step-up-gated SetNetworkSettings, so demanding a second proof would
+ * gate the retry of an act that was already proved.
+ */
+export function RenewCanonicalDomainCert(): $CancellablePromise<network$0.Settings> {
+    return $Call.ByID(95139518).then(($result: any) => {
+        return $$createType36($result);
+    });
+}
+
 export function ReplyToPRThread(pr: git$0.PRReference, threadID: string, databaseID: number, body: string): $CancellablePromise<void> {
     return $Call.ByID(446243420, pr, threadID, databaseID, body);
 }
@@ -3397,24 +3421,28 @@ export function SetEditorSettings(s: settings$0.EditorSettings): $CancellablePro
 }
 
 /**
- * SetNetworkSettings persists the new bind-all preference and
- * rebinds the transport server. Going false → true rebinds to
- * 0.0.0.0:<port> so LAN clients can reach the app; true → false
- * rebinds back to 127.0.0.1:<port>. The port is reused so a
- * previously-shared URL stays valid (only the host changes).
+ * SetNetworkSettings persists the network preferences and applies the
+ * ones the transport holds live.
  * 
- * On rebind failure the transport state is unchanged (Rebind is
- * state-intact on error) and the persisted setting is rolled back
- * so a subsequent GetNetworkSettings returns the actual transport
- * state. Returns the post-rebind Settings so the UI can update the
- * URL display in one round trip.
+ * The bind: false → true rebinds to 0.0.0.0:<port> so LAN clients can
+ * reach the app; true → false rebinds back to 127.0.0.1:<port>. The port
+ * is reused so a previously-shared URL stays valid (only the host
+ * changes). On rebind failure the transport state is unchanged (Rebind
+ * is state-intact on error) and the persisted setting is rolled back, so
+ * a subsequent GetNetworkSettings returns the actual transport state.
  * 
- * Origin allow-list: a LAN bind requires an explicit allow-list so
- * a stray browser tab on the LAN can't WebSocket-hijack a leaked
- * token (CSWSH). On bind-all=true the list contains loopback
- * variants plus the discovered LAN IP; on bind-all=false the list
- * is empty (loopback has no browser-origin to validate, and
- * InsecureSkipVerify is fine).
+ * The canonical domain: applied to the listener as the one DNS name its
+ * Host guard accepts besides the loopback spellings, and to the origin
+ * allow-list as the https origins a page served under that name has. The
+ * certificate for it is NOT obtained here — that is the reconciler in
+ * app_domaincert.go, kicked at the end of this call, because a DNS-01
+ * exchange outlives any RPC.
+ * 
+ * Origin allow-list: a LAN bind requires an explicit allow-list, so a
+ * page loaded from some other origin cannot open a socket here with a
+ * token it happened to learn. On bind-all=true the list contains
+ * loopback variants plus the discovered LAN IP; a canonical domain adds
+ * its own https origins on either bind.
  */
 export function SetNetworkSettings(s: network$0.Settings): $CancellablePromise<network$0.Settings> {
     return $Call.ByID(3915514446, s).then(($result: any) => {

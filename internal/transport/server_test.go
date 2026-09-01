@@ -1594,33 +1594,112 @@ func TestServer_BootstrapAcceptsLoopbackHosts(t *testing.T) {
 	}
 }
 
+// A configured canonical domain adds exactly one accepted name. The
+// proxy case is why: a TLS terminator on this machine forwards to the
+// loopback bind and sends the domain in the Host header, which the
+// rebind defence refused before there was a name to compare it against.
+// Every other DNS name is still refused, including one that differs by a
+// label, so this is an admission of the user's name and not of names.
+func TestServer_BootstrapAcceptsTheCanonicalDomainAndNoOtherName(t *testing.T) {
+	f := newServerFixture(t)
+	f.srv.SetCanonicalHost("Backend.Example")
+
+	get := func(t *testing.T, host string) int {
+		t.Helper()
+		req, err := http.NewRequest("GET", "http://"+f.srv.Addr()+"/bootstrap.json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = host
+		req.Header.Set("Authorization", "Bearer test-token")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// The name itself, its spelling variants, and with the port the
+	// proxy dialed.
+	for _, host := range []string{"backend.example", "BACKEND.example", "backend.example.", "backend.example:8443"} {
+		if got := get(t, host); got != http.StatusOK {
+			t.Fatalf("Host %q got %d, want 200", host, got)
+		}
+	}
+	for _, host := range []string{"other.example", "evil.backend.example", "backend.example.evil.test"} {
+		if got := get(t, host); got != http.StatusNotFound {
+			t.Fatalf("Host %q got %d, want 404", host, got)
+		}
+	}
+
+	// Clearing the name returns the guard to loopback-only, so a domain
+	// the user removed stops being answered without a rebind.
+	f.srv.SetCanonicalHost("")
+	if got := get(t, "backend.example"); got != http.StatusNotFound {
+		t.Fatalf("after clearing the domain, Host %q got %d, want 404", "backend.example", got)
+	}
+}
+
 // TestServer_BootstrapAcceptsAnyHostInLANMode pins the LAN-bind
-// release: when the origin allow-list is non-empty, the loopback Host
-// guard is a pass-through. A LAN host hitting the bootstrap by IP must
-// still reach the handler.
+// release: a listener bound where the network can reach it answers any
+// Host, because the user shares whatever spelling routes to it. The BIND
+// is what decides that, not the origin allow-list — a boot that honored
+// a persisted LAN preference set no patterns at all and answered its own
+// share URL with 404 for as long as that inference stood.
 func TestServer_BootstrapAcceptsAnyHostInLANMode(t *testing.T) {
 	f := newServerFixture(t)
-	// Tighten origin patterns to enter LAN mode without rebinding —
-	// SetOriginPatterns flips the allow-list for the live server.
+
+	get := func(t *testing.T) int {
+		t.Helper()
+		_, port, err := net.SplitHostPort(f.srv.Addr())
+		if err != nil {
+			t.Fatalf("split addr: %v", err)
+		}
+		req, err := http.NewRequest("GET", "http://127.0.0.1:"+port+"/bootstrap.json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Non-loopback Host: on a loopback bind this is the rebind
+		// defence's case and 404s.
+		req.Host = "10.0.0.5"
+		req.Header.Set("Authorization", "Bearer test-token")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if got := get(t); got != http.StatusNotFound {
+		t.Fatalf("loopback bind: Host %q got %d, want 404", "10.0.0.5", got)
+	}
+
+	// An origin allow-list alone does NOT release the guard. It is not a
+	// statement about who can reach this listener.
 	f.srv.SetOriginPatterns([]string{"http://10.0.0.5:*"})
-
-	req, err := http.NewRequest("GET", "http://"+f.srv.Addr()+"/bootstrap.json", nil)
-	if err != nil {
-		t.Fatal(err)
+	if got := get(t); got != http.StatusNotFound {
+		t.Fatalf("origin patterns alone released the Host guard: got %d, want 404", got)
 	}
-	// Non-loopback Host: under loopback-mode guard this would 404, but
-	// LAN mode skips the check. Token still validates so a 200 is the
-	// expected outcome.
-	req.Host = "10.0.0.5"
-	req.Header.Set("Authorization", "Bearer test-token")
 
-	resp, err := http.DefaultClient.Do(req)
+	_, port, err := net.SplitHostPort(f.srv.Addr())
 	if err != nil {
-		t.Fatalf("Do: %v", err)
+		t.Fatalf("split addr: %v", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("LAN mode: Host %q got %d, want 200", req.Host, resp.StatusCode)
+	if err := f.srv.Rebind("0.0.0.0:"+port, nil); err != nil {
+		t.Fatalf("rebind to the LAN bind: %v", err)
+	}
+	if got := get(t); got != http.StatusOK {
+		t.Fatalf("LAN bind: Host %q got %d, want 200", "10.0.0.5", got)
+	}
+
+	// And back: the guard returns with the loopback bind.
+	if err := f.srv.Rebind("127.0.0.1:"+port, nil); err != nil {
+		t.Fatalf("rebind back to loopback: %v", err)
+	}
+	if got := get(t); got != http.StatusNotFound {
+		t.Fatalf("after rebinding to loopback: Host %q got %d, want 404", "10.0.0.5", got)
 	}
 }
 

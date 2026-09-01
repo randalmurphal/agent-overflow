@@ -240,6 +240,7 @@ export const UpdateContextSettingsProfile = dispatch('UpdateContextSettingsProfi
 export const UpdateThreadContextSettings = dispatch('UpdateThreadContextSettings');
 export const GetNetworkSettings = dispatch('GetNetworkSettings');
 export const SetNetworkSettings = dispatch('SetNetworkSettings');
+export const RenewCanonicalDomainCert = dispatch('RenewCanonicalDomainCert');
 
 // Device access (Settings → Network → Devices).
 export const GetAccessOverview = dispatch('GetAccessOverview');
@@ -314,13 +315,41 @@ export class RemoteEndpoint {
 // builds `new NetworkSettings({ bindAll })` doesn't try to load the
 // real generated module. Real instantiation (createFrom) is exercised
 // in component tests that run against the live binding.
+//
+// Every persisted field is carried, because SetNetworkSettings writes
+// the WHOLE record: a stand-in that dropped the domain half would let a
+// test pass while the real call erased it.
+export class TLSStatus {
+  serving: string;
+  notAfter: number;
+  renewing: boolean;
+  lastError: string;
+  selfSignedFingerprint: string;
+  constructor(s: Partial<TLSStatus> = {}) {
+    this.serving = s.serving ?? '';
+    this.notAfter = s.notAfter ?? 0;
+    this.renewing = s.renewing ?? false;
+    this.lastError = s.lastError ?? '';
+    this.selfSignedFingerprint = s.selfSignedFingerprint ?? '';
+  }
+}
 export class NetworkSettings {
   bindAll: boolean;
+  canonicalDomain: string;
+  acmeDnsHook: string[];
+  externalCertFile: string;
+  externalKeyFile: string;
+  tls: TLSStatus;
   url: string;
   token: string;
   insecure: boolean;
   constructor(s: Partial<NetworkSettings> = {}) {
     this.bindAll = s.bindAll ?? false;
+    this.canonicalDomain = s.canonicalDomain ?? '';
+    this.acmeDnsHook = s.acmeDnsHook ?? [];
+    this.externalCertFile = s.externalCertFile ?? '';
+    this.externalKeyFile = s.externalKeyFile ?? '';
+    this.tls = s.tls ?? new TLSStatus();
     this.url = s.url ?? '';
     this.token = s.token ?? '';
     this.insecure = s.insecure ?? false;

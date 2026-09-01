@@ -27,6 +27,7 @@ import (
 	"agent-overflow/internal/externalurl"
 	"agent-overflow/internal/harness/darwinbundle"
 	"agent-overflow/internal/logging"
+	"agent-overflow/internal/network"
 	"agent-overflow/internal/observability/goroutinedump"
 	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/orphanreaper"
@@ -240,14 +241,15 @@ func syncShellEnvForBoot() {
 // two copies in sync as the registration call evolves (allow lists,
 // bus capacity, asset handler choices).
 //
-// loadPersistedBindAll is the desktop-path-only escape hatch for the
-// stored Phase E LAN-bind preference. Headless boots only honor the
-// explicit --listen flag (the Windows launcher always passes one), so
-// it passes false here. Pulling the load out of the helper keeps the
-// boot graph linear: this function makes deterministic decisions from
-// its arguments, never reads disk on its own.
+// LoadPersistedNetwork is the desktop-path-only escape hatch for the
+// stored network preferences: the Phase E LAN-bind toggle and the
+// canonical domain. Headless boots only honor the explicit --listen flag
+// (the Windows launcher always passes one), so it passes false here.
+// Pulling the load out of the helper keeps the boot graph linear: this
+// function makes deterministic decisions from its arguments, never reads
+// disk on its own.
 type bootTransportOptions struct {
-	LoadPersistedBindAll     bool
+	LoadPersistedNetwork     bool
 	RequireReadyForBootstrap bool
 	// HarnessReceiver, when non-nil, is registered on the dispatcher as
 	// a second RPC receiver under "main.Harness.<Method>". Only harness
@@ -382,14 +384,24 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		}
 		cfg.BindAddr = host
 		cfg.Port = port
-	} else if opts.LoadPersistedBindAll {
-		// Honor the persisted Phase E LAN-bind preference at boot so a
-		// user who toggled "Allow remote access" in a previous session
-		// doesn't see the server snap back to loopback after restart.
-		// CLI --listen still wins — operator override beats stored prefs.
-		if persisted := loadPersistedNetworkSettings(); persisted.BindAll {
+	}
+	if opts.LoadPersistedNetwork {
+		// Honor the persisted network preferences at boot so a user who
+		// turned these on in a previous session doesn't see the server
+		// snap back after a restart. CLI --listen still wins for the BIND
+		// — operator override beats stored prefs — but the canonical
+		// domain is not an address and applies either way: it decides
+		// which Host header this listener answers to, whatever it bound.
+		persisted := loadPersistedNetworkSettings()
+		if persisted.BindAll && listenAddr == "" {
 			cfg.BindAddr = "0.0.0.0"
 		}
+		cfg.CanonicalHost = persisted.CanonicalDomain
+		cfg.OriginPatterns = network.OriginPatterns(
+			cfg.BindAddr == "0.0.0.0",
+			bootLANIP(cfg.BindAddr == "0.0.0.0"),
+			persisted.CanonicalDomain,
+		)
 	}
 
 	// Pin the listen port unless the operator named one. Applies to
@@ -449,12 +461,20 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 // to pin and the certificate that listener presents can then never be two
 // different things.
 //
+// The certificate SOURCE is installed either way, even when this
+// resolution fails. It is the slot the canonical domain's certificate
+// lands in later (internal/app reconciles it from settings, and
+// internal/acmecert renews it), and a listener bound without one could
+// not serve that certificate without a restart.
+//
 // Best-effort, also deliberately. With no resolvable config directory
 // there is nowhere to keep a certificate that survives a restart, and one
 // re-minted every boot would un-pin every paired device each time — worse
 // than not offering TLS at all. Boot continues on the cleartext half,
 // which is what every browser uses regardless.
 func applyServerCertificate(cfg *transport.Config, appService *App) {
+	source := transport.NewCertificateSource()
+	cfg.Certificates = source
 	dir := bootSettingsDir()
 	if dir == "" {
 		log.Print("transport: no config directory resolved — serving cleartext only, so no client can pin this backend")
@@ -465,7 +485,7 @@ func applyServerCertificate(cfg *transport.Config, appService *App) {
 		log.Printf("transport: %v — serving cleartext only, so no client can pin this backend", err)
 		return
 	}
-	cfg.TLSCertificate = &material.Certificate
+	source.SetSelfSigned(&material.Certificate)
 	appservice.SetCertFingerprint(appService.App, material.Fingerprint)
 	if material.Minted {
 		// The replacement case logs its own reason inside servercert,
@@ -891,6 +911,16 @@ func loadPersistedNetworkSettings() settings.NetworkSettings {
 		return settings.NetworkSettings{}
 	}
 	return settings.NewService(dir).Get().Network
+}
+
+// bootLANIP answers the LAN address the boot-time origin allow-list
+// names, and only walks the interfaces when a LAN bind is what was
+// asked for. A loopback boot pays nothing.
+func bootLANIP(bindAll bool) string {
+	if !bindAll {
+		return ""
+	}
+	return network.DiscoverLocalLANIP()
 }
 
 // isolatedPprofEphemeralAddr answers what an isolated boot should bind

@@ -254,6 +254,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RemoveProviderAccount", ID: 684418419, Scope: "access:admin"},                         // main.App.RemoveProviderAccount
 	{Name: "RenameProject", ID: 3728890856, Scope: "threads:operate"},                             // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435, Scope: "threads:operate"},                               // main.App.RenameThread
+	{Name: "RenewCanonicalDomainCert", ID: 95139518, Scope: "host"},                               // main.App.RenewCanonicalDomainCert
 	{Name: "ReplyToPRThread", ID: 446243420, Scope: "git:operate"},                                // main.App.ReplyToPRThread
 	{Name: "ReportFrontendErrorBatch", ID: 2174329377, Scope: "host"},                             // main.App.ReportFrontendErrorBatch
 	{Name: "ReportUpdateInstallStatus", ID: 314214419, Scope: "host"},                             // main.App.ReportUpdateInstallStatus
