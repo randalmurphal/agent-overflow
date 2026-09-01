@@ -1,5 +1,6 @@
 // Backend history identity carried by the bootstrap manifest
-// (`backendId` / `replicaGeneration`, internal/transport/server.go).
+// (`backendId` / `backendName` / `replicaGeneration`,
+// internal/transport/server.go).
 //
 // `backendId` keys the client-side replica database; `replicaGeneration`
 // is re-minted whenever the backend's rev/epoch continuity breaks for a
@@ -15,9 +16,27 @@
 export interface BackendIdentity {
   backendId: string;
   generation: string;
+  /**
+   * What a person calls this machine — its hostname, the same string the
+   * pairing payload showed (docs/specs/remote-access.md §10, "Machine
+   * name"). DISPLAY ONLY: nothing is keyed on it, two backends may
+   * legitimately answer the same one, and `backendId` stays the
+   * identity. Empty means the backend published none, and a surface
+   * renders the id or "unknown machine" rather than guessing.
+   *
+   * Deliberately alongside the replica fields rather than in a store of
+   * its own: it arrives on the same manifest, on the same schedule, and
+   * a second subscription would be a second moment for the two to
+   * disagree about which backend is being described.
+   */
+  name: string;
 }
 
-export const UNKNOWN_BACKEND_IDENTITY: BackendIdentity = { backendId: '', generation: '' };
+export const UNKNOWN_BACKEND_IDENTITY: BackendIdentity = {
+  backendId: '',
+  generation: '',
+  name: '',
+};
 
 let current: BackendIdentity = UNKNOWN_BACKEND_IDENTITY;
 const listeners = new Set<(identity: BackendIdentity) => void>();
@@ -49,12 +68,20 @@ export function onBackendIdentity(listener: (identity: BackendIdentity) => void)
 export function setBackendIdentityFromBootstrap(
   backendId: unknown,
   generation: unknown,
+  name?: unknown,
 ): void {
   const next: BackendIdentity = {
     backendId: typeof backendId === 'string' ? backendId : '',
     generation: typeof generation === 'string' ? generation : '',
+    name: typeof name === 'string' ? name : '',
   };
-  if (next.backendId === current.backendId && next.generation === current.generation) return;
+  if (
+    next.backendId === current.backendId &&
+    next.generation === current.generation &&
+    next.name === current.name
+  ) {
+    return;
+  }
   current = next;
   for (const listener of listeners) listener(next);
 }
@@ -77,7 +104,7 @@ export function observeBackendGeneration(generation: unknown): boolean {
   if (typeof generation !== 'string' || generation === '') return false;
   if (current.backendId === '') return false;
   if (generation === current.generation) return false;
-  current = { backendId: current.backendId, generation };
+  current = { backendId: current.backendId, generation, name: current.name };
   for (const listener of listeners) listener(current);
   return true;
 }

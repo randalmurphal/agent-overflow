@@ -100,7 +100,7 @@ interface ReplicaSession {
 
 let session: ReplicaSession = {
   token: 0,
-  identity: { backendId: '', generation: '' },
+  identity: { backendId: '', generation: '', name: '' },
   db: null,
   index: [],
   indexDirty: false,
@@ -586,7 +586,7 @@ export function __resetReplicaForTest(): void {
   closeSession();
   session = {
     token: session.token + 1,
-    identity: { backendId: '', generation: '' },
+    identity: { backendId: '', generation: '', name: '' },
     db: null,
     index: [],
     indexDirty: false,

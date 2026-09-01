@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/url"
-	"os"
-	"strings"
 
+	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/slicesx"
@@ -637,16 +636,11 @@ func (a *App) pairingPageURL() (pageURL, endpoint string, err error) {
 }
 
 // backendDisplayName is the name a pairing device shows while it decides
-// whether to trust this offer. The hostname, because that is what a
-// person recognises about the machine they are pairing to.
+// whether to trust this offer.
 //
-// Convenience only: the payload documents that it grants nothing and is
-// never matched against anything, so an unreadable hostname is an empty
-// field rather than a failure.
-func backendDisplayName() string {
-	name, err := os.Hostname()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(name)
-}
+// `appidentity.HostDisplayName` and not a local os.Hostname call, because
+// the hello frame publishes the same string as `backendName` and the two
+// name the same machine from opposite ends of one pairing: the device
+// shows it while deciding, and the page labels the backend with it
+// afterwards. Two readers would be two answers to one question.
+func backendDisplayName() string { return appidentity.HostDisplayName() }

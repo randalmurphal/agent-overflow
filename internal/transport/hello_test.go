@@ -144,3 +144,46 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 		}
 	}
 }
+
+// TestServer_HelloCarriesTheBackendName pins the display name onto the
+// opening frame (docs/specs/remote-access.md §10, "Machine name").
+//
+// A client attached to several backends has to label them, and until
+// this field there was no machine name anywhere on the wire — the
+// pairing payload carried one and the device discarded it. It is
+// DISPLAY only: two backends may legitimately answer the same string,
+// so nothing may key on it and `backendId` stays the identity. The
+// assertion is on both halves of that: the configured name arrives, and
+// the identity beside it is untouched by it.
+func TestServer_HelloCarriesTheBackendName(t *testing.T) {
+	f := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.BackendName = "workshop-mini"
+		cfg.BackendIdentity = func() (string, string) { return "backend-1", "gen-1" }
+	})
+	var hello helloFrame
+	if err := json.Unmarshal(readFirstFrame(t, f.dial(t)), &hello); err != nil {
+		t.Fatalf("decode hello: %v", err)
+	}
+	if hello.BackendName != "workshop-mini" {
+		t.Fatalf("backendName = %q, want %q", hello.BackendName, "workshop-mini")
+	}
+	if hello.BackendID != "backend-1" {
+		t.Fatalf("backendId = %q, want %q — the name must not displace the identity", hello.BackendID, "backend-1")
+	}
+}
+
+// TestServer_HelloOmitsAnUnknownBackendName pins the absence.
+//
+// An unreadable hostname is an empty answer rather than a failure
+// (internal/appidentity.HostDisplayName), and an omitted field has to
+// stay distinguishable from a backend too old to send one — both mean
+// "unknown", and a client falls back to the id for both. Emitting `""`
+// would say the same thing in a second spelling every consumer would
+// then owe a branch for.
+func TestServer_HelloOmitsAnUnknownBackendName(t *testing.T) {
+	f := newServerFixture(t)
+	raw := readFirstFrame(t, f.dial(t))
+	if strings.Contains(string(raw), "backendName") {
+		t.Fatalf("hello names an unset backendName: %s", raw)
+	}
+}

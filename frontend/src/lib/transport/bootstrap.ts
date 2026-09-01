@@ -118,6 +118,13 @@ export interface Bootstrap {
   backendId?: string;
   replicaGeneration?: string;
   /**
+   * The backend's display name — its hostname, the same string the hello
+   * frame carries and the pairing payload showed. Display only: nothing
+   * is keyed on it and `backendId` stays the identity. Absent means the
+   * backend published none.
+   */
+  backendName?: string;
+  /**
    * The backend was booted as the agent test harness or the soak rig
    * (`--harness` / `--soak`), which is the only thing that arms the
    * frontend harness bridge. Absent on every ordinary boot; see
@@ -248,7 +255,7 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   // Re-validated on every manifest resolution, which is what makes a
   // mid-session generation re-mint (a restored backend) observable on
   // the reconnect refetch rather than at the next app launch.
-  setBackendIdentityFromBootstrap(data.backendId, data.replicaGeneration);
+  setBackendIdentityFromBootstrap(data.backendId, data.replicaGeneration, data.backendName);
   // Remove the spent ticket from history, Referer, and Performance
   // Resource Timing entries. The cookie carries the session from here,
   // so a reload of the scrubbed URL still boots. Skipped for a

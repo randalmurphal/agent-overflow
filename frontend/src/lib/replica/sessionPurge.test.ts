@@ -53,7 +53,7 @@ async function databaseNames(): Promise<string[]> {
 
 /** Seed a database for `backendId` the way a previous session would have. */
 async function seedBackend(backendId: string): Promise<void> {
-  await initReplica({ backendId, generation: 'g1' });
+  await initReplica({ backendId, generation: 'g1', name: '' });
   await putReplicaWindow('t-1', body());
   await __replicaSweepForTest();
 }
@@ -82,7 +82,7 @@ describe('replica database purge', () => {
     expect(await databaseNames()).toContain(replicaDatabaseName(gone));
 
     const live = freshBackendId();
-    await initReplica({ backendId: live, generation: 'g1' });
+    await initReplica({ backendId: live, generation: 'g1', name: '' });
     await __replicaSweepForTest();
 
     const names = await databaseNames();
@@ -100,7 +100,7 @@ describe('replica database purge', () => {
       request.onerror = () => reject(request.error);
     });
 
-    await initReplica({ backendId: freshBackendId(), generation: 'g1' });
+    await initReplica({ backendId: freshBackendId(), generation: 'g1', name: '' });
     await __replicaSweepForTest();
 
     expect(await databaseNames()).toContain('some-other-app');
@@ -112,7 +112,7 @@ describe('replica database purge', () => {
 
     // An identity with no backendId disables the replica. The sweep must
     // read that as "nothing nameable is live", not as "keep nothing".
-    await initReplica({ backendId: '', generation: '' });
+    await initReplica({ backendId: '', generation: '', name: '' });
     await __replicaSweepForTest();
 
     expect(await databaseNames()).toContain(replicaDatabaseName(orphan));
@@ -156,7 +156,7 @@ describe('replica database purge', () => {
     // database may not exist yet when the purge lists the origin. The
     // purge must still name it — otherwise a sign-out reports success and
     // the open re-creates the database a moment later.
-    const opening = initReplica({ backendId, generation: 'g1' });
+    const opening = initReplica({ backendId, generation: 'g1', name: '' });
 
     const result = await purgeReplicaDatabases(new Set());
     await opening;

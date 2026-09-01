@@ -61,6 +61,15 @@ type Bootstrap struct {
 	// as "no replica keying available" rather than as a generation.
 	BackendID         string `json:"backendId,omitempty"`
 	ReplicaGeneration string `json:"replicaGeneration,omitempty"`
+	// BackendName is the display name of the machine this backend runs
+	// on, the same string the hello frame carries and the pairing payload
+	// shows. Here as well as on the socket because a page decides what to
+	// label a backend before it has opened one — the manifest is the only
+	// thing a page holding no credential can read.
+	//
+	// Display only: no client keys anything on it, and BackendID stays
+	// the identity. Empty means unknown.
+	BackendName string `json:"backendName,omitempty"`
 	// PasskeysAvailable says a passkey sign-in can be started right now —
 	// this backend has a canonical domain to be a relying party for, and
 	// the identity seam is wired. The pairing screen offers the
@@ -167,6 +176,20 @@ type Config struct {
 	// Optional — when nil, the manifest carries no identity and the
 	// client keeps its replica disabled.
 	BackendIdentity func() (backendID, replicaGeneration string)
+
+	// BackendName is the display name this backend answers to on the
+	// wire: the host's name, published in the hello frame and the
+	// bootstrap manifest so a client attached to several backends can
+	// label them (docs/specs/remote-access.md §10, "Machine name").
+	//
+	// A plain string rather than a getter, unlike BackendIdentity: a
+	// hostname is knowable at boot and does not arrive with the store.
+	// There is deliberately no setting behind it — the display name IS
+	// the hostname, and the client keeps whatever nickname its owner
+	// typed.
+	//
+	// Optional. Empty publishes no name, which a client reads as unknown.
+	BackendName string
 
 	// SessionForRequest resolves the durable session a request presents,
 	// if any, and says whether the request may proceed at all.
@@ -1515,6 +1538,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		Harness:           s.cfg.Harness,
 		PageMarker:        s.cfg.PageMarker,
 		BackendID:         backendID,
+		BackendName:       s.cfg.BackendName,
 		ReplicaGeneration: replicaGeneration,
 		PasskeysAvailable: s.cfg.AuthEndpoints != nil && s.cfg.AuthEndpoints.PasskeysAvailable(),
 	})
@@ -1860,6 +1884,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		hello: helloFrame{
 			Capabilities: serverCapabilities,
 			BackendID:    backendID,
+			BackendName:  s.cfg.BackendName,
 			// Sampled per accept: the field's whole purpose is letting a
 			// client measure its own skew against this backend, which a
 			// value cached at boot would silently corrupt by the process

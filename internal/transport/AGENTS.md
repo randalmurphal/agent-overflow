@@ -295,8 +295,8 @@ hello first seeds its compatibility state before anything else lands and
 needs no "have I been told yet" branch on every other frame. Racing it
 against the pump would make that guarantee probabilistic.
 
-It carries `protocolVersion`, `capabilities`, `backendId`, and
-`serverTimeMs`.
+It carries `protocolVersion`, `capabilities`, `backendId`,
+`backendName`, and `serverTimeMs`.
 
 - **Nothing gates on the version.** Features negotiate through capability
   flags: a client asks "does this backend have X" and degrades on the
@@ -317,6 +317,21 @@ It carries `protocolVersion`, `capabilities`, `backendId`, and
   nothing reads it yet. The reader can come later; the flag cannot.
 - `capabilities` serializes as `[]`, never `null`, so "advertises
   nothing" stays distinguishable from "too old to send this frame".
+- **`backendName` is display, never identity.** It is the host's name
+  (`internal/appidentity.HostDisplayName`, the same string the pairing
+  payload shows a device deciding whether to trust an offer) and it exists
+  so a client attached to several backends can label them
+  (`docs/specs/remote-access.md` §10, "Machine name"). Two backends may
+  legitimately answer the same one, so nothing keys on it and `backendId`
+  stays the identity. `Config.BackendName` is a plain string rather than a
+  getter like `BackendIdentity`: a hostname is knowable at boot and does
+  not arrive with the store. There is deliberately NO setting behind it —
+  the display name IS the hostname, and a nickname is the client's, kept
+  from pairing time. Unset omits the field, which reads as unknown, the
+  same answer a backend too old to send it gives.
+  `/bootstrap.json` carries it too, and the two are not redundant: a page
+  decides what to label a backend before it opens a socket, and the
+  manifest is the only thing a page holding no credential can read.
 - `serverTimeMs` is sampled per accept, not cached at boot: the field
   exists so a client can measure its own skew, and a cached value would
   be wrong by the process uptime.

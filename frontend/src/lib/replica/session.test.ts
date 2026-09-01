@@ -68,7 +68,7 @@ describe('replica session', () => {
   });
 
   it('round-trips a window through IndexedDB', async () => {
-    await initReplica({ backendId: freshBackendId(), generation: 'g1' });
+    await initReplica({ backendId: freshBackendId(), generation: 'g1', name: '' });
     expect(__replicaEnabledForTest()).toBe(true);
 
     await putReplicaWindow('t-1', body({ rev: 42, epoch: 3 }));
@@ -81,11 +81,11 @@ describe('replica session', () => {
 
   it('survives a re-open of the same backend and generation', async () => {
     const backendId = freshBackendId();
-    await initReplica({ backendId, generation: 'g1' });
+    await initReplica({ backendId, generation: 'g1', name: '' });
     await putReplicaWindow('t-1', body());
 
     __resetReplicaForTest();
-    await initReplica({ backendId, generation: 'g1' });
+    await initReplica({ backendId, generation: 'g1', name: '' });
 
     expect((await getReplicaWindow('t-1'))?.rev).toBe(4);
     expect(__replicaIndexForTest().map((e) => e.threadId)).toEqual(['t-1']);
@@ -93,11 +93,11 @@ describe('replica session', () => {
 
   it('clears the database wholesale when the generation is re-minted', async () => {
     const backendId = freshBackendId();
-    await initReplica({ backendId, generation: 'g1' });
+    await initReplica({ backendId, generation: 'g1', name: '' });
     await putReplicaWindow('t-1', body());
 
     __resetReplicaForTest();
-    await initReplica({ backendId, generation: 'g2' });
+    await initReplica({ backendId, generation: 'g2', name: '' });
 
     expect(await getReplicaWindow('t-1')).toBeNull();
     expect(__replicaIndexForTest()).toEqual([]);
@@ -105,7 +105,7 @@ describe('replica session', () => {
 
   it('clears the database when the stored schema version is not this build’s', async () => {
     const backendId = freshBackendId();
-    await initReplica({ backendId, generation: 'g1' });
+    await initReplica({ backendId, generation: 'g1', name: '' });
     await putReplicaWindow('t-1', body());
     __resetReplicaForTest();
 
@@ -118,13 +118,13 @@ describe('replica session', () => {
     });
     db.close();
 
-    await initReplica({ backendId, generation: 'g1' });
+    await initReplica({ backendId, generation: 'g1', name: '' });
     expect(await getReplicaWindow('t-1')).toBeNull();
   });
 
   it('drops a stored record this build cannot read rather than painting it', async () => {
     const backendId = freshBackendId();
-    await initReplica({ backendId, generation: 'g1' });
+    await initReplica({ backendId, generation: 'g1', name: '' });
     await putReplicaWindow('t-1', body());
     __resetReplicaForTest();
 
@@ -132,12 +132,12 @@ describe('replica session', () => {
     await writeRecord(db, THREADS_STORE, 't-1', { v: 99, cipher: 'none', body: body() });
     db.close();
 
-    await initReplica({ backendId, generation: 'g1' });
+    await initReplica({ backendId, generation: 'g1', name: '' });
     expect(await getReplicaWindow('t-1')).toBeNull();
   });
 
   it('evicts the least recently saved window past the thread cap', async () => {
-    await initReplica({ backendId: freshBackendId(), generation: 'g1' });
+    await initReplica({ backendId: freshBackendId(), generation: 'g1', name: '' });
     for (let index = 0; index < MAX_REPLICA_THREADS; index += 1) {
       await putReplicaWindow(`t-${index}`, body({ savedAt: index + 1 }));
     }
@@ -151,7 +151,7 @@ describe('replica session', () => {
   });
 
   it('skips an oversized window and drops the copy it would have replaced', async () => {
-    await initReplica({ backendId: freshBackendId(), generation: 'g1' });
+    await initReplica({ backendId: freshBackendId(), generation: 'g1', name: '' });
     await putReplicaWindow('t-1', body());
 
     const huge = Array.from({ length: MAX_ENVELOPE_ITEMS + 1 }, (_, index) =>
@@ -164,7 +164,7 @@ describe('replica session', () => {
   });
 
   it('removes one entry without touching the rest', async () => {
-    await initReplica({ backendId: freshBackendId(), generation: 'g1' });
+    await initReplica({ backendId: freshBackendId(), generation: 'g1', name: '' });
     await putReplicaWindow('t-1', body());
     await putReplicaWindow('t-2', body({ savedAt: 2_000 }));
 
@@ -176,7 +176,7 @@ describe('replica session', () => {
   });
 
   it('removes an unaccounted thread without opening a transaction', async () => {
-    await initReplica({ backendId: freshBackendId(), generation: 'g1' });
+    await initReplica({ backendId: freshBackendId(), generation: 'g1', name: '' });
     await putReplicaWindow('t-1', body());
 
     const transactions = vi.spyOn(IDBDatabase.prototype, 'transaction');
@@ -193,7 +193,7 @@ describe('replica session', () => {
 
   it('reaps every unaccounted envelope in one transaction at open', async () => {
     const backendId = freshBackendId();
-    await initReplica({ backendId, generation: 'g1' });
+    await initReplica({ backendId, generation: 'g1', name: '' });
     await putReplicaWindow('kept', body());
     __resetReplicaForTest();
 
@@ -210,7 +210,7 @@ describe('replica session', () => {
     db.close();
 
     const transactions = vi.spyOn(IDBDatabase.prototype, 'transaction');
-    await initReplica({ backendId, generation: 'g1' });
+    await initReplica({ backendId, generation: 'g1', name: '' });
     const writes = transactions.mock.calls.filter((call) => call[1] === 'readwrite');
     expect(writes).toHaveLength(1);
     transactions.mockRestore();
@@ -220,7 +220,7 @@ describe('replica session', () => {
   });
 
   it('stays disabled when the manifest carries no identity', async () => {
-    await initReplica({ backendId: '', generation: '' });
+    await initReplica({ backendId: '', generation: '', name: '' });
     expect(__replicaEnabledForTest()).toBe(false);
     await putReplicaWindow('t-1', body());
     expect(await getReplicaWindow('t-1')).toBeNull();
@@ -228,7 +228,7 @@ describe('replica session', () => {
 
   it('reports every failure and disables itself after repeated ones', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await initReplica({ backendId: freshBackendId(), generation: 'g1' });
+    await initReplica({ backendId: freshBackendId(), generation: 'g1', name: '' });
     await putReplicaWindow('t-1', body());
     expect(__replicaEnabledForTest()).toBe(true);
 

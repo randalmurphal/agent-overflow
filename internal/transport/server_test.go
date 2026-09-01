@@ -2220,3 +2220,46 @@ func bootstrapDoc(t *testing.T, f *serverFixture) Bootstrap {
 	}
 	return b
 }
+
+// TestBootstrapCarriesTheBackendName pins the display name onto the
+// manifest as well as the hello frame.
+//
+// Both, deliberately, and they are not redundant: a page decides what to
+// label a backend before it has opened a socket, and the manifest is the
+// only thing a page holding no credential can read. The hello frame is
+// what a LIVE connection re-reads on every reconnect.
+//
+// Display only, so the assertion covers the identity beside it staying
+// the identity — and the omission case, since an unreadable hostname is
+// an empty answer rather than a failure.
+func TestBootstrapCarriesTheBackendName(t *testing.T) {
+	f := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.BackendName = "workshop-mini"
+		cfg.BackendIdentity = func() (string, string) { return "backend-1", "gen-1" }
+	})
+	resp := getBootstrap(t, f.srv.Addr())
+	defer resp.Body.Close()
+	var manifest Bootstrap
+	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	if manifest.BackendName != "workshop-mini" {
+		t.Fatalf("backendName = %q, want %q", manifest.BackendName, "workshop-mini")
+	}
+	if manifest.BackendID != "backend-1" {
+		t.Fatalf("backendId = %q, want %q — the name must not displace the identity", manifest.BackendID, "backend-1")
+	}
+}
+
+func TestBootstrapOmitsAnUnknownBackendName(t *testing.T) {
+	f := newServerFixture(t)
+	resp := getBootstrap(t, f.srv.Addr())
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if strings.Contains(string(body), "backendName") {
+		t.Fatalf("manifest names an unset backendName: %s", body)
+	}
+}

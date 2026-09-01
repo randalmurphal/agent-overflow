@@ -481,6 +481,12 @@ export interface TransportHello {
   /** Backend identity, or '' when the store had not opened yet. Empty
    *  means unknown and must never be treated as a wildcard. */
   backendId: string;
+  /** The backend's display name — its hostname
+   *  (docs/specs/remote-access.md §10, "Machine name"). Display only:
+   *  nothing is keyed on it, two backends may answer the same one, and
+   *  `backendId` stays the identity. '' when the backend published
+   *  none. */
+  backendName: string;
   /** The backend's wall clock when it accepted this connection, in Unix
    *  millis. */
   serverTimeMs: number;
@@ -2258,6 +2264,7 @@ export class WSClient {
       protocolVersion: Number.isFinite(frame.protocolVersion) ? frame.protocolVersion : 0,
       capabilities,
       backendId: typeof frame.backendId === 'string' ? frame.backendId : '',
+      backendName: typeof frame.backendName === 'string' ? frame.backendName : '',
       serverTimeMs,
       clockSkewMs: serverTimeMs === 0 ? 0 : serverTimeMs - Date.now(),
     };
@@ -2542,6 +2549,7 @@ export class WSClient {
 function sameHello(a: TransportHello, b: TransportHello): boolean {
   return a.protocolVersion === b.protocolVersion
     && a.backendId === b.backendId
+    && a.backendName === b.backendName
     && a.capabilities.length === b.capabilities.length
     && a.capabilities.every((cap, i) => cap === b.capabilities[i]);
 }

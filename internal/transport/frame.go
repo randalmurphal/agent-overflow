@@ -117,6 +117,19 @@ type helloFrame struct {
 	// Empty when the history store has not opened yet — the same rule as
 	// the bootstrap manifest, and it means "unknown", never a wildcard.
 	BackendID string `json:"backendId,omitempty"`
+	// BackendName is what a person calls this machine: its hostname
+	// (internal/appidentity.HostDisplayName), which is also the name the
+	// pairing payload carries. A client attached to several backends
+	// labels its machine picker with it and keeps the pairing-time value
+	// as an editable nickname (docs/specs/remote-access.md §10, "Machine
+	// name").
+	//
+	// A DISPLAY string and nothing else: nothing is authorized by it,
+	// nothing is keyed on it, and two backends may legitimately answer
+	// the same one. BackendID stays the identity. Empty when the
+	// hostname is unreadable, which reads as "unknown" — a client falls
+	// back to the id rather than to a wildcard.
+	BackendName string `json:"backendName,omitempty"`
 	// ServerTimeMs is the backend's wall clock at the moment this
 	// connection was accepted, in Unix milliseconds. Phones behind
 	// captive portals drift, and a silent clock skew is the hardest class

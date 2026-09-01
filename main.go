@@ -23,6 +23,7 @@ import (
 	"agent-overflow/internal/aocli"
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appdirs"
+	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/cdprelay"
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/harness/darwinbundle"
@@ -407,6 +408,11 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		BackendIdentity: func() (string, string) {
 			return appservice.BackendIdentity(appService.App)
 		},
+		// Not late-bound, unlike the identity above: a hostname is
+		// knowable before the store opens, and it is the same string the
+		// pairing payload shows a device deciding whether to trust this
+		// offer (internal/app backendDisplayName).
+		BackendName: appidentity.HostDisplayName(),
 		// The `ao` CLI's scoped-token registry. The App owns it because a
 		// token's lifetime is a provider session's lifetime; the transport
 		// only asks what a presented token is allowed to do.

@@ -69,6 +69,9 @@ export interface ServerHelloFrame {
   protocolVersion: number;
   capabilities: string[];
   backendId?: string;
+  /** The backend's display name (its hostname). Display only — see
+   *  TransportHello.backendName in wsClient.ts. */
+  backendName?: string;
   serverTimeMs: number;
 }
 
