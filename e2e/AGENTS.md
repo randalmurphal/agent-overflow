@@ -126,13 +126,17 @@ missing value over one that skips. Two rules keep the evidence real:
   own `beforeAll`/`afterAll`, restores the settings it wrote, and — when
   its legs need different browser LAUNCH arguments, since
   `--host-resolver-rules` is process-wide — owns its browsers too.
-  `harness-remote-device-lifecycle.spec.ts` and
-  `harness-passkey-lifecycle.spec.ts` are the two, and each header argues
-  its own constraints where they bite. Read the second before writing any
-  WebAuthn case: the three requirements a page has to satisfy at once
-  (secure context, a DOMAIN relying party, a non-loopback peer) admit
-  exactly one shape, and Chromium's virtual authenticator has a ceiling
-  the header names rather than stages around.
+  `harness-remote-device-lifecycle.spec.ts`,
+  `harness-passkey-lifecycle.spec.ts` and
+  `harness-provider-signin.spec.ts` are the three, and each header argues
+  its own constraints where they bite. Read the passkey one before
+  writing any WebAuthn case: the three requirements a page has to satisfy
+  at once (secure context, a DOMAIN relying party, a non-loopback peer)
+  admit exactly one shape, and Chromium's virtual authenticator has a
+  ceiling the header names rather than stages around. The sign-in spec is
+  the other kind of unresettable state: it ADOPTS provider accounts,
+  which live in the account store rather than in anything
+  `HarnessReset` clears.
 - Otherwise each worker owns one backend. Tests share it and must leave
   it reset (the fixture does this) rather than booting their own. Production
   project deletion drops the workflow rows (D25), but `HarnessReset` still

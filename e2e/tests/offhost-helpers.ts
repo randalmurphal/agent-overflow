@@ -283,6 +283,17 @@ export interface Surfaced {
    * connected. It is also how a spec asserts that a ceremony DID run.
    */
   rpcReplies: string[];
+  /**
+   * The channel of every pushed event frame, in arrival order, batch
+   * frames unpacked.
+   *
+   * A channel's POLICY row decides who may receive it
+   * (`internal/transport/event_channels.go`), and the only place that
+   * decision is observable is here: a channel narrowed to loopback
+   * reaches a paired device as an absence, which no screen assertion can
+   * distinguish from a backend that simply had nothing to say.
+   */
+  eventChannels: string[];
 }
 
 /**
@@ -305,6 +316,7 @@ export async function instrument(page: Page): Promise<Surfaced> {
     transportStatuses: [],
     refusals: [],
     rpcReplies: [],
+    eventChannels: [],
   };
 
   await page.exposeFunction('__aoRecordErrorToast', (text: string) => {
@@ -376,10 +388,29 @@ export async function instrument(page: Page): Promise<Surfaced> {
       if (name) methodById.set(parsed.id, name);
     });
     ws.on('framereceived', (frame) => {
-      let parsed: { type?: string; id?: string; error?: { code?: string; scope?: string } };
+      let parsed: {
+        type?: string;
+        id?: string;
+        error?: { code?: string; scope?: string };
+        channel?: string;
+        events?: Array<{ channel?: string }>;
+      };
       try {
         parsed = JSON.parse(String(frame.payload)) as typeof parsed;
       } catch {
+        return;
+      }
+      // A coalesced window ships as one `batch` frame and a single-event
+      // one as a plain `event`, so both shapes have to be unpacked or a
+      // channel's arrival would depend on how busy the connection was.
+      if (parsed.type === 'event' && parsed.channel) {
+        surfaced.eventChannels.push(parsed.channel);
+        return;
+      }
+      if (parsed.type === 'batch') {
+        for (const entry of parsed.events ?? []) {
+          if (entry.channel) surfaced.eventChannels.push(entry.channel);
+        }
         return;
       }
       if (parsed.type !== 'rpc') return;
