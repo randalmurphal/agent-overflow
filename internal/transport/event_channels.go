@@ -176,6 +176,33 @@ type ChannelPolicy struct {
 	// Scope is the grant question. A connection subject to both is
 	// narrowed by both.
 	Scope Scope
+	// EntityFiltered opts this channel into per-thread subscription
+	// narrowing: a connection that sent a `watch` frame receives this
+	// channel's frames only for the threads it named (event_entity.go).
+	//
+	// It is a THIRD, orthogonal question — Audience asks about the peer's
+	// locality, Scope about its grants, and this one about whether the peer
+	// is looking at the entity the frame is addressed to. A connection
+	// subject to all three is narrowed by all three.
+	//
+	// MEMBERSHIP RULE, and it is narrow: the channel must be a
+	// HIGH-FREQUENCY PAYLOAD CARRIER whose only consumers render the named
+	// thread, and whose absence must degrade to a slower correct path rather
+	// than to missing state. Every low-frequency thread-keyed channel — turn
+	// lifecycle, thread:updated, approvals, usage, subagent progress, todo —
+	// deliberately stays wildcard: the sidebar, the tray and the
+	// thread-status projections read those for threads with no pane open, by
+	// design, and narrowing one would silently stop a badge the user relies
+	// on to decide WHICH thread to open.
+	//
+	// A row here is a CLAIM that nothing off-pane reads the channel. The
+	// claim is established by sweeping the frontend consumers, never assumed
+	// from the channel's name — provider:item_event looks like the obvious
+	// member and is not one (see its row).
+	//
+	// An empty entity key on such a channel is still DELIVERED: an event the
+	// extractor cannot attribute must not vanish (event_entity.go).
+	EntityFiltered bool
 	// Why records the decision. A Why containing "unreviewed" means the
 	// row was captured from an emit site, not decided.
 	Why string
@@ -293,11 +320,22 @@ var channelPolicies = []ChannelPolicy{
 			"the harness itself are.",
 	},
 	{
-		Channel:   eventchan.HighlightDiffSeed,
-		Audience:  AudienceAny,
-		Retention: RetentionEphemeral,
-		Scope:     ScopeFilesRead,
-		Why: "Goes to EVERY client, deliberately: its persist-time seeds can " +
+		Channel:        eventchan.HighlightDiffSeed,
+		Audience:       AudienceAny,
+		Retention:      RetentionEphemeral,
+		Scope:          ScopeFilesRead,
+		EntityFiltered: true,
+		Why: "Entity-filtered: a seed is a cache warmer for ONE thread's diff " +
+			"cards, keyed by thread id, and its two consumers (eventsHighlight " +
+			"applyHighlightDiffSeed → diffSpanCache) only ever answer a diff " +
+			"card mounted in a pane on that thread. A client watching other " +
+			"threads would insert span arrays nothing looks up, and a card that " +
+			"mounts later recomputes through HighlightPatch anyway — the RPC " +
+			"path is the designed fallback, so a withheld seed costs a round " +
+			"trip and never a wrong color. The frames are the large ones (per " +
+			"file, per line span arrays), which is what makes the narrowing " +
+			"worth having. " +
+			"Goes to EVERY client, deliberately: its persist-time seeds can " +
 			"be parse-primed with the just-edited workspace file — better " +
 			"spans than the loopback RPC path recomputes for a persisted diff " +
 			"— so local clients consume them as in-place cache upgrades rather " +
@@ -307,11 +345,22 @@ var channelPolicies = []ChannelPolicy{
 			"and each frame can carry large span/hash arrays.",
 	},
 	{
-		Channel:   eventchan.HighlightSeed,
-		Audience:  AudienceRemoteOnly,
-		Retention: RetentionEphemeral,
-		Scope:     ScopeFilesRead,
-		Why: "Pushes syntax-span metadata alongside streaming text so a remote " +
+		Channel:        eventchan.HighlightSeed,
+		Audience:       AudienceRemoteOnly,
+		Retention:      RetentionEphemeral,
+		Scope:          ScopeFilesRead,
+		EntityFiltered: true,
+		Why: "Entity-filtered, same argument as highlight:diff_seed and with " +
+			"more force: this is per-growth-step span metadata for a STREAMING " +
+			"fence, so a busy thread produces frames at the delta rate, and its " +
+			"consumers (liveCodeSeeds putLiveCodeSeed, codeSpanCache " +
+			"seedFinalBlockSpans) are read only by a StreamdownCodeHost mounted " +
+			"in a pane on that thread. Missing seeds degrade to the highlight " +
+			"RPC that host already falls back to. One accepted loss: a final " +
+			"seed's contentKey entry is content-addressed, so an identical " +
+			"fence in another thread would have got a free cache hit it now " +
+			"pays an RPC for. " +
+			"Pushes syntax-span metadata alongside streaming text so a remote " +
 			"client colors code without a highlight RPC per growth step. " +
 			"Loopback clients get faster spans from the RPC path (sub-ms round " +
 			"trip), so these frames carry nothing they would use. The producer " +
@@ -534,7 +583,25 @@ var channelPolicies = []ChannelPolicy{
 		Why: "The main transcript stream; a remote viewer that cannot see it " +
 			"has no product. Pinned remote-visible by " +
 			"TestEventVisibleToOrigin. Keyed by thread/item — never " +
-			"latest-only.",
+			"latest-only. " +
+			"NOT EntityFiltered, and the reason is a finding rather than an " +
+			"omission (wave 6d sweep): six frontend consumers read this " +
+			"channel for threads with NO pane, and three of them are the " +
+			"off-pane surfaces the narrowing would exist to leave alone. " +
+			"threadStatuses.projectThreadItem drives the sidebar's error, " +
+			"interrupted and Plan ready badges, and its own comment says the " +
+			"pill exists \"so an off-pane user doesn't have to open the " +
+			"thread\"; eventsThreadRows.syncThreadActivity is one of the three " +
+			"sidebar-ordering bumps; eventsThreadRows.syncProposedPlanStatus " +
+			"patches hasActionableProposedPlan onto the sidebar row. The other " +
+			"three are structural: discussionLiveTail routes participant child " +
+			"threads that have no pane BY CONSTRUCTION, " +
+			"workspaceChangeLock states in a comment that it must not filter " +
+			"on threadId because \"the busy thread may be one this client has " +
+			"never mounted\", and eventsItemStream evicts threadItemCache and " +
+			"the IndexedDB replica window for exactly the INACTIVE threads. " +
+			"Narrowing this channel needs those six re-homed onto wildcard " +
+			"channels first; it is not a filter decision.",
 	},
 	{
 		Channel:   eventchan.ProviderModelFallback,

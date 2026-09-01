@@ -12,6 +12,7 @@ const (
 	frameTypeEvent     = "event"
 	frameTypeReplay    = "replay"
 	frameTypeSubscribe = "subscribe"
+	frameTypeWatch     = "watch"
 	frameTypeBatch     = "batch"
 	frameTypePing      = "ping"
 	frameTypeHello     = "hello"
@@ -135,6 +136,18 @@ const MaxReplayChannels = 1024
 // service clients use it to avoid receiving unrelated provider traffic.
 const MaxSubscribeChannels = 1024
 
+// MaxWatchThreads bounds a connection's watched-entity set. A screen shows
+// a handful of panes; 256 is well past any real pane composition and is what
+// keeps one frame from making the server build an unbounded map. Each id is
+// separately bounded at MaxWatchThreadIDBytes.
+const MaxWatchThreads = 256
+
+// MaxWatchThreadIDBytes bounds one entity id in a watch frame. Thread ids
+// are short opaque strings; the cap is the same 256 handleSubscribe applies
+// to a channel name, for the same reason — the server stores what it is
+// given, so the per-item bound is the one that matters.
+const MaxWatchThreadIDBytes = 256
+
 // MaxRPCParams caps the number of positional parameters a single RPC
 // frame can carry. Protects against pathological inputs that would
 // otherwise drive arbitrary reflect.New allocations during decode.
@@ -154,6 +167,20 @@ const MaxRPCParams = 64
 //   - "subscribe": opt this connection into the live event channels named
 //     by Channels. Omitted by ordinary SPA connections, which retain the
 //     existing all-visible-channel behavior.
+//   - "watch": name the entities (thread ids) this connection is looking
+//     at, in Threads. Narrows the EntityFiltered channels only
+//     (event_entity.go); every other channel is unaffected. The set is
+//     absolute and idempotent, an empty array is legal and means "watching
+//     nothing", and a connection that never sends one stays wildcard.
+//
+// Deliberately a SEPARATE frame type from "subscribe" rather than another
+// field on it. The two answer different questions — subscribe narrows by
+// CHANNEL and watch narrows by ENTITY — and they have different populations:
+// the launcher and the harness subscribe to channels and never watch, the
+// SPA watches entities and must never subscribe to channels (that is what
+// keeps EventBus.ChannelSubscriberCount's "no connected launcher subscriber"
+// diagnostic sound). Folding them together would make each one's absence
+// ambiguous inside a frame that set the other.
 //
 // The server echoes ID back on rpc responses so the client can match
 // requests to in-flight promises.
@@ -165,6 +192,12 @@ type ClientFrame struct {
 	Params           []json.RawMessage `json:"params,omitempty"`
 	LastSeqByChannel map[string]uint64 `json:"lastSeqByChannel,omitempty"`
 	Channels         []string          `json:"channels,omitempty"`
+	// Threads carries a watch frame's absolute entity set. `omitempty` is
+	// correct here and costs nothing: the field is read only for a frame
+	// whose Type is already "watch", so an empty array and an absent one
+	// mean the same thing on that frame — watching nothing — and no other
+	// frame type is affected by its absence.
+	Threads []string `json:"threads,omitempty"`
 	// StepUpToken carries a fresh step-up proof for THIS call and no
 	// other: the single-use token a passkey assertion minted, bound to
 	// the session this connection named (§4 "Step-up"). Empty on every

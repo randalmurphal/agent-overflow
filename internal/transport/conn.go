@@ -609,6 +609,8 @@ func (h *connHandler) readLoop(ctx context.Context) error {
 			h.handleReplay(ctx, frame)
 		case frameTypeSubscribe:
 			h.handleSubscribe(ctx, frame)
+		case frameTypeWatch:
+			h.handleWatch(ctx, frame)
 		default:
 			h.writeError(ctx, frame.ID, &FrameError{
 				Code:    ErrCodeBadParams,
@@ -630,6 +632,37 @@ func (h *connHandler) handleSubscribe(ctx context.Context, frame ClientFrame) {
 		}
 	}
 	h.sub.SetChannels(frame.Channels)
+}
+
+// handleWatch narrows this connection's EntityFiltered channels to the
+// entities the frame names (event_entity.go). The set is ABSOLUTE and
+// idempotent: each frame replaces the last, and re-sending the same one
+// changes nothing.
+//
+// An EMPTY array is legal and is not the same as never sending one — it
+// means "watching nothing", which is a client with no panes open, and it is
+// the whole point of accepting the frame at all. That is why the length
+// check here is one-sided where handleSubscribe's is not: an empty
+// SUBSCRIBE would be a connection asking for no channels, which no client
+// wants and which a serialization bug produces by accident, so that one
+// refuses it.
+//
+// Like SetChannels, this is a ONE-WAY LATCH out of wildcard — nothing
+// restores the unfiltered state, and a client that wants it back reconnects.
+// The alternative (a sentinel meaning "everything") would put a wildcard
+// spelling on the wire that a client could send by accident.
+func (h *connHandler) handleWatch(ctx context.Context, frame ClientFrame) {
+	if len(frame.Threads) > MaxWatchThreads {
+		h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid entity watch"})
+		return
+	}
+	for _, entityID := range frame.Threads {
+		if entityID == "" || len(entityID) > MaxWatchThreadIDBytes {
+			h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid entity watch"})
+			return
+		}
+	}
+	h.sub.SetWatchedThreads(frame.Threads)
 }
 
 // dispatchRPC enforces the per-conn concurrency cap and spawns a
@@ -777,6 +810,15 @@ func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 			continue
 		}
 		if !h.sub.accepts(e.Channel) {
+			continue
+		}
+		// The watch filter applies to replay for the same reason it applies
+		// to live delivery: a reconnecting client asked for its cursor to be
+		// caught up, not for the entities it stopped watching. Filtered here
+		// rather than inside EventBus.Replay so the subscriber stays the one
+		// place the connection's filters live — and, like the two above it,
+		// a frame this filter drops produces no event and no gap marker.
+		if !h.sub.watches(e.Channel, e.EntityKey) {
 			continue
 		}
 		chunk = append(chunk, e)

@@ -127,6 +127,16 @@ var (
 		"workflow:definitions-changed",
 		"workflow:engine-state", // 2026-08-25 pass
 	}
+	// Wave 6d. Membership means a watching connection stops receiving the
+	// channel for threads it did not name, so a row joining this list is a
+	// claim that NOTHING off-pane reads it — established by sweeping the
+	// frontend consumers, never by the channel's name. Both members are
+	// span cache-warmers whose absence costs a highlight RPC and nothing
+	// else. provider:item_event is deliberately absent; its row says why.
+	frozenEntityFilteredChannels = []string{
+		"highlight:diff_seed",
+		"highlight:seed",
+	}
 )
 
 func TestChannelPolicyPreservesFrozenClassification(t *testing.T) {
@@ -154,6 +164,11 @@ func TestChannelPolicyPreservesFrozenClassification(t *testing.T) {
 			name:     "latestOnly",
 			frozen:   frozenLatestOnlyChannels,
 			classify: func(c string) bool { return channelRetention(c) == RetentionLatestOnly },
+		},
+		{
+			name:     "entityFiltered",
+			frozen:   frozenEntityFilteredChannels,
+			classify: channelEntityFiltered,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

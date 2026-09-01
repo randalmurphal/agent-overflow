@@ -222,12 +222,21 @@ func (r *ring) replayAfter(lastSeq uint64) (events []Event, hadGap bool) {
 // holds ONE payload copy, not two, across up-to-1024-deep subscriber
 // buffers; Data stays populated because non-wire subscribers (the
 // harness workflow waiter) decode payloads from it.
+//
+// EntityKey is the id of the entity this frame is addressed to — a thread
+// id today — derived ONCE by the emitter (internal/app's emit funnel, which
+// shares the derivation with the replay log) rather than per subscriber. It
+// is the input to per-thread subscription narrowing on EntityFiltered
+// channels (event_entity.go) and is empty on every other frame, including
+// one whose payload the extractor could not attribute. Empty means
+// "deliver": see event_entity.go for why that direction is the safe one.
 type Event struct {
 	Channel   string
 	Seq       uint64
 	Data      json.RawMessage
 	Gap       bool
 	WireBytes []byte
+	EntityKey string
 }
 
 // NewEventBus returns a new bus with the given per-channel capacity.
@@ -267,6 +276,20 @@ func NewEventBus(capacity int) *EventBus {
 // channel. Live fanout runs before unlock so subscribers observe that same
 // order even when several goroutines emit onto one channel concurrently.
 func (b *EventBus) Emit(typedChannel eventchan.Channel, payload any) (Event, error) {
+	return b.EmitEntity(typedChannel, "", payload)
+}
+
+// EmitEntity is Emit for a caller that has already derived the frame's
+// entity key (event_entity.go). Emit is the same call with an empty key,
+// which delivers to every subscriber exactly as it always has.
+//
+// The key is a PARAMETER rather than something this package extracts,
+// because the one caller that needs it also needs it for the NDJSON replay
+// log, and the extraction is a reflect walk with a JSON round-trip fallback
+// — paying it twice per emit to keep the signature shorter would be the
+// wrong trade on the transcript-stream hot path. internal/app's emit funnel
+// is where the single derivation lives.
+func (b *EventBus) EmitEntity(typedChannel eventchan.Channel, entityKey string, payload any) (Event, error) {
 	if b.closed.Load() {
 		return Event{}, nil
 	}
@@ -329,11 +352,14 @@ func (b *EventBus) Emit(typedChannel eventchan.Channel, payload any) (Event, err
 		Seq:       r.seq,
 		Data:      json.RawMessage(wire[dataEnd-len(data) : dataEnd : dataEnd]),
 		WireBytes: wire,
+		EntityKey: entityKey,
 	}
 	// The ring retains WireBytes only: replay splices it verbatim into
 	// its batch frames (or writes it through writeEventFrame's fast
 	// path when a chunk holds one event). Data is dropped to keep ring
-	// entries to the one WireBytes reference.
+	// entries to the one WireBytes reference. EntityKey stays, because
+	// replay applies the same watch filter live delivery does and has
+	// nothing else to read the frame's address from.
 	ringEvt := evt
 	ringEvt.Data = nil
 	r.append(ringEvt)
@@ -525,6 +551,11 @@ type Subscriber struct {
 	// its grants never open. nil means unfiltered, which is what every
 	// non-conn subscriber and every connection naming no session gets.
 	scopes atomic.Pointer[eventScopeFilter]
+	// watched, when set, narrows EntityFiltered channels to the entities
+	// this connection named in a `watch` frame (event_entity.go). nil
+	// means wildcard, which is what every subscriber gets until the first
+	// such frame arrives and what every non-SPA client keeps forever.
+	watched atomic.Pointer[subscriberWatchFilter]
 	// gapped records the channels this subscriber has dropped events on
 	// since it last learned about the loss. Written only inside deliver,
 	// which runs under the bus mutex (Emit's fanout is its sole call
@@ -555,6 +586,25 @@ func (s *Subscriber) SetChannels(channels []string) {
 	s.channels.Store(&filter)
 }
 
+// SetWatchedThreads narrows this subscriber's EntityFiltered channels to
+// the given entity ids. The set is ABSOLUTE — it replaces whatever was
+// there — and an EMPTY slice is a legal, meaningful value meaning "watching
+// nothing", which is what a client with no panes open has.
+//
+// Like SetChannels this is a ONE-WAY LATCH out of wildcard: once a
+// subscriber has a set, every later call replaces it, and there is no call
+// that restores the nil. A client that wants wildcard again reconnects.
+// Deliberate — "" as a wildcard sentinel inside the set, or a nil slice
+// meaning "unset" while an empty one means "none", are both shapes where a
+// client bug reads as a silent full-stream subscription.
+func (s *Subscriber) SetWatchedThreads(entityIDs []string) {
+	filter := make(subscriberWatchFilter, len(entityIDs))
+	for _, id := range entityIDs {
+		filter[id] = struct{}{}
+	}
+	s.watched.Store(&filter)
+}
+
 // SetOriginLoopback arms enqueue-time origin-visibility filtering for a
 // connection-owned subscriber. Call it before any event matters (the
 // conn handler sets it between Subscribe and starting the pump); the
@@ -577,6 +627,29 @@ func (s *Subscriber) accepts(channel string) bool {
 		return true
 	}
 	_, ok := (*filter)[channel]
+	return ok
+}
+
+// watches reports whether this subscriber's watch set admits a frame on
+// channel addressed to entityKey. True for every subscriber that never sent
+// a watch frame, every channel the registry does not mark EntityFiltered,
+// and every frame with no entity key (event_entity.go argues that last one).
+//
+// The check order is the hot path's: the empty-key test is free and answers
+// almost every frame in the process today, the atomic load is next, and the
+// registry probe runs only once a filter is actually armed.
+func (s *Subscriber) watches(channel, entityKey string) bool {
+	if entityKey == "" {
+		return true
+	}
+	filter := s.watched.Load()
+	if filter == nil {
+		return true
+	}
+	if !channelEntityFiltered(channel) {
+		return true
+	}
+	_, ok := (*filter)[entityKey]
 	return ok
 }
 
@@ -605,6 +678,15 @@ func (s *Subscriber) deliver(e Event) {
 		return
 	}
 	if scopes := s.scopes.Load(); scopes != nil && !scopes.allows(e.Channel) {
+		return
+	}
+	// Ahead of every gap concern, exactly like the three filters above it:
+	// a frame this connection was never addressed by is not a frame it
+	// lost, so it must not mark the channel gapped and must not trigger the
+	// announce protocol. The client's own forward-skip detection is
+	// exempted for these channels for the same reason
+	// (frontend/src/lib/transport/entityFilteredChannels.ts).
+	if !s.watches(e.Channel, e.EntityKey) {
 		return
 	}
 	if len(s.gapped) > 0 {
