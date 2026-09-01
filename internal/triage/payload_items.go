@@ -281,6 +281,11 @@ func (r *Router) handleProposedPlan(evt provider.ProviderEvent) error {
 	} else if found {
 		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(plan))
 	}
+	// AFTER the item upsert, preserving the order a pane already sees. The
+	// plan row is what makes hasActionableProposedPlan true, and that
+	// derived column is how every OTHER surface — the sidebar pill on a
+	// thread with no pane — learns a plan is awaiting a decision.
+	r.emitThreadRow(evt.ThreadID)
 	return nil
 }
 

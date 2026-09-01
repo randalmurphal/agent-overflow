@@ -85,3 +85,43 @@ func TestEmitErrorToThreadIsSafeWithoutTriage(t *testing.T) {
 		t.Fatalf("unexpected emission %q — triage-nil fallback must not touch the wire", emittedName)
 	}
 }
+
+// The Failed pill's carrier. A thread that errored while this client had
+// no pane on it is exactly the case the pill exists for, and
+// provider:item_event — which used to carry the error ROW the pill was
+// derived from — is narrowed to the threads a client watches. So the
+// badge rides its own wildcard channel, emitted from the one persist
+// chokepoint every error route funnels through.
+func TestRouteErrorToThreadEmitsTheErrorNotice(t *testing.T) {
+	app := newTestAppWithStore(t)
+	if err := app.store.CreateThread(testThread("thread-notice")); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	notices := make(chan triage.ThreadErrorNoticeEvent, 4)
+	app.triage = triage.NewRouter(app.store, func(name eventchan.Channel, data any) {
+		if name != eventchan.ThreadErrorNotice {
+			return
+		}
+		evt, ok := data.(triage.ThreadErrorNoticeEvent)
+		if !ok {
+			t.Errorf("thread:error_notice payload type = %T, want triage.ThreadErrorNoticeEvent", data)
+			return
+		}
+		notices <- evt
+	})
+
+	app.emitErrorToThread("thread-notice", "reconnect failed: binary not found")
+
+	select {
+	case notice := <-notices:
+		if notice.ThreadID != "thread-notice" {
+			t.Fatalf("notice.ThreadID = %q, want thread-notice", notice.ThreadID)
+		}
+		if notice.ItemID == "" {
+			t.Fatal("notice.ItemID is empty — the badge's dedupe key")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for thread:error_notice")
+	}
+}

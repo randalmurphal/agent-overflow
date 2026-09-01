@@ -1,6 +1,8 @@
 package app
 
 import (
+	"log"
+
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -38,6 +40,24 @@ func (a *App) broadcastThreadRowIfChanged(action string, row store.Thread, chang
 		return
 	}
 	a.broadcastThreadRow(action, row)
+}
+
+// broadcastThreadRowByID re-reads the row and broadcasts it as `full`. For
+// writes that move one of the DERIVED sidebar columns threadColumns computes
+// (hasActionableProposedPlan, hasIncompleteTurn) rather than a threads column
+// the caller already holds — the proposed-plan writes, which change no field
+// of the row the RPC returned. Log-and-continue: the write already succeeded
+// and the sidebar converges on the next ListThreads.
+func (a *App) broadcastThreadRowByID(threadID string) {
+	if threadID == "" {
+		return
+	}
+	row, err := a.store.GetThread(threadID)
+	if err != nil {
+		log.Printf("broadcast thread row %s: %v", threadID, err)
+		return
+	}
+	a.broadcastThreadRow(triage.ThreadActionFull, row)
 }
 
 // broadcastThreadDeleted announces a row that no longer exists in SQLite. It

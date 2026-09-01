@@ -40,6 +40,11 @@ const (
 	// on `rate_limit` / `authentication_failed` / ... and render the
 	// matching actionable copy.
 	itemKindAPIError = "api_error"
+	// itemKindError is the generic provider / dispatch failure row. It is
+	// the one kind the sidebar's Failed pill matches, which is why an
+	// emitted row of this kind also fires thread:error_notice
+	// (Router.emitErrorNotice) — api_error deliberately does not.
+	itemKindError = "error"
 
 	payloadKindToolCallResult = "tool_call_result"
 	payloadKindCommandOutput  = "command_output"
@@ -1529,10 +1534,6 @@ func (r *Router) turnIndexForScope(threadID, scope string) (int, error) {
 
 func (r *Router) emitItemUpsert(item store.Item) {
 	r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(item))
-}
-
-func (r *Router) emitItemUpsertWithActivity(item store.Item, countsAsActivity bool) {
-	r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsertWithActivity(item, &countsAsActivity))
 }
 
 func isToolStartMetaUpdateOnly(raw json.RawMessage) bool {

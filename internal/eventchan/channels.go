@@ -169,6 +169,7 @@ const (
 
 // thread:* — thread-row state every viewer renders.
 const (
+	ThreadErrorNotice        Channel = "thread:error_notice"
 	ThreadModeChanged        Channel = "thread:mode_changed"
 	ThreadRuntimeModeChanged Channel = "thread:runtime_mode_changed"
 	ThreadTitleGeneration    Channel = "thread:title_generation"

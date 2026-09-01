@@ -14,12 +14,11 @@ import {
   isThreadWorking,
   projectApprovalRequest,
   projectApprovalResolution,
-  projectPlanReady,
-  projectPlanResolved,
+  projectReaderMessageSent,
   projectSendResolved,
   projectSendStarted,
   projectThreadViewed,
-  projectThreadItem,
+  projectThreadError,
   projectThreadReverted,
   projectTurnCompleted,
   projectTurnStarted,
@@ -57,7 +56,6 @@ function seedQueueItem(threadId: string, partial: Partial<QueueItem> & { message
   const current = getQueueForThread(threadId);
   replaceQueueForThread(threadId, [...current, item]);
 }
-import { makeItem } from '../../test/helpers/chat';
 
 describe('threadStatuses store', () => {
   beforeEach(() => {
@@ -78,36 +76,15 @@ describe('threadStatuses store', () => {
     )).toBe(false);
   });
 
-  it('does not derive working from active timeline item rows', () => {
-    projectThreadItem(makeItem({
-      id: 'text-1',
-      kind: 'assistant_text',
-      status: 'streaming',
-    }));
-    projectThreadItem(makeItem({
-      id: 'tool-1',
-      kind: 'tool_call',
-      status: 'running',
-      isBackground: false,
-    }));
+  // Invariant 22 is now structural: this store has no item-shaped entry
+  // point left, so a persisted row cannot reach the working predicate at
+  // all. What remains testable is that the attention badge it DOES accept
+  // still says nothing about liveness.
+  it('does not derive working from an attention badge', () => {
+    projectThreadError('thread-1');
 
     expect(isThreadWorking('thread-1')).toBe(false);
-    expect(getThreadStatus('thread-1')).toBe('idle');
-
-    projectThreadItem(makeItem({
-      id: 'text-1',
-      kind: 'assistant_text',
-      status: 'completed',
-    }));
-    expect(getThreadStatus('thread-1')).toBe('idle');
-
-    projectThreadItem(makeItem({
-      id: 'tool-1',
-      kind: 'tool_call',
-      status: 'completed',
-      isBackground: false,
-    }));
-    expect(getThreadStatus('thread-1')).toBe('idle');
+    expect(getThreadStatus('thread-1')).toBe('error');
   });
 
   it('lets pending approvals dominate and resolves by requestId fallback', () => {
@@ -124,56 +101,30 @@ describe('threadStatuses store', () => {
     expect(getThreadStatus('thread-1')).toBe('idle');
   });
 
-  it('holds error until a new turn signal supersedes it', () => {
-    projectThreadItem(makeItem({
-      id: 'error-1',
-      kind: 'error',
-      role: 'system',
-      status: 'completed',
-    }));
+  it('holds error until the reader answers or a new turn starts', () => {
+    projectThreadError('thread-1');
     expect(getThreadStatus('thread-1')).toBe('error');
 
-    projectThreadItem(makeItem({
-      id: 'user-1',
-      kind: 'user_text',
-      role: 'user',
-      status: 'completed',
-    }));
+    // The reader's own message supersedes the badge. WHICH user_text rows
+    // count as the reader's is decided on the backend
+    // (triage.userTextCountsAsThreadActivity) and arrives as a
+    // thread:updated activity patch — a subagent's prompt and a wire-only
+    // context injection never produce one, so they cannot reach here.
+    projectReaderMessageSent('thread-1');
     expect(getThreadStatus('thread-1')).toBe('idle');
 
+    projectThreadError('thread-1');
     projectTurnStarted('thread-1', 'turn-1', 0, 0);
     expect(getThreadStatus('thread-1')).toBe('running');
   });
 
-  it('holds error across a subagent prompt row', () => {
-    projectThreadItem(makeItem({
-      id: 'error-1',
-      kind: 'error',
-      role: 'system',
-      status: 'completed',
-    }));
-    expect(getThreadStatus('thread-1')).toBe('error');
-
-    // The agent's own instructions row: same kind and role as a message
-    // the reader typed, but nobody attended to the error.
-    projectThreadItem(makeItem({
-      id: 'user:wire:abc',
-      kind: 'user_text',
-      role: 'user',
-      status: 'completed',
-      parentId: 'toolu_agent',
-      meta: '{"provider_item_id":"abc","wire_only":true}',
-    }));
-    expect(getThreadStatus('thread-1')).toBe('error');
+  it('leaves a thread with no badge untouched when the reader sends', () => {
+    projectReaderMessageSent('thread-1');
+    expect(getThreadStatus('thread-1')).toBe('idle');
   });
 
   it('clears an error when the thread is viewed', () => {
-    projectThreadItem(makeItem({
-      id: 'error-1',
-      kind: 'error',
-      role: 'system',
-      status: 'completed',
-    }));
+    projectThreadError('thread-1');
     expect(getThreadStatus('thread-1')).toBe('error');
 
     projectThreadViewed('thread-1');
@@ -204,21 +155,24 @@ describe('threadStatuses store', () => {
 
     projectUserInputResolution('thread-1', 'req-2');
     projectTurnCompleted('thread-1', 'turn-1');
-    projectPlanReady('thread-1');
+    projectApprovalRequest('thread-1', 'req-3', 'command');
     projectThreadViewed('thread-1');
-    expect(getThreadStatus('thread-1')).toBe('plan-ready');
+    expect(getThreadStatus('thread-1')).toBe('pending-approval');
   });
 
   it('clears interrupted even when a higher-priority visible status masks it', () => {
     projectTurnStarted('thread-1', 'turn-1', 0, 0);
     projectTurnCompleted('thread-1', 'turn-1', { aborted: true });
-    projectPlanReady('thread-1');
-    expect(getThreadStatus('thread-1')).toBe('plan-ready');
+    // Queue-only working is the mask: unlike an approval request it does
+    // not clear the interrupt itself, so this proves the VIEW cleared it
+    // underneath rather than the mask having done it.
+    seedQueueItem('thread-1', { message: 'queued follow-up' });
+    expect(getThreadStatus('thread-1')).toBe('running');
 
     projectThreadViewed('thread-1');
-    expect(getThreadStatus('thread-1')).toBe('plan-ready');
+    expect(getThreadStatus('thread-1')).toBe('running');
 
-    projectPlanResolved('thread-1');
+    replaceQueueForThread('thread-1', []);
     expect(getThreadStatus('thread-1')).toBe('idle');
   });
 
@@ -265,26 +219,11 @@ describe('threadStatuses store', () => {
     it('reveals an error that was masked by queue-only working after the queue clears', () => {
       seedQueueItem('thread-1', { message: 'queued follow-up' });
 
-      projectThreadItem(makeItem({
-        id: 'error-1',
-        kind: 'error',
-        role: 'system',
-        status: 'completed',
-      }));
+      projectThreadError('thread-1');
       expect(getThreadStatus('thread-1')).toBe('running');
 
       replaceQueueForThread('thread-1', []);
       expect(getThreadStatus('thread-1')).toBe('error');
-    });
-
-    it('reveals plan-ready that was masked by queue-only working after the queue clears', () => {
-      seedQueueItem('thread-1', { message: 'queued follow-up' });
-
-      projectPlanReady('thread-1');
-      expect(getThreadStatus('thread-1')).toBe('running');
-
-      replaceQueueForThread('thread-1', []);
-      expect(getThreadStatus('thread-1')).toBe('plan-ready');
     });
 
     it('reveals interrupted that was masked by queue-only working after the queue clears', () => {
@@ -491,114 +430,12 @@ describe('threadStatuses store', () => {
     });
   });
 
-  describe('plan-ready', () => {
-    it('flips to plan-ready on a completed proposed_plan item', () => {
-      projectThreadItem(makeItem({
-        id: 'plan-1',
-        kind: 'tool_call',
-        payloadKind: 'proposed_plan',
-        status: 'completed',
-      }));
-      expect(getThreadStatus('thread-1')).toBe('plan-ready');
-    });
-
-    it('does NOT flip back to plan-ready on implemented proposed_plan upsert', () => {
-      projectPlanReady('thread-1');
-      projectTurnStarted('thread-1', 'turn-1', 0, 0);
-      projectThreadItem(makeItem({
-        id: 'plan-1',
-        kind: 'tool_call',
-        payloadKind: 'proposed_plan',
-        status: 'completed',
-        meta: '{"planImplementedAt":123}',
-      }));
-      projectTurnCompleted('thread-1', 'turn-1');
-
-      expect(getThreadStatus('thread-1')).toBe('idle');
-    });
-
-    it('does NOT flip on an errored proposed_plan', () => {
-      projectThreadItem(makeItem({
-        id: 'plan-1',
-        kind: 'tool_call',
-        payloadKind: 'proposed_plan',
-        status: 'errored',
-      }));
-      expect(getThreadStatus('thread-1')).toBe('idle');
-    });
-
-    it('does NOT flip on a user-authored proposed_plan payload', () => {
-      projectThreadItem(makeItem({
-        id: 'plan-1',
-        kind: 'user_text',
-        role: 'user',
-        payloadKind: 'proposed_plan',
-        status: 'completed',
-      }));
-      expect(getThreadStatus('thread-1')).toBe('idle');
-    });
-
-    it('does NOT flip on a streaming (in-progress) proposed_plan', () => {
-      projectThreadItem(makeItem({
-        id: 'plan-1',
-        kind: 'tool_call',
-        payloadKind: 'proposed_plan',
-        status: 'streaming',
-      }));
-      // Streaming item rows are history/display state, not thread
-      // liveness. The plan-ready flag only kicks in on terminal
-      // completed status.
-      expect(getThreadStatus('thread-1')).not.toBe('plan-ready');
-      expect(getThreadStatus('thread-1')).toBe('idle');
-    });
-
-    it('turn_started clears plan-ready (user accepted or rejected)', () => {
-      projectPlanReady('thread-1');
-      expect(getThreadStatus('thread-1')).toBe('plan-ready');
-
-      projectTurnStarted('thread-1', 'turn-1', 0, 0);
-      expect(getThreadStatus('thread-1')).toBe('running');
-    });
-
-    it('explicit projectPlanResolved clears the flag', () => {
-      projectPlanReady('thread-1');
-      expect(getThreadStatus('thread-1')).toBe('plan-ready');
-
-      projectPlanResolved('thread-1');
-      expect(getThreadStatus('thread-1')).toBe('idle');
-    });
-
-    it('running trumps plan-ready while a turn is active', () => {
-      projectPlanReady('thread-1');
-      projectTurnStarted('thread-1', 'turn-1', 0, 0);
-      expect(getThreadStatus('thread-1')).toBe('running');
-    });
-
-    it('pending-approval and awaiting-input both trump plan-ready', () => {
-      projectPlanReady('thread-1');
-      projectUserInputRequest('thread-1', 'req-1');
-      expect(getThreadStatus('thread-1')).toBe('awaiting-input');
-
-      projectApprovalRequest('thread-1', 'req-2', 'command');
-      expect(getThreadStatus('thread-1')).toBe('pending-approval');
-    });
-
-    it('error trumps plan-ready until the thread is viewed', () => {
-      projectPlanReady('thread-1');
-      expect(getThreadStatus('thread-1')).toBe('plan-ready');
-
-      projectThreadItem(makeItem({
-        id: 'error-1',
-        kind: 'error',
-        role: 'system',
-        status: 'completed',
-      }));
-      expect(getThreadStatus('thread-1')).toBe('error');
-
-      projectThreadViewed('thread-1');
-      expect(getThreadStatus('thread-1')).toBe('plan-ready');
-    });
-  });
+  // The plan-ready pill has no live mirror in this store any more: it is
+  // resolved from the thread row's durable hasActionableProposedPlan by
+  // resolveEffectiveThreadStatus, whose precedence against every live
+  // status is covered in utils/threadStatusPill.test.ts. The backend keeps
+  // that column current by broadcasting the row on thread:updated from
+  // every proposed-plan write.
 
   describe('hasPendingSend / clearPendingSend', () => {
     it('hasPendingSend mirrors projectSendStarted / projectSendResolved', () => {
@@ -625,16 +462,11 @@ describe('threadStatuses store', () => {
       expect(hasPendingSend('thread-1')).toBe(false);
     });
 
-    it('error items clear the pending-send bridge and expose failure status', () => {
+    it('an error notice clears the pending-send bridge and exposes failure status', () => {
       projectSendStarted('thread-1');
       expect(getThreadStatus('thread-1')).toBe('running');
 
-      projectThreadItem(makeItem({
-        id: 'error-before-turn',
-        kind: 'error',
-        role: 'system',
-        status: 'completed',
-      }));
+      projectThreadError('thread-1');
 
       expect(hasPendingSend('thread-1')).toBe(false);
       expect(getThreadStatus('thread-1')).toBe('error');

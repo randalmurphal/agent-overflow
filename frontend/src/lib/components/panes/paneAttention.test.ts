@@ -45,6 +45,11 @@ describe('pane attention helpers', () => {
     );
     if (status === 'running') {
       projectTurnStarted(thread.id, `turn:${thread.id}`, 0, 0);
+    } else if (status === 'plan-ready') {
+      // plan-ready has no live mirror: it is resolved from the row's
+      // durable column, which the backend keeps current by broadcasting
+      // the row on thread:updated.
+      thread.hasActionableProposedPlan = true;
     } else if (status !== 'idle') {
       setThreadStatus(thread.id, status);
     }

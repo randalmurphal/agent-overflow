@@ -931,7 +931,7 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 			r.unclaimPendingSendAnchor(threadID, id)
 			continue
 		}
-		r.emitItemUpsertWithActivity(item, false)
+		r.emitItemUpsert(item)
 		if confirmedHook != nil {
 			confirmedHook(threadID, item)
 		}
@@ -982,7 +982,7 @@ func (r *Router) rebumpAnchoredQuietSiblings(threadID, echoedItemID string, turn
 			r.markSiblingNeedsTailRebump(threadID, id)
 			continue
 		}
-		r.emitItemUpsertWithActivity(item, false)
+		r.emitItemUpsert(item)
 	}
 }
 

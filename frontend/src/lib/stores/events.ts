@@ -59,6 +59,8 @@ import {
   resetItemEventQueue,
 } from './eventsItemStream';
 import {
+  applyThreadErrorNotice,
+  type ThreadErrorNoticeEvent,
   applyThreadUpdated,
   type ThreadUpdateEvent,
   applyModeChanged,
@@ -413,6 +415,17 @@ export function setupEventListeners(): () => void {
 
   const cancelThreadUpdated = wailsEventOn<ThreadUpdateEvent>('thread:updated', applyThreadUpdated);
 
+  // thread:error_notice — a row of kind `error` was persisted on some
+  // thread. The wildcard carrier for the sidebar's Failed pill: the
+  // transcript stream it used to ride (`provider:item_event`) is narrowed
+  // to the threads this client has a surface for, and the pill exists
+  // precisely for the ones it does not. Ids only; the prose stays on the
+  // item, which the panes that want it already receive.
+  const cancelThreadErrorNotice = wailsEventOn<ThreadErrorNoticeEvent>(
+    'thread:error_notice',
+    applyThreadErrorNotice,
+  );
+
   // project:updated — one frame per project row a persisted write moved. The
   // sidebar list is otherwise refreshed only on mount and after the issuing
   // client's own RPC, so this is what converges a second attached client.
@@ -574,6 +587,7 @@ export function setupEventListeners(): () => void {
     cancelProviderCommands();
     cancelUserMessageReverted();
     cancelThreadUpdated();
+    cancelThreadErrorNotice();
     cancelProjectUpdated();
     cancelDraftUpdated();
     cancelThreadTitleGeneration();

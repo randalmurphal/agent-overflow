@@ -870,20 +870,11 @@ describe('<ThreadRow> live status dot', () => {
     expect(shell.classList.contains('status-glow-info')).toBe(false);
   });
 
-  it('renders a non-pulsing accent dot labelled Plan ready when a plan is waiting', () => {
-    setThreadStatus('t-plan-ready', 'plan-ready');
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, {
-      props: { thread: makeThread({ id: 't-plan-ready' }), pane },
-    });
-    const dot = getByTestId('thread-row-status-dot');
-    expect(dot.getAttribute('data-status')).toBe('plan-ready');
-    expect(dot.getAttribute('aria-label')).toBe('Plan Ready');
-    expect(dot.classList.contains('bg-accent')).toBe(true);
-    expect(dot.classList.contains('animate-pulse')).toBe(false);
-  });
-
-  it('renders durable Plan ready from the thread row without a live event', () => {
+  // Plan ready has ONE source: the row's durable column. There is no live
+  // status to seed — the backend broadcasts the whole row on thread:updated
+  // from every proposed-plan write, so a client that never watched the
+  // thread paints the same pill as the one that ran the turn.
+  it('renders a non-pulsing accent dot labelled Plan ready from the thread row', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
       props: {
@@ -894,6 +885,8 @@ describe('<ThreadRow> live status dot', () => {
     const dot = getByTestId('thread-row-status-dot');
     expect(dot.getAttribute('data-status')).toBe('plan-ready');
     expect(dot.getAttribute('aria-label')).toBe('Plan Ready');
+    expect(dot.classList.contains('bg-accent')).toBe(true);
+    expect(dot.classList.contains('animate-pulse')).toBe(false);
   });
 
   it('renders durable Interrupted from the thread row without a live event', () => {

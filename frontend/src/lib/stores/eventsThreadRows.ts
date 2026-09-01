@@ -6,13 +6,13 @@
 // imports another events* module. Fan-in target of events.ts's
 // setupEventListeners.
 import type { TurnCompletedEvent } from '../types/events';
-import type { Item, Thread } from '../types/models';
+import type { Thread } from '../types/models';
 import { ListThreads } from './bindings';
 import { closePanesShowingThread, findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { addToast } from './toast.svelte';
 import { getThreadById, getThreadLiveActivityAt, getThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
-import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
+import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
@@ -142,10 +142,6 @@ export function syncThreadActivity(threadId: string, updatedAt: number): void {
   touchProjectActivity(projectId, latestUpdatedAt);
 }
 
-export function userTextCountsAsActivity(item: Item): boolean {
-  return isReaderAuthoredUserText(item);
-}
-
 /**
  * Mid-session sidebar resync (transport-gap recovery). Unlike
  * refreshThreads' wholesale replacement — fine at boot, where no local
@@ -242,12 +238,12 @@ export function patchThreadDurableStatus(
   patch: Pick<Partial<Thread>, 'hasActionableProposedPlan' | 'hasIncompleteTurn'>,
 ): void {
   // No-op dedupe: skip the replace when none of the patch fields actually
-  // change the thread. This is the cooperating half of the item-upsert
-  // dedupe in `applyItemUpsertsToWindow` — `syncProposedPlanStatus` fires
-  // this on every proposed-plan upsert, and without the dedupe a repeated
-  // upsert that doesn't move the durable status STILL replaces
-  // `pane.thread` with a new reference, triggering the same reactive
-  // cascade through any component that reads `pane.thread` directly.
+  // change the thread. Callers are the turn-lifecycle handlers, which fire
+  // on every round; without the dedupe a restated value STILL replaces
+  // `pane.thread` with a new reference, triggering a reactive cascade
+  // through any component that reads `pane.thread` directly. The durable
+  // plan flag's other writer is the backend, which sends the whole row on
+  // `thread:updated` whenever a proposed-plan write moves it.
   const existing = getThreads().find((thread) => thread.id === threadId);
   if (existing && !patchMatchesThread(existing, patch)) {
     replaceThread({ ...existing, ...patch });
@@ -278,35 +274,6 @@ function patchMatchesThread(
   return true;
 }
 
-function isImplementedProposedPlan(item: Item): boolean {
-  if (item.payloadKind !== 'proposed_plan' || item.role !== 'assistant' || item.status !== 'completed') {
-    return false;
-  }
-  if (!item.meta) return false;
-  try {
-    const parsed = JSON.parse(item.meta) as { planImplementedAt?: number };
-    return Number(parsed.planImplementedAt ?? 0) > 0;
-  } catch (err) {
-    // Treat unparseable meta as not-implemented (the plan stays
-    // actionable), but don't lose the signal that a proposed_plan row
-    // carried malformed JSON.
-    console.warn(
-      `isImplementedProposedPlan: unparseable proposed_plan meta for thread ${item.threadId}, item ${item.id}:`,
-      err,
-    );
-    return false;
-  }
-}
-
-export function syncProposedPlanStatus(item: Item): void {
-  if (item.payloadKind !== 'proposed_plan' || item.role !== 'assistant' || item.status !== 'completed') {
-    return;
-  }
-  patchThreadDurableStatus(item.threadId, {
-    hasActionableProposedPlan: !isImplementedProposedPlan(item),
-  });
-}
-
 /**
  * Payload for thread:updated. Mirrors triage.ThreadUpdateEvent, which owns
  * the action vocabulary; `action` names what this client must DO with the
@@ -326,6 +293,27 @@ export interface ThreadUpdateEvent {
   title?: string;
   model?: string;
   sessionRef?: string;
+  /**
+   * A sidebar-activity bump from an activity-counting user_text persist,
+   * and nothing else — turn completions and approval requests announce
+   * themselves on their own channels. Deliberately NOT merged into the row:
+   * see the patch branch below.
+   */
+  updatedAt?: number;
+}
+
+/**
+ * Payload for thread:error_notice. Mirrors triage.ThreadErrorNoticeEvent:
+ * ids only, because the error's prose stays on the item row.
+ */
+export interface ThreadErrorNoticeEvent {
+  threadId?: string;
+  itemId?: string;
+}
+
+export function applyThreadErrorNotice(evt: ThreadErrorNoticeEvent): void {
+  if (!evt?.threadId) return;
+  projectThreadError(evt.threadId);
 }
 
 export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
@@ -333,6 +321,25 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
   switch (evt.action) {
     case 'patch': {
       if (!evt.id) return;
+      // `updatedAt` is applied WITHOUT a cached row, unlike the field
+      // merges below. It carries the reader's own message landing on a
+      // thread, which is a sidebar-ordering and attention-badge fact about
+      // threads this client may have no row for yet; both effects self-guard
+      // on an unknown id (touchThreadActivity no-ops for a thread the list
+      // doesn't hold, and the badge clears are Set deletes). Merging it into
+      // the row instead would replace the row object on every message — the
+      // reason live activity lives in a keyed box in the first place.
+      if (evt.updatedAt !== undefined) {
+        syncThreadActivity(evt.id, evt.updatedAt);
+        projectReaderMessageSent(evt.id);
+      }
+      if (evt.title === undefined && evt.model === undefined && evt.sessionRef === undefined) {
+        // Nothing to merge. Falling through would still run syncThreadRow,
+        // which folds live activity back into the row's own updatedAt and
+        // replaces the object — per-beat churn on the activity-only patch,
+        // for a copy with no changed field in it.
+        return;
+      }
       const cached = getThreadById(evt.id)
         ?? ingestPaneShowingThread(evt.id)?.thread;
       if (!cached) return;

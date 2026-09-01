@@ -150,6 +150,10 @@ func (a *App) validateProposedPlanItem(threadID, planItemID string) (store.Item,
 	if _, err := a.store.EnsureProposedPlanState(threadID, planItemID, time.Now().UnixMilli()); err != nil {
 		return store.Item{}, fmt.Errorf("ensure proposed plan state: %w", err)
 	}
+	// Same reason as resolveSourceProposedPlan: the ensure can create the
+	// proposed_plans row hasActionableProposedPlan is derived from, and the
+	// sidebar pill has no other source for it.
+	a.broadcastThreadRowByID(threadID)
 	return item, nil
 }
 

@@ -1,8 +1,11 @@
 package app
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/triage"
@@ -365,6 +368,85 @@ func TestThreadWorkspaceSwitchBroadcastsOnlyRealMoves(t *testing.T) {
 		t.Fatalf("UpdateThreadWorkspace(same): %v", err)
 	}
 	broadcasts.expectSilence("switching a thread to the workspace it already sits in")
+}
+
+// The sidebar's Plan ready pill is a DERIVED COLUMN of the thread row
+// (threads.hasActionableProposedPlan), and since provider:item_event was
+// narrowed to the threads a client watches, the row is the only way a
+// client with no surface on this thread learns the pill moved. So every
+// write that changes the derivation broadcasts the row — the in-turn
+// persist (covered in triage), and these two App-side settles.
+func TestProposedPlanStateChangesBroadcastTheThreadRow(t *testing.T) {
+	t.Run("ensure-state settle raises the pill", func(t *testing.T) {
+		app := newTestAppWithStore(t)
+		thread := mustCreateBroadcastThread(t, app)
+		seedBroadcastProposedPlan(t, app, thread.ID)
+		broadcasts := captureThreadBroadcasts(t, app)
+
+		if _, err := app.CreateProposedPlanComment(thread.ID, store.ProposedPlanCommentInput{
+			PlanItemID: "plan-item", StartLine: 1, EndLine: 1, Body: "tighten this",
+		}); err != nil {
+			t.Fatalf("CreateProposedPlanComment: %v", err)
+		}
+
+		row := broadcasts.expectRow(triage.ThreadActionFull, thread.ID)
+		if !row.HasActionableProposedPlan {
+			t.Fatal("broadcast row HasActionableProposedPlan = false, want true")
+		}
+	})
+
+	t.Run("implementing the plan clears the pill", func(t *testing.T) {
+		app := newTestAppWithStore(t)
+		thread := mustCreateBroadcastThread(t, app)
+		seedBroadcastProposedPlan(t, app, thread.ID)
+		if _, err := app.store.EnsureProposedPlanState(thread.ID, "plan-item", time.Now().UnixMilli()); err != nil {
+			t.Fatalf("EnsureProposedPlanState: %v", err)
+		}
+		// A session with no provider: applyProposedPlanAcceptance runs
+		// synchronously before sendToProvider, so the mark — and its
+		// broadcast — are observable without a provider write.
+		app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "no-provider"})
+		broadcasts := captureThreadBroadcasts(t, app)
+
+		if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
+			SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
+		}); err == nil {
+			t.Fatal("SendMessageWithOptions() error = nil, want session-has-no-provider failure")
+		}
+
+		var last *store.Thread
+		for i := range broadcasts.events {
+			evt := broadcasts.events[i]
+			if evt.Action == triage.ThreadActionFull && evt.Thread != nil && evt.Thread.ID == thread.ID {
+				last = evt.Thread
+			}
+		}
+		if last == nil {
+			t.Fatalf("no thread row broadcast for the implemented plan: %+v", broadcasts.events)
+		}
+		if last.HasActionableProposedPlan {
+			t.Fatal("broadcast row HasActionableProposedPlan = true, want false (the plan was just implemented)")
+		}
+	})
+}
+
+func seedBroadcastProposedPlan(t *testing.T, app *App, threadID string) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItemWithPayload(store.Item{
+		ID: "plan-item", ThreadID: threadID, TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", Status: "completed", Summary: "Plan",
+		PayloadID: "plan-payload", ToolName: "plan", CreatedAt: now, UpdatedAt: now,
+	}, store.Payload{
+		ID:   "plan-payload",
+		Kind: "proposed_plan",
+		Meta: `{"title":"Plan","preview":"one","lineCount":1,"charCount":3}`,
+		Data: []byte("# Plan"),
+
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed plan: %v", err)
+	}
 }
 
 func mustCompleteBroadcastTurn(t *testing.T, app *App, threadID string) {

@@ -876,6 +876,24 @@ var channelPolicies = []ChannelPolicy{
 			"is deliberately wire-safe, same story as spinner:changed.",
 	},
 	{
+		Channel:   eventchan.ThreadErrorNotice,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "{threadId, itemId} — no summary, so the provider's error " +
+			"prose stays on provider:item_event and this carries only the " +
+			"fact that a row of kind `error` was persisted. It exists to " +
+			"stay WILDCARD while provider:item_event is narrowed by watch: " +
+			"the sidebar's Failed pill is read on threads with no pane, and " +
+			"several error classes never produce a provider:turn_completed " +
+			"the pill could have keyed on instead — non-fatal wire errors, " +
+			"orphan error results, the Codex ambiguous-turn-start timeout, " +
+			"flush-dispatch failures, and steer failures. NOT " +
+			"EntityFiltered, deliberately, and low enough frequency that " +
+			"the bytes are not worth a filter. Keyed per thread: never " +
+			"latest-only.",
+	},
+	{
 		Channel:   eventchan.ThreadModeChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

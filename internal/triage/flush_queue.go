@@ -653,7 +653,7 @@ func (r *Router) selfHealEchoConsumedFlushRow(threadID string, entry pendingSend
 				// without this upsert it stays invisible until a thread
 				// reload (round-7, R7-7). Idempotent for rows the
 				// promote path already emitted.
-				r.emitItemUpsertWithActivity(updated, false)
+				r.emitItemUpsert(updated)
 			}
 		}
 	case retained == nil:

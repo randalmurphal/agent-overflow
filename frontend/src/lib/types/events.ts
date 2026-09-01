@@ -200,7 +200,6 @@ export type ItemStreamEvent =
 	      action: 'upsert';
 	      threadId: string;
 	      item: Item;
-	      countsAsActivity?: boolean;
 	    }
 	  | ({ action: 'delta' } & ItemDeltaEvent)
 	  | ({ action: 'meta' } & ItemMetaEvent)

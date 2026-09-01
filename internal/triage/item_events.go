@@ -30,23 +30,18 @@ type ItemPatchFields struct {
 }
 
 type ItemStreamEvent struct {
-	Action           string           `json:"action"`
-	ThreadID         string           `json:"threadId"`
-	Item             *store.Item      `json:"item,omitempty"`
-	CountsAsActivity *bool            `json:"countsAsActivity,omitempty"`
-	ItemID           string           `json:"itemId,omitempty"`
-	Kind             string           `json:"kind,omitempty"`
-	Delta            string           `json:"delta,omitempty"`
-	Meta             string           `json:"meta,omitempty"`
-	Patch            *ItemPatchFields `json:"patch,omitempty"`
-	UpdatedAt        int64            `json:"updatedAt,omitempty"`
+	Action    string           `json:"action"`
+	ThreadID  string           `json:"threadId"`
+	Item      *store.Item      `json:"item,omitempty"`
+	ItemID    string           `json:"itemId,omitempty"`
+	Kind      string           `json:"kind,omitempty"`
+	Delta     string           `json:"delta,omitempty"`
+	Meta      string           `json:"meta,omitempty"`
+	Patch     *ItemPatchFields `json:"patch,omitempty"`
+	UpdatedAt int64            `json:"updatedAt,omitempty"`
 }
 
-func NewItemStreamUpsert(item store.Item) ItemStreamEvent {
-	return NewItemStreamUpsertWithActivity(item, nil)
-}
-
-// NewItemStreamUpsertWithActivity is the single constructor every
+// NewItemStreamUpsert is the single constructor every
 // item-upsert emit site goes through, which is why the wire projection
 // sits here rather than at the eleven call sites: a new emitter cannot
 // forget it.
@@ -63,13 +58,12 @@ func NewItemStreamUpsert(item store.Item) ItemStreamEvent {
 // Under budget this is one length check per item event, and item events
 // are per persisted row, not per delta (newItemStreamDelta is untouched
 // and stays the streaming hot path).
-func NewItemStreamUpsertWithActivity(item store.Item, countsAsActivity *bool) ItemStreamEvent {
+func NewItemStreamUpsert(item store.Item) ItemStreamEvent {
 	projected := itemwire.Project(item, true)
 	return ItemStreamEvent{
-		Action:           itemStreamActionUpsert,
-		ThreadID:         projected.ThreadID,
-		Item:             &projected,
-		CountsAsActivity: countsAsActivity,
+		Action:   itemStreamActionUpsert,
+		ThreadID: projected.ThreadID,
+		Item:     &projected,
 	}
 }
 

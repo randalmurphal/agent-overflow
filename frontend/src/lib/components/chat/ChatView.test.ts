@@ -19,7 +19,7 @@ import {
   getThreadStatus,
   projectTurnStarted,
   projectTurnCompleted,
-  projectThreadItem,
+  projectThreadError,
   resetForTest as resetThreadStatuses,
 } from '../../stores/threadStatuses.svelte';
 import {
@@ -944,12 +944,7 @@ describe('<ChatView>', () => {
     setBindingMock('ListThreads', async () => [thread]);
     await refreshThreads();
     const pane = await buildPane(thread);
-    projectThreadItem(makeItem({
-      id: 'error-1',
-      kind: 'error',
-      role: 'system',
-      status: 'completed',
-    }));
+    projectThreadError('thread-1');
 
     render(ChatView, { props: { pane } });
     await tick();

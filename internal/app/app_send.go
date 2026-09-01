@@ -912,6 +912,10 @@ func (a *App) resolveSourceProposedPlan(threadID string, source *SourceProposedP
 	if _, err := a.store.EnsureProposedPlanState(sourceThreadID, item.ID, time.Now().UnixMilli()); err != nil {
 		return nil, fmt.Errorf("ensure source proposed plan state: %w", err)
 	}
+	// A first-ensure creates the proposed_plans row that makes
+	// hasActionableProposedPlan true; a repeat ensure re-states a row and
+	// the `full` broadcast is idempotent on the receiving side.
+	a.broadcastThreadRowByID(sourceThreadID)
 	resolved := &SourceProposedPlan{
 		ThreadID:  sourceThreadID,
 		ItemID:    item.ID,
@@ -1006,6 +1010,10 @@ func (a *App) applyProposedPlanAcceptance(threadID string, userItem store.Item, 
 		switch {
 		case err == nil:
 			a.refreshProposedPlanItem(sp.ThreadID, sp.ItemID)
+			// The plan stopped being actionable, which is a derived
+			// column of the thread row. Off-pane sidebars read the pill
+			// from there, not from the item upsert above.
+			a.broadcastThreadRowByID(sp.ThreadID)
 		case errors.Is(err, store.ErrProposedPlanAlreadyImplemented):
 			// Re-click on an already-implemented plan: keep the
 			// existing attribution and skip the emit (nothing changed).
