@@ -359,10 +359,7 @@ func TestForkThreadFromMessageFirstMessageCreatesEmptyFork(t *testing.T) {
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	sourceAttachment, err := app.UploadAttachment(source.ID, "one.png", "image/png", tinyPNGBase64())
-	if err != nil {
-		t.Fatalf("UploadAttachment: %v", err)
-	}
+	sourceAttachment := uploadTestAttachment(t, app, source.ID, "one.png", "image/png", tinyPNG())
 	meta, err := json.Marshal(userMessageMeta{
 		Attachments: []userMessageAttachmentMeta{
 			{ID: sourceAttachment.ID, ThreadID: source.ID, Filename: "one.png", MimeType: "image/png"},

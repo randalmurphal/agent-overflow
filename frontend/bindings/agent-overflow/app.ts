@@ -867,26 +867,18 @@ export function GetAccessOverview(): $CancellablePromise<app$0.AccessOverview> {
 }
 
 /**
- * GetAttachmentData returns the base64-encoded raw bytes for rendering a
- * thread-owned attachment inline in the UI. Keeping this behind RPC avoids
- * exposing a static file server.
- * 
- * This is the FULL-SIZE path used by the lightbox modal. Inline grid
- * rendering should call GetAttachmentThumbnail instead so we don't ship
- * 5 MB of pixels for a 128 px tile (especially over the remote
- * `--connect` transport).
- */
-export function GetAttachmentData(threadID: string, attachmentID: string): $CancellablePromise<string> {
-    return $Call.ByID(71154490, threadID, attachmentID);
-}
-
-/**
  * GetAttachmentThumbnail returns a small, inline-grid-sized version of the
  * attachment, generating it lazily on first call and caching the result on
  * the attachments row. ~10–30 KB per thumb vs ~1–10 MB for the original;
  * the savings matter even locally (base64 + JSON encode cost) and become
  * the difference between "instant grid" and "watch them load" over the
  * remote `--connect` transport.
+ * 
+ * This one STAYS an RPC while the full-size paths moved to HTTP, and the
+ * size is the whole reason. A thumbnail is ~10-30 KB, so base64 inside a
+ * WS frame costs a frame the socket would not notice; the round trip a
+ * ticket adds is pure latency, and a grid opens many of them at once. The
+ * rule the move was about is large bodies, and a thumbnail is not one.
  */
 export function GetAttachmentThumbnail(threadID: string, attachmentID: string): $CancellablePromise<app$0.AttachmentThumbnail> {
     return $Call.ByID(3414107538, threadID, attachmentID).then(($result: any) => {
@@ -2620,6 +2612,40 @@ export function MarkThreadRead(id: string): $CancellablePromise<void> {
  */
 export function MarkThreadUnread(id: string): $CancellablePromise<void> {
     return $Call.ByID(236597375, id);
+}
+
+/**
+ * MintAttachmentDownloadTicket authorizes ONE read of one thread-owned
+ * attachment and returns the relative URL its bytes come from.
+ * 
+ * The thread-ownership check runs here, on metadata, before any ticket
+ * exists — the same check ReadThreadBytes made and for the same reason: a
+ * stale cross-thread id must not resolve to another thread's file. The
+ * route cannot make this check itself (it has no idea what an attachment
+ * row is), which is exactly why it has to happen at the mint.
+ */
+export function MintAttachmentDownloadTicket(threadID: string, attachmentID: string): $CancellablePromise<string> {
+    return $Call.ByID(3197504008, threadID, attachmentID);
+}
+
+/**
+ * MintAttachmentUploadTicket authorizes ONE attachment upload and returns
+ * the relative URL its bytes go to.
+ * 
+ * The three metadata arguments are fixed HERE, travel inside the ticket,
+ * and are what the stored row will say. The upload request contributes the
+ * bytes and nothing else, so a client cannot describe its payload as one
+ * thing while minting and another thing while sending.
+ * 
+ * Both argument checks are deliberately duplicated with the attachment
+ * store's own. Refusing an oversize or disallowed payload BEFORE it is
+ * sent turns "10 MiB of upload, then a rejection" into one failed round
+ * trip, which on a phone is the whole difference; the store still checks
+ * again, and its signature check is the one a content type cannot talk its
+ * way past.
+ */
+export function MintAttachmentUploadTicket(threadID: string, filename: string, mimeType: string, sizeBytes: number): $CancellablePromise<string> {
+    return $Call.ByID(1857144453, threadID, filename, mimeType, sizeBytes);
 }
 
 /**
@@ -4398,16 +4424,6 @@ export function UpdateThreadRuntimeMode(id: string, mode: string): $CancellableP
 export function UpdateThreadWorkspace(id: string, path: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3875142865, id, path).then(($result: any) => {
         return $$createType1($result);
-    });
-}
-
-/**
- * UploadAttachment decodes base64 bytes, validates + persists them on disk,
- * and returns the new attachment metadata.
- */
-export function UploadAttachment(threadID: string, filename: string, mimeType: string, dataB64: string): $CancellablePromise<store$0.Attachment> {
-    return $Call.ByID(2485473713, threadID, filename, mimeType, dataB64).then(($result: any) => {
-        return $$createType90($result);
     });
 }
 

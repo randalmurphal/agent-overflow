@@ -410,6 +410,11 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// Pairing redemption and credential rotation. The App adapts the
 		// session core onto the transport's dumb DTOs.
 		AuthEndpoints: appservice.AuthEndpoints(appService.App),
+		// Attachment bytes, which cross on HTTP rather than inside a WS
+		// frame. Late-bound the same way: the adapter holds the App and
+		// reads its attachment store per call, so the store opening during
+		// ServiceStartup is not a problem this config has to sequence.
+		AttachmentTransfer: appservice.AttachmentTransfer(appService.App),
 		// Diagnostic cross-origin isolation so the renderer exposes
 		// measureUserAgentSpecificMemory. Opt-in: COEP breaks remote
 		// subresources such as chat-markdown images.

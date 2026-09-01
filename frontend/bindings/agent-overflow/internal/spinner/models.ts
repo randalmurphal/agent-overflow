@@ -68,9 +68,12 @@ export class Files {
  * at runtime, but the Wails binding generator has no special case for it
  * and would emit `number[]` in TypeScript — a declared type that
  * disagrees with what the wire actually carries. Every other binary
- * payload in this app (GetAttachmentData, AttachmentThumbnail.Data,
- * terminal replay) already spells base64 out for the same reason; this
- * follows them.
+ * payload still on the RPC wire (AttachmentThumbnail.Data, terminal
+ * replay) already spells base64 out for the same reason; this follows
+ * them. The payloads too large for that treatment left the wire entirely
+ * in wave 6b — attachment bytes now stream over HTTP — so the rule is not
+ * "base64 everything", it is "a binary payload small enough to belong in a
+ * frame says so in its type".
  */
 export class Sprite {
     "id": string;

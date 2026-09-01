@@ -90,7 +90,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ForkThreadFromMessage", ID: 3977213964, Scope: "threads:operate"},                     // main.App.ForkThreadFromMessage
 	{Name: "GenerateCommitMessage", ID: 1669373286, Scope: "git:operate"},                         // main.App.GenerateCommitMessage
 	{Name: "GetAccessOverview", ID: 1559710962, Scope: "access:admin"},                            // main.App.GetAccessOverview
-	{Name: "GetAttachmentData", ID: 71154490, Scope: "threads:read"},                              // main.App.GetAttachmentData
 	{Name: "GetAttachmentThumbnail", ID: 3414107538, Scope: "threads:read"},                       // main.App.GetAttachmentThumbnail
 	{Name: "GetBranchBaseDiff", ID: 1342635161, Scope: "files:read"},                              // main.App.GetBranchBaseDiff
 	{Name: "GetChannelMessages", ID: 3595031866, Scope: "threads:read"},                           // main.App.GetChannelMessages
@@ -227,6 +226,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995, Scope: "threads:operate"},                // main.App.MarkDiffReviewCommentsSent
 	{Name: "MarkThreadRead", ID: 1480646012, Scope: "threads:operate"},                            // main.App.MarkThreadRead
 	{Name: "MarkThreadUnread", ID: 236597375, Scope: "threads:operate"},                           // main.App.MarkThreadUnread
+	{Name: "MintAttachmentDownloadTicket", ID: 3197504008, Scope: "threads:read"},                 // main.App.MintAttachmentDownloadTicket
+	{Name: "MintAttachmentUploadTicket", ID: 1857144453, Scope: "attachments:write"},              // main.App.MintAttachmentUploadTicket
 	{Name: "MintDevicePairing", ID: 400809065, Scope: "access:admin", StepUp: true},               // main.App.MintDevicePairing
 	{Name: "MoveThreadTerminals", ID: 3013708277, Scope: "terminal:operate"},                      // main.App.MoveThreadTerminals
 	{Name: "NotificationActivated", ID: 2831503793, Scope: "host"},                                // main.App.NotificationActivated
@@ -346,7 +347,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UpdateThreadReasoningEffort", ID: 892204206, Scope: "threads:operate"},                // main.App.UpdateThreadReasoningEffort
 	{Name: "UpdateThreadRuntimeMode", ID: 325190827, Scope: "threads:operate"},                    // main.App.UpdateThreadRuntimeMode
 	{Name: "UpdateThreadWorkspace", ID: 3875142865, Scope: "threads:operate"},                     // main.App.UpdateThreadWorkspace
-	{Name: "UploadAttachment", ID: 2485473713, Scope: "attachments:write"},                        // main.App.UploadAttachment
 	{Name: "VerifyEditDiffs", ID: 3907724148, Scope: "files:read"},                                // main.App.VerifyEditDiffs
 	{Name: "Version", ID: 2431199839, Scope: "threads:read"},                                      // main.App.Version
 	{Name: "WorkflowAgentAddMemory", ID: 4000394635, Scope: "threads:autonomy"},                   // main.App.WorkflowAgentAddMemory

@@ -34,19 +34,25 @@ func grantsFor(scopes ...Scope) []string {
 // Three of them read attachment bytes or per-thread review notes and
 // carry `threads:read` instead; they moved with the diffs for the same
 // reason and are listed with the scope each actually declares.
+//
+// `GetAttachmentData` is gone (wave 6b) and its successor is here in its
+// place. The unlock it recorded did not change: the full-size read still
+// answers a session granted `threads:read`, but what that call now returns
+// is a single-use URL rather than 10 MiB of base64, and the bytes follow
+// on their own connection.
 var workspaceContentMethods = map[string]Scope{
-	"GetBranchBaseDiff":         ScopeFilesRead,
-	"GetWorkingTreeDiff":        ScopeFilesRead,
-	"GetWorkspaceCurrentDiff":   ScopeFilesRead,
-	"GetCommitDiff":             ScopeFilesRead,
-	"GetDiffContextLines":       ScopeFilesRead,
-	"VerifyEditDiffs":           ScopeFilesRead,
-	"HighlightPatchWithContext": ScopeFilesRead,
-	"SearchWorkspaceFiles":      ScopeFilesRead,
-	"GetLocalImageData":         ScopeFilesRead,
-	"ListDiffReviewComments":    ScopeThreadsRead,
-	"GetAttachmentData":         ScopeThreadsRead,
-	"GetAttachmentThumbnail":    ScopeThreadsRead,
+	"GetBranchBaseDiff":            ScopeFilesRead,
+	"GetWorkingTreeDiff":           ScopeFilesRead,
+	"GetWorkspaceCurrentDiff":      ScopeFilesRead,
+	"GetCommitDiff":                ScopeFilesRead,
+	"GetDiffContextLines":          ScopeFilesRead,
+	"VerifyEditDiffs":              ScopeFilesRead,
+	"HighlightPatchWithContext":    ScopeFilesRead,
+	"SearchWorkspaceFiles":         ScopeFilesRead,
+	"GetLocalImageData":            ScopeFilesRead,
+	"ListDiffReviewComments":       ScopeThreadsRead,
+	"MintAttachmentDownloadTicket": ScopeThreadsRead,
+	"GetAttachmentThumbnail":       ScopeThreadsRead,
 }
 
 // bookkeepingMutations is the old override map's group 1: thread,
