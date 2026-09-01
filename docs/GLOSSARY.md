@@ -31,6 +31,7 @@ subsystems, and an unqualified use is a real trap.
 | **triage** | (a) the Go package: provider-event classification (`internal/triage/AGENTS.md`). (b) thread mode: the `workflow-triage` value of `threads.mode` (`docs/architecture/schema.md`). (c) trace triage: the ui-trace bug-report investigation workflow (`.claude/skills/trace-triage/`). |
 | **projection** | (a) wire projection: the bounded copy of a timeline item a client receives, with a marker naming what was removed (`internal/itemwire/AGENTS.md`). (b) event projection: `internal/app` mapping an application service's events onto the wire channels. (c) live projection: a read-model-ish view a service exposes to the frontend (discussion/worktree activity projections, `internal/AGENTS.md`). Only (a) removes anything. |
 | **elision** | Always the wire projection's leaf drop from `meta.input` — structure-preserving, marker-carrying, never a string truncation (`internal/itemwire`). Not to be confused with the render-time ellipsis the tool-card previews apply, which is a display cap on a value that arrived whole. |
+| **kind** (notifications) | Two different fields on one wire shape. `Send.Kind` is the CATEGORY a preference toggles — `turn-complete`, `approval-needed`, `error`, `provider-signed-out`, plus the two untoggled legacy kinds. `Target.Kind` is the ROUTE a click follows — `thread`, `workflow-item`, `none`. An unqualified "the kind" in notification code is ambiguous; say which (`internal/notify`). |
 | **chokepoint** | Not conflicting, but it names at least four different single-writer points: `writeScrollTop` (scroll), `persistItem` (Go store+emit), `apply()` (entity stores), `replaceTimelineItems` (pane items). An unqualified "the chokepoint" is ambiguous outside its file. |
 
 ## Project, workspace, worktree
@@ -143,6 +144,14 @@ Source: `frontend/AGENTS.md`.
 | **peer session-turn** | A turn on a provider session AO is connected to that some OTHER client's action produced. The external-queue turn is the one AO currently sees; the term names the class, so a second producer is distinguishable rather than folded into "not ours". |
 | **history cut** | Truncating a provider thread's own history at a turn boundary, the provider-side half of edit-and-resend. Codex has three, all turn-granular; AO uses two: the in-place `thread/revert { beforeTurnId }` (keeps the thread id) and `thread/fork { lastTurnId }` (mints a new one). The two anchors describe the same boundary from opposite sides, which is why they are resolved separately (`internal/provider/codex/AGENTS.md` §"History truncation"). |
 | **item_index** | Server-assigned, immutable after first upsert, in intended-appearance order, not wire-arrival order. The timeline ordering contract rests on this (`invariants.md` §1). |
+
+## OS notifications
+
+| Term | Definition |
+|---|---|
+| **moment** | A state transition worth interrupting a person for, and the unit `internal/notify`'s mapping is written in: a turn coming to rest, an approval opening, a provider losing its login. Not an event — several wire events can project onto one moment, and most events project onto none. |
+| **retraction** | A send that WITHDRAWS a notification instead of presenting one, carrying an id and a kind and nothing else. Fired when the state that justified the notification is gone (the thread resumed, the approval was answered, the provider signed back in). Never gated by a preference: the preference answers "may I interrupt you", and withdrawing is the opposite. |
+| **stable id** | The identifier a moment derives from what it is ABOUT (`thread:<id>`, `approval:<thread>:<request>`, `provider-auth:<provider>`) rather than from a counter. It is what lets a later send replace an earlier one in place and a retraction find it. One thread holds one rest notification by construction. |
 
 ## Test rigs and process
 

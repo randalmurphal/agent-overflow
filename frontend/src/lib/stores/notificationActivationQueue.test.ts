@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Thread } from '../types/models';
-import { createNotificationActivationQueue } from './notificationActivationQueue';
+import { createNotificationActivationQueue, parseNotificationTarget } from './notificationActivationQueue';
 
 function thread(id: string): Thread {
   return { id } as Thread;
@@ -159,6 +159,28 @@ describe('notification activation queue', () => {
     await failingQueue.markHydrated();
     expect(logger.error).toHaveBeenCalledTimes(1);
     expect(failingQueue.pendingCount()).toBe(0);
+  });
+
+  it('carries backendId on every kind without letting it route', () => {
+    expect(parseNotificationTarget({ kind: 'thread', threadId: 't', backendId: 'b' }))
+      .toEqual({ kind: 'thread', threadId: 't', backendId: 'b' });
+    expect(parseNotificationTarget({ kind: 'workflow-item', workItemId: 'w', backendId: 'b' }))
+      .toEqual({ kind: 'workflow-item', workItemId: 'w', backendId: 'b' });
+    expect(parseNotificationTarget({ kind: 'none', backendId: 'b' }))
+      .toEqual({ kind: 'none', backendId: 'b' });
+    // Absent stays absent rather than becoming an empty string.
+    expect(parseNotificationTarget({ kind: 'none' })).toEqual({ kind: 'none' });
+    // It is not a route of its own: a backend id alone names no kind.
+    expect(parseNotificationTarget({ backendId: 'b' })).toBeNull();
+    // And it does not rescue an otherwise ambiguous target.
+    expect(parseNotificationTarget({
+      kind: 'thread', threadId: 't', workItemId: 'w', backendId: 'b',
+    })).toBeNull();
+  });
+
+  it('rejects a backendId that is not a bounded string', () => {
+    expect(parseNotificationTarget({ kind: 'none', backendId: 'x'.repeat(257) })).toBeNull();
+    expect(parseNotificationTarget({ kind: 'none', backendId: 42 })).toBeNull();
   });
 
   it('logs an activation failure without dropping the queue', async () => {
