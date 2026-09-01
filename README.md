@@ -169,6 +169,18 @@ A handful of opt-in modes extend that:
     certificate with.
   - the paired backend's name or endpoint — reuses that stored
     credential, so pairing happens once per machine.
+- **Tailnet access** (Settings → Network) joins this backend to your own
+  Tailscale network as its own machine, so it is reachable from anywhere
+  you are signed in — with no port forwarded, no public listener, and no
+  tunnel process to run. Turning it on gives you a link to approve the
+  machine in your tailnet; once approved, the panel shows the address it
+  answers on. It answers the same routes and demands the same paired
+  session as every other way in: joining a tailnet is how a device
+  REACHES this backend, never how it gets in. If your tailnet has HTTPS
+  enabled, the address is `https://` with a certificate browsers already
+  trust. Turning the feature off keeps the machine's identity, so
+  turning it back on rejoins as the same device; "Forget this node"
+  is the separate act that deletes it.
 - **Windows + WSL silent mode** (`agent-overflow-windows.exe`) drops
   the Linux backend into a chosen WSL distro, runs it headless, and
   forwards `localhost:<port>` from inside the distro to the Windows
@@ -188,12 +200,15 @@ checked against that session's granted scopes — with a `host` tier
 session can be granted at all. That's defense-in-depth, not a security
 boundary you can expose to the public internet.
 
-For non-trusted networks, deploy behind a tunnel that handles
-authentication and TLS:
+For non-trusted networks, reach the backend over a network you control
+rather than exposing a port on one you do not:
 
-- [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) —
-  HTTPS on a `*.ts.net` hostname, ACL-gated.
+- **Tailnet access** (above) — the built-in form, and the one to
+  prefer: no listener on any public interface, and every path in is one
+  you enrolled.
 - SSH local port forward (`ssh -L 54321:localhost:54321 host`).
+- [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve),
+  run outside the app, if you would rather manage the node yourself.
 - Reverse proxy (Caddy / Nginx / Cloudflare Tunnel) terminating TLS
   in front of the backend.
 
