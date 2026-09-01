@@ -10,7 +10,25 @@
 // `snapshot` synchronously on first read (the wsClient calls the
 // handler immediately with the seeded snapshot) and that's forbidden
 // inside a derive.
+//
+// **One status per attached backend, and the HOME one is the one every
+// existing reader gets.** A connection's status is a fact about that
+// socket, so a second attached backend has a second one — but the
+// full-width transport banner is reserved for the VISIBLE thread's own
+// backend dropping (spec §10, "Reachability is ambient, not modal"), and
+// in a single-backend app that is home. Every function below therefore
+// keeps its shape and keeps answering for home; the keyed reads are new
+// names beside them, and the per-backend boxes are a
+// `keyedSignalRegistry` so one machine's reconnect does not wake a
+// surface rendering another's.
 
+import {
+  attachedBackends,
+  homeBackend,
+  onBackendsChanged,
+} from '../transport/backends';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   DisconnectedError,
   TransportError,
@@ -18,6 +36,8 @@ import {
   type TransportHello,
   type TransportStatusSnapshot,
 } from '../transport/wsClient';
+
+const DISCONNECTED: TransportStatusSnapshot = { status: 'disconnected', nextAttemptAt: null };
 
 let snapshot = $state<TransportStatusSnapshot>({
   status: 'disconnected',
@@ -37,6 +57,59 @@ let unsubscribe: (() => void) | null = wsClient.onStatusChange(publish);
 
 export function getTransportStatus(): TransportStatusSnapshot {
   return snapshot;
+}
+
+// ---------------------------------------------------------------------------
+// Per-backend status
+// ---------------------------------------------------------------------------
+
+// One box per attached backend. Home is mirrored into it as well as into
+// `snapshot` above, so a surface that asks by id gets the same answer the
+// banner does rather than a second, subtly-later copy.
+const statusByBackend = createKeyedSignalRegistry<TransportStatusSnapshot>(DISCONNECTED);
+const backendStatusSubscriptions = new Map<BackendKey, () => void>();
+
+function watchBackendStatus(id: BackendKey): void {
+  if (backendStatusSubscriptions.has(id)) return;
+  const entry = id === HOME_BACKEND ? homeBackend() : undefined;
+  const client = entry?.client ?? attachedBackends().find((b) => b.id === id)?.client;
+  if (client === undefined) return;
+  backendStatusSubscriptions.set(
+    id,
+    client.onStatusChange((next) => {
+      statusByBackend.set(id, next);
+    }),
+  );
+}
+
+function syncBackendStatusSubscriptions(): void {
+  const live = new Set<BackendKey>();
+  for (const backend of attachedBackends()) {
+    live.add(backend.id);
+    watchBackendStatus(backend.id);
+  }
+  for (const [id, cancel] of backendStatusSubscriptions) {
+    if (live.has(id)) continue;
+    cancel();
+    backendStatusSubscriptions.delete(id);
+    statusByBackend.drop(id);
+  }
+}
+
+onBackendsChanged(syncBackendStatusSubscriptions);
+syncBackendStatusSubscriptions();
+
+/**
+ * One backend's connection state. Reactive on that backend's box alone, so
+ * a machine reconnecting does not invalidate a surface rendering another.
+ *
+ * Omitting the id answers for the page's own backend, which is what
+ * `getTransportStatus()` answers and what the banner renders.
+ */
+export function getTransportStatusFor(
+  backendId: BackendKey = HOME_BACKEND,
+): TransportStatusSnapshot {
+  return statusByBackend.get(backendId);
 }
 
 // The hello frame's contents, mirrored into runes for the same reason as
@@ -223,6 +296,9 @@ export function redialAfterSignIn(): Promise<void> {
 /** Test-only helper. Tears down the subscription so a subsequent test
  * can re-seed the singleton from a fresh wsClient. */
 export function resetTransportStatusForTest(): void {
+  for (const cancel of backendStatusSubscriptions.values()) cancel();
+  backendStatusSubscriptions.clear();
+  statusByBackend.reset();
   if (unsubscribe) {
     unsubscribe();
     unsubscribe = null;

@@ -19,6 +19,12 @@
 // exchange, on the same route, with the same cookie.
 
 import { setPageGrantsFromBootstrap } from './scopes';
+import { HOME_BACKEND } from './backendKey';
+import {
+  publishManifestBackends,
+  readBackendDescriptors,
+  setBackendManifestFetcher,
+} from './manifestBackends';
 import { setHarnessPageMarkerFromBootstrap, setHarnessSessionFromBootstrap } from './harnessMode';
 import { setPasskeysAvailableFromBootstrap } from './passkey';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
@@ -166,6 +172,26 @@ export interface Bootstrap {
    * paired sees no hello at all, and a passkey is exactly how it gets in.
    */
   passkeysAvailable?: boolean;
+  /**
+   * This backend's display name, defaulting to its hostname
+   * (docs/specs/remote-access.md §10, "Machine name"). The hello frame
+   * carries the same value; the manifest carries it too because the
+   * machine picker has to be able to name a backend whose socket has not
+   * opened yet.
+   */
+  backendName?: string;
+  /**
+   * Backends the process that served this page PROXIES, each at a
+   * same-origin pair (`/ws/backend/<id>` + `/bootstrap/<id>.json`) — the
+   * `clientmode` proxy of spec §10's desktop realization. Absent, or
+   * empty, on every single-backend boot, which is every boot today.
+   *
+   * The array is the DEFAULT source of ./backends.ts's registry, not the
+   * only one: a phone shell supplies the same shape from client-local
+   * storage with remote `wss://` URLs. That is why the registry takes a
+   * function and this field merely fills it.
+   */
+  backends?: unknown;
 }
 
 // defaultBootstrap fetches /bootstrap.json from this page's own origin,
@@ -280,6 +306,13 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   // mid-session generation re-mint (a restored backend) observable on
   // the reconnect refetch rather than at the next app launch.
   setBackendIdentityFromBootstrap(data.backendId, data.replicaGeneration, data.backendName);
+  // The attached-backend list is re-read on every manifest resolution —
+  // including the reconnect refetch — so a backend added or removed from
+  // Settings takes effect without a reload. The publisher notifies only on
+  // a real change, so a reconnect that repeats the list sweeps nothing. An
+  // ABSENT list is a single-backend page and not an error: the attached
+  // routes answer loopback only, so an off-host page is never given one.
+  publishManifestBackends(readBackendDescriptors(data.backends));
   // Remove the spent ticket from history, Referer, and Performance
   // Resource Timing entries. The cookie carries the session from here,
   // so a reload of the scrubbed URL still boots. Skipped for a
@@ -375,3 +408,42 @@ export function validateWsUrl(wsUrl: string): void {
     throw new Error(`bootstrap wsUrl not same-origin: ${clampString(wsUrl)}`);
   }
 }
+
+// An attached backend's manifest fetch: the same exchange this module
+// performs for the page's own backend, against that backend's own path
+// (`/bootstrap/<id>.json`, the `clientmode` proxy of spec §10).
+//
+// No ticket rides it. The local process in front of an attached backend
+// holds that backend's credential and presents it upstream itself, which
+// is the whole reason the desktop realization is a proxy: CSP stays
+// `'self'` and no credential enters page script. On a phone the
+// per-backend session slot supplies one instead (./deviceSession.ts,
+// keyed by the same registry id).
+//
+// `validateWsUrl` still applies, unchanged: under the proxy every attached
+// backend is same-origin by construction, so a manifest naming another
+// authority was tampered with in flight exactly as it would be for home.
+// The phone wave, whose sockets are cross-origin by design, is where that
+// rule gets its parameter — not here.
+setBackendManifestFetcher(async (descriptor) => {
+  const resp = await fetch(descriptor.bootstrapUrl, { credentials: 'same-origin' });
+  if (!resp.ok) {
+    // Same split the page's own manifest makes: a refused credential is
+    // terminal for this backend and the reconnect ladder must stop, while
+    // a 503 or a 500 is the proxy not being ready yet and is worth
+    // retrying. Reusing the same two classes is what makes an attached
+    // backend's transport states read like home's.
+    if (CREDENTIAL_REFUSED_STATUSES.has(resp.status)) throw new BootstrapRejectedError(resp.status);
+    throw new Error(`bootstrap fetch failed: HTTP ${resp.status}`);
+  }
+  const data = (await resp.json()) as Partial<Bootstrap>;
+  const wsUrl = typeof data.wsUrl === 'string' ? data.wsUrl : descriptor.wsUrl;
+  validateWsUrl(wsUrl);
+  setBackendIdentityFromBootstrap(
+    data.backendId,
+    data.replicaGeneration,
+    descriptor.id,
+    data.backendName ?? descriptor.name,
+  );
+  return { ...data, wsUrl };
+});

@@ -166,17 +166,39 @@ stops waking readers.
   `lowPowerMode` on without the frontend knowing a class exists
   (`internal/settings/residency.go`, `classdefaults.go`).
 - Every delivered event carries the connection it arrived on as
-  `wailsEventOn`'s SECOND argument (`{backendId}`). One backend fills it
-  today and every handler ignores it; a store that later has to tell two
-  backends' events apart reads it instead of being re-plumbed
-  (remote-access spec §10). An empty `backendId` means the origin is
-  unknown — never "the backend I am attached to".
+  `wailsEventOn`'s SECOND argument (`{backendId}`), and it is now filled
+  per DELIVERY: `transport/backends.ts` subscribes each attached backend's
+  own handle, so a frame is stamped with the socket it came in on, not with
+  "the" backend. A store that has to tell two backends' events apart reads
+  it. An empty `backendId` means the origin is unknown — never "the backend
+  I am attached to".
+- Which backends this client is attached to is `attachedBackends.svelte.ts`,
+  a `$state.raw` mirror of the transport registry that wakes only on attach
+  and detach. The registry itself stays a plain array because it is walked
+  on the RPC fan-out path; `stores/` owns the rune, the transport owns the
+  fact — the same split as `transportStatus.svelte.ts`, which now also
+  answers per backend (`getTransportStatusFor(backendId)`) while every
+  existing unkeyed reader still answers for HOME, so the offline banner is
+  unchanged.
+- `selectedBackend.svelte.ts` is the composer's choice of machine to CREATE
+  on, and the only thing the `selected` route consults. It defaults to home
+  and falls back to home when the chosen backend detaches, so a
+  single-backend client never leaves that default. There is no UI on it
+  yet (wave 7c).
 - Thread and project ids are globally unique UUIDs minted by
   `internal/entityid`, not ids unique per backend. That is what lets a
   store keyed by thread or project id stay un-keyed by backend when a
-  second one attaches; the collision-prone singletons (git status by path,
-  provider accounts, settings, sysstat) are the ones §10 defers. Never
-  synthesise a thread or project key from anything shorter.
+  second one attaches, and what lets `transport/entityIndex.ts` answer
+  "which backend owns this id" from one flat Map. Never synthesise a
+  thread or project key from anything shorter.
+
+  A store keyed by a PATH is the opposite case and must be keyed by
+  backend: `/home/me/repos/app` names a different repo on a different
+  machine, and two machines with the same checkout is the ordinary case,
+  not the exotic one. Settings, provider accounts and sysstat stay
+  HOME-only reads for now and say so in a comment naming the phase-7 plan
+  item; a path-keyed store does not have that option, because collapsing
+  two machines' identical paths is a wrong ANSWER, not a missing one.
 - `bindings.ts` re-exports what `wails3 generate bindings -ts` produced.
   Add the new App method by regenerating and re-exporting. Never hand-wrap
   a binding, and never reach for `window.runtime`.

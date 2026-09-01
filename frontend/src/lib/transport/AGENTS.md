@@ -5,7 +5,50 @@ pushed event, for the embedded webview, `agent-overflow --connect`, and a
 remote browser alike. Protocol and authz rules:
 [`internal/transport/AGENTS.md`](../../../../internal/transport/AGENTS.md).
 
-- `wsClient.ts` owns the single WebSocket. It tracks in-flight RPCs by id
+- `backends.ts` is the registry: which backends this client is attached to,
+  and the one `WSClient` + `TransportHandle` each of them owns. Everything a
+  connection owns stays per socket and unchanged — hello, session, replay
+  cursors, watch set, status — and what phase 7 changed is that there can be
+  more than one of them (spec §10, "One seam, two realizations").
+
+  **The HOME entry wraps the `wsClient` singleton rather than replacing
+  it.** The page's own backend is the one this document was served by and
+  the one every existing import of that singleton means, so it is an
+  ordinary entry over the existing client and the singleton stays exported.
+  Its registry id is `HOME_BACKEND` — the empty string, declared in the
+  leaf `backendKey.ts` — which is what every per-backend API defaults to,
+  and is why not one existing call site had to change. It is deliberately
+  NOT the backend's UUID: that arrives with a manifest and is unknown at
+  module load, which is exactly why it cannot key a map that must exist
+  before the first fetch resolves. Once a manifest names one, the UUID
+  becomes a SECOND key onto the same entry, so `backendById` resolves the
+  registry id and an event's origin stamp alike in one lookup.
+
+  **The list's source is one injectable function.** `setBackendSource`
+  replaces it whole; the default reads what the bootstrap manifest
+  published (`manifestBackends.ts`), which on the desktop is the set of
+  backends the local process proxies at same-origin `/ws/backend/<id>` +
+  `/bootstrap/<id>.json`. The phone supplies the same shape from
+  client-local storage with remote `wss://` URLs. Nothing else about
+  attaching differs between the two, which is why there is one seam and no
+  client-class branch below it.
+
+  **Attachment is EAGER.** The unified sidebar's list calls fan out over
+  every attached backend at boot, so a lazily-connecting entry would be
+  connected by the first thing the app does anyway — one round trip later,
+  and with a "which backend was slow" failure mode nobody can read. Eager
+  also keeps the rule that a backend's connection depends on NOTHING about
+  visibility, focus, or pane position.
+
+  `manifestBackends.ts` exists to keep one import direction. `bootstrap.ts`
+  is imported by `wsClient.ts`, which is imported by `backends.ts`, so a
+  `bootstrap → backends` edge would close a ring around two module-level
+  side effects (the singleton, the home entry) and whichever module the
+  bundler entered first would decide whether the app booted. The manifest
+  therefore PUBLISHES into that leaf, exactly as it publishes grants,
+  harness mode, passkey availability and backend identity into theirs.
+- `wsClient.ts` owns ONE WebSocket — one per attached backend, and the
+  singleton is the page's own. It tracks in-flight RPCs by id
   and keeps a per-channel last-seen seq that does three jobs at once: the
   replay-on-reconnect cursor, the dedup check, and mid-connection drop
   detection, since a forward skip on a channel already seen on THIS
@@ -139,14 +182,49 @@ remote browser alike. Protocol and authz rules:
   future replay, costing gap recovery for the rest of the session. The
   future-dialect fixture in `wsClient.test.ts` is the tripwire; add to it
   rather than to a new file.
-- `handle.ts` is that door. `resolveTransport()` answers with the
-  connection to route over, and its `origin` is the backend UUID stamped
-  on every event arriving there. One connection is the only answer today;
-  attaching to a second backend changes the resolution HERE and leaves the
-  generated bindings, the runtime shim and the event hub untouched
-  (remote-access spec §10). Resolution is one call and no allocation, and
-  the origin object is rebuilt only when the identity moves, so a
-  streaming channel does not mint one per frame.
+- `handle.ts` is that door. `resolveTransport(backendId?)` answers with the
+  connection to route over, and its `origin` is the backend UUID stamped on
+  every event arriving there. Omitting the argument answers the HOME
+  backend, which is what every existing call site means. Resolution is one
+  Map lookup and no allocation, and each backend's origin object is rebuilt
+  only when ITS identity moves, so a streaming channel does not mint one
+  per frame.
+
+  **An unresolvable target answers home rather than throwing.** An unknown
+  method id, an entity the index has never seen, a `selected` backend that
+  has since detached: all three land on the one connection that has always
+  answered them, because a single-backend app must behave exactly as it did
+  and a throw here would be a blank screen for a table that is merely
+  incomplete. `runtime.ts` warns once per method id in dev, which is where a
+  route that is genuinely missing becomes visible.
+- `entityIndex.ts` is which backend owns which entity: plain `Map`s from
+  thread id and project id to registry id, populated where rows enter the
+  client (the `all` fan-out's per-backend shares, `thread:updated`'s origin
+  stamp, the per-backend replica's cold open). **Rows gain no field.**
+  Stamping `backendId` onto every Thread would cost a property on every
+  sidebar row, make two copies of one fact, and still need the index for
+  ids whose row is not loaded. An id it does not know resolves home, which
+  is what makes a single-backend app identical.
+
+  Which entity a list method's rows ARE is keyed on the METHOD, never
+  sniffed from the row's shape. A shape-based walker is wrong the first
+  time an unrelated payload carries an `id` and a `projectId`, and being
+  wrong here routes somebody's next message to the wrong machine — the same
+  rule `passkey.ts` states for its base64url decode, for the same reason.
+  `methodRoutes.test.ts` pins every hand-written id against its
+  `Call.ByID(<n>` site in the generated bindings.
+- `methodRoutes.ts` is the route column of the Go method table, generated
+  by `methodgen` (wave 7a) and hand-written as a PLACEHOLDER until that
+  lands. Five routes: `thread` and `project` resolve argument 0 through the
+  entity index, `home` is the page's own backend, `selected` is the
+  composer's choice (`stores/selectedBackend.svelte.ts`), and `all` fans
+  out and merges. The merge rule is stated and implemented exactly once, in
+  `backends.ts`'s `mergeBackendResults`: arrays concatenate in attach
+  order, id-keyed objects shallow-merge, anything else takes the home
+  share. A failed backend's share is DROPPED and recorded on its entry
+  (`lastFanoutError`); the call rejects only when every backend failed, and
+  then with home's own error, because one unreachable machine must not
+  blank the sidebar of the ones that are reachable.
 - `passkey.ts` is the browser half of the three ceremonies, and it owns
   ONE thing: the impedance mismatch. WebAuthn's JSON dialect spells every
   binary member base64url and the DOM API speaks `ArrayBuffer`, so options
@@ -176,9 +254,13 @@ remote browser alike. Protocol and authz rules:
 - `stepUp.ts` is how a device that is not the computer satisfies a
   `step_up_required` refusal, and it is the CEREMONY only: begin, an
   assertion from the authenticator, finish, and the single-use token that
-  comes back. `installStepUpProof()` puts it in the transport's slot once
-  at boot (`src/main.ts`), and where it runs is `wsClient.ts`'s single
-  interception above.
+  comes back. `installStepUpProof()` puts it in EVERY attached handle's slot
+  once at boot (`src/main.ts`) — and in the slot of every backend attached
+  afterwards, which `backends.ts` owns. A per-connection install done once
+  at boot would leave a backend added later unable to satisfy a step-up
+  refusal, and the omission would be invisible on the owner's own machine:
+  the same recurring shape as the per-call-site wrapping this module
+  replaced. Where it runs is `wsClient.ts`'s single interception above.
 
   **One mechanism, and a new `//ao:stepup` method's UI wires NOTHING.**
   Per-call-site wrapping is the recurring-bug shape: the wrapper is what
@@ -623,4 +705,30 @@ None of them is a capability — that axis is `scopes.ts` above:
   mid-session generation change is observable, so consumers subscribe
   rather than read once. Either field empty means the backend does not
   identify its history, which consumers must treat as replica-DISABLED,
-  never as a wildcard.
+  never as a wildcard. It carries `name` too — the backend's display name,
+  from the same manifest field the hello frame's `backendName` mirrors
+  (spec §10, "Machine name"). Empty is UNNAMED, never "this machine".
+
+  One identity per attached backend, keyed by registry id, and subscribers
+  are told WHICH backend moved: "the identity changed" answers nothing once
+  there is more than one.
+
+Every per-backend singleton this client used to hold is now a map keyed by
+registry id, with `HOME_BACKEND` as the default argument — which is the
+whole reason a single-backend client behaves identically and no call site
+moved. The set, and the one field that is deliberately NOT per backend:
+
+| What | Where | Home keeps |
+|---|---|---|
+| connection + handle | `backends.ts` | the `wsClient` singleton |
+| history identity + name | `backendIdentity.ts` | today's answer |
+| capability snapshot | `scopes.ts` | today's answer; `onHost` is home's ALONE, and every remote backend answers `onHost: false` |
+| transport status | `stores/transportStatus.svelte.ts` | the unkeyed readers, so the banner is unchanged |
+| replica session | `replica/session.ts` | today's token; the DB was already named per backend |
+| `ui_state` bucket | `stores/appStorage.ts` | today's localStorage cache key |
+| paired session slot | `deviceSession.ts` | today's localStorage key, so no stored session is lost |
+
+The device KEY is deliberately not keyed: it names this browser profile,
+not a session, and every backend that enrols it records the same thumbprint
+against its own device row. A second key per backend would be a second
+device, which is not what happened.

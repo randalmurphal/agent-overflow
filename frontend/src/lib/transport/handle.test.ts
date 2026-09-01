@@ -8,6 +8,10 @@ const { mockClient } = vi.hoisted(() => ({
     callByID: vi.fn<(id: number, args: unknown[]) => Promise<unknown>>(),
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn<(channel: string, handler: (data: unknown) => void) => () => void>(),
+    installStepUpProver: vi.fn(),
+    getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
+    onStatusChange: vi.fn(() => () => undefined),
+    close: vi.fn(),
   },
 }));
 
@@ -21,7 +25,13 @@ vi.mock('./wsClient', () => ({
 }));
 
 import { resolveTransport } from './handle';
+import { __setHomeClientForTest } from './backends';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
+
+// `src/test/setup.ts` loads the real `wsClient` before this file's
+// `vi.mock` registers, so the registry's home entry captured it. Point it
+// at the fake instead — the seam exists for exactly this ordering.
+__setHomeClientForTest(mockClient as unknown as Parameters<typeof __setHomeClientForTest>[0]);
 
 const BACKEND_A = '62c8a1de-0a3f-4f4b-9d0a-2b6b1a5b0f11';
 const BACKEND_B = 'f0f7b0c4-6d0e-4a4a-8a3f-9c2f1a7d4e55';

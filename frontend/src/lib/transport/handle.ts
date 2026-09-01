@@ -1,30 +1,32 @@
 // The transport a call is routed through, resolved rather than imported.
 //
-// Every RPC and every event subscription in this app lands on ONE
-// connection, and the layers that issue them reached the `wsClient`
+// Every RPC and every event subscription in this app lands on a
+// connection, and the layers that issue them used to reach the `wsClient`
 // singleton by importing it. That is the assumption a second attached
 // backend breaks, and it breaks it in every one of those layers at once,
-// which is why the seam lands before the feature does
+// which is why the seam landed before the feature did
 // (docs/specs/remote-access.md §10: "`bindings.ts` routes RPCs through a
 // resolvable transport handle rather than importing a singleton").
 //
-// Today `resolveTransport()` has exactly one answer: the connection the
-// bootstrap manifest named. When attaching to several backends lands, the
-// resolution grows a target (and a registry to pick from) HERE, and the
-// generated bindings, the runtime shim and the event hub above it do not
-// change.
+// Phase 7 gives the seam its parameter. `resolveTransport(backendId)`
+// answers the handle for one attached backend; omitting the argument
+// answers the page's own — which is what every existing call site means
+// and why none of them had to change. The registry behind it is
+// ./backends.ts, and the layers above (the generated bindings, the
+// runtime shim, the event hub) still do not know it exists.
 //
-// Cost is one module-level call per RPC and no allocation. `origin` is
-// rebuilt only when the backend identity moves, so a fan-out that stamps
-// every event with it pays a string compare, never a new object.
+// Cost is one Map lookup per RPC and no allocation. `origin` is rebuilt
+// only when a backend's identity moves, so a fan-out that stamps every
+// event with it pays a string compare, never a new object.
 
-import { getBackendIdentity } from './backendIdentity';
-import { wsClient, type StepUpProver } from './wsClient';
+import { HOME_BACKEND, type BackendKey } from './backendKey';
+import { backendById, homeBackend } from './backends';
+import type { StepUpProver } from './wsClient';
 
 /**
  * Which connection something arrived on. Carried by every event the hub
- * fans out, so a store that later has to tell two backends' events apart
- * reads a field instead of being re-plumbed.
+ * fans out, so a store that has to tell two backends' events apart reads
+ * a field instead of being re-plumbed.
  *
  * `backendId` is empty when the backend does not identify itself (the
  * `--connect` stub, an older server). Empty means UNKNOWN, never "any" —
@@ -42,45 +44,30 @@ export interface TransportHandle {
   callByName(method: string, args: unknown[]): Promise<unknown>;
   /**
    * Install the seam that satisfies a step-up refusal for every call
-   * routed over this connection. Called once at boot; ./stepUp.ts is the
-   * one caller and ./wsClient.ts owns what happens under it.
+   * routed over this connection. ./stepUp.ts fills it — through
+   * ./backends.ts, which installs on every attached handle AND on every
+   * later attach — and ./wsClient.ts owns what happens under it.
    */
   installStepUpProver(prover: StepUpProver | null): void;
   subscribe(channel: string, handler: (data: unknown) => void): () => void;
 }
 
-let origin: EventOrigin = { backendId: '' };
-
-/** The one connection this client holds: the wsClient singleton. */
-const attached: TransportHandle = {
-  get origin(): EventOrigin {
-    const backendId = getBackendIdentity().backendId;
-    // Rebuilt only when the identity moves. Subscribers hold this object
-    // for the life of their subscription and events stamp it by
-    // reference, so a fresh object per event would be pure garbage.
-    if (origin.backendId !== backendId) origin = { backendId };
-    return origin;
-  },
-  callByID(methodId: number, args: unknown[]): Promise<unknown> {
-    return wsClient.callByID(methodId, args);
-  },
-  callByName(method: string, args: unknown[]): Promise<unknown> {
-    return wsClient.callByName(method, args);
-  },
-  installStepUpProver(prover: StepUpProver | null): void {
-    wsClient.installStepUpProver(prover);
-  },
-  subscribe(channel: string, handler: (data: unknown) => void): () => void {
-    return wsClient.subscribe(channel, handler);
-  },
-};
-
 /**
- * The transport to route through. Parameterless while one connection is
- * the only answer; the multi-backend form takes the backend to reach (or
- * enumerates the attached set for a fan-out) and every caller above this
- * keeps its shape.
+ * The transport to route through.
+ *
+ * Omitted, or naming a backend this client is not attached to, answers
+ * the HOME backend — the page's own connection. Falling back rather than
+ * throwing is deliberate and is what keeps a single-backend app behaving
+ * exactly as it did: an unresolvable entity, an unknown method id and an
+ * older bundle all land on the one connection that has always answered
+ * them (./runtime.ts warns once per method in dev when a route could not
+ * be resolved, which is where a real routing bug becomes visible).
+ *
+ * The argument accepts either spelling of a backend — its registry id or
+ * its live UUID off an event's origin stamp — because both are in the
+ * registry's index.
  */
-export function resolveTransport(): TransportHandle {
-  return attached;
+export function resolveTransport(backendId: BackendKey = HOME_BACKEND): TransportHandle {
+  if (backendId === HOME_BACKEND) return homeBackend().handle;
+  return (backendById(backendId) ?? homeBackend()).handle;
 }

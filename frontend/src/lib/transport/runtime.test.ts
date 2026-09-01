@@ -16,6 +16,10 @@ const { mockClient } = vi.hoisted(() => ({
     callByID: vi.fn<(id: number, args: unknown[]) => Promise<unknown>>(),
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn<(channel: string, handler: (data: unknown) => void) => () => void>(),
+    installStepUpProver: vi.fn(),
+    getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
+    onStatusChange: vi.fn(() => () => undefined),
+    close: vi.fn(),
   },
 }));
 
@@ -32,7 +36,13 @@ vi.mock('./wsClient', () => ({
 }));
 
 import { Call, CancellablePromise, Create, Events } from './runtime';
+import { __setHomeClientForTest } from './backends';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
+
+// `src/test/setup.ts` loads the real `wsClient` before this file's
+// `vi.mock` registers, so the registry's home entry captured it. Point it
+// at the fake instead — the seam exists for exactly this ordering.
+__setHomeClientForTest(mockClient as unknown as Parameters<typeof __setHomeClientForTest>[0]);
 import { CancellablePromise as MockCancellablePromise } from '../../test/mocks/wailsio-runtime';
 
 beforeEach(() => {

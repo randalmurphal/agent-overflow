@@ -50,6 +50,7 @@
 // honest recovery is to let that happen and pair again.
 
 import { enrollDeviceKey, mintDeviceProof } from './deviceKey';
+import { HOME_BACKEND, type BackendKey } from './backendKey';
 import { answerChallenge, type PasskeyChallenge } from './passkey';
 
 // Mirrors internal/transport/authroutes.go. Names, not policy: the
@@ -64,6 +65,23 @@ const DEVICE_KEY_HEADER = 'X-AO-Device-Key';
 
 const SESSION_STORE_KEY = 'agent-overflow:deviceSession';
 const DEVICE_KEY_STORE_KEY = 'agent-overflow:deviceKey';
+
+// One session SLOT per attached backend (phase 7, spec §10). A credential
+// names a session on ONE backend, so a browser paired with two machines
+// holds two — and the localStorage key is what keeps them apart.
+//
+// The home slot keeps TODAY'S key, unsuffixed. That is not cosmetic: every
+// already-paired browser has a credential under that exact string, and a
+// key that gained a suffix would silently un-pair every device this app
+// has ever paired. A non-home backend suffixes with its registry id.
+//
+// The DEVICE key is deliberately NOT keyed. It names this browser profile,
+// not a session, and every backend that enrolls it records the same
+// thumbprint against its own device row — a second key per backend would
+// be a second device, which is not what happened.
+function sessionStoreKey(backend: BackendKey): string {
+  return backend === HOME_BACKEND ? SESSION_STORE_KEY : `${SESSION_STORE_KEY}:${backend}`;
+}
 
 // How close to the access credential's expiry a dial triggers renewal
 // first. One minute: far enough that the ticket minted with the old
@@ -207,8 +225,8 @@ export function endpointMatchesOrigin(payload: PairingPayload, origin: string): 
   }
 }
 
-function readStoredSession(): StoredSession | null {
-  const raw = readLocal(SESSION_STORE_KEY);
+function readStoredSession(backend: BackendKey = HOME_BACKEND): StoredSession | null {
+  const raw = readLocal(sessionStoreKey(backend));
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as StoredSession;
@@ -224,13 +242,13 @@ function readStoredSession(): StoredSession | null {
   }
 }
 
-function storeSession(session: StoredSession | null): void {
-  writeLocal(SESSION_STORE_KEY, session === null ? null : JSON.stringify(session));
+function storeSession(session: StoredSession | null, backend: BackendKey = HOME_BACKEND): void {
+  writeLocal(sessionStoreKey(backend), session === null ? null : JSON.stringify(session));
 }
 
-/** Whether this browser holds a paired-device session for this origin. */
-export function hasPairedSession(): boolean {
-  return readStoredSession() !== null;
+/** Whether this browser holds a paired-device session for `backend`. */
+export function hasPairedSession(backend: BackendKey = HOME_BACKEND): boolean {
+  return readStoredSession(backend) !== null;
 }
 
 /**
@@ -273,12 +291,13 @@ async function deviceKeyHeader(
 export async function pairedSessionHeaders(
   method = 'GET',
   path = '/bootstrap.json',
+  backend: BackendKey = HOME_BACKEND,
 ): Promise<Record<string, string>> {
-  const held = readStoredSession();
+  const held = readStoredSession(backend);
   if (!held) return {};
   const keyHeader = await deviceKeyHeader(held, method, path);
   if (!keyHeader) {
-    clearPairedSession();
+    clearPairedSession(backend);
     return {};
   }
   return { [SESSION_CREDENTIAL_HEADER]: held.credential, ...keyHeader };
@@ -292,13 +311,16 @@ export async function pairedSessionHeaders(
  * hasPairedSession() still true means "unproven, retry later" exactly
  * as it does for the ticket mint.
  */
-export function renewPairedSession(fetcher: typeof fetch = fetch): Promise<boolean> {
-  return renewSession(fetcher);
+export function renewPairedSession(
+  fetcher: typeof fetch = fetch,
+  backend: BackendKey = HOME_BACKEND,
+): Promise<boolean> {
+  return renewSession(fetcher, backend);
 }
 
 /** The stored session's id, for "this device" affordances. Null when unpaired. */
-export function pairedSessionId(): string | null {
-  return readStoredSession()?.sessionId ?? null;
+export function pairedSessionId(backend: BackendKey = HOME_BACKEND): string | null {
+  return readStoredSession(backend)?.sessionId ?? null;
 }
 
 /**
@@ -314,13 +336,15 @@ export function pairedSessionId(): string | null {
  * Read on demand rather than cached: the store moves on redemption and
  * on rotation, and the two callers ask at exactly those moments.
  */
-export function pairedSessionScopes(): readonly string[] | null {
-  return readStoredSession()?.scopes ?? null;
+export function pairedSessionScopes(
+  backend: BackendKey = HOME_BACKEND,
+): readonly string[] | null {
+  return readStoredSession(backend)?.scopes ?? null;
 }
 
 /** Drop the stored session. The device key survives — it names the device, not the session. */
-export function clearPairedSession(): void {
-  storeSession(null);
+export function clearPairedSession(backend: BackendKey = HOME_BACKEND): void {
+  storeSession(null, backend);
 }
 
 interface GrantBody {
@@ -494,20 +518,26 @@ export async function signInWithPasskey(
  * retrying one would leave the page reconnecting forever instead of
  * showing the pairing prompt.
  */
-async function ticketHeaders(held: StoredSession): Promise<Record<string, string> | null> {
+async function ticketHeaders(
+  held: StoredSession,
+  backend: BackendKey,
+): Promise<Record<string, string> | null> {
   const keyHeader = await deviceKeyHeader(held, 'POST', AUTH_TICKET_PATH);
   if (!keyHeader) {
-    clearPairedSession();
+    clearPairedSession(backend);
     return null;
   }
   return { [SESSION_CREDENTIAL_HEADER]: held.credential, ...keyHeader };
 }
 
-// Single-flight guards. Two callers asking at once must observe one
-// exchange: a second concurrent renewal would present a spent secret and
-// end the session as reuse evidence.
-let renewalInFlight: Promise<boolean> | null = null;
-let ticketInFlight: Promise<string | null> | null = null;
+// Single-flight guards, PER BACKEND. Two callers asking at once must
+// observe one exchange: a second concurrent renewal would present a spent
+// secret and end the session as reuse evidence. Per backend rather than
+// global, because two backends' exchanges are unrelated and sharing one
+// latch would make a second machine's renewal silently return the first
+// machine's answer.
+const renewalInFlight = new Map<BackendKey, Promise<boolean>>();
+const ticketInFlight = new Map<BackendKey, Promise<string | null>>();
 
 /**
  * Rotate the credential pair. Resolves true when the stored pair is
@@ -519,17 +549,18 @@ let ticketInFlight: Promise<string | null> | null = null;
  * the secret may or may not be spent server-side, and only the next
  * deliberate presentation can find out.
  */
-function renewSession(fetcher: typeof fetch): Promise<boolean> {
-  if (renewalInFlight) return renewalInFlight;
-  renewalInFlight = (async () => {
-    const held = readStoredSession();
+function renewSession(fetcher: typeof fetch, backend: BackendKey): Promise<boolean> {
+  const held0 = renewalInFlight.get(backend);
+  if (held0) return held0;
+  const run = (async () => {
+    const held = readStoredSession(backend);
     if (!held?.refreshSecret) return false;
     const keyHeader = await deviceKeyHeader(held, 'POST', AUTH_TOKEN_PATH);
     if (!keyHeader) {
       // A key-bound session whose key is gone. Renewal is the one exchange
       // that could END the session by being retried, so this must not
       // reach the wire: clear it here and let the page ask to pair.
-      clearPairedSession();
+      clearPairedSession(backend);
       return false;
     }
     let res: Response;
@@ -550,7 +581,7 @@ function renewSession(fetcher: typeof fetch): Promise<boolean> {
       // moment they do. A 429 or a 5xx says nothing about the
       // credential and clears nothing.
       if (res.status === 401 && body.reason !== 'pending_confirmation') {
-        clearPairedSession();
+        clearPairedSession(backend);
       }
       return false;
     }
@@ -570,12 +601,13 @@ function renewSession(fetcher: typeof fetch): Promise<boolean> {
       // so the carried copy is still true, and dropping it would turn a
       // renewal into a downgrade of what this page offers.
       scopes: grantedScopesFrom(body) ?? held.scopes,
-    });
+    }, backend);
     return true;
   })().finally(() => {
-    renewalInFlight = null;
+    renewalInFlight.delete(backend);
   });
-  return renewalInFlight;
+  renewalInFlight.set(backend, run);
+  return run;
 }
 
 /**
@@ -592,19 +624,23 @@ function renewSession(fetcher: typeof fetch): Promise<boolean> {
  * without clearing anything — the stored credential is real and simply
  * not admitted yet.
  */
-export function mintDialTicket(fetcher: typeof fetch = fetch): Promise<string | null> {
-  if (ticketInFlight) return ticketInFlight;
-  ticketInFlight = (async () => {
-    let held = readStoredSession();
+export function mintDialTicket(
+  fetcher: typeof fetch = fetch,
+  backend: BackendKey = HOME_BACKEND,
+): Promise<string | null> {
+  const inFlight = ticketInFlight.get(backend);
+  if (inFlight) return inFlight;
+  const run = (async () => {
+    let held = readStoredSession(backend);
     if (!held) return null;
     if (held.expiresAtMs > 0 && held.expiresAtMs - Date.now() < RENEW_MARGIN_MS) {
-      await renewSession(fetcher);
-      held = readStoredSession();
+      await renewSession(fetcher, backend);
+      held = readStoredSession(backend);
       if (!held) return null;
     }
     let res: Response;
     try {
-      const headers = await ticketHeaders(held);
+      const headers = await ticketHeaders(held, backend);
       if (!headers) return null;
       res = await fetcher(AUTH_TICKET_PATH, { method: 'POST', headers });
     } catch {
@@ -616,13 +652,13 @@ export function mintDialTicket(fetcher: typeof fetch = fetch): Promise<string | 
       // renewal attempt tells them apart: a live session rotates and the
       // retried mint succeeds; a dead one refuses the rotation, which
       // clears the store.
-      if (await renewSession(fetcher)) {
-        const renewed = readStoredSession();
+      if (await renewSession(fetcher, backend)) {
+        const renewed = readStoredSession(backend);
         if (!renewed) return null;
         try {
           // A FRESH proof: the one the first attempt sent is spent, and
           // re-sending it would be refused as a replay.
-          const headers = await ticketHeaders(renewed);
+          const headers = await ticketHeaders(renewed, backend);
           if (!headers) return null;
           const retry = await fetcher(AUTH_TICKET_PATH, { method: 'POST', headers });
           if (retry.ok) {
@@ -638,9 +674,10 @@ export function mintDialTicket(fetcher: typeof fetch = fetch): Promise<string | 
     const grant = (await res.json()) as { ticket?: string };
     return grant.ticket ?? null;
   })().finally(() => {
-    ticketInFlight = null;
+    ticketInFlight.delete(backend);
   });
-  return ticketInFlight;
+  ticketInFlight.set(backend, run);
+  return run;
 }
 
 /**
@@ -649,12 +686,15 @@ export function mintDialTicket(fetcher: typeof fetch = fetch): Promise<string | 
  * pending, and false-forever once the confirm window lapses — the
  * caller owns the deadline, this owns one probe.
  */
-export async function probeActivation(fetcher: typeof fetch = fetch): Promise<boolean> {
-  const held = readStoredSession();
+export async function probeActivation(
+  fetcher: typeof fetch = fetch,
+  backend: BackendKey = HOME_BACKEND,
+): Promise<boolean> {
+  const held = readStoredSession(backend);
   if (!held) return false;
   let res: Response;
   try {
-    const headers = await ticketHeaders(held);
+    const headers = await ticketHeaders(held, backend);
     if (!headers) return false;
     res = await fetcher(AUTH_TICKET_PATH, { method: 'POST', headers });
   } catch {

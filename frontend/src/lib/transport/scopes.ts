@@ -61,8 +61,24 @@
 // capability that flapped to "nothing" for the length of an outage would
 // blank half the UI mid-reconnect. Same reasoning as the hello
 // snapshot's survival in ./wsClient.ts.
+//
+// **One snapshot per ATTACHED BACKEND** (phase 7, spec §10). A grant is a
+// property of the session a socket presents, and a device can hold full
+// access on one machine and view-only on another, so "what may I do" has
+// no app-wide answer once a second backend attaches. Every entry point
+// takes an optional registry id defaulting to `HOME_BACKEND`, which is
+// what keeps every existing call site — and the single-backend app —
+// exactly as it was.
+//
+// `onHost` is the one field that is NOT per backend in the way the others
+// are: it is a fact about where this PAGE runs, so it belongs to the home
+// backend alone. Every remote backend's snapshot answers `onHost: false`
+// and therefore refuses `host`, which is right rather than conservative —
+// `internal/transport/authorize.go` authorizes that scope from "is the
+// caller on this machine", and this page is not on that machine.
 
 import { createSubscriber } from 'svelte/reactivity';
+import { HOME_BACKEND, type BackendKey } from './backendKey';
 import { pairedSessionScopes } from './deviceSession';
 
 /**
@@ -178,10 +194,13 @@ const UNRESOLVED: ScopeSnapshot = {
   onHost: false,
 };
 
-let snapshot: ScopeSnapshot = UNRESOLVED;
+// One snapshot per backend. Home holds an entry from module load so a
+// reader before the first manifest gets the answer it always did.
+const snapshots = new Map<BackendKey, ScopeSnapshot>([[HOME_BACKEND, UNRESOLVED]]);
 // Locality as the manifest reported it, held apart from the snapshot
 // because it is an input to two of its fields and survives a re-resolve
-// that the pairing store triggers.
+// that the pairing store triggers. A property of the PAGE, so there is one
+// of it however many backends are attached.
 let pageOnHost = false;
 
 let notifyScopesChanged: (() => void) | null = null;
@@ -201,12 +220,18 @@ function sameSnapshot(a: ScopeSnapshot, b: ScopeSnapshot): boolean {
   return true;
 }
 
-// resolve rebuilds the snapshot from the two sources and publishes it
-// only when it moved. The equality check is what keeps a manifest
-// refetch on every reconnect from invalidating every gated surface in
-// the app for an answer that did not change.
-function resolve(): void {
-  const paired = pairedSessionScopes();
+// resolve rebuilds one backend's snapshot from the two sources and
+// publishes it only when it moved. The equality check is what keeps a
+// manifest refetch on every reconnect from invalidating every gated
+// surface in the app for an answer that did not change.
+//
+// `onHost` is the home backend's alone (see the module header): a remote
+// backend's session is by definition not on this machine, so its arm is
+// the paired-session one or nothing.
+function resolve(backend: BackendKey): void {
+  const home = backend === HOME_BACKEND;
+  const paired = pairedSessionScopes(backend);
+  const onHost = home && pageOnHost;
   let next: ScopeSnapshot;
   if (paired !== null) {
     // Unknown names are dropped rather than carried: this build has no
@@ -216,14 +241,15 @@ function resolve(): void {
     for (const name of paired) {
       if (isScope(name)) known.add(name);
     }
-    next = { source: 'paired-session', everyScope: false, scopes: known, onHost: pageOnHost };
-  } else if (pageOnHost) {
+    next = { source: 'paired-session', everyScope: false, scopes: known, onHost };
+  } else if (onHost) {
     next = { source: 'local-page', everyScope: true, scopes: NO_SCOPES, onHost: true };
   } else {
     next = { source: 'unpaired', everyScope: false, scopes: NO_SCOPES, onHost: false };
   }
-  if (sameSnapshot(snapshot, next)) return;
-  snapshot = next;
+  const current = snapshots.get(backend) ?? UNRESOLVED;
+  if (sameSnapshot(current, next)) return;
+  snapshots.set(backend, next);
   notifyScopesChanged?.();
 }
 
@@ -236,8 +262,9 @@ function resolve(): void {
  * `host` is answered from host presence rather than from the grant set,
  * because no session holds it — see the module header.
  */
-export function hasScope(scope: Scope): boolean {
+export function hasScope(scope: Scope, backendId: BackendKey = HOME_BACKEND): boolean {
   subscribeScopes();
+  const snapshot = snapshots.get(backendId) ?? UNRESOLVED;
   if (scope === 'host') return snapshot.onHost;
   return snapshot.everyScope || snapshot.scopes.has(scope);
 }
@@ -247,9 +274,9 @@ export function hasScope(scope: Scope): boolean {
  * to explain WHY rather than only whether. Reactive on the same
  * subscription `hasScope` uses.
  */
-export function grantedScopes(): ScopeSnapshot {
+export function grantedScopes(backendId: BackendKey = HOME_BACKEND): ScopeSnapshot {
   subscribeScopes();
-  return snapshot;
+  return snapshots.get(backendId) ?? UNRESOLVED;
 }
 
 /**
@@ -278,8 +305,9 @@ export function grantedScopes(): ScopeSnapshot {
  *    flash the indicator on every boot and would label the pairing prompt
  *    as a working read-only app.
  */
-export function isViewOnly(): boolean {
+export function isViewOnly(backendId: BackendKey = HOME_BACKEND): boolean {
   subscribeScopes();
+  const snapshot = snapshots.get(backendId) ?? UNRESOLVED;
   if (snapshot.everyScope) return false;
   return isViewOnlyGrantSet(snapshot.scopes);
 }
@@ -322,7 +350,7 @@ export function isViewOnlyGrantSet(scopes: Iterable<string>): boolean {
  */
 export function setPageGrantsFromBootstrap(remote: boolean): void {
   pageOnHost = remote !== true;
-  resolve();
+  resolve(HOME_BACKEND);
 }
 
 /**
@@ -336,8 +364,8 @@ export function setPageGrantsFromBootstrap(remote: boolean): void {
  * for its lifetime, and a revocation force-closes the socket rather than
  * narrowing what it holds.
  */
-export function refreshGrantedScopes(): void {
-  resolve();
+export function refreshGrantedScopes(backendId: BackendKey = HOME_BACKEND): void {
+  resolve(backendId);
 }
 
 /**
@@ -346,6 +374,7 @@ export function refreshGrantedScopes(): void {
  */
 export function __resetScopesForTest(): void {
   pageOnHost = false;
-  snapshot = UNRESOLVED;
+  snapshots.clear();
+  snapshots.set(HOME_BACKEND, UNRESOLVED);
   notifyScopesChanged?.();
 }

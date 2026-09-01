@@ -30,16 +30,23 @@
 // here, because the transport holds this module through a slot it FILLS
 // at boot rather than through an import.
 import { BeginPasskeyStepUp, FinishPasskeyStepUp } from '../stores/bindings';
-import { resolveTransport } from './handle';
+import { installStepUpProverEverywhere } from './backends';
 import { answerChallenge, passkeysUsable, type PasskeyChallenge } from './passkey';
 import { isStepUpRefusal } from './scopeRefusal';
 
 /**
  * Install the passkey ceremony as the transport's step-up prover. Called
  * once, at boot (`src/main.ts`), and never per call site.
+ *
+ * EVERY attached handle, and every handle attached afterwards
+ * (./backends.ts owns that half). A per-connection install done once at
+ * boot would leave a backend attached later unable to satisfy a step-up
+ * refusal, and the omission would be invisible on the owner's own machine
+ * — the same shape as the per-call-site wrapping this module exists to
+ * replace.
  */
 export function installStepUpProof(): void {
-  resolveTransport().installStepUpProver({ wants: canProve, prove: proveStepUp });
+  installStepUpProverEverywhere({ wants: canProve, prove: proveStepUp });
 }
 
 /**

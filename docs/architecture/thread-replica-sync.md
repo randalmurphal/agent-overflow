@@ -455,12 +455,16 @@ want durable replicas.
   (`replica/session.ts`) is the cross-database sweep that closes that,
   and the same call is the purge sign-out and device revocation use
   (remote-access §9): the argument is the set of backends that remain
-  attached, so an empty set drops the open database too. Boot schedules
+  attached, so an empty set drops the open databases too. Boot schedules
   it after the session is ready, never in front of the cold-open read.
   It is sequenced against the session by the same token every other
   replica operation carries — an identity change mid-sweep cancels the
-  rest, and a target that is the open database detaches the session
-  first. A client that cannot name a live backend does not sweep at all,
+  rest, and a target that some attached backend has open detaches THAT
+  backend's session first. One replica session per attached backend
+  (phase 7b): the database was already named per backend, so what
+  changed is only that `replica/session.ts` holds a map instead of one
+  slot, and the token every operation carries is what names the session
+  it belongs to. A client that cannot name a live backend does not sweep at all,
   because an empty live set is an instruction, not an unknown. Where
   `indexedDB.databases()` is missing (Firefox before 126) only the open
   database can be named, so older orphans wait for an engine that can

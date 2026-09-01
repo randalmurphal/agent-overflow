@@ -14,8 +14,35 @@
 // routes over is resolved per call, which is the seam a second attached
 // backend needs (docs/specs/remote-access.md §10). This file stays thin
 // glue exposing a Wails-shaped API on top of whichever handle answers.
+//
+// Phase 7 makes "whichever handle" a decision rather than a constant, and
+// the decision is the METHOD's rather than the caller's: ./methodRoutes.ts
+// (generated from the Go method table) says whether a call follows its
+// thread, its project, the composer's chosen backend, the page's own, or
+// every attached backend at once. `Call.ByID` reads that table, resolves
+// the handle, and dispatches — the generated bindings above it are
+// untouched and unregenerated.
+//
+// Two rules hold the fallback honest. An unknown method id, an
+// unresolvable entity and a `selected` backend that has detached ALL
+// resolve home, because a single-backend app must behave exactly as it did
+// and a throw here would be a blank screen for a table that is merely
+// incomplete. And the fallback is announced once per method id in dev, so
+// a route that is genuinely missing is visible to whoever added the
+// method rather than silently correct on the only machine they test on.
 
 import { resolveTransport, type EventOrigin } from './handle';
+import {
+  attachedBackendCount,
+  callEveryBackend,
+  homeBackend,
+  subscribeEveryBackend,
+  takePinnedBackend,
+} from './backends';
+import { HOME_BACKEND, type BackendKey } from './backendKey';
+import { noteRowsFromCall, projectBackend, threadBackend } from './entityIndex';
+import { METHOD_ROUTES, type MethodRoute } from './methodRoutes';
+import { selectedBackend } from '../stores/selectedBackend.svelte';
 
 // CancellablePromise is the wrapper Wails-generated bindings always
 // return. The real runtime ships a complex implementation (see
@@ -132,13 +159,80 @@ function wrap<T>(p: Promise<T>): CancellablePromise<T> {
   });
 }
 
+// Method ids whose missing / unresolvable route has already been reported.
+// Bounded by the method table, and only ever written in dev.
+const warnedRoutes = new Set<number>();
+
+function warnOnceForMethod(methodId: number, why: string): void {
+  if (!import.meta.env.DEV) return;
+  if (warnedRoutes.has(methodId)) return;
+  warnedRoutes.add(methodId);
+  console.warn(`transport: method ${methodId} ${why}; routed to the home backend`);
+}
+
+/**
+ * Which backend a call goes to, from its route and its arguments.
+ *
+ * Returns `null` for the `all` route, which is not one backend. Every
+ * other answer is a registry id, `HOME_BACKEND` included; no allocation
+ * beyond the two Map lookups the entity index costs.
+ */
+function resolveRoute(methodId: number, args: unknown[]): BackendKey | null {
+  const route: MethodRoute | undefined = METHOD_ROUTES[methodId];
+  if (route === undefined) {
+    warnOnceForMethod(methodId, 'has no route');
+    return HOME_BACKEND;
+  }
+  switch (route) {
+    case 'thread': {
+      const id = args[0];
+      const owner = typeof id === 'string' ? threadBackend(id) : undefined;
+      return owner ?? HOME_BACKEND;
+    }
+    case 'project': {
+      const id = args[0];
+      const owner = typeof id === 'string' ? projectBackend(id) : undefined;
+      return owner ?? HOME_BACKEND;
+    }
+    case 'selected':
+      return selectedBackend();
+    case 'all':
+      return null;
+    case 'home':
+    default:
+      return HOME_BACKEND;
+  }
+}
+
 // Call.ByID / Call.ByName route through the resolved transport handle.
 // Generated bindings hit ByID exclusively; hand-written code paths (none
 // today) can use ByName.
 export const Call = {
   ByID(methodId: number, ...args: unknown[]): CancellablePromise<unknown> {
-    return wrap(resolveTransport().callByID(methodId, args));
+    // Drained FIRST, before anything can await: a pinned target is armed
+    // for one synchronous dispatch and must not survive into the next.
+    const pinned = takePinnedBackend();
+    // The single-backend fast path, and the reason a client with one
+    // connection pays nothing for the registry: there is no route to
+    // resolve when there is only one place a call can go.
+    if (attachedBackendCount() === 1) {
+      return wrap(homeBackend().handle.callByID(methodId, args));
+    }
+    if (pinned !== null) return wrap(resolveTransport(pinned).callByID(methodId, args));
+    const target = resolveRoute(methodId, args);
+    if (target === null) {
+      return wrap(
+        callEveryBackend(methodId, args, (result, backendId) => {
+          noteRowsFromCall(methodId, result, backendId);
+        }),
+      );
+    }
+    return wrap(resolveTransport(target).callByID(methodId, args));
   },
+  // ByName has no id to look up, so it takes the route every unclassified
+  // call takes: the page's own backend. Nothing in the app calls it today;
+  // when something does, the answer is to give that method a route rather
+  // than to build a second name→route table beside the generated one.
   ByName(method: string, ...args: unknown[]): CancellablePromise<unknown> {
     return wrap(resolveTransport().callByName(method, args));
   },
@@ -198,23 +292,24 @@ export const Create = {
   Events: {} as Record<string, (source: unknown) => unknown>,
 };
 
-// Events.On registers a subscriber on the resolved transport handle. The
-// handler receives `{name, data}` to match Wails' real runtime contract —
-// the events.ts store and other consumers expect the wrapped shape — plus
-// `origin`, the connection the event arrived on.
+// Events.On registers a subscriber on EVERY attached backend, and on every
+// backend attached afterwards. The handler receives `{name, data}` to
+// match Wails' real runtime contract — the events.ts store and other
+// consumers expect the wrapped shape — plus `origin`, the connection the
+// event arrived on.
 //
-// The handle is resolved ONCE, at subscribe time, because it is the
-// connection: the subscription belongs to it, and so does the origin its
-// events carry. Stamping is free — the handle hands back the same origin
-// object until the identity moves, so this adds a property to an envelope
-// that was already being allocated per event.
+// The origin comes from the DELIVERING handle rather than from one
+// resolved at subscribe time, which is the whole difference between one
+// backend and several: the stamp used to be a property of the app and is
+// now a property of the delivery. Stamping stays free — each handle hands
+// back the same origin object until its identity moves, so this adds a
+// property to an envelope that was already being allocated per event.
 export const Events = {
   On(
     name: string,
     handler: (ev: { name: string; data: unknown; origin?: EventOrigin }) => void,
   ): () => void {
-    const transport = resolveTransport();
-    return transport.subscribe(name, (data) => {
+    return subscribeEveryBackend(name, (data, transport) => {
       handler({ name, data, origin: transport.origin });
     });
   },

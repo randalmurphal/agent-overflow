@@ -21,12 +21,37 @@
 //
 // Consumers own their reactivity and parsing: this module stores
 // opaque strings. Structured values are JSON-encoded by the caller.
+//
+// **One bucket per attached backend** (phase 7, spec §10). The bucket is
+// the BACKEND's — it lives in that backend's ui_state table and is scoped
+// there by the connection presenting it — so a client attached to two
+// machines holds two, and each flushes to its own. `withBackendTarget` is
+// how a flush names its backend: the ui_state methods are `home`-routed
+// (they are this machine's settings for every other caller), and this is
+// the one class of call whose backend is a property of the CONNECTION
+// rather than of an entity or of the method.
+//
+// Every exported function defaults to the page's own backend, so every
+// existing call site — which is all of them — keeps its shape and its
+// behaviour. Cross-backend UI state (reading another machine's bucket to
+// render its pane layout) is deliberately NOT built here: nothing asks for
+// it yet, and a bucket that could answer for a backend it was not written
+// against is a merge policy nobody has designed.
 
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { withBackendTarget } from '../transport/backends';
 import { DeleteUIState, GetUIState, SetUIState } from './bindings';
 import { addToast } from './toast.svelte';
 
 const BUCKET_CACHE_KEY = 'agent-overflow:uistate:bucket';
 const WRITE_DEBOUNCE_MS = 300;
+
+// The home bucket keeps TODAY'S cache key, unsuffixed: an already-running
+// browser has a blob under that exact string, and a key that gained a
+// suffix would flash defaults on the first paint after an update.
+function bucketCacheKey(backend: BackendKey): string {
+  return backend === HOME_BACKEND ? BUCKET_CACHE_KEY : `${BUCKET_CACHE_KEY}:${backend}`;
+}
 
 function readLocal(key: string): string | null {
   if (typeof localStorage === 'undefined') return null;
@@ -46,8 +71,8 @@ function writeLocal(key: string, value: string): void {
   }
 }
 
-function readCachedBucket(): Map<string, string> {
-  const raw = readLocal(BUCKET_CACHE_KEY);
+function readCachedBucket(backend: BackendKey): Map<string, string> {
+  const raw = readLocal(bucketCacheKey(backend));
   if (!raw) return new Map();
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -62,42 +87,74 @@ function readCachedBucket(): Map<string, string> {
   }
 }
 
-function writeCachedBucket(): void {
-  writeLocal(BUCKET_CACHE_KEY, JSON.stringify(Object.fromEntries(bucket)));
+function writeCachedBucket(store: BackendStore): void {
+  writeLocal(bucketCacheKey(store.backend), JSON.stringify(Object.fromEntries(store.bucket)));
 }
-// Pre-hydration reads serve the same-session cache; hydration
-// reconciles it against the server bucket.
-let bucket: Map<string, string> = readCachedBucket();
-let hydrated = false;
 
-// Keys written locally but not yet confirmed by a SetUIState /
-// DeleteUIState round-trip. Local values win over the server for these
-// during hydration — the user interacted before hydration finished.
-const pendingSets = new Map<string, string>();
-const pendingDeletes = new Set<string>();
-let flushTimer: ReturnType<typeof setTimeout> | null = null;
-let flushInFlight: Promise<void> | null = null;
-let saveFailureToastShown = false;
+// One backend's bucket and its write queue.
+//
+// `pendingSets` / `pendingDeletes` are the keys written locally but not
+// yet confirmed by a SetUIState / DeleteUIState round-trip; local values
+// win over the server for these during hydration, because the user
+// interacted before hydration finished.
+interface BackendStore {
+  readonly backend: BackendKey;
+  bucket: Map<string, string>;
+  hydrated: boolean;
+  readonly pendingSets: Map<string, string>;
+  readonly pendingDeletes: Set<string>;
+  flushTimer: ReturnType<typeof setTimeout> | null;
+  flushInFlight: Promise<void> | null;
+  saveFailureToastShown: boolean;
+}
+
+const stores = new Map<BackendKey, BackendStore>();
+
+function storeFor(backend: BackendKey): BackendStore {
+  let held = stores.get(backend);
+  if (held === undefined) {
+    held = {
+      backend,
+      // Pre-hydration reads serve the same-session cache; hydration
+      // reconciles it against the server bucket.
+      bucket: readCachedBucket(backend),
+      hydrated: false,
+      pendingSets: new Map(),
+      pendingDeletes: new Set(),
+      flushTimer: null,
+      flushInFlight: null,
+      saveFailureToastShown: false,
+    };
+    stores.set(backend, held);
+  }
+  return held;
+}
 
 /** Sync read. Null means "no persisted value" — callers apply their own default. */
-export function appStorageGet(key: string): string | null {
-  return bucket.get(key) ?? null;
+export function appStorageGet(key: string, backend: BackendKey = HOME_BACKEND): string | null {
+  return storeFor(backend).bucket.get(key) ?? null;
 }
 
-export function appStorageSet(key: string, value: string): void {
-  bucket.set(key, value);
-  pendingDeletes.delete(key);
-  pendingSets.set(key, value);
-  writeCachedBucket();
-  scheduleFlush();
+export function appStorageSet(
+  key: string,
+  value: string,
+  backend: BackendKey = HOME_BACKEND,
+): void {
+  const store = storeFor(backend);
+  store.bucket.set(key, value);
+  store.pendingDeletes.delete(key);
+  store.pendingSets.set(key, value);
+  writeCachedBucket(store);
+  scheduleFlush(store);
 }
 
-export function appStorageDelete(key: string): void {
-  bucket.delete(key);
-  pendingSets.delete(key);
-  pendingDeletes.add(key);
-  writeCachedBucket();
-  scheduleFlush();
+export function appStorageDelete(key: string, backend: BackendKey = HOME_BACKEND): void {
+  const store = storeFor(backend);
+  store.bucket.delete(key);
+  store.pendingSets.delete(key);
+  store.pendingDeletes.add(key);
+  writeCachedBucket(store);
+  scheduleFlush(store);
 }
 
 /**
@@ -113,6 +170,9 @@ export function appStorageAdoptLegacyKey(
   parse: (raw: string) => string | null,
 ): string | null {
   const existing = appStorageGet(key);
+  // Legacy adoption is the HOME backend's alone: the keys it migrates were
+  // written by a build with one connection, so there is exactly one bucket
+  // they can have belonged to.
   if (existing !== null) return existing;
   const raw = readLocal(legacyStorageKey);
   if (raw === null) return null;
@@ -143,45 +203,50 @@ function removeLegacyKey(legacyStorageKey: string): void {
  * Returns false when the fetch failed; the session then runs on the
  * localStorage cache and queued writes retry on the next mutation.
  */
-export async function hydrateAppStorage(): Promise<boolean> {
+export async function hydrateAppStorage(backend: BackendKey = HOME_BACKEND): Promise<boolean> {
+  const store = storeFor(backend);
   let server: { [key: string]: string | undefined };
   try {
-    server = (await GetUIState()) ?? {};
+    server = (await withBackendTarget(backend, () => GetUIState())) ?? {};
   } catch (err) {
     console.error('appStorage: hydrate failed:', err);
     return false;
   }
   const push = new Map<string, string>();
-  for (const [key, value] of bucket) {
-    if (server[key] === undefined && !pendingSets.has(key) && !pendingDeletes.has(key)) {
+  for (const [key, value] of store.bucket) {
+    if (
+      server[key] === undefined &&
+      !store.pendingSets.has(key) &&
+      !store.pendingDeletes.has(key)
+    ) {
       push.set(key, value);
     }
   }
   for (const [key, value] of Object.entries(server)) {
     if (typeof value !== 'string') continue;
-    if (pendingSets.has(key) || pendingDeletes.has(key)) continue;
-    bucket.set(key, value);
+    if (store.pendingSets.has(key) || store.pendingDeletes.has(key)) continue;
+    store.bucket.set(key, value);
   }
   for (const [key, value] of push) {
-    pendingSets.set(key, value);
+    store.pendingSets.set(key, value);
   }
-  hydrated = true;
-  writeCachedBucket();
-  if (pendingSets.size > 0 || pendingDeletes.size > 0) {
-    scheduleFlush();
+  store.hydrated = true;
+  writeCachedBucket(store);
+  if (store.pendingSets.size > 0 || store.pendingDeletes.size > 0) {
+    scheduleFlush(store);
   }
   return true;
 }
 
-export function isAppStorageHydrated(): boolean {
-  return hydrated;
+export function isAppStorageHydrated(backend: BackendKey = HOME_BACKEND): boolean {
+  return storeFor(backend).hydrated;
 }
 
-function scheduleFlush(): void {
-  if (flushTimer !== null) return;
-  flushTimer = setTimeout(() => {
-    flushTimer = null;
-    void flushAppStorage();
+function scheduleFlush(store: BackendStore): void {
+  if (store.flushTimer !== null) return;
+  store.flushTimer = setTimeout(() => {
+    store.flushTimer = null;
+    void flushAppStorage(store.backend);
   }, WRITE_DEBOUNCE_MS);
 }
 
@@ -189,51 +254,53 @@ function scheduleFlush(): void {
  * Send pending writes now. Safe to call at any time (pagehide,
  * tests); coalesces with an in-flight send instead of racing it.
  */
-export async function flushAppStorage(): Promise<void> {
-  if (flushInFlight) {
-    await flushInFlight;
+export async function flushAppStorage(backend: BackendKey = HOME_BACKEND): Promise<void> {
+  const store = storeFor(backend);
+  if (store.flushInFlight) {
+    await store.flushInFlight;
   }
-  if (pendingSets.size === 0 && pendingDeletes.size === 0) return;
-  if (flushTimer !== null) {
-    clearTimeout(flushTimer);
-    flushTimer = null;
+  if (store.pendingSets.size === 0 && store.pendingDeletes.size === 0) return;
+  if (store.flushTimer !== null) {
+    clearTimeout(store.flushTimer);
+    store.flushTimer = null;
   }
-  const sets = new Map(pendingSets);
-  const deletes = new Set(pendingDeletes);
-  pendingSets.clear();
-  pendingDeletes.clear();
+  const sets = new Map(store.pendingSets);
+  const deletes = new Set(store.pendingDeletes);
+  store.pendingSets.clear();
+  store.pendingDeletes.clear();
 
-  flushInFlight = (async () => {
+  const run = (async () => {
     try {
       if (sets.size > 0) {
-        await SetUIState(Object.fromEntries(sets));
+        await withBackendTarget(backend, () => SetUIState(Object.fromEntries(sets)));
       }
       if (deletes.size > 0) {
-        await DeleteUIState([...deletes]);
+        await withBackendTarget(backend, () => DeleteUIState([...deletes]));
       }
     } catch (err) {
       console.error('appStorage: flush failed:', err);
-      if (!saveFailureToastShown) {
-        saveFailureToastShown = true;
+      if (!store.saveFailureToastShown) {
+        store.saveFailureToastShown = true;
         addToast('error', 'Failed to save UI state');
       }
       // Re-queue what didn't land, but never clobber a newer write
       // that arrived while this flush was in flight.
       for (const [key, value] of sets) {
-        if (!pendingSets.has(key) && !pendingDeletes.has(key)) {
-          pendingSets.set(key, value);
+        if (!store.pendingSets.has(key) && !store.pendingDeletes.has(key)) {
+          store.pendingSets.set(key, value);
         }
       }
       for (const key of deletes) {
-        if (!pendingSets.has(key)) {
-          pendingDeletes.add(key);
+        if (!store.pendingSets.has(key)) {
+          store.pendingDeletes.add(key);
         }
       }
     } finally {
-      flushInFlight = null;
+      store.flushInFlight = null;
     }
   })();
-  await flushInFlight;
+  store.flushInFlight = run;
+  await run;
 }
 
 /**
@@ -242,35 +309,36 @@ export async function flushAppStorage(): Promise<void> {
  * caches survive).
  */
 export function reinitAppStorageForTest(): void {
-  if (flushTimer !== null) {
-    clearTimeout(flushTimer);
-    flushTimer = null;
+  for (const store of stores.values()) {
+    if (store.flushTimer !== null) {
+      clearTimeout(store.flushTimer);
+      store.flushTimer = null;
+    }
+    store.flushInFlight = null;
+    store.pendingSets.clear();
+    store.pendingDeletes.clear();
+    store.hydrated = false;
+    store.saveFailureToastShown = false;
+    store.bucket = readCachedBucket(store.backend);
   }
-  flushInFlight = null;
-  pendingSets.clear();
-  pendingDeletes.clear();
-  hydrated = false;
-  saveFailureToastShown = false;
-  bucket = readCachedBucket();
+  storeFor(HOME_BACKEND);
 }
 
 /** Test helper — reset the bucket and queues; wipe the cache. */
 export function resetAppStorageForTest(): void {
-  if (flushTimer !== null) {
-    clearTimeout(flushTimer);
-    flushTimer = null;
-  }
-  flushInFlight = null;
-  pendingSets.clear();
-  pendingDeletes.clear();
-  hydrated = false;
-  saveFailureToastShown = false;
-  if (typeof localStorage !== 'undefined') {
-    try {
-      localStorage.removeItem(BUCKET_CACHE_KEY);
-    } catch {
-      // ignore
+  for (const store of stores.values()) {
+    if (store.flushTimer !== null) {
+      clearTimeout(store.flushTimer);
+      store.flushTimer = null;
+    }
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.removeItem(bucketCacheKey(store.backend));
+      } catch {
+        // ignore
+      }
     }
   }
-  bucket = new Map();
+  stores.clear();
+  storeFor(HOME_BACKEND);
 }
