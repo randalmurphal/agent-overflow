@@ -94,6 +94,16 @@ func (n *launcherNotificationService) ServiceShutdown() error {
 	return n.service.ServiceShutdown()
 }
 
+// present raises, replaces or withdraws one bridged notification.
+//
+// Retraction degrades to nothing on this platform and that is deliberate:
+// wintoast exposes no call that pulls a delivered toast back out of the
+// Action Center, so Wails' RemoveNotification answers nil without acting.
+// The alternative — refusing the retraction, or logging it as a failure —
+// would turn a platform's limit into an error the user sees, for an
+// operation whose whole purpose is to make things quieter. UpdateNotification
+// has the same shape: replace-in-place where the platform has it, a fresh
+// toast where it does not.
 func (n *launcherNotificationService) present(send notify.Send) error {
 	n.mu.RLock()
 	unavailableErr := n.unavailableErr
@@ -101,11 +111,14 @@ func (n *launcherNotificationService) present(send notify.Send) error {
 	if unavailableErr != nil {
 		return unavailableErr
 	}
+	if send.Retract {
+		return n.service.RemoveNotification(send.ID)
+	}
 	data, err := notify.TargetToMap(send.Target)
 	if err != nil {
 		return err
 	}
-	return n.service.SendNotification(notifications.NotificationOptions{
+	return n.service.UpdateNotification(notifications.NotificationOptions{
 		ID:    send.ID,
 		Title: send.Title,
 		Body:  send.Body,

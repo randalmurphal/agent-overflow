@@ -149,7 +149,12 @@ missing value over one that skips. Two rules keep the evidence real:
   backend state can produce a notification therefore declares a distinct
   no-op worker fixture identity, and each cold-activation case declares
   its own, so an activation for deleted test state cannot redirect or
-  satisfy a later spec.
+  satisfy a later spec. That population is now EVERY spec that runs a
+  turn: the event mapping (`internal/app/app_notification_mapping.go`)
+  raises a `notification:send` when a top-level turn comes to rest, fails,
+  or opens an approval, and withdraws it when the thread resumes. A spec
+  asserting on notification traffic must therefore filter by thread id or
+  kind rather than by "the next send".
 - **Navigate with `harness.open(page)`, never `page.goto(harness.url)`.**
   A page URL carries a one-time ticket the first load exchanges for an
   HttpOnly session cookie, and each Playwright context is a fresh cookie

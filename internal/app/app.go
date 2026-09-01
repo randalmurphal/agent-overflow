@@ -85,10 +85,14 @@ type App struct {
 	setWindowBackground func(red, green, blue uint8)
 	// osNotifications is the single platform-routing seam behind notifyOS.
 	// Desktop boot installs the in-process Wails service adapter; the WSL
-	// headless boot installs the transport bridge; harness mode installs an
-	// explicit unavailable sender. Tests may leave it nil to exercise the
-	// same visible degraded error without pulling in a platform service.
+	// headless and harness boots install the transport bridge. Tests may
+	// leave it nil to exercise the same visible degraded error without
+	// pulling in a platform service.
 	osNotifications osNotificationSender
+	// notifications is the event→notification mapping's coordination: the
+	// ordered queue its moments dispatch on, and the small edge state the
+	// pure mapping is handed. See app_notification_mapping.go.
+	notifications notificationDispatch
 	store           *store.Store
 	git             *gitops.Core
 	gitWatch        *gitwatch.Manager

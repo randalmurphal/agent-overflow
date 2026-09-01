@@ -179,6 +179,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// the rest of teardown.
 	record("drain triage", a.drainTriage(ctx, reactorDrainTimeout))
 	record("drain flush dispatch", a.drainFlushDispatch(ctx, reactorDrainTimeout))
+	// Notification jobs read the thread title out of SQLite, so they drain
+	// with the other reactors rather than after the database closes.
+	record("drain notifications", a.drainNotifications(ctx, notificationDrainTimeout))
 
 	// Step 3: flush observability writers BEFORE closing provider
 	// sessions. Provider close events pass through the replay log; if

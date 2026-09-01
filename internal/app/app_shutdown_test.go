@@ -242,6 +242,11 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"cancel app context",
 		"drain triage",
 		"drain flush dispatch",
+		// "drain notifications" MUST appear before "close store" — a queued
+		// notification reads the thread's title out of SQLite to name it,
+		// and it joins the other reactor drains because the events it
+		// reacts to stop arriving once triage has drained.
+		"drain notifications",
 		"close replay manager",
 		"shutdown telemetry",
 		"stop idle session reaper",

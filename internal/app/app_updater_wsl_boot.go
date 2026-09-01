@@ -58,7 +58,16 @@ func NotifyPendingUpdateApplyFailure(a *App) {
 	if notice == "" {
 		return
 	}
-	if err := a.notifyOS("Update didn't apply", notice, notify.Target{Kind: "none"}); err != nil {
+	// A fixed id, because there is exactly one of these per boot and a
+	// second would be the same fact restated.
+	send := notify.Send{
+		ID:     "app-update-apply-failure",
+		Kind:   notify.KindAppUpdate,
+		Title:  "Update didn't apply",
+		Body:   notice,
+		Target: notify.Target{Kind: "none", BackendID: a.notificationBackendID()},
+	}
+	if err := a.notifyOS(send); err != nil {
 		log.Printf("updater: could not present the update-apply notice: %v", err)
 	}
 }

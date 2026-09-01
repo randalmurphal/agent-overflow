@@ -76,6 +76,26 @@ Anything the backend ANSWERED (500 to `/startup-error`, 404, a never-ready
 would churn the webview origin, wiping localStorage and the IndexedDB thread
 replica, for nothing.
 
+## Presenting a bridged notification
+
+`notifications.go` is the host-side presenter for everything the backend
+sends on `notification:send`. The wire shape, its limits and its admission
+check are `internal/notify`'s, re-run here because a cross-process boundary
+validates what it is handed rather than trusting the sender.
+
+- **A send carries a STABLE id and may be a RETRACTION.** `present` branches
+  on `Send.Retract`: withdraw by id, or `UpdateNotification` with the id the
+  mapping chose. Never allocate an id here — replace-in-place is exactly the
+  platform recognising a second send about the same moment as the same
+  notification.
+- **Retraction degrades to nothing on Windows, silently, on purpose.**
+  wintoast exposes no call that pulls a delivered toast back out of the Action
+  Center, so Wails' `RemoveNotification` answers nil without acting. Refusing
+  the retraction, or logging it as a failure, would turn a platform limit into
+  an error the user sees — for an operation whose whole purpose is to make
+  things quieter. Linux (D-Bus `CloseNotification` + `replaces_id`) and macOS
+  (remove the delivered notification) do act.
+
 ## Self-update: acting on an install directive
 
 The WSL backend downloads and digest-verifies the new launcher `.exe`, stages

@@ -367,17 +367,22 @@ var channelPolicies = []ChannelPolicy{
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeThreadsRead,
-		Why: "Instructs a presenter to raise a notification. The host-side " +
-			"presenter (the Windows launcher's notification client) is one " +
-			"consumer; an attached remote client is the other, and being told " +
-			"a turn finished while away from the desk is the whole point of " +
-			"attaching one. It carries thread titles and message text, which " +
-			"is not a new disclosure to a client that reads both over its " +
-			"ordinary RPCs. Emitting is host-side only (App.notifyOS), so no " +
-			"client can make another client raise one. Retained: the launcher " +
+		Why: "Instructs a presenter to raise, replace or withdraw a " +
+			"notification. The host-side presenter (the Windows launcher's " +
+			"notification client) is one consumer; an attached remote client " +
+			"is the other, and being told a turn finished while away from " +
+			"the desk is the whole point of attaching one. It carries a " +
+			"bounded thread TITLE and a fixed phrase, never message text, " +
+			"tool output or provider prose — internal/notify's mapping is " +
+			"the redaction boundary, and a notification is the one surface " +
+			"that renders outside the app's window. Even the title is not a " +
+			"new disclosure to a client that reads it over its ordinary " +
+			"RPCs. Emitting is host-side only (App.notifyOS), so no client " +
+			"can make another client raise one. Retained: the launcher " +
 			"replays this channel by cursor after a reconnect " +
 			"(wsllauncher/notification_client.go), so it must NOT become " +
-			"ephemeral or latest-only.",
+			"ephemeral or latest-only — and a retraction is ordered behind " +
+			"the send it withdraws, which only a real ring preserves.",
 	},
 	{
 		Channel:   eventchan.PowerKeepAwake,

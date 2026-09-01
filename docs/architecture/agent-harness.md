@@ -186,6 +186,13 @@ are not:
   sender logs one line and returns nil). It used to install a refusal
   stub, which meant the e2e spec covering the notification pipe asserted
   the stub's error string and never executed the emission at all.
+  `HarnessNotify` is no longer the only source: the event mapping taps
+  `emit`, so a mock-provider turn coming to rest raises a real
+  `notification:send` on an isolated boot too. That is deliberate — the
+  mapping and the device-tier preference gate are production code the
+  harness should exercise — and it is why the e2e suite filters
+  notification traffic by thread id rather than waiting on "the next
+  send".
 - **pprof.** Still opt-in via `AGENT_OVERFLOW_PPROF`, but a BARE enable
   (`1`/`true`) binds an ephemeral loopback port on an isolated boot
   instead of `pprofserve`'s fixed `127.0.0.1:6363`. Isolated boots are

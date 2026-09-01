@@ -203,6 +203,41 @@ two font sizes and one shared set of confirmations.
 - **A writer that reaches `ui_state` around the settings service owes it
   `InvalidateTierCache`.** There is exactly one — the harness reset's
   `ClearUIState` — and `harnessHost.ClearUIState` makes the call.
+- **Backend code that acts on THIS machine's screen reads
+  `settings.Service.BackendScreen()`, not `For("")`.** `For("")` answers device
+  DEFAULTS, which for a screen-facing preference means silently ignoring what
+  the user set on the very screen being acted on. There is one such caller —
+  the OS-notification gate — and a key with no screen behind it does not belong
+  in the device tier at all.
+
+## Notifications map from the event funnel
+
+`app_notification_mapping.go` taps `emit` itself, not the six places that
+announce a notification-worthy moment. `internal/notify` owns WHAT a moment
+says and when it is taken back (pure, testable without an App); this file owns
+WHERE each one is observed and how the sentence is finished.
+
+- **Tap the funnel, not the emitters.** Turn completion is announced from the
+  triage router, approvals from three places, provider status from a discovery
+  service, sign-in from an account manager. Subscribing to the one funnel every
+  Go→frontend event already crosses closes the class: a seventh emitter of
+  `provider:approval` is mapped the day it is written.
+- **Project synchronously, dispatch on the queue.** The tap type-asserts and
+  reads the two or three fields the mapping needs before enqueuing, so the queue
+  never retains a whole wire payload. The queue is a `serialqueue.Queue` rather
+  than a bare `go` because ORDER is the retraction contract: a retract that
+  overtook its own send would strand the notification forever.
+- **`notifyOS` is the one preference gate**, and that placement is the point: a
+  send that reaches a presenter without passing through it does not exist, so no
+  sender can ship having forgotten to ask. Checking at each call site is a class
+  of bug, not a bug.
+- **A retraction is never gated.** The gate answers "may I interrupt you", and
+  withdrawing something already on screen is the opposite. Gating it would let a
+  toggle flipped mid-flight strand the very alerts it was meant to stop.
+- **A notification body carries no content.** Titles are the thread's own,
+  clipped; bodies are fixed phrases from `internal/notify`. The provider's
+  stderr tail, the failed turn's error message and the approval's command line
+  are all deliberately left behind in the tap.
 
 ## The device-access surface
 

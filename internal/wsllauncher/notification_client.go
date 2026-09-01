@@ -428,16 +428,14 @@ func (c *NotificationClient) handleEvent(event notificationEvent) error {
 		c.logf("notifications: ignore malformed notification payload: %v", err)
 		return nil
 	}
-	if notification.ID == "" || notification.Title == "" {
-		c.logf("notifications: ignore notification with missing id or title")
-		return nil
-	}
-	if len(notification.Title) > notify.MaxTitleBytes || len(notification.Body) > notify.MaxBodyBytes {
-		c.logf("notifications: ignore oversized notification %s", notification.ID)
-		return nil
-	}
-	if err := notify.ValidateTarget(notification.Target); err != nil {
-		c.logf("notifications: ignore invalid notification target: %v", err)
+	// One admission check, shared with the backend that published this
+	// (notify.ValidateSend), rather than three restatements of it here. The
+	// re-check is not redundant: this crossed a process boundary, and the
+	// launcher is the side that would present whatever it decoded. It is
+	// also what admits a retraction, whose contract is deliberately the
+	// opposite of a presentation's — an id and a kind, and no content.
+	if err := notify.ValidateSend(notification); err != nil {
+		c.logf("notifications: ignore invalid notification: %v", err)
 		return nil
 	}
 	if err := c.present(notification); err != nil {

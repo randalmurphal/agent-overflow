@@ -69,6 +69,7 @@ func TestNotificationClientReconnectsReplaysAndPostsActivation(t *testing.T) {
 		sequence := uint64(connection)
 		payload, _ := json.Marshal(notify.Send{
 			ID:     "notification-" + string(rune('0'+connection)),
+			Kind:   notify.KindTurnComplete,
 			Title:  "Ready",
 			Body:   "Open it",
 			Target: target,
@@ -210,6 +211,7 @@ func TestNotificationClientOrdersLiveEventBehindReplayEvent(t *testing.T) {
 	event := func(seq uint64) notificationEvent {
 		payload, marshalErr := json.Marshal(notify.Send{
 			ID:     "notification-" + string(rune('0'+seq)),
+			Kind:   notify.KindTurnComplete,
 			Title:  "Ready",
 			Target: notify.Target{Kind: "none"},
 		})

@@ -11,8 +11,21 @@ import (
 	"agent-overflow/internal/transport"
 )
 
+// testSend is a valid presentation with the parts a test does not care
+// about filled in. Every notifyOS test builds from it, so a new field on the
+// wire shape lands in one place here rather than in a dozen literals.
+func testSend(target notify.Target) notify.Send {
+	return notify.Send{
+		ID:     "test-notification",
+		Kind:   notify.KindTurnComplete,
+		Title:  "Done",
+		Body:   "The task completed",
+		Target: target,
+	}
+}
+
 func TestNotifyOSUnavailableIsTypedAndVisible(t *testing.T) {
-	err := (&App{}).notifyOS("Done", "The task completed", notify.Target{Kind: "none"})
+	err := (&App{}).notifyOS(testSend(notify.Target{Kind: "none"}))
 	var notificationErr *NotificationError
 	if !errors.As(err, &notificationErr) {
 		t.Fatalf("notifyOS error = %v, want *NotificationError", err)
@@ -27,13 +40,28 @@ func TestNotifyOSUnavailableIsTypedAndVisible(t *testing.T) {
 
 func TestNotifyOSRejectsOversizedContentBeforeRouting(t *testing.T) {
 	a := &App{osNotifications: unavailableNotificationSender{reason: errors.New("should not be reached")}}
-	err := a.notifyOS(strings.Repeat("x", notify.MaxTitleBytes+1), "body", notify.Target{Kind: "none"})
-	if err == nil || !strings.Contains(err.Error(), "title exceeds") {
+	oversized := testSend(notify.Target{Kind: "none"})
+	oversized.Title = strings.Repeat("x", notify.MaxTitleBytes+1)
+	if err := a.notifyOS(oversized); err == nil || !strings.Contains(err.Error(), "title exceeds") {
 		t.Fatalf("oversized title error = %v", err)
 	}
-	err = a.notifyOS("title", strings.Repeat("x", notify.MaxBodyBytes+1), notify.Target{Kind: "none"})
-	if err == nil || !strings.Contains(err.Error(), "body exceeds") {
+	oversized = testSend(notify.Target{Kind: "none"})
+	oversized.Body = strings.Repeat("x", notify.MaxBodyBytes+1)
+	if err := a.notifyOS(oversized); err == nil || !strings.Contains(err.Error(), "body exceeds") {
 		t.Fatalf("oversized body error = %v", err)
+	}
+}
+
+// TestNotifyOSRefusesAnUndeclaredKind: the preference gate switches on the
+// kind, so a send naming one this build has never heard of is a preference
+// nobody can express. It is refused at the pipe rather than defaulted into
+// "always show".
+func TestNotifyOSRefusesAnUndeclaredKind(t *testing.T) {
+	a := &App{osNotifications: unavailableNotificationSender{reason: errors.New("should not be reached")}}
+	send := testSend(notify.Target{Kind: "none"})
+	send.Kind = "turn-finished-maybe"
+	if err := a.notifyOS(send); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("undeclared kind error = %v", err)
 	}
 }
 
@@ -64,7 +92,9 @@ func TestTransportNotificationSenderPublishesTypedPayload(t *testing.T) {
 	a.osNotifications = newTransportNotificationSender(a)
 	target := notify.Target{Kind: "thread", ThreadID: "thread-123"}
 
-	if err := a.notifyOS("Ready", "Open the finished thread", target); err != nil {
+	send := testSend(target)
+	send.Title, send.Body = "Ready", "Open the finished thread"
+	if err := a.notifyOS(send); err != nil {
 		t.Fatalf("notifyOS: %v", err)
 	}
 	events := bus.Replay(map[string]uint64{notify.SendChannel: 0})
@@ -164,7 +194,7 @@ func TestIsolatedNotificationSendSucceedsWithNoSubscriber(t *testing.T) {
 	if got := bus.ChannelSubscriberCount(notify.SendChannel); got != 0 {
 		t.Fatalf("fixture has %d explicit subscribers, want none", got)
 	}
-	if err := app.notifyOS("Ready", "Body", notify.Target{Kind: "none"}); err != nil {
+	if err := app.notifyOS(testSend(notify.Target{Kind: "none"})); err != nil {
 		t.Fatalf("send with no subscriber: %v, want success", err)
 	}
 }

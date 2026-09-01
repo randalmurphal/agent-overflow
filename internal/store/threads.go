@@ -321,6 +321,29 @@ func (s *Store) GetThreadProviderWorkspace(id string) (provider, workspacePath s
 	return provider, workspacePath, nil
 }
 
+// GetThreadTitle reads only the title column. It is the narrow read for
+// callers that need a thread's LABEL and nothing else — the OS-notification
+// mapping, which is allowed to say a thread's title and nothing more about
+// it — and it exists for the same reason GetThreadProviderWorkspace does:
+// GetThread's projection computes four derived sidebar-state subqueries per
+// call that such a caller would compute and throw away.
+//
+// A thread that is gone answers "" with no error. The caller is reacting to
+// an event about a thread that may since have been deleted, and a deleted
+// thread is not a failure to report — it is a notification with a fallback
+// label, or none at all.
+func (s *Store) GetThreadTitle(id string) (string, error) {
+	var title string
+	err := s.reader().QueryRow(`SELECT title FROM threads WHERE id = ?`, id).Scan(&title)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: get thread title %s: %w", id, err)
+	}
+	return title, nil
+}
+
 // ThreadExists reports whether a thread row is still present. It is the narrow
 // probe for the callers that hold a thread id from a table with no threads
 // foreign key (workflow run records) and need to know whether the pointer is

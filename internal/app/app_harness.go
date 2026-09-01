@@ -95,9 +95,23 @@ func (h *harnessHost) Emit(channel eventchan.Channel, data any) {
 	h.app.emit(channel, data)
 }
 
+// Notify drives the send pipe and the activation pipe from one RPC, which is
+// what lets the e2e rig observe both halves without a presenter.
+//
+// The kind is KindWorkflowAttention: the harness is exercising the PIPE, not
+// a mapped moment, so it must ride a kind that carries no per-kind toggle —
+// otherwise a test's notification would depend on a preference the test
+// never set. An allocated id rather than a stable one, for the same reason:
+// this call names no moment to retract.
 func (h *harnessHost) Notify(title, body string, target notify.Target) error {
 	return errors.Join(
-		h.app.notifyOS(title, body, target),
+		h.app.notifyOS(notify.Send{
+			ID:     notify.NewID(h.app.notifications.harnessSeq.Add(1)),
+			Kind:   notify.KindWorkflowAttention,
+			Title:  title,
+			Body:   body,
+			Target: target,
+		}),
 		h.app.activateNotificationTarget(target),
 	)
 }

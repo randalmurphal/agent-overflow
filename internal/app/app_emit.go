@@ -30,6 +30,11 @@ import (
 // hatches (app_harness.go, app_harness_replay.go) spell.
 func (a *App) emit(name eventchan.Channel, data any) {
 	a.rememberRateLimitsEvent(name, data)
+	// The OS-notification mapping taps the same funnel: four moments are
+	// worth interrupting a person for and all four are announced here
+	// (app_notification_mapping.go). It projects and queues; it never
+	// blocks this goroutine.
+	a.tapNotification(name, data)
 	// Snapshot the bus pointer once so a concurrent SetEventBus cannot
 	// flip nil/non-nil between the guard and the Emit call.
 	bus := a.eventBus.Load()
