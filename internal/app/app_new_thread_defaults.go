@@ -94,16 +94,15 @@ func (a *App) newThreadDefaultsProfile(update NewThreadDefaultsUpdate) (store.Ch
 		profile.FastMode = false
 	}
 
+	options := a.contextWindowOptionsForModel(profile.Provider, profile.Model)
 	if update.ContextWindow != 0 {
-		options := chatmodel.ContextWindowOptions(profile.Provider, profile.Model)
 		if len(options) > 0 && !chatmodel.ContextWindowSupported(options, update.ContextWindow) {
 			return store.ChatModelProfile{}, fmt.Errorf("update new thread defaults: unsupported context window %d for %s/%s", update.ContextWindow, profile.Provider, profile.Model)
 		}
 		profile.ContextWindow = update.ContextWindow
 	}
-	options := chatmodel.ContextWindowOptions(profile.Provider, profile.Model)
 	if len(options) > 0 && !chatmodel.ContextWindowSupported(options, profile.ContextWindow) {
-		profile.ContextWindow = provider.DefaultContextWindowForModel(profile.Provider, profile.Model, 0)
+		profile.ContextWindow = a.defaultContextWindowForModel(profile.Provider, profile.Model)
 	}
 
 	if update.AutoCompactStandardPercent != nil {

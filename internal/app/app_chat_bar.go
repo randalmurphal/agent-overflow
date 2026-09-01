@@ -70,7 +70,7 @@ func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelPr
 				log.Printf("chat profile: load latest: %v", err)
 			}
 		}
-		return a.visibleSeedProfile(chatmodel.FallbackProfile("", "", available...))
+		return a.visibleSeedProfile(a.fallbackChatModelProfile("", "", available...))
 	case providerName != "" && model == "":
 		if a.store != nil {
 			profile, err := a.store.LatestChatModelProfileForProvider(providerName)
@@ -83,7 +83,7 @@ func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelPr
 		}
 		// providerName is explicit here, so FallbackProvider is never
 		// consulted — omit the availability arg.
-		return a.visibleSeedProfile(chatmodel.FallbackProfile(providerName, ""))
+		return a.visibleSeedProfile(a.fallbackChatModelProfile(providerName, ""))
 	case providerName == "" && model != "":
 		providerName = chatmodel.FallbackProvider(available...)
 	}
@@ -98,7 +98,7 @@ func (a *App) seedChatModelProfile(providerName, model string) store.ChatModelPr
 			log.Printf("chat profile: load %s/%s: %v", providerName, model, err)
 		}
 	}
-	return chatmodel.FallbackProfile(providerName, model)
+	return a.fallbackChatModelProfile(providerName, model)
 }
 
 // visibleSeedProfile guards the "seed the composer from history" paths
@@ -113,7 +113,7 @@ func (a *App) visibleSeedProfile(profile store.ChatModelProfile) store.ChatModel
 	if !slices.Contains(hidden, profile.Model) {
 		return profile
 	}
-	return chatmodel.FallbackProfile(profile.Provider, firstVisibleModel(profile.Provider, hidden))
+	return a.fallbackChatModelProfile(profile.Provider, firstVisibleModel(profile.Provider, hidden))
 }
 
 // firstVisibleModel returns the first static-catalog model not in the

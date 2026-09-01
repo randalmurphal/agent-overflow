@@ -151,8 +151,11 @@ func TestMergeAddsWireOnlyModelWithFamilyWindows(t *testing.T) {
 	if merged[len(merged)-1].Slug != "claude-opus-6" {
 		t.Error("wire-only models append; they must not displace the catalog's first entry")
 	}
-	if model.Name != "Opus 6" {
-		t.Errorf("Name = %q, want the wire display name (we have nothing better)", model.Name)
+	// The row says "Opus 6"; the name is derived from the slug so a
+	// wire-only model can never collide with the catalog entry it sits
+	// beside in the picker.
+	if model.Name != "Claude Opus 6" {
+		t.Errorf("Name = %q, want the slug-derived name", model.Name)
 	}
 	if !slices.Contains(model.Capabilities, provider.ModelCapabilityFastMode) {
 		t.Error("fast-mode capability must come across from the wire")
@@ -191,6 +194,51 @@ func TestMergeWireOnlyModelWithNoFamilyGetsStandardContextOnly(t *testing.T) {
 	}
 	if kinds := driftKinds(drift, "claude-newthing-1"); !slices.Contains(kinds, DriftFamilyDefault) {
 		t.Errorf("drift = %s, want a family-default report", FormatDrift(drift))
+	}
+}
+
+// TestMergeNamesWireOnlyModelsFromTheirSlug is the anti-collision rule: the
+// CLI names the `claude-fable-5-1` row "Fable", which as a model name would
+// sit in the picker beside the catalog's "Claude Fable 5" as a second,
+// vaguer entry for what looks like the same model.
+func TestMergeNamesWireOnlyModelsFromTheirSlug(t *testing.T) {
+	wire := []claude.WireModel{{
+		Value:         "fable",
+		ResolvedModel: "claude-fable-5-1",
+		DisplayName:   "Fable",
+	}}
+
+	merged, _ := Merge(provider.ClaudeModels, wire)
+
+	model, ok := findModel(merged, "claude-fable-5-1")
+	if !ok {
+		t.Fatalf("wire-only model missing: %v", slugs(merged))
+	}
+	if model.Name != "Claude Fable 5.1" {
+		t.Errorf("Name = %q, want the slug-derived %q", model.Name, "Claude Fable 5.1")
+	}
+	catalog, _ := findModel(merged, "claude-fable-5")
+	if catalog.Name == model.Name {
+		t.Errorf("wire-only name %q collides with the catalog entry it sits beside", model.Name)
+	}
+}
+
+func TestDisplayNameFromSlug(t *testing.T) {
+	for _, tt := range []struct {
+		slug string
+		want string
+	}{
+		{"claude-fable-5-1", "Claude Fable 5.1"},
+		{"claude-opus-5", "Claude Opus 5"},
+		{"claude-haiku-4-5-20251001", "Claude Haiku 4.5.20251001"},
+		{"claude-3-5-sonnet", "Claude 3.5 Sonnet"},
+		{"sonnet", "Sonnet"},
+		// Nothing to derive: the identifier is the best label available.
+		{"-", "-"},
+	} {
+		if got := displayNameFromSlug(tt.slug); got != tt.want {
+			t.Errorf("displayNameFromSlug(%q) = %q, want %q", tt.slug, got, tt.want)
+		}
 	}
 }
 

@@ -248,6 +248,7 @@ func TestSameModelFieldsRejectsModelFieldDifference(t *testing.T) {
 
 func TestValidateContextUpdate_AcceptsKnownPair(t *testing.T) {
 	provName, model, err := ValidateContextUpdate(
+		ContextWindowOptions(string(provider.Claude), "claude-opus-4-7"),
 		"  "+string(provider.Claude)+"  ",
 		"  claude-opus-4-7  ",
 		provider.ClaudeStandardContextWindow,
@@ -262,36 +263,36 @@ func TestValidateContextUpdate_AcceptsKnownPair(t *testing.T) {
 }
 
 func TestValidateContextUpdate_RejectsEmptyProviderOrModel(t *testing.T) {
-	if _, _, err := ValidateContextUpdate("", "model", 200000, 0, 0); err == nil {
+	if _, _, err := ValidateContextUpdate(nil, "", "model", 200000, 0, 0); err == nil {
 		t.Fatal("ValidateContextUpdate(empty provider) = nil, want error")
 	}
-	if _, _, err := ValidateContextUpdate("claude", "", 200000, 0, 0); err == nil {
+	if _, _, err := ValidateContextUpdate(nil, "claude", "", 200000, 0, 0); err == nil {
 		t.Fatal("ValidateContextUpdate(empty model) = nil, want error")
 	}
-	if _, _, err := ValidateContextUpdate("   ", "   ", 200000, 0, 0); err == nil {
+	if _, _, err := ValidateContextUpdate(nil, "   ", "   ", 200000, 0, 0); err == nil {
 		t.Fatal("ValidateContextUpdate(whitespace pair) = nil, want error")
 	}
 }
 
 func TestValidateContextUpdate_RejectsUnknownPair(t *testing.T) {
-	_, _, err := ValidateContextUpdate("bogus", "bogus", 200000, 0, 0)
+	_, _, err := ValidateContextUpdate(ContextWindowOptions("bogus", "bogus"), "bogus", "bogus", 200000, 0, 0)
 	if err == nil {
 		t.Fatal("ValidateContextUpdate(unknown pair) = nil, want error")
 	}
 }
 
 func TestValidateContextUpdate_RejectsUnsupportedContextWindow(t *testing.T) {
-	_, _, err := ValidateContextUpdate(string(provider.Claude), "claude-opus-4-7", 12345, 0, 0)
+	_, _, err := ValidateContextUpdate(ContextWindowOptions(string(provider.Claude), "claude-opus-4-7"), string(provider.Claude), "claude-opus-4-7", 12345, 0, 0)
 	if err == nil {
 		t.Fatal("ValidateContextUpdate(unsupported window) = nil, want error")
 	}
 }
 
 func TestValidateContextUpdate_RejectsOutOfRangeAutoCompactPercent(t *testing.T) {
-	if _, _, err := ValidateContextUpdate(string(provider.Claude), "claude-opus-4-7", provider.ClaudeStandardContextWindow, -1, 0); err == nil {
+	if _, _, err := ValidateContextUpdate(ContextWindowOptions(string(provider.Claude), "claude-opus-4-7"), string(provider.Claude), "claude-opus-4-7", provider.ClaudeStandardContextWindow, -1, 0); err == nil {
 		t.Fatal("ValidateContextUpdate(negative standard) = nil, want error")
 	}
-	if _, _, err := ValidateContextUpdate(string(provider.Claude), "claude-opus-4-7", provider.ClaudeStandardContextWindow, 0, 91); err == nil {
+	if _, _, err := ValidateContextUpdate(ContextWindowOptions(string(provider.Claude), "claude-opus-4-7"), string(provider.Claude), "claude-opus-4-7", provider.ClaudeStandardContextWindow, 0, 91); err == nil {
 		t.Fatal("ValidateContextUpdate(extended > 90) = nil, want error")
 	}
 }

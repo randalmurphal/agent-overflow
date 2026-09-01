@@ -2,7 +2,6 @@ package app
 
 import (
 	"agent-overflow/internal/aocli"
-	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
@@ -837,7 +836,7 @@ func (a *App) createWorkflowThread(spec workflowhost.ThreadSpec) (store.Thread, 
 	// make a phase's reasoning effort, context window, and fast mode depend on
 	// unrelated interactive use of the same model, so the same run could behave
 	// differently on two machines, or on one machine a week apart.
-	seed := chatmodel.FallbackProfile(spec.ProviderName, model)
+	seed := a.fallbackChatModelProfile(spec.ProviderName, model)
 	effort := seed.ReasoningEffort
 	if authored := strings.TrimSpace(spec.Effort); authored != "" {
 		// Validation accepted the tier as a NAME; whether this model advertises it

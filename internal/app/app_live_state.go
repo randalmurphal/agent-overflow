@@ -37,6 +37,14 @@ type ThreadLiveState struct {
 	// `provider:compacting` push channel for refresh/reconnect — the
 	// window can span minutes of wire silence, so no push will restate it.
 	CompactingSinceUnixMs int64 `json:"compactingSinceUnixMs,omitempty"`
+	// SessionCLIVersion / InstalledCLIVersion mirror the `binary_stale`
+	// provider:status push for refresh/reconnect: the build this thread's
+	// live process is running versus the build now on disk. Both empty
+	// unless the thread is currently flagged stale — that push happens
+	// once, on the transition, so a webview that connects afterwards has
+	// no other way to learn it. See app_provider_binary_watch.go.
+	SessionCLIVersion   string `json:"sessionCliVersion,omitempty"`
+	InstalledCLIVersion string `json:"installedCliVersion,omitempty"`
 }
 
 type LiveStateActiveTurn struct {
@@ -86,6 +94,7 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	}
 	state.ProviderAccount = a.providerSessionAccount(threadID)
 	state.Todo = a.threadLiveTodo(threadID)
+	state.SessionCLIVersion, state.InstalledCLIVersion = a.staleProviderBinaryVersions(threadID)
 	if a.triage == nil {
 		return state, nil
 	}

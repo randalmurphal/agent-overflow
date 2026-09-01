@@ -47,3 +47,16 @@ contract; read those before adding a variant.
   helpers. Either a value is always sanitized at this boundary (the
   cache rule) or it never is (the wire rule). Mixed modes invite
   drift between callsites.
+- Do NOT gate a user-facing surface on this package's static-only
+  context-window lookups. A wire-only model (a slug the CLI ships
+  before `provider.*` lists it) exists only in the App's merged
+  catalogs, so a static lookup reports it unknown and a static
+  default guesses the provider-wide standard window — a value that IS
+  a supported option and silently displaces the family's flagged
+  default (claude-fable-5-1 defaulting to 200k instead of 1M,
+  2026-09-01). The catalog-aware pieces stay pure by taking the
+  resolved options (`ValidateContextUpdate`, `DefaultContextWindowFor`)
+  or the caller's resolver (`FallbackProfileWith`) as a PARAMETER; App
+  code supplies `App.contextWindowOptionsForModel`, threadapp supplies
+  `ModelPolicy.ContextWindowOptions`. The static functions here stay
+  as the fallback layer, never the authority.

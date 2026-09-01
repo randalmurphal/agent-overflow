@@ -182,6 +182,96 @@ describe('<ProviderStatusBanner>', () => {
     });
   });
 
+  // The provider CLI was replaced under a live session. Warning severity,
+  // and the action is the existing reconnect — nothing is broken, the
+  // session is just pinned to the binary it started on.
+  describe('binary_stale', () => {
+    function emitStale(overrides: Record<string, unknown> = {}): void {
+      emitWailsEvent('provider:status', {
+        kind: 'binary_stale',
+        provider: 'claude',
+        threadId: 'thread-1',
+        // The backend marks this actionable — the action is a button
+        // (ReconnectSession), not a URL, so there is no actionUrl and no
+        // primary-action label for it.
+        actionable: true,
+        sessionVersion: '2.1.219',
+        installedVersion: '2.1.257',
+        ...overrides,
+      } as unknown as ProviderStatusEvent);
+    }
+
+    it('renders both versions with a restart action', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      emitStale();
+
+      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      const banner = getByTestId('provider-status-banner');
+
+      expect(banner.dataset.status).toBe('binary_stale');
+      expect(banner.textContent).toContain('Claude CLI updated (2.1.219 → 2.1.257)');
+      expect(banner.textContent).toContain('restart the session to use it');
+      expect(getByTestId('provider-status-restart').textContent).toContain('Restart session');
+    });
+
+    // The provider comes off the event, so a Codex session never reads
+    // "Claude CLI".
+    it('names the provider the event is for', async () => {
+      const pane = await buildPane(
+        makeThread({ id: 'thread-1', provider: 'codex', model: 'gpt-5.4-mini' }),
+      );
+      emitStale({ provider: 'codex' });
+
+      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      expect(getByTestId('provider-status-banner').textContent).toContain('Codex CLI updated');
+    });
+
+    // Either version can be missing when the backend could not read one.
+    // Half an arrow is worse than no parenthetical at all.
+    it('degrades the parenthetical when a version is missing', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      emitStale({ sessionVersion: '' });
+
+      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      const text = getByTestId('provider-status-banner').textContent ?? '';
+      expect(text).toContain('Claude CLI updated (2.1.257)');
+      expect(text).not.toContain('→');
+    });
+
+    it('drops the parenthetical entirely when neither version is known', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      emitStale({ sessionVersion: '', installedVersion: '' });
+
+      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      const text = getByTestId('provider-status-banner').textContent ?? '';
+      expect(text).toContain('Claude CLI updated — restart the session to use it');
+      expect(text).not.toContain('(');
+    });
+
+    it('restarts the session through the existing reconnect binding', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      const reconnect = setBindingMock('ReconnectSession', async () => {});
+      vi.spyOn(pane, 'refreshFromBackend').mockResolvedValue();
+      emitStale();
+
+      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      await fireEvent.click(getByTestId('provider-status-restart'));
+
+      expect(reconnect).toHaveBeenCalledWith('thread-1');
+    });
+
+    // No install / recheck affordance leaks onto this row: the only thing
+    // to do about a stale binary is restart the session.
+    it('offers no other action', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      emitStale();
+
+      const { queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      expect(queryByTestId('provider-status-recheck')).toBeNull();
+      expect(queryByTestId('provider-status-action')).toBeNull();
+    });
+  });
+
   // `{#if providerStatus?.actionable && primaryActionLabel}` sits inside
   // `{#if providerStatus && pane.thread}`, and its deref is the FIRST operand
   // of a two-dep condition. Nulling the status in the same flush that moves

@@ -31,6 +31,7 @@ import type { ManagedProviderAccount } from './bindings';
 import { clearProviderAccount, setProviderAccount } from './accountInfo.svelte';
 import { clearProviderRateLimits, setProviderRateLimits } from './rateLimitsInfo.svelte';
 import { addToast } from './toast.svelte';
+import { recheckProviderAccount } from '../providers/actions';
 import { getProviderDefinition, PROVIDER_SETTINGS_ORDER } from '../providers/catalog';
 import { isViewOnlySession } from '../transport/runMode';
 import { PROVIDER_IDS, type ProviderID } from '../types/providers';
@@ -305,6 +306,19 @@ export async function refreshProviderAccountUsage(
   action.refreshingID = account.id;
   try {
     await RefreshProviderAccountUsage(provider, account.id);
+    // Quotas are only half of what the refresh button promises: the row also
+    // shows who the account IS, and that identity comes from a probe whose
+    // result is cached per process. Re-probe it here so a login changed
+    // outside AO stops being described by a stale answer — both render sites
+    // (Settings → Accounts and the switcher) inherit it from this one path.
+    // A probe failure is not a reason to fail the usage refresh or skip the
+    // reload, so it reports the way actions.ts's other callers do and the
+    // flow carries on.
+    try {
+      await recheckProviderAccount(provider);
+    } catch (error) {
+      console.error(`${label} account recheck failed:`, error);
+    }
     await reloadProviderAccounts();
   } catch (error) {
     console.error(`${label} usage refresh failed:`, error);

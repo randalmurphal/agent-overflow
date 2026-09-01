@@ -343,6 +343,63 @@ describe('loginProviderAccount', () => {
 });
 
 describe('refreshProviderAccountUsage', () => {
+  // The button refreshes what the row SHOWS, and identity is half of that.
+  // The probe behind it is cached per process, so without this re-probe a
+  // login changed outside AO keeps being described by the stale answer.
+  it('re-probes the account identity between the usage refresh and the reload', async () => {
+    const calls: string[] = [];
+    setBindingMock('ListProviderAccounts', async () => {
+      calls.push('list');
+      return [account({ id: 'claude-a' })];
+    });
+    setBindingMock('RefreshProviderAccountUsage', async () => {
+      calls.push('usage');
+    });
+    setBindingMock('RecheckClaudeAccount', async () => {
+      calls.push('recheck');
+      return {};
+    });
+    await loadProviderAccounts();
+    calls.length = 0;
+
+    await refreshProviderAccountUsage('claude', getProviderAccountsFor('claude')[0]);
+
+    expect(calls).toEqual(['usage', 'recheck', 'list']);
+  });
+
+  it('rechecks the account of the provider it was asked about', async () => {
+    setBindingMock('ListProviderAccounts', async () => [
+      account({ id: 'codex-a', provider: 'codex' }),
+    ]);
+    setBindingMock('RefreshProviderAccountUsage', async () => {});
+    const recheckClaude = setBindingMock('RecheckClaudeAccount', async () => ({}));
+    const recheckCodex = setBindingMock('RecheckCodexAccount', async () => ({}));
+    await loadProviderAccounts();
+
+    await refreshProviderAccountUsage('codex', getProviderAccountsFor('codex')[0]);
+
+    expect(recheckCodex).toHaveBeenCalledOnce();
+    expect(recheckClaude).not.toHaveBeenCalled();
+  });
+
+  // A failed identity probe is not a failed refresh: the quotas already
+  // landed, so the listing still has to be re-read and no error toast is
+  // owed for the half that succeeded.
+  it('completes the refresh when the recheck fails', async () => {
+    setBindingMock('ListProviderAccounts', async () => [account({ id: 'claude-a' })]);
+    const refresh = setBindingMock('RefreshProviderAccountUsage', async () => {});
+    setBindingMock('RecheckClaudeAccount', async () => {
+      throw new Error('probe exploded');
+    });
+    await loadProviderAccounts();
+
+    await refreshProviderAccountUsage('claude', getProviderAccountsFor('claude')[0]);
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(toastMessages()).toEqual([]);
+    expect(getProviderAccountActions('claude').refreshingID).toBe('');
+  });
+
   it('reports a refresh failure rather than swallowing it', async () => {
     setBindingMock('ListProviderAccounts', async () => [account({ id: 'claude-a' })]);
     setBindingMock('RefreshProviderAccountUsage', async () => {

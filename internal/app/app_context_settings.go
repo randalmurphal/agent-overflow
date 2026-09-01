@@ -40,7 +40,7 @@ func (a *App) GetContextSettings(providerName, model string) (ContextSettingsPro
 		return ContextSettingsProfile{}, fmt.Errorf("context settings: provider and model are required")
 	}
 
-	options := chatmodel.ContextWindowOptions(providerName, model)
+	options := a.contextWindowOptionsForModel(providerName, model)
 	if len(options) == 0 {
 		return ContextSettingsProfile{}, fmt.Errorf("context settings: unknown provider/model %s/%s", providerName, model)
 	}
@@ -50,10 +50,10 @@ func (a *App) GetContextSettings(providerName, model string) (ContextSettingsPro
 		if !errors.Is(err, sql.ErrNoRows) {
 			return ContextSettingsProfile{}, fmt.Errorf("context settings: load profile: %w", err)
 		}
-		profile = chatmodel.FallbackProfile(providerName, model)
+		profile = a.fallbackChatModelProfile(providerName, model)
 	}
 	if !chatmodel.ContextWindowSupported(options, profile.ContextWindow) {
-		profile.ContextWindow = chatmodel.DefaultContextWindow(providerName, model, 0)
+		profile.ContextWindow = a.defaultContextWindowForModel(providerName, model)
 	}
 
 	return ContextSettingsProfile{
@@ -70,7 +70,7 @@ func (a *App) UpdateContextSettingsProfile(update ContextSettingsUpdate) (Contex
 	if a.store == nil {
 		return ContextSettingsProfile{}, fmt.Errorf("update context settings profile: store unavailable")
 	}
-	providerName, model, err := chatmodel.ValidateContextUpdate(update.Provider, update.Model, update.ContextWindow, update.AutoCompactStandardPercent, update.AutoCompactExtendedPercent)
+	providerName, model, err := chatmodel.ValidateContextUpdate(a.contextWindowOptionsForModel(update.Provider, update.Model), update.Provider, update.Model, update.ContextWindow, update.AutoCompactStandardPercent, update.AutoCompactExtendedPercent)
 	if err != nil {
 		return ContextSettingsProfile{}, err
 	}
@@ -80,7 +80,7 @@ func (a *App) UpdateContextSettingsProfile(update ContextSettingsUpdate) (Contex
 		if !errors.Is(err, sql.ErrNoRows) {
 			return ContextSettingsProfile{}, fmt.Errorf("update context settings profile: load profile: %w", err)
 		}
-		profile = chatmodel.FallbackProfile(providerName, model)
+		profile = a.fallbackChatModelProfile(providerName, model)
 	}
 	profile.ContextWindow = update.ContextWindow
 	profile.AutoCompactStandardPercent = update.AutoCompactStandardPercent
@@ -102,7 +102,7 @@ func (a *App) UpdateThreadContextSettings(threadID string, update ContextSetting
 
 	update.Provider = thread.Provider
 	update.Model = thread.Model
-	if _, _, err := chatmodel.ValidateContextUpdate(update.Provider, update.Model, update.ContextWindow, update.AutoCompactStandardPercent, update.AutoCompactExtendedPercent); err != nil {
+	if _, _, err := chatmodel.ValidateContextUpdate(a.contextWindowOptionsForModel(update.Provider, update.Model), update.Provider, update.Model, update.ContextWindow, update.AutoCompactStandardPercent, update.AutoCompactExtendedPercent); err != nil {
 		return store.Thread{}, err
 	}
 

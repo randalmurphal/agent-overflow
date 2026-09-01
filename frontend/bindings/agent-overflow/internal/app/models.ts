@@ -3652,6 +3652,17 @@ export class ThreadLiveState {
      */
     "compactingSinceUnixMs"?: number;
 
+    /**
+     * SessionCLIVersion / InstalledCLIVersion mirror the `binary_stale`
+     * provider:status push for refresh/reconnect: the build this thread's
+     * live process is running versus the build now on disk. Both empty
+     * unless the thread is currently flagged stale — that push happens
+     * once, on the transition, so a webview that connects afterwards has
+     * no other way to learn it. See app_provider_binary_watch.go.
+     */
+    "sessionCliVersion"?: string;
+    "installedCliVersion"?: string;
+
     /** Creates a new ThreadLiveState instance. */
     constructor($$source: Partial<ThreadLiveState> = {}) {
         if (!("threadId" in $$source)) {

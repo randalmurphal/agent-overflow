@@ -82,13 +82,6 @@ func (m WireModel) CanonicalSlug() string {
 	return provider.NormalizeModelSlug(string(provider.Claude), raw)
 }
 
-// IsDefaultPointer reports whether the row is the CLI's "default" selection
-// pointer rather than a model row. Its DisplayName ("Default (recommended)")
-// names the pointer, so it must never become a model's name.
-func (m WireModel) IsDefaultPointer() bool {
-	return strings.TrimSpace(m.Value) == "default"
-}
-
 // DeclaresExtendedContext reports whether the row itself proves the model can
 // run the 1M tier, by carrying the `[1m]` marker on either identifier. Only
 // PRESENCE is evidence: `claude-fable-5[1m]` resolves to a marker-less

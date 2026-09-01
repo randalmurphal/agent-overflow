@@ -239,8 +239,11 @@ buckets that share the same window durations.
 
 The backend retains the last normalized snapshot per provider, merging by
 `windowDurationMins` because Claude reports its 5h and 7d windows separately.
-The cache rejects older reset boundaries and same-window lower readings just
-like the frontend store, so a delayed session event cannot regress hydration.
+The cache rejects older reset boundaries and stabilizes same-window boundary
+jitter, like the frontend store; within a window the NEWEST reading wins even
+when it is lower, because a server-side limit increase or usage reset is the
+current answer (2026-09-01), and a delayed older-window event still cannot
+regress hydration.
 Frontends call `GetRateLimitsSnapshots` after installing the live
 `provider:usage` listener and again when that channel reports a transport gap.
 This is necessary because a startup account probe can complete before the

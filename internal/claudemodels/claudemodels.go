@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -80,17 +81,20 @@ func FormatDrift(drift []Drift) string {
 //     five-row picker shortlist that omits still-usable older models
 //     (opus-4.x, sonnet-4-6 are absent on 2.1.219), so wire ABSENCE carries no
 //     information. Base order also decides the fallback model for new threads.
-//  2. **Base owns context windows and display names.** The wire reports no
-//     windows at all, and its `displayName` names a picker ROW, not a model —
-//     "Default (recommended)" and "Opus (1M context)" are two rows for one
-//     model, so adopting them would rename models arbitrarily.
+//  2. **Base owns context windows, and no row's `displayName` ever becomes a
+//     model name.** The wire reports no windows at all, and its `displayName`
+//     names a picker ROW, not a model — "Default (recommended)" and "Opus (1M
+//     context)" are two rows for one model, so adopting them would rename
+//     models arbitrarily. A wire-only model is named from its slug instead
+//     (newWireOnlyModel).
 //  3. **The wire owns capability flags** for models it lists: fast-mode
 //     support and the reasoning-effort set. It is the running binary's own
 //     answer; a catalog that disagrees is stale, and the disagreement is
 //     reported as drift so it gets fixed at the source.
-//  4. **Wire-only models are added**, with context windows resolved by family
-//     fallback. That is the maintenance win: a model the CLI ships before AO's
-//     catalog learns about it is selectable immediately.
+//  4. **Wire-only models are added**, named from their slug and with context
+//     windows resolved by family fallback. That is the maintenance win: a
+//     model the CLI ships before AO's catalog learns about it is selectable
+//     immediately.
 func Merge(base []provider.ModelInfo, wire []claude.WireModel) ([]provider.ModelInfo, []Drift) {
 	models := provider.CloneModels(base)
 	index := make(map[string]int, len(models))
@@ -125,10 +129,10 @@ func Merge(base []provider.ModelInfo, wire []claude.WireModel) ([]provider.Model
 // single answer the merge uses.
 type wireGroup struct {
 	slug string
-	// name is the display name of the first row that names the MODEL. The
-	// CLI's "default" pointer row is excluded — its name describes the
-	// pointer. Empty when every row for this model was a pointer.
-	name string
+	// No display name is collected: a row's name names a ROW, and a
+	// wire-only model's name is derived from its slug instead
+	// (displayNameFromSlug). See newWireOnlyModel.
+	//
 	// capabilities is the first row for this model; later rows that disagree
 	// produce DriftRowConflict rather than overwriting it.
 	capabilities claude.WireModel
@@ -148,24 +152,17 @@ func groupWireRows(wire []claude.WireModel) []wireGroup {
 		}
 		at, seen := position[slug]
 		if !seen {
-			group := wireGroup{
+			position[slug] = len(groups)
+			groups = append(groups, wireGroup{
 				slug:         slug,
 				capabilities: row,
 				extended:     row.DeclaresExtendedContext(),
 				disabled:     row.Disabled,
-			}
-			if !row.IsDefaultPointer() {
-				group.name = strings.TrimSpace(row.DisplayName)
-			}
-			position[slug] = len(groups)
-			groups = append(groups, group)
+			})
 			continue
 		}
 
 		group := &groups[at]
-		if group.name == "" && !row.IsDefaultPointer() {
-			group.name = strings.TrimSpace(row.DisplayName)
-		}
 		group.extended = group.extended || row.DeclaresExtendedContext()
 		group.disabled = group.disabled || row.Disabled
 		if !sameCapabilities(group.capabilities, row) {
@@ -258,6 +255,13 @@ func applyWireCapabilities(model *provider.ModelInfo, group wireGroup) []Drift {
 // newWireOnlyModel builds the catalog entry for a model the wire lists and the
 // hand catalog does not know yet.
 //
+// Its name is DERIVED FROM THE SLUG, not taken from the row's displayName.
+// A row name describes a picker row, and the CLI's row names are not unique
+// per model: `claude-fable-5-1` arrives as "Fable", which sits in the picker
+// next to the catalog's "Claude Fable 5" as a second, less specific entry for
+// what looks like the same thing. The slug is the one thing that is per-model
+// by construction.
+//
 // Context windows come from the closest catalog FAMILY (progressive
 // trailing-segment trim, the same shape internal/usagecost uses to price an
 // unseen model), because the wire reports no windows at all and a model with
@@ -265,14 +269,9 @@ func applyWireCapabilities(model *provider.ModelInfo, group wireGroup) []Drift {
 // match the model gets standard-200k only — the tier every Claude model has —
 // widened to 1M only when a wire row proves it by carrying the `[1m]` marker.
 func newWireOnlyModel(group wireGroup, base []provider.ModelInfo) (provider.ModelInfo, []Drift) {
-	name := group.name
-	if name == "" {
-		name = group.slug
-	}
-
 	model := provider.ModelInfo{
 		Slug:     group.slug,
-		Name:     name,
+		Name:     displayNameFromSlug(group.slug),
 		Provider: string(provider.Claude),
 	}
 	if group.capabilities.SupportsFastMode {
@@ -316,6 +315,64 @@ func newWireOnlyModel(group wireGroup, base []provider.ModelInfo) (provider.Mode
 		Kind:   DriftFamilyDefault,
 		Detail: detail,
 	}}
+}
+
+// displayNameFromSlug renders a model slug as a picker label: hyphen
+// segments become words, alphabetic ones are title-cased, and a RUN of
+// numeric ones joins on "." — so `claude-fable-5-1` reads "Claude Fable 5.1"
+// rather than "Claude Fable 5 1", and cannot be confused with the catalog's
+// own "Claude Fable 5".
+//
+// Deriving the label instead of adopting the wire's `displayName` is the
+// point: a row name ("Fable", "Opus (1M context)") names a picker row, and
+// two models can share one.
+func displayNameFromSlug(slug string) string {
+	var name strings.Builder
+	name.Grow(len(slug))
+	afterNumber := false
+	for _, segment := range strings.Split(slug, "-") {
+		if segment == "" {
+			continue
+		}
+		numeric := isNumericSegment(segment)
+		switch {
+		case name.Len() == 0:
+		case numeric && afterNumber:
+			name.WriteByte('.')
+		default:
+			name.WriteByte(' ')
+		}
+		if numeric {
+			name.WriteString(segment)
+		} else {
+			name.WriteString(titleCaseSegment(segment))
+		}
+		afterNumber = numeric
+	}
+	if name.Len() == 0 {
+		// A slug of nothing but separators. Nothing better to say than the
+		// identifier itself.
+		return slug
+	}
+	return name.String()
+}
+
+func isNumericSegment(segment string) bool {
+	for i := 0; i < len(segment); i++ {
+		if segment[i] < '0' || segment[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// titleCaseSegment upper-cases the first rune and leaves the rest alone: the
+// tail of a model segment is never prose, so "gpt"-style casing must not be
+// invented or destroyed beyond the first letter.
+func titleCaseSegment(segment string) string {
+	runes := []rune(segment)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
 }
 
 // familyMatch finds the catalog model whose slug shares the longest family

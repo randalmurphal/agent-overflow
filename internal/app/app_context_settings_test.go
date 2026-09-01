@@ -5,9 +5,132 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/claudecatalog"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 )
+
+// TestContextSettingsResolveWireOnlyClaudeModels is the claude-fable-5-1
+// regression (2026-09-01): a model the CLI ships before the static registry
+// lists it exists only in the probe-merged catalog, so the context-settings
+// surface hard-failed with "unknown provider/model" while the picker happily
+// listed the model. The merged entry inherits the fable-5 family windows, so
+// the 200k/1M pair must resolve with the 1M default and both settings paths
+// must accept either option.
+func TestContextSettingsResolveWireOnlyClaudeModels(t *testing.T) {
+	app := newTestAppWithStore(t)
+	seedWireOnlyFable51(t, app)
+
+	profile, err := app.GetContextSettings("claude", "claude-fable-5-1")
+	if err != nil {
+		t.Fatalf("GetContextSettings(claude/claude-fable-5-1): %v", err)
+	}
+	if len(profile.ContextWindows) != 2 {
+		t.Fatalf("ContextWindows = %+v, want 200k + 1M", profile.ContextWindows)
+	}
+	if profile.ContextWindow != provider.ClaudeExtendedContextWindow {
+		t.Fatalf("ContextWindow = %d, want the 1M family default %d", profile.ContextWindow, provider.ClaudeExtendedContextWindow)
+	}
+
+	updated, err := app.UpdateContextSettingsProfile(ContextSettingsUpdate{
+		Provider:      "claude",
+		Model:         "claude-fable-5-1",
+		ContextWindow: provider.ClaudeStandardContextWindow,
+	})
+	if err != nil {
+		t.Fatalf("UpdateContextSettingsProfile(claude-fable-5-1 → 200k): %v", err)
+	}
+	if updated.ContextWindow != provider.ClaudeStandardContextWindow {
+		t.Fatalf("updated ContextWindow = %d, want %d", updated.ContextWindow, provider.ClaudeStandardContextWindow)
+	}
+}
+
+// seedWireOnlyFable51 stages the probe-merged catalog the way the zero-token
+// account probe does: the CLI lists claude-fable-5-1, the static registry does
+// not, so the merged entry is wire-only with fable-5 family windows (1M default).
+func seedWireOnlyFable51(t *testing.T, app *App) {
+	t.Helper()
+	claudecatalog.Reset()
+	t.Cleanup(claudecatalog.Reset)
+	capture := claudecatalog.ModelCapture{}
+	capture.Capture([]claude.WireModel{{
+		Value:         "fable",
+		ResolvedModel: "claude-fable-5-1",
+		DisplayName:   "Fable",
+	}}, nil)
+	capture.Store(app.claudeProbeModelKey())
+}
+
+// The new-thread paint path and thread materialization seed a wire-only model
+// from the catalog default too. The static fallback's 200k IS a supported
+// option, so without the fallback re-stamp a fresh fable-5-1 thread would
+// silently start at 200k while the settings modal advertised 1M.
+func TestThreadDefaultsSeedWireOnlyClaudeModelFromCatalogDefault(t *testing.T) {
+	app := newTestAppWithStore(t)
+	seedWireOnlyFable51(t, app)
+
+	defaults, err := app.GetThreadDefaults(CreateThreadOptions{
+		ProjectID: defaultTestProjectID, Provider: "claude", Model: "claude-fable-5-1",
+	})
+	if err != nil {
+		t.Fatalf("GetThreadDefaults(claude-fable-5-1): %v", err)
+	}
+	if defaults.ContextWindow != provider.ClaudeExtendedContextWindow {
+		t.Fatalf("defaults ContextWindow = %d, want 1M %d", defaults.ContextWindow, provider.ClaudeExtendedContextWindow)
+	}
+
+	thread, err := app.CreateThread(CreateThreadOptions{
+		ProjectID: defaultTestProjectID, Provider: "claude", Model: "claude-fable-5-1",
+	})
+	if err != nil {
+		t.Fatalf("CreateThread(claude-fable-5-1): %v", err)
+	}
+	if thread.ContextWindow != provider.ClaudeExtendedContextWindow {
+		t.Fatalf("created ContextWindow = %d, want 1M %d", thread.ContextWindow, provider.ClaudeExtendedContextWindow)
+	}
+
+	// An explicit choice is still the user's: 200k stays 200k.
+	standard, err := app.CreateThread(CreateThreadOptions{
+		ProjectID: defaultTestProjectID, Provider: "claude", Model: "claude-fable-5-1",
+		ContextWindow: provider.ClaudeStandardContextWindow,
+	})
+	if err != nil {
+		t.Fatalf("CreateThread(claude-fable-5-1, 200k): %v", err)
+	}
+	if standard.ContextWindow != provider.ClaudeStandardContextWindow {
+		t.Fatalf("explicit ContextWindow = %d, want %d", standard.ContextWindow, provider.ClaudeStandardContextWindow)
+	}
+
+	// Per-thread context settings validate against the same merged options.
+	switched, err := app.UpdateThreadContextSettings(thread.ID, ContextSettingsUpdate{
+		ContextWindow: provider.ClaudeStandardContextWindow,
+	})
+	if err != nil {
+		t.Fatalf("UpdateThreadContextSettings(claude-fable-5-1 → 200k): %v", err)
+	}
+	if switched.ContextWindow != provider.ClaudeStandardContextWindow {
+		t.Fatalf("thread ContextWindow after update = %d, want %d", switched.ContextWindow, provider.ClaudeStandardContextWindow)
+	}
+
+	// So do the project's new-thread defaults, in both directions.
+	updated, err := app.UpdateNewThreadDefaults(NewThreadDefaultsUpdate{
+		ProjectID: defaultTestProjectID, Provider: "claude", Model: "claude-fable-5-1",
+		ContextWindow: provider.ClaudeExtendedContextWindow,
+	})
+	if err != nil {
+		t.Fatalf("UpdateNewThreadDefaults(claude-fable-5-1, 1M): %v", err)
+	}
+	if updated.ContextWindow != provider.ClaudeExtendedContextWindow {
+		t.Fatalf("new-thread default ContextWindow = %d, want 1M", updated.ContextWindow)
+	}
+	if _, err := app.UpdateNewThreadDefaults(NewThreadDefaultsUpdate{
+		ProjectID: defaultTestProjectID, Provider: "claude", Model: "claude-fable-5-1",
+		ContextWindow: 12345,
+	}); err == nil {
+		t.Fatal("UpdateNewThreadDefaults accepted a window the merged catalog does not offer")
+	}
+}
 
 func TestGetContextSettingsReturnsProviderModelOptions(t *testing.T) {
 	app := newTestAppWithStore(t)

@@ -34,8 +34,14 @@ In priority order (each rule earns its place from the shape above):
 1. **Nothing in the catalog is dropped or reordered.** Wire ABSENCE carries no
    information (the shortlist omits still-usable models), and catalog order
    decides the fallback model for new threads.
-2. **The catalog owns context windows and display names.** The wire reports no
-   windows at all, and its display names name rows.
+2. **The catalog owns context windows, and a row's `displayName` never
+   becomes a model name.** The wire reports no windows at all, and its
+   display names name ROWS. For a model the catalog knows, the catalog's
+   name stands; for a wire-only model (rule 4) the name is DERIVED FROM THE
+   SLUG — `claude-fable-5-1` becomes "Claude Fable 5.1" — because the row
+   name the CLI ships for it ("Fable") is not per-model and would sit in
+   the picker next to the catalog's "Claude Fable 5" as a second, vaguer
+   entry for what looks like the same thing.
 3. **The wire owns capability flags** for the models it lists: fast-mode
    support and the reasoning-effort set. It is the running binary's answer; a
    catalog that disagrees is stale. Every override is reported as drift.

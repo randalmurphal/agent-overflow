@@ -397,6 +397,22 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       effectiveModelBackendRevision = backendRevision;
       updateEffectiveModel(model);
     },
+    // Set-only: the live clears (thread-scoped `ready`, session
+    // disconnect) stay event-owned. A snapshot without the versions says
+    // nothing — clearing on it would race a `binary_stale` push that
+    // landed while the RPC was in flight, and the backend only re-emits
+    // on transitions, so a wrongly cleared banner would never come back.
+    hydrateBinaryStaleBanner: (sessionVersion, installedVersion) => {
+      if (!thread || !sessionVersion || !installedVersion) return;
+      providerBanner = {
+        provider: thread.provider,
+        status: 'binary_stale',
+        threadId: thread.id,
+        sessionVersion,
+        installedVersion,
+        actionable: true,
+      };
+    },
   });
 
   /**

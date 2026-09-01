@@ -136,7 +136,7 @@ func (s *Service) profileForSelection(providerName, model string) (store.ChatMod
 			return store.ChatModelProfile{}, fmt.Errorf("load chat model profile: %w", err)
 		}
 	}
-	return models.Sanitize(chatmodel.FallbackProfile(providerName, model)), nil
+	return models.Sanitize(chatmodel.FallbackProfileWith(models.ContextWindowOptions, providerName, model)), nil
 }
 
 func (s *Service) latestProviderProfile(providerName string) (store.ChatModelProfile, error) {
@@ -153,7 +153,7 @@ func (s *Service) latestProviderProfile(providerName string) (store.ChatModelPro
 			return store.ChatModelProfile{}, fmt.Errorf("load latest chat model profile for provider %s: %w", providerName, err)
 		}
 	}
-	return models.Sanitize(chatmodel.FallbackProfile(providerName, "")), nil
+	return models.Sanitize(chatmodel.FallbackProfileWith(models.ContextWindowOptions, providerName, "")), nil
 }
 
 func ThreadWithModelProfile(thread store.Thread, profile store.ChatModelProfile) store.Thread {

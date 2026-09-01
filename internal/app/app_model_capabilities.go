@@ -132,6 +132,42 @@ func (a *App) sanitizeThreadModelSettings(thread store.Thread) store.Thread {
 	return thread
 }
 
+// contextWindowOptionsForModel resolves the selectable context windows against
+// the best catalog the provider has (probe-enriched Claude, live Codex),
+// falling back to the shipped registry on a miss or a catalog error. Wire-only
+// models — a slug the CLI ships before the registry lists it — exist ONLY in
+// the merged catalog, carrying family-inherited windows; a static-only lookup
+// reports them unknown and hard-fails the context-settings surface (the
+// claude-fable-5-1 incident, 2026-09-01).
+//
+// Resolution is the CACHED, non-blocking variant: this sits on the new-thread
+// paint path (GetThreadDefaults), which must never start or wait for a Codex
+// CLI. The Claude merged catalog is process-free either way. For Codex a cold
+// cache falls back to the static registry, which is exactly what every caller
+// got before this chokepoint existed; the one Codex shape that differs
+// between warm and cold is a user-added custom model, whose live entry
+// clones the first catalog model's windows (internal/provider/codex/models.go
+// appendCustomModels). CreateThread resolves reasoning effort through the
+// BLOCKING lookup first, so by the time it validates the window the cache is
+// warm and the answer is the live one.
+func (a *App) contextWindowOptionsForModel(providerName, model string) []provider.ContextWindowOption {
+	candidate, found, _ := a.cachedModelInfoForProvider(providerName, model)
+	if found && len(candidate.ContextWindows) > 0 {
+		return candidate.ContextWindows
+	}
+	return chatmodel.ContextWindowOptions(providerName, model)
+}
+
+func (a *App) defaultContextWindowForModel(providerName, model string) int {
+	return chatmodel.DefaultContextWindowFor(a.contextWindowOptionsForModel(providerName, model), providerName, model)
+}
+
+// fallbackChatModelProfile is the no-stored-opinion profile with its window
+// resolved through the merged catalogs (see chatmodel.FallbackProfileWith).
+func (a *App) fallbackChatModelProfile(providerName, model string, availableProviders ...string) store.ChatModelProfile {
+	return chatmodel.FallbackProfileWith(a.contextWindowOptionsForModel, providerName, model, availableProviders...)
+}
+
 // modelInfoForProvider resolves one model against the best catalog the
 // provider has. The final return value distinguishes a successful catalog miss
 // from a catalog error: a miss is an authoritative rejection, while an error

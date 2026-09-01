@@ -177,6 +177,7 @@ func (a *App) emitProviderSessionAccount(threadID string) {
 }
 
 func (a *App) emitProviderSessionDisconnected(threadID, providerName string) {
+	a.providerBinaries.forgetStale(threadID)
 	a.emit(eventchan.ProviderSessionAccount, ProviderSessionAccountEvent{
 		ThreadID:  threadID,
 		Provider:  providerName,

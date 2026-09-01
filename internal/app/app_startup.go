@@ -127,6 +127,12 @@ func (a *App) Start(ctx context.Context) error {
 	// `system:stats` event every ~2s. See app_sysstat.go.
 	a.startSystemStatsSampler()
 
+	// Watch the provider binaries for an upgrade under a running app: a
+	// quiet tick is two stats, and a changed file re-reads the version,
+	// refreshes the model catalog, and flags live sessions still running
+	// the old build. See app_provider_binary_watch.go.
+	a.startProviderBinaryWatcher()
+
 	// Assert the persisted keep-awake state. Synchronous and cheap (one
 	// D-Bus round trip at most, nothing at all when the setting is off),
 	// and it must run on the boot path rather than lazily: the whole

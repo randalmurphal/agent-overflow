@@ -235,3 +235,52 @@ func TestActionURLTable(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionTokenReadsEveryVersionSurface(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		// `claude --version`
+		{"2.1.257 (Claude Code)", "2.1.257"},
+		// `codex --version`
+		{"codex-cli 0.149.0", "0.149.0"},
+		// Claude `system/init`'s claude_code_version, Codex's parsed
+		// app-server version: already bare.
+		{"2.1.257", "2.1.257"},
+		{"0.149.0", "0.149.0"},
+		{"v1.2", "1.2"},
+		{"1.2.", "1.2"},
+		{"", ""},
+		{"unknown", ""},
+	}
+	for _, tc := range cases {
+		if got := VersionToken(tc.raw); got != tc.want {
+			t.Errorf("VersionToken(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestBinaryStaleTreatsUnknownAsNotStale(t *testing.T) {
+	cases := []struct {
+		name      string
+		session   string
+		installed string
+		want      bool
+	}{
+		{"upgraded underneath the session", "2.1.257", "2.1.258 (Claude Code)", true},
+		{"same build, different surfaces", "0.149.0", "codex-cli 0.149.0", false},
+		// One side normalizes two-segment versions to three; a textual
+		// compare would report an upgrade that never happened.
+		{"trailing zero segment", "0.149.0", "codex-cli 0.149", false},
+		{"session never reported a version", "", "2.1.258", false},
+		{"binary version unreadable", "2.1.257", "", false},
+		{"neither side known", "", "", false},
+		{"nothing numeric on either side", "unknown", "garbled", false},
+	}
+	for _, tc := range cases {
+		if got := BinaryStale(tc.session, tc.installed); got != tc.want {
+			t.Errorf("%s: BinaryStale(%q, %q) = %v, want %v", tc.name, tc.session, tc.installed, got, tc.want)
+		}
+	}
+}
