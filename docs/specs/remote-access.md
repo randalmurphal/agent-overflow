@@ -1012,6 +1012,44 @@ path the owner controls. Pairing/token/ticket endpoints stay
 rate-limited, keyed by **token/account with a global counter across
 listeners**.
 
+**Wave 8e LANDED 2026-09-01 (a0757888..63716a92): the tailnet
+listener.** `internal/tailnet` owns the node's lifecycle over
+`tailscale.com/tsnet` v1.102.3 (Go floor moved to 1.26.6): construct
+free, start lazy, status published off the IPN bus — deliberately
+never `Up`, which cannot exit NeedsLogin — with the sign-in link
+carried as `Status.AuthURL` and cleared on join. The log upload tsnet
+performs by default is opted out unconditionally
+(`envknob.SetNoLogsNoSupport()` before Start, no setting behind it).
+The state dir `<config root>/tsnet/` IS the node identity at rest
+(kept on disable, deleted only by the explicit Forget), `Close` is
+guarded against tsnet's never-started panic and bounds its drain, and
+a node is single-use: a restart is a new Node on the same dir.
+`transport.ServeAuxiliary` serves a caller-owned listener with the
+same mux, credentials, Host/Origin rules, scope gate and session
+registry — its own `http.Server` (so a Rebind cannot close it), its
+failures to the caller's sink never `ServeErr`, no TLS sniffer
+(WireGuard already encrypted the bytes), and
+`SetAuxiliaryHosts` admits the node's MagicDNS name and addresses
+inside the Host guard only while a listener answers on them. The app
+reconciler (`app_tailnet.go`, domain-cert shape; a lifecycle mutex
+serializes passes against `ForgetTailnetNode`) attaches the cleartext
+listener on the SAME numeric port as the main bind the moment the
+node reports Running, plus tsnet's own `ListenTLS` on 443 when the
+tailnet's admin panel has HTTPS on (`CertDomains` non-empty; tsnet
+owns that certificate end to end). Settings: `TailnetEnabled` /
+`TailnetControlURL` (empty = Tailscale; Headscale is why it exists)
+ride the step-up SetNetworkSettings; read-only `TailnetStatus`
+carries state/auth URL/name/IPs/ticketed share URL (no Insecure flag
+beside an http tailnet URL — every byte crosses the WireGuard link);
+`ForgetTailnetNode` is `//ao:scope host`, no step-up, refused while
+enabled. Settings → Network grew the "Tailnet" block; tailnet peers
+are real non-loopback peers, so the session-naming admission rule
+applies unchanged. Tests run an in-process control server + loopback
+DERP/STUN (never the real control plane; the rig refuses ambient
+TS_* env), including a two-node story through the real transport;
+live-only: a real Tailscale sign-in, real ts.net issuance, and
+DERP-relayed cross-network reach.
+
 ### Headless serve mode and remote update
 
 `agent-overflow serve` runs windowless; the desktop app attaches.
