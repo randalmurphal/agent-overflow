@@ -1313,6 +1313,45 @@ paste-code/setup-token flow). If any provider makes this impossible,
 that limitation is documented explicitly rather than discovered in the
 field.
 
+LANDED 2026-09-01 (wave 8i, 9 commits ending a5b63bf6). The shipped
+shape takes the *or* branch: the backend surfaces the authorize URL and
+relays the paste-code (Claude) / device-code (Codex) flow; it does not
+proxy the loopback callback, because both CLIs bind that listener
+themselves and complete on it only host-side. A sign-in is a SESSION,
+not a blocking RPC (`internal/provideraccountapp/loginsession.go`):
+`StartProviderLogin` / `GetProviderLoginState` /
+`SubmitProviderLoginCode` / `CancelProviderLogin`, all `access:admin`,
+with every transition pushed on `provider:login`
+(AudienceAny/RetentionEphemeral/ScopeAccessAdmin — a replayed authorize
+URL is a dead one-use PKCE link, so reconnectors read the state RPC
+instead). The CLIENT picks the method: `canUseHostOpenExternalURL()`
+false means the page asks for `remote` by itself; a host with no opener
+degrades browser→remote server-side via the typed
+`externalurl.ErrNoOpener`. Drivers:
+`internal/provider/claude/login.go` (headless `claude_authenticate` /
+`claude_oauth_callback` / `claude_oauth_wait_for_completion` control
+channel, burned-flow restart with a fresh link, managed-settings
+account-type retry) and `internal/provider/codex/login.go` (app-server
+`account/login/start` both variants, `loginId`-correlated completion,
+15-minute device-code countdown hard-coded because the wire carries no
+TTL). Wire references: claude-wire.md § The sign-in control channel,
+codex-wire.md § Account sign-in. `provider:status`,
+`provider:account`, and `provider:account_usage_error` widened
+loopback-only → `access:admin` (auth state as a remote-visible signal;
+the status banner carries a Sign in action). Adoption epilogue
+unchanged; the wave also closed a pre-existing hole where a sign-in
+spawn ignored the user's configured provider environment
+(ANTHROPIC_BASE_URL) that the account probe honored. One flow surface
+(`ProviderLoginFlow.svelte`) rendered by Settings → Providers, the
+account switcher, and started from the status banner. Verified by
+driver unit suites against scripted fakes, `cmd/ao-mockprovider`
+speaking both sign-in wires with real-driver bin tests, and a
+paired-device e2e over a LAN origin where the client selects the
+remote method unprompted. A real OAuth issuance is live-only by
+construction. Rider a5b63bf6: the coordinator's start-error path now
+closes `run.done` (a cancel or shutdown join during a slow spawn
+parked forever), with a red-proven transition test.
+
 ## 8. State sync completeness
 
 Prerequisite sweep, valuable standalone:
@@ -2238,7 +2277,10 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    endpoint accepts thumbprints from phase 2 so nothing reworks).
    Includes a headless build target that does not link the webview/GTK
    stack, and the unattended credential-storage posture (§7), both
-   prerequisites for server deployments.
+   prerequisites for server deployments. Provider remote re-auth:
+   LANDED 2026-09-01 (wave 8i — §7 "Provider accounts and remote
+   login"). Open in this phase: release signing (parked to the final
+   discussion slot by 2026-09-01 ruling).
 6. **Phone preparation.** Subscription narrowing, buffered deltas, scope
    leases, reduced snapshots, attachment flows, push senders +
    notification semantics + deep links. The Capacitor shell itself
