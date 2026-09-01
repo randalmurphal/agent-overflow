@@ -1097,10 +1097,15 @@ func newTestAppWithStorePath(t *testing.T) (*App, string) {
 		_ = st.Close()
 	})
 
-	app := &App{
-		store:    st,
-		settings: settings.NewService(t.TempDir()),
-	}
+	app := &App{store: st}
+	// Through the helper, exactly as newTestApp and app_startup.go do. A
+	// composite literal escapes both halves of
+	// TestSettingsServiceIsInstalledThroughOneHelper — it scans assignment
+	// statements in non-test files — and the App it produced held a settings
+	// service whose writes announced nothing, so any test of settings
+	// convergence built on this fixture would have passed by observing
+	// silence.
+	app.setSettingsService(settings.NewService(t.TempDir()))
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
 	// The same structural spawn/home isolation setupE2EApp gets. This
 	// fixture is the majority one (~600 call sites); before this call was

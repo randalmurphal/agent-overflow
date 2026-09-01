@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/identity"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 
@@ -104,7 +105,7 @@ func EnsureClientIDIn(dir string) string {
 // errNoUIStateBucket is the one refusal that means "this connection has no
 // bucket", as opposed to "this connection may not have one". A launch-
 // credential tool, an in-process saga and a test all land here, and callers
-// that can answer from defaults (settingsBucket) treat it as a normal answer
+// that can answer from defaults (settingsScreen) treat it as a normal answer
 // rather than an error.
 var errNoUIStateBucket = errors.New("ui state: this connection names neither a session nor a client")
 
@@ -133,24 +134,37 @@ var errNoUIStateBucket = errors.New("ui state: this connection names neither a s
 // working bucket by dropping the credential it presented, which is the
 // opposite of what revoking it meant.
 func (a *App) uiStateScope(ctx context.Context) (string, error) {
+	scope, _, err := a.uiStateScreen(ctx)
+	return scope, err
+}
+
+// uiStateScreen is uiStateScope plus the second half of the same answer: the
+// CLASS of screen behind the bucket, which the settings device tier resolves
+// its class defaults from (internal/settings/classdefaults.go).
+//
+// One derivation for both, because they are one fact. A bucket resolved here
+// and a class resolved somewhere else could disagree, and the disagreement
+// would be silent — a paired phone reading desktop defaults out of its own
+// bucket looks exactly like a phone whose owner changed the setting.
+func (a *App) uiStateScreen(ctx context.Context) (string, settings.DeviceClass, error) {
 	if sessionID := transport.SessionFromContext(ctx); sessionID != "" {
 		state := a.identityState()
 		if state == nil {
-			return "", fmt.Errorf("ui state: this connection names a session and identity is not wired")
+			return "", "", fmt.Errorf("ui state: this connection names a session and identity is not wired")
 		}
 		session, reason := state.sessions.Live(sessionID)
 		if reason.Refused() {
-			return "", fmt.Errorf("ui state: session refused (%s)", reason.Code())
+			return "", "", fmt.Errorf("ui state: session refused (%s)", reason.Code())
 		}
 		device, err := a.store.GetDevice(session.DeviceID)
 		if err != nil {
-			return "", fmt.Errorf("ui state: read the session's device: %w", err)
+			return "", "", fmt.Errorf("ui state: read the session's device: %w", err)
 		}
 		if device.Channel != identity.LocalChannel {
 			if !validClientID(device.ID) {
-				return "", fmt.Errorf("ui state: device id is not a usable scope")
+				return "", "", fmt.Errorf("ui state: device id is not a usable scope")
 			}
-			return "device:" + device.ID, nil
+			return "device:" + device.ID, settingsDeviceClass(device.Class), nil
 		}
 		// The local page channel names the BACKEND's own channel, not one
 		// screen. The embedded webview, the WSL relay and the `--connect`
@@ -165,43 +179,81 @@ func (a *App) uiStateScope(ctx context.Context) (string, error) {
 		// before this change and no weaker: the only connections reaching
 		// this branch are ones already holding this backend's own
 		// loopback-only credential.
+		//
+		// The class of such a screen is DESKTOP, and it is read off the
+		// branch rather than off the local channel's device row on purpose:
+		// that row describes the CHANNEL, which several distinct screens
+		// share, so its class could not describe any one of them. Every
+		// surface on it is this machine's own — the embedded webview, the
+		// WSL-relayed window, a `--connect` stub — and the channel is
+		// loopback-bound, so no phone can reach this branch at all.
 	}
 	client := transport.ClientFromContext(ctx).DeviceID
 	if !validClientID(client) {
-		return "", errNoUIStateBucket
+		return "", settings.DeviceDesktop, errNoUIStateBucket
 	}
-	return "client:" + client, nil
+	return "client:" + client, settings.DeviceDesktop, nil
 }
 
-// settingsBucket resolves where the caller's DEVICE-tier settings live
-// (internal/settings/residency.go). Same derivation as uiStateScope, one
-// difference: a connection with no bucket at all is not an error here.
+// settingsDeviceClass converts a device row's recorded class into the
+// settings package's mirror of it (internal/settings/classdefaults.go says
+// why the two are mirrored rather than one importing the other).
+//
+// An unreadable class resolves to DESKTOP rather than to nothing. The column
+// is CHECK-constrained to the declared set, so the only value that can land
+// here undeclared is the empty string of a zero-valued row — and a device we
+// cannot classify is most likely this machine's own kind of screen, which is
+// also what every device resolved as before the class table existed.
+func settingsDeviceClass(class string) settings.DeviceClass {
+	if converted := settings.DeviceClass(class); converted.Valid() {
+		return converted
+	}
+	return settings.DeviceDesktop
+}
+
+// settingsScreen resolves the screen the caller's DEVICE-tier settings belong
+// to (internal/settings/residency.go): its bucket and its class. Same
+// derivation as uiStateScope, one difference — a connection with no bucket at
+// all is not an error here.
 //
 // Reading a bucket and reading settings are different acts. GetUIState with
 // no bucket has nothing to answer with, but settings always have an answer —
-// the device defaults — and a background saga or a test asking for settings
+// the class defaults — and a background saga or a test asking for settings
 // must get them rather than a refusal. A session the core REFUSES still
 // errors, because that refusal is about the credential, not about the bucket.
-func (a *App) settingsBucket(ctx context.Context) (string, error) {
-	scope, err := a.uiStateScope(ctx)
+func (a *App) settingsScreen(ctx context.Context) (string, settings.DeviceClass, error) {
+	scope, class, err := a.uiStateScreen(ctx)
 	if errors.Is(err, errNoUIStateBucket) {
-		return "", nil
+		return "", class, nil
 	}
-	return scope, err
+	return scope, class, err
 }
 
-// callerSettingsBucket is settingsBucket for a call that must not FAIL over
+// settingsCaller is the ONE way this package gets a per-connection settings
+// view. Every bound method that reads or writes settings for whoever is on
+// the other end goes through it, so the bucket and the class are resolved
+// together, from the same connection, in one place — the pairing a second
+// derivation site would eventually get wrong.
+func (a *App) settingsCaller(ctx context.Context) (settings.Caller, error) {
+	bucket, class, err := a.settingsScreen(ctx)
+	if err != nil {
+		return settings.Caller{}, err
+	}
+	return a.settings.For(bucket, class), nil
+}
+
+// callerSettingsScreen is settingsScreen for a call that must not FAIL over
 // it — a thread creation attributing its recent-workspace write. An
-// unresolvable bucket costs the attribution (the write lands on the backend's
+// unresolvable screen costs the attribution (the write lands on the backend's
 // own screen) and nothing else, which is not worth failing the create the
 // user asked for.
-func (a *App) callerSettingsBucket(ctx context.Context) string {
-	bucket, err := a.settingsBucket(ctx)
+func (a *App) callerSettingsScreen(ctx context.Context) (string, settings.DeviceClass) {
+	bucket, class, err := a.settingsScreen(ctx)
 	if err != nil {
-		log.Printf("settings bucket for this connection: %v", err)
-		return ""
+		log.Printf("settings screen for this connection: %v", err)
+		return "", settings.DeviceDesktop
 	}
-	return bucket
+	return bucket, class
 }
 
 // GetUIState returns the calling connection's full persisted UI-state

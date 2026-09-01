@@ -73,10 +73,12 @@ func (r *setupRecorder) Start(thread store.Thread) {
 type recentRecorder struct {
 	paths   []string
 	buckets []string
+	classes []string
 }
 
-func (r *recentRecorder) AddRecentWorkspace(bucket, path string) {
+func (r *recentRecorder) AddRecentWorkspace(bucket, class, path string) {
 	r.buckets = append(r.buckets, bucket)
+	r.classes = append(r.classes, class)
 	r.paths = append(r.paths, path)
 }
 

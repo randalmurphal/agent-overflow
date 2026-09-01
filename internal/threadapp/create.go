@@ -35,9 +35,11 @@ type CreateOptions struct {
 	CreatedByDevice string
 	// SettingsBucket names the ui_state bucket holding the calling
 	// connection's device-tier settings, empty for a backend-initiated
-	// create. The recent-workspace write is attributed to it — see
+	// create. SettingsClass names the kind of screen behind it. The
+	// recent-workspace write is attributed to the pair — see
 	// RecentWorkspaces.
 	SettingsBucket string
+	SettingsClass  string
 	// AuthorizeRuntimeMode, when set, is asked to approve the RESOLVED
 	// runtime mode — the argument if one was given, otherwise whatever the
 	// seed profile supplies — before the thread persists. Returning an
@@ -246,7 +248,7 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 	}
 	models.Remember(thread)
 	if s.deps.RecentWorkspaces != nil {
-		s.deps.RecentWorkspaces.AddRecentWorkspace(opts.SettingsBucket, workspace)
+		s.deps.RecentWorkspaces.AddRecentWorkspace(opts.SettingsBucket, opts.SettingsClass, workspace)
 	}
 	if cutWorktree && s.deps.WorktreeSetup != nil {
 		s.deps.WorktreeSetup.Start(thread)

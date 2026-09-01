@@ -34,10 +34,22 @@ func sessionCtx(sessionID, clientDeviceID string) context.Context {
 	return ctx
 }
 
-// pairDevice drives one device through the whole pairing exchange the way
-// the device side does — mint, redeem with a key thumbprint, confirm — and
-// returns the live device and session rows it produced.
+// pairDevice drives one BROWSER-class device through the whole pairing
+// exchange the way the device side does.
 func pairDevice(t *testing.T, app *App, label, thumbprint string) (store.Device, store.Session) {
+	t.Helper()
+	return pairDeviceOfClass(t, app, identity.DeviceBrowser, label, thumbprint)
+}
+
+// pairDeviceOfClass is pairDevice with the device class named — mint, redeem
+// with a key thumbprint, confirm — returning the live device and session rows
+// it produced. The class is a parameter because it is what the settings
+// device tier resolves class defaults from
+// (internal/settings/classdefaults.go), so a test about a phone has to be
+// able to pair one.
+func pairDeviceOfClass(
+	t *testing.T, app *App, class identity.DeviceClass, label, thumbprint string,
+) (store.Device, store.Session) {
 	t.Helper()
 	state := app.identityState()
 	if state == nil {
@@ -45,7 +57,7 @@ func pairDevice(t *testing.T, app *App, label, thumbprint string) (store.Device,
 	}
 	link, err := state.sessions.MintPairingLink(identity.PairingRequest{
 		UserID:       state.owner.ID,
-		DeviceClass:  identity.DeviceBrowser,
+		DeviceClass:  class,
 		BindingClass: identity.BindingDeviceBound,
 		Scopes:       identity.Scopes,
 	})

@@ -33,20 +33,22 @@ func (a *App) currentSettings() settings.Settings {
 //
 // Resolved PER CALLER. The host and user tiers are global to this backend;
 // the device tier comes out of the calling connection's own ui_state bucket
-// (docs/specs/remote-access.md §6), so two screens attached to one backend see
-// two font sizes and one shared set of confirmations. A caller with no device
-// behind it — a background saga, a test — reads the device defaults.
+// over its DEVICE-CLASS defaults (docs/specs/remote-access.md §6,
+// internal/settings/classdefaults.go), so two screens attached to one backend
+// see two font sizes and one shared set of confirmations, and a paired phone
+// that never touched lowPowerMode reads it on. A caller with no device behind
+// it — a background saga, a test — reads the desktop class's defaults.
 //
 //ao:scope settings:read
 func (a *App) GetSettings(ctx context.Context) (settings.Settings, error) {
 	if a.settings == nil {
 		return settings.DefaultSettings, nil
 	}
-	bucket, err := a.settingsBucket(ctx)
+	caller, err := a.settingsCaller(ctx)
 	if err != nil {
 		return settings.Settings{}, err
 	}
-	return redactedSettings(a.settings.For(bucket).Get()), nil
+	return redactedSettings(caller.Get()), nil
 }
 
 // redactedSettings is the projection every bound method returning a full
@@ -98,6 +100,11 @@ func redactedSettings(current settings.Settings) settings.Settings {
 // the whole merged struct first, so every key is validated the same way
 // wherever it ends up.
 //
+// The patch is applied over the caller's CLASS-RESOLVED view, which is what
+// lets a device write the opposite of its class default: a phone patching
+// lowPowerMode to false is a change from the true its class resolves to, so
+// it persists a row and outranks the table from then on.
+//
 // The returned snapshot is redacted like GetSettings': the frontend store
 // re-seeds from it, and the two read paths must not disagree about whether the
 // store holds a plaintext secret. (Nothing consumes the secrets from here —
@@ -118,12 +125,12 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 	if err := a.requireSettingsTier(ctx, patch); err != nil {
 		return settings.Settings{}, err
 	}
-	bucket, err := a.settingsBucket(ctx)
+	caller, err := a.settingsCaller(ctx)
 	if err != nil {
 		return settings.Settings{}, err
 	}
 	prev := a.settings.Get()
-	next, err := a.settings.For(bucket).Update(patch)
+	next, err := caller.Update(patch)
 	if err != nil {
 		return settings.Settings{}, err
 	}
