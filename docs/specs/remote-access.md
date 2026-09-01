@@ -2154,6 +2154,25 @@ appears. A remote re-pointed after creation keeps its stored identity
 until the next boot's backfill does not touch it (both fields are set);
 recomputing on `InvalidateForgeCache` is the residual.
 
+**7d LANDED 2026-09-01 (a1ee9e90 client, 1afa6c30 backend).** As
+designed. Migration v79 adds `remote_url` / `root_commit`;
+`git.RepoIdentity` derives them (origin verbatim through the shared
+repo-meta cache, smallest root of HEAD uncached); `projectapp` stamps a
+row at creation and on the workspace-ensure path's created rows, and
+`BackfillIdentity` runs once per boot outside the activation gate
+(its effect is two columns inside the snapshot boundary), announcing
+each moved row as `project:updated` `full` without touching
+`updated_at`. Archived rows are backfilled too, so an unarchive never
+yields the one entry that cannot merge. The client merges in
+`projects.svelte.ts` (`projectEntries`, `entryIdFor`,
+`projectMembers`, `projectSpansBackends`, `projectSiblingOn`), keyed
+by `utils/repoKey.ts`; the machine chip is `thread-row-machine` in the
+worktree slot; the project picker lists entries and the machine picker
+flips to the sibling. Accepted residuals: rename, colour and manual
+sort act on the representative row only; the reorder RPC stays
+`home`; a re-pointed remote keeps its stored identity. Still no
+Playwright coverage for two backends (harness has one).
+
 Path links and open-in-editor from a UI that is not on the thread's
 host default to copy/preview, with "open on <machine>" as the explicit
 secondary. The recommended posture for real remote editing is the
