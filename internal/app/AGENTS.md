@@ -358,6 +358,40 @@ while the feature is enabled and the node is not yet Running.
   Tailscale sign-in, a real `ts.net` certificate, and DERP-relayed reach
   between two machines.
 
+## The activation gate
+
+`app_activation.go` is the backend half of `internal/supervise`: a boot that is
+a supervisor TRIAL must prove it works before anything commits to it, which
+means booting FULLY — store, migrations, transport bind, ready — and answering
+RPCs, while taking no action of its own.
+
+- **One gate, one waiter.** `Start` hands the whole unattended set to
+  `activation.Run` as a single function (`startUnattendedWork`). Not a flag per
+  subsystem: a second boolean is how the eleventh subsystem gets added without
+  one.
+- **The zero value is OPEN**, so every boot that is not a trial never touches
+  this file. `Run` then calls its function inline, in `Start`'s own goroutine,
+  in the same order as before the gate existed — a startup failure is still a
+  boot failure and nothing about the ordinary boot moved.
+- **Membership rule for the parked set**: *if this ran and the update were
+  rolled back, would restoring the database undo it?* A rollback restores the
+  SQLite triple and nothing else, so anything that touches the world outside it
+  waits — background git fetch, provider status and account probes, rate-limit
+  probes, the idle-session reaper, the retention sweep (which deletes attachment
+  FILES), the ACME reconciler, the tailnet node, and workflow autoresume plus the
+  scheduler. Serving RPCs while parked is CORRECT; that is what "prepared" means.
+- **`startWorkflowAutomation` is split out of `initWorkflowEngine`** for that
+  reason: the engine must exist for RPCs to answer, and only the autoresume
+  sweep and the scheduler are unattended. `startWorkflowEngineForTest` calls
+  both, because a fixture with an engine and no scheduler is a state no boot
+  produces.
+- **`SetServiceUpdateRequester` and `ParkUnattendedWork` are bootstrap-boundary
+  FUNCTIONS**, and `serviceUpdateRequest` is unexported, for the reason every
+  input in `bootstrap.go` is one: an exported method on `App` is a wire RPC by
+  construction. A caller that could park this backend's unattended work over the
+  wire is a denial of service with a friendly name, and the update trigger gets
+  its step-up-gated bound method in the wave that adds it — not a wave early.
+
 ## Tests
 
 Application tests stay beside the shell. `main_test.go` changes their working

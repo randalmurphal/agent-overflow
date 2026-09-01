@@ -96,6 +96,46 @@ func (a *App) Start(ctx context.Context) error {
 		return fmt.Errorf("start orphan reaper: %w", err)
 	}
 
+	// Start the sidebar's host CPU/memory sampler. Emits a
+	// `system:stats` event every ~2s. See app_sysstat.go.
+	//
+	// NOT behind the activation gate: it reads this host's own counters and
+	// emits them. A sampler takes no action, so a trial running one and being
+	// rolled back leaves nothing behind.
+	a.startSystemStatsSampler()
+
+	// Assert the persisted keep-awake state. Synchronous and cheap (one
+	// D-Bus round trip at most, nothing at all when the setting is off),
+	// and it must run on the boot path rather than lazily: the whole
+	// point of persisting the switch is that the machine stays awake
+	// across a restart without the user touching the toggle again. The
+	// event bus is wired before Start (bootTransport → SetEventBus), so
+	// the directive this emits is retained on its latest-only ring and
+	// reaches a launcher that connects later. See app_power.go.
+	//
+	// NOT behind the activation gate, and this one is a judgement rather
+	// than a category: it does touch the host, but it asserts an idempotent
+	// state that the OS releases when the process exits, and a trial boot IS
+	// a restart — the exact moment the persisted switch exists to survive.
+	// Gating it would let the machine sleep in the middle of an update.
+	a.applyKeepAwake(a.currentSettings())
+
+	// Everything that can act on its own waits for the activation gate. On
+	// every boot but a supervisor trial the gate is already open and this
+	// runs inline, right here, in the order it always did.
+	return a.activation.Run(a.appCtx, a.startUnattendedWork)
+}
+
+// startUnattendedWork starts every subsystem that can take an action nobody
+// asked for in the moment: spawn a provider, run a command, reach the network,
+// delete a file, spend a token.
+//
+// This is the set a supervisor trial parks. The membership rule is one
+// question — "if this ran and the update were rolled back, would restoring the
+// database undo it?" — and everything here answers no. The snapshot boundary
+// is the SQLite triple; provider credentials, attachment files, git objects,
+// ACME rate limits and tailnet state are all outside it.
+func (a *App) startUnattendedWork() error {
 	// Probe provider binaries once on boot so the thread-level banner can
 	// surface "claude not found" / "codex too old" before the user opens
 	// settings. Runs in a goroutine because DetectProvider spawns subprocesses
@@ -107,6 +147,11 @@ func (a *App) Start(ctx context.Context) error {
 	// short-lived provider process and runs the wire handshake — slower
 	// than DetectProvider's version check. Results land on the frontend
 	// via the `provider:account` event.
+	//
+	// The most important member of this set: the handshake reaches the
+	// provider's own credential store, and a Claude refresh token is
+	// single-use. A trial that rotated one and was then rolled back would
+	// leave the restored version holding a credential that is already spent.
 	go a.probeStartupAccountInfo()
 
 	// Start the Claude rate-limit probe loop. Startup account adoption runs
@@ -130,21 +175,11 @@ func (a *App) Start(ctx context.Context) error {
 	// Start the retention TTL sweep. Reads Settings.Retention.Days
 	// every tick so toggling retention on/off (or changing the window)
 	// doesn't require a restart. See app_retention_cleanup.go.
+	//
+	// It prunes on-disk side effects — attachments, dated log files, bug
+	// report bookmarks — which no database snapshot restores, and its first
+	// sweep is 30 seconds in, well inside a trial's budget.
 	a.startRetentionCleanup()
-
-	// Start the sidebar's host CPU/memory sampler. Emits a
-	// `system:stats` event every ~2s. See app_sysstat.go.
-	a.startSystemStatsSampler()
-
-	// Assert the persisted keep-awake state. Synchronous and cheap (one
-	// D-Bus round trip at most, nothing at all when the setting is off),
-	// and it must run on the boot path rather than lazily: the whole
-	// point of persisting the switch is that the machine stays awake
-	// across a restart without the user touching the toggle again. The
-	// event bus is wired before Start (bootTransport → SetEventBus), so
-	// the directive this emits is retained on its latest-only ring and
-	// reaches a launcher that connects later. See app_power.go.
-	a.applyKeepAwake(a.currentSettings())
 
 	// Start the background `git fetch` cadence so ahead/behind counts
 	// track the remote instead of the user's last manual fetch. Reads
@@ -158,7 +193,10 @@ func (a *App) Start(ctx context.Context) error {
 	// and publishes each result into the listener's certificate source
 	// without a rebind. Does nothing at all when no domain is configured,
 	// which is the default. See app_domaincert.go.
-	a.startDomainCertificateLoop(dbDir)
+	//
+	// An order runs the operator's own DNS hook as a subprocess and counts
+	// against a certificate authority's rate limit. Neither is undoable.
+	a.startDomainCertificateLoop(a.configDir)
 
 	// Join the owner's tailnet when they asked for it, and keep the node's
 	// listeners attached to the transport that is already running. Honors
@@ -166,9 +204,18 @@ func (a *App) Start(ctx context.Context) error {
 	// survive a restart without the user touching the toggle again. Builds
 	// nothing at all while the setting is off, which is the default. See
 	// app_tailnet.go.
-	a.startTailnetLoop(dbDir)
+	//
+	// Bringing a node up mutates the tsnet state directory, which lives
+	// outside the snapshot boundary, and announces this machine to a
+	// coordination server.
+	a.startTailnetLoop(a.configDir)
 
-	return nil
+	// Workflow automation: the self-resume schedules and the §11 trigger
+	// cadence, both of which START PROVIDER TURNS with no one asking. The
+	// engine itself is already running (initWorkflowEngine, during
+	// initSubsystems) because rebuilding its state from SQLite is exactly
+	// what a trial has to prove works; what waits is the part that acts.
+	return a.startWorkflowAutomation()
 }
 
 // initStores resolves the on-disk data directory, opens SQLite, wires the
@@ -202,7 +249,7 @@ func (a *App) initStores() (string, *store.Store, error) {
 	if err := repairStartupOwnedPaths(dbDir); err != nil {
 		return "", nil, err
 	}
-	dbPath := filepath.Join(dbDir, "agent-overflow.db")
+	dbPath := filepath.Join(dbDir, databaseFileName)
 	if err := prepareAppSensitiveFile(dbPath); err != nil {
 		return "", nil, fmt.Errorf("failed to prepare database file %s: %w", dbPath, err)
 	}
@@ -417,6 +464,15 @@ func prepareAppSensitiveFile(path string) error {
 	}
 	return chmodAppSensitiveFileIfExists(path)
 }
+
+// databaseFileName is the one name this app's SQLite database has. It is a
+// constant rather than a literal because a SECOND package now depends on it:
+// internal/supervise snapshots and restores this file and its two sidecars
+// while no process holds them, and it cannot import this package. Its
+// DatabaseFiles() restates the names, and a drift test in this package pins the
+// two together — a rename here that missed it would leave the supervisor
+// snapshotting a file nobody writes and restoring nothing.
+const databaseFileName = "agent-overflow.db"
 
 func repairSQLiteSidecarPermissions(dbPath string) error {
 	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {

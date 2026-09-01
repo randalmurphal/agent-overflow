@@ -681,6 +681,25 @@ var channelPolicies = []ChannelPolicy{
 			"third door.",
 	},
 	{
+		Channel:   eventchan.ServiceUpdateOutcome,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeHost,
+		Why: "The one frame that closes a remote update: a client that " +
+			"asked for one holds the update id, loses its connection while " +
+			"the backend restarts, and needs to learn from the backend that " +
+			"came back which update this is and how it ended. AudienceAny " +
+			"because the peer that asked is exactly the remote owner this " +
+			"feature exists for — unlike the updater:* family, whose install " +
+			"only this host can perform. It names an update id, an outcome " +
+			"word, this build's version and the recorded reason: nothing a " +
+			"session holding `host` could not read from its own request. " +
+			"Latest-only satisfies the membership rule trivially — a process " +
+			"publishes this at most ONCE, at the moment its activation gate " +
+			"opens — and the ring is what lets a client that reconnects a " +
+			"second after boot still find it.",
+	},
+	{
 		Channel:   eventchan.SettingsUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

@@ -35,6 +35,7 @@ import (
 	"agent-overflow/internal/servercert"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/shellenv"
+	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/transport"
 )
 
@@ -117,6 +118,17 @@ func main() {
 		return
 	}
 
+	// A supervisor asks a staged binary what it is before it writes anything
+	// down. Short-circuit with the other internal re-execs: the answer is one
+	// JSON line and an exit, and a version being asked whether it can be
+	// talked to must not boot a transport to say so. See internal/supervise.
+	if len(os.Args) > 1 && os.Args[1] == supervise.PreflightSubcommand {
+		if err := supervise.WritePreflight(os.Stdout, version); err != nil {
+			fatalf("service preflight: %v", err)
+		}
+		return
+	}
+
 	// This binary is also the workflow CLI (D30): there is no separate `ao`
 	// executable, and a provider session finds this one on its PATH under the
 	// canonical name (see ensureCLISymlink). The two sidecars above are internal
@@ -124,6 +136,7 @@ func main() {
 	// is somebody typing a command.
 	bootArgs := os.Args[1:]
 	serveMode := false
+	superviseMode := false
 	switch mode := decideEntry(os.Args[1:], os.LookupEnv); mode {
 	case entryCLI:
 		os.Exit(aocli.Run(os.Args[1:], os.Stdout, os.Stderr))
@@ -134,7 +147,12 @@ func main() {
 		// flag, so the flag set below is the same one every other boot
 		// parses (main_serve.go argues why serve is not an aocli row).
 		serveMode = true
-		bootArgs = serveBootArgs(os.Args[1:])
+		bootArgs = bootArgsAfterVerb(os.Args[1:], serveVerb)
+	case entrySupervise:
+		// Same shape one layer up: the flags after the verb are the ones the
+		// supervisor will hand to the `serve` child it starts.
+		superviseMode = true
+		bootArgs = bootArgsAfterVerb(os.Args[1:], superviseVerb)
 	case entryBoot:
 		// Fall through to flag parsing and the mode switch below.
 	default:
@@ -149,7 +167,16 @@ func main() {
 		fatalf("%v", err)
 	}
 	if serveMode {
-		if err := checkServeFlags(flags); err != nil {
+		if err := checkBackendVerbFlags(serveVerb, flags); err != nil {
+			fatalf("%v", err)
+		}
+	}
+	if superviseMode {
+		// The same refusals, for the same reason one layer up: every flag
+		// checkBackendVerbFlags rejects names a different mode, and the
+		// supervisor passes its flags straight through to a `serve` child
+		// that would reject them anyway — after the unit had already started.
+		if err := checkBackendVerbFlags(superviseVerb, flags); err != nil {
 			fatalf("%v", err)
 		}
 	}
@@ -200,10 +227,15 @@ func main() {
 	goroutinedump.Install(bootLogsDir(), log.Printf)
 
 	switch {
+	case superviseMode:
+		// Before serve: `supervise` starts one, and a supervisor that fell
+		// through into being its own child would be an install with no
+		// launch state and no way to update.
+		runSupervise(bootArgs)
 	case serveMode:
 		// Before every other arm: `serve` is the mode the operator NAMED,
-		// and checkServeFlags already refused every flag that would have
-		// selected a different one.
+		// and checkBackendVerbFlags already refused every flag that would
+		// have selected a different one.
 		runServe(flags)
 	case flags.connect != "":
 		runClient(flags.connect)

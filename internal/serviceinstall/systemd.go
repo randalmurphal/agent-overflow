@@ -89,6 +89,22 @@ func (m *systemdManager) Uninstall(ctx context.Context) error {
 	return m.mustRun(ctx, "systemctl", "--user", "daemon-reload")
 }
 
+// Stop halts the unit without disabling it, so the next boot still starts it.
+//
+// Not mustRun: `systemctl stop` on a unit that is already stopped is the state
+// the caller asked for, and systemd says so without complaint anyway. What
+// this must NOT do is disable the unit — a local update stops the service for
+// a few seconds and an operator who came back to a service that no longer
+// starts at boot would have paid for an update with their uptime.
+func (m *systemdManager) Stop(ctx context.Context) error {
+	_, _, err := m.runner.Run(ctx, "systemctl", "--user", "stop", m.unitName())
+	return err
+}
+
+func (m *systemdManager) Start(ctx context.Context) error {
+	return m.mustRun(ctx, "systemctl", "--user", "start", m.unitName())
+}
+
 func (m *systemdManager) Status(ctx context.Context) (Status, error) {
 	status := Status{Manager: m.Name(), UnitPath: m.UnitPath()}
 	if _, err := os.Stat(status.UnitPath); err == nil {

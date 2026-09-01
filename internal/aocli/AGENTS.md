@@ -13,15 +13,20 @@ canonical-name symlink at `<configDir>/bin/agent-overflow` and
 user-facing string here therefore says `agent-overflow`, never `ao`; the AO_*
 environment variable names are an internal contract and keep their prefix.
 
-**One verb the root usage names is not a row in that table: `serve`.** It boots
-the windowless backend, and a boot needs the embedded asset filesystem and the
-whole transport/App graph, both of which live in package `main` by construction.
-`decideEntry` matches it BEFORE the `IsCommand` check and routes it to
-`runServe`; this package only documents it, because `usage.go` is the one help
-text a person reads. The argument is at `serveVerb` in `main_entry.go`, and the
-seam is pinned by `TestServeVerbIsNotACLICommand` — adding a `serve` row here
-would create a verb that means two different things depending on which file you
-read. The operator-facing walkthrough is
+**Two verbs are not rows in that table: `serve` and `supervise`.** Both boot,
+and a boot needs the embedded asset filesystem and the whole transport/App
+graph, both of which live in package `main` by construction. `decideEntry`
+matches each BEFORE the `IsCommand` check; this package only documents them,
+because `usage.go` is the one help text a person reads. The arguments are at
+`serveVerb` and `superviseVerb` in `main_entry.go`, and both seams are pinned
+(`TestServeVerbIsNotACLICommand`, `TestSuperviseVerbIsNotACLICommand`) — adding
+a row here would create a verb that means two different things depending on
+which file you read.
+
+`serve` is in the root usage and `supervise` deliberately is not: nobody types
+the second one, a service manager does, and documenting it would invite an
+operator to start a supervisor by hand beside the one their unit already runs.
+The operator-facing walkthrough for both is
 [docs/architecture/serve-mode.md](../../docs/architecture/serve-mode.md).
 
 The CLI has three halves:
@@ -35,8 +40,17 @@ The CLI has three halves:
   (spec §5, D15).
 - **Host** (`agent-overflow service …`): manages the machine, not a backend. It
   talks to no app and holds no credential — it writes a unit file and drives
-  the platform's service manager through `internal/serviceinstall`. `serve` is
-  the fourth host verb and the one that is not a row here.
+  the platform's service manager through `internal/serviceinstall`. `serve` and
+  `supervise` are the host verbs that are not rows here.
+
+`service update` is the one host verb that writes state a BACKEND later reads:
+it stages the named binary into `internal/supervise`'s versions directory and
+selects it, with the unit stopped on either side. It still runs no binary
+itself — the preflight that asks the file what version it is goes through the
+same injected `Runner` as every service-manager command, so a `service update`
+test describes a binary rather than executing one. That is also what makes it
+the LOCAL update path: no trial and no rollback, because the operator is
+standing there. Over-the-wire updates are the supervisor's, not this package's.
 
 `service.go` resolves every host fact ONCE, into a `serviceEnv` it passes down
 (`hostServiceEnv` is the production reader). That is why its tests describe a

@@ -100,6 +100,12 @@ type Manager interface {
 	Install(ctx context.Context) error
 	// Uninstall stops it, forgets it, and removes the unit.
 	Uninstall(ctx context.Context) error
+	// Stop halts the service without forgetting it. `service update` needs
+	// it: staging a version and moving the durable selection are the two
+	// things that must not happen while a supervisor is reading them.
+	Stop(ctx context.Context) error
+	// Start runs it again after a Stop.
+	Start(ctx context.Context) error
 	// Status reports what the manager currently thinks.
 	Status(ctx context.Context) (Status, error)
 	// Notes are things a person should know after a successful install.
@@ -162,9 +168,24 @@ func (c Config) validate() error {
 	return nil
 }
 
+// SuperviseVerb is the boot mode the unit starts.
+//
+// The unit runs the SUPERVISOR, not the backend directly, and that is the
+// whole shape of remote update: the process a service manager selects has to
+// be the stable one, because it is what decides which version runs and what
+// happens when a new one does not work. It spawns `serve` itself
+// (`internal/supervise`). A unit still naming `serve` would be an install
+// whose backend cannot be updated over the wire at all — which is why install
+// always rewrites the unit rather than leaving an existing one alone.
+//
+// Spelled here rather than imported from package main, which no package may
+// import; `main_entry.go`'s superviseVerb is pinned to this constant by a
+// drift test.
+const SuperviseVerb = "supervise"
+
 // serveArgs is the argv the unit starts, executable first.
 func (c Config) serveArgs() []string {
-	args := []string{c.Executable, "serve"}
+	args := []string{c.Executable, SuperviseVerb}
 	if c.Listen != "" {
 		args = append(args, "--listen", c.Listen)
 	}

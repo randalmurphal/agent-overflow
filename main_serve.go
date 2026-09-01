@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,12 +21,13 @@ import (
 // serveVerb in main_entry.go. Why it is a separate function from
 // runHeadless is argued at runServe.
 
-// checkServeFlags refuses the boot flags that name a DIFFERENT mode.
+// checkBackendVerbFlags refuses the boot flags that name a DIFFERENT mode.
 //
-// `serve` is the mode the operator typed, so a flag that would have
-// selected another one is a contradiction rather than a preference.
-// Letting the mode switch quietly pick a winner is how somebody ends up
-// debugging a backend they did not ask for.
+// `serve` (and `supervise`, which starts one) is the mode the operator
+// typed, so a flag that would have selected another one is a
+// contradiction rather than a preference. Letting the mode switch quietly
+// pick a winner is how somebody ends up debugging a backend they did not
+// ask for.
 //
 // Three flags survive on purpose, because all three configure THIS boot:
 // --listen (the bind), --data-dir (the root), and --reset-transport-port
@@ -38,20 +38,25 @@ import (
 // the rest of the identity set — to --soak, which this refuses, so they
 // are covered transitively and a copy of that rule would be a second
 // place to keep it true.
-func checkServeFlags(flags cliFlags) error {
+//
+// The verb is a parameter rather than the literal "serve" so the two
+// modes share one list. A supervisor hands its flags straight to the
+// child it spawns, so a flag it accepted and serve refused would be a
+// unit that starts, fails, and restarts on a loop.
+func checkBackendVerbFlags(verb string, flags cliFlags) error {
 	switch {
 	case flags.connect != "":
-		return errors.New("cannot combine serve with --connect: serve IS a backend, and --connect attaches to somebody else's")
+		return fmt.Errorf("cannot combine %s with --connect: %s IS a backend, and --connect attaches to somebody else's", verb, verb)
 	case flags.headless:
-		return errors.New("cannot combine serve with --print-url-fd: that bootstrap channel belongs to the Windows launcher, and serve prints its endpoints to stdout as text")
+		return fmt.Errorf("cannot combine %s with --print-url-fd: that bootstrap channel belongs to the Windows launcher, and %s prints its endpoints to stdout as text", verb, verb)
 	case flags.harness:
-		return errors.New("cannot combine serve with --harness: the harness is its own backend shell over mock providers")
+		return fmt.Errorf("cannot combine %s with --harness: the harness is its own backend shell over mock providers", verb)
 	case flags.soak:
-		return errors.New("cannot combine serve with --soak: the soak shell is its own backend over mock providers")
+		return fmt.Errorf("cannot combine %s with --soak: the soak shell is its own backend over mock providers", verb)
 	case flags.window:
-		return errors.New("cannot combine serve with --window: serve never opens a window, which is what it is for")
+		return fmt.Errorf("cannot combine %s with --window: %s never opens a window, which is what it is for", verb, verb)
 	case flags.mockProvider != "":
-		return errors.New("cannot combine serve with --mock-provider: mock providers belong to --harness and --soak")
+		return fmt.Errorf("cannot combine %s with --mock-provider: mock providers belong to --harness and --soak", verb)
 	}
 	return nil
 }
@@ -75,10 +80,23 @@ func checkServeFlags(flags cliFlags) error {
 //  4. A first boot with nothing paired turns the console into the owner
 //     surface (main_serve_enroll.go).
 func runServe(flags cliFlags) {
+	// Before the App exists: a supervisor's opening frame decides whether
+	// this boot is a TRIAL, and a trial boots with its activation gate
+	// already closed. Absent a supervisor this is nil and nothing below it
+	// changes. See main_serve_supervisor.go.
+	supervisor, err := attachServeSupervisor()
+	if err != nil {
+		// A marker with a broken channel behind it means the spawn is wrong,
+		// not that there is no supervisor. Booting anyway would run the
+		// unattended set on what may be a trial.
+		fatalf("serve: %v", err)
+	}
+
 	appService := newApp()
 	// Before Start, which is where initStores decides which credential
 	// backend to build.
 	appservice.UseFileKeychain(appService.App)
+	configureServeSupervision(appService, supervisor)
 	// Same reason runHeadless does it here: the updater RPC handlers must
 	// see a fully wired App before the transport can dispatch to them.
 	// Runtime-gated on the Windows launcher having spawned us, so on a
@@ -122,6 +140,16 @@ func runServe(flags cliFlags) {
 	srv.MarkReady()
 
 	printServeEndpoints(os.Stdout, appservice.ServeEndpoints(appService.App, srv), srv.Addr())
+
+	// The store is open, the migrations ran and the listener answers: this is
+	// exactly the state "prepared" names, so report it.
+	//
+	// On its own goroutine because a trial's report is followed by an
+	// unbounded wait for the commit, and the thing that ENDS that wait in the
+	// failing case is the SIGTERM the supervisor sends when it rolls back —
+	// which only arrives somewhere if the signal wait below is live. A trial
+	// that blocked the main goroutine here could not be stopped.
+	go finishServeSupervision(appService, supervisor)
 
 	// Enrollment runs on its own goroutine because it needs the server to
 	// be SERVING while it waits: the operator loads the pairing link in a

@@ -230,13 +230,30 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 		}
 		return fmt.Errorf("start workflow engine: %w", err)
 	}
+	// A queued workflow wake is process memory. Re-surface the prior process's
+	// transferred claims only after the engine has rebuilt their item rows.
+	a.workflowApplication().SurfaceReclaimedUsageAttention(usageAttentionRecoveries)
+	return nil
+}
+
+// startWorkflowAutomation arms the two things that make a run happen with
+// nobody asking: the self-resume timers and the §11 scheduler.
+//
+// Split out of initWorkflowEngine because those two are the workflow half of
+// the activation gate's set (app_activation.go). Rebuilding engine state from
+// SQLite is what a supervisor trial has to prove; firing a trigger into a
+// backend that may be rolled back in ninety seconds is what it must not do —
+// an auto-resume's boot delay is thirty seconds, comfortably inside a trial's
+// budget, and what it resumes is a provider turn that spends real tokens and
+// runs real commands.
+//
+// On every ordinary boot this runs inline from Start, in the same order and
+// with the same fatal-on-failure behaviour it had inside initWorkflowEngine.
+func (a *App) startWorkflowAutomation() error {
 	// Self-resume schedules are re-armed over the engine that just rebuilt: a
 	// timer must not be able to fire into a run the rebuild has not decided
 	// about yet, and the rebuild is what parks the runs a crash interrupted.
 	a.workflowApplication().SweepAutoResumes()
-	// A queued workflow wake is process memory. Re-surface the prior process's
-	// transferred claims only after the engine has rebuilt their item rows.
-	a.workflowApplication().SurfaceReclaimedUsageAttention(usageAttentionRecoveries)
 	// The §11 scheduler starts last and over the running engine: a trigger must
 	// never be able to fire into an engine that does not exist yet.
 	if err := a.initWorkflowScheduler(); err != nil {

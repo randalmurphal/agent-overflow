@@ -33,8 +33,13 @@ const (
 	entryRefuse
 	// entryServe is the `serve` verb: a BOOT with a name, not a command.
 	// It continues into flag parsing exactly as entryBoot does, with the
-	// verb stripped off the argv first (serveBootArgs).
+	// verb stripped off the argv first (bootArgsAfterVerb).
 	entryServe
+	// entrySupervise is the `supervise` verb: serve's sibling, and the one
+	// a service manager actually starts. It runs no backend of its own —
+	// it selects a version, runs THAT as a `serve` child, and owns the
+	// launch state an update moves (main_supervise.go).
+	entrySupervise
 )
 
 // serveVerb names the windowless boot mode
@@ -49,16 +54,28 @@ const (
 // set the CLI owns would still not own this one.
 const serveVerb = "serve"
 
+// superviseVerb names the boot mode a service manager starts
+// (docs/specs/remote-access.md §7, "Headless serve mode and remote
+// update"). A sibling of serveVerb on exactly the same terms — a person
+// does not type it, but a unit file does, and it needs the same boot
+// graph to spawn and speak to — so it is recognised in the same place and
+// refused in a session for the same reason. What it adds is the launch
+// state: it selects a version, runs it as `serve`, and is the only thing
+// that may move an install from one version to another.
+const superviseVerb = "supervise"
+
 // decideEntry classifies an argv. Pure: args plus one environment reader in,
 // a decision out, no process state touched, so every branch is table-testable.
 //
 // The rules, in the order they are applied:
 //
-//  1. `serve` is a BOOT, and it is checked first so the CLI's verb table can
-//     never acquire that name and silently reclassify it. Inside a session it
-//     is refused like every other boot: a server started from inside an agent
-//     session is a second app fighting the first one for the same SQLite file,
-//     which is the whole entryRefuse class.
+//  1. `serve` and `supervise` are BOOTS, and they are checked first so the
+//     CLI's verb table can never acquire either name and silently reclassify
+//     it. Inside a session both are refused like every other boot: a server
+//     started from inside an agent session is a second app fighting the first
+//     one for the same SQLite file, which is the whole entryRefuse class —
+//     and a SUPERVISOR started there is that plus a second writer of the
+//     launch state.
 //  2. A top-level CLI verb is a CLI invocation anywhere, session or not. The
 //     offline `workflow` commands are useful from a plain terminal and always
 //     have been.
@@ -84,6 +101,12 @@ func decideEntry(args []string, lookupEnv func(string) (string, bool)) entryMode
 		}
 		return entryServe
 	}
+	if len(args) > 0 && args[0] == superviseVerb {
+		if inSession() {
+			return entryRefuse
+		}
+		return entrySupervise
+	}
 	if len(args) > 0 && aocli.IsCommand(args[0]) {
 		return entryCLI
 	}
@@ -99,13 +122,13 @@ func decideEntry(args []string, lookupEnv func(string) (string, bool)) entryMode
 	return entryRefuse
 }
 
-// serveBootArgs strips the `serve` verb so the boot flags after it reach
+// bootArgsAfterVerb strips a boot verb so the flags after it reach
 // parseFlags. Go's flag package stops at the first non-flag token, so an
 // argv still carrying the verb would parse zero flags and silently boot
 // on defaults — the exact silent-default failure splitListenAddr exists
 // to prevent one layer down.
-func serveBootArgs(args []string) []string {
-	if len(args) > 0 && args[0] == serveVerb {
+func bootArgsAfterVerb(args []string, verb string) []string {
+	if len(args) > 0 && args[0] == verb {
 		return args[1:]
 	}
 	return args
@@ -135,16 +158,19 @@ func refuseInSessionBoot(args []string) {
 	os.Exit(2)
 }
 
-// inSessionComplaint says which of the three refusals this argv earned.
-// `serve` gets its own sentence because it IS one of this binary's verbs
-// — telling an operator it is not a command would send them looking for a
-// spelling mistake instead of at the second backend they just asked for.
+// inSessionComplaint says which of the refusals this argv earned.
+// `serve` and `supervise` get their own sentences because they ARE two of
+// this binary's verbs — telling an operator either is not a command would
+// send them looking for a spelling mistake instead of at the second
+// backend they just asked for.
 func inSessionComplaint(args []string) string {
 	switch {
 	case len(args) == 0:
 		return "it needs a command"
 	case args[0] == serveVerb:
 		return strconv.Quote(serveVerb) + " starts a backend, and this session is already talking to one"
+	case args[0] == superviseVerb:
+		return strconv.Quote(superviseVerb) + " starts and owns a backend, and this session is already talking to one"
 	default:
 		return strconv.Quote(args[0]) + " is not one of its commands"
 	}

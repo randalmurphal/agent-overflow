@@ -468,6 +468,20 @@ type App struct {
 	// the developer's real Claude Code login. Set once before Start;
 	// never mutated afterwards.
 	fileKeychainOverride bool
+	// activation is the ONE gate every subsystem that can take an action of
+	// its own waits behind, so a supervisor trial can boot fully — store,
+	// migrations, transport bind, RPCs answered — without doing anything a
+	// rollback could not undo. The zero value is OPEN: every boot except a
+	// supervisor trial never touches it. See app_activation.go.
+	activation activation
+	// serviceUpdate holds the call that asks this backend's supervisor to run
+	// an already-staged version. Installed by a supervised `serve` boot and
+	// nil everywhere else, which is what makes "this install has no
+	// supervisor" an answer rather than a nil dereference.
+	serviceUpdate struct {
+		mu      sync.Mutex
+		request func(target string) (string, error)
+	}
 	// credentialHomeOverride, when non-empty, replaces os.UserHomeDir()
 	// as the home that provideraccounts.Credentials operates under —
 	// slot storage, canonical credential, ephemeral probe homes, and the

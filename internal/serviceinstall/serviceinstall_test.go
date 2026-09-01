@@ -84,7 +84,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/home/ada/.local/bin/agent-overflow serve
+ExecStart=/home/ada/.local/bin/agent-overflow supervise
 Restart=on-failure
 RestartSec=5
 
@@ -101,7 +101,7 @@ const goldenLaunchdPlist = `<?xml version="1.0" encoding="UTF-8"?>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/Users/ada/.local/bin/agent-overflow</string>
-		<string>serve</string>
+		<string>supervise</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -152,7 +152,7 @@ func TestListenFlagReachesBothUnits(t *testing.T) {
 	linux := linuxConfig("/home/ada")
 	linux.Listen = "0.0.0.0:7777"
 	if got := mustContents(t, mustNew(t, linux, newRunner())); !strings.Contains(got,
-		"ExecStart=/home/ada/.local/bin/agent-overflow serve --listen 0.0.0.0:7777\n") {
+		"ExecStart=/home/ada/.local/bin/agent-overflow supervise --listen 0.0.0.0:7777\n") {
 		t.Errorf("systemd ExecStart missing the listen flag:\n%s", got)
 	}
 
@@ -175,11 +175,11 @@ func TestSystemdQuotesPathsThatWouldOtherwiseChangeMeaning(t *testing.T) {
 		exe  string
 		want string
 	}{
-		{name: "plain", exe: "/opt/ao/agent-overflow", want: "ExecStart=/opt/ao/agent-overflow serve"},
-		{name: "a space", exe: "/opt/my apps/agent-overflow", want: `ExecStart="/opt/my apps/agent-overflow" serve`},
-		{name: "a percent", exe: "/opt/100%/agent-overflow", want: "ExecStart=/opt/100%%/agent-overflow serve"},
-		{name: "a quote", exe: `/opt/a"b/agent-overflow`, want: `ExecStart="/opt/a\"b/agent-overflow" serve`},
-		{name: "a backslash", exe: `/opt/a\b/agent-overflow`, want: `ExecStart="/opt/a\\b/agent-overflow" serve`},
+		{name: "plain", exe: "/opt/ao/agent-overflow", want: "ExecStart=/opt/ao/agent-overflow supervise"},
+		{name: "a space", exe: "/opt/my apps/agent-overflow", want: `ExecStart="/opt/my apps/agent-overflow" supervise`},
+		{name: "a percent", exe: "/opt/100%/agent-overflow", want: "ExecStart=/opt/100%%/agent-overflow supervise"},
+		{name: "a quote", exe: `/opt/a"b/agent-overflow`, want: `ExecStart="/opt/a\"b/agent-overflow" supervise`},
+		{name: "a backslash", exe: `/opt/a\b/agent-overflow`, want: `ExecStart="/opt/a\\b/agent-overflow" supervise`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -228,7 +228,7 @@ func TestSystemdInstallWritesThenTellsTheManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the written unit: %v", err)
 	}
-	if !strings.Contains(string(body), "ExecStart=/home/ada/.local/bin/agent-overflow serve") {
+	if !strings.Contains(string(body), "ExecStart=/home/ada/.local/bin/agent-overflow supervise") {
 		t.Errorf("the written unit does not start the backend:\n%s", body)
 	}
 

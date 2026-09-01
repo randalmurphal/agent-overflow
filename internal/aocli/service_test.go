@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/supervise"
 )
 
 // recordingRunner answers every service-manager command without running one.
@@ -50,6 +52,7 @@ func testServiceEnv(t *testing.T, runner *recordingRunner) serviceEnv {
 		executable: filepath.Join(home, "bin", "agent-overflow"),
 		home:       home,
 		uid:        "1000",
+		configRoot: filepath.Join(home, "config", "agent-overflow"),
 		runner:     runner,
 	}
 }
@@ -128,11 +131,13 @@ func TestServiceInstallWritesTheUnitAndSaysWhatItDid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the unit: %v", err)
 	}
-	if !strings.Contains(string(body), "ExecStart="+env.executable+" serve\n") {
-		t.Errorf("the unit does not start serve:\n%s", body)
+	// The unit starts the SUPERVISOR, not the backend directly: it is what
+	// owns which version runs, and it spawns `serve` itself.
+	if !strings.Contains(string(body), "ExecStart="+env.executable+" supervise\n") {
+		t.Errorf("the unit does not start the supervisor:\n%s", body)
 	}
 
-	for _, want := range []string{"Installed the Agent Overflow service.", unit, env.executable + " serve"} {
+	for _, want := range []string{"Installed the Agent Overflow service.", unit, env.executable + " supervise"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout does not mention %q:\n%s", want, stdout)
 		}
@@ -157,10 +162,10 @@ func TestServiceInstallCarriesTheListenFlagIntoTheUnit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the unit: %v", err)
 	}
-	if !strings.Contains(string(body), "serve --listen 0.0.0.0:7777\n") {
+	if !strings.Contains(string(body), "supervise --listen 0.0.0.0:7777\n") {
 		t.Errorf("the unit does not carry --listen:\n%s", body)
 	}
-	if !strings.Contains(stdout, "serve --listen 0.0.0.0:7777") {
+	if !strings.Contains(stdout, "supervise --listen 0.0.0.0:7777") {
 		t.Errorf("stdout does not echo the command it installed:\n%s", stdout)
 	}
 }
@@ -178,7 +183,7 @@ func TestServiceInstallHonorsAnExplicitBinary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the unit: %v", err)
 	}
-	if !strings.Contains(string(body), "ExecStart=/opt/agent-overflow/current serve\n") {
+	if !strings.Contains(string(body), "ExecStart=/opt/agent-overflow/current supervise\n") {
 		t.Errorf("the unit does not start the named binary:\n%s", body)
 	}
 }
@@ -303,5 +308,141 @@ func TestServiceRefusesPositionalArguments(t *testing.T) {
 		if !strings.Contains(stderr, "unexpected positional arguments") {
 			t.Errorf("%s stderr = %q", command, stderr)
 		}
+	}
+}
+
+// `service update` is the LOCAL update path: the operator is standing there, so
+// there is no trial and no rollback. What it must do is stop the unit, stage
+// the binary under its own reported version, select it, and start the unit
+// again — in that order, because staging into a version directory while the
+// supervisor is running would race the file it may be about to spawn.
+func TestServiceUpdateStagesTheBinaryAndRestartsTheUnit(t *testing.T) {
+	runner := &recordingRunner{}
+	env := testServiceEnv(t, runner)
+	writeFakeBinary(t, env.executable, "9.9.9")
+	runner.answer(env.executable+" "+supervise.PreflightSubcommand,
+		`{"protocolVersion":1,"version":"9.9.9"}`, 0)
+
+	code, stdout, stderr := runService(t, env, "update")
+	if code != exitOK {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "version 9.9.9") {
+		t.Errorf("stdout does not name the installed version:\n%s", stdout)
+	}
+
+	// The staged copy is the operator's binary, under the version it reported.
+	layout, err := supervise.NewLayout(env.configRoot)
+	if err != nil {
+		t.Fatalf("NewLayout: %v", err)
+	}
+	staged, err := layout.VersionBinary("9.9.9")
+	if err != nil {
+		t.Fatalf("VersionBinary: %v", err)
+	}
+	source, err := os.ReadFile(env.executable)
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	copied, err := os.ReadFile(staged)
+	if err != nil {
+		t.Fatalf("read staged: %v", err)
+	}
+	if string(copied) != string(source) {
+		t.Error("the staged file is not the binary that was installed")
+	}
+
+	// And it is what the supervisor will select on its next boot.
+	state, found, err := supervise.LoadState(layout)
+	if err != nil || !found {
+		t.Fatalf("LoadState = (found %t, %v)", found, err)
+	}
+	if state.ActiveVersion != "9.9.9" || state.Update != nil {
+		t.Fatalf("state = %+v, want 9.9.9 active with no update in flight", state)
+	}
+
+	// Stop before start, with the staging between them.
+	var stopAt, startAt = -1, -1
+	for i, call := range runner.calls {
+		switch {
+		case strings.Contains(call, " stop "):
+			stopAt = i
+		case strings.Contains(call, " start "):
+			startAt = i
+		}
+	}
+	if stopAt < 0 || startAt < 0 || stopAt > startAt {
+		t.Fatalf("calls = %v, want a stop before a start", runner.calls)
+	}
+}
+
+// A binary that cannot answer the preflight is not one this can install, and
+// the refusal happens BEFORE the unit is stopped: an operator whose new binary
+// is broken must still have the running one.
+func TestServiceUpdateRefusesABinaryThatDoesNotAnswerAndLeavesTheUnitRunning(t *testing.T) {
+	runner := &recordingRunner{}
+	env := testServiceEnv(t, runner)
+	writeFakeBinary(t, env.executable, "unused")
+	runner.answer(env.executable+" "+supervise.PreflightSubcommand, "not an agent-overflow binary", 127)
+
+	code, _, stderr := runService(t, env, "update")
+	if code == exitOK {
+		t.Fatal("update accepted a binary that could not answer the preflight")
+	}
+	if !strings.Contains(stderr, supervise.PreflightSubcommand) {
+		t.Errorf("stderr does not say what was asked:\n%s", stderr)
+	}
+	for _, call := range runner.calls {
+		if strings.Contains(call, " stop ") {
+			t.Fatalf("the unit was stopped for an update that was refused: %v", runner.calls)
+		}
+	}
+	layout, err := supervise.NewLayout(env.configRoot)
+	if err != nil {
+		t.Fatalf("NewLayout: %v", err)
+	}
+	if _, found, err := supervise.LoadState(layout); err != nil || found {
+		t.Fatalf("a refused update wrote launch state (found %t, %v)", found, err)
+	}
+}
+
+// A version string that cannot name a directory is refused with the version in
+// the message, because the operator's own build stamped it.
+func TestServiceUpdateRefusesAVersionThatCannotNameADirectory(t *testing.T) {
+	runner := &recordingRunner{}
+	env := testServiceEnv(t, runner)
+	writeFakeBinary(t, env.executable, "unused")
+	runner.answer(env.executable+" "+supervise.PreflightSubcommand,
+		`{"protocolVersion":1,"version":"../escape"}`, 0)
+
+	code, _, stderr := runService(t, env, "update")
+	if code == exitOK {
+		t.Fatal("update accepted a version that escapes the versions directory")
+	}
+	if !strings.Contains(stderr, "../escape") {
+		t.Errorf("stderr does not name the version it refused:\n%s", stderr)
+	}
+}
+
+// `service update` is documented where every other verb is, so an operator
+// finds it without reading source.
+func TestServiceUpdateIsDocumented(t *testing.T) {
+	if !strings.Contains(serviceUsage, "update") {
+		t.Errorf("the service usage does not list update:\n%s", serviceUsage)
+	}
+	if !strings.Contains(serviceUpdateUsage, "supervisor") {
+		t.Errorf("the update usage does not explain what it replaces:\n%s", serviceUpdateUsage)
+	}
+}
+
+// writeFakeBinary is a file to be COPIED, never one to be run: every command
+// this package issues goes through the injected Runner.
+func writeFakeBinary(t *testing.T, path, marker string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("fake agent-overflow "+marker), 0o700); err != nil {
+		t.Fatalf("write: %v", err)
 	}
 }

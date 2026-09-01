@@ -37,7 +37,8 @@ that starts with a flag never reaches them.
 const serviceUsage = `Usage: agent-overflow service <command> [options]
 
 Commands:
-  install    Run "agent-overflow serve" at login, and keep it running
+  install    Run the backend at login, and keep it running
+  update     Point the installed service at a new binary
   uninstall  Stop it and remove the service
   status     Report what the service manager says about it
 
@@ -69,6 +70,27 @@ every start, so Settings -> Network can no longer move the backend: the setting
 changes, the flag wins, and nothing says why. Set the bind toggle and the port
 in Settings -> Network instead, and keep this for a host where the address must
 be fixed outside the app.
+`
+
+const serviceUpdateUsage = `Usage: agent-overflow service update [options]
+
+Options:
+  --binary <path>  the binary to install as the new version
+                   (defaults to this one)
+
+Installs a new backend version into the service, with the service stopped.
+
+This is the local update path, for the operator standing at the machine. It
+stops the service, copies the binary into its own immutable version directory
+under the config root, selects it, and starts the service again. There is no
+trial and no automatic rollback, because you are here: those exist for an
+update triggered from somewhere you cannot reach the machine from.
+
+It is also how you replace the SUPERVISOR — the stable process the service
+manager starts, which is what runs and updates the backend. Replacing the file
+on disk and restarting the service does not do that on its own: the supervisor
+selects whichever version its durable state names, which is what keeps a
+committed update committed across a restart. Replace the file, then run this.
 `
 
 const serviceUninstallUsage = `Usage: agent-overflow service uninstall

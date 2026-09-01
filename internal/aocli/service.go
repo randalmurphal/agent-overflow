@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 
+	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/serviceinstall"
+	"agent-overflow/internal/supervise"
 )
 
 // serviceEnv is everything the service command needs to know about the machine
@@ -30,6 +33,12 @@ type serviceEnv struct {
 	configHome    string
 	uid           string
 	runner        serviceinstall.Runner
+	// configRoot is the app-managed directory the backend keeps its data in,
+	// and therefore where its launch state and staged versions live. Carried
+	// with its error for the same reason executable is: `service --help` must
+	// work on a host where it cannot be resolved.
+	configRoot    string
+	configRootErr error
 }
 
 // hostServiceEnv reads the real machine. lookupEnv supplies XDG_CONFIG_HOME,
@@ -42,6 +51,7 @@ func hostServiceEnv(lookupEnv func(string) (string, bool)) serviceEnv {
 	}
 	env.executable, env.executableErr = os.Executable()
 	env.home, env.homeErr = os.UserHomeDir()
+	env.configRoot, env.configRootErr = appdirs.Root()
 	if configHome, ok := lookupEnv("XDG_CONFIG_HOME"); ok {
 		env.configHome = configHome
 	}
@@ -61,6 +71,8 @@ func serviceCommand(args []string, env serviceEnv, stdout, stderr io.Writer) int
 		return exitOK
 	case "install":
 		return serviceInstall(args[1:], env, stdout, stderr)
+	case "update":
+		return serviceUpdate(args[1:], env, stdout, stderr)
 	case "uninstall":
 		return serviceUninstall(args[1:], env, stdout, stderr)
 	case "status":
@@ -96,6 +108,113 @@ func serviceInstall(args []string, env serviceEnv, stdout, stderr io.Writer) int
 		fmt.Fprintf(stdout, "\n%s\n", note)
 	}
 	return exitOK
+}
+
+// serviceUpdate is the LOCAL update path: the operator is standing at the
+// machine, so there is no trial, no snapshot and no automatic rollback.
+//
+// The sequence is t3code's local command and the order is the point. Stop the
+// unit FIRST: staging a version and moving the durable selection are exactly
+// the two things a running supervisor is reading, and a selection written
+// underneath one would be read on its next restart with no way to tell when.
+// Then stage, then select, then start — so a failure at any step leaves the
+// service stopped on a state that still names a version that works.
+//
+// This is also how a supervisor is replaced, which is the other half of the
+// protocol boundary: a target that needs a newer update protocol than the
+// installed supervisor is refused over the wire, and this is the command that
+// refusal names.
+func serviceUpdate(args []string, env serviceEnv, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("agent-overflow service update", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	binary := flags.String("binary", "", "the binary to install as the new version")
+	if code, done := parseServiceFlags(flags, args, serviceUpdateUsage, stdout, stderr); done {
+		return code
+	}
+
+	manager, config, code := serviceManager(env, *binary, "", stderr)
+	if manager == nil {
+		return code
+	}
+	if env.configRootErr != nil {
+		fmt.Fprintf(stderr, "agent-overflow service: cannot find the config root: %v\n", env.configRootErr)
+		return exitError
+	}
+	layout, err := supervise.NewLayout(env.configRoot)
+	if err != nil {
+		return operationalError(stderr, err)
+	}
+
+	// Ask the binary what it is, in its own process. It is the only thing that
+	// can answer, and an answer that comes back also proves the file runs on
+	// this host at all — which is worth learning before the service is stopped
+	// rather than after.
+	answer, err := servicePreflight(config.Executable, env.runner)
+	if err != nil {
+		return operationalError(stderr, err)
+	}
+	if err := supervise.ValidVersion(answer.Version); err != nil {
+		fmt.Fprintf(stderr, "agent-overflow service: %s reports version %q, which cannot name a directory: %v\n",
+			config.Executable, answer.Version, err)
+		return exitError
+	}
+
+	if err := manager.Stop(context.Background()); err != nil {
+		return operationalError(stderr, err)
+	}
+	if err := supervise.StageBinary(layout, answer.Version, config.Executable); err != nil {
+		return operationalError(stderr, err)
+	}
+	state, err := supervise.Adopt(answer.Version)
+	if err != nil {
+		return operationalError(stderr, err)
+	}
+	if err := supervise.SaveState(layout, state); err != nil {
+		return operationalError(stderr, err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		return operationalError(stderr, err)
+	}
+
+	fmt.Fprintf(stdout, "Updated the Agent Overflow service to version %s.\n", answer.Version)
+	fmt.Fprintf(stdout, "  Manager: %s\n", manager.Name())
+	fmt.Fprintf(stdout, "  Staged:  %s\n", filepath.Join(mustVersionDir(layout, answer.Version), supervise.BinaryName))
+	fmt.Fprintf(stdout, "  Starts:  %s\n", strings.Join(serviceStartCommand(config), " "))
+	return exitOK
+}
+
+// servicePreflight runs the staged binary's own answer through the injected
+// Runner, so a `service update` test describes a binary rather than executing
+// one — the same posture every other command this host verb runs already has.
+func servicePreflight(binary string, runner serviceinstall.Runner) (supervise.Preflight, error) {
+	output, code, err := runner.Run(context.Background(), binary, supervise.PreflightSubcommand)
+	if err != nil {
+		return supervise.Preflight{}, fmt.Errorf("running %s %s: %w", binary, supervise.PreflightSubcommand, err)
+	}
+	if code != 0 {
+		return supervise.Preflight{}, fmt.Errorf(
+			"%s %s exited %d, so it is not an Agent Overflow binary this can install%s",
+			binary, supervise.PreflightSubcommand, code, indentedDetail(output))
+	}
+	return supervise.ParsePreflight(output)
+}
+
+func indentedDetail(output string) string {
+	if strings.TrimSpace(output) == "" {
+		return ""
+	}
+	return ":\n  " + strings.ReplaceAll(strings.TrimSpace(output), "\n", "\n  ")
+}
+
+// mustVersionDir is for printing only: the version was validated above, so the
+// error branch is unreachable and an empty path is a better outcome than a
+// second failure path in the success message.
+func mustVersionDir(layout supervise.Layout, version string) string {
+	dir, err := layout.VersionDir(version)
+	if err != nil {
+		return ""
+	}
+	return dir
 }
 
 func serviceUninstall(args []string, env serviceEnv, stdout, stderr io.Writer) int {
@@ -189,8 +308,10 @@ func serviceManager(env serviceEnv, binary, listen string, stderr io.Writer) (se
 }
 
 // serviceStartCommand is what the unit runs, for printing back to a person.
+// The verb comes from serviceinstall rather than a literal, so this cannot
+// print one thing while the unit file says another.
 func serviceStartCommand(config serviceinstall.Config) []string {
-	args := []string{config.Executable, "serve"}
+	args := []string{config.Executable, serviceinstall.SuperviseVerb}
 	if config.Listen != "" {
 		args = append(args, "--listen", config.Listen)
 	}

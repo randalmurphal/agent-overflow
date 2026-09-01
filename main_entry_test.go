@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/aocli"
+	"agent-overflow/internal/serviceinstall"
 )
 
 // noEnv and inSession are the two environments decideEntry distinguishes:
@@ -108,6 +109,32 @@ func TestServeVerbIsNotACLICommand(t *testing.T) {
 	}
 }
 
+// The supervise verb is the same seam as serve: routed here, refused as a CLI
+// command, so it cannot come to mean two things depending on which file you
+// read. Unlike serve it is deliberately NOT in the root usage — nobody types
+// it, a service manager does, and documenting it would invite an operator to
+// start a supervisor by hand beside the one their unit already runs.
+func TestSuperviseVerbIsNotACLICommand(t *testing.T) {
+	if aocli.IsCommand(superviseVerb) {
+		t.Fatalf("aocli declares %q as a command, but main routes it to the supervise boot before the CLI check", superviseVerb)
+	}
+	if superviseVerb == serveVerb {
+		t.Fatal("the two boot verbs are the same string")
+	}
+}
+
+// internal/serviceinstall writes `ExecStart=<binary> supervise` into the unit
+// file and this package is what answers to it. Neither imports the other's
+// spelling by accident, so the two are pinned here: a rename on one side alone
+// installs a unit whose command this binary rejects, which shows up as a
+// service that will not start and nothing else.
+func TestTheInstalledUnitStartsTheVerbThisBinaryRoutes(t *testing.T) {
+	if superviseVerb != serviceinstall.SuperviseVerb {
+		t.Fatalf("main routes %q and serviceinstall installs %q",
+			superviseVerb, serviceinstall.SuperviseVerb)
+	}
+}
+
 // The root help text is the one place a person reads the verb set, and serve
 // is the one verb in it that this package routes rather than aocli. A usage
 // string that stopped naming it would leave the mode undiscoverable.
@@ -117,39 +144,42 @@ func TestRootUsageNamesTheServeVerb(t *testing.T) {
 	}
 }
 
-// serveBootArgs strips the verb so the flags after it reach parseFlags. Go's
+// bootArgsAfterVerb strips the verb so the flags after it reach parseFlags. Go's
 // flag package stops at the first non-flag token, so an argv that still
 // carried the verb would parse ZERO flags and boot on defaults — the silent
 // default this repo refuses everywhere else in the bind path.
 func TestServeBootArgs(t *testing.T) {
 	tests := []struct {
 		name string
+		verb string
 		args []string
 		want []string
 	}{
-		{name: "the verb is stripped", args: []string{"serve"}, want: []string{}},
-		{name: "flags after the verb survive", args: []string{"serve", "--listen", "0.0.0.0:7777"}, want: []string{"--listen", "0.0.0.0:7777"}},
-		{name: "an argv without the verb is untouched", args: []string{"--listen", "0.0.0.0:7777"}, want: []string{"--listen", "0.0.0.0:7777"}},
-		{name: "an empty argv is untouched", args: nil, want: nil},
+		{name: "the verb is stripped", verb: serveVerb, args: []string{"serve"}, want: []string{}},
+		{name: "flags after the verb survive", verb: serveVerb, args: []string{"serve", "--listen", "0.0.0.0:7777"}, want: []string{"--listen", "0.0.0.0:7777"}},
+		{name: "an argv without the verb is untouched", verb: serveVerb, args: []string{"--listen", "0.0.0.0:7777"}, want: []string{"--listen", "0.0.0.0:7777"}},
+		{name: "an empty argv is untouched", verb: serveVerb, args: nil, want: nil},
+		{name: "the supervise verb is stripped by the same helper", verb: superviseVerb, args: []string{"supervise", "--data-dir", "/srv/ao"}, want: []string{"--data-dir", "/srv/ao"}},
+		{name: "one verb does not strip the other", verb: superviseVerb, args: []string{"serve", "--data-dir", "/srv/ao"}, want: []string{"serve", "--data-dir", "/srv/ao"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := serveBootArgs(test.args)
+			got := bootArgsAfterVerb(test.args, test.verb)
 			if len(got) != len(test.want) {
-				t.Fatalf("serveBootArgs(%q) = %q, want %q", test.args, got, test.want)
+				t.Fatalf("bootArgsAfterVerb(%q, %q) = %q, want %q", test.args, test.verb, got, test.want)
 			}
 			for i := range got {
 				if got[i] != test.want[i] {
-					t.Fatalf("serveBootArgs(%q) = %q, want %q", test.args, got, test.want)
+					t.Fatalf("bootArgsAfterVerb(%q, %q) = %q, want %q", test.args, test.verb, got, test.want)
 				}
 			}
 		})
 	}
 
 	// The whole point: after stripping, the ordinary boot flag set parses.
-	flags, err := parseFlags(serveBootArgs([]string{"serve", "--listen", "0.0.0.0:7777", "--reset-transport-port"}))
+	flags, err := parseFlags(bootArgsAfterVerb([]string{"serve", "--listen", "0.0.0.0:7777", "--reset-transport-port"}, serveVerb))
 	if err != nil {
-		t.Fatalf("parseFlags after serveBootArgs: %v", err)
+		t.Fatalf("parseFlags after bootArgsAfterVerb: %v", err)
 	}
 	if flags.listenAddr != "0.0.0.0:7777" {
 		t.Fatalf("listenAddr = %q, want %q", flags.listenAddr, "0.0.0.0:7777")
@@ -159,8 +189,10 @@ func TestServeBootArgs(t *testing.T) {
 	}
 }
 
-// The three refusals a person can actually earn, plus the three flags that
-// must keep working after the verb.
+// The refusals a person can actually earn, plus the three flags that must
+// keep working after the verb. Both verbs share one list on purpose: a
+// supervisor hands its flags straight to the serve child it spawns, so a flag
+// only one of them refused would be a unit that starts and immediately fails.
 func TestCheckServeFlags(t *testing.T) {
 	refused := []struct {
 		name string
@@ -179,8 +211,17 @@ func TestCheckServeFlags(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseFlags(%q): %v", test.args, err)
 			}
-			if err := checkServeFlags(flags); err == nil {
-				t.Fatalf("checkServeFlags accepted %q", test.args)
+			for _, verb := range []string{serveVerb, superviseVerb} {
+				err := checkBackendVerbFlags(verb, flags)
+				if err == nil {
+					t.Fatalf("checkBackendVerbFlags(%q) accepted %q", verb, test.args)
+				}
+				// The refusal names the verb the operator typed. A supervisor
+				// that reported a serve refusal would send them to the wrong
+				// command line.
+				if !strings.Contains(err.Error(), verb) {
+					t.Fatalf("checkBackendVerbFlags(%q) = %v, which does not name the verb", verb, err)
+				}
 			}
 		})
 	}
@@ -197,15 +238,17 @@ func TestCheckServeFlags(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parseFlags(%q): %v", args, err)
 		}
-		if err := checkServeFlags(flags); err != nil {
-			t.Fatalf("checkServeFlags(%q) = %v, want nil", args, err)
+		for _, verb := range []string{serveVerb, superviseVerb} {
+			if err := checkBackendVerbFlags(verb, flags); err != nil {
+				t.Fatalf("checkBackendVerbFlags(%q, %q) = %v, want nil", verb, args, err)
+			}
 		}
 	}
 }
 
 // The launcher-identity flags are refused transitively: each one already
 // requires --soak, and serve refuses --soak. This pins that reasoning rather
-// than a second copy of the rule inside checkServeFlags.
+// than a second copy of the rule inside checkBackendVerbFlags.
 func TestServeRefusesLauncherIdentityThroughSoak(t *testing.T) {
 	for _, args := range [][]string{
 		{"--autopilot"},

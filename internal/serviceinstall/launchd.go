@@ -123,6 +123,22 @@ func (m *launchdManager) Uninstall(ctx context.Context) error {
 	return nil
 }
 
+// Stop halts the agent without unloading its plist.
+//
+// `launchctl kill` rather than `bootout`: bootout unloads the label entirely,
+// and a Start after one would have to bootstrap the plist again — which is
+// install's job, not update's. KeepAlive only relaunches on a BAD exit, so a
+// SIGTERM the backend handles cleanly leaves it stopped, which is what this
+// asks for. Not mustRun: an agent that is not running is the state wanted.
+func (m *launchdManager) Stop(ctx context.Context) error {
+	_, _, err := m.runner.Run(ctx, "launchctl", "kill", "SIGTERM", m.target())
+	return err
+}
+
+func (m *launchdManager) Start(ctx context.Context) error {
+	return m.mustRun(ctx, "launchctl", "kickstart", m.target())
+}
+
 func (m *launchdManager) Status(ctx context.Context) (Status, error) {
 	status := Status{Manager: m.Name(), UnitPath: m.UnitPath()}
 	if _, err := os.Stat(status.UnitPath); err == nil {

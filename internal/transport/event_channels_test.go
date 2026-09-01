@@ -106,6 +106,11 @@ var (
 		// A LEVEL, not an edge: a reconnecting launcher replays with a
 		// zero cursor and must converge on the current keep-awake state.
 		"power:keepawake",
+		// At most ONE frame per process lifetime, published when the
+		// activation gate opens, so "newest supersedes" holds trivially. The
+		// ring is what lets a client reconnecting a second after the restart
+		// still find its update's outcome.
+		"service:update-outcome",
 		"spinner:changed",
 		"system:stats",
 		"theme:changed",

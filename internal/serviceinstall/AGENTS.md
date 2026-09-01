@@ -1,6 +1,6 @@
 # internal/serviceinstall/
 
-Installs `agent-overflow serve` as a per-user background service: a systemd
+Installs `agent-overflow supervise` as a per-user background service: a systemd
 user unit on Linux, a launchd LaunchAgent on macOS. It generates the unit file,
 hands the manager its own commands, and reports what the manager says back.
 
@@ -43,6 +43,21 @@ machine.
 - **`ConfigHome` is honored on Linux.** systemd reads user units from
   `$XDG_CONFIG_HOME/systemd/user`. A host that sets it and a unit written to
   `~/.config` never meet.
+- **`ExecStart` names `SuperviseVerb`, not `serve`.** The supervisor is the
+  stable process the manager owns; the backend is its child, and the supervisor
+  is what can replace it (`internal/supervise`). A unit that started `serve`
+  directly would leave the host unable to update itself, and the failure is
+  silent — it serves perfectly. `main`'s
+  `TestTheInstalledUnitStartsTheVerbThisBinaryRoutes` pins the constant against
+  the verb the binary actually routes, because a rename on one side alone
+  installs a unit whose command this binary rejects. An install over an older,
+  `serve`-shaped unit migrates it: install always rewrites.
+- **`Stop` and `Start` are for `service update`, and are deliberately not
+  `disable` / `bootout`.** An update restarts a service; it does not uninstall
+  one. On launchd that means `kill SIGTERM` plus `kickstart` rather than
+  `bootout` plus `bootstrap`, so the plist stays loaded throughout and a failed
+  update leaves a host that still comes back on reboot. `Stop` is also not
+  `mustRun`: stopping something already stopped is the state the caller wanted.
 - **`LaunchdLabel` is not the app bundle identifier.** A Mac can run the
   desktop app and a serve agent at once, and launchd tells services apart by
   label.

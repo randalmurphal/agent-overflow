@@ -128,6 +128,16 @@ const (
 	SessionImportProgress Channel = "session-import:progress"
 )
 
+// service:* — what a supervised serve host says about its own launch.
+// One frame per boot at most, published the moment the activation gate
+// opens, naming the update this boot is the outcome of. It is what makes
+// "the update succeeded" mean the NEW version answered rather than that
+// the old one stopped: the client that asked holds the update id and
+// waits for it to come back.
+const (
+	ServiceUpdateOutcome Channel = "service:update-outcome"
+)
+
 // settings:* — one frame per tier a persisted settings write moved,
 // carrying the tier and the changed KEY NAMES only. No values ride it:
 // GetSettings redacts endpoint tokens and sensitive environment values,

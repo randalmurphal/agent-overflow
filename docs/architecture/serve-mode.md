@@ -146,12 +146,17 @@ have, and the console never says anything again.
 
 ```
 agent-overflow service install [--listen <host:port>] [--binary <path>]
+agent-overflow service update [--binary <path>]
 agent-overflow service uninstall
 agent-overflow service status
 ```
 
 `install` writes the unit file and tells the platform's service manager to run
-it from now on. Running it again replaces what is installed. `status` reports
+it from now on. What the unit starts is `<binary> supervise`, not
+`<binary> serve` — the supervisor is the stable process the manager owns, and
+the backend is its child (see [The supervisor](#the-supervisor)). Installing
+over an older unit rewrites it, so an install that predates the supervisor is
+migrated by running `install` again. Running it again replaces what is installed. `status` reports
 what the manager says, and exits 1 when the backend is not running, so it reads
 in a shell conditional. `uninstall` stops the service and deletes the unit and
 NOTHING else — the config root, the history and the paired devices are all
@@ -163,7 +168,7 @@ backend no terminal, and the console enrollment above needs one. Run
 
 | Platform | What gets installed |
 |---|---|
-| Linux | A systemd USER unit at `$XDG_CONFIG_HOME/systemd/user/agent-overflow.service` (`~/.config/...` by default). `Restart=on-failure`, `WantedBy=default.target`. |
+| Linux | A systemd USER unit at `$XDG_CONFIG_HOME/systemd/user/agent-overflow.service` (`~/.config/...` by default), starting `<binary> supervise`. `Restart=on-failure`, `WantedBy=default.target`. |
 | macOS | A launchd LaunchAgent at `~/Library/LaunchAgents/com.agentoverflow.serve.plist`, `RunAtLoad` with `KeepAlive` on a bad exit. |
 | Windows | Refused, naming the reason: the Windows install is a launcher that already supervises its backend inside WSL. Install the service INSIDE the WSL distribution, from the Linux binary there. |
 
@@ -213,6 +218,131 @@ start. Settings → Network can then no longer move the backend — the setting
 changes, the flag wins, and nothing says why. Set the bind toggle and the port
 below instead, and keep `--listen` for a host whose address must be fixed
 outside the app.
+
+## The supervisor
+
+A serve host is two processes: `agent-overflow supervise`, which the service
+manager starts and which does nothing but decide what runs, and the backend it
+spawns as a child. The split exists so a host can be updated without anyone
+being at the machine — the process that swaps the backend cannot be the backend,
+or the swap would take out the thing performing it.
+
+**A supervisor is optional forever.** `agent-overflow serve` started by hand is
+unchanged and knows nothing about any of this; the whole mechanism keys off one
+environment marker the supervisor sets when it spawns a child, and its absence
+means the backend behaves exactly as it did before the supervisor existed.
+
+### What the supervisor owns
+
+Everything lives under `<config root>/agent-overflow/runtime/`:
+
+| Path | What it is |
+|---|---|
+| `service-state.json` | which version runs, and the one update record |
+| `versions/<version>/agent-overflow` | staged binaries, immutable once written |
+| `snapshot/` | the SQLite triple, copied while no process held it, for the length of a trial |
+| `restore-marker.json` | present only while a rollback is mid-copy |
+
+The state file is the whole selection, and the supervisor **fails closed on
+one it cannot read**: an unknown schema, a version that could name something
+outside `versions/`, a record in a state nobody defined. It exits non-zero and
+starts nothing rather than guessing, because every guess it could make means
+running a version the operator did not choose. The service manager's
+`Restart=on-failure` then retries it, and it keeps refusing until a person
+looks.
+
+On a host with no state at all, the supervisor stages a copy of **its own
+binary** under `versions/` and records that as active. That copy is what makes
+the first update coherent: "the previous version" then names an immutable
+directory rather than a file you may replace at any moment.
+
+One consequence worth knowing: once a host is supervised, **replacing the
+binary on disk and restarting the service does not change what serves.** The
+replaced file supervises, and the previously selected version still runs as the
+backend — which is correct (it is what keeps a committed update committed) and
+is exactly the surprise worth naming. The supervisor logs a line saying so, with
+`agent-overflow service update` as the fix.
+
+### The update cycle
+
+An update goes through six states, and the supervisor performs them one at a
+time on a single goroutine, so no two can overlap:
+
+1. **Accept.** The target's staged binary must exist and answer
+   `agent-overflow __service-preflight` with a protocol this supervisor speaks.
+   All of that happens before anything durable is written, so a target that
+   cannot run costs nothing.
+2. **Stop.** The running backend gets SIGTERM and the ordinary shutdown, so it
+   closes provider sessions, flushes SQLite and drains the transport.
+3. **Snapshot.** The database, its WAL and its shared-memory file are copied
+   while **no process holds them**. That is the only moment the copy is safe,
+   which is why it sits between the stop and the start rather than anywhere
+   more convenient.
+4. **Trial.** The target starts, told over the channel that it is a trial. It
+   boots fully — migrations, transport bind, ready — and **answers RPCs**, but
+   every subsystem that could take an action of its own waits at one gate.
+5. **Prepared.** The trial says it got there. The supervisor writes the commit
+   durably *first*, then deletes the snapshot, then tells the trial — which
+   opens its gate and starts behaving like an ordinary backend.
+6. **Or rollback.** A trial that exits, or that has not reported prepared
+   within **120 seconds**, is stopped; a restore marker is written and fsynced;
+   the snapshot goes back over the database; and the previous version restarts.
+
+The trial's parked set is the second half of the rollback boundary. A restored
+database undoes everything **inside** it, and nothing outside: a `git fetch`,
+a refreshed provider credential, an ACME order, a retention sweep that deleted
+attachment files, a workflow turn that spent real tokens. So none of those runs
+until commit. Serving RPCs while parked is correct — that is what "prepared"
+means.
+
+### What you see when one rolls back
+
+Nothing in the app changes version, and the journal says why:
+
+```
+supervise: update upd-… accepted: 1.4.0 -> 1.5.0
+supervise: stopping the backend to snapshot the database
+supervise: starting version 1.5.0 as a trial
+supervise: rolling back update upd-…: the trial exited before reporting prepared: exit status 1
+supervise: restarting version 1.4.0
+```
+
+The reason is also recorded in `service-state.json`, so it survives the log.
+A client that asked for the update is told the outcome and the update's id when
+the backend comes back, which is how it distinguishes "my update failed" from
+"the backend restarted for some other reason".
+
+**A supervisor killed at any point recovers from those files alone.** Killed
+mid-trial, it finds the record still pending and tries again — twice, then it
+rolls back, because a trial that reliably kills its supervisor would otherwise
+loop forever on an unattended host. Killed mid-restore, the next boot finds the
+marker and finishes the copy **before** it selects or spawns anything, so no
+version ever opens a half-restored database.
+
+### Disk
+
+A trial needs room for a **second full copy of the database** for as long as it
+runs, plus one directory per staged version. The supervisor deletes versions
+nothing can select — anything that is neither running nor the one a rollback
+would return to — after each commit.
+
+### Updating locally
+
+```
+agent-overflow service update [--binary <path>]
+```
+
+This is the operator-present path, and it has no trial and no rollback for the
+same reason: you are standing there. It asks the binary what version it is,
+stops the unit, stages that binary under that version, selects it, and starts
+the unit again. `--binary` names the file to install; it defaults to the running
+one, so `agent-overflow service update` after replacing your binary on `PATH` is
+the whole upgrade.
+
+It is also how the **supervisor itself** is replaced, which nothing else can do:
+replace the file the unit starts, then run this once. A staged version that
+speaks a newer update protocol than the installed supervisor is refused with
+that sentence, for exactly this reason.
 
 ## Bind and port
 
@@ -308,10 +438,12 @@ It is a single file with nothing beside it. Put it on `PATH`
 `scripts/install.sh` is for the DESKTOP artifacts — it writes a desktop entry
 and an icon, which a server has no use for — so it is not the route here.
 
-**Serve mode does not self-update.** The in-app updater is wired by the desktop
-boot and by the WSL launcher's backend, and `serve` is neither, so it stays
-unconfigured on both Linux binaries. Update a serve host by replacing the file
-and restarting the service. That is also why a desktop install can never be
+**The in-app updater is not what updates a serve host.** It is wired by the
+desktop boot and by the WSL launcher's backend, and `serve` is neither, so it
+stays unconfigured on both Linux binaries. A serve host is updated by its
+supervisor instead — `agent-overflow service update` locally, or over the wire
+once that lands — and an unsupervised `serve` is updated by replacing the file
+and restarting it. That is also why a desktop install can never be
 handed the headless artifact by accident: release assets are matched by exact
 name rather than by looking for "linux" somewhere in one
 (`internal/appupdate/assetmatch.go`).
