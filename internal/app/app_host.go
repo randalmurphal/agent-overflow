@@ -18,6 +18,7 @@ import (
 // remote --connect client sees the backend's version too.
 //
 //ao:scope threads:read
+//ao:route home
 func (a *App) Version() string {
 	return a.version
 }
@@ -28,6 +29,7 @@ func (a *App) Version() string {
 // Windows default browser instead of launching a Linux/WSLg browser.
 //
 //ao:scope host
+//ao:route home
 func (a *App) OpenExternalURL(rawURL string) error {
 	return externalurl.Open(context.Background(), rawURL)
 }
@@ -37,6 +39,7 @@ func (a *App) OpenExternalURL(rawURL string) error {
 // detection, EntryLimit truncation) lives in internal/dirbrowse.
 //
 //ao:scope host
+//ao:route selected
 func (a *App) BrowseDirectory(path string) (dirbrowse.Listing, error) {
 	return dirbrowse.Browse(path)
 }
@@ -55,6 +58,7 @@ type LocalImageData struct {
 // it. This method is LocalOnly because its arguments select a host file.
 //
 //ao:scope files:read
+//ao:route selected
 func (a *App) GetLocalImageData(path, workspacePath string) (LocalImageData, error) {
 	resolved, err := editor.ResolvePath(path, workspacePath)
 	if err != nil {

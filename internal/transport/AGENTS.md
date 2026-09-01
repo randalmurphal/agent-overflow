@@ -1059,16 +1059,21 @@ retention interactions, and the client-side forward-skip detection are in
 
 ## Code generation
 
-`methodgen/` emits `methods_gen.go`, the `MethodMeta{Name, ID, Scope, StepUp}`
-table. Run `go run ./internal/transport/methodgen` and commit the result;
-`TestMethodsGen_InSync` bytes-diffs a fresh run against the committed output, so
-a new exported `App` method without a regeneration fails CI.
+`methodgen/` emits TWO files from ONE scan: `methods_gen.go`, the
+`MethodMeta{Name, ID, Scope, Route, StepUp}` table, and
+`frontend/src/lib/transport/methodRoutes.ts`, the client's copy of the Route
+column. Run `make methodgen` and commit both; `TestMethodsGen_InSync`
+bytes-diffs a fresh run against each committed output, so a new exported `App`
+method without a regeneration fails CI. One command for both halves is the
+point — a second command to run is a second command to forget, and the failure
+would land on whoever next touched a file they had no reason to think was
+stale.
 
-It reads the scope vocabulary out of `scopes.go` by AST rather than restating
-it, for the reason it parses `internalmethods.go` the same way: this tool cannot
-import the package it generates into, or a broken `methods_gen.go` would stop
-the very run that fixes it. That makes `scopes.go` a generator INPUT — see the
-manifest paragraph below.
+It reads the scope vocabulary out of `scopes.go` and the route vocabulary out
+of `routes.go` by AST rather than restating either, for the reason it parses
+`internalmethods.go` the same way: this tool cannot import the package it
+generates into, or a broken `methods_gen.go` would stop the very run that fixes
+it. That makes both files generator INPUTS — see the manifest paragraph below.
 
 That gate is only as good as its cache key, and for a long time it was not
 good at all. `go test` keys a cached result on the files the TEST PROCESS
@@ -1089,6 +1094,57 @@ move (`docs/architecture/root-decomposition.md` § Wire compatibility). Adding a
 spec widens the production allow-list and gives every method on it a scope
 row the per-call gate reads, which is why `Harness` is deliberately not one:
 receiver-level `LocalOnly` says no grant reaches host tooling at all.
+
+### The Route column
+
+Scope answers "may this caller do it". **Route answers "on which machine"**
+(`routes.go`; `docs/specs/remote-access.md` §10, "Routing an RPC"). The two are
+independent: a call routed to the thread's backend is still gated there by its
+own scope, and `home` carries no authority of its own.
+
+**Nothing on this side routes anything.** One connection is one backend, and
+every RPC that arrives on it is for the backend that answered it. The column
+exists for the CLIENT, which holds one `WSClient` per attached backend and has
+to pick one before it writes a frame. It is declared here anyway, beside the
+scope it ships with, so a method's two classifications are one decision on one
+screen — and it crosses to the client as generated code, never as a second
+hand-kept list.
+
+| route | the call belongs to |
+|---|---|
+| `thread` | the backend that owns the thread named by the first non-context parameter |
+| `project` | the backend that owns the project named by the first non-context parameter |
+| `home` | the backend that served the page |
+| `selected` | the backend the composer is pointed at |
+| `all` | every attached backend, answers merged by the client |
+
+**Two routes are inferred, and it is not a naming convention that makes them
+so.** Thread ids and project ids are minted unique across BACKENDS
+(`internal/entityid`), so a client holding one names its owner with no other
+help; every other id in the tree is unique within one database. So `methodgen`
+reads `thread` off a first parameter named `threadID` and `project` off
+`projectID` (case-insensitively, because the same parameter is spelled
+`threadID` in one file and `threadId` in another, and a route that changed with
+the spelling would be a routing decision made by a typo), and **every other
+method declares `//ao:route home|selected|all`**. Unrouted fails the run listing
+every offender, the same fail-closed shape as unscoped: a method nobody routed
+is one a multi-backend client answers from whichever socket happened to be
+first, which is a wrong answer that looks like a right one.
+
+An explicit directive OVERRIDES the inference, and the browser companion is
+what it is for: `BrowserCompanionPaneAttach(threadID, ...)` names a thread and
+is still `home`, because the pane is a native view on the page's own machine
+whatever thread it is showing.
+
+**`home` is not a synonym for "host-scoped".** It is the honest answer for a
+method that acts on the backend serving the page — its settings, its access
+admin, its provider accounts, its update supervisor, its `ui_state` bucket —
+and it is also where the methods keyed by an id that is neither a thread nor a
+project land today (terminal ids, workflow item ids, subscription ids,
+attachment ids). Those are NOT settled: the client resolves such an id through
+its entity index, and the route column has no word for that. `home` is the
+fail-closed placeholder, and the list is in wave 7a's report; a method that
+grows a thread-id parameter should take the inference instead.
 
 ## Per-connection policy and keepalive
 

@@ -12,6 +12,7 @@ import (
 // ListDiscussions returns persisted discussion definitions for the given scope.
 //
 //ao:scope threads:read
+//ao:route selected
 func (a *App) ListDiscussions(scope string) ([]store.DiscussionDefinition, error) {
 	return a.discussionService().List(scope)
 }
@@ -24,6 +25,7 @@ func (a *App) ListDiscussionsForThread(threadID string) ([]store.DiscussionDefin
 // GetDiscussion returns a persisted discussion definition by name and scope.
 //
 //ao:scope threads:read
+//ao:route selected
 func (a *App) GetDiscussion(name, scope string) (store.DiscussionDefinition, error) {
 	return a.discussionService().Get(name, scope)
 }
@@ -31,6 +33,7 @@ func (a *App) GetDiscussion(name, scope string) (store.DiscussionDefinition, err
 // CreateDiscussion validates and persists a discussion definition.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) CreateDiscussion(def store.DiscussionDefinition) error {
 	return a.discussionService().Create(def)
 }
@@ -38,6 +41,7 @@ func (a *App) CreateDiscussion(def store.DiscussionDefinition) error {
 // UpdateDiscussion replaces an existing persisted discussion definition.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) UpdateDiscussion(prevName, prevScope string, def store.DiscussionDefinition) error {
 	return a.discussionService().Update(prevName, prevScope, def)
 }
@@ -45,6 +49,7 @@ func (a *App) UpdateDiscussion(prevName, prevScope string, def store.DiscussionD
 // DeleteDiscussion removes a persisted discussion definition.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) DeleteDiscussion(name, scope string) error {
 	return a.discussionService().Delete(name, scope)
 }
@@ -59,6 +64,7 @@ func (a *App) StartDiscussion(threadID, discussionName string) error {
 // GetChannelMessages returns ordered messages for a discussion channel.
 //
 //ao:scope threads:read
+//ao:route selected
 func (a *App) GetChannelMessages(channelID string, afterSeq, limit int) ([]store.ChannelMessage, error) {
 	return a.discussionService().GetMessages(channelID, afterSeq, limit)
 }
@@ -71,6 +77,7 @@ func (a *App) GetChannelMessages(channelID string, afterSeq, limit int) ([]store
 // Read-only — same LAN-safety class as GetChannelMessages.
 //
 //ao:scope threads:read
+//ao:route selected
 func (a *App) GetChannelState(channelID string) (ChannelStatePayload, error) {
 	state, err := a.discussionService().ChannelState(channelID)
 	return projectChannelState(state), err
@@ -95,6 +102,7 @@ func (a *App) GetChannelState(channelID string) (ChannelStatePayload, error) {
 // SendMessage does, for the same reason.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) PostChannelMessage(channelID, content string) (store.ChannelMessage, error) {
 	return a.discussionService().Post(channelID, content)
 }
@@ -117,6 +125,7 @@ func (a *App) PostChannelMessage(channelID, content string) (store.ChannelMessag
 // in that participant's own child thread.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) ConcludeDiscussion(channelID string) (ChannelStatePayload, error) {
 	state, err := a.discussionService().Conclude(channelID)
 	return projectChannelState(state), err

@@ -42,6 +42,7 @@ func (a *App) ReplayManager() *replay.Manager {
 // see app_settings.go.
 //
 //ao:scope host
+//ao:route home
 func (a *App) ReconfigureObservability(prev, next settings.Settings) {
 	if a.replay != nil {
 		a.replay.SetEnabled(next.ObservabilityEventLogEnabled)
@@ -66,6 +67,7 @@ func (a *App) uiTrace() (*uitrace.Tracer, error) {
 // API so a debug run can be inspected after a visual glitch.
 //
 //ao:scope host
+//ao:route home
 func (a *App) GetUIRenderTracePath() (string, error) {
 	t, err := a.uiTrace()
 	if err != nil {
@@ -80,6 +82,7 @@ func (a *App) GetUIRenderTracePath() (string, error) {
 // directory.
 //
 //ao:scope host
+//ao:route home
 func (a *App) AppendUIRenderTraceBatch(lines []string) (string, error) {
 	t, err := a.uiTrace()
 	if err != nil {
@@ -107,6 +110,7 @@ func (a *App) frontendErrorLog() (*uitrace.Tracer, error) {
 // permanently leaks the deriveds that update had just connected).
 //
 //ao:scope host
+//ao:route home
 func (a *App) ReportFrontendErrorBatch(lines []string) (string, error) {
 	t, err := a.frontendErrorLog()
 	if err != nil {
@@ -123,6 +127,7 @@ func (a *App) ReportFrontendErrorBatch(lines []string) (string, error) {
 // (empty string if no trace data exists yet).
 //
 //ao:scope host
+//ao:route home
 func (a *App) BookmarkUIRenderTrace() (string, error) {
 	t, err := a.uiTrace()
 	if err != nil {

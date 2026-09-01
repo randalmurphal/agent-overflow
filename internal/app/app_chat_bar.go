@@ -137,6 +137,7 @@ func firstVisibleModel(providerName string, hidden []string) string {
 }
 
 //ao:scope settings:read
+//ao:route home
 func (a *App) ListChatBarFavorites() ([]store.ChatBarFavorite, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("list chat bar favorites: store unavailable")
@@ -145,6 +146,7 @@ func (a *App) ListChatBarFavorites() ([]store.ChatBarFavorite, error) {
 }
 
 //ao:scope settings:write
+//ao:route home
 func (a *App) SetChatBarFavorite(fav store.ChatBarFavorite, starred bool) ([]store.ChatBarFavorite, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("set chat bar favorite: store unavailable")

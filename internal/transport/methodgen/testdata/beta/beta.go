@@ -11,11 +11,13 @@ type Beta struct{}
 // DoBeta is collected.
 //
 //ao:scope threads:read
+//ao:route home
 func (b *Beta) DoBeta() (string, error) { return "", nil }
 
 // AlsoBeta is collected.
 //
 //ao:scope files:read
+//ao:route home
 func (b *Beta) AlsoBeta() {}
 
 // Gamma exists to collide with the alpha fixture.
@@ -24,10 +26,12 @@ type Gamma struct{}
 // SharedName duplicates Alpha.SharedName across specs.
 //
 //ao:scope host
+//ao:route home
 func (g *Gamma) SharedName() {}
 
 // AlsoGamma must never be collected under the Beta spec: Gamma shares
 // beta's directory but is a different receiver.
 //
 //ao:scope host
+//ao:route home
 func (g *Gamma) AlsoGamma() {}

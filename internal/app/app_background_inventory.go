@@ -117,6 +117,7 @@ type BackgroundWorkInventory struct {
 // authorizations, and only the read is safe on a session alone.
 //
 //ao:scope threads:read
+//ao:route all
 func (a *App) ListRunningBackgroundWork() (BackgroundWorkInventory, error) {
 	live := a.sessionManager().snapshot()
 	threadIDs := make([]string, 0, len(live))

@@ -17,6 +17,7 @@ import (
 // reasonable ceiling (50–100) for interactive UIs.
 //
 //ao:scope threads:read
+//ao:route all
 func (a *App) SearchThreadMessages(query string, limit int) ([]store.ThreadMessageHit, error) {
 	hits, err := a.store.SearchThreadMessages(query, limit)
 	if err != nil {

@@ -44,6 +44,7 @@ import (
 // client instead of only the one that remembers to ask.
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) ArchiveThread(id string) error {
 	// Stamped BEFORE the lock, because waiting for the lock is exactly
 	// the window in which this archive can go stale: a send already
@@ -83,6 +84,7 @@ func (a *App) ArchiveThread(id string) error {
 // visibly-active thread with a session dying underneath it.
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) UnarchiveThread(id string) (store.Thread, error) {
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()

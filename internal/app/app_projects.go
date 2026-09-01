@@ -33,6 +33,7 @@ func (w appProjectWorkspace) FindWorktree(projectPath, candidate string) (string
 // project for the sidebar.
 //
 //ao:scope threads:read
+//ao:route all
 func (a *App) ListProjects() ([]store.ProjectWithCounts, error) {
 	return a.projectApplication().List()
 }
@@ -43,6 +44,7 @@ func (a *App) ListProjects() ([]store.ProjectWithCounts, error) {
 // "redirect to the existing project" rather than a failure.
 //
 //ao:scope git:operate
+//ao:route selected
 func (a *App) CreateProject(path string) (store.Project, error) {
 	row, err := a.projectApplication().Create(path)
 	if err != nil {
@@ -55,6 +57,7 @@ func (a *App) CreateProject(path string) (store.Project, error) {
 // RenameProject updates the display name. Path is immutable.
 //
 //ao:scope threads:operate
+//ao:route project
 func (a *App) RenameProject(id, name string) (store.Project, error) {
 	write, err := a.projectApplication().Rename(id, name)
 	if err != nil {
@@ -67,6 +70,7 @@ func (a *App) RenameProject(id, name string) (store.Project, error) {
 // ArchiveProject hides the project without deleting it.
 //
 //ao:scope threads:operate
+//ao:route project
 func (a *App) ArchiveProject(id string) error {
 	write, err := a.projectApplication().Archive(id)
 	if err != nil {
@@ -79,6 +83,7 @@ func (a *App) ArchiveProject(id string) error {
 // UnarchiveProject reverses ArchiveProject and returns the refreshed row.
 //
 //ao:scope threads:operate
+//ao:route project
 func (a *App) UnarchiveProject(id string) (store.Project, error) {
 	write, err := a.projectApplication().Unarchive(id)
 	if err != nil {
@@ -98,6 +103,7 @@ func (a *App) UnarchiveProject(id string) (store.Project, error) {
 // rows really did change and other clients need them.
 //
 //ao:scope threads:operate
+//ao:route home
 func (a *App) UpdateProjectSortPositions(orderedIDs []string) error {
 	moved, err := a.projectApplication().UpdateSortPositions(orderedIDs)
 	if err != nil {
@@ -196,6 +202,7 @@ type ProjectDeletionResult struct {
 // method would otherwise already hold on every thread in the project.
 //
 //ao:scope threads:operate
+//ao:route project
 func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	if a.store == nil {
 		return ProjectDeletionResult{}, fmt.Errorf("delete project: store unavailable")

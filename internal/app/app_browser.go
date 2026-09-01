@@ -120,6 +120,7 @@ func (a *App) teardownBrowserThread(threadID string) {
 // cookies back to disk.
 //
 //ao:scope terminal:operate
+//ao:route home
 func (a *App) ClearBrowserSiteData() error {
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")

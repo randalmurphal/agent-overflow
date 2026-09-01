@@ -135,6 +135,7 @@ func (a *App) StopCodexSubagent(threadID, launchID string) (bool, error) {
 // and its answer names absolute paths on the host filesystem.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) GetCodexSkills(ctx context.Context, workspacePath string, forceReload bool) (codexskills.CwdSkills, error) {
 	return a.codexAppService().Skills(ctx, workspacePath, forceReload)
 }
@@ -160,6 +161,7 @@ func (a *App) GetCodexSkills(ctx context.Context, workspacePath string, forceRel
 // under the user's credentials and returns account-scoped data.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) GetCodexAccountUsage() (*CodexAccountUsage, error) {
 	result, err := a.codexAppService().AccountUsage()
 	if err != nil || result == nil {

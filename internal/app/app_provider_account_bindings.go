@@ -21,6 +21,7 @@ type ManagedProviderAccount struct {
 }
 
 //ao:scope access:admin
+//ao:route home
 func (a *App) ListProviderAccounts() ([]ManagedProviderAccount, error) {
 	if a.providerAccounts == nil {
 		return []ManagedProviderAccount{}, nil
@@ -37,6 +38,7 @@ func (a *App) ListProviderAccounts() ([]ManagedProviderAccount, error) {
 }
 
 //ao:scope access:admin
+//ao:route home
 func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProviderAccount, error) {
 	if a.providerAccounts == nil {
 		return ManagedProviderAccount{}, errors.New("provider account storage is unavailable")
@@ -57,6 +59,7 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 // Whatever was already running for this provider is cancelled.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) StartProviderLogin(
 	providerName string,
 	method provideraccountapp.LoginMethod,
@@ -73,6 +76,7 @@ func (a *App) StartProviderLogin(
 // provider with nothing in flight is idle.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) GetProviderLoginState(providerName string) provideraccountapp.LoginState {
 	if a.providerAccounts == nil {
 		return provideraccountapp.IdleLoginState(providerName)
@@ -85,6 +89,7 @@ func (a *App) GetProviderLoginState(providerName string) provideraccountapp.Logi
 // ChatGPT page.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) SubmitProviderLoginCode(
 	providerName, code string,
 ) (provideraccountapp.LoginState, error) {
@@ -98,6 +103,7 @@ func (a *App) SubmitProviderLoginCode(
 // CancelProviderLogin ends a sign-in and leaves the provider idle.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) CancelProviderLogin(providerName string) provideraccountapp.LoginState {
 	if a.providerAccounts == nil {
 		return provideraccountapp.IdleLoginState(providerName)
@@ -111,6 +117,7 @@ func (a *App) CancelProviderLogin(providerName string) provideraccountapp.LoginS
 // cached authentication until the normal safe reconnect-on-send gate.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) RemoveProviderAccount(providerName, accountID string) error {
 	if a.providerAccounts == nil {
 		return errors.New("provider account storage is unavailable")
@@ -136,6 +143,7 @@ func (a *App) RemoveProviderAccount(providerName, accountID string) error {
 // refreshable while the selected account waits one out.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) RefreshProviderAccountUsage(providerName, accountID string) error {
 	if a.providerAccounts == nil {
 		return errors.New("provider account storage is unavailable")

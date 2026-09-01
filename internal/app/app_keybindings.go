@@ -26,6 +26,7 @@ func (a *App) keybindingsService() (*keybindings.Service, error) {
 // report; see keybindings.LoadResult.
 //
 //ao:scope settings:read
+//ao:route home
 func (a *App) GetKeybindings() (keybindings.LoadResult, error) {
 	svc, err := a.keybindingsService()
 	if err != nil {
@@ -39,6 +40,7 @@ func (a *App) GetKeybindings() (keybindings.LoadResult, error) {
 // + cap contract.
 //
 //ao:scope settings:write
+//ao:route home
 func (a *App) UpdateKeybindings(bindings []keybindings.Keybinding) error {
 	svc, err := a.keybindingsService()
 	if err != nil {
@@ -80,6 +82,7 @@ func (a *App) browserAccelerators() keybindings.AcceleratorSet {
 // defaults.
 //
 //ao:scope settings:write
+//ao:route home
 func (a *App) ResetKeybindings() error {
 	svc, err := a.keybindingsService()
 	if err != nil {

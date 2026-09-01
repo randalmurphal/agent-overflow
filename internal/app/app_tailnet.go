@@ -469,6 +469,7 @@ func tailnetStateExists(configRoot string) bool {
 // argument RenewCanonicalDomainCert makes.
 //
 //ao:scope host
+//ao:route home
 func (a *App) ForgetTailnetNode(ctx context.Context) (network.Settings, error) {
 	if a.settings == nil {
 		return network.Settings{}, fmt.Errorf("settings service unavailable")

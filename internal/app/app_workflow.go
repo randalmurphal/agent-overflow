@@ -326,6 +326,7 @@ func (a *App) startAutomationRun(automation store.Automation, goal string, seeds
 // holds rather than re-deriving one from a duration it sent.
 //
 //ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowScheduleResume(ctx context.Context, itemID, at string) (string, error) {
 	// The engine is required even though nothing resumes now: what this arms is
 	// a `WorkflowResumeItem`, and an app with no engine would take the schedule,
@@ -462,6 +463,7 @@ func decodeWorkflowSeeds(seeds json.RawMessage) (map[string]any, json.RawMessage
 }
 
 //ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowCancelItem(ctx context.Context, itemID string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -489,6 +491,7 @@ func (a *App) WorkflowCancelItem(ctx context.Context, itemID string) error {
 // engine offers it at fresh phase entries only.
 //
 //ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowResumeItem(ctx context.Context, itemID, targetPhase string, refreshDefinition bool) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -536,6 +539,7 @@ func (a *App) WorkflowResumeItem(ctx context.Context, itemID, targetPhase string
 // phase thread currently parked under human control.
 //
 //ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowCompleteTakeover(itemID string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -611,6 +615,7 @@ func currentWorkflowPhaseAttempt(phases []store.WorkItemPhase) (store.WorkItemPh
 // to the runs it started.
 //
 //ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAnswerQuestion(ctx context.Context, itemID, answer string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -623,6 +628,7 @@ func (a *App) WorkflowAnswerQuestion(ctx context.Context, itemID, answer string)
 }
 
 //ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowResolveGate(ctx context.Context, itemID, decision, note string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -645,6 +651,7 @@ func (a *App) WorkflowResolveGate(ctx context.Context, itemID, decision, note st
 // about is not the same act as pausing.
 //
 //ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowSetGlobalPause(paused bool) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -665,6 +672,7 @@ func (a *App) WorkflowSetGlobalPause(paused bool) error {
 // authority; settings are only its restart-surviving copy.
 //
 //ao:scope threads:read
+//ao:route home
 func (a *App) WorkflowGetEngineState() (engine.EngineState, error) {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -828,6 +836,7 @@ type WorkflowRunSpend struct {
 }
 
 //ao:scope threads:read
+//ao:route home
 func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 	if a.store == nil {
 		return WorkflowItemDetailView{}, fmt.Errorf("workflow store unavailable")

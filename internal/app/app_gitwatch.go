@@ -91,6 +91,7 @@ func (a *App) GitStatusSubscribe(ctx context.Context, threadID string) (GitStatu
 // first on disconnect.
 //
 //ao:scope git:operate
+//ao:route home
 func (a *App) GitStatusUnsubscribe(subscriptionID string) error {
 	a.gitApplication().Unsubscribe(subscriptionID)
 	return nil

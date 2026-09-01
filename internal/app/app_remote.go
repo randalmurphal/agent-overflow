@@ -20,6 +20,7 @@ type RemoteEndpointSummary = settings.RemoteEndpointSummary
 // backends.
 //
 //ao:scope settings:write
+//ao:route home
 func (a *App) ListRemoteEndpoints() ([]RemoteEndpointSummary, error) {
 	if a.settings == nil {
 		return nil, fmt.Errorf("settings service unavailable")
@@ -44,6 +45,7 @@ func (a *App) ListRemoteEndpoints() ([]RemoteEndpointSummary, error) {
 // token-holder.
 //
 //ao:scope host
+//ao:route home
 func (a *App) GetRemoteEndpointToken(id string) (string, error) {
 	if a.settings == nil {
 		return "", fmt.Errorf("settings service unavailable")
@@ -70,6 +72,7 @@ func (a *App) GetRemoteEndpointToken(id string) (string, error) {
 // GetRemoteEndpointToken when the user copies the launch command.
 //
 //ao:scope settings:write
+//ao:route home
 func (a *App) AddRemoteEndpoint(name, url, token string) (RemoteEndpointSummary, error) {
 	if a.settings == nil {
 		return RemoteEndpointSummary{}, fmt.Errorf("settings service unavailable")
@@ -91,6 +94,7 @@ func (a *App) AddRemoteEndpoint(name, url, token string) (RemoteEndpointSummary,
 // AddRemoteEndpoint for the reasoning.
 //
 //ao:scope settings:write
+//ao:route home
 func (a *App) UpdateRemoteEndpoint(id, name, url, token string) (RemoteEndpointSummary, error) {
 	if a.settings == nil {
 		return RemoteEndpointSummary{}, fmt.Errorf("settings service unavailable")
@@ -107,6 +111,7 @@ func (a *App) UpdateRemoteEndpoint(id, name, url, token string) (RemoteEndpointS
 // rather than silently no-oping.
 //
 //ao:scope settings:write
+//ao:route home
 func (a *App) DeleteRemoteEndpoint(id string) error {
 	if a.settings == nil {
 		return fmt.Errorf("settings service unavailable")
@@ -119,6 +124,7 @@ func (a *App) DeleteRemoteEndpoint(id string) error {
 // list can sort or visually emphasise recently-used endpoints.
 //
 //ao:scope settings:write
+//ao:route home
 func (a *App) TouchRemoteEndpoint(id string) error {
 	if a.settings == nil {
 		return fmt.Errorf("settings service unavailable")

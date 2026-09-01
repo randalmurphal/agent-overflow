@@ -193,6 +193,7 @@ type SessionImportProgressEvent struct {
 // fail the call — a broken Codex home must not take Claude's sessions away.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) ListImportableSessions(req ImportScanRequest) (ImportScanResult, error) {
 	scan, err := a.sessionImporter().List(req.ForceRefresh)
 	if err != nil {
@@ -261,6 +262,7 @@ func (a *App) ImportThreadUpdates(threadID string) (ImportUpdateResult, error) {
 // twice.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) ImportSessions(req ImportSessionsRequest) (ImportRunHandle, error) {
 	handle, err := a.sessionImporter().Start(req.IDs)
 	if err != nil {
@@ -274,6 +276,7 @@ func (a *App) ImportSessions(req ImportSessionsRequest) (ImportRunHandle, error)
 // end from silence.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) CancelSessionImport(importID string) error {
 	return a.sessionImporter().Cancel(importID)
 }

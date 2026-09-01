@@ -66,6 +66,7 @@ type ReleaseSummary struct {
 // does not depend on the network.
 //
 //ao:scope host
+//ao:route home
 func (a *App) CheckForUpdate() (UpdateAvailability, error) {
 	if a.updater == nil {
 		return UpdateAvailability{CurrentVersion: a.version}, nil
@@ -91,6 +92,7 @@ func wireUpdateAvailability(availability appupdate.UpdateAvailability) UpdateAva
 // newest first, so the frontend can offer a version picker. Read-only; LocalOnly.
 //
 //ao:scope host
+//ao:route home
 func (a *App) ListReleases() ([]ReleaseSummary, error) {
 	if a.updater == nil {
 		return nil, ErrUpdatesUnsupported
@@ -142,6 +144,7 @@ func wireReleaseSummaries(releases []appupdate.ReleaseSummary) []ReleaseSummary 
 // chosen release is being resolved and installed.
 //
 //ao:scope host
+//ao:route home
 func (a *App) DownloadUpdate(tag string) error {
 	if a.updater == nil {
 		return ErrUpdatesUnsupported
@@ -164,6 +167,7 @@ func (a *App) DownloadUpdate(tag string) error {
 // kill it. See restartToUpdateWSL.
 //
 //ao:scope host
+//ao:route home
 func (a *App) RestartToUpdate() error {
 	if a.updater == nil {
 		return ErrUpdatesUnsupported
@@ -193,6 +197,7 @@ func (a *App) RestartToUpdate() error {
 // the updater's busy fence.
 //
 //ao:scope host
+//ao:route home
 func (a *App) ReportUpdateInstallStatus(stage, version, message string) error {
 	if a.updater == nil {
 		return ErrUpdatesUnsupported

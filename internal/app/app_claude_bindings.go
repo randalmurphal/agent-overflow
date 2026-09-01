@@ -84,6 +84,7 @@ type ThreadContextUsageCategory struct {
 // shape grows a path or env field, re-run the decision.
 //
 //ao:scope threads:read
+//ao:route selected
 func (a *App) GetClaudeSlashCommands() ClaudeSlashCommands {
 	commands, probed := a.providerDiscoveryService().ClaudeCommands()
 	return ClaudeSlashCommands{Probed: probed, Commands: slicesx.OrEmpty(commands)}
@@ -156,6 +157,7 @@ func projectThreadContextUsage(usage *claude.ContextUsage) ThreadContextUsage {
 // workspace tree, and its rows name what is installed on the host.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) GetClaudeSkills(workspacePath string) ([]claudeconfig.Skill, error) {
 	return a.claudeAppService().Skills(workspacePath)
 }

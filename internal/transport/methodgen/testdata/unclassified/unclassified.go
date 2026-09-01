@@ -10,6 +10,7 @@ type Delta struct{}
 // refusal names only the methods actually at fault.
 //
 //ao:scope threads:read
+//ao:route home
 func (d *Delta) Annotated() {}
 
 // Unannotated carries prose and no directive, which is the shape a new

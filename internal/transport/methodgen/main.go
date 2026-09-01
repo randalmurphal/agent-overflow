@@ -23,6 +23,23 @@
 // naming a scope nobody declared, fails the run with every offending
 // name listed — the completeness gate is the generator, not a test.
 //
+// Every collected method also carries a ROUTE, naming which attached
+// backend the call belongs to (docs/specs/remote-access.md §10). Two of
+// the five values are INFERRED from the method's first non-context
+// parameter — threadID means `thread`, projectID means `project` —
+// because those two ids are minted to be unique across backends
+// (internal/entityid) and a client resolves them with no other help.
+// Everything else declares `//ao:route home|selected|all`, and an
+// explicit directive overrides the inference where a case needs it.
+// Unrouted fails the run exactly as unscoped does: an unclassified
+// method is one nobody decided about, and on a multi-backend client it
+// would silently answer from whichever socket happened to be first.
+//
+// The table is mirrored into TypeScript at
+// frontend/src/lib/transport/methodRoutes.ts by the same run, because
+// the client is the only consumer of the column and two hand-kept copies
+// agree only until the first edit.
+//
 // Method-name -> FNV-1a-32 ID map matches Wails' internal/hash.Fnv
 // (verified at v3.0.0-alpha.76 against the generated frontend bindings:
 // fnvHash("main.App.ArchiveProject") == 1352159878).
@@ -30,6 +47,7 @@
 // Run via:
 //
 //	go run ./internal/transport/methodgen [-out internal/transport/methods_gen.go]
+//	  [-ts-out frontend/src/lib/transport/methodRoutes.ts]
 package main
 
 import (
@@ -48,7 +66,10 @@ import (
 	"strings"
 )
 
-const defaultOut = "internal/transport/methods_gen.go"
+const (
+	defaultOut   = "internal/transport/methods_gen.go"
+	defaultTSOut = "frontend/src/lib/transport/methodRoutes.ts"
+)
 
 // receiverSpec names one scan target: a directory of Go source, the
 // receiver type declared in it, and the package/type labels its
@@ -175,12 +196,51 @@ func scopesPath(root string) string {
 // every annotation in the tree.
 func loadScopeVocabulary(root string) (map[string]bool, error) {
 	target := scopesPath(root)
+	scopes, err := constStringSet(target, "Scope")
+	if err != nil {
+		return nil, err
+	}
+	if len(scopes) == 0 {
+		return nil, fmt.Errorf("no Scope constants found in %s", target)
+	}
+	return scopes, nil
+}
+
+// routesPath is the route vocabulary's source file. Named once for the
+// same reason scopesPath is.
+func routesPath(root string) string {
+	return filepath.Join(root, "internal/transport/routes.go")
+}
+
+// loadRouteVocabulary parses internal/transport/routes.go for the
+// `MethodRoute` constant block and returns the declared spellings.
+//
+// Parsed rather than restated, for the reason loadScopeVocabulary is:
+// this tool cannot import the package it generates into. An empty result
+// is fatal — a vocabulary nobody declared would refuse every annotation
+// in the tree.
+func loadRouteVocabulary(root string) (map[string]bool, error) {
+	target := routesPath(root)
+	routes, err := constStringSet(target, "MethodRoute")
+	if err != nil {
+		return nil, err
+	}
+	if len(routes) == 0 {
+		return nil, fmt.Errorf("no MethodRoute constants found in %s", target)
+	}
+	return routes, nil
+}
+
+// constStringSet returns every string literal assigned to a constant of
+// the named type in one file. Shared by the scope and route vocabulary
+// readers so the two cannot drift in how they read a const block.
+func constStringSet(target, typeName string) (map[string]bool, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, target, nil, parser.ParseComments)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", target, err)
 	}
-	scopes := map[string]bool{}
+	out := map[string]bool{}
 	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok || gen.Tok != token.CONST {
@@ -198,7 +258,7 @@ func loadScopeVocabulary(root string) (map[string]bool, error) {
 			if ident, ok := vs.Type.(*ast.Ident); ok {
 				groupType = ident.Name
 			}
-			if groupType != "Scope" {
+			if groupType != typeName {
 				continue
 			}
 			for _, value := range vs.Values {
@@ -210,14 +270,22 @@ func loadScopeVocabulary(root string) (map[string]bool, error) {
 				if err != nil {
 					continue
 				}
-				scopes[name] = true
+				out[name] = true
 			}
 		}
 	}
-	if len(scopes) == 0 {
-		return nil, fmt.Errorf("no Scope constants found in %s", target)
-	}
-	return scopes, nil
+	return out, nil
+}
+
+// The two routes methodgen infers, and the parameter name each is
+// inferred from. Declared here rather than inline so the inference rule
+// and its error messages read off one table.
+var inferredRoutes = []struct {
+	param string
+	route string
+}{
+	{param: "threadid", route: "thread"},
+	{param: "projectid", route: "project"},
 }
 
 // MethodEntry is one row in the generated map.
@@ -226,11 +294,13 @@ type MethodEntry struct {
 	ID     uint32
 	FQN    string
 	Scope  string
+	Route  string
 	StepUp bool
 }
 
 func main() {
 	out := flag.String("out", defaultOut, "output file path (relative to repo root)")
+	tsOut := flag.String("ts-out", defaultTSOut, "TypeScript route-mirror output path (relative to repo root)")
 	rootFlag := flag.String("root", ".", "repository root every receiverSpec.Dir resolves against")
 	inputs := flag.String("inputs", "", "write the list of files read, one per line, to this path (for the freshness gate)")
 	flag.Parse()
@@ -249,7 +319,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	entries, err := scanReceivers(root, receiverSpecs, skip, scopes)
+	routes, err := loadRouteVocabulary(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "methodgen: %v\n", err)
+		os.Exit(1)
+	}
+
+	entries, err := scanReceivers(root, receiverSpecs, skip, scopes, routes)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "methodgen: %v\n", err)
 		os.Exit(1)
@@ -280,6 +356,21 @@ func main() {
 		fmt.Fprintf(os.Stderr, "methodgen: write %s: %v\n", target, err)
 		os.Exit(1)
 	}
+
+	// The TS mirror is written by the SAME run, unconditionally. It
+	// carries one column of the table above for a consumer that cannot
+	// read Go, and a second command to run is a second command to
+	// forget — the drift gate would then fail on a file the developer
+	// had no reason to think was stale.
+	tsTarget := *tsOut
+	if !filepath.IsAbs(tsTarget) {
+		tsTarget = filepath.Join(root, tsTarget)
+	}
+	if err := os.WriteFile(tsTarget, renderTS(entries), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "methodgen: write %s: %v\n", tsTarget, err)
+		os.Exit(1)
+	}
+
 	if *inputs != "" {
 		if err := writeInputManifest(root, receiverSpecs, *inputs); err != nil {
 			fmt.Fprintf(os.Stderr, "methodgen: inputs: %v\n", err)
@@ -287,7 +378,7 @@ func main() {
 		}
 	}
 
-	fmt.Printf("methodgen: wrote %d methods to %s\n", len(entries), target)
+	fmt.Printf("methodgen: wrote %d methods to %s and %s\n", len(entries), target, tsTarget)
 }
 
 // writeInputManifest records every file this run read, one absolute path
@@ -303,7 +394,7 @@ func main() {
 // a full six-gate run (2026-08-30). The gate reads this manifest's files
 // so the cache key covers what the generator actually parsed.
 func writeInputManifest(root string, specs []receiverSpec, target string) error {
-	paths := []string{internalMethodsPath(root), scopesPath(root)}
+	paths := []string{internalMethodsPath(root), scopesPath(root), routesPath(root)}
 	for _, spec := range specs {
 		// The DIRECTORY as well as its files. Go's cache hashes a file by
 		// content but a directory by its entry list, and only the second
@@ -362,13 +453,13 @@ func specFiles(root string, spec receiverSpec) ([]string, error) {
 // generator is the one gate that runs before the name reaches the wire
 // at all. Every offending name is collected and reported together, so
 // one run tells a developer everything they have to classify.
-func scanReceivers(root string, specs []receiverSpec, skip map[string]bool, scopes map[string]bool) ([]MethodEntry, error) {
+func scanReceivers(root string, specs []receiverSpec, skip, scopes, routes map[string]bool) ([]MethodEntry, error) {
 	fset := token.NewFileSet()
 	var entries []MethodEntry
 	// method name -> the FQN that claimed it, for the collision report.
 	claimed := map[string]string{}
 	// Annotation faults, collected across every spec and reported once.
-	var unannotated, undeclared []string
+	var unannotated, undeclared, unrouted, undeclaredRoute []string
 
 	for _, spec := range specs {
 		paths, err := specFiles(root, spec)
@@ -415,7 +506,7 @@ func scanReceivers(root string, specs []receiverSpec, skip map[string]bool, scop
 				}
 				claimed[name] = fqn
 
-				scope, stepUp, err := methodAnnotations(fn.Doc)
+				scope, route, stepUp, err := methodAnnotations(fn.Doc)
 				if err != nil {
 					return nil, fmt.Errorf("%s (%s): %w", name, path, err)
 				}
@@ -426,11 +517,25 @@ func scanReceivers(root string, specs []receiverSpec, skip map[string]bool, scop
 					undeclared = append(undeclared, fmt.Sprintf("%s (//ao:scope %s)", name, scope))
 				}
 
+				// An explicit directive wins over the inference, so a
+				// method whose first parameter is a thread id but whose
+				// call belongs to the page's own backend can say so.
+				if route == "" {
+					route = inferRoute(fn.Type.Params)
+				}
+				switch {
+				case route == "":
+					unrouted = append(unrouted, name)
+				case !routes[route]:
+					undeclaredRoute = append(undeclaredRoute, fmt.Sprintf("%s (//ao:route %s)", name, route))
+				}
+
 				entries = append(entries, MethodEntry{
 					Name:   name,
 					ID:     fnvHash(fqn),
 					FQN:    fqn,
 					Scope:  scope,
+					Route:  route,
 					StepUp: stepUp,
 				})
 			}
@@ -447,22 +552,89 @@ func scanReceivers(root string, specs []receiverSpec, skip map[string]bool, scop
 	}
 	if len(undeclared) > 0 {
 		sort.Strings(undeclared)
-		declared := make([]string, 0, len(scopes))
-		for name := range scopes {
-			declared = append(declared, name)
-		}
-		sort.Strings(declared)
 		return nil, fmt.Errorf("%d bound method(s) name an undeclared scope: %s\nDeclared scopes: %s",
-			len(undeclared), strings.Join(undeclared, ", "), strings.Join(declared, ", "))
+			len(undeclared), strings.Join(undeclared, ", "), strings.Join(sortedKeys(scopes), ", "))
+	}
+	if len(unrouted) > 0 {
+		sort.Strings(unrouted)
+		return nil, fmt.Errorf("%d bound method(s) carry no route: %s\n"+
+			"A client attached to several backends picks one before it writes a frame, so every bound method "+
+			"says which (docs/specs/remote-access.md §10). `thread` and `project` are inferred from a first "+
+			"parameter named threadID or projectID; everything else adds `//ao:route home|selected|all` to the "+
+			"doc comment, naming a route internal/transport/routes.go declares",
+			len(unrouted), strings.Join(unrouted, ", "))
+	}
+	if len(undeclaredRoute) > 0 {
+		sort.Strings(undeclaredRoute)
+		return nil, fmt.Errorf("%d bound method(s) name an undeclared route: %s\nDeclared routes: %s",
+			len(undeclaredRoute), strings.Join(undeclaredRoute, ", "), strings.Join(sortedKeys(routes), ", "))
 	}
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return entries, nil
 }
 
+// sortedKeys renders a vocabulary set for an error message.
+func sortedKeys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for name := range set {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// inferRoute reads the route off the method's first non-context
+// parameter, answering "" when nothing matches.
+//
+// Only two ids are inferrable, and it is not a naming convention that
+// makes them so: thread ids and project ids are minted to be unique
+// across BACKENDS (internal/entityid), so a client holding one can name
+// the backend that owns it with no other help. Every other id in the
+// tree is unique within one database, which is exactly why the rest of
+// the table is authored rather than guessed.
+//
+// The comparison is case-insensitive because Go source spells the same
+// parameter threadID and threadId in different files, and a route that
+// depended on which would be a routing decision made by a typo.
+func inferRoute(params *ast.FieldList) string {
+	if params == nil {
+		return ""
+	}
+	for _, field := range params.List {
+		if len(field.Names) == 0 {
+			continue
+		}
+		if isContextType(field.Type) {
+			continue
+		}
+		name := strings.ToLower(field.Names[0].Name)
+		for _, candidate := range inferredRoutes {
+			if name == candidate.param {
+				return candidate.route
+			}
+		}
+		return ""
+	}
+	return ""
+}
+
+// isContextType reports whether expr is context.Context. A bound method
+// may take one as its leading parameter (transport.ClientFromContext
+// reads the calling screen off it) and the generated TS bindings strip
+// it, so it is never the parameter a route is inferred from.
+func isContextType(expr ast.Expr) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Context" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "context"
+}
+
 // methodAnnotations reads the //ao: directives out of one method's doc
-// comment: the mandatory `//ao:scope <name>` and the optional
-// `//ao:stepup`.
+// comment: the mandatory `//ao:scope <name>`, the route override
+// `//ao:route <name>`, and the optional `//ao:stepup`.
 //
 // Comment directives rather than struct tags or a side table, for the
 // same reason //wails:ignore is one: the classification travels with the
@@ -475,9 +647,9 @@ func scanReceivers(root string, specs []receiverSpec, skip map[string]bool, scop
 // A malformed or repeated directive IS an error: it is a typo in a line
 // somebody wrote on purpose, and guessing which one they meant would
 // silently classify a method.
-func methodAnnotations(doc *ast.CommentGroup) (scope string, stepUp bool, err error) {
+func methodAnnotations(doc *ast.CommentGroup) (scope, route string, stepUp bool, err error) {
 	if doc == nil {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	for _, c := range doc.List {
 		switch {
@@ -486,23 +658,34 @@ func methodAnnotations(doc *ast.CommentGroup) (scope string, stepUp bool, err er
 		case strings.HasPrefix(c.Text, scopeDirective):
 			value := strings.TrimSpace(strings.TrimPrefix(c.Text, scopeDirective))
 			if value == "" {
-				return "", false, fmt.Errorf("%s directive names no scope", scopeDirective)
+				return "", "", false, fmt.Errorf("%s directive names no scope", scopeDirective)
 			}
 			if scope != "" {
-				return "", false, fmt.Errorf("two %s directives (%q and %q); a method exercises one capability",
+				return "", "", false, fmt.Errorf("two %s directives (%q and %q); a method exercises one capability",
 					scopeDirective, scope, value)
 			}
 			scope = value
+		case strings.HasPrefix(c.Text, routeDirective):
+			value := strings.TrimSpace(strings.TrimPrefix(c.Text, routeDirective))
+			if value == "" {
+				return "", "", false, fmt.Errorf("%s directive names no route", routeDirective)
+			}
+			if route != "" {
+				return "", "", false, fmt.Errorf("two %s directives (%q and %q); a call belongs to one backend",
+					routeDirective, route, value)
+			}
+			route = value
 		}
 	}
-	return scope, stepUp, nil
+	return scope, route, stepUp, nil
 }
 
-// The two directive spellings, named once so the parser and every error
+// The directive spellings, named once so the parser and every error
 // message agree. gofmt strips trailing space, so the step-up line is an
 // exact match the way //wails:ignore is.
 const (
 	scopeDirective  = "//ao:scope"
+	routeDirective  = "//ao:route"
 	stepUpDirective = "//ao:stepup"
 )
 
@@ -571,10 +754,19 @@ package transport
 // method's doc comment; the generator refuses to emit a table with an
 // unannotated method in it, which is what makes every row below a
 // decision somebody made (docs/specs/remote-access.md §5).
+//
+// Route names WHICH attached backend the call belongs to
+// (docs/specs/remote-access.md §10). It is inferred from a first
+// parameter named threadID or projectID and declared with //ao:route
+// otherwise; unrouted fails the run the same way unscoped does. Nothing
+// on this side reads it — one connection is one backend — so it travels
+// to the client through the generated mirror at
+// frontend/src/lib/transport/methodRoutes.ts.
 type MethodMeta struct {
 	Name   string
 	ID     uint32
 	Scope  Scope
+	Route  MethodRoute
 	StepUp bool
 }
 
@@ -585,7 +777,7 @@ type MethodMeta struct {
 var GeneratedMethods = []MethodMeta{
 `)
 	for _, e := range entries {
-		fmt.Fprintf(&buf, "\t{Name: %q, ID: %d, Scope: %q", e.Name, e.ID, e.Scope)
+		fmt.Fprintf(&buf, "\t{Name: %q, ID: %d, Scope: %q, Route: %q", e.Name, e.ID, e.Scope, e.Route)
 		if e.StepUp {
 			buf.WriteString(", StepUp: true")
 		}
@@ -605,4 +797,37 @@ func NewMethodAllowList() map[string]bool {
 }
 `)
 	return buf.Bytes(), nil
+}
+
+// renderTS emits the TypeScript mirror of the Route column.
+//
+// Keyed by method ID rather than by name, because that is what the
+// client has when it routes: the generated bindings call $Call.ByID(id,
+// ...args) and never mention the method's name. A name-keyed map would
+// make every call site do a lookup the wire does not need.
+//
+// The row comment carries the name anyway, so a diff on this file reads
+// as method names rather than as thirty-two-bit integers.
+func renderTS(entries []MethodEntry) []byte {
+	var buf bytes.Buffer
+	buf.WriteString(`// Code generated by internal/transport/methodgen. DO NOT EDIT.
+//
+// Run "go run ./internal/transport/methodgen" to regenerate.
+//
+// Which attached backend each bound method's call belongs to
+// (docs/specs/remote-access.md §10, "Routing an RPC"). The Go half is
+// internal/transport/methods_gen.go's Route column, generated from the
+// same scan in the same run; the thread and project routes are inferred
+// from the method's first parameter, the rest are authored //ao:route
+// directives.
+
+export type MethodRoute = 'thread' | 'project' | 'home' | 'selected' | 'all';
+
+export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
+`)
+	for _, e := range entries {
+		fmt.Fprintf(&buf, "\t%d: '%s', // %s\n", e.ID, e.Route, e.Name)
+	}
+	buf.WriteString("};\n")
+	return buf.Bytes()
 }

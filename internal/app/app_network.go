@@ -68,6 +68,7 @@ func (a *App) networkSettingsForCallerWithLAN(
 // sign-in link — are what remote administration needs, and they travel.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) GetNetworkSettings(ctx context.Context) (network.Settings, error) {
 	return a.networkSettingsForCaller(ctx, a.persistedNetworkSettings()), nil
 }
@@ -105,6 +106,7 @@ func (a *App) GetNetworkSettings(ctx context.Context) (network.Settings, error) 
 // and its return carried the launch token to it until that pick existed.
 //
 //ao:scope settings:write
+//ao:route home
 //ao:stepup
 func (a *App) SetNetworkSettings(ctx context.Context, s network.Settings) (network.Settings, error) {
 	if a.settings == nil {
@@ -221,6 +223,7 @@ func (a *App) SetNetworkSettings(ctx context.Context, s network.Settings) (netwo
 // gate the retry of an act that was already proved.
 //
 //ao:scope host
+//ao:route home
 func (a *App) RenewCanonicalDomainCert(ctx context.Context) (network.Settings, error) {
 	if a.settings == nil {
 		return network.Settings{}, fmt.Errorf("settings service unavailable")

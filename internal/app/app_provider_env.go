@@ -26,6 +26,7 @@ import (
 // duplicates are rejected here — never dropped silently at spawn time.
 //
 //ao:scope settings:write
+//ao:route home
 //ao:stepup
 func (a *App) SetProviderCustomEnvVar(
 	providerName, name, value string,
@@ -43,6 +44,7 @@ func (a *App) SetProviderCustomEnvVar(
 // about it instead of appearing to succeed.
 //
 //ao:scope settings:write
+//ao:route home
 //ao:stepup
 func (a *App) DeleteProviderCustomEnvVar(providerName, name string) (settings.Settings, error) {
 	next, err := a.providerDiscoveryService().DeleteProviderCustomEnvVar(providerName, name)

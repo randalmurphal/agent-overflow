@@ -56,6 +56,7 @@ func (a *App) paneHostOptions() *appbrowser.PaneHostOptions {
 // grant opens it.
 //
 //ao:scope host
+//ao:route home
 func (a *App) BrowserHostReport(pageID, kind, detail string) error {
 	manager := a.browser.manager
 	if manager == nil {

@@ -17,6 +17,7 @@ import (
 // keeps only the latest per-provider entry.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) GetProviderStatuses() ([]provider.ProviderStatus, error) {
 	return a.providerDiscoveryService().ProviderStatuses(), nil
 }
@@ -40,6 +41,7 @@ func (a *App) currentSettings() settings.Settings {
 // it — a background saga, a test — reads the desktop class's defaults.
 //
 //ao:scope settings:read
+//ao:route home
 func (a *App) GetSettings(ctx context.Context) (settings.Settings, error) {
 	if a.settings == nil {
 		return settings.DefaultSettings, nil
@@ -118,6 +120,7 @@ func redactedSettings(current settings.Settings) settings.Settings {
 // need a fresh step-up proof.
 //
 //ao:scope session
+//ao:route home
 func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (settings.Settings, error) {
 	if a.settings == nil {
 		return settings.Settings{}, fmt.Errorf("settings service unavailable")
@@ -233,6 +236,7 @@ func patchTouchesLiveClaudeAxis(patch map[string]any) bool {
 // else is the shipped list verbatim.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) GetModelsForProvider(providerName string) ([]provider.ModelInfo, error) {
 	return a.providerDiscoveryService().ModelsForProvider(context.Background(), providerName)
 }

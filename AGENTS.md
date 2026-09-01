@@ -202,7 +202,11 @@ See [docs/references/spike-policy.md](docs/references/spike-policy.md).
   wire RPC, so it carries an `//ao:scope <name>` annotation naming the
   capability it exercises — `methodgen` fails the run without one, and
   that scope is what the per-call gate compares a session's grants
-  against. See `internal/transport/AGENTS.md` for the vocabulary, the
+  against. It also carries a ROUTE, naming which attached backend the
+  call belongs to: `thread` and `project` are inferred from a first
+  parameter named `threadID` / `projectID`, and everything else declares
+  `//ao:route home|selected|all` or the same generator fails the run.
+  See `internal/transport/AGENTS.md` for both vocabularies, the
   step-up set, and the authz and replay rules.
 
 - **`.claude/` and `.playwright-mcp/` MUST stay excluded from the

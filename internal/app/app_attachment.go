@@ -115,6 +115,7 @@ func (a *App) ListAttachments(threadID string) ([]store.Attachment, error) {
 // DeleteAttachment removes both the metadata row and the disk file.
 //
 //ao:scope attachments:write
+//ao:route selected
 func (a *App) DeleteAttachment(attachmentID string) error {
 	if a.attachments == nil {
 		return fmt.Errorf("attachment store not initialized")

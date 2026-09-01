@@ -36,6 +36,7 @@ type EditorInfo struct {
 // for the WSL-bridge resolution rules.
 //
 //ao:scope host
+//ao:route home
 func (a *App) ListAvailableEditors() ([]EditorInfo, error) {
 	detected := editor.DetectEditors(context.Background())
 	out := make([]EditorInfo, 0, len(detected))
@@ -90,6 +91,7 @@ func (a *App) ListAvailableEditors() ([]EditorInfo, error) {
 // sentinel error.
 //
 //ao:scope host
+//ao:route home
 func (a *App) OpenInEditor(path string, line, col int, workspacePath, editorID string) error {
 	// editor.ResolvePath (called inside editor.Open) is the single source
 	// of truth for the path-shape contract: empty / non-canonical / UNC
@@ -129,6 +131,7 @@ func (a *App) OpenInEditor(path string, line, col int, workspacePath, editorID s
 // "Auto" pill rather than guessing on the frontend.
 //
 //ao:scope settings:read
+//ao:route home
 func (a *App) GetEditorSettings() settings.EditorSettings {
 	if a.settings == nil {
 		return settings.EditorSettings{}
@@ -147,6 +150,7 @@ func (a *App) GetEditorSettings() settings.EditorSettings {
 // availability flags.
 //
 //ao:scope settings:write
+//ao:route home
 func (a *App) SetEditorSettings(s settings.EditorSettings) (settings.EditorSettings, error) {
 	// Match the error shape used by every other settings-touching
 	// binding ("settings service unavailable") rather than ErrShuttingDown,

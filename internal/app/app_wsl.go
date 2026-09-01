@@ -24,6 +24,7 @@ var (
 // distribution.
 //
 //ao:scope threads:read
+//ao:route home
 func (a *App) IsWSL() (bool, error) {
 	return wslIsWSL(), nil
 }
@@ -33,6 +34,7 @@ func (a *App) IsWSL() (bool, error) {
 // call so a distro installed mid-session shows up without a restart.
 //
 //ao:scope host
+//ao:route home
 func (a *App) ListWSLDistros() ([]wsllauncher.Distro, error) {
 	if !wslIsWSL() {
 		return nil, nil
@@ -50,6 +52,7 @@ func (a *App) ListWSLDistros() ([]wsllauncher.Distro, error) {
 // AGENT_OVERFLOW_WIN_APPDATA, or the wsl.json file doesn't exist yet.
 //
 //ao:scope host
+//ao:route home
 func (a *App) GetWSLDistroPreference() (string, error) {
 	if !wslIsWSL() {
 		return "", nil
@@ -79,6 +82,7 @@ func (a *App) GetWSLDistroPreference() (string, error) {
 // those fields are owned by the launcher's install path.
 //
 //ao:scope host
+//ao:route home
 //ao:stepup
 func (a *App) SetWSLDistroPreference(name string) (string, error) {
 	if !wslIsWSL() {

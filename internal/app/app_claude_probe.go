@@ -51,6 +51,7 @@ func resetClaudeProbeCacheForTest() {
 // already has the value from the original miss.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	return a.providerDiscoveryService().ProbeClaudeAccount()
 }
@@ -67,6 +68,7 @@ func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 // rather than passing a `bypassCache` flag that's easy to forget.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) RecheckClaudeAccount() (provider.AccountInfo, error) {
 	return a.providerDiscoveryService().RecheckClaudeAccount()
 }

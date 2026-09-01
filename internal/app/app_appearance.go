@@ -34,6 +34,7 @@ func (a *App) themeService() (*theme.Service, error) {
 // state, not log entries.
 //
 //ao:scope settings:read
+//ao:route home
 func (a *App) GetThemeFiles() (theme.Files, error) {
 	service, err := a.themeService()
 	if err != nil {
@@ -54,6 +55,7 @@ func (a *App) GetThemeFiles() (theme.Files, error) {
 // already returned.
 //
 //ao:scope settings:write
+//ao:route home
 func (a *App) SetAppearance(appearance theme.Appearance) error {
 	service, err := a.themeService()
 	if err != nil {
@@ -81,6 +83,7 @@ func (a *App) SetAppearance(appearance theme.Appearance) error {
 // can satisfy it. An invalid color is a real error and is reported.
 //
 //ao:scope host
+//ao:route home
 func (a *App) SetWindowBackgroundColor(hex string) error {
 	red, green, blue, err := theme.ParseHexColor(hex)
 	if err != nil {
@@ -142,6 +145,7 @@ func (a *App) spinnerService() (*spinner.Service, error) {
 // state, not log entries.
 //
 //ao:scope settings:read
+//ao:route home
 func (a *App) GetSpinnerFiles() (spinner.Files, error) {
 	service, err := a.spinnerService()
 	if err != nil {

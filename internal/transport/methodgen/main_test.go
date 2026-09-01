@@ -30,11 +30,22 @@ var fixtureScopes = map[string]bool{
 	"host":           true,
 }
 
+// fixtureRoutes is the route vocabulary the fixtures annotate against,
+// hand-written for the reason fixtureScopes is;
+// TestLoadRouteVocabulary_ReadsTheDeclaredSet covers the real file.
+var fixtureRoutes = map[string]bool{
+	"thread":   true,
+	"project":  true,
+	"home":     true,
+	"selected": true,
+	"all":      true,
+}
+
 // TestScanReceivers_MergesSpecsFromDifferentDirs is the multi-receiver
 // gate: two specs in two directories produce one table, sorted by
 // name, with each entry's FQN built from ITS OWN spec's labels.
 func TestScanReceivers_MergesSpecsFromDifferentDirs(t *testing.T) {
-	entries, err := scanReceivers(".", fixtureSpecs, map[string]bool{"Startup": true}, fixtureScopes)
+	entries, err := scanReceivers(".", fixtureSpecs, map[string]bool{"Startup": true}, fixtureScopes, fixtureRoutes)
 	if err != nil {
 		t.Fatalf("scanReceivers: %v", err)
 	}
@@ -78,7 +89,7 @@ func TestScanReceivers_MergesSpecsFromDifferentDirs(t *testing.T) {
 // //wails:ignore, value receivers, *_test.go files, and the internal
 // skip set.
 func TestScanReceivers_SkipRules(t *testing.T) {
-	entries, err := scanReceivers(".", fixtureSpecs, map[string]bool{"Startup": true}, fixtureScopes)
+	entries, err := scanReceivers(".", fixtureSpecs, map[string]bool{"Startup": true}, fixtureScopes, fixtureRoutes)
 	if err != nil {
 		t.Fatalf("scanReceivers: %v", err)
 	}
@@ -111,7 +122,7 @@ func TestScanReceivers_DuplicateNameAcrossSpecs(t *testing.T) {
 		{Dir: "testdata/alpha", Receiver: "Alpha", Package: "main"},
 		{Dir: "testdata/beta", Receiver: "Gamma", Package: "svc", TypeName: "App"},
 	}
-	_, err := scanReceivers(".", specs, nil, fixtureScopes)
+	_, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
 	if err == nil {
 		t.Fatal("want a collision error for SharedName declared on both receivers, got nil")
 	}
@@ -127,7 +138,7 @@ func TestScanReceivers_DuplicateNameAcrossSpecs(t *testing.T) {
 // would strip every one of its methods from the wire.
 func TestScanReceivers_MissingDir(t *testing.T) {
 	specs := []receiverSpec{{Dir: "testdata/nope", Receiver: "Alpha", Package: "main"}}
-	if _, err := scanReceivers(".", specs, nil, fixtureScopes); err == nil {
+	if _, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes); err == nil {
 		t.Fatal("want an error for a spec naming a missing directory, got nil")
 	}
 }
@@ -163,7 +174,7 @@ func TestReceiverSpecs_TodaysConfig(t *testing.T) {
 // wave of failing runs.
 func TestScanReceivers_RefusesUnannotatedMethods(t *testing.T) {
 	specs := []receiverSpec{{Dir: "testdata/unclassified", Receiver: "Delta", Package: "main"}}
-	_, err := scanReceivers(".", specs, nil, fixtureScopes)
+	_, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
 	if err == nil {
 		t.Fatal("want a refusal for the unannotated fixture methods, got nil")
 	}
@@ -184,7 +195,7 @@ func TestScanReceivers_RefusesUnannotatedMethods(t *testing.T) {
 // grant can ever admit.
 func TestScanReceivers_RefusesUndeclaredScope(t *testing.T) {
 	specs := []receiverSpec{{Dir: "testdata/badscope", Receiver: "Epsilon", Package: "main"}}
-	_, err := scanReceivers(".", specs, nil, fixtureScopes)
+	_, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
 	if err == nil {
 		t.Fatal("want a refusal for the undeclared scope, got nil")
 	}
@@ -201,7 +212,7 @@ func TestScanReceivers_RefusesUndeclaredScope(t *testing.T) {
 // //ao:stepup is a mandatory per-call proof quietly becoming optional.
 func TestScanReceivers_ParsesStepUp(t *testing.T) {
 	specs := []receiverSpec{{Dir: "testdata/stepup", Receiver: "Zeta", Package: "main"}}
-	entries, err := scanReceivers(".", specs, nil, fixtureScopes)
+	entries, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
 	if err != nil {
 		t.Fatalf("scanReceivers: %v", err)
 	}
@@ -243,5 +254,104 @@ func TestLoadScopeVocabulary_ReadsTheDeclaredSet(t *testing.T) {
 	// here rather than in whichever annotation used it.
 	if len(scopes) != 13 {
 		t.Errorf("collected %d scopes (%v), want the eleven grantable names plus session and host", len(scopes), scopes)
+	}
+}
+
+// TestScanReceivers_InfersRouteFromTheFirstParameter pins the half of
+// the Route column nobody writes down. Thread and project ids are
+// unique across BACKENDS (internal/entityid), so a client resolves one
+// with no other help — which is why exactly those two are inferred and
+// every other id is authored.
+//
+// The context and casing cases are here because both are real in the
+// tree: a bound method may take a leading ctx (stripped by the TS
+// bindings) and the same parameter is spelled threadID in one file and
+// threadId in another. A route that changed with either would be a
+// routing decision made by a typo.
+func TestScanReceivers_InfersRouteFromTheFirstParameter(t *testing.T) {
+	specs := []receiverSpec{{Dir: "testdata/routes", Receiver: "Eta", Package: "main"}}
+	entries, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
+	if err != nil {
+		t.Fatalf("scanReceivers: %v", err)
+	}
+	got := map[string]string{}
+	for _, e := range entries {
+		got[e.Name] = e.Route
+	}
+	want := map[string]string{
+		"Threaded":    "thread",
+		"ThreadedCtx": "thread",
+		"Projected":   "project",
+		"Overridden":  "home",
+		"Declared":    "all",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("collected %v, want %v", got, want)
+	}
+	for name, route := range want {
+		if got[name] != route {
+			t.Errorf("%s: route = %q, want %q", name, got[name], route)
+		}
+	}
+}
+
+// TestScanReceivers_RefusesUnroutedMethods is the route half of the
+// completeness gate. A method nobody routed is one a multi-backend
+// client would answer from whichever socket happened to be first, which
+// is a wrong answer that looks like a right one — so it stops the run,
+// listing every offender the way the scope gate does.
+func TestScanReceivers_RefusesUnroutedMethods(t *testing.T) {
+	specs := []receiverSpec{{Dir: "testdata/unrouted", Receiver: "Theta", Package: "main"}}
+	_, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
+	if err == nil {
+		t.Fatal("want a refusal for the unrouted fixture methods, got nil")
+	}
+	for _, want := range []string{"Unrouted", "AlsoUnrouted", "//ao:route"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not name %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "Routed,") || strings.Contains(err.Error(), " Routed ") {
+		t.Errorf("refusal %q names the correctly routed control method", err)
+	}
+}
+
+// TestScanReceivers_RefusesUndeclaredRoute closes the other half, for
+// the reason the undeclared-scope refusal exists: a typo one
+// transposition off a real route reads correct in review, and would
+// land as a value no client can resolve.
+func TestScanReceivers_RefusesUndeclaredRoute(t *testing.T) {
+	specs := []receiverSpec{{Dir: "testdata/badroute", Receiver: "Iota", Package: "main"}}
+	_, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
+	if err == nil {
+		t.Fatal("want a refusal for the undeclared route, got nil")
+	}
+	for _, want := range []string{"Typo", "hoem", "home"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not name %q — the faulty method, its typo, and the declared set", err, want)
+		}
+	}
+}
+
+// TestLoadRouteVocabulary_ReadsTheDeclaredSet reads the real
+// internal/transport/routes.go, for the reason its scope counterpart
+// reads scopes.go: the generator's whole defence against a typo is that
+// the vocabulary comes from the file the client mirror is generated
+// against.
+func TestLoadRouteVocabulary_ReadsTheDeclaredSet(t *testing.T) {
+	routes, err := loadRouteVocabulary("../../..")
+	if err != nil {
+		t.Fatalf("loadRouteVocabulary: %v", err)
+	}
+	for _, want := range []string{"thread", "project", "home", "selected", "all"} {
+		if !routes[want] {
+			t.Errorf("declared vocabulary is missing %q", want)
+		}
+	}
+	if routes["MethodRoute"] || routes[""] {
+		t.Errorf("vocabulary collected a non-value: %v", routes)
+	}
+	if len(routes) != 5 {
+		t.Errorf("collected %d routes (%v), want exactly the five §10 names", len(routes), routes)
 	}
 }

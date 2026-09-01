@@ -158,6 +158,7 @@ func (a *App) activateNotificationTarget(target notify.Target) error {
 // emits the same frontend event as the in-process desktop callback.
 //
 //ao:scope host
+//ao:route home
 func (a *App) NotificationActivated(target notify.Target) error {
 	return a.activateNotificationTarget(target)
 }

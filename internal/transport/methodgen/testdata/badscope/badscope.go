@@ -11,10 +11,12 @@ type Epsilon struct{}
 // typo.
 //
 //ao:scope threads:read
+//ao:route home
 func (e *Epsilon) Fine() {}
 
 // Typo names a scope one character off a real one, which is exactly the
 // case a closed vocabulary exists to catch: it reads correct.
 //
 //ao:scope threads:reed
+//ao:route home
 func (e *Epsilon) Typo() {}

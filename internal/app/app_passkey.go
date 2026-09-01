@@ -216,6 +216,7 @@ type PasskeyStepUpGrant struct {
 // could register its way around its own revocation.
 //
 //ao:scope access:admin
+//ao:route home
 //ao:stepup
 func (a *App) BeginPasskeyRegistration(label string) (PasskeyChallengeResult, error) {
 	state, err := a.accessState()
@@ -252,6 +253,7 @@ func (a *App) BeginPasskeyRegistration(label string) (PasskeyChallengeResult, er
 // lifecycle.spec.ts`). Registering remotely also cost two prompts.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) FinishPasskeyRegistration(ceremonyID string, response json.RawMessage) (PasskeySummary, error) {
 	state, err := a.accessState()
 	if err != nil {
@@ -267,6 +269,7 @@ func (a *App) FinishPasskeyRegistration(ceremonyID string, response json.RawMess
 // ListPasskeys returns the owner's registered credentials, oldest first.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) ListPasskeys() ([]PasskeySummary, error) {
 	state, err := a.accessState()
 	if err != nil {
@@ -296,6 +299,7 @@ func (a *App) ListPasskeys() ([]PasskeySummary, error) {
 // other one is — and the surface says so rather than implying otherwise.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) DeletePasskey(passkeyID string) (bool, error) {
 	state, err := a.accessState()
 	if err != nil {
@@ -320,6 +324,7 @@ func (a *App) DeletePasskey(passkeyID string) (bool, error) {
 // signature from a credential registered on this account.
 //
 //ao:scope session
+//ao:route home
 func (a *App) BeginPasskeyStepUp(ctx context.Context) (PasskeyChallengeResult, error) {
 	state, err := a.accessState()
 	if err != nil {
@@ -348,6 +353,7 @@ func (a *App) BeginPasskeyStepUp(ctx context.Context) (PasskeyChallengeResult, e
 // connection's session when it is spent (transport.Config.StepUpProof).
 //
 //ao:scope session
+//ao:route home
 func (a *App) FinishPasskeyStepUp(ceremonyID string, response json.RawMessage) (PasskeyStepUpGrant, error) {
 	state, err := a.accessState()
 	if err != nil {

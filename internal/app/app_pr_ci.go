@@ -24,6 +24,7 @@ type PRCIJobLogResult struct {
 }
 
 //ao:scope git:operate
+//ao:route selected
 func (a *App) GetPRCIJobs(pr gitops.PRReference) (gitops.CIPipeline, error) {
 	if a.shuttingDown.Load() {
 		return gitops.CIPipeline{}, ErrShuttingDown
@@ -35,6 +36,7 @@ func (a *App) GetPRCIJobs(pr gitops.PRReference) (gitops.CIPipeline, error) {
 }
 
 //ao:scope git:operate
+//ao:route selected
 func (a *App) GetPRCIJobLog(pr gitops.PRReference, jobID string) (PRCIJobLogResult, error) {
 	if a.shuttingDown.Load() {
 		return PRCIJobLogResult{}, ErrShuttingDown
@@ -59,6 +61,7 @@ func (a *App) GetPRCIJobLog(pr gitops.PRReference, jobID string) (PRCIJobLogResu
 // is stable per (pr, job), so a re-save refreshes the same file.
 //
 //ao:scope git:operate
+//ao:route selected
 func (a *App) SavePRCIJobLog(pr gitops.PRReference, jobID, jobName string) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown

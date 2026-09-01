@@ -9,12 +9,14 @@ type Alpha struct{}
 // DoAlpha is collected.
 //
 //ao:scope threads:read
+//ao:route home
 func (a *Alpha) DoAlpha() error { return nil }
 
 // SharedName is collected here and deliberately re-declared on the
 // beta fixture's Gamma, to exercise the cross-spec collision refusal.
 //
 //ao:scope host
+//ao:route home
 func (a *Alpha) SharedName() {}
 
 // unexportedAlpha is skipped: not exported.

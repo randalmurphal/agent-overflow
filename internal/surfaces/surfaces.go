@@ -1087,7 +1087,7 @@ var Registries = []Registry{
 		Routes:    []string{"/ws", "/rpc"},
 		Source:    "internal/transport/methods_gen.go",
 		Symbol:    "GeneratedMethods",
-		RowFields: []string{"Name", "ID", "Scope"},
+		RowFields: []string{"Name", "ID", "Scope", "Route"},
 		Gates: []string{
 			"internal/transport/authorize.go:AuthorizeSessionMethod",
 			"internal/transport/dispatcher.go:ResolveForOrigin",
@@ -1106,7 +1106,14 @@ var Registries = []Registry{
 			"returns, so host tooling stays unenumerable. The per-METHOD " +
 			"origin partition that used to sit beside them is deleted: " +
 			"every off-host connection names a session, and its grants are " +
-			"the answer. `host` is the scope no session may hold.",
+			"the answer. `host` is the scope no session may hold. The Route " +
+			"column is the same table's second classification and no gate " +
+			"here reads it: one connection is one backend, so routing is " +
+			"the CLIENT's decision, made against the generated mirror at " +
+			"frontend/src/lib/transport/methodRoutes.ts. It is listed as a " +
+			"required field for the reason the scope is — a row nobody " +
+			"routed is a call a multi-backend client answers from whichever " +
+			"socket happened to be first.",
 	},
 	{
 		Name:      "event channels",

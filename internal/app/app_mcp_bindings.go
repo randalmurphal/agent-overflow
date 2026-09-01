@@ -214,6 +214,7 @@ func (a *App) ReconnectMcpServer(threadID, name string) error {
 // hits but still single-flights concurrent callers.
 //
 //ao:scope settings:write
+//ao:route home
 func (a *App) GetMcpServerStatus(providerName, name string, force bool) (mcpstatus.ServerStatus, error) {
 	return a.mcpService().GetMcpServerStatus(providerName, name, force)
 }
@@ -226,6 +227,7 @@ func (a *App) GetMcpServerStatus(providerName, name string, force bool) (mcpstat
 // snapshot is already populated.
 //
 //ao:scope settings:write
+//ao:route home
 func (a *App) ListMcpServerStatuses(providerName string) ([]mcpstatus.ServerStatus, error) {
 	return a.mcpService().ListMcpServerStatuses(providerName)
 }
@@ -239,6 +241,7 @@ func (a *App) ListMcpServerStatuses(providerName string) ([]mcpstatus.ServerStat
 // "" for a workspace-agnostic refresh.
 //
 //ao:scope settings:write
+//ao:route selected
 func (a *App) RefreshMcpServerStatus(providerName, workspacePath string) ([]mcpstatus.ServerStatus, error) {
 	return a.mcpService().RefreshMcpServerStatus(providerName, workspacePath)
 }
@@ -277,6 +280,7 @@ func (a *App) ListThreadMcpServers(threadID string) ([]ThreadMCPServer, error) {
 // ignored.
 //
 //ao:scope settings:write
+//ao:route selected
 func (a *App) ListWorkspaceMcpServers(providerName, workspacePath string) ([]ThreadMCPServer, error) {
 	rows, err := a.mcpService().ListWorkspaceMcpServers(providerName, workspacePath)
 	return threadMCPServers(rows), err
@@ -314,6 +318,7 @@ func (a *App) SetThreadMcpServerEnabled(threadID, name string, enabled bool) err
 // thread would start in.
 //
 //ao:scope settings:write
+//ao:route selected
 //ao:stepup
 func (a *App) SetWorkspaceMcpServerEnabled(providerName, workspacePath, name string, enabled bool) error {
 	if isAppManagedMCPServer(name) {
@@ -328,6 +333,7 @@ func (a *App) SetWorkspaceMcpServerEnabled(providerName, workspacePath, name str
 // confirmed, rejected, timed out, or the app shuts down.
 //
 //ao:scope settings:write
+//ao:route selected
 func (a *App) TriggerWorkspaceMcpAuth(providerName, workspacePath, serverName string) (MCPAuthInitResult, error) {
 	result, err := a.mcpService().TriggerWorkspaceMcpAuth(providerName, workspacePath, serverName)
 	return mcpAuthInitResult(result), err

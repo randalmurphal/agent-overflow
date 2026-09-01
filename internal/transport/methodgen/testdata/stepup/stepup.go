@@ -9,11 +9,13 @@ type Zeta struct{}
 // Ordinary carries a scope and nothing else.
 //
 //ao:scope settings:write
+//ao:route home
 func (z *Zeta) Ordinary() {}
 
 // Reconfigures carries both directives, in the order a real annotation
 // spells them.
 //
 //ao:scope settings:write
+//ao:route home
 //ao:stepup
 func (z *Zeta) Reconfigures() {}

@@ -16,6 +16,7 @@ func (a *App) rememberRateLimitsEvent(name eventchan.Channel, data any) {
 // completed before the frontend subscribed to that channel.
 //
 //ao:scope threads:read
+//ao:route home
 func (a *App) GetRateLimitsSnapshots() []provider.RateLimitsSnapshot {
 	return a.providerLifecycleService().Snapshots()
 }

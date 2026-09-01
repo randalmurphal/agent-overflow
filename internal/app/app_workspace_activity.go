@@ -62,6 +62,7 @@ type BusyThread struct {
 // background-task event.
 //
 //ao:scope git:operate
+//ao:route selected
 func (a *App) GetWorkspaceActivity(workspacePath string) (WorkspaceActivity, error) {
 	activity, err := a.worktreeApplication().Activity(workspacePath)
 	if err != nil {

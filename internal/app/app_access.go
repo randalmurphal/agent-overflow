@@ -53,6 +53,7 @@ const pairingFragmentPrefix = "#pair="
 // read.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) GetAccessOverview() (AccessOverview, error) {
 	state, err := a.accessState()
 	if err != nil {
@@ -139,6 +140,7 @@ func (a *App) GetAccessOverview() (AccessOverview, error) {
 // An unrecognized level is refused rather than widened.
 //
 //ao:scope access:admin
+//ao:route home
 //ao:stepup
 func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, error) {
 	state, err := a.accessState()
@@ -221,6 +223,7 @@ func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, erro
 // waits.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
 	state, err := a.accessState()
 	if err != nil {
@@ -243,6 +246,7 @@ func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
 // the owner has matched the verification number.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) ConfirmDevicePairing(linkID string) error {
 	state, err := a.accessState()
 	if err != nil {
@@ -257,6 +261,7 @@ func (a *App) ConfirmDevicePairing(linkID string) error {
 // mistake.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) CancelDevicePairing(linkID string) error {
 	state, err := a.accessState()
 	if err != nil {
@@ -284,6 +289,7 @@ func (a *App) CancelDevicePairing(linkID string) error {
 // outlived a first revocation is exactly the one worth reaching.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) RevokeAccessDevice(deviceID string) (DeviceRevocationResult, error) {
 	state, err := a.accessState()
 	if err != nil {
@@ -324,6 +330,7 @@ func (a *App) RevokeAccessDevice(deviceID string) (DeviceRevocationResult, error
 // the device still redeems a fresh link and passes the number check.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) RestoreAccessDevice(deviceID string) error {
 	state, err := a.accessState()
 	if err != nil {
@@ -363,6 +370,7 @@ func (a *App) RestoreAccessDevice(deviceID string) error {
 // `access:admin` must be able to finish tidying up a phone it revoked.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) ForgetAccessDevice(deviceID string) error {
 	state, err := a.accessState()
 	if err != nil {
@@ -408,6 +416,7 @@ func (a *App) ForgetAccessDevice(deviceID string) error {
 // close the host's own window until a restart.
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) RevokeAccessSession(sessionID string) error {
 	state, err := a.accessState()
 	if err != nil {

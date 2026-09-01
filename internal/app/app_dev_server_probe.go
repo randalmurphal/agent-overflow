@@ -13,6 +13,7 @@ import (
 // host, and a remote viewer's localhost is not this machine anyway.
 //
 //ao:scope host
+//ao:route home
 func (a *App) ProbeDevServerURL(rawURL string) (bool, error) {
 	return a.devServerProbe().Live(context.Background(), rawURL)
 }

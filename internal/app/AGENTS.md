@@ -19,9 +19,21 @@ labels: any of those changes every method ID.
 its doc comment (plus `//ao:stepup` where the spec requires a per-call proof);
 the generator fails the run without one, and that scope is the whole of what
 `transport.AuthorizeSessionMethod` compares a caller's grants against — there
-is no second, hand-listed reachability table. A bound method
-addition/removal must annotate it, regenerate Wails bindings with `-ts`,
-regenerate methodgen,
+is no second, hand-listed reachability table.
+
+It also carries a ROUTE, which answers a different question: not "may this
+caller do it" but "on which machine" (`docs/specs/remote-access.md` §10). A
+method whose first non-context parameter is named `threadID` or `projectID`
+needs no directive — those two ids are unique across backends
+(`internal/entityid`), so the generator infers `thread` / `project` from the
+signature. Every other method declares `//ao:route home|selected|all`, and the
+generator fails the run without it. The vocabulary and what each value means
+are in `internal/transport/AGENTS.md` § The Route column; the client is the
+only consumer, through the generated mirror at
+`frontend/src/lib/transport/methodRoutes.ts`.
+
+A bound method addition/removal must annotate BOTH, regenerate Wails bindings
+with `-ts`, run `make methodgen`,
 and verify all existing `$Call.ByID` values remain stable unless a wire migration
 was explicitly approved.
 

@@ -32,6 +32,7 @@ type ContextSettingsUpdate struct {
 }
 
 //ao:scope settings:read
+//ao:route home
 func (a *App) GetContextSettings(providerName, model string) (ContextSettingsProfile, error) {
 	if a.store == nil {
 		return ContextSettingsProfile{}, fmt.Errorf("context settings: store unavailable")
@@ -69,6 +70,7 @@ func (a *App) GetContextSettings(providerName, model string) (ContextSettingsPro
 }
 
 //ao:scope settings:write
+//ao:route home
 func (a *App) UpdateContextSettingsProfile(update ContextSettingsUpdate) (ContextSettingsProfile, error) {
 	if a.store == nil {
 		return ContextSettingsProfile{}, fmt.Errorf("update context settings profile: store unavailable")

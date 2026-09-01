@@ -35,6 +35,7 @@ func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
 // header's browser chip and the pane-reopen reconcile.
 //
 //ao:scope host
+//ao:route home
 func (a *App) BrowserCompanionThreadState(threadID string) (appbrowser.CompanionEvent, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
@@ -53,6 +54,7 @@ func (a *App) BrowserCompanionThreadState(threadID string) (appbrowser.Companion
 // the pane under it.
 //
 //ao:scope host
+//ao:route home
 func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (appbrowser.CompanionSubscription, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionSubscription{}, fmt.Errorf("browser manager unavailable")
@@ -75,6 +77,7 @@ func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (
 }
 
 //ao:scope host
+//ao:route home
 func (a *App) BrowserCompanionPaneDetach(paneID string) error {
 	if a.browser.manager != nil {
 		a.browser.manager.DetachPane(paneID)
@@ -86,6 +89,7 @@ func (a *App) BrowserCompanionPaneDetach(paneID string) error {
 // coalesced to one call per changed frame by the frontend.
 //
 //ao:scope host
+//ao:route home
 func (a *App) BrowserCompanionPaneRect(paneID string, rect appbrowser.PaneRect) error {
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
@@ -99,6 +103,7 @@ func (a *App) BrowserCompanionPaneRect(paneID string, rect appbrowser.PaneRect) 
 // Remote pages have no file to reveal.
 //
 //ao:scope host
+//ao:route home
 func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, pageID string) error {
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
@@ -111,6 +116,7 @@ func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, page
 }
 
 //ao:scope host
+//ao:route home
 func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action BrowserCompanionAction) (appbrowser.CompanionEvent, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")

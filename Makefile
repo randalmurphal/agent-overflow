@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e
+.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -14,10 +14,19 @@ help:
 		'Perf:    make perf-wsl | make soak-contract' \
 		'Smoke:   make e2e (mocked) | make provider-smoke (real tokens)' \
 		'Import:  make import-corpus-smoke AO_IMPORT_CORPUS_CLAUDE=/copy AO_IMPORT_CORPUS_CODEX=/copy' \
-		'Docs:    make ao-harness-docs'
+		'Docs:    make ao-harness-docs' \
+		'Codegen: make methodgen'
 
 ao-harness-docs:
 	go generate ./cmd/ao-harness
+
+# Regenerate the bound-method classification table and its client-side
+# route mirror. ONE command for both halves, because they come out of one
+# scan: internal/transport/methods_gen.go and
+# frontend/src/lib/transport/methodRoutes.ts. `make go-test`'s
+# TestMethodsGen_InSync fails on either being stale and names this target.
+methodgen:
+	go run ./internal/transport/methodgen
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing, raw provider

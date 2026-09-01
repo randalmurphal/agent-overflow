@@ -48,6 +48,7 @@ func resetCodexProbeCacheForTest() {
 // false positives. (Drift D3 from the app-root refactor.)
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) ProbeCodexAccount() (provider.AccountInfo, error) {
 	return a.providerDiscoveryService().ProbeCodexAccount()
 }
@@ -60,6 +61,7 @@ func (a *App) ProbeCodexAccount() (provider.AccountInfo, error) {
 // needs one (e.g. after a `codex login` flow lands).
 //
 //ao:scope access:admin
+//ao:route home
 func (a *App) RecheckCodexAccount() (provider.AccountInfo, error) {
 	return a.providerDiscoveryService().RecheckCodexAccount()
 }

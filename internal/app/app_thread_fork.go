@@ -41,6 +41,7 @@ import (
 // and any cleanup errors are joined with the primary error.
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) ForkThread(ctx context.Context, sourceThreadID string, atTurnIndex *int) (store.Thread, error) {
 	// Hold the source thread's action lock for the duration of the fork so
 	// concurrent SendMessage / InterruptAndRevertIfClean / etc. can't write
@@ -239,6 +240,7 @@ func (a *App) ForkThread(ctx context.Context, sourceThreadID string, atTurnIndex
 // selected prompt is not copied into the fork.
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, userItemID string) (store.Thread, error) {
 	unlock := a.threadLocks().Lock(sourceThreadID)
 	defer unlock()

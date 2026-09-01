@@ -260,6 +260,7 @@ func (a *App) callerSettingsScreen(ctx context.Context) (string, settings.Device
 // bucket. A fresh client gets an empty map — defaults, not an error.
 //
 //ao:scope session
+//ao:route home
 func (a *App) GetUIState(ctx context.Context) (map[string]string, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("ui state: store unavailable")
@@ -274,6 +275,7 @@ func (a *App) GetUIState(ctx context.Context) (map[string]string, error) {
 // SetUIState batch-upserts entries into the calling connection's bucket.
 //
 //ao:scope session
+//ao:route home
 func (a *App) SetUIState(ctx context.Context, entries map[string]string) error {
 	if a.store == nil {
 		return fmt.Errorf("ui state: store unavailable")
@@ -363,6 +365,7 @@ func migrateUIStateFromSettings(configDir string, st *store.Store) {
 // Missing keys are a no-op.
 //
 //ao:scope session
+//ao:route home
 func (a *App) DeleteUIState(ctx context.Context, keys []string) error {
 	if a.store == nil {
 		return fmt.Errorf("ui state: store unavailable")

@@ -107,6 +107,7 @@ type HighlightResult struct {
 // and renders class id N as CSS class `syntax-<name>`. Wire-safe.
 //
 //ao:scope files:read
+//ao:route home
 func (a *App) HighlightClassNames() []string {
 	return highlight.ClassNames()
 }
@@ -118,6 +119,7 @@ func (a *App) HighlightClassNames() []string {
 // recomputes under the current schema. Wire-safe.
 //
 //ao:scope files:read
+//ao:route home
 func (a *App) HighlightSchemaVersion() string {
 	return highlight.SchemaVersion()
 }
@@ -126,6 +128,7 @@ func (a *App) HighlightSchemaVersion() string {
 // text-in/metadata-out, no local state touched.
 //
 //ao:scope files:read
+//ao:route home
 func (a *App) HighlightCode(req HighlightCodeRequest) (HighlightResult, error) {
 	res, err := a.highlightService().Code(req.Lang, req.Source)
 	return wireHighlightResult(res), err
@@ -137,6 +140,7 @@ func (a *App) HighlightCode(req HighlightCodeRequest) (HighlightResult, error) {
 // for the kept leading space. Wire-safe.
 //
 //ao:scope files:read
+//ao:route home
 func (a *App) HighlightPatch(req HighlightPatchRequest) (HighlightResult, error) {
 	res, err := a.highlightService().Patch(req.Path, req.Patch)
 	return wireHighlightResult(res), err

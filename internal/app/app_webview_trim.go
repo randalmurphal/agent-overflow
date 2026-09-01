@@ -61,6 +61,7 @@ type webviewTrimDirective struct {
 // has no remote form.
 //
 //ao:scope host
+//ao:route home
 func (a *App) RequestWebviewMemoryTrim(inputSinceLastTrim bool) (string, error) {
 	if a.hasActiveProviderTurn() {
 		return "skipped-active-turn", nil

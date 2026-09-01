@@ -107,6 +107,7 @@ type ThreadTitleGenerationEvent struct {
 // with the return value.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store.Thread, error) {
 	settingsBucket, settingsClass := a.callerSettingsScreen(ctx)
 	thread, err := a.threadApplication().Create(threadapp.CreateOptions{
@@ -154,6 +155,7 @@ func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store
 // ephemeral across restart; the saved cwd is what persists).
 //
 //ao:scope terminal:operate
+//ao:route selected
 func (a *App) StartTerminal(ctx context.Context, opts StartTerminalOptions) (store.Thread, error) {
 	thread, err := a.threadApplication().StartTerminal(threadapp.TerminalOptions{
 		ProjectID:       opts.ProjectID,
@@ -177,6 +179,7 @@ func (a *App) StartTerminal(ctx context.Context, opts StartTerminalOptions) (sto
 // changes.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) GetThreadDefaults(opts CreateThreadOptions) (ThreadDefaults, error) {
 	defaults, err := a.threadApplication().Defaults(threadapp.CreateOptions{
 		ProjectID: opts.ProjectID,
@@ -206,11 +209,13 @@ func (a *App) GetThreadDefaults(opts CreateThreadOptions) (ThreadDefaults, error
 // discussion runtime) go through a.store.ListThreads directly.
 //
 //ao:scope threads:read
+//ao:route all
 func (a *App) ListThreads() ([]store.Thread, error) { return a.threadApplication().List() }
 
 // ListArchivedThreads returns every archived thread for the settings panel.
 //
 //ao:scope threads:read
+//ao:route all
 func (a *App) ListArchivedThreads() ([]store.Thread, error) {
 	return a.threadApplication().ListArchived()
 }
@@ -218,6 +223,7 @@ func (a *App) ListArchivedThreads() ([]store.Thread, error) {
 // GetThread returns a single thread row.
 //
 //ao:scope threads:read
+//ao:route thread
 func (a *App) GetThread(id string) (store.Thread, error) { return a.threadApplication().Get(id) }
 
 // ArchiveThread / UnarchiveThread live in app_thread_archive.go: archiving
@@ -229,6 +235,7 @@ func (a *App) GetThread(id string) (store.Thread, error) { return a.threadApplic
 // poll. Mirrors the emit shape used by applyThreadTitleIfCurrent.
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) RenameThread(id string, title string) error {
 	if err := a.threadApplication().Rename(id, title); err != nil {
 		return err
@@ -257,6 +264,7 @@ func (a *App) RenameThread(id string, title string) error {
 // off the wire.
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) MarkThreadRead(id string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 	defer cancel()
@@ -273,6 +281,7 @@ func (a *App) MarkThreadRead(id string) error {
 // migration; explicit unread uses a concrete old timestamp.
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) MarkThreadUnread(id string) error {
 	row, changed, err := a.threadApplication().MarkUnread(id)
 	if err != nil {
@@ -286,6 +295,7 @@ func (a *App) MarkThreadUnread(id string) error {
 // two manual attention groups above needs-attention.
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) PinThread(id string) (store.Thread, error) {
 	row, changed, err := a.threadApplication().Pin(id)
 	if err != nil {
@@ -299,6 +309,7 @@ func (a *App) PinThread(id string) (store.Thread, error) {
 // burners and returns the refreshed row for frontend reconciliation.
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) SetThreadPinGroup(id string, group int) (store.Thread, error) {
 	row, changed, err := a.threadApplication().SetPinGroup(id, group)
 	if err != nil {
@@ -311,6 +322,7 @@ func (a *App) SetThreadPinGroup(id string, group int) (store.Thread, error) {
 // UnpinThread clears pinned_at and pin_group and returns the refreshed row.
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) UnpinThread(id string) (store.Thread, error) {
 	row, changed, err := a.threadApplication().Unpin(id)
 	if err != nil {
@@ -333,6 +345,7 @@ func (a *App) UnpinThread(id string) (store.Thread, error) {
 // every model change doesn't trip the lock.
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) UpdateThreadProvider(id, providerName string) (store.Thread, error) {
 	update, err := a.threadApplication().UpdateProvider(id, providerName)
 	if err != nil {
@@ -373,6 +386,7 @@ func (a *App) UpdateThreadModelSelection(threadID string, providerName string, m
 // Claude needs a restart, deferred until the thread is quiet).
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, error) {
 	_, changed, err := a.threadApplication().UpdateReasoningEffort(id, effort)
 	if err != nil {
@@ -396,6 +410,7 @@ func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, erro
 // session restarts — deferred until the thread is quiet).
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) UpdateThreadFastMode(id string, on bool) (store.Thread, error) {
 	_, changed, err := a.threadApplication().UpdateFastMode(id, on)
 	if err != nil {
@@ -440,6 +455,7 @@ func (a *App) UpdateThreadFastMode(id string, on bool) (store.Thread, error) {
 // write that changed nothing emits nothing.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) UpdateThreadBranch(workspacePath, branch string) ([]store.Thread, error) {
 	rows, err := a.threadApplication().UpdateBranch(workspacePath, branch)
 	if err != nil {
@@ -460,6 +476,7 @@ func (a *App) UpdateThreadBranch(workspacePath, branch string) ([]store.Thread, 
 // per-row Deleted callback, which is the only place the child ids are known.
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) DeleteThread(id string) error {
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
@@ -471,6 +488,7 @@ func (a *App) DeleteThread(id string) error {
 // providers, so this restarts — deferred until the thread is quiet).
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) UpdateThreadContextWindow(id string, tokens int) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update context window: store unavailable")
@@ -493,6 +511,7 @@ func (a *App) UpdateThreadContextWindow(id string, tokens int) (store.Thread, er
 // full access — that restarts, deferred until the thread is quiet).
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) UpdateThreadRuntimeMode(ctx context.Context, id, mode string) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update runtime mode: store unavailable")
@@ -521,6 +540,7 @@ func (a *App) UpdateThreadRuntimeMode(ctx context.Context, id, mode string) (sto
 // live because the provider CWD is part of its launch config.
 //
 //ao:scope threads:operate
+//ao:route thread
 func (a *App) UpdateThreadWorkspace(id, path string) (store.Thread, error) {
 	return a.switchThreadWorkspace(id, path)
 }
@@ -567,6 +587,7 @@ func (a *App) UpdateThreadMode(threadID string, mode string) (store.Thread, erro
 // thread but WorkspacePath is left empty and the UI can prompt.
 //
 //ao:scope threads:operate
+//ao:route selected
 func (a *App) CreateThreadFromPR(
 	ctx context.Context,
 	project string,

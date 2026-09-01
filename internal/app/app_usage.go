@@ -24,6 +24,7 @@ import (
 // scope only this machine can satisfy.
 //
 //ao:scope threads:read
+//ao:route all
 func (a *App) GetUsageStats(query store.UsageQuery) ([]store.UsageBucket, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("usage stats: store unavailable")
