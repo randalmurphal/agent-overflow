@@ -516,7 +516,11 @@ test.describe.serial('remote device lifecycle', () => {
   });
 
   // -------------------------------------------------------------------
-  // 4. View-only degradation, proven at the wire.
+  // 4. View-only degradation, proven at the wire. Third in EXECUTION
+  //    order on purpose: the device is view-only only because the case
+  //    above re-paired it that way, and the one below re-pairs it full
+  //    again — the numbering names the cluster, the position is the
+  //    choreography.
   // -------------------------------------------------------------------
   test('a view-only device is inert, says so, and spends no refusal on a passive load', async () => {
     // A fresh document so the capture covers the whole boot fan-out, not
