@@ -26,6 +26,12 @@
   import ComposerPendingApprovalPanel from './ComposerPendingApprovalPanel.svelte';
   import ComposerPendingUserInputPanel from './ComposerPendingUserInputPanel.svelte';
   import { deriveComposerInputState } from './composerInputState';
+  import {
+    attachedBackendEntry,
+    backendDisplayName,
+    threadMachine,
+    threadMachineUnreachable,
+  } from '../../stores/attachedBackends.svelte';
   import { deriveComposerSendState } from './composerSendState';
   import { dispatchSend } from './composerSend';
   import { runInterruptOrRevert } from '../../stores/revertOnInterrupt.svelte';
@@ -108,6 +114,15 @@
   // and the disabled state is the affordance the rest of the app already
   // uses for a control that is out of reach.
   let sendUngranted = $derived(!hasScope('threads:operate'));
+  // The thread's machine, when it is not this page's own and its socket is
+  // down. Empty on a single-backend client and for home, whose drop the
+  // transport banner already announces.
+  let unreachableTarget = $derived.by(() => {
+    const thread = pane.thread;
+    if (!thread || !threadMachineUnreachable(thread.id, thread.projectId)) return '';
+    const entry = attachedBackendEntry(threadMachine(thread.id, thread.projectId));
+    return entry ? backendDisplayName(entry) : 'That machine';
+  });
   let respondUngranted = $derived(!hasScope('approvals:respond'));
   // Mid-round signal: a wire round is currently in flight (the model
   // is streaming text/tool work). The composer stays typeable during
@@ -201,6 +216,7 @@
   let inputState = $derived(deriveComposerInputState({
     isDisabled,
     sendUngranted,
+    unreachableTarget,
     hasBlockingPrompt,
     hasUserInputPrompt,
     userInputCustomAnswer,

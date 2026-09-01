@@ -16,6 +16,10 @@ import {
   onBackendsChanged,
   type BackendEntry,
 } from '../transport/backends';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { getBackendIdentity } from '../transport/backendIdentity';
+import { projectBackend, threadBackend } from '../transport/entityIndex';
+import { getTransportStatusFor } from './transportStatus.svelte';
 
 let list = $state.raw<readonly BackendEntry[]>(registryBackends().slice());
 
@@ -39,4 +43,56 @@ export function getAttachedBackends(): readonly BackendEntry[] {
  */
 export function hasMultipleBackends(): boolean {
   return list.length > 1;
+}
+
+// ---------------------------------------------------------------------------
+// What the UI says about a backend
+// ---------------------------------------------------------------------------
+
+/** The registry entry for a key, or undefined once it has detached. */
+export function attachedBackendEntry(key: BackendKey): BackendEntry | undefined {
+  for (const entry of list) if (entry.id === key) return entry;
+  return undefined;
+}
+
+/**
+ * What a person calls this machine. Home's name arrives on its own hello
+ * (`backendName`), an attached one's on the descriptor pairing wrote; a
+ * backend that published neither is named by its id rather than by a
+ * guess, and home falls back to the one thing that is always true of it.
+ */
+export function backendDisplayName(entry: BackendEntry): string {
+  if (entry.home) return getBackendIdentity().name || 'This machine';
+  return entry.name || entry.id;
+}
+
+/** Whether this backend's socket is open and serving. */
+export function backendReachable(key: BackendKey): boolean {
+  return getTransportStatusFor(key).status === 'connected';
+}
+
+/**
+ * The machine a thread lives on, by the row's own id first and its
+ * project's second — a draft placeholder has no indexed thread id yet, but
+ * its project is on exactly one machine (wave 7d merges entries; until
+ * then a project IS a machine choice).
+ */
+export function threadMachine(threadId: string, projectId: string | null | undefined): BackendKey {
+  return threadBackend(threadId) ?? (projectId ? projectBackend(projectId) : undefined) ?? HOME_BACKEND;
+}
+
+/**
+ * Whether a thread's machine is off-line from this client's point of view.
+ *
+ * Home never answers true here: the page's own backend dropping is the
+ * full-width transport banner's job (spec §10, "Reachability is ambient,
+ * not modal"), and dimming every row under it as well would say one thing
+ * twice. Answers false outright on a single-backend client so the sidebar
+ * and the composer pay nothing until a second machine exists.
+ */
+export function threadMachineUnreachable(threadId: string, projectId: string | null | undefined): boolean {
+  if (list.length < 2) return false;
+  const key = threadMachine(threadId, projectId);
+  if (key === HOME_BACKEND) return false;
+  return !backendReachable(key);
 }

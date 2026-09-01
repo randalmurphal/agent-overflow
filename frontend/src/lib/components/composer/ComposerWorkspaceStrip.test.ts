@@ -12,6 +12,7 @@ import {
   worktreeIntentForThread,
 } from '../../stores/worktreeIntent.svelte';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 describe('<ComposerWorkspaceStrip>', () => {
   beforeEach(() => {
@@ -47,6 +48,31 @@ describe('<ComposerWorkspaceStrip>', () => {
       'env-picker-trigger',
       'branch-picker-trigger',
     ]);
+  });
+
+  it('mounts no machine picker on a single-backend page', async () => {
+    const pane = await buildPane(makeThread());
+    const { queryByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
+    expect(queryByTestId('machine-picker-trigger')).toBeNull();
+  });
+
+  it('leads the strip with the machine picker once a second backend is attached', async () => {
+    // "Where am I" reads outer to inner: machine, then the checkout on it.
+    stageBackend();
+    try {
+      const pane = await buildPane(makeThread());
+      const { getByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
+      const triggers = Array.from(
+        getByTestId('composer-workspace-strip').querySelectorAll<HTMLElement>('[data-testid$="-picker-trigger"]'),
+      );
+      expect(triggers.map((el) => el.getAttribute('data-testid'))).toEqual([
+        'machine-picker-trigger',
+        'env-picker-trigger',
+        'branch-picker-trigger',
+      ]);
+    } finally {
+      resetStagedBackends();
+    }
   });
 
   it('renders the "+ new branch" toggle when intent flips to "new-worktree" and the input only after entering creating-branch mode', async () => {

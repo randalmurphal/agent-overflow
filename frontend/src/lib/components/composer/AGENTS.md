@@ -57,3 +57,17 @@ wall-clock timer was the single most expensive thing in the renderer:
 from `utils/ambientPhase.ts`, so a remount lands mid-cycle on the same
 beat every other ambient indicator shares. Any new indicator here follows
 the same shape.
+
+## The workspace strip reads outer to inner
+
+`workspace/ComposerWorkspaceStrip.svelte` is "where am I" for the draft:
+machine, project, checkout, branch. `MachinePicker.svelte` leads it and
+mounts only while `hasMultipleBackends()`, so a single-backend app has no
+trace of it. Until wave 7d a project lives on exactly one machine, so the
+picker's label is the owner of the pane's project and choosing another
+machine flips the draft to that machine's first project; it stages the
+pane's backend BEFORE the flip because the flip's own RPCs take the
+`selected` route. An unreachable machine stays listed, dimmed and
+disabled — never a silent failover. The same answer drives the composer's
+disabled reason (`unreachableTarget` in `composerInputState.ts`) and the
+dimmed sidebar row, all from `stores/attachedBackends.svelte.ts`.

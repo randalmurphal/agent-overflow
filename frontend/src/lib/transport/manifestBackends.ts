@@ -127,3 +127,39 @@ export function fetchBackendManifest(descriptor: BackendDescriptor): Promise<Boo
 export function __resetManifestBackendsForTest(): void {
   descriptors = [];
 }
+
+// ---------------------------------------------------------------------------
+// A backend attached after boot
+// ---------------------------------------------------------------------------
+
+// The proxy paths the local backend serves an attached profile at. Mirrors
+// internal/transport/attachedroutes.go (`AttachedWSPrefix`,
+// `AttachedBootstrapPrefix`, `attachedBootstrapSuffix`); the manifest names
+// them on every boot, and this is only for the one attach the page itself
+// just performed, so it does not wait for the next manifest fetch to learn
+// the door it asked for.
+const ATTACHED_WS_PREFIX = '/ws/backend/';
+const ATTACHED_BOOTSTRAP_PREFIX = '/bootstrap/';
+const ATTACHED_BOOTSTRAP_SUFFIX = '.json';
+
+/** The descriptor the manifest will name for a profile id, built now. */
+export function descriptorForAttachedId(id: string, name: string): BackendDescriptor {
+  const scheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+  return {
+    id,
+    backendId: '',
+    name,
+    wsUrl: scheme + window.location.host + ATTACHED_WS_PREFIX + id,
+    bootstrapUrl: ATTACHED_BOOTSTRAP_PREFIX + id + ATTACHED_BOOTSTRAP_SUFFIX,
+  };
+}
+
+/** Publish the current list plus one just-attached profile. */
+export function publishAttachedBackend(descriptor: BackendDescriptor): void {
+  publishManifestBackends([...descriptors.filter((d) => d.id !== descriptor.id), descriptor]);
+}
+
+/** Publish the current list without one just-removed profile. */
+export function publishDetachedBackend(id: string): void {
+  publishManifestBackends(descriptors.filter((d) => d.id !== id));
+}

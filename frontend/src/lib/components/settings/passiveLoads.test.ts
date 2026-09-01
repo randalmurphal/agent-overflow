@@ -35,6 +35,8 @@ import { SCOPES } from '../../transport/scopes';
 import DevicesSection from './DevicesSection.svelte';
 import NetworkSection from './NetworkSection.svelte';
 import WSLSection, { resetWSLSectionCache } from './WSLSection.svelte';
+import SystemsSection from './SystemsSection.svelte';
+import { __resetSystemsForTest } from '../../stores/systems.svelte';
 
 /** A device paired with full access holds every grantable scope — not `host`. */
 function pairFullAccess(): Promise<void> {
@@ -88,6 +90,7 @@ function stubBindings() {
     isWSL: setBindingMock('IsWSL', async () => true),
     distros: setBindingMock('ListWSLDistros', async () => [{ name: 'Ubuntu', default: true }]),
     distroPref: setBindingMock('GetWSLDistroPreference', async () => 'Ubuntu'),
+    systems: setBindingMock('ListBackends', async () => []),
   };
 }
 
@@ -105,6 +108,7 @@ describe('settings sections issue no passive RPC they were not granted', () => {
     resetBindingMocks();
     resetRunMode();
     resetWSLSectionCache();
+    __resetSystemsForTest();
     bindings = stubBindings();
   });
 
@@ -174,6 +178,21 @@ describe('settings sections issue no passive RPC they were not granted', () => {
       // carrying a copy of the check.
       expect(bindings.passkeys).not.toHaveBeenCalled();
       expect(getByTestId('devices-section-unavailable')).toBeTruthy();
+    });
+  });
+
+  describe('SystemsSection — the attached-machine list is host', () => {
+    it('loads it on the owner’s own screen', async () => {
+      render(SystemsSection);
+      await waitFor(() => expect(bindings.systems).toHaveBeenCalled());
+    });
+
+    it('asks nothing from a device paired with FULL access, and says why', async () => {
+      await pairFullAccess();
+      const { getByTestId } = render(SystemsSection);
+      await settle();
+      expect(bindings.systems).not.toHaveBeenCalled();
+      expect(getByTestId('systems-section-unavailable')).toBeTruthy();
     });
   });
 

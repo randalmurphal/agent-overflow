@@ -179,7 +179,7 @@ test('sending from that draft reuses the thread already bound to the worktree', 
   await expectSameFilesystemPath(rows[0].workspacePath, worktree!.path);
   expect(rows[0].branch).toBe(EXISTING_BRANCH);
 
-  // And the send did not move the user's strip back to Local.
+  // And the send did not move the user's strip back to Base.
   await expect(stripLabels(page).env).toHaveText(basename(worktree!.path));
   await expect(stripLabels(page).branch).toHaveText(EXISTING_BRANCH);
   await expect(page.getByTestId('thread-row')).toHaveCount(1);

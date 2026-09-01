@@ -1963,7 +1963,7 @@ surfaces in exactly three places:
   thread (§7).
 - **Reachability is ambient, not modal.** Per-backend status lives
   where the backend is chosen: the composer's machine picker dims an
-  unreachable entry in place, and Settings → Devices carries the
+  unreachable entry in place, and Settings → Systems carries the
   detail. Threads on an unreachable backend dim and stay readable
   from the replica. The full-width transport banner is reserved for
   the visible thread's own backend dropping.
@@ -2100,6 +2100,32 @@ session slot are per backend; the workspace key is `${backendId} ${path}`
 so the change lock and git status cannot cross machines. Settings,
 system stats and provider accounts stay home-only reads until a
 surface needs otherwise.
+
+**7c LANDED 2026-09-01.** `MachinePicker.svelte` leads the composer's
+workspace strip and mounts only while more than one backend is
+attached; the single-backend app is pixel-identical. In this wave a
+project lives on exactly one machine, so the picker's label is the
+owner of the pane's project and choosing another machine flips the
+draft to that machine's first project (a machine with none says so and
+moves nothing); the pane's backend is staged before the flip because
+the flip's RPCs take the `selected` route. Unreachable entries are
+listed, dimmed and disabled with the reason in place; the composer on
+a thread whose machine is unreachable disables with "<name> is
+unreachable" (after the read-only reason, before the prompt copy) and
+its sidebar row dims — never for home, whose outage is the transport
+banner's. The project picker prefixes each entry with its machine while
+several are attached. Settings → Systems (Workspace group) lists the
+attached machines with live reachability, renames inline, detaches on a
+second press, and starts a pairing from a pasted link, holding the
+verification number until `backend:attach` retires it; the store
+(`stores/systems.svelte.ts`) owns the four `host` RPCs and publishes the
+confirmed descriptor to the registry itself. "Local" is "Base" in both
+pickers. Deferred to 7d, where a project first spans machines: the
+machine chip in the worktree-chip slot and the sticky per-project
+choice. No Playwright coverage yet: the harness runs one backend, and
+staging a second is a harness change 7d will need anyway; the wave is
+proved by component suites over a staged second backend
+(`test/helpers/backends.ts`).
 
 Path links and open-in-editor from a UI that is not on the thread's
 host default to copy/preview, with "open on <machine>" as the explicit

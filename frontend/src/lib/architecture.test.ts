@@ -75,6 +75,7 @@ const APPEARANCE_STORE = 'lib/stores/appearance.svelte.ts';
 const EDITORS_STORE = 'lib/stores/editors.svelte.ts';
 const BROWSER_COMPANION_STORE = 'lib/stores/browserCompanion.svelte.ts';
 const PROVIDER_ACCOUNTS_STORE = 'lib/stores/providerAccounts.svelte.ts';
+const SYSTEMS_STORE = 'lib/stores/systems.svelte.ts';
 
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionPaneAttach: owned(BROWSER_COMPANION_STORE, 'attachBrowserCompanion()'),
@@ -131,6 +132,13 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   GetProviderLoginState: owned(PROVIDER_ACCOUNTS_STORE, 'hydrateProviderLogins()'),
   SubmitProviderLoginCode: owned(PROVIDER_ACCOUNTS_STORE, 'submitProviderLoginCode()'),
   CancelProviderLogin: owned(PROVIDER_ACCOUNTS_STORE, 'cancelProviderLogin()'),
+  // The attached-machine list is one fact with a two-step pairing hanging
+  // off it: a section calling AddBackend itself would show a verification
+  // number the backend:attach frame has no way to retire.
+  ListBackends: owned(SYSTEMS_STORE, 'loadSystems()'),
+  AddBackend: owned(SYSTEMS_STORE, 'addSystem()'),
+  RemoveBackend: owned(SYSTEMS_STORE, 'removeSystem()'),
+  RenameBackend: owned(SYSTEMS_STORE, 'renameSystem()'),
   ListAvailableEditors: owned(EDITORS_STORE, 'startLoad()'),
   GetEditorSettings: owned(EDITORS_STORE, 'startLoad()'),
   SetEditorSettings: owned(EDITORS_STORE, 'setEditorPreference()'),

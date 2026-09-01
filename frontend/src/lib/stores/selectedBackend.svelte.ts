@@ -20,16 +20,16 @@
 //     thread on another machine, else the app-wide choice.
 //  3. Otherwise home.
 //
-// **No UI in this wave.** The machine picker is wave 7c, one more dropdown
-// in the composer's existing project / worktree / branch strip, hidden
-// until more than one backend is paired (spec §10). Until it exists the
-// answer is always the home backend, which is exactly today's behaviour.
+// The writer is `components/composer/workspace/MachinePicker.svelte`, one
+// more dropdown in the composer's project / worktree / branch strip,
+// mounted only while more than one backend is attached (spec §10). On a
+// single-backend page nothing writes here and the answer is always home.
 //
-// Sticky per project is also 7c's ("sticky last-used per project", §10).
-// The primitive here is the single current choice plus the per-pane
-// override a draft placeholder can carry, because those are what routing
-// needs; a per-project memory is a preference layered on top and belongs
-// with the picker that writes it.
+// The primitive is the single current choice plus the per-pane override a
+// draft placeholder carries, because those are what routing needs. A
+// per-project memory ("sticky last-used per project", §10) only has
+// something to remember once a project spans machines, which is wave 7d's
+// merged entry; it belongs with the picker when that lands.
 //
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { backendById } from '../transport/backends';

@@ -679,7 +679,7 @@ describe('<BranchPicker>', () => {
     expect(getBindingMock('GitCheckout')).toBeUndefined();
   });
 
-  it('flips the new-branch base to the Local sentinel when picking the Local row while creating', async () => {
+  it('flips the new-branch base to the Local sentinel when picking the Base row while creating', async () => {
     const pane = await buildPane('main');
     if (!pane.thread) throw new Error('missing test thread');
     // Local row is a base picker for the new branch — only meaningful
@@ -710,7 +710,7 @@ describe('<BranchPicker>', () => {
       props: { pane },
     });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
-    const localRow = await findByRole('menuitem', { name: /Local \(with changes\)/ });
+    const localRow = await findByRole('menuitem', { name: /Base \(with changes\)/ });
     await fireEvent.click(localRow);
 
     expect(worktreeIntentForThread(pane.thread).newBranchBase).toBe('__LOCAL__');

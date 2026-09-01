@@ -62,11 +62,11 @@ describe('<EnvPicker>', () => {
     resetPanesForTest();
   });
 
-  it('labels the trigger Local at the project root', async () => {
+  it('labels the trigger Base at the project root', async () => {
     const pane = await buildPane(makeThread({ workspacePath: '/repo' }));
     const { getByTestId } = render(EnvPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
     const trigger = getByTestId('env-picker-trigger');
-    expect(trigger.textContent ?? '').toMatch(/Local/);
+    expect(trigger.textContent ?? '').toMatch(/Base/);
     expect(trigger).toHaveAttribute('data-trigger-icon', 'folder');
   });
 
@@ -199,7 +199,7 @@ describe('<EnvPicker>', () => {
     await fireEvent.click(newWorktreeRow);
 
     expect(getBindingMock('UpdateThreadWorkspace')).not.toHaveBeenCalled();
-    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Local/);
+    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Base/);
   });
 
   // The rows move THIS thread; they must not be pinned by a sibling thread
@@ -265,7 +265,7 @@ describe('<EnvPicker>', () => {
     await fireEvent.click(newWorktreeRow);
 
     expect(getBindingMock('UpdateThreadWorkspace')).not.toHaveBeenCalled();
-    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Local/);
+    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Base/);
   });
 
   it('opens an inline confirm strip and removes a clean worktree', async () => {

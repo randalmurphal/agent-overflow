@@ -2,6 +2,14 @@ export interface ComposerInputStateInput {
   isDisabled: boolean;
   /** See ComposerSendStateInput.sendUngranted. */
   sendUngranted?: boolean;
+  /**
+   * The display name of the thread's machine when this client cannot
+   * reach it, else empty. An attached backend dropping disables the
+   * composer for its threads in place (spec §10: never a silent failover
+   * to another machine); the page's own backend dropping is the
+   * transport banner's job and never sets this.
+   */
+  unreachableTarget?: string;
   hasBlockingPrompt: boolean;
   hasUserInputPrompt: boolean;
   userInputCustomAnswer: string;
@@ -20,7 +28,11 @@ export interface ComposerInputState {
 
 export function deriveComposerInputState(input: ComposerInputStateInput): ComposerInputState {
   return {
-    disabled: input.isDisabled || Boolean(input.sendUngranted) || input.hasBlockingPrompt,
+    disabled:
+      input.isDisabled ||
+      Boolean(input.sendUngranted) ||
+      Boolean(input.unreachableTarget) ||
+      input.hasBlockingPrompt,
     value: input.hasUserInputPrompt ? input.userInputCustomAnswer : input.draftContent,
     placeholder: inputPlaceholder(input),
   };
@@ -31,6 +43,7 @@ function inputPlaceholder(input: ComposerInputStateInput): string {
   // Read before the prompt cases: a session that cannot send also cannot
   // answer, so offering the prompt's instructions would be a dead end.
   if (input.sendUngranted) return 'This device has read-only access';
+  if (input.unreachableTarget) return `${input.unreachableTarget} is unreachable`;
   if (input.hasBlockingPrompt) return 'Respond to the approval request to continue';
   if (input.hasUserInputPrompt) return 'Type a custom answer, or choose an option above';
   if (input.hasDiffReviewSource && input.hasDraftDiffReviewComments) {

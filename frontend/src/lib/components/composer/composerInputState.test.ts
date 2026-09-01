@@ -78,3 +78,16 @@ describe('deriveComposerInputState', () => {
       .toBe('Add feedback to refine the plan, or leave blank to implement it');
   });
 });
+
+describe('deriveComposerInputState — an unreachable machine', () => {
+  it('disables the input and names the machine, after the read-only case and before the prompts', () => {
+    expect(deriveComposerInputState(input({ unreachableTarget: 'Laptop', hasBlockingPrompt: true }))).toEqual({
+      disabled: true,
+      value: 'draft text',
+      placeholder: 'Laptop is unreachable',
+    });
+    expect(
+      deriveComposerInputState(input({ unreachableTarget: 'Laptop', sendUngranted: true })).placeholder,
+    ).toBe('This device has read-only access');
+  });
+});

@@ -29,6 +29,8 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { emitItemEventUpsert } from '../../../test/helpers/chat';
 import { THREAD_ROW_DRAG_MIME } from '../../utils/threadDragPayload';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -1065,5 +1067,48 @@ describe('<ThreadRow> nested row chrome', () => {
     // Compact layout: every row reserves a 24px leading pin gutter, then
     // depth 2+ steps 8px per nesting level. indent=2 -> 24 + 8 = 32px.
     expect(outer.style.paddingLeft).toBe('32px');
+  });
+});
+
+describe('<ThreadRow> on an unreachable machine', () => {
+  // Wave 7c: a row whose backend is off-line dims, and home never does —
+  // the page's own outage is the transport banner's job.
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+    resetKeybindingsStore();
+    resetKeyboardModifiersForTest();
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+  });
+
+  afterEach(() => {
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+  });
+
+  it('dims a row whose machine cannot be reached, and clears when it returns', async () => {
+    const staged = stageBackend({ status: 'reconnecting' });
+    noteThread('thread-1', 'laptop');
+    const thread = makeThread();
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    const row = getByTestId('thread-row');
+    expect(row).toHaveAttribute('data-machine-unreachable', 'true');
+
+    staged.setStatus('connected');
+    await tick();
+    expect(row).not.toHaveAttribute('data-machine-unreachable');
+  });
+
+  it('never dims a home row, whatever the second backend is doing', async () => {
+    stageBackend({ status: 'reconnecting' });
+    const thread = makeThread();
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(getByTestId('thread-row')).not.toHaveAttribute('data-machine-unreachable');
   });
 });

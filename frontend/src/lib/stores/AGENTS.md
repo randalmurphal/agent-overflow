@@ -192,8 +192,28 @@ stops waking readers.
   chosen backend detaches, so a single-backend client never leaves the
   default. `stores/panes.svelte.ts` arms the focused-pane resolver at its
   own load — a function, not an import, because `panes → thread →
-  gitStatusStore → transport` already exists. There is no UI on the picker
-  yet (wave 7c).
+  gitStatusStore → transport` already exists. The picker that writes it is
+  `components/composer/workspace/MachinePicker.svelte`, mounted only when
+  `hasMultipleBackends()`; it stages the pane's choice BEFORE the draft
+  flip, because the flip's own RPCs take the `selected` route.
+- `systems.svelte.ts` owns the attached-machine list (`ListBackends`,
+  `AddBackend`, `RemoveBackend`, `RenameBackend`) and the `backend:attach`
+  reaction. Pairing is two RPCs apart in time — the verification number
+  comes back at once, the far owner confirms minutes later — so the pending
+  row and its retirement have to share one owner. A confirmed attach
+  publishes the descriptor to the transport registry itself
+  (`publishAttachedBackend`) rather than waiting on a manifest re-fetch,
+  and a removal detaches the socket as well as forgetting the descriptor.
+  All four RPCs are `host`: a `--connect` window and every paired device
+  see an explanation, and the passive load asks `hasScope('host')` first.
+- `attachedBackends.svelte.ts` is also where the UI's per-backend
+  vocabulary lives: `backendDisplayName` (home by its hello name),
+  `backendReachable` (that backend's status box is `connected`),
+  `threadMachine` (row id, then project, then home — until wave 7d a
+  project IS a machine choice) and `threadMachineUnreachable`, which never
+  answers true for home because the page's own outage is the transport
+  banner's job, and answers false outright on a single-backend page so the
+  sidebar and composer pay nothing until a second machine exists.
 - Thread and project ids are globally unique UUIDs minted by
   `internal/entityid`, not ids unique per backend. That is what lets a
   store keyed by thread or project id stay un-keyed by backend when a

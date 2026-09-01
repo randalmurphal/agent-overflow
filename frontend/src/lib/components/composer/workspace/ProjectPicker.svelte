@@ -32,6 +32,14 @@
     flipPaneDraftPlaceholder,
   } from '../../../stores/threadCreation.svelte';
   import { addToast } from '../../../stores/toast.svelte';
+  import { setPaneBackend } from '../../../stores/selectedBackend.svelte';
+  import {
+    attachedBackendEntry,
+    backendDisplayName,
+    hasMultipleBackends,
+  } from '../../../stores/attachedBackends.svelte';
+  import { projectBackend } from '../../../transport/entityIndex';
+  import { HOME_BACKEND } from '../../../transport/backendKey';
   import { userFacingError } from '../../../utils/userFacingError';
 
   interface Props {
@@ -57,6 +65,14 @@
     return getProject(activeProjectId)?.project.name ?? '';
   });
   let projects = $derived(getProjects());
+  // With several machines attached, two projects may share a name and
+  // even a path; the row says which machine before it says where.
+  let multiMachine = $derived(hasMultipleBackends());
+  function projectDescription(projectId: string, path: string): string {
+    if (!multiMachine) return path;
+    const entry = attachedBackendEntry(projectBackend(projectId) ?? HOME_BACKEND);
+    return entry ? `${backendDisplayName(entry)} · ${path}` : path;
+  }
 
   function handleTrigger(): void {
     if (isLocked) return;
@@ -78,6 +94,10 @@
     try {
       const project = getProject(projectId)?.project;
       if (!project) throw new Error('Project not found');
+      // A project lives on one machine, so choosing it chooses the machine
+      // the draft is created on. Staged before the flip: the flip's own
+      // RPCs take the `selected` route and must already know where.
+      setPaneBackend(pane.paneId, projectBackend(projectId) ?? HOME_BACKEND);
       // flipPaneDraftPlaceholder fetches the destination project's seed
       // defaults (current branch, last-used model for the project) so
       // the placeholder doesn't surface as a blank toolbar after the
@@ -143,7 +163,7 @@
             {#each projects as pwc (pwc.project.id)}
               <MenuItem
                 label={pwc.project.name}
-                description={pwc.project.path}
+                description={projectDescription(pwc.project.id, pwc.project.path)}
                 checked={pwc.project.id === activeProjectId}
                 onSelect={() => void selectProject(pwc.project.id)}
               />

@@ -8,6 +8,7 @@
   import { clearSidebarCursor, getSidebarCursorThreadId } from '../../stores/sidebarCursor.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById, getThreadLiveActivityAt } from '../../stores/threads.svelte';
+  import { threadMachineUnreachable } from '../../stores/attachedBackends.svelte';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { openThreadFromNavigation, openThreadInNewPane, openThreadInPane } from '../../stores/panes.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -316,6 +317,10 @@
   let indentPx = $derived(INDENT_PX[Math.min(indent, INDENT_PX.length - 1)]);
   let rowPaddingLeftPx = $derived(PIN_SLOT_PX + indentPx);
 
+  // A thread on an attached machine this client cannot reach right now
+  // dims in place and stays readable from the replica (spec §10). Home is
+  // never dimmed here: its drop is the transport banner's.
+  let machineUnreachable = $derived(threadMachineUnreachable(thread.id, thread.projectId));
   let worktreeName = $derived(pathBasename(thread.worktreePath));
   let showWorktreeMeta = $derived(!editing && Boolean(thread.worktreePath && worktreeName));
   const WORKTREE_META_OFFSET_PX = 14;
@@ -344,12 +349,14 @@
     draggable={!editing}
     aria-pressed={selected}
     class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
-      {selected || isActive ? 'text-fg' : 'text-fg-muted group-hover/thread-item:text-fg'}"
+      {selected || isActive ? 'text-fg' : 'text-fg-muted group-hover/thread-item:text-fg'}
+      {machineUnreachable ? 'opacity-50' : ''}"
     style="padding-left: {rowPaddingLeftPx}px"
     data-testid="thread-row"
     data-sidebar-thread-id={thread.id}
     data-live-status={liveStatus}
     data-effective-status={effectiveStatus}
+    data-machine-unreachable={machineUnreachable || undefined}
   >
   {#if showPinAffordance}
     <!--

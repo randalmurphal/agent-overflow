@@ -5,6 +5,7 @@
   import GeneralSettings from './GeneralSettings.svelte';
   import DevicesSection from './DevicesSection.svelte';
   import NetworkSection from './NetworkSection.svelte';
+  import SystemsSection from './SystemsSection.svelte';
   import WSLSection from './WSLSection.svelte';
   import ProviderSettings from './ProviderSettings.svelte';
   import PromptOverridesSettings from './PromptOverridesSettings.svelte';
@@ -177,6 +178,8 @@
             <DevicesSection />
             <WSLSection />
           </div>
+        {:else if activeSection === 'systems'}
+          <SystemsSection />
         {:else if activeSection === 'observability'}
           <ObservabilitySettings />
         {:else if activeSection === 'storage'}

@@ -25,6 +25,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'git', label: 'Git', group: 'Workspace' },
   { id: 'editor', label: 'Editor', group: 'Workspace' },
   { id: 'network', label: 'Network', group: 'Workspace' },
+  { id: 'systems', label: 'Systems', group: 'Workspace' },
   { id: 'observability', label: 'Observability', group: 'Data' },
   { id: 'storage', label: 'Storage', group: 'Data' },
 ] as const satisfies ReadonlyArray<{ id: string; label: string; group: SettingsGroup }>;

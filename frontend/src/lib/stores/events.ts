@@ -60,6 +60,7 @@ import {
   flushItemEventQueue,
   resetItemEventQueue,
 } from './eventsItemStream';
+import { applyBackendAttach, type BackendAttachEvent } from './systems.svelte';
 import {
   applyThreadErrorNotice,
   type ThreadErrorNoticeEvent,
@@ -416,6 +417,16 @@ export function setupEventListeners(): () => void {
     applyThreadErrorNotice,
   );
 
+  // backend:attach — how a pairing this machine started from Settings →
+  // Systems ended, minutes after AddBackend returned the verification
+  // number. Loopback-only and host-scoped on the Go side, so only the
+  // page that can manage systems ever receives it.
+  const cancelBackendAttach = wailsEventOn<BackendAttachEvent>('backend:attach', (evt) => {
+    const outcome = applyBackendAttach(evt);
+    if (outcome.error) addToast('error', `Could not attach ${outcome.name}: ${outcome.error}`);
+    else addToast('success', `Attached ${outcome.name}`);
+  });
+
   // project:updated — one frame per project row a persisted write moved. The
   // sidebar list is otherwise refreshed only on mount and after the issuing
   // client's own RPC, so this is what converges a second attached client.
@@ -584,6 +595,7 @@ export function setupEventListeners(): () => void {
     cancelUserMessageReverted();
     cancelThreadUpdated();
     cancelThreadErrorNotice();
+    cancelBackendAttach();
     cancelProjectUpdated();
     cancelDraftUpdated();
     cancelThreadTitleGeneration();
