@@ -846,6 +846,26 @@ dependency.
 
 ### TLS (in-app termination)
 
+**Wave 8b LANDED 2026-08-31 (2ccbe6cd): the termination half.**
+`internal/servercert` load-or-mints the install's self-signed ECDSA
+P-256 certificate (one combined 0600 PEM under the config root,
+ten-year validity, unreadable material replaced loudly — a replacement
+un-pins every paired device and `Material.Replaced` says so). The
+transport terminates TLS on the SAME port it serves cleartext on
+(`tlssniff.go`: first byte 0x16 → `tls.Server`, else plain; one
+goroutine per conn off the accept loop, bounded by
+`HTTPReadHeaderTimeout`), with `bindListener` as the one listener
+constructor so boot / ephemeral fallback / rebind / retry / rollback
+all keep the wrap. `deriveWSURL` follows the request (`r.TLS` or a
+validated `X-Forwarded-Proto: https` → `wss://`) — the
+forwarded header is honored there and nowhere else; `OriginAllowed`
+and the Secure cookie flag stay on `r.TLS`. The pairing payload's
+`certFingerprint` is populated from the minted cert
+(`sha256:<lowercase hex>` over the leaf DER), injected at
+`MintDevicePairing` and read back off the minted row. The pinning
+CLIENT (desktop attach + CLI) is the next wave; browsers keep the
+cleartext half and `network.Settings.URL` stays `http://`.
+
 Two supported paths; others are documented escape hatches, not built:
 
 1. **Owned domain + DNS-01**. DNS record → LAN IP (public DNS may hold
