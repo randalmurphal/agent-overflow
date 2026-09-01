@@ -34,6 +34,13 @@ func WriteJSON(path string, v any) error {
 // Write atomically replaces path with data using private file and directory
 // permissions. It is the byte-oriented counterpart to WriteJSON for sensitive
 // provider-owned files whose schema Agent Overflow must preserve verbatim.
+//
+// Both halves of durability are done: the file's bytes are fsynced before the
+// rename, and the DIRECTORY is fsynced after it. Without the second one the
+// rename itself is only in the page cache, so a machine that loses power right
+// after a "successful" write can come back to the old name — or to no name at
+// all. The file fsync alone protects the contents of an entry that may not be
+// there.
 func Write(path string, data []byte) error {
 	if path == "" {
 		return errors.New("atomicfile: empty path")
@@ -73,6 +80,23 @@ func Write(path string, data []byte) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		cleanup()
 		return fmt.Errorf("atomicfile: rename %s -> %s: %w", tmpPath, path, err)
+	}
+	return SyncDir(dir)
+}
+
+// SyncDir fsyncs a directory so entries created, renamed or removed inside it
+// survive a power loss. Exported because the callers that write more than one
+// file into a directory — a staged version tree, a database snapshot — need to
+// sync it once at the end rather than once per file.
+//
+// A no-op on Windows, where a directory handle cannot be opened for the flush
+// and the filesystem does not offer the guarantee to ask for.
+func SyncDir(dir string) error {
+	if dir == "" {
+		return errors.New("atomicfile: empty directory")
+	}
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("atomicfile: sync dir %s: %w", dir, err)
 	}
 	return nil
 }
