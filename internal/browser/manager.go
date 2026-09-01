@@ -294,7 +294,16 @@ func (m *Manager) OpenFile(ctx context.Context, access Access, path string, opts
 	if err != nil {
 		return PageInfo{}, err
 	}
-	return m.navigate(ctx, access, (&url.URL{Scheme: "file", Path: filepath.ToSlash(resolved)}).String(), opts)
+	// The URL must name the file as the RENDERER sees it. An engine whose
+	// renderer is on the other side of a machine boundary answers through
+	// engineFileURL; everywhere else the backend path is the renderer path.
+	fileURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(resolved)}).String()
+	if engine, ok := m.engine.(engineFileURL); ok {
+		if fileURL, err = engine.FileURL(ctx, resolved); err != nil {
+			return PageInfo{}, err
+		}
+	}
+	return m.navigate(ctx, access, fileURL, opts)
 }
 
 func (m *Manager) navigate(ctx context.Context, access Access, targetURL string, opts OpenOptions) (PageInfo, error) {

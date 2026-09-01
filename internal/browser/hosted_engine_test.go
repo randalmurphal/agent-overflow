@@ -745,3 +745,33 @@ func TestHostedEngineBrowserDialCreatesNoTargetAndEnablesDiscovery(t *testing.T)
 		t.Fatal("the dial never enabled target discovery; the targetDestroyed backstop would hear nothing")
 	}
 }
+
+// A file the agent opens is on the WSL filesystem, but the renderer that
+// must load it is a Windows-side WebView2, so the URL has to carry the
+// Windows VIEW of the path (2026-08-31: file:///home/... navigated a live
+// pane to ERR_FILE_NOT_FOUND). The engine advertises that through
+// engineFileURL; losing the implementation would silently regress
+// browser_open_file to a URL no Windows renderer can read.
+var _ engineFileURL = (*hostedEngine)(nil)
+
+func TestWindowsFileURLCarriesTheRendererView(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, want string
+	}{
+		{"wsl UNC", `\\wsl.localhost\AlmaLinux-10\home\u\page.html`, "file://wsl.localhost/AlmaLinux-10/home/u/page.html"},
+		{"drive path", `C:\Users\u\page.html`, "file:///C:/Users/u/page.html"},
+		{"drive path with spaces", `C:\My Files\a b.html`, "file:///C:/My%20Files/a%20b.html"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := windowsFileURL(tc.path)
+			if err != nil || got != tc.want {
+				t.Fatalf("windowsFileURL(%q) = %q, %v; want %q", tc.path, got, err, tc.want)
+			}
+		})
+	}
+	for _, path := range []string{"", `\\hostonly`, `\\wsl.localhost`, "relative/path", "/linux/path"} {
+		if got, err := windowsFileURL(path); err == nil {
+			t.Errorf("windowsFileURL(%q) = %q, want an error", path, got)
+		}
+	}
+}

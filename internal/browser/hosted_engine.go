@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -279,6 +280,38 @@ func (e *hostedEngine) ClearSiteData(ctx context.Context) error {
 		return fmt.Errorf("browser: pane host could not clear site data (%s): %s", report.kind, report.detail)
 	}
 	return nil
+}
+
+// FileURL answers the file URL the Windows-side renderer can actually
+// read. The backend's paths are WSL paths that do not exist on Windows;
+// `wslpath -w` translates them to the `\\wsl.localhost\<distro>\...` UNC
+// view (or a drive path for /mnt/<letter>), which is the same boundary
+// the clipboard copy-file feature already crosses in the other direction.
+func (e *hostedEngine) FileURL(ctx context.Context, path string) (string, error) {
+	converted, err := windowsPathFor(ctx, path)
+	if err != nil {
+		return "", err
+	}
+	return windowsFileURL(converted)
+}
+
+// windowsFileURL turns a Windows path into the file URL Chromium expects:
+// a UNC path's host rides the URL authority (file://wsl.localhost/...),
+// a drive path rides an empty one (file:///C:/...). Tag-free and pure so
+// the shape is pinned by tests on every platform.
+func windowsFileURL(windowsPath string) (string, error) {
+	slashed := strings.ReplaceAll(windowsPath, `\`, "/")
+	if host, ok := strings.CutPrefix(slashed, "//"); ok {
+		hostname, share, found := strings.Cut(host, "/")
+		if !found || hostname == "" || share == "" {
+			return "", fmt.Errorf("browser: unusable UNC path %q", windowsPath)
+		}
+		return (&url.URL{Scheme: "file", Host: hostname, Path: "/" + share}).String(), nil
+	}
+	if len(slashed) < 2 || slashed[1] != ':' {
+		return "", fmt.Errorf("browser: unusable Windows path %q", windowsPath)
+	}
+	return (&url.URL{Scheme: "file", Path: "/" + slashed}).String(), nil
 }
 
 // DiscardPage closes a controller the Manager declined to adopt. The handle

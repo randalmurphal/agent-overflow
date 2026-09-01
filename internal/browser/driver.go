@@ -47,6 +47,17 @@ type engineSiteData interface {
 	ClearSiteData(ctx context.Context) error
 }
 
+// engineFileURL is implemented by an engine whose renderer reads the
+// filesystem from a DIFFERENT machine than the backend: the launcher-hosted
+// WebView2 renders on Windows while the backend's paths are WSL paths, so a
+// local file is addressed by its Windows view (`wslpath -w`, the same
+// boundary the clipboard copy-file feature crosses). An engine whose
+// renderer shares the backend's filesystem does not implement it, and the
+// Manager then navigates to the backend path's own file URL.
+type engineFileURL interface {
+	FileURL(ctx context.Context, path string) (string, error)
+}
+
 // engineProfile is one canonical workspace's isolated site data: the unit that
 // owns its pages and their download behavior. Site data itself is the ENGINE's
 // (spec §4) — a real browser profile on disk, or an ephemeral session — so
