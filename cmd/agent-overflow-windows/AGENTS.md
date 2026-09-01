@@ -145,6 +145,61 @@ parked on a locked OS thread for the process lifetime. An unrecognized mode
 is dropped, never defaulted, since guessing `display` pins the machine awake
 on a garbled frame and guessing `off` drops an inhibit the user asked for.
 
+## Embedded browser pane: hosting the second WebView2
+
+The backend decides what the pane shows and where it sits; the controllers
+that draw it must be child windows of THIS process's HWND, driven from its
+UI thread. So the backend emits directives on `eventchan.BrowserHost` and
+`browserhost.go` executes them through `internal/webview2host`, which owns
+the COM, the z-order rule, and the CDP relay (its guide has the reasoning
+for all three).
+
+- **Lazy, not bootstrap-gated.** `handleBrowserHostDirective` builds the
+  host and its tunnel on the FIRST directive. The feature costs a browser
+  process and a profile directory, most sessions never open a pane, and a
+  backend without the feature simply never emits. A bootstrap flag would
+  have to be kept in sync to say what the first directive already proves.
+  A construction failure is not cached: its inputs (AppData, the profile
+  directory, a free port) can come back. The two ops the backend BLOCKS on
+  are answered even when the host could not be built at all — `create`
+  with `create-failed`, `clear-data` with `clear-failed` — rather than
+  becoming a pane that never appears or a Settings button that spins until
+  its own timeout. The rest address a page that, by definition, was never
+  created. Being lazy also makes it profile-agnostic for free:
+  `startNotificationBridge` wires `HandleBrowserHost` on every launch, so
+  an isolated profile's backend is served exactly like the dev instance
+  the moment it emits — which is what makes
+  `AO_HARNESS_REAL_BROWSER=1 make harness-wsl` the Windows leg of the
+  real-engine gate (`docs/specs/embedded-browser.md` §10) with no
+  launcher-side wiring of its own.
+- **Profile storage.** `prepareBrowserProfileStorage` creates
+  `appidentity.BrowserProfilesDir(mode)` beside the SPA's own webview2
+  directory, through the same `validateWindowsStoragePath` that refuses
+  symlinked and reparse-point components. Per mode like the others, and
+  for a harder reason: a WebView2 user-data folder belongs to one browser
+  process, so a shared folder would leave whichever launcher started
+  second unable to create its environment at all. It is also the folder
+  Settings → Clear site data DELETES (and recreates empty): the backend's
+  own `browser-profiles/` tree is empty on this deployment, so this folder
+  is the whole of the user's pane site data.
+- **Env scrub at boot.** `main` calls `webview2host.ScrubEnvOverrides`
+  before `prepareWebviewStorage`, ahead of the SPA environment Wails
+  builds. An inherited `WEBVIEW2_USER_DATA_FOLDER`, including a SET BUT
+  EMPTY one, silently collapses every environment in the process onto one
+  profile with no error anywhere.
+- **Reports go through a serial queue.** `reportBrowserHost` submits to
+  `launcherApp.browserReports` rather than calling the RPC inline. The
+  host reports `created` from a WebView2 completion handler running on the
+  UI thread, where a blocking RPC would freeze the window; a bare `go`
+  would let the backend see `closed` before the `created` carrying the
+  page's CDP target id.
+- **Teardown before the windows.** `OnShutdown` calls `closeBrowserHost`
+  ahead of `stopLaunchedBackend`: a pane controller outliving its parent
+  HWND faults inside WebView2. Calling it from that hook is safe even
+  though the hook already runs on the main thread, because Wails' dispatch
+  runs the closure inline when it is already there instead of posting to a
+  pump that is blocked waiting on the hook.
+
 ## Isolated-profile containment
 
 Three layers, all gated on `activeProfile != ""` so a production launch keeps

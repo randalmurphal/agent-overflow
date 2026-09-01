@@ -7,19 +7,24 @@ import (
 	"strconv"
 	"time"
 
+	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/windowgeom"
 )
 
 // IsolationConfig is the complete mocked-provider boot contract shared by the
-// harness and soak modes. Keeping the four safety pins in one value prevents a
-// new boot mode from applying only part of the isolation boundary.
+// harness and soak modes. Keeping the safety pins in one value prevents a new
+// boot mode from applying only part of the isolation boundary.
 type IsolationConfig struct {
 	ProviderBinary         string
 	CredentialHome         string
 	UseFileKeychain        bool
 	DisableBackgroundFetch bool
+	// MockBrowserEngine pins the browser Manager to the fake engine. A mocked
+	// boot has no display and must never open a real one, yet its pane chrome
+	// and host rect still have to render (spec §10).
+	MockBrowserEngine bool
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -32,6 +37,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.credentialHomeOverride = config.CredentialHome
 	a.fileKeychainOverride = config.UseFileKeychain
 	a.backgroundFetchDisabled = config.DisableBackgroundFetch
+	a.browser.mockEngine = config.MockBrowserEngine
 }
 
 // UseFileKeychain moves provider credentials and the browser companion's
@@ -110,6 +116,16 @@ func SetDataDirOverride(a *App, dataDir string) { a.dataDirOverride = dataDir }
 // string a device is told to pin is the string that listener presents.
 // Call before the transport serves.
 func SetCertFingerprint(a *App, fingerprint string) { a.certFingerprint = fingerprint }
+
+// SetBrowserCDPRelay installs the backend end of the Windows launcher's CDP
+// tunnel, which the executable creates before the transport so the same
+// object can serve the /browser-cdp route.
+//
+// Non-nil only on the WSL deployment, and that is the whole engine
+// selection: the browser Manager takes the hosted (embedded-pane) engine
+// exactly when a relay exists, so "which engine" and "is there a launcher
+// to host windows" can never disagree. Must be called before Start.
+func SetBrowserCDPRelay(a *App, relay appbrowser.CDPRelay) { a.browser.cdpRelay = relay }
 
 // EnsurePrivateDir applies the same ownership and mode rules used by App
 // startup to a bootstrap-owned data directory.

@@ -30,8 +30,16 @@ A channel exists only when BOTH halves are present:
 
 `internal/transport`'s `TestEveryEventChannelConstantHasAPolicyRow` and
 `TestEveryChannelPolicyRowHasAConstant` fail on either half missing. The
-constants are enumerated by AST-parsing this package's source, so there
-is no third list to keep in sync. Adding a constant is enough.
+constants are enumerated by AST-parsing this package's source, so no list
+of SPELLINGS is kept anywhere else.
+
+One list of CONSTANTS is: `cmd/ao-harness/channels.go`, the vocabulary
+the CLI prints and checks a `--channel` against, because Go cannot
+enumerate a package's constants at runtime. It names the constants rather
+than their strings, so a rename fails its compile, and
+`TestKnownChannelsCoversTheEventChannelRegistry` AST-parses this package
+to catch an addition that never reached it. Practically: a new channel is
+those three edits, and both cross-checks tell you which one you missed.
 
 ## Why the newtype, and what it does not do
 

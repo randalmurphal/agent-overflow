@@ -23,6 +23,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/harness"
 	"agent-overflow/internal/harness/control"
+	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/slicesx"
@@ -38,6 +39,7 @@ import (
 // the provider processes.
 type Config struct {
 	Host            Host
+	Window          WindowController
 	Version         string
 	BuildStamp      string
 	DataRoot        string
@@ -384,6 +386,41 @@ func (h *Harness) HarnessEmit(channel string, payload json.RawMessage) error {
 	}
 	h.config.Host.Emit(eventchan.Channel(channel), payload)
 	return nil
+}
+
+// HarnessBrowserPressKey types one chord into a browser page's native view
+// (docs/architecture/browser-tools.md § Keyboard): the page becomes first
+// responder and the key event enters through the window, so the engine's
+// chord gate sees exactly what a real keystroke would. OS-level input
+// synthesis needs Accessibility trust the harness cannot assume; this does
+// not, because the app is posting to its own window.
+func (h *Harness) HarnessBrowserPressKey(threadID, pageID string, chord keybindings.Accelerator) error {
+	if h.config.Host == nil {
+		return fmt.Errorf("harness host unavailable")
+	}
+	if strings.TrimSpace(chord.Key) == "" {
+		return fmt.Errorf("chord key must be non-empty")
+	}
+	return h.config.Host.BrowserPressKey(threadID, pageID, chord)
+}
+
+// HarnessBrowserScroll scrolls a real browser page through the same bounded
+// manager operation used by the browser MCP. Fake-engine boots refuse it.
+func (h *Harness) HarnessBrowserScroll(threadID, pageID string, x, y float64) error {
+	if h.config.Host == nil {
+		return fmt.Errorf("harness host unavailable")
+	}
+	return h.config.Host.BrowserScroll(threadID, pageID, x, y)
+}
+
+// HarnessBrowserScreenshot captures the current native viewport as JPEG.
+// []byte intentionally crosses the harness RPC as base64: callers can retain
+// an exact artifact without granting the harness a new filesystem write API.
+func (h *Harness) HarnessBrowserScreenshot(threadID, pageID string) ([]byte, error) {
+	if h.config.Host == nil {
+		return nil, fmt.Errorf("harness host unavailable")
+	}
+	return h.config.Host.BrowserScreenshot(threadID, pageID)
 }
 
 // HarnessNotify exercises the production send helper and then synthesizes

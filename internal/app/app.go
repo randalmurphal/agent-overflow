@@ -298,6 +298,11 @@ type App struct {
 	// providerDiscoveryCaches is a test-only cache injection. Production leaves
 	// it nil and providerDiscoveryService uses the bounded process-wide set.
 	providerDiscoveryCaches *providerdiscoveryapp.Caches
+	// providerBinaries is the provider-binary upgrade watcher's concern
+	// (`app_provider_binary_watch.go`): the last version each binary
+	// reported and the live threads flagged stale against it. Zero value
+	// ready; the watcher goroutine only runs from Start.
+	providerBinaries appProviderBinaryWatchState
 	// claudeApp owns application-facing reads and controls for live Claude
 	// sessions. Account and process lifecycle stay with their own services.
 	claudeAppOnce sync.Once

@@ -23,6 +23,7 @@ import (
 	"agent-overflow/internal/aocli"
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appdirs"
+	"agent-overflow/internal/cdprelay"
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/harness/darwinbundle"
 	"agent-overflow/internal/logging"
@@ -30,6 +31,7 @@ import (
 	"agent-overflow/internal/observability/goroutinedump"
 	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/orphanreaper"
+	"agent-overflow/internal/platform"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/servercert"
 	"agent-overflow/internal/settings"
@@ -308,6 +310,27 @@ type bootTransportOptions struct {
 	AllowDevServerAssets bool
 }
 
+// bootBrowserCDPRelay binds the loopback endpoint the Windows launcher's
+// CDP tunnel terminates on, or returns nil where no launcher can exist.
+//
+// A failure here is not fatal: the app is fully usable without a browser
+// pane, and a backend that refuses to boot because one loopback port was
+// unavailable would be a far worse trade. The Manager then keeps its
+// managed-Chrome engine, which still works — it is the pane that is lost,
+// and the log line is what says so.
+func bootBrowserCDPRelay() *cdprelay.Endpoint {
+	if !platform.IsWSL() {
+		return nil
+	}
+	relay, err := cdprelay.New(cdprelay.Config{})
+	if err != nil {
+		log.Printf("browser pane: cdp relay unavailable, keeping the managed browser engine: %v", err)
+		return nil
+	}
+	log.Printf("browser pane: cdp relay listening on %s", relay.Addr())
+	return relay
+}
+
 func bootTransport(appService *App, listenAddr string, opts bootTransportOptions) *transport.Server {
 	started := time.Now()
 	defer logBootPhase("transport.total", started)
@@ -419,6 +442,16 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// measureUserAgentSpecificMemory. Opt-in: COEP breaks remote
 		// subresources such as chat-markdown images.
 		CrossOriginIsolate: envTruthy(os.Getenv(diagenv.RendererDiag)),
+	}
+	// The embedded browser pane's Windows leg. Inside WSL the browser
+	// engine lives in the launcher process, reached over a tunnel the
+	// launcher DIALS on this route; everywhere else there is no launcher,
+	// so neither the route nor the relay exists and the browser Manager
+	// keeps its managed-Chrome engine. The relay is built here rather than
+	// during startup because the transport route needs it at construction.
+	if relay := bootBrowserCDPRelay(); relay != nil {
+		cfg.CDPTunnel = relay
+		appservice.SetBrowserCDPRelay(appService.App, relay)
 	}
 	if cfg.CrossOriginIsolate {
 		log.Printf("transport: renderer diag mode — cross-origin isolation headers on (remote subresources will not load)")

@@ -25,7 +25,7 @@ import (
 func eventChannelConstants() []eventchan.Channel {
 	return []eventchan.Channel{
 		eventchan.BrowserCompanionState,
-		eventchan.BrowserInstallProgress,
+		eventchan.BrowserHost,
 		eventchan.DiscussionMessage,
 		eventchan.DiscussionState,
 		eventchan.DraftUpdated,

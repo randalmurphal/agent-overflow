@@ -96,7 +96,13 @@ func TestBackgroundTaskNotification_PersistsNotificationWithoutMutatingLifecycle
 	}
 }
 
-func TestBackgroundTaskNotification_DrainedStashWithoutLaunchDoesNotCreateRows(t *testing.T) {
+// A task_notification whose launch cannot be resolved writes no rows
+// AND leaves the stashed terminal alone: the launch row may still land
+// later (subagent transcript projection lags the main wire), and
+// draining the stash here destroyed the only evidence the late row
+// could settle against. Rowless stashes are pruned by the session-end
+// settle and the boot sweep instead.
+func TestBackgroundTaskNotification_PreservesStashWithoutLaunchAndCreatesNoRows(t *testing.T) {
 	cases := []struct {
 		name    string
 		status  string
@@ -144,9 +150,9 @@ func TestBackgroundTaskNotification_DrainedStashWithoutLaunchDoesNotCreateRows(t
 			}
 
 			if _, found, err := st.GetPendingBackgroundTerminal("t1", "hidden-task"); err != nil {
-				t.Fatalf("read drained stash: %v", err)
-			} else if found {
-				t.Fatal("expected hidden-task stash to be drained")
+				t.Fatalf("read stash: %v", err)
+			} else if !found {
+				t.Fatal("expected hidden-task stash to be preserved for a late-arriving launch row")
 			}
 			items, err := st.ListItems("t1")
 			if err != nil {
@@ -1136,7 +1142,7 @@ func TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier(t *tes
 		taskID           = "task-resume-1"
 		description      = "Frontend transitive suppression fix"
 		// The launch INPUT description deliberately differs from the
-		// rebind envelope's `description` so resumeCarrierSummary's two
+		// rebind envelope's `description` so resumeCarrierIdentity's two
 		// branches are distinguishable: the prefer-original branch
 		// yields "Agent: "+launchInputDescription (the original row's
 		// own Summary), the fallback would yield "Agent: "+description.
@@ -1149,7 +1155,11 @@ func TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier(t *tes
 	// completes through the normal task lifecycle.
 	startMeta, _ := json.Marshal(map[string]any{
 		"toolName": "Agent",
-		"input":    map[string]any{"description": launchInputDescription},
+		"input": map[string]any{
+			"description":   launchInputDescription,
+			"subagent_type": "general-purpose",
+			"model":         "opus",
+		},
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventToolStart,
@@ -1170,6 +1180,19 @@ func TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier(t *tes
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("original launch task_started: %v", err)
+	}
+	// The child's first assistant envelope stamps the resolved model onto
+	// the launch (the Subn meta-update) — the authoritative source the
+	// identity copy must prefer over the input's "opus" alias.
+	subnMeta, _ := json.Marshal(map[string]any{"subagent_model": "claude-opus-4-7"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    originalLaunchID,
+		Meta:      subnMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("original launch subagent_model stamp: %v", err)
 	}
 	ackMeta, _ := json.Marshal(map[string]any{"is_background": true})
 	if err := router.Handle(provider.ProviderEvent{
@@ -1278,6 +1301,22 @@ func TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier(t *tes
 	if carrier.Summary != "Agent: "+launchInputDescription {
 		t.Fatalf("carrier summary = %q, want %q (prefer-original rewrite)", carrier.Summary, "Agent: "+launchInputDescription)
 	}
+	// Identity copy: the keep-running flip resolves the original launch
+	// and stamps its identity onto the carrier's meta, so the timeline
+	// leaf / tray / completion card render the resumed agent's type and
+	// model instead of the SendMessage input's raw recipient id and the
+	// parent thread's model. subagent_model must be the Subn stamp
+	// (claude-opus-4-7), not the input's "opus" alias.
+	var carrierMeta map[string]any
+	if err := json.Unmarshal([]byte(carrier.Meta), &carrierMeta); err != nil {
+		t.Fatalf("carrier meta unmarshal: %v", err)
+	}
+	if carrierMeta["subagent_type"] != "general-purpose" {
+		t.Fatalf("carrier meta.subagent_type = %v, want general-purpose", carrierMeta["subagent_type"])
+	}
+	if carrierMeta["subagent_model"] != "claude-opus-4-7" {
+		t.Fatalf("carrier meta.subagent_model = %v, want claude-opus-4-7 (Subn stamp preferred over input alias)", carrierMeta["subagent_model"])
+	}
 
 	// Reaper-protection pin: the carrier must be the row that keeps
 	// ListRunningBackgroundToolCalls non-empty while the resumed agent
@@ -1373,7 +1412,7 @@ func TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier(t *tes
 }
 
 // TestBackgroundTaskNotification_ResumeCarrierFallbackDescription pins
-// resumeCarrierSummary's description fallback: when the original launch
+// resumeCarrierIdentity's description fallback: when the original launch
 // row referenced by resumes_tool_use_id no longer exists (retention
 // pruned it), the carrier Summary derives from the rebind envelope's
 // description — bounded exactly like every other tool summary
@@ -1442,6 +1481,126 @@ func TestBackgroundTaskNotification_ResumeCarrierFallbackDescription(t *testing.
 	}
 	if strings.Contains(carrier.Summary, longDescription) {
 		t.Fatalf("carrier summary carries the unbounded description verbatim: %q", carrier.Summary)
+	}
+}
+
+// TestBackgroundTaskNotification_ResumeCarrierReconnectResolvesByTaskID
+// pins the reconnect edge: a parser restarted between the original
+// launch and the resume stamps NO resumes_tool_use_id (the in-memory
+// binding is gone), but the original launch's persisted meta.task_id is
+// still on file — so the identity copy resolves it through
+// FindOriginalAgentLaunchByTaskID and the carrier still gets the
+// original's Summary, subagent_type and subagent_model. The lookup must
+// skip the carrier's OWN row, which carries the same task_id by the
+// time the flip runs (the rebind meta-update landed first).
+func TestBackgroundTaskNotification_ResumeCarrierReconnectResolvesByTaskID(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	const (
+		originalLaunchID = "original-agent-reconnect"
+		carrierID        = "sendmessage-carrier-reconnect"
+		taskID           = "task-reconnect-1"
+	)
+
+	// Round 1: original launch with full identity, persisted BEFORE the
+	// "restart" — its rows are all the new parser instance has.
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Agent",
+		"input": map[string]any{
+			"description":   "Original round-1 input",
+			"subagent_type": "Explore",
+			"model":         "opus",
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: originalLaunchID,
+		ItemType: "Agent", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("original launch start: %v", err)
+	}
+	taskStartedMeta, _ := json.Marshal(map[string]any{"task_id": taskID})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: originalLaunchID,
+		Meta: taskStartedMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("original launch task_started: %v", err)
+	}
+	subnMeta, _ := json.Marshal(map[string]any{"subagent_model": "claude-opus-4-7"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: originalLaunchID,
+		Meta: subnMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("original launch subagent_model stamp: %v", err)
+	}
+	ackMeta, _ := json.Marshal(map[string]any{"is_background": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: originalLaunchID,
+		Content: "Async agent launched successfully.", Meta: ackMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("original launch ack: %v", err)
+	}
+
+	// Round 2 after a parser restart: the rebind carries description +
+	// subagent_type straight off the wire but NO resumes_tool_use_id.
+	carrierStartMeta, _ := json.Marshal(map[string]any{
+		"toolName": "SendMessage",
+		"input":    map[string]any{"to": "a464e54e96a45cd0c", "summary": "resume"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: carrierID,
+		ItemType: "SendMessage", Meta: carrierStartMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("carrier launch start: %v", err)
+	}
+	rebindMeta, _ := json.Marshal(map[string]any{
+		"task_id":       taskID,
+		"task_type":     "local_agent",
+		"description":   "Original round-1 input",
+		"subagent_type": "Explore",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: carrierID,
+		Meta: rebindMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("carrier rebind meta-update: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: carrierID,
+		Content: "resumed from transcript", Meta: ackMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("carrier ack: %v", err)
+	}
+
+	carrier, ok, err := st.GetThreadItem("t1", carrierID)
+	if err != nil || !ok {
+		t.Fatalf("lookup carrier: ok=%v err=%v", ok, err)
+	}
+	if !carrier.IsBackground || carrier.Status != statusRunning {
+		t.Fatalf("carrier bg=%v status=%q, want background running", carrier.IsBackground, carrier.Status)
+	}
+	// Summary resolved through the task_id lookup — the original row's
+	// own Summary, not the description fallback (identical text here
+	// would unpin the branch, so the launch input description above is
+	// what the original's Summary derives from and the assertion goes
+	// through the row).
+	original, ok, err := st.GetThreadItem("t1", originalLaunchID)
+	if err != nil || !ok {
+		t.Fatalf("lookup original: ok=%v err=%v", ok, err)
+	}
+	if carrier.Summary != original.Summary {
+		t.Fatalf("carrier summary = %q, want the original launch's %q (task_id resolution)", carrier.Summary, original.Summary)
+	}
+	var carrierMeta map[string]any
+	if err := json.Unmarshal([]byte(carrier.Meta), &carrierMeta); err != nil {
+		t.Fatalf("carrier meta unmarshal: %v", err)
+	}
+	if carrierMeta["subagent_model"] != "claude-opus-4-7" {
+		t.Fatalf("carrier meta.subagent_model = %v, want claude-opus-4-7 (copied via task_id lookup)", carrierMeta["subagent_model"])
+	}
+	if carrierMeta["subagent_type"] != "Explore" {
+		t.Fatalf("carrier meta.subagent_type = %v, want Explore", carrierMeta["subagent_type"])
 	}
 }
 

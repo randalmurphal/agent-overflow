@@ -48,8 +48,8 @@ func TestChannelPolicyEveryRowHasAWhy(t *testing.T) {
 // this list move together.
 var (
 	frozenLoopbackOnlyChannels = []string{
-		"browser:companion-state",  // local URLs and file paths
-		"browser:install-progress", // 2026-08-26 pass
+		"browser:companion-state", // local URLs and file paths
+		"browser:host",            // 2026-08-31: launcher pane directive, same posture as webview:trim
 		// Wave 4b: names the thread whose composer draft moved. Same posture
 		// as its own RPCs (GetDraft / SaveDraft / ClearDraft are all
 		// CategorySessionControl) — in-progress user-typed work, and "who is
@@ -98,7 +98,8 @@ var (
 		"highlight:seed",
 	}
 	frozenEphemeralChannels = []string{
-		"browser:companion-state", // subscribe returns the complete snapshot
+		"browser:companion-state", // the thread-state read returns the complete snapshot
+		"browser:host",            // 2026-08-31: replaying a stale pane directive reopens closed pages
 		"harness:ui-query",        // a one-shot query directive; a replayed one has no waiter
 		"highlight:diff_seed",
 		"highlight:seed",
@@ -111,7 +112,6 @@ var (
 		"webview:trim", // 2026-08-25: replaying a stale trim would GC an active session
 	}
 	frozenLatestOnlyChannels = []string{
-		"browser:install-progress", // superseding artifact-install phase
 		// A LEVEL, not an edge: a reconnecting launcher replays with a
 		// zero cursor and must converge on the current keep-awake state.
 		"power:keepawake",

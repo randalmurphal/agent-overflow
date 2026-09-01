@@ -7,13 +7,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/attachment"
 	appbrowser "agent-overflow/internal/browser"
-	"agent-overflow/internal/chromium"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
@@ -180,6 +178,13 @@ func (a *App) startUnattendedWork() error {
 	// report bookmarks — which no database snapshot restores, and its first
 	// sweep is 30 seconds in, well inside a trial's budget.
 	a.startRetentionCleanup()
+
+	// Watch the provider binaries for an upgrade under a running app: a
+	// quiet tick is two stats, and a changed file re-reads the version,
+	// refreshes the model catalog, and flags live sessions still running
+	// the old build. Behind the activation gate because a changed file
+	// spawns `<binary> --version`. See app_provider_binary_watch.go.
+	a.startProviderBinaryWatcher()
 
 	// Start the background `git fetch` cadence so ahead/behind counts
 	// track the remote instead of the user's last manual fetch. Reads
@@ -610,18 +615,27 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	a.sweepCrashedWorktreeSetups()
 	logBootPhase("app.sweep_crashed_worktree_setups", worktreeSetupSweepStarted)
 	browserSettings := a.currentSettings()
-	browserInstaller := chromium.NewInstaller(dbDir, eventchan.BrowserInstallProgress, a.emit)
-	browserInstaller.BinaryPath = strings.TrimSpace(os.Getenv("AO_BROWSER_BINARY"))
+	a.refreshBrowserAccelerators()
 	a.browser.manager = appbrowser.NewManager(
-		browserInstaller,
 		dbDir,
 		browserConfigFromSettings(browserSettings),
-		appbrowser.ManagerOptions{FileStateKey: a.fileKeychainOverride},
+		appbrowser.ManagerOptions{
+			FakeEngine:   a.browser.mockEngine,
+			PaneHost:     a.paneHostOptions(),
+			NativeWindow: a.browser.nativeWindow,
+			Accelerators: a.browserAccelerators,
+		},
 	)
 	a.browser.manager.SetEventSink(func(event appbrowser.CompanionEvent) {
 		a.emit(eventchan.BrowserCompanionState, event)
 	})
-	a.browser.mcp = appbrowser.NewMCPServer(a.browser.manager, browserSettings.BrowserEnabled)
+	// No engine, no browser MCP server. A deployment without a window hosts
+	// no pages (spec §9), so offering a thread 28 tools that can only refuse
+	// would be worse than offering none: the absence is what the model and
+	// the UI can both read.
+	if a.browser.manager.Available() {
+		a.browser.mcp = appbrowser.NewMCPServer(a.browser.manager, browserSettings.BrowserEnabled)
+	}
 	a.browser.liveEnabled.Store(browserSettings.BrowserEnabled)
 	a.terminals = terminal.NewManager(a.terminalOutputCallback, a.terminalExitCallback)
 	attachmentStore, err := attachment.NewStore(attachment.Config{

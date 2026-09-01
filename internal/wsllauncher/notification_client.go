@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/relaysession"
 	"agent-overflow/internal/selfupdate"
+	"agent-overflow/internal/webview2host"
 
 	"github.com/coder/websocket"
 )
@@ -69,6 +70,21 @@ type NotificationClientConfig struct {
 	// hour ago or lands a moment from now. Convergence therefore needs no
 	// re-emit on subscribe and no cursor bookkeeping here.
 	HandleKeepAwake func(mode string)
+
+	// HandleBrowserHost, when non-nil, additionally subscribes this
+	// connection to the ephemeral browser:host directive channel and
+	// hands every VALID directive to the callback. Same posture as
+	// HandleWebviewTrim: nil keeps the wire unchanged, the callback runs
+	// off the read loop, and the channel carries no replay cursor — a
+	// pane directive speaks for the layout it was emitted into, and
+	// replaying a backlog would reopen pages the user has closed.
+	//
+	// Validation happens HERE, not in the handler: a directive names a
+	// profile that becomes a directory on disk and a page the launcher
+	// creates OS windows for, so an invalid one is logged and dropped
+	// and never reaches the host — the same trust-boundary rule the
+	// install directive follows.
+	HandleBrowserHost func(directive webview2host.Directive)
 }
 
 // NotificationClient is the launcher's narrow transport client. It consumes
@@ -87,6 +103,7 @@ type NotificationClient struct {
 	handleInstall     func(selfupdate.InstallDirective)
 	handleWebviewTrim func(reason string)
 	handleKeepAwake   func(mode string)
+	handleBrowserHost func(directive webview2host.Directive)
 	// channels is the exact subscribe-frame payload, fixed at construction so
 	// every reconnect asks for the same set.
 	channels []string
@@ -169,6 +186,9 @@ func NewNotificationClient(config NotificationClientConfig) (*NotificationClient
 	if config.HandleWebviewTrim != nil {
 		channels = append(channels, string(eventchan.WebviewTrim))
 	}
+	if config.HandleBrowserHost != nil {
+		channels = append(channels, string(eventchan.BrowserHost))
+	}
 	var levelChannels []string
 	if config.HandleKeepAwake != nil {
 		channels = append(channels, string(eventchan.PowerKeepAwake))
@@ -182,6 +202,7 @@ func NewNotificationClient(config NotificationClientConfig) (*NotificationClient
 		handleInstall:     config.HandleUpdateInstall,
 		handleWebviewTrim: config.HandleWebviewTrim,
 		handleKeepAwake:   config.HandleKeepAwake,
+		handleBrowserHost: config.HandleBrowserHost,
 		channels:          channels,
 		levelChannels:     levelChannels,
 		logf:              logf,
@@ -392,6 +413,10 @@ func (c *NotificationClient) handleEvent(event notificationEvent) error {
 		c.handleWebviewTrimDirective(event.Data)
 		return nil
 	}
+	if event.Channel == string(eventchan.BrowserHost) {
+		c.handleBrowserHostDirective(event.Data)
+		return nil
+	}
 	if event.Channel == string(eventchan.PowerKeepAwake) {
 		if event.Gap {
 			// Cannot happen with a zero cursor on a latest-only ring, but
@@ -490,6 +515,36 @@ func (c *NotificationClient) handleWebviewTrimDirective(data json.RawMessage) {
 		return
 	}
 	go c.handleWebviewTrim(directive.Reason)
+}
+
+// handleBrowserHostDirective decodes and validates one browser:host frame
+// and hands it to the launcher's pane host. A frame that fails to decode
+// or fails Validate is logged and dropped, never connection-fatal: the
+// directive commands real browser windows, so a garbled one must not be
+// guessed at, and losing one costs a redraw the backend re-derives rather
+// than the whole notification bridge.
+//
+// Off the read loop like its siblings, and here that is load-bearing
+// rather than merely polite: the handler blocks on the launcher's UI
+// thread and, on the first directive, on a cold WebView2 environment
+// create that takes seconds. Running it inline would stall notification
+// delivery and the report RPC the handler itself posts back over this
+// same connection.
+func (c *NotificationClient) handleBrowserHostDirective(data json.RawMessage) {
+	if c.handleBrowserHost == nil {
+		c.logf("browser host: ignore directive on an unsubscribed connection")
+		return
+	}
+	var directive webview2host.Directive
+	if err := json.Unmarshal(data, &directive); err != nil {
+		c.logf("browser host: ignore malformed directive: %v", err)
+		return
+	}
+	if err := directive.Validate(); err != nil {
+		c.logf("browser host: ignore invalid directive: %v", err)
+		return
+	}
+	go c.handleBrowserHost(directive)
 }
 
 // handleKeepAwakeDirective decodes one power:keepawake frame and hands its

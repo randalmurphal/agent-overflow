@@ -239,8 +239,11 @@ buckets that share the same window durations.
 
 The backend retains the last normalized snapshot per provider, merging by
 `windowDurationMins` because Claude reports its 5h and 7d windows separately.
-The cache rejects older reset boundaries and same-window lower readings just
-like the frontend store, so a delayed session event cannot regress hydration.
+The cache rejects older reset boundaries and stabilizes same-window boundary
+jitter, like the frontend store; within a window the NEWEST reading wins even
+when it is lower, because a server-side limit increase or usage reset is the
+current answer (2026-09-01), and a delayed older-window event still cannot
+regress hydration.
 Frontends call `GetRateLimitsSnapshots` after installing the live
 `provider:usage` listener and again when that channel reports a transport gap.
 This is necessary because a startup account probe can complete before the
@@ -1497,9 +1500,12 @@ that asked, not a description of what was cut.
 Checked against rust-v0.150.1 for every consumer of thread shape:
 
 - `thread/fork` still works on a paginated source (`prepare_fork` with
-  `ForkBoundary::ThroughTurn`) and still returns turns, so the fork cut stays
-  valid as a fallback. Its one paginated-specific refusal needs
-  `ephemeral: true`.
+  `ForkBoundary::ThroughTurn`), so the fork cut stays valid as a fallback. AO
+  sends `excludeTurns: true` on every fork because hydrating a long transcript
+  into that single response can exceed the process line cap. Anchored forks
+  validate the resulting tail with one descending
+  `thread/turns/list {itemsView:"notLoaded", limit:1}` page. The one
+  paginated-specific fork refusal needs `ephemeral: true`.
 - Two methods are refused outright on a paginated thread: `thread/rollback`
   ("paginated threads do not support thread/rollback") and DETACHED review
   ("paginated threads do not support detached review",

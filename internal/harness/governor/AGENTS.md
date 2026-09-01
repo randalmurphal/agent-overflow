@@ -53,8 +53,9 @@ kill path here.
 
 ## Defaults and callers
 
-`DefaultCeilingBytes` is 2 GiB (enough for the app plus managed Chrome's
-measured 1.69 GB aggregate-RSS macOS startup peak),
+`DefaultCeilingBytes` is 2 GiB (sized when the app could still spawn a managed
+Chrome whose measured macOS startup peak was 1.69 GB aggregate RSS; that Chrome
+is gone, and the harness now boots a fake browser engine that spawns nothing),
 `DefaultAvailableFloorBytes` is 2 GiB.
 The floor absorbs an allocation burst between the watchdog's 100ms
 samples; a sub-gigabyte floor can let the host OOM before the next exact

@@ -44,11 +44,12 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "BookmarkUIRenderTrace", ID: 1374242488, Scope: "host"},                                // main.App.BookmarkUIRenderTrace
 	{Name: "BrowseDirectory", ID: 320967638, Scope: "host"},                                       // main.App.BrowseDirectory
 	{Name: "BrowserCompanionDo", ID: 197228034, Scope: "terminal:operate"},                        // main.App.BrowserCompanionDo
-	{Name: "BrowserCompanionInput", ID: 2747693029, Scope: "terminal:operate"},                    // main.App.BrowserCompanionInput
-	{Name: "BrowserCompanionNextFrame", ID: 776020183, Scope: "terminal:operate"},                 // main.App.BrowserCompanionNextFrame
-	{Name: "BrowserCompanionResize", ID: 2921114943, Scope: "terminal:operate"},                   // main.App.BrowserCompanionResize
-	{Name: "BrowserCompanionSubscribe", ID: 668496681, Scope: "terminal:operate"},                 // main.App.BrowserCompanionSubscribe
-	{Name: "BrowserCompanionUnsubscribe", ID: 3385360912, Scope: "terminal:operate"},              // main.App.BrowserCompanionUnsubscribe
+	{Name: "BrowserCompanionPaneAttach", ID: 205254296, Scope: "terminal:operate"},                // main.App.BrowserCompanionPaneAttach
+	{Name: "BrowserCompanionPaneDetach", ID: 3255514830, Scope: "terminal:operate"},               // main.App.BrowserCompanionPaneDetach
+	{Name: "BrowserCompanionPaneRect", ID: 2491183339, Scope: "terminal:operate"},                 // main.App.BrowserCompanionPaneRect
+	{Name: "BrowserCompanionRevealPageFile", ID: 535837959, Scope: "terminal:operate"},            // main.App.BrowserCompanionRevealPageFile
+	{Name: "BrowserCompanionThreadState", ID: 1485125416, Scope: "terminal:operate"},              // main.App.BrowserCompanionThreadState
+	{Name: "BrowserHostReport", ID: 2848608143, Scope: "host"},                                    // main.App.BrowserHostReport
 	{Name: "CancelDevicePairing", ID: 2608316491, Scope: "access:admin"},                          // main.App.CancelDevicePairing
 	{Name: "CancelProviderLogin", ID: 341374423, Scope: "access:admin"},                           // main.App.CancelProviderLogin
 	{Name: "CancelSessionImport", ID: 2562316972, Scope: "threads:operate"},                       // main.App.CancelSessionImport

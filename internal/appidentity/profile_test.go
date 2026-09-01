@@ -70,6 +70,7 @@ func TestIsolatedIdentitiesAreDistinct(t *testing.T) {
 		record("singleInstanceID", mode, SingleInstanceID("wsl", mode))
 		record("webviewProfileDir", mode, WebviewProfileDir(mode))
 		record("renderForensicsDir", mode, RenderForensicsDir(mode))
+		record("browserProfilesDir", mode, BrowserProfilesDir(mode))
 		record("appTitle", mode, AppTitle(mode))
 	}
 	// Log and window state deliberately DO share between dev and prod;

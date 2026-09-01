@@ -112,3 +112,16 @@ Rules that hold across the package:
   whose next save overwrites it.
 - Do NOT change the JSON tags on `Keybinding` without a coordinated
   frontend change. The bindings tree carries a generated mirror.
+
+## The accelerator mirror
+
+`accelerator.go` is the ONE place chord syntax is read on the Go side, and
+it exists for a single consumer: the embedded browser's native page views,
+which must answer "does AO own this chord?" synchronously inside the key
+event, with no frontend to ask (docs/architecture/browser-tools.md
+§ Keyboard). `Accelerators(bindings, mac)` mirrors the frontend's
+`tryParseChord` token grammar, resolves `mod`, and keeps only chords with
+ctrl/meta/alt; `AcceleratorSet.Match` tries the other Shift glyph the way the
+frontend matcher does. A chord this mirror cannot read is not claimed — the
+frontend stays the owner of validation and issue reporting, and a grammar
+change there is a change here too.

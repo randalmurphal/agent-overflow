@@ -765,17 +765,28 @@ var channelPolicies = []ChannelPolicy{
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionEphemeral,
 		Scope:     ScopeTerminalOperate,
-		Why: "Per-thread live page titles and URLs, including file paths. The " +
-			"subscribe RPC returns a complete snapshot, so replay is unnecessary.",
+		Why: "Per-thread live page titles and URLs, including file paths. " +
+			"BrowserCompanionThreadState returns a complete snapshot, so " +
+			"replay is unnecessary.",
 	},
 	{
-		Channel:   eventchan.BrowserInstallProgress,
+		Channel:   eventchan.BrowserHost,
 		Audience:  AudienceLoopbackOnly,
-		Retention: RetentionLatestOnly,
-		Scope:     ScopeTerminalOperate,
-		Why: "Managed full-Chrome install progress; error strings can quote " +
-			"manifest URLs. Each phase supersedes the prior phase, so reconnect " +
-			"and live-drop recovery need only the newest state.",
+		Retention: RetentionEphemeral,
+		Scope:     ScopeHost,
+		Why: "An imperative directive, not a notification: the Windows " +
+			"launcher acts on it by creating, moving, showing and " +
+			"destroying real browser windows inside its own window. Its " +
+			"only legitimate consumer is that launcher, which is loopback " +
+			"by construction, and a peer that saw it would learn the " +
+			"workspace profile ids and the pane geometry. Ephemeral for " +
+			"the same reason as updater:install and webview:trim: a " +
+			"directive speaks for the layout it was emitted into, so " +
+			"replaying a backlog to a launcher that reconnects (the " +
+			"Windows-WSL relay tears connections down mid-session) would " +
+			"reopen pages the user has closed and position them against a " +
+			"pane rect that has moved. The backend re-derives the pane " +
+			"state and re-emits.",
 	},
 	{
 		Channel:   eventchan.SessionImportProgress,

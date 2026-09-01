@@ -172,6 +172,50 @@ webview's cookies, localStorage, IndexedDB replica and shader caches
 stay inside the data root. Under WSLg the window lands on the Windows
 desktop. Full contract: `docs/specs/testing-harness.md` §1-§2.
 
+### The browser engine, and the one opt-in that un-stubs it
+
+An isolated boot pins the browser Manager to the FAKE engine
+(`newIsolatedProviderApp` → `IsolationConfig.MockBrowserEngine`, spec
+`docs/specs/embedded-browser.md` §10). The companion pane's chrome, tab
+strip and host rect all render; nothing is behind them, and every tool
+needing real page content refuses by name. The pin is what keeps
+`make go-test`, `make e2e` and every unattended boot display-free.
+
+`AO_HARNESS_REAL_BROWSER=1` lifts it — the manual real-engine gate:
+
+```
+AO_HARNESS_REAL_BROWSER=1 make harness-window   # native engine (WebKitGTK / WKWebView)
+AO_HARNESS_REAL_BROWSER=1 make harness-wsl      # launcher-hosted WebView2, the Windows leg
+```
+
+Nothing else about the boot changes: same isolated data root, same mock
+providers, same Harness RPC surface. Site data stays isolated as well
+(native engines write under `<dataRoot>/browser-profiles/`; the Windows
+launcher's WebView2 user-data folder is already per-mode).
+
+Three properties are load-bearing:
+
+- **Default-off.** Unset, or set to anything `envTruthy` rejects, keeps
+  the pin. The only failure mode of getting this wrong is a browser
+  launched on a machine nobody is watching, so the safe answer is the
+  one you get by not deciding.
+- **Never for a soak.** `--autopilot` is what makes an isolated instance
+  a soak rather than a harness, and the variable is refused (loudly, in
+  the log) whenever it is armed. The axis is the autopilot, not the flag
+  spelling: the Windows harness rides the launcher-owned `--soak` wire
+  flag WITHOUT it and is as attended as `--harness`.
+- **It crosses the WSL boundary.** `make harness-wsl` runs the backend
+  inside the distro, two WSLENV hops from the shell you typed in:
+  `DEV_WSL_FWD_VARS` (Makefile) is hop 1, `diagenv.Passthrough()` is
+  hop 2. Exactly how `AGENT_OVERFLOW_PPROF` travels.
+
+The Windows leg needs no launcher wiring beyond that. The WSL backend
+already builds the CDP relay on every boot (`bootBrowserCDPRelay`, gated
+on `platform.IsWSL()`, not on boot mode), and the launcher already
+handles `browser:host` directives for every profile — it builds the host
+lazily on the FIRST directive, so a harness backend that emits one is
+served exactly like the dev instance.
+
 ### What an isolated boot does NOT stub
 
 The premise is that everything except the provider processes is
@@ -231,6 +275,11 @@ every App plus Harness method. Use `ao-harness rpc --list` for that full list.
 | `HarnessInfo()` | Identity + evidence paths (DB, event-log dir, UI trace, frontend error log), the instance's `clientId`, `soakAutopilot` (`"off"` / `"arming"` / `"armed"` / `"failed: <reason>"`, where the autopilot arms on a goroutine that starts *after* the instance is published as a soak, so without the latch a soak that never armed looks identical to a working one), and `assetsFreshness`: the boot's embedded-bundle verdict (`match` / `stale` / `unknown` / `dev-server`). The binary embeds `frontend/dist` at BUILD time, so a `vite build` followed by a not-rebuilt harness binary silently serves the previous bundle; boot compares the embed against the adjacent on-disk dist, warns loudly on `stale`, and `ao-harness health` flags it. |
 | `HarnessListMethods()` | Every method name reachable on the wire, sorted: the App's bindings and the Harness surface in one array of bare wire names. Lets a caller check an instance has the RPC it is about to call instead of discovering a version mismatch as an opaque `method_not_found`. |
 | `HarnessEmit(channel, payload)` | Publish a raw event on the bus: the escape hatch for injecting one-off frames at the frontend. |
+| `HarnessBrowserPressKey(threadId, pageId, chord)` | Type one chord (`{key, ctrl, meta, alt, shift}`, `KeyboardEvent.key` spelling) into a browser page's NATIVE view: the page becomes first responder and the key event enters through the window's own dispatch, so the engine's chord gate (browser-tools.md § Keyboard) sees what a real keystroke would. Exists because OS-level input synthesis needs Accessibility trust a driver cannot assume. Real-engine boots only (`AO_HARNESS_REAL_BROWSER=1`); the fake and launcher-hosted engines refuse by name. |
+| `HarnessBrowserScroll(threadId, pageId, x, y)` | Scroll a real browser page through the production manager's bounded operation. This is the provider-free native-rendering diagnostic; fake-engine boots refuse it. |
+| `HarnessBrowserScreenshot(threadId, pageId)` | Capture a real browser page as viewport JPEG bytes (base64 on the JSON wire), so a scroll/render regression can retain exact before/after artifacts without OS screenshot or accessibility privileges. The call temporarily mounts an otherwise hidden page in a deterministic 900×600 CSS test rect (the native size follows the shell's CSS-to-client scale), then restores its prior active page and companion visibility. Fake-engine boots refuse it. |
+| `HarnessWindowState()` | Read the isolated native window's outer DIP bounds, maximize/fullscreen/minimize flags, and its screen's DIP + physical work areas. Windowed boots only; headless instances refuse by name. This is the geometry assertion surface on hosts where OS accessibility automation is unavailable. |
+| `HarnessWindowCommand(command)` | Drive one native action (`maximize`, `unmaximize`, `fullscreen`, `unfullscreen`, `minimize`, `unminimize`) or set one outer DIP `bounds` rect. Exactly one is required. Animated transitions return before settling; poll `HarnessWindowState`. Windowed boots only. |
 | `HarnessListThreadRows()` | Every non-archived thread ROW, drafts included. `App.ListThreads` hides a row until it has an item or a content-carrying draft, so this is the only read that can prove a row was *not* created (or read back what a just-materialized one was bound to). |
 | `HarnessSeed(spec)` | **Strictly decoded** (unknown fields refused, positions reported, since a mistyped `treads:` used to seed nothing and return success). Declarative fixtures: projects (existing path or generated git repo), threads, pre-baked turn/item history, project-scoped workflow definitions/profile/items, and `providerHome` files, which are slash-separated relative paths written under the harness-owned provider home (`<dataRoot>/home`, never the real one, even under `AO_HARNESS_KEEP_HOME`), for `.claude.json` MCP config, skills, settings, or a `.claude/projects/...` transcript paired with a thread's `sessionRef`. Returns created ids and the home paths written. |
 | `HarnessReset()` | Blank slate without a reboot: set the global workflow pause and cancel every live run through the production cancel path, stop sessions, settle in-flight turns, delete the workflow run records (`DeleteProjectWorkflowRecords`: production deletion drops these too under D25, but reset drops them first so the delete has no worktrees left to walk against a spec's fixtures), delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, remove the provider trees under the harness-owned home (`.claude`, `.claude.json`, `.codex`: seeded `providerHome` fixtures plus the transcripts mocks wrote, which would otherwise leak into the next test's import scan), drop the cached session-import scan (its dedup is a projection of the rows just deleted, and nothing but a finished import run invalidates it), clear persisted UI view state (`ui_state` rows name entity ids: the workflows overlay stack persists work-item ids, and a surviving row makes the next test's fresh page restore a selection onto deleted rows — the wipe also takes the user and device settings tiers, which live in the same table since `internal/settings/residency.go`, so the reset drops the settings cache with it and both return to their defaults), and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
@@ -787,10 +836,10 @@ then either holds it open until SIGINT/SIGTERM or, with `--detach`,
 prints the pid and returns (stop it by killing that pid). A wait that
 runs out of its wall-clock `--timeout` fails and kills the browser group
 rather than reporting a page that is not there. The browser is resolved
-in three links, and the chosen one is printed: `--browser` or
-`$AO_HARNESS_BROWSER`, then the Chrome-for-Testing already managed by the
-built-in browser (a path lookup, never a download), then a Chromium-family
-binary on `PATH`. `--devtools-port`
+in two links, and the chosen one is printed: `--browser` or
+`$AO_HARNESS_BROWSER`, then a Chromium-family binary on `PATH`. There is
+no third link: the built-in browser hosts its own engine and downloads
+nothing, so there is no managed Chrome cache to borrow. `--devtools-port`
 additionally exposes CDP, which is what `profile` and `bench --trace`
 need. A headless-shell page hosts the bridge faithfully but is not the
 production rendering engine on any platform, so treat its perf numbers as

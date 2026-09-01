@@ -62,6 +62,7 @@
   //    gated by the close reason.
 
   import type { Snippet } from 'svelte';
+  import { airspaceSurface } from '../../utils/paneAirspace.svelte';
   import {
     hasOpenPopoverOwnedBy,
     popoverAnchorChainReaches,
@@ -568,6 +569,7 @@
     data-popover
     data-placement={resolvedPlacement ?? placement}
     class="z-[80]"
+    use:airspaceSurface
   >
     {@render children()}
   </div>

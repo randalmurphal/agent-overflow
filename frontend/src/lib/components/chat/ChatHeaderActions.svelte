@@ -13,6 +13,7 @@
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
   import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
+  import Globe from '@lucide/svelte/icons/globe';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getProject, getProjectLabelText } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -30,6 +31,11 @@
   import Icon from '../primitives/Icon.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import { isCompanionOpen, toggleCompanion } from '../../stores/companionPanes.svelte';
+  import {
+    browserCompanionAct,
+    browserCompanionState,
+    hydrateBrowserCompanionState,
+  } from '../../stores/browserCompanion.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -123,6 +129,33 @@
     pane.activityRuns.setAllCollapsed(!runsCollapsed);
   }
 
+  // The browser chip renders only while this thread has live browser pages,
+  // so closing the companion pane no longer strands them: the chip is the
+  // reopen door. Hidden entirely when no pages exist — a control that could
+  // only say "there is nothing to show" is noise. The state read is per-key
+  // reactive, and the hydration read fills in what the ephemeral
+  // `browser:companion-state` channel cannot replay to a fresh UI.
+  let threadIdForBrowser = $derived(pane.threadId ?? '');
+  let browserState = $derived(threadIdForBrowser ? browserCompanionState(threadIdForBrowser) : null);
+  let browserVisible = $derived(browserState?.visible === true);
+
+  $effect(() => {
+    if (threadIdForBrowser) hydrateBrowserCompanionState(threadIdForBrowser);
+  });
+
+  async function toggleBrowserCompanion(): Promise<void> {
+    const threadId = threadIdForBrowser;
+    const state = browserState;
+    if (!threadId || !state) return;
+    // A hidden companion has no pane to carry the banner, so the refusal
+    // comes back here and goes to a toast.
+    const failure = await browserCompanionAct(threadId, {
+      kind: browserVisible ? 'hide' : 'show',
+      pageId: browserVisible ? '' : (state.activePageId ?? ''),
+    });
+    if (failure) addToast('error', failure);
+  }
+
   function toggleWorkspaceReview(): void {
     if (!pane.threadId) return;
     if (pane.showReviewPane) {
@@ -193,6 +226,26 @@
     >
       {#snippet children()}
         <ProviderIcon provider="claude-tui" size={13} />
+      {/snippet}
+    </Button>
+  {/if}
+
+  {#if browserState}
+    <!-- Browser companion toggle. Present only while the thread's shared
+         browser session has live pages; reopens the pane after the user
+         closed it (closing the pane never closes the pages). -->
+    <Button
+      variant="secondary"
+      size="xs"
+      pressed={browserVisible}
+      ariaLabel="Toggle browser pane"
+      title="Toggle browser pane"
+      onclick={() => void toggleBrowserCompanion()}
+      testId="browser-companion-toggle"
+      class="shrink-0 w-6 px-0"
+    >
+      {#snippet children()}
+        <Icon icon={Globe} size={12} strokeWidth={2} class="opacity-90" />
       {/snippet}
     </Button>
   {/if}

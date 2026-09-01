@@ -73,8 +73,11 @@ launch, how do progress and terminal signals arrive, which controls exist
   when the source thread changes, closes itself when the scoped row is
   gone on restore (Q5).
 - Background section lists every node that is backgrounded or descends
-  from one, indented by depth; click opens the pane and scrolls the
-  timeline to the card. Forks appear without a kill button (Q8).
+  from one, indented by depth; a row click opens the pane and scrolls the
+  timeline to the card. The row's explicit open button opens the pane
+  only — the timeline jump is explicit navigation and releases
+  bottom-follow, which a reader pinned to a streaming tail did not ask
+  for (2026-08-31). Forks appear without a kill button (Q8).
 - Background action: icon button on a running inline agent or Bash row
   (Claude only: `background_tasks` control_request by `tool_use_id`);
   no keyboard shortcut (Q9). Claude stops forwarding the node through the
@@ -85,12 +88,16 @@ launch, how do progress and terminal signals arrive, which controls exist
   (`stop_task`); never forks (interrupt-only) or Codex children
   (`close_agent` is model-only).
 - A direct Claude slash command appears as a running Command row on its
-  `command_lifecycle` started frame. If an `isSidechain:true` mirror row also
-  carries `attributionSkill`, the same row changes to Skill and owns the
-  mirrored transcript. Main-agent rows can carry the same attribution with
-  `isSidechain:false`; they leave the Command row and later top-level launches
-  alone. This uses wire evidence, not a maintained list of commands that may
-  fork.
+  `command_lifecycle` started frame. If its mirror has ownerless
+  `agent_metadata` and an `isSidechain:true` row carrying `attributionSkill`,
+  the same row changes to Skill and owns the mirrored transcript. An ordinary
+  Agent mirror carries its launch `toolUseId` in `agent_metadata`; AO leaves its
+  duplicate mirror ignored while normal child stdout populates the Agent row.
+  A mirror takes over only after backgrounding stops stdout, or below an
+  already mirrored parent. Inherited inline-skill attribution does not change
+  that ownership. Main-agent rows can carry the same attribution with
+  `isSidechain:false` and leave the Command row alone. This uses wire evidence,
+  not a maintained list of commands that may fork.
 - A forked command's outer synthetic answer renders once after that activity
   as top-level Markdown labelled `<skill> · skill result`. It remains a
   system `command_result`, not parent-agent prose, and remains visible when

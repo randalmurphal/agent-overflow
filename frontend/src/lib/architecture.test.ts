@@ -77,10 +77,11 @@ const BROWSER_COMPANION_STORE = 'lib/stores/browserCompanion.svelte.ts';
 const PROVIDER_ACCOUNTS_STORE = 'lib/stores/providerAccounts.svelte.ts';
 
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
-  BrowserCompanionSubscribe: owned(BROWSER_COMPANION_STORE, 'attachBrowserCompanion()'),
-  BrowserCompanionNextFrame: owned(BROWSER_COMPANION_STORE, 'the attachment frame loop'),
-  BrowserCompanionUnsubscribe: owned(BROWSER_COMPANION_STORE, 'the attachment release()'),
-  BrowserCompanionResize: owned(BROWSER_COMPANION_STORE, 'resizeBrowserCompanion()'),
+  BrowserCompanionPaneAttach: owned(BROWSER_COMPANION_STORE, 'attachBrowserCompanion()'),
+  BrowserCompanionPaneDetach: owned(BROWSER_COMPANION_STORE, 'the attachment release()'),
+  BrowserCompanionPaneRect: owned(BROWSER_COMPANION_STORE, 'reportBrowserPaneRect()'),
+  BrowserCompanionDo: owned(BROWSER_COMPANION_STORE, 'browserCompanionAct()'),
+  BrowserCompanionThreadState: owned(BROWSER_COMPANION_STORE, 'hydrateBrowserCompanionState()'),
   GetGitStatus: owned(GIT_STATUS_STORE, 'refreshGitStatus()'),
   GitStatusSubscribe: owned(GIT_STATUS_STORE, 'attachGitStatus()'),
   GitStatusUnsubscribe: owned(GIT_STATUS_STORE, 'the attachment release()'),

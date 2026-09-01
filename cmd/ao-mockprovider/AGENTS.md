@@ -268,6 +268,9 @@ does on its own:
   the mock's `turn/completed` before answering, matching upstream's integrated
   shutdown boundary. Both cuts post a `history_cut` control report before they
   answer, because "which cut did the app choose" has no other observable.
+  `thread/fork` honors `excludeTurns` and records the fork's turn IDs so the
+  following metadata-only `thread/turns/list` page reports the actual new tail.
+  Without that state, the harness cannot exercise AO's anchored-fork validation.
 
 - **A steer echoes its own `userMessage`.** `turn/steer` reports its text on
   the same surface a turn's own input does AND writes the `item/completed`

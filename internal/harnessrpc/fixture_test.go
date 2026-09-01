@@ -3,6 +3,7 @@ package harnessrpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/store"
@@ -22,13 +24,15 @@ import (
 func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
 
 type testHost struct {
-	store     *store.Store
-	replay    *replaylog.Manager
-	emit      func(eventchan.Channel, any)
-	eventBus  *transport.EventBus
-	origin    string
-	published *store.Identity
-	sent      []string
+	store             *store.Store
+	replay            *replaylog.Manager
+	emit              func(eventchan.Channel, any)
+	eventBus          *transport.EventBus
+	origin            string
+	published         *store.Identity
+	sent              []string
+	browserScroll     func(string, string, float64, float64) error
+	browserScreenshot func(string, string) ([]byte, error)
 }
 
 func newHarnessTestHost(t *testing.T) (*Harness, *testHost) {
@@ -85,6 +89,21 @@ func (h *testHost) Emit(channel eventchan.Channel, data any) {
 	}
 }
 func (h *testHost) Notify(string, string, notify.Target) error { return nil }
+func (h *testHost) BrowserPressKey(string, string, keybindings.Accelerator) error {
+	return errors.New("no browser engine in the fixture")
+}
+func (h *testHost) BrowserScroll(threadID, pageID string, x, y float64) error {
+	if h.browserScroll == nil {
+		return errors.New("no browser engine in the fixture")
+	}
+	return h.browserScroll(threadID, pageID, x, y)
+}
+func (h *testHost) BrowserScreenshot(threadID, pageID string) ([]byte, error) {
+	if h.browserScreenshot == nil {
+		return nil, errors.New("no browser engine in the fixture")
+	}
+	return h.browserScreenshot(threadID, pageID)
+}
 func (h *testHost) CreateProject(path string) (store.Project, error) {
 	now := time.Now().UnixMilli()
 	project := store.Project{ID: uuid.NewString(), Path: path, Name: filepath.Base(path), CreatedAt: now, UpdatedAt: now}

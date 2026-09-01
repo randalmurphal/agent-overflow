@@ -19,9 +19,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
+	"unsafe"
 
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appdirs"
+	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harnessrpc"
 	"agent-overflow/internal/settings"
@@ -96,8 +99,10 @@ func runHarness(flags cliFlags) {
 		}
 	}
 
-	appService := newIsolatedProviderApp(paths)
-	h := newHarness(appService, paths)
+	appService, nativeWindow := newIsolatedProviderApp(paths, isolationOptions{
+		RealBrowserEngine: realBrowserEngineRequested(flags),
+	})
+	h := newHarness(appService, paths, nativeWindow)
 	// The control server must listen before App.Start: it publishes its
 	// address/token through App.providerExtraEnv (write-once before
 	// Start), and the first session start could spawn a mock that needs
@@ -154,7 +159,7 @@ func runHarness(flags cliFlags) {
 	defer instance.remove()
 
 	if flags.window {
-		if err := runWindowedShell(appService, srv, isolatedWindowTitle(instanceinfo.ModeHarness, instance.id)); err != nil {
+		if err := runWindowedShell(appService, srv, isolatedWindowTitle(instanceinfo.ModeHarness, instance.id), nativeWindow); err != nil {
 			instance.remove()
 			controlServer.Shutdown()
 			fatalf("harness: %v", err)
@@ -164,28 +169,157 @@ func runHarness(flags cliFlags) {
 	waitForHeadlessShutdown(appService, srv)
 }
 
+// isolationOptions carries the ONE isolation decision a mocked boot mode
+// is allowed to make for itself. The four provider-safety pins are
+// deliberately absent: they are unconditional in every mode, which is what
+// TestMockedBootModesShareOneIsolationHelper proves. Anything added here
+// must be defaulted SAFE by its zero value, so a caller that forgets to
+// fill it in gets the pinned behaviour.
+type isolationOptions struct {
+	// RealBrowserEngine lifts the fake-engine pin so this instance selects
+	// whatever real engine its deployment has. Zero value keeps the pin.
+	// Only realBrowserEngineRequested may set it.
+	RealBrowserEngine bool
+}
+
 // newIsolatedProviderApp builds the App for a boot mode whose providers
 // are mocked: the agent test harness (--harness) and the soak rig
 // (--soak). It is the ONE place these pins are applied, so a second
-// mocked boot mode cannot ship with three of the four — enforced by
+// mocked boot mode cannot ship with only some of them — the four
+// provider-safety pins are enforced by
 // TestMockedBootModesShareOneIsolationHelper.
 //
 // Every pin here is structural, not advisory: settings stay editable at
 // runtime in both modes, and only the spawn-time override makes "this
 // process can never reach a real provider binary" true regardless of
 // what a later UpdateSettings writes.
-func newIsolatedProviderApp(paths harnessPaths) *App {
+//
+// It also returns the window cell an isolated WINDOWED boot fills in
+// later (isolatedNativeWindow). Both live here for the same reason: this
+// helper is the first thing both boot modes do, so "the browser engine's
+// window getter was installed before App.Start" is true by construction
+// rather than by remembering to call a second function.
+func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *isolatedNativeWindow) {
 	appService := newApp()
 	appservice.ConfigureIsolation(appService.App, appservice.IsolationConfig{
 		ProviderBinary:         paths.MockProvider,
 		CredentialHome:         paths.CredentialHome,
 		UseFileKeychain:        true,
 		DisableBackgroundFetch: true,
+		// Default-ON, and lifted only by the manual gate below. A mocked boot
+		// is normally headless and unattended, so the fake engine is what
+		// keeps the companion pane's chrome, tab strip and host rect
+		// renderable (spec §10) with no browser behind them — and what keeps
+		// `make go-test` / `make e2e` display-free.
+		MockBrowserEngine: !opts.RealBrowserEngine,
 	})
-	return appService
+	window := &isolatedNativeWindow{}
+	appservice.SetBrowserNativeWindow(appService.App, window.pointer)
+	return appService, window
 }
 
-func newHarness(app *App, paths harnessPaths) *harnessrpc.Harness {
+// realBrowserEngineRequested answers whether this isolated boot may host a
+// REAL browser engine instead of the fake one — the manual gate spec §10
+// promised (`AO_HARNESS_REAL_BROWSER=1 make harness-window`, or the same
+// variable forwarded across the WSL boundary for `make harness-wsl`).
+//
+// Two conditions, both required:
+//
+//   - The opt-in is truthy. DEFAULT-OFF is the entire safety story: every
+//     unattended run — `make go-test`, `make e2e`, a Playwright leg, a CI
+//     boot — keeps the fake engine and opens no browser anybody has to
+//     notice or close.
+//   - The soak autopilot is NOT armed. `--autopilot` is exactly what makes
+//     an isolated instance a SOAK rather than a harness (main_soak.go): a
+//     rig left streaming for hours with nobody at the keyboard must not
+//     grow a browser engine, so the pin stays unconditional there. Note the
+//     axis is the autopilot, not the flag spelling: the Windows harness
+//     (`make harness-wsl`) rides the launcher-owned `--soak` wire flag
+//     WITHOUT it, and is as attended as `--harness` is.
+//
+// Every other pin ConfigureIsolation applies stays unconditional in both
+// modes; this is the only liftable one, and this is the only place it lifts.
+func realBrowserEngineRequested(flags cliFlags) bool {
+	if !envTruthy(os.Getenv(diagenv.HarnessRealBrowser)) {
+		return false
+	}
+	if flags.autopilot {
+		log.Printf("%s is set, but --autopilot arms the soak: keeping the fake browser engine (an unattended rig never hosts a real one)", diagenv.HarnessRealBrowser)
+		return false
+	}
+	log.Printf("%s: fake browser engine pin lifted — this instance selects the real engine for its deployment (manual gate, docs/specs/embedded-browser.md §10)", diagenv.HarnessRealBrowser)
+	return true
+}
+
+// isolatedNativeWindow is the desktop window an isolated WINDOWED boot hands
+// both the in-process browser engine and the harness's native-window RPCs.
+//
+// It exists because an isolated boot inverts the desktop boot's order: the
+// backend is started and marked ready BEFORE any window is created, while
+// SetBrowserNativeWindow must be called before Start. That works only
+// because the two facts are needed at different times — engine SELECTION
+// reads whether a getter exists (webkit_engine_linux.go / the darwin twin
+// check `opts.NativeWindow == nil`), and the window POINTER is resolved
+// lazily, when the first browser tool call starts the engine. So the
+// getter/controller cell is installed empty here and filled by
+// runWindowedShell, which cannot run until long after Start returned.
+type isolatedNativeWindow struct {
+	mu      sync.Mutex
+	handle  func() unsafe.Pointer
+	state   func() (harnessrpc.WindowState, error)
+	command func(harnessrpc.WindowCommand) error
+}
+
+// publish installs the live window accessor. Called once, by the windowed
+// shell, before the app loop starts.
+func (w *isolatedNativeWindow) publish(
+	handle func() unsafe.Pointer,
+	state func() (harnessrpc.WindowState, error),
+	command func(harnessrpc.WindowCommand) error,
+) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.handle = handle
+	w.state = state
+	w.command = command
+}
+
+// pointer is the getter the App holds. nil means "no window" — a headless
+// isolated boot, or a windowed one whose window has not materialized yet —
+// which the engine reports as a bounded refusal, never a crash.
+func (w *isolatedNativeWindow) pointer() unsafe.Pointer {
+	w.mu.Lock()
+	handle := w.handle
+	w.mu.Unlock()
+	if handle == nil {
+		return nil
+	}
+	return handle()
+}
+
+func (w *isolatedNativeWindow) State() (harnessrpc.WindowState, error) {
+	w.mu.Lock()
+	state := w.state
+	w.mu.Unlock()
+	if state == nil {
+		return harnessrpc.WindowState{}, errors.New("native window unavailable: start the harness with --window")
+	}
+	return state()
+}
+
+func (w *isolatedNativeWindow) Command(command harnessrpc.WindowCommand) error {
+	w.mu.Lock()
+	drive := w.command
+	w.mu.Unlock()
+	if drive == nil {
+		return errors.New("native window unavailable: start the harness with --window")
+	}
+	return drive(command)
+}
+
+var _ harnessrpc.WindowController = (*isolatedNativeWindow)(nil)
+
+func newHarness(app *App, paths harnessPaths, window harnessrpc.WindowController) *harnessrpc.Harness {
 	return appservice.NewHarness(app.App, appservice.HarnessPaths{
 		DataRoot:        paths.DataRoot,
 		DataDir:         paths.DataDir,
@@ -197,6 +331,7 @@ func newHarness(app *App, paths harnessPaths) *harnessrpc.Harness {
 		AssetsDigest:    paths.AssetsDigest,
 		ShutdownTimeout: headlessShutdownTimeout,
 		TerminateSelf:   terminateSelf,
+		Window:          window,
 	})
 }
 

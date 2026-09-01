@@ -105,13 +105,18 @@ func TestMergeRateLimitsSnapshotAcceptsHigherUsageAcrossResetTimestampJitter(t *
 	}
 }
 
-func TestMergeRateLimitsSnapshotIgnoresJitterWithoutFresherUsage(t *testing.T) {
+// Reset-boundary jitter within tolerance never moves the boundary. An equal
+// reading is a no-op; a lower reading wins (same-window usage may
+// legitimately drop when the limit grows mid-window — see MergeSnapshot)
+// but still keeps the established boundary.
+func TestMergeRateLimitsSnapshotKeepsBoundaryUnderJitter(t *testing.T) {
 	for _, test := range []struct {
 		name            string
 		incomingPercent float64
+		wantChanged     bool
 	}{
-		{name: "equal usage", incomingPercent: 8},
-		{name: "lower usage", incomingPercent: 7},
+		{name: "equal usage", incomingPercent: 8, wantChanged: false},
+		{name: "lower usage", incomingPercent: 7, wantChanged: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			current := provider.RateLimitsSnapshot{
@@ -130,8 +135,17 @@ func TestMergeRateLimitsSnapshotIgnoresJitterWithoutFresherUsage(t *testing.T) {
 			}
 
 			got, changed := providerlifecycleapp.MergeSnapshot(current, incoming)
-			if changed {
-				t.Fatalf("merge changed on jitter with %s: %+v", test.name, got.Limits)
+			if changed != test.wantChanged {
+				t.Fatalf("merge changed = %v, want %v: %+v", changed, test.wantChanged, got.Limits)
+			}
+			if !changed {
+				return
+			}
+			if got.Limits[0].UsedPercent != test.incomingPercent {
+				t.Fatalf("newest same-window reading did not win: %+v", got.Limits)
+			}
+			if got.Limits[0].ResetsAt != 1784841601 {
+				t.Fatalf("jittered boundary replaced the established one: %+v", got.Limits)
 			}
 		})
 	}

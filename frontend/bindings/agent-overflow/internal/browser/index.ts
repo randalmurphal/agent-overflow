@@ -3,7 +3,7 @@
 
 export {
     CompanionEvent,
-    CompanionInput,
     CompanionSubscription,
-    PageInfo
+    PageInfo,
+    PaneRect
 } from "./models.js";

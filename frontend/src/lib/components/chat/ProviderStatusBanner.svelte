@@ -88,11 +88,26 @@
         return 'bg-error/15 border-error/30 text-error';
       case 'version_too_old':
       case 'unauthenticated':
+      case 'binary_stale':
         return 'bg-warning/15 border-warning/30 text-warning';
       default:
         return '';
     }
   });
+
+  // `binary_stale`: the CLI was replaced under a session that is still
+  // running the old one. Either version can be missing, so the parenthetical
+  // degrades instead of printing half an arrow.
+  function binaryStaleMessage(status: ProviderStatusEvent): string {
+    const label = providerCliLabel(status.provider);
+    const from = (status.sessionVersion ?? '').trim();
+    const to = (status.installedVersion ?? '').trim();
+    let versions = '';
+    if (from && to) versions = ` (${from} → ${to})`;
+    else if (to) versions = ` (${to})`;
+    else if (from) versions = ` (was ${from})`;
+    return `${label} updated${versions} — restart the session to use it.`;
+  }
 
   let providerBannerMessage = $derived.by(() => {
     if (!providerStatus) return '';
@@ -105,6 +120,8 @@
         return providerStatus.message
           || `${label} not found at the configured path.`;
       }
+      case 'binary_stale':
+        return binaryStaleMessage(providerStatus);
       case 'version_too_old':
       case 'unauthenticated':
       case 'error':
@@ -285,6 +302,17 @@
           class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           {signingIn ? 'Signing in…' : 'Sign in'}
+        </button>
+      {/if}
+      {#if providerStatus?.status === 'binary_stale'}
+        <button
+          onclick={handleReconnect}
+          disabled={reconnecting || operateUngranted}
+          title={operateUngranted ? 'Not granted to this device' : undefined}
+          data-testid="provider-status-restart"
+          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
+          {reconnecting ? 'Restarting…' : 'Restart session'}
         </button>
       {/if}
       {#if providerStatus?.actionable && primaryActionLabel}

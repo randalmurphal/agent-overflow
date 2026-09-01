@@ -170,7 +170,7 @@ func TestSoakScenarioIsShipped(t *testing.T) {
 // permanent invariant in CLAUDE.md asks for: a boot mode that constructs
 // an App able to start sessions must not hand-roll its own isolation.
 //
-// The four pins below are what make a mocked boot mode incapable of
+// The first four pins below are what make a mocked boot mode incapable of
 // reaching a real provider binary or the developer's real provider
 // homes. They are applied in exactly ONE function
 // (app.ConfigureIsolation through newIsolatedProviderApp), so a future mode — a second soak variant, a
@@ -185,12 +185,21 @@ func TestSoakScenarioIsShipped(t *testing.T) {
 // bootstrap.go this test pins every assignment to, so a mode reaching for
 // it still cannot pick up an isolation pin without going through the file
 // that owns them. The other three remain isolation-only.
+//
+// mockEngine rides the same rule for the same reason. Unlike the four it
+// is LIFTABLE (realBrowserEngineRequested, the manual real-engine gate in
+// docs/specs/embedded-browser.md §10), which makes a second assignment
+// site even worse: the lift would then have two places to disagree about,
+// and the failure is a browser silently launched on an unattended rig.
+// One assignment site keeps "default-on, lifted in exactly one function"
+// checkable.
 func TestMockedBootModesShareOneIsolationHelper(t *testing.T) {
 	pins := []string{
 		"providerBinaryOverride",
 		"fileKeychainOverride",
 		"credentialHomeOverride",
 		"backgroundFetchDisabled",
+		"mockEngine",
 	}
 	assignment := make([]*regexp.Regexp, len(pins))
 	for i, pin := range pins {

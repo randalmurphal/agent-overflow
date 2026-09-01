@@ -251,8 +251,8 @@ describe('rateLimitsInfo', () => {
     expect(getProviderRateLimit('claude', 300)?.resetsAt).toBe(1776300000);
   });
 
-  // Equal `resetsAt` = same window. Usage climbs monotonically within
-  // a window, so a higher same-window reading is the fresher value.
+  // Equal `resetsAt` = same window. The newest reading wins in either
+  // direction; rising is the common case.
   it('updates on a same-window higher-reading event', () => {
     setProviderRateLimits({
       provider: 'claude',
@@ -295,7 +295,7 @@ describe('rateLimitsInfo', () => {
     expect(limit?.resetsAt).toBe(1784841601);
   });
 
-  it('does not churn or regress usage for reset timestamp jitter alone', () => {
+  it('does not churn on identical readings under boundary jitter', () => {
     setProviderRateLimits({
       provider: 'claude',
       accountId: 'equal',
@@ -332,14 +332,21 @@ describe('rateLimitsInfo', () => {
       updatedAt: 1784827200,
     });
 
+    // Identical reading under boundary jitter: no churn, same object.
     expect(getProviderRateLimits('claude', 'equal')[0]).toBe(equalBefore);
-    expect(getProviderRateLimits('claude', 'lower')[0]).toBe(lowerBefore);
+    // Lower same-window reading: newest wins, boundary stays stabilized.
+    expect(lowerBefore?.usedPercent).toBe(8);
+    const lowerAfter = getProviderRateLimits('claude', 'lower')[0];
+    expect(lowerAfter?.usedPercent).toBe(7);
+    expect(lowerAfter?.resetsAt).toBe(1784841601);
   });
 
-  // Delayed probe/notification races can replay an older lower reading
-  // for the same reset boundary after a fresher one. Keep the higher
-  // value until the reset boundary advances.
-  it('drops a same-window lower-reading event', () => {
+  // A same-window reading with LOWER used-percent is the server's current
+  // answer, not staleness: the server can raise the limit or outright reset
+  // usage mid-window (2026-09-01: a manual server-side weekly reset under
+  // an unchanged boundary froze the meters at the stale maximum until the
+  // next app restart). The newest reading must win.
+  it('accepts a same-window lower-reading event', () => {
     setProviderRateLimits({
       provider: 'codex',
       limits: [
@@ -355,7 +362,8 @@ describe('rateLimitsInfo', () => {
       updatedAt: 1776286000,
     });
 
-    expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(39);
+    expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(9);
+    expect(getProviderRateLimit('codex', 300)?.resetsAt).toBe(1776300000);
   });
 
   // The defense applies per-window: a stale 5h event must not

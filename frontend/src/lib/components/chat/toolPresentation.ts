@@ -8,6 +8,7 @@ import type {
 import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
 import { parseJsonObject } from '../../utils/parseJsonObject';
 import { parsePatchFilesCached, type PatchFile, type PatchLine } from '../../utils/patchFiles';
+import { isClaudeResumeCarrierItem } from '../../utils/subagentLaunch';
 import { isCodexCollabControlToolName } from './codexCollabControls';
 import { commandTextForItem, isCommandToolName } from './commandDisplay';
 import { structuredFileEditPathTargets } from './toolCardPreview';
@@ -200,7 +201,7 @@ function resolveTimelineToolPresentation(input: ToolPresentationInput): ToolPres
     return commandPresentation(item, item, item);
   }
 
-  if (isClaudeAgentTool(item)) {
+  if (isClaudeAgentTool(item) || isClaudeResumeCarrierItem(item)) {
     return { kind: 'agent', item };
   }
 
@@ -232,7 +233,7 @@ function resolveTrayToolPresentation(input: ToolPresentationInput): ToolPresenta
     };
   }
 
-  if (isClaudeAgentTool(displayItem)) {
+  if (isClaudeAgentTool(displayItem) || isClaudeResumeCarrierItem(displayItem)) {
     return {
       kind: 'agent',
       item: outputItem,

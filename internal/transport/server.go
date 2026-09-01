@@ -19,6 +19,8 @@ import (
 
 	"agent-overflow/internal/loopback"
 	"agent-overflow/internal/pagehost"
+
+	"github.com/coder/websocket"
 )
 
 // Bootstrap is the JSON document the SPA fetches at /bootstrap.json on
@@ -262,6 +264,16 @@ type Config struct {
 	// That is every boot before the App's startup wires it, and every test
 	// that does not ask for byte transfer.
 	AttachmentTransfer AttachmentTransfer
+
+	// CDPTunnel consumes the Windows launcher's CDP relay connection on
+	// CDPTunnelPath. Optional — when nil the route is not
+	// registered at all, which is the right answer everywhere the pane
+	// host cannot exist (native desktop builds, remote clients).
+	//
+	// The route carries no RPC and no event ring: it is a byte-stream
+	// multiplexer whose peer is another AO process on this host, admitted
+	// by the same launch token and the same loopback rule as /ws.
+	CDPTunnel CDPTunnelEndpoint
 
 	// ScopedTokens resolves an `ao` CLI credential to the caller scope it
 	// was minted for. The App owns the registry (a token lives exactly as
@@ -805,6 +817,9 @@ func (s *Server) buildHTTPServer() *http.Server {
 		mux.HandleFunc(AuthTicketPath,
 			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthTicket)))
 	}
+	if s.cfg.CDPTunnel != nil {
+		mux.HandleFunc(CDPTunnelPath, s.loopbackHostGuard(s.handleCDPTunnel))
+	}
 	assetH := s.cfg.AssetHandler
 	if assetH == nil {
 		assetH = http.NotFoundHandler()
@@ -1334,6 +1349,14 @@ const (
 	WSPath        = "/ws"
 )
 
+// CDPTunnelPath is the route handleCDPTunnel serves, spelled as a literal
+// here rather than reached for as webview2host.CDPTunnelPath because
+// internal/surfaces' AST gate resolves a route pattern only from a literal
+// or a package-level constant in the REGISTERING package. The launcher
+// dials the other spelling, so the two must agree;
+// TestCDPTunnelPathMatchesWebview2Host is the pin.
+const CDPTunnelPath = "/browser-cdp"
+
 // handlePageURL answers PageURLPath. The default shape is one URL and a
 // newline: plain text because every browser-pointing consumer wants
 // exactly the string, and the two non-Go ones (a shell, the e2e rig)
@@ -1669,6 +1692,48 @@ func requestIsHTTPS(r *http.Request) bool {
 		return true
 	}
 	return strings.EqualFold(strings.TrimSpace(r.Header.Get(ForwardedProtoHeader)), "https")
+}
+
+// CDPTunnelEndpoint consumes the launcher's CDP relay connection. The
+// transport owns the route, the credential and the locality rule; what the
+// bytes mean is the endpoint's business (internal/cdprelay).
+type CDPTunnelEndpoint interface {
+	ServeCDPTunnel(ctx context.Context, conn *websocket.Conn)
+}
+
+// handleCDPTunnel upgrades the Windows launcher's CDP relay connection.
+//
+// Same credential and same direction as the notification bridge it rides
+// beside: the launcher dials this backend's loopback with the launch
+// token, and nothing ever crosses the WSL boundary inbound. The peer is
+// another process on this host, never a browser, so the connection is
+// refused outright for a non-loopback peer instead of leaning on the
+// origin allow-list — a LAN client that reached this route would be
+// handed a byte pipe to whatever the launcher relays.
+func (s *Server) handleCDPTunnel(w http.ResponseWriter, r *http.Request) {
+	// Track BEFORE upgrade so a slow handshake also blocks Shutdown.
+	s.wg.Add(1)
+	defer s.wg.Done()
+
+	if !loopback.PeerAddress(r.RemoteAddr) {
+		// 404, not 403: indistinguishable from "no such path", the same
+		// unfingerprintable refusal /bootstrap.json and /rpc give.
+		http.NotFound(w, r)
+		return
+	}
+	// No origin patterns: the peer is a Go process with no browser origin
+	// to present, and OriginAllowed passes a request that carries none.
+	// Compression off — CDP payloads are already the bulk traffic on a
+	// local pipe, and the launcher's writes are frame-sized. No session
+	// ticket either: this route's caller presents the launch credential
+	// directly, exactly as it does on the notification bridge.
+	conn, err := upgrade(w, r, s.cred, nil, false, false)
+	if err != nil {
+		// upgrade has already written the HTTP error code.
+		return
+	}
+	s.cfg.CDPTunnel.ServeCDPTunnel(s.rootCtx, conn)
+	_ = conn.Close(websocket.StatusNormalClosure, "")
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {

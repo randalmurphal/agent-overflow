@@ -1733,10 +1733,14 @@ func TestKilledTaskUpdatedWithoutLaunchDoesNotCreateOrphanCompletion(t *testing.
 	if len(items) != 0 {
 		t.Fatalf("expected no orphan rows for hidden killed task, got %+v", items)
 	}
+	// The killed terminal is STASHED, not dropped: the launch row may
+	// still land later (subagent transcript projection lags the main
+	// wire), and the stash is what settles it then. The session-end
+	// settle prunes stashes whose row never materializes.
 	if _, found, err := st.GetPendingBackgroundTerminal("t1", "missing-killed-task"); err != nil {
 		t.Fatalf("read stash: %v", err)
-	} else if found {
-		t.Fatal("killed task_updated should not leave a stash")
+	} else if !found {
+		t.Fatal("killed task_updated without a launch row must be stashed for the late-arriving row")
 	}
 }
 

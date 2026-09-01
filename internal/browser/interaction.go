@@ -6,14 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
-
-	"github.com/chromedp/cdproto/cdp"
-	"github.com/chromedp/cdproto/input"
-	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/chromedp"
 )
 
 func (m *Manager) Pointer(ctx context.Context, access Access, opts PointerOptions) (PageInfo, error) {
@@ -25,164 +19,18 @@ func (m *Manager) Pointer(ctx context.Context, access Access, opts PointerOption
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	action := strings.ToLower(strings.TrimSpace(opts.Action))
 	if len(opts.Path) > 100 {
 		return PageInfo{}, fmt.Errorf("browser: drag path exceeds 100 points")
 	}
-	if action != "drag" {
+	if strings.ToLower(strings.TrimSpace(opts.Action)) != "drag" {
 		if err := validatePoint(Point{X: opts.X, Y: opts.Y}); err != nil {
 			return PageInfo{}, err
 		}
 	}
-	modifiers, err := inputModifiers(opts.Modifiers)
-	if err != nil {
+	if err := p.driver.Pointer(opCtx, opts); err != nil {
 		return PageInfo{}, err
-	}
-	modifierMask := input.ModifierNone
-	for _, modifier := range modifiers {
-		modifierMask |= modifier
-	}
-	button, err := inputButton(opts.Button)
-	if err != nil {
-		return PageInfo{}, err
-	}
-	targetCtx := targetCommandContext(opCtx)
-	switch action {
-	case "click", "double_click":
-		count := int64(1)
-		if action == "double_click" {
-			count = 2
-		}
-		if err := input.DispatchMouseEvent(input.MousePressed, opts.X, opts.Y).WithButton(button).WithModifiers(modifierMask).WithClickCount(count).Do(targetCtx); err != nil {
-			return PageInfo{}, err
-		}
-		if err := input.DispatchMouseEvent(input.MouseReleased, opts.X, opts.Y).WithButton(button).WithModifiers(modifierMask).WithClickCount(count).Do(targetCtx); err != nil {
-			return PageInfo{}, err
-		}
-	case "move":
-		if err := input.DispatchMouseEvent(input.MouseMoved, opts.X, opts.Y).WithButton(input.None).WithModifiers(modifierMask).Do(targetCtx); err != nil {
-			return PageInfo{}, err
-		}
-	case "scroll":
-		if !finite(opts.ScrollX) || !finite(opts.ScrollY) || opts.ScrollX < -100_000 || opts.ScrollX > 100_000 || opts.ScrollY < -100_000 || opts.ScrollY > 100_000 {
-			return PageInfo{}, fmt.Errorf("browser: scroll delta is out of range")
-		}
-		if err := input.DispatchMouseEvent(input.MouseWheel, opts.X, opts.Y).WithDeltaX(opts.ScrollX).WithDeltaY(opts.ScrollY).WithModifiers(modifierMask).Do(targetCtx); err != nil {
-			return PageInfo{}, err
-		}
-	case "drag":
-		if len(opts.Path) < 2 {
-			return PageInfo{}, fmt.Errorf("browser: drag path requires at least two points")
-		}
-		for _, point := range opts.Path {
-			if err := validatePoint(point); err != nil {
-				return PageInfo{}, err
-			}
-		}
-		first := opts.Path[0]
-		dragData := make(chan *input.DragData, 1)
-		chromedp.ListenTarget(opCtx, func(event any) {
-			if intercepted, ok := event.(*input.EventDragIntercepted); ok && intercepted.Data != nil {
-				select {
-				case dragData <- intercepted.Data:
-				default:
-				}
-			}
-		})
-		if err := input.SetInterceptDrags(true).Do(targetCtx); err != nil {
-			return PageInfo{}, err
-		}
-		defer func() { _ = input.SetInterceptDrags(false).Do(targetCtx) }()
-		if err := input.DispatchMouseEvent(input.MouseMoved, first.X, first.Y).WithButton(input.None).WithModifiers(modifierMask).Do(targetCtx); err != nil {
-			return PageInfo{}, err
-		}
-		if err := input.DispatchMouseEvent(input.MousePressed, first.X, first.Y).WithButton(input.Left).WithButtons(1).WithModifiers(modifierMask).WithClickCount(1).Do(targetCtx); err != nil {
-			return PageInfo{}, err
-		}
-		for _, point := range opts.Path[1:] {
-			if err := input.DispatchMouseEvent(input.MouseMoved, point.X, point.Y).WithButton(input.None).WithButtons(1).WithModifiers(modifierMask).Do(targetCtx); err != nil {
-				return PageInfo{}, err
-			}
-		}
-		last := opts.Path[len(opts.Path)-1]
-		var intercepted *input.DragData
-		select {
-		case intercepted = <-dragData:
-		case <-time.After(100 * time.Millisecond):
-		case <-opCtx.Done():
-			return PageInfo{}, opCtx.Err()
-		}
-		if intercepted == nil {
-			intercepted = &input.DragData{Items: []*input.DragDataItem{}, DragOperationsMask: 1}
-		}
-		for i, point := range opts.Path[1:] {
-			kind := input.DragOver
-			if i == 0 {
-				kind = input.DragEnter
-			}
-			if err := input.DispatchDragEvent(kind, point.X, point.Y, intercepted).WithModifiers(modifierMask).Do(targetCtx); err != nil {
-				return PageInfo{}, err
-			}
-		}
-		if err := input.DispatchDragEvent(input.Drop, last.X, last.Y, intercepted).WithModifiers(modifierMask).Do(targetCtx); err != nil {
-			return PageInfo{}, err
-		}
-		if err := input.DispatchMouseEvent(input.MouseReleased, last.X, last.Y).WithButton(input.Left).WithButtons(0).WithModifiers(modifierMask).WithClickCount(1).Do(targetCtx); err != nil {
-			return PageInfo{}, err
-		}
-	default:
-		return PageInfo{}, fmt.Errorf("browser: pointer action must be click, double_click, move, scroll, or drag")
 	}
 	return m.finishPageOperation(opCtx, p)
-}
-
-func validatePoint(point Point) error {
-	if !finite(point.X) || !finite(point.Y) || point.X < 0 || point.Y < 0 || point.X > maxCompanionWidth || point.Y > maxCompanionHeight {
-		return fmt.Errorf("browser: pointer coordinates are outside the bounded viewport")
-	}
-	return nil
-}
-
-func inputButton(raw string) (input.MouseButton, error) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", "left":
-		return input.Left, nil
-	case "right":
-		return input.Right, nil
-	case "middle":
-		return input.Middle, nil
-	case "back":
-		return input.Back, nil
-	case "forward":
-		return input.Forward, nil
-	default:
-		return input.None, fmt.Errorf("browser: button must be left, right, middle, back, or forward")
-	}
-}
-
-func inputModifiers(raw []string) ([]input.Modifier, error) {
-	out := make([]input.Modifier, 0, len(raw))
-	for _, value := range raw {
-		switch strings.ToLower(strings.TrimSpace(value)) {
-		case "alt":
-			out = append(out, input.ModifierAlt)
-		case "control", "ctrl":
-			out = append(out, input.ModifierCtrl)
-		case "meta", "command", "cmd":
-			out = append(out, input.ModifierMeta)
-		case "shift":
-			out = append(out, input.ModifierShift)
-		case "controlormeta":
-			if runtime.GOOS == "darwin" {
-				out = append(out, input.ModifierMeta)
-			} else {
-				out = append(out, input.ModifierCtrl)
-			}
-		default:
-			return nil, fmt.Errorf("browser: unsupported modifier %q", value)
-		}
-	}
-	return out, nil
 }
 
 func (m *Manager) DOMAction(ctx context.Context, access Access, opts DOMActionOptions) (any, error) {
@@ -202,7 +50,7 @@ func (m *Manager) DOMAction(ctx context.Context, access Access, opts DOMActionOp
 		defer p.mu.Unlock()
 		opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 		defer cancel()
-		if runErr := chromedp.Run(opCtx, chromedp.KeyEvent(opts.Text)); runErr != nil {
+		if runErr := p.driver.TypeText(opCtx, opts.Text); runErr != nil {
 			return nil, runErr
 		}
 		return m.finishPageOperation(opCtx, p)
@@ -239,23 +87,14 @@ func (m *Manager) DOMAction(ctx context.Context, access Access, opts DOMActionOp
 }
 
 func (m *Manager) scrollNodeReference(ctx context.Context, p *managedPage, ref nodeReference, x, y float64) (PageInfo, error) {
-	if !finite(x) || !finite(y) || x < -100_000 || x > 100_000 || y < -100_000 || y > 100_000 {
-		return PageInfo{}, fmt.Errorf("browser: scroll delta is out of range")
+	if err := validateScrollDelta(x, y); err != nil {
+		return PageInfo{}, err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
-	root, err := locatorFrameRoot(opCtx, ref.Frames)
-	if err != nil {
-		return PageInfo{}, err
-	}
-	var nodes []*cdp.Node
-	if err := chromedp.Run(opCtx, chromedp.Nodes(ref.Selector, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0), chromedp.FromNode(root))); err != nil || len(nodes) != 1 {
-		return PageInfo{}, fmt.Errorf("browser: node_id is stale")
-	}
-	fn := fmt.Sprintf(`function(){this.scrollBy({left:%f,top:%f,behavior:"instant"})}`, x, y)
-	if err := callElementFunction(opCtx, nodes[0], fn); err != nil {
+	if err := p.driver.ScrollNode(opCtx, ref, x, y); err != nil {
 		return PageInfo{}, err
 	}
 	return m.finishPageOperation(opCtx, p)
@@ -363,7 +202,7 @@ func (m *Manager) WaitAdvanced(ctx context.Context, access Access, opts WaitOpti
 		}
 	}
 	if opts.URL != "" || opts.LoadState != "" {
-		if err := waitForPage(opCtx, p, opts.URL, opts.LoadState); err != nil {
+		if err := m.waitForPage(opCtx, p, opts.URL, opts.LoadState); err != nil {
 			return PageInfo{}, err
 		}
 	}
@@ -373,7 +212,9 @@ func (m *Manager) WaitAdvanced(ctx context.Context, access Access, opts WaitOpti
 	return m.finishPageOperation(opCtx, p)
 }
 
-func waitForPage(ctx context.Context, p *managedPage, urlPattern, loadState string) error {
+// waitForPage polls the driver's load-state sample. The vocabulary and the URL
+// glob are the tool's contract; only the sampling is engine-specific.
+func (m *Manager) waitForPage(ctx context.Context, p *managedPage, urlPattern, loadState string) error {
 	state := strings.ToLower(strings.TrimSpace(loadState))
 	if state == "" {
 		state = "load"
@@ -388,20 +229,8 @@ func waitForPage(ctx context.Context, p *managedPage, urlPattern, loadState stri
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		var status struct{ URL, Ready string }
-		expression := `({url:location.href,ready:document.readyState})`
-		if evalErr := chromedp.Run(ctx, chromedp.Evaluate(expression, &status)); evalErr == nil {
-			urlOK := matcher == nil || matcher.MatchString(status.URL)
-			networkIdle := false
-			if state == "networkidle" {
-				p.networkMu.Lock()
-				networkIdle = len(p.requests) == 0 && time.Since(p.lastNetwork) >= 500*time.Millisecond
-				p.networkMu.Unlock()
-			}
-			stateOK := state == "commit" || (state == "domcontentloaded" && status.Ready != "loading") || (state == "load" && status.Ready == "complete") || (state == "networkidle" && status.Ready == "complete" && networkIdle)
-			if urlOK && stateOK {
-				return nil
-			}
+		if status, statusErr := p.driver.PageStatus(ctx); statusErr == nil && matchStatus(status, matcher, state) {
+			return nil
 		}
 		select {
 		case <-ctx.Done():
@@ -411,20 +240,20 @@ func waitForPage(ctx context.Context, p *managedPage, urlPattern, loadState stri
 	}
 }
 
-func waitForNavigation(ctx context.Context, p *managedPage, beforeURL string, beforeLoader cdp.LoaderID, urlPattern, loadState string) error {
+func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before navigationMark, urlPattern, loadState string) error {
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		var current string
-		_ = chromedp.Run(ctx, chromedp.Location(&current))
-		changed := current != beforeURL
-		if beforeLoader != "" {
-			if tree, err := page.GetFrameTree().Do(targetCommandContext(ctx)); err == nil && tree != nil && tree.Frame != nil && tree.Frame.LoaderID != beforeLoader {
-				changed = true
-			}
+		// A mark the engine cannot read is empty, not an error: an unreadable
+		// location differs from the one recorded before the action, which is
+		// itself evidence the page moved.
+		current, _ := p.driver.NavigationMark(ctx)
+		changed := current.URL != before.URL
+		if before.Loader != "" && current.Loader != "" && current.Loader != before.Loader {
+			changed = true
 		}
 		if changed {
-			return waitForPage(ctx, p, urlPattern, loadState)
+			return m.waitForPage(ctx, p, urlPattern, loadState)
 		}
 		select {
 		case <-ctx.Done():

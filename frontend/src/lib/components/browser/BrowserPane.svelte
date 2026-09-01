@@ -1,60 +1,62 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ArrowRight from '@lucide/svelte/icons/arrow-right';
+  import FolderOpen from '@lucide/svelte/icons/folder-open';
   import Plus from '@lucide/svelte/icons/plus';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import SquareCode from '@lucide/svelte/icons/square-code';
   import X from '@lucide/svelte/icons/x';
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
     attachBrowserCompanion,
-    applyBrowserCompanionState,
-    resizeBrowserCompanion,
+    browserCompanionAct,
+    noteBrowserActionError,
+    reportBrowserPaneRect,
   } from '../../stores/browserCompanion.svelte';
-  import {
-    BrowserCompanionAction,
-    BrowserCompanionDo,
-    BrowserCompanionInput,
-    type BrowserCompanionInputEvent,
-  } from '../../stores/bindings';
+  import { BrowserCompanionRevealPageFile } from '../../stores/bindings';
   import Icon from '../primitives/Icon.svelte';
   import { errString } from '../../utils/errors';
-  import { isMacPlatform } from '../../utils/platform';
+  import { airspaceIntersects, airspaceSurfaces } from '../../utils/paneAirspace.svelte';
+  import { rgbChannels, toConcreteColor } from '../../utils/cssColorProbe';
+  import { getPaneLayoutItems } from '../../stores/paneLayout.svelte';
+  import { getSidebarWidth, isSidebarCollapsed } from '../../stores/sidebarLayout.svelte';
+  import { getAppliedTheme } from '../../theme/themeApply.svelte';
+
+  // The pane surface is an empty HOST RECT: the platform positions a real
+  // native browser view over it (spec docs/specs/embedded-browser.md §7).
+  // This component's job is the chrome around it and the geometry under it —
+  // it forwards no input and paints no page pixels. The native view receives
+  // real OS input when focused; overlays that must paint above it hide it
+  // through the airspace registry.
 
   let { ctx }: { ctx: PanelContext } = $props();
   let surface: HTMLDivElement | undefined = $state(undefined);
   let attachment = $state<ReturnType<typeof attachBrowserCompanion> | null>(null);
   let address = $state('');
   let addressFocused = $state(false);
-  let error = $state('');
-  let resizeTimer: ReturnType<typeof setTimeout> | null = null;
-  let inputChain: Promise<void> = Promise.resolve();
-  let pendingMove: BrowserCompanionInputEvent | null = null;
-  let moveFrame = 0;
-  let moveQueued = false;
-  let pendingWheel: BrowserCompanionInputEvent | null = null;
-  let wheelFrame = 0;
-  let wheelQueued = false;
+  let rectFrame = 0;
+  let lastSentKey = '';
+  let bgRaw = '';
+  let bgHex = '';
 
   let view = $derived(attachment?.current ?? null);
   let pages = $derived(view?.state.pages ?? []);
   let sessionName = $derived(view?.state.sessionName ?? '');
   let activePageId = $derived(view?.state.activePageId ?? '');
   let activePage = $derived(pages.find((page) => page.id === activePageId) ?? pages[0] ?? null);
-  let frameSrc = $derived(view?.frame ? `data:image/jpeg;base64,${view.frame}` : '');
+  let activeIsLocalFile = $derived((activePage?.url ?? '').toLowerCase().startsWith('file:'));
+  // Boolean, not the view object: the re-report effect below must fire on
+  // attach, never on every page-state push.
+  let attached = $derived(view !== null);
 
   $effect(() => {
     const threadId = ctx.threadId;
     if (!threadId) return;
-    const rect = untrack(() => surface?.getBoundingClientRect());
-    attachment = attachBrowserCompanion(threadId, Math.round(rect?.width ?? 900), Math.round(rect?.height ?? 700));
+    attachment = attachBrowserCompanion(threadId);
     return () => {
-      if (moveFrame) cancelAnimationFrame(moveFrame);
-      if (wheelFrame) cancelAnimationFrame(wheelFrame);
-      moveFrame = 0;
-      wheelFrame = 0;
-      pendingMove = null;
-      pendingWheel = null;
+      if (rectFrame) cancelAnimationFrame(rectFrame);
+      rectFrame = 0;
+      lastSentKey = '';
       attachment?.release();
       attachment = null;
     };
@@ -65,208 +67,252 @@
     if (!addressFocused) address = url;
   });
 
-  $effect(() => {
+  // ─── Host-rect geometry ────────────────────────────────────────────────
+  // One report per changed frame: every signal below only SCHEDULES, and the
+  // flush reads geometry once. There is deliberately no standing rAF loop —
+  // a per-frame callback would pin frame production at panel refresh.
+
+  function scheduleRect(): void {
+    if (rectFrame) return;
+    rectFrame = requestAnimationFrame(() => {
+      rectFrame = 0;
+      flushRect();
+    });
+  }
+
+  // A native view cannot be partially cropped by the DOM, so the report
+  // carries the VISIBLE INTERSECTION of the host rect with every clipping
+  // ancestor (and the viewport): the platform host crops the view to it
+  // while the page keeps the full rect's size. A pane half behind the
+  // sidebar shows its visible half instead of hiding or overhanging.
+  function visibleClip(el: HTMLElement, rect: DOMRect): { left: number; top: number; right: number; bottom: number } {
+    let left = Math.max(rect.left, 0);
+    let top = Math.max(rect.top, 0);
+    let right = Math.min(rect.right, window.innerWidth);
+    let bottom = Math.min(rect.bottom, window.innerHeight);
+    for (let node = el.parentElement; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
+      const r = node.getBoundingClientRect();
+      if (style.overflowX !== 'visible') {
+        left = Math.max(left, r.left);
+        right = Math.min(right, r.right);
+      }
+      if (style.overflowY !== 'visible') {
+        top = Math.max(top, r.top);
+        bottom = Math.min(bottom, r.bottom);
+      }
+    }
+    return { left, top, right, bottom };
+  }
+
+  // The pane surface's resolved background color, memoized on the computed
+  // string so the canvas round trip only runs when the theme actually
+  // changes; the theme-change trigger below clears the memo.
+  function paneBackground(el: HTMLElement): string {
+    const raw = getComputedStyle(el).backgroundColor;
+    if (raw === bgRaw) return bgHex;
+    bgRaw = raw;
+    const channels = rgbChannels(toConcreteColor(raw));
+    bgHex =
+      channels && channels.a === 1
+        ? '#' + [channels.r, channels.g, channels.b].map((c) => c.toString(16).padStart(2, '0')).join('')
+        : '';
+    return bgHex;
+  }
+
+  const round2 = (value: number): number => Math.round(value * 100) / 100;
+
+  function flushRect(): void {
     const el = surface;
     const threadId = ctx.threadId;
     if (!el || !threadId) return;
-    const observer = new ResizeObserver((entries) => {
-      const size = entries[0]?.contentRect;
-      if (!size) return;
-      if (resizeTimer) clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => {
-        void resizeBrowserCompanion(threadId, Math.round(size.width), Math.round(size.height)).catch(() => {});
-      }, 120);
-    });
+    const rect = el.getBoundingClientRect();
+    const clip = visibleClip(el, rect);
+    const clipWidth = Math.max(0, clip.right - clip.left);
+    const clipHeight = Math.max(0, clip.bottom - clip.top);
+    // Obscurity is judged against the VISIBLE part: an overlay above a
+    // clipped-away strip does not hide the pane.
+    const visible =
+      rect.width >= 1 &&
+      rect.height >= 1 &&
+      clipWidth >= 1 &&
+      clipHeight >= 1 &&
+      !airspaceIntersects({ left: clip.left, top: clip.top, right: clip.right, bottom: clip.bottom });
+    const report = {
+      x: round2(rect.left),
+      y: round2(rect.top),
+      width: round2(rect.width),
+      height: round2(rect.height),
+      clipX: round2(clip.left),
+      clipY: round2(clip.top),
+      clipWidth: round2(clipWidth),
+      clipHeight: round2(clipHeight),
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      visible,
+      background: paneBackground(el),
+    };
+    const key =
+      `${report.x},${report.y},${report.width},${report.height},` +
+      `${report.clipX},${report.clipY},${report.clipWidth},${report.clipHeight},` +
+      `${report.viewportWidth},${report.viewportHeight},${report.visible},${report.background}`;
+    if (key === lastSentKey) return;
+    lastSentKey = key;
+    reportBrowserPaneRect(threadId, report);
+  }
+
+  $effect(() => {
+    const el = surface;
+    if (!el || !ctx.threadId) return;
+    const observer = new ResizeObserver(() => scheduleRect());
     observer.observe(el);
+    const onLayoutShift = (): void => scheduleRect();
+    window.addEventListener('resize', onLayoutShift);
+    // Capture-phase: a scroll anywhere in an ancestor chain moves the rect
+    // without resizing it (the pane strip scrolling behind the sidebar).
+    document.addEventListener('scroll', onLayoutShift, true);
+    scheduleRect();
     return () => {
       observer.disconnect();
-      if (resizeTimer) clearTimeout(resizeTimer);
-      resizeTimer = null;
+      window.removeEventListener('resize', onLayoutShift);
+      document.removeEventListener('scroll', onLayoutShift, true);
     };
   });
 
-  async function act(kind: string, pageId = activePageId, nextAddress = ''): Promise<void> {
+  // Overlay open/close re-evaluates obscurity; the mount acquiring its pane
+  // id re-sends the rect a too-early report dropped.
+  $effect(() => {
+    airspaceSurfaces();
+    if (attached) lastSentKey = '';
+    scheduleRect();
+  });
+
+  // Layout-driven POSITION changes: a divider drag on another pane slides
+  // this pane sideways without resizing it, which no ResizeObserver, window
+  // resize or scroll event reports (live incident 2026-08-31: the native
+  // view stayed planted until the next scroll). Pane widths and the sidebar
+  // are the app's own movers, so reading them here re-measures on every
+  // frame of a drag. Over-firing is fine — flushRect dedupes.
+  $effect(() => {
+    for (const item of getPaneLayoutItems()) void item.widthPx;
+    void getSidebarWidth();
+    void isSidebarCollapsed();
+    scheduleRect();
+  });
+
+  // A theme or mode change recolors the pane surface without moving it.
+  $effect(() => {
+    void getAppliedTheme();
+    bgRaw = '';
+    scheduleRect();
+  });
+
+  async function act(kind: string, pageId = activePageId, nextAddress = '', index = 0): Promise<void> {
     const threadId = ctx.threadId;
     if (!threadId) return;
-    error = '';
+    await browserCompanionAct(threadId, { kind, pageId, address: nextAddress, index });
+  }
+
+  async function revealPageFile(): Promise<void> {
+    const threadId = ctx.threadId;
+    if (!threadId || !activePageId) return;
+    noteBrowserActionError(threadId, '');
     try {
-      const state = await BrowserCompanionDo(threadId, new BrowserCompanionAction({
-        kind,
-        pageId,
-        address: nextAddress,
-      }));
-      applyBrowserCompanionState(state);
+      await BrowserCompanionRevealPageFile(threadId, activePageId);
     } catch (err) {
-      error = errString(err);
+      noteBrowserActionError(threadId, errString(err));
     }
   }
 
-  function queueInput(event: BrowserCompanionInputEvent): void {
-    const threadId = ctx.threadId;
-    const pageId = activePageId;
-    if (!threadId || !pageId) return;
-    inputChain = inputChain
-      .then(() => BrowserCompanionInput(threadId, pageId, event))
-      .catch((err) => { error = errString(err); });
+  // ─── Tab drag-reorder ──────────────────────────────────────────────────
+  // Same HTML5 DnD protocol the pane host uses for pane reordering. The
+  // drop slot is a thin insertion bar between tabs; the drop commits a
+  // "move" action and the authoritative order comes back with the state.
+
+  const TAB_DRAG_MIME = 'application/x-ao-browser-tab';
+  let dragPageId = $state('');
+  let dropSlot = $state(-1);
+
+  function tabDragStart(event: DragEvent, pageId: string): void {
+    if (!event.dataTransfer) return;
+    event.dataTransfer.setData(TAB_DRAG_MIME, pageId);
+    event.dataTransfer.effectAllowed = 'move';
+    dragPageId = pageId;
   }
 
-  // Pointer movement is lossy by nature. Keep at most one move queued behind
-  // the in-flight input chain so a slow backend cannot turn hovering into an
-  // unbounded promise/backlog; button/key edges stay ordered on the same chain.
-  function queueLatestMove(): void {
-    if (moveQueued || !pendingMove) return;
-    const event = pendingMove;
-    pendingMove = null;
-    const threadId = ctx.threadId;
-    const pageId = activePageId;
-    if (!threadId || !pageId) return;
-    moveQueued = true;
-    inputChain = inputChain
-      .then(() => BrowserCompanionInput(threadId, pageId, event))
-      .catch((err) => { error = errString(err); })
-      .finally(() => {
-        moveQueued = false;
-        if (pendingMove && !moveFrame) {
-          moveFrame = requestAnimationFrame(() => {
-            moveFrame = 0;
-            queueLatestMove();
-          });
-        }
-      });
-  }
-
-  function framePoint(event: PointerEvent | WheelEvent): { x: number; y: number } | null {
-    const el = event.currentTarget as HTMLElement;
-    const rect = el.getBoundingClientRect();
-    const width = view?.frameWidth ?? 0;
-    const height = view?.frameHeight ?? 0;
-    if (!width || !height || !rect.width || !rect.height) return null;
-    const scale = Math.min(rect.width / width, rect.height / height);
-    const renderedWidth = width * scale;
-    const renderedHeight = height * scale;
-    const left = rect.left + (rect.width - renderedWidth) / 2;
-    const top = rect.top + (rect.height - renderedHeight) / 2;
-    const x = (event.clientX - left) / scale;
-    const y = (event.clientY - top) / scale;
-    if (x < 0 || y < 0 || x > width || y > height) return null;
-    return { x, y };
-  }
-
-  function mouseButton(button: number): string {
-    if (button === 1) return 'middle';
-    if (button === 2) return 'right';
-    return 'left';
-  }
-
-  function pointerInput(event: PointerEvent, kind: 'move' | 'down' | 'up'): void {
-    const point = framePoint(event);
-    if (!point) return;
-    const input = {
-      kind,
-      ...point,
-      button: mouseButton(event.button),
-      buttons: event.buttons,
-      clickCount: event.detail || 1,
-    };
-    if (kind === 'move') {
-      pendingMove = input;
-      if (!moveFrame) {
-        moveFrame = requestAnimationFrame(() => {
-          moveFrame = 0;
-          queueLatestMove();
-        });
-      }
-      return;
-    }
-    if (kind === 'down') {
-      (event.currentTarget as HTMLElement).focus({ preventScroll: true });
-      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    }
-    queueInput(input);
-  }
-
-  function wheelInput(event: WheelEvent): void {
-    const point = framePoint(event);
-    if (!point) return;
+  function tabDragOver(event: DragEvent, index: number): void {
+    if (!dragPageId || !event.dataTransfer?.types.includes(TAB_DRAG_MIME)) return;
     event.preventDefault();
-    if (pendingWheel) {
-      pendingWheel = {
-        kind: 'wheel',
-        ...point,
-        deltaX: (pendingWheel.deltaX ?? 0) + event.deltaX,
-        deltaY: (pendingWheel.deltaY ?? 0) + event.deltaY,
-      };
-    } else {
-      pendingWheel = { kind: 'wheel', ...point, deltaX: event.deltaX, deltaY: event.deltaY };
-    }
-    if (!wheelFrame) {
-      wheelFrame = requestAnimationFrame(() => {
-        wheelFrame = 0;
-        queueLatestWheel();
-      });
-    }
+    event.dataTransfer.dropEffect = 'move';
+    const tab = event.currentTarget as HTMLElement;
+    const rect = tab.getBoundingClientRect();
+    dropSlot = event.clientX < rect.left + rect.width / 2 ? index : index + 1;
   }
 
-  function queueLatestWheel(): void {
-    if (wheelQueued || !pendingWheel) return;
-    const input = pendingWheel;
-    pendingWheel = null;
-    const threadId = ctx.threadId;
-    const pageId = activePageId;
-    if (!threadId || !pageId) return;
-    wheelQueued = true;
-    inputChain = inputChain
-      .then(() => BrowserCompanionInput(threadId, pageId, input))
-      .catch((err) => { error = errString(err); })
-      .finally(() => {
-        wheelQueued = false;
-        if (pendingWheel && !wheelFrame) {
-          wheelFrame = requestAnimationFrame(() => {
-            wheelFrame = 0;
-            queueLatestWheel();
-          });
-        }
-      });
-  }
-
-  function keyInput(event: KeyboardEvent): void {
-    if (event.isComposing) return;
-    if (event.key === 'Shift' || event.key === 'Control' || event.key === 'Alt' || event.key === 'Meta') return;
+  function stripDragOver(event: DragEvent): void {
+    if (!dragPageId || !event.dataTransfer?.types.includes(TAB_DRAG_MIME)) return;
+    // Only the strip's own empty tail; a tab under the pointer already set
+    // its slot and stopped the event from bubbling this far unhandled.
+    if (event.target !== event.currentTarget) return;
     event.preventDefault();
-    event.stopPropagation();
-    queueInput({
-      kind: 'key',
-      key: event.key,
-      alt: event.altKey,
-      control: event.ctrlKey,
-      meta: event.metaKey,
-      shift: event.shiftKey,
-    });
+    event.dataTransfer.dropEffect = 'move';
+    dropSlot = pages.length;
   }
 
-  function closeTabShortcut(event: KeyboardEvent): void {
-    if (event.isComposing || event.key.toLowerCase() !== 'w' || event.altKey || event.shiftKey) return;
-    const modifier = isMacPlatform() ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
-    if (!modifier || !activePageId) return;
+  function tabDrop(event: DragEvent): void {
+    const pageId = event.dataTransfer?.getData(TAB_DRAG_MIME) ?? '';
+    const slot = dropSlot;
+    dragPageId = '';
+    dropSlot = -1;
+    if (!pageId || slot < 0) return;
     event.preventDefault();
-    event.stopPropagation();
-    void act('close', activePageId);
+    const from = pages.findIndex((page) => page.id === pageId);
+    if (from < 0) return;
+    // The backend's move index addresses the list WITHOUT the moved tab.
+    const to = from < slot ? slot - 1 : slot;
+    if (to === from) return;
+    void act('move', pageId, '', to);
   }
+
+  function tabDragEnd(): void {
+    dragPageId = '';
+    dropSlot = -1;
+  }
+
 </script>
 
-<div
-  class="flex h-full min-h-0 flex-col bg-surface-0"
-  data-testid="browser-pane"
-  onkeydowncapture={closeTabShortcut}
->
-  <div class="flex min-h-9 items-end gap-1 overflow-x-auto border-b border-border-subtle bg-surface-1 px-1 pt-1">
+<div class="flex h-full min-h-0 flex-col bg-surface-0" data-testid="browser-pane">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="flex min-h-9 items-end gap-1 overflow-x-auto border-b border-border-subtle bg-surface-1 px-1 pt-1"
+    onmousedown={(event) => {
+      // Middle-press would start OS autoscroll; on a tab strip it closes tabs.
+      if (event.button === 1) event.preventDefault();
+    }}
+    ondragover={stripDragOver}
+    ondrop={tabDrop}
+  >
     {#if sessionName}
       <span class="mb-1 max-w-36 shrink-0 truncate px-1.5 text-[0.68rem] text-fg-muted" title={sessionName}>{sessionName}</span>
     {/if}
-    {#each pages as page (page.id)}
+    {#each pages as page, tabIndex (page.id)}
+      {#if dropSlot === tabIndex && dragPageId}
+        <div class="h-6 w-0.5 shrink-0 self-center rounded bg-accent"></div>
+      {/if}
       <div
-        class="group flex h-8 min-w-28 max-w-48 items-center rounded-t-md {page.id === activePageId ? 'bg-surface-0 text-fg' : 'text-fg-muted hover:bg-surface-2'}"
+        class="group flex h-8 min-w-28 max-w-48 items-center rounded-t-md {page.id === activePageId ? 'bg-surface-0 text-fg' : 'text-fg-muted hover:bg-surface-2'} {page.id === dragPageId ? 'opacity-50' : ''}"
         title={page.label ? `${page.label} — ${page.title || page.url}` : page.title || page.url}
+        draggable="true"
+        ondragstart={(event) => tabDragStart(event, page.id)}
+        ondragover={(event) => tabDragOver(event, tabIndex)}
+        ondrop={tabDrop}
+        ondragend={tabDragEnd}
+        onauxclick={(event) => {
+          if (event.button !== 1) return;
+          event.preventDefault();
+          void act('close', page.id);
+        }}
       >
         <button
           class="h-full min-w-0 flex-1 truncate pl-2 text-left text-[0.72rem]"
@@ -280,14 +326,17 @@
         ><Icon icon={X} size={12} /></button>
       </div>
     {/each}
+    {#if dropSlot === pages.length && dragPageId}
+      <div class="h-6 w-0.5 shrink-0 self-center rounded bg-accent"></div>
+    {/if}
     <button class="mb-1 rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="New tab" title="New tab" onclick={() => void act('new', '')}>
       <Icon icon={Plus} size={14} />
     </button>
   </div>
 
   <div class="flex h-10 shrink-0 items-center gap-1 border-b border-border-subtle bg-surface-1 px-2">
-    <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="Back" onclick={() => void act('back')}><Icon icon={ArrowLeft} size={14} /></button>
-    <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="Forward" onclick={() => void act('forward')}><Icon icon={ArrowRight} size={14} /></button>
+    <button class="rounded p-1.5 text-fg-muted enabled:hover:bg-surface-2 enabled:hover:text-fg disabled:opacity-35" aria-label="Back" disabled={!activePage?.canGoBack} onclick={() => void act('back')}><Icon icon={ArrowLeft} size={14} /></button>
+    <button class="rounded p-1.5 text-fg-muted enabled:hover:bg-surface-2 enabled:hover:text-fg disabled:opacity-35" aria-label="Forward" disabled={!activePage?.canGoForward} onclick={() => void act('forward')}><Icon icon={ArrowRight} size={14} /></button>
     <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="Reload" onclick={() => void act('reload')}><Icon icon={RefreshCw} size={13} /></button>
     <input
       class="h-7 min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-0 px-2 text-[0.75rem] text-fg outline-none focus:border-accent/60"
@@ -303,36 +352,38 @@
         }
       }}
     />
+    {#if activeIsLocalFile}
+      <button
+        class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
+        aria-label="Show in folder"
+        title="Show in folder"
+        onclick={() => void revealPageFile()}
+      ><Icon icon={FolderOpen} size={13} /></button>
+    {/if}
+    <button
+      class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
+      aria-label="Open devtools"
+      title="Open devtools"
+      onclick={() => void act('devtools')}
+    ><Icon icon={SquareCode} size={13} /></button>
     <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="Close browser" title="Close browser" onclick={() => void act('hide', '')}><Icon icon={X} size={14} /></button>
   </div>
 
-  {#if error}
-    <div class="shrink-0 border-b border-error/25 bg-error/10 px-3 py-1.5 text-[0.7rem] text-error" role="alert">{error}</div>
+  {#if view?.actionError}
+    <div class="shrink-0 border-b border-error/25 bg-error/10 px-3 py-1.5 text-[0.7rem] text-error" role="alert">{view.actionError}</div>
   {/if}
 
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <!-- The host rect. The native browser view is positioned exactly over this
+       element by the platform host; what renders HERE is only visible when
+       no view is presented (no engine, or the page is hidden). -->
   <div
     bind:this={surface}
-    class="relative min-h-0 flex-1 overflow-hidden bg-surface-0 outline-none focus:ring-1 focus:ring-inset focus:ring-accent/70"
-    role="application"
-    tabindex="0"
+    class="relative min-h-0 flex-1 overflow-hidden bg-surface-0"
+    data-testid="browser-pane-host-rect"
     aria-label="Browser page"
-    onpointerdown={(event) => pointerInput(event, 'down')}
-    onpointermove={(event) => pointerInput(event, 'move')}
-    onpointerup={(event) => pointerInput(event, 'up')}
-    onpointercancel={(event) => pointerInput(event, 'up')}
-    onwheel={wheelInput}
-    onkeydown={keyInput}
-    oncompositionend={(event) => queueInput({ kind: 'text', text: event.data })}
-    oncontextmenu={(event) => event.preventDefault()}
   >
-    {#if frameSrc}
-      <img src={frameSrc} alt="" draggable="false" class="pointer-events-none h-full w-full select-none object-contain" />
-    {:else if view?.error || attachment?.error}
+    {#if view?.error || attachment?.error}
       <div class="flex h-full items-center justify-center px-4 text-sm text-error">{view?.error || attachment?.error}</div>
-    {:else}
-      <div class="flex h-full items-center justify-center text-sm text-fg-muted">Connecting…</div>
     {/if}
   </div>
 </div>

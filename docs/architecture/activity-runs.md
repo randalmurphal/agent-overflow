@@ -736,6 +736,18 @@ which half owns the position.
 - It leaves `externalContentGeometry` unset. There is no virtualizer inside a
   run, so the controller's own contentEl ResizeObserver is the right geometry
   source, following the `ChannelView` precedent.
+- That source is the CONTENT box only, so a clip-VIEWPORT change — the cap
+  lift retracting when a body inside collapses, the `50vh` half on a window
+  resize — must reach the controller separately: the component's clip
+  ResizeObserver calls `observe('composer-geometry')` (escape-aware,
+  live-capable), the same seam the conversation uses for its composer.
+  Without it, a collapse's two layout passes (content shrink, then the
+  cap retraction one RO round later) race: the shrink delivery re-pins
+  against whichever cap is current at delivery time, and when the
+  retraction resolves last the grown scrollable range is a delta no
+  content delivery ever reports — the pinned run strands the retracted
+  height above its newest row (2026-08-31, "the collapse doesn't collapse
+  in the right direction").
 - `liveContentActive` wires to `pane.lastLiveContentAt` through
   `isLiveContentActive`.
 - It **never** calls `pane.attachScrollController`. That slot is

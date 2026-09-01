@@ -572,13 +572,30 @@ func ContextWindowSupportedForModel(providerName, model string, tokens int) bool
 	return false
 }
 
+// ContextTierForModelWindow resolves the auto-compact tier a window belongs
+// to. When the static registry has no options for the pair (a wire-only
+// model that exists only in the App's merged catalogs), the tier is derived
+// from the window itself: every provider's extended tier is the 1M window,
+// so a 1M thread on an unlisted model compacts on the extended threshold
+// rather than the standard one (claude-fable-5-1, 2026-09-01).
 func ContextTierForModelWindow(providerName, model string, tokens int) string {
-	for _, option := range ContextWindowOptionsForModel(providerName, model) {
+	options := ContextWindowOptionsForModel(providerName, model)
+	for _, option := range options {
 		if option.Tokens == tokens {
 			return option.Tier
 		}
 	}
+	if len(options) == 0 && tokens >= extendedContextWindowForProvider(providerName) {
+		return ContextTierExtended
+	}
 	return ContextTierStandard
+}
+
+func extendedContextWindowForProvider(providerName string) int {
+	if providerName == string(Codex) {
+		return CodexExtendedContextWindow
+	}
+	return ClaudeExtendedContextWindow
 }
 
 // DefaultContextWindowForOptions returns the tokens of the option flagged

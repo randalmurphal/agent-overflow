@@ -95,8 +95,12 @@ func normalizedRateLimitEntryKey(entry provider.RateLimitEntry) string {
 }
 
 // fresherRateLimitEntry reports whether candidate should replace prior when
-// aliases collapse onto the same quota. A later reset boundary wins; within
-// one boundary utilization is monotonic.
+// aliases (`five_hour` / `session`) collapse onto the same quota INSIDE ONE
+// snapshot. A later reset boundary wins; within one boundary the higher
+// reading is kept as a tie-break between two rows of the same wire message,
+// which carry no ordering. Across snapshots the newest reading wins, lower or
+// not — that rule lives in providerlifecycleapp.MergeSnapshot and the
+// frontend rateLimitsInfo store, not here.
 func fresherRateLimitEntry(prior, candidate provider.RateLimitEntry) bool {
 	if candidate.ResetsAt != prior.ResetsAt {
 		return candidate.ResetsAt > prior.ResetsAt

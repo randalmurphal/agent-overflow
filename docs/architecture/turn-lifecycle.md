@@ -237,14 +237,23 @@ round's **background carrier**.
   `tool_result` ack, which carries no async marker of its own,
   still emits `EventToolComplete{is_background:true}`.
 - Triage's keep-running flip (§1 above, the `!launch.IsBackground` →
-  `IsBackground` transition) additionally rewrites the carrier's
-  `Summary` to the resumed agent's identity (`"Agent: <description>"`,
-  preferring the original launch row's own Summary when it's still
-  around) whenever the launch row's meta carries
-  `resumes_tool_use_id`, stamped by the parser's enriched
-  meta-only `EventToolStart` for the rebind `task_started`. Without
-  this the carrier would read "SendMessage -> done" instead of
-  identifying the agent it's resuming.
+  `IsBackground` transition) additionally resolves the ORIGINAL launch
+  row (`resumeCarrierIdentity`, tool_lifecycle.go) — by
+  `resumes_tool_use_id` when the parser held the binding, else by the
+  persisted `items.meta.task_id` stamp
+  (`store.FindOriginalAgentLaunchByTaskID`, oldest row excluding the
+  carrier itself, which carries the same task_id by then), so the
+  reconnect edge resolves too. It rewrites the carrier's `Summary` to
+  the resumed agent's identity (`"Agent: <description>"`, preferring
+  the original launch row's own Summary when it's still around) and
+  copies the original's `subagent_model` (Subn stamp first, launch
+  `input.model` alias second) plus any missing
+  `subagent_type`/`description` onto the carrier's meta. The parser
+  already stamps wire-sourced `description` + `subagent_type` from the
+  rebind `task_started` via its enriched meta-only `EventToolStart`.
+  Without all this the carrier would read "SendMessage -> done" with
+  the raw recipient id instead of identifying the agent it's resuming,
+  and its card would inherit the parent thread's model.
 - Round 2's `task_updated`/`task_notification` then write a NEW
   `tool_completion` sibling under the carrier
   (`"complete:"+carrierID`, distinct from round 1's
@@ -297,12 +306,14 @@ Implementation:
 
 1. **`task_updated`** with status in `{completed, failed}` writes a
    row to `pending_background_task_terminals` (PK
-   `(thread_id, task_id)`). The tray query `ListLiveBackgroundTasks`
-   joins against this table with `NOT EXISTS` on `tool_use_id`, so
-   the launch drops out of the tray immediately. **No chat row is
-   written yet.** Triage emits
-   `provider:background_task_state{state:"exited"}` so the frontend
-   can refresh.
+   `(thread_id, task_id)`). The lifecycle gates in
+   `items_lifecycle.go` (`HasLiveBackgroundToolCall`,
+   `HasQueueBlockingBackgroundToolCall`) join against this table with
+   `NOT EXISTS` on `tool_use_id`, so an exited-but-unobserved shell
+   stops blocking the reaper and the flush queue. **No chat row is
+   written yet.** The tray query does not join the stash; the
+   frontend learns of the exit through the
+   `provider:background_task_state{state:"exited"}` emit.
 2. **Agent observation**, either `system/task_notification` (the model
    sees the queued attachment on the next iteration) or a
    `TaskOutput` `tool_result` (the model explicitly polled), drains
@@ -325,12 +336,17 @@ Implementation:
    flush and yanked it back out on the next
    (bug-report-20260801T024731Z).
 3. **`task_updated` with `status="killed"`** is a deliberate carve-out:
-   the `killed` status is only reached via the user's explicit
-   `stop_task` (the StopClaudeTask binding behind the tray's Stop
-   button). The user already knows the process was stopped (there's
-   nothing for the agent to "observe"), so triage skips the stash and
-   writes the sibling immediately so chat shows the killed badge
-   without waiting for a future turn.
+   `killed` means the CLI ended the process — the user's `stop_task`
+   (the StopClaudeTask binding behind the tray's Stop button), a
+   foreground agent exiting and taking its shells with it, or session
+   close (claude-wire.md §Background task ownership). No agent
+   observation is coming, so triage skips the stash and writes the
+   sibling immediately so chat shows the killed badge without waiting
+   for a future turn. When the launch row does not exist yet (a
+   subagent-owned shell killed before the transcript projection
+   persisted its row), the killed terminal is stashed instead and
+   drained when the row lands
+   (`settleStashedTerminalForLateLaunch`).
 
 ### Crash recovery: recoverable Claude background launches
 
@@ -365,6 +381,20 @@ matters for `claude-tui`: the interactive provider reconstructs
 `system/task_started`, so its backgrounded launches carry no `task_id`.
 Requiring one is exactly what left them rendering "running" forever
 after a restart.
+
+The same settle also runs per thread while the app is alive:
+`Router.SettleBackgroundLaunchesForSessionEnd` fires from
+`teardownAndCloseSession` (user stop, idle reaper, config restart) and
+from `handleSessionDied` (unexpected process death). Background shells
+die with the CLI process and a resume does not revive them, so every
+still-running backgrounded launch on the closed thread — nested ones
+included, which the top-level lifecycle gates never settle
+(invariant 24) — gets its `session_died` sibling immediately instead
+of ticking in the tray until the next app boot. Both the per-thread
+settle and the boot sweep prune leftover stash rows afterwards
+(thread-scoped and global respectively): a stash whose launch row
+never materialized has no future observer, and the table has no other
+prune.
 
 Codex background projections use a different lifecycle. On startup, before a
 provider can spawn, `Store.RecoverCodexBackgroundRuntime` retires every live

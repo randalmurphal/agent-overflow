@@ -743,3 +743,108 @@ describe('activity run — the top fade covers the clip\'s sub-pixel top edge', 
     expect(f.bottom).toBeLessThanOrEqual(c.bottom);
   });
 });
+
+describe('activity run — collapsing an expanded body keeps the tail pinned', () => {
+  // Collapsing a disclosure inside a bottom-following clip shrinks the
+  // CONTENT in one layout pass, while the cap lift it granted
+  // (observeActivityRunExpansion → style:max-height) retracts in a later
+  // one. Between the two the browser clamps `scrollTop` down by the body's
+  // height; when the cap then retracts, the scrollable range grows back and
+  // — on the tail run, whose geometry RO deliberately does not bottom-hold
+  // because the controller owns the follow — nothing re-asks for the
+  // bottom. The run stranded a body's height above its newest row
+  // (2026-08-31, "the collapse doesn't collapse in the right direction").
+  const THREAD_ID = 'thread-run-collapse-pin';
+  const THOUGHT = 'Deciding how the fixture should behave in detail: this reasoning row '
+    + 'carries several full clauses so that, once expanded past its three-line clamp, '
+    + 'the revealed body is far taller than the clamp it replaces. The delta between '
+    + 'the expanded body and the clamp is exactly the cap lift under test, so the text '
+    + 'keeps going for a few more lines of deliberate, unhurried reasoning about '
+    + 'nothing in particular, purely to buy the run interior height it can lose again.';
+
+  function items(): Item[] {
+    const built: Item[] = [prose('p0', 0, THREAD_ID)];
+    for (let i = 0; i < RUN_ROWS; i += 1) built.push(tool(`a${i}`, i + 1, THREAD_ID));
+    built.push(makeItem({
+      id: 'th-tail',
+      threadId: THREAD_ID,
+      itemIndex: RUN_ROWS + 1,
+      kind: 'thinking',
+      summary: THOUGHT,
+      createdAt: RUN_ROWS + 1,
+      updatedAt: RUN_ROWS + 1,
+    }));
+    built.push(tool('z-after', RUN_ROWS + 2, THREAD_ID));
+    return built;
+  }
+
+  it('re-pins the live run to its bottom after a think collapse', async () => {
+    const { scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
+    const run = scrollEl.querySelector('[data-testid="activity-run"]') as HTMLElement;
+    // The LIVE tail run: the one with a controller, whose geometry RO does
+    // not bottom-hold — historical runs self-heal through their settle
+    // follow, so asserting on one would pass without the fix.
+    expect(run.dataset.live).toBe('true');
+    const clip = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
+    const bottomGap = () => clip.scrollHeight - clip.scrollTop - clip.clientHeight;
+    // Vacuity guards: scrollable (or there is nothing to strand), resting at
+    // its bottom (the state under test).
+    expect(clip.scrollHeight).toBeGreaterThan(clip.clientHeight);
+    expect(bottomGap()).toBeLessThanOrEqual(DRIFT_PX);
+    const capBefore = clip.clientHeight;
+
+    (run.querySelector('[data-testid="thinking-toggle"]') as HTMLElement).click();
+    // The expand grants the cap lift; the run must settle back on its
+    // newest row before the collapse can be the thing under test.
+    await waitFor(() => clip.clientHeight > capBefore + 8, 'cap to lift on expand');
+    await waitFor(() => bottomGap() <= DRIFT_PX, 'expand to settle at the bottom');
+
+    // The reader steps into the run and comes back to its bottom by wheel,
+    // as a reader browsing a run does before toggling a body.
+    clip.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+    clip.scrollTop = Math.max(0, clip.scrollTop - 200);
+    await raf();
+    await raf();
+    clip.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true }));
+    clip.scrollTop = clip.scrollHeight - clip.clientHeight;
+    await raf();
+    await raf();
+    await waitFor(() => bottomGap() <= DRIFT_PX, 'return to the run bottom');
+
+    const toggle = run.querySelector('[data-testid="thinking-toggle"]') as HTMLElement;
+    // A real click, not element.click(): the pointer press is what arms the
+    // run's reader-gesture attribution before the collapse's clamp fires.
+    toggle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    toggle.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    toggle.click();
+    await waitFor(() => clip.clientHeight <= capBefore + DRIFT_PX, 'cap to retract on collapse');
+    // The strand is stable, not transient: without the re-pin the gap stays
+    // a whole body tall forever, so a generous settle window cannot mask it.
+    await waitFor(() => bottomGap() <= DRIFT_PX, 'collapse to keep the newest row', 240);
+    expect(bottomGap()).toBeLessThanOrEqual(DRIFT_PX);
+  });
+
+  it('re-pins when the clip viewport shrinks under a pinned run', async () => {
+    // The two halves of a collapse land in separate layout passes: the
+    // body's shrink (whose clamp the controller's content observer explains
+    // and re-pins), then the cap-lift retraction
+    // (observeActivityRunExpansion → style:max-height). The controller's
+    // only geometry source is the CONTENT box, so whichever pass resolves
+    // last must still reach it — when the retraction lands after the
+    // content delivery already wrote its bottom, the re-opened gap is a
+    // viewport change no content delta will ever report. This drives that
+    // half alone: shrink the clip's viewport under a pinned run and require
+    // the follow to re-ask for the bottom.
+    const { scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
+    const run = scrollEl.querySelector('[data-testid="activity-run"]') as HTMLElement;
+    expect(run.dataset.live).toBe('true');
+    const clip = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
+    const bottomGap = () => clip.scrollHeight - clip.scrollTop - clip.clientHeight;
+    expect(clip.scrollHeight).toBeGreaterThan(clip.clientHeight);
+    expect(bottomGap()).toBeLessThanOrEqual(DRIFT_PX);
+
+    clip.style.maxHeight = `${clip.clientHeight - 80}px`;
+    await waitFor(() => bottomGap() <= DRIFT_PX, 'viewport shrink to re-pin the bottom', 240);
+    expect(bottomGap()).toBeLessThanOrEqual(DRIFT_PX);
+  });
+});

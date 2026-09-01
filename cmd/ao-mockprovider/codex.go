@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,6 +39,11 @@ type codexAdapter struct {
 	// codex >= 0.148) that `list` and `delete` answer over. Guarded by mu.
 	// Nothing fills it — `add` is a tripwire. See codex_queue.go.
 	queue []codexQueueEntry
+	// forkTurns backs metadata-only `thread/turns/list` reads for threads this
+	// process forked. ForkAt excludes response turns and validates its anchor
+	// through that read, so the harness must preserve the new thread's tail.
+	// Guarded by mu.
+	forkTurns map[string][]string
 	// steerSeq numbers the `userMessage` echo each `turn/steer` produces, so
 	// several steers inside one turn never share an item id.
 	steerSeq atomic.Int64
@@ -107,7 +113,13 @@ func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *cod
 			responses[method] = tmpl
 		}
 	}
-	a := &codexAdapter{e: e, w: w, responses: responses, waiters: make(map[int64]chan bool)}
+	a := &codexAdapter{
+		e:         e,
+		w:         w,
+		responses: responses,
+		waiters:   make(map[int64]chan bool),
+		forkTurns: make(map[string][]string),
+	}
 	a.approvalSeq.Store(codexApprovalIDBase)
 	return a
 }
@@ -238,7 +250,7 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 			a.respond(id, method, a.e.currentVars())
 			return
 		}
-		if a.handleReadRequest(id, method) {
+		if a.handleReadRequest(id, method, params) {
 			return
 		}
 		// -32601, not `{"result":{}}`. An empty success is a LIE that no
@@ -267,7 +279,35 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 // branches worth exercising in a harness.
 //
 // Returns false when the method is not one of them.
-func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string) bool {
+func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string, params json.RawMessage) bool {
+	if method == "thread/turns/list" {
+		threadID := readParamString(params, "threadId")
+		a.mu.Lock()
+		turnIDs := append([]string(nil), a.forkTurns[threadID]...)
+		a.mu.Unlock()
+		offset, _ := strconv.Atoi(readParamString(params, "cursor"))
+		if offset < 0 || offset > len(turnIDs) {
+			offset = 0
+		}
+		limit := readParamInt(params, "limit")
+		if limit <= 0 || limit > len(turnIDs)-offset {
+			limit = len(turnIDs) - offset
+		}
+		data := make([]map[string]any, 0, limit)
+		for i := offset; i < offset+limit; i++ {
+			data = append(data, map[string]any{"id": turnIDs[len(turnIDs)-1-i]})
+		}
+		var nextCursor any
+		if next := offset + limit; next < len(turnIDs) {
+			nextCursor = strconv.Itoa(next)
+		}
+		a.w.writeLine(mustJSON(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      id,
+			"result":  map[string]any{"data": data, "nextCursor": nextCursor},
+		}), 0, 0)
+		return true
+	}
 	var result string
 	switch method {
 	case "account/read":
@@ -300,11 +340,6 @@ func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string) bool
 		// thread, and claiming them for the root thread would make every
 		// harness thread look like someone's subagent.
 		result = `{"thread":{"id":"${THREAD_ID}","status":{"type":"idle","activeFlags":[]}}}`
-	case "thread/turns/list":
-		// Turn shells, and the mock keeps no rollout to list them from.
-		// An empty page with a null cursor is the honest answer and the
-		// one the revert-boundary probe handles as "no durable turns".
-		result = `{"data":[],"nextCursor":null}`
 	case "thread/settings/update":
 		// Upstream answers a bare result; the app only checks for an error.
 		result = `{}`
@@ -338,11 +373,11 @@ func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string) bool
 	return true
 }
 
-// forkThread answers `thread/fork`: a NEW thread id plus the turn tail
-// that survived the cut, which is the shape `parseThreadForkResponse`
-// decodes and `ForkAt` validates its anchor against. `lastTurnId` is
-// inclusive; ABSENT copies every turn, which is exactly what a mid-turn
-// tail fork sends. A `lastTurnId` naming the IN-PROGRESS turn is refused
+// forkThread answers `thread/fork` with a new thread id and records the turn
+// tail for `thread/turns/list`. It includes turns in the response only when
+// the caller did not set `excludeTurns`. `lastTurnId` is inclusive; ABSENT
+// copies every turn, which is exactly what a mid-turn tail fork sends. A
+// `lastTurnId` naming the IN-PROGRESS turn is refused
 // with a JSON-RPC error, matching codex 0.147.0 — that refusal is the
 // whole reason AO normalises such an anchor to a tail fork, so the mock
 // has to be able to produce it rather than quietly full-forking.
@@ -384,6 +419,12 @@ func (a *codexAdapter) forkThread(id json.RawMessage, params json.RawMessage) {
 		turns = append(turns, map[string]any{"id": turnID})
 	}
 	forked := fmt.Sprintf("%s-fork-%d", a.e.currentVars()["THREAD_ID"], a.forkSeq.Add(1))
+	a.mu.Lock()
+	a.forkTurns[forked] = append([]string(nil), turnIDs...)
+	a.mu.Unlock()
+	if readParamBool(params, "excludeTurns") {
+		turns = turns[:0]
+	}
 	a.w.writeLine(mustJSON(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
@@ -600,6 +641,18 @@ func readParamString(params json.RawMessage, key string) string {
 		return ""
 	}
 	return s
+}
+
+func readParamBool(params json.RawMessage, key string) bool {
+	var value bool
+	_ = json.Unmarshal(readParamRaw(params, key), &value)
+	return value
+}
+
+func readParamInt(params json.RawMessage, key string) int {
+	var value int
+	_ = json.Unmarshal(readParamRaw(params, key), &value)
+	return value
 }
 
 // readParamRaw returns one request parameter undecoded, for values whose shape

@@ -38,13 +38,19 @@
     isStopping: boolean;
     provider: ProviderID | null;
     onStop: (rowID: string, stopTarget: string) => void;
-    /** Row click / open-button target (spec Q8): scroll the source
-     * timeline to this node and, for agent launches, open the agent
-     * companion scoped to it. Absent on surfaces with no pane. */
+    /** Row click target (spec Q8): scroll the source timeline to this
+     * node and, for agent launches, open the agent companion scoped to
+     * it. Absent on surfaces with no pane. */
     onOpen?: (task: TrayTask) => void;
+    /** The explicit open button's target: open the agent companion and
+     * nothing else. Deliberately without the row click's timeline jump —
+     * the jump is explicit navigation, so it releases bottom-follow, and
+     * a reader opening the pane while pinned to a streaming tail must not
+     * lose the pin to a scroll they never asked for. */
+    onOpenPane?: (task: TrayTask) => void;
   }
 
-  let { task, stopTarget, isStopping, provider, onStop, onOpen }: Props = $props();
+  let { task, stopTarget, isStopping, provider, onStop, onOpen, onOpenPane }: Props = $props();
 
   function onRowClick(event: MouseEvent): void {
     if (!onOpen) return;
@@ -75,12 +81,12 @@
   let durationLabel = $derived(task.elapsedMs === null ? '' : formatElapsed(task.elapsedMs));
 
   // The explicit open button exists only for agent launches — the same
-  // gate `onOpen` applies before opening the companion. A plain command
-  // row (backgrounded Bash, a Codex PTY) has no agent pane to open, so
-  // the button there was a no-op with a lying tooltip; the row click
-  // still scrolls the timeline to it.
+  // gate `onOpenPane` applies before opening the companion. A plain
+  // command row (backgrounded Bash, a Codex PTY) has no agent pane to
+  // open, so the button there was a no-op with a lying tooltip; the row
+  // click still scrolls the timeline to it.
   let agentInfo = $derived(trayTaskAgentInfo(task));
-  let opensAgentPane = $derived(onOpen !== undefined && agentInfo !== null);
+  let opensAgentPane = $derived(onOpenPane !== undefined && agentInfo !== null);
 
   // The agent's live counters (user ruling 2026-08-23: a running
   // background agent's tool count, tokens and activity line show HERE —
@@ -140,11 +146,11 @@
         {tokensLabel}
       </span>
     {/if}
-    {#if onOpen && opensAgentPane}
+    {#if onOpenPane && opensAgentPane}
       <button
         type="button"
         class="shrink-0 rounded p-0.5 text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-        onclick={() => onOpen(task)}
+        onclick={() => onOpenPane(task)}
         title="Open in agent pane"
         aria-label="Open in Agent Pane"
         data-testid="background-task-tray-row-open"

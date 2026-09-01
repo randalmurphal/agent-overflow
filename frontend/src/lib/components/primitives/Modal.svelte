@@ -11,6 +11,7 @@
   import type { Snippet } from 'svelte';
   import { fade, scale } from 'svelte/transition';
   import { focusTrap } from '../../utils/focusTrap';
+  import { airspaceSurface } from '../../utils/paneAirspace.svelte';
   import { hasOpenPopoverOwnedBy } from '../../utils/popoverOwnership';
   import { randomId } from '../../utils/randomId';
 
@@ -138,6 +139,7 @@
     ].join(' ')}
     data-modal-backdrop
     data-modal-align={align}
+    use:airspaceSurface
     onclick={handleBackdropClick}
     onkeydown={handleKeydown}
     transition:fade={{ duration: 140 }}

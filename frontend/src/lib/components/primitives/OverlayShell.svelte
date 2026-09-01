@@ -16,6 +16,7 @@
   import type { Snippet } from 'svelte';
   import { fade } from 'svelte/transition';
   import { focusTrap } from '../../utils/focusTrap';
+  import { airspaceSurface } from '../../utils/paneAirspace.svelte';
 
   interface Props {
     open: boolean;
@@ -39,6 +40,7 @@
   <div
     class="fixed inset-0 z-40 flex items-stretch justify-center bg-overlay p-4 backdrop-blur-sm md:p-8"
     data-testid={scrimTestId}
+    use:airspaceSurface
     onclick={handleScrimClick}
     transition:fade={{ duration: 120 }}
   >

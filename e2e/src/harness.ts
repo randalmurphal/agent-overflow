@@ -13,7 +13,6 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { chromium } from '@playwright/test';
 
 import {
   spawnContained,
@@ -74,9 +73,6 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
     memoryLimitBytes: opts.memoryLimitBytes ?? FALLBACK_MEMORY_LIMIT_BYTES,
     env: {
       ...process.env,
-      // Reuse the browser `make install` already provisioned for this suite;
-      // isolated harness roots must not each download Chrome-for-Testing.
-      AO_BROWSER_BINARY: chromium.executablePath(),
       ...opts.env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],

@@ -1089,6 +1089,51 @@ export class Settings {
     "keepAwakeScreen": boolean;
 
     /**
+     * The OS-notification preferences (docs/specs/remote-access.md §9).
+     * NotificationsEnabled is the master switch: with it off this screen
+     * raises no OS notification at all, including the two senders that
+     * predate the event mapping (a workflow item needing a human, and the
+     * WSL launcher's "update didn't apply" notice). The four below are the
+     * per-kind toggles over notify.Kind's four mapped moments.
+     * 
+     * ALL FIVE DEFAULT TRUE, and are therefore all present in
+     * DefaultSettings. That is the KeepAwakeScreen pattern and it is what
+     * makes an absent key read as ON — which matters more here than
+     * anywhere else, because notifications were unconditional before these
+     * keys existed. A user upgrading into them must keep exactly the
+     * behaviour they had, and only then narrow it.
+     * 
+     * The defaults are also the honest answer to "what is worth
+     * interrupting someone for": all four moments are ones where either the
+     * agent has stopped needing the machine and started needing the person,
+     * or nothing will run again until the person acts.
+     */
+    "notificationsEnabled": boolean;
+
+    /**
+     * NotifyTurnComplete covers a top-level turn arriving at rest. The
+     * noisiest of the four by volume, and the first one a user with many
+     * threads turns off.
+     */
+    "notifyTurnComplete": boolean;
+
+    /**
+     * NotifyApprovalNeeded covers the agent blocked on permission.
+     */
+    "notifyApprovalNeeded": boolean;
+
+    /**
+     * NotifyError covers a turn that failed and a provider process that
+     * died under a thread.
+     */
+    "notifyError": boolean;
+
+    /**
+     * NotifyProviderSignedOut covers a provider whose login is gone.
+     */
+    "notifyProviderSignedOut": boolean;
+
+    /**
      * Window stores the desktop window placement (position, size, and
      * maximized/fullscreen state) so the app reopens where it was last
      * closed. Owned by the Go side, not the frontend — written from
@@ -1248,6 +1293,21 @@ export class Settings {
         if (!("keepAwakeScreen" in $$source)) {
             this["keepAwakeScreen"] = false;
         }
+        if (!("notificationsEnabled" in $$source)) {
+            this["notificationsEnabled"] = false;
+        }
+        if (!("notifyTurnComplete" in $$source)) {
+            this["notifyTurnComplete"] = false;
+        }
+        if (!("notifyApprovalNeeded" in $$source)) {
+            this["notifyApprovalNeeded"] = false;
+        }
+        if (!("notifyError" in $$source)) {
+            this["notifyError"] = false;
+        }
+        if (!("notifyProviderSignedOut" in $$source)) {
+            this["notifyProviderSignedOut"] = false;
+        }
         if (!("window" in $$source)) {
             this["window"] = (new windowgeom$0.Geometry());
         }
@@ -1278,7 +1338,7 @@ export class Settings {
         const $$createField57_0 = $$createType12;
         const $$createField62_0 = $$createType0;
         const $$createField64_0 = $$createType0;
-        const $$createField69_0 = $$createType13;
+        const $$createField74_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -1338,7 +1398,7 @@ export class Settings {
             $$parsedSource["spinnerDisabledAnimations"] = $$createField64_0($$parsedSource["spinnerDisabledAnimations"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField69_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField74_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

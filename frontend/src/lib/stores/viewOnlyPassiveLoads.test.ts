@@ -14,6 +14,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { pairViewOnly, resetToLocalPage } from '../../test/helpers/scopes';
+import {
+  hydrateBrowserCompanionState,
+  resetBrowserCompanionForTest,
+} from './browserCompanion.svelte';
 import { attachGitStatus, refreshGitStatus } from './gitStatusStore.svelte';
 import { attachMcpServers } from './mcpServers.svelte';
 import { ensureProviderModels, resetProviderModelsForTest } from './providerModels.svelte';
@@ -31,6 +35,11 @@ function stubBindings() {
     mcp: setBindingMock('ListThreadMcpServers', async () => []),
     models: setBindingMock('GetModelsForProvider', async () => []),
     worktreeSetup: setBindingMock('GetThreadWorktreeSetup', async () => null),
+    browserCompanion: setBindingMock('BrowserCompanionThreadState', async () => ({
+      threadId: THREAD,
+      pages: [],
+      visible: false,
+    })),
     updateCheck: setBindingMock('CheckForUpdate', async () => ({
       supported: true,
       updateAvailable: false,
@@ -53,11 +62,13 @@ describe('view-only sessions issue no passive operate RPCs', () => {
     bindings = stubBindings();
     resetProviderModelsForTest();
     resetUpdatesForTest();
+    resetBrowserCompanionForTest();
   });
 
   afterEach(() => {
     resetToLocalPage();
     resetProviderModelsForTest();
+    resetBrowserCompanionForTest();
   });
 
   it('does not subscribe git status without git:operate', async () => {
@@ -109,6 +120,19 @@ describe('view-only sessions issue no passive operate RPCs', () => {
     await pairViewOnly();
     await hydrateWorktreeSetup(THREAD);
     expect(bindings.worktreeSetup).not.toHaveBeenCalled();
+  });
+
+  it('does not read the browser companion snapshot without terminal:operate', async () => {
+    await pairViewOnly();
+    hydrateBrowserCompanionState(THREAD);
+    await settle();
+    expect(bindings.browserCompanion).not.toHaveBeenCalled();
+  });
+
+  it('reads the browser companion snapshot on the local page', async () => {
+    hydrateBrowserCompanionState(THREAD);
+    await settle();
+    expect(bindings.browserCompanion).toHaveBeenCalled();
   });
 
   it('does not run the launch update check off-host, and rests as unsupported', async () => {

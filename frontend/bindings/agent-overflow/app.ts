@@ -258,34 +258,76 @@ export function BrowserCompanionDo(threadID: string, action: app$0.BrowserCompan
     });
 }
 
-export function BrowserCompanionInput(threadID: string, pageID: string, event: browser$0.CompanionInput): $CancellablePromise<void> {
-    return $Call.ByID(2747693029, threadID, pageID, event);
-}
-
-export function BrowserCompanionNextFrame(subscriptionID: string): $CancellablePromise<browser$0.CompanionEvent> {
-    return $Call.ByID(776020183, subscriptionID).then(($result: any) => {
-        return $$createType4($result);
-    });
-}
-
-export function BrowserCompanionResize(subscriptionID: string, width: number, height: number): $CancellablePromise<void> {
-    return $Call.ByID(2921114943, subscriptionID, width, height);
-}
-
 /**
- * BrowserCompanionSubscribe attaches the calling connection to the live frame
- * stream for a thread. Chrome only screencasts while at least one companion is
- * mounted; connection cleanup is the leak-proof fallback for an unclean UI
- * disconnect.
+ * BrowserCompanionPaneAttach registers the calling connection's mounted pane
+ * surface for a thread. The native view is presented only while a mount with
+ * a paintable rect exists, so connection cleanup guarantees a dead UI can
+ * never leave a browser view painted over a window that no longer renders
+ * the pane under it.
  */
-export function BrowserCompanionSubscribe(threadID: string, width: number, height: number): $CancellablePromise<browser$0.CompanionSubscription> {
-    return $Call.ByID(668496681, threadID, width, height).then(($result: any) => {
+export function BrowserCompanionPaneAttach(threadID: string): $CancellablePromise<browser$0.CompanionSubscription> {
+    return $Call.ByID(205254296, threadID).then(($result: any) => {
         return $$createType5($result);
     });
 }
 
-export function BrowserCompanionUnsubscribe(subscriptionID: string): $CancellablePromise<void> {
-    return $Call.ByID(3385360912, subscriptionID);
+export function BrowserCompanionPaneDetach(paneID: string): $CancellablePromise<void> {
+    return $Call.ByID(3255514830, paneID);
+}
+
+/**
+ * BrowserCompanionPaneRect reports where the mounted pane's host rect sits,
+ * coalesced to one call per changed frame by the frontend.
+ */
+export function BrowserCompanionPaneRect(paneID: string, rect: browser$0.PaneRect): $CancellablePromise<void> {
+    return $Call.ByID(2491183339, paneID, rect);
+}
+
+/**
+ * BrowserCompanionRevealPageFile opens the OS file manager with the local
+ * file a companion page is displaying selected, so it can be dragged into
+ * chat and mail apps — which accept file drops but not a pasted file object.
+ * Remote pages have no file to reveal.
+ */
+export function BrowserCompanionRevealPageFile(threadID: string, pageID: string): $CancellablePromise<void> {
+    return $Call.ByID(535837959, threadID, pageID);
+}
+
+/**
+ * BrowserCompanionThreadState answers the thread's current page/session
+ * snapshot without acquiring anything. The `browser:companion-state` channel
+ * is ephemeral (no replay), so a freshly loaded UI has no way to know a
+ * thread already has live pages — this is the hydration read behind the chat
+ * header's browser chip and the pane-reopen reconcile.
+ */
+export function BrowserCompanionThreadState(threadID: string): $CancellablePromise<browser$0.CompanionEvent> {
+    return $Call.ByID(1485125416, threadID).then(($result: any) => {
+        return $$createType4($result);
+    });
+}
+
+/**
+ * BrowserHostReport is how the Windows launcher answers a browser:host
+ * directive. Its name is pinned by webview2host.RPCReport, which both
+ * sides of the wire import.
+ * 
+ * kind is one of created (detail is the page's CDP target id, which is
+ * what lets this backend attach chromedp to a controller it did not
+ * create), create-failed, closed, or process-failed. An unrecognised kind
+ * or a malformed page id is refused rather than guessed at: both ends
+ * validate, because a near-miss would settle the wrong page's create.
+ * 
+ * The report is best-effort in the launcher — a lost one costs a page
+ * handle the backend re-derives — so this returns quickly and never
+ * blocks on browser work.
+ * 
+ * Scoped host: it settles pane-host state for real browser windows on
+ * this machine, and its only legitimate caller is the launcher process
+ * beside this backend. No remote session can host a native view, so no
+ * grant opens it.
+ */
+export function BrowserHostReport(pageID: string, kind: string, detail: string): $CancellablePromise<void> {
+    return $Call.ByID(2848608143, pageID, kind, detail);
 }
 
 /**
@@ -1348,9 +1390,11 @@ export function GetRemoteEndpointToken(id: string): $CancellablePromise<string> 
  * 
  * Resolved PER CALLER. The host and user tiers are global to this backend;
  * the device tier comes out of the calling connection's own ui_state bucket
- * (docs/specs/remote-access.md §6), so two screens attached to one backend see
- * two font sizes and one shared set of confirmations. A caller with no device
- * behind it — a background saga, a test — reads the device defaults.
+ * over its DEVICE-CLASS defaults (docs/specs/remote-access.md §6,
+ * internal/settings/classdefaults.go), so two screens attached to one backend
+ * see two font sizes and one shared set of confirmations, and a paired phone
+ * that never touched lowPowerMode reads it on. A caller with no device behind
+ * it — a background saga, a test — reads the desktop class's defaults.
  */
 export function GetSettings(): $CancellablePromise<settings$0.Settings> {
     return $Call.ByID(2554697378).then(($result: any) => {
@@ -4251,6 +4295,11 @@ export function UpdateRemoteEndpoint(id: string, name: string, url: string, toke
  * bucket for device keys (docs/specs/remote-access.md §6). Validation runs on
  * the whole merged struct first, so every key is validated the same way
  * wherever it ends up.
+ * 
+ * The patch is applied over the caller's CLASS-RESOLVED view, which is what
+ * lets a device write the opposite of its class default: a phone patching
+ * lowPowerMode to false is a change from the true its class resolves to, so
+ * it persists a row and outranks the table from then on.
  * 
  * The returned snapshot is redacted like GetSettings': the frontend store
  * re-seeds from it, and the two read paths must not disagree about whether the

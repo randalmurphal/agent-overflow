@@ -8,13 +8,12 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"agent-overflow/internal/appdirs"
-	"agent-overflow/internal/chromium"
 	"agent-overflow/internal/harnessclient"
 	"agent-overflow/internal/procutil"
 )
@@ -81,25 +80,35 @@ func (c browserChoice) headlessShell() bool {
 type browserResolver struct {
 	getenv   func(string) string
 	lookPath func(string) (string, error)
-	// configRoot is the app-managed root whose Chrome cache the
-	// chain consults. Resolved by appdirs in production.
-	configRoot func() (string, error)
 }
 
 func defaultBrowserResolver() browserResolver {
-	return browserResolver{getenv: os.Getenv, lookPath: exec.LookPath, configRoot: appdirs.Root}
+	return browserResolver{getenv: os.Getenv, lookPath: exec.LookPath}
 }
 
-// resolve walks a three-link chain and says which link answered:
+// executableFile reports whether a path names a file this process could
+// exec. Windows dispatches on extension, everything else on the mode bits.
+func executableFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return strings.HasSuffix(strings.ToLower(path), ".exe")
+	}
+	return info.Mode()&0o111 != 0
+}
+
+// resolve walks a two-link chain and says which link answered:
 //
 //  1. --browser, else $AO_HARNESS_BROWSER. An explicit path that is not
 //     executable is an error, never a silent fall-through to link 2:
 //     a caller who named a binary wants THAT binary.
-//  2. a full Chrome-for-Testing already installed by the built-in browser,
-//     under the app-managed config root. This is
-//     a read of one executable path, never a download — `ao-harness`
-//     has no network story and must not grow one.
-//  3. a Chromium-family browser on PATH.
+//  2. a Chromium-family browser on PATH.
+//
+// There is no third link. The app used to install a managed Chrome this
+// chain could borrow; the embedded browser now hosts its own engine and
+// downloads nothing, and `ao-harness` has no network story of its own.
 func (r browserResolver) resolve(explicit string) (browserChoice, error) {
 	if strings.TrimSpace(explicit) == "" {
 		explicit = strings.TrimSpace(r.getenv(attachBrowserEnv))
@@ -113,15 +122,10 @@ func (r browserResolver) resolve(explicit string) (browserChoice, error) {
 			}
 			path = found
 		}
-		if !chromium.Executable(path) {
+		if !executableFile(path) {
 			return browserChoice{}, fmt.Errorf("browser %q is not an executable file", path)
 		}
 		return browserChoice{Path: path, Source: "explicit"}, nil
-	}
-	if root, err := r.configRoot(); err == nil {
-		if installed, ok := chromium.InstalledChrome(root); ok {
-			return browserChoice{Path: installed.BinaryPath, Source: "cached Chrome for Testing " + installed.Version}, nil
-		}
 	}
 	for _, name := range systemBrowserNames {
 		path, err := r.lookPath(name)
@@ -132,7 +136,7 @@ func (r browserResolver) resolve(explicit string) (browserChoice, error) {
 	}
 	return browserChoice{}, fmt.Errorf(
 		"no headless browser found: set $%s to a Chromium-family binary (or pass --browser), "+
-			"install one of %s on PATH, or let the app install Chrome once by using the built-in browser tools",
+			"or install one of %s on PATH",
 		attachBrowserEnv, strings.Join(systemBrowserNames, ", "))
 }
 
@@ -189,7 +193,7 @@ func runAttach(e *env, args []string) error {
 	flags := e.newFlagSet("attach")
 	detach := flags.Bool("detach", false, "leave the browser running in the background and print its pid instead of holding the terminal")
 	timeout := flags.Duration("timeout", attachDefaultTimeout, "wall-clock budget for the page to load and the bridge to answer")
-	browser := flags.String("browser", "", "path to a Chromium-family binary (default: $"+attachBrowserEnv+", then the app-managed Chrome, then PATH)")
+	browser := flags.String("browser", "", "path to a Chromium-family binary (default: $"+attachBrowserEnv+", then PATH)")
 	width := flags.Int("width", 1600, "page width in CSS pixels")
 	height := flags.Int("height", 1000, "page height in CSS pixels")
 	devtools := flags.Int("devtools-port", 0, "also serve the Chromium DevTools protocol on this `port`, so profile and bench --trace can attach")

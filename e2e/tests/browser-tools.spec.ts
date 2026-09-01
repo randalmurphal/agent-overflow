@@ -111,14 +111,22 @@ test('agent browser page stays headless until explicitly presented as an interac
   await address.fill(htmlPath);
   await address.press('Enter');
 
+  // The harness boots the fake engine (spec §10): pages navigate and carry a
+  // URL, but nothing renders them, so the title is derived from the address
+  // rather than read from a document. That pin is default-on and this suite
+  // must never lift it — AO_HARNESS_REAL_BROWSER is a MANUAL gate, and an
+  // e2e run that set it would assert against a real document instead.
   await expect.poll(async () => {
     const state = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, {
       kind: 'activate',
       pageId,
     });
-    return state.pages?.find((candidate) => candidate.id === pageId)?.title;
-  }).toBe('Companion fixture');
-  await expect(pane.locator('img')).toHaveAttribute('src', /^data:image\/jpeg;base64,/);
+    return state.pages?.find((candidate) => candidate.id === pageId)?.url;
+  }).toContain('browser-companion.html');
+  // The pane reserves a host rect a real engine would present its view over.
+  // Pixels are never in the DOM any more, on any engine.
+  await expect(pane.getByTestId('browser-pane-host-rect')).toBeVisible();
+  await expect(pane.locator('img')).toHaveCount(0);
 
   await pane.getByRole('button', { name: 'Close browser' }).click();
   await expect(pane).toHaveCount(0);

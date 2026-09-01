@@ -356,7 +356,7 @@ thread companion described in [`browser-tools.md`](browser-tools.md).
   possible.
 - **Browser companion**, explicit and on demand. Chromium always runs headless;
   pages remain in the background until the agent or user presents one. The
-  explicitly selected CDP page is then screencast into an ephemeral pane beside
+  explicitly selected CDP page was then screencast into an ephemeral pane beside
   its owner thread. This avoids the misleading external Chrome window, the
   session split a second native Wails webview would create, and focus stealing
   between concurrent subagents.

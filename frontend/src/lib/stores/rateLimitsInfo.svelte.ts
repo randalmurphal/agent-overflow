@@ -51,18 +51,18 @@ export function setProviderRateLimits(snapshot: RateLimitsSnapshot): void {
     if (prior) {
       const resetDelta = entry.resetsAt - prior.resetsAt;
       if (resetDelta < -RESET_JITTER_TOLERANCE_SECONDS) continue;
-      const sameWindow = Math.abs(resetDelta) <= RESET_JITTER_TOLERANCE_SECONDS;
-      if (
-        sameWindow
-        && Number.isFinite(prior.usedPercent)
-        && Number.isFinite(entry.usedPercent)
-        && prior.usedPercent > entry.usedPercent
-      ) {
-        continue;
-      }
-      if (sameWindow) {
+      // Same window: the NEWEST reading wins, even when its used-percent is
+      // lower. Every event carries the server's current answer, and the
+      // server legitimately lowers same-window utilization — a limit
+      // increase, or an outright server-side usage reset under an unchanged
+      // boundary (2026-09-01: Anthropic manually reset weekly usage
+      // mid-window; the backend accepted the drop while this store's copy of
+      // the keep-the-max rule froze the meters at the stale figure until the
+      // next app restart). MergeSnapshot in internal/providerlifecycleapp
+      // is this rule's backend twin — change both together.
+      if (Math.abs(resetDelta) <= RESET_JITTER_TOLERANCE_SECONDS) {
         // Claude's endpoint can move an otherwise identical reset boundary by
-        // a few seconds. Stabilize it so the UI accepts rising usage without
+        // a few seconds. Stabilize it so the UI accepts updates without
         // churning on every periodic probe.
         candidate = { ...entry, resetsAt: prior.resetsAt };
       }

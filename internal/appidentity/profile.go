@@ -151,6 +151,33 @@ func RenderForensicsDir(mode string) string {
 	}
 }
 
+// BrowserProfilesDir names the user-data folder (relative to the app's
+// %APPDATA% directory) for the embedded browser pane's SECOND WebView2
+// environment, beside the SPA's own WebviewProfileDir rather than inside
+// it. One folder holds every workspace: isolation between workspaces is a
+// named CoreWebView2Profile within this environment, so all panes share
+// one browser process and one debugging port.
+//
+// Split per mode for a harder reason than the other two: a WebView2
+// user-data folder belongs to ONE browser process, and an isolated
+// instance is designed to run beside the developer's own. Sharing this
+// folder would not merely mix cookies, it would leave whichever launcher
+// started second unable to create the environment at all.
+func BrowserProfilesDir(mode string) string {
+	switch mode {
+	case ModeDev:
+		return "browser-profiles-dev"
+	case ModeHarness:
+		return "browser-profiles-harness"
+	case ModeSoak:
+		return "browser-profiles-soak"
+	case ModePerf:
+		return "browser-profiles-perf"
+	default:
+		return "browser-profiles"
+	}
+}
+
 // DevToolsPort is the loopback CDP port the WebView2 exposes for a mode,
 // or 0 when it must not expose one at all (production — the protocol is
 // unauthenticated). Every diagnostic mode gets a DIFFERENT port on

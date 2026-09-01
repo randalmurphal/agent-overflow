@@ -49,13 +49,12 @@ func TestParseInitResponseReadsCapturedModels(t *testing.T) {
 	want := []struct {
 		value         string
 		canonical     string
-		defaultRow    bool
 		extended      bool
 		fastMode      bool
 		effortLevels  int
 		supportEffort bool
 	}{
-		{value: "default", canonical: "claude-opus-5", defaultRow: true, extended: true, fastMode: true, effortLevels: 5, supportEffort: true},
+		{value: "default", canonical: "claude-opus-5", extended: true, fastMode: true, effortLevels: 5, supportEffort: true},
 		{value: "opus[1m]", canonical: "claude-opus-5", extended: true, fastMode: true, effortLevels: 5, supportEffort: true},
 		// The wire's one inconsistency: `[1m]` on the alias, absent from the
 		// id it resolves to. Both sides must normalise to the same slug.
@@ -73,9 +72,6 @@ func TestParseInitResponseReadsCapturedModels(t *testing.T) {
 		}
 		if got := row.CanonicalSlug(); got != expected.canonical {
 			t.Errorf("row %d CanonicalSlug = %q, want %q", i, got, expected.canonical)
-		}
-		if got := row.IsDefaultPointer(); got != expected.defaultRow {
-			t.Errorf("row %d IsDefaultPointer = %v, want %v", i, got, expected.defaultRow)
 		}
 		if got := row.DeclaresExtendedContext(); got != expected.extended {
 			t.Errorf("row %d DeclaresExtendedContext = %v, want %v", i, got, expected.extended)

@@ -61,17 +61,18 @@ type ToolStartMeta struct {
 	TaskID          string          `json:"task_id"`
 	SubagentModel   string          `json:"subagent_model"`
 	ParentToolUseID string          `json:"parent_tool_use_id"`
-	// ResumesToolUseID and Description carry Claude's resume-rebind
-	// linkage: system/task_started rebinding an idle async agent's
-	// task_id onto a NEW tool_use (e.g. the harness's SendMessage call)
-	// — see claude-wire.md §E6. ResumesToolUseID is the tool_use_id of
-	// the ORIGINAL launch this tool_use is resuming; Description is the
-	// original agent's description straight off the rebind
-	// task_started envelope. Both are only populated by the parser's
-	// resume path (parse_system.go); a normal launch's meta-only
-	// task_started update never sets them.
+	// ResumesToolUseID, Description and SubagentType carry Claude's
+	// resume-rebind linkage: system/task_started rebinding an idle
+	// async agent's task_id onto a NEW tool_use (e.g. the harness's
+	// SendMessage call) — see claude-wire.md §E6. ResumesToolUseID is
+	// the tool_use_id of the ORIGINAL launch this tool_use is
+	// resuming; Description and SubagentType are the original agent's
+	// identity straight off the rebind task_started envelope. All are
+	// only populated by the parser's resume path (parse_system.go); a
+	// normal launch's meta-only task_started update never sets them.
 	ResumesToolUseID string `json:"resumes_tool_use_id"`
 	Description      string `json:"description"`
+	SubagentType     string `json:"subagent_type"`
 }
 
 // ToolCompleteMeta is the decoded slice of an EventToolComplete's Meta
@@ -127,6 +128,7 @@ func DecodeToolStartMetaObject(obj map[string]json.RawMessage) ToolStartMeta {
 	decodeRawField(obj, "parent_tool_use_id", &m.ParentToolUseID)
 	decodeRawField(obj, "resumes_tool_use_id", &m.ResumesToolUseID)
 	decodeRawField(obj, "description", &m.Description)
+	decodeRawField(obj, "subagent_type", &m.SubagentType)
 	return m
 }
 

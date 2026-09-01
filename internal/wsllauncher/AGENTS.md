@@ -55,17 +55,34 @@ Two callers:
   That channel is ephemeral on the server, so it deliberately carries no
   replay cursor and no sequence tracking; only `notification:send` does.
   Leaving the callback nil keeps the wire exactly as it was.
-- `notification_rpc.go` is the call layer both of the launcher's RPCs share
-  (`NotificationActivated` and `ReportUpdateInstallStatus`, the latter pinned by
-  `selfupdate.RPCReportStatus` and posted as `stage, version, message`): one
-  pending map, one 5s timeout, one disconnect story. The two differ in what
-  the timeout covers, and the difference is deliberate: `Activate`'s
-  connection wait rides the caller's context so a cold-boot toast click
-  survives the bridge still connecting, while `ReportUpdateInstallStatus` is
-  bounded end to end (connection wait included) because a directive only
-  arrives over a live connection, the backend's ACK deadline is already
-  counting, and a report blocked on a reconnect would hold the launcher's
-  install guard indefinitely and could land late enough to be refused. A call
+  Setting `HandleBrowserHost` subscribes the connection to
+  `eventchan.BrowserHost` and dispatches every directive that passes
+  `webview2host.Directive.Validate`; invalid and malformed ones are logged
+  and dropped, never guessed at, because a directive moves or destroys a
+  real browser window. Ephemeral like the two above, so no replay cursor.
+  Dispatch is off the read loop and here that is load-bearing rather than
+  merely polite: the handler blocks on the launcher's UI thread and, on the
+  first directive, on a cold WebView2 environment create that takes
+  seconds.
+- `notification_rpc.go` is the call layer the launcher's RPCs share
+  (`NotificationActivated`, `ReportUpdateInstallStatus` pinned by
+  `selfupdate.RPCReportStatus` and posted as `stage, version, message`, and
+  `ReportBrowserHost` pinned by `webview2host.RPCReport` and posted as
+  `pageId, kind, detail`): one
+  pending map, one 5s timeout, one disconnect story. They differ in what the
+  timeout covers, and the difference is deliberate: `Activate`'s connection
+  wait rides the caller's context so a cold-boot toast click survives the
+  bridge still connecting, while both REPORTS are bounded end to end
+  (connection wait included). A report only exists because a directive
+  arrived over a live connection, so a bridge that is down now just died.
+  For `ReportUpdateInstallStatus` the backend's ACK deadline is already
+  counting and a report blocked on a reconnect would hold the launcher's
+  install guard indefinitely and could land late enough to be refused; for
+  `ReportBrowserHost` the caller is a UI-thread-adjacent handler whose
+  every later directive would queue behind the wait. `ReportBrowserHost`
+  additionally checks its own page id and kind before the wire, so a typo
+  in launcher code fails at the call site instead of arriving as a report
+  the backend can only drop. A call
   the backend *answered and rejected* returns `*RPCRefusedError`; every other
   failure (no connection, write error, timeout) returns a plain error. That
   split is load-bearing, not cosmetic. See below.

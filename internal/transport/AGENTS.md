@@ -8,13 +8,13 @@ walkthroughs live in
 ## What this package owns
 
 The HTTP listener (embedded SPA, `/bootstrap.json`, `/healthz`, the `/ws`
-upgrade, the two `/attachments/` byte routes, and
-`POST /rpc` for the `ao` CLI) plus any AUXILIARY listener a caller hands it
-(§ Auxiliary listeners), the JSON wire frame, token authentication, the
-per-connection authorization policy, per-peer request budgets on the credential
-surfaces, reflection-based RPC dispatch, a per-channel bounded ring for event
-replay on reconnect, and the live-session registry that lets a revocation reach
-connections that are already open. Method
+upgrade, the two `/attachments/` byte routes, `POST /rpc` for the `ao` CLI,
+and `/browser-cdp` where a pane host exists) plus any AUXILIARY listener a
+caller hands it (§ Auxiliary listeners), the JSON wire frame, token
+authentication, the per-connection authorization policy, per-peer request
+budgets on the credential surfaces, reflection-based RPC dispatch, a
+per-channel bounded ring for event replay on reconnect, and the live-session
+registry that lets a revocation reach connections that are already open. Method
 IDs are FNV-1a 32-bit of `<package>.<typeName>.<methodName>`, matching Wails'
 `internal/hash.Fnv`, so the generated TypeScript bindings keep working. The ring
 is in-memory only: a network jitter buffer, not a history store (root
@@ -624,6 +624,27 @@ used. The LAN share URL still gets the page cookie and still loads — the
 person holding it has to reach the pairing prompt — it just arrives with no
 local channel.
 
+## The CDP tunnel route
+
+`/browser-cdp` (`webview2host.CDPTunnelPath`) is a credentialled entry point of
+its own: the Windows launcher dials it to carry the embedded browser pane's CDP
+traffic into the WSL backend. It is registered ONLY when `Config.CDPTunnel` is
+set, which the executable does only on the WSL deployment, so on every other
+build the path does not exist.
+
+Same credential and same locality rules as `/ws`, and deliberately no wider:
+`loopbackHostGuard` on the Host header, the launch credential through `upgrade`
+(never a session ticket — `sessionProven` is false here), and
+`loopback.PeerAddress` on the peer, all answering 404. The socket is handed
+whole to `CDPTunnelEndpoint.ServeCDPTunnel` — a byte-stream multiplexer, not an
+RPC surface — so no method table, replay ring, or event policy applies to it.
+This package does not speak the frame protocol; the interface is one method so
+that `internal/cdprelay` owns the codec and this package owns only who may
+reach it. A LAN peer that could open this route would be driving a real browser
+window on the user's desktop, which is why none of the three checks is
+optional. No `//ao:scope` annotation applies: this is not an RPC surface,
+so the per-call gate never sees it.
+
 ## Origin allow-list and peer locality
 
 **`OriginAllowed` (credential.go) gates `/ws`, `/bootstrap.json` and
@@ -961,7 +982,14 @@ happens to be listening. Subscription ids stay legitimate on the RPC result that
 hands out the unsubscribe handle (`GitStatusSubscriptionResult.ID`), a
 per-caller lease rather than an address.
 `TestWirePayloadsAreEntityKeyedNotSubscriptionKeyed` (repo root) fails on any
-struct field that serializes as `subscriptionId`.
+struct field that serializes as `subscriptionId`, and on the sibling spellings
+of the same idea (`subId`, `streamId`, `handleId`, `watcherId`).
+
+It carries exactly one carve-out, and the shape of it is the rule: a byte-stream
+MULTIPLEXER numbers its streams because the stream number IS the identity of a
+live socket, with no entity behind it and no shared observation being filtered
+down. `webview2host`'s CDP tunnel is that; an event that has merely run out of a
+better key is not. The exemption is keyed by file so it cannot widen quietly.
 
 Two panes routinely watch one entity, so subscription-keyed frames force each
 pane into a private filtered copy and those copies drift: they disagreed about

@@ -5,10 +5,15 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as keybindings$0 from "../keybindings/models.js";
+
 /**
  * CompanionEvent is live browser state for the calling thread's companion
- * pane. State is emitted on page lifecycle/navigation changes; frames are
- * delivered privately only while a frontend subscription is active.
+ * pane, emitted on page lifecycle and navigation changes. It carries no
+ * pixels: the pane's page content is a real view the engine presents behind
+ * the pane's host rect (spec §7).
  */
 export class CompanionEvent {
     "kind": string;
@@ -16,13 +21,16 @@ export class CompanionEvent {
     "pages"?: PageInfo[];
     "activePageId"?: string;
     "pageId"?: string;
-    "frame"?: string;
-    "width"?: number;
-    "height"?: number;
-    "sequence"?: number;
     "error"?: string;
     "visible"?: boolean | null;
     "sessionName"?: string;
+
+    /**
+     * Accelerator rides a Kind "accelerator" event: a bound chord pressed
+     * while the thread's page view held keyboard focus, for the frontend to
+     * dispatch as if the SPA had received it.
+     */
+    "accelerator"?: keybindings$0.Accelerator | null;
 
     /** Creates a new CompanionEvent instance. */
     constructor($$source: Partial<CompanionEvent> = {}) {
@@ -41,48 +49,23 @@ export class CompanionEvent {
      */
     static createFrom($$source: any = {}): CompanionEvent {
         const $$createField2_0 = $$createType1;
+        const $$createField8_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pages" in $$parsedSource) {
             $$parsedSource["pages"] = $$createField2_0($$parsedSource["pages"]);
+        }
+        if ("accelerator" in $$parsedSource) {
+            $$parsedSource["accelerator"] = $$createField8_0($$parsedSource["accelerator"]);
         }
         return new CompanionEvent($$parsedSource as Partial<CompanionEvent>);
     }
 }
 
-export class CompanionInput {
-    "kind": string;
-    "x"?: number;
-    "y"?: number;
-    "deltaX"?: number;
-    "deltaY"?: number;
-    "button"?: string;
-    "buttons"?: number;
-    "clickCount"?: number;
-    "key"?: string;
-    "text"?: string;
-    "alt"?: boolean;
-    "control"?: boolean;
-    "meta"?: boolean;
-    "shift"?: boolean;
-
-    /** Creates a new CompanionInput instance. */
-    constructor($$source: Partial<CompanionInput> = {}) {
-        if (!("kind" in $$source)) {
-            this["kind"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new CompanionInput instance from a string or object.
-     */
-    static createFrom($$source: any = {}): CompanionInput {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new CompanionInput($$parsedSource as Partial<CompanionInput>);
-    }
-}
-
+/**
+ * CompanionSubscription is what mounting a pane answers: the mount id the
+ * frontend detaches and reports rects with, plus the thread's current state so
+ * the pane renders without a second round trip.
+ */
 export class CompanionSubscription {
     "id": string;
     "state": CompanionEvent;
@@ -103,7 +86,7 @@ export class CompanionSubscription {
      * Creates a new CompanionSubscription instance from a string or object.
      */
     static createFrom($$source: any = {}): CompanionSubscription {
-        const $$createField1_0 = $$createType2;
+        const $$createField1_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("state" in $$parsedSource) {
             $$parsedSource["state"] = $$createField1_0($$parsedSource["state"]);
@@ -120,6 +103,14 @@ export class PageInfo {
     "selected"?: boolean;
     "lastOpened"?: string;
 
+    /**
+     * CanGoBack / CanGoForward mirror the page's session history so the
+     * companion toolbar can disable a button instead of offering a click
+     * that can only error.
+     */
+    "canGoBack": boolean;
+    "canGoForward": boolean;
+
     /** Creates a new PageInfo instance. */
     constructor($$source: Partial<PageInfo> = {}) {
         if (!("id" in $$source)) {
@@ -130,6 +121,12 @@ export class PageInfo {
         }
         if (!("title" in $$source)) {
             this["title"] = "";
+        }
+        if (!("canGoBack" in $$source)) {
+            this["canGoBack"] = false;
+        }
+        if (!("canGoForward" in $$source)) {
+            this["canGoForward"] = false;
         }
 
         Object.assign(this, $$source);
@@ -144,7 +141,89 @@ export class PageInfo {
     }
 }
 
+/**
+ * PaneRect is where a mounted browser pane's host rect sits, in the SPA's own
+ * CSS pixels, together with the SPA viewport it was measured in. A host never
+ * assumes CSS pixels equal its units: it scales the rect by its own client
+ * size over the viewport, which makes the position exact under webview zoom
+ * (Ctrl+=) and any DPI without either side knowing the other's scale factor.
+ * Visible is false while the pane is mounted but must not be painted over: an
+ * AO overlay intersects the rect, or the rect is entirely off the pane strip.
+ * 
+ * Clip* is the VISIBLE intersection of the rect with every clipping ancestor,
+ * in the same CSS-pixel space. A native view cannot be cropped by the DOM, so
+ * the engine crops it: the view keeps the full rect's size (the page must not
+ * relayout because it scrolled half behind the sidebar) and the host clips its
+ * presentation to the clip rect. An unclipped pane reports clip == rect.
+ * Background is the pane surface's resolved CSS color ("#rrggbb"); engines
+ * paint it where the page has not presented yet, so freshly exposed strips
+ * match the pane instead of flashing the engine default.
+ */
+export class PaneRect {
+    "x": number;
+    "y": number;
+    "width": number;
+    "height": number;
+    "clipX": number;
+    "clipY": number;
+    "clipWidth": number;
+    "clipHeight": number;
+    "viewportWidth": number;
+    "viewportHeight": number;
+    "visible": boolean;
+    "background"?: string;
+
+    /** Creates a new PaneRect instance. */
+    constructor($$source: Partial<PaneRect> = {}) {
+        if (!("x" in $$source)) {
+            this["x"] = 0;
+        }
+        if (!("y" in $$source)) {
+            this["y"] = 0;
+        }
+        if (!("width" in $$source)) {
+            this["width"] = 0;
+        }
+        if (!("height" in $$source)) {
+            this["height"] = 0;
+        }
+        if (!("clipX" in $$source)) {
+            this["clipX"] = 0;
+        }
+        if (!("clipY" in $$source)) {
+            this["clipY"] = 0;
+        }
+        if (!("clipWidth" in $$source)) {
+            this["clipWidth"] = 0;
+        }
+        if (!("clipHeight" in $$source)) {
+            this["clipHeight"] = 0;
+        }
+        if (!("viewportWidth" in $$source)) {
+            this["viewportWidth"] = 0;
+        }
+        if (!("viewportHeight" in $$source)) {
+            this["viewportHeight"] = 0;
+        }
+        if (!("visible" in $$source)) {
+            this["visible"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PaneRect instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PaneRect {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PaneRect($$parsedSource as Partial<PaneRect>);
+    }
+}
+
 // Private type creation functions
 const $$createType0 = PageInfo.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = CompanionEvent.createFrom;
+const $$createType2 = keybindings$0.Accelerator.createFrom;
+const $$createType3 = $Create.Nullable($$createType2);
+const $$createType4 = CompanionEvent.createFrom;

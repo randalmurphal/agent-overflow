@@ -917,17 +917,25 @@ func (p *Parser) parseTaskStartedEvent(
 		metaFields["parent_tool_use_id"] = taskRef.ParentToolUseID
 	}
 	if isResume {
-		// resumes_tool_use_id + description tie the carrier back to
-		// the agent it's resuming — triage's keep-running flip uses
-		// them to rewrite the carrier's Summary to the agent-centric
-		// form ("Agent: <description>") instead of "SendMessage: …".
-		// Only stamped on the resume path so a normal launch's
-		// meta-update never gains an unrelated description field.
+		// resumes_tool_use_id + description + subagent_type tie the
+		// carrier back to the agent it's resuming — triage's
+		// keep-running flip uses them to rewrite the carrier's Summary
+		// to the agent-centric form ("Agent: <description>") instead
+		// of "SendMessage: …", and the frontend renders the carrier
+		// row with the ORIGINAL agent's identity (type + description)
+		// instead of the resuming tool's raw input. description and
+		// subagent_type come straight off the wire envelope, so both
+		// survive the reconnect edge where resumesToolUseID is
+		// unknown. Only stamped on the resume path so a normal
+		// launch's meta-update never gains unrelated identity fields.
 		if resumesToolUseID != "" {
 			metaFields["resumes_tool_use_id"] = resumesToolUseID
 		}
 		if desc := readRawString(raw["description"]); desc != "" {
 			metaFields["description"] = desc
+		}
+		if agentType := firstNonEmpty(readRawString(raw["subagent_type"]), readRawString(raw["subagentType"])); agentType != "" {
+			metaFields["subagent_type"] = agentType
 		}
 	}
 	meta, _ := json.Marshal(metaFields)

@@ -8,6 +8,55 @@ import (
 	"time"
 )
 
+func TestMoveCompanionPageReordersAndNewPagesAppend(t *testing.T) {
+	pages := make(map[string]*managedPage, 3)
+	for i, id := range []string{"first", "second", "third"} {
+		p := &managedPage{id: id, owner: "thread", createdAt: int64(i + 1)}
+		p.tabOrder.Store(p.createdAt)
+		p.info = PageInfo{ID: id}
+		pages[id] = p
+	}
+	m := &Manager{
+		scopes:   map[string]*workspaceScope{"/repo": {pages: pages}},
+		sessions: map[string]SessionInfo{"thread": {}},
+	}
+	access := Access{ThreadID: "thread", Workspace: "/repo"}
+
+	order := func() []string {
+		state := m.threadState("thread")
+		ids := make([]string, 0, len(state.Pages))
+		for _, page := range state.Pages {
+			ids = append(ids, page.ID)
+		}
+		return ids
+	}
+
+	if err := m.MoveCompanionPage(access, "third", 0); err != nil {
+		t.Fatalf("move = %v", err)
+	}
+	if got := order(); got[0] != "third" || got[1] != "first" || got[2] != "second" {
+		t.Fatalf("order after front move = %v", got)
+	}
+	// An out-of-range index clamps to the end instead of failing.
+	if err := m.MoveCompanionPage(access, "third", 99); err != nil {
+		t.Fatalf("clamped move = %v", err)
+	}
+	if got := order(); got[2] != "third" {
+		t.Fatalf("order after clamped move = %v", got)
+	}
+	// A page opened after a renumbering move still lands at the end.
+	late := &managedPage{id: "late", owner: "thread", createdAt: time.Now().UnixNano()}
+	late.tabOrder.Store(late.createdAt)
+	late.info = PageInfo{ID: "late"}
+	pages["late"] = late
+	if got := order(); got[3] != "late" {
+		t.Fatalf("order with late page = %v", got)
+	}
+	if err := m.MoveCompanionPage(access, "missing", 0); err == nil {
+		t.Fatal("moving an unknown page did not fail")
+	}
+}
+
 func TestCompanionStateKeepsTabOrderAndUsesExplicitActivePage(t *testing.T) {
 	first := &managedPage{id: "first", owner: "thread", createdAt: 1}
 	first.info = PageInfo{ID: first.id, URL: "https://first.test", Title: "First"}
@@ -37,9 +86,8 @@ func TestBackgroundPageActivityDoesNotStealCompanionSelection(t *testing.T) {
 	second := &managedPage{id: "second", owner: "thread", createdAt: 2}
 	second.info = PageInfo{ID: second.id, URL: "https://second.test"}
 	m := &Manager{
-		scopes:        map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
-		sessions:      map[string]SessionInfo{"thread": {ActivePageID: first.id, Visible: true}},
-		subscriptions: map[string]companionSubscriber{},
+		scopes:   map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
+		sessions: map[string]SessionInfo{"thread": {ActivePageID: first.id, Visible: true}},
 	}
 
 	m.pageChanged(second)
@@ -54,9 +102,8 @@ func TestVisibilityRequiresExplicitPageWhenConcurrentAndPinsSelection(t *testing
 	second := &managedPage{id: "second", owner: "thread", createdAt: 2}
 	second.info = PageInfo{ID: second.id, Label: "docs", URL: "https://second.test"}
 	m := &Manager{
-		scopes:        map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
-		sessions:      map[string]SessionInfo{"thread": {ActivePageID: first.id}},
-		subscriptions: map[string]companionSubscriber{},
+		scopes:   map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
+		sessions: map[string]SessionInfo{"thread": {ActivePageID: first.id}},
 	}
 	access := Access{ThreadID: "thread", Workspace: "/repo"}
 	show := true
@@ -116,9 +163,8 @@ func TestConcurrentThreadsKeepSelectionVisibilityAndLabelsScoped(t *testing.T) {
 	second := &managedPage{id: "second", owner: "thread-b", createdAt: 2}
 	second.info = PageInfo{ID: second.id}
 	m := &Manager{
-		scopes:        map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
-		sessions:      map[string]SessionInfo{},
-		subscriptions: map[string]companionSubscriber{},
+		scopes:   map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{first.id: first, second.id: second}}},
+		sessions: map[string]SessionInfo{},
 	}
 	show := true
 	var wg sync.WaitGroup
@@ -145,48 +191,5 @@ func TestConcurrentThreadsKeepSelectionVisibilityAndLabelsScoped(t *testing.T) {
 		if state.ActivePageID != pageID || state.Visible == nil || !*state.Visible || len(state.Pages) != 1 || state.Pages[0].Label != "preview" {
 			t.Fatalf("scoped state %s = %#v", threadID, state)
 		}
-	}
-}
-
-func TestCompanionFrameDeliveryIsAddressedAndLatestOnly(t *testing.T) {
-	m := &Manager{subscriptions: map[string]companionSubscriber{
-		"wanted": {threadID: "thread", frames: make(chan CompanionEvent, 1), done: make(chan struct{})},
-		"other":  {threadID: "other", frames: make(chan CompanionEvent, 1), done: make(chan struct{})},
-	}}
-	m.deliverCompanionFrame(CompanionEvent{Kind: "frame", ThreadID: "thread", Sequence: 1})
-	m.deliverCompanionFrame(CompanionEvent{Kind: "frame", ThreadID: "thread", Sequence: 2})
-
-	event, err := m.NextCompanionFrame(context.Background(), "wanted")
-	if err != nil || event.Sequence != 2 {
-		t.Fatalf("latest frame = %#v, %v", event, err)
-	}
-	select {
-	case event := <-m.subscriptions["other"].frames:
-		t.Fatalf("other thread received frame: %#v", event)
-	default:
-	}
-}
-
-func TestCompanionUnsubscribeReleasesFrameWaiter(t *testing.T) {
-	m := &Manager{subscriptions: map[string]companionSubscriber{
-		"sub": {threadID: "thread", frames: make(chan CompanionEvent, 1), done: make(chan struct{})},
-	}}
-	done := make(chan error, 1)
-	go func() {
-		_, err := m.NextCompanionFrame(context.Background(), "sub")
-		done <- err
-	}()
-	m.UnsubscribeCompanion("sub")
-	if err := <-done; err == nil {
-		t.Fatal("frame waiter survived unsubscribe")
-	}
-}
-
-func TestClampCompanionViewportBoundsResourceUse(t *testing.T) {
-	if w, h := clampViewport(1, 2); w != minCompanionWidth || h != minCompanionHeight {
-		t.Fatalf("minimum clamp = %dx%d", w, h)
-	}
-	if w, h := clampViewport(99999, 99999); w != maxCompanionWidth || h != maxCompanionHeight {
-		t.Fatalf("maximum clamp = %dx%d", w, h)
 	}
 }

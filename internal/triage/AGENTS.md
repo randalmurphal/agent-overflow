@@ -85,8 +85,18 @@ subagent-aware path as guilty until it proves scope containment.
   depth, while the reaper and queue gates beside it in
   `store/items_lifecycle.go` stay `parent_id = ''`. Listing a nested
   background Bash — in the tray or in the cross-thread inventory — is a
-  membership question; whether it blocks the flush queue or survives a
-  teardown is top-level only (invariant 24).
+  membership question; whether it blocks the flush queue is top-level
+  only (invariant 24). Settlement is NOT top-level:
+  `SettleBackgroundLaunchesForSessionEnd` (session close and death)
+  and the boot sweep settle launches at any depth, because the gates'
+  exemption is exactly what used to leave nested rows ticking forever.
+- A `system/task_started` meta update can precede its launch row —
+  subagent-owned shells announce on the main wire before the owner's
+  transcript projection persists the row. `persistToolCallLaunch`
+  holds the correlation fields (`pendingToolCorrelations`, bounded,
+  swept with the threadState) and applies them when the row lands,
+  draining any terminal stashed in the meantime. Never drop a
+  correlation-bearing meta update just because the row is missing.
 
 ## Stopped-thread routing (invariant 29)
 
@@ -279,9 +289,14 @@ through `claude/sessionimport.ConvertSubagentTranscriptData`.
   `tool_use_id` for tool rows (a completion also requires the row to have
   left `running`), `items.meta.provider_item_id` for text, thinking and
   the agent's own prompt row, and the provider boundary UUID for a
-  compaction. Errors and command results are undecidable, so
-  `subagentBackfillCut` replays the whole tail from the first decidable
-  and missing event, carrying the undecidable ones with it.
+  compaction. A compaction is reconciled by that UUID independently of
+  the cut: the live mirror compaction tap (claude
+  `parse_transcript_mirror.go`) normally lands it mid-run at its real
+  position, and stdout omits it either way, so its absence proves
+  nothing about where streaming stopped. Errors and command results are
+  undecidable, so `subagentBackfillCut` replays the whole tail from the
+  first decidable and missing event, carrying the undecidable ones with
+  it.
 - **Text and thinking bypass `handleTextDelta` / `handleThinking`**,
   which would open a streaming block and wait for a stop the transcript
   has no event for, wedging the interrupt queue behind a count that

@@ -33,6 +33,9 @@ func (m *testModels) CoerceReasoningEffort(providerName, model, effort string) s
 func (m *testModels) SupportsFastMode(providerName, model string) bool {
 	return chatmodel.SupportsStoredFastMode(providerName, model)
 }
+func (m *testModels) ContextWindowOptions(providerName, model string) []provider.ContextWindowOption {
+	return chatmodel.ContextWindowOptions(providerName, model)
+}
 func (m *testModels) DraftDefaults(providerName, model, effort string, fastMode bool) (string, bool) {
 	return m.CoerceReasoningEffort(providerName, model, effort), fastMode && m.SupportsFastMode(providerName, model)
 }

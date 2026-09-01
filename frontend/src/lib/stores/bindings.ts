@@ -89,11 +89,11 @@ export {
   UpdateSettings,
   ClearBrowserSiteData,
   BrowserCompanionDo,
-  BrowserCompanionInput,
-  BrowserCompanionNextFrame,
-  BrowserCompanionResize,
-  BrowserCompanionSubscribe,
-  BrowserCompanionUnsubscribe,
+  BrowserCompanionThreadState,
+  BrowserCompanionPaneAttach,
+  BrowserCompanionPaneDetach,
+  BrowserCompanionPaneRect,
+  BrowserCompanionRevealPageFile,
   GetContextSettings,
 
   // Custom provider environment. Dedicated mutators rather than
@@ -559,9 +559,8 @@ export {
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 export {
   CompanionEvent as BrowserCompanionEvent,
-  CompanionInput as BrowserCompanionInputEvent,
-  CompanionSubscription as BrowserCompanionSubscription,
   PageInfo as BrowserPageInfo,
+  PaneRect as BrowserPaneRect,
 } from '../../../bindings/agent-overflow/internal/browser/models.js';
 export {
   Keybinding,

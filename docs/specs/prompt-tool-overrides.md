@@ -189,10 +189,10 @@ as thread error state and the session starts anyway.
   cold resume without it inherits the rollout's stored instructions, not
   the catalog default. `buildThreadParams` covers both, which is what
   also carries the disabled-tool `config` keys onto a resume.
-- `thread/fork` carries **neither**: `ForkAt` sends only `threadId` and
-  the optional `lastTurnId` anchor, and that is safe for the same reason
-  it is safe for model / sandbox / reviewer: nothing executes on a forked
-  thread until AO spawns against it, and that spawn is a `thread/resume`
+- `thread/fork` carries **neither**: `ForkAt` sends `threadId`,
+  `excludeTurns: true`, and the optional `lastTurnId` anchor. That is safe for
+  the same reason it is safe for model / sandbox / reviewer: nothing executes
+  on a forked thread until AO spawns against it, and that spawn is a `thread/resume`
   which re-asserts every axis. So the axes to get right on a fork are the
   ones on its NEXT launch config, not on the fork call.
 - Replacement is verbatim-total on the Responses `instructions` field.

@@ -286,6 +286,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getScrollController: () => paneScroll.controller,
     hydrateSubagentChildren: (rootItemID) =>
       subagentMemory.hydrateChildren(rootItemID),
+    // Prune cuts keep companion-rendered rows — see agentPaneHeldRowIds
+    // (hoisted function declaration; called lazily, so the late
+    // definition is safe, same as the subagentMemory arrow above).
+    getHeldRowIds: () => agentPaneHeldRowIds(),
   });
   const pendingInteractiveState = createThreadPendingInteractiveState();
   // Activity-run registry: stable run identity across window edges, plus
@@ -393,7 +397,36 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       effectiveModelBackendRevision = backendRevision;
       updateEffectiveModel(model);
     },
+    // Set-only: the live clears (thread-scoped `ready`, session
+    // disconnect) stay event-owned. A snapshot without the versions says
+    // nothing — clearing on it would race a `binary_stale` push that
+    // landed while the RPC was in flight, and the backend only re-emits
+    // on transitions, so a wrongly cleared banner would never come back.
+    hydrateBinaryStaleBanner: (sessionVersion, installedVersion) => {
+      if (!thread || !sessionVersion || !installedVersion) return;
+      providerBanner = {
+        provider: thread.provider,
+        status: 'binary_stale',
+        threadId: thread.id,
+        sessionVersion,
+        installedVersion,
+        actionable: true,
+      };
+    },
   });
+
+  /**
+   * Every row the OPEN agent companion is rendering (the scope trail's
+   * whole subtree), or null when no pane is open. Shared by the two
+   * chokepoints that can remove rows from pane memory — the fold
+   * eviction commit and the timeline window's prune cuts — because a
+   * row disappearing out from under the mounted companion blanks the
+   * very transcript the reader opened, whichever path dropped it.
+   */
+  function agentPaneHeldRowIds(): ReadonlySet<string> | null {
+    const rootScope = thread !== null ? agentPaneRetainedRootScope(paneId, thread.id) : '';
+    return rootScope ? collectAgentScopeRetainedIds(getItems(), rootScope) : null;
+  }
 
   // Subagent transcript-memory domain (the live-eviction fold registry,
   // settled-child eviction policy, and on-demand child hydration) lives
@@ -416,10 +449,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // never consult per-anchor expansion (collapse-time eviction, the
     // collapsed-launch subtree sweep) still must not fold rows the open
     // pane is rendering.
-    agentPaneHeldRows: () => {
-      const rootScope = thread !== null ? agentPaneRetainedRootScope(paneId, thread.id) : '';
-      return rootScope ? collectAgentScopeRetainedIds(getItems(), rootScope) : null;
-    },
+    agentPaneHeldRows: agentPaneHeldRowIds,
   });
 
   /**

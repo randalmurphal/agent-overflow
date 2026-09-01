@@ -11,7 +11,6 @@ import {
 import { addToast } from './toast.svelte';
 import {
   compareCursors,
-  compareItemToCursor,
   compareItemsByTimelinePosition,
   cursorFromItem,
   cursorIsValid,
@@ -64,6 +63,14 @@ export interface ThreadTimelineWindowOptions {
   getScrollController(): PaneScrollController | null;
   /** Pane-owned subagent transcript hydration — loadUntilItem's subtree hydration. */
   hydrateSubagentChildren(rootItemID: string): Promise<boolean>;
+  /**
+   * Every row the OPEN agent companion is rendering (the scope trail's
+   * whole subtree), or null when no pane is open. The prune cuts consult
+   * it so a window cut can never fold rows out from under a mounted
+   * companion — the same blanking the eviction chokepoint's
+   * `agentPaneHeldRows` exists to prevent (live incident 2026-08-22).
+   */
+  getHeldRowIds?(): ReadonlySet<string> | null;
 }
 
 /**
@@ -90,6 +97,15 @@ export interface ThreadTimelineWindow {
   readonly hasDeferredRecentWindowPrune: boolean;
   readonly loadingOlder: boolean;
   readonly loadingNewer: boolean;
+  /**
+   * The reader explicitly paged history into this window (`loadOlder`,
+   * or a `loadUntilItem` recenter). While set, NO automatic prune may
+   * drop rows: the reader asked to see this history, and reclaiming a
+   * few MB of summary rows is never worth taking their conversation
+   * away (user ruling, 2026-08-31). Clears when the window is rebuilt
+   * at a bounded size — thread switch, cache restore, tail reload.
+   */
+  readonly userPinnedHistory: boolean;
   /** Apply `switchThread`'s single initial paged load (cache-miss path). */
   applyInitialSlice(paged: PagedItems, threadID: string): void;
   /** Refresh cursors + hasMore flags from a paged response against the current window. Also used directly by `refreshFromBackend`. */
@@ -278,6 +294,8 @@ export function createThreadTimelineWindow(
   let recentWindowPrunePending: boolean = $state(false);
   let loadingOlder: boolean = $state(false);
   let loadingNewer: boolean = $state(false);
+  /** See the interface doc — set by user paging, disables every automatic prune. */
+  let userPinnedHistory: boolean = $state(false);
 
   /**
    * Separate generation counter for `loadOlder` / `loadUntilItem` so a
@@ -314,75 +332,112 @@ export function createThreadTimelineWindow(
     hasMoreNewer = pagedHasMoreNewer(paged);
   }
 
-  function includeAncestorClosure(
-    keepIds: Set<string>,
+  /**
+   * Bound on the parent walks below. Real subagent trees are two or
+   * three deep; the cap exists only so corrupt provider parentId links
+   * cannot spin here (same guard as threadSubagentMemory's).
+   */
+  const MAX_PARENT_HOPS = 16;
+
+  /**
+   * Count of top-level rows — what every window cap below measures.
+   * Raw `items.length` is the wrong proxy for "screens of content":
+   * subagent children render inside their anchor's card (or an open
+   * agent companion), so a busy agent can hold a thousand loaded child
+   * rows while the timeline shows one card. Counting them made the
+   * forced prune evict the actual conversation to keep an invisible
+   * subtree (incident 2026-08-31, the sibling of the backend pagers'
+   * `topLevelItemsFilter` rule — see internal/store/paging.go).
+   */
+  function topLevelCount(items: readonly Item[]): number {
+    let count = 0;
+    for (const item of items) {
+      if ((item.parentId ?? '') === '') count += 1;
+    }
+    return count;
+  }
+
+  /**
+   * Cut the window by TOP-LEVEL position: an item is kept iff its
+   * top-level root (itself, or the launch anchor its parent chain
+   * resolves to) passes `keepsRoot`. Children therefore always travel
+   * with their anchor — a cut can neither strand a child without the
+   * anchor that renders it (the admission invariant) nor spend the
+   * retained budget on child rows while evicting the conversation.
+   * Rows the open agent companion renders are additionally kept, with
+   * their ancestor chains, whatever side of the cut they fall on.
+   */
+  function cutWindowByRootCursor(
     sourceItems: readonly Item[],
-  ): void {
-    const byId = new Map(sourceItems.map((item) => [item.id, item]));
-    let changed = true;
-    while (changed) {
-      changed = false;
+    keepsRoot: (rootCursor: TimelineCursorLike) => boolean,
+  ): Item[] {
+    const byId = new Map<string, Item>();
+    for (const item of sourceItems) byId.set(item.id, item);
+    const rootCursorMemo = new Map<string, TimelineCursorLike>();
+    const rootCursorOf = (item: Item): TimelineCursorLike => {
+      const chain: string[] = [];
+      let walker = item;
+      let cursor: TimelineCursorLike | null = null;
+      for (let hops = 0; hops <= MAX_PARENT_HOPS; hops += 1) {
+        const memoized = rootCursorMemo.get(walker.id);
+        if (memoized) {
+          cursor = memoized;
+          break;
+        }
+        chain.push(walker.id);
+        const parentId = walker.parentId ?? '';
+        const parent = parentId === '' ? undefined : byId.get(parentId);
+        if (!parent) break; // top-level, or orphan: nearest loaded root
+        walker = parent;
+      }
+      cursor ??= cursorFromItem(walker);
+      for (const id of chain) rootCursorMemo.set(id, cursor);
+      return cursor;
+    };
+    const keepIds = new Set<string>();
+    for (const item of sourceItems) {
+      if (keepsRoot(rootCursorOf(item))) keepIds.add(item.id);
+    }
+    const held = options.getHeldRowIds?.() ?? null;
+    if (held !== null && held.size > 0) {
       for (const item of sourceItems) {
-        if (!keepIds.has(item.id)) continue;
-        if (!item.parentId || keepIds.has(item.parentId)) continue;
-        if (!byId.has(item.parentId)) continue;
-        keepIds.add(item.parentId);
-        changed = true;
+        if (!held.has(item.id) || keepIds.has(item.id)) continue;
+        keepIds.add(item.id);
+        let parentId = item.parentId ?? '';
+        for (let hops = 0; parentId !== '' && hops < MAX_PARENT_HOPS; hops += 1) {
+          if (keepIds.has(parentId)) break;
+          keepIds.add(parentId);
+          parentId = byId.get(parentId)?.parentId ?? '';
+        }
       }
     }
+    return sourceItems.filter((item) => keepIds.has(item.id));
   }
 
   function keepRecentWindowItems(
     sourceItems: readonly Item[],
     targetCount: number,
   ): PrunedWindow {
-    if (sourceItems.length <= targetCount) {
+    const topLevel = sourceItems.filter(
+      (item) => (item.parentId ?? '') === '',
+    );
+    if (topLevel.length <= targetCount) {
       return {
         items: sourceItems as Item[],
         oldestCursor: oldestCursorFromItems(sourceItems),
         newestCursor: newestCursorFromItems(sourceItems),
       };
     }
-    const cutoffIndex = Math.max(0, sourceItems.length - targetCount);
-    const cutoffItem = sourceItems[cutoffIndex] ?? sourceItems[0];
-    const cutoffCursor = cursorFromItem(cutoffItem);
-    const keepIds = new Set(
-      sourceItems
-        .filter((item) => compareItemToCursor(item, cutoffCursor) >= 0)
-        .map((item) => item.id),
+    const cutoffCursor = cursorFromItem(
+      topLevel[topLevel.length - targetCount],
     );
-    includeAncestorClosure(keepIds, sourceItems);
     return {
-      items: sourceItems.filter((item) => keepIds.has(item.id)),
+      items: cutWindowByRootCursor(
+        sourceItems,
+        (rootCursor) => compareCursors(rootCursor, cutoffCursor) >= 0,
+      ),
       oldestCursor: cutoffCursor,
       newestCursor: newestCursorFromItems(sourceItems),
-    };
-  }
-
-  function keepHeadWindowItems(
-    sourceItems: readonly Item[],
-    targetCount: number,
-  ): PrunedWindow {
-    if (sourceItems.length <= targetCount) {
-      return {
-        items: sourceItems as Item[],
-        oldestCursor: oldestCursorFromItems(sourceItems),
-        newestCursor: newestCursorFromItems(sourceItems),
-      };
-    }
-    const cutoffItem =
-      sourceItems[Math.min(sourceItems.length - 1, targetCount - 1)];
-    const cutoffCursor = cursorFromItem(cutoffItem);
-    const keepIds = new Set(
-      sourceItems
-        .filter((item) => compareItemToCursor(item, cutoffCursor) <= 0)
-        .map((item) => item.id),
-    );
-    includeAncestorClosure(keepIds, sourceItems);
-    return {
-      items: sourceItems.filter((item) => keepIds.has(item.id)),
-      oldestCursor: oldestCursorFromItems(sourceItems),
-      newestCursor: cutoffCursor,
     };
   }
 
@@ -391,12 +446,17 @@ export function createThreadTimelineWindow(
       hasMoreNewerAfterPrune?: boolean;
     } = {},
   ): void {
+    if (userPinnedHistory) {
+      recentWindowPrunePending = false;
+      return;
+    }
     const items = options.getItems();
-    if (items.length <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) return;
+    const loadedTopLevel = topLevelCount(items);
+    if (loadedTopLevel <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) return;
     const thread = options.getThread();
     const activeTurn = thread !== null ? getActiveTurn(thread.id) : null;
     const exceedsHardCeiling =
-      items.length > ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS;
+      loadedTopLevel > ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS;
     // A large keyed reconciliation is avoidable main-thread work while a
     // turn is active. Defer it, with the hard ceiling as the memory
     // backstop against a runaway turn. Paint correctness does not depend on
@@ -426,31 +486,14 @@ export function createThreadTimelineWindow(
     recentWindowPrunePending = result === 'deferred';
   }
 
-  // Paged (click-driven) prunes tolerate up to the HARD ceiling, not the
-  // MAX cap the streaming prune uses. Item count is a proxy for "screens of
-  // content below the reader", and one giant activity run breaks it: 500+
-  // tool rows render as a single collapsed node a few hundred px tall, so
-  // pruning at MAX evicted the on-screen conversation right below the run
-  // ("Load older" visibly ATE the thread tail — incident 2026-08-25, the
-  // 700-item soak run). Tool rows are summary-only (~1-2KB), so the extra
-  // headroom is ~1-3MB held only after explicit back-paging; the streaming
-  // settle prune still trims the window back to TARGET, so steady state is
-  // unchanged.
-  function pruneToHeadWindowIfNeeded(): void {
-    const items = options.getItems();
-    if (items.length <= ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS) return;
-    const next = keepHeadWindowItems(
-      items,
-      ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
-    );
-    // loadOlder paging: the dropped tail sits below the viewport, so the
-    // virtualizer leaves the reading position alone.
-    applyPagedPrune(next, { hasMoreNewerAfterPrune: true });
-  }
-
+  // loadNewer's opposite-edge prune. Gated on the user pin like every
+  // other automatic drop: once the reader has explicitly paged history
+  // in, catching the window up toward the tail must not throw that
+  // history away behind them.
   function prunePagedRecentWindowIfNeeded(hasMoreNewerAfterPrune: boolean): void {
+    if (userPinnedHistory) return;
     const items = options.getItems();
-    if (items.length <= ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS) return;
+    if (topLevelCount(items) <= ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS) return;
     const next = keepRecentWindowItems(items, ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
     applyPagedPrune(next, {
       hasMoreHistoryAfterPrune: true,
@@ -559,6 +602,7 @@ export function createThreadTimelineWindow(
     recentWindowPrunePending = false;
     loadingOlder = false;
     loadingNewer = false;
+    userPinnedHistory = false;
   }
 
   /**
@@ -579,6 +623,7 @@ export function createThreadTimelineWindow(
     recentWindowPrunePending = false;
     loadingOlder = false;
     loadingNewer = false;
+    userPinnedHistory = false;
   }
 
   /**
@@ -633,8 +678,12 @@ export function createThreadTimelineWindow(
    * See docs/architecture/scroll-arbitration-plan.md.
    */
   function settleRecentWindowPrune(): void {
+    if (userPinnedHistory) {
+      recentWindowPrunePending = false;
+      return;
+    }
     if (hasMoreNewer) return;
-    if (options.getItems().length <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) {
+    if (topLevelCount(options.getItems()) <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) {
       recentWindowPrunePending = false;
       return;
     }
@@ -713,10 +762,13 @@ export function createThreadTimelineWindow(
           hasMoreHistory = nextHasMoreHistory;
         },
       });
-      // The keyed virtualizer derives the combined prepend + tail prune,
-      // carries measurements with surviving rows, and emits the exact
-      // compensation in one flush.
-      pruneToHeadWindowIfNeeded();
+      // The reader asked for this history: pin the window so no
+      // automatic prune (streaming, settle, or the loadNewer edge drop)
+      // can take it back. There is deliberately no opposite-edge prune
+      // here either — the window grows as far as the reader pages
+      // (incident 2026-08-25 was the capped version of this path eating
+      // the thread tail; the pin replaces that tolerance dance).
+      if (insertedRows) userPinnedHistory = true;
       await tick();
       return loadOlderResult('loaded', insertedBeforeWindow, insertedRows);
     } catch (err) {
@@ -849,6 +901,10 @@ export function createThreadTimelineWindow(
         disposeDropped: true,
         afterCommit: () => applyWindowMetadataFromPaged(paged),
       });
+      // A scroll-to-item recenter is explicit navigation into history:
+      // pin the window so the streaming prunes cannot yank the reader's
+      // target out from under them while a turn keeps appending.
+      userPinnedHistory = true;
       if (subagentRootID) {
         await options.hydrateSubagentChildren(subagentRootID);
         if (
@@ -970,6 +1026,9 @@ export function createThreadTimelineWindow(
         disposeDropped: true,
         afterCommit: () => applyWindowMetadataFromPaged(paged),
       });
+      // The window is a bounded tail slice again — the pinned history it
+      // may have replaced is gone, so bounded steady-state pruning re-arms.
+      userPinnedHistory = false;
       return true;
     } catch (err) {
       if (
@@ -1012,6 +1071,9 @@ export function createThreadTimelineWindow(
     },
     get loadingNewer() {
       return loadingNewer;
+    },
+    get userPinnedHistory() {
+      return userPinnedHistory;
     },
     applyInitialSlice,
     applyWindowMetadataFromPaged,

@@ -100,3 +100,79 @@ func TestFindToolCallItemByTaskIDResolvesIndexedMeta(t *testing.T) {
 		t.Error("expected no match on different thread")
 	}
 }
+
+// TestFindOriginalAgentLaunchByTaskID pins the resume-carrier
+// original-launch resolution: a §E6 resume stamps the SAME task_id onto
+// the carrier's own row, so the lookup must return the OLDEST row
+// carrying the task_id with the carrier itself excluded — the first
+// binding, which is the original Agent launch — even across repeated
+// resumes whose carriers all share the id.
+func TestFindOriginalAgentLaunchByTaskID(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.CreateThread(Thread{
+		ID: "t-orig", ProjectID: defaultTestProjectID, Title: "T",
+		Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	// The original launch: oldest row with the task_id. Its updated_at
+	// is NEWEST (round-2 Subn stamps touch the launch row), which is
+	// exactly why the pick orders by created_at, not updated_at.
+	if err := s.InsertItem(Item{
+		ID: "agent-launch", ThreadID: "t-orig", TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", ToolName: "Agent",
+		Summary: "Agent: original", Meta: `{"task_id":"task-r","subagent_model":"claude-opus-4-7"}`,
+		CreatedAt: now, UpdatedAt: now + 500,
+	}); err != nil {
+		t.Fatalf("insert launch: %v", err)
+	}
+	// A first-resume carrier, younger, same task_id.
+	if err := s.InsertItem(Item{
+		ID: "carrier-1", ThreadID: "t-orig", TurnIndex: 1, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", ToolName: "SendMessage",
+		Summary: "Agent: original", Meta: `{"task_id":"task-r"}`,
+		CreatedAt: now + 100, UpdatedAt: now + 100,
+	}); err != nil {
+		t.Fatalf("insert carrier-1: %v", err)
+	}
+	// The second-resume carrier doing the lookup.
+	if err := s.InsertItem(Item{
+		ID: "carrier-2", ThreadID: "t-orig", TurnIndex: 2, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", ToolName: "SendMessage",
+		Summary: "Agent: original", Meta: `{"task_id":"task-r"}`,
+		CreatedAt: now + 200, UpdatedAt: now + 200,
+	}); err != nil {
+		t.Fatalf("insert carrier-2: %v", err)
+	}
+
+	item, ok, err := s.FindOriginalAgentLaunchByTaskID("t-orig", "task-r", "carrier-2")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if !ok || item.ID != "agent-launch" {
+		t.Fatalf("resolved %q (ok=%v), want agent-launch", item.ID, ok)
+	}
+
+	// Excluding the launch itself falls to the next-oldest row — the
+	// exclusion is by id, never by tool name.
+	item, ok, err = s.FindOriginalAgentLaunchByTaskID("t-orig", "task-r", "agent-launch")
+	if err != nil {
+		t.Fatalf("find excluding launch: %v", err)
+	}
+	if !ok || item.ID != "carrier-1" {
+		t.Fatalf("resolved %q (ok=%v), want carrier-1", item.ID, ok)
+	}
+
+	// Empty task id short-circuits without a DB call.
+	if _, ok, err := s.FindOriginalAgentLaunchByTaskID("t-orig", "", "carrier-2"); err != nil || ok {
+		t.Fatalf("empty task id: ok=%v err=%v, want no match", ok, err)
+	}
+
+	// Unknown task id returns (_, false, nil).
+	if _, ok, err := s.FindOriginalAgentLaunchByTaskID("t-orig", "task-missing", "carrier-2"); err != nil || ok {
+		t.Fatalf("unknown task id: ok=%v err=%v, want no match", ok, err)
+	}
+}

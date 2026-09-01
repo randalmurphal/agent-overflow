@@ -44,10 +44,13 @@ bodies are likewise outside that API.
   surface and JSON-serializable schemas.
 - `TestMCPRoutesEveryParityTool` drives every advertised tool through the real
   Streamable HTTP MCP dispatcher and strict argument decoder.
-- `TestManagerCodexBrowserParityWithManagedChrome` uses real managed Chrome to
-  exercise semantic/scoped/regex locators, cross-origin frames, trusted input,
-  pointer drag, DOM handles, async read-only evaluation, network-idle and
-  navigation waits, isolated clipboard, console logs, exact asset bytes,
+- Live parity against a real engine is exercised by running the desktop app,
+  not by the suite: `make go-test` has no browser engine at all. What the suite
+  still proves is everything above the driver seam. What a live run must cover
+  when the parity surface changes: semantic/scoped/regex locators, cross-origin
+  frames, trusted input, pointer drag, DOM handles, async read-only evaluation,
+  network-idle and navigation waits, isolated clipboard, console logs, exact
+  asset bytes,
   resource/attribute/computed-style asset attribution, bounded download
   completion, screenshots, viewport/visibility, and tabs.
 - The browser package runs under the race detector, and the harness E2E suite

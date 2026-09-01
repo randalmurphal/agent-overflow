@@ -3,16 +3,12 @@ package browser
 import (
 	"context"
 	"fmt"
-	"log"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
-
-	"github.com/chromedp/cdproto/cdp"
-	"github.com/chromedp/chromedp"
 )
 
 func (m *Manager) ownedPages(threadID string) []*managedPage {
@@ -75,7 +71,7 @@ func countPagesLocked(scopes map[string]*workspaceScope) int {
 }
 
 func ambiguousPageError(pages []*managedPage) error {
-	sort.Slice(pages, func(i, j int) bool { return pages[i].createdAt < pages[j].createdAt })
+	sortPagesByTabOrder(pages)
 	refs := make([]string, 0, len(pages))
 	for _, p := range pages {
 		info := p.cachedInfo()
@@ -98,41 +94,22 @@ func operationContext(caller, pageCtx context.Context, timeout time.Duration) (c
 	return ctx, func() { stop(); cancel() }
 }
 
-func browserCommandContext(ctx context.Context) context.Context {
-	chromedpContext := chromedp.FromContext(ctx)
-	if chromedpContext == nil || chromedpContext.Browser == nil {
-		return ctx
+// pageInfo reads and bounds one page's live URL, title, and history state.
+func (m *Manager) pageInfo(ctx context.Context, p *managedPage) (PageInfo, error) {
+	location, title, err := p.driver.Info(ctx)
+	if err != nil {
+		return PageInfo{}, err
 	}
-	return cdp.WithExecutor(ctx, chromedpContext.Browser)
-}
-
-func targetCommandContext(ctx context.Context) context.Context {
-	chromedpContext := chromedp.FromContext(ctx)
-	if chromedpContext == nil || chromedpContext.Target == nil {
-		return ctx
+	back, forward, err := p.driver.HistoryState(ctx)
+	if err != nil {
+		return PageInfo{}, err
 	}
-	return cdp.WithExecutor(ctx, chromedpContext.Target)
-}
-
-type browserLogWriter struct{}
-
-func (browserLogWriter) Write(data []byte) (int, error) {
-	for _, line := range strings.Split(string(data), "\n") {
-		message := strings.TrimSpace(line)
-		if message == "" || strings.Contains(message, "CVDisplayLinkCreateWithCGDisplay failed") || strings.HasPrefix(message, "DevTools listening on ") {
-			continue
-		}
-		log.Printf("browser: chrome: %s", message)
-	}
-	return len(data), nil
-}
-
-func pageInfo(ctx context.Context, id string) (PageInfo, error) {
-	var location, title string
-	if err := chromedp.Run(ctx, chromedp.Location(&location), chromedp.Title(&title)); err != nil {
-		return PageInfo{}, fmt.Errorf("browser: read page state: %w", err)
-	}
-	return PageInfo{ID: id, URL: truncateUTF8(location, maxBrowserURLBytes), Title: truncateUTF8(title, maxBrowserTitleBytes)}, nil
+	return PageInfo{
+		ID:        p.id,
+		URL:       truncateUTF8(location, maxBrowserURLBytes),
+		Title:     truncateUTF8(title, maxBrowserTitleBytes),
+		CanGoBack: back, CanGoForward: forward,
+	}, nil
 }
 
 func truncateUTF8(value string, limit int) string {
@@ -143,6 +120,24 @@ func truncateUTF8(value string, limit int) string {
 		limit--
 	}
 	return value[:limit]
+}
+
+func finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
+
+// validateScrollDelta bounds every scroll a tool can request, wherever the
+// gesture originates.
+func validateScrollDelta(x, y float64) error {
+	if !finite(x) || !finite(y) || x < -100_000 || x > 100_000 || y < -100_000 || y > 100_000 {
+		return fmt.Errorf("browser: scroll delta is out of range")
+	}
+	return nil
+}
+
+func validatePoint(point Point) error {
+	if !finite(point.X) || !finite(point.Y) || point.X < 0 || point.Y < 0 || point.X > maxCompanionWidth || point.Y > maxCompanionHeight {
+		return fmt.Errorf("browser: pointer coordinates are outside the bounded viewport")
+	}
+	return nil
 }
 
 func canonicalRoot(path string) (string, error) {
@@ -203,7 +198,19 @@ func (m *Manager) navigationAllowed(access Access, rawURL string) bool {
 		// pages out of the navigation allow-list.
 		return strings.EqualFold(parsed.Host, "mhjfbmdgcfjbbpaeojofohoefgiehjai")
 	case "file":
-		_, err := m.authorizeFile(access, filepath.FromSlash(parsed.Path))
+		backendPath := filepath.FromSlash(parsed.Path)
+		if engine, ok := m.engine.(engineFileURL); ok {
+			// The URL is in the RENDERER's form (file:///C:/...,
+			// file://wsl.localhost/...); authorize the backend path behind
+			// it. A URL the engine cannot map names a filesystem the
+			// backend cannot reach, so it stays blocked.
+			mapped, err := engine.BackendFilePath(context.Background(), rawURL)
+			if err != nil {
+				return false
+			}
+			backendPath = mapped
+		}
+		_, err := m.authorizeFile(access, backendPath)
 		return err == nil
 	default:
 		return false

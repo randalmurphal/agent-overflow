@@ -811,3 +811,24 @@ func TestCodexCatalogOffersTheTopTiersWhereTheyExist(t *testing.T) {
 		}
 	}
 }
+
+// A wire-only model (absent from the static registry) still needs the right
+// auto-compact tier for the window it runs on: the tier is derived from the
+// window itself, so a 1M thread on claude-fable-5-1 compacts on the extended
+// threshold instead of silently using the standard one.
+func TestContextTierForModelWindowDerivesTierForUnlistedModels(t *testing.T) {
+	if got := ContextTierForModelWindow(string(Claude), "claude-fable-5-1", ClaudeExtendedContextWindow); got != ContextTierExtended {
+		t.Fatalf("unlisted claude 1M tier = %q, want %q", got, ContextTierExtended)
+	}
+	if got := ContextTierForModelWindow(string(Claude), "claude-fable-5-1", ClaudeStandardContextWindow); got != ContextTierStandard {
+		t.Fatalf("unlisted claude 200k tier = %q, want %q", got, ContextTierStandard)
+	}
+	if got := ContextTierForModelWindow(string(Codex), "gpt-custom", CodexExtendedContextWindow); got != ContextTierExtended {
+		t.Fatalf("unlisted codex 1M tier = %q, want %q", got, ContextTierExtended)
+	}
+	// A listed model keeps the registry's answer, including for a window it
+	// does not offer.
+	if got := ContextTierForModelWindow(string(Codex), "gpt-5.5", CodexExtendedContextWindow); got != ContextTierStandard {
+		t.Fatalf("listed model with unsupported window tier = %q, want %q", got, ContextTierStandard)
+	}
+}

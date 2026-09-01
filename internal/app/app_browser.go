@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"time"
+	"unsafe"
 
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/mcpapp"
@@ -14,6 +15,15 @@ import (
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 )
+
+// SetBrowserNativeWindow hands the browser manager the desktop window an
+// in-process engine hosts its views inside. Call it before Start: the manager
+// is built during startup, and a deployment that answers no window gets NO
+// engine for the life of the process. A getter (rather than a pointer)
+// because the window is created later, on the app loop.
+func SetBrowserNativeWindow(a *App, window func() unsafe.Pointer) {
+	a.browser.nativeWindow = window
+}
 
 func browserConfigFromSettings(current settings.Settings) appbrowser.Config {
 	return appbrowser.Config{
@@ -28,8 +38,9 @@ func (a *App) browserMCPConfigForThread(thread store.Thread) (map[string]any, er
 		return nil, nil
 	}
 	if a.browser.mcp == nil {
-		// Focused fixtures that construct a bare App do not boot optional
-		// subsystems. Production initSubsystems always wires this server.
+		// Either this deployment has no browser engine (spec §9), or a
+		// focused fixture constructed a bare App without optional
+		// subsystems. Both mean the thread is offered no browser server.
 		return nil, nil
 	}
 	return a.browser.mcp.RegisterThread(appbrowser.Access{
@@ -83,7 +94,7 @@ func (a *App) setBrowserThreadMCPEnabled(thread store.Thread, enabled bool) erro
 		return fmt.Errorf("browser tools are disabled in Settings")
 	}
 	if a.browser.mcp == nil {
-		return fmt.Errorf("browser MCP unavailable")
+		return fmt.Errorf("browser tools are not available in this deployment")
 	}
 	a.browser.mcp.SetThreadEnabled(thread.ID, enabled)
 	if _, ok := a.sessionManager().get(thread.ID); !ok {

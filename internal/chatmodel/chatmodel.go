@@ -223,6 +223,35 @@ func DefaultContextWindow(providerName, model string, fallback int) int {
 	return provider.DefaultContextWindowForModel(providerName, strings.TrimSpace(model), fallback)
 }
 
+// DefaultContextWindowFor prefers the flagged default among CALLER-RESOLVED
+// options (the App's merged catalogs, which carry family-inherited windows
+// for wire-only models the static registry lacks), falling back to the
+// static registry default only when the options carry nothing.
+func DefaultContextWindowFor(options []provider.ContextWindowOption, providerName, model string) int {
+	if tokens, ok := provider.DefaultContextWindowForOptions(options); ok {
+		return tokens
+	}
+	return provider.DefaultContextWindowForModel(providerName, model, 0)
+}
+
+// FallbackProfileWith is FallbackProfile with the context window re-stamped
+// from resolve, the caller's catalog-aware options lookup. FallbackProfile's
+// static default for a wire-only model is the provider-wide standard window,
+// which IS one of the merged catalog's options and so survives every
+// supported-window check, silently displacing the family's flagged default
+// (claude-fable-5-1 starting at 200k instead of 1M). A fallback profile
+// carries no user choice, so the catalog default always wins here; for a
+// statically-known model the re-stamp is the same value.
+func FallbackProfileWith(
+	resolve func(providerName, model string) []provider.ContextWindowOption,
+	providerName, model string,
+	availableProviders ...string,
+) store.ChatModelProfile {
+	profile := FallbackProfile(providerName, model, availableProviders...)
+	profile.ContextWindow = DefaultContextWindowFor(resolve(profile.Provider, profile.Model), profile.Provider, profile.Model)
+	return profile
+}
+
 // IsValidContextWindow reports whether `tokens` is a usable size. A
 // non-positive value means "no opinion, fall back to the default."
 func IsValidContextWindow(tokens int) bool {
@@ -232,29 +261,34 @@ func IsValidContextWindow(tokens int) bool {
 // ValidateContextUpdate runs the per-field bounds checks shared by
 // the global `UpdateContextSettingsProfile` and the per-thread
 // `UpdateThreadContextSettings` paths: trims and requires
-// provider/model, asserts that the (provider, model) pair is known
-// to the registry, asserts that contextWindow is one of the
-// registry-advertised options, and asserts that the two auto-compact
-// percent thresholds sit in the inclusive 0..90 range that
+// provider/model, asserts that the caller-resolved options are
+// non-empty (an empty slice means the pair is unknown to every
+// catalog the caller consulted), asserts that contextWindow is one
+// of those options, and asserts that the two auto-compact percent
+// thresholds sit in the inclusive 0..90 range that
 // `IsValidAutoCompactPercent` accepts.
+//
+// The options are a PARAMETER, not an internal lookup, because the
+// static registry alone is the wrong authority: wire-only models
+// exist only in the App's merged catalogs, and this package stays
+// process-free. Callers resolve via `App.contextWindowOptionsForModel`.
 //
 // Returns the trimmed provider + model strings on success so callers
 // don't re-trim. The int inputs are bounds-checked but never
 // rewritten — callers continue to use the raw int values they
 // passed in. Errors carry a "context settings:" prefix so the
 // caller's wrap matches the existing user-facing string.
-func ValidateContextUpdate(rawProvider, rawModel string, contextWindow, autoCompactStandardPercent, autoCompactExtendedPercent int) (provider, model string, err error) {
-	provider = strings.TrimSpace(rawProvider)
+func ValidateContextUpdate(options []provider.ContextWindowOption, rawProvider, rawModel string, contextWindow, autoCompactStandardPercent, autoCompactExtendedPercent int) (providerName, model string, err error) {
+	providerName = strings.TrimSpace(rawProvider)
 	model = strings.TrimSpace(rawModel)
-	if provider == "" || model == "" {
+	if providerName == "" || model == "" {
 		return "", "", fmt.Errorf("context settings: provider and model are required")
 	}
-	options := ContextWindowOptions(provider, model)
 	if len(options) == 0 {
-		return "", "", fmt.Errorf("context settings: unknown provider/model %s/%s", provider, model)
+		return "", "", fmt.Errorf("context settings: unknown provider/model %s/%s", providerName, model)
 	}
 	if !ContextWindowSupported(options, contextWindow) {
-		return "", "", fmt.Errorf("context settings: unsupported context window %d for %s/%s", contextWindow, provider, model)
+		return "", "", fmt.Errorf("context settings: unsupported context window %d for %s/%s", contextWindow, providerName, model)
 	}
 	if autoCompactStandardPercent < 0 || autoCompactStandardPercent > 90 {
 		return "", "", fmt.Errorf("context settings: standard auto-compact percent must be between 0 and 90")
@@ -262,7 +296,7 @@ func ValidateContextUpdate(rawProvider, rawModel string, contextWindow, autoComp
 	if autoCompactExtendedPercent < 0 || autoCompactExtendedPercent > 90 {
 		return "", "", fmt.Errorf("context settings: extended auto-compact percent must be between 0 and 90")
 	}
-	return provider, model, nil
+	return providerName, model, nil
 }
 
 // SupportsStoredFastMode reports whether a stored fast-mode flag

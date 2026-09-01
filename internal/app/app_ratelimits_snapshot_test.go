@@ -88,17 +88,22 @@ func TestGetRateLimitsSnapshotsRejectsStaleWindowUpdates(t *testing.T) {
 		Provider: "codex",
 		Limits:   []provider.RateLimitEntry{{LimitID: "codex", WindowMins: 300, UsedPercent: 90, ResetsAt: 400}},
 	}
-	olderReading := provider.RateLimitsSnapshot{
+	// Same window, lower percent: the newest reading wins (a mid-window
+	// limit increase legitimately lowers utilization; see MergeSnapshot).
+	lowerReading := provider.RateLimitsSnapshot{
 		Provider: "codex",
 		Limits:   []provider.RateLimitEntry{{LimitID: "codex", WindowMins: 300, UsedPercent: 50, ResetsAt: 500}},
 	}
-	for _, snapshot := range []*provider.RateLimitsSnapshot{&fresh, &olderReset, &olderReading} {
+	for _, snapshot := range []*provider.RateLimitsSnapshot{&fresh, &olderReset, &lowerReading} {
 		app.emit("provider:usage", provider.UsageEvent{Action: "rate_limits", RateLimits: snapshot})
 	}
 
 	got := app.GetRateLimitsSnapshots()
-	if len(got) != 1 || len(got[0].Limits) != 1 || got[0].Limits[0].UsedPercent != 60 {
-		t.Fatalf("stale update regressed snapshot: %+v", got)
+	if len(got) != 1 || len(got[0].Limits) != 1 || got[0].Limits[0].UsedPercent != 50 {
+		t.Fatalf("snapshot after older-window + same-window updates: %+v", got)
+	}
+	if got[0].Limits[0].ResetsAt != 500 {
+		t.Fatalf("older reset window replaced the fresh one: %+v", got)
 	}
 }
 

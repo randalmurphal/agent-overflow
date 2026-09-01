@@ -124,9 +124,11 @@ export function createThreadItemStreamApply(
         (errors ??= []).push(error);
       }
     }
-    // Live eviction runs before the window-cap check so settled subagent
-    // children never count toward the prune trigger. The cap therefore bounds
-    // renderable rows, matching the backend pagers' top-level-only budget.
+    // Live eviction runs before the window-cap check, and the cap itself
+    // counts only top-level rows (matching the backend pagers'
+    // top-level-only budget): children an open companion or expanded card
+    // keeps loaded — which eviction deliberately never folds — must not
+    // push the prune into evicting the conversation (incident 2026-08-31).
     try {
       subagentMemory.evictSettledChildren(next.changedItems);
     } catch (error) {

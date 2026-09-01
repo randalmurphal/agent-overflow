@@ -46,8 +46,28 @@ var bannedWireNames = map[string]string{
 	"watcherid":      "watcher handle",
 }
 
+// exemptWireNames carves out the one shape where a per-caller handle IS the
+// entity, keyed by file so it cannot widen by accident.
+//
+// A byte-stream MULTIPLEXER is not an event: the CDP tunnel interleaves N
+// live TCP connections over one WebSocket, and the stream number is the
+// only identity such a connection has. There is no cwd, thread id or PR key
+// to key by, and no consumer is filtering a shared observation down to its
+// own slice — the two sides are the two ends of one socket. Every
+// multiplexer on the wire (HTTP/2, SSH, yamux) numbers streams for exactly
+// this reason.
+//
+// Renaming the field to dodge the tripwire would have been the wrong fix:
+// it would keep the shape and blind the guard. If a second entry ever wants
+// to land here, that is the moment to check it is a multiplexer and not an
+// event that has run out of a better key.
+var exemptWireNames = map[string]map[string]bool{
+	"internal/webview2host/cdpframe.go": {"streamid": true},
+}
+
 func TestWirePayloadsAreEntityKeyedNotSubscriptionKeyed(t *testing.T) {
 	for _, file := range collectGoSources(t) {
+		exempt := exemptWireNames[filepath.ToSlash(file)]
 		fileSet := token.NewFileSet()
 		parsed, err := parser.ParseFile(fileSet, file, nil, parser.SkipObjectResolution)
 		if err != nil {
@@ -70,7 +90,7 @@ func TestWirePayloadsAreEntityKeyedNotSubscriptionKeyed(t *testing.T) {
 					continue
 				}
 				kind, banned := bannedWireNames[strings.ToLower(name)]
-				if !banned {
+				if !banned || exempt[strings.ToLower(name)] {
 					continue
 				}
 				t.Errorf(
@@ -81,6 +101,13 @@ func TestWirePayloadsAreEntityKeyedNotSubscriptionKeyed(t *testing.T) {
 			}
 			return true
 		})
+	}
+	// A carve-out for a file that no longer exists is dead prose that would
+	// quietly re-arm somewhere else if the path were ever reused.
+	for file := range exemptWireNames {
+		if _, err := os.Stat(file); err != nil {
+			t.Errorf("wire-name exemption names %s, which is not there: %v", file, err)
+		}
 	}
 }
 

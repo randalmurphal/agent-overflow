@@ -2,60 +2,21 @@ package browser
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
-
-	cdplog "github.com/chromedp/cdproto/log"
-	cdpruntime "github.com/chromedp/cdproto/runtime"
 )
 
-func (p *managedPage) captureConsole(event *cdpruntime.EventConsoleAPICalled) {
-	parts := make([]string, 0, len(event.Args))
-	for _, arg := range event.Args {
-		if arg == nil {
-			continue
-		}
-		var value any
-		if len(arg.Value) > 0 && json.Unmarshal(arg.Value, &value) == nil {
-			parts = append(parts, fmt.Sprint(value))
-		} else if arg.Description != "" {
-			parts = append(parts, arg.Description)
-		} else {
-			parts = append(parts, string(arg.Type))
-		}
-	}
-	level := strings.ToLower(string(event.Type))
+// normalizeConsoleLevel folds an engine's level vocabulary onto the closed set
+// the tool reports and filters on.
+func normalizeConsoleLevel(level string) string {
+	level = strings.ToLower(strings.TrimSpace(level))
 	if level == "warning" {
 		level = "warn"
 	}
 	if level != "debug" && level != "info" && level != "warn" && level != "error" {
 		level = "log"
 	}
-	timestamp := time.Now().UTC()
-	if event.Timestamp != nil {
-		timestamp = time.Time(*event.Timestamp).UTC()
-	}
-	p.appendLog(ConsoleLog{Level: level, Message: strings.Join(parts, " "), Timestamp: timestamp.Format(time.RFC3339Nano), URL: p.cachedInfo().URL})
-}
-
-func (p *managedPage) captureLogEntry(event *cdplog.EventEntryAdded) {
-	if event.Entry == nil {
-		return
-	}
-	level := strings.ToLower(string(event.Entry.Level))
-	if level == "warning" {
-		level = "warn"
-	}
-	if level != "debug" && level != "info" && level != "warn" && level != "error" {
-		level = "log"
-	}
-	timestamp := time.Now().UTC()
-	if event.Entry.Timestamp != nil {
-		timestamp = time.Time(*event.Entry.Timestamp).UTC()
-	}
-	p.appendLog(ConsoleLog{Level: level, Message: event.Entry.Text, Timestamp: timestamp.Format(time.RFC3339Nano), URL: event.Entry.URL})
+	return level
 }
 
 func (p *managedPage) appendLog(entry ConsoleLog) {

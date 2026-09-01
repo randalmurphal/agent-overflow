@@ -11,8 +11,10 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-webauthn/webauthn v0.18.0
+	github.com/gobwas/ws v1.4.0
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/uuid v1.6.0
+	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/rjeczalik/notify v0.9.3
 	github.com/robfig/cron/v3 v3.0.1
@@ -32,7 +34,6 @@ require (
 	github.com/tree-sitter/tree-sitter-rust v0.24.2
 	github.com/tree-sitter/tree-sitter-typescript v0.23.2
 	github.com/wailsapp/wails/v3 v3.0.0-beta.4
-	github.com/zalando/go-keyring v0.2.6
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0
@@ -150,7 +151,6 @@ require (
 	github.com/gobwas/glob v0.2.3 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
-	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/btree v1.1.3 // indirect
@@ -257,6 +257,7 @@ require (
 	github.com/yuin/goldmark v1.7.16 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
+	github.com/zalando/go-keyring v0.2.6 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	gitlab.com/digitalxero/go-conventional-commit v1.0.7 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
@@ -290,7 +291,7 @@ require (
 
 tool github.com/wailsapp/wails/v3/cmd/wails3
 
-// Fork pin: branch ao-beta-memory-trim, six patches on top of the
+// Fork pin: branch ao-beta-memory-trim, nine patch groups on top of the
 // upstream v3.0.0-beta.4 tag. Only ONE replace is needed now: upstream
 // folded the separate wails/webview2 module into v3/internal/webview2
 // (#5711, alpha2.114), so the second pin that used to carry the suspend
@@ -344,8 +345,18 @@ tool github.com/wailsapp/wails/v3/cmd/wails3
 //     creation never completes — now genuinely posted. Unpatched 0/2
 //     (panic), patched 8/8 recovered ~3s on the wails-pr6002-matrix rig.
 //
+//  8. WebviewWindow.CallDevToolsProtocolMethod (2d9e02219): exposes the
+//     embedded WebView2 page's protocol session through the application
+//     layer for AO's browser integration.
+//
+//  9. macOS outer-frame + DIP geometry (dae7e8f74): creation treats Wails
+//     width/height as the NSWindow's outer frame instead of content size,
+//     and GetScreen resolves raw Retina NSScreen values through the laid-out
+//     screen cache. This prevents title-bar growth on every restore and 2x
+//     display records that break maximize placement.
+//
 // Dropped at the beta.4 rebase — both landed upstream: the mixed-DPI
 // monitor-scale-detection re-enable (#5732 -> PR #5734) and the host
 // rasterization-scale stand-down (PR #5761, which generalised it to
 // visual hosting). Do not re-add them.
-replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260825150712-2d9e0221958f
+replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260901164027-dae7e8f7452d

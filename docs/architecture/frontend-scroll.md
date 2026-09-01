@@ -299,8 +299,11 @@ the review pane's collapse/expand, not just same-length reorders.
 
 ## Load Paging (keyed mutation inference)
 
-`loadOlder` and `loadNewer` mutate the window at one end and prune the
-other. Both mutations commit before one final Svelte flush. The virtualizer
+`loadOlder` grows the window at the head and never drops the tail; a
+successful page also sets the pane's `userPinnedHistory` latch (below).
+`loadNewer` grows the tail and may prune the head, but only while the
+window is unpinned. When a paired prune does fire, both mutations commit
+before one final Svelte flush. The virtualizer
 compares the previous and next key sequences before exposing render data and
 classifies the combined change as head, tail, unchanged, or a general keyed
 mutation. Callers cannot label a mutation or leave a mode bit armed.
@@ -316,7 +319,7 @@ signature (`utils/virtual/priors.ts`), not a position, so there is no
 index-keyed prior state left to shift. Duplicate keys fail at the virtualizer
 boundary instead of corrupting the measurement map.
 
-`loadOlder` / `loadNewer` apply the paired prune directly (the dropped end is
+`loadNewer` applies its paired prune directly (the dropped end is
 always opposite the reading viewport, so there is nothing to veto or restore).
 The streaming / settle prune keeps an explicit anchor-survival guard
 (`canPreserveTimelineWindow`, below) because it can fire under a
@@ -331,7 +334,25 @@ corrupt the rendered size store.
 
 The streaming append path caps the loaded window
 (`ACTIVE_TIMELINE_WINDOW_MAX_ITEMS`, pruning back to
-`ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS`). A mounted timeline normally defers the
+`ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS`). Two rules bound every cap and
+cut in `threadTimelineWindow.svelte.ts`:
+
+- **Caps count top-level rows only**, and prune cuts select by an item's
+  top-level root, so children always travel with their anchor — the
+  frontend half of the backend pagers' `topLevelItemsFilter` rule.
+  Subagent children render inside their anchor's card (or the agent
+  companion, whose held rows every cut also keeps), so counting them let
+  a busy agent's invisible child mass force the prune into evicting the
+  visible conversation (incident 2026-08-31: one launch card left, and a
+  "Load older" whose pages the next prune cycle ate again).
+- **User paging pins the window** (`userPinnedHistory`): after a
+  successful `loadOlder` or a `loadUntilItem` recenter, no automatic
+  prune runs at all — history the reader explicitly loaded is never
+  taken back for a few MB of summary rows. The pin clears when the
+  window is rebuilt at a bounded size: thread switch, cache restore,
+  `loadRecentTail`.
+
+A mounted timeline normally defers the
 prune to visual quiet because reconciling hundreds of rows is still expensive
 main-thread work. Correctness no longer depends on that timing. The
 virtualizer keeps surviving rows on one stable mounted paint plane, preserves

@@ -208,6 +208,10 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		return
 	}
 	var result any
+	// note is an engine capability qualifier a tool's result carries beside its
+	// JSON payload — never instead of it, so the payload's shape is the same
+	// on every engine.
+	var note string
 	var err error
 	switch call.Name {
 	case "browser_open":
@@ -413,7 +417,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			}
 			expression := readOnlyExpression(a.Expression, a.Argument)
 			evalCtx, cancel := context.WithTimeout(ctx, timeout)
-			result, err = s.controller.EvaluateReadOnly(evalCtx, access, a.PageID, expression)
+			result, note, err = s.controller.EvaluateReadOnly(evalCtx, access, a.PageID, expression)
 			cancel()
 		}
 	case "browser_clipboard":
@@ -448,7 +452,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		writeToolError(w, req.ID, err)
 		return
 	}
-	writeToolJSON(w, req.ID, result)
+	writeToolJSON(w, req.ID, result, note)
 }
 
 func readOnlyExpression(expression string, argument json.RawMessage) string {
@@ -611,13 +615,21 @@ func writeRPC(w http.ResponseWriter, status int, value any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
-func writeToolJSON(w http.ResponseWriter, id json.RawMessage, value any) {
+
+// writeToolJSON writes one tool result. A non-empty engine note becomes a
+// SECOND content entry rather than a wrapper around the payload: the first
+// entry stays the exact JSON every caller already parses, on every engine.
+func writeToolJSON(w http.ResponseWriter, id json.RawMessage, value any, note string) {
 	data, err := json.Marshal(value)
 	if err != nil {
 		writeToolError(w, id, err)
 		return
 	}
-	writeRPCResult(w, id, map[string]any{"content": []map[string]any{{"type": "text", "text": string(data)}}})
+	content := []map[string]any{{"type": "text", "text": string(data)}}
+	if note != "" {
+		content = append(content, map[string]any{"type": "text", "text": note})
+	}
+	writeRPCResult(w, id, map[string]any{"content": content})
 }
 func writeToolImage(w http.ResponseWriter, id json.RawMessage, data []byte) {
 	writeRPCResult(w, id, map[string]any{"content": []map[string]any{{"type": "image", "mimeType": "image/jpeg", "data": base64.StdEncoding.EncodeToString(data)}}})
@@ -715,7 +727,7 @@ func toolDefinitions() []map[string]any {
 		{"name": "browser_scroll", "description": "Scroll the window or a selected element by CSS pixels.", "inputSchema": object(map[string]any{"page_id": stringProp, "selector": stringProp, "x": map[string]any{"type": "number"}, "y": map[string]any{"type": "number"}}, "y")},
 		{"name": "browser_wait", "description": "Wait for duration, selector/locator state, URL glob, or commit/DOMContentLoaded/load/network-idle state.", "inputSchema": waitSchema},
 		{"name": "browser_history", "description": "Navigate back, forward, reload, or stop loading.", "inputSchema": object(map[string]any{"page_id": stringProp, "action": map[string]any{"type": "string", "enum": []string{"back", "forward", "reload", "stop"}}}, "action")},
-		{"name": "browser_evaluate_readonly", "description": "Evaluate a side-effect-free JavaScript expression or function with optional JSON argument in page scope and return a bounded JSON result; possible mutations are rejected by Chrome.", "inputSchema": object(map[string]any{"page_id": stringProp, "expression": stringProp, "argument": map[string]any{}, "timeout_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 30000}}, "expression")},
+		{"name": "browser_evaluate_readonly", "description": "Evaluate a side-effect-free JavaScript expression or function with optional JSON argument in page scope and return a bounded JSON result; possible mutations are rejected by the engine where it can, and the result says so when they cannot be.", "inputSchema": object(map[string]any{"page_id": stringProp, "expression": stringProp, "argument": map[string]any{}, "timeout_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 30000}}, "expression")},
 		{"name": "browser_evaluate", "description": "Evaluate JavaScript in the page and return a bounded JSON result. Prefer browser_evaluate_readonly for inspection.", "inputSchema": object(map[string]any{"page_id": stringProp, "expression": stringProp}, "expression")},
 		{"name": "browser_clipboard", "description": "Read or write this managed tab's isolated clipboard as text or bounded MIME items; never touches the OS clipboard.", "inputSchema": object(map[string]any{"page_id": stringProp, "action": enumProp("read", "read_text", "write", "write_text"), "text": stringProp, "items": map[string]any{"type": "array", "maxItems": 100, "items": clipboardItem}}, "action")},
 		{"name": "browser_console_logs", "description": "Read the tab's bounded console/runtime log ring with level, substring, and result limits.", "inputSchema": object(map[string]any{"page_id": stringProp, "filter": stringProp, "levels": map[string]any{"type": "array", "items": enumProp("debug", "info", "log", "warn", "warning", "error")}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": maxConsoleEntries}})},

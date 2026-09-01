@@ -1066,7 +1066,10 @@ type UsageEvent struct {
 }
 ```
 
-**`ProviderStatusEvent`** is a closed kind enum for banner behavior:
+**`ProviderStatusEvent`** is a closed kind enum for banner behavior. The
+wire shape is `providerstatus.Event` (`internal/providerstatus/providerstatus.go`);
+a `threadId` scopes a kind to one pane, and `binary_stale` carries
+`sessionVersion` / `installedVersion` for the restart banner.
 ```go
 type ProviderStatusEvent struct {
     Kind    string `json:"kind"` // one of the values below
@@ -1080,6 +1083,10 @@ type ProviderStatusEvent struct {
 //   "transient_retry"        — adapter is retrying against a non-rate-limit
 //                              cause (5xx, billing, invalid_request, etc.);
 //                              Message carries the upstream reason verbatim
+//   "binary_stale"           — thread-scoped: this thread's live session runs
+//                              an older CLI than the installed binary; carries
+//                              sessionVersion/installedVersion and clears via
+//                              a thread-scoped status "ready" (or disconnect)
 //   "ok"                     — transient issue resolved; frontend clears banner
 ```
 

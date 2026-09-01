@@ -47,6 +47,13 @@ export interface ThreadLiveStateHydrationOptions {
     backendRevision: number,
     expectedMutationRevision: number,
   ): void;
+  /**
+   * Snapshot leg of the stale-binary banner (`sessionCliVersion` /
+   * `installedCliVersion`, both set only while the thread's live session
+   * runs an older CLI than the installed binary). Set-only by contract:
+   * clears stay with the `provider:status` / disconnect events.
+   */
+  hydrateBinaryStaleBanner(sessionVersion: string, installedVersion: string): void;
 }
 
 export interface LiveStateFetchResult {
@@ -177,6 +184,10 @@ export function createThreadLiveStateHydration(
     // window has no upcoming frame to learn it from — the snapshot is the
     // only source. 0 clears a flag the window's close outran.
     hydrateCompactingState(threadID, snapshot.compactingSinceUnixMs ?? 0);
+    options.hydrateBinaryStaleBanner(
+      snapshot.sessionCliVersion ?? '',
+      snapshot.installedCliVersion ?? '',
+    );
   }
 
   async function startLiveStateFetch(

@@ -586,6 +586,34 @@ describe('createThreadPane', () => {
     expect(getActiveTurn(pane.threadId) !== null).toBe(false);
   });
 
+  // The stale-binary banner has a snapshot leg for a webview that
+  // (re)connects after the push: GetThreadLiveState carries the two
+  // versions while the thread's live session runs an older CLI. The leg is
+  // SET-ONLY — a snapshot without the versions says nothing, because it
+  // could have been computed before a push that landed while the RPC was
+  // in flight, and the backend only re-emits on transitions.
+  it('hydrates the stale-binary banner from live state, set-only', async () => {
+    const pane = createThreadPane();
+    let versions: { sessionCliVersion?: string; installedCliVersion?: string } = {
+      sessionCliVersion: '2.1.100',
+      installedCliVersion: '2.1.200',
+    };
+    setBindingMock('GetThreadLiveState', async (threadId: string) => ({
+      threadId,
+      ...versions,
+    }));
+
+    await pane.switchThread(makeThread({ id: 'thread-stale', provider: 'claude' }));
+    expect(pane.providerBanner?.status).toBe('binary_stale');
+    expect(pane.providerBanner?.sessionVersion).toBe('2.1.100');
+    expect(pane.providerBanner?.installedVersion).toBe('2.1.200');
+    expect(pane.providerBanner?.threadId).toBe('thread-stale');
+
+    versions = {};
+    await pane.refreshFromBackend();
+    expect(pane.providerBanner?.status).toBe('binary_stale');
+  });
+
   it('hydrates live server state on thread switch', async () => {
     const pane = createThreadPane();
     setBindingMock('GetThreadLiveState', async (threadId: string) => ({

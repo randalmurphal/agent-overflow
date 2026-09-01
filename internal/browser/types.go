@@ -3,6 +3,8 @@ package browser
 import (
 	"context"
 	"time"
+
+	"agent-overflow/internal/keybindings"
 )
 
 const ServerName = "ao-browser-tools"
@@ -14,43 +16,30 @@ type Config struct {
 }
 
 // CompanionEvent is live browser state for the calling thread's companion
-// pane. State is emitted on page lifecycle/navigation changes; frames are
-// delivered privately only while a frontend subscription is active.
+// pane, emitted on page lifecycle and navigation changes. It carries no
+// pixels: the pane's page content is a real view the engine presents behind
+// the pane's host rect (spec §7).
 type CompanionEvent struct {
 	Kind         string     `json:"kind"`
 	ThreadID     string     `json:"threadId"`
 	Pages        []PageInfo `json:"pages,omitempty"`
 	ActivePageID string     `json:"activePageId,omitempty"`
 	PageID       string     `json:"pageId,omitempty"`
-	Frame        string     `json:"frame,omitempty"`
-	Width        int        `json:"width,omitempty"`
-	Height       int        `json:"height,omitempty"`
-	Sequence     uint64     `json:"sequence,omitempty"`
 	Error        string     `json:"error,omitempty"`
 	Visible      *bool      `json:"visible,omitempty"`
 	SessionName  string     `json:"sessionName,omitempty"`
+	// Accelerator rides a Kind "accelerator" event: a bound chord pressed
+	// while the thread's page view held keyboard focus, for the frontend to
+	// dispatch as if the SPA had received it.
+	Accelerator *keybindings.Accelerator `json:"accelerator,omitempty"`
 }
 
+// CompanionSubscription is what mounting a pane answers: the mount id the
+// frontend detaches and reports rects with, plus the thread's current state so
+// the pane renders without a second round trip.
 type CompanionSubscription struct {
 	ID    string         `json:"id"`
 	State CompanionEvent `json:"state"`
-}
-
-type CompanionInput struct {
-	Kind       string  `json:"kind"`
-	X          float64 `json:"x,omitempty"`
-	Y          float64 `json:"y,omitempty"`
-	DeltaX     float64 `json:"deltaX,omitempty"`
-	DeltaY     float64 `json:"deltaY,omitempty"`
-	Button     string  `json:"button,omitempty"`
-	Buttons    int64   `json:"buttons,omitempty"`
-	ClickCount int64   `json:"clickCount,omitempty"`
-	Key        string  `json:"key,omitempty"`
-	Text       string  `json:"text,omitempty"`
-	Alt        bool    `json:"alt,omitempty"`
-	Control    bool    `json:"control,omitempty"`
-	Meta       bool    `json:"meta,omitempty"`
-	Shift      bool    `json:"shift,omitempty"`
 }
 
 type Access struct {
@@ -66,6 +55,11 @@ type PageInfo struct {
 	Title      string `json:"title"`
 	Selected   bool   `json:"selected,omitempty"`
 	LastOpened string `json:"lastOpened,omitempty"`
+	// CanGoBack / CanGoForward mirror the page's session history so the
+	// companion toolbar can disable a button instead of offering a click
+	// that can only error.
+	CanGoBack    bool `json:"canGoBack"`
+	CanGoForward bool `json:"canGoForward"`
 }
 
 type Snapshot struct {
@@ -387,7 +381,7 @@ type Controller interface {
 	Wait(context.Context, Access, string, string, int) (PageInfo, error)
 	History(context.Context, Access, string, string) (PageInfo, error)
 	Evaluate(context.Context, Access, string, string) (any, error)
-	EvaluateReadOnly(context.Context, Access, string, string) (any, error)
+	EvaluateReadOnly(context.Context, Access, string, string) (any, string, error)
 	CloseThread(context.Context, string) error
 	Close() error
 	ClearSiteData(context.Context) error

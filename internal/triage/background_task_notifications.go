@@ -110,16 +110,17 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		launch = store.Item{}
 	}
 	if !found {
-		if _, _, err := r.store.TakePendingBackgroundTerminal(evt.ThreadID, meta.TaskID); err != nil {
-			log.Printf("triage: drain hidden task_notification stash %s: %v", meta.TaskID, err)
-		}
-		// Correct to drop: no resolvable launch means the work belongs
-		// to a subagent whose private transcript was never projected
-		// into this thread, and there is no parent-thread row a
-		// notification could hang off. Logged because the drop was
-		// previously silent — a task_notification vanishing here is
-		// indistinguishable from one that never arrived, and that is
-		// exactly the evidence the next investigation needs.
+		// Drop the NOTIFICATION but keep any stashed terminal: the
+		// launch row may still land later (subagent transcript
+		// projection lags the main wire for async agents), and the
+		// stash is what lets settleStashedTerminalForLateLaunch or the
+		// session-end settle write a truthful completion sibling then.
+		// Draining it here destroyed that evidence and left the
+		// late-arriving row a permanent running zombie. Logged because
+		// the drop was previously silent — a task_notification
+		// vanishing here is indistinguishable from one that never
+		// arrived, and that is exactly the evidence the next
+		// investigation needs.
 		log.Printf(
 			"triage: drop task_notification with no resolvable launch thread=%s task_id=%s summary=%q",
 			evt.ThreadID, meta.TaskID, ClampErrorSummary(evt.Content),

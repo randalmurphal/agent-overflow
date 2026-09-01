@@ -43,6 +43,35 @@ func TestMergeSnapshotPreservesFresherWindowAndAcceptsReset(t *testing.T) {
 	}
 }
 
+// A same-window reading with LOWER used-percent is the server's current
+// answer, not staleness: the server can raise the limit or outright reset
+// usage mid-window (2026-09-01: a manual server-side weekly reset under an
+// unchanged boundary). The newest reading must win or the meter freezes at
+// the stale maximum until the window rolls.
+func TestMergeSnapshotAcceptsSameWindowUsageDrop(t *testing.T) {
+	current := provider.RateLimitsSnapshot{
+		Provider: string(provider.Claude),
+		Limits: []provider.RateLimitEntry{{
+			LimitID: "seven_day", WindowMins: 10080,
+			UsedPercent: 46, ResetsAt: 1_788_000_000,
+		}},
+	}
+	fresh := provider.RateLimitsSnapshot{
+		Provider: string(provider.Claude),
+		Limits: []provider.RateLimitEntry{{
+			LimitID: "seven_day", WindowMins: 10080,
+			UsedPercent: 4, ResetsAt: 1_788_000_000,
+		}},
+	}
+	merged, changed := MergeSnapshot(current, fresh)
+	if !changed || merged.Limits[0].UsedPercent != 4 {
+		t.Fatalf("same-window usage drop merge = %+v, changed = %v", merged, changed)
+	}
+	if merged.Limits[0].ResetsAt != 1_788_000_000 {
+		t.Fatalf("reset boundary moved: %+v", merged.Limits[0])
+	}
+}
+
 func TestRememberEventMergesBeforePersisting(t *testing.T) {
 	var persisted []provider.RateLimitsSnapshot
 	service := New(Deps{Accounts: AccountDeps{
@@ -53,11 +82,12 @@ func TestRememberEventMergesBeforePersisting(t *testing.T) {
 	}})
 	first := provider.RateLimitsSnapshot{
 		Provider: string(provider.Codex), AccountID: "account",
-		Limits: []provider.RateLimitEntry{{LimitID: "session", WindowMins: 300, UsedPercent: 20}},
+		Limits: []provider.RateLimitEntry{{LimitID: "session", WindowMins: 300, UsedPercent: 20, ResetsAt: 1_784_823_600}},
 	}
 	service.RememberEvent(eventchan.ProviderUsage, provider.UsageEvent{Action: "rate_limits", RateLimits: &first})
 	second := CloneSnapshot(first)
 	second.Limits[0].UsedPercent = 10
+	second.Limits[0].ResetsAt = 1_784_820_000 // older window: merge rejects, nothing re-persists
 	service.RememberEvent(eventchan.ProviderUsage, provider.UsageEvent{Action: "rate_limits", RateLimits: &second})
 	if len(persisted) != 1 || persisted[0].Limits[0].UsedPercent != 20 {
 		t.Fatalf("persisted = %+v", persisted)

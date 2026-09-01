@@ -152,12 +152,12 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 		}
 		fastMode = false
 	}
-	contextOptions := chatmodel.ContextWindowOptions(providerName, model)
+	contextOptions := models.ContextWindowOptions(providerName, model)
 	if opts.ContextWindow != 0 && len(contextOptions) > 0 && !chatmodel.ContextWindowSupported(contextOptions, contextWindow) {
 		return store.Thread{}, fmt.Errorf("create thread: unsupported context window %d for %s/%s", contextWindow, providerName, model)
 	}
 	if len(contextOptions) > 0 && !chatmodel.ContextWindowSupported(contextOptions, contextWindow) {
-		contextWindow = provider.DefaultContextWindowForModel(providerName, model, 0)
+		contextWindow = chatmodel.DefaultContextWindowFor(contextOptions, providerName, model)
 	}
 	if !provider.IsValidAutoCompactPercent(autoCompactStandardPercent) {
 		return store.Thread{}, fmt.Errorf("create thread: auto-compact standard percent must be between 0 and 90")
@@ -350,9 +350,9 @@ func (s *Service) Defaults(opts CreateOptions) (Defaults, error) {
 	model = provider.NormalizeModelSlug(providerName, model)
 	effort, fastMode := models.DraftDefaults(providerName, model, seed.ReasoningEffort, seed.FastMode)
 	contextWindow := seed.ContextWindow
-	contextOptions := chatmodel.ContextWindowOptions(providerName, model)
+	contextOptions := models.ContextWindowOptions(providerName, model)
 	if len(contextOptions) > 0 && !chatmodel.ContextWindowSupported(contextOptions, contextWindow) {
-		contextWindow = provider.DefaultContextWindowForModel(providerName, model, 0)
+		contextWindow = chatmodel.DefaultContextWindowFor(contextOptions, providerName, model)
 	}
 	branch := ""
 	if s.deps.Workspace != nil {

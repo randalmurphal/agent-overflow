@@ -72,7 +72,7 @@ func TestParityToolSchemasDescribeNestedArguments(t *testing.T) {
 
 func TestArtifactQuotaPrunesOnlyExpiredFilesAndReservesAtomically(t *testing.T) {
 	root := t.TempDir()
-	manager := NewManager(nil, root, Config{}, ManagerOptions{})
+	manager := NewManager(root, Config{}, ManagerOptions{})
 	if err := os.MkdirAll(manager.artifactRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestParityBoundsAndPureHelpers(t *testing.T) {
 }
 
 func TestSessionNameLimitCountsUnicodeCharacters(t *testing.T) {
-	manager := NewManager(nil, t.TempDir(), Config{}, ManagerOptions{})
+	manager := NewManager(t.TempDir(), Config{}, ManagerOptions{})
 	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
 	if _, err := manager.NameSession(t.Context(), access, strings.Repeat("🔎", 120)); err != nil {
 		t.Fatalf("120-character session name rejected: %v", err)

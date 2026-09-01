@@ -268,7 +268,13 @@ export interface BackgroundTaskStateEvent {
 export type ProviderStatusKind =
   | 'binary_missing'
   | 'unauthenticated'
-  | 'version_incompatible';
+  | 'version_incompatible'
+  // The installed provider CLI was replaced while this thread's session was
+  // already running it. Thread-scoped and warning-severity: nothing is
+  // broken, the session is just pinned to the old binary until it restarts.
+  // There is no matching CLEAR kind — a withdrawal has nothing new to say,
+  // so the backend clears with the legacy thread-scoped `status: 'ready'`.
+  | 'binary_stale';
 
 export interface ProviderStatusEvent {
   /**
@@ -277,7 +283,16 @@ export interface ProviderStatusEvent {
    * both are required for the banner to scope + dispatch correctly.
    */
   provider: ProviderID;
-  status: 'ready' | 'not_found' | 'version_too_old' | 'unauthenticated' | 'error';
+  status:
+    | 'ready'
+    | 'not_found'
+    | 'version_too_old'
+    | 'unauthenticated'
+    | 'error'
+    // No legacy counterpart — the binary-detect pipeline has no notion of a
+    // session outliving the binary it started on. Carried in the same union
+    // so the banner branches on one vocabulary.
+    | 'binary_stale';
   message?: string;
   version?: string;
   actionable: boolean;
@@ -289,6 +304,14 @@ export interface ProviderStatusEvent {
    * `status` otherwise.
    */
   kind?: ProviderStatusKind;
+  /**
+   * `binary_stale` only: the CLI version this thread's live session was
+   * started on, and the version now installed. Either can be empty when the
+   * backend could not read one, so the banner copy degrades rather than
+   * printing half an arrow. Empty on every other kind.
+   */
+  sessionVersion?: string;
+  installedVersion?: string;
   /**
    * threadId is attached by the new chat-rewrite router so the banner can
    * scope to a specific pane. Legacy binary-detect emissions omit it —

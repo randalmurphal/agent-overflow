@@ -506,6 +506,42 @@ var Listeners = []Listener{
 			"binary, which no release artifact contains.",
 	},
 	{
+		Name:       "CDP relay endpoint",
+		Package:    "internal/cdprelay",
+		Binding:    BindLoopback,
+		Credential: CredPeerLocality,
+		Posture:    PostureProxied,
+		Sites:      []string{"internal/cdprelay/endpoint.go"},
+		Why: "The WSL half of the embedded browser pane. It exists only " +
+			"where the executable built a relay (the WSL deployment), and " +
+			"it binds 127.0.0.1:0 so chromedp inside the backend can dial " +
+			"a CDP endpoint that actually lives in the Windows launcher. " +
+			"Peer locality is the whole check, and the capability behind " +
+			"it is large: a caller reaching it drives the pane's WebView2 " +
+			"controllers. What keeps that proportionate is the second " +
+			"half of the pair — a stream only goes anywhere once the " +
+			"launcher has dialled /browser-cdp with the launch " +
+			"credential, so an unauthenticated local caller finds " +
+			"ErrTunnelDown and nothing else. Direction is the property: " +
+			"the launcher dials the backend, never the reverse.",
+	},
+	{
+		Name:       "WebView2 debug-port reservation",
+		Package:    "internal/webview2host",
+		Binding:    BindLoopback,
+		Credential: CredNone,
+		Posture:    PostureNone,
+		Sites:      []string{"internal/webview2host/host_windows.go"},
+		Why: "Not a server, and the same answer as the dev supervisor's " +
+			"port probe: freeLoopbackPort binds 127.0.0.1:0 to learn a " +
+			"free port number and closes it in the same function, so no " +
+			"handler is ever attached and no byte is ever written. The " +
+			"number then goes to Chromium's --remote-debugging-port, and " +
+			"the surface that ends up on it is the 'managed Chrome " +
+			"DevTools port' row below, not this one. Enumerated because " +
+			"the gate matches on the bind.",
+	},
+	{
 		Name:       "managed Chrome DevTools port",
 		Package:    "internal/browser",
 		Binding:    BindLoopback,
@@ -722,6 +758,22 @@ var Routes = []Route{
 			"not. Single-shot: a failed upload is retried by minting " +
 			"again, since resumable transfer is deferred to the phone " +
 			"waves and every body here is at most 10 MiB.",
+	},
+	{
+		Pattern:    "/browser-cdp",
+		Listener:   "app transport",
+		Credential: CredPageSession,
+		Posture:    PostureProxied,
+		Why: "The Windows launcher's CDP relay connection, registered only " +
+			"when Config.CDPTunnel is set — the WSL deployment and nowhere " +
+			"else, so on every other build the path does not exist. Three " +
+			"checks, none optional: the loopback Host guard, the launch " +
+			"credential through the same upgrade /ws uses (never a session " +
+			"ticket), and the kernel-reported peer address. A caller that " +
+			"got through would be driving real browser windows on the " +
+			"user's desktop. Once upgraded it carries no RPC and no event " +
+			"ring: the socket is handed whole to internal/cdprelay, which " +
+			"owns the codec, so no method table or channel policy applies.",
 	},
 	{
 		Pattern:    "/rpc",
@@ -961,6 +1013,19 @@ var Origins = []Origin{
 			"claude process. No engine renders these bytes and this " +
 			"process authors none of them; it classifies requests on the " +
 			"way through and forwards the response body as it arrives.",
+	},
+	{
+		Name:     "upstream relay (CDP tunnel)",
+		Listener: "CDP relay endpoint",
+		Author:   AuthorUpstream,
+		Posture:  PostureProxied,
+		Why: "CDP frames from the pane's WebView2 controllers in the " +
+			"Windows launcher, relayed unchanged to the chromedp client " +
+			"inside this backend. This process authors none of them and " +
+			"no engine renders them: the only reader is a CDP client, and " +
+			"the one HTTP document on the path (/json/version) is the " +
+			"launcher's, read under a byte cap so a wedged endpoint " +
+			"cannot make the backend allocate without bound.",
 	},
 	{
 		Name:     "harness control plane",

@@ -6,6 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unsafe"
+
+	"agent-overflow/internal/diagenv"
+	"agent-overflow/internal/harnessrpc"
 )
 
 func TestParseFlagsHarnessRequiresDataDir(t *testing.T) {
@@ -224,5 +228,155 @@ func TestMockControlEnvironmentIsInstalledBeforeAppStart(t *testing.T) {
 				path, startControl, installEnv, startApp,
 			)
 		}
+	}
+}
+
+// TestRealBrowserEngineIsOptInAndNeverArmedForTheSoak covers the whole
+// pin decision (docs/specs/embedded-browser.md §10). Two properties, and
+// the default-off one is the safety property: every unattended run —
+// `make go-test`, `make e2e`, a Playwright leg — must keep the fake
+// engine, because the only failure mode of getting this wrong is a
+// browser silently launched on a machine nobody is watching.
+func TestRealBrowserEngineIsOptInAndNeverArmedForTheSoak(t *testing.T) {
+	cases := []struct {
+		name  string
+		env   string
+		flags cliFlags
+		want  bool
+	}{
+		{"harness, no opt-in", "", cliFlags{harness: true}, false},
+		{"harness, opt-in", "1", cliFlags{harness: true}, true},
+		{"harness, opt-in spelled true", "TRUE", cliFlags{harness: true}, true},
+		{"harness, non-truthy value", "0", cliFlags{harness: true}, false},
+		{"harness, garbage value", "maybe", cliFlags{harness: true}, false},
+		{"windowed harness, opt-in", "1", cliFlags{harness: true, window: true}, true},
+		// The Windows harness (`make harness-wsl`) rides the launcher-owned
+		// --soak wire flag WITHOUT --autopilot. It is attended, so it lifts.
+		{"launcher-shell harness, opt-in", "1", cliFlags{soak: true}, true},
+		{"launcher-shell harness, no opt-in", "", cliFlags{soak: true}, false},
+		// --autopilot is what makes an isolated instance a SOAK. Unattended
+		// for hours: the pin is unconditional there, opt-in or not.
+		{"soak autopilot, opt-in", "1", cliFlags{soak: true, autopilot: true}, false},
+		{"soak autopilot, no opt-in", "", cliFlags{soak: true, autopilot: true}, false},
+		{"windowed soak autopilot, opt-in", "1", cliFlags{soak: true, autopilot: true, window: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(diagenv.HarnessRealBrowser, tc.env)
+			if got := realBrowserEngineRequested(tc.flags); got != tc.want {
+				t.Fatalf("realBrowserEngineRequested(%+v) with %s=%q = %v, want %v",
+					tc.flags, diagenv.HarnessRealBrowser, tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
+// The pin is the NEGATION of the opt-in, so the zero isolationOptions —
+// what a caller that forgot to fill it in would pass — must still pin the
+// fake engine.
+func TestZeroIsolationOptionsKeepTheFakeBrowserEngine(t *testing.T) {
+	if (isolationOptions{}).RealBrowserEngine {
+		t.Fatal("zero isolationOptions requests a real browser engine; the safe default must be the zero value")
+	}
+}
+
+// The opt-in has to reach the WSL backend, which runs on the far side of
+// two WSLENV hops (`make harness-wsl`). diagenv.Passthrough is hop 2, the
+// one the launcher owns; DEV_WSL_FWD_VARS is hop 1, from the WSL shell to
+// the Windows launcher. Missing either leaves the variable set in a
+// terminal that the backend never hears about.
+func TestRealBrowserOptInCrossesTheWSLBoundary(t *testing.T) {
+	found := false
+	for _, name := range diagenv.Passthrough() {
+		if name == diagenv.HarnessRealBrowser {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("%s is not in diagenv.Passthrough(); the Windows harness backend would never see it", diagenv.HarnessRealBrowser)
+	}
+	makefile, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	for _, line := range strings.Split(string(makefile), "\n") {
+		if !strings.HasPrefix(line, "DEV_WSL_FWD_VARS :=") {
+			continue
+		}
+		if !strings.Contains(line, diagenv.HarnessRealBrowser) {
+			t.Fatalf("DEV_WSL_FWD_VARS omits %s; the WSL shell would never hand it to the Windows launcher", diagenv.HarnessRealBrowser)
+		}
+		return
+	}
+	t.Fatal("DEV_WSL_FWD_VARS not found in the Makefile")
+}
+
+// TestBrowserWindowGetterIsInstalledBeforeAppStart is the sibling of
+// TestMockControlEnvironmentIsInstalledBeforeAppStart, for the other
+// write-once boot input.
+//
+// SetBrowserNativeWindow must run before App.Start: the browser Manager is
+// built during startup and selects its engine from whether a getter
+// EXISTS. An isolated boot starts its backend long before any window,
+// which works only because the pointer behind the getter is resolved
+// lazily — so the getter is installed (still empty) inside
+// newIsolatedProviderApp, and this ordering is what keeps that call on the
+// right side of Start.
+func TestBrowserWindowGetterIsInstalledBeforeAppStart(t *testing.T) {
+	for _, path := range []string{"main_harness.go", "main_soak.go"} {
+		source, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := string(source)
+		build := strings.Index(text, "newIsolatedProviderApp(paths, isolationOptions{")
+		startApp := strings.Index(text, "appService.Start(bootCtx)")
+		if build < 0 || startApp < 0 || build > startApp {
+			t.Fatalf("%s: newIsolatedProviderApp=%d App.Start=%d; the browser window getter must be installed before startup", path, build, startApp)
+		}
+	}
+	// The install itself lives in that one helper, so a third isolated boot
+	// mode cannot pick up the pins without also picking up the window.
+	source, err := os.ReadFile("main_harness.go")
+	if err != nil {
+		t.Fatalf("read main_harness.go: %v", err)
+	}
+	if strings.Count(string(source), "appservice.SetBrowserNativeWindow(") != 1 {
+		t.Fatal("main_harness.go must install the browser window getter exactly once, inside newIsolatedProviderApp")
+	}
+}
+
+// The window cell is written by the Wails app loop and read by the browser
+// engine's start path, so it answers nil safely before the shell publishes
+// and returns the live handle after.
+func TestIsolatedNativeWindowAnswersNilUntilPublished(t *testing.T) {
+	window := &isolatedNativeWindow{}
+	if window.pointer() != nil {
+		t.Fatal("an unpublished window cell returned a pointer")
+	}
+	var handle int
+	wantState := harnessrpc.WindowState{Bounds: harnessrpc.WindowRect{Width: 1100, Height: 720}}
+	var gotCommand harnessrpc.WindowCommand
+	window.publish(
+		func() unsafe.Pointer { return unsafe.Pointer(&handle) },
+		func() (harnessrpc.WindowState, error) { return wantState, nil },
+		func(command harnessrpc.WindowCommand) error { gotCommand = command; return nil },
+	)
+	if window.pointer() != unsafe.Pointer(&handle) {
+		t.Fatal("the published window handle did not reach the getter")
+	}
+	if got, err := window.State(); err != nil || got != wantState {
+		t.Fatalf("published window state = %+v, %v; want %+v", got, err, wantState)
+	}
+	wantCommand := harnessrpc.WindowCommand{Action: "maximize"}
+	if err := window.Command(wantCommand); err != nil || gotCommand != wantCommand {
+		t.Fatalf("published window command = %+v, %v; want %+v", gotCommand, err, wantCommand)
+	}
+	// A windowed boot whose window has not materialized yet answers nil
+	// through the published getter, which is the ordinary case between
+	// app.Run and ApplicationStarted.
+	window.publish(func() unsafe.Pointer { return nil }, nil, nil)
+	if window.pointer() != nil {
+		t.Fatal("a published getter answering nil did not surface as nil")
 	}
 }

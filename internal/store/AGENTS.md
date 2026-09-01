@@ -598,7 +598,9 @@ baseline:
 - `idx_items_running_bg_tool_calls` (v41) serves the startup orphan sweep
   (`ListRecoverableClaudeBackgroundLaunches`), the one items query with no
   thread scope — measured 12s of cold full-table I/O on a multi-GB history DB
-  without it. `idx_items_live_background` can't serve it because that index
+  without it. Its thread-scoped variant
+  (`ListRecoverableClaudeBackgroundLaunchesForThread`, the session-end
+  settle) shares the same body and index. `idx_items_live_background` can't serve it because that index
   additionally requires `parent_id = ''` and subagent-scoped launches carry a
   parent.
 - `idx_items_running_fg_tool_calls` (v42) serves

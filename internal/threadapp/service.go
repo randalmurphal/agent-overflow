@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/keyedlock"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -18,6 +19,10 @@ type ModelPolicy interface {
 	SupportsReasoningEffort(providerName, model, effort string) bool
 	CoerceReasoningEffort(providerName, model, effort string) string
 	SupportsFastMode(providerName, model string) bool
+	// ContextWindowOptions resolves the selectable context windows against the
+	// best catalog available (merged/live, not just the static registry), so a
+	// wire-only model's windows validate and default correctly.
+	ContextWindowOptions(providerName, model string) []provider.ContextWindowOption
 	DraftDefaults(providerName, model, effort string, fastMode bool) (string, bool)
 	Remember(thread store.Thread)
 }

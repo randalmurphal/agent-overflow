@@ -127,6 +127,40 @@ func (s *Store) FindToolCallItemByTaskID(threadID, taskID string) (Item, bool, e
 	return item, found, nil
 }
 
+// FindOriginalAgentLaunchByTaskID resolves the ORIGINAL launch row a
+// Claude task belongs to: the OLDEST tool_call on threadID carrying
+// taskID in its persisted meta, excluding excludeItemID (the caller's
+// own row). It exists for the resume-carrier identity copy
+// (triage's keep-running flip): a §E6 resume rebinds the task onto the
+// resuming tool's OWN row and stamps the same task_id there, so
+// FindToolCallItemByTaskID's newest-first pick would hand the carrier
+// back to itself. Oldest-first with the carrier excluded is the first
+// binding — the original Agent/Task launch — even across repeated
+// resumes, whose carriers are all younger than the launch.
+//
+// Same index as FindToolCallItemByTaskID (idx_items_meta_task_id);
+// the exclusion and ordering are post-index refinements over the
+// handful of rows one task_id can match.
+func (s *Store) FindOriginalAgentLaunchByTaskID(threadID, taskID, excludeItemID string) (Item, bool, error) {
+	if taskID == "" {
+		return Item{}, false, nil
+	}
+	item, found, err := queryOneHydratedTimelineItem(
+		s.reader(), threadID,
+		`SELECT id FROM timeline_items
+		  WHERE thread_id = ?
+		    AND json_extract(meta, '$.task_id') = ?
+		    AND id <> ?
+		  ORDER BY created_at ASC
+		  LIMIT 1`,
+		threadID, taskID, excludeItemID,
+	)
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: find original agent launch by task id %s: %w", taskID, err)
+	}
+	return item, found, nil
+}
+
 // GetThreadItemByPayloadID returns the newest item on threadID whose
 // payload_id OR input_payload_id matches payloadID, so a payload id is
 // not usable outside the thread that references it. The two partial

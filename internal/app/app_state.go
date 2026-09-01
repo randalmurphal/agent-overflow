@@ -4,9 +4,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	appbrowser "agent-overflow/internal/browser"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/sessionimport"
 )
 
@@ -99,11 +101,32 @@ type appSessionImportState struct {
 }
 
 // appBrowserState is the provider-neutral arbitrary-web browser concern. The
-// MCP listener is cheap and per-session-tokened; Manager owns the lazily
-// launched Chrome process and workspace BrowserContexts.
+// MCP listener is cheap and per-session-tokened; Manager owns the engine — the
+// launcher-hosted controllers or the in-process views this app's own window
+// holds — and every page in it. A deployment with no window has no engine at
+// all, and browser tools are not offered there.
 type appBrowserState struct {
-	manager            *appbrowser.Manager
-	mcp                *appbrowser.MCPServer
+	manager *appbrowser.Manager
+	mcp     *appbrowser.MCPServer
+	// accelerators is the effective bound-chord set a page's native view
+	// hands back to AO (spec §7). Read on the UI thread per keypress, so it
+	// is a swap, not a keybindings file read; refreshBrowserAccelerators
+	// replaces it whenever the keybindings change.
+	accelerators atomic.Pointer[keybindings.AcceleratorSet]
+	// cdpRelay is the backend end of the Windows launcher's CDP tunnel,
+	// handed in by the executable before startup (bootstrap.go) and non-nil
+	// only on the WSL deployment. Its presence selects the hosted engine.
+	cdpRelay appbrowser.CDPRelay
+	// nativeWindow answers the desktop window an in-process browser engine
+	// hosts its views inside, or nil where there is no window at all
+	// (--connect, harness, tests) — which is what leaves those with no engine
+	// and no browser tools. Set once before Start by the desktop entry point.
+	nativeWindow func() unsafe.Pointer
+	// mockEngine pins the Manager to the fake engine (spec §10). It is one of
+	// the mocked-boot isolation pins (bootstrap.go), so the harness and soak
+	// render the pane's chrome and host rect with no browser behind them and
+	// no display to need.
+	mockEngine         bool
 	applyMu            sync.Mutex
 	applyWG            sync.WaitGroup
 	settingsGeneration atomic.Uint64

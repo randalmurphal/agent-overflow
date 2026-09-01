@@ -108,10 +108,11 @@ func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
 // compacts its OWN context, which is private to it — the same reason
 // handleTokenUsage drops scoped usage — so the thread's compacting
 // window, its usage-emit throttle and its context meter, all of which
-// describe the main agent, stay exactly where they are. Today only the
-// transcript backfill (subagent_transcript.go) delivers a scoped
-// boundary; the rule lives in the handler so a live one would land the
-// same way.
+// describe the main agent, stay exactly where they are. Two deliverers,
+// one rule: the live mirror compaction tap (claude
+// parse_transcript_mirror.go) lands the boundary at its real position,
+// and the terminal transcript backfill (subagent_transcript.go)
+// reconciles by the same provider uuid, so both resolve to one row.
 func (r *Router) persistSubagentCompaction(evt provider.ProviderEvent, scope string) error {
 	turnIndex, err := r.turnIndexForScope(evt.ThreadID, scope)
 	if err != nil {

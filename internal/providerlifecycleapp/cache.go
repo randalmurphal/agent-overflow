@@ -57,7 +57,20 @@ func (s *Service) RememberEvent(name eventchan.Channel, data any) {
 }
 
 // MergeSnapshot applies per-limit/window freshness without regressing quota
-// windows or same-window usage.
+// windows: an entry whose reset boundary is older than the cached one is
+// discarded, and same-window jitter in the boundary keeps the cached value.
+//
+// Within the same window the NEWEST reading wins, even when its used-percent
+// is lower. Every feed (wire rate-limit headers, the HTTP/app-server probes)
+// reports the server's current answer, and the server legitimately lowers
+// same-window utilization — a limit increase, or an outright server-side
+// usage reset under an unchanged boundary (2026-09-01: Anthropic manually
+// reset weekly usage mid-window, 46%→4% with the same resetsAt, and a
+// keep-the-max rule froze the stale figure until the window rolled,
+// surviving refresh and restart alike).
+// The only regression a max rule ever prevented was the sub-percent race of a
+// probe observed just before a turn landing just after it, which the next
+// reading corrects.
 func MergeSnapshot(current, incoming provider.RateLimitsSnapshot) (provider.RateLimitsSnapshot, bool) {
 	original := current
 	if current.Provider == "" {
@@ -85,7 +98,7 @@ func MergeSnapshot(current, incoming provider.RateLimitsSnapshot) (provider.Rate
 		if index, exists := indexByWindow[key]; exists {
 			prior := merged.Limits[index]
 			resetOrder := compareResetBoundaries(prior.ResetsAt, entry.ResetsAt)
-			if resetOrder < 0 || (resetOrder == 0 && prior.UsedPercent > entry.UsedPercent) {
+			if resetOrder < 0 {
 				continue
 			}
 			if resetOrder == 0 {

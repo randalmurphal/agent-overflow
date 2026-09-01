@@ -19,7 +19,7 @@ func requireWindowedBuild() {
 
 // runWindowedShell is unreachable: requireWindowedBuild exits before any
 // caller gets here. It exists so both build tags carry the same symbols.
-func runWindowedShell(_ *App, _ *transport.Server, _ string) error {
+func runWindowedShell(_ *App, _ *transport.Server, _ string, _ *isolatedNativeWindow) error {
 	requireWindowedBuild()
 	return nil
 }

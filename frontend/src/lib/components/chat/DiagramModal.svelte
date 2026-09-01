@@ -23,6 +23,7 @@
    */
 
   import { focusTrap } from '../../utils/focusTrap';
+  import { airspaceSurface } from '../../utils/paneAirspace.svelte';
 
   interface Props {
     open: boolean;
@@ -241,6 +242,7 @@
   <div
     class="fixed inset-0 z-[70] flex items-center justify-center bg-overlay backdrop-blur-sm"
     data-diagram-modal-backdrop
+    use:airspaceSurface
     onclick={handleBackdropClick}
     onkeydown={handleKeydown}
     role="dialog"

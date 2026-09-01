@@ -2,7 +2,6 @@ package browser
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"net"
 	"net/url"
@@ -10,59 +9,63 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
-	"github.com/chromedp/cdproto/emulation"
-	"github.com/chromedp/cdproto/input"
-	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/cdproto/target"
-	"github.com/chromedp/chromedp"
+	"agent-overflow/internal/keybindings"
+
 	"github.com/google/uuid"
 )
 
 const (
-	companionFrameInterval  = time.Second / 15
-	companionJPEGQuality    = 65
-	minCompanionWidth       = 320
-	minCompanionHeight      = 240
-	maxCompanionWidth       = 1920
-	maxCompanionHeight      = 1200
-	maxCompanionSubscribers = 64
-	maxCompanionText        = 1 << 20
-	maxCompanionKey         = 256
+	// The viewport bounds `browser_viewport` accepts, and the box every
+	// pointer coordinate must fall inside.
+	minCompanionWidth  = 320
+	minCompanionHeight = 240
+	maxCompanionWidth  = 1920
+	maxCompanionHeight = 1200
+	// maxCompanionPanes bounds the mounted pane surfaces one process tracks,
+	// so a client that never detaches cannot grow the registry without end.
+	maxCompanionPanes = 64
 )
 
-type companionSubscriber struct {
+// PaneRect is where a mounted browser pane's host rect sits, in the SPA's own
+// CSS pixels, together with the SPA viewport it was measured in. A host never
+// assumes CSS pixels equal its units: it scales the rect by its own client
+// size over the viewport, which makes the position exact under webview zoom
+// (Ctrl+=) and any DPI without either side knowing the other's scale factor.
+// Visible is false while the pane is mounted but must not be painted over: an
+// AO overlay intersects the rect, or the rect is entirely off the pane strip.
+//
+// Clip* is the VISIBLE intersection of the rect with every clipping ancestor,
+// in the same CSS-pixel space. A native view cannot be cropped by the DOM, so
+// the engine crops it: the view keeps the full rect's size (the page must not
+// relayout because it scrolled half behind the sidebar) and the host clips its
+// presentation to the clip rect. An unclipped pane reports clip == rect.
+// Background is the pane surface's resolved CSS color ("#rrggbb"); engines
+// paint it where the page has not presented yet, so freshly exposed strips
+// match the pane instead of flashing the engine default.
+type PaneRect struct {
+	X              float64 `json:"x"`
+	Y              float64 `json:"y"`
+	Width          float64 `json:"width"`
+	Height         float64 `json:"height"`
+	ClipX          float64 `json:"clipX"`
+	ClipY          float64 `json:"clipY"`
+	ClipWidth      float64 `json:"clipWidth"`
+	ClipHeight     float64 `json:"clipHeight"`
+	ViewportWidth  float64 `json:"viewportWidth"`
+	ViewportHeight float64 `json:"viewportHeight"`
+	Visible        bool    `json:"visible"`
+	Background     string  `json:"background,omitempty"`
+}
+
+// paneMount is one mounted pane surface: the frontend's claim that a host rect
+// for this thread exists, plus the last rect it reported. The mount is the
+// unit connection cleanup releases, so a dead UI can never leave a native view
+// painted over a window that no longer renders the pane under it.
+type paneMount struct {
 	threadID string
-	width    int
-	height   int
-	frames   chan CompanionEvent
-	done     chan struct{}
-}
-
-type pageStream struct {
-	width  int
-	height int
-	done   chan struct{}
-	frames chan CompanionEvent
-	seq    uint64
-	ready  bool
-}
-
-func clampViewport(width, height int) (int, int) {
-	if width < minCompanionWidth {
-		width = minCompanionWidth
-	}
-	if height < minCompanionHeight {
-		height = minCompanionHeight
-	}
-	if width > maxCompanionWidth {
-		width = maxCompanionWidth
-	}
-	if height > maxCompanionHeight {
-		height = maxCompanionHeight
-	}
-	return width, height
+	rect     PaneRect
+	hasRect  bool
 }
 
 func (p *managedPage) setInfo(info PageInfo) {
@@ -70,6 +73,17 @@ func (p *managedPage) setInfo(info PageInfo) {
 	info.Label = p.info.Label
 	p.info = info
 	p.metaMu.Unlock()
+}
+
+// setHistoryState updates only the back/forward flags and reports whether
+// anything changed, so the async refresh behind an engine info event emits
+// no state push when the answer is the one already shown.
+func (p *managedPage) setHistoryState(canGoBack, canGoForward bool) bool {
+	p.metaMu.Lock()
+	changed := p.info.CanGoBack != canGoBack || p.info.CanGoForward != canGoForward
+	p.info.CanGoBack, p.info.CanGoForward = canGoBack, canGoForward
+	p.metaMu.Unlock()
+	return changed
 }
 
 func (p *managedPage) setLabel(label string) PageInfo {
@@ -91,7 +105,7 @@ func (m *Manager) pageChanged(p *managedPage) {
 	p.touch()
 	m.ensureActivePage(p.owner, p.id)
 	m.emitThreadState(p.owner)
-	m.syncThreadStream(p.owner)
+	m.syncPanePresentation(p.owner)
 }
 
 func (m *Manager) threadState(threadID string) CompanionEvent {
@@ -106,7 +120,7 @@ func (m *Manager) threadState(threadID string) CompanionEvent {
 	}
 	session, hasSession := m.sessions[threadID]
 	m.mu.Unlock()
-	sort.Slice(pages, func(i, j int) bool { return pages[i].createdAt < pages[j].createdAt })
+	sortPagesByTabOrder(pages)
 	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(pages))}
 	visible := false
 	if hasSession {
@@ -136,151 +150,211 @@ func (m *Manager) emitThreadState(threadID string) {
 	}
 }
 
-func (m *Manager) updateTargetInfo(info target.Info) {
-	m.mu.Lock()
-	var found *managedPage
+// pageByHandleLocked resolves an engine handle to the page it drives. Caller
+// holds m.mu.
+func (m *Manager) pageByHandleLocked(handle string) *managedPage {
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.target == info.TargetID {
-				found = p
-				break
+			if p.driver.Handle() == handle {
+				return p
 			}
 		}
-		if found != nil {
-			break
-		}
 	}
+	return nil
+}
+
+// keyChord is engineEvents.KeyChord: it answers on the engine's UI thread, so
+// it is one set lookup, and the routing that takes m.mu happens off it.
+func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator) bool {
+	if m.accelerators == nil {
+		return false
+	}
+	bound, ok := m.accelerators().Match(pressed)
+	if !ok {
+		return false
+	}
+	go m.emitAccelerator(handle, bound)
+	return true
+}
+
+func (m *Manager) emitAccelerator(handle string, bound keybindings.Accelerator) {
+	m.mu.Lock()
+	p := m.pageByHandleLocked(handle)
+	m.mu.Unlock()
+	if p == nil {
+		return
+	}
+	m.emit(CompanionEvent{Kind: "accelerator", ThreadID: p.owner, Accelerator: &bound})
+}
+
+// AcceleratorsChanged tells an engine that matches chords out of process
+// (engineAccelerators) that the bound set it holds is stale.
+func (m *Manager) AcceleratorsChanged() {
+	if engine, ok := m.engine.(engineAccelerators); ok {
+		engine.SyncAccelerators()
+	}
+}
+
+func (m *Manager) updatePageInfo(handle, url, title string) {
+	m.mu.Lock()
+	found := m.pageByHandleLocked(handle)
 	m.mu.Unlock()
 	if found == nil {
 		return
 	}
-	found.setInfo(PageInfo{ID: found.id, URL: truncateUTF8(info.URL, maxBrowserURLBytes), Title: truncateUTF8(info.Title, maxBrowserTitleBytes)})
+	previous := found.cachedInfo()
+	found.setInfo(PageInfo{
+		ID:    found.id,
+		URL:   truncateUTF8(url, maxBrowserURLBytes),
+		Title: truncateUTF8(title, maxBrowserTitleBytes),
+		// The engine event carries no history state; keep what is shown
+		// and let the async refresh below correct it.
+		CanGoBack: previous.CanGoBack, CanGoForward: previous.CanGoForward,
+	})
 	m.emitThreadState(found.owner)
+	go m.refreshHistoryState(found)
 }
 
-func (m *Manager) SubscribeCompanion(access Access, width, height int) (CompanionSubscription, error) {
-	state := m.threadState(access.ThreadID)
-	if len(state.Pages) == 0 {
-		return CompanionSubscription{}, fmt.Errorf("browser: thread has no open pages")
+// refreshHistoryState re-reads one page's back/forward availability after an
+// engine announced a navigation, off the engine's event goroutine — the read
+// is a driver round trip, and blocking the event dispatcher on it could
+// deadlock an engine whose events and commands share a loop. A late answer
+// only ever disables a button one push later; the next state emission wins.
+func (m *Manager) refreshHistoryState(p *managedPage) {
+	ctx, cancel := operationContext(context.Background(), p.driver.Lifetime(), operationTimeout)
+	defer cancel()
+	back, forward, err := p.driver.HistoryState(ctx)
+	if err != nil {
+		return
 	}
-	width, height = clampViewport(width, height)
-	id := uuid.NewString()
-	m.mu.Lock()
-	if len(m.subscriptions) >= maxCompanionSubscribers {
-		m.mu.Unlock()
-		return CompanionSubscription{}, fmt.Errorf("browser: too many companion subscriptions")
+	if p.setHistoryState(back, forward) {
+		m.emitThreadState(p.owner)
 	}
-	m.subscriptions[id] = companionSubscriber{
-		threadID: access.ThreadID,
-		width:    width,
-		height:   height,
-		frames:   make(chan CompanionEvent, 1),
-		done:     make(chan struct{}),
-	}
-	m.mu.Unlock()
-	m.syncThreadStream(access.ThreadID)
-	return CompanionSubscription{ID: id, State: state}, nil
 }
 
 func (m *Manager) CompanionState(access Access) CompanionEvent {
 	return m.threadState(access.ThreadID)
 }
 
-func (m *Manager) UnsubscribeCompanion(id string) {
+// AttachPane registers one mounted pane surface for a thread and answers the
+// state snapshot the pane renders its chrome from. The returned id is what
+// SetPaneRect addresses and what DetachPane (or connection cleanup) releases.
+func (m *Manager) AttachPane(access Access) (CompanionSubscription, error) {
+	state := m.threadState(access.ThreadID)
+	if len(state.Pages) == 0 {
+		return CompanionSubscription{}, fmt.Errorf("browser: thread has no open pages")
+	}
+	id := uuid.NewString()
 	m.mu.Lock()
-	sub, ok := m.subscriptions[id]
+	if len(m.panes) >= maxCompanionPanes {
+		m.mu.Unlock()
+		return CompanionSubscription{}, fmt.Errorf("browser: too many mounted browser panes")
+	}
+	m.panes[id] = paneMount{threadID: access.ThreadID}
+	m.mu.Unlock()
+	return CompanionSubscription{ID: id, State: state}, nil
+}
+
+// DetachPane releases one pane mount. The presentation sync runs so an engine
+// with a presented native view hides it rather than painting over whatever
+// replaced the pane.
+func (m *Manager) DetachPane(id string) {
+	m.mu.Lock()
+	mount, ok := m.panes[id]
 	if ok {
-		delete(m.subscriptions, id)
-		close(sub.done)
+		delete(m.panes, id)
 	}
 	m.mu.Unlock()
 	if ok {
-		m.syncThreadStream(sub.threadID)
+		m.syncPanePresentation(mount.threadID)
 	}
 }
 
-// NextCompanionFrame waits for the newest frame addressed to one companion
-// subscription. Frames do not ride the global event bus: only the connection
-// that mounted the pane pays the JPEG wire/JSON cost, and the capacity-one
-// queue naturally backpressures a slow or backgrounded renderer.
-func (m *Manager) NextCompanionFrame(ctx context.Context, id string) (CompanionEvent, error) {
-	m.mu.Lock()
-	sub, ok := m.subscriptions[strings.TrimSpace(id)]
-	m.mu.Unlock()
-	if !ok {
-		return CompanionEvent{}, fmt.Errorf("browser: companion subscription not found")
+// SetPaneRect records the mounted pane's current host rect. The frontend
+// coalesces to one report per changed frame, so this path must stay cheap: a
+// bookkeeping write and one presentation sync.
+func (m *Manager) SetPaneRect(id string, rect PaneRect) error {
+	if rect.Width < 0 || rect.Height < 0 {
+		rect.Width, rect.Height = 0, 0
 	}
-	select {
-	case event := <-sub.frames:
-		return event, nil
-	case <-sub.done:
-		return CompanionEvent{}, fmt.Errorf("browser: companion subscription closed")
-	case <-ctx.Done():
-		return CompanionEvent{}, ctx.Err()
+	if rect.ClipX == 0 && rect.ClipY == 0 && rect.ClipWidth == 0 && rect.ClipHeight == 0 {
+		// A reporter that predates clipping (tests, the harness bridge) means
+		// "unclipped", and downstream engines must never see a zero clip they
+		// would crop everything away with.
+		rect.ClipX, rect.ClipY = rect.X, rect.Y
+		rect.ClipWidth, rect.ClipHeight = rect.Width, rect.Height
 	}
-}
-
-func (m *Manager) deliverCompanionFrame(event CompanionEvent) {
-	m.mu.Lock()
-	for _, sub := range m.subscriptions {
-		if sub.threadID != event.ThreadID {
-			continue
-		}
-		select {
-		case sub.frames <- event:
-		default:
-			select {
-			case <-sub.frames:
-			default:
-			}
-			select {
-			case sub.frames <- event:
-			default:
-			}
-		}
+	if rect.ClipWidth < 0 || rect.ClipHeight < 0 {
+		rect.ClipWidth, rect.ClipHeight = 0, 0
 	}
-	m.mu.Unlock()
-}
-
-func (m *Manager) ResizeCompanion(id string, width, height int) error {
-	width, height = clampViewport(width, height)
 	m.mu.Lock()
-	sub, ok := m.subscriptions[id]
+	mount, ok := m.panes[strings.TrimSpace(id)]
 	if ok {
-		sub.width, sub.height = width, height
-		m.subscriptions[id] = sub
+		mount.rect = rect
+		mount.hasRect = true
+		m.panes[strings.TrimSpace(id)] = mount
 	}
 	m.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("browser: companion subscription not found")
+		return fmt.Errorf("browser: pane mount not found")
 	}
-	m.syncThreadStream(sub.threadID)
+	m.syncPanePresentation(mount.threadID)
 	return nil
 }
 
-func (m *Manager) syncThreadStream(threadID string) {
+// OpenPaneDevTools opens the engine's inspector for one of the thread's pages.
+// Only engines with an inspector they can open implement paneDevTools;
+// WKWebView (Safari's Develop menu is the inspector) and the fake engine
+// answer with an explained refusal rather than a silent no-op.
+func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID string) error {
+	host, ok := m.engine.(paneDevTools)
+	if !ok {
+		return fmt.Errorf("browser: devtools are not available on this browser engine")
+	}
+	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
+	if err != nil {
+		return err
+	}
+	host.OpenPageDevTools(p.driver.Handle())
+	return nil
+}
+
+// syncPanePresentation decides WHICH of a thread's pages is presented and
+// whether the pane is showing at all, then tells the engine the outcome. The
+// decision itself stays here, in the Manager: an engine is told the outcome,
+// never the rule.
+//
+// Where the pane SITS is the frontend's answer: the mounted pane reports its
+// host rect (SetPaneRect) and that rect rides along, so bounds always land
+// before the show. At most one pane per thread exists (a frontend invariant),
+// and a mounted pane without a usable rect yet keeps the view hidden rather
+// than flashing it at a stale place.
+//
+// An engine whose pages are not real windows implements no paneHost, so this
+// is a type assertion that fails and costs nothing on every deployment that
+// cannot present a page at all.
+func (m *Manager) syncPanePresentation(threadID string) {
+	host, ok := m.engine.(paneHost)
+	if !ok {
+		return
+	}
 	m.mu.Lock()
-	var pages []*managedPage
-	var active *managedPage
-	width, height := 0, 0
-	hasSubscriber := false
 	session, hasSession := m.sessions[threadID]
-	visible := hasSession && session.Visible
-	for _, sub := range m.subscriptions {
-		if sub.threadID != threadID {
+	shown := false
+	var rect PaneRect
+	for _, mount := range m.panes {
+		if mount.threadID != threadID || !mount.hasRect {
 			continue
 		}
-		hasSubscriber = true
-		if sub.width*sub.height > width*height {
-			width, height = sub.width, sub.height
+		if mount.rect.Visible && mount.rect.Width >= 1 && mount.rect.Height >= 1 &&
+			mount.rect.ClipWidth >= 1 && mount.rect.ClipHeight >= 1 {
+			shown = true
+			rect = mount.rect
 		}
 	}
-	if hasSubscriber && session.ViewportSet {
-		width, height = session.ViewportW, session.ViewportH
-	}
-	if !visible {
-		width, height = 0, 0
-	}
+	visible := hasSession && session.Visible && shown
+	var pages []*managedPage
+	var active *managedPage
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
 			if p.owner != threadID {
@@ -294,197 +368,63 @@ func (m *Manager) syncThreadStream(threadID string) {
 	}
 	m.mu.Unlock()
 	for _, p := range pages {
-		if width == 0 || p != active {
-			p.stopStream()
+		if p == active && visible {
+			continue
 		}
+		host.HidePage(p.driver.Handle())
 	}
-	if width > 0 && active != nil {
-		active.startStream(m, width, height)
+	if visible && active != nil {
+		host.SetPageBounds(active.driver.Handle(), rect)
+		host.ShowPage(active.driver.Handle())
 	}
 }
 
-func (p *managedPage) startStream(m *Manager, width, height int) {
-	width, height = clampViewport(width, height)
-	p.streamMu.Lock()
-	if p.stream != nil && p.stream.width == width && p.stream.height == height {
-		p.streamMu.Unlock()
-		return
-	}
-	old := p.stream
-	stream := &pageStream{
-		width: width, height: height,
-		done:   make(chan struct{}),
-		frames: make(chan CompanionEvent, 1),
-	}
-	p.stream = stream
-	p.streamMu.Unlock()
-	if old != nil {
-		close(old.done)
-	}
-	go stream.run(m)
-	go func() {
-		p.streamCmdMu.Lock()
-		defer p.streamCmdMu.Unlock()
-		p.streamMu.Lock()
-		current := p.stream == stream
-		p.streamMu.Unlock()
-		if !current {
-			return
+// sortPagesByTabOrder is THE tab-strip order: every surface that lists a
+// thread's pages (companion state, ambiguity errors) sorts with it so the
+// UI, the tools and the errors never disagree about which tab is first.
+func sortPagesByTabOrder(pages []*managedPage) {
+	sort.Slice(pages, func(i, j int) bool {
+		oi, oj := pages[i].tabOrder.Load(), pages[j].tabOrder.Load()
+		if oi != oj {
+			return oi < oj
 		}
-		ctx, cancel := operationContext(context.Background(), p.ctx, 5*time.Second)
-		defer cancel()
-		targetCtx := targetCommandContext(ctx)
-		_ = page.StopScreencast().Do(targetCtx)
-		if err := emulation.SetDeviceMetricsOverride(int64(width), int64(height), 1, false).Do(targetCtx); err != nil {
-			m.emit(CompanionEvent{Kind: "error", ThreadID: p.owner, PageID: p.id, Error: err.Error()})
-			return
-		}
-		// Chrome may deliver the first (and, for a static page, only) frame
-		// before StartScreencast returns. Arm the stream before issuing the
-		// command so that frame cannot be discarded by the target callback.
-		p.streamMu.Lock()
-		if p.stream == stream {
-			stream.ready = true
-		}
-		p.streamMu.Unlock()
-		if err := page.StartScreencast().WithFormat(page.ScreencastFormatJpeg).WithQuality(companionJPEGQuality).WithMaxWidth(int64(width)).WithMaxHeight(int64(height)).WithEveryNthFrame(2).Do(targetCtx); err != nil {
-			p.streamMu.Lock()
-			if p.stream == stream {
-				stream.ready = false
-			}
-			p.streamMu.Unlock()
-			m.emit(CompanionEvent{Kind: "error", ThreadID: p.owner, PageID: p.id, Error: err.Error()})
-			return
-		}
-		// Screencast is damage-driven: a page that was already fully painted
-		// can produce no event at all. Seed a single frame after startup, but
-		// skip it when the stream callback already delivered one.
-		if err := p.seedInitialStreamFrame(stream); err != nil {
-			m.emit(CompanionEvent{Kind: "error", ThreadID: p.owner, PageID: p.id, Error: err.Error()})
-		}
-	}()
+		return pages[i].createdAt < pages[j].createdAt
+	})
 }
 
-func (p *managedPage) seedInitialStreamFrame(stream *pageStream) error {
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		p.streamMu.Lock()
-		current := p.stream == stream
-		alreadyDelivered := stream.seq > 0
-		p.streamMu.Unlock()
-		if !current || alreadyDelivered {
-			return nil
-		}
-		ctx, cancel := operationContext(context.Background(), p.ctx, 3*time.Second)
-		initial, err := page.CaptureScreenshot().
-			WithFormat(page.CaptureScreenshotFormatJpeg).
-			WithQuality(companionJPEGQuality).
-			WithFromSurface(true).
-			WithOptimizeForSpeed(true).
-			Do(targetCommandContext(ctx))
-		cancel()
-		if err == nil && len(initial) == 0 {
-			err = fmt.Errorf("empty JPEG")
-		}
-		if err == nil {
-			p.streamMu.Lock()
-			if p.stream == stream && stream.seq == 0 {
-				stream.seq++
-				frame := CompanionEvent{
-					Kind: "frame", ThreadID: p.owner, PageID: p.id,
-					Frame: base64.StdEncoding.EncodeToString(initial),
-					Width: stream.width, Height: stream.height, Sequence: stream.seq,
-				}
-				select {
-				case stream.frames <- frame:
-				default:
-				}
-			}
-			p.streamMu.Unlock()
-			return nil
-		}
-		lastErr = err
-		select {
-		case <-stream.done:
-			return nil
-		case <-p.ctx.Done():
-			return nil
-		case <-time.After(75 * time.Millisecond):
-		}
+// MoveCompanionPage places one of the thread's pages at index in tab order
+// (clamped). Order is runtime state, like the pages themselves: the moved
+// prefix is renumbered 1..n, and a page opened later keeps appending at the
+// end because its creation-time key is always larger.
+func (m *Manager) MoveCompanionPage(access Access, pageID string, index int) error {
+	p, _, err := m.lookupOwnedPage(access, pageID)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("browser: seed companion frame after retries: %w", lastErr)
-}
-
-func (p *managedPage) stopStream() {
-	p.streamMu.Lock()
-	stream := p.stream
-	p.stream = nil
-	p.streamMu.Unlock()
-	if stream == nil {
-		return
-	}
-	close(stream.done)
-	go func() {
-		p.streamCmdMu.Lock()
-		defer p.streamCmdMu.Unlock()
-		p.streamMu.Lock()
-		replaced := p.stream != nil
-		p.streamMu.Unlock()
-		if replaced {
-			return
-		}
-		ctx, cancel := operationContext(context.Background(), p.ctx, 3*time.Second)
-		defer cancel()
-		_ = page.StopScreencast().Do(targetCommandContext(ctx))
-	}()
-}
-
-func (s *pageStream) run(m *Manager) {
-	ticker := time.NewTicker(companionFrameInterval)
-	defer ticker.Stop()
-	var pending *CompanionEvent
-	for {
-		select {
-		case <-s.done:
-			return
-		case frame := <-s.frames:
-			pending = &frame
-		case <-ticker.C:
-			if pending != nil {
-				m.deliverCompanionFrame(*pending)
-				pending = nil
+	m.mu.Lock()
+	var pages []*managedPage
+	for _, scope := range m.scopes {
+		for _, q := range scope.pages {
+			if q.owner == access.ThreadID {
+				pages = append(pages, q)
 			}
 		}
 	}
-}
-
-func (m *Manager) handleScreencastFrame(p *managedPage, event *page.EventScreencastFrame) {
-	go func() {
-		ctx, cancel := operationContext(context.Background(), p.ctx, 3*time.Second)
-		defer cancel()
-		_ = page.ScreencastFrameAck(event.SessionID).Do(targetCommandContext(ctx))
-	}()
-	p.streamMu.Lock()
-	stream := p.stream
-	if stream == nil || !stream.ready {
-		p.streamMu.Unlock()
-		return
-	}
-	stream.seq++
-	frame := CompanionEvent{Kind: "frame", ThreadID: p.owner, PageID: p.id, Frame: event.Data, Width: stream.width, Height: stream.height, Sequence: stream.seq}
-	select {
-	case stream.frames <- frame:
-	default:
-		select {
-		case <-stream.frames:
-		default:
-		}
-		select {
-		case stream.frames <- frame:
-		default:
+	m.mu.Unlock()
+	sortPagesByTabOrder(pages)
+	ordered := make([]*managedPage, 0, len(pages))
+	for _, q := range pages {
+		if q != p {
+			ordered = append(ordered, q)
 		}
 	}
-	p.streamMu.Unlock()
+	index = max(0, min(index, len(ordered)))
+	ordered = append(ordered[:index], append([]*managedPage{p}, ordered[index:]...)...)
+	for i, q := range ordered {
+		q.tabOrder.Store(int64(i + 1))
+	}
+	m.emitThreadState(access.ThreadID)
+	return nil
 }
 
 func (m *Manager) NewCompanionPage(ctx context.Context, access Access) (PageInfo, error) {
@@ -506,7 +446,7 @@ func (m *Manager) ActivateCompanionPage(access Access, pageID string) error {
 	p.touch()
 	m.setActivePage(access.ThreadID, p.id)
 	m.emitThreadState(access.ThreadID)
-	m.syncThreadStream(access.ThreadID)
+	m.syncPanePresentation(access.ThreadID)
 	return nil
 }
 
@@ -518,7 +458,17 @@ func (m *Manager) NavigateCompanion(ctx context.Context, access Access, pageID, 
 	lower := strings.ToLower(address)
 	parsed, _ := url.Parse(address)
 	if parsed != nil && strings.EqualFold(parsed.Scheme, "file") {
-		return m.OpenFile(ctx, access, filepath.FromSlash(parsed.Path), OpenOptions{PageID: pageID})
+		localPath := filepath.FromSlash(parsed.Path)
+		if engine, ok := m.engine.(engineFileURL); ok {
+			// A pasted file URL is in the RENDERER's form; OpenFile wants
+			// the backend path behind it.
+			mapped, err := engine.BackendFilePath(ctx, address)
+			if err != nil {
+				return PageInfo{}, err
+			}
+			localPath = mapped
+		}
+		return m.OpenFile(ctx, access, localPath, OpenOptions{PageID: pageID})
 	}
 	if filepath.IsAbs(address) {
 		return m.OpenFile(ctx, access, address, OpenOptions{PageID: pageID})
@@ -542,79 +492,4 @@ func (m *Manager) NavigateCompanion(ctx context.Context, access Access, pageID, 
 		}
 	}
 	return m.Open(ctx, access, address, OpenOptions{PageID: pageID})
-}
-
-func (m *Manager) CompanionInput(ctx context.Context, access Access, pageID string, event CompanionInput) error {
-	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
-	if err != nil {
-		return err
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-	defer cancel()
-	targetCtx := targetCommandContext(opCtx)
-	switch strings.ToLower(strings.TrimSpace(event.Kind)) {
-	case "text":
-		if event.Text == "" {
-			return nil
-		}
-		if len(event.Text) > maxCompanionText {
-			return fmt.Errorf("browser: companion text exceeds %d bytes", maxCompanionText)
-		}
-		err = input.InsertText(event.Text).Do(targetCtx)
-	case "key":
-		if len(event.Key) == 0 || len(event.Key) > maxCompanionKey {
-			return fmt.Errorf("browser: companion key must be between 1 and %d bytes", maxCompanionKey)
-		}
-		key := event.Key
-		if event.Control {
-			key = "Control+" + key
-		}
-		if event.Alt {
-			key = "Alt+" + key
-		}
-		if event.Shift {
-			key = "Shift+" + key
-		}
-		if event.Meta {
-			key = "Meta+" + key
-		}
-		encoded, modifiers := browserKey(key)
-		err = chromedp.Run(opCtx, chromedp.KeyEvent(encoded, browserKeyOptions(key, modifiers)...))
-	case "move", "down", "up", "wheel":
-		mouseType := input.MouseMoved
-		switch strings.ToLower(event.Kind) {
-		case "down":
-			mouseType = input.MousePressed
-		case "up":
-			mouseType = input.MouseReleased
-		case "wheel":
-			mouseType = input.MouseWheel
-		}
-		button := input.None
-		switch strings.ToLower(event.Button) {
-		case "left":
-			button = input.Left
-		case "middle":
-			button = input.Middle
-		case "right":
-			button = input.Right
-		}
-		params := input.DispatchMouseEvent(mouseType, event.X, event.Y).WithButton(button).WithButtons(event.Buttons).WithClickCount(event.ClickCount)
-		if mouseType == input.MouseWheel {
-			params = params.WithDeltaX(event.DeltaX).WithDeltaY(event.DeltaY)
-		}
-		err = params.Do(targetCtx)
-	default:
-		return fmt.Errorf("browser: unsupported companion input %q", event.Kind)
-	}
-	if err != nil {
-		return fmt.Errorf("browser: companion input: %w", err)
-	}
-	// Input targets the already-active companion page. Updating its MRU stamp
-	// is enough; emitting a full tab-state event for every pointer move would
-	// flood every local connection while changing no visible state.
-	p.touch()
-	return nil
 }

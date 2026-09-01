@@ -171,12 +171,13 @@ export const RefreshProviderAccountUsage = dispatch('RefreshProviderAccountUsage
 export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');
 export const ClearBrowserSiteData = dispatch('ClearBrowserSiteData');
+export const BrowserCompanionRevealPageFile = dispatch('BrowserCompanionRevealPageFile');
 export const BrowserCompanionDo = dispatch('BrowserCompanionDo');
-export const BrowserCompanionInput = dispatch('BrowserCompanionInput');
-export const BrowserCompanionNextFrame = dispatch('BrowserCompanionNextFrame');
-export const BrowserCompanionResize = dispatch('BrowserCompanionResize');
-export const BrowserCompanionSubscribe = dispatch('BrowserCompanionSubscribe');
-export const BrowserCompanionUnsubscribe = dispatch('BrowserCompanionUnsubscribe');
+export const BrowserCompanionPaneAttach = dispatch('BrowserCompanionPaneAttach');
+export const BrowserCompanionPaneDetach = dispatch('BrowserCompanionPaneDetach');
+export const BrowserCompanionPaneRect = dispatch('BrowserCompanionPaneRect');
+export const BrowserCompanionThreadState = dispatch('BrowserCompanionThreadState');
+export const BrowserHostReport = dispatch('BrowserHostReport');
 
 // Appearance / themes (stores/appearance.svelte.ts). Both writes are gated
 // on the wire — `SetAppearance` needs `settings:write` and

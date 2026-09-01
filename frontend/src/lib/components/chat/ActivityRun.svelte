@@ -659,7 +659,19 @@
     const content = contentEl;
     const controller = stick;
     if (!clip || !content) return;
-    const geometry = new ResizeObserver(() => processClipGeometry(controller === null));
+    const geometry = new ResizeObserver(() => {
+      processClipGeometry(controller === null);
+      // The controller's only geometry source is the CONTENT box, so a
+      // clip-viewport change — the cap lift retracting when a body inside
+      // collapses, the 50vh half of the cap on a window resize — is
+      // invisible to it: the scrollable range grows with no content delta
+      // to report, and a pinned run strands the retracted height above its
+      // newest row (2026-08-31, "the collapse doesn't collapse in the
+      // right direction"). Same seam the conversation uses for its own
+      // viewport changes: escape-aware, live-capable, so an escaped reader
+      // is never yanked and a mid-glide change rides the glide.
+      controller?.observe('composer-geometry');
+    });
     geometry.observe(clip);
     if (controller === null) geometry.observe(content);
     return () => geometry.disconnect();

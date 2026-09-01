@@ -121,8 +121,11 @@ claim here.
 - `session_fork.go` — the `thread/fork` RPC wrapper (`Fork` / `ForkAt`);
   a `lastTurnId` cut (Codex >= 0.143) is the history truncation that
   works on every supported codex, and the one AO falls back to. It
-  replaced the deprecated `thread/rollback` and is not upstream's only
-  cut — see §"History truncation: three cuts, all turn-granular".
+  always sends `excludeTurns: true` so a long transcript cannot become one
+  oversized JSON-RPC response. Anchored forks validate the new tail with one
+  metadata-only `thread/turns/list` request. It replaced the deprecated
+  `thread/rollback` and is not upstream's only cut — see §"History
+  truncation: three cuts, all turn-granular".
 - `session_revert.go` — the `thread/revert` RPC wrapper (`Revert`), the
   in-place cut AO PREFERS: same thread id, same rollout lineage, no
   repoint. Two gates decide whether it is available, both read off the
@@ -537,7 +540,9 @@ the paginated consequences:
 - `thread/fork { lastTurnId }` (`session_fork.go`) is the FALLBACK and the only
   cut every supported codex answers. It names the same boundary as revert from
   the opposite side (last KEPT turn versus first DROPPED one), which is why the
-  app layer resolves the two anchors separately.
+  app layer resolves the two anchors separately. Every fork excludes response
+  turns. An anchored fork validates its result through a one-row descending
+  `thread/turns/list {itemsView:"notLoaded"}` page instead.
 - `threadStartHistoryMode` asks for `paginated` at birth, because upstream's
   default is legacy and `thread/resume` has no history-mode field, so a thread
   that starts legacy can never be reverted. `isHistoryPaginationUnsupported`
@@ -624,7 +629,7 @@ Params and response shapes are in `codex-wire.md`. These are the AO-side rules.
 |---|---|
 | `thread/start`, `thread/resume` | `buildThreadParams` always names `approvalsReviewer`, and `verifyApprovalsReviewerEcho` reads it back before the session is handed out. Resume always sends `excludeTurns: true`, because AO's SQLite projection is the transcript authority. |
 | mid-life reconcile resumes | `session_probe.go`, `collab_profiles.go`, and `collab_rehydrate.go` send NO overrides. Codex ignores overrides when resuming a LOADED thread, and a divergent one arms its shutdown-and-cold-resume branch. A child resume response is also the authority for that child's effective model and effort. |
-| `thread/fork` | Names none of the config axes, safe only because nothing executes until a `turn/start` re-asserts every axis. Do not special-case the reviewer without doing the same for the sandbox. |
+| `thread/fork` | Names none of the config axes, safe only because nothing executes until a `turn/start` re-asserts every axis. Always sends `excludeTurns: true`; anchored forks read one metadata-only turn shell afterward to validate the cut. Do not special-case the reviewer without doing the same for the sandbox. |
 | `turn/start` | Carries the per-turn config overrides, which is how a live model, effort, fast-mode or runtime-mode change lands with no restart. `SendOptions.OutputSchema` rides it and is never sticky. |
 | `turn/steer` | Takes no config fields. Refuse with `ErrNoActiveTurn`, without writing, when there is no tracked `activeTurnID`. |
 | `thread/settings/update` | Strictly ADDITIVE over the `turn/start` overrides (model, effort, `serviceTier`), so every failure path degrades to the previous behavior. The runtime-mode axes never route through it, and it is called only while the thread is idle. |

@@ -56,6 +56,11 @@ carries none (`internal/pagehost`).
   stdlib-only so the page contract has one definition and no Wails dependency).
   Minting is the caller's too — each host passes the `mint` its own backend
   reaches.
+- Every `Bounds`, creation-option size, and `Screen.WorkArea` crossing this
+  boundary is DIP. On macOS that depends on the pinned Wails fork converting
+  requested outer frames to AppKit content rects at construction and resolving
+  `GetScreen` through the laid-out screen cache; returning raw `NSScreen`
+  values recreates progressive title-bar growth and 2x Retina display records.
 
 ## Importers (GUI binaries only)
 

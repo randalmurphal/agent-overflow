@@ -672,6 +672,15 @@ foreground. It's NOT a "backgrounded-only" signal.
 
 Don't branch on exact values; treat as a classification hint.
 
+### `owned_by_subagent`
+
+`owned_by_subagent: true` marks a task launched by a subagent rather
+than the main agent (observed on 2.1.237; see §Background task
+ownership). The envelope arrives on the main wire either way — and for
+subagent-owned tasks it usually arrives BEFORE the owner's transcript
+projection has persisted the launch row, which is why triage holds the
+correlation rather than requiring the row to exist.
+
 ### Subagent extension
 
 For `task_type: "local_agent"`, the envelope also carries:
@@ -761,10 +770,48 @@ the tray ("process state: is it still running?") from the chat
 ("agent observation state: has the model seen it complete?"). See
 [`turn-lifecycle.md §Tray decoupling`](../architecture/turn-lifecycle.md#tray-decoupling-process-state-vs-agent-observation-tray-a).
 
-`patch.status="killed"` is the carve-out: it only appears as the CLI's
-reply to a user-initiated `stop_task` control_request. The user
-already knows the process was stopped, so triage skips the stash and
-writes the `tool_completion{status:"killed"}` sibling immediately.
+`patch.status="killed"` is the carve-out: no agent observation is
+coming (the CLI killed the process — a user `stop_task`
+control_request, a foreground agent exiting and taking its shells with
+it, or session close; see §Background task ownership), so triage skips
+the stash and writes the `tool_completion{status:"killed"}` sibling
+immediately. When the launch row does not exist yet (a subagent-owned
+shell killed before the transcript projection persisted its row), the
+killed terminal is stashed instead so the late-arriving row can settle
+against it.
+
+---
+
+## Background task ownership
+
+Confirmed by live spikes against claude 2.1.237 (2026-08-31; the
+months-old source mirror disagreed on the async case, the wire won):
+
+- Every shell task has an OWNING agent (`task.agentId` in the CLI's
+  registry). `system/task_started` marks subagent-owned shells with
+  `owned_by_subagent: true`; the envelope still arrives on the MAIN
+  wire regardless of the owner's nesting depth, typically before the
+  owner's transcript projection has persisted the launch row (triage
+  holds the correlation fields until the row lands —
+  `pendingToolCorrelations`).
+- A FOREGROUND (awaited) agent's exit kills its still-running shells
+  (`killShellTasksForAgent` in the CLI's `runAgent` finally block).
+  The orphaned shells' terminals — `task_updated{killed}` +
+  `task_notification{stopped}` — are emitted on the main wire.
+- An ASYNC (backgrounded) agent's exit does NOT kill its shells. They
+  keep running until the session closes (observed 125+s past agent
+  completion), and their eventual terminals arrive on the main wire.
+  A tray row for such a shell showing "running" after its agent
+  finished is truthful.
+- Session close kills every remaining shell and, on a graceful stdin
+  close, emits their killed terminals before exit. AO tears the thread
+  down first, so those frames are dropped by design; the app-side
+  settle (`SettleBackgroundLaunchesForSessionEnd`) writes the
+  session_died siblings instead, on both intentional close and
+  process death.
+- A resumed session (`--resume`) does NOT revive background tasks —
+  the shells died with the old process. Still-running launch rows from
+  a previous session are provably orphans.
 
 ---
 
@@ -1774,23 +1821,34 @@ both handlers already use. The parser additionally:
    has no async marker.
 2. Enriches the meta-only `EventToolStart` the rebind `task_started`
    emits with `resumes_tool_use_id` (the previously-bound tool_use, which is
-   the original launch) and the wire's `description`. The envelope
-   also carries `subagent_type`, but nothing downstream consumes it,
-   so the parser deliberately does not stamp it.
+   the original launch) and the wire's `description` +
+   `subagent_type` — both wire-sourced, so both survive the
+   reconnect edge below where `resumes_tool_use_id` is unknown.
 
 Triage's keep-running flip then marks the carrier row backgrounded +
-running, and (because its meta carries `resumes_tool_use_id`) it
-rewrites its Summary to the original launch's own Summary (or
-`"Agent: " + description` as a fallback), so the carrier reads
-"Agent: Frontend transitive suppression fix" instead of "SendMessage:
-…". Round 2's `task_updated`/`task_notification` then write a NEW
+running and resolves the ORIGINAL launch row — through
+`resumes_tool_use_id`, or through the persisted `items.meta.task_id`
+stamp when that is absent (`FindOriginalAgentLaunchByTaskID`: oldest
+row with the task_id, the carrier's own row excluded since the rebind
+stamped the same id there). It rewrites the carrier's Summary to the
+original launch's own Summary (or `"Agent: " + description` as a
+fallback), so the carrier reads "Agent: Frontend transitive
+suppression fix" instead of "SendMessage: …", and copies the
+original's `subagent_model` (the Subn stamp, else the launch
+`input.model` alias) plus any missing `subagent_type`/`description`
+onto the carrier meta — which is what lets the frontend render the
+carrier row, tray entry and completion card with the resumed agent's
+own type and model (`claudeResumeCarrierIdentity`,
+frontend `utils/subagentLaunch.ts`) instead of the raw recipient id
+and the parent thread's model. Round 2's
+`task_updated`/`task_notification` then write a NEW
 `tool_completion` sibling under the carrier (`complete:<carrierID>`,
 distinct from round 1's `complete:<originalLaunchID>`), which
 `buildBackgroundTerminalSummary` renders as "Agent: Frontend
 transitive suppression fix -> done", indistinguishable from any other
 backgrounded agent completion. See
 [`turn-lifecycle.md §Task lifecycle`](../architecture/turn-lifecycle.md#2-task-lifecycle-claude-only)
-and `internal/triage/tool_lifecycle.go`'s `resumeCarrierSummary`.
+and `internal/triage/tool_lifecycle.go`'s `resumeCarrierIdentity`.
 
 Why this matters operationally: AO's idle-session reaper closes a
 quiet session unless `ListRunningBackgroundToolCalls` is non-empty.
@@ -1810,8 +1868,10 @@ tool_use that was never observed as the launch tool (`Agent`, or
 `Task` on older builds, per `isAgentLaunchToolName` in
 `parse_assistant.go`) is still classified as a resume, so the carrier
 marking survives the restart even though `resumes_tool_use_id` is
-unknown (omitted) and the Summary rewrite has no anchor row to look
-up. A fresh launch cannot false-positive into this rule: parser
+unknown (omitted) — triage's Summary rewrite and identity copy still
+resolve the original launch through its persisted
+`items.meta.task_id` stamp, so the parser restart costs nothing
+downstream. A fresh launch cannot false-positive into this rule: parser
 lifetime == CLI process lifetime (stdio), and the assistant envelope
 carrying the launch tool_use always precedes its `task_started` on
 the same sequentially-parsed stream, so the launch-tool marker is
@@ -2197,6 +2257,21 @@ agent: without the flag the parent stream carries the agent's Bash
 `tool_use`/`tool_result` pairs and nothing else; with it, the same run
 additionally carries `assistant`/`thinking` and `assistant`/`text`
 envelopes parented to the launch.
+
+### What neither path forwards: subagent compaction
+
+A subagent's `system/compact_boundary` and its `isCompactSummary` user
+row never reach parent stdout on either launch path, flag or no flag
+(observed live 2026-09-01, two auto-compacts in one async agent: zero
+stdout envelopes for either row). They exist only in the agent's
+sidechain JSONL — and in the sidechain `transcript_mirror` feed, which
+carried each pair within ~0.5s of the compaction, boundary and summary
+in one batch (`parentUuid` of the summary = the boundary's uuid, same
+as the on-disk pairing). AO's mirror handling deliberately drops
+batches for stdout-streaming agents to avoid duplicating their deltas;
+the compaction tap (`parse_transcript_mirror.go`) is the carve-out that
+forwards exactly these two row shapes so the divider lands at its real
+position instead of being appended by the terminal transcript replay.
 
 ### The subagent's opening prompt
 
@@ -3178,15 +3253,19 @@ Two gaps make this surface necessary:
 - A directly entered forked command such as `/code-review high` produces only
   its outer `<synthetic>` command result on ordinary stdout. Its fork-root
   prompt, tool calls, results, and final assistant row arrive live in the
-  mirrored sidechain. Its rows carry `isSidechain:true`; root assistant rows
-  also carry `attributionSkill` and `agentId`. The conjunction dynamically
-  proves a Skill fork without a command-name list. `attributionSkill` alone is
-  insufficient because Claude also stamps it on `isSidechain:false` main-agent
-  work after an inline skill injects context. The `command_lifecycle` uuid
-  identifies the outer command. AO shows a provisional running Command row on
-  the lifecycle's `started` frame, then changes that same row to Skill when the
-  sidechain attribution arrives. A long first model step no longer looks like
-  a command that failed to start.
+  mirrored sidechain. The file starts with
+  `agent_metadata {agentType:"general-purpose"}` and no `toolUseId`; root
+  assistant rows carry `isSidechain:true`, `attributionSkill`, and `agentId`.
+  Those facts dynamically prove a Skill fork without a command-name list.
+  `attributionSkill` alone is insufficient because Claude also stamps it on
+  `isSidechain:false` main-agent work after an inline skill injects context.
+  It is also inherited by ordinary Agent children launched after that inline
+  skill. Their metadata instead carries the owning launch as
+  `toolUseId:"toolu_…"`. The `command_lifecycle` uuid identifies the outer
+  command. AO shows a provisional running Command row on the lifecycle's
+  `started` frame, then changes that same row to Skill after ownerless metadata
+  and sidechain attribution confirm the fork. A long first model step no longer
+  looks like a command that failed to start.
 - A foreground agent moved through `background_tasks` stops ordinary
   sidechain forwarding at the acknowledgement. Its later rows continue in
   the mirror. An agent launched async normally still forwards its sidechain,
@@ -3199,11 +3278,16 @@ received entries through the session-import converter's stateful
 never tails transcript files for live updates. The terminal file converter
 remains only for an older process that has no mirrored marker.
 
-Rows whose scope or attribution is not known stay in a bounded buffer until
-`isSidechain:true` plus `attributionSkill` claim the fork. An explicit
-`isSidechain:false` clears that buffer and leaves the command unprojected. If
-the file, entry, or byte bound drops any prefix data, AO persists a warning
-beneath the command row instead of leaving the gap silent.
+Rows whose scope or attribution is not known stay in a bounded buffer. An
+ordinary Agent's `agent_metadata.toolUseId` classifies the mirror as that
+Agent's duplicate even if the metadata beats `system/task_started`; ordinary
+stdout remains its live source. AO opens a projector only if
+`background_tasks` stopped that feed or the launch belongs below an already
+mirrored scope. Ownerless `agent_metadata` plus `isSidechain:true` and
+`attributionSkill` claim a forked Skill. An explicit `isSidechain:false` clears
+the buffer and leaves the command unprojected. If the file, entry, or byte bound
+drops any prefix data, AO persists a warning beneath the command row instead of
+leaving the gap silent.
 
 ### Local command envelope sequence
 

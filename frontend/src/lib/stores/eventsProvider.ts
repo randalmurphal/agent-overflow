@@ -52,7 +52,12 @@ import type { ErrorSurface, ThreadPaneIngest } from './threadPaneRoles';
 type ProviderEventPane = ThreadPaneIngest &
   Pick<
     ErrorSurface,
-    'generalError' | 'setGeneralError' | 'setSessionError' | 'clearSessionError' | 'setProviderBanner'
+    | 'generalError'
+    | 'setGeneralError'
+    | 'setSessionError'
+    | 'clearSessionError'
+    | 'providerBanner'
+    | 'setProviderBanner'
   >;
 
 function ingestPanes(): Iterable<ProviderEventPane> {
@@ -224,10 +229,16 @@ export function applyUsageEvent(evt: UsageEvent): void {
 // not on this banner channel; session-death drives `pane.generalError`
 // via `provider:session_died`. So the legacy mapping only needs to cover
 // the boot-time provider-presence states.
+//
+// `binary_stale` has no legacy counterpart — binary detection cannot know a
+// session outlived the binary it started on — so it maps onto itself. Its
+// WITHDRAWAL speaks the legacy vocabulary instead: a thread-scoped
+// `status: 'ready'` with no kind, which takes the banner=null path below.
 const KIND_TO_LEGACY_STATUS: Record<NonNullable<ProviderStatusEvent['kind']>, ProviderStatusEvent['status']> = {
   binary_missing: 'not_found',
   unauthenticated: 'unauthenticated',
   version_incompatible: 'version_too_old',
+  binary_stale: 'binary_stale',
 };
 
 export function applyProviderStatus(evt: ProviderStatusEvent): void {
@@ -266,7 +277,12 @@ export function applyProviderStatus(evt: ProviderStatusEvent): void {
     recordProviderStatus(normalized);
   }
 
-  const banner = effectiveStatus === 'ready' ? null : normalized;
+  // A thread-scoped clear WITHDRAWS the pane's own banner rather than
+  // pinning it to "nothing": `undefined` lets the pane fall back to the
+  // provider-global status, so a pane whose stale-binary banner was just
+  // withdrawn still shows the provider-wide auth failure every other pane
+  // shows. `null` here would make it the one pane showing nothing.
+  const banner = effectiveStatus === 'ready' ? undefined : normalized;
   for (const pane of ingestPanes()) {
     if (pane.thread?.provider !== provider) continue;
     // Kind-bearing events can carry a threadId for per-pane scoping; when
@@ -274,6 +290,12 @@ export function applyProviderStatus(evt: ProviderStatusEvent): void {
     // is provider-global (legacy behavior) and fans out to every matching
     // pane as before.
     if (evt.threadId && pane.threadId !== evt.threadId) continue;
+    // A thread-scoped banner is owned by its thread: only a thread-scoped
+    // withdrawal (or the session's disconnect) may take it down. Letting a
+    // provider-global event reset the slot would drop it for good, because
+    // the backend raises it on transitions only — the account probe emits
+    // a global status on every recheck, including the refresh button.
+    if (!evt.threadId && pane.providerBanner?.threadId) continue;
     pane.setProviderBanner(evt.threadId ? banner : undefined);
   }
 }
@@ -321,6 +343,15 @@ export function applyProviderSessionAccount(evt: ProviderSessionAccountEvent): v
   for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.setProviderSessionAccount(evt.connected ? evt : null);
+    // A `binary_stale` banner is a claim about the session that is running:
+    // it is pinned to the binary it started on. A disconnect retires that
+    // claim however it happened (restart, crash, idle sweep, user stop), and
+    // the next session's own status event is what may raise it again. Every
+    // other banner kind describes the INSTALL rather than this session, so
+    // scope the clear to the one status whose premise just went away.
+    if (!evt.connected && pane.providerBanner?.status === 'binary_stale') {
+      pane.setProviderBanner(undefined);
+    }
   }
 }
 

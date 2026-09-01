@@ -45,13 +45,22 @@
 
   let { tasks, provider, threadId, runningCount, pane }: Props = $props();
 
-  function onOpenRow(task: TrayTask): void {
+  // The button opens the companion and nothing else; the row click also
+  // jumps the timeline to the node (spec Q8). Split on purpose: the jump
+  // is explicit navigation and releases bottom-follow, and the open
+  // button was silently unpinning a reader stuck to a streaming tail.
+  function onOpenPane(task: TrayTask): void {
     if (!pane || !threadId) return;
-    pane.requestScrollToItem(task.rowId);
     const info = trayTaskAgentInfo(task);
     if (info) {
       openAgentCompanion(pane.paneId, threadId, task.rowId, info.name || trayTaskLabel(task));
     }
+  }
+
+  function onOpenRow(task: TrayTask): void {
+    if (!pane || !threadId) return;
+    pane.requestScrollToItem(task.rowId);
+    onOpenPane(task);
   }
   let backgroundStop = $derived<ProviderBackgroundStop>(
     provider ? getProviderDefinition(provider).backgroundStop : 'none',
@@ -200,6 +209,7 @@
           isStopping={stoppingRows.has(task.rowId)}
           onStop={onStopRow}
           onOpen={pane ? onOpenRow : undefined}
+          onOpenPane={pane ? onOpenPane : undefined}
         />
       </li>
     {/each}

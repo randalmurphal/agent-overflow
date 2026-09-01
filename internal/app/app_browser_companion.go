@@ -13,6 +13,9 @@ type BrowserCompanionAction struct {
 	Kind    string `json:"kind"`
 	PageID  string `json:"pageId,omitempty"`
 	Address string `json:"address,omitempty"`
+	// Index is the target tab position for "move". Not omitempty: index 0
+	// (move to the front) is a real value.
+	Index int `json:"index"`
 }
 
 func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
@@ -25,13 +28,32 @@ func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
 	}, nil
 }
 
-// BrowserCompanionSubscribe attaches the calling connection to the live frame
-// stream for a thread. Chrome only screencasts while at least one companion is
-// mounted; connection cleanup is the leak-proof fallback for an unclean UI
-// disconnect.
+// BrowserCompanionThreadState answers the thread's current page/session
+// snapshot without acquiring anything. The `browser:companion-state` channel
+// is ephemeral (no replay), so a freshly loaded UI has no way to know a
+// thread already has live pages — this is the hydration read behind the chat
+// header's browser chip and the pane-reopen reconcile.
 //
 //ao:scope terminal:operate
-func (a *App) BrowserCompanionSubscribe(ctx context.Context, threadID string, width, height int) (appbrowser.CompanionSubscription, error) {
+func (a *App) BrowserCompanionThreadState(threadID string) (appbrowser.CompanionEvent, error) {
+	if a.browser.manager == nil {
+		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
+	}
+	access, err := a.browserAccess(threadID)
+	if err != nil {
+		return appbrowser.CompanionEvent{}, err
+	}
+	return a.browser.manager.CompanionState(access), nil
+}
+
+// BrowserCompanionPaneAttach registers the calling connection's mounted pane
+// surface for a thread. The native view is presented only while a mount with
+// a paintable rect exists, so connection cleanup guarantees a dead UI can
+// never leave a browser view painted over a window that no longer renders
+// the pane under it.
+//
+//ao:scope terminal:operate
+func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (appbrowser.CompanionSubscription, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionSubscription{}, fmt.Errorf("browser manager unavailable")
 	}
@@ -39,13 +61,13 @@ func (a *App) BrowserCompanionSubscribe(ctx context.Context, threadID string, wi
 	if err != nil {
 		return appbrowser.CompanionSubscription{}, err
 	}
-	result, err := a.browser.manager.SubscribeCompanion(access, width, height)
+	result, err := a.browser.manager.AttachPane(access)
 	if err != nil {
 		return appbrowser.CompanionSubscription{}, err
 	}
 	if state := transport.ConnStateFromContext(ctx); state != nil {
-		if !state.RegisterCleanup(func() { a.browser.manager.UnsubscribeCompanion(result.ID) }) {
-			a.browser.manager.UnsubscribeCompanion(result.ID)
+		if !state.RegisterCleanup(func() { a.browser.manager.DetachPane(result.ID) }) {
+			a.browser.manager.DetachPane(result.ID)
 			return appbrowser.CompanionSubscription{}, fmt.Errorf("browser: connection closing")
 		}
 	}
@@ -53,27 +75,39 @@ func (a *App) BrowserCompanionSubscribe(ctx context.Context, threadID string, wi
 }
 
 //ao:scope terminal:operate
-func (a *App) BrowserCompanionUnsubscribe(subscriptionID string) error {
+func (a *App) BrowserCompanionPaneDetach(paneID string) error {
 	if a.browser.manager != nil {
-		a.browser.manager.UnsubscribeCompanion(subscriptionID)
+		a.browser.manager.DetachPane(paneID)
 	}
 	return nil
 }
 
+// BrowserCompanionPaneRect reports where the mounted pane's host rect sits,
+// coalesced to one call per changed frame by the frontend.
+//
 //ao:scope terminal:operate
-func (a *App) BrowserCompanionNextFrame(ctx context.Context, subscriptionID string) (appbrowser.CompanionEvent, error) {
-	if a.browser.manager == nil {
-		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
-	}
-	return a.browser.manager.NextCompanionFrame(ctx, subscriptionID)
-}
-
-//ao:scope terminal:operate
-func (a *App) BrowserCompanionResize(subscriptionID string, width, height int) error {
+func (a *App) BrowserCompanionPaneRect(paneID string, rect appbrowser.PaneRect) error {
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
 	}
-	return a.browser.manager.ResizeCompanion(subscriptionID, width, height)
+	return a.browser.manager.SetPaneRect(paneID, rect)
+}
+
+// BrowserCompanionRevealPageFile opens the OS file manager with the local
+// file a companion page is displaying selected, so it can be dragged into
+// chat and mail apps — which accept file drops but not a pasted file object.
+// Remote pages have no file to reveal.
+//
+//ao:scope terminal:operate
+func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, pageID string) error {
+	if a.browser.manager == nil {
+		return fmt.Errorf("browser manager unavailable")
+	}
+	access, err := a.browserAccess(threadID)
+	if err != nil {
+		return err
+	}
+	return a.browser.manager.RevealPageFile(ctx, access, pageID)
 }
 
 //ao:scope terminal:operate
@@ -92,6 +126,8 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		_, err = a.browser.manager.History(ctx, access, action.PageID, action.Kind)
 	case "activate":
 		err = a.browser.manager.ActivateCompanionPage(access, action.PageID)
+	case "move":
+		err = a.browser.manager.MoveCompanionPage(access, action.PageID, action.Index)
 	case "show":
 		visible := true
 		_, err = a.browser.manager.Visibility(ctx, access, &visible, action.PageID)
@@ -102,6 +138,8 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		_, err = a.browser.manager.NewCompanionPage(ctx, access)
 	case "close":
 		err = a.browser.manager.ClosePage(ctx, access, action.PageID)
+	case "devtools":
+		err = a.browser.manager.OpenPaneDevTools(ctx, access, action.PageID)
 	default:
 		err = fmt.Errorf("browser: unsupported companion action %q", action.Kind)
 	}
@@ -109,16 +147,4 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		return appbrowser.CompanionEvent{}, err
 	}
 	return a.browser.manager.CompanionState(access), nil
-}
-
-//ao:scope terminal:operate
-func (a *App) BrowserCompanionInput(ctx context.Context, threadID, pageID string, event appbrowser.CompanionInput) error {
-	if a.browser.manager == nil {
-		return fmt.Errorf("browser manager unavailable")
-	}
-	access, err := a.browserAccess(threadID)
-	if err != nil {
-		return err
-	}
-	return a.browser.manager.CompanionInput(ctx, access, pageID, event)
 }

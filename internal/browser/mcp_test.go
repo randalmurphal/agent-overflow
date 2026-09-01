@@ -95,9 +95,9 @@ func (f *fakeController) History(context.Context, Access, string, string) (PageI
 func (f *fakeController) Evaluate(context.Context, Access, string, string) (any, error) {
 	return nil, nil
 }
-func (f *fakeController) EvaluateReadOnly(_ context.Context, _ Access, _ string, expression string) (any, error) {
+func (f *fakeController) EvaluateReadOnly(_ context.Context, _ Access, _ string, expression string) (any, string, error) {
 	f.readExpression = expression
-	return nil, nil
+	return nil, "", nil
 }
 func (f *fakeController) CloseThread(_ context.Context, id string) error {
 	f.closeThreads = append(f.closeThreads, id)

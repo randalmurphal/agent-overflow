@@ -137,8 +137,13 @@ func runSoak(flags cliFlags) {
 		}
 	}
 
-	appService := newIsolatedProviderApp(paths)
-	h := newHarness(appService, paths)
+	// Same helper, same pins. The browser opt-in is refused here whenever
+	// --autopilot is armed: that is what makes this instance a soak rather
+	// than the (attended) Windows harness, which rides the same wire flag.
+	appService, nativeWindow := newIsolatedProviderApp(paths, isolationOptions{
+		RealBrowserEngine: realBrowserEngineRequested(flags),
+	})
+	h := newHarness(appService, paths, nativeWindow)
 	// Before App.Start, exactly as in harness mode: the control server
 	// publishes its address/token through providerExtraEnv (write-once
 	// before Start) and the autopilot's first send spawns a mock that
@@ -228,7 +233,7 @@ func runSoak(flags cliFlags) {
 		// Any autopilot goroutine above keeps running: --window changes
 		// only who hosts the window (this process instead of the Windows
 		// launcher), never what the instance drives.
-		if err := runWindowedShell(appService, srv, isolatedWindowTitle(mode, instance.id)); err != nil {
+		if err := runWindowedShell(appService, srv, isolatedWindowTitle(mode, instance.id), nativeWindow); err != nil {
 			instance.remove()
 			controlServer.Shutdown()
 			fatalf("%s: %v", label, err)

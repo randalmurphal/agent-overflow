@@ -175,7 +175,13 @@ tasks:
       - GOOS=windows GOARCH={{.ARCH}} CGO_ENABLED=0 go build -trimpath -ldflags "-H windowsgui -X main.payloadVersion={{.VERSION | default "dev"}} -X main.launcherMode={{.WSL_LAUNCHER_MODE | default "prod"}}" -o {{.BIN_DIR | default "bin"}}/{{.APP_NAME | default "agent-overflow"}}.exe ./cmd/agent-overflow-windows
     sources:
       - "cmd/agent-overflow-windows/**/*"
-      - "internal/wsllauncher/**/*"
+      # Every internal package, not the handful the launcher happened to
+      # import when this list was written. It imports a dozen (appidentity,
+      # notify, selfupdate, uikeys, uiwindow, webview2host, wsldistro,
+      # wsllauncher, harness/governor, ...), and a name missing from here
+      # is not a slow rebuild but a SILENTLY STALE .exe. Same trade the
+      # linux-payload task above already takes.
+      - "internal/**/*.go"
       - "{{.BIN_DIR | default \"bin\"}}/agent-overflow-linux"
       - "{{.WINDOWS_ICON}}"
       - "{{.WINDOWS_MANIFEST}}"
