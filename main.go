@@ -406,6 +406,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		cfg.BindAddr = host
 		cfg.Port = port
 	}
+	settingsPort := 0
 	if opts.LoadPersistedNetwork {
 		// Honor the persisted network preferences at boot so a user who
 		// turned these on in a previous session doesn't see the server
@@ -417,6 +418,9 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		if persisted.BindAll && listenAddr == "" {
 			cfg.BindAddr = "0.0.0.0"
 		}
+		// The saved port is applied by pinTransportPort, which owns the
+		// whole three-way precedence and the cache interaction.
+		settingsPort = persisted.ListenPort
 		cfg.CanonicalHost = persisted.CanonicalDomain
 		cfg.OriginPatterns = network.OriginPatterns(
 			cfg.BindAddr == "0.0.0.0",
@@ -425,11 +429,12 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		)
 	}
 
-	// Pin the listen port unless the operator named one. Applies to
-	// every bind host: a stable port also stabilises the LAN share URL.
-	// --reset-transport-port drops the existing pin first, which is how
-	// the Windows launcher escapes a pinned port the host cannot reach.
-	portPin := pinTransportPort(&cfg, bootSettingsDir(), resetTransportPortPin)
+	// Resolve the listen port: --listen, else the saved network.listenPort,
+	// else the pin. Applies to every bind host — a stable port also
+	// stabilises the LAN share URL. --reset-transport-port drops the
+	// existing pin first, which is how the Windows launcher escapes a
+	// pinned port the host cannot reach.
+	portPin := pinTransportPort(&cfg, bootSettingsDir(), settingsPort, resetTransportPortPin)
 
 	// One decoration rule for every page URL this backend hands out, and
 	// the transport serves it (PageURLPath) to the local tooling that
@@ -449,6 +454,13 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		fatalf("transport: construct server: %v", err)
 	}
 	appService.SetTransportServer(srv)
+	// A settings-driven rebind moves the listener without going through
+	// the boot path, so the port cache would otherwise keep naming an
+	// address nothing is on. Installed only when there is a directory to
+	// write to; a nil recorder is a no-op inside the App.
+	if dir := bootSettingsDir(); dir != "" {
+		appservice.SetBoundPortRecorder(appService.App, func(port int) { storeTransportPort(dir, port) })
+	}
 	// Revocation is only real if it reaches live connections: hand the
 	// session core the registry of open sockets, so revoking a session
 	// force-closes the ones carrying it. Before Start, so no connection
@@ -464,6 +476,15 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// fallback predicate missed. Clear the pin so the next launch
 		// binds ephemeral instead of replaying the same failure.
 		portPin.clearOnFailedBind(err)
+		if settingsPort != 0 && listenAddr == "" {
+			// A settings-chosen port deliberately has no ephemeral fallback,
+			// so this is the one bind failure the operator can fix from the
+			// UI. Name the setting and both ways out, because the raw
+			// "address already in use" says nothing about where the number
+			// came from.
+			fatalf("transport: start server: %v (network.listenPort is %d in Settings > Network; change or clear it there, or pass --listen for one launch)",
+				err, settingsPort)
+		}
 		fatalf("transport: start server: %v", err)
 	}
 	portPin.adopt(srv.Addr())

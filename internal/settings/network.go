@@ -19,6 +19,26 @@ type NetworkSettings struct {
 	// false keeps the bind on 127.0.0.1 — the safe loopback behaviour.
 	BindAll bool `json:"bindAll"`
 
+	// ListenPort is the TCP port the transport binds. Zero means
+	// automatic, which is what every install did before this existed:
+	// the backend takes an ephemeral port on its first launch and then
+	// keeps re-taking the same one out of the transport-port cache.
+	//
+	// A non-zero value is the operator saying which port this install
+	// OWNS, and it is the only way to make that stable across a machine
+	// where something else might get there first. It is worth setting on
+	// a serve host and nowhere else: every share URL, every pairing link
+	// and every paired client's stored endpoint names this number, so a
+	// host reachable at a port somebody else picked is a host whose
+	// address is only knowable by reading it off the console.
+	//
+	// The whole 1-65535 range is allowed, privileged ports included. A
+	// backend with CAP_NET_BIND_SERVICE (or a launchd socket) can hold
+	// port 443, and refusing that here would be guessing about a
+	// capability this package cannot see. A bind that is not permitted
+	// fails loudly at boot, naming the port.
+	ListenPort int `json:"listenPort,omitempty"`
+
 	// CanonicalDomain is the one HTTPS name this backend answers to: a
 	// bare hostname, no scheme, no port, no path. Setting it does three
 	// things at once — the Host header carrying that name is accepted,
@@ -82,6 +102,11 @@ func (n NetworkSettings) HasExternalPair() bool {
 	return n.ExternalCertFile != "" && n.ExternalKeyFile != ""
 }
 
+// MaxListenPort is the top of the TCP port range. Named rather than
+// spelled, because the refusal message quotes it and a reader should see
+// the same number in both places.
+const MaxListenPort = 65535
+
 // MaxACMEDNSHookArgs bounds the stored argv. A DNS hook is a command
 // plus a handful of flags; a list past this length is a paste accident,
 // and the bound keeps one settings read from carrying an unbounded
@@ -93,6 +118,14 @@ const MaxACMEDNSHookArgs = 32
 // serving side would otherwise have to answer at handshake time, where
 // there is nobody to tell.
 func validateNetwork(n NetworkSettings) (NetworkSettings, error) {
+	if n.ListenPort < 0 || n.ListenPort > MaxListenPort {
+		// Refused rather than clamped. A clamp would bind SOME port and
+		// report success, and the operator would then be looking for
+		// their backend at a number nothing ever chose.
+		return NetworkSettings{}, fmt.Errorf(
+			"network.listenPort must be 0 (automatic) or 1-%d, got %d", MaxListenPort, n.ListenPort)
+	}
+
 	n.CanonicalDomain = strings.ToLower(strings.TrimSpace(n.CanonicalDomain))
 	if n.CanonicalDomain != "" {
 		if err := validateBareHostname(n.CanonicalDomain); err != nil {
@@ -192,6 +225,12 @@ func validateNetwork(n NetworkSettings) (NetworkSettings, error) {
 // tailnet, enabled bit included, since an empty control URL means the
 // public coordination server and keeping the toggle alone would register
 // this node somewhere the user did not name.
+//
+// The BIND half is two values now and only one of them can be wrong:
+// BindAll is a bool and is always kept, while an out-of-range listen port
+// drops to zero. Dropping it means "automatic", which is the behaviour
+// every install had before the field existed, so the backend still binds
+// and still starts — and the log line above says which value went.
 func sanitizeNetwork(n NetworkSettings) NetworkSettings {
 	sanitized, err := validateNetwork(n)
 	if err == nil {
@@ -199,6 +238,9 @@ func sanitizeNetwork(n NetworkSettings) NetworkSettings {
 	}
 	log.Printf("settings: dropping unusable network configuration: %v", err)
 	kept := NetworkSettings{BindAll: n.BindAll}
+	if bind, bindErr := validateNetwork(NetworkSettings{ListenPort: n.ListenPort}); bindErr == nil {
+		kept.ListenPort = bind.ListenPort
+	}
 	if tls, tlsErr := validateNetwork(NetworkSettings{
 		CanonicalDomain:  n.CanonicalDomain,
 		ACMEDNSHook:      n.ACMEDNSHook,

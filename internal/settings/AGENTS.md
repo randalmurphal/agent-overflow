@@ -149,9 +149,16 @@ file, which is what the pre-database boot readers in `main.go` and
   target list the desktop binary's settings panel exposes.
 - `network.go`: `NetworkSettings` — how this backend is REACHED — plus
   the usual strict/lenient pair. It carries the LAN bind toggle, the
-  canonical domain, the DNS-01 hook argv, the external cert/key
-  pair, and the tailnet toggle with its coordination-server URL
-  (`docs/specs/remote-access.md` §7). Four rules the validator
+  listen port, the canonical domain, the DNS-01 hook argv, the external
+  cert/key pair, and the tailnet toggle with its coordination-server URL
+  (`docs/specs/remote-access.md` §7). The PORT is 0 for automatic (an
+  ephemeral bind cached in `transport-port.json`, which is every install
+  that never touched this) or 1-65535 — privileged ports included,
+  because a backend with `CAP_NET_BIND_SERVICE` can hold one and this
+  package cannot see that capability. An out-of-range value is REFUSED,
+  never clamped: a clamp would bind some port and report success, leaving
+  the operator looking for their backend at a number nothing chose. Four
+  rules the validator
   enforces on the domain half, each because the alternative is a
   backend that cannot serve what it claims: a domain is a bare hostname
   (`validateBareHostname`, the same rule the GitLab host allowlist
@@ -165,7 +172,7 @@ file, which is what the pre-database boot readers in `main.go` and
   terminates TLS in front. The tailnet half has one: a control URL, if
   given, parses to an absolute `http`/`https` URL with a host, because
   an unusable one is a node that can never come up.
-  **The lenient path keeps `BindAll` and validates the two halves
+  **The lenient path keeps `BindAll` and validates the three halves
   SEPARATELY.** The bind toggle is independent of all of it; a
   half-configured domain is one the reconciler could act on wrongly, so
   that half drops whole — and it drops WITHOUT taking the tailnet with
@@ -173,7 +180,10 @@ file, which is what the pre-database boot readers in `main.go` and
   off the tailnet. When the tailnet half is itself unusable, the
   ENABLED BIT drops with the URL: an empty control URL means the public
   coordination server, so keeping the toggle alone would register the
-  node somewhere the user never named.
+  node somewhere the user never named. The BIND half is two values and
+  only one of them can be wrong: an out-of-range port drops to 0, which
+  means automatic — what every install did before the field existed — so
+  the backend still binds and still starts.
 - `mutate.go`: the SINGLE persisted-write path. Every mutator in this
   package (`Update`, `AddRecentWorkspace`, the remote-endpoint CRUD, the
   provider-environment CRUD) is a closure handed to `Service.mutate`,

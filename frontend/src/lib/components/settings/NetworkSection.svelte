@@ -13,6 +13,7 @@
   import { hasScope } from '../../transport/scopes';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import NetworkDomainEditor from './NetworkDomainEditor.svelte';
+  import NetworkPortEditor from './NetworkPortEditor.svelte';
   import NetworkTailnetEditor from './NetworkTailnetEditor.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
@@ -71,6 +72,7 @@
   function writeRequest(current: NetworkSettings, patch: Partial<NetworkSettings>): NetworkSettings {
     return new NetworkSettings({
       bindAll: current.bindAll,
+      listenPort: current.listenPort,
       canonicalDomain: current.canonicalDomain,
       acmeDnsHook: current.acmeDnsHook,
       externalCertFile: current.externalCertFile,
@@ -95,6 +97,23 @@
     } catch (err) {
       settings = previous;
       addToast('error', `Failed to update network settings: ${errString(err)}`);
+    } finally {
+      saving = false;
+    }
+  }
+
+  // No optimistic update, unlike the bind toggle: a port change moves the
+  // listener this window is talking to, and painting the new number before
+  // the backend confirms would show an address nothing answers on if the
+  // rebind failed. The RPC's own answer is the only value written here.
+  async function savePort(port: number): Promise<void> {
+    if (!settings || saving) return;
+    saving = true;
+    const previous = settings;
+    try {
+      settings = await SetNetworkSettings(writeRequest(previous, { listenPort: port }));
+    } catch (err) {
+      addToast('error', `Failed to change the port: ${errString(err)}`);
     } finally {
       saving = false;
     }
@@ -281,6 +300,9 @@
             onToggle={toggleBindAll}
           />
         </SettingsField>
+        {#if settings}
+          <NetworkPortEditor {settings} busy={saving} onsave={savePort} />
+        {/if}
       </div>
     {/if}
   </section>

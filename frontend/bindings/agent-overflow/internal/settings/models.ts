@@ -209,6 +209,28 @@ export class NetworkSettings {
     "bindAll": boolean;
 
     /**
+     * ListenPort is the TCP port the transport binds. Zero means
+     * automatic, which is what every install did before this existed:
+     * the backend takes an ephemeral port on its first launch and then
+     * keeps re-taking the same one out of the transport-port cache.
+     * 
+     * A non-zero value is the operator saying which port this install
+     * OWNS, and it is the only way to make that stable across a machine
+     * where something else might get there first. It is worth setting on
+     * a serve host and nowhere else: every share URL, every pairing link
+     * and every paired client's stored endpoint names this number, so a
+     * host reachable at a port somebody else picked is a host whose
+     * address is only knowable by reading it off the console.
+     * 
+     * The whole 1-65535 range is allowed, privileged ports included. A
+     * backend with CAP_NET_BIND_SERVICE (or a launchd socket) can hold
+     * port 443, and refusing that here would be guessing about a
+     * capability this package cannot see. A bind that is not permitted
+     * fails loudly at boot, naming the port.
+     */
+    "listenPort"?: number;
+
+    /**
      * CanonicalDomain is the one HTTPS name this backend answers to: a
      * bare hostname, no scheme, no port, no path. Setting it does three
      * things at once — the Host header carrying that name is accepted,
@@ -273,10 +295,10 @@ export class NetworkSettings {
      * Creates a new NetworkSettings instance from a string or object.
      */
     static createFrom($$source: any = {}): NetworkSettings {
-        const $$createField2_0 = $$createType0;
+        const $$createField3_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("acmeDnsHook" in $$parsedSource) {
-            $$parsedSource["acmeDnsHook"] = $$createField2_0($$parsedSource["acmeDnsHook"]);
+            $$parsedSource["acmeDnsHook"] = $$createField3_0($$parsedSource["acmeDnsHook"]);
         }
         return new NetworkSettings($$parsedSource as Partial<NetworkSettings>);
     }

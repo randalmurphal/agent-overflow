@@ -35,6 +35,28 @@ First boot, a missing file, and an invalid one (garbage JSON, or a port outside
 Persistence is best effort. An unresolvable settings dir or a failed write logs
 and leaves the run ephemeral, and never blocks boot.
 
+### The saved port, and why it is the middle input
+
+`network.listenPort` (Settings → Network, `internal/settings/network.go`) sits
+between the two above, and behaves like neither. It LOSES to `--listen`, because
+a flag is one launch and a setting is the install. It BEATS the cache outright
+and takes no ephemeral fallback: the whole reason to set it is that every share
+URL, pairing link and paired client's stored endpoint names the number, so a
+backend that quietly moved would be unreachable at the only address anybody has.
+A bind it cannot have is a loud boot failure naming the setting.
+
+It still ADOPTS. A port the setting asked for and the kernel gave IS the previous
+bind, so recording it is what makes clearing the setting later mean "stay here
+and float from now on" rather than "jump back to whatever ephemeral port was
+cached before you set this". `SetNetworkSettings` keeps the same invariant while
+the process runs, through `app.SetBoundPortRecorder`: whenever the operator
+touches the port field, the port the listener ended up on is written to the
+cache.
+
+Boot only reads the setting where `LoadPersistedNetwork` is on — the desktop and
+`serve` boots. The Windows launcher's headless backend is deliberately outside
+it, along with the rest of the persisted network preferences.
+
 ### Bind failure: `Config.EphemeralPortFallback`
 
 This is the transport half. With a non-zero `Port`, a bind that fails *because
@@ -52,10 +74,13 @@ failure forever.
 
 ### Rebind uses a narrower predicate on purpose
 
-`Rebind` (the LAN toggle) is untouched by the above. `app_network.go` computes
-the new addr from the live `Server.Addr()` port, so a host flip keeps the pinned
-port, and `Rebind` never falls back to an ephemeral port: silently moving a live
-server's port would break every connected client's origin.
+`Rebind` (the LAN toggle and the port field) is untouched by the above.
+`app_network.go` computes the new addr from the saved `network.listenPort`, or
+from the live `Server.Addr()` port when nothing is saved — so a host flip alone
+keeps the port, and clearing the port field moves nothing. `Rebind` never falls
+back to an ephemeral port: silently moving a live server's port would break every
+connected client's origin, which is the same reason the saved port fails loudly
+at boot.
 
 Its own recovery uses the strictly narrower `addrInUse` (EADDRINUSE,
 WSAEADDRINUSE). That path cures a bind by closing our live listener and

@@ -86,6 +86,16 @@ func ServeEndpoints(a *App, srv *transport.Server) network.Settings {
 	return network.FromServer(srv, a.persistedNetworkSettings())
 }
 
+// SetBoundPortRecorder installs the sink that persists the port this
+// listener is on, so the executable's transport-port cache keeps naming
+// the previous bind after Settings → Network moves it. Call before the
+// transport serves.
+//
+// A callback rather than a path, because the cache's format, location and
+// failure policy are the executable's (main_transport_port.go) and this
+// package has no business restating any of them.
+func SetBoundPortRecorder(a *App, record func(port int)) { a.boundPortRecorder = record }
+
 // SetDataDirOverride installs the executable's --data-dir boot input.
 func SetDataDirOverride(a *App, dataDir string) { a.dataDirOverride = dataDir }
 

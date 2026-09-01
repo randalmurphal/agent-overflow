@@ -142,6 +142,50 @@ Do that once, then start the service. After the first device exists, every
 later device is paired from Settings → Access on the device you already
 have, and the console never says anything again.
 
+## Bind and port
+
+Settings → Network holds both halves of the address, and a serve host
+reads them at boot.
+
+**Allow remote access** decides the host: off binds `127.0.0.1`, on binds
+`0.0.0.0` so other machines can reach it.
+
+**Port** decides the port. Leave it blank and Agent Overflow takes one on
+first launch and keeps reusing it — fine for a desktop install, and not
+what you want on a serve host, where the number is in every share URL and
+every pairing link. Set it and that port is the one this install owns.
+
+Precedence at boot, highest first:
+
+1. `--listen host:port` on the command line. One launch, and it writes
+   nothing: a debugging run must not move where the install lives.
+2. The saved **Port**.
+3. The port this backend last bound (`transport-port.json`, a cache).
+
+A saved port that cannot be bound is a boot FAILURE naming the setting,
+not a quiet move to somewhere else. That is deliberate: a backend nobody
+can find at the address they have is worse than one that did not start.
+Under systemd, `Restart=on-failure` plus `systemctl --user status
+agent-overflow` is how you see it. Fix it in Settings → Network from a
+device that is already paired, or start once with `--listen` to get in.
+
+### What changing the port costs
+
+The port is part of the origin, so it is not a cosmetic setting.
+
+- **A browser** loses its session: the page cookie's name carries the
+  port, and everything it saved (its local state and its offline thread
+  copy) is scoped to the old origin. It has to pair or sign in again.
+- **A paired app** (`agent-overflow --connect`) stores the endpoint the
+  pairing link named and never rediscovers it. It keeps dialing the old
+  port and reports a connection failure; the credential is not cleared,
+  but it cannot reach the backend. Pair it again from the moved backend
+  and the new link overwrites the endpoint.
+- **Live connections** finish, then cannot reconnect.
+
+Clearing the port back to blank does NOT move the listener. It means
+"stop pinning this", and the backend stays where it is.
+
 ## Credential storage
 
 A serve host stores every secret it holds in files under the config root,

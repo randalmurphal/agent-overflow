@@ -22,6 +22,15 @@ export class Settings {
     "bindAll": boolean;
 
     /**
+     * ListenPort is the port the transport binds, or 0 for automatic
+     * (settings.NetworkSettings.ListenPort argues the choice). It is a
+     * PREFERENCE, not an observation: the port actually bound right now
+     * is the authority in URL below, and the two differ for exactly as
+     * long as it takes a saved change to rebind.
+     */
+    "listenPort": number;
+
+    /**
      * CanonicalDomain is the one HTTPS name this backend answers to
      * (docs/specs/remote-access.md §7). Bare hostname, no scheme, no
      * port. Empty means the backend is reached by address only.
@@ -112,6 +121,9 @@ export class Settings {
         if (!("bindAll" in $$source)) {
             this["bindAll"] = false;
         }
+        if (!("listenPort" in $$source)) {
+            this["listenPort"] = 0;
+        }
         if (!("canonicalDomain" in $$source)) {
             this["canonicalDomain"] = "";
         }
@@ -153,18 +165,18 @@ export class Settings {
      * Creates a new Settings instance from a string or object.
      */
     static createFrom($$source: any = {}): Settings {
-        const $$createField2_0 = $$createType0;
-        const $$createField7_0 = $$createType1;
-        const $$createField8_0 = $$createType2;
+        const $$createField3_0 = $$createType0;
+        const $$createField8_0 = $$createType1;
+        const $$createField9_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("acmeDnsHook" in $$parsedSource) {
-            $$parsedSource["acmeDnsHook"] = $$createField2_0($$parsedSource["acmeDnsHook"]);
+            $$parsedSource["acmeDnsHook"] = $$createField3_0($$parsedSource["acmeDnsHook"]);
         }
         if ("tls" in $$parsedSource) {
-            $$parsedSource["tls"] = $$createField7_0($$parsedSource["tls"]);
+            $$parsedSource["tls"] = $$createField8_0($$parsedSource["tls"]);
         }
         if ("tailnet" in $$parsedSource) {
-            $$parsedSource["tailnet"] = $$createField8_0($$parsedSource["tailnet"]);
+            $$parsedSource["tailnet"] = $$createField9_0($$parsedSource["tailnet"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

@@ -418,6 +418,16 @@ type App struct {
 	// serves and never after, so the RPC goroutines that read it cannot
 	// race the write.
 	certFingerprint string
+	// boundPortRecorder persists the port this listener is on, so the
+	// executable's transport-port cache keeps naming the previous bind
+	// after a settings-driven rebind moved it. Nil in every fixture and on
+	// every boot that resolved no config directory, and calling it is
+	// best-effort by construction: the file is a cache, and losing a write
+	// to it costs one churned origin on some later launch, never this call.
+	//
+	// A boot input like the two above, installed before the transport
+	// serves (bootstrap.SetBoundPortRecorder) and never written after.
+	boundPortRecorder func(port int)
 	// domainCert owns the canonical domain's certificate: what is loaded,
 	// what failed, and the one goroutine that renews it. Zero value is an
 	// App with no reconciler running, which is every fixture that never

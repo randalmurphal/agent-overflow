@@ -486,6 +486,13 @@ export interface NetworkPersistedSettings {
   bindAll: boolean;
 
   /**
+   * The port the transport binds, or 0 for automatic — which is an
+   * ephemeral port on first launch, reused from a cache after that. A
+   * non-zero value is the operator naming the port this install owns.
+   */
+  listenPort: number;
+
+  /**
    * The one HTTPS name this backend answers to: a bare hostname, no
    * scheme, no port, no path. Empty means the backend is reached by
    * address only.

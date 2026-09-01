@@ -52,6 +52,7 @@ export const SETTINGS_DEFAULTS = {
   observabilityEventLogEnabled: false,
   network: {
     bindAll: false,
+    listenPort: 0,
     canonicalDomain: "",
     acmeDnsHook: [],
     externalCertFile: "",

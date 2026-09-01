@@ -66,6 +66,7 @@ func (a *App) SetNetworkSettings(s network.Settings) (network.Settings, error) {
 	prev := a.settings.Get().Network
 	next := settings.NetworkSettings{
 		BindAll:           s.BindAll,
+		ListenPort:        s.ListenPort,
 		CanonicalDomain:   s.CanonicalDomain,
 		ACMEDNSHook:       s.ACMEDNSHook,
 		ExternalCertFile:  s.ExternalCertFile,
@@ -92,9 +93,23 @@ func (a *App) SetNetworkSettings(s network.Settings) (network.Settings, error) {
 	originPatterns := network.OriginPatterns(stored.BindAll, lanIP, stored.CanonicalDomain)
 	srv.SetCanonicalHost(stored.CanonicalDomain)
 
-	if prev.BindAll != stored.BindAll {
-		port := portFromAddr(srv.Addr())
-		addr := fmt.Sprintf("%s:%d", network.BindHost(stored.BindAll), port)
+	// The address has two halves and either can move. The HOST comes from
+	// the bind toggle; the PORT is the saved one, or where the listener
+	// already is when nothing is saved.
+	//
+	// Clearing the port back to 0 ("automatic") deliberately does NOT move
+	// the listener. The listener is already on a port, every share URL and
+	// every paired device's stored endpoint names it, and jumping to some
+	// other number to express "no preference" would break all of them to
+	// change nothing the operator asked to change. It means "stop pinning
+	// this", and the re-pin below is what makes the next boot agree.
+	currentPort := portFromAddr(srv.Addr())
+	wantPort := stored.ListenPort
+	if wantPort == 0 {
+		wantPort = currentPort
+	}
+	if prev.BindAll != stored.BindAll || wantPort != currentPort {
+		addr := fmt.Sprintf("%s:%d", network.BindHost(stored.BindAll), wantPort)
 		if err := srv.Rebind(addr, &transport.RebindOptions{OriginPatterns: originPatterns}); err != nil {
 			// Roll the file back so we don't lie about the transport
 			// state. The rollback uses the previously-persisted value,
@@ -113,6 +128,16 @@ func (a *App) SetNetworkSettings(s network.Settings) (network.Settings, error) {
 		// No address change, so no listener swap: rotate the allow-list
 		// in place. A domain edit must not drop every open socket.
 		srv.SetOriginPatterns(originPatterns)
+	}
+
+	// Keep the transport-port cache naming where this listener actually
+	// is, whenever the operator touched the port field. That file is a
+	// cache of the previous bind, and the two ways it could go stale are
+	// both this call: pinning a new port (the cache still holds the old
+	// one) and clearing the pin (the cache holds a port from before it was
+	// ever set, and the next boot would silently move there).
+	if prev.ListenPort != stored.ListenPort {
+		a.recordBoundPort(portFromAddr(srv.Addr()))
 	}
 
 	// The certificate half runs on its own goroutine. Kicking it here is
@@ -158,6 +183,16 @@ func (a *App) RenewCanonicalDomainCert() (network.Settings, error) {
 	return network.FromServer(a.transportServer.Load(), a.networkSettingsFrom(stored)), nil
 }
 
+// recordBoundPort tells the executable where this listener ended up, when
+// there is anything listening for that. A zero port is a bound address
+// this process could not parse, which is not a fact worth persisting.
+func (a *App) recordBoundPort(port int) {
+	if a.boundPortRecorder == nil || port == 0 {
+		return
+	}
+	a.boundPortRecorder(port)
+}
+
 // persistedNetworkSettings is the wire record built from what is stored
 // plus the observed certificate status, with the server-derived fields
 // left for network.FromServer to fill.
@@ -168,6 +203,7 @@ func (a *App) persistedNetworkSettings() network.Settings {
 func (a *App) networkSettingsFrom(stored settings.NetworkSettings) network.Settings {
 	return network.Settings{
 		BindAll:         stored.BindAll,
+		ListenPort:      stored.ListenPort,
 		CanonicalDomain: stored.CanonicalDomain,
 		// OrEmpty so an unconfigured hook is `[]` on the wire rather than
 		// `null`: the field is a list the screen renders, and a client

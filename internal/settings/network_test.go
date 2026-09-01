@@ -184,6 +184,80 @@ func TestAHandEditedFileLosesOnlyTheUnusableHalf(t *testing.T) {
 	}
 }
 
+// The listen port persists through the same one write path, and zero is
+// a real stored value meaning "automatic" rather than an absent one.
+func TestListenPortRoundTripsThroughTheOneWritePath(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	updated, err := svc.SetNetwork(NetworkSettings{ListenPort: 7777})
+	if err != nil {
+		t.Fatalf("SetNetwork: %v", err)
+	}
+	if updated.Network.ListenPort != 7777 {
+		t.Fatalf("ListenPort = %d, want 7777", updated.Network.ListenPort)
+	}
+	if got := NewService(dir).Get().Network.ListenPort; got != 7777 {
+		t.Fatalf("reloaded ListenPort = %d, want 7777", got)
+	}
+
+	if _, err := svc.SetNetwork(NetworkSettings{ListenPort: 0}); err != nil {
+		t.Fatalf("SetNetwork clearing the port: %v", err)
+	}
+	if got := NewService(dir).Get().Network.ListenPort; got != 0 {
+		t.Fatalf("reloaded ListenPort = %d after clearing, want 0", got)
+	}
+}
+
+// Refused, never clamped. A clamp would bind SOME port and report
+// success, and the operator would then be looking for their backend at a
+// number nothing ever chose.
+func TestSetNetworkRefusesAnUnusableListenPort(t *testing.T) {
+	for _, port := range []int{-1, 65536, 1 << 20} {
+		if _, err := NewService(t.TempDir()).SetNetwork(NetworkSettings{ListenPort: port}); err == nil {
+			t.Errorf("SetNetwork accepted listenPort %d", port)
+		}
+	}
+	// Privileged ports are allowed: a backend with CAP_NET_BIND_SERVICE
+	// can hold one, and this package cannot see that capability.
+	for _, port := range []int{1, 443, 65535} {
+		if _, err := NewService(t.TempDir()).SetNetwork(NetworkSettings{ListenPort: port}); err != nil {
+			t.Errorf("SetNetwork refused listenPort %d: %v", port, err)
+		}
+	}
+}
+
+// The bind half is two values and only one of them can be wrong, so an
+// out-of-range port drops to automatic without taking the toggle, the
+// domain, or the tailnet with it.
+func TestAHandEditedFileLosesOnlyTheUnusablePort(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{
+		"network": {
+			"bindAll": true,
+			"listenPort": 99999,
+			"canonicalDomain": "ao.example.com",
+			"tailnetEnabled": true
+		}
+	}`), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	loaded := NewService(dir).Get().Network
+	if loaded.ListenPort != 0 {
+		t.Fatalf("the out-of-range port survived load as %d", loaded.ListenPort)
+	}
+	if !loaded.BindAll {
+		t.Error("the bind toggle was dropped along with the port")
+	}
+	if loaded.CanonicalDomain != "ao.example.com" {
+		t.Errorf("the domain was dropped along with the port: %q", loaded.CanonicalDomain)
+	}
+	if !loaded.TailnetEnabled {
+		t.Error("the tailnet was dropped along with the port")
+	}
+}
+
 // The tailnet half persists through the same one write path, and its
 // control URL is validated where a person can be told rather than at
 // bring-up, minutes later, with nothing connecting the two.

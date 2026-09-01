@@ -21,6 +21,13 @@ type Settings struct {
 	// 127.0.0.1.
 	BindAll bool `json:"bindAll"`
 
+	// ListenPort is the port the transport binds, or 0 for automatic
+	// (settings.NetworkSettings.ListenPort argues the choice). It is a
+	// PREFERENCE, not an observation: the port actually bound right now
+	// is the authority in URL below, and the two differ for exactly as
+	// long as it takes a saved change to rebind.
+	ListenPort int `json:"listenPort"`
+
 	// CanonicalDomain is the one HTTPS name this backend answers to
 	// (docs/specs/remote-access.md §7). Bare hostname, no scheme, no
 	// port. Empty means the backend is reached by address only.
