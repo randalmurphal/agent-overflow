@@ -7,6 +7,7 @@
   import AppearanceSection from './AppearanceSection.svelte';
   import PaneDensitySection from './PaneDensitySection.svelte';
   import ActivityRunSection from './ActivityRunSection.svelte';
+  import NotificationsSection from './NotificationsSection.svelte';
   import SpinnerSection from './SpinnerSection.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
 
@@ -174,6 +175,8 @@
       </SettingsField>
     </div>
   </section>
+
+  <NotificationsSection />
 
   <SpinnerSection />
 

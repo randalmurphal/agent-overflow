@@ -219,7 +219,13 @@ file, which is what the pre-database boot readers in `main.go` and
   write. The non-collision argument against the frontend's own
   `appStorage` keys is stated in the file and is worth keeping true: every
   `appStorage` key is either colon-namespaced or one of three named legacy
-  spellings, and no settings key contains a colon.
+  spellings, and no settings key contains a colon. `Service.BackendScreen()`
+  is the one narrow exception to "device tier means the CALLER's bucket": it
+  binds to the bucket `AttachTierStore` was given, for backend code that acts
+  on the BACKEND MACHINE's own screen and can say so — today the OS-notification
+  gate, which presents there in-process on macOS and Linux and through the
+  Windows launcher on WSL. It is not "the device tier, globally"; a key with no
+  screen behind it does not belong in the device tier at all.
 - `gendefaults.go` + `gendefaults/`: the generator that makes
   `DefaultSettings` the SINGLE source of settings defaults. It reflects
   the struct's json tags (the `knownSettingsFieldNames` walk), takes each
@@ -248,8 +254,15 @@ file, which is what the pre-database boot readers in `main.go` and
   that a REMOTE screen should own its own copy of goes to the device
   tier, a preference that follows the person across screens goes to
   user, and anything this backend's own behaviour reads goes to host or
-  user but never device (one backend behaviour cannot be driven by a
-  per-screen value).
+  user unless that behaviour ACTS ON a nameable screen. The test is
+  whether a caller can be resolved, not whether Go code reads the key:
+  `backgroundGitFetch` and `editor` drive one backend behaviour with no
+  screen attached, so a per-screen value would have nothing to resolve
+  against and they are user-tier; the notification preferences are read by
+  backend code too, but a notification is presented ON a screen, and the
+  host-side sender resolves them against the backend machine's own bucket
+  (`Service.BackendScreen`) exactly as an attached client resolves them
+  against its own.
   A field whose intended default is the Go zero value stays OUT of
   `DefaultSettings`. That is what makes an absent key read as the
   default for every settings file written before the field existed.

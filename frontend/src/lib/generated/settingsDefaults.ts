@@ -76,4 +76,9 @@ export const SETTINGS_DEFAULTS = {
   workflowPaused: false,
   keepAwakeEnabled: false,
   keepAwakeScreen: true,
+  notificationsEnabled: true,
+  notifyTurnComplete: true,
+  notifyApprovalNeeded: true,
+  notifyError: true,
+  notifyProviderSignedOut: true,
 } satisfies Settings;

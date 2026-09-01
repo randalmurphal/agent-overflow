@@ -124,6 +124,31 @@ func (s *Service) For(bucket string) Caller {
 	return Caller{svc: s, bucket: bucket}
 }
 
+// BackendScreen binds the service to the BACKEND MACHINE's own screen — the
+// bucket AttachTierStore was given.
+//
+// It is for backend code that acts on that screen and no other: today, the
+// host-side OS-notification sender, which presents on the machine this
+// process runs on (in-process on macOS and Linux, bridged to the Windows
+// launcher on WSL — one machine either way). `For("")` would answer device
+// DEFAULTS there, silently ignoring the preferences the user set on the very
+// screen being interrupted.
+//
+// It is NOT a general-purpose "the device tier, globally". A key that has no
+// screen behind it does not belong in the device tier at all (§6's retiering
+// rule, and the note on backgroundGitFetch in tier.go). Reach for this only
+// when the caller can name the screen it is acting on and that screen is
+// this machine's.
+//
+// A store-less service, or one whose backend bucket never resolved, answers
+// the same defaults `For("")` would: no bucket, no preferences, no failure.
+func (s *Service) BackendScreen() Caller {
+	s.mu.RLock()
+	bucket := s.backendBucket
+	s.mu.RUnlock()
+	return s.For(bucket)
+}
+
 // Get returns the settings this caller sees: the shared host+user snapshot
 // with its own device slice overlaid.
 func (c Caller) Get() Settings {

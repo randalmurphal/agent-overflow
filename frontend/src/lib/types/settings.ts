@@ -243,6 +243,21 @@ export interface Settings {
    */
   keepAwakeScreen: boolean;
   /**
+   * OS notifications master switch. Off means this screen raises none at
+   * all, including workflow attention and the update notice. Default on:
+   * notifications were unconditional before these keys existed, so an
+   * absent key must read as the behaviour the user already had.
+   */
+  notificationsEnabled: boolean;
+  /** OS notification when a top-level turn finishes. Default on. */
+  notifyTurnComplete: boolean;
+  /** OS notification when the agent is blocked on your approval. Default on. */
+  notifyApprovalNeeded: boolean;
+  /** OS notification when a turn fails or a provider stops. Default on. */
+  notifyError: boolean;
+  /** OS notification when a provider's login is gone. Default on. */
+  notifyProviderSignedOut: boolean;
+  /**
    * Working-indicator spinner verbs: replace the rail's "Working" label
    * with one verb per turn, drawn from the built-in list plus
    * `spinnerCustomVerbs`. Default ON — the verbs are text-only and the

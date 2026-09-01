@@ -153,6 +153,24 @@ var tierByKey = map[string]Tier{
 	"projectSortMode":       TierDevice,
 	"usagePeriod":           TierDevice,
 	"recentWorkspaces":      TierDevice,
+	// OS notifications are a property of the SCREEN they interrupt: a
+	// laptop at the desk wants approval alerts, a phone in a pocket wants
+	// only the ones that block work, and a wall display wants none. §9
+	// states the tier ("per event type × per backend").
+	//
+	// These are read by backend code, which the retiering note above says
+	// is the mark of a user-tier key — and the distinction is real, not a
+	// carve-out. backgroundGitFetch and editor drive ONE backend behaviour
+	// with no screen attached to it, so a per-screen value has no caller to
+	// resolve against. A notification has one: it is presented ON a screen,
+	// and the host-side sender resolves these against the backend
+	// machine's own screen bucket (Service.BackendScreen), exactly as an
+	// attached remote client will resolve them against its own.
+	"notificationsEnabled":    TierDevice,
+	"notifyTurnComplete":      TierDevice,
+	"notifyApprovalNeeded":    TierDevice,
+	"notifyError":             TierDevice,
+	"notifyProviderSignedOut": TierDevice,
 	// Spinner appearance is display, like fonts and motion.
 	"spinnerVerbsEnabled":         TierDevice,
 	"spinnerAnimationsEnabled":    TierDevice,

@@ -492,6 +492,37 @@ type Settings struct {
 	// absent key must read as on, which only DefaultSettings can do.
 	KeepAwakeScreen bool `json:"keepAwakeScreen"`
 
+	// The OS-notification preferences (docs/specs/remote-access.md §9).
+	// NotificationsEnabled is the master switch: with it off this screen
+	// raises no OS notification at all, including the two senders that
+	// predate the event mapping (a workflow item needing a human, and the
+	// WSL launcher's "update didn't apply" notice). The four below are the
+	// per-kind toggles over notify.Kind's four mapped moments.
+	//
+	// ALL FIVE DEFAULT TRUE, and are therefore all present in
+	// DefaultSettings. That is the KeepAwakeScreen pattern and it is what
+	// makes an absent key read as ON — which matters more here than
+	// anywhere else, because notifications were unconditional before these
+	// keys existed. A user upgrading into them must keep exactly the
+	// behaviour they had, and only then narrow it.
+	//
+	// The defaults are also the honest answer to "what is worth
+	// interrupting someone for": all four moments are ones where either the
+	// agent has stopped needing the machine and started needing the person,
+	// or nothing will run again until the person acts.
+	NotificationsEnabled bool `json:"notificationsEnabled"`
+	// NotifyTurnComplete covers a top-level turn arriving at rest. The
+	// noisiest of the four by volume, and the first one a user with many
+	// threads turns off.
+	NotifyTurnComplete bool `json:"notifyTurnComplete"`
+	// NotifyApprovalNeeded covers the agent blocked on permission.
+	NotifyApprovalNeeded bool `json:"notifyApprovalNeeded"`
+	// NotifyError covers a turn that failed and a provider process that
+	// died under a thread.
+	NotifyError bool `json:"notifyError"`
+	// NotifyProviderSignedOut covers a provider whose login is gone.
+	NotifyProviderSignedOut bool `json:"notifyProviderSignedOut"`
+
 	// Per-client UI view state (pane layout, collapsed projects,
 	// sidebar width, …) deliberately does NOT live here: it moved to
 	// the store's ui_state table, keyed per client, so two clients of
@@ -584,6 +615,14 @@ var DefaultSettings = Settings{
 	// itself (KeepAwakeEnabled) is the zero value and deliberately NOT
 	// here. See both fields for why the pair is split this way.
 	KeepAwakeScreen: true,
+	// Every notification preference defaults ON so an absent key reads as
+	// the unconditional behaviour that shipped before these keys existed.
+	// See the block on the fields.
+	NotificationsEnabled:    true,
+	NotifyTurnComplete:      true,
+	NotifyApprovalNeeded:    true,
+	NotifyError:             true,
+	NotifyProviderSignedOut: true,
 }
 
 // HiddenModelsForProvider returns the hidden-model slug list for the

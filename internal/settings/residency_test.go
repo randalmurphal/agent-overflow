@@ -311,6 +311,68 @@ func TestABucketLessDeviceWriteLandsOnTheBackendScreen(t *testing.T) {
 	}
 }
 
+// BackendScreen is the backend machine's own screen, not "the device tier,
+// globally": the host-side notification sender presents on that screen, so
+// it must read the preferences set THERE and no other device's.
+func TestBackendScreenReadsTheBackendMachinesOwnBucket(t *testing.T) {
+	svc, _ := tieredService(t)
+
+	if _, err := svc.For(testBackendBucket).Update(map[string]any{
+		"notifyTurnComplete": false,
+	}); err != nil {
+		t.Fatalf("backend Update: %v", err)
+	}
+	if _, err := svc.For("client:phone").Update(map[string]any{
+		"notifyApprovalNeeded": false,
+	}); err != nil {
+		t.Fatalf("phone Update: %v", err)
+	}
+
+	backend := svc.BackendScreen().Get()
+	if backend.NotifyTurnComplete {
+		t.Error("BackendScreen ignored the preference set on the backend's own screen")
+	}
+	if !backend.NotifyApprovalNeeded {
+		t.Error("BackendScreen adopted another device's preference")
+	}
+	// And the phone keeps its own answer, unaffected by the backend's.
+	phone := svc.For("client:phone").Get()
+	if !phone.NotifyTurnComplete || phone.NotifyApprovalNeeded {
+		t.Errorf("phone view = %+v, want only its own toggle off", phone)
+	}
+}
+
+// A service with no backend bucket — one built before AttachTierStore, which
+// main.go and main_desktop.go both do — answers defaults rather than failing.
+func TestBackendScreenWithoutAStoreAnswersDefaults(t *testing.T) {
+	svc := NewService(t.TempDir())
+	if got := svc.BackendScreen().Get(); !got.NotificationsEnabled || !got.NotifyError {
+		t.Fatalf("store-less BackendScreen = %+v, want the defaults", got)
+	}
+}
+
+// Every notification preference defaults ON. Notifications were
+// unconditional before these keys existed, so a default of off would be a
+// silent behaviour change for every existing install.
+func TestNotificationPreferencesDefaultOn(t *testing.T) {
+	for key, on := range map[string]bool{
+		"notificationsEnabled":    DefaultSettings.NotificationsEnabled,
+		"notifyTurnComplete":      DefaultSettings.NotifyTurnComplete,
+		"notifyApprovalNeeded":    DefaultSettings.NotifyApprovalNeeded,
+		"notifyError":             DefaultSettings.NotifyError,
+		"notifyProviderSignedOut": DefaultSettings.NotifyProviderSignedOut,
+	} {
+		if !on {
+			t.Errorf("%s defaults off", key)
+		}
+		tier, ok := TierForKey(key)
+		if !ok || tier != TierDevice {
+			t.Errorf("%s is tier %q (known=%t), want %q: a notification interrupts a SCREEN",
+				key, tier, ok, TierDevice)
+		}
+	}
+}
+
 // The recent list is per caller on both sides, so a screen sees the
 // workspaces IT opened.
 func TestRecentWorkspacesArePerCaller(t *testing.T) {
