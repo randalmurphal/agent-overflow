@@ -32,12 +32,10 @@
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import { isCompanionOpen, toggleCompanion } from '../../stores/companionPanes.svelte';
   import {
-    applyBrowserCompanionState,
+    browserCompanionAct,
     browserCompanionState,
     hydrateBrowserCompanionState,
   } from '../../stores/browserCompanion.svelte';
-  import { BrowserCompanionAction, BrowserCompanionDo } from '../../stores/bindings';
-  import { errString } from '../../utils/errors';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -149,19 +147,13 @@
     const threadId = threadIdForBrowser;
     const state = browserState;
     if (!threadId || !state) return;
-    try {
-      const next = await BrowserCompanionDo(
-        threadId,
-        new BrowserCompanionAction({
-          kind: browserVisible ? 'hide' : 'show',
-          pageId: browserVisible ? '' : (state.activePageId ?? ''),
-          address: '',
-        }),
-      );
-      applyBrowserCompanionState(next);
-    } catch (err) {
-      addToast('error', errString(err));
-    }
+    // A hidden companion has no pane to carry the banner, so the refusal
+    // comes back here and goes to a toast.
+    const failure = await browserCompanionAct(threadId, {
+      kind: browserVisible ? 'hide' : 'show',
+      pageId: browserVisible ? '' : (state.activePageId ?? ''),
+    });
+    if (failure) addToast('error', failure);
   }
 
   function toggleWorkspaceReview(): void {

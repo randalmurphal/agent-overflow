@@ -3,6 +3,7 @@ package harnessrpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/store"
@@ -85,6 +87,9 @@ func (h *testHost) Emit(channel eventchan.Channel, data any) {
 	}
 }
 func (h *testHost) Notify(string, string, notify.Target) error { return nil }
+func (h *testHost) BrowserPressKey(string, string, keybindings.Accelerator) error {
+	return errors.New("no browser engine in the fixture")
+}
 func (h *testHost) CreateProject(path string) (store.Project, error) {
 	now := time.Now().UnixMilli()
 	project := store.Project{ID: uuid.NewString(), Path: path, Name: filepath.Base(path), CreatedAt: now, UpdatedAt: now}

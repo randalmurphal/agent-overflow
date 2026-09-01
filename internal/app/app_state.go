@@ -8,6 +8,7 @@ import (
 
 	appbrowser "agent-overflow/internal/browser"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/sessionimport"
 )
 
@@ -107,6 +108,11 @@ type appSessionImportState struct {
 type appBrowserState struct {
 	manager *appbrowser.Manager
 	mcp     *appbrowser.MCPServer
+	// accelerators is the effective bound-chord set a page's native view
+	// hands back to AO (spec §7). Read on the UI thread per keypress, so it
+	// is a swap, not a keybindings file read; refreshBrowserAccelerators
+	// replaces it whenever the keybindings change.
+	accelerators atomic.Pointer[keybindings.AcceleratorSet]
 	// cdpRelay is the backend end of the Windows launcher's CDP tunnel,
 	// handed in by the executable before startup (bootstrap.go) and non-nil
 	// only on the WSL deployment. Its presence selects the hosted engine.

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
 	"github.com/chromedp/cdproto/target"
@@ -97,7 +98,7 @@ func (r stubRelay) BrowserWebSocketURL(context.Context) (string, error) {
 func newTestHostedEngine(t *testing.T, relay hostRelay, events engineEvents) (*hostedEngine, *directiveSink) {
 	t.Helper()
 	sink := newDirectiveSink()
-	engine := newHostedEngine(relay, sink.send, events)
+	engine := newHostedEngine(relay, sink.send, nil, events)
 	engine.logf = func(format string, args ...any) { t.Logf(format, args...) }
 	engine.createTimeout = 150 * time.Millisecond
 	engine.attachTimeout = 150 * time.Millisecond
@@ -142,7 +143,7 @@ func TestHostedProfileIDIsDerivedStableAndValid(t *testing.T) {
 }
 
 func TestHostedEngineStartRequiresWiring(t *testing.T) {
-	engine := newHostedEngine(nil, nil, engineEvents{})
+	engine := newHostedEngine(nil, nil, nil, engineEvents{})
 	if err := engine.Start(context.Background()); err == nil {
 		t.Fatal("an unwired pane host started")
 	}
@@ -816,5 +817,37 @@ func TestWindowsPathFromFileURLInvertsTheRendererView(t *testing.T) {
 		if err != nil || back != path {
 			t.Fatalf("round trip of %q via %q = %q, %v", path, asURL, back, err)
 		}
+	}
+}
+
+// The launcher matches chords in its own process, so the backend's whole
+// part is: ship the set at Start (and again whenever it changes), and route
+// the report of a match to the Manager as the page's KeyChord.
+func TestHostedEngineShipsAcceleratorsAndRoutesAMatch(t *testing.T) {
+	set := keybindings.AcceleratorSet{{Key: "w", Ctrl: true}: {}}
+	var chords []keybindings.Accelerator
+	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{
+		KeyChord: func(handle string, pressed keybindings.Accelerator) bool {
+			if handle != "page1" {
+				t.Errorf("KeyChord for %q, want page1", handle)
+			}
+			chords = append(chords, pressed)
+			return true
+		},
+	})
+	engine.accelerators = func() keybindings.AcceleratorSet { return set }
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	engine.SyncAccelerators()
+	sink.expectOps(t, webview2host.OpAccelerators, webview2host.OpAccelerators)
+	if got := sink.all[0].Accelerators; len(got) != 1 || got[0] != (keybindings.Accelerator{Key: "w", Ctrl: true}) {
+		t.Fatalf("shipped set = %#v", got)
+	}
+
+	engine.Report("page1", webview2host.ReportAccelerator, `{"key":"w","ctrl":true}`)
+	engine.Report("page1", webview2host.ReportAccelerator, `not json`)
+	if len(chords) != 1 || chords[0] != (keybindings.Accelerator{Key: "w", Ctrl: true}) {
+		t.Fatalf("KeyChord saw %#v", chords)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -77,7 +78,7 @@ func TestNotificationClientDispatchesBrowserHostDirective(t *testing.T) {
 			W:         800,
 			H:         600,
 		}
-		if got != want {
+		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("dispatched directive = %#v, want %#v", got, want)
 		}
 	case <-time.After(2 * time.Second):

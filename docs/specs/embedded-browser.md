@@ -269,10 +269,10 @@ positioned over.
   inspected from Safari (external; documented).
 
 Focus and keyboard are native: the engine view receives real OS input
-when focused. The SPA's global shortcuts don't fire while the browser
-view has focus (matches every embedded-webview app); Esc/app-level
-accelerators that must work get accelerator handling at the host layer
-if the need shows up in use.
+when focused. The SPA's global shortcuts would not fire while the browser
+view has focus, so every engine gates modifier chords on the app's bound
+set before its document sees them and hands a bound one back for the SPA
+to dispatch (as built: docs/architecture/browser-tools.md § Keyboard).
 
 ## 8. Tool surface mapping
 

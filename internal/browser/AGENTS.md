@@ -225,6 +225,19 @@ builder for macOS.
 - EVERY WebKit/AppKit call goes through `wkDo` (Wails' main-thread dispatch,
   bounded). Same rule, same reasons, same lock discipline as `gtkDo`: a lock
   here covers map bookkeeping only, and no wkDo-backed call happens under one.
+- Teardown issued FROM the main thread disposes inline. Wails runs
+  `ServiceShutdown` on the main thread and blocks it until it returns, so a
+  `closeBrowser` that fanned profile disposal out to goroutines parked every
+  `wkDo` for its full timeout and Cmd+Q beachballed (2026-09-01). The engine
+  answers `OnUIThread()` (`engineUIThread` in driver.go, `ao_wkv_on_main_thread`)
+  and the Manager disposes sequentially on the caller when it is true. The
+  GTK engine has the same seam (`ao_wk_on_main_thread`) for the same reason.
+- `aoWKVKeyChord` (and `aoWebKitKeyChord` on GTK) is the one export that
+  ANSWERS: it runs inside the key event's delivery and must return before the
+  event is released, so `Manager.keyChord` is a set lookup and a goroutine,
+  never a lock that a `wkDo`-backed path could be holding. The set itself is
+  swapped in whole by the App (`refreshBrowserAccelerators`), never read
+  from disk here. See browser-tools.md § Keyboard.
 - A `//export` callback runs ON the main thread, so it must never call `wkDo`
   itself — the dispatch would queue behind the delegate it is running inside
   and freeze the UI for a full `wkCallTimeout`. And it must never release an

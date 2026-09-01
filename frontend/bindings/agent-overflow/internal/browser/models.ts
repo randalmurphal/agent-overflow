@@ -5,6 +5,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as keybindings$0 from "../keybindings/models.js";
+
 /**
  * CompanionEvent is live browser state for the calling thread's companion
  * pane, emitted on page lifecycle and navigation changes. It carries no
@@ -20,6 +24,13 @@ export class CompanionEvent {
     "error"?: string;
     "visible"?: boolean | null;
     "sessionName"?: string;
+
+    /**
+     * Accelerator rides a Kind "accelerator" event: a bound chord pressed
+     * while the thread's page view held keyboard focus, for the frontend to
+     * dispatch as if the SPA had received it.
+     */
+    "accelerator"?: keybindings$0.Accelerator | null;
 
     /** Creates a new CompanionEvent instance. */
     constructor($$source: Partial<CompanionEvent> = {}) {
@@ -38,9 +49,13 @@ export class CompanionEvent {
      */
     static createFrom($$source: any = {}): CompanionEvent {
         const $$createField2_0 = $$createType1;
+        const $$createField8_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pages" in $$parsedSource) {
             $$parsedSource["pages"] = $$createField2_0($$parsedSource["pages"]);
+        }
+        if ("accelerator" in $$parsedSource) {
+            $$parsedSource["accelerator"] = $$createField8_0($$parsedSource["accelerator"]);
         }
         return new CompanionEvent($$parsedSource as Partial<CompanionEvent>);
     }
@@ -71,7 +86,7 @@ export class CompanionSubscription {
      * Creates a new CompanionSubscription instance from a string or object.
      */
     static createFrom($$source: any = {}): CompanionSubscription {
-        const $$createField1_0 = $$createType2;
+        const $$createField1_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("state" in $$parsedSource) {
             $$parsedSource["state"] = $$createField1_0($$parsedSource["state"]);
@@ -209,4 +224,6 @@ export class PaneRect {
 // Private type creation functions
 const $$createType0 = PageInfo.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = CompanionEvent.createFrom;
+const $$createType2 = keybindings$0.Accelerator.createFrom;
+const $$createType3 = $Create.Nullable($$createType2);
+const $$createType4 = CompanionEvent.createFrom;

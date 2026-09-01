@@ -1,4 +1,6 @@
 import {
+  BrowserCompanionAction,
+  BrowserCompanionDo,
   BrowserCompanionPaneAttach,
   BrowserCompanionPaneDetach,
   BrowserCompanionPaneRect,
@@ -8,8 +10,14 @@ import {
 } from './bindings';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
-import { closeCompanion, companionForSource, openCompanion } from './companionPanes.svelte';
-import { addPaneThreadMountedObserver, getAllPanes } from './panes.svelte';
+import {
+  closeCompanion,
+  companionForSource,
+  getCompanionPane,
+  openCompanion,
+} from './companionPanes.svelte';
+import { addPaneThreadMountedObserver, focusPane, getAllPanes, getFocusedPaneId, getPane } from './panes.svelte';
+import { errString } from '../utils/errors';
 
 // The browser pane's state store. The pane surface itself is an empty host
 // rect the platform positions a NATIVE browser view over (spec
@@ -18,7 +26,10 @@ import { addPaneThreadMountedObserver, getAllPanes } from './panes.svelte';
 
 export interface BrowserCompanionView {
   state: BrowserCompanionEvent;
+  /** The pane failed as a whole (attach, backend); replaces its body. */
   error: string;
+  /** The last chrome action was refused; the pane's banner. */
+  actionError: string;
 }
 
 // paneIds maps a thread to its live pane mount, acquired by the entity
@@ -31,7 +42,7 @@ const liveStates = createKeyedSignalRegistry<BrowserCompanionEvent | null>(null)
 const hydratedThreads = new Set<string>();
 
 function emptyView(state: BrowserCompanionEvent): BrowserCompanionView {
-  return { state, error: '' };
+  return { state, error: '', actionError: '' };
 }
 
 const store = createEntityStore<BrowserCompanionView, void>({
@@ -94,6 +105,10 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
     if (previous) store.apply(event.threadId, { ...previous, error: event.error || 'Browser pane failed' });
     return;
   }
+  if (event.kind === 'accelerator') {
+    replayBrowserAccelerator(event);
+    return;
+  }
   if (event.kind !== 'state') return;
   hydratedThreads.add(event.threadId);
   if ((event.pages?.length ?? 0) > 0) liveStates.set(event.threadId, event);
@@ -114,11 +129,96 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
   );
 }
 
+/**
+ * A bound chord pressed while the thread's NATIVE page view held keyboard
+ * focus (spec §7). The engine swallowed it and the backend routed it here;
+ * replaying it as a window keydown puts it through the one dispatcher every
+ * other keystroke uses, so `when` gates, user rebinds, and the palette all
+ * behave exactly as if the SPA had been focused. The companion pane is
+ * focused first: the click that gave the page focus moved no DOM focus, and
+ * pane-scoped commands (pane.close → this pane's tab) need the logical focus
+ * to be where the user is looking.
+ */
+function replayBrowserAccelerator(event: BrowserCompanionEvent): void {
+  const chord = event.accelerator;
+  if (!chord) return;
+  const sourcePaneId = sourcePaneIdForThread(event.threadId);
+  const companion = sourcePaneId ? companionForSource(sourcePaneId, 'browser') : null;
+  if (companion) focusPane(companion.paneId);
+  window.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      key: chord.key,
+      ctrlKey: chord.ctrl === true,
+      metaKey: chord.meta === true,
+      altKey: chord.alt === true,
+      shiftKey: chord.shift === true,
+      cancelable: true,
+    }),
+  );
+}
+
 // Reactive per-thread read behind the chat header's browser chip: null until
 // the thread has live pages. Tracked per key, so a chip re-evaluates only
 // when ITS thread's pages change.
 export function browserCompanionState(threadId: string): BrowserCompanionEvent | null {
   return liveStates.get(threadId);
+}
+
+export function noteBrowserActionError(threadId: string, message: string): void {
+  const previous = store.snapshot(threadId);
+  if (previous && previous.actionError !== message) store.apply(threadId, { ...previous, actionError: message });
+}
+
+/**
+ * One chrome action against the thread's pages. The backend answers with the
+ * next state, which lands like any push; a refusal lands in `actionError` (the
+ * mounted pane's banner) and is also returned, for a caller whose pane may
+ * not be mounted (the chat header's show/hide chip). Null on success. The
+ * pane's buttons, that chip, and the `pane.close` chord all go through here.
+ */
+export async function browserCompanionAct(
+  threadId: string,
+  action: { kind: string; pageId?: string; address?: string; index?: number },
+): Promise<string | null> {
+  noteBrowserActionError(threadId, '');
+  try {
+    const state = await BrowserCompanionDo(
+      threadId,
+      new BrowserCompanionAction({
+        kind: action.kind,
+        pageId: action.pageId ?? '',
+        address: action.address ?? '',
+        index: action.index ?? 0,
+      }),
+    );
+    applyBrowserCompanionState(state);
+    return null;
+  } catch (err) {
+    const message = errString(err);
+    noteBrowserActionError(threadId, message);
+    return message;
+  }
+}
+
+/**
+ * `pane.close` on a focused browser companion closes its ACTIVE TAB; the pane
+ * goes only with its last tab (the zero-page state push closes the companion
+ * in applyBrowserCompanionState). Routed from the command, not from a keydown
+ * handler on the pane: on WebKit a click on the tab strip moves no DOM focus,
+ * so a pane-scoped handler missed the chord and the window-level `pane.close`
+ * destroyed the whole pane instead. Returns false when nothing browser-shaped
+ * holds focus, and the command falls through to its pane close.
+ */
+export function closeFocusedBrowserTab(): boolean {
+  const focusedId = getFocusedPaneId();
+  const companion = focusedId ? getCompanionPane(focusedId) : null;
+  if (companion?.kind !== 'browser') return false;
+  const threadId = getPane(companion.sourcePaneId)?.threadId;
+  const state = threadId ? liveStates.get(threadId) : null;
+  const pageId = state?.activePageId || state?.pages?.[0]?.id;
+  if (!threadId || !pageId) return false;
+  void browserCompanionAct(threadId, { kind: 'close', pageId });
+  return true;
 }
 
 // The `browser:companion-state` channel is ephemeral (no replay), so a

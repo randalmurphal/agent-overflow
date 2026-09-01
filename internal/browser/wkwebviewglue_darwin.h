@@ -24,6 +24,11 @@
 // which is a capability answer exactly like "is there a window".
 int ao_wkv_supported(void);
 
+// ao_wkv_on_main_thread reports whether the caller is AppKit's main thread: the
+// thread every call here runs on, and the one Wails blocks while services shut
+// down. The Manager asks it to choose an inline teardown over a fanned-out one.
+int ao_wkv_on_main_thread(void);
+
 // ---- host ----------------------------------------------------------------
 
 // ao_wkv_host_attach adds AO's 1x1 clipping park view BENEATH the Wails
@@ -145,6 +150,11 @@ void ao_wkv_view_snapshot(void *view, uint64_t call_id);
 // ao_wkv_policy_finish answers a navigation decision aoWKVAllow deferred, and
 // releases the copied decision block. Exactly one call per deferred decision.
 void ao_wkv_policy_finish(void *decision, int allow);
+
+// ao_wkv_view_press_key makes the view first responder and sends one key-down
+// through its window's own event path, so a chord is gated exactly as a real
+// keystroke would be. Harness-only; key is the KeyboardEvent.key spelling.
+void ao_wkv_view_press_key(void *view, const char *key, int ctrl, int meta, int alt, int shift);
 
 // ---- memory --------------------------------------------------------------
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
@@ -108,6 +110,9 @@ type hostedEngine struct {
 	send   func(webview2host.Directive)
 	events engineEvents
 	logf   func(string, ...any)
+	// accelerators is the bound-chord set the launcher matches against in
+	// its own process. Nil ships an empty set: no chord is taken.
+	accelerators func() keybindings.AcceleratorSet
 
 	// The two bounds are fields rather than the constants directly so a
 	// test can drive the timeout paths without spending them.
@@ -132,11 +137,12 @@ type hostedEngine struct {
 	bounds        map[string]PaneRect
 }
 
-func newHostedEngine(relay hostRelay, send func(webview2host.Directive), events engineEvents) *hostedEngine {
+func newHostedEngine(relay hostRelay, send func(webview2host.Directive), accelerators func() keybindings.AcceleratorSet, events engineEvents) *hostedEngine {
 	return &hostedEngine{
 		relay:         relay,
 		send:          send,
 		events:        events,
+		accelerators:  accelerators,
 		logf:          log.Printf,
 		createTimeout: hostCreateTimeout,
 		attachTimeout: hostAttachTimeout,
@@ -164,8 +170,32 @@ func (e *hostedEngine) Start(context.Context) error {
 	e.mu.Lock()
 	e.started = true
 	e.mu.Unlock()
+	// The launcher matches chords itself, so it needs the set before the
+	// first page can take focus. Idempotent, like everything else here.
+	e.SyncAccelerators()
 	return nil
 }
+
+// SyncAccelerators is engineAccelerators: ship the current bound set to the
+// launcher, which holds it host-wide and gates every page's key events on it.
+func (e *hostedEngine) SyncAccelerators() {
+	e.mu.Lock()
+	started := e.started
+	e.mu.Unlock()
+	// Before Start there is no page to gate, and a directive would make the
+	// launcher build its WebView2 environment for nothing; Start ships the
+	// set when the first page is about to exist.
+	if e.send == nil || !started {
+		return
+	}
+	var list []keybindings.Accelerator
+	if e.accelerators != nil {
+		list = e.accelerators().List()
+	}
+	e.send(webview2host.Directive{Op: webview2host.OpAccelerators, Accelerators: list})
+}
+
+var _ engineAccelerators = (*hostedEngine)(nil)
 
 func (e *hostedEngine) Running() bool {
 	e.mu.Lock()
@@ -611,6 +641,15 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
 			e.retirePage(pageID)
 		}
+	case webview2host.ReportAccelerator:
+		// The launcher already matched and swallowed the chord; the Manager
+		// re-matches (same set) and routes it to the owning thread.
+		var pressed keybindings.Accelerator
+		if err := json.Unmarshal([]byte(detail), &pressed); err != nil {
+			e.logf("browser: pane host accelerator for page %s is unreadable: %v", pageID, err)
+			return
+		}
+		e.events.KeyChord(pageID, pressed)
 	case webview2host.ReportCleared, webview2host.ReportClearFailed:
 		// A clear names a correlation id, not a page: there is no controller
 		// to close and no page to retire. Nobody waiting means ClearSiteData

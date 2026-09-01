@@ -3,6 +3,8 @@ package browser
 import (
 	"context"
 	"time"
+
+	"agent-overflow/internal/keybindings"
 )
 
 const ServerName = "ao-browser-tools"
@@ -26,6 +28,10 @@ type CompanionEvent struct {
 	Error        string     `json:"error,omitempty"`
 	Visible      *bool      `json:"visible,omitempty"`
 	SessionName  string     `json:"sessionName,omitempty"`
+	// Accelerator rides a Kind "accelerator" event: a bound chord pressed
+	// while the thread's page view held keyboard focus, for the frontend to
+	// dispatch as if the SPA had received it.
+	Accelerator *keybindings.Accelerator `json:"accelerator,omitempty"`
 }
 
 // CompanionSubscription is what mounting a pane answers: the mount id the

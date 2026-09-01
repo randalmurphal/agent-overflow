@@ -6,6 +6,42 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
+ * Accelerator is one chord as a native key event reports it: the DOM
+ * `KeyboardEvent.key` spelling of the key (lowercase; " " for space) plus the
+ * four modifier states, with `mod` already resolved to the platform's key.
+ * 
+ * It exists for the embedded browser. A chord pressed while a page's NATIVE
+ * view holds keyboard focus never reaches the SPA's keydown dispatcher, so the
+ * engine asks — synchronously, on the UI thread — whether AO binds that chord
+ * before letting the page have it. Matching happens here, on the Go side of
+ * the wire, because the answer has to be given before the event is released.
+ */
+export class Accelerator {
+    "key": string;
+    "ctrl"?: boolean;
+    "meta"?: boolean;
+    "alt"?: boolean;
+    "shift"?: boolean;
+
+    /** Creates a new Accelerator instance. */
+    constructor($$source: Partial<Accelerator> = {}) {
+        if (!("key" in $$source)) {
+            this["key"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Accelerator instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Accelerator {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Accelerator($$parsedSource as Partial<Accelerator>);
+    }
+}
+
+/**
  * Keybinding is the on-disk / over-the-wire shape of a single
  * keybinding. `When` is an optional VS Code-style context expression
  * (e.g. "!terminalFocus" or "terminalOpen && !approvalPending").

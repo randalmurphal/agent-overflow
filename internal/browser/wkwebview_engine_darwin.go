@@ -148,6 +148,14 @@ func (e *wkEngine) ClearSiteData(ctx context.Context) error {
 // drifted would silently stop clearing rather than fail to build.
 var _ engineSiteData = (*wkEngine)(nil)
 
+// OnUIThread is the Manager's cue (engineUIThread in driver.go) that every
+// wkDo below would run inline from the caller. It is what lets a teardown
+// issued from the blocked main thread at quit finish instead of parking on a
+// queue that thread is not draining.
+func (e *wkEngine) OnUIThread() bool { return wkOnMainThread() }
+
+var _ engineUIThread = (*wkEngine)(nil)
+
 // holdPopup takes ownership of an engine-created view until the Manager adopts
 // or discards it. The engine never decides which.
 func (e *wkEngine) holdPopup(view unsafe.Pointer) string {

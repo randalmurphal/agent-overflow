@@ -30,6 +30,7 @@ import {
   syncThread,
 } from './panes.svelte';
 import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
+import { closeFocusedBrowserTab } from './browserCompanion.svelte';
 import type { PaneLayoutItem } from './paneLayout.svelte';
 import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
 import { getThreadById } from './threads.svelte';
@@ -270,6 +271,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: '!terminalFocus',
     editableReachable: true,
     run: () => {
+      // A focused browser companion closes a TAB; the pane goes with its last
+      // tab (browserCompanion.svelte.ts). Focus stays where it is.
+      if (closeFocusedBrowserTab()) return;
       closeFocusedPaneOrCompanion();
       const nextFocused = getFocusedThreadPaneId();
       if (nextFocused) focusPaneComposerIfEditableActive(nextFocused);

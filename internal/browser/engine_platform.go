@@ -20,7 +20,7 @@ func selectEngine(configDir string, opts ManagerOptions, events engineEvents) br
 	case opts.FakeEngine:
 		return newFakeEngine()
 	case opts.PaneHost != nil:
-		return newHostedEngine(opts.PaneHost.Relay, opts.PaneHost.Directive, events)
+		return newHostedEngine(opts.PaneHost.Relay, opts.PaneHost.Directive, opts.Accelerators, events)
 	}
 	if engine := newNativeEngine(configDir, opts, events); engine != nil {
 		return engine

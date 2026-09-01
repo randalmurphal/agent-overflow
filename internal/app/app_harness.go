@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/harnessrpc"
+	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/store"
@@ -97,6 +98,17 @@ func (h *harnessHost) Notify(title, body string, target notify.Target) error {
 		h.app.notifyOS(title, body, target),
 		h.app.activateNotificationTarget(target),
 	)
+}
+
+func (h *harnessHost) BrowserPressKey(threadID, pageID string, chord keybindings.Accelerator) error {
+	if h.app.browser.manager == nil {
+		return errors.New("browser manager unavailable")
+	}
+	access, err := h.app.browserAccess(threadID)
+	if err != nil {
+		return err
+	}
+	return h.app.browser.manager.HarnessPressKey(context.Background(), access, pageID, chord)
 }
 
 func (h *harnessHost) CreateProject(path string) (store.Project, error) {

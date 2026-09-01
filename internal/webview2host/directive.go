@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"agent-overflow/internal/keybindings"
 )
 
 // Op is the closed set of pane-host commands the backend may send. An op
@@ -40,6 +42,12 @@ const (
 	// backend waits on it exactly the way it waits on a create, and the
 	// launcher answers ReportCleared or ReportClearFailed under it.
 	OpClearData Op = "clear-data"
+	// OpAccelerators replaces the host-wide set of chords a page must hand
+	// back to AO instead of delivering to its document. The launcher matches
+	// AcceleratorKeyPressed against it in its own process — the backend is a
+	// network hop away and WebView2 wants the Handled answer synchronously —
+	// and reports a match as ReportAccelerator. It addresses no page.
+	OpAccelerators Op = "accelerators"
 )
 
 // Directive is one pane-host command. It is the JSON payload of an
@@ -48,6 +56,8 @@ const (
 // The zero value is not a valid directive: Validate rejects it, and the
 // launcher validates BEFORE dispatching, so no field below is ever
 // consumed unchecked.
+const maxAccelerators = 2048
+
 type Directive struct {
 	Op        Op      `json:"op"`
 	PageID    string  `json:"pageId,omitempty"`
@@ -75,6 +85,9 @@ type Directive struct {
 	// the controller where the page has not presented yet so freshly
 	// exposed strips match the pane. Empty leaves the engine default.
 	Bg string `json:"bg,omitempty"`
+	// Accelerators is OpAccelerators' payload: the whole bound set, `mod`
+	// already resolved by the backend.
+	Accelerators []keybindings.Accelerator `json:"accelerators,omitempty"`
 	// Ephemeral asks for an InPrivate profile on create, and on
 	// close-profile says the profile directory is expected to be
 	// discarded. It is meaningless on every other op.
@@ -117,6 +130,13 @@ func (d Directive) Validate() error {
 		return ValidatePageID(d.PageID)
 	case OpCloseProfile:
 		return ValidateProfileID(d.ProfileID)
+	case OpAccelerators:
+		// Defaults plus a full user override list is a few hundred; this is
+		// a frame-size tripwire, not a policy.
+		if len(d.Accelerators) > maxAccelerators {
+			return fmt.Errorf("%d accelerators exceeds the %d cap", len(d.Accelerators), maxAccelerators)
+		}
+		return nil
 	default:
 		return fmt.Errorf("%w: %q", ErrUnknownOp, d.Op)
 	}
@@ -196,6 +216,9 @@ const (
 	// the user asked to destroy is still on disk, which the backend must be
 	// able to say out loud rather than report a silent success.
 	ReportClearFailed ReportKind = "clear-failed"
+	// ReportAccelerator carries one keybindings.Accelerator as JSON: a bound
+	// chord the launcher took from the page named by the report's page id.
+	ReportAccelerator ReportKind = "accelerator"
 )
 
 // RPCReport is the method name the launcher posts its answers under, over
@@ -216,7 +239,7 @@ const MaxReportDetailBytes = 4096
 func ValidKind(kind ReportKind) bool {
 	switch kind {
 	case ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed,
-		ReportCleared, ReportClearFailed:
+		ReportCleared, ReportClearFailed, ReportAccelerator:
 		return true
 	default:
 		return false

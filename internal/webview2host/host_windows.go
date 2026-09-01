@@ -13,6 +13,8 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/keybindings"
+
 	"github.com/jchv/go-webview2/webviewloader"
 	"golang.org/x/sys/windows"
 )
@@ -50,6 +52,9 @@ type Host struct {
 	envHandle   *iEnvironmentCompletedHandler
 
 	pages map[string]*hostPage
+	// accelerators is the bound-chord set every page's key events are gated
+	// on (accelerators_windows.go). Replaced whole by OpAccelerators.
+	accelerators keybindings.AcceleratorSet
 
 	cdpPort int
 }
@@ -228,6 +233,8 @@ func (h *Host) Apply(directive Directive) {
 		h.closePages(func(page *hostPage) bool { return page.profileID == directive.ProfileID })
 	case OpClearData:
 		h.clearData(directive.PageID)
+	case OpAccelerators:
+		h.setAccelerators(directive.Accelerators)
 	}
 }
 
@@ -798,6 +805,13 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 	page.pendingHandlers = append(page.pendingHandlers, failHandler)
 	if _, err := view.addProcessFailed(failHandler); err != nil {
 		h.config.Logf("browser host: page %s process-failed subscription: %v", page.id, err)
+	}
+	keyHandler := newAcceleratorKeyPressedHandler(func(args *iAcceleratorKeyPressedEventArgs) {
+		h.acceleratorPressed(page, args)
+	})
+	page.pendingHandlers = append(page.pendingHandlers, keyHandler)
+	if _, err := controller.addAcceleratorKeyPressed(keyHandler); err != nil {
+		h.config.Logf("browser host: page %s accelerator subscription: %v", page.id, err)
 	}
 
 	// Target.getTargetInfo through the controller's own DevTools session

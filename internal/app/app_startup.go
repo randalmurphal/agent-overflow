@@ -521,6 +521,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	a.sweepCrashedWorktreeSetups()
 	logBootPhase("app.sweep_crashed_worktree_setups", worktreeSetupSweepStarted)
 	browserSettings := a.currentSettings()
+	a.refreshBrowserAccelerators()
 	a.browser.manager = appbrowser.NewManager(
 		dbDir,
 		browserConfigFromSettings(browserSettings),
@@ -528,6 +529,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 			FakeEngine:   a.browser.mockEngine,
 			PaneHost:     a.paneHostOptions(),
 			NativeWindow: a.browser.nativeWindow,
+			Accelerators: a.browserAccelerators,
 		},
 	)
 	a.browser.manager.SetEventSink(func(event appbrowser.CompanionEvent) {

@@ -374,3 +374,11 @@ func webkitDownloadOwner(handle string) *webkitProfile {
 	}
 	return nil
 }
+
+// OnUIThread is the Manager's cue (engineUIThread in driver.go) that every
+// gtkDo would run inline from the caller. It is what lets a teardown issued
+// from the blocked main thread at quit finish instead of parking on a queue
+// that thread is not draining.
+func (e *webkitEngine) OnUIThread() bool { return gtkOnMainThread() }
+
+var _ engineUIThread = (*webkitEngine)(nil)

@@ -23,6 +23,7 @@ extern void aoWKVDownloadStarted(uint64_t profile_id, uint64_t page_id, uint64_t
                                  void *download, char *uri, char *suggested);
 extern void aoWKVDownloadFinished(uint64_t download_id, double received, int state, char *path);
 extern void aoWKVClearDone(uint64_t call_id, char *err);
+extern int aoWKVKeyChord(uint64_t page_id, const char *key, int ctrl, int meta, int alt, int shift);
 
 // The download state vocabulary the Go seam uses (driver.go).
 #define AO_DL_IN_PROGRESS 0
@@ -61,6 +62,145 @@ static uint64_t ao_view_page_id(id view) {
 
 static uint64_t ao_view_profile_id(id view) {
   return ao_number(objc_getAssociatedObject(view, &kAOProfileIDKey));
+}
+
+// ---------------------------------------------------------------------------
+// Accelerators: app chords pressed while the PAGE has keyboard focus.
+//
+// The SPA and a presented page are sibling views in one window, and AppKit
+// has one first responder. Once the user clicks into page content, every key
+// goes to WebKit — Cmd+W included, which WebKit does not handle and this app
+// has no menu to catch. AOWebView is WKWebView with one addition: modifier
+// chords are offered to Go first (aoWKVKeyChord, a synchronous set lookup),
+// and a chord AO binds is swallowed here and dispatched by the SPA. Plain
+// typing never crosses; the page keeps every chord AO does not bind.
+// ---------------------------------------------------------------------------
+
+@interface AOWebView : WKWebView
+@end
+
+// ao_key_name spells an NSEvent's key the way KeyboardEvent.key does, which is
+// the spelling keybindings are written in. nil for keys no chord is bound to.
+static NSString *ao_key_name(NSEvent *event) {
+  NSString *chars = [event charactersIgnoringModifiers];
+  if ([chars length] == 0) {
+    return nil;
+  }
+  unichar c = [chars characterAtIndex:0];
+  switch (c) {
+    case NSUpArrowFunctionKey: return @"arrowup";
+    case NSDownArrowFunctionKey: return @"arrowdown";
+    case NSLeftArrowFunctionKey: return @"arrowleft";
+    case NSRightArrowFunctionKey: return @"arrowright";
+    case NSHomeFunctionKey: return @"home";
+    case NSEndFunctionKey: return @"end";
+    case NSPageUpFunctionKey: return @"pageup";
+    case NSPageDownFunctionKey: return @"pagedown";
+    case NSDeleteFunctionKey: return @"delete";
+    case NSInsertFunctionKey: return @"insert";
+    case 0x7f: return @"backspace";
+    case 0x0d: case 0x03: return @"enter";
+    case 0x1b: return @"escape";
+    case 0x09: case 0x19: return @"tab";
+    default: break;
+  }
+  if (c >= NSF1FunctionKey && c <= NSF12FunctionKey) {
+    return [NSString stringWithFormat:@"f%d", (int)(c - NSF1FunctionKey + 1)];
+  }
+  if (c < 0x20 || (c >= 0xF700 && c <= 0xF8FF)) {
+    return nil;
+  }
+  return [chars lowercaseString];
+}
+
+// ao_claim_chord answers whether AO takes this key event. Only when the page
+// view itself holds focus: -performKeyEquivalent: is walked over EVERY view in
+// the window, and a chord typed into the SPA is the SPA's.
+static BOOL ao_claim_chord(WKWebView *view, NSEvent *event) {
+  if ([event type] != NSEventTypeKeyDown) {
+    return NO;
+  }
+  NSResponder *responder = [[view window] firstResponder];
+  if (![responder isKindOfClass:[NSView class]] || ![(NSView *)responder isDescendantOf:view]) {
+    return NO;
+  }
+  NSEventModifierFlags flags = [event modifierFlags];
+  int ctrl = (flags & NSEventModifierFlagControl) != 0;
+  int meta = (flags & NSEventModifierFlagCommand) != 0;
+  int alt = (flags & NSEventModifierFlagOption) != 0;
+  int shift = (flags & NSEventModifierFlagShift) != 0;
+  if (!ctrl && !meta && !alt) {
+    return NO;
+  }
+  NSString *key = ao_key_name(event);
+  if (key == nil) {
+    return NO;
+  }
+  return aoWKVKeyChord(ao_view_page_id(view), [key UTF8String], ctrl, meta, alt, shift) == 1;
+}
+
+@implementation AOWebView
+// Cmd and Ctrl chords arrive here, before any keyDown. Option-only chords do
+// not, hence the second override.
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+  if (ao_claim_chord(self, event)) {
+    return YES;
+  }
+  return [super performKeyEquivalent:event];
+}
+
+- (void)keyDown:(NSEvent *)event {
+  if (ao_claim_chord(self, event)) {
+    return;
+  }
+  [super keyDown:event];
+}
+@end
+
+void ao_wkv_view_press_key(void *view, const char *key, int ctrl, int meta, int alt, int shift) {
+  @autoreleasepool {
+    WKWebView *v = (WKWebView *)view;
+    NSWindow *window = v == nil ? nil : [v window];
+    if (window == nil || key == NULL) {
+      return;
+    }
+    NSString *chars = [NSString stringWithUTF8String:key];
+    // Named keys travel as their function-key character so ao_key_name reads
+    // them back by the same table a hardware key would hit.
+    static NSDictionary<NSString *, NSString *> *named = nil;
+    if (named == nil) {
+      named = [@{
+        @"enter" : @"\r", @"escape" : @"\x1b", @"tab" : @"\t", @"backspace" : @"\x7f",
+        @"arrowup" : [NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey],
+        @"arrowdown" : [NSString stringWithFormat:@"%C", (unichar)NSDownArrowFunctionKey],
+        @"arrowleft" : [NSString stringWithFormat:@"%C", (unichar)NSLeftArrowFunctionKey],
+        @"arrowright" : [NSString stringWithFormat:@"%C", (unichar)NSRightArrowFunctionKey],
+      } retain];
+    }
+    NSString *mapped = named[chars];
+    if (mapped != nil) {
+      chars = mapped;
+    }
+    NSEventModifierFlags flags = 0;
+    if (ctrl) flags |= NSEventModifierFlagControl;
+    if (meta) flags |= NSEventModifierFlagCommand;
+    if (alt) flags |= NSEventModifierFlagOption;
+    if (shift) flags |= NSEventModifierFlagShift;
+    [window makeFirstResponder:v];
+    NSEvent *event = [NSEvent keyEventWithType:NSEventTypeKeyDown
+                                      location:NSZeroPoint
+                                 modifierFlags:flags
+                                     timestamp:[[NSProcessInfo processInfo] systemUptime]
+                                  windowNumber:[window windowNumber]
+                                       context:nil
+                                    characters:chars
+                   charactersIgnoringModifiers:chars
+                                     isARepeat:NO
+                                       keyCode:0];
+    // The window's own dispatch: key equivalents are tried across the view
+    // tree first, then keyDown on the first responder — the real path.
+    [window sendEvent:event];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +246,8 @@ static NSView *ao_park = nil;
 static NSView *ao_view_clip(NSView *view) {
   return (NSView *)objc_getAssociatedObject(view, &kAOClipKey);
 }
+
+int ao_wkv_on_main_thread(void) { return [NSThread isMainThread] ? 1 : 0; }
 
 int ao_wkv_supported(void) {
   @autoreleasepool {
@@ -499,7 +641,7 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   // The configuration WebKit hands over carries the opener's data store and
   // process, which is what makes the popup part of the same workspace profile.
   // It is never replaced.
-  WKWebView *popup = [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 800)
+  WKWebView *popup = [[AOWebView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 800)
                                         configuration:configuration];
   NSURL *url = [[navigationAction request] URL];
   // Held (the +1 from -alloc) until the Manager adopts or discards it. WebKit
@@ -892,7 +1034,7 @@ void *ao_wkv_view_new(void *store, uint64_t page_id, uint64_t profile_id,
     [[configuration preferences] setJavaScriptCanOpenWindowsAutomatically:YES];
     WKUserContentController *controller = [[[WKUserContentController alloc] init] autorelease];
     [configuration setUserContentController:controller];
-    WKWebView *view = [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 800)
+    WKWebView *view = [[AOWebView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 800)
                                          configuration:configuration];
     if (view == nil) {
       return NULL;
@@ -1115,10 +1257,9 @@ static void ao_snapshot_deliver(uint64_t call_id, NSImage *image, int width, int
     aoWKVSnapshotDone(call_id, NULL, 0, 0, 0, strdup("browser: screenshot context failed"));
     return;
   }
-  // A bitmap context's origin is bottom-left; flipping makes row 0 the top row,
-  // which is what a top-down RGBA image means everywhere else.
-  CGContextTranslateCTM(ctx, 0, (CGFloat)height);
-  CGContextScaleCTM(ctx, 1.0, -1.0);
+  // No CTM flip: CGContextDrawImage into a bitmap context already writes the
+  // image top-down (row 0 is the top row), which is what webkitimage.go and the
+  // clip math expect. Flipping here inverted every screenshot (2026-08-31).
   CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)width, (CGFloat)height), cg);
   CGContextRelease(ctx);
   aoWKVSnapshotDone(call_id, pixels, width, height, (int)stride, NULL);

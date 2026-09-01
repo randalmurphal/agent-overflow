@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/keybindings"
 )
 
 func TestDirectiveValidateAcceptsEveryOp(t *testing.T) {
@@ -93,7 +96,7 @@ func TestDirectiveJSONShape(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	want := Directive{Op: OpBounds, PageID: "page-1", ProfileID: "ws_abc", X: 10.5, Y: 20, W: 800, H: 600, Ephemeral: true}
-	if directive != want {
+	if !reflect.DeepEqual(directive, want) {
 		t.Fatalf("decoded = %#v, want %#v", directive, want)
 	}
 }
@@ -109,7 +112,7 @@ func TestClearDataWireSpelling(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &directive); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if want := (Directive{Op: OpClearData, PageID: "clear-1"}); directive != want {
+	if want := (Directive{Op: OpClearData, PageID: "clear-1"}); !reflect.DeepEqual(directive, want) {
 		t.Fatalf("decoded = %#v, want %#v", directive, want)
 	}
 	if err := directive.Validate(); err != nil {
@@ -158,4 +161,33 @@ func isValidUTF8(s string) bool {
 		}
 	}
 	return true
+}
+
+// The accelerator op and report are spelled on both ends of the wire like
+// clear-data is, and drift would be just as silent: the launcher would
+// deliver every chord to the page and the SPA would never hear Ctrl+W.
+func TestAcceleratorsWireSpelling(t *testing.T) {
+	var directive Directive
+	raw := `{"op":"accelerators","accelerators":[{"key":"w","ctrl":true},{"key":"r","alt":true,"shift":true}]}`
+	if err := json.Unmarshal([]byte(raw), &directive); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	want := Directive{Op: OpAccelerators, Accelerators: []keybindings.Accelerator{
+		{Key: "w", Ctrl: true}, {Key: "r", Alt: true, Shift: true},
+	}}
+	if !reflect.DeepEqual(directive, want) {
+		t.Fatalf("decoded = %#v, want %#v", directive, want)
+	}
+	if err := directive.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if err := (Directive{Op: OpAccelerators}).Validate(); err != nil {
+		t.Fatalf("an empty set is a valid (clearing) directive: %v", err)
+	}
+	if err := (Directive{Op: OpAccelerators, Accelerators: make([]keybindings.Accelerator, maxAccelerators+1)}).Validate(); err == nil {
+		t.Fatal("an oversized set validated")
+	}
+	if !ValidKind(ReportAccelerator) {
+		t.Fatal("the accelerator report is not a valid kind")
+	}
 }

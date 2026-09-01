@@ -21,6 +21,12 @@
 // Returns 1 on success, 0 when the window has no child to wrap.
 int ao_wk_host_attach(void *gtk_window);
 
+// ao_wk_on_main_thread reports whether the caller is the GTK thread: the one
+// ao_wk_host_attach ran on, the one every call here runs on, and the one Wails
+// blocks while services shut down. The Manager asks it to choose an inline
+// teardown over a fanned-out one. 0 until the host has attached once.
+int ao_wk_on_main_thread(void);
+
 // ao_wk_host_park puts a view into the background host at its own slot. The
 // host clips to 1x1, so a parked view is mapped (real viewport, fresh
 // snapshots) while costing the window no size at all. A GtkFixed at offscreen

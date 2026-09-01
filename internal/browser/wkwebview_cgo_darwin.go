@@ -19,6 +19,8 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/keybindings"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -80,6 +82,10 @@ var errWKUnavailable = fmt.Errorf("browser: the desktop window is not accepting 
 // exist without. It is a pure runtime version read with no UI in it, so it does
 // not need the main thread — and it runs before any Manager exists.
 func wkSupported() bool { return C.ao_wkv_supported() == 1 }
+
+// wkOnMainThread answers whether wkDo would run its closure inline right now —
+// true only on the AppKit main thread, where Wails' dispatch short-circuits.
+func wkOnMainThread() bool { return C.ao_wkv_on_main_thread() == 1 }
 
 // ---------------------------------------------------------------------------
 // Registries the Objective-C callbacks resolve against
@@ -194,6 +200,23 @@ func aoWKVPageInfo(pageID C.uint64_t, uri *C.char, title *C.char) {
 	page.noteLoad(location)
 	// Off the main thread: the Manager takes its own locks to route this.
 	go page.engine.events.PageInfoChanged(page.handle, location, name)
+}
+
+// aoWKVKeyChord runs ON the main thread, inside the key event's delivery, and
+// answers synchronously: it is a set lookup in the Manager and nothing that
+// waits. The routing that follows a claim leaves the thread on a goroutine.
+//
+//export aoWKVKeyChord
+func aoWKVKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift C.int) C.int {
+	page := wkLookupPage(uint64(pageID))
+	if page == nil || page.engine.events.KeyChord == nil {
+		return 0
+	}
+	pressed := keybindings.Accelerator{Key: C.GoString(key), Ctrl: ctrl != 0, Meta: meta != 0, Alt: alt != 0, Shift: shift != 0}
+	if page.engine.events.KeyChord(page.handle, pressed) {
+		return 1
+	}
+	return 0
 }
 
 //export aoWKVPageClosed

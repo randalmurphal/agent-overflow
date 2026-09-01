@@ -37,9 +37,17 @@ contract explicit:
   activity does not steal their selected tab. They are never layout
   persisted, and their host rect is a real native view's airspace: the
   mount must be released on unmount so a dead pane cannot leave a browser
-  view painted over the window. Pane lifecycle shortcuts such as platform
-  Mod+W are captured by `BrowserPane` before its address bar can consume
-  them.
+  view painted over the window. Mod+W on a focused browser companion closes
+  the ACTIVE TAB, routed from the `pane.close` command through
+  `closeFocusedBrowserTab()` (browserCompanion.svelte.ts), never from a
+  keydown handler on the pane: a click on the tab strip moves no DOM focus,
+  so a pane-scoped handler misses the chord and the window-level command
+  would destroy the pane. The pane closes with its last tab, via the
+  zero-page state push. Chords pressed while the NATIVE page view has
+  keyboard focus never reach the DOM at all; the engine hands bound ones
+  back as `accelerator` companion events and the store replays them as a
+  window keydown after focusing the companion, so the same dispatcher runs
+  ([browser-tools.md § Keyboard](../../../../../docs/architecture/browser-tools.md#keyboard)).
 
 Do not put chat behavior in this directory. Pane components mount and
 measure; chat/terminal/sidebar behavior stays in the owning feature

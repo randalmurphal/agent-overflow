@@ -60,11 +60,42 @@ per-platform no-op.
   thread's explicitly selected tab and caps the viewport at 1920×1200. No pixels
   cross the wire in either direction, so a hidden pane costs nothing and no
   connection can receive browser image data.
+- `pane.close` (Mod+W) on a focused browser companion closes the active tab;
+  the companion closes when its last tab does. Closing the companion any other
+  way hides the session and keeps its pages, so reopening shows the same tabs.
+
+## Keyboard
+
+The page is a native view beside the SPA's, and the window has one keyboard
+focus. Once the user clicks into page content every key goes to the engine,
+so AO's chords have to be taken back at the engine:
+
+- The App reduces the effective keybindings to an `AcceleratorSet`
+  (`internal/keybindings/accelerator.go`, the Go mirror of the frontend chord
+  grammar with `mod` resolved per platform) at startup and after every
+  keybindings write. Only chords with ctrl, meta, or alt are in it: bare and
+  shift-only keys are typing and always reach the page.
+- Each engine gates key events on it before its document sees them: the
+  WKWebView subclass's `performKeyEquivalent:`/`keyDown:` (only while the page
+  view is first responder), a capture-phase `GtkEventControllerKey` on the
+  WebKitGTK view, and WebView2's `AcceleratorKeyPressed` in the launcher, which
+  matches in its own process against the set the backend ships in an
+  `accelerators` directive and answers with an `accelerator` report.
+- A bound chord is swallowed by the engine and reaches the frontend as an
+  `accelerator` event on `browser:companion-state`, carrying the BOUND
+  spelling (Shift glyph variants are normalized by the match). The store
+  focuses the thread's browser companion and replays the chord as a window
+  keydown, so `when` gates, rebinds and the palette all behave as if the SPA
+  had been focused. A bound chord whose `when` fails there is a no-op — the
+  page never gets it back, which is the price of answering synchronously.
 - Session teardown closes that thread's pages. A workspace profile with no
   pages is disposed. An engine with no profiles is stopped after a bounded idle
   delay.
 - App shutdown cancels calls, disposes profiles, stops the engine, then closes
-  the MCP listener.
+  the MCP listener. Wails runs that shutdown ON the desktop UI thread, which
+  the WebKit engines dispatch every native call to, so when the caller is that
+  thread the profiles are disposed inline on it (`engineUIThread`) rather than
+  fanned out to goroutines that could only wait for it.
 
 ## Tool surface
 

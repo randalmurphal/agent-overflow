@@ -23,6 +23,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/harness"
 	"agent-overflow/internal/harness/control"
+	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/slicesx"
@@ -384,6 +385,22 @@ func (h *Harness) HarnessEmit(channel string, payload json.RawMessage) error {
 	}
 	h.config.Host.Emit(eventchan.Channel(channel), payload)
 	return nil
+}
+
+// HarnessBrowserPressKey types one chord into a browser page's native view
+// (docs/architecture/browser-tools.md § Keyboard): the page becomes first
+// responder and the key event enters through the window, so the engine's
+// chord gate sees exactly what a real keystroke would. OS-level input
+// synthesis needs Accessibility trust the harness cannot assume; this does
+// not, because the app is posting to its own window.
+func (h *Harness) HarnessBrowserPressKey(threadID, pageID string, chord keybindings.Accelerator) error {
+	if h.config.Host == nil {
+		return fmt.Errorf("harness host unavailable")
+	}
+	if strings.TrimSpace(chord.Key) == "" {
+		return fmt.Errorf("chord key must be non-empty")
+	}
+	return h.config.Host.BrowserPressKey(threadID, pageID, chord)
 }
 
 // HarnessNotify exercises the production send helper and then synthesizes

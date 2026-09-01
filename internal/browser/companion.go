@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 
+	"agent-overflow/internal/keybindings"
+
 	"github.com/google/uuid"
 )
 
@@ -148,20 +150,54 @@ func (m *Manager) emitThreadState(threadID string) {
 	}
 }
 
-func (m *Manager) updatePageInfo(handle, url, title string) {
-	m.mu.Lock()
-	var found *managedPage
+// pageByHandleLocked resolves an engine handle to the page it drives. Caller
+// holds m.mu.
+func (m *Manager) pageByHandleLocked(handle string) *managedPage {
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
 			if p.driver.Handle() == handle {
-				found = p
-				break
+				return p
 			}
 		}
-		if found != nil {
-			break
-		}
 	}
+	return nil
+}
+
+// keyChord is engineEvents.KeyChord: it answers on the engine's UI thread, so
+// it is one set lookup, and the routing that takes m.mu happens off it.
+func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator) bool {
+	if m.accelerators == nil {
+		return false
+	}
+	bound, ok := m.accelerators().Match(pressed)
+	if !ok {
+		return false
+	}
+	go m.emitAccelerator(handle, bound)
+	return true
+}
+
+func (m *Manager) emitAccelerator(handle string, bound keybindings.Accelerator) {
+	m.mu.Lock()
+	p := m.pageByHandleLocked(handle)
+	m.mu.Unlock()
+	if p == nil {
+		return
+	}
+	m.emit(CompanionEvent{Kind: "accelerator", ThreadID: p.owner, Accelerator: &bound})
+}
+
+// AcceleratorsChanged tells an engine that matches chords out of process
+// (engineAccelerators) that the bound set it holds is stale.
+func (m *Manager) AcceleratorsChanged() {
+	if engine, ok := m.engine.(engineAccelerators); ok {
+		engine.SyncAccelerators()
+	}
+}
+
+func (m *Manager) updatePageInfo(handle, url, title string) {
+	m.mu.Lock()
+	found := m.pageByHandleLocked(handle)
 	m.mu.Unlock()
 	if found == nil {
 		return

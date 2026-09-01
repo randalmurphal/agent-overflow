@@ -9,14 +9,11 @@
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
     attachBrowserCompanion,
-    applyBrowserCompanionState,
+    browserCompanionAct,
+    noteBrowserActionError,
     reportBrowserPaneRect,
   } from '../../stores/browserCompanion.svelte';
-  import {
-    BrowserCompanionAction,
-    BrowserCompanionDo,
-    BrowserCompanionRevealPageFile,
-  } from '../../stores/bindings';
+  import { BrowserCompanionRevealPageFile } from '../../stores/bindings';
   import Icon from '../primitives/Icon.svelte';
   import { errString } from '../../utils/errors';
   import { airspaceIntersects, airspaceSurfaces } from '../../utils/paneAirspace.svelte';
@@ -24,7 +21,6 @@
   import { getPaneLayoutItems } from '../../stores/paneLayout.svelte';
   import { getSidebarWidth, isSidebarCollapsed } from '../../stores/sidebarLayout.svelte';
   import { getAppliedTheme } from '../../theme/themeApply.svelte';
-  import { isMacPlatform } from '../../utils/platform';
 
   // The pane surface is an empty HOST RECT: the platform positions a real
   // native browser view over it (spec docs/specs/embedded-browser.md §7).
@@ -38,7 +34,6 @@
   let attachment = $state<ReturnType<typeof attachBrowserCompanion> | null>(null);
   let address = $state('');
   let addressFocused = $state(false);
-  let error = $state('');
   let rectFrame = 0;
   let lastSentKey = '';
   let bgRaw = '';
@@ -216,28 +211,17 @@
   async function act(kind: string, pageId = activePageId, nextAddress = '', index = 0): Promise<void> {
     const threadId = ctx.threadId;
     if (!threadId) return;
-    error = '';
-    try {
-      const state = await BrowserCompanionDo(threadId, new BrowserCompanionAction({
-        kind,
-        pageId,
-        address: nextAddress,
-        index,
-      }));
-      applyBrowserCompanionState(state);
-    } catch (err) {
-      error = errString(err);
-    }
+    await browserCompanionAct(threadId, { kind, pageId, address: nextAddress, index });
   }
 
   async function revealPageFile(): Promise<void> {
     const threadId = ctx.threadId;
     if (!threadId || !activePageId) return;
-    error = '';
+    noteBrowserActionError(threadId, '');
     try {
       await BrowserCompanionRevealPageFile(threadId, activePageId);
     } catch (err) {
-      error = errString(err);
+      noteBrowserActionError(threadId, errString(err));
     }
   }
 
@@ -296,21 +280,9 @@
     dropSlot = -1;
   }
 
-  function closeTabShortcut(event: KeyboardEvent): void {
-    if (event.isComposing || event.key.toLowerCase() !== 'w' || event.altKey || event.shiftKey) return;
-    const modifier = isMacPlatform() ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
-    if (!modifier || !activePageId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    void act('close', activePageId);
-  }
 </script>
 
-<div
-  class="flex h-full min-h-0 flex-col bg-surface-0"
-  data-testid="browser-pane"
-  onkeydowncapture={closeTabShortcut}
->
+<div class="flex h-full min-h-0 flex-col bg-surface-0" data-testid="browser-pane">
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="flex min-h-9 items-end gap-1 overflow-x-auto border-b border-border-subtle bg-surface-1 px-1 pt-1"
@@ -397,8 +369,8 @@
     <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="Close browser" title="Close browser" onclick={() => void act('hide', '')}><Icon icon={X} size={14} /></button>
   </div>
 
-  {#if error}
-    <div class="shrink-0 border-b border-error/25 bg-error/10 px-3 py-1.5 text-[0.7rem] text-error" role="alert">{error}</div>
+  {#if view?.actionError}
+    <div class="shrink-0 border-b border-error/25 bg-error/10 px-3 py-1.5 text-[0.7rem] text-error" role="alert">{view.actionError}</div>
   {/if}
 
   <!-- The host rect. The native browser view is positioned exactly over this

@@ -301,6 +301,16 @@ func (c *iCoreWebView2Controller) putBounds(bounds rect) error {
 	return hresult(hr)
 }
 
+func (c *iCoreWebView2Controller) addAcceleratorKeyPressed(handler *iAcceleratorKeyPressedHandler) (eventRegistrationToken, error) {
+	var token eventRegistrationToken
+	hr, _, _ := c.vtbl.AddAcceleratorKeyPressed.Call(
+		uintptr(unsafe.Pointer(c)),
+		uintptr(unsafe.Pointer(handler)),
+		uintptr(unsafe.Pointer(&token)),
+	)
+	return token, hresult(hr)
+}
+
 func (c *iCoreWebView2Controller) putIsVisible(visible bool) error {
 	var value int32
 	if visible {
@@ -603,6 +613,75 @@ var devToolsCompletedVtbl = handlerVtbl{
 
 func newDevToolsCompletedHandler(done func(uintptr, string)) *iDevToolsCompletedHandler {
 	return &iDevToolsCompletedHandler{vtbl: &devToolsCompletedVtbl, done: done}
+}
+
+// --- AcceleratorKeyPressed ---
+
+// ICoreWebView2AcceleratorKeyPressedEventArgs. Only the three members the
+// chord gate reads are called; the vtable is complete so the offsets hold.
+type iAcceleratorKeyPressedEventArgsVtbl struct {
+	iUnknownVtbl
+	GetKeyEventKind      comProc
+	GetVirtualKey        comProc
+	GetKeyEventLParam    comProc
+	GetPhysicalKeyStatus comProc
+	GetHandled           comProc
+	PutHandled           comProc
+}
+
+type iAcceleratorKeyPressedEventArgs struct {
+	vtbl *iAcceleratorKeyPressedEventArgsVtbl
+}
+
+// COREWEBVIEW2_KEY_EVENT_KIND: the two DOWN kinds. SYSTEM_KEY_DOWN is how
+// every Alt chord arrives.
+const (
+	keyEventKindKeyDown       uint32 = 0
+	keyEventKindSystemKeyDown uint32 = 2
+)
+
+func (a *iAcceleratorKeyPressedEventArgs) keyEventKind() uint32 {
+	value := uint32(0xffffffff)
+	_, _, _ = a.vtbl.GetKeyEventKind.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(&value)))
+	return value
+}
+
+func (a *iAcceleratorKeyPressedEventArgs) virtualKey() uint32 {
+	var value uint32
+	_, _, _ = a.vtbl.GetVirtualKey.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(&value)))
+	return value
+}
+
+func (a *iAcceleratorKeyPressedEventArgs) putHandled(handled bool) error {
+	var value int32
+	if handled {
+		value = 1
+	}
+	hr, _, _ := a.vtbl.PutHandled.Call(uintptr(unsafe.Pointer(a)), uintptr(value))
+	return hresult(hr)
+}
+
+type iAcceleratorKeyPressedHandler struct {
+	vtbl    *handlerVtbl
+	pressed func(args *iAcceleratorKeyPressedEventArgs)
+}
+
+var acceleratorKeyPressedVtbl = handlerVtbl{
+	iUnknownVtbl: iUnknownVtbl{
+		QueryInterface: newComProc(noopQueryInterface),
+		AddRef:         newComProc(noopAddRefRelease),
+		Release:        newComProc(noopAddRefRelease),
+	},
+	Invoke: newComProc(func(this *iAcceleratorKeyPressedHandler, _ *iCoreWebView2Controller, args *iAcceleratorKeyPressedEventArgs) uintptr {
+		if args != nil {
+			this.pressed(args)
+		}
+		return 0
+	}),
+}
+
+func newAcceleratorKeyPressedHandler(pressed func(*iAcceleratorKeyPressedEventArgs)) *iAcceleratorKeyPressedHandler {
+	return &iAcceleratorKeyPressedHandler{vtbl: &acceleratorKeyPressedVtbl, pressed: pressed}
 }
 
 // --- ProcessFailed ---

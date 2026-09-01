@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"regexp"
+
+	"agent-overflow/internal/keybindings"
 )
 
 // The engine seam. `Manager` owns policy — Access checks, the page registry and
@@ -45,6 +47,26 @@ type browserEngine interface {
 // delete already is the clear.
 type engineSiteData interface {
 	ClearSiteData(ctx context.Context) error
+}
+
+// engineUIThread is implemented by an engine whose every native call is a
+// dispatch to the desktop UI thread (WKWebView, WebKitGTK). Wails runs
+// ServiceShutdown ON that thread and blocks it until the services return, so
+// a teardown fanned out to goroutines from there cannot make progress: each
+// dispatch parks for its full timeout and the app beachballs through quit.
+// When the caller IS the UI thread the Manager disposes inline instead — the
+// dispatch runs synchronously there and the teardown takes milliseconds.
+type engineUIThread interface {
+	OnUIThread() bool
+}
+
+// engineAccelerators is implemented by an engine whose key-chord gate runs
+// in ANOTHER process (the launcher-hosted WebView2): it cannot ask the Manager
+// synchronously, so it is handed the bound set instead, and re-sent it here
+// whenever the keybindings change. In-process engines ask through
+// engineEvents.KeyChord and need nothing from this.
+type engineAccelerators interface {
+	SyncAccelerators()
 }
 
 // engineFileURL is implemented by an engine whose renderer reads the
@@ -298,6 +320,12 @@ type engineEvents struct {
 	PageInfoChanged  func(handle, url, title string)
 	DownloadStarted  func(downloadStart)
 	DownloadProgress func(downloadProgress)
+	// KeyChord is the one SYNCHRONOUS question on this seam: a modifier chord
+	// was pressed while the page's native view held keyboard focus — does AO
+	// own it? True means the engine swallows the event and AO dispatches the
+	// chord; false means the page keeps it. It runs on the engine's UI
+	// thread, so the answer must be a set lookup and nothing that waits.
+	KeyChord func(handle string, pressed keybindings.Accelerator) bool
 }
 
 // matchStatus reports whether a sampled page state satisfies a wait condition.

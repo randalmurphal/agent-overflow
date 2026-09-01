@@ -15,6 +15,7 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
 	"github.com/google/uuid"
@@ -54,8 +55,11 @@ const (
 // quotas, and the AO-managed per-tab clipboard. How an operation reaches a live
 // page belongs to the engine behind `browserEngine` / `pageDriver` (driver.go).
 type Manager struct {
-	engine     browserEngine
-	profileDir string
+	engine browserEngine
+	// accelerators is ManagerOptions.Accelerators; read per keypress on the
+	// engine's UI thread by keyChord.
+	accelerators func() keybindings.AcceleratorSet
+	profileDir   string
 
 	startMu sync.Mutex
 	mu      sync.Mutex
@@ -81,6 +85,12 @@ type Manager struct {
 }
 
 type ManagerOptions struct {
+	// Accelerators answers the effective bound-chord set, refreshed by the
+	// App whenever the keybindings change. A chord in it pressed while a
+	// page's native view has keyboard focus is taken from the page and
+	// dispatched by the SPA (spec §7). Nil means no chord is ever taken.
+	Accelerators func() keybindings.AcceleratorSet
+
 	// FakeEngine selects the in-memory engine (fake_engine.go) whose pages
 	// exist and navigate but render nothing. Set by the harness and soak
 	// boots, which have to draw the pane's chrome and host rect on machines
@@ -192,12 +202,14 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		sessions:     make(map[string]SessionInfo),
 		artifactRoot: filepath.Join(configDir, "browser-artifacts"),
 	}
+	m.accelerators = opts.Accelerators
 	m.engine = selectEngine(configDir, opts, engineEvents{
 		PopupOpened:      m.adoptPopup,
 		PageClosed:       m.removeClosedPage,
 		PageInfoChanged:  m.updatePageInfo,
 		DownloadStarted:  m.downloadStarted,
 		DownloadProgress: m.downloadProgress,
+		KeyChord:         m.keyChord,
 	})
 	pruneEncryptedCheckpoints(configDir)
 	return m
@@ -703,16 +715,29 @@ func (m *Manager) closeBrowser(caller context.Context) error {
 	closeCtx, closeCancel := context.WithTimeout(caller, 20*time.Second)
 	defer closeCancel()
 	errs := make(chan error, len(scopes))
-	var wg sync.WaitGroup
-	for _, scope := range scopes {
-		wg.Go(func() {
+	done := make(chan struct{})
+	if ui, ok := m.engine.(engineUIThread); ok && ui.OnUIThread() {
+		// The caller is the UI thread itself (Wails runs ServiceShutdown on it
+		// and blocks it). Every native call below is a dispatch to that thread:
+		// inline from here, a deadlock-until-timeout from a goroutine. So
+		// sequential, on this thread, bounded by the engine and not the clock.
+		for _, scope := range scopes {
 			if err := scope.profile.Dispose(closeCtx); err != nil {
 				errs <- err
 			}
-		})
+		}
+		close(done)
+	} else {
+		var wg sync.WaitGroup
+		for _, scope := range scopes {
+			wg.Go(func() {
+				if err := scope.profile.Dispose(closeCtx); err != nil {
+					errs <- err
+				}
+			})
+		}
+		go func() { wg.Wait(); close(done) }()
 	}
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
 	timedOut := false
 	select {
 	case <-done:

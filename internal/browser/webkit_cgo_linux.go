@@ -18,6 +18,8 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/keybindings"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -46,6 +48,10 @@ const gtkCallTimeout = 10 * time.Second
 // the difference between "this will never run" and "this did not run yet",
 // which is what decides who owns a C allocation a closure would have freed.
 func gtkAlive() bool { return application.Get() != nil }
+
+// gtkOnMainThread answers whether gtkDo would run its closure inline right now —
+// true only on the GTK thread, where Wails' dispatch short-circuits.
+func gtkOnMainThread() bool { return C.ao_wk_on_main_thread() == 1 }
 
 func gtkDo(fn func()) bool {
 	if !gtkAlive() {
@@ -171,6 +177,24 @@ func aoWebKitPageInfo(pageID C.uint64_t, uri *C.char, title *C.char) {
 	page.noteLoad(location)
 	// Off the GTK thread: the Manager takes its own locks to route this.
 	go page.engine.events.PageInfoChanged(page.handle, location, name)
+}
+
+// aoWebKitKeyChord runs ON the GTK thread, inside the key event's delivery,
+// and answers synchronously: it is a set lookup in the Manager and nothing
+// that waits. The routing that follows a claim leaves the thread on a
+// goroutine.
+//
+//export aoWebKitKeyChord
+func aoWebKitKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift C.int) C.int {
+	page := webkitLookupPage(uint64(pageID))
+	if page == nil || page.engine.events.KeyChord == nil {
+		return 0
+	}
+	pressed := keybindings.Accelerator{Key: C.GoString(key), Ctrl: ctrl != 0, Meta: meta != 0, Alt: alt != 0, Shift: shift != 0}
+	if page.engine.events.KeyChord(page.handle, pressed) {
+		return 1
+	}
+	return 0
 }
 
 //export aoWebKitPageClosed

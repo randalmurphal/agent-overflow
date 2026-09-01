@@ -21,7 +21,25 @@ var (
 	procDestroyWindow  = user32.NewProc("DestroyWindow")
 	procShowWindow     = user32.NewProc("ShowWindow")
 	procDefWindowProc  = user32.NewProc("DefWindowProcW")
+	procGetKeyState    = user32.NewProc("GetKeyState")
 )
+
+// Virtual-key codes the chord gate reads modifier state for.
+const (
+	vkShift   = 0x10
+	vkControl = 0x11
+	vkMenu    = 0x12
+	vkLWin    = 0x5b
+	vkRWin    = 0x5c
+)
+
+// keyDown reads a virtual key's state as of the message being processed —
+// which, from inside an AcceleratorKeyPressed handler, is the key event
+// itself. High bit set means down.
+func keyDown(vk uintptr) bool {
+	state, _, _ := procGetKeyState.Call(vk)
+	return int16(state) < 0
+}
 
 const (
 	gwHwndNext = 2

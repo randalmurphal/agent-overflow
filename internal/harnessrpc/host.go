@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/store"
@@ -37,6 +38,10 @@ type Host interface {
 	ListVisibleThreads() ([]store.Thread, error)
 	Emit(eventchan.Channel, any)
 	Notify(title, body string, target notify.Target) error
+	// BrowserPressKey delivers one key chord to a browser page's NATIVE view
+	// through the window's own event path, as if the user had clicked into
+	// the page and typed it. Refused on engines with no native view.
+	BrowserPressKey(threadID, pageID string, chord keybindings.Accelerator) error
 	CreateProject(path string) (store.Project, error)
 	CreateThread(ThreadOptions) (store.Thread, error)
 	ArchiveThread(threadID string) error

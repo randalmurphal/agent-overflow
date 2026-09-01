@@ -79,6 +79,7 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionPaneAttach: owned(BROWSER_COMPANION_STORE, 'attachBrowserCompanion()'),
   BrowserCompanionPaneDetach: owned(BROWSER_COMPANION_STORE, 'the attachment release()'),
   BrowserCompanionPaneRect: owned(BROWSER_COMPANION_STORE, 'reportBrowserPaneRect()'),
+  BrowserCompanionDo: owned(BROWSER_COMPANION_STORE, 'browserCompanionAct()'),
   BrowserCompanionThreadState: owned(BROWSER_COMPANION_STORE, 'hydrateBrowserCompanionState()'),
   GetGitStatus: owned(GIT_STATUS_STORE, 'refreshGitStatus()'),
   GitStatusSubscribe: owned(GIT_STATUS_STORE, 'attachGitStatus()'),
