@@ -1310,7 +1310,9 @@ methods, because an exported App method IS a wire RPC;
 `serviceUpdateRequest` stays unexported until W8h2 puts the step-up
 gate in front of it. `service update <version>` is the LOCAL path
 (preflight → stop unit → stage → adopt → save → start); the REMOTE
-trigger is W8h2, blocked on the release-signing decision.
+trigger is W8h2, unblocked by the 2026-09-01 signing cut: it rides
+step-up, and the download is verified against the published checksum
+over HTTPS.
 `internal/atomicfile` gained the directory-fsync half of durability
 (own commit) — every existing caller was exposed. Tests drive
 scripted fake children over the real protocol on the real
@@ -1497,17 +1499,22 @@ Prerequisite sweep, valuable standalone:
   never stuck behind a download. Bundles declare a minimum shell
   version (a too-old native shell is the one case that gates on a
   store update); last-known-good is kept with first-boot healthcheck
-  and auto-rollback, mirroring the remote-update posture. Trust line:
-  bundles are code, so transport trust is not enough. The shell
-  verifies every bundle against the **release signing key baked into
-  the shell itself**. A backend can only relay genuine signed
-  releases, never arbitrary script, so one misbehaving backend cannot
-  reach the phone's device keys or its *other* backends' credentials
-  through an update. Self-built/dev bundles require an explicit
-  per-device "trust dev bundles from this backend" toggle. Only
-  owner-tier backends may supply bundles at all; peer and hub
-  connections never push executable content and are served by
-  capability flags instead. With this, the SPA layer is effectively
+  and auto-rollback, mirroring the remote-update posture. Trust line
+  (ruled 2026-09-01: release signing is CUT; a key the owner has to
+  keep across machines would be lost, and the phone's backends are the
+  owner's and friends' own): the paired session over pinned TLS is the
+  integrity boundary. The shell verifies each bundle against the
+  SHA-256 manifest the backend serves on that same session, so a
+  bundle is exactly as trusted as the backend it came from, which is
+  the trust the device already extended by pairing. Only owner-tier
+  backends may supply bundles at all; peer and hub connections never
+  push executable content and are served by capability flags instead.
+  Stated plainly: one misbehaving owner-tier backend can reach the
+  phone's device key and its *other* backends' credentials through an
+  update, so the phone pairs only with backends whose operator the
+  owner would trust with the desktop, which is the self-and-friends
+  posture ruled for it; shell-baked signing returns as its own addition
+  if distribution ever widens. With this, the SPA layer is effectively
   skew-free for the single-backend common case (multi-backend runs
   the newest attached backend's bundle and speaks flags to older
   ones).
@@ -1515,10 +1522,11 @@ Prerequisite sweep, valuable standalone:
   desktop attach client load the SPA *from* the backend they connect
   to. A member using a browser against a team hub executes
   hub-served code, ordinary web trust, and no trust line pretends
-  otherwise. The phone shell is the only code-isolated client: its
-  bundle comes solely from signed releases via owner-tier backends,
-  and it speaks to hubs and peers with data plus capability flags
-  only.
+  otherwise. The phone shell is the only client whose code arrives
+  over a pinned, paired session rather than plain web trust: its
+  bundle comes solely from owner-tier backends, verified against the
+  manifest served on that session (signing cut, 2026-09-01), and it
+  speaks to hubs and peers with data plus capability flags only.
 - **Phone transport security.** WKWebView cannot accept a self-signed
   cert for WebSocket at all (the auth-challenge hook covers HTTPS
   only; ATS exceptions are ignored for WS), so the webview never
@@ -1673,7 +1681,9 @@ Prerequisite sweep, valuable standalone:
   self-hosted binaries. Personal builds can send directly; distribution
   requires either a blind relay (payload encrypted end-to-end, gateway
   cannot read it), UnifiedPush, or PWA Web Push (VAPID keys are
-  genuinely per-backend). Decide before the phone app ships publicly.
+  genuinely per-backend). Decide before the phone app ships publicly;
+  the concrete options for friends' backends and the recommendation
+  are under "The phone client" below (push, 6g).
 - **Notification semantics**: event→push mapping (turn complete,
   approval needed, error, provider signed out), redaction policy
   (payloads transit Apple/Google, and titles and command text are
@@ -1748,6 +1758,158 @@ Prerequisite sweep, valuable standalone:
   answers; approving from a notification is not allowed (app-open, and
   `approvals:respond` scope, and optionally biometric).
 
+### The phone client (wave 6f design, ruled 2026-09-01)
+
+Rulings (user, 2026-09-01): the phone is the FULL app — anything the
+desktop can do, the phone can do, unless the surface is physically
+host-bound. All approvals are answerable from the phone. Opening the app
+requires the strongest local gate the platform offers (the phone is more
+sensitive than anything else on it). Voice input is wanted. The phone is
+for the owner and a few friends, each running their OWN backend on their
+OWN tailnet; Tailscale is the remote path. No tablet layout now, but
+nothing may make one hard later. No panes: single-thread navigation.
+Release signing is CUT (the paired session over TLS is the trust root;
+distribution-grade signing returns as its own addition if that day comes).
+
+**Shape.** One Capacitor project, `mobile/`, wrapping the SAME built SPA
+(`frontend/dist` is the web dir; nothing is forked). Android is the
+first target and the only one buildable from the Linux box; the iOS
+target is generated by the same tooling and built on the Mac when the
+owner wants it. Native plugins, each behind one TS seam in
+`frontend/src/lib/native/`: app lifecycle (pause/resume), secure key +
+biometric gate, QR scan, push registration, file/camera pickers. The
+WebSocket stays the WebView's own (CapacitorHttp interception off for
+the transport); the native side holds the device key and signs session
+proofs on request from the bridge, so the private key never enters JS.
+
+**Layout mode, not device class.** `layout = 'compact'` is chosen from
+viewport width and coarse pointer, never from the paired device class.
+That is the whole tablet story: a wider viewport falls out of compact
+into the existing layout, and the day a tablet layout is wanted it is a
+third breakpoint, not a new app. Compact rules:
+- The thread list is the ROOT screen (the sidebar, full width). Tap opens
+  the thread full-screen; the platform back gesture returns. The pane
+  registry holds exactly one pane at all times, so the watched set is
+  that thread plus its live-tail children — the narrowing from 6d/6d2 is
+  what makes a phone-sized connection affordable.
+- Popovers become bottom sheets. (A popover is the small floating menu
+  anchored to the button that opened it; a sheet is a panel that slides
+  up from the bottom edge and is dismissed by dragging down. Same
+  content, touch-native chrome.) Project / worktree / branch / machine /
+  model / mode / effort pickers, the approval card, the plan decision
+  card, and the interactive-request prompts are all sheets.
+- Settings, devices, workflows, and git views are stacked screens, not
+  modals.
+- The composer pins to the bottom above the keyboard. Send is a button;
+  Return inserts a newline (phone keyboards have no modifier). The
+  context strip scrolls horizontally as chips. Slash commands and
+  mentions keep their menus, rendered as a sheet above the keyboard.
+- Transcript components are the desktop ones unchanged. Width-driven
+  adjustments only: code blocks and diffs keep monospace with horizontal
+  scroll inside the card (never re-wrapped, so alignment survives), tool
+  cards collapse by default, the message nav rail is hidden (a desktop
+  affordance) and its jump-to-message role moves to a long-press on the
+  scroll indicator later if wanted. Scroll, reveal-queue, spring and
+  fade behaviors are the same code; touch inertia is the platform's.
+- Hidden on the phone because they cannot exist there: the in-app
+  browser (a native page view on the host), "open in editor" path links
+  (become copy-path), and host-window controls. The terminal IS shown
+  and is a first-class phone surface (user ruling: running simple
+  commands from the phone is a headline use). It is the same xterm.js
+  drawer over `terminal:operate`; what compact adds is what every phone
+  terminal adds: a key row docked above the keyboard for the keys phone
+  keyboards lack (Esc, Tab, Ctrl as a sticky modifier, arrows, `|`, `-`,
+  `~`, `/`), autocorrect and autocapitalize off on xterm's hidden input,
+  a font size the thumb can read, and the drawer sized to the visible
+  viewport above the keyboard. The terminal is a stacked screen in
+  compact, not a bottom drawer, so the keyboard and the key row own the
+  bottom edge.
+
+**Voice.** Comes free: the composer is a real text field, so the phone
+keyboard's dictation key types into it, and the platform's recognizer is
+better than anything a laptop has. No plugin, no permission, nothing to
+build. A dedicated mic button that streams to a recognizer is a later
+option, not a first-shell need.
+
+**Opening the app.** The device key lives in the Android keystore
+(StrongBox when the phone has it), created with user-authentication
+required, so the key is unusable until the platform's biometric or
+credential prompt succeeds. That prompt IS the app lock: it runs on
+cold start and on resume after a configurable background window
+(default 5 minutes; per-device setting), and the WebView sits behind a
+native lock screen until it passes. No passkey ceremony is needed in
+the WebView: step-up already lives at pairing-mint on the GRANTING side,
+which is the owner's desktop with its passkey. The phone's job at
+pairing is to scan a QR and prove its fresh key; the desktop's job is
+to approve it with the strong ceremony that already exists.
+
+**Pairing and remote-only.** A phone never has a local backend. First
+run is one screen: "Scan the QR from Agent Overflow → Settings →
+Devices". More backends pair the same way from the phone's own
+settings, and the machine picker (phase 7) is the root-level context:
+which machine's threads am I looking at. Connectivity is a top banner
+with the transport states the desktop already has; a backend that is
+unreachable is dimmed, not hidden. Offline: threads the replica holds
+open read-only with a banner, the composer is disabled (no
+cross-disconnect send queue; the queue semantics were hard enough with
+one live socket), and reconnect replays from the per-channel cursors as
+today.
+
+**Lifecycle (feeds 6e).** The app plugin's pause/resume is the ONLY
+visibility signal the client ever sends, as one `lease` frame
+(`{"type":"lease","state":"background"|"active"}`) — whole-client native
+lifecycle, never per-pane, never document visibility (the off-view shedding rule above).
+A backgrounded client keeps its socket until the OS closes it; the
+backend stops highlight seeds and coalesces assistant deltas for that
+connection (one frame per thread per 250 ms) while the lease says
+background, and turn/approval/error events keep flowing so the push
+mapping and the badge carriers are unaffected. Resume restores full
+streaming; a socket the OS did close reconnects through the ordinary
+replay. The desktop and browser clients send no lease and stay exactly
+as they are.
+
+**Push (6g).** Native push on Android is Firebase Cloud Messaging: free,
+but SENDING requires the app's Firebase service credential, which
+belongs to the app's Firebase project and cannot be handed to every
+friend's backend. So:
+- The owner's own backend: enter the service-account credential once in
+  settings; the backend sends directly. Payloads carry ids only (the
+  6a redaction rule: the summary is fetched from the backend after tap).
+- Friends' backends: DECISION OPEN (§18 item 1 made concrete). Options:
+  (a) a tiny blind relay the owner hosts — friends' backends POST
+  `{deviceToken, ciphertext}` to it, it forwards to FCM as a data
+  message, the app decrypts with the device key, the relay never reads
+  content; (b) UnifiedPush via ntfy, which needs the ntfy app on the
+  friend's phone; (c) each friend creates their own Firebase project and
+  builds their own APK. Recommendation: (a); it is ~200 lines of Go, runs
+  anywhere with HTTPS, and the friend's backend needs only a relay URL.
+The tap route is the 6a target shape as a deep link
+(`thread` / `approval` / `provider-auth`), opening the app through the
+lock and landing on the thread with the relevant sheet raised.
+
+**Bundle sync (6g).** The APK ships with the SPA bundle it was built
+with. On connect the backend advertises its bundle version and minimum
+shell version; a newer bundle downloads in the background over the
+paired session and is verified against the SHA-256 manifest the backend
+served on that same session (signing is cut; the session is the
+integrity boundary), swaps in on the next cold start, and rolls back to
+last-known-good if the first boot fails its health check. A backend
+older than the shell's minimum is refused with a clear message, never a
+half-working UI.
+
+**Verification.** Playwright already drives the SPA against the harness;
+a compact-viewport project (390×844, touch enabled) runs the same
+suites plus the compact-specific specs (root list → thread → back, sheet
+open/dismiss, composer above keyboard, approval sheet from a deep link)
+with no device involved. The APK builds from the Android SDK installed
+in WSL and is sideloaded for the on-device checks that only a phone can
+prove: biometric lock, push tap-through,
+keystore-bound signing, background lease timing.
+
+**Order.** Phase 7 (machine picker, the phone's root context) first, then
+the shell with lease work designed against its real lifecycle, then push
+and bundle sync.
+
 ## 10. Multi-backend clients
 
 Decide the **seams** in phase 1, not a speculative store rewrite.
@@ -1798,10 +1960,23 @@ surfaces in exactly three places:
   machine. The picker shows what the choice implies: machine,
   checkout/branch, and the provider account that runs and bills the
   thread (§7).
-- **Reachability is ambient, not modal.** Per-backend status lives in
-  the sidebar footer; threads on an unreachable backend dim and stay
-  readable from the replica. The full-width transport banner is
-  reserved for the visible thread's own backend dropping.
+- **Reachability is ambient, not modal.** Per-backend status lives
+  where the backend is chosen: the composer's machine picker dims an
+  unreachable entry in place, and Settings → Devices carries the
+  detail. Threads on an unreachable backend dim and stay readable
+  from the replica. The full-width transport banner is reserved for
+  the visible thread's own backend dropping.
+
+Ruled 2026-09-01 (user), phase 7 UI: the machine picker is one more
+dropdown in the composer's existing project / worktree / branch strip,
+not a new row, and it stays hidden until more than one backend is
+paired, so the single-backend app looks exactly as it does today.
+Unreachable entries are dimmed, never removed. The worktree picker's
+"Local" entry is renamed "Base" (it means the project's root checkout,
+and "Local" collides with "this machine" once machines are a choice).
+Per-backend sidebar footer rows are CUT: Settings is where systems are
+added, the composer is where one is picked, and nothing else advertises
+the fleet.
 
 Path links and open-in-editor from a UI that is not on the thread's
 host default to copy/preview, with "open on <machine>" as the explicit
@@ -1937,6 +2112,36 @@ Classes to enumerate:
 - **Content origins**: anything serving bytes an agent or user
   authored declares its origin and content-type posture; agent-authored
   bytes never execute at the SPA origin.
+
+Additions from the 2026-09-01 merge of main v0.0.14, which replaced the
+streamed browser companion with a **native page view** (a WKWebView /
+WebView2 / WebKitGTK child view clipped into the pane):
+
+- **The page view is host-only.** It is a native view on the host with
+  no remote form. Its RPCs (`BrowserCompanion*`, `BrowserHostReport`)
+  and its `browser:companion-state` / `browser:host` channels are
+  `scope: host`, which `authorize.go` judges by `proof.HostPresent`
+  before any grant is consulted: no session holds host. The frontend's
+  `hasScope('host')` is `snapshot.onHost`, so a remote client never
+  hydrates the companion state and never opens the pane; the e2e
+  view-only sweep caught the unguarded hydrate on main and it is now
+  gated. `ClearBrowserSiteData` stays at `terminal:operate` (it clears
+  the host's browsing profile but needs no host window); flagged, not
+  decided.
+- **CDP relay listener** (`internal/cdprelay`): loopback, WSL only,
+  direction launcher → backend, carrying the WebView2 DevTools byte
+  stream. Credential: kernel peer locality (`loopback.PeerAddress`)
+  plus the launch credential. Declared in the Listener rows.
+- **WebView2 debug-port reservation** (`webview2host.freeLoopbackPort`):
+  the host binds a free loopback port so the page view's DevTools port
+  is ours before Chromium takes it. Implicit, listed the way chromedp's
+  port was.
+- **`/browser-cdp` route** (`transport.CDPTunnelPath`): a byte-stream
+  mux the scope gate never sees, so it is enumerated as a route with
+  its own posture. Loopback `Host` guard, launch credential, and
+  kernel peer address each fail as 404; the upgrade runs with the
+  session unproven. `cdptunnel_contract_test.go` pins the route row,
+  the listener rows, and the origin row together.
 
 Rules that follow: a new listener declares its binding class and what it
 accepts; a new route declares tier + scope + content posture; a new
@@ -2447,8 +2652,10 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    stack, and the unattended credential-storage posture (§7), both
    prerequisites for server deployments. Provider remote re-auth:
    LANDED 2026-09-01 (wave 8i — §7 "Provider accounts and remote
-   login"). Open in this phase: release signing (parked to the final
-   discussion slot by 2026-09-01 ruling).
+   login"). Release signing: CUT by
+   2026-09-01 ruling (§9 bundle sync states the trust line that
+   replaces it); the W8h2 remote update trigger is unblocked behind
+   step-up.
 6. **Phone preparation.** Subscription narrowing (LANDED 2026-09-01,
    wave 6d — §9 "Phone-era efficiency": the watch frame + entity
    filter on the two highlight channels; the six-consumer re-home
@@ -2467,7 +2674,9 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 7. **Multi-backend UI.** Keying the collision-prone singletons; the
    unified sidebar with project targets, composer target picker, and
    ambient reachability (§10); the port gateway's remote wiring in
-   the in-app browser (§7).
+   the in-app browser (§7). Rulings of 2026-09-01 (§10): picker in the
+   composer strip, hidden until more than one backend, dimmed
+   unreachable entries, "Base" rename, footer rows cut.
 8. **Team sharing.** Hub-first: team-server deployment, shared
    workspaces with roles, peer sessions, hub-to-hub peering, payload
    sensitivity tiers, fork pipeline. Ingress triggers and per-workflow
@@ -2494,8 +2703,12 @@ Each phase leaves `make check` green.
 
 ## 18. Decisions still open
 
-1. Push distribution posture (§9). Direct for personal builds is fine;
-   the distributed answer must be chosen before public release.
+1. Push delivery for friends' self-hosted backends (§9 "The phone
+   client", push). The owner's backend sends directly with the app's
+   Firebase credential; a friend's backend cannot hold it. Options:
+   (a) a blind relay the owner hosts (recommended), (b) UnifiedPush
+   via ntfy, (c) a Firebase project and APK per friend. Chosen before
+   the phone app reaches a friend.
 2. How much of the payload-sensitivity machinery (§11) is built at
    team-time vs. designed-only now.
 3. Whether draft "edited on <device>" and presence-aware routing survive
