@@ -394,12 +394,42 @@ with a passkey" on both the pairing screen and the terminal-state
 transport banner, and `withStepUp` retrying a refused call once with
 a fresh assertion. The banner path fixed a real defect its e2e rig
 found: a page that mounted while transport was terminal had loaded
-nothing, so the first connection of such a page reloads it. Known
-gap, deliberately deferred to its own wave: `withStepUp` currently
-wraps only the passkey block's own begin — the rest of the step-up
-set (pairing mint, network settings, MCP config, custom env, WSL
-distro, worktree recipes) still has host presence as its only
-reachable proof from a remote screen.
+nothing, so the first connection of such a page reloads it.
+
+**Wave 8f2 LANDED 2026-09-01 (2e3aa3cd, 35d3abf3): step-up reaches
+every gated surface.** Wave 8f left the ceremony wrapped around one
+call site (the passkey block's own begin); every other step-up method
+had host presence as its only reachable proof from a remote screen,
+invisibly, because on the owner's own machine the gate passes
+silently. The per-call wrapper is deleted and the ceremony now runs
+behind ONE interception in the RPC dispatch path
+(`wsClient.installStepUpProver`, filled at boot by
+`transport/stepUp.ts` — the client-side mirror of the backend's
+`Config.StepUpProof` seam, injected because the ceremony is itself
+two RPCs through the same client). A refused call proves the touch
+and is dispatched once more with the token; a future `//ao:stepup`
+method's UI wires nothing. Structural properties: the recursion guard
+is a dispatch-time read of `ceremonyInFlight` (the ceremony's own
+RPCs take the un-intercepted path by construction, never by name
+matching; the pinning test fails on the deadlock rather than
+hanging); the retry goes below the interception so exactly one retry;
+the token still reaches a frame only through `withStepUpToken`'s
+frame-construction drain; ceremonies serialize (one prompt at a time,
+each refusal gets its own token — a token proves one call); any
+ceremony failure settles the caller with the ORIGINAL refusal. One
+deliberate narrowing, documented and pinned: a call dispatched WHILE
+a prompt is open gets its refusal rather than queueing (press again).
+Proven remotely end to end: MintDevicePairing (e2e drives it from a
+paired remote page with zero passkey code in the component, asserting
+refusal → ceremony → armed retry → landed link off the wire),
+BeginPasskeyRegistration, MCP config writes, provider custom-env
+writes, worktree-setup recipes, and every host-tier UpdateSettings
+key whose control mounts remotely. Two step-up entries in §4's list
+remain unreachable remotely for a reason OUTSIDE step-up: the network
+section's READ (`GetNetworkSettings`) and the WSL distro methods
+carry `//ao:scope host`, so those screens never load on a paired
+device — widening that read scope is a product decision, not a
+mechanism gap.
 
 ### Step-up (mandatory, not optional)
 
