@@ -353,6 +353,54 @@ expiry, and **mandatory step-up** for the catastrophic set (below).
 Cross-device (phone signs for a browser via QR) is native CTAP hybrid.
 Fallback is always pairing.
 
+**Wave 8f LANDED 2026-09-01 (67cff7d8..4d007991): passkeys, both
+uses.** `github.com/go-webauthn/webauthn` v0.18.0, with the four
+policies the library deliberately leaves to the caller owned in
+`internal/identity/passkey.go` and argued in that package's guide: a
+single-use ceremony book (the library ACCEPTS SessionData replay;
+ours deletes the ceremony on the first finish attempt, purpose
+mismatch included, so a step-up challenge can never finish as a
+sign-in), enforced ceremony expiry (`Timeouts.Enforce` is off by
+default), single-owner credential accounting under the wave-8a user
+row (32-byte lazy user handle; `credentialFor` round-trips
+BackupEligible exactly because the library refuses a BE flip), and a
+relying party resolved per ceremony (`internal/app/app_passkey.go`:
+canonical domain as the only RP ID candidate, origins =
+`https://domain` + `https://domain:port`, http only for the
+`.localhost` family the e2e rig uses). Sign-in mints through the same
+`Mint`/`issueFor` chokepoints pairing uses, with a REQUIRED device-key
+proof: the passkey proves the PERSON, the device row is what
+revocation reaches, and `resolvePasskeyDevice` applies pairing's
+adoption rules (revoked refused, other-user key mismatch, class
+always `DeviceBrowser`). Step-up gained its second proof: a 2-minute
+single-use token bound to the asking session, spent by the transport
+ONCE per call (`CallerProof` resolved before the gate, carried in
+context; `ConnPrincipal.HostPresent` is gone, replaced by
+`StepUpProvenFromContext`), presented via the additive
+`ClientFrame.StepUpToken` field with `CapabilityPasskeys` +
+`Bootstrap.PasskeysAvailable` telling the client both halves.
+`FinishPasskeyStepUp` reads the assertion's OWN userVerified flag
+(stored flags latch) and compares credential owner against the asking
+session's account. Registration is `access:admin` + step-up on the
+BEGIN only — a proof on the finish would ask the authenticator to
+assert with the credential it just created and the backend has not
+stored, which breaks remote registration on its own success; the
+finish rides the single-use ceremony handle instead (f39a233b, e2e
+case 3 proves the remote round-trip on the wire). Removal ends no
+session and carries no step-up (it issues nothing, and the phone you
+can reach must be able to remove the credential on the one you
+cannot). UI: a Passkeys block inside Settings → Devices, "Sign in
+with a passkey" on both the pairing screen and the terminal-state
+transport banner, and `withStepUp` retrying a refused call once with
+a fresh assertion. The banner path fixed a real defect its e2e rig
+found: a page that mounted while transport was terminal had loaded
+nothing, so the first connection of such a page reloads it. Known
+gap, deliberately deferred to its own wave: `withStepUp` currently
+wraps only the passkey block's own begin — the rest of the step-up
+set (pairing mint, network settings, MCP config, custom env, WSL
+distro, worktree recipes) still has host presence as its only
+reachable proof from a remote screen.
+
 ### Step-up (mandatory, not optional)
 
 A per-call fresh passkey (or host-presence) proof, never an ambient
