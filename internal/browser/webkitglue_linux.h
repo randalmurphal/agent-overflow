@@ -38,8 +38,14 @@ void ao_wk_host_unpark(void *view);
 // measured in. The overlay's own size over that viewport is the scale, which
 // keeps the view aligned under webview zoom without either side knowing the
 // zoom factor. vw/vh <= 0 means the rect is already in overlay units.
+// clip_* is the VISIBLE intersection of that rect, same units. clip == rect is
+// the unclipped presentation and is byte-for-byte the path above; a smaller
+// clip moves the view into a clipping box sized to the intersection, where it
+// keeps the FULL rect's size so a half-occluded page does not relayout.
 void ao_wk_host_present(void *view, double x, double y, double width,
-                        double height, double vw, double vh);
+                        double height, double clip_x, double clip_y,
+                        double clip_width, double clip_height, double vw,
+                        double vh);
 
 // ao_wk_host_hide returns a presented view to the background host without
 // tearing anything down.
@@ -72,6 +78,9 @@ void ao_wk_view_adopt(void *view, uint64_t page_id, const char *user_script,
                       const char *console_handler);
 
 void ao_wk_view_close(void *view);
+// ao_wk_view_set_background sets the view's base color (opaque), which is what
+// the page paints over and what shows where it has not painted yet.
+void ao_wk_view_set_background(void *view, double red, double green, double blue);
 void ao_wk_view_set_size(void *view, int width, int height);
 // ao_wk_view_open_inspector shows the WebKit inspector for one view.
 // Developer extras are enabled at view construction, so the inspector is

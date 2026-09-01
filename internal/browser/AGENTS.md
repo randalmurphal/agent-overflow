@@ -102,6 +102,23 @@ controller exactly as it drives a Chrome tab. Only LIFETIME differs.
   the Manager still decides WHICH page is presented. Visibility is deduped in
   the engine because it is recomputed on every selection, focus and page-list
   change.
+- **`PaneRect` carries a clip intersection and a background color.** A native
+  view cannot be partially cropped by the DOM, so the frontend reports the
+  visible intersection alongside the full rect and every engine crops its
+  presentation to it WITHOUT resizing the page (Windows: a per-page clip HWND;
+  Linux/macOS: a per-page clip container widget/view). Per page, never a
+  process-wide singleton: two threads can present two panes at once, and a
+  shared container (or a single "the presented view" pointer) corrupts the
+  first pane the moment the second presents — both engines shipped that bug
+  once (2026-08-31 review) and the class is named here so it stays dead.
+  `SetPaneRect` normalizes a zero clip to clip == rect, so a clip-less
+  reporter still works; an empty intersection never presents. `Background`
+  ("#rrggbb") is painted where the page has not presented yet so freshly
+  exposed strips match the pane.
+- **Tab order is `tabOrder`, sorted by `sortPagesByTabOrder` everywhere.** The
+  companion "move" action renumbers it; every listing surface (companion
+  state, ambiguity errors) sorts through the one helper so the UI, the tools
+  and the errors never disagree about which tab is first.
 - **One carve-out, deliberate.** `AttachPage` fails: the launcher does not
   surface WebView2's `NewWindowRequested`, so no popup is ever reported and a
   driver for a controller nobody created would be worse than a loud failure.
@@ -169,6 +186,15 @@ completion callbacks, the window surgery). Everything else is ordinary Go.
 - The pane rect is four `GtkOverlay` margins with `ALIGN_FILL`, never a size
   request: `gtk_widget_set_size_request` cannot SHRINK a WebKitWebView, whose
   natural size sticks at its largest-ever allocation.
+- A partially occluded pane adds that view's OWN clip box (a `GtkOverlay`
+  with `overflow: hidden`, margin-positioned at the CLIP rect, stored as
+  object data on the view) whose `get-child-position` handler allocates the
+  view the FULL rect at a negative offset — the only exact, shrinkable size
+  a margin cannot express. Per view, never a shared static (two panes can be
+  clipped at once), and "is this view presented" is derived from the widget
+  tree, never a single pointer. The pane's `#rrggbb` background goes to
+  `webkit_web_view_set_background_color` before the present so a freshly
+  exposed strip already carries the pane's color.
 - Every page operation is one JS function body built in `webkitjs.go` — which
   is deliberately tag-free and cgo-free so the builders are compiled and unit
   tested on every platform. Same for the screenshot arithmetic in
@@ -213,8 +239,10 @@ builder for macOS.
 - The pane rect arrives as a `PaneRect` in SPA CSS pixels and is scaled by the
   content view's bounds over the rect's viewport (same proportional rule as
   every host), then flipped against the content view's own `isFlipped`, never
-  assumed. AppKit needs no reparenting surgery: a second subview joins Wails'
-  content view directly. `wkwebview_pane_darwin.go` is the `paneHost` half,
+  assumed. AppKit needs no reparenting surgery: each page's per-page clip
+  container (`clipsToBounds`, sized to the clip rect) joins Wails' content
+  view and the presented view joins the container at the full rect's size.
+  `wkwebview_pane_darwin.go` is the `paneHost` half,
   mirroring `webkit_pane_linux.go` — and deliberately NOT `paneDevTools`:
   WKWebView has no public call that opens its inspector, so the pane's
   devtools button gets the Manager's explained refusal and the real

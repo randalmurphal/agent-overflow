@@ -236,9 +236,15 @@ navigation buttons, close — the same `BrowserPane.svelte` chrome — with
 the frame `<img>` replaced by an empty host rect the native view is
 positioned over.
 
-- The SPA observes the host rect (`ResizeObserver` + scroll/layout)
-  and reports it over a binding; the platform host positions the
-  native view. Rect updates coalesce per frame. On Linux the rect is
+- The SPA observes the host rect (`ResizeObserver` + scroll/layout +
+  the pane-layout and sidebar stores — a divider drag on ANOTHER pane
+  slides this one sideways without resizing it, which no observer or
+  event reports) and reports it over a binding, together with the
+  VISIBLE CLIP INTERSECTION and the pane's resolved background color;
+  the platform host positions the native view at the full rect and
+  crops it to the clip through a per-page clip container, so a pane
+  half behind the sidebar shows its visible half without the page
+  relayouting. Rect updates coalesce per frame. On Linux the rect is
   expressed as four `GtkOverlay` margins with `ALIGN_FILL`
   (spike-verified: `gtk_widget_set_size_request` cannot SHRINK a
   WebKitWebView — natural size sticks at the largest-ever allocation

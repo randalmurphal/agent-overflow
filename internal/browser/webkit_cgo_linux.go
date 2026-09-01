@@ -310,11 +310,22 @@ func webkitPresentView(view unsafe.Pointer, rect PaneRect) error {
 	if !gtkDo(func() {
 		C.ao_wk_host_present(view, C.double(rect.X), C.double(rect.Y),
 			C.double(rect.Width), C.double(rect.Height),
+			C.double(rect.ClipX), C.double(rect.ClipY),
+			C.double(rect.ClipWidth), C.double(rect.ClipHeight),
 			C.double(rect.ViewportWidth), C.double(rect.ViewportHeight))
 	}) {
 		return errGTKUnavailable
 	}
 	return nil
+}
+
+// webkitSetViewBackground paints the pane's own surface color underneath the
+// page, so a strip the clip rect has just exposed matches the pane instead of
+// flashing WebKit's default white.
+func webkitSetViewBackground(view unsafe.Pointer, color webkitRGB) {
+	gtkDo(func() {
+		C.ao_wk_view_set_background(view, C.double(color.R), C.double(color.G), C.double(color.B))
+	})
 }
 
 func webkitHideView(view unsafe.Pointer, slot, width, height int) error {

@@ -138,10 +138,10 @@ type managedPage struct {
 	driver pageDriver
 	// ctx is the page's lifetime, taken from its driver. Operations are
 	// bounded against it.
-	ctx          context.Context
-	mu           sync.Mutex
-	lastUse      atomic.Int64
-	createdAt    int64
+	ctx       context.Context
+	mu        sync.Mutex
+	lastUse   atomic.Int64
+	createdAt int64
 	// tabOrder is the page's position key in the thread's tab strip: creation
 	// time by default, renumbered by MoveCompanionPage. Atomic because tab
 	// sorts run outside m.mu.
