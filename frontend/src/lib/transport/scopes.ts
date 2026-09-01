@@ -356,13 +356,17 @@ export function setPageGrantsFromBootstrap(remote: boolean): void {
 /**
  * Re-read the paired-session grant set.
  *
- * The one caller is `wsClient.redialAfterPairing()`: completing the
- * pairing flow both stores a credential and re-dials under it, and the
- * grants that arrived with that credential are what this page may now
- * do. Re-resolving anywhere else would be polling, which the manifest
- * refetch already makes unnecessary — a session's grants are immutable
- * for its lifetime, and a revocation force-closes the socket rather than
- * narrowing what it holds.
+ * Two callers, both of them a moment a backend's answer comes into
+ * existence rather than a poll. `wsClient.redialAfterPairing()`:
+ * completing the pairing flow both stores a credential and re-dials under
+ * it, and the grants that arrived with that credential are what this page
+ * may now do. `backends.attachBackend()`: a newly attached backend has no
+ * snapshot at all until one is resolved from the credential stored for
+ * it, and a surface mounting on the unresolved answer would hide every
+ * control that backend would in fact allow. Re-resolving anywhere else
+ * would be polling, which the manifest refetch already makes unnecessary
+ * — a session's grants are immutable for its lifetime, and a revocation
+ * force-closes the socket rather than narrowing what it holds.
  */
 export function refreshGrantedScopes(backendId: BackendKey = HOME_BACKEND): void {
   resolve(backendId);

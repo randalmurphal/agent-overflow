@@ -43,7 +43,7 @@ import {
   onBackendIdentity,
 } from './backendIdentity';
 import { forgetBackendEntities } from './entityIndex';
-import { grantedScopes, type ScopeSnapshot } from './scopes';
+import { grantedScopes, refreshGrantedScopes, type ScopeSnapshot } from './scopes';
 import {
   fetchBackendManifest,
   manifestBackendDescriptors,
@@ -268,6 +268,25 @@ export function backendById(id: string): BackendEntry | undefined {
 }
 
 /**
+ * The REGISTRY key for an event origin's backend UUID.
+ *
+ * An origin stamp carries the UUID (`{backendId}` on every delivered
+ * event); everything keyed per backend on this side is keyed by registry
+ * id, because that key exists before the first manifest resolves and the
+ * UUID does not. This is the one translation between them.
+ *
+ * An unknown or empty stamp answers HOME. Every event on a single-backend
+ * client arrives before its own manifest has resolved at least once — the
+ * hello frame precedes it — so "unstamped" has always meant the only
+ * connection there is, and reading it as anything else would key a
+ * single-backend app's state under a backend it is not attached to.
+ */
+export function backendKeyForOrigin(backendId: string): BackendKey {
+  if (backendId === '') return HOME_BACKEND;
+  return byId.get(backendId)?.id ?? HOME_BACKEND;
+}
+
+/**
  * Attach a backend. Idempotent on the registry id: re-attaching an id
  * already held answers the existing entry rather than opening a second
  * socket to the same machine.
@@ -291,6 +310,11 @@ export function attachBackend(descriptor: BackendDescriptor): BackendEntry {
     byId.set(descriptor.backendId, entry);
   }
   if (installedProver !== null) entry.handle.installStepUpProver(installedProver);
+  // Resolve this backend's grant set from the credential stored for it,
+  // BEFORE anything renders against it. A surface that mounted on the
+  // unresolved snapshot would hide every control the backend would in fact
+  // have allowed, and nothing would invalidate it until the next reconnect.
+  refreshGrantedScopes(entry.id);
   for (const sub of standing) attachStanding(sub, entry);
   notifyBackendsChanged();
   return entry;
@@ -614,6 +638,7 @@ export function __attachBackendForTest(
     byId.set(descriptor.backendId, entry);
   }
   if (installedProver !== null) entry.handle.installStepUpProver(installedProver);
+  refreshGrantedScopes(entry.id);
   for (const sub of standing) attachStanding(sub, entry);
   notifyBackendsChanged();
   return entry;

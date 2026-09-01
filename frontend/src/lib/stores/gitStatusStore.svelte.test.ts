@@ -14,13 +14,38 @@ import {
 import { __setTransportStatusForTest } from './transportStatus.svelte';
 import type { GitStatus } from '../types/git';
 import type { Thread } from '../types/models';
-import { workspaceKeyForThread } from '../utils/workspaceKey';
+import { composeWorkspaceKey, workspaceKeyForThread } from '../utils/workspaceKey';
+import { HOME_BACKEND } from '../transport/backendKey';
+import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
+import { __attachBackendForTest, detachBackend } from '../transport/backends';
+import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { applyTransportGap } from './eventsTransportGap';
 
-const WORKSPACE = '/workspace';
-const OTHER_WORKSPACE = '/workspace-two';
+// The store is keyed by `${backendId} ${path}` (utils/workspaceKey.ts), so
+// the PATH an RPC is called with and the KEY an entry is held under are two
+// different strings. A single-backend client keys under HOME_BACKEND, the
+// empty string, and these tests pin that spelling.
+// A stand-in connection for a second attached backend. This suite's RPCs
+// all go through the bindings mock, so nothing is dialled: what the entry
+// needs is a client the registry can install standing subscriptions on.
+function fakeBackendClient(): never {
+  return {
+    callByID: async () => null,
+    callByName: async () => null,
+    subscribe: () => () => undefined,
+    installStepUpProver: () => undefined,
+    getStatus: () => ({ status: 'connected', nextAttemptAt: null }),
+    onStatusChange: () => () => undefined,
+    close: () => undefined,
+  } as never;
+}
+
+const WORKSPACE_PATH = '/workspace';
+const OTHER_WORKSPACE_PATH = '/workspace-two';
+const WORKSPACE = composeWorkspaceKey(HOME_BACKEND, WORKSPACE_PATH);
+const OTHER_WORKSPACE = composeWorkspaceKey(HOME_BACKEND, OTHER_WORKSPACE_PATH);
 const CWD = '/canonical/workspace';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
@@ -28,8 +53,8 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     id: 'thread-1',
     title: 'Example',
     provider: 'claude',
-    workspacePath: WORKSPACE,
-    projectPath: WORKSPACE,
+    workspacePath: WORKSPACE_PATH,
+    projectPath: WORKSPACE_PATH,
     model: 'claude-sonnet-4-6',
     mode: 'chat',
     createdAt: 0,
@@ -80,6 +105,7 @@ function installSubscribeMock(initial: GitStatus, id = 'sub-1', cwd = CWD) {
 beforeEach(() => {
   resetPanesForTest();
   setBindingMock('UpdateThreadBranch', async () => [makeThread({ branch: 'main' })]);
+  __resetEntityIndexForTest();
 });
 
 describe('gitStatusStore — workspace keying', () => {
@@ -134,6 +160,69 @@ describe('gitStatusStore — workspace keying', () => {
     expect(b.current?.aheadCount).toBe(4);
     a.release();
     b.release();
+  });
+
+  it('does NOT cross two backends that canonicalize to the SAME cwd', async () => {
+    // Canonicalization happens on the backend, so a laptop and a desktop
+    // holding the same checkout report the identical cwd. Routed by cwd
+    // alone, one machine's push would paint the other's header — and the
+    // branch reconciliation behind it would write one machine's branch onto
+    // the other's rows.
+    const REMOTE = 'laptop';
+    const REMOTE_UUID = '99999999-8888-4777-8666-555555555555';
+    // The grant set for a backend comes from the credential stored for it
+    // (transport/deviceSession.ts owns this record's shape and its key).
+    localStorage.setItem(
+      `agent-overflow:deviceSession:${REMOTE}`,
+      JSON.stringify({
+        sessionId: 's-laptop',
+        credential: 'c',
+        expiresAtMs: Date.now() + 60_000,
+        scopes: ['git:operate'],
+      }),
+    );
+    setBackendIdentityFromBootstrap(REMOTE_UUID, 'gen-1', REMOTE);
+    __attachBackendForTest(
+      {
+        id: REMOTE,
+        backendId: REMOTE_UUID,
+        name: 'Laptop',
+        wsUrl: 'ws://localhost:3000/ws/backend/laptop',
+        bootstrapUrl: '/bootstrap/laptop.json',
+      },
+      fakeBackendClient(),
+    );
+
+    const pane = buildPane();
+    installSubscribeMock(status({ insertions: 1 }));
+    const here = attachGitStatus(WORKSPACE, { threadId: pane.threadId! });
+    await flush();
+
+    noteThread('thread-remote', REMOTE);
+    setBindingMock('GitStatusSubscribe', async () => ({
+      id: 'sub-remote',
+      cwd: CWD,
+      status: status({ insertions: 1 }),
+    }));
+    const there = attachGitStatus(composeWorkspaceKey(REMOTE, WORKSPACE_PATH), {
+      threadId: 'thread-remote',
+    });
+    await flush();
+
+    // One frame, delivered on the REMOTE connection. Same cwd, same path.
+    emitWailsEvent(
+      'git:status',
+      { cwd: CWD, status: status({ insertions: 99 }) },
+      REMOTE_UUID,
+    );
+    await flush();
+
+    expect(there.current?.insertions).toBe(99);
+    expect(here.current?.insertions).toBe(1);
+    here.release();
+    there.release();
+    detachBackend(REMOTE);
+    localStorage.removeItem(`agent-overflow:deviceSession:${REMOTE}`);
   });
 
   it('drops a "git:status" push for a cwd nothing is attached to', async () => {
@@ -333,7 +422,7 @@ describe('gitStatusStore — transport edges', () => {
 describe('gitStatusStore — transport gap', () => {
   it('re-sources every live workspace and keeps the last status while it reloads', async () => {
     const paneA = buildPane();
-    const paneB = buildPane(makeThread({ id: 'thread-2', workspacePath: OTHER_WORKSPACE }));
+    const paneB = buildPane(makeThread({ id: 'thread-2', workspacePath: OTHER_WORKSPACE_PATH }));
     const subscribeFn = setBindingMock('GitStatusSubscribe', async (threadId: string) => ({
       id: `sub-${threadId}`,
       cwd: `/canonical/${threadId}`,
@@ -404,7 +493,7 @@ describe('gitStatusStore — observed branch reconciliation', () => {
 
     const a = attachGitStatus(WORKSPACE, { threadId: pane.threadId! });
     await vi.waitFor(() => {
-      expect(updateBranch).toHaveBeenCalledWith(WORKSPACE, 'feature/live');
+      expect(updateBranch).toHaveBeenCalledWith(WORKSPACE_PATH, 'feature/live');
       expect(pane.thread?.branch).toBe('feature/live');
     });
     a.release();
@@ -454,7 +543,7 @@ describe('gitStatusStore — observed branch reconciliation', () => {
     installSubscribeMock(status({ branch: 'main' }));
 
     const a = attachGitStatus(WORKSPACE, { threadId: pane.threadId! });
-    await vi.waitFor(() => expect(updateBranch).toHaveBeenCalledWith(WORKSPACE, 'main'));
+    await vi.waitFor(() => expect(updateBranch).toHaveBeenCalledWith(WORKSPACE_PATH, 'main'));
     await flush();
 
     expect(replaceThread).not.toHaveBeenCalled();
@@ -532,7 +621,7 @@ describe('gitStatusStore — refreshNow', () => {
     await refreshGitStatus(WORKSPACE, pane.threadId!, () => WORKSPACE);
 
     expect(a.current?.insertions).toBe(9);
-    await vi.waitFor(() => expect(updateBranch).toHaveBeenCalledWith(WORKSPACE, 'feature/refreshed'));
+    await vi.waitFor(() => expect(updateBranch).toHaveBeenCalledWith(WORKSPACE_PATH, 'feature/refreshed'));
     a.release();
   });
 

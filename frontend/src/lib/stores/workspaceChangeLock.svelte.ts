@@ -64,7 +64,12 @@ import { getActiveTurn } from './threadStatuses.svelte';
 import { createEntityStore } from './entityStore.svelte';
 import { isMethodUnavailableError } from './transportStatus.svelte';
 import { createRefreshScheduler } from '../utils/refreshScheduler';
-import { workspaceKeyForThread } from '../utils/workspaceKey';
+import {
+  workspaceKeyBackend,
+  workspaceKeyForThread,
+  workspaceKeyPath,
+} from '../utils/workspaceKey';
+import { withBackendTarget } from '../transport/backends';
 
 // Turn and background-task events burst — a thread cycling wire rounds emits
 // several per second — and every live key answers each one. 100ms collapses
@@ -96,6 +101,8 @@ function activityError(err: unknown): unknown {
 const store = createEntityStore<WorkspaceActivity, void>({
   name: 'workspaceChangeLock',
   source: async ({ key, apply, fail, signal }) => {
+    const backend = workspaceKeyBackend(key);
+    const path = workspaceKeyPath(key);
     // Responses used to be able to overtake each other: the initial load and
     // every debounced event refresh were separate RPCs on ONE entity
     // generation, and an older IDLE answer landing after a newer BUSY one
@@ -115,10 +122,20 @@ const store = createEntityStore<WorkspaceActivity, void>({
         // rides it too. A session without that grant is not being offered
         // any of those controls, so asking would be one refusal per
         // workspace and one fail() painting a lock reason on a surface
-        // that has nothing to unlock.
-        if (!hasScope('git:operate')) return;
+        // that has nothing to unlock. Asked of THIS key's backend: a grant
+        // is a property of one session on one machine, and reading home's
+        // answer for a remote checkout is how a control appears that its
+        // own backend will refuse.
+        if (!hasScope('git:operate', backend)) return;
         try {
-          const activity = (await GetWorkspaceActivity(key)) as WorkspaceActivity;
+          // The key is `${backendId} ${path}`; the RPC wants the path, and
+          // it has to be asked of the machine the path is ON. Nothing in
+          // the argument says which — a path is not an entity — so the
+          // backend is pinned from the key rather than routed from the
+          // arguments.
+          const activity = (await withBackendTarget(backend, () =>
+            GetWorkspaceActivity(path),
+          )) as WorkspaceActivity;
           if (token.isCurrent()) apply(activity);
         } catch (err) {
           // fail() is the whole recovery: the lock reads as blocked

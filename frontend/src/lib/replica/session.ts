@@ -42,6 +42,7 @@
 //    commit rejects without saying whether it landed.
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { noteThread } from '../transport/entityIndex';
 import {
   UNKNOWN_BACKEND_IDENTITY,
   onBackendIdentity,
@@ -580,6 +581,12 @@ export async function getReplicaWindow(
     if (raw === undefined) return null;
     const body = readEnvelope(raw);
     noteSuccess();
+    // A HIT is evidence of ownership: the record was written under this
+    // backend's identity into a database named for it, so the thread lives
+    // there. That is the cold-open leg of the entity index — the pane opens
+    // before any list has answered, and without this the first RPC about a
+    // thread painted from the replica would route home.
+    noteThread(threadId, sessionOf(token)?.backend ?? HOME_BACKEND);
     if (!body) {
       // Stored by an older build. Drop rather than repair.
       void removeReplicaWindow(threadId, token);

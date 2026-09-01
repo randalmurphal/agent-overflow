@@ -36,7 +36,12 @@ export function readBackendDescriptors(value: unknown): BackendDescriptor[] {
   for (const raw of value) {
     if (!raw || typeof raw !== 'object') continue;
     const row = raw as Partial<BackendDescriptor>;
-    if (typeof row.id !== 'string' || row.id === '') continue;
+    // A registry id must be a non-empty string with no SPACE in it: it is
+    // the prefix of every path-keyed composite key
+    // (`utils/workspaceKey.ts`), which splits on the first space, and an id
+    // that broke that split would silently key one machine's checkout under
+    // another's. Rejected at the door rather than escaped at each use.
+    if (typeof row.id !== 'string' || row.id === '' || row.id.includes(' ')) continue;
     if (typeof row.wsUrl !== 'string' || typeof row.bootstrapUrl !== 'string') continue;
     out.push({
       id: row.id,

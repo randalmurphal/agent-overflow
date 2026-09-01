@@ -49,6 +49,8 @@ import type {
 import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { setSystemStats } from './systemStats.svelte';
 import { transportGapChannel } from '../transport/wsClient';
+import { backendKeyForOrigin } from '../transport/backends';
+import { forgetProject, forgetThread, noteProject, noteThread } from '../transport/entityIndex';
 // wailsEventOn lives in a leaf module so low-level stores can subscribe to
 // backend events without importing this handler module; imported here for
 // setupEventListeners() use and re-exported below for existing import sites.
@@ -388,7 +390,20 @@ export function setupEventListeners(): () => void {
     applyUserMessageReverted,
   );
 
-  const cancelThreadUpdated = wailsEventOn<ThreadUpdateEvent>('thread:updated', applyThreadUpdated);
+  // The row's own backend is learned HERE and not inside the applier: the
+  // frame names the row, the connection it arrived on names the machine
+  // that holds it, and only the subscription sees both. It is also the only
+  // way a thread created on another screen — never in any list this client
+  // fetched — becomes routable, which is what keeps the next RPC about it
+  // from silently going to the wrong machine.
+  const cancelThreadUpdated = wailsEventOn<ThreadUpdateEvent>('thread:updated', (evt, origin) => {
+    const id = evt?.thread?.id ?? evt?.id;
+    if (id) {
+      if (evt.action === 'deleted') forgetThread(id);
+      else noteThread(id, backendKeyForOrigin(origin.backendId));
+    }
+    applyThreadUpdated(evt);
+  });
 
   // thread:error_notice — a row of kind `error` was persisted on some
   // thread. The wildcard carrier for the sidebar's Failed pill: the
@@ -406,7 +421,14 @@ export function setupEventListeners(): () => void {
   // client's own RPC, so this is what converges a second attached client.
   const cancelProjectUpdated = wailsEventOn<ProjectUpdateEvent>(
     'project:updated',
-    applyProjectUpdated,
+    (evt, origin) => {
+      const id = evt?.project?.id ?? evt?.id;
+      if (id) {
+        if (evt.action === 'deleted') forgetProject(id);
+        else noteProject(id, backendKeyForOrigin(origin.backendId));
+      }
+      applyProjectUpdated(evt);
+    },
   );
 
   // draft:updated — one frame per persisted composer-draft write, naming the

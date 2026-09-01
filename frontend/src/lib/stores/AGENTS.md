@@ -198,7 +198,23 @@ stops waking readers.
   not the exotic one. Settings, provider accounts and sysstat stay
   HOME-only reads for now and say so in a comment naming the phase-7 plan
   item; a path-keyed store does not have that option, because collapsing
-  two machines' identical paths is a wrong ANSWER, not a missing one.
+  two machines' identical paths is a wrong ANSWER, not a missing one — an
+  agent busy on one machine would unlock `Remove Worktree` over the other's
+  identical directory.
+
+  The key is `${backendId} ${path}`, built by `utils/workspaceKey.ts` and
+  never spelled by hand. A composite STRING rather than a two-level map,
+  because the hot path is one `Map.get` per status frame and per lock read
+  and the concatenation happens once at derivation; it also keeps
+  `createEntityStore`'s single-string key, so refcounting, suspension and
+  diagnostics are untouched. Split it with `workspaceKeyPath` before any
+  RPC — the wire wants a path — and pin the call to `workspaceKeyBackend`'s
+  answer with `withBackendTarget`, because nothing in a path argument says
+  which machine it is on and the route table cannot resolve one. The same
+  applies to a SUBSCRIPTION ID: it is meaningful only on the connection
+  that minted it. `gitStatusStore.svelte.ts`'s cwd alias map is keyed the
+  same way, and its `git:status` handler resolves the frame's origin
+  through `backendKeyForOrigin` rather than trusting the cwd alone.
 - `bindings.ts` re-exports what `wails3 generate bindings -ts` produced.
   Add the new App method by regenerating and re-exporting. Never hand-wrap
   a binding, and never reach for `window.runtime`.
