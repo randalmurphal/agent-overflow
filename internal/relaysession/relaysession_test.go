@@ -42,6 +42,18 @@ func TestSessionCarriersMatchTransport(t *testing.T) {
 		t.Fatalf("transport names the session cookie %q, which does not start with %q",
 			planted[0].Name, CookiePrefix)
 	}
+	// BootstrapURL restates both route paths as literals in the same
+	// derivation, and the derivation is only right while they are the
+	// transport's own. Asking for a URL under a proxy PREFIX is what shows
+	// both halves at once: the `/ws` it trims and the `/bootstrap.json` it
+	// appends.
+	derived, err := BootstrapURL("wss://host:9000/backend" + transport.WSPath)
+	if err != nil {
+		t.Fatalf("BootstrapURL: %v", err)
+	}
+	if want := "https://host:9000/backend" + transport.BootstrapPath; derived != want {
+		t.Fatalf("BootstrapURL = %q, want %q", derived, want)
+	}
 }
 
 // bootstrapStub serves /bootstrap.json the way the backend does: the

@@ -662,9 +662,9 @@ func (s *Server) buildHTTPServer() *http.Server {
 	// is the same one that starts the connection — the budget that matters
 	// for it is the ticket exchange that precedes it. /healthz and the
 	// assets are never limited (ratelimit.go says why).
-	mux.HandleFunc("/bootstrap.json",
+	mux.HandleFunc(BootstrapPath,
 		rateLimited(s.bootstrapLimit, s.loopbackHostGuard(s.handleBootstrap)))
-	mux.HandleFunc("/ws", s.loopbackHostGuard(s.handleWS))
+	mux.HandleFunc(WSPath, s.loopbackHostGuard(s.handleWS))
 	mux.HandleFunc(PageURLPath,
 		rateLimited(s.pageURLLimit, s.loopbackHostGuard(s.handlePageURL)))
 	mux.HandleFunc(HealthPath, s.loopbackHostGuard(s.handleHealthz))
@@ -1042,6 +1042,23 @@ func (s *Server) hostPort() (string, string, bool) {
 // ticket as separate JSON fields, so nothing credential-shaped reaches
 // the URL at all — see WebviewPageURL and internal/pagehost.
 const PageURLPath = "/pageurl"
+
+// BootstrapPath and WSPath are the two routes every client of this wire
+// reaches, and the two that were restated the most.
+//
+// Named for the reason PageURLPath and ScopedRPCPath already are: four
+// packages spell these paths without linking this server —
+// `internal/relaysession` derives one from the other, `internal/clientmode`
+// proxies onto both, `internal/deviceclient` dials both, and the Windows
+// launcher links neither this package nor a copy of its mux. A rename here
+// would leave every one of them dialling a route that no longer exists,
+// and the only symptom would be a client that cannot connect. Exported
+// constants give those packages something to pin against; the surfaces
+// gate reads a constant as readily as a literal.
+const (
+	BootstrapPath = "/bootstrap.json"
+	WSPath        = "/ws"
+)
 
 // handlePageURL answers PageURLPath. The default shape is one URL and a
 // newline: plain text because every browser-pointing consumer wants
