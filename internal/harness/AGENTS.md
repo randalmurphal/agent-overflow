@@ -18,7 +18,11 @@ this file covers the package boundaries.
   and `ao-mockprovider` processes: `Server` (registration resolve,
   long-poll command delivery, progress reports), `Client` +
   `FromEnv` (the mock side), and the `AO_HARNESS_CONTROL` /
-  `AO_HARNESS_CONTROL_TOKEN` env contract.
+  `AO_HARNESS_CONTROL_TOKEN` env contract. `CommandLoginComplete` is the
+  one command that is not about a scenario: the Codex device-code
+  sign-in finishes on another screen, so nothing written to the mock's
+  stdin reaches that moment, and the completion has to be paired with
+  the credential adoption then reads out of the isolated login home.
 - `instanceinfo/` covers instance discovery for `--harness` / `--soak`
   boots: `ID(dataRoot)` (first 8 hex of the canonical root's SHA-256),
   the `Row` written to

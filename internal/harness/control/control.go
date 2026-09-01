@@ -89,6 +89,10 @@ type Command struct {
 	Lines []string `json:"lines,omitempty"`
 	// Code for "exit".
 	Code int `json:"code,omitempty"`
+	// Error is the failure text for "login_complete". Empty settles the
+	// sign-in successfully, which is the only value that also writes a
+	// credential into the isolated login home.
+	Error string `json:"error,omitempty"`
 }
 
 // Command types.
@@ -96,6 +100,19 @@ const (
 	CommandAdvance = "advance"
 	CommandEmit    = "emit"
 	CommandExit    = "exit"
+	// CommandLoginComplete settles the account sign-in a mock started.
+	//
+	// It exists because the Codex device-code flow has no client-driven
+	// finish: the person types the code on another screen and the
+	// app-server announces `account/login/completed` on its own. Nothing a
+	// test can write to the mock's stdin reaches that moment, and a plain
+	// "emit" cannot serve either — the completion has to be paired with the
+	// credential the adoption epilogue then reads out of the login home, and
+	// only the mock knows where that home is.
+	//
+	// Claude's remote sign-in needs no counterpart: it finishes on the code
+	// the person pastes back, which travels the ordinary control channel.
+	CommandLoginComplete = "login_complete"
 )
 
 // Report is a progress event from mock to backend. The backend wraps

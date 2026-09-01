@@ -49,6 +49,12 @@ type codexAdapter struct {
 	// thread, so turns it never ran are history rather than nonsense.
 	// See codex_revert.go#anchorIsCuttable.
 	resumedThread bool
+
+	// login is the account sign-in this connection is serving, if any. It
+	// carries its own lock rather than sharing mu: its completion arrives on
+	// the control-poll goroutine while account/login/* arrive on the stdin
+	// one, and neither touches turn state. See codex_login.go.
+	login codexLoginState
 }
 
 // mockCodexModelList is the default `model/list` answer. It is not optional
@@ -223,6 +229,9 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		if a.handleQueueRequest(id, method, params) {
 			return
 		}
+		if a.handleLoginRequest(id, method, params) {
+			return
+		}
 		// A scenario's own response template is the most specific
 		// statement there is and wins over everything below.
 		if _, scripted := a.responses[method]; scripted {
@@ -368,6 +377,13 @@ func (a *codexAdapter) forkThread(id json.RawMessage, params json.RawMessage) {
 		"id":      id,
 		"result":  map[string]any{"thread": map[string]any{"id": forked, "turns": turns}},
 	}), 0, 0)
+}
+
+// writeRPCResult answers one request with a result body written verbatim.
+// The scenario-template path (respond) is for methods a scenario may override;
+// this is for the ones the adapter answers from its own state.
+func (a *codexAdapter) writeRPCResult(id json.RawMessage, result string) {
+	a.w.writeLine(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":%s}`, id, result), 0, 0)
 }
 
 func (a *codexAdapter) writeRPCError(id json.RawMessage, code int, message string) {

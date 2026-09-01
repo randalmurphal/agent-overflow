@@ -69,6 +69,15 @@ func main() {
 		return
 	}
 
+	// And for the sign-in control channel (`claude -p --output-format
+	// stream-json`): control_requests only, no turns, no scenario. Codex's
+	// sign-in has no counterpart here — it runs over an ordinary app-server
+	// connection and is answered by that adapter (codex_login.go).
+	if protocol == scenario.ProviderClaude && isClaudeLoginInvocation(args) {
+		runClaudeLogin()
+		return
+	}
+
 	// Both real CLIs validate a structured-output schema before the turn runs
 	// and exit non-zero when it breaks strict mode. Mirroring that here is what
 	// keeps the harness honest: a mock that accepts any schema lets a workflow
@@ -113,10 +122,6 @@ func main() {
 		})
 	}
 
-	if src.client != nil {
-		go src.client.Poll(context.Background(), e.handleCommand)
-	}
-
 	var adapter interface {
 		protocolAdapter
 		readStdin()
@@ -128,6 +133,14 @@ func main() {
 		adapter = newCodexAdapter(e, w, src.sc.Codex)
 	}
 	e.adapter = adapter
+
+	// Polling starts only once the adapter is installed: a command can arrive
+	// on the very first poll, and login_complete is dispatched THROUGH the
+	// adapter.
+	if src.client != nil {
+		go src.client.Poll(context.Background(), e.handleCommand)
+	}
+
 	go e.run()
 	adapter.readStdin() // blocks until stdin EOF, then terminates the process
 }
