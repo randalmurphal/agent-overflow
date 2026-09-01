@@ -114,8 +114,23 @@ missing value over one that skips. Two rules keep the evidence real:
 - Draft threads (no items yet) are hidden from the sidebar. Seed at least
   one turn, or send the first message before navigating, when a spec needs
   the thread visible.
-- Each worker owns one backend. Tests share it and must leave it reset
-  (the fixture does this) rather than booting their own. Production
+- **A spec boots its OWN backend only for state `harness.reset()` cannot
+  undo**, and then owns everything downstream of it. The LAN bind and the
+  canonical domain both PERSIST to the settings file and REBIND the
+  listener, so borrowing the worker fixture's instance hands the next
+  spec a rebound backend. Such a spec is `test.describe.serial` with its
+  own `beforeAll`/`afterAll`, restores the settings it wrote, and — when
+  its legs need different browser LAUNCH arguments, since
+  `--host-resolver-rules` is process-wide — owns its browsers too.
+  `harness-remote-device-lifecycle.spec.ts` and
+  `harness-passkey-lifecycle.spec.ts` are the two, and each header argues
+  its own constraints where they bite. Read the second before writing any
+  WebAuthn case: the three requirements a page has to satisfy at once
+  (secure context, a DOMAIN relying party, a non-loopback peer) admit
+  exactly one shape, and Chromium's virtual authenticator has a ceiling
+  the header names rather than stages around.
+- Otherwise each worker owns one backend. Tests share it and must leave
+  it reset (the fixture does this) rather than booting their own. Production
   project deletion drops the workflow rows (D25), but `HarnessReset` still
   deletes them itself first (`DeleteProjectWorkflowRecords`): reset removes
   the generated workspace tree wholesale rather than spending a git

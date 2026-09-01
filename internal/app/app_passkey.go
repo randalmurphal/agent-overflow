@@ -34,12 +34,20 @@ import (
 // therefore has no passkey surface at all, which the surfaces say plainly
 // rather than half-offering.
 //
-// The `.localhost` family is the exception and the harness's path: a
-// browser treats those names as a secure context over plain HTTP and
-// resolves them to loopback itself, so they are the only names a ceremony
-// can run under with no certificate at all. `localhost` bare is not
-// settable — a canonical domain must contain a dot — so the spelling that
-// works is `<label>.localhost`.
+// The `.localhost` family is the exception: a browser treats those names
+// as a secure context over plain HTTP and resolves them to loopback
+// itself, so they are the only names a ceremony can run under with no
+// certificate at all. `localhost` bare is not settable — a canonical
+// domain must contain a dot — so the spelling that works is
+// `<label>.localhost`.
+//
+// It is NOT what the e2e rig runs on, and the reason is worth knowing
+// before reaching for it: the frontend reads every `*.localhost` document
+// as local (`transport/bootstrap.ts` `isLoopbackHostname`), so a page
+// served under one never latches a terminal transport state and never
+// offers to sign in. A remote leg needs an ordinary domain over the
+// listener's TLS half; `e2e/tests/harness-passkey-lifecycle.spec.ts`
+// argues the whole shape.
 func passkeyRelyingParty(a *App) identity.RelyingParty {
 	if a == nil || a.settings == nil {
 		return identity.RelyingParty{}

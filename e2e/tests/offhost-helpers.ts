@@ -1,12 +1,14 @@
 // The pieces every off-host spec needs: how a non-loopback peer is
-// produced on one machine, and how a device becomes one.
+// produced on one machine, how a device becomes one, and what a person
+// at that device would have SEEN.
 //
-// Two spec families share them — `harness-offhost-authz.spec.ts` (what a
-// paired device may reach) and `harness-remote-device-lifecycle.spec.ts`
+// Three spec families share them — `harness-offhost-authz.spec.ts` (what
+// a paired device may reach), `harness-remote-device-lifecycle.spec.ts`
 // (pair, revoke, forget, re-pair, and what the owner's screen says about
-// it) — so they live here rather than in whichever file was written
-// first. Everything below is the REAL exchange; nothing here reaches
-// past a route a phone would use.
+// it) and `harness-passkey-lifecycle.spec.ts` (register, sign in with no
+// code, step up remotely) — so they live here rather than in whichever
+// file was written first. Everything below is the REAL exchange; nothing
+// here reaches past a route a phone would use.
 //
 // HOW A NON-LOOPBACK PEER IS PRODUCED without a second machine: bind the
 // server to 0.0.0.0 and dial one of this host's own non-loopback
@@ -30,7 +32,7 @@
 import { readFileSync } from 'node:fs';
 import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { expect } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
 
@@ -243,4 +245,135 @@ export function methodNameById(id: number): string {
     ).toBeGreaterThan(50);
   }
   return methodNames.get(id) ?? `methodId:${id}`;
+}
+
+// ---------------------------------------------------------------------
+// Page instrumentation: what a person would have SEEN.
+// ---------------------------------------------------------------------
+
+export interface Surfaced {
+  /** Every error toast that was ever rendered, in order, whether or not it is still up. */
+  errorToasts: string[];
+  /** Every console error and uncaught exception. */
+  consoleErrors: string[];
+  /** Every `data-status` the transport banner ever published. */
+  transportStatuses: string[];
+  /** Every RPC refusal frame the page received, as `<method> <code>:<scope>`. */
+  refusals: string[];
+  /**
+   * The method name of every RPC REPLY frame, refused or not. The
+   * precondition for asserting `refusals` is empty: a capture that saw no
+   * traffic at all would report a clean wire for a page that never
+   * connected. It is also how a spec asserts that a ceremony DID run.
+   */
+  rpcReplies: string[];
+}
+
+/**
+ * Record what the page surfaced, in NODE rather than on `window`, so a
+ * navigation cannot lose what an earlier document showed — the same
+ * reason `fixtures.ts` collects CSP violations this way.
+ *
+ * Toasts and banner statuses are captured through a MutationObserver
+ * rather than by polling a locator, because both are transient: a toast
+ * auto-dismisses and a status moves on, so a locator assertion run after
+ * the fact would report an absence that was never true.
+ *
+ * Call it before the first navigation: the init script has to be in place
+ * for the document that will do the thing being observed.
+ */
+export async function instrument(page: Page): Promise<Surfaced> {
+  const surfaced: Surfaced = {
+    errorToasts: [],
+    consoleErrors: [],
+    transportStatuses: [],
+    refusals: [],
+    rpcReplies: [],
+  };
+
+  await page.exposeFunction('__aoRecordErrorToast', (text: string) => {
+    surfaced.errorToasts.push(text);
+  });
+  await page.exposeFunction('__aoRecordTransportStatus', (status: string) => {
+    if (surfaced.transportStatuses.at(-1) !== status) surfaced.transportStatuses.push(status);
+  });
+  await page.addInitScript(() => {
+    const win = window as unknown as {
+      __aoRecordErrorToast?: (text: string) => void;
+      __aoRecordTransportStatus?: (status: string) => void;
+    };
+    const noteToast = (el: Element) => win.__aoRecordErrorToast?.(el.textContent?.trim() ?? '');
+    const noteBanner = (el: Element) =>
+      win.__aoRecordTransportStatus?.(el.getAttribute('data-status') ?? '');
+    const scan = (node: Node) => {
+      if (!(node instanceof Element)) return;
+      if (node.matches('[data-toast-type="error"]')) noteToast(node);
+      for (const el of node.querySelectorAll('[data-toast-type="error"]')) noteToast(el);
+      if (node.matches('[data-testid="transport-status-banner"]')) noteBanner(node);
+      for (const el of node.querySelectorAll('[data-testid="transport-status-banner"]'))
+        noteBanner(el);
+    };
+    // `document` is a valid observe target and exists this early, which
+    // `document.body` does not.
+    new MutationObserver((records) => {
+      for (const record of records) {
+        if (record.type === 'attributes' && record.target instanceof Element) {
+          noteBanner(record.target);
+          continue;
+        }
+        for (const added of record.addedNodes) scan(added);
+      }
+    }).observe(document, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-status'],
+    });
+  });
+
+  page.on('console', (message) => {
+    if (message.type() === 'error') surfaced.consoleErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => surfaced.consoleErrors.push(`uncaught: ${error.message}`));
+
+  // The wire itself. A refusal is a field on the RPC response frame
+  // (`internal/transport/frame.go`), and the prose is redacted for a
+  // non-loopback caller, so the CODE plus the named scope is the whole
+  // answer that survives. The METHOD is not on the reply at all — it is on
+  // the request that shares its id — so the sent side is correlated here
+  // too: "something was refused" is a failure nobody can act on, and the
+  // name of the call is the whole lead.
+  page.on('websocket', (ws) => {
+    const methodById = new Map<string, string>();
+    ws.on('framesent', (frame) => {
+      let parsed: { type?: string; id?: string; method?: string; methodId?: number };
+      try {
+        parsed = JSON.parse(String(frame.payload)) as typeof parsed;
+      } catch {
+        return;
+      }
+      if (parsed.type !== 'rpc' || !parsed.id) return;
+      // A generated binding sends `methodId` and nothing else; only
+      // `callByName` sends a name.
+      const name =
+        parsed.method ?? (parsed.methodId ? methodNameById(parsed.methodId) : undefined);
+      if (name) methodById.set(parsed.id, name);
+    });
+    ws.on('framereceived', (frame) => {
+      let parsed: { type?: string; id?: string; error?: { code?: string; scope?: string } };
+      try {
+        parsed = JSON.parse(String(frame.payload)) as typeof parsed;
+      } catch {
+        return;
+      }
+      if (parsed.type !== 'rpc') return;
+      const method = methodById.get(parsed.id ?? '') ?? 'unknown';
+      methodById.delete(parsed.id ?? '');
+      surfaced.rpcReplies.push(method);
+      if (!parsed.error?.code) return;
+      surfaced.refusals.push(`${method} ${parsed.error.code}:${parsed.error.scope ?? ''}`);
+    });
+  });
+
+  return surfaced;
 }

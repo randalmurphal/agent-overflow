@@ -393,6 +393,20 @@ remote browser alike. Protocol and authz rules:
   on the pairing screen — past it the app mounts into its ordinary
   reconnecting banner, which is the designed surface for that.
 
+  **The banner's surface is the case where the app is ALREADY mounted,
+  and that needs the boot to run a SECOND time.** A page that mounted
+  while the transport was terminal loaded nothing: every store's first
+  fetch was refused by the latched client, and only the entity-keyed ones
+  re-acquire when a connection arrives (`stores/entityStore.svelte.ts`),
+  so the sidebar, settings, keybindings, the pane layout and the
+  persisted app storage each loaded once and never again. Signing in from
+  the banner therefore attached a socket to an EMPTY app until
+  `TransportStatusBanner.svelte` grew the guarded reload that gives it
+  what `main.ts` gives the pairing path by construction (found by
+  `e2e/tests/harness-passkey-lifecycle.spec.ts`). Anything else that adds
+  a way OUT of a terminal state inherits it — the exit is what has to
+  boot, never each button that reaches one.
+
   The socket it retires is DETACHED before it is closed
   (`detachSocket`), so the close takes `handleSocketClose`'s superseded
   branch. The live branch would reject every outstanding RPC — including

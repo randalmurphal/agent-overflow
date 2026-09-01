@@ -46,11 +46,12 @@ import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {
-  methodNameById,
+  instrument,
   mintLink,
   nonLoopbackIPv4,
   pairDeviceOverWire,
   type PairingInvite,
+  type Surfaced,
 } from './offhost-helpers.js';
 
 // ---------------------------------------------------------------------
@@ -121,134 +122,6 @@ const LADDER_SILENCE_MS = 2_000;
 
 /** The two states the client latches on and stops the ladder for. */
 const TERMINAL_STATUSES = ['unauthorized', 'pairing-required'];
-
-// ---------------------------------------------------------------------
-// Page instrumentation: what a person would have SEEN.
-// ---------------------------------------------------------------------
-
-interface Surfaced {
-  /** Every error toast that was ever rendered, in order, whether or not it is still up. */
-  errorToasts: string[];
-  /** Every console error and uncaught exception. */
-  consoleErrors: string[];
-  /** Every `data-status` the transport banner ever published. */
-  transportStatuses: string[];
-  /** Every RPC refusal frame the page received, as `<code>:<scope>`. */
-  refusals: string[];
-  /**
-   * The method name of every RPC REPLY frame, refused or not. The
-   * precondition for asserting `refusals` is empty: a capture that saw no
-   * traffic at all would report a clean wire for a page that never
-   * connected.
-   */
-  rpcReplies: string[];
-}
-
-/**
- * Record what the page surfaced, in NODE rather than on `window`, so a
- * navigation cannot lose what an earlier document showed — the same
- * reason `fixtures.ts` collects CSP violations this way.
- *
- * Toasts and banner statuses are captured through a MutationObserver
- * rather than by polling a locator, because both are transient: a toast
- * auto-dismisses and a status moves on, so a locator assertion run after
- * the fact would report an absence that was never true.
- */
-async function instrument(page: Page): Promise<Surfaced> {
-  const surfaced: Surfaced = {
-    errorToasts: [],
-    consoleErrors: [],
-    transportStatuses: [],
-    refusals: [],
-    rpcReplies: [],
-  };
-
-  await page.exposeFunction('__aoRecordErrorToast', (text: string) => {
-    surfaced.errorToasts.push(text);
-  });
-  await page.exposeFunction('__aoRecordTransportStatus', (status: string) => {
-    if (surfaced.transportStatuses.at(-1) !== status) surfaced.transportStatuses.push(status);
-  });
-  await page.addInitScript(() => {
-    const win = window as unknown as {
-      __aoRecordErrorToast?: (text: string) => void;
-      __aoRecordTransportStatus?: (status: string) => void;
-    };
-    const noteToast = (el: Element) => win.__aoRecordErrorToast?.(el.textContent?.trim() ?? '');
-    const noteBanner = (el: Element) =>
-      win.__aoRecordTransportStatus?.(el.getAttribute('data-status') ?? '');
-    const scan = (node: Node) => {
-      if (!(node instanceof Element)) return;
-      if (node.matches('[data-toast-type="error"]')) noteToast(node);
-      for (const el of node.querySelectorAll('[data-toast-type="error"]')) noteToast(el);
-      if (node.matches('[data-testid="transport-status-banner"]')) noteBanner(node);
-      for (const el of node.querySelectorAll('[data-testid="transport-status-banner"]'))
-        noteBanner(el);
-    };
-    // `document` is a valid observe target and exists this early, which
-    // `document.body` does not.
-    new MutationObserver((records) => {
-      for (const record of records) {
-        if (record.type === 'attributes' && record.target instanceof Element) {
-          noteBanner(record.target);
-          continue;
-        }
-        for (const added of record.addedNodes) scan(added);
-      }
-    }).observe(document, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['data-status'],
-    });
-  });
-
-  page.on('console', (message) => {
-    if (message.type() === 'error') surfaced.consoleErrors.push(message.text());
-  });
-  page.on('pageerror', (error) => surfaced.consoleErrors.push(`uncaught: ${error.message}`));
-
-  // The wire itself. A refusal is a field on the RPC response frame
-  // (`internal/transport/frame.go`), and the prose is redacted for a
-  // non-loopback caller, so the CODE plus the named scope is the whole
-  // answer that survives. The METHOD is not on the reply at all — it is on
-  // the request that shares its id — so the sent side is correlated here
-  // too: "something was refused" is a failure nobody can act on, and the
-  // name of the call is the whole lead.
-  page.on('websocket', (ws) => {
-    const methodById = new Map<string, string>();
-    ws.on('framesent', (frame) => {
-      let parsed: { type?: string; id?: string; method?: string; methodId?: number };
-      try {
-        parsed = JSON.parse(String(frame.payload)) as typeof parsed;
-      } catch {
-        return;
-      }
-      if (parsed.type !== 'rpc' || !parsed.id) return;
-      // A generated binding sends `methodId` and nothing else; only
-      // `callByName` sends a name.
-      const name =
-        parsed.method ?? (parsed.methodId ? methodNameById(parsed.methodId) : undefined);
-      if (name) methodById.set(parsed.id, name);
-    });
-    ws.on('framereceived', (frame) => {
-      let parsed: { type?: string; id?: string; error?: { code?: string; scope?: string } };
-      try {
-        parsed = JSON.parse(String(frame.payload)) as typeof parsed;
-      } catch {
-        return;
-      }
-      if (parsed.type !== 'rpc') return;
-      const method = methodById.get(parsed.id ?? '') ?? 'unknown';
-      methodById.delete(parsed.id ?? '');
-      surfaced.rpcReplies.push(method);
-      if (!parsed.error?.code) return;
-      surfaced.refusals.push(`${method} ${parsed.error.code}:${parsed.error.scope ?? ''}`);
-    });
-  });
-
-  return surfaced;
-}
 
 // ---------------------------------------------------------------------
 // The flow, driven the way the person is.

@@ -95,6 +95,43 @@
     snapshot.status !== 'connected' && (hasEverConnected || bootGraceExpired),
   );
 
+  // A page that mounted while the transport was TERMINAL loaded nothing.
+  // Every store's first fetch was refused by the latched client, and only
+  // entity-keyed stores re-acquire when a connection arrives
+  // (stores/entityStore.svelte.ts) — the sidebar's projects and threads,
+  // settings, keybindings, the pane layout and the persisted app storage
+  // each load once on mount and never again. So leaving a terminal state
+  // from this banner attached the socket and left an EMPTY app (found by
+  // e2e/tests/harness-passkey-lifecycle.spec.ts).
+  //
+  // Booting again is what the pairing-link path gets by construction:
+  // main.ts mounts App only AFTER the redial, so its fan-out runs once,
+  // attached. This is that same thing for a page that was already
+  // mounted, and it covers every way out of a terminal state rather than
+  // the sign-in button alone.
+  //
+  // The guard is what makes it cost nothing: it fires only on the FIRST
+  // connection of a page that has been terminal, where there is no loaded
+  // state and nothing anybody typed to discard. A session that dies
+  // mid-use and is signed back in keeps its page. Plain `let`, not
+  // `$state`: these are the effect's own memory and nothing renders from
+  // them, so making them reactive would only add a dependency that can
+  // re-run it.
+  let sawTerminal = false;
+  let connectedOnce = false;
+
+  $effect(() => {
+    const status = snapshot.status;
+    if (isTerminalConnectionStatus(status)) {
+      sawTerminal = true;
+      return;
+    }
+    if (status !== 'connected') return;
+    const first = !connectedOnce;
+    connectedOnce = true;
+    if (first && sawTerminal) location.reload();
+  });
+
   $effect(() => {
     if (!visible) {
       if (timer !== null) {
