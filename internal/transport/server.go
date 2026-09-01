@@ -252,6 +252,17 @@ type Config struct {
 	// Optional — when nil, neither route is registered.
 	AuthEndpoints AuthEndpoints
 
+	// AttachmentTransfer backs the two attachment byte routes: it opens a
+	// thread-owned attachment for streaming, and persists a streamed
+	// upload. The app satisfies it with an adapter over its attachment
+	// store.
+	//
+	// Optional — when nil, neither route answers anything but the 404 a
+	// spent ticket gets, and the mint methods have nothing to hand out.
+	// That is every boot before the App's startup wires it, and every test
+	// that does not ask for byte transfer.
+	AttachmentTransfer AttachmentTransfer
+
 	// ScopedTokens resolves an `ao` CLI credential to the caller scope it
 	// was minted for. The App owns the registry (a token lives exactly as
 	// long as the provider session it belongs to); this package owns the
@@ -511,6 +522,17 @@ type Server struct {
 	// but belongs to none either.
 	wsTickets *ticketBook
 
+	// The two attachment transfer books (attachmentroutes.go). TWO, not
+	// one: a download ticket is minted by a `threads:read` call and an
+	// upload ticket by an `attachments:write` one, so a single book would
+	// make "can this ticket be presented at the other route" a property of
+	// its subject parsing rather than of which book holds it. Separate
+	// books make the confusion unrepresentable, cost one field, and let
+	// the bounds move independently if reading and writing ever have
+	// different shapes of traffic.
+	attachmentDownloadTickets *ticketBook
+	attachmentUploadTickets   *ticketBook
+
 	// remoteConns counts live non-loopback WebSocket connections.
 	// Feeds HasRemoteClient, which gates work that only benefits
 	// remote viewers (the highlight seed push). Note tunneled remotes
@@ -581,6 +603,9 @@ func New(cfg Config) (*Server, error) {
 		scopedRPCLimit: newRateLimiter(ScopedRPCPath, scopedRPCRateLimit),
 		authLimit:      newRateLimiter("/auth", authRateLimit),
 		wsTickets:      newTicketBook(maxOutstandingWSTickets, wsTicketTTL),
+
+		attachmentDownloadTickets: newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
+		attachmentUploadTickets:   newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 	}
 	if !cfg.RequireReadyForBootstrap {
 		s.ready.Store(true)
@@ -759,6 +784,20 @@ func (s *Server) buildHTTPServer() *http.Server {
 		mux.HandleFunc(AuthPasskeyFinishPath,
 			rateLimited(s.authLimit, s.loopbackHostGuard(s.handlePasskeyFinish)))
 	}
+	// The attachment byte routes. Registered unconditionally, like every
+	// route above that answers a ticket rather than a credential: the
+	// seam is late-bound (the attachment store opens during the App's
+	// startup, after this config is built), so gating registration on it
+	// would mean a boot whose routes depended on when the mux happened to
+	// be built. With no seam they answer the same 404 a spent ticket gets.
+	//
+	// No rate limiter, deliberately — the ticket is minted by an
+	// authorized RPC and spent once, so there is no request a peer can
+	// repeat for free. No Origin allow-list either; both decisions are
+	// argued at the top of attachmentroutes.go and recorded in the
+	// internal/surfaces rows.
+	mux.HandleFunc(AttachmentDownloadPath, s.loopbackHostGuard(s.handleAttachmentDownload))
+	mux.HandleFunc(AttachmentUploadPath, s.loopbackHostGuard(s.handleAttachmentUpload))
 	// The ticket route needs no AuthEndpoints — it mints from the session
 	// the caller already holds — so it is registered whenever a session
 	// can be resolved at all.

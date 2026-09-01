@@ -119,6 +119,22 @@ const (
 	// authenticator.
 	CredPasskeyAssertion Credential = "passkey assertion"
 
+	// CredTransferTicket is a single-use ticket minted by an RPC the
+	// per-call scope gate already authorized, bound to ONE transfer —
+	// which attachment, or which thread plus exactly how many bytes —
+	// spent by the first request that presents it, and dead in seconds
+	// either way.
+	//
+	// Weaker than a session credential in one respect and stronger in
+	// another, and both belong in the same sentence. Weaker: it travels
+	// in the query string, so it lands in any log that records URLs, as
+	// CredUnguessablePath does. Stronger: what a copy of it buys is one
+	// request for bytes somebody was already authorized to move, within
+	// seconds, and only if nobody spent it first — while a session
+	// credential names everything its grants reach, for as long as it
+	// lives.
+	CredTransferTicket Credential = "single-use transfer ticket"
+
 	// CredNone is no check of any kind. Only defensible on a listener
 	// that serves nothing, or one whose entire boundary is the bind
 	// address plus an explicit opt-in.
@@ -149,6 +165,24 @@ const (
 	// index and binary profile blobs, served with no security headers
 	// because the stdlib handler writes them and we do not wrap it.
 	PostureDiagnostic ContentPosture = "diagnostic"
+
+	// PostureOpaqueMedia is bytes an engine PAINTS and never parses: an
+	// image served under a Content-Type from a closed allow-list, with
+	// nosniff, from a payload whose format was verified by reading its
+	// signature bytes rather than by believing a header.
+	//
+	// It exists because attachment bytes are the first content on this
+	// tree's own origin that a person or a provider authored, and calling
+	// them PostureStructured would be a lie about what they are while
+	// calling them PostureAppOrigin would be a lie about what an engine
+	// does with them. The distinction is the whole of what
+	// TestAuthoredBytesNeverExecute protects: a document executes at the
+	// origin that served it, and a PNG does not. Nothing about this
+	// posture is safe for a format that can carry script — SVG is
+	// deliberately absent from the attachment store's allow-list, and
+	// adding it there would make this row wrong rather than making SVG
+	// acceptable.
+	PostureOpaqueMedia ContentPosture = "opaque media"
 
 	// PostureNone is a listener that serves no bytes at all.
 	PostureNone ContentPosture = "none"
@@ -636,6 +670,60 @@ var Routes = []Route{
 			"unfingerprintable 404: there is nothing to bind a ticket to.",
 	},
 	{
+		Pattern:    "GET /attachments/{threadID}/{attachmentID}",
+		Listener:   "app transport",
+		Credential: CredTransferTicket,
+		Posture:    PostureOpaqueMedia,
+		Why: "One attachment's bytes, streamed. It exists because the " +
+			"alternative was worse in a way no credential fixes: every " +
+			"attachment byte used to ride base64 inside a single WebSocket " +
+			"RPC frame, so a 10 MiB image became a ~13.4 MB frame on the " +
+			"same socket as the live event stream. The ticket is minted by " +
+			"a threads:read call the per-RPC gate authorized, names ONE " +
+			"(thread, attachment) pair, and is spent by the first request " +
+			"— and the path is compared against that subject rather than " +
+			"read from it, so a request naming a different attachment is " +
+			"refused rather than served whatever the ticket said. What " +
+			"leaves is an image under a Content-Type from the attachment " +
+			"store's closed allow-list, verified at upload time by its " +
+			"signature bytes rather than by a header, with nosniff and " +
+			"Cache-Control: no-store — the URL carried a single-use " +
+			"credential, so a shared cache holding the response would hold " +
+			"the attachment past the one request authorized to read it. " +
+			"Deliberately NOT behind the Origin allow-list that guards /ws " +
+			"and /bootstrap.json: that check exists to stop a foreign page " +
+			"spending an ambient cookie, and nothing here is authorized by " +
+			"one, so a foreign page can cause the request and neither " +
+			"produce the ticket nor read the answer. Deliberately not rate " +
+			"limited either: a peer cannot repeat a request whose " +
+			"admission was spent, and the work behind it was authorized " +
+			"one attachment at a time by a call that already passed the " +
+			"budgeted socket.",
+	},
+	{
+		Pattern:    "PUT /attachments/upload",
+		Listener:   "app transport",
+		Credential: CredTransferTicket,
+		Posture:    PostureStructured,
+		Why: "The write half, and the one route on this listener whose " +
+			"body is large by design. The ticket is minted by an " +
+			"attachments:write call that refused an over-cap size BEFORE " +
+			"minting, and its subject carries everything the stored row " +
+			"will say about these bytes — thread, filename, content type, " +
+			"exact length. The request contributes the bytes and nothing " +
+			"else: a filename read off a header would be a caller " +
+			"describing a payload it is in the middle of sending. The cap " +
+			"is enforced DURING the read rather than from Content-Length, " +
+			"because a declared length is a claim and a chunked body " +
+			"declares nothing; a body that overruns is cut off mid-stream " +
+			"and answered 413, and one that under-delivers is refused " +
+			"rather than stored short. It answers the created row as JSON, " +
+			"which is why the posture is structured while its sibling's is " +
+			"not. Single-shot: a failed upload is retried by minting " +
+			"again, since resumable transfer is deferred to the phone " +
+			"waves and every body here is at most 10 MiB.",
+	},
+	{
 		Pattern:    "/rpc",
 		Listener:   "app transport",
 		Credential: CredPageSession,
@@ -783,12 +871,40 @@ var Origins = []Origin{
 		Listener: "app transport",
 		Author:   AuthorBuild,
 		Posture:  PostureAppOrigin,
-		Why: "The application itself. Everything served here is the " +
-			"embedded frontend/dist bundle, fixed at build time. Content a " +
-			"provider or the user authored reaches the page as DATA over " +
-			"the WebSocket and is rendered by bundle code — it is never " +
-			"served as a document at this origin, which is the property " +
-			"/design/ broke and TestAuthoredBytesNeverExecute now holds.",
+		Why: "The application itself. Every EXECUTABLE byte served here is " +
+			"the embedded frontend/dist bundle, fixed at build time. " +
+			"Content a provider or the user authored reaches the page as " +
+			"DATA over the WebSocket and is rendered by bundle code — it " +
+			"is never served as a document at this origin, which is the " +
+			"property /design/ broke and TestAuthoredBytesNeverExecute now " +
+			"holds. Since wave 6b one class of authored content also " +
+			"leaves this origin as BYTES rather than as data: attachment " +
+			"images, on the two ticketed routes above. That is the row " +
+			"below, and it is separate precisely because the two answers " +
+			"differ in the only two fields this table records — whose " +
+			"bytes they are, and what an engine does with them.",
+	},
+	{
+		Name:     "attachment bytes (app transport)",
+		Listener: "app transport",
+		Author:   AuthorAgentOrUser,
+		Posture:  PostureOpaqueMedia,
+		Why: "The same scheme+host+port as the row above, and a row of its " +
+			"own because folding it in would leave one of the two facts " +
+			"unrecorded: these bytes were authored by the person using the " +
+			"app (a pasted screenshot, a dropped photo), not by the build. " +
+			"It is the first content on this tree's own origin that " +
+			"AuthorAgentOrUser honestly describes, which turns " +
+			"TestAuthoredBytesNeverExecute from a tripwire over an empty " +
+			"set into a check with something in it. What keeps it from " +
+			"being /design/ again is that nothing here is a DOCUMENT: the " +
+			"format is decided by reading the payload's signature bytes at " +
+			"upload time against a five-entry image allow-list, the " +
+			"response Content-Type comes from that verified answer rather " +
+			"than from anything a caller said, nosniff is set, and SVG — " +
+			"the one image format that can carry script — is deliberately " +
+			"not on the list. Adding it there would make this row wrong, " +
+			"not make SVG acceptable.",
 	},
 	{
 		Name:     "SPA origin (tailnet node)",

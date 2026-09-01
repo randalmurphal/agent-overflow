@@ -28,13 +28,15 @@ var (
 		CredPairingToken:      true,
 		CredRefreshSecret:     true,
 		CredPasskeyAssertion:  true,
+		CredTransferTicket:    true,
 	}
 	postures = map[ContentPosture]bool{
-		PostureAppOrigin:  true,
-		PostureStructured: true,
-		PostureProxied:    true,
-		PostureDiagnostic: true,
-		PostureNone:       true,
+		PostureAppOrigin:   true,
+		PostureStructured:  true,
+		PostureProxied:     true,
+		PostureDiagnostic:  true,
+		PostureOpaqueMedia: true,
+		PostureNone:        true,
 	}
 	authors = map[BytesAuthor]bool{
 		AuthorBuild:       true,
@@ -183,13 +185,18 @@ func TestEveryServingListenerHasAnOrigin(t *testing.T) {
 }
 
 // TestAuthoredBytesNeverExecute is the rule /design/ broke: it served
-// agent-written files at the SPA origin, where the bundle's own code
-// runs and the page credential lives. Nothing carries AuthorAgentOrUser
-// today, so this passes over an empty set — it is a tripwire for the
-// next feature that wants to serve a provider's output as a document,
-// not a check on today's behaviour. Provider and user content reaches
-// the page as data over the WebSocket and is rendered by bundle code,
-// which is what keeps the set empty.
+// agent-written files at the SPA origin, where the bundle's own code runs
+// and the page credential lives.
+//
+// It stopped being a tripwire over an empty set in wave 6b. Attachment
+// bytes — a screenshot the person pasted — now leave the app transport as
+// bytes rather than as data inside a WebSocket frame, so one row honestly
+// carries AuthorAgentOrUser and this test has something to check. What
+// keeps it passing is the POSTURE, not the absence of authored content:
+// those bytes are opaque media under a signature-verified image
+// Content-Type with nosniff, which an engine paints and never parses.
+// Provider output still reaches the page as data over the WebSocket and
+// is rendered by bundle code.
 func TestAuthoredBytesNeverExecute(t *testing.T) {
 	for _, origin := range Origins {
 		if origin.Author == AuthorAgentOrUser && origin.Posture == PostureAppOrigin {
