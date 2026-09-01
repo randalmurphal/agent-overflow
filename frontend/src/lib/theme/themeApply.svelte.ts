@@ -342,7 +342,7 @@ export function applyTheme(input: ResolveInput, settled = true): AppliedTheme {
 function warningsDigest(warnings: readonly ThemeWarning[]): string {
   let out = '';
   for (const warning of warnings) {
-    out += `${warning.code} ${warning.themeId ?? ''} ${warning.path}`;
+    out += `${warning.code}\u0000${warning.themeId ?? ''}\u0000${warning.path}\u0001`;
   }
   return out;
 }

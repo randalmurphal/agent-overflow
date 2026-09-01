@@ -240,6 +240,7 @@ export const UpdateContextSettingsProfile = dispatch('UpdateContextSettingsProfi
 export const UpdateThreadContextSettings = dispatch('UpdateThreadContextSettings');
 export const GetNetworkSettings = dispatch('GetNetworkSettings');
 export const SetNetworkSettings = dispatch('SetNetworkSettings');
+export const ForgetTailnetNode = dispatch('ForgetTailnetNode');
 export const RenewCanonicalDomainCert = dispatch('RenewCanonicalDomainCert');
 
 // Device access (Settings → Network → Devices).
@@ -642,7 +643,8 @@ export const GetQueueState = dispatch('GetQueueState');
 // transitively imports one of these. They are RPCs no current test exercises;
 // dispatch() makes them reject loudly if a test ever does hit them unmocked.
 // Keep this block a superset of bindings/agent-overflow/app.ts so it can't
-// drift again (see scripts diffing real-vs-mock exports).
+// drift again — `bindings-app.test.ts` beside this file fails on a missing
+// or vanished name in either direction.
 export const CheckForUpdate = dispatch('CheckForUpdate');
 export const DownloadUpdate = dispatch('DownloadUpdate');
 export const RestartToUpdate = dispatch('RestartToUpdate');
@@ -669,3 +671,15 @@ export const WorkflowAgentRunStatus = dispatch('WorkflowAgentRunStatus');
 export const WorkflowAgentSchedule = dispatch('WorkflowAgentSchedule');
 export const WorkflowAgentSetNotes = dispatch('WorkflowAgentSetNotes');
 export const WorkflowAgentStartRun = dispatch('WorkflowAgentStartRun');
+export const WorkflowAgentAddMemory = dispatch('WorkflowAgentAddMemory');
+export const WorkflowAgentAmendSeeds = dispatch('WorkflowAgentAmendSeeds');
+export const WorkflowAgentGuideRun = dispatch('WorkflowAgentGuideRun');
+export const WorkflowAgentInspectRun = dispatch('WorkflowAgentInspectRun');
+export const WorkflowAgentListMemory = dispatch('WorkflowAgentListMemory');
+export const WorkflowAgentRunNarrative = dispatch('WorkflowAgentRunNarrative');
+export const WorkflowAgentWatchRun = dispatch('WorkflowAgentWatchRun');
+export const WorkflowScheduleResume = dispatch('WorkflowScheduleResume');
+export const ListMcpServerStatuses = dispatch('ListMcpServerStatuses');
+export const ListRunningBackgroundWork = dispatch('ListRunningBackgroundWork');
+export const StopThreadBackgroundWork = dispatch('StopThreadBackgroundWork');
+export const ReportUpdateInstallStatus = dispatch('ReportUpdateInstallStatus');
