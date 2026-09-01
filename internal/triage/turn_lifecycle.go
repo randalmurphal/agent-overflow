@@ -1570,7 +1570,7 @@ func (r *Router) MarkUserInterrupt(threadID string, sampledTurnIndex int, tok Fl
 		ID:        errID,
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
-		Kind:      itemKindError,
+		Kind:      ItemKindError,
 		Role:      "system",
 		Status:    statusCompleted,
 		Summary:   "Stopped by user",

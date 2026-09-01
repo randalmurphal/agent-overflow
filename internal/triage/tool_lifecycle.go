@@ -40,11 +40,13 @@ const (
 	// on `rate_limit` / `authentication_failed` / ... and render the
 	// matching actionable copy.
 	itemKindAPIError = "api_error"
-	// itemKindError is the generic provider / dispatch failure row. It is
+	// ItemKindError is the generic provider / dispatch failure row. It is
 	// the one kind the sidebar's Failed pill matches, which is why an
 	// emitted row of this kind also fires thread:error_notice
-	// (Router.emitErrorNotice) — api_error deliberately does not.
-	itemKindError = "error"
+	// (Router.emitErrorNotice) — api_error deliberately does not. Exported
+	// because internal/app persists three failure rows of this kind (send,
+	// steer, flush dispatch) and the notice keys on the exact string.
+	ItemKindError = "error"
 
 	payloadKindToolCallResult = "tool_call_result"
 	payloadKindCommandOutput  = "command_output"

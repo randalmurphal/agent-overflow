@@ -728,7 +728,7 @@ func (a *App) recordSendFailureAndCompleteTurn(threadID string, turnIndex int, s
 		ID:        triage.NewErrorID(turnIndex, "", errSeq),
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
-		Kind:      "error",
+		Kind:      triage.ItemKindError,
 		Role:      "system",
 		Status:    "completed",
 		Summary:   fmt.Sprintf("Failed to send: %v", sendErr),

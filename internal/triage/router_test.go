@@ -2555,7 +2555,7 @@ func TestErrorItemPersistEmitsErrorNotice(t *testing.T) {
 
 	now := time.Now().UnixMilli()
 	if err := router.PersistItem(store.Item{
-		ID: "error-1", ThreadID: "t1", Kind: itemKindError, Role: "system",
+		ID: "error-1", ThreadID: "t1", Kind: ItemKindError, Role: "system",
 		Status: "completed", Summary: "boom", CreatedAt: now, UpdatedAt: now,
 	}, nil); err != nil {
 		t.Fatalf("persist error item: %v", err)
@@ -2608,7 +2608,7 @@ func TestNonErrorPersistsEmitNoErrorNotice(t *testing.T) {
 	}{
 		{name: "api_error", kind: "api_error"},
 		{name: "assistant_text", kind: "assistant_text"},
-		{name: "quiet error", kind: itemKindError, quiet: true},
+		{name: "quiet error", kind: ItemKindError, quiet: true},
 	}
 
 	for _, tc := range cases {

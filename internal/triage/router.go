@@ -876,7 +876,7 @@ func (r *Router) persistProviderErrorItem(threadID string, turnIndex int, summar
 	// emit. Clamp before the dedup probe so a re-fired long error
 	// compares equal to its already-clamped row.
 	summary = ClampErrorSummary(summary)
-	itemKind := itemKindError
+	itemKind := ItemKindError
 	itemMeta := ""
 	if enum := APIErrorEnum(meta); enum != "" {
 		itemKind = itemKindAPIError
@@ -1181,7 +1181,7 @@ type ThreadErrorNoticeEvent struct {
 //   - Quiet persists do not notify, for the same reason they emit no item
 //     upsert: the row is reserving a timeline position, not reporting.
 func (r *Router) emitErrorNotice(item store.Item) {
-	if item.Kind != itemKindError || item.ThreadID == "" {
+	if item.Kind != ItemKindError || item.ThreadID == "" {
 		return
 	}
 	r.emit(eventchan.ThreadErrorNotice, ThreadErrorNoticeEvent{

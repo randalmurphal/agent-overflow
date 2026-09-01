@@ -233,7 +233,7 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 			ID:        triage.NewErrorID(turnIndex, "", errSeq),
 			ThreadID:  threadID,
 			TurnIndex: turnIndex,
-			Kind:      "error",
+			Kind:      triage.ItemKindError,
 			Role:      "system",
 			Status:    "completed",
 			Summary:   fmt.Sprintf("Failed to steer: %v", steerErr),

@@ -749,7 +749,7 @@ func (a *App) persistFlushDispatchError(threadID string, turnIndex int, dispatch
 		ID:        triage.NewErrorID(turnIndex, "", seq),
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
-		Kind:      "error",
+		Kind:      triage.ItemKindError,
 		Role:      "system",
 		Status:    "completed",
 		Summary:   fmt.Sprintf("Failed to deliver queued message: %v", dispatchErr),
