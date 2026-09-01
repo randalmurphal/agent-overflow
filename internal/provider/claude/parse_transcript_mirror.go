@@ -3,6 +3,7 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ type transcriptMirrorState struct {
 	taskScopes        map[string]mirrorTaskScope
 	scopeOwners       map[string]string
 	commands          map[string]*mirroredCommand
+	compactionTaps    map[string]*mirrorCompactionTap
 	pending           map[string][]json.RawMessage
 	pendingFacts      map[string]mirrorEntryInspection
 	pendingOwner      map[string]string
@@ -131,8 +133,19 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 			return events, nil
 		}
 		if !classification.provesSkillFork() && !binding.needsProjection {
+			// The batches are dropped for good here, so compaction rows in
+			// them get their one live chance now. Buffered batches never went
+			// through the tap (they could still have fed a projection).
+			if pending := state.pending[projectionKey]; len(pending) > 0 {
+				if pendingFacts, err := inspectMirrorEntries(pending); err == nil {
+					if pendingFacts.agentID == "" {
+						pendingFacts.agentID = classification.agentID
+					}
+					events = append(events, p.tapUnprojectedCompaction(threadID, state, pendingFacts, pending, now)...)
+				}
+			}
 			state.clearPending(projectionKey)
-			return events, nil
+			return append(events, p.tapUnprojectedCompaction(threadID, state, facts, entries, now)...), nil
 		}
 		if pending := state.pending[projectionKey]; len(pending) > 0 {
 			combined := make([]json.RawMessage, 0, len(pending)+len(entries))
@@ -231,7 +244,9 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 		// Ordinary async agents already stream on stdout. Mirroring those too
 		// would duplicate their live deltas. A projection is opened only for
 		// the two gaps above, or for a child launch owned by one of them.
-		return events, nil
+		// Compaction rows are the one exception the stdout feed never
+		// carries, so they are tapped out of the dropped batch.
+		return append(events, p.tapUnprojectedCompaction(threadID, state, facts, entries, now)...), nil
 	}
 	if err := projection.observeMetadata(facts); err != nil {
 		return events, fmt.Errorf("inspect transcript_mirror %q: %w", envelope.FilePath, err)
@@ -264,6 +279,82 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 	return events, nil
 }
 
+// tapUnprojectedCompaction forwards the compaction rows of a mirror batch
+// that is otherwise dropped because its agent already streams on stdout.
+// The stdout feed never carries a sidechain's `system/compact_boundary` or
+// `isCompactSummary` rows (claude-wire.md §Subagent stream forwarding), so
+// without this the boundary only exists in the terminal transcript replay,
+// which appends it after the agent's final answer — the wrong position.
+//
+// Failure here is logged and dropped rather than returned: the terminal
+// replay reconciles every boundary by uuid, so the fallback is today's
+// end-of-transcript placement, never a lost compaction.
+func (p *Parser) tapUnprojectedCompaction(
+	threadID string,
+	state *transcriptMirrorState,
+	facts mirrorEntryInspection,
+	entries []json.RawMessage,
+	now time.Time,
+) []provider.ProviderEvent {
+	agentID := facts.agentID
+	if agentID == "" {
+		return nil
+	}
+	existing := state.compactionTaps[agentID]
+	picked := make([]json.RawMessage, 0, 2)
+	uuids := make([]string, 0, 2)
+	for i, entry := range entries {
+		if i >= len(facts.entries) {
+			break
+		}
+		fact := facts.entries[i]
+		if !fact.compaction || fact.uuid == "" {
+			continue
+		}
+		if existing != nil {
+			if _, seen := existing.seen[fact.uuid]; seen {
+				continue
+			}
+		}
+		picked = append(picked, entry)
+		uuids = append(uuids, fact.uuid)
+	}
+	if len(picked) == 0 {
+		return nil
+	}
+
+	// The launch tool call is the scope every row lands under. task_started
+	// binds it minutes before any compaction; a resumed agent's newest
+	// carrier wins, matching noteMirrorTaskScope's rebind rule.
+	scope := state.taskScopes[agentID].scope
+	if scope == "" {
+		scope = p.taskToolUseRef(agentID).ToolUseID
+	}
+	if scope == "" {
+		log.Printf("claude: transcript_mirror compaction for agent %q has no resolvable launch tool_use; deferring to terminal replay", agentID)
+		return nil
+	}
+	tap, retargeted, err := state.compactionTap(threadID, agentID, scope)
+	if err != nil {
+		log.Printf("claude: transcript_mirror compaction tap for agent %q: %v; deferring to terminal replay", agentID, err)
+		return retargeted
+	}
+	rows, err := sessionimport.DecodeSidechainRows(picked, now)
+	if err != nil {
+		log.Printf("claude: transcript_mirror compaction tap decode for agent %q: %v; deferring to terminal replay", agentID, err)
+		return retargeted
+	}
+	for _, uuid := range uuids {
+		tap.seen[uuid] = struct{}{}
+	}
+	result, err := tap.projector.AppendRows(rows)
+	if err != nil {
+		log.Printf("claude: transcript_mirror compaction tap for agent %q: %v; deferring to terminal replay", agentID, err)
+		return retargeted
+	}
+	return append(retargeted, tapCompactionProviderEvents(threadID, agentID, result)...)
+}
+
 func (p *Parser) ensureTranscriptMirrorState() *transcriptMirrorState {
 	if p.transcriptMirror == nil {
 		p.transcriptMirror = &transcriptMirrorState{
@@ -271,6 +362,7 @@ func (p *Parser) ensureTranscriptMirrorState() *transcriptMirrorState {
 			taskScopes:       make(map[string]mirrorTaskScope),
 			scopeOwners:      make(map[string]string),
 			commands:         make(map[string]*mirroredCommand),
+			compactionTaps:   make(map[string]*mirrorCompactionTap),
 			pending:          make(map[string][]json.RawMessage),
 			pendingFacts:     make(map[string]mirrorEntryInspection),
 			pendingOwner:     make(map[string]string),
@@ -304,24 +396,29 @@ func (p *Parser) finishMirroredTask(threadID, taskID string) []provider.Provider
 		return nil
 	}
 	state := p.transcriptMirror
+	// The task terminal is the last mirror signal this agent gets; a tapped
+	// boundary still waiting for its summary row flushes here, BEFORE the
+	// notification event the caller appends, so triage persists it ahead of
+	// the transcript replay that would otherwise re-mint it.
+	events := state.drainCompactionTap(threadID, taskID)
 	binding := state.taskScopes[taskID]
 	if binding.scope == "" {
-		return nil
+		return events
 	}
 	if !binding.needsProjection {
 		delete(state.taskScopes, taskID)
-		return nil
+		return events
 	}
 	key := binding.projectionKey
 	projection := state.projections[key]
 	if projection == nil || projection.agentID != taskID {
 		binding.terminal = true
 		state.taskScopes[taskID] = binding
-		return nil
+		return events
 	}
 	delete(state.taskScopes, taskID)
 	result := projection.projector.Close()
-	events := state.providerEvents(threadID, result, key)
+	events = append(events, state.providerEvents(threadID, result, key)...)
 	state.removeProjection(key)
 	return events
 }
@@ -372,6 +469,9 @@ func (p *Parser) closeTranscriptMirrors() {
 	for _, projection := range p.transcriptMirror.projections {
 		projection.projector.Close()
 	}
+	for _, tap := range p.transcriptMirror.compactionTaps {
+		tap.projector.Close()
+	}
 	p.transcriptMirror = nil
 }
 
@@ -395,6 +495,10 @@ const (
 
 type mirrorEntryFact struct {
 	uuid string
+	// compaction marks a `system/compact_boundary` row or its
+	// `isCompactSummary` child — the two row shapes the stdout forwarding
+	// path never carries, and the only ones the compaction tap feeds.
+	compaction bool
 }
 
 func (i mirrorEntryInspection) timestampOr(fallback time.Time) time.Time {
@@ -458,6 +562,7 @@ func inspectMirrorEntries(entries []json.RawMessage) (mirrorEntryInspection, err
 	for _, entry := range entries {
 		var raw struct {
 			Type             string `json:"type"`
+			Subtype          string `json:"subtype"`
 			UUID             string `json:"uuid"`
 			AgentID          string `json:"agentId"`
 			LegacyAgentID    string `json:"agent_id"`
@@ -465,6 +570,7 @@ func inspectMirrorEntries(entries []json.RawMessage) (mirrorEntryInspection, err
 			LegacyToolUseID  string `json:"tool_use_id"`
 			IsSidechain      *bool  `json:"isSidechain"`
 			LegacySidechain  *bool  `json:"is_sidechain"`
+			IsCompactSummary bool   `json:"isCompactSummary"`
 			AttributionSkill string `json:"attributionSkill"`
 			LegacySkill      string `json:"attribution_skill"`
 			Timestamp        string `json:"timestamp"`
@@ -488,7 +594,11 @@ func inspectMirrorEntries(entries []json.RawMessage) (mirrorEntryInspection, err
 		if err := facts.observeScope(raw.LegacySidechain); err != nil {
 			return mirrorEntryInspection{}, err
 		}
-		facts.entries = append(facts.entries, mirrorEntryFact{uuid: strings.TrimSpace(raw.UUID)})
+		facts.entries = append(facts.entries, mirrorEntryFact{
+			uuid: strings.TrimSpace(raw.UUID),
+			compaction: (raw.Type == "system" && raw.Subtype == "compact_boundary") ||
+				raw.IsCompactSummary,
+		})
 		facts.agentID = firstNonEmpty(facts.agentID,
 			strings.TrimSpace(raw.AgentID), strings.TrimSpace(raw.LegacyAgentID))
 		facts.attributionSkill = firstNonEmpty(facts.attributionSkill,

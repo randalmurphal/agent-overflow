@@ -266,9 +266,14 @@ through `claude/sessionimport.ConvertSubagentTranscriptData`.
   `tool_use_id` for tool rows (a completion also requires the row to have
   left `running`), `items.meta.provider_item_id` for text, thinking and
   the agent's own prompt row, and the provider boundary UUID for a
-  compaction. Errors and command results are undecidable, so
-  `subagentBackfillCut` replays the whole tail from the first decidable
-  and missing event, carrying the undecidable ones with it.
+  compaction. A compaction is reconciled by that UUID independently of
+  the cut: the live mirror compaction tap (claude
+  `parse_transcript_mirror.go`) normally lands it mid-run at its real
+  position, and stdout omits it either way, so its absence proves
+  nothing about where streaming stopped. Errors and command results are
+  undecidable, so `subagentBackfillCut` replays the whole tail from the
+  first decidable and missing event, carrying the undecidable ones with
+  it.
 - **Text and thinking bypass `handleTextDelta` / `handleThinking`**,
   which would open a streaming block and wait for a stop the transcript
   has no event for, wedging the interrupt queue behind a count that

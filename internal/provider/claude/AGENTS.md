@@ -227,7 +227,12 @@ dispatches. Parser state is single-goroutine, driven by the read loop.
   unless backgrounding stopped stdout or a mirrored parent owns the launch.
   Only ownerless `agent_metadata` plus `isSidechain:true` and attribution prove
   a direct command fork. `isSidechain:false` must never open a projector or
-  parent later main activity beneath the command.
+  parent later main activity beneath the command. An ignored duplicate
+  mirror still feeds the compaction tap: stdout forwarding never carries
+  a sidechain's `compact_boundary` / `isCompactSummary` rows
+  (claude-wire.md §"What neither path forwards"), so those two shapes —
+  and only those — are projected out of otherwise-dropped batches, keyed
+  to the launch via `taskScopes` or the `task_started` map.
 
 ## Lifecycles this package drives
 

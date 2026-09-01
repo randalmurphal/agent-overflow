@@ -2245,6 +2245,21 @@ agent: without the flag the parent stream carries the agent's Bash
 additionally carries `assistant`/`thinking` and `assistant`/`text`
 envelopes parented to the launch.
 
+### What neither path forwards: subagent compaction
+
+A subagent's `system/compact_boundary` and its `isCompactSummary` user
+row never reach parent stdout on either launch path, flag or no flag
+(observed live 2026-09-01, two auto-compacts in one async agent: zero
+stdout envelopes for either row). They exist only in the agent's
+sidechain JSONL — and in the sidechain `transcript_mirror` feed, which
+carried each pair within ~0.5s of the compaction, boundary and summary
+in one batch (`parentUuid` of the summary = the boundary's uuid, same
+as the on-disk pairing). AO's mirror handling deliberately drops
+batches for stdout-streaming agents to avoid duplicating their deltas;
+the compaction tap (`parse_transcript_mirror.go`) is the carve-out that
+forwards exactly these two row shapes so the divider lands at its real
+position instead of being appended by the terminal transcript replay.
+
 ### The subagent's opening prompt
 
 The inline path ALSO echoes the task prompt the CLI handed the agent, as

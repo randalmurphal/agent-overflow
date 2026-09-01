@@ -149,3 +149,71 @@ func TestSubagentTranscriptReconcilesMirroredToolCompletionAtTerminal(t *testing
 		t.Fatalf("mirrored tool status = %q, want exact terminal result to settle it", tool.Status)
 	}
 }
+
+// The live mirror compaction tap delivers a subagent's boundary mid-run.
+// It must land under the launch at its live position, touch nothing
+// thread-level, and make the terminal transcript replay of the same
+// boundary a no-op instead of a duplicate divider.
+func TestLiveScopedCompactionLandsUnderLaunchAndTerminalReplayDedupes(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startAgentLaunch(t, router, "t1", "agent-live-compact", "", "task-live-compact")
+	deliverSubagentBlock(t, router, "t1", "agent-live-compact", "msg_before#0", "text", "before the compaction")
+
+	meta, _ := json.Marshal(map[string]any{"trigger": "auto", "preTokens": 294445, "summary": "live summary"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCompactBoundary, ThreadID: "t1", ItemID: "cb-live",
+		Content: "Conversation compacted", Meta: meta,
+		ParentToolUseID: "agent-live-compact", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("live scoped compaction: %v", err)
+	}
+
+	compactionID := CompactionItemID(0, "cb-live", 0)
+	row, ok, err := st.GetThreadItem("t1", compactionID)
+	if err != nil || !ok {
+		t.Fatalf("live compaction row missing: ok=%v err=%v", ok, err)
+	}
+	if row.ParentID != "agent-live-compact" {
+		t.Fatalf("live compaction escaped launch scope: parent=%q", row.ParentID)
+	}
+	if row.PayloadID == "" {
+		t.Fatal("live compaction lost its summary payload")
+	}
+
+	deliverSubagentBlock(t, router, "t1", "agent-live-compact", "msg_after#0", "text", "after the compaction")
+
+	transcript := writeSubagentTranscript(t, "agent-live-compact.jsonl",
+		sidechainPromptRow("s1", "the task prompt", 1),
+		sidechainTextRow("s2", "s1", "msg_before", "before the compaction", 2),
+		sidechainCompactRow("cb-live", "s2", 3),
+		sidechainCompactSummaryRow("cs-live", "cb-live", "live summary", 3),
+		sidechainTextRow("s3", "cs-live", "msg_after", "after the compaction", 4),
+	)
+	stashAgentTerminal(t, router, "t1", "agent-live-compact", "task-live-compact")
+	notifyAgent(t, router, "t1", "agent-live-compact", "task-live-compact", transcript, nil)
+	router.WaitForPendingSettles()
+
+	compactions := 0
+	for _, child := range childrenOfLaunch(t, st, "t1", "agent-live-compact", 0) {
+		if child.Kind == "compaction" {
+			compactions++
+		}
+	}
+	if compactions != 1 {
+		t.Fatalf("live + terminal delivery produced %d compaction rows, want 1", compactions)
+	}
+
+	// The thread's own timeline gained no top-level divider.
+	items, err := st.ListTurnItemsSansPayload("t1", 0)
+	if err != nil {
+		t.Fatalf("list turn items: %v", err)
+	}
+	for _, item := range items {
+		if item.Kind == "compaction" && item.ParentID == "" {
+			t.Fatalf("scoped compaction leaked to thread level: %v", item.ID)
+		}
+	}
+}

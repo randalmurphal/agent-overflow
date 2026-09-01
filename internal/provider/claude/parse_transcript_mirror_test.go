@@ -669,3 +669,135 @@ func TestTranscriptMirrorContinuesManuallyBackgroundedAgent(t *testing.T) {
 		t.Fatalf("replayed mirror row emitted twice: %+v", replay)
 	}
 }
+
+// An ordinary async agent streams on stdout, so its mirror batches are
+// dropped — except compaction rows, which stdout never carries. The tap
+// forwards exactly those, scoped to the launch, paired with their summary,
+// and deduplicated against mirror re-sends.
+func TestTranscriptMirrorTapsAsyncAgentCompaction(t *testing.T) {
+	parser := NewParser()
+	parse := func(line string) []provider.ProviderEvent {
+		t.Helper()
+		events, err := parser.ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("ParseLine: %v\n%s", err, line)
+		}
+		return events
+	}
+
+	parse(`{"type":"assistant","message":{"id":"m-parent","role":"assistant","content":[{"type":"tool_use","id":"toolu-async","name":"Agent","input":{"description":"work","subagent_type":"general-purpose","prompt":"go"}}]}}`)
+	parse(`{"type":"system","subtype":"task_started","task_id":"ag-async","task_type":"local_agent","tool_use_id":"toolu-async"}`)
+
+	// Ordinary sidechain content stays dropped: stdout already carries it.
+	if dropped := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-ag-async.jsonl","entries":[{"type":"assistant","uuid":"a-1","agentId":"ag-async","isSidechain":true,"timestamp":"2026-08-24T12:00:00Z","message":{"id":"msg-1","role":"assistant","model":"m","content":[{"type":"text","text":"hi"}]}}]}`); len(dropped) != 0 {
+		t.Fatalf("async agent content batch emitted events: %+v", dropped)
+	}
+
+	events := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-ag-async.jsonl","entries":[{"type":"system","subtype":"compact_boundary","uuid":"cb-1","parentUuid":null,"agentId":"ag-async","isSidechain":true,"content":"Conversation compacted","timestamp":"2026-08-24T12:01:00Z","compactMetadata":{"trigger":"auto","preTokens":294445,"durationMs":147213,"preservedSegment":{"headUuid":"x"}}},{"type":"user","uuid":"cs-1","parentUuid":"cb-1","agentId":"ag-async","isSidechain":true,"isCompactSummary":true,"timestamp":"2026-08-24T12:01:00Z","message":{"role":"user","content":"summary of everything"}}]}`)
+	if len(events) != 1 {
+		t.Fatalf("compaction batch emitted %d events, want 1: %+v", len(events), events)
+	}
+	boundary := events[0]
+	if boundary.Kind != provider.EventCompactBoundary || boundary.ItemID != "cb-1" {
+		t.Fatalf("tapped boundary = %+v", boundary)
+	}
+	if boundary.ParentToolUseID != "toolu-async" {
+		t.Fatalf("tapped boundary escaped launch scope: %+v", boundary)
+	}
+	if boundary.ThreadID != testThread {
+		t.Fatalf("tapped boundary thread = %q", boundary.ThreadID)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(boundary.Meta, &meta); err != nil {
+		t.Fatalf("boundary meta: %v", err)
+	}
+	if meta["trigger"] != "auto" || meta["summary"] != "summary of everything" {
+		t.Fatalf("boundary meta = %v", meta)
+	}
+	if _, leaked := meta["preservedSegment"]; leaked {
+		t.Fatalf("heavy preservedSegment leaked into meta: %v", meta)
+	}
+
+	// A cumulative/replayed mirror batch is deduped by transcript uuid.
+	if replay := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-ag-async.jsonl","entries":[{"type":"system","subtype":"compact_boundary","uuid":"cb-1","agentId":"ag-async","isSidechain":true,"content":"Conversation compacted","timestamp":"2026-08-24T12:01:00Z","compactMetadata":{"trigger":"auto"}}]}`); len(replay) != 0 {
+		t.Fatalf("replayed compaction emitted twice: %+v", replay)
+	}
+}
+
+// The CLI writes the boundary and its summary together, but a mirror flush
+// may split them. The tap holds the boundary until the summary arrives so
+// one compaction stays one divider with its summary attached.
+func TestTranscriptMirrorTapPairsCompactionAcrossBatches(t *testing.T) {
+	parser := NewParser()
+	parse := func(line string) []provider.ProviderEvent {
+		t.Helper()
+		events, err := parser.ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("ParseLine: %v\n%s", err, line)
+		}
+		return events
+	}
+
+	parse(`{"type":"assistant","message":{"id":"m-parent","role":"assistant","content":[{"type":"tool_use","id":"toolu-split","name":"Agent","input":{"description":"work","subagent_type":"Explore","prompt":"go"}}]}}`)
+	parse(`{"type":"system","subtype":"task_started","task_id":"ag-split","task_type":"local_agent","tool_use_id":"toolu-split"}`)
+
+	if held := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-ag-split.jsonl","entries":[{"type":"system","subtype":"compact_boundary","uuid":"cb-2","agentId":"ag-split","isSidechain":true,"content":"Conversation compacted","timestamp":"2026-08-24T12:01:00Z","compactMetadata":{"trigger":"auto"}}]}`); len(held) != 0 {
+		t.Fatalf("bare boundary emitted before its summary: %+v", held)
+	}
+	events := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-ag-split.jsonl","entries":[{"type":"user","uuid":"cs-2","parentUuid":"cb-2","agentId":"ag-split","isSidechain":true,"isCompactSummary":true,"timestamp":"2026-08-24T12:01:01Z","message":{"role":"user","content":"folded summary"}}]}`)
+	if len(events) != 1 || events[0].Kind != provider.EventCompactBoundary || events[0].ItemID != "cb-2" {
+		t.Fatalf("split compaction = %+v", events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("boundary meta: %v", err)
+	}
+	if meta["summary"] != "folded summary" {
+		t.Fatalf("split summary not folded: %v", meta)
+	}
+}
+
+// A boundary whose summary never arrives flushes at the task terminal,
+// ahead of the notification, so triage persists it before the transcript
+// replay would re-mint the same uuid.
+func TestTranscriptMirrorTapFlushesPendingBoundaryAtTaskTerminal(t *testing.T) {
+	parser := NewParser()
+	parse := func(line string) []provider.ProviderEvent {
+		t.Helper()
+		events, err := parser.ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("ParseLine: %v\n%s", err, line)
+		}
+		return events
+	}
+
+	parse(`{"type":"assistant","message":{"id":"m-parent","role":"assistant","content":[{"type":"tool_use","id":"toolu-term","name":"Agent","input":{"description":"work","subagent_type":"Explore","prompt":"go"}}]}}`)
+	parse(`{"type":"system","subtype":"task_started","task_id":"ag-term","task_type":"local_agent","tool_use_id":"toolu-term"}`)
+	if held := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-ag-term.jsonl","entries":[{"type":"system","subtype":"compact_boundary","uuid":"cb-3","agentId":"ag-term","isSidechain":true,"content":"Conversation compacted","timestamp":"2026-08-24T12:01:00Z","compactMetadata":{"trigger":"auto"}}]}`); len(held) != 0 {
+		t.Fatalf("bare boundary emitted before terminal: %+v", held)
+	}
+
+	events := parse(`{"type":"system","subtype":"task_notification","task_id":"ag-term","tool_use_id":"toolu-term","status":"completed","output_file":"/tmp/agent-ag-term.jsonl"}`)
+	if len(events) < 2 {
+		t.Fatalf("terminal emitted %d events, want boundary + notification: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventCompactBoundary || events[0].ItemID != "cb-3" || events[0].ParentToolUseID != "toolu-term" {
+		t.Fatalf("flushed boundary = %+v", events[0])
+	}
+	if events[len(events)-1].Kind != provider.EventBackgroundTaskNotification {
+		t.Fatalf("notification missing after flush: %+v", events)
+	}
+}
+
+// A compaction for an agent the parser cannot scope is left to the terminal
+// replay rather than mis-parented.
+func TestTranscriptMirrorTapSkipsUnresolvableAgent(t *testing.T) {
+	parser := NewParser()
+	events, err := parser.ParseLine(testThread, []byte(`{"type":"transcript_mirror","filePath":"/tmp/agent-ag-unknown.jsonl","entries":[{"type":"system","subtype":"compact_boundary","uuid":"cb-4","agentId":"ag-unknown","isSidechain":true,"content":"Conversation compacted","timestamp":"2026-08-24T12:01:00Z","compactMetadata":{"trigger":"auto"}}]}`))
+	if err != nil {
+		t.Fatalf("ParseLine: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("unscoped compaction emitted events: %+v", events)
+	}
+}

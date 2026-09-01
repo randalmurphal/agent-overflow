@@ -16,7 +16,90 @@ const (
 	maxPendingMirrorFileBytes  = 2 << 20
 	maxPendingMirrorTotalBytes = 8 << 20
 	maxSeenMirrorSourceUUIDs   = 8192
+	maxMirrorCompactionTaps    = 64
 )
+
+// mirrorCompactionTap carries a stdout-streaming agent's compactions out of
+// the mirror batches AO otherwise ignores. The stdout forwarding path
+// (`--forward-subagent-text`) never carries a sidechain's
+// `system/compact_boundary` or `isCompactSummary` rows, so without the tap a
+// live compaction only surfaces when the terminal transcript replay appends
+// it — after the agent's final answer, at the wrong position. The tap feeds
+// ONLY those two row shapes through the same SidechainProjector the full
+// projections use, so the emitted boundary carries the transcript uuid that
+// makes triage's persist and the terminal replay's dedupe agree on one row.
+type mirrorCompactionTap struct {
+	scope     string
+	projector *sessionimport.SidechainProjector
+	// seen dedupes mirror re-sends per transcript uuid. Unbounded on
+	// purpose: it only ever holds compaction-row uuids, ~2 per compaction.
+	seen map[string]struct{}
+}
+
+// compactionTap returns the live tap for agentID scoped to scope, creating
+// or retargeting one as needed. A resume rebinds an agent to a new carrier
+// tool call; the old tap is closed and its pending boundary (if any) is
+// returned so it still lands under the launch it belongs to. A nil tap means
+// the ceiling was hit — the terminal replay still recovers the row, at the
+// cost of position.
+func (s *transcriptMirrorState) compactionTap(threadID, agentID, scope string) (*mirrorCompactionTap, []provider.ProviderEvent, error) {
+	tap := s.compactionTaps[agentID]
+	var retargeted []provider.ProviderEvent
+	if tap != nil && tap.scope != scope {
+		retargeted = tapCompactionProviderEvents(threadID, agentID, tap.projector.Close())
+		seen := tap.seen
+		delete(s.compactionTaps, agentID)
+		tap = &mirrorCompactionTap{seen: seen}
+	}
+	if tap == nil {
+		tap = &mirrorCompactionTap{seen: map[string]struct{}{}}
+	}
+	if tap.projector == nil {
+		if len(s.compactionTaps) >= maxMirrorCompactionTaps {
+			return nil, retargeted, fmt.Errorf("compaction-tap limit reached")
+		}
+		projector, err := sessionimport.NewSidechainProjector(scope)
+		if err != nil {
+			return nil, retargeted, err
+		}
+		tap.scope = scope
+		tap.projector = projector
+		s.compactionTaps[agentID] = tap
+	}
+	return tap, retargeted, nil
+}
+
+// drainCompactionTap closes agentID's tap at its task terminal, flushing a
+// boundary still waiting for its summary row.
+func (s *transcriptMirrorState) drainCompactionTap(threadID, agentID string) []provider.ProviderEvent {
+	tap := s.compactionTaps[agentID]
+	if tap == nil {
+		return nil
+	}
+	delete(s.compactionTaps, agentID)
+	return tapCompactionProviderEvents(threadID, agentID, tap.projector.Close())
+}
+
+// tapCompactionProviderEvents finalizes a tap projector's output. The tap
+// feeds only boundary and summary rows, both of which project to compaction
+// events; anything else is a converter change this filter must be taught
+// about, surfaced rather than forwarded with a wrong shape.
+func tapCompactionProviderEvents(threadID, agentID string, result sessionimport.ConvertResult) []provider.ProviderEvent {
+	var events []provider.ProviderEvent
+	for _, imported := range result.Events {
+		event := imported.ProviderEvent
+		if event.Kind != provider.EventCompactBoundary {
+			log.Printf("claude: transcript_mirror compaction tap for agent %q dropped unexpected %s event", agentID, event.Kind)
+			continue
+		}
+		event.ThreadID = threadID
+		events = append(events, event)
+	}
+	for _, warning := range result.Warnings {
+		log.Printf("claude: transcript_mirror compaction tap warning %s: %s", warning.Code, warning.Message)
+	}
+	return events
+}
 
 func (s *transcriptMirrorState) clearPending(key string) {
 	s.totalPendingBytes -= s.pendingBytes[key]
