@@ -351,9 +351,12 @@ untouched by this package and **still authorizes every request today**.
 What changed in wave 5b is that a request may now ALSO name a session.
 `internal/app/app_identity.go` supplies the transport's hooks: a request
 carrying no session credential proceeds and names none (every
-launch-credential client — the harness CLI, the e2e rig, a `--connect`
-stub), and one carrying a credential this package refuses is refused
-outright, rather than silently downgrading to an unattributed connection.
+launch-credential client — the harness CLI, the e2e rig, a same-host
+`--connect` stub), and one carrying a credential this package refuses is
+refused outright, rather than silently downgrading to an unattributed
+connection. A `--connect` stub started from a PAIRING LINK is on the
+other side of that line: it holds no launch credential at all and names
+its own device session on every hop (`internal/deviceclient`).
 
 Phase 3 has since made naming a session REQUIRED where its absence
 cannot be tolerated, and the boundary it drew is the PEER rather than
@@ -473,7 +476,11 @@ some other way would be the way around it; there is no second resolver.
   the backend's local channel. `internal/relaysession` fetches the
   session cookie out of an authenticated bootstrap exchange; from another
   host that exchange now carries none, so a cross-host `--connect` stub
-  needs a paired device session rather than the backend's own.
+  needs a paired device session rather than the backend's own — which is
+  what `internal/deviceclient` gives it. `agent-overflow --connect
+  <pairing link>` runs the ceremony this package serves, holds the
+  rotating session it returns, and presents it on every hop; the stub
+  falls back to nothing when that session ends, and says so.
 
 A class added to `BindingClasses` needs an answer in `bindingAdmitsPeer`
 in the same change. Everything that is not `loopback-only` is admitted

@@ -153,11 +153,22 @@ A handful of opt-in modes extend that:
   so a second device needs the panel read again.
   Equivalent to flipping the "Allow remote access" toggle in Settings →
   Network, which persists the preference across launches.
-- **`--connect ws://host:port/ws?token=<value>`** runs the desktop
+- **`--connect <endpoint | pairing link | backend>`** runs the desktop
   binary as a thin client against a remote backend. The local process
-  boots a stub static-asset server, keeps the upstream token in Go, and
-  carries the webview's WebSocket to the remote backend. No local
-  transport, store, or providers are started.
+  boots a stub static-asset server, keeps the upstream credential in Go,
+  and carries the webview's WebSocket to the remote backend. No local
+  transport, store, or providers are started. Three forms:
+  - `ws://host:port/ws?token=<value>` — a backend on this machine, or
+    one reached through an SSH tunnel. The upstream's launch token
+    authenticates the hop.
+  - a pairing link copied from the other machine's Settings → Network —
+    for a backend across a network, where a launch token is not enough.
+    The terminal shows a six-digit verification number to compare and
+    confirm on that machine; once confirmed, this installation holds a
+    device credential it renews on its own and pins that backend's TLS
+    certificate with.
+  - the paired backend's name or endpoint — reuses that stored
+    credential, so pairing happens once per machine.
 - **Windows + WSL silent mode** (`agent-overflow-windows.exe`) drops
   the Linux backend into a chosen WSL distro, runs it headless, and
   forwards `localhost:<port>` from inside the distro to the Windows

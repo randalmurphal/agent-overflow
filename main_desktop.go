@@ -15,6 +15,8 @@ import (
 	"errors"
 	"io/fs"
 	"log"
+	"os"
+	"os/signal"
 	"sync"
 
 	appservice "agent-overflow/internal/app"
@@ -31,13 +33,19 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
-// runClient is the Phase F remote-client entry point. Instead of
+// runClient is the remote-client entry point. Instead of
 // booting the local transport (HTTP+WS server, App service registration,
 // SQLite, observability, sessions), the desktop binary points the
 // Wails webview at a tiny loopback stub that serves the SPA shell
 // verbatim, answers /bootstrap.json on its own origin, and carries the
-// SPA's WebSocket to the operator-supplied remote endpoint with the
+// SPA's WebSocket to the backend named on the command line with the
 // upstream credential attached in Go (internal/clientmode).
+//
+// What that credential is, and whether reaching it needs a pairing
+// ceremony first, is prepareConnection's answer (main_connect.go). The
+// ceremony runs BEFORE the window exists, on purpose: it is a
+// conversation between two people at two screens, and a window that
+// opened first would be showing an outage for the length of it.
 //
 // Why we still need a loopback HTTP server: the Wails webview only
 // loads `http://`/`https://` URLs (or the embedded asset URL with the
@@ -46,9 +54,14 @@ import (
 // same-origin manifest. The stub server is single-purpose: the shell,
 // the assets under /assets/, the manifest, and the /ws carry.
 func runClient(rawURL string) {
-	cfg, err := clientmode.ParseConnectURL(rawURL)
+	// Interrupt reaches the ceremony's waits: the confirmation poll runs
+	// for up to ten minutes, and Ctrl-C during it must end the process
+	// rather than be swallowed by a client that is mid-request.
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
+	cfg, err := prepareConnection(ctx, rawURL)
+	stopSignals()
 	if err != nil {
-		fatalf("--connect: %v", err)
+		fatalConnect(err)
 	}
 
 	embeddedSPA, err := fs.Sub(assets, "frontend/dist")

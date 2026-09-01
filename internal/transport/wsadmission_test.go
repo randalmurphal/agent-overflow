@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"agent-overflow/internal/servercert"
 )
 
 // The /ws admission matrix (docs/specs/remote-access.md §4, "Local
@@ -51,13 +53,19 @@ func (l remotePeerListener) Accept() (net.Conn, error) {
 	return remotePeerConn{conn}, nil
 }
 
-// admissionFixture is one server reachable two ways: its own listener,
-// whose peers really are loopback, and a second listener carrying the
-// same handler whose peers read as a LAN address.
+// admissionFixture is one server reachable three ways: its own listener,
+// whose peers really are loopback, a second listener carrying the same
+// handler whose peers read as a LAN address, and — for a case that
+// configured a certificate — that same off-host leg with TLS terminated
+// on it by the production wrapper.
 type admissionFixture struct {
 	srv      *Server
 	loopback string
 	remote   string
+	// remoteTLS is empty unless the case configured a certificate. It is
+	// where a paired Go-native client actually arrives: a peer that is not
+	// on this machine, over TLS it pinned from the pairing payload.
+	remoteTLS string
 }
 
 // admissionSessionCredential is the one credential the fixture's session
@@ -130,7 +138,22 @@ func newAdmissionFixtureWith(t *testing.T, mutate func(*Config)) *admissionFixtu
 		_ = httpSrv.Shutdown(ctx)
 	})
 
-	return &admissionFixture{srv: srv, loopback: srv.Addr(), remote: listener.Addr().String()}
+	fixture := &admissionFixture{srv: srv, loopback: srv.Addr(), remote: listener.Addr().String()}
+
+	// The TLS leg, when the case asked for a certificate. It goes through
+	// sniffTLS rather than tls.NewListener so the first byte is classified
+	// exactly as the bound listener classifies it — a paired client and a
+	// cleartext browser reach one address in production, and a fixture
+	// that assumed TLS would not exercise that.
+	if tlsConfig := serverTLSConfig(cfg.TLSCertificate); tlsConfig != nil {
+		secure, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen for the remote TLS leg: %v", err)
+		}
+		go func() { _ = httpSrv.Serve(sniffTLS(remotePeerListener{secure}, tlsConfig, 5*time.Second)) }()
+		fixture.remoteTLS = secure.Addr().String()
+	}
+	return fixture
 }
 
 // dial performs one upgrade and reports the refusal status, or 101 when
@@ -156,8 +179,90 @@ func (f *admissionFixture) dial(t *testing.T, addr, query string, header http.He
 	return resp.StatusCode
 }
 
+// dialSecure is dial over the off-host leg's TLS half, pinning the
+// server's certificate the way a Go-native paired client does.
+func (f *admissionFixture) dialSecure(t *testing.T, material servercert.Material, query string, header http.Header) int {
+	t.Helper()
+	if f.remoteTLS == "" {
+		t.Fatal("this fixture has no TLS leg: configure a certificate")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	url := "wss://" + f.remoteTLS + "/ws"
+	if query != "" {
+		url += "?" + query
+	}
+	conn, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{
+		HTTPHeader: header,
+		HTTPClient: pinnedClient(material),
+	})
+	if err == nil {
+		_ = conn.Close(websocket.StatusNormalClosure, "")
+		return http.StatusSwitchingProtocols
+	}
+	if resp == nil {
+		t.Fatalf("dial %s: %v (no HTTP response to read a status from)", url, err)
+	}
+	return resp.StatusCode
+}
+
 func sessionHeader() http.Header {
 	return http.Header{SessionCredentialHeader: []string{admissionSessionCredential}}
+}
+
+// TestUpgradeAdmitsAPairedDeviceOffHostOverPinnedTLS composes the two
+// halves the two waves each built one of: the peer is not on this
+// machine, the connection is the TLS half of the one port, and what it
+// presents is a session rather than the launch credential. That is the
+// whole of how `agent-overflow --connect` attaches across hosts, and the
+// point of asserting it here is that terminating TLS changes NOTHING
+// about admission — the launch credential alone is refused on the secure
+// leg exactly as it is on the cleartext one.
+//
+// It lives in this package because producing a non-loopback peer needs
+// the second listener above, which is unexported by construction.
+func TestUpgradeAdmitsAPairedDeviceOffHostOverPinnedTLS(t *testing.T) {
+	material, err := servercert.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("mint a certificate: %v", err)
+	}
+	f := newAdmissionFixtureWith(t, func(cfg *Config) { cfg.TLSCertificate = &material.Certificate })
+
+	ticket, err := f.srv.wsTickets.mint(admissionSessionID)
+	if err != nil {
+		t.Fatalf("mint ws ticket: %v", err)
+	}
+	cases := []struct {
+		name   string
+		query  string
+		header http.Header
+		want   int
+	}{{
+		// The Go-native client's own path: it holds no launch credential
+		// and never will, so the ticket is the whole of its admission.
+		name:  "a spent ticket alone",
+		query: WSTicketParam + "=" + ticket,
+		want:  http.StatusSwitchingProtocols,
+	}, {
+		name:   "a session credential alongside the launch credential",
+		query:  "token=admission-token",
+		header: sessionHeader(),
+		want:   http.StatusSwitchingProtocols,
+	}, {
+		name:  "the launch credential alone",
+		query: "token=admission-token",
+		want:  http.StatusNotFound,
+	}, {
+		name: "nothing at all",
+		want: http.StatusNotFound,
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := f.dialSecure(t, material, tc.query, tc.header); got != tc.want {
+				t.Fatalf("upgrade status over TLS = %d, want %d", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestUpgradeAdmitsTheLaunchCredentialOnlyFromThisMachine(t *testing.T) {

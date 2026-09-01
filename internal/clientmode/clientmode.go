@@ -22,10 +22,40 @@ import (
 	"agent-overflow/internal/transport"
 )
 
+// PairedUpstream is the paired-device credential this stub carries when
+// the backend is on ANOTHER machine (docs/specs/remote-access.md §7).
+//
+// Declared here and satisfied by `*deviceclient.Client`, the same
+// direction as every other seam this package has: clientmode owns the
+// carry and knows nothing about device keys, refresh rotation or
+// certificate pinning.
+//
+// Three methods, because a carried upgrade needs three different things
+// and each has to be per-request:
+//
+//   - Authorize attaches the session credential and a proof minted for
+//     THAT request. A proof binds the method and the path and is spent on
+//     first use, so it cannot be prepared once and reused.
+//   - Ticket mints the single-use `?ticket=` the upgrade names its
+//     session with. The header carrier does NOT stand in for the launch
+//     credential on `/ws` (`internal/transport/AGENTS.md`), and a
+//     cross-host stub holds no launch credential at all — so the ticket
+//     is the whole of how a paired upgrade is admitted.
+//   - RoundTripper is the pinned transport both the manifest probe and
+//     the proxy dial through, so the certificate this stub verifies is
+//     the one the device pinned when it paired rather than whatever the
+//     host trust store would accept.
+type PairedUpstream interface {
+	Authorize(req *http.Request) error
+	Ticket(ctx context.Context) (string, error)
+	RoundTripper() http.RoundTripper
+}
+
 // Config configures the local stub server. WSURL is the upstream
 // transport endpoint (ws:// or wss://) this stub carries the SPA's
-// WebSocket to; Token is that backend's session credential. Both come
-// from the operator-supplied --connect URL, and neither is ever served
+// WebSocket to; what authenticates the hop is either Token — that
+// backend's launch credential, for a same-host attach — or Paired, a
+// device session for a backend across a network. Neither is ever served
 // to the page.
 type Config struct {
 	// WSURL is the upstream WebSocket endpoint. Must be ws:// or wss://.
@@ -34,10 +64,23 @@ type Config struct {
 	// anything the page can see.
 	WSURL string
 
-	// Token is the upstream backend's session credential. Held
-	// server-side for the life of the process: the stub presents it when
-	// it probes the upstream manifest and when it carries the upgrade.
+	// Token is the upstream backend's launch credential, for the
+	// SAME-HOST attach: the WSL launcher's relay, an SSH tunnel, a
+	// developer pointing one process at another on their own machine.
+	// Held server-side for the life of the process: the stub presents it
+	// when it probes the upstream manifest and when it carries the
+	// upgrade.
+	//
+	// Exactly one of Token and Paired is required. A launch credential
+	// alone cannot admit an off-host upgrade (spec §4, "Local clients"),
+	// and a paired device has no launch credential to present.
 	Token string
+
+	// Paired is the device session for a backend on another machine.
+	// When set, the upstream is reached with that session's credential,
+	// a fresh proof per request, and a fresh socket ticket per carried
+	// upgrade — all over the pinned transport it supplies.
+	Paired PairedUpstream
 
 	// ClientID is this installation's durable UI-state client
 	// identity, threaded onto the page URL as ?cid= (the same parameter
@@ -203,8 +246,15 @@ func Serve(cfg Config) (*Server, error) {
 	if cfg.WSURL == "" {
 		return nil, errors.New("clientmode: Config.WSURL is required")
 	}
-	if cfg.Token == "" {
-		return nil, errors.New("clientmode: Config.Token is required")
+	// Exactly one credential, checked in both directions. Neither is the
+	// obvious default: a stub with no credential reaches nothing, and a
+	// stub holding both would have two answers to "whose request is this"
+	// and no rule for which wins.
+	switch {
+	case cfg.Token == "" && cfg.Paired == nil:
+		return nil, errors.New("clientmode: Config.Token or Config.Paired is required")
+	case cfg.Token != "" && cfg.Paired != nil:
+		return nil, errors.New("clientmode: Config.Token and Config.Paired are alternatives, not a pair")
 	}
 	if cfg.BindAddr == "" {
 		cfg.BindAddr = "127.0.0.1"
@@ -236,8 +286,26 @@ func Serve(cfg Config) (*Server, error) {
 	// bound — and the credential fetch runs inline on an upgrade, which is
 	// the path that must not stall.
 	upstreamClient := &http.Client{Timeout: bootstrapProbeTimeout}
-	session := relaysession.New(upstreamBootstrap, cfg.Token, upstreamClient)
-	wsProxy, err := newWSProxy(cfg.WSURL, cfg.Token, session)
+	// A paired upstream is reached through the transport the device
+	// paired over, so the certificate this stub verifies is the one it
+	// pinned rather than whatever the host trust store would accept — and
+	// through the same one the proxy dials on, so a certificate that
+	// changed under this process fails both halves at once instead of
+	// leaving a probe that says the backend is fine and a socket that
+	// cannot reach it.
+	var session *relaysession.Source
+	if cfg.Paired != nil {
+		upstreamClient.Transport = cfg.Paired.RoundTripper()
+	} else {
+		// relaysession is the SAME-HOST relay's mechanism: it fetches the
+		// backend's own local page-channel credential so a hop that would
+		// otherwise be trusted for its topology alone names a session. A
+		// paired device already holds a session of its own, which is
+		// better in every respect — it is revocable, it is scoped, and it
+		// is this device's rather than the backend's.
+		session = relaysession.New(upstreamBootstrap, cfg.Token, upstreamClient)
+	}
+	wsProxy, err := newWSProxy(cfg, session)
 	if err != nil {
 		return nil, fmt.Errorf("clientmode: build websocket proxy: %w", err)
 	}
@@ -424,12 +492,45 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // A refusal is the transport's 404, which a browser surfaces as a bare
 // socket failure; the SPA's reconnect ladder and its /bootstrap.json
 // revalidation own the verdict from there, unchanged.
+//
+// A PAIRED upstream needs one more thing before the carry, and it has to
+// be minted here rather than baked into the proxy: the socket ticket that
+// names this device's session. It is single-use and lives seconds, so one
+// ticket serves one handshake — a ticket configured once into the proxy's
+// target would be spent by the first upgrade and refused by every one
+// after it.
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if !transport.OriginAllowed(r, nil) || !s.cred.Authenticate(r) {
 		http.NotFound(w, r)
 		return
 	}
+	if s.cfg.Paired != nil {
+		ticket, err := s.cfg.Paired.Ticket(r.Context())
+		if err != nil {
+			// One shape for every mint failure, matching what the proxy's
+			// own ErrorHandler answers an unreachable upstream with. A
+			// refused upgrade is not where this SPA learns its session is
+			// finished: /bootstrap.json is the one place that maps an
+			// upstream verdict onto the terminal state, and it runs the
+			// same credential against the same backend moments later.
+			log.Printf("clientmode: mint upstream socket ticket: %v", err)
+			http.Error(w, "backend unreachable", http.StatusServiceUnavailable)
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), upgradeTicketKey{}, ticket))
+	}
 	s.wsProxy.ServeHTTP(w, r)
+}
+
+// upgradeTicketKey carries the socket ticket handleWS minted from the
+// request into the proxy's Rewrite, which is the only other place that
+// sees this particular upgrade. A context value rather than a field,
+// because the proxy is built once and every handshake needs its own.
+type upgradeTicketKey struct{}
+
+func upgradeTicket(ctx context.Context) string {
+	ticket, _ := ctx.Value(upgradeTicketKey{}).(string)
+	return ticket
 }
 
 // bootstrapProbeTimeout bounds one upstream credential probe. The SPA
@@ -484,8 +585,24 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	// Header, not query: the upstream's `?t=` slot now takes a one-time
 	// page ticket, and this is a client that is not a browser presenting
-	// the session token it was configured with.
-	req.Header.Set("Authorization", "Bearer "+s.cfg.Token)
+	// the credential it was configured with. Which credential that is, is
+	// the whole of the difference between the two modes — a launch token
+	// for a same-host attach, this device's session plus a proof minted
+	// for THIS request for a paired one.
+	if s.cfg.Paired != nil {
+		if err := s.cfg.Paired.Authorize(req); err != nil {
+			// The device cannot present itself at all: no stored session,
+			// or a key it can no longer sign with. Transient in shape
+			// (503) because the SPA's terminal state is reserved for a
+			// verdict the BACKEND gave — and the run that started this
+			// stub already told the person, in the terminal, what to do.
+			log.Printf("clientmode: authorize the bootstrap probe: %v", err)
+			http.Error(w, "backend unreachable", http.StatusServiceUnavailable)
+			return
+		}
+	} else {
+		req.Header.Set("Authorization", "Bearer "+s.cfg.Token)
+	}
 	resp, err := s.probeClient.Do(req)
 	if err != nil {
 		// Unreachable upstream is indistinguishable from a mid-outage
@@ -643,9 +760,17 @@ func readIndexHTML(assets fs.FS) ([]byte, error) {
 //     Host is cleared so the request goes out naming the upstream, which
 //     is what the upstream's own loopback host guard expects when the
 //     endpoint is reached through an SSH tunnel.
-//   - Attach the upstream credential as a bearer header. This is the
-//     only place it appears on a wire, and it replaces the page's own
-//     credential rather than travelling beside it.
+//   - Attach the upstream credential. This is the only place it appears
+//     on a wire, and it replaces the page's own credential rather than
+//     travelling beside it. Which credential depends on the mode: a
+//     bearer launch token for a same-host attach, and for a paired
+//     device the single-use `?ticket=` handleWS minted from this
+//     request. The ticket is the whole of a paired upgrade's admission —
+//     a spent one both names the session and stands in for the launch
+//     credential the device does not have, which the session HEADER
+//     deliberately does not do (`internal/transport/AGENTS.md`), so
+//     sending the header here as well would put a credential on the wire
+//     that nothing reads.
 //   - Drop the browser's Cookie and Origin. This stub's cookie means
 //     nothing upstream, and this stub's origin is not one the upstream
 //     serves — an Origin it does not recognise is refused, correctly,
@@ -669,8 +794,8 @@ func readIndexHTML(assets fs.FS) ([]byte, error) {
 // connection and splices both directions, which also clears the HTTP
 // server's write deadline (net/http hijackLocked), so the stub's request
 // timeouts cannot cut a healthy long-lived socket.
-func newWSProxy(wsURL, token string, session *relaysession.Source) (*httputil.ReverseProxy, error) {
-	parsed, err := url.Parse(wsURL)
+func newWSProxy(cfg Config, session *relaysession.Source) (*httputil.ReverseProxy, error) {
+	parsed, err := url.Parse(cfg.WSURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse ws url: %w", err)
 	}
@@ -686,23 +811,28 @@ func newWSProxy(wsURL, token string, session *relaysession.Source) (*httputil.Re
 	if target.Path == "" || target.Path == "/" {
 		target.Path = "/ws"
 	}
-	return &httputil.ReverseProxy{
+	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme = target.Scheme
 			pr.Out.URL.Host = target.Host
 			pr.Out.URL.Path = target.Path
-			pr.Out.URL.RawQuery = upstreamQuery(target.RawQuery, pr.In.URL.Query())
+			pr.Out.URL.RawQuery = upstreamQuery(target.RawQuery, pr.In.URL.Query(), upgradeTicket(pr.In.Context()))
 			pr.Out.Host = ""
 			pr.Out.Header.Del("Cookie")
 			pr.Out.Header.Del("Origin")
-			pr.Out.Header.Set("Authorization", "Bearer "+token)
-			// The session credential is this process's to set and nobody
-			// else's. Deleted before it is written, so the value on the
-			// hop is always the one this stub fetched: a browser cannot
-			// put a header on an upgrade, but a local non-browser client
-			// holding this stub's cookie could, and a forwarded one would
-			// let it name a session it did not obtain.
+			// Both credential headers are DELETED before either is
+			// written, in both modes. A browser cannot put a header on an
+			// upgrade, but a local client that is not a browser holding
+			// this stub's cookie could, and a forwarded one would let it
+			// name a credential it did not obtain.
+			pr.Out.Header.Del("Authorization")
 			pr.Out.Header.Del(relaysession.Header)
+			if session == nil {
+				// Paired: the ticket on the query is the credential, and
+				// it was minted for this handshake alone.
+				return
+			}
+			pr.Out.Header.Set("Authorization", "Bearer "+cfg.Token)
 			if credential := session.Credential(pr.In.Context()); credential != "" {
 				pr.Out.Header.Set(relaysession.Header, credential)
 			}
@@ -716,10 +846,14 @@ func newWSProxy(wsURL, token string, session *relaysession.Source) (*httputil.Re
 			// one instead of replaying the dead one.
 			//
 			// The response is passed through untouched. The verdict on
-			// whether the TOKEN is still honoured belongs to the
+			// whether the CREDENTIAL is still honoured belongs to the
 			// /bootstrap.json probe, which is the one place that maps
 			// upstream status onto the SPA's terminal state.
-			if resp.StatusCode != http.StatusSwitchingProtocols {
+			//
+			// Nothing to mark in paired mode: the ticket was single-use
+			// and is already spent, and the session behind it renews on
+			// its own schedule rather than on a refusal.
+			if session != nil && resp.StatusCode != http.StatusSwitchingProtocols {
 				session.Stale()
 			}
 			return nil
@@ -732,18 +866,33 @@ func newWSProxy(wsURL, token string, session *relaysession.Source) (*httputil.Re
 			log.Printf("clientmode: websocket proxy: %v", err)
 			http.Error(w, "backend unreachable", http.StatusServiceUnavailable)
 		},
-	}, nil
+	}
+	if cfg.Paired != nil {
+		// The pinned transport carries the upgrade too. ReverseProxy
+		// dials through it and takes the 101 over itself, so the socket
+		// the page's frames ride is the one whose certificate this device
+		// verified — not merely a probe that agreed beforehand.
+		proxy.Transport = cfg.Paired.RoundTripper()
+	}
+	return proxy, nil
 }
 
 // upstreamQuery assembles the query the proxied upgrade carries: the
-// operator URL's own parameters, plus the page's declared client identity.
+// operator URL's own parameters, the page's declared client identity, and
+// — for a paired device — the single-use socket ticket minted for this
+// handshake.
 //
 // The operator's values win a collision. They are the endpoint's
 // configuration and the page cannot see them; a page parameter that
 // overwrote one would be the page reconfiguring the hop.
-func upstreamQuery(operator string, page url.Values) string {
+//
+// The ticket is the one value that wins outright, because it is not
+// configuration: it is this handshake's credential, and an operator URL
+// that carried a stale `ticket=` would otherwise spend a dead one and
+// leave the fresh one unpresented.
+func upstreamQuery(operator string, page url.Values, ticket string) string {
 	declared := transport.ParseClientIdentity(page).Query()
-	if len(declared) == 0 {
+	if len(declared) == 0 && ticket == "" {
 		return operator
 	}
 	values, err := url.ParseQuery(operator)
@@ -757,6 +906,9 @@ func upstreamQuery(operator string, page url.Values) string {
 			continue
 		}
 		values[key] = list
+	}
+	if ticket != "" {
+		values.Set(transport.WSTicketParam, ticket)
 	}
 	return values.Encode()
 }

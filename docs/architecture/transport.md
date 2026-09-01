@@ -235,7 +235,7 @@ refused manifest and latches its existing `unauthorized` state. Nothing wedges.
 | Carrier | Who uses it | Why not one of the others |
 |---|---|---|
 | `ao_page_<port>` cookie | every browser request after the exchange | script cannot read it back |
-| `Authorization: Bearer` | WSL launcher probe + notification socket, `ao-harness`, the `--connect` stub's upstream hop, e2e's `/pageurl` calls | keeps the credential out of URLs, process listings, logs |
+| `Authorization: Bearer` | WSL launcher probe + notification socket, `ao-harness`, a same-host `--connect` stub's upstream hop, e2e's `/pageurl` calls | keeps the credential out of URLs, process listings, logs |
 | `?token=` | the browser and Node WebSocket APIs | those APIs build a URL and nothing else — no handshake headers |
 
 `Authenticate` reads all three and ends in the same `ConstantTimeEqual`.
@@ -263,7 +263,7 @@ kernel-reported peer, the same predicate the event filter, the step-up proof and
 |---|---|---|
 | loopback | launch credential, no session | admitted — the webview, `ao-harness`, the e2e rig, the launcher's notification socket, the `--connect` stub's carried hop when it is same-host |
 | loopback | a live session | admitted |
-| non-loopback | a live session (ticket, header, or cookie) | admitted |
+| non-loopback | a live session (ticket, header, or cookie) | admitted — a paired browser, and a `--connect` stub that paired with this backend (`internal/deviceclient`), both on a ticket |
 | non-loopback | launch credential alone | `http.NotFound` |
 | non-loopback | nothing | `http.NotFound` |
 
@@ -341,13 +341,29 @@ through the same `loopbackHostGuard` the credentialled routes use. Readiness
 is not folded in: `/bootstrap.json`'s 503 stays the "booting" answer, because a
 probe that reports booting as unreachable would defeat both consumers.
 
-### `--connect` carries the socket rather than handing over the token
+### `--connect` carries the socket rather than handing over the credential
 
-The stub (`internal/clientmode`) holds the upstream token server-side and gives
-its page the same thing a local boot gives it: a ticket on the URL, then a
+The stub (`internal/clientmode`) holds the upstream credential server-side and
+gives its page the same thing a local boot gives it: a ticket on the URL, then a
 cookie for the stub's own origin. Its `/ws` is a `httputil.ReverseProxy` that
 checks origin and credential locally, deletes the local `Cookie` and `Origin`
-headers, and sets `Authorization: Bearer <upstream token>` for the hop.
+headers, and attaches the upstream's own credential for the hop.
+
+Which credential that is depends on how the stub was started, and it is exactly
+one of two:
+
+| Started with | Holds | Presents on the hop |
+|---|---|---|
+| `--connect ws://host:port/ws?token=…` | the upstream backend's launch token | `Authorization: Bearer <token>`, plus the backend's own local-channel session forwarded through `internal/relaysession` |
+| `--connect <pairing link>` or a paired backend name | a rotating device session and a device key (`internal/deviceclient`) | a single-use `?ticket=` minted per upgrade, over TLS pinned to the certificate the pairing payload named |
+
+The first is a SAME-HOST attach: a launch credential alone cannot admit an
+off-host upgrade, so a stub across a network has to be the second. The second
+carries nothing on the header arm — only a spent ticket both names a session and
+stands in for the launch credential, and a paired device has no launch
+credential to present — while the stub's `/bootstrap.json` probe, which is an
+ordinary HTTP request rather than an upgrade, carries `X-AO-Session` plus a proof
+minted for that request.
 
 The alternative — point the page straight at the upstream — cannot work under a
 cookie model, because the stub cannot set a cookie for another origin; the page

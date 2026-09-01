@@ -1,18 +1,23 @@
 # internal/clientmode/
 
-`agent-overflow --connect <url>` remote-client mode. The desktop binary
-skips booting a local transport and points its Wails webview at a
-remote-hosted backend, reached through this stub.
+`agent-overflow --connect` remote-client mode. The desktop binary skips
+booting a local transport and points its Wails webview at a remote-hosted
+backend, reached through this stub. What the operator typed decides which
+credential the stub carries — a `ws://…?token=` endpoint on the same
+machine, or a pairing link / paired backend across a network, resolved
+before `Serve` by `main_connect.go`.
 
 ## Layout
 
-- `clientmode.go` is the public surface: `Config`, `ParseConnectURL`,
-  `Serve`, `Server`. The stub HTTP server, the credential exchange, the
-  WebSocket carrier, and the URL parser all live here.
+- `clientmode.go` is the public surface: `Config`, `PairedUpstream`,
+  `ParseConnectURL`, `Serve`, `Server`. The stub HTTP server, the
+  credential exchange, the WebSocket carrier, and the URL parser all live
+  here.
 - `clientmode_test.go`: URL-parsing tests, shell-serving and manifest
   tests, the credential and origin rules on `/ws`, the forwarded session
-  credential and its refresh-on-refusal, the upstream revalidation
-  verdicts, static-asset serving, idempotent shutdown.
+  credential and its refresh-on-refusal, the paired upstream's carried
+  probe and per-upgrade ticket, the upstream revalidation verdicts,
+  static-asset serving, idempotent shutdown.
 
 ## Responsibility boundary
 
@@ -20,25 +25,33 @@ remote-hosted backend, reached through this stub.
   - Validating the operator-supplied `--connect` URL.
   - Booting a tiny loopback HTTP server that serves the embedded SPA
     bundle, answers `/bootstrap.json`, and carries `/ws` to the upstream.
-  - Holding the upstream session token, which never leaves this process.
+  - Holding the upstream credential, which never leaves this process —
+    either the launch token or the paired device session behind
+    `Config.Paired`.
 - What does NOT belong here:
   - The WebSocket client itself. That's `frontend/src/lib/transport/
     wsClient.ts`. This package only carries the socket it opens.
-  - Authenticating the remote server's TLS certificate. The OS trust
-    store handles that; clientmode does not pin or verify beyond
-    what `wss://` already gives you.
+  - Anything about how a device credential is obtained, held or renewed:
+    keys, pairing, refresh rotation, and certificate pinning are
+    `internal/deviceclient`'s. This package declares the three-method
+    `PairedUpstream` it needs and knows nothing behind it.
+  - Deciding what to verify the remote server's TLS certificate against.
+    In token mode there is nothing to decide — the OS trust store answers
+    it, as `wss://` always did. In paired mode the decision was made when
+    the device paired, and it arrives as a ready `http.RoundTripper` this
+    package dials through for both the probe and the proxy.
   - Any RPC dispatch, event bus, replay ring, or upgrade of its own.
     `internal/transport` owns those, and `clientmode` deliberately skips
     that whole stack so connecting clients don't ship a second backend.
 
-## The upstream token stays server-side
+## The upstream credential stays server-side
 
 The page never receives the upstream credential, in any form a script
 could read. The flow mirrors a local boot exactly:
 
-1. `Serve` builds a `transport.Credential` around the configured upstream
-   token — the same type, and therefore the same `Authenticate`, the
-   transport server uses.
+1. `Serve` builds a `transport.Credential` for THIS stub's own page — the
+   same type, and therefore the same `Authenticate`, the transport server
+   uses. It is unrelated to whatever authenticates the upstream hop.
 2. `AppURL` stamps `?host=webview&mode=client&cid=…` and NO credential:
    this process owns the window, so `main_desktop.go` hands the page its
    ticket by `uiwindow.DeliverPageTicket(window, stub.MintPageTicket)`
@@ -50,8 +63,10 @@ could read. The flow mirrors a local boot exactly:
    later request rides the cookie.
 4. `handleWS` checks `transport.OriginAllowed` and `Credential.Authenticate`,
    then hands the request to a `httputil.ReverseProxy` that deletes the
-   local `Cookie` and `Origin` headers and sets `Authorization: Bearer
-   <upstream token>` for the hop.
+   local `Cookie` and `Origin` headers and attaches the upstream's own
+   credential for the hop: `Authorization: Bearer <upstream token>` in
+   token mode, and in paired mode a single-use `?ticket=` minted from
+   THIS request (see below).
 
 The hop REPLACES the query rather than forwarding it (the operator's
 endpoint owns it, and the page's own marker and client id mean nothing
@@ -97,6 +112,46 @@ response through untouched: the verdict on whether the TOKEN is still
 honoured belongs to the `/bootstrap.json` probe below, which is the one
 place that maps upstream status onto the SPA's terminal state.
 
+## A paired stub carries its own session, not the backend's
+
+`Config.Paired` is the CROSS-HOST mode, and it is an alternative to
+`Config.Token` rather than an addition — `Serve` refuses both and
+refuses neither. `agent-overflow --connect <pairing link>` runs the
+ceremony in the terminal (`main_connect.go`) and hands `Serve` the
+resulting `*deviceclient.Client`; a stub started that way holds no launch
+credential at all and never obtains one, which is the shape spec §4
+requires off-host: a session that is this DEVICE's, revocable and scoped,
+rather than the backend's own.
+
+Three things are carried, and each is minted per request because each is
+single-use by construction:
+
+- The manifest probe presents the session credential plus a proof signed
+  over THAT request (`PairedUpstream.Authorize`). A proof binds the
+  method and the path, so one cannot be prepared at `Serve` and reused.
+- The carried upgrade presents a single-use `?ticket=` minted from the
+  request `handleWS` is holding (`PairedUpstream.Ticket`), and
+  deliberately **not** the session header. Only a spent ticket both names
+  a session and stands in for the launch credential on `/ws`
+  (`internal/transport/AGENTS.md`), which is the whole of how a device
+  with no launch credential is admitted; sending the header alongside it
+  would put a credential on the wire nothing reads and cost an ECDSA
+  signature per handshake. `upstreamQuery` lets the ticket win a
+  collision outright for the same reason — it is this handshake's
+  credential, not configuration the operator's URL owns.
+- Both go through the pinned `RoundTripper`, so the certificate the probe
+  agreed with is the certificate the socket rides, and a certificate that
+  changed under this process fails both at once rather than leaving a
+  probe that says the backend is fine and a socket that cannot reach it.
+
+`relaysession` is not built in this mode and `ModifyResponse` marks
+nothing: a ticket is spent by definition, and the session behind it
+renews on its own schedule rather than on a refusal. A mint or authorize
+failure answers 503, never the credential channel's 404 — the SPA's
+terminal state is reserved for a verdict the BACKEND gave, and the run
+that started this stub already told the person, in the terminal, what a
+dead pairing needs.
+
 **Carrying `/ws` rather than pointing the browser at the upstream is the
 design choice this package is built around.** The alternative — hand the
 page the upstream's `wsUrl` — cannot work under a cookie model: this stub
@@ -119,8 +174,9 @@ negotiate with each other and this process only splices bytes.
   round trip it costs is what buys the HttpOnly cookie. The page ticket
   the host injects is not an exception: it is single-use, it is spent by
   that same fetch, and what it buys is the cookie no script can read.
-- Do NOT serve the upstream token to a local GET. Anything on this
-  listener that would hand out the token is a way for any process on the
+- Do NOT serve the upstream credential to a local GET, in either mode.
+  Anything on this listener that would hand out the token, the device
+  session, a proof or a socket ticket is a way for any process on the
   host to become a client; the ticket exchange exists so it doesn't need
   to be.
 - Do NOT add RPC dispatch, an event bus, or a real upgrade here. `/ws` is
@@ -134,7 +190,8 @@ negotiate with each other and this process only splices bytes.
 
 The SPA refetches the manifest mid-outage to learn whether its session is
 still honoured. The stub answers by asking the upstream from Go
-(CORS-free) with the bearer token, then maps the verdict onto the shapes
+(CORS-free) with whichever upstream credential it holds, then maps the
+verdict onto the shapes
 the SPA already knows (transport/AGENTS.md § "Credentials and refusal
 shapes"): a refusal is 404, everything transient — network failure
 included — is 503, so the reconnect ladder survives. This is what lets
@@ -159,3 +216,7 @@ outage still lands its cookie and its retry costs no ticket.
   skipped on `--connect`.
 - `internal/relaysession`: the forwarded session credential, shared with
   the WSL launcher. Its package doc carries the full contract.
+- `internal/deviceclient`: the other side of `PairedUpstream` — the
+  device key, the pairing ceremony, the rotating session it holds on
+  disk, and the pinned dial. `main_connect.go` is what wires the two
+  together for `agent-overflow --connect`.

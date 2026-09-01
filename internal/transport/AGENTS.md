@@ -186,6 +186,14 @@ add a route here without a `Route` row there and the gate fails. Keep the
 pattern a literal or a constant for the same reason — a computed pattern
 is a route the gate cannot see.
 
+Four packages outside this one build a URL for `/bootstrap.json` or `/ws`
+without linking this server (`relaysession`, `clientmode`, `deviceclient`,
+and the Windows launcher through the first of those), so both patterns are
+exported constants — `BootstrapPath` and `WSPath` — and the drift guards in
+`relaysession` and `deviceclient` pin their copies to them. A rename that
+missed a copy is otherwise a client dialing a route this server does not
+serve, which only a live session notices.
+
 `/healthz` is the one deliberately unauthenticated route besides the
 bundle. It answers version + backend id because its two consumers — the
 pre-WS compatibility check and the update watchdog — run precisely when
@@ -259,7 +267,9 @@ it, and they all end in that same comparison:
   rides (the manifest refetch, the `/ws` upgrade).
 - **`Authorization: Bearer`**, presented by a client that is not a browser: the
   WSL launcher's probe and notification socket, `ao-harness`, the `--connect`
-  stub dialing its upstream.
+  stub dialing an upstream on this machine. A `--connect` stub that PAIRED
+  holds no launch credential and presents none — it names its device session
+  instead, which is what the admission rule below requires of it anyway.
 - **`?token=`**, for clients that can build a URL and nothing else — the browser
   and Node WebSocket APIs cannot set handshake headers.
 

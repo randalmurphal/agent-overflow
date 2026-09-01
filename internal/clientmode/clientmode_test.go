@@ -3,6 +3,7 @@ package clientmode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/fstest"
@@ -817,7 +819,7 @@ func TestHandleWS_CarriesTheUpgradeWithTheUpstreamCredential(t *testing.T) {
 // overwrote one would be the page reconfiguring the hop.
 func TestUpstreamQuery_OperatorParametersWin(t *testing.T) {
 	page := url.Values{"did": {"screen-abcdef01"}, "conn": {"live-abcdef01"}}
-	got, err := url.ParseQuery(upstreamQuery("did=operator-pinned-id&region=eu", page))
+	got, err := url.ParseQuery(upstreamQuery("did=operator-pinned-id&region=eu", page, ""))
 	if err != nil {
 		t.Fatalf("parse the assembled query: %v", err)
 	}
@@ -837,8 +839,28 @@ func TestUpstreamQuery_OperatorParametersWin(t *testing.T) {
 func TestUpstreamQuery_UnparseableOperatorQueryIsForwardedVerbatim(t *testing.T) {
 	const operator = "%zz"
 	page := url.Values{"did": {"screen-abcdef01"}}
-	if got := upstreamQuery(operator, page); got != operator {
+	if got := upstreamQuery(operator, page, ""); got != operator {
 		t.Fatalf("upstreamQuery = %q, want %q", got, operator)
+	}
+}
+
+// TestUpstreamQuery_TicketWinsOutright — the ticket is not configuration.
+// It is this handshake's credential, minted seconds ago and good for one
+// use, so an operator URL still carrying a spent one must not be what the
+// upgrade presents.
+func TestUpstreamQuery_TicketWinsOutright(t *testing.T) {
+	got, err := url.ParseQuery(upstreamQuery("ticket=already-spent&region=eu", url.Values{}, "minted-for-this-handshake"))
+	if err != nil {
+		t.Fatalf("parse the assembled query: %v", err)
+	}
+	if got.Get("ticket") != "minted-for-this-handshake" {
+		t.Errorf("ticket = %q, want the freshly minted one", got.Get("ticket"))
+	}
+	if len(got["ticket"]) != 1 {
+		t.Errorf("ticket appears %d times, want the stale one replaced rather than appended", len(got["ticket"]))
+	}
+	if got.Get("region") != "eu" {
+		t.Errorf("region = %q, want the operator's other values preserved", got.Get("region"))
 	}
 }
 
@@ -1061,5 +1083,220 @@ func TestServe_DegradesWhenTheUpstreamHasNoCredential(t *testing.T) {
 	}
 	if got := <-upstream.presented; got != "" {
 		t.Fatalf("the upgrade named a session the upstream never issued: %q", got)
+	}
+}
+
+// fakePaired is a PairedUpstream that records what it was asked for. The
+// real one is `*deviceclient.Client`; this package deliberately does not
+// import it, so the seam is exercised through the interface it declares
+// rather than through the implementation that satisfies it.
+type fakePaired struct {
+	credential string
+	// ticketErr, when set, is what Ticket answers instead of minting.
+	ticketErr error
+	tickets   atomic.Int32
+	authorize atomic.Int32
+	// paths records the request paths Authorize was asked to sign for, so
+	// a test can see that the proof was minted against the request that
+	// carried it.
+	mu    sync.Mutex
+	paths []string
+}
+
+func (f *fakePaired) Authorize(req *http.Request) error {
+	f.authorize.Add(1)
+	f.mu.Lock()
+	f.paths = append(f.paths, req.URL.Path)
+	f.mu.Unlock()
+	req.Header.Set(relaysession.Header, f.credential)
+	req.Header.Set("X-AO-Device-Key", "proof-for-"+req.Method+"-"+req.URL.Path)
+	return nil
+}
+
+func (f *fakePaired) Ticket(context.Context) (string, error) {
+	if f.ticketErr != nil {
+		return "", f.ticketErr
+	}
+	return fmt.Sprintf("ticket-%d", f.tickets.Add(1)), nil
+}
+
+func (f *fakePaired) RoundTripper() http.RoundTripper { return http.DefaultTransport }
+
+func (f *fakePaired) signedPaths() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.paths...)
+}
+
+// servePaired boots a stub attached to a paired upstream, the cross-host
+// shape: no launch token anywhere in this process.
+func servePaired(t *testing.T, upstream *httptest.Server, paired PairedUpstream) *Server {
+	t.Helper()
+	srv, err := Serve(Config{
+		WSURL:  "ws" + strings.TrimPrefix(upstream.URL, "http") + "/ws",
+		Paired: paired,
+		Assets: fakeAssets(),
+	})
+	if err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+	return srv
+}
+
+// TestServe_TokenAndPairedAreAlternatives — a stub with neither reaches
+// nothing, and one with both would have two answers to "whose request is
+// this" and no rule for which wins.
+func TestServe_TokenAndPairedAreAlternatives(t *testing.T) {
+	if _, err := Serve(Config{WSURL: "ws://h/", Assets: fakeAssets()}); err == nil {
+		t.Fatal("Serve accepted neither Token nor Paired, want error")
+	}
+	if _, err := Serve(Config{WSURL: "ws://h/", Token: "t", Paired: &fakePaired{}, Assets: fakeAssets()}); err == nil {
+		t.Fatal("Serve accepted both Token and Paired, want error")
+	}
+}
+
+// TestHandleBootstrap_PairedProbeCarriesTheDeviceSession — the
+// revalidation probe is the one place a `--connect` client learns its
+// credential is finished, and a paired client's credential is its device
+// session, not a launch token it does not have. The proof has to be minted
+// for the probe's own path, because a signed proof binds it.
+func TestHandleBootstrap_PairedProbeCarriesTheDeviceSession(t *testing.T) {
+	var sawSession, sawProof, sawBearer string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawSession = r.Header.Get(relaysession.Header)
+		sawProof = r.Header.Get("X-AO-Device-Key")
+		sawBearer = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"wsUrl":"ws://upstream-perspective/ws"}`))
+	}))
+	t.Cleanup(upstream.Close)
+	paired := &fakePaired{credential: "ao1.device-session"}
+	srv := servePaired(t, upstream, paired)
+
+	resp, err := http.Get(stubBootstrapURL(t, srv))
+	if err != nil {
+		t.Fatalf("GET /bootstrap.json: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bootstrap status = %d, want 200", resp.StatusCode)
+	}
+	if sawSession != "ao1.device-session" {
+		t.Errorf("upstream saw session %q, want the device session", sawSession)
+	}
+	if sawProof != "proof-for-GET-/bootstrap.json" {
+		t.Errorf("upstream saw proof %q, want one minted for the probe's own request", sawProof)
+	}
+	if sawBearer != "" {
+		t.Errorf("a paired stub presented a bearer credential it does not hold: %q", sawBearer)
+	}
+	if got := paired.signedPaths(); len(got) != 1 || got[0] != "/bootstrap.json" {
+		t.Errorf("signed paths = %v, want exactly the probe's", got)
+	}
+}
+
+// TestHandleWS_PairedUpgradeCarriesAFreshTicket is the cross-host carry in
+// one test. Two things are load-bearing and both are pinned here: a spent
+// ticket both names the session and stands in for the launch credential
+// this device does not have, and it is single-use — so a second handshake
+// gets a second ticket rather than replaying the first.
+func TestHandleWS_PairedUpgradeCarriesAFreshTicket(t *testing.T) {
+	type observed struct {
+		query   string
+		auth    string
+		session string
+	}
+	seen := make(chan observed, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bootstrap.json" {
+			_, _ = w.Write([]byte(`{"wsUrl":"ws://upstream-perspective/ws"}`))
+			return
+		}
+		if r.URL.Path != "/ws" {
+			http.NotFound(w, r)
+			return
+		}
+		seen <- observed{
+			query:   r.URL.RawQuery,
+			auth:    r.Header.Get("Authorization"),
+			session: r.Header.Get(relaysession.Header),
+		}
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			t.Errorf("upstream accept: %v", err)
+			return
+		}
+		conn.CloseNow()
+	}))
+	t.Cleanup(upstream.Close)
+	paired := &fakePaired{credential: "ao1.device-session"}
+	srv := servePaired(t, upstream, paired)
+	cookie := exchangeStubCookie(t, srv)
+
+	tickets := make([]string, 0, 2)
+	for range 2 {
+		if err := dialThroughStub(t, srv, cookie); err != nil {
+			t.Fatalf("dial through the stub: %v", err)
+		}
+		got := <-seen
+		if got.auth != "" {
+			t.Errorf("a paired upgrade presented a bearer credential: %q", got.auth)
+		}
+		// The session HEADER does not stand in for the launch credential
+		// on /ws (internal/transport/AGENTS.md), so putting one here would
+		// be a credential on the wire that nothing reads.
+		if got.session != "" {
+			t.Errorf("a paired upgrade carried an inert session header: %q", got.session)
+		}
+		query, err := url.ParseQuery(got.query)
+		if err != nil {
+			t.Fatalf("upstream query %q: %v", got.query, err)
+		}
+		ticket := query.Get(transport.WSTicketParam)
+		if ticket == "" {
+			t.Fatalf("the carried upgrade named no ticket: %q", got.query)
+		}
+		tickets = append(tickets, ticket)
+	}
+	if tickets[0] == tickets[1] {
+		t.Fatalf("both upgrades carried ticket %q; a spent ticket is refused", tickets[0])
+	}
+}
+
+// TestHandleWS_PairedTicketFailureIsTransient — a failed mint answers the
+// same 503 an unreachable upstream does. A refused upgrade is not where
+// the SPA learns its session is finished: /bootstrap.json is the one place
+// that maps an upstream verdict onto the terminal state, and answering 404
+// here would latch it on a network blink.
+func TestHandleWS_PairedTicketFailureIsTransient(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"wsUrl":"ws://upstream-perspective/ws"}`))
+	}))
+	t.Cleanup(upstream.Close)
+	paired := &fakePaired{credential: "ao1.device-session"}
+	srv := servePaired(t, upstream, paired)
+	cookie := exchangeStubCookie(t, srv)
+	paired.ticketErr = errors.New("the backend no longer honours this session")
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+srv.Addr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("build the upgrade request: %v", err)
+	}
+	req.Header.Set("Cookie", cookie.Name+"="+cookie.Value)
+	req.Header.Set("Origin", "http://"+srv.Addr())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /ws: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("stub status = %d, want 503", resp.StatusCode)
+	}
+	if paired.tickets.Load() != 0 {
+		t.Errorf("a failing mint still handed out %d tickets", paired.tickets.Load())
 	}
 }

@@ -318,11 +318,16 @@ var Listeners = []Listener{
 		Sites:      []string{"internal/clientmode/clientmode.go"},
 		Why: "Serves the same embedded bundle against a backend on another " +
 			"host. It mints its OWN page credential and keeps the upstream " +
-			"token server-side, carrying /ws through a reverse proxy with " +
-			"the bearer header attached in Go — the page never holds a " +
-			"credential for the upstream, and SPA code is identical across " +
-			"embedded, --connect and remote-browser boots. LAN-capable for " +
-			"the same reason as the transport: BindAddr is the user's.",
+			"one server-side, carrying /ws through a reverse proxy with that " +
+			"credential attached in Go — the page never holds a credential " +
+			"for the upstream, and SPA code is identical across embedded, " +
+			"--connect and remote-browser boots. Which upstream credential " +
+			"depends on how the stub was started: the backend's launch token " +
+			"as a bearer header, or — when it was started from a pairing " +
+			"link — the rotating device session it holds durably, presented " +
+			"over TLS pinned to the certificate the payload named " +
+			"(internal/deviceclient). LAN-capable for the same reason as the " +
+			"transport: BindAddr is the user's.",
 	},
 	{
 		Name:       "harness control plane",
@@ -613,10 +618,13 @@ var Routes = []Route{
 		Credential: CredPageSession,
 		Posture:    PostureProxied,
 		Why: "Validates this origin's page credential, then carries the " +
-			"socket to the upstream with the upstream bearer token " +
-			"attached server-side. Two credentials meet here and neither " +
-			"crosses: the page's stops at the stub, the upstream's never " +
-			"reaches the page.",
+			"socket to the upstream with the upstream's own credential " +
+			"attached server-side: the launch token as a bearer header, or " +
+			"a single-use ticket minted per upgrade when the stub holds a " +
+			"paired device session, which is the whole of what admits an " +
+			"off-host peer. Two credentials meet here and neither crosses: " +
+			"the page's stops at the stub, the upstream's never reaches the " +
+			"page.",
 	},
 
 	// internal/harness/control — the mock-provider control plane.
