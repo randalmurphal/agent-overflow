@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/eventchan"
 )
@@ -149,6 +150,15 @@ func TestScopedConnectionReceivesOnlyGrantedChannels(t *testing.T) {
 		}
 	})
 	conn := f.dial(t)
+
+	// The dial returns on the 101; the connection's subscriber attaches a
+	// moment later. Emitting into that window delivers to nobody — a live
+	// emit is not replayed — and the read below then times out on a
+	// server that behaved correctly. Wait for the attach, as the other
+	// live-delivery tests do.
+	if !waitFor(func() bool { return f.bus.SubscriberCount() >= 1 }, 2*time.Second) {
+		t.Fatal("the server never registered the connection's subscriber")
+	}
 
 	// Withheld first, then admitted. If the scope filter leaked, the
 	// terminal frame is what the read below returns, and the assertion
