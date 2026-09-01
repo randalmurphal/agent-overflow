@@ -2832,6 +2832,157 @@ export class PairingStatusView {
 }
 
 /**
+ * PasskeyChallengeResult is a ceremony the backend just started.
+ * 
+ * Options is the WebAuthn options blob, verbatim from the library, and it
+ * crosses this layer unread — a typed mirror would be a second definition
+ * of the specification's shape that agrees with the library's only until
+ * it grows a field. `json.RawMessage` generates as `any`, and the browser
+ * half decodes its base64url members before calling
+ * `navigator.credentials` (frontend/src/lib/transport/passkey.ts).
+ */
+export class PasskeyChallengeResult {
+    "ceremonyId": string;
+    "options": json$0.RawMessage;
+
+    /** Creates a new PasskeyChallengeResult instance. */
+    constructor($$source: Partial<PasskeyChallengeResult> = {}) {
+        if (!("ceremonyId" in $$source)) {
+            this["ceremonyId"] = "";
+        }
+        if (!("options" in $$source)) {
+            this["options"] = null;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PasskeyChallengeResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PasskeyChallengeResult {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PasskeyChallengeResult($$parsedSource as Partial<PasskeyChallengeResult>);
+    }
+}
+
+/**
+ * PasskeyStepUpGrant is a proven step-up: one token, spendable once, on
+ * the session that asked for it.
+ */
+export class PasskeyStepUpGrant {
+    "token": string;
+
+    /**
+     * ExpiresAtMs is when it stops being spendable. Absolute, like every
+     * other deadline on this wire, because a client handed a duration has
+     * to decide when its own clock started counting.
+     */
+    "expiresAtMs": number;
+
+    /** Creates a new PasskeyStepUpGrant instance. */
+    constructor($$source: Partial<PasskeyStepUpGrant> = {}) {
+        if (!("token" in $$source)) {
+            this["token"] = "";
+        }
+        if (!("expiresAtMs" in $$source)) {
+            this["expiresAtMs"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PasskeyStepUpGrant instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PasskeyStepUpGrant {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PasskeyStepUpGrant($$parsedSource as Partial<PasskeyStepUpGrant>);
+    }
+}
+
+/**
+ * PasskeySummary is one registered credential as the settings list shows
+ * it. Deliberately not the store row: the public key, the credential id
+ * and the attestation blob are not a person's business and would put
+ * bytes on the wire that no screen renders.
+ */
+export class PasskeySummary {
+    "id": string;
+    "label": string;
+    "createdAtMs": number;
+    "lastUsedAtMs"?: number;
+
+    /**
+     * RelyingPartyID is the domain this credential was registered under.
+     * An authenticator binds a credential to that exact string, so a
+     * changed canonical domain leaves the credential real and unusable.
+     */
+    "relyingPartyId": string;
+
+    /**
+     * Usable is false for exactly that case: the credential is listed
+     * anyway, because hiding it would leave a person unable to remove
+     * something their authenticator still offers them.
+     */
+    "usable": boolean;
+
+    /**
+     * CloneWarning is set when this authenticator's signature counter
+     * failed to advance. An ANOMALY to show, never a verdict: the counter
+     * is optional, authenticators that keep none report zero forever, and
+     * a sign-in proceeds either way.
+     */
+    "cloneWarning"?: boolean;
+
+    /**
+     * BackedUp reports that the credential is synced to the person's
+     * account rather than living on one device, which is what makes it
+     * available on a phone they have not paired.
+     */
+    "backedUp"?: boolean;
+
+    /**
+     * Transports is what the authenticator said it can be reached by
+     * ("internal", "hybrid", "usb"). Presentation only.
+     */
+    "transports"?: string[];
+
+    /** Creates a new PasskeySummary instance. */
+    constructor($$source: Partial<PasskeySummary> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("label" in $$source)) {
+            this["label"] = "";
+        }
+        if (!("createdAtMs" in $$source)) {
+            this["createdAtMs"] = 0;
+        }
+        if (!("relyingPartyId" in $$source)) {
+            this["relyingPartyId"] = "";
+        }
+        if (!("usable" in $$source)) {
+            this["usable"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PasskeySummary instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PasskeySummary {
+        const $$createField8_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("transports" in $$parsedSource) {
+            $$parsedSource["transports"] = $$createField8_0($$parsedSource["transports"]);
+        }
+        return new PasskeySummary($$parsedSource as Partial<PasskeySummary>);
+    }
+}
+
+/**
  * PatchSpanSeed is one file's precomputed diff spans. ContentKey is the
  * frontend `contentKey(patch text)` string; together with Path it is
  * exactly the diffSpanCache base key, so the frontend can insert

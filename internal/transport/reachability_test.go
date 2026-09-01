@@ -199,6 +199,8 @@ func TestStepUpMethodsAreTheSpecSet(t *testing.T) {
 		"SetWorkspaceMcpServerEnabled": "MCP config write",
 		"SetWSLDistroPreference":       "WSL distro preference",
 		"SetProjectWorktreeSetup":      "worktree-setup recipe write: stores argv that runs unattended on every worktree cut",
+		"BeginPasskeyRegistration":     "registering a credential that admits a future caller, on the same argument as minting a pairing link",
+		"FinishPasskeyRegistration":    "registering a credential that admits a future caller, on the same argument as minting a pairing link",
 	}
 	got := map[string]bool{}
 	for _, method := range GeneratedMethods {
@@ -249,13 +251,24 @@ func TestSessionFloorAdmitsASessionThatWasGrantedNothing(t *testing.T) {
 // NAME would be an ungated surface, and nothing else in the tree would
 // notice. §6 names four — the settings patch, gated per key, and the
 // three ui_state calls, each of which reaches only the calling
-// connection's own bucket.
+// connection's own bucket. §4's step-up ceremony adds two, for the
+// reason spelled out beside them.
 func TestSessionFloorMethodsAreTheSpecSet(t *testing.T) {
 	want := map[string]string{
 		"UpdateSettings": "all three settings tiers on one method; requireSettingsTier decides per key",
 		"GetUIState":     "reads the calling connection's own bucket and no other",
 		"SetUIState":     "writes the calling connection's own bucket and no other",
 		"DeleteUIState":  "deletes from the calling connection's own bucket and no other",
+		// The two step-up ceremony calls. The floor is not a relaxation
+		// here, it is the only scope that works: this pair is how a session
+		// SATISFIES the gate that just refused it, so any grant requirement
+		// would leave step-up reachable only to sessions already holding
+		// something — and the calls behind step-up are the ones no standing
+		// grant opens. Neither discloses anything either: the challenge is
+		// random, the session is the connection's own, and the token they
+		// end in requires a signature from a credential on this account.
+		"BeginPasskeyStepUp":  "starts a proof for the calling connection's own session and no other",
+		"FinishPasskeyStepUp": "ends a proof for the session its own ceremony recorded, not one this call names",
 	}
 	got := map[string]bool{}
 	for _, method := range GeneratedMethods {

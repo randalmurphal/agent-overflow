@@ -137,15 +137,20 @@ The two non-grants:
   against §6's three tiers) or is simply "this session is writing its own
   bucket" (`GetUIState` / `SetUIState` / `DeleteUIState`, whose bucket comes
   from the connection and never from a parameter). A view-only device setting
-  its own font size is the case it exists for.
+  its own font size is the case it exists for. The step-up ceremony pair
+  (`BeginPasskeyStepUp` / `FinishPasskeyStepUp`) is there for a stronger reason:
+  it is how a session SATISFIES the gate that just refused it, so requiring any
+  grant would leave step-up reachable only to sessions already holding
+  something — and the calls behind step-up are the ones no standing grant opens.
   `TestSessionFloorMethodsAreTheSpecSet` pins WHICH methods carry it, because
   the floor admits everybody: an annotation that drifted onto a method whose
   authority its NAME decides would be an ungated surface.
 
 `//ao:stepup` marks the calls §4 requires a fresh per-call proof for: minting a
-pairing link, network bind / exposure changes, provider custom-env writes, MCP
-config writes, the WSL distro preference, and worktree-setup recipe writes
-(stored argv that runs unattended on every worktree cut).
+pairing link, registering a passkey, network bind / exposure changes, provider
+custom-env writes, MCP config writes, the WSL distro preference, and
+worktree-setup recipe writes (stored argv that runs unattended on every worktree
+cut).
 `TestStepUpMethodsAreTheSpecSet` pins that list, because a dropped directive
 turns a mandatory proof into an ambient standing grant and nothing else in the
 tree would notice.

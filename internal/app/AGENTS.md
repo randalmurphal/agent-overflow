@@ -225,10 +225,12 @@ are facts about this process rather than about a row:
   link, not an edit to a row.
 
 Every method carries `//ao:scope access:admin`, which is what keeps the
-set together: one annotation, so the surface moves as a unit. Minting
-alone adds `//ao:stepup`, because issuing a credential that enrolls
-ANOTHER device is the one call a standing grant must not make — a session
-that could mint could enroll its way around its own revocation. The rest
+set together: one annotation, so the surface moves as a unit. Two of them
+add `//ao:stepup`, and they are the two that ISSUE: minting a pairing
+link, and registering a passkey. A standing grant must not make either —
+a session that could mint could enroll its way around its own revocation,
+and a session that could register a credential could do the same thing
+with a different kind of key. The rest
 answer a device the owner granted `access:admin`, which is what makes
 revoking a lost phone from the other phone possible.
 Minting ISSUES a credential, revoking withdraws
@@ -242,6 +244,20 @@ free to enroll again, and the audit rows stay); the overview read goes with them
 it carries the device map, the connection counts, the audit log, and a
 pending pairing's verification number — which is only a check if the
 owner is the only party comparing it.
+
+`app_passkey.go`'s four `access:admin` methods join the same set on the
+same terms, with one difference worth saying out loud rather than
+inferring: **removing a passkey ends no session.** A session a passkey
+signed in is an ordinary session on an ordinary device row, and it ends
+the way every other one does — by revoking the device. `DeletePasskey`
+carries no `//ao:stepup` for the argument every subtraction here makes
+(it issues nothing, and the phone you can still reach must be able to
+remove the credential on the one you cannot), and the UI copy has to say
+what it DOES rather than imply a revocation. `ListPasskeys` carries
+credentials that have OUTLIVED their domain — `Usable: false` where the
+stored relying party no longer matches the current one — because an
+authenticator still offers those, so hiding them would leave a person
+unable to remove something they can still see.
 
 Two shapes are worth knowing before editing:
 

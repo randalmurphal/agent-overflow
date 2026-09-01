@@ -39,6 +39,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "AttachThreadWorktree", ID: 2367642633, Scope: "git:operate"},                          // main.App.AttachThreadWorktree
 	{Name: "AutoResumeThread", ID: 4095667805, Scope: "threads:operate"},                          // main.App.AutoResumeThread
 	{Name: "BackgroundClaudeTask", ID: 2098425262, Scope: "threads:operate"},                      // main.App.BackgroundClaudeTask
+	{Name: "BeginPasskeyRegistration", ID: 1189501287, Scope: "access:admin", StepUp: true},       // main.App.BeginPasskeyRegistration
+	{Name: "BeginPasskeyStepUp", ID: 3214812657, Scope: "session"},                                // main.App.BeginPasskeyStepUp
 	{Name: "BookmarkUIRenderTrace", ID: 1374242488, Scope: "host"},                                // main.App.BookmarkUIRenderTrace
 	{Name: "BrowseDirectory", ID: 320967638, Scope: "host"},                                       // main.App.BrowseDirectory
 	{Name: "BrowserCompanionDo", ID: 197228034, Scope: "terminal:operate"},                        // main.App.BrowserCompanionDo
@@ -70,6 +72,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteDiffReviewComment", ID: 1303317790, Scope: "threads:operate"},                   // main.App.DeleteDiffReviewComment
 	{Name: "DeleteDiscussion", ID: 302062730, Scope: "threads:operate"},                           // main.App.DeleteDiscussion
 	{Name: "DeleteEmptyDraftThread", ID: 3876094070, Scope: "threads:operate"},                    // main.App.DeleteEmptyDraftThread
+	{Name: "DeletePasskey", ID: 151243274, Scope: "access:admin"},                                 // main.App.DeletePasskey
 	{Name: "DeleteProject", ID: 3379369923, Scope: "threads:operate"},                             // main.App.DeleteProject
 	{Name: "DeleteProposedPlanComment", ID: 554913120, Scope: "threads:operate"},                  // main.App.DeleteProposedPlanComment
 	{Name: "DeleteProviderCustomEnvVar", ID: 784096448, Scope: "settings:write", StepUp: true},    // main.App.DeleteProviderCustomEnvVar
@@ -78,6 +81,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteUIState", ID: 1186757769, Scope: "session"},                                     // main.App.DeleteUIState
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin"},                           // main.App.DevicePairingStatus
 	{Name: "DownloadUpdate", ID: 115027584, Scope: "host"},                                        // main.App.DownloadUpdate
+	{Name: "FinishPasskeyRegistration", ID: 1601396603, Scope: "access:admin", StepUp: true},      // main.App.FinishPasskeyRegistration
+	{Name: "FinishPasskeyStepUp", ID: 1569276637, Scope: "session"},                               // main.App.FinishPasskeyStepUp
 	{Name: "ForgetAccessDevice", ID: 516065248, Scope: "access:admin"},                            // main.App.ForgetAccessDevice
 	{Name: "ForgetTailnetNode", ID: 767560289, Scope: "host"},                                     // main.App.ForgetTailnetNode
 	{Name: "ForkThread", ID: 4063914461, Scope: "threads:operate"},                                // main.App.ForkThread
@@ -197,6 +202,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListMcpServerStatuses", ID: 2582096622, Scope: "settings:write"},                      // main.App.ListMcpServerStatuses
 	{Name: "ListPRCommits", ID: 4110818691, Scope: "git:operate"},                                 // main.App.ListPRCommits
 	{Name: "ListPRReviewThreads", ID: 763649720, Scope: "git:operate"},                            // main.App.ListPRReviewThreads
+	{Name: "ListPasskeys", ID: 3860831272, Scope: "access:admin"},                                 // main.App.ListPasskeys
 	{Name: "ListPendingInteractiveRequests", ID: 4186874978, Scope: "approvals:respond"},          // main.App.ListPendingInteractiveRequests
 	{Name: "ListProjects", ID: 2721360259, Scope: "threads:read"},                                 // main.App.ListProjects
 	{Name: "ListProposedPlanComments", ID: 2030403250, Scope: "threads:read"},                     // main.App.ListProposedPlanComments

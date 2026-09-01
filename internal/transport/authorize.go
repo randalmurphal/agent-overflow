@@ -231,14 +231,21 @@ func stepUpMessage(detail string) string {
 }
 
 // AuthRefused builds the refusal a bound method returns when the session
-// its connection named stopped admitting work between the pre-call gate
-// and the argument recheck — a revocation landing mid-call, which is the
-// window §4 "Revocation" says must close on the next answer rather than on
-// the next watchdog tick.
+// core turned down work the pre-call gate had already admitted.
+//
+// The original case is a revocation landing between the gate and a
+// method's argument recheck, which is the window §4 "Revocation" says must
+// close on the next answer rather than on the next watchdog tick. The
+// general case is any refusal a method can only discover by ASKING the
+// core — a passkey ceremony the core does not recognise, an assertion it
+// declines — where the caller is still who it said it was and the answer
+// is no anyway.
 //
 // Same envelope AuthFailure builds for the pre-call path, wrapped so it
 // reaches the wire as itself: reasonCode is identity's closed vocabulary,
-// carried uninterpreted for authReason.ts to present.
+// carried uninterpreted for authReason.ts to present. That is what makes
+// widening the set cheap — a new code presents itself, with no new shape
+// on this wire and no branch here to keep in step.
 func AuthRefused(reasonCode string) error {
 	return &authzError{frame: *AuthFailure(reasonCode)}
 }
