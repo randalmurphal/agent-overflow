@@ -61,7 +61,7 @@ func (f *fakeNotificationPlatform) SendNotification(options notifications.Notifi
 func (f *fakeNotificationPlatform) UpdateNotification(options notifications.NotificationOptions) error {
 	return f.SendNotification(options)
 }
-func (f *fakeNotificationPlatform) RemoveNotification(identifier string) error {
+func (f *fakeNotificationPlatform) RemoveDeliveredNotification(identifier string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.removed = append(f.removed, identifier)

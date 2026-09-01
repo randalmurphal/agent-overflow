@@ -98,7 +98,8 @@ func (n *launcherNotificationService) ServiceShutdown() error {
 //
 // Retraction degrades to nothing on this platform and that is deliberate:
 // wintoast exposes no call that pulls a delivered toast back out of the
-// Action Center, so Wails' RemoveNotification answers nil without acting.
+// Action Center, so Wails' RemoveDeliveredNotification answers nil without
+// acting.
 // The alternative — refusing the retraction, or logging it as a failure —
 // would turn a platform's limit into an error the user sees, for an
 // operation whose whole purpose is to make things quieter. UpdateNotification
@@ -111,8 +112,12 @@ func (n *launcherNotificationService) present(send notify.Send) error {
 	if unavailableErr != nil {
 		return unavailableErr
 	}
+	// RemoveDeliveredNotification, matching the desktop presenter's seam:
+	// the vendored RemoveNotification beside it is Linux-only, and using one
+	// name for the class everywhere is what keeps a platform-support change
+	// in the fork from splitting the two presenters' behavior.
 	if send.Retract {
-		return n.service.RemoveNotification(send.ID)
+		return n.service.RemoveDeliveredNotification(send.ID)
 	}
 	data, err := notify.TargetToMap(send.Target)
 	if err != nil {

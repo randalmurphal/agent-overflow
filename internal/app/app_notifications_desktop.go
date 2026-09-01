@@ -25,12 +25,20 @@ import (
 // to write here — the `*_darwin.go` / `*_windows.go` convention applies where
 // we own the mechanism, and here the vendored tree already does.
 //
-// UpdateNotification and RemoveNotification are on the seam because
+// UpdateNotification and RemoveDeliveredNotification are on the seam because
 // retraction is (docs/specs/remote-access.md §9). Their platform support is
 // uneven and the caller must not care: Linux closes the D-Bus notification
 // and re-posts with `replaces_id`, macOS removes the delivered notification,
 // and Windows answers nil without doing anything (wintoast exposes no
 // retract-from-Action-Center call). Degrading silently is the contract.
+//
+// RemoveDeliveredNotification BY NAME, not the similarly-shaped
+// RemoveNotification beside it in the vendored service: that one is a
+// documented nil stub on macOS (only Linux implements it), so retracting
+// through it would no-op on the one desktop that can actually pull a
+// delivered banner back. RemoveDeliveredNotification is real on macOS,
+// the identical D-Bus close on Linux, and the same nil stub on Windows —
+// a strict superset.
 type notificationPlatformService interface {
 	ServiceName() string
 	ServiceStartup(context.Context, application.ServiceOptions) error
@@ -38,7 +46,7 @@ type notificationPlatformService interface {
 	RequestNotificationAuthorization() (bool, error)
 	SendNotification(notifications.NotificationOptions) error
 	UpdateNotification(notifications.NotificationOptions) error
-	RemoveNotification(identifier string) error
+	RemoveDeliveredNotification(identifier string) error
 	OnNotificationResponse(func(notifications.NotificationResult))
 }
 
@@ -168,7 +176,7 @@ func (n *desktopNotificationService) send(payload notify.Send) error {
 	}
 
 	if payload.Retract {
-		return n.service.RemoveNotification(payload.ID)
+		return n.service.RemoveDeliveredNotification(payload.ID)
 	}
 	data, err := notify.TargetToMap(payload.Target)
 	if err != nil {

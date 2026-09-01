@@ -90,11 +90,13 @@ validates what it is handed rather than trusting the sender.
   notification.
 - **Retraction degrades to nothing on Windows, silently, on purpose.**
   wintoast exposes no call that pulls a delivered toast back out of the Action
-  Center, so Wails' `RemoveNotification` answers nil without acting. Refusing
-  the retraction, or logging it as a failure, would turn a platform limit into
-  an error the user sees — for an operation whose whole purpose is to make
-  things quieter. Linux (D-Bus `CloseNotification` + `replaces_id`) and macOS
-  (remove the delivered notification) do act.
+  Center, so Wails' `RemoveDeliveredNotification` answers nil without acting.
+  Refusing the retraction, or logging it as a failure, would turn a platform
+  limit into an error the user sees — for an operation whose whole purpose is
+  to make things quieter. Linux (D-Bus `CloseNotification` + `replaces_id`)
+  and macOS (remove the delivered notification) do act — through
+  `RemoveDeliveredNotification`, never the similarly-shaped
+  `RemoveNotification`, which is a nil stub everywhere but Linux.
 
 ## Self-update: acting on an install directive
 
