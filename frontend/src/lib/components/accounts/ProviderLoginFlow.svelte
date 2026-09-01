@@ -130,7 +130,7 @@
           <p class="mt-0.5 text-[0.6875rem] text-fg-hint">Checking with {label}…</p>
         {:else if waitingOnBrowser}
           <p class="mt-0.5 text-[0.6875rem] text-fg-hint">
-            Waiting for you to finish signing in in the browser.
+            Waiting for the sign-in to finish in the browser.
           </p>
         {:else if wantsPastedCode}
           <p class="mt-0.5 text-[0.6875rem] text-fg-hint">

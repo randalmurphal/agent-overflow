@@ -241,6 +241,11 @@ func (m *Manager) StartProviderLogin(providerName string, method LoginMethod) (L
 	if err != nil {
 		joined := errors.Join(err, run.teardown())
 		m.settleLoginRun(run, LoginPhaseFailed, loginProse(joined))
+		// driveLogin never ran, so this path owns the close. A cancel or the
+		// shutdown join can already be parked on run.done — the run was in
+		// the registry for the whole spawn — and every waiter waits forever
+		// without it.
+		close(run.done)
 		return m.ProviderLoginState(providerName), joined
 	}
 	state := m.publishLoginFlow(run, flow, notice)

@@ -58,11 +58,11 @@ type Deps struct {
 	// and has no other way to be finished.
 	LoginSpawnEnv func() map[string]string
 	HTTPClient    func() *http.Client
-	Sessions        SessionGateway
-	Probes          ProbeInvalidator
-	RateLimits      RateLimitSink
-	Backoff         UsageBackoff
-	Accounts        AccountSink
+	Sessions      SessionGateway
+	Probes        ProbeInvalidator
+	RateLimits    RateLimitSink
+	Backoff       UsageBackoff
+	Accounts      AccountSink
 }
 
 // Manager owns the complete managed-account consistency boundary. Every
