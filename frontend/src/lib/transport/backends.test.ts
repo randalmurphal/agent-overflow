@@ -185,7 +185,7 @@ describe('subscribeEveryBackend', () => {
 describe('event origin across two backends', () => {
   it('stamps each event with the backend it was delivered on', () => {
     setBackendIdentityFromBootstrap(HOME_UUID, 'gen-1');
-    setBackendIdentityFromBootstrap(REMOTE_UUID, 'gen-1', 'laptop');
+    setBackendIdentityFromBootstrap(REMOTE_UUID, 'gen-1', 'Laptop', 'laptop');
     const remote = attachFake();
 
     const seen: Array<{ data: unknown; backendId: string }> = [];

@@ -12,6 +12,7 @@ import {
 import { getThreadById, replaceThread as replaceThreadInRegistry } from './threads.svelte';
 import { setGitStatusPaneBridge } from './gitStatusStore.svelte';
 import { workspaceKeyForThread } from '../utils/workspaceKey';
+import { setFocusedThreadResolver } from './selectedBackend.svelte';
 import { REVEAL_PANE_EVENT } from './eventNames';
 import {
   refreshWatchedThreads,
@@ -704,6 +705,14 @@ export function syncThread(thread: Thread): void {
 // decided whether a module-level event listener registered. Importing this
 // module is the whole wiring: no registration order, and no test reset that
 // can leave branch reconciliation unable to reach a pane.
+// The `selected` route's first question is which thread the person is
+// looking at (stores/selectedBackend.svelte). Armed here, at this module's
+// load, for the same reason the git-status bridge is: importing panes from
+// that leaf would close the `panes → thread → gitStatusStore → transport`
+// ring, and the failure mode would be an init order that decides whether
+// routing works.
+setFocusedThreadResolver(() => getFocusedPaneOrNull()?.threadId ?? null);
+
 setGitStatusPaneBridge({
   syncThread,
   reportWorkspaceError(workspaceKey, message) {

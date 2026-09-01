@@ -40,8 +40,14 @@ import {
   takePinnedBackend,
 } from './backends';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
-import { noteRowsFromCall, projectBackend, threadBackend } from './entityIndex';
+import {
+  noteFamilyRowsFromCall,
+  noteRowsFromCall,
+  projectBackend,
+  threadBackend,
+} from './entityIndex';
 import { METHOD_ROUTES, type MethodRoute } from './methodRoutes';
+import { familyBackend } from './methodFamilies';
 import { selectedBackend } from '../stores/selectedBackend.svelte';
 
 // CancellablePromise is the wrapper Wails-generated bindings always
@@ -178,6 +184,15 @@ function warnOnceForMethod(methodId: number, why: string): void {
  * beyond the two Map lookups the entity index costs.
  */
 function resolveRoute(methodId: number, args: unknown[]): BackendKey | null {
+  // The ID-FAMILY table first. 59 methods are keyed by an id that is
+  // neither a thread nor a project — a workflow item, an automation, a
+  // terminal, a subscription — and the generated table parks all of them
+  // on `home` because it has no vocabulary to infer them. Home is the
+  // right fallback but the wrong answer once one of them lives on a second
+  // machine, so an id the index KNOWS wins over the parked route; an id it
+  // does not know falls through and lands where it always did.
+  const owned = familyBackend(methodId, args);
+  if (owned !== undefined) return owned;
   const route: MethodRoute | undefined = METHOD_ROUTES[methodId];
   if (route === undefined) {
     warnOnceForMethod(methodId, 'has no route');
@@ -227,7 +242,19 @@ export const Call = {
         }),
       );
     }
-    return wrap(resolveTransport(target).callByID(methodId, args));
+    // Ids a routed call ANSWERS with are indexed too: a workflow item, a
+    // terminal and a subscription are only ever learned from the call that
+    // listed or minted them, and the next call about one has to know which
+    // machine that was. Only on the multi-backend path — the fast path
+    // above returns before any of this exists.
+    return wrap(
+      resolveTransport(target)
+        .callByID(methodId, args)
+        .then((result) => {
+          noteFamilyRowsFromCall(methodId, result, target);
+          return result;
+        }),
+    );
   },
   // ByName has no id to look up, so it takes the route every unclassified
   // call takes: the page's own backend. Nothing in the app calls it today;

@@ -19,7 +19,6 @@
 // exchange, on the same route, with the same cookie.
 
 import { setPageGrantsFromBootstrap } from './scopes';
-import { HOME_BACKEND } from './backendKey';
 import {
   publishManifestBackends,
   readBackendDescriptors,
@@ -172,26 +171,6 @@ export interface Bootstrap {
    * paired sees no hello at all, and a passkey is exactly how it gets in.
    */
   passkeysAvailable?: boolean;
-  /**
-   * This backend's display name, defaulting to its hostname
-   * (docs/specs/remote-access.md §10, "Machine name"). The hello frame
-   * carries the same value; the manifest carries it too because the
-   * machine picker has to be able to name a backend whose socket has not
-   * opened yet.
-   */
-  backendName?: string;
-  /**
-   * Backends the process that served this page PROXIES, each at a
-   * same-origin pair (`/ws/backend/<id>` + `/bootstrap/<id>.json`) — the
-   * `clientmode` proxy of spec §10's desktop realization. Absent, or
-   * empty, on every single-backend boot, which is every boot today.
-   *
-   * The array is the DEFAULT source of ./backends.ts's registry, not the
-   * only one: a phone shell supplies the same shape from client-local
-   * storage with remote `wss://` URLs. That is why the registry takes a
-   * function and this field merely fills it.
-   */
-  backends?: unknown;
 }
 
 // defaultBootstrap fetches /bootstrap.json from this page's own origin,
@@ -442,8 +421,8 @@ setBackendManifestFetcher(async (descriptor) => {
   setBackendIdentityFromBootstrap(
     data.backendId,
     data.replicaGeneration,
-    descriptor.id,
     data.backendName ?? descriptor.name,
+    descriptor.id,
   );
   return { ...data, wsUrl };
 });

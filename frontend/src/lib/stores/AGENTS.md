@@ -180,10 +180,19 @@ stops waking readers.
   answers per backend (`getTransportStatusFor(backendId)`) while every
   existing unkeyed reader still answers for HOME, so the offline banner is
   unchanged.
-- `selectedBackend.svelte.ts` is the composer's choice of machine to CREATE
-  on, and the only thing the `selected` route consults. It defaults to home
-  and falls back to home when the chosen backend detaches, so a
-  single-backend client never leaves that default. There is no UI on it
+- `selectedBackend.svelte.ts` is the only thing the `selected` route
+  consults, and it answers the machine the person is LOOKING AT: the
+  focused thread pane's thread, else the draft's chosen backend, else home.
+  The focused-thread leg is load-bearing rather than a nicety — several
+  `selected` methods take a workspace PATH (`UpdateThreadBranch`,
+  `GetWorkspaceActivity`, `GetLocalImageData`, `StartTerminal`), and a path
+  issued while a thread is on screen is about that thread's checkout;
+  routing it by a picker value would ask one machine about another's
+  directory and get a plausible answer. It falls back to home when the
+  chosen backend detaches, so a single-backend client never leaves the
+  default. `stores/panes.svelte.ts` arms the focused-pane resolver at its
+  own load — a function, not an import, because `panes → thread →
+  gitStatusStore → transport` already exists. There is no UI on the picker
   yet (wave 7c).
 - Thread and project ids are globally unique UUIDs minted by
   `internal/entityid`, not ids unique per backend. That is what lets a

@@ -181,7 +181,7 @@ describe('gitStatusStore — workspace keying', () => {
         scopes: ['git:operate'],
       }),
     );
-    setBackendIdentityFromBootstrap(REMOTE_UUID, 'gen-1', REMOTE);
+    setBackendIdentityFromBootstrap(REMOTE_UUID, 'gen-1', 'Laptop', REMOTE);
     __attachBackendForTest(
       {
         id: REMOTE,
