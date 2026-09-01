@@ -49,6 +49,7 @@ import {
   clampString,
   extractRpcIdFromOversizedFrame,
 } from './frames';
+import { isEntityFilteredChannel } from './entityFilteredChannels';
 import { getConnectionId, getDeviceId } from './clientIdentity';
 import { hasPairedSession, mintDialTicket } from './deviceSession';
 import { refreshGrantedScopes } from './scopes';
@@ -128,6 +129,21 @@ const TRANSPORT_GAP_CHANNEL = 'transport:gap';
 // Cap matches server-side MaxReplayChannels (frame.go) so the replay
 // frame can't exceed the wire limit.
 export const MAX_REPLAY_CHANNELS = 1024;
+
+// Mirrors internal/transport/frame.go MaxWatchThreads. A set past this is
+// refused by the backend, so the client checks it rather than sending one.
+export const MAX_WATCH_THREADS = 256;
+
+// sameStringList compares two already-sorted lists elementwise. The watch
+// set is small (panes on a screen), so a loop beats building a Set per
+// composition change on what is a per-pane-open path.
+function sameStringList(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
 // Native notification activation can arrive before the SPA makes its first
 // WS connection (notably a cold launch from a Windows toast). Seed this
 // channel at sequence zero so the first replay request drains the transport
@@ -746,6 +762,16 @@ export class WSClient {
   private notificationReplayPending = false;
   private notificationReplayBuffer: ServerEventFrame[] = [];
   private notificationCheckpointScope: string | null = null;
+  // The watched-thread set last WRITTEN to a socket, sorted. `null` means
+  // no watch frame has ever been sent, which is the wildcard state the
+  // backend starts every connection in — so a client that never composes a
+  // set behaves exactly as it did before the frame existed.
+  //
+  // The SENT set, not the desired one, because it is both the dedup key and
+  // what has to be restated after a reconnect. A send that failed leaves
+  // this holding the previous value, so the next composition change differs
+  // from it and re-sends.
+  private watchedThreads: string[] | null = null;
 
   constructor(opts: WSClientOptions = {}) {
     this.fetchBootstrap = opts.bootstrap ?? defaultBootstrap;
@@ -877,6 +903,49 @@ export class WSClient {
         this.subscribers.delete(channel);
       }
     };
+  }
+
+  /**
+   * Name the threads this connection is looking at, narrowing the
+   * entity-filtered channels (./entityFilteredChannels.ts) server-side.
+   *
+   * The set is ABSOLUTE and idempotent: an identical set sends nothing, and
+   * an EMPTY one is a legal value meaning "no panes open". Composed from
+   * pane EXISTENCE and never from visibility — an off-screen pane, a hidden
+   * document and a background tab all keep watching, because a pane that
+   * stopped receiving would render wrongly the moment it is looked at.
+   *
+   * Nothing here is authorization. It reduces what this client asks to be
+   * sent; what it is ALLOWED to be sent is the per-connection origin and
+   * grant filters, which the backend applies regardless.
+   *
+   * Returns silently when disconnected: the set is retained and restated on
+   * the next open, ahead of the replay frame.
+   */
+  setWatchedThreads(threadIds: readonly string[]): void {
+    // Sorted + deduped so the dedup compare is a plain sequence equality
+    // and the wire bytes are stable for an unchanged composition — pane
+    // registries iterate in insertion order, which reshuffles on a reorder
+    // that changes nothing about what is being watched.
+    const next = [...new Set(threadIds)].sort();
+    if (next.length > MAX_WATCH_THREADS) {
+      // Unreachable by construction: the set is bounded by the number of
+      // open panes and the size of the discussion rosters they mount, both
+      // orders of magnitude below this. If it ever happens, the backend
+      // would refuse the frame anyway, so report it and leave the previous
+      // set standing rather than sending a truncated one — a truncated set
+      // silently stops watching a thread that IS open, which is the one
+      // outcome this whole mechanism must not produce.
+      console.warn(`wsClient: watch set of ${next.length} exceeds ${MAX_WATCH_THREADS}; not narrowing`);
+      this.diagnosticsSink?.(
+        'transport: watched-thread set exceeded the wire bound',
+        `${next.length} threads`,
+      );
+      return;
+    }
+    if (this.watchedThreads !== null && sameStringList(this.watchedThreads, next)) return;
+    this.watchedThreads = next;
+    this.sendFrame({ type: 'watch', threads: next });
   }
 
   /** Current transport status snapshot. Cheap; safe to call repeatedly. */
@@ -1549,6 +1618,15 @@ export class WSClient {
     // at its floor. handleSocketClose resets it once the connection
     // proved stable (BACKOFF_RESET_AFTER_MS).
     this.connectedAt = Date.now();
+    // Restate the watched set BEFORE the replay request, and on the same
+    // socket. The backend handles inbound frames in order on one read loop,
+    // so a watch written first is applied before the replay it precedes —
+    // which is what stops a reconnect replaying every watched channel's
+    // whole ring for threads this client stopped looking at. A connection
+    // that has composed no set skips this and stays wildcard.
+    if (this.watchedThreads !== null) {
+      this.sendFrame({ type: 'watch', threads: this.watchedThreads });
+    }
     // First-frame after open: replay any missed events. The server
     // only acts on this if the map is non-empty; it's still cheap
     // to send unconditionally since channel-by-channel reconciliation
@@ -2261,6 +2339,16 @@ export class WSClient {
       cursor !== undefined
       && cursor.epoch === this.connectionEpoch
       && evt.seq > cursor.seq + 1
+      // …unless the server is deliberately withholding this channel's
+      // frames for threads we did not name. A withheld frame still spent
+      // its channel's seq, so on a narrowed channel a forward skip is the
+      // NORMAL case and means nothing was lost — reading it as a drop would
+      // fire a full resync for every frame addressed to another thread.
+      // Both halves of the condition matter: the exemption applies only to
+      // channels the backend actually narrows, and only once this
+      // connection has armed a filter. Explicit `gap:true` markers are
+      // untouched; they are handled above, before this heuristic runs.
+      && !(this.watchedThreads !== null && isEntityFilteredChannel(evt.channel))
     ) {
       // Forward skip inside one connection: the events between the two
       // seqs existed and never reached us, because the server's fanout

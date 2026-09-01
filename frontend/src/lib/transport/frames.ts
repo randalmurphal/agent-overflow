@@ -107,7 +107,26 @@ export interface ClientReplayFrame {
   lastSeqByChannel: Record<string, number>;
 }
 
-export type ClientFrame = ClientRPCFrame | ClientReplayFrame;
+/**
+ * Name the threads this connection is looking at. The backend narrows the
+ * entity-filtered channels (./entityFilteredChannels.ts) to this set and
+ * leaves every other channel alone.
+ *
+ * `threads` is ABSOLUTE — each frame replaces the last, and an empty array
+ * is a legal, meaningful value meaning "no panes open". A connection that
+ * has never sent one receives everything, which is the default every client
+ * that does not speak this frame keeps.
+ *
+ * Its own frame type rather than a field on a subscribe frame: the SPA must
+ * never send a channel `subscribe`, because the backend counts those to
+ * decide whether a dedicated launcher bridge is attached.
+ */
+export interface ClientWatchFrame {
+  type: 'watch';
+  threads: string[];
+}
+
+export type ClientFrame = ClientRPCFrame | ClientReplayFrame | ClientWatchFrame;
 
 // Logged strings (channel names, error messages) get clamped before
 // reaching console / toast surfaces. Caps the worst-case noise from a
