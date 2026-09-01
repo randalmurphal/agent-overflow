@@ -1194,6 +1194,12 @@ func TestReplay_LocalAgentAsyncResume(t *testing.T) {
 	if rebindMeta["description"] != "Frontend transitive suppression fix" {
 		t.Fatalf("rebind meta.description = %v, want %q", rebindMeta["description"], "Frontend transitive suppression fix")
 	}
+	// The rebind envelope carries the ORIGINAL agent's subagent_type;
+	// the stamp is what lets the carrier row render the resumed agent's
+	// identity (frontend claudeResumeCarrierIdentity) without a lookup.
+	if rebindMeta["subagent_type"] != "general-purpose" {
+		t.Fatalf("rebind meta.subagent_type = %v, want %q", rebindMeta["subagent_type"], "general-purpose")
+	}
 
 	// The SendMessage ack (fixture line 8) carries no isAsync/
 	// async_launched marker of its own — {"success":true,"message":...,
@@ -1292,5 +1298,10 @@ func TestReplay_LocalAgentAsyncResume_ReconnectWithoutBinding(t *testing.T) {
 	}
 	if rebindMeta["description"] != "Frontend transitive suppression fix" {
 		t.Fatalf("reconnect rebind meta.description = %v, want %q", rebindMeta["description"], "Frontend transitive suppression fix")
+	}
+	// subagent_type is wire-sourced like description, so it too survives
+	// the reconnect edge where the in-memory binding is gone.
+	if rebindMeta["subagent_type"] != "general-purpose" {
+		t.Fatalf("reconnect rebind meta.subagent_type = %v, want %q", rebindMeta["subagent_type"], "general-purpose")
 	}
 }

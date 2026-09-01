@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   NO_LOADED_SUBAGENT_CHILDREN,
+  claudeResumeCarrierIdentity,
   isPotentialSubagentLaunch,
   subagentLaunchContextFrom,
   subagentLaunchInfo,
@@ -226,6 +227,59 @@ describe('subagentLaunchInfo — SendMessage resume carrier (claude-wire.md §E6
       background: true,
       name: 'Frontend transitive suppression fix',
     });
+  });
+
+  it('carries the original agent identity when the triage stamps are present', () => {
+    // Parser stamps subagent_type + description off the rebind
+    // task_started; triage copies subagent_model from the original
+    // launch row in the keep-running flip. With all three present the
+    // carrier renders exactly like the original launch: title-cased
+    // type as the name, model affix, description beside it.
+    const item = mkItem({
+      id: 'toolu_resume',
+      toolName: 'SendMessage',
+      isBackground: true,
+      summary: 'Agent: Frontend transitive suppression fix',
+      meta: meta({
+        task_id: 'a464e54e96a45cd0c',
+        resumes_tool_use_id: 'toolu_original',
+        description: 'Frontend transitive suppression fix',
+        subagent_type: 'general-purpose',
+        subagent_model: 'claude-opus-4-7',
+      }),
+    });
+
+    expect(subagentLaunchInfo(item, NO_CHILDREN)).toEqual({
+      kind: 'agent',
+      provider: 'claude',
+      background: true,
+      name: 'General Purpose',
+      model: 'claude-opus-4-7',
+      agentType: 'general-purpose',
+    });
+
+    expect(claudeResumeCarrierIdentity(item)).toEqual({
+      name: 'General Purpose',
+      agentType: 'general-purpose',
+      model: 'claude-opus-4-7',
+      description: 'Frontend transitive suppression fix',
+    });
+  });
+
+  it('suppresses the description line when it already is the name', () => {
+    // No subagent_type stamp: the description doubles as the name, so
+    // the identity's description is empty and no surface renders the
+    // same line twice.
+    const identity = claudeResumeCarrierIdentity(
+      mkItem({
+        id: 'toolu_resume',
+        toolName: 'SendMessage',
+        isBackground: true,
+        meta: meta({ task_id: 'a1', description: 'investigate the leak' }),
+      }),
+    );
+    expect(identity.name).toBe('investigate the leak');
+    expect(identity.description).toBe('');
   });
 
   it('falls back to un-prefixing the rewritten summary when no description was stamped', () => {

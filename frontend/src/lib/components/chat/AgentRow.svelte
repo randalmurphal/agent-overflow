@@ -54,6 +54,11 @@
     deriveClaudeSubagentModelLabel,
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
+  import {
+    claudeResumeCarrierIdentity,
+    isClaudeResumeCarrierItem,
+  } from '../../utils/subagentLaunch';
+  import { displayModelLabel } from '../../utils/modelLabels';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
@@ -96,9 +101,25 @@
   let statusMeta = $derived(parseJsonObject(effectiveStatusItem.payloadMeta));
   let agentToolName = $derived(effectiveDisplayItem.toolName === 'Task' ? 'Agent' : (effectiveDisplayItem.toolName ?? 'Agent'));
   let agentInputObject = $derived(readClaudeSubagentInput(summaryMeta, displayMeta));
-  let agentLabel = $derived(deriveClaudeSubagentLabel(agentInputObject, agentToolName));
-  let modelLabel = $derived(deriveClaudeSubagentModelLabel(agentInputObject, displayMeta, agentToolName));
-  let description = $derived(deriveClaudeSubagentDescription(agentInputObject));
+  // A §E6 resume carrier's identity (type / model / description) lives in
+  // its stamped meta, not its SendMessage input — the input only names
+  // the recipient agent id, which is noise to a reader.
+  let carrierIdentity = $derived(
+    isClaudeResumeCarrierItem(effectiveDisplayItem)
+      ? claudeResumeCarrierIdentity(effectiveDisplayItem)
+      : null,
+  );
+  let agentLabel = $derived(
+    carrierIdentity?.name ?? deriveClaudeSubagentLabel(agentInputObject, agentToolName),
+  );
+  let modelLabel = $derived(
+    carrierIdentity
+      ? (carrierIdentity.model ? displayModelLabel('claude', carrierIdentity.model) : '')
+      : deriveClaudeSubagentModelLabel(agentInputObject, displayMeta, agentToolName),
+  );
+  let description = $derived(
+    carrierIdentity ? carrierIdentity.description : deriveClaudeSubagentDescription(agentInputObject),
+  );
   let inputPreview = $derived(
     description ||
       presentToolCardInputPreview(effectiveDisplayItem, summaryMeta, displayMeta, paneWorkspacePath(pane)).text,

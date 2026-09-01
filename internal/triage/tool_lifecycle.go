@@ -391,7 +391,11 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 		if meta.IsBackground && !launch.IsBackground {
 			launch.IsBackground = true
 			launch.UpdatedAt = now
-			launch.Summary = r.resumeCarrierSummary(evt.ThreadID, launch.Summary, launch.Meta)
+			var identityPatch json.RawMessage
+			launch.Summary, identityPatch = r.resumeCarrierIdentity(evt.ThreadID, launch)
+			if len(identityPatch) > 0 {
+				launch.Meta = mergeItemMetaJSON(launch.Meta, identityPatch)
+			}
 			if meta.WatchTask {
 				// Selective one-key merge — the full completion meta
 				// (tool_result echo, tool_use_result) must NOT bloat the
@@ -1396,35 +1400,65 @@ func backgroundTerminalStatus(meta backgroundTaskTerminalMeta) string {
 	}
 }
 
-// resumeCarrierSummary rewrites a resume carrier's Summary to the
-// agent-centric form ("Agent: <description>") so the row — and the
+// resumeCarrierIdentity rewrites a resume carrier's Summary to the
+// agent-centric form ("Agent: <description>") — so the row and the
 // "-> done" completion sibling buildBackgroundTerminalSummary derives
-// from it — reads as the resumed agent's own completion instead of
-// "SendMessage -> done". Only triggers when metaJSON carries
-// resumes_tool_use_id (stamped by the parser's task_started resume
-// path — see ToolStartMeta.ResumesToolUseID); a carrier whose original
-// launch predates this parser instance (the reconnect edge in
-// parse_system.go's task_started case) has no resumes_tool_use_id and
-// keeps its default launch Summary, since there is no anchor id to
-// resolve and using bare description alone risks mislabeling a
-// non-resume edge case that happened to hit the same detection path.
+// from it read as the resumed agent's own completion instead of
+// "SendMessage -> done" — and returns a meta patch carrying the
+// ORIGINAL agent's identity (subagent_type / subagent_model /
+// description) for the carrier row, so every surface that renders the
+// carrier (timeline leaf, background tray, completion card) reads the
+// resumed agent's type and model off the carrier's own persisted meta
+// instead of the resuming tool's raw input or the parent thread's
+// model.
 //
-// Prefers the original launch row's own Summary (it already reads
-// "Agent: <description>" from its own launch) so any later
+// A carrier is recognized by the parser's resume stamps
+// (resumes_tool_use_id, or the wire-sourced description /
+// subagent_type — parse_system.go writes any of them ONLY on its
+// resume-detection path), so ordinary background launches flowing
+// through the same keep-running flip (§E5 async acks,
+// run_in_background, Monitor) return unchanged without a lookup.
+//
+// The original launch resolves through resumes_tool_use_id when the
+// parser held the binding, and otherwise — the reconnect edge, where
+// a fresh parser never saw the launch — through the persisted
+// items.meta.task_id stamp (FindOriginalAgentLaunchByTaskID, which
+// excludes the carrier's own row: the rebind stamped the same task_id
+// there). Prefers the original launch row's own Summary (it already
+// reads "Agent: <description>" from its own launch) so any later
 // normalization of that format stays in one place; falls back to
-// "Agent: " + description when the original row lookup misses (e.g.
-// retention already pruned it).
-func (r *Router) resumeCarrierSummary(threadID, currentSummary, metaJSON string) string {
-	resumeMeta := DecodeToolStartMeta(json.RawMessage(metaJSON))
-	if resumeMeta.ResumesToolUseID == "" {
-		return currentSummary
+// "Agent: " + description when both lookups miss (e.g. retention
+// already pruned the launch).
+func (r *Router) resumeCarrierIdentity(threadID string, launch store.Item) (string, json.RawMessage) {
+	carrierMeta := DecodeToolStartMeta(json.RawMessage(launch.Meta))
+	if carrierMeta.ResumesToolUseID == "" && carrierMeta.Description == "" && carrierMeta.SubagentType == "" {
+		return launch.Summary, nil
 	}
-	if original, found, err := r.store.GetThreadItem(threadID, resumeMeta.ResumesToolUseID); err != nil {
-		log.Printf("triage: resume carrier original-launch lookup %s: %v", resumeMeta.ResumesToolUseID, err)
-	} else if found && strings.TrimSpace(original.Summary) != "" {
-		return original.Summary
+
+	var original store.Item
+	var found bool
+	if carrierMeta.ResumesToolUseID != "" {
+		var err error
+		original, found, err = r.store.GetThreadItem(threadID, carrierMeta.ResumesToolUseID)
+		if err != nil {
+			log.Printf("triage: resume carrier original-launch lookup %s: %v", carrierMeta.ResumesToolUseID, err)
+		}
 	}
-	if resumeMeta.Description != "" {
+	if !found && carrierMeta.TaskID != "" {
+		var err error
+		original, found, err = r.store.FindOriginalAgentLaunchByTaskID(threadID, carrierMeta.TaskID, launch.ID)
+		if err != nil {
+			log.Printf("triage: resume carrier task-id launch lookup %s: %v", carrierMeta.TaskID, err)
+		}
+	}
+	if found && original.Kind != itemKindToolCall {
+		found = false
+	}
+
+	summary := launch.Summary
+	if found && strings.TrimSpace(original.Summary) != "" {
+		summary = original.Summary
+	} else if carrierMeta.Description != "" {
 		// Intentional duplication of the "Agent: <preview>" shape the
 		// launch path derives via BuildToolCallSummary+toolInputPreview
 		// — there is no input JSON here to feed that pipeline, only the
@@ -1432,9 +1466,49 @@ func (r *Router) resumeCarrierSummary(threadID, currentSummary, metaJSON string)
 		// the same way toolInputPreview bounds every other summary
 		// (80 runes, newlines stripped) so a model-chosen description
 		// can't write an unbounded items.summary.
-		return "Agent: " + truncatePreview(resumeMeta.Description, 80)
+		summary = "Agent: " + truncatePreview(carrierMeta.Description, 80)
 	}
-	return currentSummary
+
+	patch := map[string]string{}
+	if found {
+		origMeta := DecodeToolStartMeta(json.RawMessage(original.Meta))
+		var origInput struct {
+			Model        string `json:"model"`
+			SubagentType string `json:"subagent_type"`
+			Description  string `json:"description"`
+		}
+		if len(origMeta.Input) > 0 {
+			// Undecodable input degrades to no patch fields, like
+			// DecodeToolStartMeta's own garbage rule.
+			_ = json.Unmarshal(origMeta.Input, &origInput)
+		}
+		// subagent_model: the Subn stamp from the child's own assistant
+		// envelopes (which stay parented to the ORIGINAL launch across
+		// resume rounds, claude-wire.md §E6) is authoritative; the
+		// launch input's model alias covers a child that never streamed
+		// an envelope before the resume.
+		if carrierMeta.SubagentModel == "" {
+			if model := origMeta.SubagentModel; model != "" {
+				patch["subagent_model"] = model
+			} else if origInput.Model != "" {
+				patch["subagent_model"] = origInput.Model
+			}
+		}
+		if carrierMeta.SubagentType == "" && origInput.SubagentType != "" {
+			patch["subagent_type"] = origInput.SubagentType
+		}
+		if carrierMeta.Description == "" && origInput.Description != "" {
+			patch["description"] = truncatePreview(origInput.Description, 80)
+		}
+	}
+	if len(patch) == 0 {
+		return summary, nil
+	}
+	encoded, err := json.Marshal(patch)
+	if err != nil {
+		return summary, nil
+	}
+	return summary, encoded
 }
 
 // buildBackgroundTerminalSummary produces the sibling row's summary.

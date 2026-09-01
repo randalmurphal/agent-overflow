@@ -43,6 +43,7 @@ import { extractClaudeTaskID } from './claudeTaskMeta';
 import {
   deriveClaudeSubagentLabel,
   readClaudeSubagentInputFromStrings,
+  titleCaseClaudeSubagentToken,
 } from './claudeSubagentLabel';
 
 interface ParsedCodexSubagentInput {
@@ -339,24 +340,63 @@ function forkedSkillName(item: Item): string {
 }
 
 /**
- * Name for a §E6 resume carrier. The resuming tool is a `SendMessage`, so
- * its own input says nothing about the agent; the parser stamps the
- * ORIGINAL agent's `description` off the rebind `task_started`, and
- * triage rewrites the row Summary to `Agent: <description>` from the
- * original launch. Read the stamp first, fall back to un-prefixing the
- * summary, and never render the bare tool name.
+ * A §E6 resume carrier: the `SendMessage` tool_use Claude rebound an idle
+ * async agent's task onto. The parser marks it backgrounded and triage
+ * stamps the rebound `task_id`, so "backgrounded SendMessage carrying a
+ * task id" is the carrier and nothing else is — an ordinary SendMessage
+ * (a cross-session peer message) is neither and stays a plain tool row.
+ */
+export function isClaudeResumeCarrierItem(item: Item): boolean {
+  if (item.kind !== 'tool_call') return false;
+  if ((item.toolName ?? '').trim() !== 'SendMessage') return false;
+  if (item.isBackground !== true) return false;
+  return extractClaudeTaskID(item) !== null;
+}
+
+export interface ClaudeResumeCarrierIdentity {
+  /** Display name: title-cased `subagent_type`, else the description. */
+  name: string;
+  /** The ORIGINAL agent's `subagent_type` slug ('' when unstamped). */
+  agentType: string;
+  /** The ORIGINAL agent's model ('' when unstamped). */
+  model: string;
+  /**
+   * The one-line task beside the name — the original launch description.
+   * Empty when the description already IS the name (no `subagent_type`
+   * stamp), so a card never renders the same line twice.
+   */
+  description: string;
+}
+
+/**
+ * Identity for a §E6 resume carrier. The resuming tool is a
+ * `SendMessage`, so its own input says nothing about the agent; the
+ * parser stamps the ORIGINAL agent's `subagent_type` + `description` off
+ * the rebind `task_started`, triage copies `subagent_model` from the
+ * original launch row in the keep-running flip, and the row Summary is
+ * rewritten to `Agent: <description>`. Read the stamps first, fall back
+ * to un-prefixing the summary, and never render the bare tool name.
  */
 const RESUME_SUMMARY_PREFIX = 'Agent: ';
 
-function resumedAgentName(item: Item): string {
-  const description = parseJsonObject(item.meta)?.description;
-  if (typeof description === 'string' && description.trim()) return description.trim();
-  const summary = (item.summary ?? '').trim();
-  if (summary.startsWith(RESUME_SUMMARY_PREFIX)) {
-    const stripped = summary.slice(RESUME_SUMMARY_PREFIX.length).trim();
-    if (stripped) return stripped;
+export function claudeResumeCarrierIdentity(item: Item): ClaudeResumeCarrierIdentity {
+  const meta = parseJsonObject(item.meta);
+  const agentType =
+    typeof meta?.subagent_type === 'string' ? meta.subagent_type.trim() : '';
+  const model =
+    typeof meta?.subagent_model === 'string' ? meta.subagent_model.trim() : '';
+  let description =
+    typeof meta?.description === 'string' ? meta.description.trim() : '';
+  if (!description) {
+    const summary = (item.summary ?? '').trim();
+    if (summary.startsWith(RESUME_SUMMARY_PREFIX)) {
+      description = summary.slice(RESUME_SUMMARY_PREFIX.length).trim();
+    }
   }
-  return 'Agent';
+  const name = agentType
+    ? titleCaseClaudeSubagentToken(agentType)
+    : description || 'Agent';
+  return { name, agentType, model, description: agentType ? description : '' };
 }
 
 /**
@@ -421,13 +461,15 @@ export function subagentLaunchInfo(
   if (toolName === 'SendMessage') {
     // A resume carrier is backgrounded AND bound to the resumed agent's
     // task id; an ordinary SendMessage is neither.
-    if (item.isBackground !== true) return null;
-    if (!extractClaudeTaskID(item)) return null;
+    if (!isClaudeResumeCarrierItem(item)) return null;
+    const identity = claudeResumeCarrierIdentity(item);
     return {
       kind: 'agent',
       provider: 'claude',
       background: true,
-      name: resumedAgentName(item),
+      name: identity.name,
+      ...(identity.model ? { model: identity.model } : {}),
+      ...(identity.agentType ? { agentType: identity.agentType } : {}),
     };
   }
 

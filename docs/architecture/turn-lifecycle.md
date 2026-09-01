@@ -237,14 +237,23 @@ round's **background carrier**.
   `tool_result` ack, which carries no async marker of its own,
   still emits `EventToolComplete{is_background:true}`.
 - Triage's keep-running flip (§1 above, the `!launch.IsBackground` →
-  `IsBackground` transition) additionally rewrites the carrier's
-  `Summary` to the resumed agent's identity (`"Agent: <description>"`,
-  preferring the original launch row's own Summary when it's still
-  around) whenever the launch row's meta carries
-  `resumes_tool_use_id`, stamped by the parser's enriched
-  meta-only `EventToolStart` for the rebind `task_started`. Without
-  this the carrier would read "SendMessage -> done" instead of
-  identifying the agent it's resuming.
+  `IsBackground` transition) additionally resolves the ORIGINAL launch
+  row (`resumeCarrierIdentity`, tool_lifecycle.go) — by
+  `resumes_tool_use_id` when the parser held the binding, else by the
+  persisted `items.meta.task_id` stamp
+  (`store.FindOriginalAgentLaunchByTaskID`, oldest row excluding the
+  carrier itself, which carries the same task_id by then), so the
+  reconnect edge resolves too. It rewrites the carrier's `Summary` to
+  the resumed agent's identity (`"Agent: <description>"`, preferring
+  the original launch row's own Summary when it's still around) and
+  copies the original's `subagent_model` (Subn stamp first, launch
+  `input.model` alias second) plus any missing
+  `subagent_type`/`description` onto the carrier's meta. The parser
+  already stamps wire-sourced `description` + `subagent_type` from the
+  rebind `task_started` via its enriched meta-only `EventToolStart`.
+  Without all this the carrier would read "SendMessage -> done" with
+  the raw recipient id instead of identifying the agent it's resuming,
+  and its card would inherit the parent thread's model.
 - Round 2's `task_updated`/`task_notification` then write a NEW
   `tool_completion` sibling under the carrier
   (`"complete:"+carrierID`, distinct from round 1's

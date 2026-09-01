@@ -1821,23 +1821,34 @@ both handlers already use. The parser additionally:
    has no async marker.
 2. Enriches the meta-only `EventToolStart` the rebind `task_started`
    emits with `resumes_tool_use_id` (the previously-bound tool_use, which is
-   the original launch) and the wire's `description`. The envelope
-   also carries `subagent_type`, but nothing downstream consumes it,
-   so the parser deliberately does not stamp it.
+   the original launch) and the wire's `description` +
+   `subagent_type` — both wire-sourced, so both survive the
+   reconnect edge below where `resumes_tool_use_id` is unknown.
 
 Triage's keep-running flip then marks the carrier row backgrounded +
-running, and (because its meta carries `resumes_tool_use_id`) it
-rewrites its Summary to the original launch's own Summary (or
-`"Agent: " + description` as a fallback), so the carrier reads
-"Agent: Frontend transitive suppression fix" instead of "SendMessage:
-…". Round 2's `task_updated`/`task_notification` then write a NEW
+running and resolves the ORIGINAL launch row — through
+`resumes_tool_use_id`, or through the persisted `items.meta.task_id`
+stamp when that is absent (`FindOriginalAgentLaunchByTaskID`: oldest
+row with the task_id, the carrier's own row excluded since the rebind
+stamped the same id there). It rewrites the carrier's Summary to the
+original launch's own Summary (or `"Agent: " + description` as a
+fallback), so the carrier reads "Agent: Frontend transitive
+suppression fix" instead of "SendMessage: …", and copies the
+original's `subagent_model` (the Subn stamp, else the launch
+`input.model` alias) plus any missing `subagent_type`/`description`
+onto the carrier meta — which is what lets the frontend render the
+carrier row, tray entry and completion card with the resumed agent's
+own type and model (`claudeResumeCarrierIdentity`,
+frontend `utils/subagentLaunch.ts`) instead of the raw recipient id
+and the parent thread's model. Round 2's
+`task_updated`/`task_notification` then write a NEW
 `tool_completion` sibling under the carrier (`complete:<carrierID>`,
 distinct from round 1's `complete:<originalLaunchID>`), which
 `buildBackgroundTerminalSummary` renders as "Agent: Frontend
 transitive suppression fix -> done", indistinguishable from any other
 backgrounded agent completion. See
 [`turn-lifecycle.md §Task lifecycle`](../architecture/turn-lifecycle.md#2-task-lifecycle-claude-only)
-and `internal/triage/tool_lifecycle.go`'s `resumeCarrierSummary`.
+and `internal/triage/tool_lifecycle.go`'s `resumeCarrierIdentity`.
 
 Why this matters operationally: AO's idle-session reaper closes a
 quiet session unless `ListRunningBackgroundToolCalls` is non-empty.
@@ -1857,8 +1868,10 @@ tool_use that was never observed as the launch tool (`Agent`, or
 `Task` on older builds, per `isAgentLaunchToolName` in
 `parse_assistant.go`) is still classified as a resume, so the carrier
 marking survives the restart even though `resumes_tool_use_id` is
-unknown (omitted) and the Summary rewrite has no anchor row to look
-up. A fresh launch cannot false-positive into this rule: parser
+unknown (omitted) — triage's Summary rewrite and identity copy still
+resolve the original launch through its persisted
+`items.meta.task_id` stamp, so the parser restart costs nothing
+downstream. A fresh launch cannot false-positive into this rule: parser
 lifetime == CLI process lifetime (stdio), and the assistant envelope
 carrying the launch tool_use always precedes its `task_started` on
 the same sequentially-parsed stream, so the launch-tool marker is

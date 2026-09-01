@@ -204,7 +204,9 @@ export function classifyToolName(
       // Deliberately NOT `isSubagent` — a peer is a separate, independently
       // driven session, not a child this turn spawned and waits on, and
       // marking it as one would put it on the subagent rail with a
-      // lifecycle nothing here owns.
+      // lifecycle nothing here owns. A §E6 resume CARRIER never reaches
+      // this classifier: toolPresentation routes it to the agent
+      // presentation (isClaudeResumeCarrierItem) before header lookup.
       return {
         icon: "speech-bubble",
         label: "message",

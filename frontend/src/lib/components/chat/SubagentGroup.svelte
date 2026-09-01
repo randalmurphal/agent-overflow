@@ -80,9 +80,11 @@
     type TimelineNode,
   } from '../../utils/subagentGrouping';
   import {
+    claudeResumeCarrierIdentity,
     codexCompletionPreview,
     codexSubagentLaunchInfo,
     codexSubagentTaskDescription,
+    isClaudeResumeCarrierItem,
     isCodexAgentLaunchItem,
     launchRunsDetached,
     subagentLaunchInfo,
@@ -257,11 +259,15 @@
   // The one-line task beside the title. Codex spawns read their OWN
   // shape (V1's plaintext prompt; V2 adds nothing, because its prompt is
   // encrypted and the label already is the task name it falls back to);
+  // a resume carrier reads the ORIGINAL agent's description off its
+  // stamped meta (its SendMessage input only names the recipient id);
   // everything else reads the Claude input block.
   let inputDescription = $derived(
     isCodexAgentLaunchItem(parent)
       ? codexSubagentTaskDescription(codexSubagentLaunchInfo(parent))
-      : deriveClaudeSubagentDescription(inputObject),
+      : isClaudeResumeCarrierItem(parent)
+        ? claudeResumeCarrierIdentity(parent).description
+        : deriveClaudeSubagentDescription(inputObject),
   );
 
   // ---- Status visualization (matches GenericToolCallRow) -----------

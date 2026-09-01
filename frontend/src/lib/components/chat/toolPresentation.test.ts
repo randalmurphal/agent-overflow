@@ -105,6 +105,49 @@ describe('resolveToolPresentation', () => {
     }
   });
 
+  it('routes a SendMessage resume carrier to agent presentation on both surfaces', () => {
+    // §E6: a backgrounded SendMessage bound to a task id is the resumed
+    // agent's carrier row, not a peer message — it renders as an agent
+    // leaf in the timeline and in the background tray.
+    const carrier = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      toolName: 'SendMessage',
+      isBackground: true,
+      summary: 'Agent: Frontend transitive suppression fix',
+      meta: JSON.stringify({
+        task_id: 'a464e54e96a45cd0c',
+        subagent_type: 'general-purpose',
+        subagent_model: 'claude-opus-4-7',
+        description: 'Frontend transitive suppression fix',
+      }),
+    });
+
+    expect(resolveToolPresentation({ item: carrier, provider: 'claude' }).kind).toBe('agent');
+    expect(
+      resolveToolPresentation({
+        item: carrier,
+        provider: 'claude',
+        surface: 'tray',
+        displayItem: carrier,
+        statusItem: carrier,
+        outputItem: carrier,
+      }).kind,
+    ).toBe('agent');
+  });
+
+  it('keeps an ordinary SendMessage (a peer message) on the generic path', () => {
+    const peer = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'SendMessage',
+      summary: 'SendMessage: hello',
+      meta: JSON.stringify({ input: { to: 'other-session', message: 'hello' } }),
+    });
+
+    expect(resolveToolPresentation({ item: peer, provider: 'claude' }).kind).toBe('generic');
+  });
+
   it('keeps non-Codex collab_agent on the generic presentation path', () => {
     const item = makeItem({
       kind: 'tool_call',
