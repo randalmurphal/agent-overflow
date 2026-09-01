@@ -46,6 +46,9 @@ var topLevelCommands = []topLevelCommand{
 		}
 		return exitOK
 	}},
+	{name: "service", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
+		return serviceCommand(args, hostServiceEnv(lookupEnv), stdout, stderr)
+	}},
 	{name: "workflow", run: func(args []string, configRoot string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 		return runWorkflow(args, configRoot, lookupEnv, stdout, stderr)
 	}},

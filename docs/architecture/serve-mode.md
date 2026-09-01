@@ -142,6 +142,78 @@ Do that once, then start the service. After the first device exists, every
 later device is paired from Settings → Access on the device you already
 have, and the console never says anything again.
 
+## Running it as a service
+
+```
+agent-overflow service install [--listen <host:port>] [--binary <path>]
+agent-overflow service uninstall
+agent-overflow service status
+```
+
+`install` writes the unit file and tells the platform's service manager to run
+it from now on. Running it again replaces what is installed. `status` reports
+what the manager says, and exits 1 when the backend is not running, so it reads
+in a shell conditional. `uninstall` stops the service and deletes the unit and
+NOTHING else — the config root, the history and the paired devices are all
+still there, and installing again picks them back up.
+
+**Pair your first device before installing.** A service manager gives the
+backend no terminal, and the console enrollment above needs one. Run
+`agent-overflow serve` by hand, pair, Ctrl-C, then install.
+
+| Platform | What gets installed |
+|---|---|
+| Linux | A systemd USER unit at `$XDG_CONFIG_HOME/systemd/user/agent-overflow.service` (`~/.config/...` by default). `Restart=on-failure`, `WantedBy=default.target`. |
+| macOS | A launchd LaunchAgent at `~/Library/LaunchAgents/com.agentoverflow.serve.plist`, `RunAtLoad` with `KeepAlive` on a bad exit. |
+| Windows | Refused, naming the reason: the Windows install is a launcher that already supervises its backend inside WSL. Install the service INSIDE the WSL distribution, from the Linux binary there. |
+
+`Restart=on-failure` and not `always`, on both platforms: a clean exit is you
+stopping the backend, and a supervisor that restarts one of those cannot be
+stopped.
+
+### What a user service does when nobody is logged in
+
+This is the part that surprises people, and it is different on each platform.
+
+On **Linux**, a systemd user service lives in your login session. It stops when
+your last session on the machine ends and starts again when you log in — so a
+server you reach only over SSH is not serving between logins. Turn that off:
+
+```sh
+loginctl enable-linger $USER
+```
+
+`install` does not run it for you. Lingering changes how your session behaves
+for everything on the machine, so it is your call, not the installer's. The
+install output names the command.
+
+On **macOS**, a LaunchAgent runs in the GUI login session. A Mac that reboots to
+the login window is not serving until somebody signs in. There is no lingering
+equivalent for a per-user agent; a Mac that must serve unattended needs
+automatic login, or a different arrangement than this command installs.
+
+Logs go where the platform puts them:
+
+```sh
+journalctl --user -u agent-overflow -f       # Linux
+tail -f ~/Library/Logs/agent-overflow-serve.log   # macOS
+```
+
+### The two flags
+
+`--binary <path>` names the executable the unit starts. It defaults to the
+running binary's own resolved path, which is right for the usual case of one
+file on `PATH`. Name a path instead when the file you actually maintain is
+somewhere else — a symlink you repoint on upgrade, for instance, since the
+default resolves THROUGH it and would pin the service to today's target.
+
+`--listen <host:port>` is rarely what you want, and the reason is worth stating
+plainly: a flag in the unit overrides the saved network settings on every
+start. Settings → Network can then no longer move the backend — the setting
+changes, the flag wins, and nothing says why. Set the bind toggle and the port
+below instead, and keep `--listen` for a host whose address must be fixed
+outside the app.
+
 ## Bind and port
 
 Settings → Network holds both halves of the address, and a serve host

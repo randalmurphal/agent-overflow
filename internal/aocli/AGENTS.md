@@ -24,7 +24,7 @@ would create a verb that means two different things depending on which file you
 read. The operator-facing walkthrough is
 [docs/architecture/serve-mode.md](../../docs/architecture/serve-mode.md).
 
-The CLI has two halves:
+The CLI has three halves:
 
 - **Offline** (`agent-overflow workflow …`): scope discovery, definition
   validation, listing, scaffolding, and the embedded authoring schema. Needs no
@@ -33,6 +33,20 @@ The CLI has two halves:
   one HTTP POST per invocation against a running Agent Overflow, authenticated
   with the scoped credential the app injected into the calling agent's session
   (spec §5, D15).
+- **Host** (`agent-overflow service …`): manages the machine, not a backend. It
+  talks to no app and holds no credential — it writes a unit file and drives
+  the platform's service manager through `internal/serviceinstall`. `serve` is
+  the fourth host verb and the one that is not a row here.
+
+`service.go` resolves every host fact ONCE, into a `serviceEnv` it passes down
+(`hostServiceEnv` is the production reader). That is why its tests describe a
+machine rather than running on one, and why there is no package-level seam a
+test must remember to reset — a `service` test that reached the real host would
+enable a service on the developer's own login. `--help` works on a host where
+`os.Executable()` does not, which is why `serviceEnv` carries its two possible
+failures rather than resolving them eagerly. The unit-file rules, the injected
+`Runner`, and what install deliberately does not do live in
+[internal/serviceinstall](../serviceinstall/AGENTS.md).
 
 Workflow definition behavior belongs to `internal/workflow/def`, and starter
 content to `internal/workflow/starters`. This package discovers scopes, loads

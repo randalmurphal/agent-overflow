@@ -15,6 +15,13 @@ agent-overflow <command>
                                                main's entry dispatch, listed in the root usage
                                                because it is a verb a person types
                                                (docs/architecture/serve-mode.md)
+  service install [--listen <host:port>] [--binary <path>]
+  service uninstall
+  service status                               host commands: manage the machine's service
+                                               manager, talk to no app, hold no credential.
+                                               status exits 1 when it is not running. Refused on
+                                               Windows, where the launcher already supervises its
+                                               WSL backend (docs/architecture/serve-mode.md)
   workflow new|validate|list|schema            offline (each takes --config-root; put it after
                                                the subcommand: aocli's root FlagSet would accept
                                                a leading one, but the binary's entry router only

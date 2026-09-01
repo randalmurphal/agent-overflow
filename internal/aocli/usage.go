@@ -8,6 +8,9 @@ const rootUsage = `Usage: agent-overflow <command> [options]
 
 Host commands (run on the machine the backend lives on):
   serve              Run the backend with no window, for access from elsewhere
+  service install    Run that backend at login, and keep it running
+  service uninstall  Stop it and remove the service
+  service status     Report what the service manager says about it
 
 Offline commands (work anywhere):
   workflow new       Scaffold a workflow definition
@@ -29,6 +32,57 @@ answering.
 Put --config-root after the subcommand ("workflow validate --config-root …"):
 the app binary routes to these commands by their leading verb, so an invocation
 that starts with a flag never reaches them.
+`
+
+const serviceUsage = `Usage: agent-overflow service <command> [options]
+
+Commands:
+  install    Run "agent-overflow serve" at login, and keep it running
+  uninstall  Stop it and remove the service
+  status     Report what the service manager says about it
+
+Manages a per-user background service: a systemd user unit on Linux, a launchd
+LaunchAgent on macOS. On Windows the launcher already supervises its own
+backend inside WSL; install the service inside the WSL distribution instead.
+
+Pair it with "agent-overflow serve" run once by hand first: a service manager
+gives the backend no terminal, and pairing your FIRST device needs one.
+`
+
+const serviceInstallUsage = `Usage: agent-overflow service install [options]
+
+Options:
+  --binary <path>       the agent-overflow binary the service starts
+                        (defaults to this one)
+  --listen <host:port>  bind address to pass to serve
+
+Writes the unit file and tells the service manager to run it from now on.
+Running it again replaces what is installed.
+
+--binary defaults to the running binary's own resolved path. Name a path
+instead when the file you actually maintain is somewhere else — a symlink you
+replace on upgrade, for one, since the default resolves through it and would
+pin the service to today's target.
+
+--listen is rarely what you want. It overrides the saved network settings on
+every start, so Settings -> Network can no longer move the backend: the setting
+changes, the flag wins, and nothing says why. Set the bind toggle and the port
+in Settings -> Network instead, and keep this for a host where the address must
+be fixed outside the app.
+`
+
+const serviceUninstallUsage = `Usage: agent-overflow service uninstall
+
+Stops the service and removes its unit file. Nothing else is touched: the
+config root, the history and the paired devices are all still there, and
+installing again picks them back up.
+`
+
+const serviceStatusUsage = `Usage: agent-overflow service status
+
+Reports whether the service manager knows about the backend, whether it starts
+on its own, and whether it is up. Exits 1 when it is not running, so it reads
+in a shell conditional.
 `
 
 const workflowUsage = `Usage: agent-overflow workflow <command> [options]
