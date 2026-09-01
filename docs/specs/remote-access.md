@@ -894,6 +894,35 @@ reconnect loop. Wire spellings pinned by drift tests
 Five app-level integration tests drive pair→confirm→pinned-wss→RPC,
 view-only grants, fingerprint mismatch, revocation, and refresh reuse.
 
+**Wave 8d LANDED 2026-09-01 (2344e33c): the owned-domain path.**
+`internal/acmecert` obtains and renews the canonical domain's
+certificate over DNS-01 with `x/crypto/acme` directly (decided: no
+lego/certmagic/libdns; the DNS integration is a user-configured hook
+run as `<argv...> set|clear _acme-challenge.<domain> <value>`, own
+process group, timeout, output captured into the failure; persisted
+account key; set→validate→clear with clear-on-failure; tests drive a
+narrow `CA` fake, a real LE issuance is live-only). The transport's
+certificate is now resolved per handshake (`certsource.go`,
+`tls.Config.GetCertificate` over two atomic slots): SNI naming the
+canonical domain → the domain cert (ACME or the user's external
+cert/key pair, which WINS over issuance), everything else including
+SNI-less → the self-signed cert, so device pins never move; both slots
+swap live, no rebind. `internal/app`'s reconciler goroutine owns
+when: daily tick + kick on settings write / renew-now, 30-day renewal
+window, 5m→6h backoff, the serving cert never dropped on failure.
+Settings: `NetworkSettings` grew CanonicalDomain / ACMEDNSHook /
+ExternalCertFile+KeyFile (both-or-neither, absolute; domain with
+neither = the proxy-in-front deployment, allowed), riding the step-up
+SetNetworkSettings; read-only `TLSStatus` (serving kind, notAfter,
+last error) + "Check certificate now" (`//ao:scope host`, no step-up:
+config is what step-up gates). Share URL flips to `https://<domain>`
+only when the LISTENER completes a handshake for that exact name
+(`ServesDomain(name)`), Insecure false then. The Host guard's mode
+signal moved from origin-list emptiness to the BIND ADDRESS (the old
+signal 404'd LAN clients on a persisted-preference boot), and
+`Config.CanonicalHost` adds exactly one accepted DNS name inside the
+guard. Settings → Network grew the "Domain and HTTPS" block.
+
 Two supported paths; others are documented escape hatches, not built:
 
 1. **Owned domain + DNS-01**. DNS record → LAN IP (public DNS may hold
