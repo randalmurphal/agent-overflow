@@ -1,6 +1,12 @@
 // Saved native provider accounts (Claude + Codex): the ONE load / login /
 // switch / refresh / remove path in the app.
 //
+// PHASE 7, HOME-ONLY: `ListProviderAccounts` and every login/switch RPC
+// take the `home` route, so this is the page's own machine's accounts. A
+// provider login is a credential ON a machine — the same account signed in
+// twice is two logins, not one — so unifying this list is a remote-access
+// §10 plan item with its own design, not a keying change.
+//
 // Two surfaces consume it — Settings → Providers → Accounts (per-provider
 // slice, with removal) and the account-switcher picker (all providers, switch
 // + refresh only). They share this module rather than each owning a copy so a

@@ -65,9 +65,17 @@ export function isLoaded(): boolean {
 }
 
 /**
- * Pull the authoritative list from the backend. Resolves once the store
- * has been populated (or left unchanged on failure — previous data is
- * preserved so the sidebar doesn't blank out on a transient error).
+ * Pull the authoritative list from every attached backend. Resolves once
+ * the store has been populated (or left unchanged on failure — previous
+ * data is preserved so the sidebar doesn't blank out on a transient
+ * error).
+ *
+ * `ListProjects` takes the `all` route, so the arrays are concatenated and
+ * a machine that fails to answer is dropped from the merge rather than
+ * failing the load (`transport/backends.ts`). Two machines holding the
+ * SAME repo therefore appear as two rows for now: merging by repo identity
+ * is remote-access §10's wave 7d, and doing it here would need a repo key
+ * the backend does not yet publish.
  */
 export async function refreshProjects(): Promise<void> {
   try {

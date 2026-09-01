@@ -43,6 +43,16 @@ export function getThreads(): Thread[] {
  * the debounced MarkThreadRead persist and revert lastReadAt. Mid-session
  * resyncs go through eventsThreadRows' refreshSidebarProjections, which
  * merges each row against local state first.
+ *
+ * `ListThreads` is routed to EVERY attached backend and the arrays are
+ * concatenated (`transport/methodRoutes.ts` → `transport/backends.ts`), so
+ * one sidebar shows every machine's threads and this store needs no
+ * knowledge of how many there are. A backend that fails to answer is
+ * dropped from the merge and recorded on its own entry rather than failing
+ * the load, so one unreachable machine cannot blank the sidebar of the
+ * ones that answered — which is also why nothing here treats a short list
+ * as a deletion. Which backend a row came from is recorded in
+ * `transport/entityIndex.ts`, not on the row.
  */
 export async function loadThreads(): Promise<Thread[]> {
   threads = await ListThreads() as Thread[];

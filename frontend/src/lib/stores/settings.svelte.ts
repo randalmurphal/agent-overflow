@@ -1,3 +1,9 @@
+// PHASE 7, HOME-ONLY: `GetSettings` / `UpdateSettings` take the `home`
+// route, so this store reads and writes the page's own backend even when
+// others are attached. Per-backend settings is remote-access §10's own
+// plan item and is deliberately not built here — a single projection over
+// several machines' settings is a merge policy question (which machine's
+// theme? whose provider paths?), not a keying one.
 import type { Settings } from "../types/settings";
 import { SETTINGS_DEFAULTS } from "../generated/settingsDefaults";
 import { GetSettings, UpdateSettings } from "./bindings";
