@@ -26,7 +26,6 @@
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
   import { answerChallenge, PasskeyAbandonedError, passkeysUsable } from '../../transport/passkey';
-  import { withStepUp } from '../../transport/stepUp';
   import { suggestDeviceLabel } from '../../utils/deviceLabel';
 
   // Whether this backend can register one at all: it needs a canonical
@@ -51,11 +50,13 @@
     }
   }
 
-  // Only the BEGIN is step-up gated, so only it goes through withStepUp:
-  // on the owner's own screen host presence satisfies it and nothing
-  // prompts, and on a remote device an EXISTING passkey proves it. The
-  // finish rides the ceremony handle that begin returned, which is
-  // single-use and short-lived — one proof per registration is the
+  // Only the BEGIN is step-up gated, and nothing here says so: the
+  // transport runs the ceremony for whatever it refuses
+  // (transport/stepUp.ts). On the owner's own screen host presence
+  // satisfies the gate and nothing prompts; on a remote device an
+  // EXISTING passkey proves it, then the create below asks for the new
+  // one. The finish rides the ceremony handle that begin returned, which
+  // is single-use and short-lived — one proof per registration is the
   // granularity, and a second would ask the authenticator to assert with
   // the credential it just created and the backend has not stored yet
   // (internal/app/app_passkey.go argues it).
@@ -64,7 +65,7 @@
     acting = true;
     try {
       const label = suggestDeviceLabel();
-      const challenge = await withStepUp(() => BeginPasskeyRegistration(label));
+      const challenge = await BeginPasskeyRegistration(label);
       const response = await answerChallenge(
         { ceremonyId: challenge.ceremonyId, options: challenge.options },
         'create',

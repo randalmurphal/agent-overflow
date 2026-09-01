@@ -19,7 +19,7 @@
 // every event with it pays a string compare, never a new object.
 
 import { getBackendIdentity } from './backendIdentity';
-import { wsClient } from './wsClient';
+import { wsClient, type StepUpProver } from './wsClient';
 
 /**
  * Which connection something arrived on. Carried by every event the hub
@@ -41,11 +41,11 @@ export interface TransportHandle {
   callByID(methodId: number, args: unknown[]): Promise<unknown>;
   callByName(method: string, args: unknown[]): Promise<unknown>;
   /**
-   * Attach a single-use step-up proof to the first call `run` issues.
-   * Scoped to the callback because presenting the token spends it; see
-   * ./wsClient.ts, and ./stepUp.ts for the one caller.
+   * Install the seam that satisfies a step-up refusal for every call
+   * routed over this connection. Called once at boot; ./stepUp.ts is the
+   * one caller and ./wsClient.ts owns what happens under it.
    */
-  withStepUpToken<T>(token: string, run: () => T): T;
+  installStepUpProver(prover: StepUpProver | null): void;
   subscribe(channel: string, handler: (data: unknown) => void): () => void;
 }
 
@@ -67,8 +67,8 @@ const attached: TransportHandle = {
   callByName(method: string, args: unknown[]): Promise<unknown> {
     return wsClient.callByName(method, args);
   },
-  withStepUpToken<T>(token: string, run: () => T): T {
-    return wsClient.withStepUpToken(token, run);
+  installStepUpProver(prover: StepUpProver | null): void {
+    wsClient.installStepUpProver(prover);
   },
   subscribe(channel: string, handler: (data: unknown) => void): () => void {
     return wsClient.subscribe(channel, handler);

@@ -314,6 +314,43 @@ export class TransportError extends Error {
   }
 }
 
+// StepUpProver is the seam that turns a step-up refusal into a proof, and
+// the client-side mirror of the backend's `transport.Config.StepUpProof`:
+// the connection owns the slot, and the module that knows how to satisfy
+// the gate fills it once at boot (./stepUp.ts, from src/main.ts).
+//
+// INSTALLED rather than imported, because satisfying the gate is itself
+// two RPCs through the generated bindings, which route back through this
+// client. Importing the ceremony from here would be that cycle, and it
+// would drag the refusal vocabulary (./scopeRefusal.ts) in with it.
+//
+// Two members, because the two questions are asked at different moments
+// and only one of them may cost anything. `wants` is asked about every
+// rejected RPC, so it is a synchronous predicate over the error; `prove`
+// runs only for the refusals it claims, and may put a biometric prompt on
+// somebody's screen.
+export interface StepUpProver {
+  /** Whether a fresh proof could satisfy this refusal on this page. */
+  wants(err: unknown): boolean;
+  /**
+   * Run the ceremony and answer the single-use token it minted.
+   *
+   * A rejection means "there was nothing to try" — an abandoned prompt, a
+   * backend that refused the ceremony — and the caller is then settled
+   * with the ORIGINAL refusal rather than with whatever happened in here.
+   */
+  prove(): Promise<string>;
+}
+
+// DispatchSpec names one outgoing call: the method, by id or by name, and
+// its arguments. Held for the length of the call by the step-up
+// interception, which may have to dispatch it a second time.
+interface DispatchSpec {
+  methodId?: number;
+  method?: string;
+  params: unknown[];
+}
+
 // Pending tracks an outstanding RPC. The timer is cleared on settle so
 // the timeout doesn't fire after the response arrives.
 interface Pending {
@@ -663,6 +700,13 @@ export class WSClient {
   // token is spent by the presentation and a slot that outlived one call
   // would spend it on whatever came next.
   private stepUpToken: string | null = null;
+  // The installed proof seam (see StepUpProver) and the ceremony's own
+  // bookkeeping. `ceremonyInFlight` is the recursion guard, read at
+  // DISPATCH time; `ceremonyQueue` is what keeps two prompts off one
+  // screen. Both are read in dispatchRPC below.
+  private stepUpProver: StepUpProver | null = null;
+  private ceremonyInFlight = false;
+  private ceremonyQueue: Promise<void> = Promise.resolve();
   private readonly subscribers = new Map<string, Set<EventHandler>>();
   private readonly statusHandlers = new Set<StatusHandler>();
   private readonly helloHandlers = new Set<HelloHandler>();
@@ -793,6 +837,22 @@ export class WSClient {
     } finally {
       this.stepUpToken = null;
     }
+  }
+
+  /**
+   * Install the seam that satisfies a step-up refusal on this connection,
+   * or clear it. One installation, at boot, and nothing at a call site
+   * opts in.
+   *
+   * That is the whole point of it being here. Wrapping each gated call
+   * instead is a wrapper the next `//ao:stepup` method's UI forgets, and
+   * the forgetting is invisible where it is written: on the owner's own
+   * machine host presence satisfies the gate, so no ceremony ever runs
+   * and the missing wrapper costs nothing until somebody is holding a
+   * phone.
+   */
+  installStepUpProver(prover: StepUpProver | null): void {
+    this.stepUpProver = prover;
   }
 
   // subscribe registers a handler for `channel`. Returns the
@@ -1113,11 +1173,103 @@ export class WSClient {
     this.subscribers.clear();
   }
 
-  // dispatchRPC is the single path through which both callByID and
-  // callByName route. It generates an id, registers the pending entry,
-  // and either sends immediately (socket open) or after the in-flight
-  // connect resolves (socket connecting).
-  private dispatchRPC(spec: { methodId?: number; method?: string; params: unknown[] }): Promise<unknown> {
+  // dispatchRPC is the single path both callByID and callByName route
+  // through, and therefore the ONE place a step-up refusal becomes a
+  // proof. A call refused for want of one runs the ceremony and is sent
+  // once more with the token; its caller only ever sees the outcome.
+  //
+  // **Whether this call may be retried under a proof is decided HERE,
+  // synchronously, before anything is sent — and that is the recursion
+  // guard.** The ceremony's own RPCs are issued while `ceremonyInFlight`
+  // is set, so they take the un-intercepted path by construction rather
+  // than by anybody matching their names; a ceremony call refused for
+  // want of a proof would otherwise wait on the ceremony waiting on it.
+  //
+  // The interception closure retains this call's `spec` — its params
+  // included — for as long as the call is outstanding, and no longer.
+  // That is the price of closing the class at one point rather than at
+  // every gated call site, and it is the same window the awaiting caller
+  // already holds its own arguments for.
+  private dispatchRPC(spec: DispatchSpec): Promise<unknown> {
+    const prover = this.ceremonyInFlight ? null : this.stepUpProver;
+    const settled = this.sendRPC(spec);
+    if (prover === null) return settled;
+    return settled.catch((err: unknown) => {
+      if (!prover.wants(err)) throw err;
+      return this.retryUnderProof(prover, spec, err);
+    });
+  }
+
+  // retryUnderProof runs the ceremony and dispatches the refused call
+  // once more with the token armed.
+  //
+  // EXACTLY once, and structurally: the retry goes through sendRPC rather
+  // than dispatchRPC, so a second refusal is the answer rather than a
+  // second prompt. A call refused after a proof was accepted was refused
+  // for a different reason than the first time, and asking for another
+  // touch would train somebody to approve prompts that do not work.
+  //
+  // Anything that goes wrong in the ceremony settles the caller with the
+  // ORIGINAL refusal. What happened from where they sit is that the
+  // change did not go through, and ./scopeRefusal.ts owns that sentence;
+  // a WebAuthn error would name a fault they did not commit.
+  private async retryUnderProof(
+    prover: StepUpProver,
+    spec: DispatchSpec,
+    refusal: unknown,
+  ): Promise<unknown> {
+    let token: string;
+    try {
+      token = await this.proveInTurn(prover);
+    } catch {
+      throw refusal;
+    }
+    if (this.closed) throw refusal;
+    // Armed and dispatched in one synchronous step: sendRPC builds its
+    // frame inside this callback, so the token lands on this call and on
+    // no other (withStepUpToken above). There is no second way for a
+    // token to reach a frame.
+    return this.withStepUpToken(token, () => this.sendRPC(spec));
+  }
+
+  // proveInTurn runs one ceremony at a time. Two calls refused at once —
+  // a screen with two gated writes in flight — must not put two prompts
+  // on one screen: the second is unattributable, and on most platforms it
+  // simply replaces the first.
+  //
+  // They are SERIALIZED rather than sharing one proof, because a token
+  // proves ONE call: the second refusal needs a ceremony of its own, and
+  // it asks for it once the first prompt has been answered. The queue
+  // tracks order and nothing else, so a ceremony that failed hands the
+  // next caller its turn rather than its failure.
+  private proveInTurn(prover: StepUpProver): Promise<string> {
+    const turn = this.ceremonyQueue.then(() => this.runCeremony(prover));
+    this.ceremonyQueue = turn.then(
+      () => {},
+      () => {},
+    );
+    return turn;
+  }
+
+  // runCeremony holds `ceremonyInFlight` for the whole of the ceremony,
+  // which is what puts its RPCs on the un-intercepted path in
+  // dispatchRPC. Set before `prove` is called and cleared after it
+  // settles, so there is no window where one of its calls is dispatched
+  // without the guard.
+  private async runCeremony(prover: StepUpProver): Promise<string> {
+    this.ceremonyInFlight = true;
+    try {
+      return await prover.prove();
+    } finally {
+      this.ceremonyInFlight = false;
+    }
+  }
+
+  // sendRPC generates an id, registers the pending entry, and either
+  // sends immediately (socket open) or after the in-flight connect
+  // resolves (socket connecting). One send, one settlement: the step-up
+  // retry above is the only caller that ever issues a second one.
+  private sendRPC(spec: DispatchSpec): Promise<unknown> {
     if (this.closed) {
       return Promise.reject(new DisconnectedError('client closed'));
     }

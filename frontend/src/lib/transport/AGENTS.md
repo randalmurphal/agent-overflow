@@ -73,8 +73,48 @@ remote browser alike. Protocol and authz rules:
   gap recovery: the ordinary cursor still carries what the session
   actually missed.
 
-  `RETRY_ON_TRANSIENT_CLOSE` is the only sanctioned way an RPC is re-sent
-  without its caller knowing. It is EMPTY, and a test pins that. An entry
+  **One interception in the dispatch path turns a step-up refusal into a
+  proof, for every gated method at once.** `installStepUpProver` is the
+  slot and `stepUp.ts` fills it at boot — the client owns the seam and
+  the ceremony is INJECTED, mirroring the backend's
+  `transport.Config.StepUpProof` and for the same reason the Go side has
+  a seam there: the ceremony is itself two RPCs through this client, so
+  importing it from here would be a cycle. A refused call runs the
+  ceremony and is dispatched once more with the token; its caller only
+  ever sees the outcome.
+
+  Three rules hold it together, and each is structural rather than a
+  check somebody has to remember:
+
+  - **The recursion guard is the dispatch-time read of
+    `ceremonyInFlight`,** never a method name. The ceremony's own RPCs
+    are issued while it is set, so they take the un-intercepted path by
+    construction — and a ceremony call that was intercepted would wait
+    on the ceremony that is waiting on it. `stepUp.test.ts` stages
+    exactly that and FAILS on the deadlock rather than hanging silently.
+    The same read excludes a call dispatched WHILE a prompt is open,
+    which is the one deliberate narrowing: it gets its refusal, and the
+    person presses again.
+  - **Ceremonies are serialized, never shared.** Two calls refused at
+    once must not put two prompts on one screen (the second is
+    unattributable, and on most platforms it replaces the first), and a
+    token proves ONE call — so the second refusal waits for the first
+    prompt to be answered and then asks for a proof of its own.
+  - **The retry reuses `withStepUpToken`,** which is the only way a token
+    reaches a frame. It arms a private slot drained at FRAME
+    CONSTRUCTION, not at send, because presenting a token spends it and a
+    slot left standing across an await would put somebody's touch on
+    whatever dispatched next.
+
+  The cost of covering every call site is that an outstanding RPC's
+  arguments are retained by the retry closure for the length of that
+  call, and no longer — the same window the awaiting caller holds them
+  for. That is the trade for closing the class at one point.
+
+  `RETRY_ON_TRANSIENT_CLOSE` is the only sanctioned way a call is re-sent
+  after it may have REACHED the backend. (The step-up retry above re-sends
+  too, but only a call the backend answered with a refusal, so it cannot
+  duplicate an action.) It is EMPTY, and a test pins that. An entry
   needs the call to be idempotent on the backend AND its loss to fall in
   a known transient window; anything else duplicates an action to recover
   an answer. Ordinary reconnect recovery is the store-level suspension
@@ -132,35 +172,57 @@ remote browser alike. Protocol and authz rules:
   this — and a surface that reports it as an error accuses somebody of a
   fault they did not commit.
 - `stepUp.ts` is how a device that is not the computer satisfies a
-  `step_up_required` refusal. `withStepUp(call)` runs the call, and on
-  that one refusal runs a ceremony and runs the call ONCE more with the
-  token armed.
+  `step_up_required` refusal, and it is the CEREMONY only: begin, an
+  assertion from the authenticator, finish, and the single-use token that
+  comes back. `installStepUpProof()` puts it in the transport's slot once
+  at boot (`src/main.ts`), and where it runs is `wsClient.ts`'s single
+  interception above.
 
-  **A retry, never an interceptor.** The ceremony puts a biometric prompt
-  on somebody's screen, so it is wrapped around an action they pressed a
-  button for — a prompt raised by a pane mounting or a background refresh
-  is one nobody asked for and nobody can attribute. Putting this at the
-  transport door would do exactly that.
+  **One mechanism, and a new `//ao:stepup` method's UI wires NOTHING.**
+  Per-call-site wrapping is the recurring-bug shape: the wrapper is what
+  the next gated surface forgets, and the forgetting is invisible where
+  it is written, because on the owner's own machine host presence
+  satisfies the gate and no ceremony ever runs. That was the shipped
+  state after wave 8f — one wrapped call site, and minting a pairing
+  link, MCP config writes, provider custom env, worktree-setup recipes
+  and every host-tier settings key silently unreachable from a phone.
+  Do not add a second door: there is no per-call wrapper to reach for,
+  and a surface that wants one is asking for the interception to be
+  wrong.
 
-  Exactly one retry and no loop: a second refusal after a proof was
-  accepted means the call was refused for a different reason, and asking
-  for another touch trains somebody to approve prompts that do not work.
-  It rethrows the ORIGINAL refusal when there is nothing to try (no
-  passkey on this page, prompt dismissed), because what happened from
-  where the person sits is that the change did not go through, and
-  `scopeRefusal.ts` owns that sentence.
+  **The prompt-attribution objection is answered by the GATE's shape,
+  not by the call site.** A biometric prompt nobody asked for is still
+  the thing to avoid, and what makes the interception safe is that every
+  `//ao:stepup` method is a write somebody pressed a button for
+  (`internal/transport/AGENTS.md` names the set). No passive load — a
+  pane mounting, a background refresh — can reach one, so there is
+  nothing for a prompt to be raised by. Adding the directive to a method
+  a passive load issues would break that, and is the change to argue
+  before making.
 
-  **A multi-call ceremony is wrapped ONCE, around the call that starts
-  it.** `PasskeysBlock.svelte` wraps only `BeginPasskeyRegistration`; the
-  finish rides the single-use, minutes-long handle the begin returned, so
-  it is already proved and a second wrap would guard nothing. It would
-  also break the case it looks like it protects: the second ceremony's
-  `get()` is answered by the credential the authenticator just created
-  and the backend has not stored yet, so a REMOTE registration fails on
-  its own success. The backend agrees by carrying no `//ao:stepup` there
-  (`internal/transport/AGENTS.md`), and the two must move together —
-  wrapping a call the gate does not refuse costs a prompt that changes
-  nothing.
+  Exactly one retry and no loop, structurally: the retry is dispatched
+  below the interception, so a second refusal is the answer. A call
+  refused after a proof was accepted was refused for a different reason,
+  and asking for another touch trains somebody to approve prompts that
+  do not work. Anything that goes wrong in the ceremony — no passkey on
+  this page, a dismissed prompt, a refused begin — settles the caller
+  with the ORIGINAL refusal, because what happened from where they sit
+  is that the change did not go through and `scopeRefusal.ts` owns that
+  sentence. `PasskeysBlock.svelte` is the surface that proves the two
+  halves stay separate: a dismissed REGISTRATION prompt is
+  `PasskeyAbandonedError` and gets no toast, a dismissed STEP-UP prompt
+  arrives as the refusal and gets one.
+
+  **A multi-call ceremony is proved ONCE, at the call that starts it**,
+  and the backend is what decides that: `BeginPasskeyRegistration`
+  carries `//ao:stepup` and `FinishPasskeyRegistration` deliberately does
+  not, so the finish rides the single-use, minutes-long handle the begin
+  returned and is never refused. That is not a nicety — a second ceremony
+  would ask the authenticator to assert with the credential it just
+  created and this backend has not stored yet, so a REMOTE registration
+  would fail on its own success. Since nothing wraps calls any more, the
+  rule is now the backend's alone to keep
+  (`internal/transport/AGENTS.md`).
 - `frames.ts` is the TypeScript mirror of `internal/transport/frame.go`.
   Change one and change the other in the same commit. Frames evolve
   ADDITIVELY: a new optional field or a new frame type is safe because

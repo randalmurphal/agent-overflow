@@ -3,6 +3,7 @@ import App from './App.svelte';
 import { appTitleForEnv } from './appTitle';
 import { installBrowserHistoryGuard } from './lib/utils/browserHistoryGuard';
 import { installFrontendErrorCapture } from './lib/utils/frontendErrorCapture';
+import { installStepUpProof } from './lib/transport/stepUp';
 import type { MemoryReport } from './lib/utils/memoryReport';
 import {
   revealDrainStats,
@@ -28,6 +29,12 @@ document.title = appTitleForEnv(import.meta.env);
 // Install before mount so mount-time exceptions are captured too.
 installFrontendErrorCapture();
 installBrowserHistoryGuard();
+// How a remote screen satisfies a step-up gate. Installed into the
+// transport rather than imported by it (the ceremony is itself two RPCs),
+// and installed HERE so it covers every `//ao:stepup` method in the app
+// from the first call — including the pairing screen's, which mounts
+// below without the rest of the app.
+installStepUpProof();
 // On-demand memory accounting for console / CDP probes. The stub keeps
 // the collector chunk out of the startup graph entirely; the dynamic
 // import resolves from the module cache on every call after the first.

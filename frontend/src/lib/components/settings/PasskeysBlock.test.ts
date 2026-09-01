@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { setPasskeysAvailableFromBootstrap } from '../../transport/passkey';
+import { getToasts } from '../../stores/toast.svelte';
 import PasskeysBlock from './PasskeysBlock.svelte';
 
 function passkey(overrides: Record<string, unknown> = {}) {
@@ -98,6 +99,66 @@ describe('<PasskeysBlock>', () => {
 
     await fireEvent.click(await findByRole('button', { name: 'Confirm remove' }));
     expect(removed).toHaveBeenCalledWith('pk-1');
+  });
+
+  it('asks for the registration and nothing else, because proving is the transport’s', async () => {
+    // The block calls the gated method plainly. Where the caller is a
+    // remote screen, `transport/stepUp.ts` runs the ceremony for whatever
+    // the backend refuses and dispatches the call again — so a ceremony
+    // started HERE would be a second mechanism, and on the owner's own
+    // machine (host presence satisfies the gate) it would be a prompt for
+    // nothing.
+    setBindingMock('ListPasskeys', async () => []);
+    const begin = setBindingMock('BeginPasskeyRegistration', async () => ({
+      ceremonyId: 'cer-1',
+      options: { challenge: 'AQID' },
+    }));
+    const ceremony = setBindingMock('BeginPasskeyStepUp', async () => {
+      throw new Error('must not be reached');
+    });
+    const { findByRole } = render(PasskeysBlock);
+
+    await fireEvent.click(await findByRole('button', { name: 'Add a passkey' }));
+    await vi.waitFor(() => expect(begin).toHaveBeenCalledTimes(1));
+    expect(ceremony).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing when the prompt is dismissed', async () => {
+    // `installAuthenticator` answers `create` with null, which is a
+    // dismissal — nothing went wrong, somebody changed their mind, and a
+    // toast would accuse them of a fault. The same holds for a step-up
+    // prompt dismissed under the transport's ceremony: what reaches here
+    // is the original refusal, not the abandonment.
+    setBindingMock('ListPasskeys', async () => []);
+    setBindingMock('BeginPasskeyRegistration', async () => ({
+      ceremonyId: 'cer-1',
+      options: { challenge: 'AQID' },
+    }));
+    const before = getToasts().length;
+    const { findByRole } = render(PasskeysBlock);
+
+    const add = await findByRole('button', { name: 'Add a passkey' });
+    await fireEvent.click(add);
+    // Settled: the control is live again, which is the state the `finally`
+    // restores after the abandoned ceremony.
+    await vi.waitFor(() => expect((add as HTMLButtonElement).disabled).toBe(false));
+    expect(getToasts().slice(before)).toEqual([]);
+  });
+
+  it('reports a refusal the transport could not satisfy', async () => {
+    // The other half of the pair above: a change that did not go through
+    // must say so. Reached when there is no passkey to prove with, or the
+    // proof was dismissed.
+    setBindingMock('ListPasskeys', async () => []);
+    setBindingMock('BeginPasskeyRegistration', async () => {
+      throw new Error('needs a fresh proof');
+    });
+    const { findByRole } = render(PasskeysBlock);
+
+    await fireEvent.click(await findByRole('button', { name: 'Add a passkey' }));
+    await vi.waitFor(() =>
+      expect(getToasts().at(-1)?.message).toMatch(/^Failed to add a passkey:/),
+    );
   });
 
   it('goes inert rather than absent when this backend has no domain', async () => {
