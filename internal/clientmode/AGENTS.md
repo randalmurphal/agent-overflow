@@ -11,10 +11,12 @@ before `Serve` by `main_connect.go`.
 
 - `clientmode.go` is the public surface: `Config`, `PairedUpstream`,
   `ParseConnectURL`, `Serve`, `Server`. The stub HTTP server, the
-  credential exchange, the WebSocket carrier, and the URL parser all live
-  here.
+  credential exchange, the WebSocket carrier, the attachment byte relay,
+  and the URL parser all live here.
 - `clientmode_test.go`: URL-parsing tests, shell-serving and manifest
-  tests, the credential and origin rules on `/ws`, the forwarded session
+  tests, the credential and origin rules on `/ws` and `/attachments/`,
+  the drift guard between the relay's prefix and the backend's two route
+  patterns, the forwarded session
   credential and its refresh-on-refusal, the paired upstream's carried
   probe and per-upgrade ticket, the upstream revalidation verdicts,
   static-asset serving, idempotent shutdown.
@@ -24,7 +26,8 @@ before `Serve` by `main_connect.go`.
 - What BELONGS here:
   - Validating the operator-supplied `--connect` URL.
   - Booting a tiny loopback HTTP server that serves the embedded SPA
-    bundle, answers `/bootstrap.json`, and carries `/ws` to the upstream.
+    bundle, answers `/bootstrap.json`, carries `/ws` to the upstream, and
+    relays attachment bodies under `/attachments/`.
   - Holding the upstream credential, which never leaves this process —
     either the launch token or the paired device session behind
     `Config.Paired`.
@@ -182,6 +185,15 @@ negotiate with each other and this process only splices bytes.
 - Do NOT add RPC dispatch, an event bus, or a real upgrade here. `/ws` is
   a byte carrier with no protocol knowledge; the whole point of
   `--connect` is to skip the local transport.
+- Do NOT attach an upstream credential to the `/attachments/` relay. Those
+  routes accept none: the single-use ticket already on the query is the
+  whole admission, and it was minted by an RPC the upstream's scope gate
+  authorized. What IS checked here is this stub's OWN page credential,
+  and dropping that check would turn a LAN-capable listener into an open
+  relay to the backend's transfer routes.
+- Do NOT rewrite the URL on that relay. The path names the attachment and
+  the query carries the ticket; both were minted by the upstream, for the
+  upstream, and touching either is only a way to get them wrong.
 - Do NOT bind to anything other than 127.0.0.1. The loopback server
   is the boot shim for the local Wails webview; nothing else should
   reach it.

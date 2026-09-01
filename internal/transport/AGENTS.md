@@ -8,7 +8,7 @@ walkthroughs live in
 ## What this package owns
 
 The HTTP listener (embedded SPA, `/bootstrap.json`, `/healthz`, the `/ws`
-upgrade, and
+upgrade, the two `/attachments/` byte routes, and
 `POST /rpc` for the `ao` CLI) plus any AUXILIARY listener a caller hands it
 (§ Auxiliary listeners), the JSON wire frame, token authentication, the
 per-connection authorization policy, per-peer request budgets on the credential
@@ -395,20 +395,28 @@ re-delivering a spent one is harmless. The SPA raises that readiness itself
 (`frontend/src/lib/transport/pageHost.ts`), because it replaces
 `@wailsio/runtime` and nothing else in the page will.
 
-**There is ONE ticket mechanism** (`ticket.go`), and both users share it. A
+**There is ONE ticket mechanism** (`ticket.go`), and every user shares it. A
 `ticketBook` mints a CSPRNG token, hands it out over a channel that is already
 authenticated, and lets the FIRST presentation spend it — with a constant-time
-compare, an eviction rule, and a bound. The page ticket and the WebSocket ticket
-differ in exactly two parameters:
+compare, an eviction rule, and a bound. The four books differ in exactly two
+parameters:
 
 | | subject | deadline |
 |---|---|---|
 | page ticket (`Credential.tickets`) | none — a launch has one page credential, so the ticket only decides who receives it | none — a URL ticket is produced for a person to open, and a launcher's fixed `?t=` URL must still work an hour later |
 | WS ticket (`Server.wsTickets`) | the session id it names | `wsTicketTTL` (30s) — a client mints one immediately before it dials |
+| attachment download (`Server.attachmentDownloadTickets`) | the `(thread, attachment)` pair it admits | `attachmentTicketTTL` (30s) — same reason as the WS ticket |
+| attachment upload (`Server.attachmentUploadTickets`) | the thread, filename, content type and exact byte count the stored row will carry | `attachmentTicketTTL` (30s) |
 
-Do not add a third implementation. A new single-use token is a new book with
+Do not add a fifth implementation. A new single-use token is a new book with
 those two parameters set; building it separately means a second constant-time
-compare and a second place for "single use" to be got subtly wrong. Because a
+compare and a second place for "single use" to be got subtly wrong.
+
+The two attachment books are separate FROM EACH OTHER on purpose, and that is
+the one place this file recommends more books rather than fewer: a ticket minted
+to read must not be spendable to write, whatever its subject would parse as, and
+one shared book would make that a property of subject parsing instead of a
+property of the mechanism. Because a
 ticket is spent by the page it was minted for, anything that navigates more than
 once asks `/pageurl` for a fresh one rather than reusing the boot URL:
 `ao-harness open`/`info`/`attach`/`up` and the e2e `HarnessApp.open()` take the
@@ -619,7 +627,8 @@ local channel.
 ## Origin allow-list and peer locality
 
 **`OriginAllowed` (credential.go) gates `/ws`, `/bootstrap.json` and
-`/pageurl`, ahead of the credential check.** A request with no `Origin` header is
+`/pageurl`, ahead of the credential check.** It deliberately does not gate the
+`/attachments/` byte routes; § Attachment bytes says why. A request with no `Origin` header is
 a client that is not a browser (or a same-origin GET, which browsers send without
 one) and passes to the credential and peer rules. A request *with* an `Origin`
 passes only when it names the authority this request was addressed to — scheme
@@ -644,8 +653,9 @@ gap — same-site ignores ports. `upgrade` therefore hands coder/websocket
 `InsecureSkipVerify: true` and owns the decision itself, so one rule applies on
 loopback and LAN alike.
 
-**The `loopbackHostGuard` on `/bootstrap.json`, `/ws`, `/healthz` and `/rpc` is a
-separate rule, and its mode signal is the BIND ADDRESS.** While the live listen
+**The `loopbackHostGuard` on `/bootstrap.json`, `/ws`, `/healthz`, `/rpc` and the
+two `/attachments/` routes is a separate rule, and its mode signal is the BIND
+ADDRESS.** While the live listen
 address is loopback it 404s any Host header that is not a loopback name
 (`loopback.HostHeader` accepts only `127.0.0.1`, `localhost`, and `::1`, and
 refuses every DNS name — including one that resolves to 127.0.0.1, which is the
@@ -687,6 +697,61 @@ Both predicates live in `internal/loopback` alongside the two endpoint-URL
 classifiers. They are deliberately different rules and the package doc says why;
 do not swap one for another because the names look interchangeable.
 
+## Attachment bytes do not ride the socket
+
+`attachmentroutes.go` (wave 6b). Two routes, both reached by a ticket and
+nothing else:
+
+| route | ticket subject | answers |
+|---|---|---|
+| `GET /attachments/{threadID}/{attachmentID}` | that exact pair | the bytes, via `http.ServeContent` (Range and conditional handling come free) |
+| `PUT /attachments/upload` | thread + filename + content type + exact size | the created row as JSON |
+
+**Why they exist.** Every attachment byte used to ride base64 inside one WS RPC
+frame, so a 10 MiB image became a ~13.4 MB frame on the socket the live event
+stream shares — the one thing the spec forbids outright ("large bodies never
+block the event socket").
+
+**No session cookie is required, and that is not a gap.** The ticket IS the
+admission, exactly as the WS ticket is on the upgrade. It is minted only by a
+bound method the per-call scope gate already authorized
+(`MintAttachmentDownloadTicket` / `MintAttachmentUploadTicket`, `internal/app`),
+it is spent by the first presentation, and it lives 30 seconds. Because nothing
+here is authorized by an ambient cookie, the Origin allow-list is deliberately
+NOT applied: it exists to stop a foreign page spending a credential the browser
+attaches on its own, and there is none to spend — a foreign page can cause the
+request and can neither produce the ticket nor read the answer. The Host guard
+IS kept.
+
+**A refusal is 404 in every case** — missing ticket, spent ticket, a path the
+ticket does not name, and a seam failure alike. Nothing on the wire
+distinguishes them.
+
+**Nothing on the request may widen what the ticket admits.** The download path
+is COMPARED against the subject rather than read from. The upload's filename and
+content type come from the subject rather than from headers, because a header
+would be a caller describing bytes it is in the middle of sending.
+
+**The upload cap is enforced during the read** (`http.MaxBytesReader`), not from
+`Content-Length`: a declared length is a claim and a chunked body declares none.
+A mismatched `Content-Length` is only an early exit.
+
+**Both routes replace the server's 60s timeouts** with
+`AttachmentTransferWindow` (5 minutes) per request. The 60s default is right for
+an RPC and wrong for bytes — 10 MiB inside it demands a sustained ~170 KB/s —
+and the same bytes previously rode a socket net/http had already released, so
+leaving the defaults would have been a NEW way for a large attachment to fail.
+`internal/clientmode` imports that constant for its relay rather than restating
+it.
+
+**Resumable upload is deliberately NOT built.** A ticket is spent by the first
+request, so a failed upload is retried by minting again. Bodies are at most
+10 MiB and the composer compresses images first; resumable transfer belongs to
+the phone waves and is a design of its own.
+
+`GetAttachmentThumbnail` stays an RPC. ~10-30 KB is not a large body, and a grid
+would pay a mint round trip per tile.
+
 ## Per-peer request budgets
 
 `ratelimit.go` gives three routes a token bucket per peer: `/bootstrap.json`,
@@ -695,6 +760,12 @@ readiness probe is polled by design and one page load is dozens of asset
 requests, so limiting either breaks ordinary use to bound work that is already
 trivial. `/ws` is not limited either: one upgrade per long-lived connection,
 and the budget that matters for it is the ticket exchange that precedes it.
+**The two `/attachments/` routes are not limited either**, and the reason is
+the same one that lets them run without a cookie: a peer cannot repeat a
+request whose admission was spent, and every transfer was authorized one
+attachment at a time by a mint that crossed the budgeted socket. A bucket here
+would bound the same work twice while adding a way for a busy grid to be
+refused.
 
 What this bounds is WORK, not guessing. The launch token is 256 random bits and
 scoped tokens are minted per provider process, so no achievable request rate
@@ -732,8 +803,11 @@ present.
 `wireheaders.go` is the one definition, shared with `internal/clientmode`.
 `WriteSecurityHeaders` sends `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`, which keeps the
-page ticket out of outbound referers. Cache-Control is deliberately NOT in
-that set: each route picks its own policy.
+page ticket out of outbound referers — and, since wave 6b, transfer tickets
+too. Cache-Control is deliberately NOT in that set: each route picks its own
+policy. The byte routes pick `no-store`, because the URL that fetched them
+carried a single-use credential and a shared cache holding the response would
+hold an attachment past the one request authorized to read it.
 `WriteCrossOriginIsolationHeaders` (COOP, COEP `require-corp`, CORP) is
 diagnostic-mode only, gated on `Config.CrossOriginIsolate` from
 `diagenv.RendererDiag`: it buys `crossOriginIsolated` and

@@ -363,6 +363,22 @@ remote browser alike. Protocol and authz rules:
   the same backend identity. Keep it thin: transport behavior belongs in
   `wsClient.ts`, and which transport a call lands on belongs in
   `handle.ts`.
+- `attachmentTransfer.ts` is the ONE module here that calls `fetch` for
+  app data, and it exists because bindings carry JSON: a Blob body and a
+  streamed response are exactly what they cannot express. Attachment bytes
+  used to ride base64 inside a WS RPC frame, so a 10 MiB screenshot became
+  a ~13.4 MB frame on the socket the live event stream shares. Now an RPC
+  mints a single-use ticket and the bytes cross on their own connection.
+  Two rules hold it together. Every URL is **relative** — the SPA is served
+  from three different origins across the boots it supports (embedded
+  webview, `--connect` stub, paired remote browser) and does not know which
+  one it is in, so a host named here would be right for at most one.
+  Credentials are **same-origin**, stated rather than left to the default,
+  because the `--connect` stub checks its own page cookie before relaying
+  and a change in that default would break exactly one boot. Do not add a
+  second `fetch` call site for bytes; add a route and a ticket subject
+  instead. `GetAttachmentThumbnail` stays an RPC on purpose: ~10-30 KB is
+  not a large body, and a grid would pay a mint round trip per tile.
 - `bootstrap.ts` owns the `/bootstrap.json` fetch, the one-time page-ticket
   exchange, and WS-URL validation that stops a tampered manifest pivoting
   the connection to another scheme. **No credential is readable by page

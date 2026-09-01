@@ -17,7 +17,13 @@ a host can name what it holds without importing the component's chunk.
 captures the current thread id and draft snapshot, then delegates back to
 the pane and draft store. Drag, drop, paste and upload live in
 `composerUploads.svelte.ts`, which carries a per-thread guard so a slow
-upload cannot land in the wrong pane.
+upload cannot land in the wrong pane. The bytes themselves go over HTTP,
+not the RPC wire: `uploadAttachmentBytes`
+(`lib/transport/attachmentTransfer.ts`) mints a single-use ticket for
+exactly this file and PUTs the `File` as the body, so a 10 MiB paste is
+never a base64 string in a WebSocket frame. `compressImageToFit` still
+runs first and is unchanged — a re-encode that fits beats a rejection,
+whatever carries the result.
 
 ## Rail visibility is one predicate
 

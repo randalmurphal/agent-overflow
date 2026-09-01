@@ -69,8 +69,11 @@ and has content — so per-branch removal would be a list to keep in step.
 ## Extension points
 
 - To accept a new image MIME / extension: extend `allowedMIMEs` /
-  `allowedExtensions`. Keep the whitelist tight; the directory should
-  stay safe to serve as static content.
+  `allowedExtensions`. Keep the whitelist tight, and judge a candidate by
+  what a browser engine does with it rather than by whether it is "an
+  image": every type here is painted at the app's own origin
+  (`internal/surfaces`, `PostureOpaqueMedia`), so SVG is absent
+  deliberately and adding it would make that classification false.
 - To change the write flow: preserve the "DB row + final file both
   exist, or neither does" invariant. Test the crash points.
 
