@@ -1626,6 +1626,47 @@ Prerequisite sweep, valuable standalone:
   for the phone client, which cannot afford every thread's transcript.
   One accepted loss: a content-addressed highlight cache hit across
   threads now pays an RPC.
+
+  The re-home LANDED 2026-09-01 (wave 6d2, phone phase) and
+  `provider:item_event` is now entity-filtered. Each off-pane fact got
+  the cheapest wildcard frame that states it, chosen from the survey
+  rather than invented: the Plan ready pill is a DERIVED COLUMN the
+  store already computes (`hasActionableProposedPlan`), so every
+  proposed-plan write (the in-turn persist in triage, the
+  implemented mark and the ensure-state settles in app) now broadcasts
+  the thread row as a `thread:updated` `full`, and the client's two
+  live re-derivations of that column were deleted rather than
+  duplicated. The user_text sidebar bump and the reader-answered badge
+  clear ride one `thread:updated` `patch` carrying `updatedAt` alone,
+  emitted exactly where an activity-counting user_text persist bumps
+  `MarkThreadActivity` (never on turn completion or approvals, which
+  announce themselves); the client applies it WITHOUT a cached row,
+  into the keyed live-activity box, never merged into the row object.
+  The Failed pill rides a new `thread:error_notice` channel
+  (`{threadId, itemId}`, wildcard by design), emitted from the ONE
+  persist funnel every error row crosses — the classes that never
+  produce a `provider:turn_completed` (non-fatal wire errors, orphan
+  error results, the ambiguous-turn-start timeout, flush-dispatch and
+  steer failures) are covered structurally, `api_error` keeps its
+  no-badge behavior. The workspace-change lock dropped its item trigger
+  (foreground tool completions never changed its answer) and
+  `provider:background_tasks_changed` now fires on Claude's exit,
+  drain and orphan-recovery transitions, which previously reached only
+  the loopback-only `background_task_state`. Discussion child threads
+  were already watched via the live-tail roster. The eviction branch
+  stays as written and simply stops firing for unwatched threads: both
+  the warm-reentry cache and the replica window are stamp-validated on
+  every open (`SyncThreadWindow` answers `stale` with a replacing
+  page), so the cost is one stale first paint on reopen, not a wrong
+  render. Two accepted ordering deltas on the ORIGINATING client: a
+  plan-ready pill now sits below a live `interrupted` (the durable
+  ordering every other client already saw), and a quiet eager-persist
+  bumps the sidebar at dispatch rather than at echo. The remaining
+  in-stream consumers (send-queue flush confirm, proposedPlans warm
+  cache, activity rail) are pane-lifetime or watched-thread scoped by
+  construction. The one hard rule this leaves behind: a new global
+  consumer of an item row is the thing this split exists to prevent;
+  it gets a wildcard carrier or it does not ship.
 - **Push**: senders run in the backend, outbound-only. Constraint to
   resolve before shipping to anyone but the owner: APNs/FCM require the
   *app vendor's* signing key, which cannot ship inside distributed
@@ -2410,8 +2451,9 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    discussion slot by 2026-09-01 ruling).
 6. **Phone preparation.** Subscription narrowing (LANDED 2026-09-01,
    wave 6d — §9 "Phone-era efficiency": the watch frame + entity
-   filter on the two highlight channels; `provider:item_event` awaits
-   the six-consumer re-home named there), buffered deltas, scope
+   filter on the two highlight channels; the six-consumer re-home
+   LANDED 2026-09-01, wave 6d2, and `provider:item_event` is now
+   entity-filtered too), buffered deltas, scope
    leases, reduced snapshots, attachment flows (LANDED 2026-09-01,
    wave 6b — §14 "Snapshot and attachment transfers"), push senders +
    notification semantics + deep links (notification mapping,
