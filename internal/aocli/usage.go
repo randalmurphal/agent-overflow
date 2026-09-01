@@ -6,6 +6,9 @@ package aocli
 
 const rootUsage = `Usage: agent-overflow <command> [options]
 
+Host commands (run on the machine the backend lives on):
+  serve              Run the backend with no window, for access from elsewhere
+
 Offline commands (work anywhere):
   workflow new       Scaffold a workflow definition
   workflow validate  Validate a workflow definition

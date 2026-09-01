@@ -122,11 +122,19 @@ func main() {
 	// canonical name (see ensureCLISymlink). The two sidecars above are internal
 	// re-execs of our own making and win the argv outright; everything from here
 	// is somebody typing a command.
+	bootArgs := os.Args[1:]
+	serveMode := false
 	switch mode := decideEntry(os.Args[1:], os.LookupEnv); mode {
 	case entryCLI:
 		os.Exit(aocli.Run(os.Args[1:], os.Stdout, os.Stderr))
 	case entryRefuse:
 		refuseInSessionBoot(os.Args[1:])
+	case entryServe:
+		// The verb names the mode; everything after it is an ordinary boot
+		// flag, so the flag set below is the same one every other boot
+		// parses (main_serve.go argues why serve is not an aocli row).
+		serveMode = true
+		bootArgs = serveBootArgs(os.Args[1:])
 	case entryBoot:
 		// Fall through to flag parsing and the mode switch below.
 	default:
@@ -136,9 +144,14 @@ func main() {
 		fatalf("entry dispatch: unhandled mode %d", mode)
 	}
 
-	flags, err := parseFlags(os.Args[1:])
+	flags, err := parseFlags(bootArgs)
 	if err != nil {
 		fatalf("%v", err)
+	}
+	if serveMode {
+		if err := checkServeFlags(flags); err != nil {
+			fatalf("%v", err)
+		}
 	}
 	if runtime.GOOS == "darwin" && flags.window {
 		// A windowed isolated macOS boot must come from the per-run bundle
@@ -187,6 +200,11 @@ func main() {
 	goroutinedump.Install(bootLogsDir(), log.Printf)
 
 	switch {
+	case serveMode:
+		// Before every other arm: `serve` is the mode the operator NAMED,
+		// and checkServeFlags already refused every flag that would have
+		// selected a different one.
+		runServe(flags)
 	case flags.connect != "":
 		runClient(flags.connect)
 	case flags.harness:

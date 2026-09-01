@@ -31,32 +31,63 @@ const (
 	// entryRefuse prints CLI help and exits non-zero. Reached only from
 	// inside a provider session, where a boot would mean a second app.
 	entryRefuse
+	// entryServe is the `serve` verb: a BOOT with a name, not a command.
+	// It continues into flag parsing exactly as entryBoot does, with the
+	// verb stripped off the argv first (serveBootArgs).
+	entryServe
 )
+
+// serveVerb names the windowless boot mode
+// (docs/specs/remote-access.md §7, "Headless serve mode and remote
+// update"). It is a verb rather than a flag because a person types it,
+// and a boot mode rather than an aocli command because it needs the
+// embedded asset FS and the whole transport/App boot graph — both of
+// which live in package main by construction (internal/AGENTS.md:
+// executable-only code stays at the root). Routing it through
+// aocli.topLevelCommands would mean injecting a boot callback INTO the
+// CLI package, which inverts the dependency to gain nothing: the verb
+// set the CLI owns would still not own this one.
+const serveVerb = "serve"
 
 // decideEntry classifies an argv. Pure: args plus one environment reader in,
 // a decision out, no process state touched, so every branch is table-testable.
 //
 // The rules, in the order they are applied:
 //
-//  1. A top-level CLI verb is a CLI invocation anywhere, session or not. The
+//  1. `serve` is a BOOT, and it is checked first so the CLI's verb table can
+//     never acquire that name and silently reclassify it. Inside a session it
+//     is refused like every other boot: a server started from inside an agent
+//     session is a second app fighting the first one for the same SQLite file,
+//     which is the whole entryRefuse class.
+//  2. A top-level CLI verb is a CLI invocation anywhere, session or not. The
 //     offline `workflow` commands are useful from a plain terminal and always
 //     have been.
-//  2. Outside a session (no AO_ENDPOINT) nothing else changes: this is the
+//  3. Outside a session (no AO_ENDPOINT) nothing else changes: this is the
 //     binary a user double-clicks, and an unrecognised argument has always
 //     landed in the desktop boot.
-//  3. Inside a session, a leading flag this binary defines (--harness,
+//  4. Inside a session, a leading flag this binary defines (--harness,
 //     --connect, --data-dir, --listen, --print-url-fd, --mock-provider) is a
 //     deliberate operator invocation and still boots — `make e2e` run from an
 //     agent session inherits AO_ENDPOINT and must keep working.
-//  4. Inside a session, anything else — no arguments at all, an unknown verb,
+//  5. Inside a session, anything else — no arguments at all, an unknown verb,
 //     an unknown flag — is refused. An agent that typed a command we do not
 //     have gets CLI help, never a second GUI process fighting the first one
 //     for the same SQLite file.
 func decideEntry(args []string, lookupEnv func(string) (string, bool)) entryMode {
+	inSession := func() bool {
+		endpoint, _ := lookupEnv(aocli.EnvEndpoint)
+		return strings.TrimSpace(endpoint) != ""
+	}
+	if len(args) > 0 && args[0] == serveVerb {
+		if inSession() {
+			return entryRefuse
+		}
+		return entryServe
+	}
 	if len(args) > 0 && aocli.IsCommand(args[0]) {
 		return entryCLI
 	}
-	if endpoint, _ := lookupEnv(aocli.EnvEndpoint); strings.TrimSpace(endpoint) == "" {
+	if !inSession() {
 		return entryBoot
 	}
 	if len(args) == 0 {
@@ -66,6 +97,18 @@ func decideEntry(args []string, lookupEnv func(string) (string, bool)) entryMode
 		return entryBoot
 	}
 	return entryRefuse
+}
+
+// serveBootArgs strips the `serve` verb so the boot flags after it reach
+// parseFlags. Go's flag package stops at the first non-flag token, so an
+// argv still carrying the verb would parse zero flags and silently boot
+// on defaults — the exact silent-default failure splitListenAddr exists
+// to prevent one layer down.
+func serveBootArgs(args []string) []string {
+	if len(args) > 0 && args[0] == serveVerb {
+		return args[1:]
+	}
+	return args
 }
 
 // isBootFlag reports whether an argument names one of this binary's own boot
@@ -85,15 +128,26 @@ func isBootFlag(arg string) bool {
 // help, and exit with the CLI's usage-error code so a scripted caller reads it
 // the same way it reads any other bad invocation.
 func refuseInSessionBoot(args []string) {
-	complaint := "it needs a command"
-	if len(args) > 0 {
-		complaint = strconv.Quote(args[0]) + " is not one of its commands"
-	}
 	fmt.Fprintf(os.Stderr,
 		"agent-overflow: %s is set, so this is an Agent Overflow session and the app is already running; %s.\n",
-		aocli.EnvEndpoint, complaint)
+		aocli.EnvEndpoint, inSessionComplaint(args))
 	fmt.Fprint(os.Stderr, aocli.Usage())
 	os.Exit(2)
+}
+
+// inSessionComplaint says which of the three refusals this argv earned.
+// `serve` gets its own sentence because it IS one of this binary's verbs
+// — telling an operator it is not a command would send them looking for a
+// spelling mistake instead of at the second backend they just asked for.
+func inSessionComplaint(args []string) string {
+	switch {
+	case len(args) == 0:
+		return "it needs a command"
+	case args[0] == serveVerb:
+		return strconv.Quote(serveVerb) + " starts a backend, and this session is already talking to one"
+	default:
+		return strconv.Quote(args[0]) + " is not one of its commands"
+	}
 }
 
 // bootFlags holds the pointers newBootFlagSet's flags write into. It exists so

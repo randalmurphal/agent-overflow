@@ -13,6 +13,17 @@ canonical-name symlink at `<configDir>/bin/agent-overflow` and
 user-facing string here therefore says `agent-overflow`, never `ao`; the AO_*
 environment variable names are an internal contract and keep their prefix.
 
+**One verb the root usage names is not a row in that table: `serve`.** It boots
+the windowless backend, and a boot needs the embedded asset filesystem and the
+whole transport/App graph, both of which live in package `main` by construction.
+`decideEntry` matches it BEFORE the `IsCommand` check and routes it to
+`runServe`; this package only documents it, because `usage.go` is the one help
+text a person reads. The argument is at `serveVerb` in `main_entry.go`, and the
+seam is pinned by `TestServeVerbIsNotACLICommand` — adding a `serve` row here
+would create a verb that means two different things depending on which file you
+read. The operator-facing walkthrough is
+[docs/architecture/serve-mode.md](../../docs/architecture/serve-mode.md).
+
 The CLI has two halves:
 
 - **Offline** (`agent-overflow workflow …`): scope discovery, definition

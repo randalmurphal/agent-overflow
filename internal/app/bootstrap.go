@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"time"
 
+	"agent-overflow/internal/network"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/windowgeom"
 )
 
@@ -30,6 +32,58 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.credentialHomeOverride = config.CredentialHome
 	a.fileKeychainOverride = config.UseFileKeychain
 	a.backgroundFetchDisabled = config.DisableBackgroundFetch
+}
+
+// UseFileKeychain moves provider credentials and the browser companion's
+// state key out of the OS keychain and into 0600 files under the config
+// root. Call before Start.
+//
+// This is the SAME pin ConfigureIsolation sets, reached for an unrelated
+// reason, and the two callers must not be confused. A mocked boot sets it
+// so a test can never touch the developer's real keychain. The `serve`
+// boot sets it because an unattended host has no login session: on Linux
+// the Secret Service lives in the desktop session's D-Bus, and on macOS
+// the login keychain is unlocked by a person logging in. A backend started
+// by systemd at boot, or by launchd before anyone signs in, would either
+// block on a prompt nobody can answer or silently fall back — and "the
+// operator's provider logins disappeared after a reboot" is the shape that
+// second outcome takes. Files under a root this process already owns are
+// the honest posture for a machine nobody is sitting at
+// (docs/architecture/serve-mode.md).
+//
+// It is a separate function from ConfigureIsolation rather than a fifth
+// field on it because serve is not an isolated boot: it spawns the REAL
+// provider CLIs against the operator's real provider homes, which is the
+// entire point of leaving it running.
+func UseFileKeychain(a *App) { a.fileKeychainOverride = true }
+
+// HasEnrolledDevice reports whether any device could still sign in to this
+// backend from somewhere else.
+//
+// Two exclusions, and each is what makes the answer useful to the `serve`
+// console. The LOCAL PAGE CHANNEL is not a paired device: it is this
+// backend's own row, resolved on every boot for the window this mode never
+// opens, so counting it would mean a serve host was never fresh. A REVOKED
+// row is not access either — the owner ended it deliberately — and an
+// owner who revoked their last device on a machine with no screen has no
+// remaining way in, which is the one moment the console most needs to
+// offer enrollment.
+//
+// So this answers "is there a device that could reach this backend", not
+// "has this backend ever been paired". The second question would leave a
+// headless host locked out of itself after a revocation.
+func HasEnrolledDevice(a *App) (bool, error) { return a.hasEnrolledDevice() }
+
+// ServeEndpoints is the addressing summary a windowless boot prints for
+// the person who started it: the share URL, this launch's token, whether
+// that URL is cleartext, and the tailnet URL when the node is up.
+//
+// It is GetNetworkSettings' own composition — the persisted preferences
+// through network.FromServer — so the address printed on a serve console
+// and the address shown in Settings → Network are produced by one
+// formatter and cannot drift.
+func ServeEndpoints(a *App, srv *transport.Server) network.Settings {
+	return network.FromServer(srv, a.persistedNetworkSettings())
 }
 
 // SetDataDirOverride installs the executable's --data-dir boot input.

@@ -31,6 +31,14 @@ type topLevelCommand struct {
 // is. Run dispatches through it and Commands reports it, so the app binary's
 // verb dispatch (main.go, D30) cannot drift from the set this package handles:
 // adding a row here is what makes `agent-overflow <verb>` reach it.
+//
+// One verb the root usage documents is deliberately NOT a row: `serve`, which
+// boots the windowless backend. It is a BOOT, and a boot needs the embedded
+// asset filesystem and the whole transport/App graph, both of which live in
+// package main by construction. A row here would mean injecting a boot
+// callback into this package, which inverts the dependency to gain nothing —
+// the verb set this package owns still would not own that one. The argument
+// lives beside the code that routes it, at serveVerb in main_entry.go.
 var topLevelCommands = []topLevelCommand{
 	{name: "help", run: func(_ []string, _ string, _ func(string) (string, bool), stdout, stderr io.Writer) int {
 		if err := writeOutput(stdout, rootUsage); err != nil {

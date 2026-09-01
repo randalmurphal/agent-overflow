@@ -444,6 +444,28 @@ func (a *App) accessState() (*identityState, error) {
 	return state, nil
 }
 
+// hasEnrolledDevice is the predicate behind bootstrap.HasEnrolledDevice,
+// which carries the argument for both exclusions. It stops at the first
+// match rather than counting: the caller asks a yes/no question, and a
+// host with one device deserves the same work as a host with twenty.
+func (a *App) hasEnrolledDevice() (bool, error) {
+	state, err := a.accessState()
+	if err != nil {
+		return false, err
+	}
+	devices, err := a.store.ListDevicesForUser(state.owner.ID)
+	if err != nil {
+		return false, fmt.Errorf("access: list devices: %w", err)
+	}
+	for _, device := range devices {
+		if device.Channel == identity.LocalChannel || device.RevokedAt != 0 {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 // sessionConnCount asks the transport how many sockets carry a session.
 // Zero before the transport exists, which is the honest answer for an App
 // that is not serving.

@@ -10,6 +10,11 @@ authoritative in `internal/aocli/usage.go`, printed by `agent-overflow help` and
 
 ```
 agent-overflow <command>
+  serve [--listen|--data-dir|--reset-transport-port]
+                                               NOT an aocli command: a boot mode routed by
+                                               main's entry dispatch, listed in the root usage
+                                               because it is a verb a person types
+                                               (docs/architecture/serve-mode.md)
   workflow new|validate|list|schema            offline (each takes --config-root; put it after
                                                the subcommand: aocli's root FlagSet would accept
                                                a leading one, but the binary's entry router only

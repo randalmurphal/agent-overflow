@@ -131,6 +131,35 @@ type PairingStatusView struct {
 	ExpiresAtMs        int64  `json:"expiresAtMs"`
 }
 
+// Redeemed reports that a device has claimed the link and is showing the
+// number the owner has to match. It is the one state a waiting surface
+// ACTS on rather than keeps waiting through.
+func (v PairingStatusView) Redeemed() bool { return v.State == pairingStateRedeemed }
+
+// Settled reports that the exchange is over, whichever way it went, so a
+// poll loop can stop.
+func (v PairingStatusView) Settled() bool {
+	switch v.State {
+	case pairingStateConfirmed, pairingStateCanceled, pairingStateExpired:
+		return true
+	}
+	return false
+}
+
+// Confirmed reports the one settled state that actually enrolled the
+// device. Canceled and expired are the other two, and a caller that
+// treated "settled" as "done, it worked" would tell an operator their
+// phone was paired when the link had run out.
+func (v PairingStatusView) Confirmed() bool { return v.State == pairingStateConfirmed }
+
+// The three predicates above exist so a caller outside this package can
+// branch on a link's state without restating these strings. The constants
+// stay unexported deliberately — the vocabulary is this surface's, and a
+// second spelling of "redeemed" somewhere else is a bug nothing would
+// catch. Methods on the DTO rather than on App, so they never become wire
+// RPCs: internal/transport/methodgen scans one receiver (*App) and these
+// are invisible to it by construction.
+
 // DeviceRevocationResult is what one RevokeAccessDevice actually did.
 //
 // It exists because "revoked, 2 sessions ended, 1 connection closed" and
