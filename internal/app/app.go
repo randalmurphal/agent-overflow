@@ -93,9 +93,9 @@ type App struct {
 	// ordered queue its moments dispatch on, and the small edge state the
 	// pure mapping is handed. See app_notification_mapping.go.
 	notifications notificationDispatch
-	store           *store.Store
-	git             *gitops.Core
-	gitWatch        *gitwatch.Manager
+	store         *store.Store
+	git           *gitops.Core
+	gitWatch      *gitwatch.Manager
 	// gitApp owns gitwatch wire fan-out and the unattended background-fetch
 	// lifecycle. This shell retains the stable Wails façades and event projection.
 	gitAppOnce sync.Once
