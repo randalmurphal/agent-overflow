@@ -279,12 +279,12 @@ func TestWorkflowReadsAndPauseSplitOnScope(t *testing.T) {
 		"WorkflowGetJobNotes",
 		"WorkflowGetEngineState",
 	} {
-		if frameErr := AuthorizeSessionMethod(readOnly, name, false); frameErr != nil {
+		if frameErr := AuthorizeSessionMethod(readOnly, name, CallerProof{}); frameErr != nil {
 			t.Errorf("off-host read-only session refused %s: %+v", name, frameErr)
 		}
 	}
 
-	frameErr := AuthorizeSessionMethod(readOnly, "WorkflowSetGlobalPause", false)
+	frameErr := AuthorizeSessionMethod(readOnly, "WorkflowSetGlobalPause", CallerProof{})
 	if frameErr == nil {
 		t.Fatal("a read-only session paused the whole engine")
 	}

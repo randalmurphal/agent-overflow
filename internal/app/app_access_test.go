@@ -380,10 +380,10 @@ func TestViewOnlyDeviceReadsWithoutOperatingOrLosingItsOwnScreen(t *testing.T) {
 	app := accessApp(t)
 	grant := mintForAccess(t, app, string(identity.PairingAccessViewOnly), "thumb-view")
 
-	if refusal := transport.AuthorizeSessionMethod(grant.Scopes, "ListThreads", false); refusal != nil {
+	if refusal := transport.AuthorizeSessionMethod(grant.Scopes, "ListThreads", transport.CallerProof{}); refusal != nil {
 		t.Errorf("a view-only device was refused a read: %+v", refusal)
 	}
-	refusal := transport.AuthorizeSessionMethod(grant.Scopes, "ArchiveThread", false)
+	refusal := transport.AuthorizeSessionMethod(grant.Scopes, "ArchiveThread", transport.CallerProof{})
 	if refusal == nil {
 		t.Fatal("a view-only device was admitted an operation")
 	}
@@ -393,7 +393,7 @@ func TestViewOnlyDeviceReadsWithoutOperatingOrLosingItsOwnScreen(t *testing.T) {
 
 	// A device-tier setting is a property of the screen in front of the
 	// person, not an authority over this backend.
-	if refusal := transport.AuthorizeSessionMethod(grant.Scopes, "UpdateSettings", false); refusal != nil {
+	if refusal := transport.AuthorizeSessionMethod(grant.Scopes, "UpdateSettings", transport.CallerProof{}); refusal != nil {
 		t.Fatalf("a view-only device could not reach UpdateSettings: %+v", refusal)
 	}
 	if err := app.requireSettingsTier(callFrom(grant.SessionID, false), map[string]any{"fontSize": 15}); err != nil {

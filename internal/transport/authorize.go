@@ -69,38 +69,62 @@ func classify(methodName string) MethodMeta {
 	return MethodMeta{Name: methodName, Scope: ScopeHost}
 }
 
+// CallerProof is what ONE CALL proved about the caller, resolved per RPC
+// rather than captured at upgrade.
+//
+// Per call, because step-up is per call: §4 asks for "a per-call fresh
+// passkey (or host-presence) proof", and an answer read once when the
+// socket opened would be a standing grant wearing the word "fresh". Host
+// presence is fixed for a connection and could have been captured, but it
+// travels in the same struct so the two answers to one question live in
+// one place — a gate that reads one and forgets the other is the failure
+// this shape exists to make impossible.
+type CallerProof struct {
+	// HostPresent is whether the peer is on this machine, from the
+	// kernel-reported address the upgrade classified.
+	HostPresent bool
+	// StepUp is whether this call presented a valid step-up token: a
+	// single-use, minutes-lived grant a passkey assertion minted, bound to
+	// the session presenting it. Spent by the presentation, whatever the
+	// answer (Config.StepUpProof).
+	StepUp bool
+}
+
 // stepUpProven reports whether this call carries a fresh proof for §4's
 // step-up set ("Step-up (mandatory, not optional)").
 //
-// THIS PHASE THE PROOF IS HOST PRESENCE. §4 asks for "a per-call fresh
-// passkey (or host-presence) proof"; passkeys arrive in phase 5, so the
-// host-presence half is what exists, and being on this machine is what it
-// means today. That is also the reality the step-up set already lives
-// under: before the origin partition was deleted every //ao:stepup method
-// derived local-only from its scope, so naming host presence as the proof
-// preserves the reachability they already had rather than loosening it.
+// TWO proofs, and §4 names both: standing at the machine, or a passkey
+// assertion this backend verified moments ago. Neither is a standing
+// grant — host presence is the kernel's answer about this connection's
+// peer, and a step-up token is single-use, expires in minutes, and is
+// bound to the session that asked for it.
 //
-// It is a function rather than an inline `isLoopback` so phase 5 swaps the
-// PROOF without touching a call site: the passkey assertion lands here,
-// beside the argument for what a proof is, and every gate that asks the
-// question keeps asking it the same way.
-func stepUpProven(hostPresent bool) bool { return hostPresent }
+// The second proof does not weaken the first. Before passkeys the
+// step-up set was unreachable from ANY remote session, so an owner away
+// from their desk could not change their own backend's network binding;
+// the passkey path makes the set reachable to the OWNER specifically, by
+// demanding a signature from a credential only they hold. A session
+// without one is refused exactly as before.
+//
+// It stays one function so every gate asks the question the same way, and
+// a third proof would move no call site.
+func stepUpProven(proof CallerProof) bool { return proof.HostPresent || proof.StepUp }
 
 // AuthorizeSessionMethod decides whether a connection carrying a durable
 // session may invoke methodName. A nil return authorizes the call.
 //
-// granted is the session's scope set, re-read for this call. hostPresent
-// is whether the caller is on this machine, which is what a step-up proof
-// resolves to this phase (see stepUpProven).
+// granted is the session's scope set, re-read for this call. proof is what
+// this call proved about its caller, also resolved for this call (see
+// CallerProof).
 //
 // The order is the contract. `host` is judged before the grant set because
 // no grant can ever satisfy it — telling a caller to acquire a scope no
 // session may hold would be a false instruction — and step-up before the
 // grant set for the same reason. `session` joins them for the mirror
 // reason: no grant is needed, so no grant is looked for.
-func AuthorizeSessionMethod(granted []string, methodName string, hostPresent bool) *FrameError {
+func AuthorizeSessionMethod(granted []string, methodName string, proof CallerProof) *FrameError {
 	meta := classify(methodName)
-	if meta.Scope == ScopeHost && !hostPresent {
+	if meta.Scope == ScopeHost && !proof.HostPresent {
 		return &FrameError{
 			Code: ErrCodeScopeRequired,
 			Message: fmt.Sprintf(
@@ -108,12 +132,10 @@ func AuthorizeSessionMethod(granted []string, methodName string, hostPresent boo
 			Scope: string(ScopeHost),
 		}
 	}
-	if meta.StepUp && !stepUpProven(hostPresent) {
+	if meta.StepUp && !stepUpProven(proof) {
 		return &FrameError{
-			Code: ErrCodeStepUpRequired,
-			Message: fmt.Sprintf(
-				"%s requires a fresh host-presence proof, which a standing grant cannot supply",
-				methodName),
+			Code:    ErrCodeStepUpRequired,
+			Message: stepUpMessage(methodName),
 		}
 	}
 	if meta.Scope == ScopeHost {
@@ -193,8 +215,19 @@ func ScopeRequired(scope Scope, detail string) error {
 func StepUpRequired(detail string) error {
 	return &authzError{frame: FrameError{
 		Code:    ErrCodeStepUpRequired,
-		Message: fmt.Sprintf("%s requires a fresh host-presence proof, which a standing grant cannot supply", detail),
+		Message: stepUpMessage(detail),
 	}}
+}
+
+// stepUpMessage is the one phrasing of a step-up refusal, so the pre-call
+// gate and a method's own argument recheck name the same two remedies.
+// The client branches on the CODE; this text is what a person reads in a
+// log or a loopback error, and it has to say which proofs exist or the
+// remedy is unguessable.
+func stepUpMessage(detail string) string {
+	return fmt.Sprintf(
+		"%s requires a fresh proof — host presence or a passkey — which a standing grant cannot supply",
+		detail)
 }
 
 // AuthRefused builds the refusal a bound method returns when the session

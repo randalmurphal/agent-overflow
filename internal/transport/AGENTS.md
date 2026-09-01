@@ -184,8 +184,8 @@ all, so no grant could reach it even if a session tried.
 `method_not_found` shape an unregistered method returns, so that receiver stays
 unenumerable off-host (`dispatcher_localonly_test.go`). `isLoopback` still
 travels with the connection for two more reasons: `InvokeForOrigin` redacts
-method-error text for a non-loopback peer, and host presence is what a step-up
-proof resolves to this phase.
+method-error text for a non-loopback peer, and host presence is one of the two
+proofs that satisfy step-up.
 
 Method bodies do not re-check origin. A reverse proxy on the same host makes
 remote peers appear loopback and defeats this locality, so proxy from a
@@ -214,8 +214,21 @@ on loopback.
   call, so the floor admits an EMPTY grant set. Looking for `session` in the
   grant set would refuse every session.
 - **Step-up goes through `stepUpProven`**, one function whose doc comment
-  carries §4's argument. This phase the proof is host presence; phase 5 swaps
-  the proof there and no call site moves.
+  carries §4's argument. TWO proofs satisfy it, and §4 names both: standing
+  at the machine, or a passkey assertion this backend verified moments ago.
+  Neither is standing — host presence is the kernel's answer about this
+  connection's peer, and a step-up token is single-use, expires in minutes,
+  and is bound to the session that asked (`Config.StepUpProof`, satisfied in
+  `internal/app` over `identity.SpendStepUpToken`). The passkey path did not
+  loosen the set; it made the set reachable at all to an owner who is not at
+  the machine, which was previously impossible by construction.
+- **The proof is resolved ONCE per call, into `CallerProof`, and carried on
+  the ctx** (`WithCallerProof`). It has to be: resolving it SPENDS the token,
+  so a method's own argument recheck must READ the gate's answer rather than
+  ask again — `internal/app`'s `requireStepUp` reads
+  `StepUpProvenFromContext`. That is also why the token rides
+  `ClientFrame.StepUpToken` rather than a parameter: no method signature
+  mentions it, and both the gate and the in-method recheck need it.
 - **Two typed refusals**, following the `ErrCodeGrantRequired` precedent:
   `scope_required` carries the missing scope in `FrameError.Scope` (a FIELD,
   because prose does not survive the wire for a non-loopback caller and a
@@ -482,7 +495,7 @@ still be mapping it.
 
 ## The device-facing credential routes
 
-`authroutes.go` holds three POSTs (spec §4), the only routes on this mux a
+`authroutes.go` holds five POSTs (spec §4), the only routes on this mux a
 client reaches WITHOUT the launch credential — because they are how a client
 that has never met this backend gets one.
 
@@ -490,16 +503,22 @@ that has never met this backend gets one.
 |---|---|---|
 | `/auth/pair` | a single-use pairing token, plus the proof of the key the device generated first — signed in `X-AO-Device-Key`, or a bare identifier in the body for a device that cannot sign | `Config.AuthEndpoints != nil` |
 | `/auth/token` | a rotating refresh secret in the body, its device proof in `X-AO-Device-Key` | `Config.AuthEndpoints != nil` |
+| `/auth/passkey/begin` | nothing at all, and no body | `Config.AuthEndpoints != nil` |
+| `/auth/passkey/finish` | an assertion over the challenge that begin issued, plus a device proof in `X-AO-Device-Key` | `Config.AuthEndpoints != nil` |
 | `/auth/ticket` | the session credential it already holds | `Config.SessionForRequest != nil` |
 
-Rules that hold across all three:
+Rules that hold across all five:
 
 - **This package owns the wire, not the decision.** `AuthEndpoints` is a
-  two-method interface declared here and satisfied by an app-side adapter over
+  five-method interface declared here and satisfied by an app-side adapter over
   `internal/identity` — the same direction and the same reason as
   `ScopedTokens`. The DTOs (`PairingRedemption`, `SessionRenewal`,
-  `TokenGrant`) are dumb: nothing here validates a token, interprets a reason
-  code, or knows what a session row is.
+  `TokenGrant`, `PasskeyChallenge`, `PasskeyAssertion`) are dumb: nothing here
+  validates a token, verifies a signature, interprets a reason code, or knows
+  what a session row is. The WebAuthn options and the browser's response cross
+  as raw JSON, because a typed copy here would be a second definition of the
+  specification's shape that agrees with the library's only until it grows a
+  field.
 - **A grant publishes what it carries.** `TokenGrant.Scopes` is on both
   redemption and rotation responses, always an array and never null, because
   the client has no other way to learn what its own session may do — and an
@@ -537,6 +556,24 @@ Rules that hold across all three:
   deliberately no signed path. A device that enrolled a key is never accepted on
   the bare shape, on any route. Phase 5 swapped the VALUE and moved no call
   site, which is what the header being named for the KEY bought.
+
+**Only the SIGN-IN ceremony is a route.** A passkey has three uses and the
+other two — registering a credential, and proving step-up — are made from a
+surface that already holds a session, so they are bound methods
+(`internal/app`). Registration in particular must never be reachable without
+one: it is what a later sign-in trusts. What sign-in gets a route for is that
+its caller holds nothing, which is the whole point of it.
+
+**Availability is a per-request ANSWER, not a registration condition.** The
+routes exist whenever the identity seam does; a backend with no canonical
+domain answers `passkey_unavailable`. Making registration conditional would
+put a rebind inside "the owner named a domain", and unavailable is the only
+answer a client can explain anyway. The reachable half is published twice, and
+the two say different things: `CapabilityPasskeys` in the hello frame says this
+backend SPEAKS the ceremonies (a dialect fact, frozen with the rest of the
+list), while `Bootstrap.PasskeysAvailable` says one can be RUN right now (a
+configuration fact, which has to reach a page that holds no credential and has
+opened no socket).
 
 **The owner-facing half of pairing is deliberately not here.** Minting a link,
 reading the verification number, confirming and cancelling are Go API on
@@ -622,7 +659,8 @@ header is written by the client and `Node.ts.net:443` is the same name as
 and the guard never switches off.
 
 **Peer locality is `loopback.PeerAddress(r.RemoteAddr)`**, captured before the
-upgrade and reused for the host-tooling receiver refusal, the step-up proof,
+upgrade and reused for the host-tooling receiver refusal, the host-presence
+half of the step-up proof,
 error-text redaction, permessage-deflate selection, asset cache headers, the
 local-channel cookie plant on `/bootstrap.json`, and the manifest's `Remote`
 field. `internal/app`'s `bindingAdmitsPeer` calls the same predicate on the

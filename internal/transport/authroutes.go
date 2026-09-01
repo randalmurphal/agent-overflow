@@ -9,7 +9,7 @@ import (
 
 // The device-facing credential routes (docs/specs/remote-access.md §4).
 //
-// Three POSTs, one shape: a device that holds no page credential presents
+// Five POSTs, one shape: a device that holds no page credential presents
 // what it does hold, and is answered with a typed reason code when that is
 // not enough. They are the only routes on this listener a client reaches
 // WITHOUT the launch credential, because they are how a client that has
@@ -40,6 +40,19 @@ const AuthTokenPath = "/auth/token"
 // AuthTicketPath mints a single-use WebSocket ticket for the session the
 // caller already holds.
 const AuthTicketPath = "/auth/ticket"
+
+// AuthPasskeyBeginPath starts a passkey SIGN-IN ceremony, and only that
+// one. The other two ceremonies — registering a credential, and proving
+// step-up — are made from a surface that already holds a session, so they
+// are bound methods on the wire rather than routes here. Putting them on
+// an unauthenticated route would add a way to ask for a challenge that no
+// caller needs, and registration in particular must never be reachable
+// without a session: it is what a later sign-in trusts.
+const AuthPasskeyBeginPath = "/auth/passkey/begin"
+
+// AuthPasskeyFinishPath completes a sign-in ceremony and answers with a
+// credential pair, exactly as pairing redemption does.
+const AuthPasskeyFinishPath = "/auth/passkey/finish"
 
 // SessionCredentialHeader carries a session credential for a client that
 // can set headers. The cookie below is for the one that cannot.
@@ -198,6 +211,56 @@ type TokenGrant struct {
 	Scopes []string `json:"scopes"`
 }
 
+// PasskeyChallenge is a ceremony this backend just started: an opaque
+// handle and the options a browser hands to `navigator.credentials`.
+//
+// Options is raw JSON, never a typed struct. The shape is the WebAuthn
+// specification's, the library that produced it owns every field, and a
+// mirror here would be a second definition that agrees with the first only
+// until the library adds a field. This package carries the bytes.
+type PasskeyChallenge struct {
+	// CeremonyID names the challenge to finish against. Opaque to the
+	// client, single-use on the backend, and NOT a credential: it admits
+	// nothing on its own, and answering the challenge it names requires a
+	// key this backend already knows.
+	CeremonyID string `json:"ceremonyId"`
+	// Options is the `publicKey` member for navigator.credentials.get,
+	// verbatim from the ceremony.
+	Options json.RawMessage `json:"options"`
+}
+
+// PasskeyAssertion is what a device presents to finish a sign-in ceremony.
+//
+// A dumb DTO like the two above: nothing here verifies a signature, and
+// the fields it fills in itself are exactly the ones a caller must not be
+// able to state about its own request.
+type PasskeyAssertion struct {
+	// CeremonyID names the challenge this answers.
+	CeremonyID string `json:"ceremonyId"`
+	// Response is the browser's PublicKeyCredential, JSON-encoded with its
+	// binary members base64url — the shape the WebAuthn library parses.
+	// Raw JSON for the same reason PasskeyChallenge.Options is.
+	Response json.RawMessage `json:"response"`
+	// KeyThumbprint identifies the keypair this device generated before
+	// signing in, exactly as PairingRedemption's does, and is ignored
+	// whenever DeviceProof is present. A passkey proves the PERSON; the
+	// device row is what a revocation reaches, so a sign-in still enrolls
+	// or re-adopts a device.
+	KeyThumbprint string `json:"keyThumbprint"`
+	// DeviceProof is the signed proof from DeviceKeyHeader. Never from the
+	// body, for the reason PairingRedemption.DeviceProof is not.
+	DeviceProof string `json:"-"`
+	// Method and Path are what a signed proof binds, filled in here from
+	// the request itself.
+	Method string `json:"-"`
+	Path   string `json:"-"`
+	// Label and Platform are what a newly enrolled device calls itself.
+	Label    string `json:"label,omitempty"`
+	Platform string `json:"platform,omitempty"`
+	// Peer is the request's remote address, for the audit trail.
+	Peer string `json:"-"`
+}
+
 // authRefusal is the body of a refused credential request. One field,
 // because the code is the whole message: prose belongs to the client's
 // presentation module (frontend/src/lib/transport/authReason.ts), which
@@ -220,6 +283,24 @@ type AuthEndpoints interface {
 	RedeemPairing(req PairingRedemption) (TokenGrant, string)
 	// RenewSession rotates one credential pair.
 	RenewSession(req SessionRenewal) (TokenGrant, string)
+	// PasskeysAvailable reports whether a sign-in ceremony can be started
+	// right now.
+	//
+	// A method rather than a Config bool because the answer moves while the
+	// process runs: it depends on the canonical domain, which is a setting
+	// the owner edits. Registering the routes on a boot-time snapshot would
+	// mean a backend that grew a domain still had no passkey surface until
+	// it restarted.
+	PasskeysAvailable() bool
+	// BeginPasskeySignIn starts a discoverable-credential ceremony. No
+	// caller identity is named, and none could be: which credential
+	// answers is the authenticator's business, and a backend that asked
+	// "which account" would be answering an enumeration question for free.
+	BeginPasskeySignIn() (PasskeyChallenge, string)
+	// FinishPasskeySignIn verifies an assertion and issues a credential
+	// pair — the same TokenGrant redemption and rotation produce, because
+	// what a device holds afterwards is identical.
+	FinishPasskeySignIn(req PasskeyAssertion) (TokenGrant, string)
 }
 
 // handleAuthPair answers AuthPairPath.
@@ -265,6 +346,65 @@ func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
 	req.Peer = r.RemoteAddr
 	grant, reason := endpoints.RenewSession(req)
 	writeAuthResult(w, s.csp, grant, reason)
+}
+
+// handlePasskeyBegin answers AuthPasskeyBeginPath with a fresh challenge.
+//
+// No credential is consulted, for the reason /auth/pair consults none: the
+// caller is a browser that has never met this backend and holds nothing.
+// The challenge it receives authorizes nothing — spending it means
+// producing a signature from a key this backend already registered — so
+// what stands in front of the route is everything that is not a secret:
+// the method, the Origin allow-list, the Host guard, and the shared budget.
+//
+// The request carries no body at all. There is nothing a caller could
+// usefully say here, and a body would be a place to say which account —
+// which is the question a discoverable ceremony exists not to ask.
+func (s *Server) handlePasskeyBegin(w http.ResponseWriter, r *http.Request) {
+	endpoints := s.cfg.AuthEndpoints
+	if endpoints == nil || !s.acceptAuthPost(w, r) {
+		return
+	}
+	challenge, reason := endpoints.BeginPasskeySignIn()
+	writePasskeyChallenge(w, s.csp, challenge, reason)
+}
+
+// handlePasskeyFinish answers AuthPasskeyFinishPath with a credential pair.
+//
+// Same shape as redemption, and deliberately: a verified assertion and a
+// spent pairing link both mean "the owner said yes", so both end in one
+// TokenGrant and a client handles neither specially.
+func (s *Server) handlePasskeyFinish(w http.ResponseWriter, r *http.Request) {
+	endpoints := s.cfg.AuthEndpoints
+	if endpoints == nil || !s.acceptAuthPost(w, r) {
+		return
+	}
+	var req PasskeyAssertion
+	if !decodeAuthBody(w, r, &req) {
+		return
+	}
+	req.DeviceProof = r.Header.Get(DeviceKeyHeader)
+	req.Method, req.Path = r.Method, r.URL.Path
+	req.Peer = r.RemoteAddr
+	grant, reason := endpoints.FinishPasskeySignIn(req)
+	writeAuthResult(w, s.csp, grant, reason)
+}
+
+// writePasskeyChallenge writes a started ceremony or the typed refusal
+// that replaced it, in the shape writeAuthResult uses for a grant: 401
+// with `{"reason": code}`, so a client reads one refusal envelope on
+// every route of this family.
+func writePasskeyChallenge(w http.ResponseWriter, csp ContentSecurityPolicy, challenge PasskeyChallenge, reason string) {
+	h := w.Header()
+	WriteSecurityHeaders(h, csp)
+	h.Set("Cache-Control", "no-store")
+	h.Set("Content-Type", "application/json")
+	if reason != "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(authRefusal{Reason: reason})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(challenge)
 }
 
 // ticketGrant is the body of a minted WebSocket ticket.

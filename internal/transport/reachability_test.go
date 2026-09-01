@@ -78,7 +78,7 @@ func TestWorkspaceContentAnswersASessionGrantedTheScope(t *testing.T) {
 			if got := classify(name).Scope; got != scope {
 				t.Fatalf("scope = %q, want %q; this list records what each method declares", got, scope)
 			}
-			if fe := AuthorizeSessionMethod(grantsFor(scope), name, false); fe != nil {
+			if fe := AuthorizeSessionMethod(grantsFor(scope), name, CallerProof{}); fe != nil {
 				t.Fatalf("a session granted %q was refused: %+v", scope, fe)
 			}
 
@@ -88,7 +88,7 @@ func TestWorkspaceContentAnswersASessionGrantedTheScope(t *testing.T) {
 					without = append(without, other)
 				}
 			}
-			fe := AuthorizeSessionMethod(grantsFor(without...), name, false)
+			fe := AuthorizeSessionMethod(grantsFor(without...), name, CallerProof{})
 			if fe == nil {
 				t.Fatalf("a session holding every scope EXCEPT %q was admitted", scope)
 			}
@@ -108,10 +108,10 @@ func TestBookkeepingMutationsRideThreadsOperate(t *testing.T) {
 			if got := classify(name).Scope; got != ScopeThreadsOperate {
 				t.Fatalf("scope = %q, want %q", got, ScopeThreadsOperate)
 			}
-			if fe := AuthorizeSessionMethod(grantsFor(ScopeThreadsOperate), name, false); fe != nil {
+			if fe := AuthorizeSessionMethod(grantsFor(ScopeThreadsOperate), name, CallerProof{}); fe != nil {
 				t.Fatalf("a session granted %q was refused: %+v", ScopeThreadsOperate, fe)
 			}
-			fe := AuthorizeSessionMethod(grantsFor(ScopeThreadsRead), name, false)
+			fe := AuthorizeSessionMethod(grantsFor(ScopeThreadsRead), name, CallerProof{})
 			if fe == nil || fe.Code != ErrCodeScopeRequired || fe.Scope != string(ScopeThreadsOperate) {
 				t.Fatalf("a read-only session got %+v, want %s naming %s", fe, ErrCodeScopeRequired, ScopeThreadsOperate)
 			}
@@ -132,7 +132,7 @@ func TestHostScopedMethodsStayRefusedForEveryOffHostSession(t *testing.T) {
 			continue
 		}
 		checked++
-		fe := AuthorizeSessionMethod(everything, method.Name, false)
+		fe := AuthorizeSessionMethod(everything, method.Name, CallerProof{})
 		if fe == nil {
 			t.Errorf("%s is host-scoped and answered a session that is not on this machine", method.Name)
 			continue
@@ -164,7 +164,7 @@ func TestStepUpMethodsRefuseAnOffHostSession(t *testing.T) {
 		if method.Scope == ScopeHost {
 			want = ErrCodeScopeRequired
 		}
-		fe := AuthorizeSessionMethod(everything, method.Name, false)
+		fe := AuthorizeSessionMethod(everything, method.Name, CallerProof{})
 		if fe == nil || fe.Code != want {
 			t.Errorf("%s is //ao:stepup and answered %+v for an off-host session, want %s", method.Name, fe, want)
 		}
@@ -234,7 +234,7 @@ func TestSessionFloorAdmitsASessionThatWasGrantedNothing(t *testing.T) {
 			continue
 		}
 		floored++
-		if fe := AuthorizeSessionMethod(nil, method.Name, false); fe != nil {
+		if fe := AuthorizeSessionMethod(nil, method.Name, CallerProof{}); fe != nil {
 			t.Errorf("%s is at the session floor and refused a session holding nothing: %+v", method.Name, fe)
 		}
 	}
@@ -282,10 +282,10 @@ func TestSessionFloorMethodsAreTheSpecSet(t *testing.T) {
 func TestSessionFloorIsNeverAGrant(t *testing.T) {
 	// The floor admits with an empty grant set, so the assertion that
 	// means anything is the reverse: holding it changes no OTHER answer.
-	if fe := AuthorizeSessionMethod(grantsFor(ScopeSession), "OpenInEditor", false); fe == nil {
+	if fe := AuthorizeSessionMethod(grantsFor(ScopeSession), "OpenInEditor", CallerProof{}); fe == nil {
 		t.Error("a grant set naming the session floor reached a host-scoped method")
 	}
-	if fe := AuthorizeSessionMethod(grantsFor(ScopeSession), "ArchiveThread", false); fe == nil {
+	if fe := AuthorizeSessionMethod(grantsFor(ScopeSession), "ArchiveThread", CallerProof{}); fe == nil {
 		t.Error("a grant set naming the session floor reached an execute-tier method")
 	}
 	if ScopeSession.Tier() != TierSession {

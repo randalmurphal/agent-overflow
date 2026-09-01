@@ -45,8 +45,8 @@ use the existing guarded fixtures and mock scripts.
 
 `app_identity.go` is where `internal/identity` and `internal/transport`
 meet, because neither may import the other. It holds the one
-`*identity.Sessions`, satisfies the four hooks the transport declares
-(`SessionForRequest`, `SessionLive`, `SessionScopes`,
+`*identity.Sessions`, satisfies the five hooks the transport declares
+(`SessionForRequest`, `SessionLive`, `SessionScopes`, `StepUpProof`,
 `PageSessionCredential`), and implements `transport.AuthEndpoints`.
 
 Everything in that file is adaptation. **No policy decision belongs
@@ -77,13 +77,24 @@ enforce for a caller that reached it another way; put it in
   off-host resolves NO SESSION rather than refusing the request — the
   full argument is in `internal/identity/AGENTS.md` § Binding class.
 - `AuthEndpoints(a *App)` is a bootstrap-boundary function returning an
-  unexported adapter type, **not** two exported `App` methods. An exported
-  method on `App` is promoted onto `main.App` and becomes a wire RPC by
-  construction (see § Bootstrap boundary); redeeming a pairing link over
-  the RPC wire would let a caller who already holds a session enroll
+  unexported adapter type, **not** a set of exported `App` methods. An
+  exported method on `App` is promoted onto `main.App` and becomes a wire
+  RPC by construction (see § Bootstrap boundary); redeeming a pairing link
+  over the RPC wire would let a caller who already holds a session enroll
   another device, which is the one thing the HTTP route's shape exists to
   constrain. Anything the transport calls through an interface belongs on
   a type of its own for the same reason.
+- **The passkey seam is split by who the caller is, and that split is the
+  point.** SIGN-IN goes through this adapter, because its caller holds
+  nothing; REGISTERING a credential and PROVING step-up are bound methods,
+  because their callers already hold a session and registration must never
+  be reachable without one — it is what a later sign-in trusts.
+  `app_passkey.go` holds the two facts neither `internal/identity` nor
+  `internal/transport` can know: what this backend answers to
+  (`passkeyRelyingParty`, from the canonical domain plus the live
+  listener's port, re-read per ceremony because the domain is a live
+  setting) and `StepUpProof`, the hook the per-RPC gate spends a token
+  through.
 - The local page credential is cached and re-issued within
   `localReissueMargin` of expiry, rather than on a timer. The manifest is
   refetched on every reconnect, so the moment a fresh credential is needed
@@ -118,6 +129,12 @@ are decided by what the call CARRIES (`docs/specs/remote-access.md` §16 phase 3
 - `requireSettingsTier` — `UpdateSettings` carries all three of §6's tiers, so
   it is decided per patch key: device rides any valid session, user needs
   `settings:write`, host needs a step-up proof.
+- `requireStepUp` — the host tier's rule, and the one helper that must NOT
+  re-derive its answer. Two proofs satisfy step-up (host presence, or a
+  passkey assertion), and the transport resolves both ONCE per call because
+  resolving the second SPENDS a single-use token. So this reads
+  `transport.StepUpProvenFromContext` — the gate's own answer — rather than
+  asking again and finding the token gone.
 
 Three rules hold for every helper here:
 

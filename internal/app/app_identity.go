@@ -91,6 +91,13 @@ func (a *App) initIdentity(backendID string) {
 	if conns := a.liveConns.Load(); conns != nil {
 		sessions.AttachConns(*conns)
 	}
+	// What this backend answers to, which the session core cannot know: a
+	// closure rather than a value, because the canonical domain is a live
+	// setting and a ceremony begun after it changes must run under the new
+	// name (app_passkey.go).
+	sessions.SetRelyingParty(func() identity.RelyingParty {
+		return passkeyRelyingParty(a)
+	})
 
 	// The local page channel: a loopback-only session this backend mints
 	// for ITSELF, so a local connection names a session instead of being
@@ -380,6 +387,74 @@ func (e authEndpoints) RenewSession(req transport.SessionRenewal) (transport.Tok
 		return transport.TokenGrant{}, reason.Code()
 	}
 	return localGrant(tokens), ""
+}
+
+// PasskeysAvailable reports whether a sign-in ceremony can start right
+// now. Satisfies transport.AuthEndpoints.
+//
+// Asked per request rather than captured at boot, because the answer moves
+// with the canonical domain — a setting the owner edits while the process
+// runs.
+func (e authEndpoints) PasskeysAvailable() bool {
+	state := e.app.identityState()
+	return state != nil && state.sessions.PasskeysAvailable()
+}
+
+// BeginPasskeySignIn starts a discoverable ceremony. Satisfies
+// transport.AuthEndpoints.
+func (e authEndpoints) BeginPasskeySignIn() (transport.PasskeyChallenge, string) {
+	state := e.app.identityState()
+	if state == nil {
+		return transport.PasskeyChallenge{}, identity.ReasonPasskeyUnavailable.Code()
+	}
+	challenge, reason := state.sessions.BeginPasskeySignIn()
+	if reason.Refused() {
+		return transport.PasskeyChallenge{}, reason.Code()
+	}
+	return transport.PasskeyChallenge{
+		CeremonyID: challenge.CeremonyID,
+		Options:    challenge.Options,
+	}, ""
+}
+
+// FinishPasskeySignIn verifies an assertion and issues a credential pair.
+// Satisfies transport.AuthEndpoints.
+//
+// The grant is the ordinary one, with no verification number and no
+// pairing id: a passkey sign-in has nothing for a second screen to
+// confirm, so the fields that drive that exchange stay empty and the
+// client's existing "am I confirmed" branch answers yes on the first
+// response.
+func (e authEndpoints) FinishPasskeySignIn(req transport.PasskeyAssertion) (transport.TokenGrant, string) {
+	state := e.app.identityState()
+	if state == nil {
+		return transport.TokenGrant{}, identity.ReasonPasskeyUnavailable.Code()
+	}
+	signIn, reason := state.sessions.FinishPasskeySignIn(identity.PasskeySignInRequest{
+		CeremonyID: req.CeremonyID,
+		Response:   req.Response,
+		Proof:      passkeyProof(req),
+		Label:      req.Label,
+		Platform:   req.Platform,
+		Peer:       req.Peer,
+	})
+	if reason.Refused() {
+		return transport.TokenGrant{}, reason.Code()
+	}
+	return localGrant(signIn.Tokens), ""
+}
+
+// passkeyProof resolves which of a sign-in's two carriers holds the
+// device's presentation, on exactly redemptionProof's rule. Two functions
+// rather than one because the two DTOs are separate wire shapes and
+// neither may grow a field to satisfy the other; the rule they apply is
+// stated once, there.
+func passkeyProof(req transport.PasskeyAssertion) identity.DeviceProof {
+	value := req.DeviceProof
+	if value == "" {
+		value = req.KeyThumbprint
+	}
+	return identity.DeviceProof{Value: value, Method: req.Method, Path: req.Path}
 }
 
 // redemptionProof resolves which of a redemption's two carriers holds the

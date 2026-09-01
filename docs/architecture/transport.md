@@ -256,8 +256,8 @@ fine off-host. So `handleWS` requires a non-loopback peer to NAME a live durable
 session (spec §4, "Local clients") — through the spent `?ticket=`, the
 `X-AO-Session` header, or the `ao_session_<port>` cookie, the three carriers
 `SessionForRequest` already reads. Locality is `loopback.PeerAddress` over the
-kernel-reported peer, the same predicate the event filter, the step-up proof and
-`internal/app`'s `bindingAdmitsPeer` use.
+kernel-reported peer, the same predicate the event filter, the host-presence half
+of the step-up proof and `internal/app`'s `bindingAdmitsPeer` use.
 
 | Peer | Presents | Upgrade |
 |---|---|---|
@@ -498,10 +498,12 @@ storming.
 
 ## The device-facing credential routes
 
-Three POSTs (`authroutes.go`) are the only routes a client reaches without the
+Five POSTs (`authroutes.go`) are the only routes a client reaches without the
 launch credential, because they are how a client that has never met this backend
 gets one: `/auth/pair` redeems a pairing link, `/auth/token` rotates a credential
-pair, `/auth/ticket` mints the single-use ticket the `/ws` upgrade spends.
+pair, `/auth/passkey/begin` and `/auth/passkey/finish` sign a device in with a
+registered passkey, and `/auth/ticket` mints the single-use ticket the `/ws`
+upgrade spends.
 
 ```
 device                                   backend
@@ -521,9 +523,33 @@ device                                   backend
   │──────────────────────────────────────────▶│  spend, re-check liveness, upgrade
 ```
 
-The transport owns the wire and nothing else: `AuthEndpoints` is a two-method
+The passkey pair is the same exchange with the pairing link removed:
+
+```
+browser                                  backend
+  │  POST /auth/passkey/begin  (no body)      │
+  │──────────────────────────────────────────▶│  starts a discoverable ceremony,
+  │                                           │  pins the relying party beside it
+  │◀── {ceremonyId, options} ─────────────────│
+  │  (navigator.credentials.get, the person   │
+  │   verifies on their authenticator)        │
+  │  POST /auth/passkey/finish                │
+  │    {ceremonyId, response, keyThumbprint}  │
+  │    X-AO-Device-Key: <proof>               │
+  │──────────────────────────────────────────▶│  deletes the ceremony, verifies,
+  │                                           │  resolves the device, mints a LIVE session
+  │◀── {credential, refreshSecret, scopes} ───│
+```
+
+No verification number and no confirmation step: the assertion is a signature by
+a key the owner registered from a surface that already held admin, and a second
+screen adds nothing. The device proof is still required — the passkey proves the
+person, and the device row is what a revocation reaches.
+
+The transport owns the wire and nothing else: `AuthEndpoints` is a five-method
 interface it declares and the App satisfies over `internal/identity`, and the
-DTOs are dumb. A refusal is `401` with `{"reason": "<code>"}` — the typed code
+DTOs are dumb (the WebAuthn options and the browser's response cross as raw
+JSON, unread by either layer). A refusal is `401` with `{"reason": "<code>"}` — the typed code
 from `internal/identity`'s closed set, which the client's presentation module
 turns into a sentence. The device key rides `X-AO-Device-Key` and is never read
 from the body: a proof a caller may write into the document it is proving
@@ -539,7 +565,7 @@ ambient cookie.
 ## Per-peer request budgets
 
 Four budgets carry a token bucket per peer: `/bootstrap.json`, `/pageurl`,
-`/rpc`, and the three `/auth/*` routes together. `/healthz` and the SPA assets carry none, and `/ws` carries none because
+`/rpc`, and the five `/auth/*` routes together. `/healthz` and the SPA assets carry none, and `/ws` carries none because
 one upgrade opens a long-lived connection whose credential came from the ticket
 exchange that preceded it.
 

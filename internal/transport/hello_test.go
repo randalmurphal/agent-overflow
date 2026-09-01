@@ -132,6 +132,7 @@ func TestServer_HelloOmitsBackendIDWhenIdentityIsUnknown(t *testing.T) {
 func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 	want := []string{
 		"notifications.remote",
+		"passkeys",
 	}
 	if len(serverCapabilities) != len(want) {
 		t.Fatalf("advertised capabilities = %v, want %v — update this list and the name's doc comment in the same change",

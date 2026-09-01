@@ -146,6 +146,10 @@ type connSettings struct {
 	// sessionScopes reads the named session's grants per RPC, or nil when
 	// nothing can answer. See Config.SessionScopes.
 	sessionScopes func(sessionID string) ([]string, string)
+	// stepUpProof spends a step-up token an RPC presented, or nil when
+	// nothing can answer — in which case host presence is the only proof,
+	// which is the behavior before passkeys. See Config.StepUpProof.
+	stepUpProof func(sessionID, token string) bool
 
 	// sessionRecheck and maxLifetime are Config.SessionRecheckInterval
 	// and Config.MaxRemoteConnLifetime, unresolved: zero takes the
@@ -202,6 +206,10 @@ type connHandler struct {
 	// pre-enforcement behavior every launch-credential client still has.
 	sessionScopes func(sessionID string) ([]string, string)
 
+	// stepUpProof spends a step-up token presented on one RPC. Nil leaves
+	// host presence as the only step-up proof.
+	stepUpProof func(sessionID, token string) bool
+
 	// eventScopes is the grant half of this connection's event filter,
 	// resolved once at upgrade (see connEventScopes).
 	eventScopes eventScopeFilter
@@ -228,8 +236,8 @@ type connHandler struct {
 //
 // profile is captured at upgrade time and carries per-connection
 // transport policy. profile.isLoopback is forwarded to every dispatcher
-// resolution (host-tooling receivers, redacted error text) and to the
-// scope gate, where it is what a step-up proof resolves to this phase.
+// resolution (host-tooling receivers, redacted error text) and seeds the
+// per-call CallerProof the scope gate judges step-up on.
 func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus *EventBus, settings connSettings, profile connProfile) {
 	if settings.readLimit <= 0 {
 		settings.readLimit = DefaultReadLimit
@@ -269,6 +277,7 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		sessionRecheck:    settings.sessionRecheck,
 		maxLifetime:       settings.maxLifetime,
 		sessionScopes:     settings.sessionScopes,
+		stepUpProof:       settings.stepUpProof,
 		eventScopes:       eventScopes,
 	}
 	h.lastReadAt.Store(time.Now().UnixNano())
@@ -288,9 +297,8 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// Handlers that scope durable state read the session first and fall
 	// back to the screen, which is why neither may be dropped here.
 	connCtx, state := WithConnState(connCtx, ConnPrincipal{
-		Client:      profile.client,
-		SessionID:   profile.sessionID,
-		HostPresent: profile.isLoopback,
+		Client:    profile.client,
+		SessionID: profile.sessionID,
 	})
 	defer state.RunCleanups()
 
@@ -659,10 +667,16 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 		return
 	}
 
-	if fe := h.authorizeSession(method.Name); fe != nil {
+	// Resolved once, before either gate, and carried into the call. The
+	// pre-call gate below and the method's own argument recheck read the
+	// SAME answer — which they must, because resolving it SPENDS a step-up
+	// token and a second resolution would find it gone.
+	proof := h.callerProof(frame)
+	if fe := h.authorizeSession(method.Name, proof); fe != nil {
 		h.writeError(ctx, frame.ID, fe)
 		return
 	}
+	ctx = WithCallerProof(ctx, proof)
 
 	result, fe := h.dispatcher.InvokeForOrigin(ctx, method, frame.Params, h.profile.isLoopback)
 	if fe != nil {
@@ -690,7 +704,7 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 // revoking a session must stop the next RPC on a socket that is already
 // open, and the refusal the hook returns is how it does (§4
 // "Revocation").
-func (h *connHandler) authorizeSession(methodName string) *FrameError {
+func (h *connHandler) authorizeSession(methodName string, proof CallerProof) *FrameError {
 	if h.profile.sessionID == "" || h.sessionScopes == nil {
 		return nil
 	}
@@ -701,7 +715,30 @@ func (h *connHandler) authorizeSession(methodName string) *FrameError {
 		// gate's, so it keeps the credential channel's shape.
 		return AuthFailure(refusal)
 	}
-	return AuthorizeSessionMethod(granted, methodName, h.profile.isLoopback)
+	return AuthorizeSessionMethod(granted, methodName, proof)
+}
+
+// callerProof resolves what THIS call proved about its caller.
+//
+// Host presence comes from the connection and costs nothing. The token
+// half is asked only when it could change the answer: a host-present
+// caller is already proven, so presenting a token there would spend it for
+// nothing, and a caller naming no session has nothing a token could be
+// bound to.
+//
+// The token is spent by the asking, whatever the answer. That is what
+// single use means, and it is why this runs once per RPC rather than once
+// per gate.
+func (h *connHandler) callerProof(frame ClientFrame) CallerProof {
+	proof := CallerProof{HostPresent: h.profile.isLoopback}
+	if proof.HostPresent || frame.StepUpToken == "" {
+		return proof
+	}
+	if h.stepUpProof == nil || h.profile.sessionID == "" {
+		return proof
+	}
+	proof.StepUp = h.stepUpProof(h.profile.sessionID, frame.StepUpToken)
+	return proof
 }
 
 // handleReplay streams every event missed since the client's

@@ -52,12 +52,40 @@ type ConnPrincipal struct {
 	// SessionID is the durable session this connection presented, empty
 	// when it named none — every launch-credential client today.
 	SessionID string
-	// HostPresent is whether the peer is on this machine. It is what a
-	// step-up proof resolves to this phase (transport.stepUpProven), so a
-	// bound method whose ARGUMENTS reach something §4 puts behind a fresh
-	// proof reads it here rather than re-deriving "local" from a header
-	// the peer supplied.
-	HostPresent bool
+}
+
+// callerProofKey addresses the per-CALL proof, which is deliberately not on
+// the principal above: a principal is fixed for a connection, and step-up
+// is answered per RPC (see CallerProof).
+type callerProofKey struct{}
+
+// WithCallerProof installs what one call proved about its caller, for the
+// argument-dependent rechecks a bound method runs on itself.
+//
+// The transport resolves it once per RPC and the pre-call gate and the
+// in-method recheck read that same value, so the two cannot disagree about
+// whether this call was stepped up — which matters because the token is
+// spent by the resolution and cannot be presented twice.
+//
+// A context nothing installed this on answers the zero proof, which is the
+// honest answer for an in-process call: it proves nothing about a peer,
+// and every gate that reads it admits such a caller on the session check
+// before it ever asks.
+func WithCallerProof(ctx context.Context, proof CallerProof) context.Context {
+	return context.WithValue(ctx, callerProofKey{}, proof)
+}
+
+// CallerProofFromContext returns what this call proved about its caller.
+func CallerProofFromContext(ctx context.Context) CallerProof {
+	proof, _ := ctx.Value(callerProofKey{}).(CallerProof)
+	return proof
+}
+
+// StepUpProvenFromContext reports whether this call carries a fresh
+// step-up proof — host presence or a spent passkey token. The one reader a
+// bound method needs; the disjunction itself is argued on stepUpProven.
+func StepUpProvenFromContext(ctx context.Context) bool {
+	return stepUpProven(CallerProofFromContext(ctx))
 }
 
 type connStateKey struct{}
@@ -96,15 +124,6 @@ func (c *ConnState) SessionID() string {
 	return c.principal.SessionID
 }
 
-// HostPresent reports whether the peer is on this machine, fixed at upgrade
-// like the rest of the principal.
-func (c *ConnState) HostPresent() bool {
-	if c == nil {
-		return false
-	}
-	return c.principal.HostPresent
-}
-
 // ClientFromContext is the one-liner handlers use: the identity of the screen
 // this call came from, or the zero value when there is none (an in-process
 // binding, a background saga, a test).
@@ -116,15 +135,6 @@ func ClientFromContext(ctx context.Context) ClientIdentity {
 // session this call's connection presented, or "" when it presented none.
 func SessionFromContext(ctx context.Context) string {
 	return ConnStateFromContext(ctx).SessionID()
-}
-
-// HostPresentFromContext reports whether this call came from a peer on this
-// machine. False for a context no transport connection installed, which is
-// the honest answer: an in-process caller proves nothing about a peer, and
-// every gate that reads this admits such a caller on the session check
-// before it ever asks.
-func HostPresentFromContext(ctx context.Context) bool {
-	return ConnStateFromContext(ctx).HostPresent()
 }
 
 // ConnStateFromContext extracts the per-connection ConnState if one was

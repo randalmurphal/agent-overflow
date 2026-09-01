@@ -111,6 +111,14 @@ const (
 	// as much in its reuse being detectable as in its being secret.
 	CredRefreshSecret Credential = "rotating refresh secret"
 
+	// CredPasskeyAssertion is a WebAuthn signature over a challenge this
+	// backend issued moments ago, made by a credential the owner
+	// registered from an already-authenticated surface. Not a bearer
+	// secret at all: nothing transmitted here can be replayed, because
+	// the challenge is single-use and the private key never leaves the
+	// authenticator.
+	CredPasskeyAssertion Credential = "passkey assertion"
+
 	// CredNone is no check of any kind. Only defensible on a listener
 	// that serves nothing, or one whose entire boundary is the bind
 	// address plus an explicit opt-in.
@@ -580,6 +588,39 @@ var Routes = []Route{
 			"spent, so a copy of the secret cannot self-renew. Presenting " +
 			"a SPENT secret revokes the whole family rather than being " +
 			"answered, which is what makes a copy detectable at all.",
+	},
+	{
+		Pattern:    "/auth/passkey/begin",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureStructured,
+		Why: "Starts a passkey sign-in ceremony for a browser that holds " +
+			"nothing at all — which is the point of the route, since a " +
+			"passkey is how a device this backend has never seen signs in " +
+			"with no code to type. What it hands back authorizes nothing: " +
+			"a random challenge, spendable only by producing a signature " +
+			"from a credential the owner registered here earlier, single " +
+			"use, and expiring in minutes. It names no account and accepts " +
+			"no body, so it cannot be asked whether a given person has a " +
+			"passkey. Registered whenever Config.AuthEndpoints is set; a " +
+			"backend with no canonical domain answers the typed " +
+			"passkey_unavailable rather than making the route come and go " +
+			"with a setting.",
+	},
+	{
+		Pattern:    "/auth/passkey/finish",
+		Listener:   "app transport",
+		Credential: CredPasskeyAssertion,
+		Posture:    PostureStructured,
+		Why: "Completes a sign-in ceremony and answers with the same " +
+			"credential pair pairing redemption produces, because what a " +
+			"device holds afterwards is identical. The assertion is " +
+			"verified against the challenge this backend issued, at the " +
+			"relying party it pinned when it issued it, and the ceremony " +
+			"is deleted on the FIRST attempt whether it verified or not. " +
+			"A device key rides X-AO-Device-Key exactly as it does on " +
+			"/auth/pair: the passkey proves the person, and the device row " +
+			"is what a revocation later reaches.",
 	},
 	{
 		Pattern:    "/auth/ticket",

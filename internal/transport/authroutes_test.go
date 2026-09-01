@@ -18,12 +18,21 @@ import (
 // arranged and remembers what the route handed it, which is the half
 // worth pinning: this package's job is the carriers, not the decision.
 type stubAuth struct {
-	mu        sync.Mutex
-	pairing   []PairingRedemption
-	renewals  []SessionRenewal
-	grant     TokenGrant
-	reason    string
-	renewGood bool
+	mu         sync.Mutex
+	pairing    []PairingRedemption
+	renewals   []SessionRenewal
+	assertions []PasskeyAssertion
+	grant      TokenGrant
+	reason     string
+	renewGood  bool
+	// passkeys is what PasskeysAvailable answers. False by default, which
+	// is the state of a backend with no canonical domain.
+	passkeys bool
+	// challenge is what a begin hands back when passkeys are available.
+	challenge PasskeyChallenge
+	// beginCount records how many ceremonies were started, so a route that
+	// answered without asking the endpoint is visible.
+	beginCount int
 }
 
 func (s *stubAuth) RedeemPairing(req PairingRedemption) (TokenGrant, string) {
@@ -41,6 +50,39 @@ func (s *stubAuth) RenewSession(req SessionRenewal) (TokenGrant, string) {
 		return s.grant, ""
 	}
 	return s.grant, s.reason
+}
+
+func (s *stubAuth) PasskeysAvailable() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.passkeys
+}
+
+func (s *stubAuth) BeginPasskeySignIn() (PasskeyChallenge, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.beginCount++
+	if !s.passkeys {
+		return PasskeyChallenge{}, "passkey_unavailable"
+	}
+	return s.challenge, ""
+}
+
+func (s *stubAuth) FinishPasskeySignIn(req PasskeyAssertion) (TokenGrant, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.assertions = append(s.assertions, req)
+	return s.grant, s.reason
+}
+
+func (s *stubAuth) lastAssertion(t *testing.T) PasskeyAssertion {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.assertions) == 0 {
+		t.Fatal("the route never reached the endpoint")
+	}
+	return s.assertions[len(s.assertions)-1]
 }
 
 func (s *stubAuth) lastPairing(t *testing.T) PairingRedemption {
@@ -503,6 +545,190 @@ func TestGrantCarriesItsScopesAsAnArray(t *testing.T) {
 		}
 		if !strings.Contains(string(body), `"scopes":[]`) {
 			t.Fatalf("empty grant set did not encode as an array: %s", body)
+		}
+	})
+}
+
+// The two passkey routes are a sign-in that needs no code to type: a
+// browser this backend has never seen asks for a challenge, answers it,
+// and holds the same credential pair a pairing redemption would have
+// produced.
+func TestPasskeySignInAnswersTheSameGrantPairingDoes(t *testing.T) {
+	auth := &stubAuth{
+		passkeys: true,
+		challenge: PasskeyChallenge{
+			CeremonyID: "ceremony-1",
+			Options:    json.RawMessage(`{"challenge":"abc","rpId":"backend.example"}`),
+		},
+		grant: TokenGrant{
+			SessionID: "sess-1", Credential: "ao1.credential", ExpiresAtMs: 42,
+			RefreshSecret: "refresh-1", Scopes: []string{"threads:read"},
+		},
+	}
+	f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
+
+	resp := postJSON(t, f.srv.Addr(), AuthPasskeyBeginPath, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("begin status = %d, want 200", resp.StatusCode)
+	}
+	var challenge PasskeyChallenge
+	if err := json.NewDecoder(resp.Body).Decode(&challenge); err != nil {
+		t.Fatalf("decode challenge: %v", err)
+	}
+	if challenge.CeremonyID != "ceremony-1" {
+		t.Fatalf("ceremony id did not survive the wire: %+v", challenge)
+	}
+	// The options blob crosses unread. A typed copy here would be a second
+	// definition of the WebAuthn shape, agreeing with the library's only
+	// until it grows a field.
+	if string(challenge.Options) != `{"challenge":"abc","rpId":"backend.example"}` {
+		t.Fatalf("options were reshaped: %s", challenge.Options)
+	}
+
+	resp = postJSON(t, f.srv.Addr(), AuthPasskeyFinishPath, PasskeyAssertion{
+		CeremonyID: "ceremony-1",
+		Response:   json.RawMessage(`{"id":"cred"}`),
+		Label:      "A Laptop",
+		Platform:   "linux",
+	}, map[string]string{DeviceKeyHeader: "signed-proof"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("finish status = %d, want 200", resp.StatusCode)
+	}
+	var grant TokenGrant
+	if err := json.NewDecoder(resp.Body).Decode(&grant); err != nil {
+		t.Fatalf("decode grant: %v", err)
+	}
+	if grant.Credential != "ao1.credential" || grant.SessionID != "sess-1" {
+		t.Fatalf("grant did not survive the wire: %+v", grant)
+	}
+	// Nothing to confirm on a second screen: the assertion IS the owner.
+	if grant.AwaitingConfirmation || grant.VerificationNumber != "" {
+		t.Fatalf("a passkey sign-in asked for a confirmation: %+v", grant)
+	}
+
+	req := auth.lastAssertion(t)
+	if req.CeremonyID != "ceremony-1" || req.Label != "A Laptop" {
+		t.Fatalf("the route reshaped the assertion: %+v", req)
+	}
+	if req.DeviceProof != "signed-proof" {
+		t.Fatalf("device proof = %q, want the header's value", req.DeviceProof)
+	}
+	if req.Method != http.MethodPost || req.Path != AuthPasskeyFinishPath {
+		t.Fatalf("the route did not carry the request binding: method %q path %q", req.Method, req.Path)
+	}
+	if req.Peer == "" {
+		t.Fatal("the peer was not filled in; the audit entry would name nobody")
+	}
+	if got := resp.Header.Get("Cache-Control"); !strings.Contains(got, "no-store") {
+		t.Fatalf("Cache-Control = %q; a credential must never be cacheable", got)
+	}
+}
+
+// A proof a caller may write into the same document it is proving
+// something about is not a proof, so the body carrier is never read while
+// a header is present — the same rule /auth/pair applies, restated here
+// because these are separate wire shapes and neither may drift.
+func TestPasskeyFinishNeverReadsAProofFromTheBody(t *testing.T) {
+	auth := &stubAuth{passkeys: true, grant: TokenGrant{SessionID: "s", Credential: "c"}}
+	f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
+
+	body := map[string]any{
+		"ceremonyId":    "ceremony-1",
+		"response":      json.RawMessage(`{}`),
+		"keyThumbprint": "thumb-from-body",
+		"deviceProof":   "forged-from-body",
+	}
+	postJSON(t, f.srv.Addr(), AuthPasskeyFinishPath, body, map[string]string{
+		DeviceKeyHeader: "the-real-proof",
+	})
+
+	req := auth.lastAssertion(t)
+	if req.DeviceProof != "the-real-proof" {
+		t.Fatalf("device proof = %q; the body was allowed to name it", req.DeviceProof)
+	}
+	// The thumbprint DOES survive: it is an identifier a keyless device
+	// asks to be known by, not a proof, and the app side ignores it
+	// whenever a header proof is present.
+	if req.KeyThumbprint != "thumb-from-body" {
+		t.Fatalf("thumbprint = %q, want the body's", req.KeyThumbprint)
+	}
+}
+
+// A backend with no canonical domain has no relying party, so the route
+// exists and answers the typed refusal rather than coming and going with
+// a setting — which would make a rebind part of naming a domain.
+func TestPasskeyBeginAnswersATypedRefusalWithNoRelyingParty(t *testing.T) {
+	auth := &stubAuth{passkeys: false}
+	f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
+
+	resp := postJSON(t, f.srv.Addr(), AuthPasskeyBeginPath, nil, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 — the refusal shape every credential route shares", resp.StatusCode)
+	}
+	var refusal authRefusal
+	if err := json.NewDecoder(resp.Body).Decode(&refusal); err != nil {
+		t.Fatalf("decode refusal: %v", err)
+	}
+	if refusal.Reason != "passkey_unavailable" {
+		t.Fatalf("reason = %q, want the typed code the client can explain", refusal.Reason)
+	}
+	if auth.beginCount != 1 {
+		t.Fatalf("begin reached the endpoint %d times; the route answered on its own", auth.beginCount)
+	}
+}
+
+// Every route in this family answers POST and nothing else, and the
+// passkey pair is not an exception: a GET that started a ceremony would be
+// one a foreign page could trigger by navigation.
+func TestPasskeyRoutesAnswerPostOnly(t *testing.T) {
+	auth := &stubAuth{passkeys: true}
+	f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
+
+	for _, path := range []string{AuthPasskeyBeginPath, AuthPasskeyFinishPath} {
+		resp, err := http.Get("http://" + f.srv.Addr() + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("GET %s = %d, want 405", path, resp.StatusCode)
+		}
+	}
+}
+
+// Availability reaches the page that needs it through the manifest,
+// because a browser deciding whether to offer "sign in with a passkey"
+// holds no credential and has opened no socket.
+func TestBootstrapPublishesPasskeyAvailability(t *testing.T) {
+	read := func(t *testing.T, f *serverFixture) Bootstrap {
+		t.Helper()
+		resp := getBootstrap(t, f.srv.Addr())
+		defer func() { _ = resp.Body.Close() }()
+		var manifest Bootstrap
+		if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+			t.Fatalf("decode manifest: %v", err)
+		}
+		return manifest
+	}
+
+	t.Run("available", func(t *testing.T) {
+		auth := &stubAuth{passkeys: true}
+		f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
+		if !read(t, f).PasskeysAvailable {
+			t.Fatal("the manifest hid an available passkey surface; the pairing screen would never offer it")
+		}
+	})
+	t.Run("no relying party", func(t *testing.T) {
+		auth := &stubAuth{passkeys: false}
+		f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
+		if read(t, f).PasskeysAvailable {
+			t.Fatal("the manifest offered a surface that would refuse every ceremony")
+		}
+	})
+	t.Run("no identity wired at all", func(t *testing.T) {
+		f := newServerFixture(t)
+		if read(t, f).PasskeysAvailable {
+			t.Fatal("a backend with no session core advertised passkeys")
 		}
 	})
 }

@@ -60,10 +60,13 @@ func (a *App) requireScope(ctx context.Context, scope transport.Scope, detail st
 	return transport.ScopeRequired(scope, detail)
 }
 
-// requireStepUp refuses when the call carries no fresh step-up proof. This
-// phase the proof is host presence, resolved at upgrade and read off the
-// connection principal rather than re-derived from anything the peer sent
-// (transport.stepUpProven has the argument and the phase-5 swap point).
+// requireStepUp refuses when the call carries no fresh step-up proof.
+//
+// Two proofs satisfy it — standing at the machine, or a passkey assertion
+// this backend verified moments ago — and both are resolved ONCE by the
+// transport for this call, then read here. Resolving it again would be
+// wrong rather than merely wasteful: the token half is single-use and the
+// pre-call gate already spent it (transport.stepUpProven has the argument).
 //
 // A call with no session behind it is in-process and passes, for the reason
 // the file header gives.
@@ -71,7 +74,7 @@ func (a *App) requireStepUp(ctx context.Context, detail string) error {
 	if transport.SessionFromContext(ctx) == "" {
 		return nil
 	}
-	if transport.HostPresentFromContext(ctx) {
+	if transport.StepUpProvenFromContext(ctx) {
 		return nil
 	}
 	return transport.StepUpRequired(detail)

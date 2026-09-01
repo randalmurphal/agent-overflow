@@ -63,6 +63,7 @@ const ProtocolVersion = 1
 // something reads it — the reader can come later, the flag cannot.
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
+	CapabilityPasskeys,
 }
 
 // CapabilityRemoteNotifications says this backend delivers the
@@ -76,6 +77,20 @@ var serverCapabilities = []string{
 // anything, which is that client's own decision, and it is not
 // authorization: emitting stays host-side only.
 const CapabilityRemoteNotifications = "notifications.remote"
+
+// CapabilityPasskeys says this backend speaks the passkey ceremonies:
+// the sign-in routes on the credential surface, the registration and
+// step-up methods on the wire, and ClientFrame.StepUpToken as a proof it
+// will actually read. Without it a client cannot tell "this backend
+// refuses my step-up" from "this backend is too old to have been asked",
+// and the honest fallback — telling the person to go to the machine — is
+// only correct in the second case.
+//
+// It says the ceremonies EXIST. Whether one can be run right now is a
+// different, configuration-dependent question the bootstrap manifest
+// answers (Bootstrap.PasskeysAvailable), because a backend with no
+// canonical domain has nothing to be a relying party for.
+const CapabilityPasskeys = "passkeys"
 
 // helloFrame is the first frame written on every upgraded connection.
 //
@@ -150,6 +165,21 @@ type ClientFrame struct {
 	Params           []json.RawMessage `json:"params,omitempty"`
 	LastSeqByChannel map[string]uint64 `json:"lastSeqByChannel,omitempty"`
 	Channels         []string          `json:"channels,omitempty"`
+	// StepUpToken carries a fresh step-up proof for THIS call and no
+	// other: the single-use token a passkey assertion minted, bound to
+	// the session this connection named (§4 "Step-up"). Empty on every
+	// ordinary frame, and additive — a backend that does not read it
+	// behaves exactly as before, which is what makes the swap window safe.
+	//
+	// On the frame rather than in Params, because it is not an argument:
+	// no method's signature mentions it, the argument-dependent rechecks
+	// inside a method need it just as much as the pre-call gate does, and
+	// a parameter would have to be threaded through every generated
+	// binding that could ever need one.
+	//
+	// Presenting it SPENDS it, whatever the call turns out to need. A
+	// client attaches one to the call it is retrying and nowhere else.
+	StepUpToken string `json:"stepUpToken,omitempty"`
 }
 
 // ServerFrame is the union of every frame the server may send. The

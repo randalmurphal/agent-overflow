@@ -63,12 +63,23 @@ func threadInMode(t *testing.T, app *App, mode provider.RuntimeMode) store.Threa
 }
 
 // callFrom is the ctx a bound method sees when the transport dispatched it
-// on a connection carrying sessionID.
+// on a connection carrying sessionID: the connection's principal, plus
+// what the transport resolved this ONE call to have proved.
 func callFrom(sessionID string, hostPresent bool) context.Context {
 	ctx, _ := transport.WithConnState(context.Background(), transport.ConnPrincipal{
-		SessionID: sessionID, HostPresent: hostPresent,
+		SessionID: sessionID,
 	})
-	return ctx
+	return transport.WithCallerProof(ctx, transport.CallerProof{HostPresent: hostPresent})
+}
+
+// callSteppedUp is the same ctx for a call whose step-up was proved by a
+// spent passkey token rather than by standing at the machine — the remote
+// owner's path, which host presence alone can never produce.
+func callSteppedUp(sessionID string) context.Context {
+	ctx, _ := transport.WithConnState(context.Background(), transport.ConnPrincipal{
+		SessionID: sessionID,
+	})
+	return transport.WithCallerProof(ctx, transport.CallerProof{StepUp: true})
 }
 
 // wantScopeRefusal asserts err is the typed refusal naming scope.

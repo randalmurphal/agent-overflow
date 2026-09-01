@@ -27,6 +27,7 @@ var (
 		CredSessionCredential: true,
 		CredPairingToken:      true,
 		CredRefreshSecret:     true,
+		CredPasskeyAssertion:  true,
 	}
 	postures = map[ContentPosture]bool{
 		PostureAppOrigin:  true,

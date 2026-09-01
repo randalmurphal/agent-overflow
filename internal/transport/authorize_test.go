@@ -29,7 +29,7 @@ const (
 func TestAuthorizeSessionMethodAdmitsAGrantedScope(t *testing.T) {
 	granted := []string{string(ScopeThreadsRead), string(ScopeSettingsRead)}
 	for _, method := range []string{observeMethod, settingsGetter} {
-		if fe := AuthorizeSessionMethod(granted, method, false); fe != nil {
+		if fe := AuthorizeSessionMethod(granted, method, CallerProof{}); fe != nil {
 			t.Errorf("%s with its scope granted = %#v, want admitted", method, fe)
 		}
 	}
@@ -37,7 +37,7 @@ func TestAuthorizeSessionMethodAdmitsAGrantedScope(t *testing.T) {
 
 func TestAuthorizeSessionMethodRefusesAnUngrantedScopeAndNamesIt(t *testing.T) {
 	granted := []string{string(ScopeThreadsRead)}
-	fe := AuthorizeSessionMethod(granted, executeMethod, false)
+	fe := AuthorizeSessionMethod(granted, executeMethod, CallerProof{})
 	if fe == nil {
 		t.Fatalf("%s with only threads:read = admitted, want refused", executeMethod)
 	}
@@ -54,7 +54,7 @@ func TestAuthorizeSessionMethodRefusesAnUngrantedScopeAndNamesIt(t *testing.T) {
 // An empty grant set is a real answer — a session narrowed to nothing —
 // and must refuse rather than read as "no restrictions".
 func TestAuthorizeSessionMethodRefusesAnEmptyGrantSet(t *testing.T) {
-	if fe := AuthorizeSessionMethod(nil, observeMethod, true); fe == nil {
+	if fe := AuthorizeSessionMethod(nil, observeMethod, CallerProof{HostPresent: true}); fe == nil {
 		t.Fatal("a session granted nothing was admitted to an observe-tier method")
 	}
 }
@@ -64,14 +64,14 @@ func TestAuthorizeSessionMethodRefusesAnEmptyGrantSet(t *testing.T) {
 // and admitted when it is (the embedded webview's own session names one).
 func TestHostScopedMethodFollowsHostPresenceNotGrants(t *testing.T) {
 	claiming := []string{string(ScopeHost)}
-	fe := AuthorizeSessionMethod(claiming, hostMethod, false)
+	fe := AuthorizeSessionMethod(claiming, hostMethod, CallerProof{})
 	if fe == nil {
 		t.Fatalf("%s from a remote session = admitted, want refused", hostMethod)
 	}
 	if fe.Code != ErrCodeScopeRequired || fe.Scope != string(ScopeHost) {
 		t.Errorf("refusal = %#v, want scope_required naming host", fe)
 	}
-	if fe := AuthorizeSessionMethod(nil, hostMethod, true); fe != nil {
+	if fe := AuthorizeSessionMethod(nil, hostMethod, CallerProof{HostPresent: true}); fe != nil {
 		t.Errorf("%s from the host itself = %#v, want admitted", hostMethod, fe)
 	}
 }
@@ -81,17 +81,116 @@ func TestStepUpMethodNeedsAProofNoGrantCanSupply(t *testing.T) {
 	for _, scope := range Scopes {
 		everything = append(everything, string(scope))
 	}
-	fe := AuthorizeSessionMethod(everything, stepUpMethod, false)
+	fe := AuthorizeSessionMethod(everything, stepUpMethod, CallerProof{})
 	if fe == nil {
 		t.Fatalf("%s from a remote session holding every scope = admitted", stepUpMethod)
 	}
 	if fe.Code != ErrCodeStepUpRequired {
 		t.Errorf("code = %q, want %q", fe.Code, ErrCodeStepUpRequired)
 	}
-	// Host presence IS the proof this phase (stepUpProven), so the same
-	// call from this machine goes through.
-	if fe := AuthorizeSessionMethod(everything, stepUpMethod, true); fe != nil {
+	// Two proofs satisfy it (stepUpProven), and each one alone is enough:
+	// standing at the machine, or a passkey assertion this backend just
+	// verified. The second is the only one a remote owner can produce.
+	if fe := AuthorizeSessionMethod(everything, stepUpMethod, CallerProof{HostPresent: true}); fe != nil {
 		t.Errorf("%s with host presence = %#v, want admitted", stepUpMethod, fe)
+	}
+	if fe := AuthorizeSessionMethod(everything, stepUpMethod, CallerProof{StepUp: true}); fe != nil {
+		t.Errorf("%s with a spent passkey token = %#v, want admitted", stepUpMethod, fe)
+	}
+}
+
+// A passkey proof satisfies STEP-UP and nothing else. Host scope is a
+// statement about where the caller is, and no signature can make a remote
+// caller be on this machine — so a stepped-up remote session still cannot
+// reach a method with no remote form.
+func TestAPasskeyProofNeverStandsInForHostPresence(t *testing.T) {
+	fe := AuthorizeSessionMethod(nil, hostMethod, CallerProof{StepUp: true})
+	if fe == nil {
+		t.Fatalf("%s reached a remote session that had stepped up", hostMethod)
+	}
+	if fe.Code != ErrCodeScopeRequired || fe.Scope != string(ScopeHost) {
+		t.Fatalf("refusal = %#v, want the host scope refusal", fe)
+	}
+}
+
+// The token is resolved ONCE per call and spent by the asking. Two
+// properties ride on that: the argument-dependent recheck inside a method
+// reads the answer rather than re-asking (a second ask would find the
+// token gone), and a token presented on a call that did not need one is
+// still consumed.
+func TestAStepUpTokenIsSpentOncePerCall(t *testing.T) {
+	spent := 0
+	h := &connHandler{
+		profile: connProfile{sessionID: "s1", isLoopback: false},
+		stepUpProof: func(sessionID, token string) bool {
+			spent++
+			return sessionID == "s1" && token == "good"
+		},
+	}
+
+	proof := h.callerProof(ClientFrame{StepUpToken: "good"})
+	if !proof.StepUp {
+		t.Fatal("a valid token did not prove step-up")
+	}
+	if spent != 1 {
+		t.Fatalf("the hook was asked %d times for one call, want 1", spent)
+	}
+
+	if proof := h.callerProof(ClientFrame{StepUpToken: "wrong"}); proof.StepUp {
+		t.Fatal("a token the hook refused proved step-up")
+	}
+	if spent != 2 {
+		t.Fatalf("the hook was asked %d times, want 2 — a refused token must still be consumed", spent)
+	}
+}
+
+// The session comes from the CONNECTION and never from the frame, which is
+// what makes "bound to the session that asked" enforceable: a token minted
+// elsewhere is presented on this socket against this socket's session.
+func TestAStepUpTokenIsJudgedAgainstTheConnectionsSession(t *testing.T) {
+	var asked string
+	h := &connHandler{
+		profile: connProfile{sessionID: "the-connections-session", isLoopback: false},
+		stepUpProof: func(sessionID, token string) bool {
+			asked = sessionID
+			return true
+		},
+	}
+	h.callerProof(ClientFrame{StepUpToken: "t"})
+	if asked != "the-connections-session" {
+		t.Fatalf("the hook was asked about %q, want the connection's session", asked)
+	}
+}
+
+// A host-present caller is already proven, so presenting a token there
+// would burn it for nothing — and a connection that names no session has
+// nothing a token could be bound to.
+func TestAStepUpTokenIsNotSpentWhenItCouldNotChangeTheAnswer(t *testing.T) {
+	cases := map[string]connProfile{
+		"host present":     {sessionID: "s1", isLoopback: true},
+		"names no session": {isLoopback: false},
+	}
+	for name, profile := range cases {
+		t.Run(name, func(t *testing.T) {
+			asked := false
+			h := &connHandler{
+				profile:     profile,
+				stepUpProof: func(string, string) bool { asked = true; return true },
+			}
+			h.callerProof(ClientFrame{StepUpToken: "t"})
+			if asked {
+				t.Fatal("the token was spent on a call whose answer it could not change")
+			}
+		})
+	}
+}
+
+// A backend with no step-up hook keeps exactly the behavior it had before
+// passkeys: host presence is the only proof, and a token proves nothing.
+func TestNoStepUpHookLeavesHostPresenceAsTheOnlyProof(t *testing.T) {
+	h := &connHandler{profile: connProfile{sessionID: "s1", isLoopback: false}}
+	if h.callerProof(ClientFrame{StepUpToken: "t"}).StepUp {
+		t.Fatal("a token proved step-up against a backend that cannot verify one")
 	}
 }
 
@@ -102,10 +201,10 @@ func TestUnclassifiedMethodEnforcesAsHost(t *testing.T) {
 	if got := classify(unclassified).Scope; got != ScopeHost {
 		t.Fatalf("classify(%s) = %q, want host", unclassified, got)
 	}
-	if fe := AuthorizeSessionMethod(nil, unclassified, false); fe == nil {
+	if fe := AuthorizeSessionMethod(nil, unclassified, CallerProof{}); fe == nil {
 		t.Error("an unclassified method was admitted to a remote session")
 	}
-	if fe := AuthorizeSessionMethod(nil, unclassified, true); fe != nil {
+	if fe := AuthorizeSessionMethod(nil, unclassified, CallerProof{HostPresent: true}); fe != nil {
 		t.Errorf("an unclassified method from the host = %#v, want admitted", fe)
 	}
 }
@@ -124,7 +223,7 @@ func TestSessionFloorAdmitsAConnectionWithNoGrants(t *testing.T) {
 			return nil, ""
 		},
 	}
-	if fe := h.authorizeSession(floorMethod); fe != nil {
+	if fe := h.authorizeSession(floorMethod, CallerProof{}); fe != nil {
 		t.Fatalf("a session holding nothing was refused %s: %#v", floorMethod, fe)
 	}
 	if !asked {
@@ -132,7 +231,7 @@ func TestSessionFloorAdmitsAConnectionWithNoGrants(t *testing.T) {
 	}
 	// The floor moves no other answer: the same connection is still
 	// refused everything its (empty) grant set does not cover.
-	if fe := h.authorizeSession(executeMethod); fe == nil {
+	if fe := h.authorizeSession(executeMethod, CallerProof{}); fe == nil {
 		t.Errorf("a session holding nothing reached %s", executeMethod)
 	}
 }
@@ -149,7 +248,7 @@ func TestConnectionNamingNoSessionSkipsTheScopeGate(t *testing.T) {
 			return nil, ""
 		},
 	}
-	if fe := h.authorizeSession(hostMethod); fe != nil {
+	if fe := h.authorizeSession(hostMethod, CallerProof{}); fe != nil {
 		t.Fatalf("launch-credential connection refused %s: %#v", hostMethod, fe)
 	}
 	if asked {
@@ -161,7 +260,7 @@ func TestConnectionNamingNoSessionSkipsTheScopeGate(t *testing.T) {
 // stays the only judge, which is what it was before enforcement.
 func TestConnectionWithNoGrantHookSkipsTheScopeGate(t *testing.T) {
 	h := &connHandler{profile: connProfile{sessionID: "s1", isLoopback: false}}
-	if fe := h.authorizeSession(executeMethod); fe != nil {
+	if fe := h.authorizeSession(executeMethod, CallerProof{}); fe != nil {
 		t.Fatalf("connection with no grant hook refused: %#v", fe)
 	}
 }
@@ -172,16 +271,16 @@ func TestSessionScopedConnectionIsGatedPerCall(t *testing.T) {
 		profile:       connProfile{sessionID: "s1", isLoopback: false},
 		sessionScopes: func(string) ([]string, string) { return granted, "" },
 	}
-	if fe := h.authorizeSession(observeMethod); fe != nil {
+	if fe := h.authorizeSession(observeMethod, CallerProof{}); fe != nil {
 		t.Fatalf("granted method refused: %#v", fe)
 	}
-	if fe := h.authorizeSession(executeMethod); fe == nil || fe.Code != ErrCodeScopeRequired {
+	if fe := h.authorizeSession(executeMethod, CallerProof{}); fe == nil || fe.Code != ErrCodeScopeRequired {
 		t.Fatalf("ungranted method = %#v, want scope_required", fe)
 	}
 	// The grants are re-read per call, so narrowing them takes effect on
 	// the very next RPC rather than at the next watchdog tick.
 	granted = nil
-	if fe := h.authorizeSession(observeMethod); fe == nil {
+	if fe := h.authorizeSession(observeMethod, CallerProof{}); fe == nil {
 		t.Fatal("a call after the grants were withdrawn was still admitted")
 	}
 }
@@ -194,7 +293,7 @@ func TestRevokedSessionRefusesWithTheCredentialShape(t *testing.T) {
 		profile:       connProfile{sessionID: "s1", isLoopback: true},
 		sessionScopes: func(string) ([]string, string) { return nil, "revoked_session" },
 	}
-	fe := h.authorizeSession(observeMethod)
+	fe := h.authorizeSession(observeMethod, CallerProof{})
 	if fe == nil {
 		t.Fatal("a revoked session was admitted")
 	}
@@ -325,5 +424,89 @@ func TestAuthzErrorsAreRecognizedThroughWrapping(t *testing.T) {
 	}
 	if _, ok := AuthzFrame(errors.New("ordinary failure")); ok {
 		t.Fatal("an ordinary error was read as an authorization refusal")
+	}
+}
+
+// The whole path, over a real socket from a peer that is not on this
+// machine: a client attaches a step-up token to one frame, the transport
+// spends it against that connection's session, and the METHOD BODY sees
+// the answer. The body is the half that matters — internal/app's
+// argument-dependent rechecks run there, and a proof that stopped at the
+// gate would leave every one of them refusing a caller the gate admitted.
+func TestAStepUpTokenReachesTheMethodBodyFromARemotePeer(t *testing.T) {
+	spent := 0
+	f := newAdmissionFixtureWith(t, func(cfg *Config) {
+		cfg.StepUpProof = func(sessionID, token string) bool {
+			spent++
+			return sessionID == admissionSessionID && token == "fresh-proof"
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws://"+f.remote+"/ws?token=admission-token",
+		&websocket.DialOptions{HTTPHeader: sessionHeader()})
+	if err != nil {
+		t.Fatalf("dial the off-host leg: %v", err)
+	}
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+	readFrameOfType(t, conn, frameTypeHello)
+
+	ask := func(t *testing.T, id, token string) bool {
+		t.Helper()
+		frame := ClientFrame{Type: frameTypeRPC, ID: id, Method: "ReportStepUp", StepUpToken: token}
+		buf, err := json.Marshal(frame)
+		if err != nil {
+			t.Fatalf("marshal frame: %v", err)
+		}
+		if err := conn.Write(ctx, websocket.MessageText, buf); err != nil {
+			t.Fatalf("write frame: %v", err)
+		}
+		answer := readFrameOfType(t, conn, frameTypeRPC)
+		if answer.Error != nil {
+			t.Fatalf("ReportStepUp refused: %#v", answer.Error)
+		}
+		var proven bool
+		if err := json.Unmarshal(answer.Result, &proven); err != nil {
+			t.Fatalf("decode result: %v", err)
+		}
+		return proven
+	}
+
+	if ask(t, "1", "") {
+		t.Fatal("a remote call carrying no token reported a step-up proof")
+	}
+	if spent != 0 {
+		t.Fatalf("the hook was asked %d times for a call with no token", spent)
+	}
+	if !ask(t, "2", "fresh-proof") {
+		t.Fatal("a valid token did not reach the method body")
+	}
+	if spent != 1 {
+		t.Fatalf("the hook was asked %d times, want exactly one spend per call", spent)
+	}
+	if ask(t, "3", "some-other-token") {
+		t.Fatal("a token this backend refused reported a step-up proof")
+	}
+}
+
+// readFrameOfType reads until a frame of the wanted type arrives, so a
+// keepalive landing mid-test is not mistaken for the answer.
+func readFrameOfType(t *testing.T, conn *websocket.Conn, want string) ServerFrame {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("read %s frame: %v", want, err)
+		}
+		var frame ServerFrame
+		if err := json.Unmarshal(data, &frame); err != nil {
+			t.Fatalf("decode frame: %v", err)
+		}
+		if frame.Type == want {
+			return frame
+		}
 	}
 }

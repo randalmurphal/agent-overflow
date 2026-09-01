@@ -59,6 +59,22 @@ type Bootstrap struct {
 	// as "no replica keying available" rather than as a generation.
 	BackendID         string `json:"backendId,omitempty"`
 	ReplicaGeneration string `json:"replicaGeneration,omitempty"`
+	// PasskeysAvailable says a passkey sign-in can be started right now —
+	// this backend has a canonical domain to be a relying party for, and
+	// the identity seam is wired. The pairing screen offers the
+	// no-code-to-type path only when it is true.
+	//
+	// Here rather than in the hello frame's capability list because it is
+	// CONFIGURATION, not a dialect fact: it changes when the owner edits a
+	// setting, and it has to reach a page that holds no credential and has
+	// not opened a socket. The capability list answers the other half —
+	// whether this backend speaks the ceremonies at all
+	// (CapabilityPasskeys).
+	//
+	// Omitted when false, and absent is safe to read as false: a backend
+	// too old to send it has no passkey surface either, so both answers
+	// lead a client to the same screen.
+	PasskeysAvailable bool `json:"passkeysAvailable,omitempty"`
 }
 
 // MaxRetainedFormerSrvs caps how many retired http.Servers Rebind keeps
@@ -196,6 +212,25 @@ type Config struct {
 	// is the pre-enforcement behavior: the origin gate alone decides, as it
 	// does for every launch-credential client.
 	SessionScopes func(sessionID string) (scopes []string, refusal string)
+
+	// StepUpProof spends the step-up token one RPC presented and reports
+	// whether it was valid FOR THAT SESSION.
+	//
+	// The fourth hook over the same seam, and the one that gives §4's
+	// step-up set a proof other than standing at the machine
+	// (authorize.go). SPENDS is the contract: the token is single-use, so
+	// this is asked exactly once per RPC and its answer is carried into
+	// the call rather than recomputed by the argument-dependent rechecks
+	// inside a method.
+	//
+	// The session id comes from the CONNECTION, never from the frame, so a
+	// token minted for one session cannot be presented on another's socket
+	// — which is what makes "bound to the session that asked" enforceable
+	// at all.
+	//
+	// Optional. Nil leaves host presence as the only step-up proof, which
+	// is the behavior before passkeys.
+	StepUpProof func(sessionID, token string) bool
 
 	// PageSessionCredential returns the session credential to plant on
 	// the page as an HttpOnly cookie during the bootstrap exchange, or ""
@@ -713,6 +748,16 @@ func (s *Server) buildHTTPServer() *http.Server {
 			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthPair)))
 		mux.HandleFunc(AuthTokenPath,
 			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthToken)))
+		// Registered whenever the identity seam exists, not whenever a
+		// passkey could be used: availability depends on a setting the owner
+		// edits while the process runs, and a route that appeared and
+		// vanished with it would make a rebind part of changing a domain.
+		// Unavailable is an ANSWER here (`passkey_unavailable`), which is
+		// also the only one a client can explain.
+		mux.HandleFunc(AuthPasskeyBeginPath,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handlePasskeyBegin)))
+		mux.HandleFunc(AuthPasskeyFinishPath,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handlePasskeyFinish)))
 	}
 	// The ticket route needs no AuthEndpoints — it mints from the session
 	// the caller already holds — so it is registered whenever a session
@@ -1409,6 +1454,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		PageMarker:        s.cfg.PageMarker,
 		BackendID:         backendID,
 		ReplicaGeneration: replicaGeneration,
+		PasskeysAvailable: s.cfg.AuthEndpoints != nil && s.cfg.AuthEndpoints.PasskeysAvailable(),
 	})
 }
 
@@ -1704,6 +1750,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		sessionConns:      s.sessionConns,
 		sessionLive:       s.cfg.SessionLive,
 		sessionScopes:     s.cfg.SessionScopes,
+		stepUpProof:       s.cfg.StepUpProof,
 		sessionRecheck:    s.cfg.SessionRecheckInterval,
 		maxLifetime:       s.cfg.MaxRemoteConnLifetime,
 		hello: helloFrame{
