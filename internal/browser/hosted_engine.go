@@ -719,7 +719,9 @@ func (e *hostedEngine) SetPageBounds(handle string, rect PaneRect) {
 		e.dispatch(webview2host.Directive{
 			Op: webview2host.OpBounds, PageID: handle,
 			X: rect.X, Y: rect.Y, W: rect.Width, H: rect.Height,
+			CX: rect.ClipX, CY: rect.ClipY, CW: rect.ClipWidth, CH: rect.ClipHeight,
 			VW: rect.ViewportWidth, VH: rect.ViewportHeight,
+			Bg: rect.Background,
 		})
 	}
 }

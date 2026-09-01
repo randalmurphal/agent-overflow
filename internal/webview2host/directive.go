@@ -56,12 +56,25 @@ type Directive struct {
 	Y         float64 `json:"y,omitempty"`
 	W         float64 `json:"w,omitempty"`
 	H         float64 `json:"h,omitempty"`
+	// CX/CY/CW/CH are the VISIBLE clip rect in the same units as X/Y/W/H:
+	// the controller keeps the full rect's size and the host crops its
+	// presentation to this intersection, so a pane half behind the sidebar
+	// shows its visible half instead of hiding or overhanging. A zero pair
+	// means unclipped (crop to the full rect).
+	CX float64 `json:"cx,omitempty"`
+	CY float64 `json:"cy,omitempty"`
+	CW float64 `json:"cw,omitempty"`
+	CH float64 `json:"ch,omitempty"`
 	// VW/VH are the SPA viewport the rect was measured in, in its CSS
 	// pixels. The host scales the rect by its client size over these, so
 	// the position is exact under webview zoom and any DPI. Zero means
 	// unscaled (treat X/Y/W/H as client pixels).
 	VW float64 `json:"vw,omitempty"`
 	VH float64 `json:"vh,omitempty"`
+	// Bg is the pane surface's resolved CSS color ("#rrggbb"), painted by
+	// the controller where the page has not presented yet so freshly
+	// exposed strips match the pane. Empty leaves the engine default.
+	Bg string `json:"bg,omitempty"`
 	// Ephemeral asks for an InPrivate profile on create, and on
 	// close-profile says the profile directory is expected to be
 	// discarded. It is meaningless on every other op.
@@ -110,7 +123,11 @@ func (d Directive) Validate() error {
 }
 
 func (d Directive) validateBounds() error {
-	for name, value := range map[string]float64{"x": d.X, "y": d.Y, "w": d.W, "h": d.H, "vw": d.VW, "vh": d.VH} {
+	for name, value := range map[string]float64{
+		"x": d.X, "y": d.Y, "w": d.W, "h": d.H,
+		"cx": d.CX, "cy": d.CY, "cw": d.CW, "ch": d.CH,
+		"vw": d.VW, "vh": d.VH,
+	} {
 		if math.IsNaN(value) || math.IsInf(value, 0) {
 			return fmt.Errorf("bounds %s is not a finite number", name)
 		}
@@ -121,10 +138,37 @@ func (d Directive) validateBounds() error {
 	if d.W <= 0 || d.H <= 0 {
 		return fmt.Errorf("bounds must have positive width and height, got %gx%g", d.W, d.H)
 	}
+	// The clip is all-or-nothing like the viewport: a fully clipped pane is
+	// hidden upstream, never sized to nothing here.
+	if (d.CW > 0) != (d.CH > 0) || d.CW < 0 || d.CH < 0 {
+		return fmt.Errorf("bounds clip must be a positive pair or absent, got %gx%g", d.CW, d.CH)
+	}
 	// The viewport pair is all-or-nothing: scaling one axis and not the
 	// other could only misplace the view.
 	if (d.VW > 0) != (d.VH > 0) || d.VW < 0 || d.VH < 0 {
 		return fmt.Errorf("bounds viewport must be a positive pair or absent, got %gx%g", d.VW, d.VH)
+	}
+	if err := validateBg(d.Bg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateBg accepts "" or "#rrggbb". The value reaches a COM color struct
+// and a log line, so anything fancier (rgb(), var(), names) is refused here
+// rather than half-parsed at the host.
+func validateBg(bg string) error {
+	if bg == "" {
+		return nil
+	}
+	if len(bg) != 7 || bg[0] != '#' {
+		return fmt.Errorf("bounds bg %q is not #rrggbb", bg)
+	}
+	for i := 1; i < 7; i++ {
+		c := bg[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return fmt.Errorf("bounds bg %q is not #rrggbb", bg)
+		}
 	}
 	return nil
 }

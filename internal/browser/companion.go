@@ -31,15 +31,29 @@ const (
 // size over the viewport, which makes the position exact under webview zoom
 // (Ctrl+=) and any DPI without either side knowing the other's scale factor.
 // Visible is false while the pane is mounted but must not be painted over: an
-// AO overlay intersects the rect, or the rect is clipped by the pane strip.
+// AO overlay intersects the rect, or the rect is entirely off the pane strip.
+//
+// Clip* is the VISIBLE intersection of the rect with every clipping ancestor,
+// in the same CSS-pixel space. A native view cannot be cropped by the DOM, so
+// the engine crops it: the view keeps the full rect's size (the page must not
+// relayout because it scrolled half behind the sidebar) and the host clips its
+// presentation to the clip rect. An unclipped pane reports clip == rect.
+// Background is the pane surface's resolved CSS color ("#rrggbb"); engines
+// paint it where the page has not presented yet, so freshly exposed strips
+// match the pane instead of flashing the engine default.
 type PaneRect struct {
 	X              float64 `json:"x"`
 	Y              float64 `json:"y"`
 	Width          float64 `json:"width"`
 	Height         float64 `json:"height"`
+	ClipX          float64 `json:"clipX"`
+	ClipY          float64 `json:"clipY"`
+	ClipWidth      float64 `json:"clipWidth"`
+	ClipHeight     float64 `json:"clipHeight"`
 	ViewportWidth  float64 `json:"viewportWidth"`
 	ViewportHeight float64 `json:"viewportHeight"`
 	Visible        bool    `json:"visible"`
+	Background     string  `json:"background,omitempty"`
 }
 
 // paneMount is one mounted pane surface: the frontend's claim that a host rect
@@ -227,6 +241,16 @@ func (m *Manager) SetPaneRect(id string, rect PaneRect) error {
 	if rect.Width < 0 || rect.Height < 0 {
 		rect.Width, rect.Height = 0, 0
 	}
+	if rect.ClipX == 0 && rect.ClipY == 0 && rect.ClipWidth == 0 && rect.ClipHeight == 0 {
+		// A reporter that predates clipping (tests, the harness bridge) means
+		// "unclipped", and downstream engines must never see a zero clip they
+		// would crop everything away with.
+		rect.ClipX, rect.ClipY = rect.X, rect.Y
+		rect.ClipWidth, rect.ClipHeight = rect.Width, rect.Height
+	}
+	if rect.ClipWidth < 0 || rect.ClipHeight < 0 {
+		rect.ClipWidth, rect.ClipHeight = 0, 0
+	}
 	m.mu.Lock()
 	mount, ok := m.panes[strings.TrimSpace(id)]
 	if ok {
@@ -286,7 +310,8 @@ func (m *Manager) syncPanePresentation(threadID string) {
 		if mount.threadID != threadID || !mount.hasRect {
 			continue
 		}
-		if mount.rect.Visible && mount.rect.Width >= 1 && mount.rect.Height >= 1 {
+		if mount.rect.Visible && mount.rect.Width >= 1 && mount.rect.Height >= 1 &&
+			mount.rect.ClipWidth >= 1 && mount.rect.ClipHeight >= 1 {
 			shown = true
 			rect = mount.rect
 		}
