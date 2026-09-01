@@ -295,6 +295,40 @@ func (e *hostedEngine) FileURL(ctx context.Context, path string) (string, error)
 	return windowsFileURL(converted)
 }
 
+// BackendFilePath answers FileURL's inverse: the WSL path behind a file URL
+// the Windows-side renderer handed back (a request being authorized, an
+// address-bar paste). `wslpath -u` owns the conversion, so a UNC host that
+// is not this machine's WSL view errors — and the caller treats that as an
+// unauthorized file, which is the correct answer for a share the backend
+// cannot stat anyway.
+func (e *hostedEngine) BackendFilePath(ctx context.Context, rawURL string) (string, error) {
+	windowsPath, err := windowsPathFromFileURL(rawURL)
+	if err != nil {
+		return "", err
+	}
+	return runWSLPath(ctx, "-u", windowsPath)
+}
+
+// windowsPathFromFileURL is windowsFileURL's pure inverse: the URL authority
+// becomes the UNC host, an empty one requires a drive-letter path.
+func windowsPathFromFileURL(rawURL string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "file") {
+		return "", fmt.Errorf("browser: not a file URL: %q", rawURL)
+	}
+	if parsed.Host != "" {
+		if strings.TrimLeft(parsed.Path, "/") == "" {
+			return "", fmt.Errorf("browser: unusable UNC file URL %q", rawURL)
+		}
+		return `\\` + parsed.Host + strings.ReplaceAll(parsed.Path, "/", `\`), nil
+	}
+	trimmed := strings.TrimPrefix(parsed.Path, "/")
+	if len(trimmed) < 2 || trimmed[1] != ':' {
+		return "", fmt.Errorf("browser: file URL %q does not name a Windows path", rawURL)
+	}
+	return strings.ReplaceAll(trimmed, "/", `\`), nil
+}
+
 // windowsFileURL turns a Windows path into the file URL Chromium expects:
 // a UNC path's host rides the URL authority (file://wsl.localhost/...),
 // a drive path rides an empty one (file:///C:/...). Tag-free and pure so

@@ -118,13 +118,23 @@ controller exactly as it drives a Chrome tab. Only LIFETIME differs.
   happened, never a quiet success — reporting success here would tell the
   user cookies were destroyed that are still on disk.
 - **The renderer's filesystem is NOT the backend's.** The controller renders
-  on Windows while the backend's paths are WSL paths, so any PATH handed to
-  this engine must cross the boundary as the Windows view. `browser_open_file`
-  does it through `engineFileURL` (`wslpath -w` → the `\\wsl.localhost` UNC →
-  `windowsFileURL`); a backend-path file URL navigates a live pane to
-  ERR_FILE_NOT_FOUND (2026-08-31). Known open sibling of the same class:
-  `profileOptions.DownloadDir` is a WSL path no Windows renderer can write —
-  downloads on this deployment are not wired to the artifact directory yet.
+  on Windows while the backend's paths are WSL paths, so paths cross the
+  boundary through `engineFileURL`, in BOTH directions. Outbound:
+  `browser_open_file` navigates via `FileURL` (`wslpath -w` → the
+  `\\wsl.localhost` UNC → `windowsFileURL`); a backend-path file URL
+  navigates a live pane to ERR_FILE_NOT_FOUND (2026-08-31). Inbound: every
+  file URL the Manager sees back from this engine — the `fetch`-interceptor
+  authority check in `navigationAllowed`, an address-bar paste in
+  `NavigateCompanion` — is renderer-form, and must come back through
+  `BackendFilePath` (`windowsPathFromFileURL` → `wslpath -u`) before being
+  authorized against workspace paths. Skipping the inverse made the
+  interceptor block the very navigation `OpenFile` had just authorized,
+  with Edge painting our own `ErrorReasonBlockedByClient` as "This page has
+  been blocked by Microsoft Edge" (2026-08-31) — when a pane shows that
+  page, suspect the interceptor before Edge policy. Known open sibling of
+  the same class: `profileOptions.DownloadDir` is a WSL path no Windows
+  renderer can write — downloads on this deployment are not wired to the
+  artifact directory yet.
 - **The clear's correlation id is not a page.** It is minted by
   `newHostedPageID` and rides the same watch/report machinery `createPage`
   uses, because that machinery is keyed on a page id. `Report` therefore

@@ -190,7 +190,19 @@ func (m *Manager) navigationAllowed(access Access, rawURL string) bool {
 		// pages out of the navigation allow-list.
 		return strings.EqualFold(parsed.Host, "mhjfbmdgcfjbbpaeojofohoefgiehjai")
 	case "file":
-		_, err := m.authorizeFile(access, filepath.FromSlash(parsed.Path))
+		backendPath := filepath.FromSlash(parsed.Path)
+		if engine, ok := m.engine.(engineFileURL); ok {
+			// The URL is in the RENDERER's form (file:///C:/...,
+			// file://wsl.localhost/...); authorize the backend path behind
+			// it. A URL the engine cannot map names a filesystem the
+			// backend cannot reach, so it stays blocked.
+			mapped, err := engine.BackendFilePath(context.Background(), rawURL)
+			if err != nil {
+				return false
+			}
+			backendPath = mapped
+		}
+		_, err := m.authorizeFile(access, backendPath)
 		return err == nil
 	default:
 		return false

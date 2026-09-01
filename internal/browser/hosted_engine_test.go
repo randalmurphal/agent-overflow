@@ -775,3 +775,46 @@ func TestWindowsFileURLCarriesTheRendererView(t *testing.T) {
 		}
 	}
 }
+
+// The interceptor and the companion address bar hand back renderer-form
+// file URLs; windowsPathFromFileURL must invert windowsFileURL exactly, or
+// the authority check blocks the navigation OpenFile just authorized
+// (live incident 2026-08-31, ERR_BLOCKED_BY_CLIENT).
+func TestWindowsPathFromFileURLInvertsTheRendererView(t *testing.T) {
+	for _, tc := range []struct {
+		name, rawURL, want string
+	}{
+		{"wsl UNC", "file://wsl.localhost/AlmaLinux-10/home/u/page.html", `\\wsl.localhost\AlmaLinux-10\home\u\page.html`},
+		{"drive path", "file:///C:/Users/u/page.html", `C:\Users\u\page.html`},
+		{"drive path with spaces", "file:///C:/My%20Files/a%20b.html", `C:\My Files\a b.html`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := windowsPathFromFileURL(tc.rawURL)
+			if err != nil || got != tc.want {
+				t.Fatalf("windowsPathFromFileURL(%q) = %q, %v; want %q", tc.rawURL, got, err, tc.want)
+			}
+		})
+	}
+	for _, tc := range []struct{ name, rawURL string }{
+		{"not file", "https://example.test/a"},
+		{"empty", ""},
+		{"UNC host without a share", "file://wsl.localhost"},
+		{"hostless without a drive", "file:///home/u/page.html"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := windowsPathFromFileURL(tc.rawURL); err == nil {
+				t.Fatalf("windowsPathFromFileURL(%q) = %q, want an error", tc.rawURL, got)
+			}
+		})
+	}
+	for _, path := range []string{`\\wsl.localhost\AlmaLinux-10\home\u\a b.html`, `C:\My Files\a b.html`} {
+		asURL, err := windowsFileURL(path)
+		if err != nil {
+			t.Fatalf("windowsFileURL(%q): %v", path, err)
+		}
+		back, err := windowsPathFromFileURL(asURL)
+		if err != nil || back != path {
+			t.Fatalf("round trip of %q via %q = %q, %v", path, asURL, back, err)
+		}
+	}
+}

@@ -54,8 +54,19 @@ type engineSiteData interface {
 // boundary the clipboard copy-file feature crosses). An engine whose
 // renderer shares the backend's filesystem does not implement it, and the
 // Manager then navigates to the backend path's own file URL.
+//
+// The mapping runs BOTH ways. Every file URL the Manager later sees back
+// from such an engine — the request interceptor's authority check, a file
+// URL pasted into the companion address bar — is in the RENDERER's form,
+// and authorizing it against backend workspace paths without translating
+// first fails closed: the interceptor blocks the very navigation OpenFile
+// just authorized (live incident 2026-08-31, ERR_BLOCKED_BY_CLIENT).
+// BackendFilePath is that inverse; a URL naming a filesystem the backend
+// cannot reach (a foreign UNC host) is an error, which callers treat as
+// "not authorized".
 type engineFileURL interface {
 	FileURL(ctx context.Context, path string) (string, error)
+	BackendFilePath(ctx context.Context, rawURL string) (string, error)
 }
 
 // engineProfile is one canonical workspace's isolated site data: the unit that

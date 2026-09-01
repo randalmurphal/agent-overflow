@@ -312,7 +312,17 @@ func (m *Manager) NavigateCompanion(ctx context.Context, access Access, pageID, 
 	lower := strings.ToLower(address)
 	parsed, _ := url.Parse(address)
 	if parsed != nil && strings.EqualFold(parsed.Scheme, "file") {
-		return m.OpenFile(ctx, access, filepath.FromSlash(parsed.Path), OpenOptions{PageID: pageID})
+		localPath := filepath.FromSlash(parsed.Path)
+		if engine, ok := m.engine.(engineFileURL); ok {
+			// A pasted file URL is in the RENDERER's form; OpenFile wants
+			// the backend path behind it.
+			mapped, err := engine.BackendFilePath(ctx, address)
+			if err != nil {
+				return PageInfo{}, err
+			}
+			localPath = mapped
+		}
+		return m.OpenFile(ctx, access, localPath, OpenOptions{PageID: pageID})
 	}
 	if filepath.IsAbs(address) {
 		return m.OpenFile(ctx, access, address, OpenOptions{PageID: pageID})
