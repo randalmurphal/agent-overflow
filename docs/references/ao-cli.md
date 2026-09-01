@@ -15,13 +15,23 @@ agent-overflow <command>
                                                main's entry dispatch, listed in the root usage
                                                because it is a verb a person types
                                                (docs/architecture/serve-mode.md)
+  supervise [same boot flags as serve]         also NOT an aocli command, and deliberately NOT in
+                                               the root usage: a service manager starts it, never
+                                               a person. It owns the backend as a child and is
+                                               what makes a serve host updatable
+                                               (docs/architecture/serve-mode.md § The supervisor)
   service install [--listen <host:port>] [--binary <path>]
+  service update [--binary <path>]
   service uninstall
   service status                               host commands: manage the machine's service
                                                manager, talk to no app, hold no credential.
                                                status exits 1 when it is not running. Refused on
                                                Windows, where the launcher already supervises its
-                                               WSL backend (docs/architecture/serve-mode.md)
+                                               WSL backend (docs/architecture/serve-mode.md).
+                                               install writes ExecStart=<binary> supervise, not
+                                               serve; update stages a binary as a new version and
+                                               restarts the unit, and is the only way to replace
+                                               the supervisor itself
   workflow new|validate|list|schema            offline (each takes --config-root; put it after
                                                the subcommand: aocli's root FlagSet would accept
                                                a leading one, but the binary's entry router only
