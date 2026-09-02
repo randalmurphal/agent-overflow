@@ -52,6 +52,17 @@ through `go run`. Override the backend binary with `AO_HARNESS_BIN`.
 Chromium comes from the Playwright cache
 (`pnpm exec playwright install chromium` on a fresh machine).
 
+The gate is two Playwright PROJECTS over the same harness and the same
+bundle: `desktop` (Desktop Chrome) runs every ordinary spec, and
+`compact` (Pixel 7: touch, coarse pointer, a 412px layout viewport) runs
+the `compact-*.spec.ts` files. Compact is a layout mode of the one app
+(frontend/AGENTS.md § Compact), so a surface is done only when both
+projects pass, and a fix found on one is checked on the other. Run one
+file with `bin/ao-harness-e2e tests/<spec>`; the file's name picks the
+project. Changes to the native seams (`frontend/src/lib/native/`) also
+rerun the emulator smoke, `make e2e-android`, which drives the same specs
+inside the Android shell.
+
 Not everything in `tests/` runs in the gate, on purpose. A
 `*.manual.spec.ts` is `testIgnore`d by `playwright.config.ts` and needs
 `playwright.manual.config.ts` plus a locally generated fixture. The
