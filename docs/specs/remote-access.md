@@ -1911,6 +1911,47 @@ keystore-bound signing, background lease timing.
 the shell with lease work designed against its real lifecycle, then push
 and bundle sync.
 
+**6f LANDED so far (2026-09-01).** Three of the four pieces are on the
+branch; the shell itself is in flight.
+- *Compact layout* (77ceed40, 7c3a7c05): `stores/layoutMode.svelte.ts`
+  picks `compact` from `(max-width: 640px) and (pointer: coarse)` and
+  nothing else, stamps `layout-compact` and `data-compact-screen` on
+  `<html>`, and a `compact:` Tailwind variant keys on the class. The
+  sidebar is the list screen and the pane strip the thread screen; both
+  stay MOUNTED and swap `visibility` plus `inert`, so a trip back to the
+  list keeps the timeline's observers and scroll position. `revealPane`
+  flips to the thread screen; the chat header grows a back button and
+  loses the pane close control. Panes are one screen wide with no
+  dividers, so companions still open and the reveal glide is the screen
+  switch. Popovers are bottom sheets by default (`Popover`'s `sheet`
+  prop; the composer's completion lists opt out), overlays fill the
+  screen, Return inserts a newline (`enterSends`), the nav rail and its
+  gutter are gone. Deviation from the design text above: the terminal is
+  a stacked screen over the chat column rather than a route of its own,
+  and "settings, devices, workflows, git as stacked screens" is met by
+  the existing overlays filling the screen, not by new screens.
+- *Terminal key row* (1b5a016c): `TerminalKeyRow.svelte` docks under the
+  xterm surface under compact (Esc, Tab, sticky Ctrl, arrows, `-` `/` `|`
+  `~`), writes through `term.input` so the PTY keeps one writer, and
+  sticky Ctrl converts the next input chunk from any source in
+  `terminalKeys.ts`. Not built here: autocorrect/autocapitalize off on
+  xterm's hidden input, the thumb font size, and sizing to the visual
+  viewport above the keyboard; those are on-device checks for the Mac
+  pass.
+- *Lease frame* (27cfb2fd): `{"type":"lease","state":...}` parsed in
+  `conn.go`; `highlight:seed` is withheld at `Subscriber.deliver` before
+  gap accounting; `provider:item_event` deltas are merged per (thread,
+  item) per 250 ms in `lease.go` with the LAST merged seq, and every
+  pass-through on the channel flushes ALL pending rows first so the
+  channel never goes backwards. `transport/lease.ts` `setClientLease` is
+  the one door; only the shell calls it. The loopback harness never
+  receives a seed (remote-only audience), so the e2e asserts a floor and
+  the withholding is proved at the seam.
+- *Verification*: Playwright has a second project, `compact` (Pixel 7,
+  `compact-*.spec.ts`), inside `make e2e`; the 390×844 figure above is
+  the descriptor's 412×915 in practice. Rule recorded in the guides: a
+  surface is done only when both projects pass.
+
 ## 10. Multi-backend clients
 
 Decide the **seams** in phase 1, not a speculative store rewrite.
