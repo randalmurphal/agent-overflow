@@ -5,7 +5,7 @@
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
-  import { DANGER_BUTTON_CLASS, SECONDARY_BUTTON_CLASS } from './styles';
+  import { DANGER_BUTTON_CLASS, INPUT_CLASS, SECONDARY_BUTTON_CLASS } from './styles';
 
   let settings = $derived(getSettings());
   let clearArmed = $state(false);
@@ -42,6 +42,21 @@
       </SettingsField>
       <SettingsField label="Files outside workspace" hint="Allow browser tools to open any regular file your OS account can read.">
         <ToggleSwitch checked={settings.browserAllowOutsideWorkspace} disabled={!settings.browserEnabled} ariaLabel="Toggle Outside Workspace Browser Files" onToggle={(value) => updateSetting('browserAllowOutsideWorkspace', value)} />
+      </SettingsField>
+      <SettingsField
+        label="Chromium path"
+        hint="Only used by a serve host, which launches its own browser. Must be an absolute path."
+        htmlFor="browser-chromium-path"
+      >
+        <input
+          id="browser-chromium-path"
+          type="text"
+          data-testid="settings-browser-chromium-path"
+          value={settings.browserChromiumPath}
+          onchange={(e) => updateSetting('browserChromiumPath', (e.target as HTMLInputElement).value)}
+          placeholder="Found on PATH when empty"
+          class="{INPUT_CLASS} max-w-[16rem]"
+        />
       </SettingsField>
     </div>
   </section>
