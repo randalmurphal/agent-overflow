@@ -1,3 +1,5 @@
+import { isModClick } from '../../utils/modClick';
+
 export interface ProjectNewThreadOptions {
   openInNewPane?: boolean;
 }
@@ -8,7 +10,7 @@ export type ProjectNewThreadHandler = (
 ) => void | Promise<void>;
 
 export function shouldOpenProjectThreadInNewPane(event: MouseEvent): boolean {
-  return event.ctrlKey || event.metaKey;
+  return isModClick(event);
 }
 
 /**

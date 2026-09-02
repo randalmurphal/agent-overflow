@@ -1,8 +1,11 @@
 import { OpenExternalURL } from '../stores/bindings';
+import { browserCompanionAct, browserCompanionState } from '../stores/browserCompanion.svelte';
 import { addToast } from '../stores/toast.svelte';
 import { runMode } from '../transport/runMode';
+import { hasScope } from '../transport/scopes';
 import type { BackendKey } from '../transport/backendKey';
 import { errString } from './errors';
+import { isModClick } from './modClick';
 import { PATH_LINK_HREF_PREFIX } from './pathLinkExtension';
 
 let delegateInstallCount = 0;
@@ -137,6 +140,27 @@ function previewLinkForEventTarget(target: EventTarget | null): HTMLElement | nu
   return target.closest<HTMLElement>('[data-preview-port]');
 }
 
+function threadIdForTarget(target: EventTarget | null): string {
+  if (!(target instanceof Element)) return '';
+  return target.closest<HTMLElement>('[data-thread-id]')?.dataset.threadId ?? '';
+}
+
+/**
+ * Open a URL in the thread's companion browser pane.
+ *
+ * Two calls because the backend has no new-page-with-address action: `new`
+ * mints the page and pushes the state that names it active, and the
+ * navigate follows on that id. A refused `new` stops the sequence rather
+ * than navigating whatever tab happened to be active, which would take a
+ * page the person was reading.
+ */
+async function openInCompanionBrowser(threadId: string, url: string): Promise<void> {
+  if (await browserCompanionAct(threadId, { kind: 'new' })) return;
+  const pageId = browserCompanionState(threadId)?.activePageId ?? '';
+  if (!pageId) return;
+  await browserCompanionAct(threadId, { kind: 'navigate', pageId, address: url });
+}
+
 function handleExternalLinkClick(event: MouseEvent): void {
   if (event.defaultPrevented) return;
   if (event.button !== 0 && event.button !== 1) return;
@@ -175,6 +199,21 @@ function handleExternalLinkClick(event: MouseEvent): void {
   if (!safeURL) return;
 
   event.preventDefault();
+
+  // Mod+click opens the link in the thread's companion browser, which is a
+  // NATIVE view of the host process — so off host it is not a degraded
+  // version of the gesture, there is nothing there to open, and the click
+  // falls back to the plain behaviour. Middle-click is deliberately not in
+  // this branch: it means "somewhere other than here" in every browser, and
+  // the system browser is that somewhere.
+  if (event.button === 0 && isModClick(event) && hasScope('host')) {
+    const threadId = threadIdForTarget(event.target);
+    if (threadId) {
+      void openInCompanionBrowser(threadId, safeURL);
+      return;
+    }
+  }
+
   void handleExternalURL(safeURL);
 }
 
