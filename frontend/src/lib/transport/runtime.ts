@@ -257,11 +257,19 @@ export const Call = {
     );
   },
   // ByName has no id to look up, so it takes the route every unclassified
-  // call takes: the page's own backend. Nothing in the app calls it today;
-  // when something does, the answer is to give that method a route rather
-  // than to build a second name→route table beside the generated one.
+  // call takes: the page's own backend. A PINNED target still wins, and
+  // must — `withBackendTarget` is the caller saying which machine it means,
+  // and a door that quietly dropped it would ask home about another
+  // machine's ports and get a plausible answer. The pin is drained here
+  // whether or not it is used, for the reason ByID drains it first: it is
+  // armed for one synchronous dispatch and must not survive into the next.
+  //
+  // Anything reaching this door wants a route of its own rather than a
+  // second name→route table beside the generated one; the pin is the
+  // stopgap a hand-declared wrapper uses until its method is generated.
   ByName(method: string, ...args: unknown[]): CancellablePromise<unknown> {
-    return wrap(resolveTransport().callByName(method, args));
+    const pinned = takePinnedBackend();
+    return wrap(resolveTransport(pinned ?? undefined).callByName(method, args));
   },
 };
 

@@ -97,6 +97,7 @@
   import { userFacingError } from './lib/utils/userFacingError';
   import { initUpdates } from './lib/stores/updates.svelte';
   import { initServiceUpdates } from './lib/stores/serviceUpdate.svelte';
+  import { initDevServers } from './lib/stores/devServers.svelte';
 
   let discussionStartFor = $state<Thread | null>(null);
   let searchFocuser = $state<(() => void) | null>(null);
@@ -375,6 +376,10 @@
     // status on every hello, and their flow frames. Silent where no backend
     // reports a supervisor.
     const cleanupServiceUpdates = initServiceUpdates();
+    // Which ports each attached machine will share a preview of, and the
+    // two actions the external-link delegate calls. Silent on a machine
+    // this session holds no `preview:open` for.
+    const cleanupDevServers = initDevServers();
     // appStorage hydration gates the view-state consumers: pane layout
     // restore reads the per-client bucket, and the sidebar syncs adopt
     // the durable copies over the pre-hydration cache. A failed
@@ -500,6 +505,7 @@
       cleanupLayoutMode();
       cleanupUpdates();
       cleanupServiceUpdates();
+      cleanupDevServers();
       cleanupExternalLinks();
       cleanupZoomKeys();
       cleanupLoafTrace();

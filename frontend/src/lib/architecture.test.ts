@@ -77,6 +77,7 @@ const BROWSER_COMPANION_STORE = 'lib/stores/browserCompanion.svelte.ts';
 const PROVIDER_ACCOUNTS_STORE = 'lib/stores/providerAccounts.svelte.ts';
 const SYSTEMS_STORE = 'lib/stores/systems.svelte.ts';
 const SERVICE_UPDATE_STORE = 'lib/stores/serviceUpdate.svelte.ts';
+const DEV_SERVERS_STORE = 'lib/stores/devServers.svelte.ts';
 
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionPaneAttach: owned(BROWSER_COMPANION_STORE, 'attachBrowserCompanion()'),
@@ -148,6 +149,17 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   GetServiceUpdateStatus: owned(SERVICE_UPDATE_STORE, 'loadMachineUpdate()'),
   ListServiceReleases: owned(SERVICE_UPDATE_STORE, 'loadServiceReleases()'),
   RequestServiceUpdate: owned(SERVICE_UPDATE_STORE, 'requestServiceUpdate()'),
+  // One machine's shareable ports is one list per backend fed by one
+  // channel, and the two mutations reconcile against it. A markdown link
+  // or a settings row calling AllowPreviewPort itself would share a port
+  // the list the link renders from never learns about, and a second
+  // reader of GetDevServers would answer from a snapshot the frames never
+  // converge. MintPreviewURL spends a single-use ticket, so a caller
+  // outside the store could mint one nothing opens.
+  GetDevServers: owned(DEV_SERVERS_STORE, 'loadDevServers()'),
+  AllowPreviewPort: owned(DEV_SERVERS_STORE, 'allowPreviewPort()'),
+  DisallowPreviewPort: owned(DEV_SERVERS_STORE, 'disallowPreviewPort()'),
+  MintPreviewURL: owned(DEV_SERVERS_STORE, 'openPreview()'),
   ListAvailableEditors: owned(EDITORS_STORE, 'startLoad()'),
   GetEditorSettings: owned(EDITORS_STORE, 'startLoad()'),
   SetEditorSettings: owned(EDITORS_STORE, 'setEditorPreference()'),

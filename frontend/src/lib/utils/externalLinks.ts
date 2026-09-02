@@ -1,10 +1,33 @@
 import { OpenExternalURL } from '../stores/bindings';
 import { addToast } from '../stores/toast.svelte';
 import { runMode } from '../transport/runMode';
+import type { BackendKey } from '../transport/backendKey';
 import { errString } from './errors';
 import { PATH_LINK_HREF_PREFIX } from './pathLinkExtension';
 
 let delegateInstallCount = 0;
+
+/**
+ * What a preview anchor's click does, supplied by `stores/devServers`.
+ *
+ * Taken by REGISTRATION rather than by import, and for the reason the
+ * pane registry arms its focused-pane resolver the same way: that store
+ * opens a minted URL through `handleExternalURL` below, so an import back
+ * from here would close a ring around two modules that both run at boot.
+ * The store installs these in `initDevServers()` and clears them on
+ * teardown; with none installed there are no preview anchors in the
+ * document either, because the rewrite is armed by the same list frame.
+ */
+export interface PreviewLinkActions {
+  open: (threadId: string, port: number, path: string) => Promise<void>;
+  allow: (backend: BackendKey, port: number) => Promise<void>;
+}
+
+let previewActions: PreviewLinkActions | null = null;
+
+export function installPreviewLinkActions(actions: PreviewLinkActions | null): void {
+  previewActions = actions;
+}
 
 export function safeExternalURL(raw: string | null | undefined): string | null {
   if (!raw) return null;
@@ -103,9 +126,50 @@ export function externalURLForEventTarget(target: EventTarget | null): string | 
   return safeExternalURL(rawHref);
 }
 
+/**
+ * The preview anchor a click landed on, or null. The anchor's `href` stays
+ * the ORIGINAL `localhost:<port>` URL so copying and inspecting it say what
+ * the agent said; where it goes is decided here, from the data attributes
+ * the markdown rewrite stamped (`utils/previewLinkExtension.ts`).
+ */
+function previewLinkForEventTarget(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof Element)) return null;
+  return target.closest<HTMLElement>('[data-preview-port]');
+}
+
 function handleExternalLinkClick(event: MouseEvent): void {
   if (event.defaultPrevented) return;
   if (event.button !== 0 && event.button !== 1) return;
+
+  // The inline Allow port action beside a link that is not shared. It is a
+  // real button rather than an anchor, so it is checked before the link
+  // resolution below ever runs.
+  if (event.button === 0 && event.target instanceof Element) {
+    const allow = event.target.closest<HTMLElement>('[data-preview-allow]');
+    if (allow) {
+      event.preventDefault();
+      const port = Number(allow.dataset.previewAllow ?? '');
+      if (previewActions && Number.isSafeInteger(port)) {
+        void previewActions.allow(allow.dataset.previewBackend ?? '', port);
+      }
+      return;
+    }
+  }
+
+  const preview = previewLinkForEventTarget(event.target);
+  if (preview) {
+    // Every state swallows the click: the href names a listener on the
+    // machine the agent is on, and following it here would load whatever
+    // answers on that port of the machine the READER is on, or nothing.
+    event.preventDefault();
+    if (event.button !== 0) return;
+    if ((preview.dataset.previewState ?? '') !== 'open') return;
+    const port = Number(preview.dataset.previewPort ?? '');
+    const threadId = preview.dataset.previewThread ?? '';
+    if (!previewActions || !threadId || !Number.isSafeInteger(port)) return;
+    void previewActions.open(threadId, port, preview.dataset.previewPath ?? '/');
+    return;
+  }
 
   const safeURL = externalURLForEventTarget(event.target);
   if (!safeURL) return;

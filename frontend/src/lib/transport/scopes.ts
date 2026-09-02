@@ -100,6 +100,7 @@ export type Scope =
   | 'approvals:respond'
   | 'threads:autonomy'
   | 'terminal:operate'
+  | 'preview:open'
   | 'git:operate'
   | 'attachments:write'
   | 'settings:read'
@@ -124,6 +125,7 @@ export const EXECUTE_SCOPES: readonly Scope[] = [
   'approvals:respond',
   'threads:autonomy',
   'terminal:operate',
+  'preview:open',
   'git:operate',
   'attachments:write',
   'settings:write',
@@ -138,6 +140,7 @@ export const SCOPES: readonly Scope[] = [
   'approvals:respond',
   'threads:autonomy',
   'terminal:operate',
+  'preview:open',
   'git:operate',
   'attachments:write',
   'settings:read',
