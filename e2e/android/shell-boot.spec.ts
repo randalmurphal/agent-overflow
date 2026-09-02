@@ -415,9 +415,10 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
   const endpoint = `http://127.0.0.1:${harness.bootstrap.port}`;
 
   // The APP pairs through its own screen, the same door the case above
-  // documents. It has to be genuinely paired: the health check IS this
-  // shell reaching hello after the swap, and an unpaired shell would sit
-  // on the first-run screen until the watchdog rolled the bundle back.
+  // documents. It has to be genuinely paired: the health check runs from
+  // the paired boot path (`native/boot.ts`), and an unpaired shell would
+  // sit on the first-run screen until the watchdog rolled the bundle
+  // back.
   const appInvite = await harness.rpc<PairingInvite>('MintDevicePairing', 'phone', 'full');
   await page.goto(SHELL_ORIGIN + '/' + fragmentOf(appInvite));
   await page.reload();
@@ -554,9 +555,9 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
 
   // --- And it proves itself before the watchdog fires -------------------
   // `pendingHealth` clears when the shell calls `ready()`, which it does
-  // once the app has mounted and its home transport has reached hello.
-  // The 30s watchdog is the other outcome, so this poll is bounded well
-  // inside it: a rollback here would mean the swap boots but cannot talk.
+  // once the app has mounted and its boot has run to the end. The 30s
+  // watchdog is the other outcome, so this poll is bounded well inside
+  // it: a rollback here would mean the swap never booted.
   await expect
     .poll(
       async () =>

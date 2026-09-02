@@ -294,11 +294,18 @@ export function stopBundleSync(): void {
 /**
  * Confirm this launch healthy, once.
  *
- * Called by `native/boot.ts` after the app has mounted and the home
- * transport has reached hello. That sequence IS the health check: a
- * bundle that boots, mounts and talks to its backend is a bundle that
- * works, and one that does not never reaches this call — so the native
- * watchdog rolls it back (mobile/AGENTS.md § The bundle plugin).
+ * Called by `native/boot.ts` after the app has mounted. Reaching this
+ * call IS the health check: the bundle's module graph loaded, `main.ts`
+ * ran to the end, the app rendered, and the plugin the bundle's native
+ * seams depend on answered. A bundle that fails any of those never gets
+ * here, and the native watchdog rolls it back (mobile/AGENTS.md § The
+ * bundle plugin).
+ *
+ * Deliberately NOT "reached hello". A phone launched with no network
+ * would roll back a working bundle, record its id as failed, and refuse
+ * it on every later hello — stranded on the old app until the desktop
+ * built a newer one. A bundle that boots but cannot reach its backend
+ * shows the transport banner, which is that problem's own surface.
  *
  * Idempotent per launch and never throws: a phone whose plugin refuses
  * this is one that will roll back on its own, which is the safe end.
@@ -319,39 +326,13 @@ export async function reportBundleHealthy(): Promise<void> {
 }
 
 /**
- * The health check as `boot.ts` spells it: wait for the home backend's
- * hello, then confirm.
- *
- * Never rejects and never times out. A shell that never reaches its
- * backend simply does not confirm, and the native watchdog rolls the
- * bundle back 30 seconds into the launch — which is the correct outcome
- * for a bundle whose first act was to fail to talk to the machine that
- * sent it.
+ * The health check as `boot.ts` spells it. Never rejects: a bundle that
+ * cannot confirm is one the native watchdog rolls back 30 seconds into
+ * the launch.
  */
 export async function confirmLaunchHealthy(): Promise<void> {
-  // Off the shell this would await a hello forever for a call that has
-  // nothing to confirm. The guard is what makes it safe to call from a
-  // shared boot path.
   if (!isNativeShell()) return;
-  await whenHomeHello();
   await reportBundleHealthy();
-}
-
-function whenHomeHello(): Promise<void> {
-  return new Promise<void>((resolve) => {
-    let cancel: (() => void) | null = null;
-    let settled = false;
-    cancel = onBackendHelloChange((backend, hello) => {
-      if (settled || backend !== HOME_BACKEND || hello === null) return;
-      settled = true;
-      // The subscription fires synchronously for a backend that has
-      // already said hello, so this can run before the assignment above
-      // completes; the post-call check is what unsubscribes then.
-      cancel?.();
-      resolve();
-    });
-    if (settled) cancel();
-  });
 }
 
 function evaluate(): void {

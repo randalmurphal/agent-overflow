@@ -56,7 +56,7 @@ export function noteBundleReady(): void {
 export function noteBundleTooOld(machineName: string): void {
   if (staged) return;
   const machine = clampString(machineName.trim() || 'this backend', MACHINE_NAME_MAX);
-  notice = `This phone's app is too old for ${machine}. Update Agent Overflow on the phone.`;
+  notice = `This app is too old for ${machine}. Install a newer Agent Overflow on this phone.`;
 }
 
 /** Test seam: forget what was published. */

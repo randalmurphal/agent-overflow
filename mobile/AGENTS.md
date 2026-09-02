@@ -188,8 +188,14 @@ white screen.
 ### The 30-second watchdog
 
 `ready()` is the health check, and the shell calls it once per launch
-after the app has mounted and its home transport has reached hello — a
-bundle that boots and talks to its backend is a bundle that works.
+from `native/boot.ts` after the app has mounted. Getting that far is the
+check: the module graph loaded, `main.ts` ran to its end, the app
+rendered, and the plugin answered. **Reaching the backend is not part of
+it**, on purpose. A phone launched with no network would otherwise roll
+back a working bundle, record its id in `rolledBack`, and refuse it on
+every later hello — stranded on the old app until the desktop built a
+newer one. A bundle that boots but cannot talk shows the transport
+banner, which is that problem's own surface.
 
 A bundle that hangs before then would otherwise sit on a dead screen
 until the person killed the app, and killing it is what ARMS the

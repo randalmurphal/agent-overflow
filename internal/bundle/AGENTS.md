@@ -42,7 +42,7 @@ to pick the newest backend when several are attached.
 ## Two implementations of one rule, pinned by one golden
 
 The Go side hashes the embedded `frontend/dist`. `frontend/scripts/
-bundleId.mjs` hashes the same tree at build time and stamps
+bundleId.ts` hashes the same tree at build time and stamps
 `bundle-id.txt` into it, because a shell running the bundle its APK
 shipped with has no state-file entry naming it and must still be able to
 say "the backend's id is the one I am already running".

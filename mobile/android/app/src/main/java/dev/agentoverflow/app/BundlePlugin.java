@@ -96,9 +96,11 @@ public class BundlePlugin extends Plugin {
 
     /**
      * The health check. Called once per launch by the shell, after the
-     * app has mounted and its home transport has reached hello — that
-     * sequence IS the check, because a bundle that boots and talks to its
-     * backend is a bundle that works.
+     * app has mounted and its boot has run to the end — getting as far
+     * as this call IS the check, because a bundle that loads, renders
+     * and reaches its plugin is a bundle that works. Reaching the backend
+     * is deliberately not part of it: a phone launched offline must not
+     * roll back a good bundle.
      */
     @PluginMethod
     public void ready(PluginCall call) {

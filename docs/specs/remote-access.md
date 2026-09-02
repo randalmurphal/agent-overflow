@@ -2006,6 +2006,58 @@ text above was deviated from:
   visual-viewport height above the keyboard, and the biometric prompt
   itself.
 
+**6g-a LANDED (2026-09-01).** Bundle sync, the backend as the phone's
+update server (6e375500, b07099f2, e417f01d, 8f1bfd66, 3224aab1, and
+the review fixes that follow them):
+- *The bundle* (`internal/bundle`): the embedded `frontend/dist` as a
+  SHA-256 manifest whose id is the content hash, plus a deflated zip
+  built from that manifest's own list and re-verified as it compresses.
+  Walked lazily on first use; `*.map` and `bundle-id.txt` excluded;
+  every path must pass `CleanPath` or the tree is refused;
+  `MinShellBuild = 1` is the one version gate in the design.
+  `frontend/scripts/bundleId.ts` is the build-side twin and stamps
+  `dist/bundle-id.txt`, the APK's own answer to "what am I running";
+  one fixture directory and one golden id pin the two implementations.
+- *The routes* (`internal/transport/bundleroutes.go`): `GET
+  /bundle/manifest.json` and `GET /bundle/archive.zip`, admitted by the
+  paired session plus its device proof and by nothing else (the shell
+  holds no cookie for its backend), 404 otherwise, shell CORS with its
+  own preflights, `http.ServeContent` so Range resumes a lost transfer,
+  no rate limit. The hello frame carries `bundleId`, `bundleVersion`,
+  `minShellBuild`; all three are omitted on a dev-server boot, which a
+  shell reads as "keep running what I have". The owner-tier gate has
+  its place reserved in `bundleSessionAdmits` for when tiers exist.
+- *The shell* (`BundleStore`, `BundlePlugin`, `MainActivity`): one
+  state file `{current, next, pendingHealth, lastKnownGood,
+  rolledBack}` beside one directory per id; the swap is decided before
+  `super.onCreate` because the Bridge loads from its builder's path
+  once; a 30 s watchdog rolls back in place when the health flag is
+  still set; staging verifies every entry against the manifest by
+  canonical path, digest and size. `BundleStore` takes a directory and
+  no Android type, so the whole mechanic is a JVM test that `make apk`
+  runs before it assembles.
+- *The decision* (`frontend/src/lib/native/bundleSync.ts`): a pure
+  `decideBundleSync` with one row per case; the newest attached backend
+  wins, home on ties; deferred while the OS has the app paused; six
+  attempts per id; two sentences and nothing else, through the
+  transport banner.
+- Deviations from the text above: (1) the swap is next-cold-start only.
+  "Swaps when ready" is not built: a live swap under a running app
+  would drop in-flight composer and scroll state, and a phone's next
+  cold start is never far away. (2) Health is "the SPA booted to
+  `native/boot.ts`", not "reached the backend". A phone launched with
+  no network would otherwise roll back a working bundle and refuse it
+  on every later hello; a bundle that boots but cannot talk shows the
+  transport banner, which is that problem's own surface. (3) The phone
+  does not recompute a manifest's id from its list: the id arrives on
+  the same session as the files it names, and the Go tests pin it to
+  that list.
+- *Not done on this box, by ruling*: the emulator cases in
+  `e2e/android/shell-boot.spec.ts` (stage, cold-start swap, a damaged
+  archive refused, health confirmed inside the watchdog) are written
+  against the docs and unrun; bundle sync end to end on a real phone
+  is on the Mac list.
+
 ## 10. Multi-backend clients
 
 Decide the **seams** in phase 1, not a speculative store rewrite.

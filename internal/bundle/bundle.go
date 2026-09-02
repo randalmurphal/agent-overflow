@@ -68,7 +68,7 @@ const MinShellBuild = 1
 
 // IDFileName is where a built bundle records its own id, written into
 // `frontend/dist` by the Vite plugin that mirrors the hash rule below
-// (`frontend/scripts/bundleId.mjs`).
+// (`frontend/scripts/bundleId.ts`).
 //
 // It exists for exactly one reader: a shell running the bundle its APK
 // was built with, which holds no state-file entry naming it and must
@@ -85,7 +85,7 @@ const IDFileName = "bundle-id.txt"
 // bundle a phone runs.
 //
 // Two exclusions and no more, both of which must be mirrored exactly by
-// `frontend/scripts/bundleId.mjs` (a fixture and one golden id pin them
+// `frontend/scripts/bundleId.ts` (a fixture and one golden id pin them
 // against each other):
 //
 //   - `*.map`. Source maps are emitted only by the perf-investigation
@@ -211,6 +211,9 @@ func (b *Bundle) build() (Manifest, error) {
 		if entry.IsDir() || !Included(name) {
 			return nil
 		}
+		if !CleanPath(name) {
+			return fmt.Errorf("%q is not a path a shell may write", name)
+		}
 		sum, size, err := b.hashFile(name, digest)
 		if err != nil {
 			return err
@@ -237,7 +240,7 @@ func (b *Bundle) build() (Manifest, error) {
 }
 
 // ID is the content-id rule, in one place because two implementations
-// have to agree on it (`frontend/scripts/bundleId.mjs`).
+// have to agree on it (`frontend/scripts/bundleId.ts`).
 //
 // The hash covers `path\x00sha256\n` per file over files sorted by path.
 // NUL is the separator because it is the one byte a path cannot contain,
@@ -334,14 +337,14 @@ func (b *Bundle) copyVerified(name string, dst io.Writer, digest hash.Hash) (str
 }
 
 // CleanPath reports whether a manifest path is one a shell may write to
-// disk under a bundle directory. It lives here, beside the writer of the
-// document, rather than only in the consumer that enforces it.
+// disk under a bundle directory. `build` refuses a tree holding any
+// other kind, so every manifest this package publishes passes it; the
+// Android plugin re-checks the same rule on every entry it unzips. The
+// producer enforces it and the consumer enforces it, so neither has to
+// trust the other.
 //
 // It refuses an absolute path, any `..` or `.` element, a backslash or a
 // drive letter, and any path that does not survive path.Clean unchanged.
-// The Android plugin re-checks the same rule on every entry it unzips,
-// which is the arrangement intended: the producer states it and the
-// consumer enforces it, so neither has to trust the other.
 func CleanPath(name string) bool {
 	switch {
 	case name == "", strings.HasPrefix(name, "/"), strings.Contains(name, `\`), strings.Contains(name, ":"):

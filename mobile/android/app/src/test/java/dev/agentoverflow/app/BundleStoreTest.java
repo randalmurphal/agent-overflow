@@ -291,6 +291,28 @@ public class BundleStoreTest {
     }
 
     @Test
+    public void aBundleStagedBeforeTheHealthReportSurvivesIt() throws Exception {
+        // The order on a fast link: the shell stages the download and
+        // only then confirms this launch healthy. The reap that report
+        // triggers must not take the bundle the person was just told
+        // about.
+        BundleStore store = new BundleStore(root());
+        stageOk(store, "one", spa());
+        store.onBoot();
+        Map<String, byte[]> second = spa();
+        second.put("assets/app.js", "export const a = 2;\n".getBytes(StandardCharsets.UTF_8));
+        stageOk(store, "two", second);
+        store.ready();
+
+        BundleStore.State state = store.read();
+        assertEquals("two", state.next);
+        assertTrue("a staged bundle waits for the next cold start", store.dir("two").isDirectory());
+        assertEquals("the next cold start adopts what the healthy report did not lose",
+                "two", store.onBoot().getName());
+        assertEquals("", store.read().next);
+    }
+
+    @Test
     public void aBootThatNeverReportsHealthyRollsBack() throws Exception {
         BundleStore store = new BundleStore(root());
         stageOk(store, "good", spa());

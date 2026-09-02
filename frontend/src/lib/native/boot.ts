@@ -91,10 +91,12 @@ export async function installNativeShell(
   await installNativeLifecycle();
   // Neither is awaited, and neither may be. The update channel is
   // background work behind a lock screen that is already up: a download
-  // that took a minute must not hold the gate, and the health
-  // confirmation deliberately waits for a hello that may never come
-  // (./bundleSync.ts). The lock below is what this function's caller is
-  // waiting for.
+  // that took a minute must not hold the gate. The lock below is what
+  // this function's caller is waiting for.
+  //
+  // The health confirmation goes here because reaching here is the
+  // check: the app has mounted and this bundle's boot ran to its end
+  // (./bundleSync.ts, `reportBundleHealthy`).
   void bundles.startBundleSync();
   void bundles.confirmLaunchHealthy();
   // The lock is handed back rather than kept here: the caller owns the

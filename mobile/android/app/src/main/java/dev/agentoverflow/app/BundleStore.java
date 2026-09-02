@@ -330,9 +330,9 @@ final class BundleStore {
     }
 
     /**
-     * The app reached its backend and is running. Clear the health
-     * check, promote the running bundle to last-known-good, and reap
-     * every directory that is now neither.
+     * The app booted and is running. Clear the health check, promote the
+     * running bundle to last-known-good, and reap every directory the
+     * state no longer names.
      *
      * <p>{@code rolledBack} is cleared only when THIS launch was the
      * first on a new bundle — which is exactly the case {@code
@@ -360,7 +360,14 @@ final class BundleStore {
         }
     }
 
-    /** Delete every bundle directory that is neither current nor last-known-good. */
+    /**
+     * Delete every bundle directory the state file no longer names.
+     *
+     * <p>{@code next} is kept too: a bundle staged before this launch
+     * reported healthy is waiting for the next cold start, and reaping
+     * it here would be a download the person was told about that then
+     * never loads.
+     */
     private void pruneLocked(State state) {
         File[] entries = root.listFiles();
         if (entries == null) {
@@ -369,6 +376,9 @@ final class BundleStore {
         Set<String> keep = new HashSet<>();
         if (!state.current.isEmpty()) {
             keep.add(state.current);
+        }
+        if (!state.next.isEmpty()) {
+            keep.add(state.next);
         }
         if (!state.lastKnownGood.isEmpty()) {
             keep.add(state.lastKnownGood);

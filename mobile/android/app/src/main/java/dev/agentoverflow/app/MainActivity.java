@@ -23,7 +23,7 @@ import java.io.File;
  *
  * <p><b>The 30-second watchdog is the other half of the health check.</b>
  * The shell calls {@code Bundle.ready()} once its app has mounted and its
- * home transport has reached hello. A bundle that hangs before then would
+ * boot has run to the end. A bundle that hangs before then would
  * otherwise sit on a dead screen until the person killed the app — and
  * killing it is what ARMS the rollback, so they would have to work out
  * that killing it is the fix. Instead, if the health flag is still set
@@ -36,11 +36,11 @@ public class MainActivity extends BridgeActivity {
     /**
      * How long a fresh bundle has to say it is working.
      *
-     * <p>Generous on purpose: it has to cover a cold WebView start, the
-     * app's boot fan-out and one transport dial on a phone's link, and
-     * the cost of being wrong in the slow direction is a rollback nobody
-     * needed. Thirty seconds is far past a healthy boot and far short of
-     * a person's patience with a blank screen.
+     * <p>Generous on purpose: it has to cover a cold WebView start and
+     * the app's whole boot fan-out on a slow phone, and the cost of being
+     * wrong in the slow direction is a rollback nobody needed. Thirty
+     * seconds is far past a healthy boot and far short of a person's
+     * patience with a blank screen.
      */
     private static final long HEALTH_DEADLINE_MS = 30_000L;
 

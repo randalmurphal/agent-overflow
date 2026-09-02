@@ -204,7 +204,7 @@ describe('<TransportStatusBanner> and the bundle notice', () => {
     const { getByTestId } = render(TransportStatusBanner);
     await tick();
     expect(getByTestId('transport-status-banner').textContent).toContain(
-      "This phone's app is too old for desk. Update Agent Overflow on the phone.",
+      'This app is too old for desk. Install a newer Agent Overflow on this phone.',
     );
   });
 

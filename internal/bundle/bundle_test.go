@@ -39,7 +39,7 @@ func TestManifestMatchesTheSharedGolden(t *testing.T) {
 	}
 	if manifest.ID != goldenID(t) {
 		t.Fatalf("id = %s, want the golden %s\n"+
-			"Both this package and frontend/scripts/bundleId.mjs hash the same "+
+			"Both this package and frontend/scripts/bundleId.ts hash the same "+
 			"fixture. If the rule changed on purpose, change BOTH and re-stamp "+
 			"testdata/fixturebundle.id.", manifest.ID, goldenID(t))
 	}
@@ -207,6 +207,20 @@ func TestNoTreeAtAllIsAnError(t *testing.T) {
 	var absent *Bundle
 	if _, err := absent.Manifest(); err == nil {
 		t.Fatal("a nil Bundle produced a manifest")
+	}
+}
+
+func TestATreeWithAPathAShellCannotWriteIsRefused(t *testing.T) {
+	// fs.WalkDir yields whatever names the tree holds, and a name with a
+	// backslash is legal in an fs.FS and a directory separator on the
+	// consumer. The producer refuses to publish it rather than leaving
+	// the plugin to reject every stage forever.
+	tree := fstest.MapFS{
+		"index.html":       &fstest.MapFile{Data: []byte("<html></html>")},
+		`assets\app.js`:    &fstest.MapFile{Data: []byte("1")},
+	}
+	if _, err := New(tree, "dev").Manifest(); err == nil {
+		t.Fatal("Manifest published a path a shell may not write")
 	}
 }
 
