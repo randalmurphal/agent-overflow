@@ -1307,16 +1307,59 @@ automation — membership rule: "would restoring the database undo
 it?"). `ParkUnattendedWork` / `ActivateUnattendedWork` /
 `SetServiceUpdateRequester` are bootstrap-boundary functions, not App
 methods, because an exported App method IS a wire RPC;
-`serviceUpdateRequest` stays unexported until W8h2 puts the step-up
-gate in front of it. `service update <version>` is the LOCAL path
-(preflight → stop unit → stage → adopt → save → start); the REMOTE
-trigger is W8h2, unblocked by the 2026-09-01 signing cut: it rides
-step-up, and the download is verified against the published checksum
-over HTTPS.
+`serviceUpdateRequest` stays unexported; the step-up gate in front of
+it is W8h2's `RequestServiceUpdate`. `service update <version>` is the
+LOCAL path (preflight → stop unit → stage → adopt → save → start); the
+REMOTE trigger is W8h2 (Go half LANDED 2026-09-02, note below),
+unblocked by the 2026-09-01 signing cut: it rides step-up, and the
+download is verified against the published checksum over HTTPS.
 `internal/atomicfile` gained the directory-fsync half of durability
 (own commit) — every existing caller was exposed. Tests drive
 scripted fake children over the real protocol on the real
 descriptors, HOME detached; race-clean at -count=3.
+
+**W8h2 (Go half) LANDED (2026-09-02).** The remote update trigger
+(de75e8c8, 86b5a5d0, 645703b4, 9b887ff1, 7906146f, 2a1c5b88, plus the
+trial refusal in review):
+- *The release chain without a window* (`appupdate.ReleaseSource`):
+  `List` / `Latest` / `Fetch(ctx, tag, dst, onProgress)`, built from
+  the same two provider types `Configure` builds, so a serve host and
+  the desktop cannot disagree about which asset is this host's.
+  `Fetch` hashes the stream and compares it to the sidecar digest;
+  a release with nothing to verify against is refused before a byte is
+  requested. `NewReleaseSource` refuses an empty platform token rather
+  than defaulting to `runtime.GOOS`, which would be the wrong artifact
+  on WSL and on a headless build.
+- *The flow* (`internal/app/app_service_update.go`): `resolving →
+  downloading → verifying → staging → requested`, the local command's
+  order. Download to `os.CreateTemp` under the layout root (one
+  filesystem, so `StageBinary` is a local copy), preflight BEFORE
+  stage, the staged version is the preflight's answer, temp removed on
+  every exit, 20 min ceiling under the app's life context, progress
+  throttled to 250 ms on `service:update-status` (AudienceAny,
+  LatestOnly, `access:admin`). After `requested` the status stays put
+  with its `UpdateID`; the supervisor's `service:update-outcome` frame
+  (its scope fixed from `host`, which no session can hold, to
+  `access:admin`) is what closes the loop for the client that asked.
+- *The RPCs*: `GetServiceUpdateStatus` and `ListServiceReleases` are
+  `access:admin`; `RequestServiceUpdate(tag)` is `access:admin` +
+  step-up, `route selected`. It refuses an invalid tag, the running
+  version, a host with no supervisor, a build with no single-file
+  artifact, a second flow, a shutting-down backend, and a TRIAL boot
+  (the supervisor is already mid-update; refusing before the download
+  is the review addition). `host` would have made the whole feature
+  reachable only from the machine it exists to save a trip to.
+- *Where it is absent*: `ConfigureServiceUpdates` runs only from a
+  supervised `serve` whose build has a stageable artifact
+  (`serviceArtifactPlatform()`: `headless-<GOOS>` for the windowless
+  build, `linux` for the GUI one, empty on darwin's app-bundle zip and
+  on windows). An empty answer is the `Unavailable` sentence, not a
+  button that cannot work. The passive `Latest` check runs once,
+  unparked, during a trial too.
+- *Not yet*: the Settings → Updates surface, the footer badge for a
+  selected machine, and the rollback picker (frontend half, hands-on,
+  after 6g-b lands). Live-only: a real GitHub release feed and a real
+  supervised restart.
 
 ### Provider accounts and remote login
 
@@ -2996,8 +3039,8 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    LANDED 2026-09-01 (wave 8i — §7 "Provider accounts and remote
    login"). Release signing: CUT by
    2026-09-01 ruling (§9 bundle sync states the trust line that
-   replaces it); the W8h2 remote update trigger is unblocked behind
-   step-up.
+   replaces it); the W8h2 remote update trigger's Go half LANDED
+   2026-09-02 behind step-up, its Settings surface still to come.
 6. **Phone preparation.** Subscription narrowing (LANDED 2026-09-01,
    wave 6d — §9 "Phone-era efficiency": the watch frame + entity
    filter on the two highlight channels; the six-consumer re-home
