@@ -257,6 +257,16 @@ stops waking readers.
   machine's own `listening`, which is what replaces the loopback probe off
   host.
 
+  `allowed` and `source` are different questions and the reader has to keep
+  them apart. `allowed` says a port is reachable; `source` says why, and
+  only `allowed` (the persisted set, which a hand-named port always joins)
+  can be taken back — `DisallowPreviewPort` edits that set and nothing
+  else. So `allowedPreviewPorts` is both kinds, for the field that refuses
+  a port already reachable, and `sharedPreviewPorts` /
+  `attributedPreviewPorts` are the split Settings renders: a control on the
+  first, a sentence on the second. A Stop sharing button on an attributed
+  row is a button that changes nothing.
+
   Its `resolve` closes over a SNAPSHOT rather than reading the registry:
   it is called from inside marked's tokenizer during a render, and a
   reactive read there would make every markdown tree in the timeline a

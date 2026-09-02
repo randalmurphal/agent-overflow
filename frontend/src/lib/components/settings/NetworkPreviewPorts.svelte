@@ -18,9 +18,11 @@
   import {
     allowPreviewPort,
     allowedPreviewPorts,
+    attributedPreviewPorts,
     disallowPreviewPort,
     loadDevServers,
     machineDevServers,
+    sharedPreviewPorts,
   } from '../../stores/devServers.svelte';
   import { HOME_BACKEND } from '../../transport/backendKey';
   import SettingsField from './SettingsField.svelte';
@@ -32,7 +34,15 @@
   let draft = $state('');
 
   let machine = $derived(machineDevServers(HOME_BACKEND));
+  // Two kinds of shared port, and only one of them has a control. A port
+  // in the persisted set is this list's to take back; a port shared because
+  // a thread is running a server on it goes away when that run does, and
+  // `DisallowPreviewPort` would edit a set it is not in. `ports` is both,
+  // because the field below refuses a port that is already reachable
+  // whichever way it got there.
   let ports = $derived(allowedPreviewPorts(HOME_BACKEND));
+  let shared = $derived(sharedPreviewPorts(HOME_BACKEND));
+  let attributed = $derived(attributedPreviewPorts(HOME_BACKEND));
   let previewHost = $derived(machine.list?.previewHost ?? '');
   let answered = $derived(machine.list !== null);
 
@@ -81,7 +91,7 @@
     </p>
   {:else}
     <ul class="flex flex-col gap-1" data-testid="preview-ports-list">
-      {#each ports as port (port)}
+      {#each shared as port (port)}
         <li class="flex items-center gap-2" data-testid="preview-port-row" data-port={port}>
           <span class="font-mono text-[0.8125rem] text-fg">{port}</span>
           <button
@@ -93,6 +103,18 @@
           >
             Stop sharing
           </button>
+        </li>
+      {/each}
+      {#each attributed as row (row.port)}
+        <li
+          class="flex items-center gap-2"
+          data-testid="preview-port-attributed"
+          data-port={row.port}
+        >
+          <span class="font-mono text-[0.8125rem] text-fg-muted">{row.port}</span>
+          <span class="text-[0.71875rem] text-fg-hint">
+            Shared while {row.process === '' ? 'a thread' : row.process} runs it
+          </span>
         </li>
       {/each}
     </ul>

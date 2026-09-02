@@ -25,6 +25,25 @@ function frame(ports: number[], previewHost = 'desk.tail.ts.net'): DevServerList
   };
 }
 
+// A port reachable because a thread is running a server on it. `Disallow`
+// only edits the persisted set, so these rows carry no control: offering
+// one would be a button that changes nothing.
+function attributedFrame(
+  rows: { port: number; process?: string }[],
+  previewHost = 'desk.tail.ts.net',
+): DevServerList {
+  return {
+    previewHost,
+    servers: rows.map(({ port, process }) => ({
+      port,
+      allowed: true,
+      source: 'attributed' as const,
+      listening: true,
+      ...(process === undefined ? {} : { process }),
+    })),
+  };
+}
+
 describe('<NetworkPreviewPorts>', () => {
   beforeEach(() => {
     resetBindingMocks();
@@ -67,6 +86,60 @@ describe('<NetworkPreviewPorts>', () => {
       '5173',
       '3000',
     ]);
+  });
+
+  it('names what is running an attributed port, and offers no control for it', async () => {
+    initDevServers();
+    const { getByTestId, queryByTestId } = render(NetworkPreviewPorts);
+    emitWailsEvent('devserver:list', attributedFrame([{ port: 5173, process: 'vite' }]));
+
+    const row = await waitFor(() => getByTestId('preview-port-attributed'));
+    expect(row.dataset.port).toBe('5173');
+    expect(row.textContent).toContain('Shared while vite runs it');
+    expect(queryByTestId('preview-port-remove')).toBeNull();
+    expect(queryByTestId('preview-port-row')).toBeNull();
+  });
+
+  it('falls back to naming the thread when the machine sent no process', async () => {
+    initDevServers();
+    const { getByTestId } = render(NetworkPreviewPorts);
+    emitWailsEvent('devserver:list', attributedFrame([{ port: 5173 }]));
+
+    await waitFor(() =>
+      expect(getByTestId('preview-port-attributed').textContent).toContain(
+        'Shared while a thread runs it',
+      ),
+    );
+  });
+
+  it('keeps the persisted rows above the attributed ones', async () => {
+    initDevServers();
+    const { getAllByTestId, getByTestId } = render(NetworkPreviewPorts);
+    emitWailsEvent('devserver:list', {
+      previewHost: 'desk.tail.ts.net',
+      servers: [
+        ...attributedFrame([{ port: 3000, process: 'next' }]).servers,
+        ...frame([5173]).servers,
+      ],
+    });
+
+    await waitFor(() => expect(getAllByTestId('preview-port-row')).toHaveLength(1));
+    expect(getByTestId('preview-port-row').dataset.port).toBe('5173');
+    expect(getByTestId('preview-port-attributed').dataset.port).toBe('3000');
+  });
+
+  it('refuses a port that a thread is already sharing', async () => {
+    initDevServers();
+    const { getByTestId } = render(NetworkPreviewPorts);
+    emitWailsEvent('devserver:list', attributedFrame([{ port: 5173, process: 'vite' }]));
+
+    await fireEvent.input(getByTestId('preview-port-input'), { target: { value: '5173' } });
+    await waitFor(() =>
+      expect(getByTestId('preview-port-error').textContent?.trim()).toBe(
+        'That port is already shared.',
+      ),
+    );
+    expect(getByTestId('preview-port-add')).toBeDisabled();
   });
 
   it('shares a typed port and clears the field, leaving the list to the next frame', async () => {

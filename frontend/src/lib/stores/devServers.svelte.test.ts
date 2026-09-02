@@ -31,6 +31,7 @@ import type { DevServer, DevServerList } from './bindings';
 import {
   allowPreviewPort,
   allowedPreviewPorts,
+  attributedPreviewPorts,
   devServerListening,
   disallowPreviewPort,
   initDevServers,
@@ -44,6 +45,7 @@ import {
   previewRouted,
   previewSignature,
   resetDevServersForTest,
+  sharedPreviewPorts,
 } from './devServers.svelte';
 import { forgetThread, noteThread } from '../transport/entityIndex';
 
@@ -193,6 +195,33 @@ describe('devServers store', () => {
       expect(allowedPreviewPorts(HOME_BACKEND)).toEqual([5173, 3000]);
       emitWailsEvent('devserver:list', list({ servers: [server(3000)] }));
       expect(allowedPreviewPorts(HOME_BACKEND)).toEqual([3000]);
+    });
+
+    it('splits the shared ports by how they came to be shared', () => {
+      initDevServers();
+      emitWailsEvent(
+        'devserver:list',
+        list({
+          servers: [
+            server(5173, { source: 'attributed', process: 'vite' }),
+            server(3000, { source: 'allowed' }),
+            server(8080, { source: 'seen', allowed: false }),
+          ],
+        }),
+      );
+
+      // The field's check is against everything reachable; the rows with a
+      // Stop sharing control are the persisted set alone, because that is
+      // all `DisallowPreviewPort` can act on.
+      expect(allowedPreviewPorts(HOME_BACKEND)).toEqual([5173, 3000]);
+      expect(sharedPreviewPorts(HOME_BACKEND)).toEqual([3000]);
+      expect(attributedPreviewPorts(HOME_BACKEND)).toEqual([{ port: 5173, process: 'vite' }]);
+    });
+
+    it('leaves an attributed port unnamed when the machine named no process', () => {
+      initDevServers();
+      emitWailsEvent('devserver:list', list({ servers: [server(5173, { source: 'attributed' })] }));
+      expect(attributedPreviewPorts(HOME_BACKEND)).toEqual([{ port: 5173, process: '' }]);
     });
 
     it('subscribes once and tears down', () => {

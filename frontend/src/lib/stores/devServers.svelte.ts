@@ -144,8 +144,10 @@ export function machineDevServers(key: BackendKey): MachineDevServers {
 }
 
 /**
- * The ports this machine is sharing, in list order. What Settings → Network
- * renders a row per; empty where nothing has been allowed.
+ * Every port this machine is sharing, in list order, however it came to be
+ * shared. What the Settings field checks a typed port against, so that
+ * re-adding one already reachable is refused rather than called to no
+ * effect.
  */
 export function allowedPreviewPorts(key: BackendKey): readonly number[] {
   const list = machines.get(key).list;
@@ -155,6 +157,48 @@ export function allowedPreviewPorts(key: BackendKey): readonly number[] {
     if (server.allowed) ports.push(server.port);
   }
   return ports;
+}
+
+/**
+ * The ports in this machine's PERSISTED set, in list order. The only ones
+ * `DisallowPreviewPort` can act on, so the only ones Settings offers to
+ * stop sharing. A port named by hand is always `allowed`, whatever else is
+ * true of it (`internal/devservers`), which is what makes the source the
+ * whole test.
+ */
+export function sharedPreviewPorts(key: BackendKey): readonly number[] {
+  const list = machines.get(key).list;
+  if (!list) return [];
+  const ports: number[] = [];
+  for (const server of list.servers ?? []) {
+    if (server.allowed && server.source === 'allowed') ports.push(server.port);
+  }
+  return ports;
+}
+
+/** A port reachable because a thread on this machine is running a server there. */
+export interface AttributedPreviewPort {
+  port: number;
+  /** What is running it, empty when the machine did not name a process. */
+  process: string;
+}
+
+/**
+ * The ports shared for as long as a thread keeps them alive, in list order.
+ * Settings shows them so the set it lists is the set that is reachable, but
+ * offers no control: taking one back means ending the run that owns it, and
+ * `DisallowPreviewPort` only edits the persisted set.
+ */
+export function attributedPreviewPorts(key: BackendKey): readonly AttributedPreviewPort[] {
+  const list = machines.get(key).list;
+  if (!list) return [];
+  const rows: AttributedPreviewPort[] = [];
+  for (const server of list.servers ?? []) {
+    if (server.allowed && server.source === 'attributed') {
+      rows.push({ port: server.port, process: server.process ?? '' });
+    }
+  }
+  return rows;
 }
 
 /**
