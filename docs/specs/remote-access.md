@@ -2998,7 +2998,15 @@ Each phase leaves `make check` green.
    Firebase credential; a friend's backend cannot hold it. Options:
    (a) a blind relay the owner hosts (recommended), (b) UnifiedPush
    via ntfy, (c) a Firebase project and APK per friend. Chosen before
-   the phone app reaches a friend.
+   the phone app reaches a friend. Ruled 2026-09-01 (user): push is
+   OWNER-ONLY for now (the owner's backend sends; any other backend
+   records the token and sends nothing), and the seam is shaped so the
+   owner's home backend can later double as the wake relay. ORDERING,
+   ruled the same day: everything that connects other people (this
+   relay, §11 sharing in either shape of item 5) comes AFTER ownership
+   and permissions exist: named accounts beyond the single owner,
+   attribution on threads and approvals, and links minted for a named
+   person. Nothing multi-person is designed in detail before that.
 2. How much of the payload-sensitivity machinery (§11) is built at
    team-time vs. designed-only now.
 3. Whether draft "edited on <device>" and presence-aware routing survive
