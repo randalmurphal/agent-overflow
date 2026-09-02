@@ -17,6 +17,7 @@
 // is the QR code on the owner's own desktop.
 
 import { setBackendSource, syncAttachedBackends } from '../transport/backends';
+import { onBeforeBackendDetach } from '../transport/detachSteps';
 import type { PairingPayload } from '../transport/deviceSession';
 import { setHomeEndpoint, storedBackendEndpoint } from '../transport/homeEndpoint';
 import { storedBackendDescriptors } from '../transport/manifestBackends';
@@ -83,13 +84,16 @@ export function adoptPairingEndpoint(payload: PairingPayload): string {
 export async function installNativeShell(
   onLockChange: (locked: boolean) => void,
 ): Promise<AppLock> {
-  const [{ installNativeLifecycle }, { installAppLock }, bundles] = await Promise.all([
-    import('./lifecycle'),
-    import('./lock'),
-    import('./bundleSync'),
-  ]);
+  const [{ installNativeLifecycle }, { installAppLock }, bundles, push, presenter] =
+    await Promise.all([
+      import('./lifecycle'),
+      import('./lock'),
+      import('./bundleSync'),
+      import('./push'),
+      import('../stores/pushPresenter.svelte'),
+    ]);
   await installNativeLifecycle();
-  // Neither is awaited, and neither may be. The update channel is
+  // None of these is awaited, and none may be. The update channel is
   // background work behind a lock screen that is already up: a download
   // that took a minute must not hold the gate. The lock below is what
   // this function's caller is waiting for.
@@ -99,7 +103,49 @@ export async function installNativeShell(
   // (./bundleSync.ts, `reportBundleHealthy`).
   void bundles.startBundleSync();
   void bundles.confirmLaunchHealthy();
+  // Push, in three pieces that are deliberately independent: telling the
+  // backends where to reach this phone, presenting what arrives over the
+  // socket while the app is in the background, and following a tap. Each
+  // is useful without the others — a phone with a denied permission still
+  // presents nothing and follows nothing, and one whose build carries no
+  // push configuration still does everything else (§ Push in
+  // mobile/AGENTS.md).
+  void push.startPushRegistration();
+  void presenter.startPushPresenter();
+  void push.watchPushTaps((target) => {
+    void routeNotificationTap(target);
+  });
+  // The step that has to run while a connection is still open. Installed
+  // once, on the shell only, and the two removal doors call it
+  // (transport/detachSteps.ts).
+  onBeforeBackendDetach((backend) => {
+    void push.unregisterPushFrom(backend);
+  });
   // The lock is handed back rather than kept here: the caller owns the
   // screen the gate is in front of, so it owns the retry button too.
   return await installAppLock({ onChange: onLockChange });
+}
+
+/**
+ * A notification tap, onto the route the desktop already uses.
+ *
+ * Nothing new is built here on purpose. `applyNotificationActivated` is
+ * the same door the Windows launcher's clicks come through, and the
+ * activation queue behind it already waits for hydration — which is what
+ * makes a tap that cold-launched the app land on the right thread once
+ * the registry is loaded, and what makes a tap through the lock screen
+ * land the moment the person unlocks (the app under the lock is mounted
+ * and inert, not absent).
+ */
+async function routeNotificationTap(value: unknown): Promise<void> {
+  const [{ applyNotificationActivated }, { parseNotificationTarget }] = await Promise.all([
+    import('../stores/eventsNotification'),
+    import('../stores/notificationActivationQueue'),
+  ]);
+  const target = parseNotificationTarget(value);
+  if (target === null) {
+    console.warn('push: a tap named a route this build could not read', value);
+    return;
+  }
+  applyNotificationActivated(target);
 }

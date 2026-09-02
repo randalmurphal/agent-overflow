@@ -125,6 +125,16 @@ export function installAppDefaults(): void {
   // seed synchronously.
   setBindingMock('HighlightSchemaVersion', async () => 'hv-integration');
   setBindingMock('HighlightClassNames', async () => ['none']);
+  // Settings → General → Notifications hosts the phone-push block, whose
+  // status read is a passive load: any suite that renders GeneralSettings
+  // (directly, through SettingsView, or through App) reaches this binding.
+  setBindingMock('GetPushSenderStatus', async () => ({
+    configured: false,
+    projectId: '',
+    clientEmail: '',
+    lastError: '',
+    registeredDevices: 0,
+  }));
 }
 
 /**

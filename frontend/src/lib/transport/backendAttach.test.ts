@@ -24,6 +24,7 @@ import {
   type BackendDescriptor,
 } from './backends';
 import { clearPairedSession, hasPairedSession } from './deviceSession';
+import { __resetDetachStepsForTest, onBeforeBackendDetach } from './detachSteps';
 import {
   __resetHomeEndpointForTest,
   forgetBackendEndpoint,
@@ -97,11 +98,13 @@ describe('backendAttach', () => {
     __resetBackendsForTest();
     __resetHomeEndpointForTest();
     __resetPendingAttachmentsForTest();
+    __resetDetachStepsForTest();
   });
 
   afterEach(() => {
     __resetBackendsForTest();
     __resetPendingAttachmentsForTest();
+    __resetDetachStepsForTest();
     localStorage.clear();
   });
 
@@ -149,6 +152,61 @@ describe('backendAttach', () => {
 
     it('is quiet about a machine that is not attached', () => {
       expect(() => detachAttachedBackend('never-paired')).not.toThrow();
+    });
+
+    it('runs the installed steps while the connection is still up', () => {
+      // The one step today is a phone withdrawing its push registration,
+      // which is an RPC over the very socket about to close. If it ran
+      // after the close, the backend would keep waking a device that has
+      // no way left to say stop.
+      storeBackendEndpoint(LAPTOP, ENDPOINT);
+      storeSessionFor(LAPTOP);
+      const staged = stageMachine();
+      let sawAtStep: { attached: boolean; session: boolean } | null = null;
+      const seen: string[] = [];
+      onBeforeBackendDetach((backend) => {
+        seen.push(backend);
+        sawAtStep = {
+          attached: backendById(LAPTOP) !== undefined,
+          session: hasPairedSession(LAPTOP),
+        };
+      });
+
+      detachAttachedBackend(LAPTOP);
+
+      expect(seen).toEqual([LAPTOP]);
+      expect(sawAtStep).toEqual({ attached: true, session: true });
+      expect(staged.storedAtClose()).toEqual({ session: true, endpoint: true });
+    });
+
+    it('removes the machine even when a step throws', () => {
+      storeBackendEndpoint(LAPTOP, ENDPOINT);
+      storeSessionFor(LAPTOP);
+      stageMachine();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      onBeforeBackendDetach(() => {
+        throw new Error('the backend was already gone');
+      });
+      let ran = false;
+      onBeforeBackendDetach(() => {
+        ran = true;
+      });
+
+      detachAttachedBackend(LAPTOP);
+
+      // A machine somebody cannot get rid of is the worse failure, and
+      // one thrown step must not silence the next.
+      expect(ran).toBe(true);
+      expect(backendById(LAPTOP)).toBeUndefined();
+      expect(hasPairedSession(LAPTOP)).toBe(false);
+      warn.mockRestore();
+    });
+
+    it('runs no step for the home backend, which it refuses outright', () => {
+      const seen: string[] = [];
+      onBeforeBackendDetach((backend) => seen.push(backend));
+      detachAttachedBackend('');
+      expect(seen).toEqual([]);
     });
   });
 

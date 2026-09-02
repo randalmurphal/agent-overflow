@@ -640,6 +640,24 @@ remote browser alike. Protocol and authz rules:
   rule the pairing paths keep in the other direction (a stored session
   never outlives the knowledge of where to present it).
 
+  **`detachSteps.ts` is what runs BEFORE any of the three, and before
+  `unpairHome()` drops the home credential too.** There are exactly two
+  doors out of a connection and both are in this directory, while the
+  work they now have to do is not: a phone withdrawing its push
+  registration is an RPC over the very socket about to close
+  (`native/push.ts`). A direct import either way would put a Capacitor
+  seam inside the transport or close a cycle with `deviceSession.ts`, so
+  the shell INSTALLS a step through `onBeforeBackendDetach` and the two
+  doors call `runBeforeBackendDetach`. Same shape and same reason as
+  `backends.setBackendSource`: one function, replaced rather than
+  branched on. Steps are fire-and-forget and MUST NOT be allowed to fail
+  the removal — a backend that is unreachable at the moment it is
+  detached cannot be told anything, and a machine somebody cannot get rid
+  of is the worse failure, so a throw is logged and the next step still
+  runs. The placement is the whole point: a device that has already let
+  go of the socket has no way left to say "stop waking me", and the
+  backend would keep sending until the registration died of old age.
+
   **The pending pairing lives here too**, in a plain module map with a
   change listener, the shape `manifestBackends.ts` uses. It has to outlive
   the call that started it: the owner confirms on the OTHER machine,

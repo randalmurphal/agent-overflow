@@ -29,6 +29,7 @@ import {
   storeBackendEndpoint,
   storedBackendEndpoint,
 } from './homeEndpoint';
+import { __resetDetachStepsForTest, onBeforeBackendDetach } from './detachSteps';
 
 const PAYLOAD: PairingPayload = {
   v: 1,
@@ -424,5 +425,21 @@ describe('the auth exchanges under a shell origin', () => {
     expect(hasPairedSession()).toBe(false);
     expect(storedBackendEndpoint('')).toBe('');
     expect(storedBackendEndpoint('b-1')).toBe('https://laptop.test:7777');
+  });
+
+  it('unpairing home runs the detach steps while the credential is still held', async () => {
+    // The other removal door, and the same rule: a phone withdrawing its
+    // push registration is a call that needs the session it is about to
+    // drop (./detachSteps.ts).
+    __resetDetachStepsForTest();
+    const fetcher = vi.fn().mockResolvedValue(grantResponse());
+    await redeemPairing(PAYLOAD, 'Phone', fetcher as unknown as typeof fetch);
+    const seen: { backend: string; held: boolean }[] = [];
+    onBeforeBackendDetach((backend) => seen.push({ backend, held: hasPairedSession() }));
+
+    unpairHome();
+
+    expect(seen).toEqual([{ backend: '', held: true }]);
+    __resetDetachStepsForTest();
   });
 });

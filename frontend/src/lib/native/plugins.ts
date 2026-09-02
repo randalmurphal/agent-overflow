@@ -100,6 +100,54 @@ export interface BundleSyncPlugin {
   state(): Promise<BundleState>;
 }
 
+/** One notification, as the tray renders it. Mirrors `notify.Send`. */
+export interface PushPresentation {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  /** The tap route, as its own JSON document. Opaque to the shell. */
+  target: string;
+}
+
+/** A tap that reached the app, from the launch intent or a live one. */
+export interface PushTap {
+  id: string;
+  /** The same JSON document the presentation carried. */
+  target: string;
+}
+
+/**
+ * The in-app `Push` plugin: the permission, the registration token, the
+ * tray, and the tap.
+ *
+ * Local Java like `Bundle` is, and for a stronger reason: the published
+ * push plugin renders only Google-composed notifications and cannot
+ * cancel one, and cancelling is half of this feature (mobile/AGENTS.md
+ * § Push).
+ */
+export interface PushNotificationPlugin {
+  requestPermission(): Promise<{ granted: boolean }>;
+  /**
+   * `configured` is false on a build with no Firebase configuration file,
+   * which is a fact about the APK rather than a failure — hence a value
+   * and not a rejection.
+   */
+  getToken(): Promise<{ configured: boolean; token: string }>;
+  present(options: PushPresentation): Promise<void>;
+  retract(options: { id: string }): Promise<void>;
+  /** The tap this launch started with, once. `{}` when there was none. */
+  takePendingTap(): Promise<Partial<PushTap>>;
+  addListener(
+    event: 'tap',
+    handler: (tap: PushTap) => void,
+  ): Promise<{ remove: () => Promise<void> }>;
+  addListener(
+    event: 'tokenRefresh',
+    handler: (event: { token: string }) => void,
+  ): Promise<{ remove: () => Promise<void> }>;
+}
+
 async function loadModule<T>(load: () => Promise<T>): Promise<T | null> {
   if (!isNativeShell()) return null;
   try {
@@ -146,6 +194,30 @@ export async function bundlePlugin(): Promise<BundleSyncPlugin | null> {
     return register('Bundle');
   } catch (err) {
     console.warn('native: the bundle plugin did not register', err);
+    return null;
+  }
+}
+
+/**
+ * The push plugin, or null off the shell.
+ *
+ * Registered rather than imported, exactly as `bundlePlugin` is and for
+ * the same reasons: it is Java in this repo with no npm package, and an
+ * APK built before it existed answers a proxy whose calls reject. Both
+ * read as "this phone cannot be woken", which `native/push.ts` treats as
+ * a normal outcome rather than an error.
+ */
+export async function pushPlugin(): Promise<PushNotificationPlugin | null> {
+  const mod = await loadModule(() => import('@capacitor/core'));
+  const register = mod?.registerPlugin as
+    | ((name: string) => PushNotificationPlugin)
+    | null
+    | undefined;
+  if (typeof register !== 'function') return null;
+  try {
+    return register('Push');
+  } catch (err) {
+    console.warn('native: the push plugin did not register', err);
     return null;
   }
 }

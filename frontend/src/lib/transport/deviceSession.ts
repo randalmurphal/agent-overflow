@@ -53,6 +53,7 @@
 // is already spent, the next presentation would end the session, and the
 // honest recovery is to let that happen and pair again.
 
+import { runBeforeBackendDetach } from './detachSteps';
 import { enrollDeviceKey, mintDeviceProof } from './deviceKey';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import {
@@ -432,8 +433,14 @@ export function clearPairedSession(backend: BackendKey = HOME_BACKEND): void {
  * where home is, at which point the next boot is a first run again
  * (native/boot.ts). Session first, then the endpoint, so there is never
  * a moment with a credential and nowhere to present it.
+ *
+ * The detach steps run ahead of both, for the reason
+ * `backendAttach.detachAttachedBackend` states about the other door: a
+ * phone withdrawing its push registration is a call over the credential
+ * being dropped, and there is no later moment at which it can be made.
  */
 export function unpairHome(): void {
+  runBeforeBackendDetach(HOME_BACKEND);
   clearPairedSession(HOME_BACKEND);
   forgetBackendEndpoint(HOME_BACKEND);
 }

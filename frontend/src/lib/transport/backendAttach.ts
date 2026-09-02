@@ -38,6 +38,7 @@ import {
   redeemPairing,
   type PairingPayload,
 } from './deviceSession';
+import { runBeforeBackendDetach } from './detachSteps';
 import {
   endpointHost,
   forgetBackendEndpoint,
@@ -164,11 +165,19 @@ export async function awaitAttachedActivation(
  * credential from under a poll that was still running would spend a
  * request per interval for the rest of the confirmation window.
  *
+ * The installed detach STEPS run before all of it, and that placement is
+ * the point rather than a nicety: the only one today is a phone
+ * withdrawing its push registration, which is a call over the very socket
+ * about to be closed. A device that has already let go has no way left to
+ * say "stop waking me", and the backend would keep sending until the
+ * registration died of old age (./detachSteps.ts).
+ *
  * The home backend is refused: it is the page's own connection, and a
  * page with no connection has nothing to be.
  */
 export function detachAttachedBackend(id: BackendKey): void {
   if (id === HOME_BACKEND) return;
+  runBeforeBackendDetach(id);
   forgetPendingAttachment(id);
   detachBackend(id);
   clearPairedSession(id);

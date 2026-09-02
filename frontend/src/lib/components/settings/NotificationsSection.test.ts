@@ -13,6 +13,14 @@ async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
     const p = (patch as Record<string, unknown>) ?? {};
     return { ...merged, ...p };
   });
+  // The notifications block below reads the push status on mount.
+  setBindingMock('GetPushSenderStatus', async () => ({
+    configured: false,
+    projectId: '',
+    clientEmail: '',
+    lastError: '',
+    registeredDevices: 0,
+  }));
   await loadSettings();
   return merged;
 }

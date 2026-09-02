@@ -1,7 +1,7 @@
 // The passive-load rule, applied to the settings sections.
 //
 // `stores/viewOnlyPassiveLoads.test.ts` sweeps the loaders that live in
-// stores. These four don't: each section calls its RPCs from its own mount
+// stores. These don't: each section calls its RPCs from its own mount
 // effect, which is why the store sweep was green while every one of them
 // spent a refusal the moment a paired device opened Settings → Network
 // (found by the harness, 2026-08-31 — `harness-remote-device-lifecycle`
@@ -35,6 +35,7 @@ import { SCOPES } from '../../transport/scopes';
 import DevicesSection from './DevicesSection.svelte';
 import NetworkSection from './NetworkSection.svelte';
 import WSLSection, { resetWSLSectionCache } from './WSLSection.svelte';
+import NotificationsSection from './NotificationsSection.svelte';
 import SystemsSection from './SystemsSection.svelte';
 import { __resetSystemsForTest } from '../../stores/systems.svelte';
 
@@ -91,6 +92,19 @@ function stubBindings() {
     distros: setBindingMock('ListWSLDistros', async () => [{ name: 'Ubuntu', default: true }]),
     distroPref: setBindingMock('GetWSLDistroPreference', async () => 'Ubuntu'),
     systems: setBindingMock('ListBackends', async () => []),
+    // The phone-push block reads with `access:admin` and WRITES with
+    // `host`. Both are stubbed so the sweep can assert that the read fires
+    // where it is granted and the write never fires from a mount at all.
+    pushStatus: setBindingMock('GetPushSenderStatus', async () => ({
+      configured: false,
+      projectId: '',
+      clientEmail: '',
+      lastError: '',
+      registeredDevices: 0,
+    })),
+    setPushCredential: setBindingMock('SetPushSenderCredential', async () => {
+      throw new Error('SetPushSenderCredential must never be called by a passive load');
+    }),
   };
 }
 
@@ -193,6 +207,37 @@ describe('settings sections issue no passive RPC they were not granted', () => {
       await settle();
       expect(bindings.systems).not.toHaveBeenCalled();
       expect(getByTestId('systems-section-unavailable')).toBeTruthy();
+    });
+  });
+
+  describe('NotificationsSection — the phone-push block reads with access:admin', () => {
+    it('loads the push status on the owner’s own screen, and offers the credential field', async () => {
+      const { getByLabelText } = render(NotificationsSection);
+      await waitFor(() => expect(bindings.pushStatus).toHaveBeenCalled());
+      expect(getByLabelText('Service account key')).toBeTruthy();
+      expect(bindings.setPushCredential).not.toHaveBeenCalled();
+    });
+
+    it('loads it for a device paired with FULL access, and hides what only the host may write', async () => {
+      await pairFullAccess();
+      const { queryByLabelText } = render(NotificationsSection);
+      await waitFor(() => expect(bindings.pushStatus).toHaveBeenCalled());
+      // Hidden rather than disabled: `host` is granted to no session, so
+      // the field could only ever fail, and a control that can only fail
+      // is worse than no control.
+      expect(queryByLabelText('Service account key')).toBeNull();
+      expect(bindings.setPushCredential).not.toHaveBeenCalled();
+    });
+
+    it('asks nothing from a view-only device, and still renders the toggles it owns', async () => {
+      await pairViewOnly();
+      const { getByTestId, queryByTestId } = render(NotificationsSection);
+      await settle();
+      expect(bindings.pushStatus).not.toHaveBeenCalled();
+      // The section itself is not gated: these preferences describe the
+      // screen the person is on, and every screen has them.
+      expect(getByTestId('settings-notifications-section')).toBeTruthy();
+      expect(queryByTestId('settings-phone-push')).toBeNull();
     });
   });
 

@@ -24,6 +24,14 @@ async function seed(): Promise<void> {
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('ListThreads', async () => []);
   setBindingMock('ListArchivedThreads', async () => []);
+  // The notifications block below reads the push status on mount.
+  setBindingMock('GetPushSenderStatus', async () => ({
+    configured: false,
+    projectId: '',
+    clientEmail: '',
+    lastError: '',
+    registeredDevices: 0,
+  }));
   resetKeybindingsStore();
   await loadSettings();
 }

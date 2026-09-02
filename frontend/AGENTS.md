@@ -340,6 +340,17 @@ with no error. Assert one layer deeper against the real pipeline instead
 (`setBindingMock('ReportFrontendErrorBatch', …)` rather than mocking
 `utils/frontendErrorCapture`).
 
+A new binding called by a PASSIVE LOAD needs its mock in every suite
+that renders the component, not just the one that asserts on it. The
+mock dispatcher throws SYNCHRONOUSLY for an unmocked name, so the
+`try/catch` around the load runs its `addToast` inside the `$effect`
+flush, and Svelte reports `effect_update_depth_exceeded` instead of the
+name that was missing. Adding the phone-push status read to
+`NotificationsSection` failed four unrelated settings suites that way
+(2026-09-02); the fix is one `setBindingMock` per suite, and
+`test/integration/_helpers.ts#installAppDefaults` is where the whole-App
+ones belong.
+
 Operator-run drivers are named `*.manual.ts` and run only under
 `pnpm test:manual`, never in a gate. `markdown/freezeReplay.manual.ts`
 replays a recorded streaming corpus through the production markdown path

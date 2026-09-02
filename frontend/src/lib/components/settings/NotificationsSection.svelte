@@ -11,9 +11,17 @@
   // while their absence reads as "nothing to configure until you turn this
   // on". All five default ON, because notifications were unconditional
   // before these keys existed.
+  //
+  // The phone-push block sits at the FOOT of this section rather than in
+  // its own, because it answers the same question one screen down: these
+  // toggles decide what interrupts a device, and push decides whether a
+  // device that is asleep gets to be interrupted at all. It renders only
+  // where the session can read it, so a device without `access:admin`
+  // sees the toggles and nothing else (./PhonePushBlock.svelte).
 
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
+  import PhonePushBlock from './PhonePushBlock.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
 
@@ -82,5 +90,7 @@
         />
       </SettingsField>
     {/if}
+
+    <PhonePushBlock />
   </div>
 </section>

@@ -350,6 +350,40 @@ held until the page asks for it with `takePendingTap`, because `load()`
 runs long before any listener is attached and an event fired into nobody
 is a tap that opened nothing.
 
+### The web side: registration, presentation, and the tag they share
+
+`native/push.ts` owns ONE fact and its lifecycle: this launch's
+registration token, and which backends have been told it. Registering is
+idempotent — the backend keys one row per device — which is what lets
+"a backend was attached" and "the token rotated" both answer with the
+same call and no bookkeeping about which pairs are already done. A
+DENIED permission is remembered for the launch and asked again on the
+next cold start: no prompt storm, no permanent refusal, and restarting
+the app is a thing people already do.
+
+Withdrawing is the asymmetric half. `unregisterPushFrom` is installed as
+a step in `transport/detachSteps.ts` rather than watched for here,
+because it is an RPC over the very socket being taken away: a phone that
+has already let go has no way left to say "stop waking me". Both removal
+doors run it — a machine detached in Settings, and `unpairHome()`.
+
+`stores/pushPresenter.svelte.ts` is the other end of the foreground drop,
+on the socket path: it presents `notification:send` only while the lease
+is `background`, and never gates a retraction. **The home backend's
+notifications keep the PLAIN send id as their tray tag**, deliberately
+colliding with what the pushed message would use, so a backgrounded phone
+whose socket is still alive shows ONE notification rather than two.
+Every other attached backend is namespaced `<backendId>|<id>`, because
+notification ids are not unique across machines: `provider-auth:claude`
+is the same string on every backend the owner runs, and without the
+prefix one machine's sign-out notice would silently replace another's.
+
+Settings → Notifications carries the owner's half: the status line reads
+with `access:admin` so "my phone stopped buzzing" is answerable from
+somewhere other than the machine, while the credential field is `host`
+and hidden rather than disabled off-host, since the step-up gate refuses
+it anyway.
+
 ### `google-services.json`, and this box
 
 The file lives at `mobile/android/app/google-services.json` and is
@@ -400,7 +434,8 @@ never resolves a Capacitor module at runtime:
 | `native/pickers.ts` | a documented stub |
 | `native/boot.ts` | what runs before anything mounts; `adoptPairingEndpoint` is the one place both pairing doors (scanned code, `#pair=` hash) point the shell at a backend |
 | `native/bundleSync.ts` | the one door for downloading a newer bundle from an attached backend, and for reporting this launch healthy (§ The bundle plugin) |
-| `native/push.ts` | permission, token, and `RegisterPushToken` on every attached backend; the unregister step rides `detachAttachedBackend` (§ Push) |
+| `native/push.ts` | permission, token, `RegisterPushToken` on every attached backend, and the tap route; the unregister rides both removal doors through `transport/detachSteps.ts` (§ Push) |
+| `stores/pushPresenter.svelte.ts` | the socket's half of the tray: background-only presentation, ungated retraction, and the tag both paths share (§ Push) |
 
 Two things `main.ts` keeps true for the shell. The `#pair=` hash is
 checked BEFORE the first-run screen for every client, so a shell can be

@@ -595,6 +595,7 @@ export type {
   PasskeySummary,
   PasskeyChallengeResult,
   PasskeyStepUpGrant,
+  PushSenderStatus,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 export {
   Distro as WSLDistro,
