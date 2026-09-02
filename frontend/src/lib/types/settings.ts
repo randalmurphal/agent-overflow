@@ -229,6 +229,13 @@ export interface Settings {
   /** Permit browser_open_file outside the current workspace/project roots. */
   browserAllowOutsideWorkspace: boolean;
   /**
+   * Absolute path to the Chromium the HEADLESS engine runs, on a backend
+   * with no window to host a browser view in (serve mode). Empty means
+   * "find one on PATH"; nothing is ever downloaded. It has no effect on a
+   * windowed deployment, whose engine is the platform's own.
+   */
+  browserChromiumPath: string;
+  /**
    * Keep-awake master switch (the sidebar moon/sun toggle): while on,
    * the app holds an OS sleep inhibitor so the machine never
    * idle-sleeps. Persisted, so it survives restarts. Mirrors

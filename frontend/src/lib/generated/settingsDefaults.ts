@@ -21,6 +21,7 @@ export const SETTINGS_DEFAULTS = {
   browserEnabled: true,
   browserPersistSiteData: true,
   browserAllowOutsideWorkspace: false,
+  browserChromiumPath: "",
   confirmArchive: true,
   confirmDelete: true,
   autoPinNewThreads: true,

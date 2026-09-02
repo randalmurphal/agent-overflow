@@ -650,6 +650,34 @@ func TestUpdateDefaultsBlankBinaryPaths(t *testing.T) {
 	}
 }
 
+// browserChromiumPath is the headless engine's browser override. Empty is
+// the normal value ("search PATH"); a relative one is refused at the write,
+// because it would be resolved against the serve process's own PATH and the
+// operator would silently get a different browser than the one they named.
+func TestUpdateRequiresAnAbsoluteBrowserChromiumPath(t *testing.T) {
+	svc := NewService(t.TempDir())
+
+	if got := svc.Get().BrowserChromiumPath; got != "" {
+		t.Fatalf("BrowserChromiumPath default = %q, want empty", got)
+	}
+	got, err := svc.Update(map[string]any{"browserChromiumPath": "  /opt/chromium/chrome  "})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if got.BrowserChromiumPath != "/opt/chromium/chrome" {
+		t.Fatalf("BrowserChromiumPath = %q, want /opt/chromium/chrome", got.BrowserChromiumPath)
+	}
+	if _, err := svc.Update(map[string]any{"browserChromiumPath": "chromium"}); err == nil {
+		t.Fatal("a bare program name was accepted as the browser override")
+	}
+	if _, err := svc.Update(map[string]any{"browserChromiumPath": ""}); err != nil {
+		t.Fatalf("clearing the override failed: %v", err)
+	}
+	if got := svc.Get().BrowserChromiumPath; got != "" {
+		t.Fatalf("BrowserChromiumPath = %q after clearing", got)
+	}
+}
+
 func TestActivityRunDefaultsAreCollapsedAndThirty(t *testing.T) {
 	got := NewService(t.TempDir()).Get()
 	if got.ActivityRunDefault != "collapsed" {

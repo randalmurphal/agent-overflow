@@ -75,6 +75,9 @@ var tierByKey = map[string]Tier{
 	"browserEnabled":               TierHost,
 	"browserPersistSiteData":       TierHost,
 	"browserAllowOutsideWorkspace": TierHost,
+	// browserChromiumPath names an executable on THIS machine, like the
+	// provider binaries above it.
+	"browserChromiumPath": TierHost,
 	// Keep-awake inhibits THIS machine's sleep, and workflowPaused is the
 	// backend engine's own run state.
 	"keepAwakeEnabled": TierHost,
