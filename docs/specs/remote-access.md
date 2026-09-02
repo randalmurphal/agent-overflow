@@ -1911,8 +1911,10 @@ keystore-bound signing, background lease timing.
 the shell with lease work designed against its real lifecycle, then push
 and bundle sync.
 
-**6f LANDED so far (2026-09-01).** Three of the four pieces are on the
-branch; the shell itself is in flight.
+**6f LANDED (2026-09-01).** Compact layout, the terminal key row, the
+lease frame, the own-origin seam, the Android shell, its emulator
+smoke, and the phone's machine list. What each is, and where the design
+text above was deviated from:
 - *Compact layout* (77ceed40, 7c3a7c05): `stores/layoutMode.svelte.ts`
   picks `compact` from `(max-width: 640px) and (pointer: coarse)` and
   nothing else, stamps `layout-compact` and `data-compact-screen` on
@@ -1951,6 +1953,58 @@ branch; the shell itself is in flight.
   `compact-*.spec.ts`), inside `make e2e`; the 390×844 figure above is
   the descriptor's 412×915 in practice. Rule recorded in the guides: a
   surface is done only when both projects pass.
+- *Own-origin seam* (bfa31c35, d8c50230): the phone is the first client
+  whose page origin is not its backend's, so every home-backend URL that
+  used to be relative now passes through
+  `frontend/src/lib/transport/homeEndpoint.ts` (`homeUrl`, `homeWsUrl`,
+  `homeCredentials`), where empty is the identity and the desktop's
+  answer forever. The shell's document origin is the fixed
+  `https://shell.agent-overflow.invalid` (reserved, resolves nowhere);
+  `internal/transport/shellorigin.go` admits that exact string on the
+  upgrade and answers CORS for it on `/bootstrap.json`, the five
+  `/auth/*` routes and the two attachment routes, echo-exact origin and
+  no credentials flag, since a cross-origin page presents
+  `X-AO-Session` plus the device proof in headers rather than a cookie.
+  Endpoints are stored beside the session slots they belong to, one map
+  keyed by registry id with home under `''`. `acceptPairingEndpoint`
+  asks the two client classes different questions: a browser refuses a
+  payload naming another endpoint, a shell adopts it. `unpairHome()`
+  and the banner's "Pair again" are the way back for a page that cannot
+  navigate to a new link.
+- *Android shell* (eebe2d5a; Capacitor 8 in 3a415165): `mobile/` is a
+  Capacitor project whose `webDir` is `frontend/dist`, so the phone runs
+  the desktop's bundle under the compact layout. Plugins (`app`,
+  `barcode-scanner`, `biometric-auth`) are dependencies of `mobile/`
+  only; `AO_SHELL=1` aliases their specifiers there and every other
+  build resolves a null stub, so the desktop bundle cannot carry them.
+  Seams in `frontend/src/lib/native/`: lifecycle (pause/resume to
+  `setClientLease`, hardware back to the list screen or Escape through
+  the keybinding path), lock (biometric on cold start and on resume,
+  the app root marked `inert` underneath), QR scan, a documented picker
+  stub, and `boot.ts` whose `adoptPairingEndpoint` is the one place
+  both pairing doors point the shell at a backend. Deviations from the
+  text above: `minSdkVersion` 26 (the scanner's native library declares
+  it); dictation is the keyboard's, as ruled; no signing key (debug
+  signing until there is a distribution); pickers answer `null`; iOS
+  not added. An `http://` pairing link fails at the fetch on a device
+  by design, the debug build alone permits cleartext to `127.0.0.1`
+  for the emulator smoke.
+- *Emulator smoke + phone machine list* (17d7a2f5, 44e29850):
+  `make e2e-android` drives the shell's own WebView through Playwright's
+  Android API, with the harness backend reached through `adb reverse`
+  at the device's loopback (the emulator's `10.0.2.2` alias is mixed
+  content under the `https://` origin and is refused before any policy
+  is read). It exits clean without a device and has NOT yet run on one;
+  its first run is the Mac pass. A phone lists, pairs and detaches a
+  second machine through `backendAttach.ts` (redeem into one more
+  session slot and endpoint, poll activation, detach socket then
+  credential then address), which Settings → Systems renders under the
+  shell.
+- *Not done on this box, by ruling*: every on-device check waits for
+  the Mac at the end of the campaign: the first emulator run, a
+  physical phone, xterm's hidden-input attributes and thumb sizing, the
+  visual-viewport height above the keyboard, and the biometric prompt
+  itself.
 
 ## 10. Multi-backend clients
 
