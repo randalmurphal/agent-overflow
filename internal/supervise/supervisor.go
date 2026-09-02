@@ -423,18 +423,44 @@ func (s *Supervisor) acceptUpdate(state State, target string) (State, error) {
 	return next, nil
 }
 
-// preflight asks a staged binary what it is, in its own process, bounded.
-func (s *Supervisor) preflight(binary string) (Preflight, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), preflightTimeout)
+// PreflightBinary asks a binary what it is, in its own process, bounded.
+//
+// Exported because TWO processes have to ask that question and must ask it the
+// same way. The supervisor asks before it writes a pending update record. The
+// backend asks before it stages a downloaded artifact into a version
+// directory, so a file that is not an Agent Overflow binary this host can run
+// is refused while it is still a temp file. A second implementation of "run it
+// and read its answer" is how one of them ends up accepting what the other
+// would refuse, and the refusal that matters most — CheckPreflight's protocol
+// rule — is only correct if both saw the same answer.
+//
+// The binary inherits THIS process's environment, runs in its own process
+// group, and gets preflightTimeout to print one line.
+func PreflightBinary(ctx context.Context, binary string) (Preflight, error) {
+	return preflightBinary(ctx, binary, nil)
+}
+
+// preflightBinary is the one implementation. A nil env inherits this process's
+// environment, which is what PreflightBinary wants; the supervisor passes its
+// configured child environment instead, so the answer comes from a process
+// started the way the child would be.
+func preflightBinary(ctx context.Context, binary string, env []string) (Preflight, error) {
+	ctx, cancel := context.WithTimeout(ctx, preflightTimeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, binary, PreflightSubcommand)
-	command.Env = s.childEnv()
+	command.Env = env
 	procutil.ConfigureGroup(command)
 	output, err := command.Output()
 	if err != nil {
 		return Preflight{}, fmt.Errorf("the staged binary did not answer %s: %w", PreflightSubcommand, err)
 	}
 	return ParsePreflight(string(output))
+}
+
+// preflight asks a staged binary what it is, with the environment this
+// supervisor gives its children.
+func (s *Supervisor) preflight(binary string) (Preflight, error) {
+	return preflightBinary(context.Background(), binary, s.childEnv())
 }
 
 // preflightTimeout bounds the preflight. It prints one line and exits, so a

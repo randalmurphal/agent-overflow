@@ -60,6 +60,18 @@ thing.
   binary and runs `__service-preflight` in its own process BEFORE it writes the
   pending record. A pending record naming a version that cannot run is a
   rollback the operator did not need to pay for.
+- **`PreflightBinary` is the ONE preflight.** Exported, because two processes
+  ask that question: the supervisor here, and the backend in `internal/app`
+  before it stages a downloaded artifact into a version directory (the remote
+  update trigger refuses a file that is not an Agent Overflow binary this host
+  can run while it is still a temp file). Both go through
+  `preflightBinary`, which differs only in the environment it hands the child —
+  `nil` inherits this process's, and the supervisor passes `childEnv()` so its
+  answer comes from a process started the way the child would be. A second
+  implementation of "run it and read its answer" is how one caller accepts what
+  the other would refuse, and `CheckPreflight`'s protocol rule is only correct
+  if both saw the same answer.
+  `TestTheSupervisorAsksThroughTheSameImplementation` pins the two together.
 - **Snapshot only while nothing holds the database.** Between the stop and the
   trial's start, and nowhere else. The copy is not safe at any other moment.
 - **Commit durably, THEN tell the child.** The child opens its activation gate
