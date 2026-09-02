@@ -26,6 +26,13 @@ Area guides: [`stores/`](src/lib/stores/AGENTS.md),
 `src/lib/components/`: `chat/`, `composer/`, `panes/`, `review/`,
 `terminal/`, `virtual/`, `workflows/`.
 
+`src/lib/native/` is the phone shell's side of this app: one seam per
+platform capability, each inert in a browser build behind an
+`isNativeShell()` check. It is documented with the container it serves,
+[`mobile/AGENTS.md`](../mobile/AGENTS.md). Nothing outside that directory
+should branch on being on a phone — the layout is chosen from the
+viewport (§ Compact), never from the client.
+
 ## Reuse before reimplementing
 
 Two surfaces that are conceptually the same surface share one component.

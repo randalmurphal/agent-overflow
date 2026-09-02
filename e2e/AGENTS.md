@@ -63,6 +63,25 @@ project. Changes to the native seams (`frontend/src/lib/native/`) also
 rerun the emulator smoke, `make e2e-android`, which drives the same specs
 inside the Android shell.
 
+`make e2e-android` (`scripts/android-smoke.sh`) installs the APK
+`make apk` built and runs the compact project against the WebView on the
+first `adb` device in state `device`. It is deliberately NOT a blocking
+gate: with nothing attached it prints how to create and start an AVD and
+exits 0, because the seams' web fallbacks are already covered by
+`pnpm test` and a check that cannot run on a laptop is a check people
+learn to skip. What it answers that nothing else can is whether the
+bundle boots under the shell's fixed origin, whether the Capacitor
+plugins register, and whether the hardware back button reaches
+`showCompactList`.
+
+What CAN be answered without a device is the transport half, and
+`compact-shell-origin.spec.ts` answers it: it serves `frontend/dist` from
+a throwaway `http.createServer` on its own port, so the page and the
+backend are genuinely different origins and the browser enforces CORS
+itself. Setting `window.__aoHomeEndpoint` on a page the backend served
+would exercise the URL rewriting and prove nothing, because every request
+would still be same-origin.
+
 Not everything in `tests/` runs in the gate, on purpose. A
 `*.manual.spec.ts` is `testIgnore`d by `playwright.config.ts` and needs
 `playwright.manual.config.ts` plus a locally generated fixture. The
@@ -146,9 +165,13 @@ missing value over one that skips. Two rules keep the evidence real:
   its legs need different browser LAUNCH arguments, since
   `--host-resolver-rules` is process-wide — owns its browsers too.
   `harness-remote-device-lifecycle.spec.ts`,
-  `harness-passkey-lifecycle.spec.ts` and
-  `harness-provider-signin.spec.ts` are the three, and each header argues
-  its own constraints where they bite. Read the passkey one before
+  `harness-passkey-lifecycle.spec.ts`,
+  `harness-provider-signin.spec.ts` and `compact-shell-origin.spec.ts`
+  are the four, and each header argues its own constraints where they
+  bite. The cross-origin one owns its backend for a different reason than
+  persistence: the page origin it has to admit is an ephemeral port that
+  does not exist until a listener has one, so the backend has to be
+  LAUNCHED with that origin in its environment. Read the passkey one before
   writing any WebAuthn case: the three requirements a page has to satisfy
   at once (secure context, a DOMAIN relying party, a non-loopback peer)
   admit exactly one shape, and Chromium's virtual authenticator has a

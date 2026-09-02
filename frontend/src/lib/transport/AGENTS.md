@@ -608,6 +608,20 @@ remote browser alike. Protocol and authz rules:
   endpoint is stale or edited. A shell can never be a backend's origin, so
   what the QR names is where that backend lives and adopting it is the
   point of scanning it.
+- `backendAttach.ts` is how a client with no local process attaches a
+  SECOND machine. A desktop hands the link to its Go side, which holds a
+  profile and proxies the machine; a phone has nothing to hand it to, so
+  it redeems the link itself into one more session slot and one more
+  endpoint. That is a transport exchange rather than a settings screen's
+  business, which is why it lives here and
+  `components/settings/SystemsSection.svelte` only calls it: the registry
+  id is the payload's `backendId`, an id that is empty or holds a space is
+  refused (it becomes a storage key and a `/ws/backend/<id>` path
+  segment), and the endpoint is stored BEFORE the redemption so the
+  `/auth/pair` POST is already addressed at the machine being paired with.
+  `awaitAttachedActivation` then polls that slot's `probeActivation` until
+  the owner confirms on the other machine, and publishes the new
+  descriptor through `syncAttachedBackends()`.
 - `pageHost.ts` is the OTHER ticket channel: the page's half of the
   handshake with a Go process that owns its window. Such a page is marked
   by `?host=webview` on an otherwise bare URL, because a URL is copyable,

@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e apk
+.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e apk e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -522,6 +522,16 @@ e2e: harness-build
 apk:
 	cd mobile && pnpm install --frozen-lockfile
 	mobile/scripts/build-apk.sh
+
+# The compact Playwright project driven inside a running emulator's
+# WebView, which is the only place the native seams are real. It is
+# deliberately NOT a blocking gate: a laptop with no emulator prints how
+# to start one and exits clean, because the seams' web fallbacks are
+# already covered by `make test` and an unrunnable check that fails is a
+# check people learn to skip.
+e2e-android: harness-build
+	cd e2e && pnpm install --frozen-lockfile
+	e2e/scripts/android-smoke.sh
 
 # AO_PERF_CONTRACT=1 enforces the wall-clock timing contracts (see
 # frontend/src/test/helpers/perfContract.ts). They are gated off by
