@@ -13,16 +13,24 @@ the App and is safe for concurrent use.
 
 `DevServer.Source` is not a label, it is what the row can do:
 
-- `attributed` — a listener that traces back to a thread's provider
-  session or one of its terminals. Allowed automatically; a link is
-  live.
 - `allowed` — a port the owner hand-named in `network.previewPorts`.
   Allowed because they said so.
+- `attributed` — a listener that traces back to a thread's provider
+  session or one of its terminals, and that nobody named. Allowed
+  automatically; a link is live for as long as the process is.
 - `seen` — listening, answering like a page, owned by nothing this app
   started. Not allowed; it is the candidate list the "Allow port" action
   draws from.
 
 Anything else that is listening does not appear at all.
+
+**`allowed` wins over attribution, always.** "allowed" means "in the
+persisted list"; "attributed" means "shared only by attribution". A port
+that is both still carries its `threadId`, `pid` and `process`, but its
+source stays `allowed` — the settings screen lists the `allowed` rows as
+the persisted set it can take entries out of, so calling this row
+attributed would hide the entry and leave no way to stop sharing it while
+the process runs.
 
 ## Attribution is process facts, never names
 

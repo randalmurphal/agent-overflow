@@ -39,11 +39,18 @@ type DevServer struct {
 	// Source says WHY it is in the list, and the three values are three
 	// different affordances on screen:
 	//
-	//   attributed — a thread owns it; the link is live.
 	//   allowed    — the owner named it in network.previewPorts.
+	//   attributed — a thread owns it and nobody named it; the link is
+	//                live for as long as the process is.
 	//   seen       — listening and answering like a page, owned by
 	//                nothing this app started. The candidate list the
 	//                "Allow port" action draws from.
+	//
+	// "allowed" means "in the persisted list"; "attributed" means "shared
+	// only by attribution". A hand-named port that a thread also owns is
+	// ALLOWED — it carries ThreadID, PID and Process all the same, but
+	// calling it attributed would hide the persisted entry from the
+	// settings screen and leave no way to stop sharing it.
 	Source string `json:"source"`
 
 	// Listening is false in exactly two cases, and the row exists in both
@@ -203,10 +210,14 @@ func (s *Scanner) Scan(ctx context.Context, owners []Owner, allowed []int) ([]De
 			// The owner named this port. It is published whatever it
 			// answers — the probe is a filter on candidates nobody
 			// chose, not a second opinion on a choice already made.
+			//
+			// SourceAllowed wins over attribution, always. Source says
+			// WHERE the row came from, and a hand-named port came from
+			// the persisted list even when a thread also owns it. The
+			// thread is still named on the row; what would be lost by
+			// calling it attributed is the only handle the settings
+			// screen has for taking it back out of the list.
 			row.Source = SourceAllowed
-			if row.ThreadID != "" {
-				row.Source = SourceAttributed
-			}
 			row.Allowed = true
 		default:
 			if probes >= maxProbesPerScan {

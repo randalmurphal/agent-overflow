@@ -497,7 +497,8 @@ has two halves:
   Changing it takes an admin-capable device and no step-up: it exposes
   your own dev server to your own devices. Use it for a dev server you
   started by hand outside the app, which the backend has no way to
-  attribute.
+  attribute. A port you named is yours to remove even while a thread of
+  yours happens to be running it.
 
 Anything else listening on the host is never reachable this way, however
 many ports are open on it.

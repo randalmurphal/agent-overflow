@@ -256,3 +256,36 @@ func TestScanFoldsBothAddressFamiliesIntoOneRow(t *testing.T) {
 		t.Errorf("row = %+v, want thread-a", servers[0])
 	}
 }
+
+// A port that is BOTH hand-named and attributed reports "allowed". Source
+// says where the row came from, and this one came from the persisted list;
+// calling it attributed would hide the entry from the settings screen and
+// leave the person no way to stop sharing it while the process runs. The
+// thread's own facts stay on the row either way.
+func TestAHandNamedPortStaysAllowedEvenWhenAThreadOwnsIt(t *testing.T) {
+	_, port := htmlServer(t)
+
+	f := newProcFixture(t)
+	f.listenRow(false, hexLoopbackV4, port, 100)
+	f.process(t, 500, 300, 300, "vite", 100)
+	f.process(t, 300, 1, 300, "claude")
+	root := f.write(t)
+
+	scanner := newScanner(root, time.Now)
+	servers, err := scanner.Scan(context.Background(),
+		[]Owner{{ThreadID: "thread-a", PID: 300, PGID: 300}}, []int{port})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	row := rowFor(t, servers, port)
+	if row.Source != SourceAllowed {
+		t.Errorf("source = %q, want %q: the persisted entry must stay visible", row.Source, SourceAllowed)
+	}
+	if row.ThreadID != "thread-a" || row.Process != "vite" || row.PID != 500 {
+		t.Errorf("row lost the thread it also belongs to: %+v", row)
+	}
+	if !row.Allowed || !row.Listening {
+		t.Errorf("row = %+v, want allowed and listening", row)
+	}
+}
