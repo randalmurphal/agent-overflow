@@ -472,9 +472,7 @@ export const BrowseDirectory = dispatch('BrowseDirectory');
 export const ListRecentTurns = dispatch('ListRecentTurns');
 
 // Windowed history + thread-wide aggregates. Active panes load bounded
-// slices via ListThreadSliceAround and page by item-coordinate cursors;
-// ListRecentThreadItems / turn pagers remain legacy surfaces.
-export const ListRecentThreadItems = dispatch('ListRecentThreadItems');
+// slices via ListThreadSliceAround and page by item-coordinate cursors.
 export const ListThreadSliceAround = dispatch('ListThreadSliceAround');
 
 /**
@@ -506,9 +504,7 @@ export const SyncThreadWindow = async (
   return { status: 'stale', epoch: 1, rev: 1, generation: 'test-generation', page };
 };
 export const ListItemsBeforeCursor = dispatch('ListItemsBeforeCursor');
-export const ListItemsBeforeTurn = dispatch('ListItemsBeforeTurn');
 export const ListItemsAfterCursor = dispatch('ListItemsAfterCursor');
-export const ListItemsAfterTurn = dispatch('ListItemsAfterTurn');
 export const ListSubagentDescendants = dispatch('ListSubagentDescendants');
 export const ListThreadProposedPlans = dispatch('ListThreadProposedPlans');
 export const ListProposedPlanComments = dispatch('ListProposedPlanComments');

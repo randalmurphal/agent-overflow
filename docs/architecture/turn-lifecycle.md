@@ -67,6 +67,18 @@ two historically accurate rows. The launch row's `status='running'`
 (see [chat-rewrite.md §Background tray](chat-rewrite.md)); it is not
 a claim that the tool is currently executing.
 
+Because the row never leaves `running`, its LIVENESS is carried by
+`meta.live_background_active`, and since migration v74 the schema keeps
+that flag rather than the write paths: `items` triggers stamp it false
+the moment a completion sibling exists — including when the launch row
+arrives after its sibling, and when a later write replaces the launch's
+meta wholesale — and restore it if the sibling is deleted. The teardown
+and Codex-projection writers still set it for their own reasons; what
+changed is that "a completion exists" no longer has to be re-derived by
+every reader. That is what lets the tray's read be two index seeks
+instead of a walk of every launch the thread has ever backgrounded. DDL
+and rationale: `internal/store/background_settle_triggers.go`.
+
 ### Codex background projection
 
 Codex has no `run_in_background` flag, but it still has backgrounded

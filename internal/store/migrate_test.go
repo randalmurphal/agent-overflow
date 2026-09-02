@@ -5256,3 +5256,88 @@ func TestMigrationV72ConvertsDesignThreadsAndRemovesMode(t *testing.T) {
 		}
 	}
 }
+
+// v73: the partial index behind the reader-authored user_text reads.
+// Membership AND the plan are both asserted: a partial index SQLite
+// declines to use is the same as no index, and what it declines on is
+// exactly the predicate readerAuthoredUserTextFilterFor emits.
+func TestMigrationV73AddsUserTextIndex(t *testing.T) {
+	db := migrateThrough(t, 72)
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v73', '/v73', 'v73', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (
+		id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived
+	) VALUES ('t-v73', 'p-v73', 'v73', 'claude', '/v73', '', 1, 1, 0)`)
+	insert := func(id string, turn, index int, kind, parent string) {
+		t.Helper()
+		mustExec(t, db, `INSERT INTO items
+			(id, thread_id, turn_index, item_index, kind, role, status, summary,
+			 parent_id, created_at, updated_at)
+			VALUES (?, 't-v73', ?, ?, ?, 'user', 'completed', 'x', ?, 1, 1)`,
+			id, turn, index, kind, parent)
+	}
+	insert("u-top", 0, 0, "user_text", "")
+	insert("a-top", 0, 1, "assistant_text", "")
+	insert("u-child", 0, 2, "user_text", "u-top")
+
+	if err := applyMigration(db, migrationByVersion(t, 73)); err != nil {
+		t.Fatalf("apply migration v73: %v", err)
+	}
+
+	indexSQL := readIndexSQL(t, db, "idx_items_user_text")
+	for _, term := range []string{"kind = 'user_text'", "parent_id = ''"} {
+		if !strings.Contains(indexSQL, term) {
+			t.Errorf("idx_items_user_text lost its %q predicate: %s", term, indexSQL)
+		}
+	}
+	// Membership: the assistant row and the subagent child prompt are out.
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM items INDEXED BY idx_items_user_text
+		 WHERE kind = 'user_text' AND parent_id = ''`).Scan(&count); err != nil {
+		t.Fatalf("count via index: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("index membership = %d, want 1", count)
+	}
+	// The reads that qualify for it, each spelled the way its production
+	// caller spells it — the local arm of the ticks / recall compound,
+	// the title context's earliest-ask read, and the turn summaries.
+	for _, tc := range []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{
+			name: "nav rail ticks and composer recall",
+			query: `EXPLAIN QUERY PLAN SELECT items.id, items.turn_index, items.item_index
+			  FROM items
+			 WHERE items.thread_id = ?
+			   AND ` + readerAuthoredUserTextFilterFor("items.") + `
+			 ORDER BY items.turn_index, items.item_index`,
+			args: []any{"t-v73"},
+		},
+		{
+			name: "thread title context earliest ask",
+			query: `EXPLAIN QUERY PLAN SELECT items.id FROM items
+			 WHERE items.thread_id = ?
+			   AND ` + topLevelItemsFilterFor("items.") + `
+			   AND items.kind = 'user_text'
+			 ORDER BY items.turn_index, items.item_index LIMIT 1`,
+			args: []any{"t-v73"},
+		},
+		{
+			name: "turn user summaries",
+			query: `EXPLAIN QUERY PLAN SELECT turn_index, summary, MIN(item_index)
+			  FROM items
+			 WHERE thread_id = ?
+			   AND ` + readerAuthoredUserTextFilter + `
+			 GROUP BY turn_index ORDER BY turn_index`,
+			args: []any{"t-v73"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertPlanUses(t, db, "idx_items_user_text", tc.query, tc.args...)
+		})
+	}
+}

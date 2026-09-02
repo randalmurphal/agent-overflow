@@ -44,10 +44,9 @@ export function isSmoothLiveContentKind(kind: ItemKind | string): boolean {
 }
 
 /**
- * Default raw-item budget passed to `ListItemsBeforeTurn` for an
- * explicit "Load older" page. The backend walks turns DESC summing
- * each turn's item count until cumulative >= this budget, then returns
- * that turn's items plus every newer one below the caller's floor. One
+ * Default raw-item budget passed to `ListItemsBeforeCursor` for an
+ * explicit "Load older" page. The backend selects this many visible
+ * top-level rows strictly before the caller's window floor, so one
  * click loads about this many items regardless of per-turn density.
  */
 export const LOAD_OLDER_ITEM_BUDGET = 200;

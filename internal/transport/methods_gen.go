@@ -166,9 +166,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListImportableSessions", ID: 99668597},                 // main.App.ListImportableSessions
 	{Name: "ListItems", ID: 2158085763},                            // main.App.ListItems
 	{Name: "ListItemsAfterCursor", ID: 2915892537},                 // main.App.ListItemsAfterCursor
-	{Name: "ListItemsAfterTurn", ID: 932754656},                    // main.App.ListItemsAfterTurn
 	{Name: "ListItemsBeforeCursor", ID: 162135710},                 // main.App.ListItemsBeforeCursor
-	{Name: "ListItemsBeforeTurn", ID: 2147361923},                  // main.App.ListItemsBeforeTurn
 	{Name: "ListLiveBackgroundTasks", ID: 320784263},               // main.App.ListLiveBackgroundTasks
 	{Name: "ListMcpServerStatuses", ID: 2582096622},                // main.App.ListMcpServerStatuses
 	{Name: "ListPRCommits", ID: 4110818691},                        // main.App.ListPRCommits
@@ -178,7 +176,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListProposedPlanComments", ID: 2030403250},             // main.App.ListProposedPlanComments
 	{Name: "ListProviderAccounts", ID: 981125684},                  // main.App.ListProviderAccounts
 	{Name: "ListRecentCommits", ID: 1937809620},                    // main.App.ListRecentCommits
-	{Name: "ListRecentThreadItems", ID: 2604956482},                // main.App.ListRecentThreadItems
 	{Name: "ListRecentTurns", ID: 1083162294},                      // main.App.ListRecentTurns
 	{Name: "ListReleases", ID: 397986043},                          // main.App.ListReleases
 	{Name: "ListRemoteEndpoints", ID: 3443007043},                  // main.App.ListRemoteEndpoints

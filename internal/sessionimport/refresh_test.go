@@ -789,9 +789,11 @@ func TestRefreshFailsClosedWhenAFingerprintedCodexHeaderCannotBeRead(t *testing.
 
 func importedItemCount(t *testing.T, st *store.Store, threadID string) int {
 	t.Helper()
-	window, err := st.ListRecentItems(threadID, 0)
+	// The whole fixture thread's window: these imports are dozens of
+	// rows, so one tail slice is all of it.
+	window, err := st.ListThreadSliceAround(threadID, "", 1000)
 	if err != nil {
-		t.Fatalf("ListRecentItems: %v", err)
+		t.Fatalf("ListThreadSliceAround: %v", err)
 	}
 	return len(window.Items)
 }

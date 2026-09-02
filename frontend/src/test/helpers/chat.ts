@@ -95,15 +95,7 @@ export function installPaneMocks(items: Item[] = []): void {
   setBindingMock('AutoResumeThread', async () => {});
   // The pane loads the initial slice of history via ListThreadSliceAround
   // on switch (works for both bottom-snapshot and saved-anchor cases).
-  // ListRecentThreadItems is the canonical wider-window binding used by
-  // the transport-gap recovery path (`refreshFromBackend`); component
-  // tests that don't exercise that path leave the default empty.
   setBindingMock('ListThreadSliceAround', async () => ({
-    items,
-    oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
-    hasMore: false,
-  }));
-  setBindingMock('ListRecentThreadItems', async () => ({
     items,
     oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
     hasMore: false,

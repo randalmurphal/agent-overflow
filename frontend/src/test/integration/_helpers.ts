@@ -171,11 +171,6 @@ export function installThreadViewDefaults(): void {
   setBindingMock('MarkThreadRead', async () => {});
   setBindingMock('MarkThreadUnread', async () => {});
   setBindingMock('AutoResumeThread', async () => {});
-  setBindingMock('ListRecentThreadItems', async () => ({
-    items: [],
-    oldestTurnIndex: -1,
-    hasMore: false,
-  }));
   setBindingMock('ListThreadSliceAround', async () => ({
     items: [],
     oldestTurnIndex: -1,

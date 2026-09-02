@@ -1937,18 +1937,6 @@ export function ListItemsAfterCursor(threadID: string, after: store$0.TimelineCu
 }
 
 /**
- * ListItemsAfterTurn is the legacy turn-ceiling pager. Active panes use
- * ListItemsAfterCursor so long single turns remain item-bounded. The synthetic
- * cursor points at the end of afterTurnIndex, so rows strictly above that turn
- * are loaded with a hard primary-row budget.
- */
-export function ListItemsAfterTurn(threadID: string, afterTurnIndex: number, itemBudget: number): $CancellablePromise<store$0.PagedItems> {
-    return $Call.ByID(932754656, threadID, afterTurnIndex, itemBudget).then(($result: any) => {
-        return $$createType95($result);
-    });
-}
-
-/**
  * ListItemsBeforeCursor loads older items on demand, strictly before the
  * frontend's current item-coordinate window floor. The item budget is a hard
  * primary-row cap; render-support ancestors can be stitched in above it, but
@@ -1956,21 +1944,6 @@ export function ListItemsAfterTurn(threadID: string, afterTurnIndex: number, ite
  */
 export function ListItemsBeforeCursor(threadID: string, before: store$0.TimelineCursor, itemBudget: number): $CancellablePromise<store$0.PagedItems> {
     return $Call.ByID(162135710, threadID, before, itemBudget).then(($result: any) => {
-        return $$createType95($result);
-    });
-}
-
-/**
- * ListItemsBeforeTurn is the legacy turn-floor pager. Active panes use
- * ListItemsBeforeCursor so long single turns remain item-bounded. Keep this
- * public compatibility surface item-bounded too: the synthetic cursor points
- * below every possible index in beforeTurnIndex — head-healed prompts sit at
- * NEGATIVE indexes, so index 0 is not the start of a turn — keeping the load
- * strictly below that turn with a hard primary-row budget (mirror of
- * ListItemsAfterTurn's MaxInt ceiling).
- */
-export function ListItemsBeforeTurn(threadID: string, beforeTurnIndex: number, itemBudget: number): $CancellablePromise<store$0.PagedItems> {
-    return $Call.ByID(2147361923, threadID, beforeTurnIndex, itemBudget).then(($result: any) => {
         return $$createType95($result);
     });
 }
@@ -2081,17 +2054,6 @@ export function ListProviderAccounts(): $CancellablePromise<app$0.ManagedProvide
 export function ListRecentCommits(ws: app$0.WorkspaceRef): $CancellablePromise<app$0.BranchCommit[]> {
     return $Call.ByID(1937809620, ws).then(($result: any) => {
         return $$createType88($result);
-    });
-}
-
-/**
- * ListRecentThreadItems loads a broad recent tail window. Active chat panes
- * use ListThreadSliceAround for bounded switch/refresh loads; this method is
- * retained for legacy callers and any future full-tail refresh surfaces.
- */
-export function ListRecentThreadItems(threadID: string, turnLimit: number): $CancellablePromise<store$0.PagedItems> {
-    return $Call.ByID(2604956482, threadID, turnLimit).then(($result: any) => {
-        return $$createType95($result);
     });
 }
 

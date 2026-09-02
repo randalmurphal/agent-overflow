@@ -33,7 +33,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`adrs/`](architecture/adrs/) | Architecture Decision Records. One file per load-bearing choice. |
 | [`refactoring-principles.md`](architecture/refactoring-principles.md) | The five rules a behavior-preserving refactor follows. |
 | [`data-flow.md`](architecture/data-flow.md) | How provider output becomes visible state. Pipeline diagram. |
-| [`schema.md`](architecture/schema.md) | SQLite schema summary. Tables, indexes, migration policy. |
+| [`schema.md`](architecture/schema.md) | SQLite schema summary. Tables, indexes, triggers, migration policy. |
 | [`triage-routing.md`](architecture/triage-routing.md) | Routing table: every `EventKind` → handler → destination. |
 | [`turn-lifecycle.md`](architecture/turn-lifecycle.md) | The three-lifecycle mental model (tool / task / turn). Read before touching provider, triage, or any turn-state UI. |
 | [`root-decomposition.md`](architecture/root-decomposition.md) | Field-ownership and seam map of the `*App` root receiver, plus the wire-compat facts that make a split byte-identical on the wire. |

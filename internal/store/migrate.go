@@ -658,10 +658,16 @@ CREATE INDEX idx_work_items_automation_source_ref
 		// history DB (2026-07-28), spent inside ServiceStartup while the SPA
 		// is still gated on readiness. The existing idx_items_live_background
 		// can't serve it: that index additionally requires parent_id = '',
-		// and subagent-scoped background launches carry a parent. The index
-		// stays small (settled launches keep their completion sibling but the
-		// launch row stays `running`, so entries accumulate slowly — a few
-		// thousand rows across months of history).
+		// and subagent-scoped background launches carry a parent.
+		//
+		// NOTE (v74): this migration shipped believing the index would stay
+		// small. It did not. A settled launch keeps its completion sibling
+		// but the launch row stays `running` with the flag untouched, so
+		// every launch a thread ever backgrounded stayed in here — measured
+		// 2,883 entries across 157 threads, 494 on one thread. Migration v74
+		// stamps `live_background_active=false` at settlement from SQLite
+		// itself, which is what finally makes this index the small,
+		// genuinely-live set the paragraph above assumed.
 		SQL: `CREATE INDEX idx_items_running_bg_tool_calls
     ON items(thread_id, id)
  WHERE kind = 'tool_call'
@@ -1367,6 +1373,52 @@ CREATE TABLE provider_thread_cost (
 		Name:    "remove_design_mode",
 		SQL:     removeDesignModeV72SQL,
 		Rebuild: true,
+	},
+	{
+		Version: 73,
+		Name:    "items_user_text_index",
+		// The nav rail's ticks read runs on EVERY thread switch and asks
+		// for one thread's reader-authored user_text rows in timeline
+		// order. Nothing indexed `kind`, so it walked the thread's whole
+		// ordering index probing each row's kind: 17,816 pages / 17 ms on
+		// a 67k-item thread, against 736 / 1-3 ms once this index exists.
+		// The composer's history recall, the thread-title context reads,
+		// and ListTurnUserSummaries ask the same shape.
+		//
+		// The index predicate is exactly the prefix
+		// readerAuthoredUserTextFilterFor emits, because SQLite only uses
+		// a partial index when the query's predicates TEXTUALLY imply the
+		// index's WHERE clause. Narrow by construction: reader prompts are
+		// ~1% of a thread's rows (6,816 of 620,987 on the measured store).
+		SQL: `CREATE INDEX idx_items_user_text
+    ON items(thread_id, turn_index, item_index)
+ WHERE kind = 'user_text' AND parent_id = '';`,
+	},
+	{
+		Version: backgroundSettleTriggerMigrationVersion,
+		Name:    "background_launch_settlement_triggers",
+		// Makes "settled" representable on the launch row instead of
+		// only in a correlated NOT EXISTS, which is what let the two
+		// partial "live" indexes accumulate every launch a thread had
+		// ever backgrounded. See background_settle_triggers.go for the
+		// full rationale, the recursion argument, and the reader
+		// contract that does not change.
+		//
+		// Order matters: the backfill runs BEFORE the triggers exist,
+		// so its ~3k UPDATEs pay no WHEN evaluation, and the triggers
+		// then take over a table whose invariant already holds.
+		//
+		// idx_items_completion_created serves the tray seed's
+		// "launches named by a recent completion sibling" half.
+		// Completion siblings only exist for background launches, so
+		// the partial index is tiny (6k rows on a 6GB history against
+		// millions of items).
+		SQL: backfillSettledBackgroundLaunchesSQL + `
+
+CREATE INDEX idx_items_completion_created
+    ON items(thread_id, created_at) WHERE completion_of <> '';
+
+` + backgroundSettleTriggersSQL,
 	},
 }
 

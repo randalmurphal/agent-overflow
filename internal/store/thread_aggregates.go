@@ -114,8 +114,29 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 // launch and its completion must age out together: returning an orphan
 // launch whose completion was pruned would re-render it as "running"
 // indefinitely. A launch with no completion yet still surfaces unless
-// projection meta explicitly marks it inactive with
-// `live_background_active=false`.
+// it is marked inactive with `live_background_active=false` — which,
+// since migration v74, the schema itself stamps the moment a completion
+// sibling exists (background_settle_triggers.go), on top of the
+// teardown/projection writers that always did.
+//
+// That is what lets the SEED be cheap. It is two index reads, never a
+// walk of the thread's background history:
+//
+//   - every live launch (`idx_items_running_bg_tool_calls` — running,
+//     background, flag set), at ANY depth, which post-v74 contains only
+//     genuinely live rows;
+//   - every launch named by a completion sibling inside the retention
+//     window (`idx_items_completion_created`), which is how a
+//     just-settled launch and its completion still leave together.
+//
+// The descendant walk then runs from that seed only, and the outer
+// SELECT is driven FROM the resulting id set (`CROSS JOIN items`, so
+// the planner cannot flip it back into a whole-thread scan) rather than
+// filtering the thread. Before v74 the seed was "every background
+// tool_call in the thread" and the walk covered every descendant they
+// ever had: 75k page reads / 309MB / 120-200ms on a 38k-item thread to
+// return between zero and eight rows, on every thread switch and after
+// every background tool completion.
 //
 // This is the DISPLAY query only. The reaper and queue gates in
 // items_lifecycle.go (HasRunningTopLevelForegroundToolCall,
@@ -132,45 +153,92 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 // adds those via Store.ListLiveCodexSubagentLaunches and projects the tray copy
 // as running without mutating the stored card.
 //
+// One predicate MOVED with v74 and it is the reason the tray keeps
+// looking the same. The launch branch used to read
+// `flag != 0 AND (no sibling OR recent sibling)`; it now reads
+// `(flag != 0 AND no sibling) OR recent sibling`. Before v74 the flag
+// was independent of settlement, so the outer form held; now the
+// trigger clears the flag AT settlement, and the outer form would drop
+// a just-finished launch on the same read that still returns its
+// completion — an orphan "-> done" row under nothing. The two forms
+// differ on exactly one state: a launch a teardown marked inactive
+// that LATER acquired a completion inside the window. The only writer
+// of that mark (`markConfirmedBackgroundTasksInactiveAfterProviderCleanup`)
+// truncates the thread immediately afterwards, so the state is not
+// reachable in the app; where it did occur, showing the pair together
+// is what the "age out together" rule above asks for anyway.
+//
 // Thread-scoped. Live launches surface regardless of turn_index.
 // Ordering is (turn_index, item_index) so launches precede completions.
-func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis int64) ([]Item, error) {
-	// Placeholder order: bg roots (threadID), descendants base hop
-	// (threadID), descendants recursive hop (threadID), anchor join
-	// (threadID), outer scope (threadID), launch completion window
-	// (cutoff), sibling window (cutoff).
-	rows, err := s.reader().Query(
-		`WITH RECURSIVE bg(id) AS (
-		    SELECT id FROM items
+// liveBackgroundTasksSQL is the tray query. Built once, not per call:
+// it is one of the two statements that run on every thread switch AND
+// after every background tool completion, and the string concatenation
+// is not free at that cadence.
+//
+// The two `INDEXED BY` hints on the seed are planner directives, not
+// optimism. Both partial indexes are the whole point of the rewrite,
+// and an empty or freshly-migrated `items` gives the planner no row
+// stats to prefer them with (see the index-ordering note in
+// schema_v1.go). `TestListLiveBackgroundTasksSeedUsesPartialIndexes`
+// fails the moment a plan stops using either, or starts scanning the
+// thread through `idx_items_thread_turn_item_unique`.
+//
+// The final `CROSS JOIN` is the same kind of directive: the candidate
+// set is a co-routine of unknown size, and left to itself the planner
+// drives from `items` and probes the candidates with an automatic
+// index — which is exactly the whole-thread scan this query stopped
+// doing. CROSS JOIN pins the loop order.
+var liveBackgroundTasksSQL = `WITH RECURSIVE bg(id) AS (
+		    SELECT id FROM items INDEXED BY idx_items_running_bg_tool_calls
 		     WHERE thread_id = ?
 		       AND kind = 'tool_call'
+		       AND status = 'running'
 		       AND is_background = 1
+		       AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
+		    UNION
+		    SELECT c.completion_of
+		      FROM items c INDEXED BY idx_items_completion_created
+		     WHERE c.thread_id = ?
+		       AND c.completion_of <> ''
+		       AND c.created_at >= ?
+		       AND EXISTS (
+		         SELECT 1 FROM items l
+		          WHERE l.thread_id = c.thread_id
+		            AND l.id = c.completion_of
+		            AND l.kind = 'tool_call'
+		            AND l.is_background = 1
+		       )
 		),
-		`+descendantsCTE("items", "SELECT id FROM bg")+`,
+		` + descendantsCTE("items", "SELECT id FROM bg") + `,
 		anchors(id) AS (
 		    SELECT id FROM bg
 		    UNION
 		    SELECT i.id
 		      FROM rel
 		      CROSS JOIN items i ON i.thread_id = ? AND i.id = rel.id
-		     WHERE `+subagentLaunchFilterFor("i.")+`
+		     WHERE ` + subagentLaunchFilterFor("i.") + `
+		),
+		cand(id) AS (
+		    SELECT id FROM anchors
+		    UNION
+		    SELECT c.id FROM items c INDEXED BY idx_items_completion_created
+		     WHERE c.thread_id = ?
+		       AND c.completion_of <> ''
+		       AND c.created_at >= ?
 		)
-		SELECT `+itemColumns+`
-		   FROM items
+		SELECT ` + itemColumns + `
+		   FROM cand
+		   CROSS JOIN items ON items.thread_id = ? AND items.id = cand.id
 		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
-		  WHERE items.thread_id = ?
-		    AND (
+		  WHERE (
 		      (
 		        items.id IN (SELECT id FROM anchors)
 		        AND items.kind = 'tool_call'
 		        AND items.status = 'running'
-		        AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
 		        AND (
-		          NOT EXISTS (
-		            SELECT 1 FROM items c
-		             WHERE c.thread_id = items.thread_id
-		               AND c.completion_of = items.id
-		               AND c.completion_of <> ''
+		          (
+		            COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
+		            AND ` + noCompletionSiblingSQL + `
 		          )
 		          OR EXISTS (
 		            SELECT 1 FROM items c
@@ -187,8 +255,21 @@ func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis i
 		        AND items.completion_of IN (SELECT id FROM anchors)
 		      )
 		    )
-		  ORDER BY items.turn_index, items.item_index`,
-		threadID, threadID, threadID, threadID, threadID, retentionCutoffMillis, retentionCutoffMillis,
+		  ORDER BY items.turn_index, items.item_index`
+
+func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis int64) ([]Item, error) {
+	rows, err := s.reader().Query(liveBackgroundTasksSQL,
+		// bg seed: live launches (threadID), settled-in-window launches
+		// (threadID, cutoff).
+		threadID, threadID, retentionCutoffMillis,
+		// descendants base hop (threadID), recursive hop (threadID),
+		// anchor join (threadID).
+		threadID, threadID, threadID,
+		// candidate completion rows (threadID, cutoff).
+		threadID, retentionCutoffMillis,
+		// outer scope (threadID), launch completion window (cutoff),
+		// sibling window (cutoff).
+		threadID, retentionCutoffMillis, retentionCutoffMillis,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list live background tasks for %s: %w", threadID, err)

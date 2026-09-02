@@ -843,11 +843,6 @@ describe('setupEventListeners', () => {
     let releaseSnapshot!: (value: unknown) => void;
     setBindingMock('SwitchThread', async (threadId: unknown) =>
       makeThread({ id: typeof threadId === 'string' ? threadId : 'thread-1' }));
-    setBindingMock('ListRecentThreadItems', async () => ({
-      items: [] as Item[],
-      oldestTurnIndex: -1,
-      hasMore: false,
-    }));
     setBindingMock('ListPendingInteractiveRequests', () => new Promise((resolve) => {
       releaseSnapshot = resolve;
     }));

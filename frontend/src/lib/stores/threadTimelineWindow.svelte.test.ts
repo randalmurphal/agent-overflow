@@ -1553,11 +1553,6 @@ describe('threadTimelineWindow', () => {
           };
         },
       );
-      setBindingMock('ListRecentThreadItems', async () => {
-        throw new Error(
-          'refreshFromBackend should not use the broad recent loader',
-        );
-      });
 
       await pane.switchThread(makeThread({ id: 't' }));
       await pane.refreshFromBackend();

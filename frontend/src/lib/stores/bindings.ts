@@ -314,14 +314,11 @@ export {
   ListRecentTurns,
 
   // Windowed history + thread-wide aggregates. See /app_paging.go.
-  // Active panes use bounded slice/cursor pagers; broad recent and
-  // turn-based pagers remain available for legacy/full-tail surfaces.
-  ListRecentThreadItems,
+  // Active panes load a bounded slice and page by item-coordinate
+  // cursor; there is no turn-based pager.
   ListThreadSliceAround,
   ListItemsBeforeCursor,
-  ListItemsBeforeTurn,
   ListItemsAfterCursor,
-  ListItemsAfterTurn,
   ListSubagentDescendants,
   ListThreadProposedPlans,
   ListProposedPlanComments,

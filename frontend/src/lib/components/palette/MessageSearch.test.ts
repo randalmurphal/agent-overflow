@@ -17,11 +17,6 @@ beforeEach(async () => {
   await refreshThreads();
   setBindingMock('SwitchThread', async () => {});
   setBindingMock('ListItems', async () => []);
-  setBindingMock('ListRecentThreadItems', async () => ({
-    items: [],
-    oldestTurnIndex: -1,
-    hasMore: false,
-  }));
   setBindingMock('ListRecentTurns', async () => []);
 });
 

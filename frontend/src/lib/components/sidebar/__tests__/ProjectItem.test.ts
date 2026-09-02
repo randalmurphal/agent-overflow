@@ -13,7 +13,7 @@ import {
   projectTurnStarted,
   resetForTest as resetThreadStatuses,
 } from '../../../stores/threadStatuses.svelte';
-import type { Item, Project, ProjectWithCounts, Thread } from '../../../types/models';
+import type { Project, ProjectWithCounts, Thread } from '../../../types/models';
 import {
   resetBindingMocks,
   setBindingMock,
@@ -63,11 +63,6 @@ describe('<ProjectItem>', () => {
     resetThreadStatuses();
     resetBindingMocks();
     setBindingMock('SwitchThread', async (threadId: string) => thread(threadId));
-    setBindingMock('ListRecentThreadItems', async () => ({
-      items: [] as Item[],
-      oldestTurnIndex: -1,
-      hasMore: false,
-    }));
     setBindingMock('ListRecentTurns', async () => []);
   });
 

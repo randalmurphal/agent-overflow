@@ -216,3 +216,79 @@ func TestCodexChildTerminalPersistsFinalProgress(t *testing.T) {
 		t.Fatal("the live entry must be consumed at the terminal")
 	}
 }
+
+// TestBackgroundCompletionSiblingLeavesTheLaunchSettled pins the write
+// ORDER at that same terminal. writeBackgroundCompletionSibling inserts
+// the sibling, and inserting a completion is what stamps the launch
+// `live_background_active=false` (migration v74,
+// store/background_settle_triggers.go). persistFinalSubagentProgress
+// then rewrites the launch's meta WHOLESALE from an in-memory copy read
+// BEFORE that insert. Without the AFTER UPDATE leg of the trigger set,
+// that second write restores the launch to "live" and leaves it in
+// every partial live index forever — which is the shape the whole
+// settlement change exists to remove.
+func TestBackgroundCompletionSiblingLeavesTheLaunchSettled(t *testing.T) {
+	r, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Agent",
+		"is_background": true,
+		"task_id":       "task-settle",
+		"input":         map[string]any{"description": "background review"},
+	})
+	if err := r.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "toolu_settle",
+		ItemType: "Agent", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if live, err := st.HasLiveBackgroundToolCall("t1"); err != nil || !live {
+		t.Fatalf("a just-launched background agent must read as live: live=%v err=%v", live, err)
+	}
+	tickProgress(t, r, "t1", "toolu_settle", provider.SubagentProgressMeta{
+		TaskID: "task-settle", ToolUses: 3, TotalTokens: 4200,
+	})
+
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id": "task-settle", "tool_use_id": "toolu_settle",
+		"status": "completed", "source": "task_output",
+	})
+	if err := r.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "toolu_settle",
+		Meta: terminalMeta, Content: "done", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("terminal: %v", err)
+	}
+
+	launch, found, err := st.GetThreadItem("t1", "toolu_settle")
+	if err != nil || !found {
+		t.Fatalf("launch row: found=%v err=%v", found, err)
+	}
+	// Invariant 24: the launch itself never leaves `running`.
+	if launch.Status != "running" {
+		t.Fatalf("launch status = %q, want running", launch.Status)
+	}
+	var meta struct {
+		LiveBackgroundActive *bool `json:"live_background_active"`
+	}
+	if err := json.Unmarshal([]byte(launch.Meta), &meta); err != nil {
+		t.Fatalf("decode launch meta %q: %v", launch.Meta, err)
+	}
+	if meta.LiveBackgroundActive == nil || *meta.LiveBackgroundActive {
+		t.Fatalf("the wholesale meta rewrite un-settled the launch: meta = %s", launch.Meta)
+	}
+
+	// The stamp must not have cost the progress the same write persisted.
+	progress, ok := persistedProgressFor(t, st, "t1", "toolu_settle")
+	if !ok {
+		t.Fatal("background terminal did not persist final progress onto the launch")
+	}
+	if progress.ToolUses != 3 || progress.TotalTokens != 4200 {
+		t.Fatalf("final progress = %+v", progress)
+	}
+
+	if live, err := st.HasLiveBackgroundToolCall("t1"); err != nil || live {
+		t.Fatalf("a settled launch must not read as live: live=%v err=%v", live, err)
+	}
+}

@@ -695,6 +695,26 @@ rule only: the reaper and queue gates in `items_lifecycle.go`
 nested background Bash and whether that Bash blocks the flush queue or
 survives a session teardown are different questions.
 
+Because the launch never leaves `running`, "live" is not expressible as
+a status: it is `running AND live_background_active != 0 AND no
+completion sibling`. The third term is CORRELATED, so no partial index
+can carry it, and every live index therefore matched every launch a
+thread had ever backgrounded (2,883 rows across 157 threads on a real
+history; the tray read cost 120-200ms and 309MB of page reads on the
+worst thread to return between zero and eight rows). Migration v74 moves
+that term onto the row: four `items` triggers
+(`internal/store/background_settle_triggers.go`) stamp
+`meta.live_background_active=false` the moment a completion sibling
+exists and restore it if that sibling is deleted, so the flag alone
+means "no teardown and no sibling" and the partial indexes hold only
+genuinely live launches. It is schema-owned for the same reason the
+history stamps are: launch rows are written by triage, the importer, the
+fork clone, and the migration chain, so a Go-side stamp would be one
+forgotten call site away from a launch that ticks forever. Readers keep
+their explicit no-sibling term — it is the documented contract and one
+covering-index seek, and it keeps a row written around the triggers from
+reading as live.
+
 **Rationale.** Claude's `task_updated` terminal / TaskOutput
 enrichment and Codex's background terminal / subagent completion
 signals can arrive AFTER the turn that launched the work. Agents

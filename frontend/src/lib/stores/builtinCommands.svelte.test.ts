@@ -84,11 +84,6 @@ function readyPane(overrides: Partial<Thread> = {}): ReturnType<typeof createThr
   setBindingMock('SwitchThread', async (threadId: unknown) => ({
     id: typeof threadId === 'string' ? threadId : 'thread-1',
   }));
-  setBindingMock('ListRecentThreadItems', async () => ({
-    items: [],
-    oldestTurnIndex: -1,
-    hasMore: false,
-  }));
   setBindingMock('ListPendingInteractiveRequests', async () => ({
     approvals: [],
     userInputs: [],
@@ -407,9 +402,8 @@ describe('thread.interrupt command', () => {
     await command.run(makeCommandContext(pane, {}));
 
     expect(interruptCalled).toBe(true);
-    // Clear any unrelated banner the readyPane setup may have left
-    // (the test fixture's lazy ListRecentThreadItems mock is absent
-    // here — that's a separate concern from the cancel path).
+    // Clear any unrelated banner the readyPane setup may have left —
+    // a separate concern from the cancel path.
     pane.clearGeneralError();
     // Re-run to confirm the cancel path itself doesn't re-introduce
     // an error after clearing.
@@ -471,7 +465,6 @@ describe('thread.interrupt command', () => {
   });
 
   it('treats "no active turn" from InterruptTurn as a benign no-op', async () => {
-    setBindingMock('ListRecentThreadItems', async () => []);
     const pane = readyPane();
     // Wait one microtask so switchThread's lazy item-load settles before
     // we assert on generalError — readyPane spawns it without awaiting.

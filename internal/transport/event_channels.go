@@ -472,7 +472,7 @@ var channelPolicies = []ChannelPolicy{
 			"by provider.MarshalProcessExitMeta (single line, hard length " +
 			"cap) — and that is a decided disclosure, not an oversight: the " +
 			"same string persists to items.meta, which the wire-safe " +
-			"ListRecentThreadItems already serves to remote peers " +
+			"ListThreadSliceAround already serves to remote peers " +
 			"(2026-08-25 security review, finding 1). Pinned by " +
 			"TestEventVisibleToOrigin.",
 	},

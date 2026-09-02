@@ -59,6 +59,16 @@ const noCompletionSiblingIndexedSQL = `NOT EXISTS (
 // kept textually in sync with the partial `idx_items_live_background`, which
 // is what serves them.
 //
+// Since migration v74 the schema itself maintains the
+// `live_background_active` half (background_settle_triggers.go): a launch
+// is stamped inactive the moment a completion sibling exists, so this
+// fragment's flag test now means "no session teardown AND no completion
+// sibling" and the index behind it holds only genuinely live rows. Callers
+// still pair it with an explicit no-sibling probe
+// (noCompletionSiblingSQL) — that is the documented contract, it costs one
+// covering-index seek, and it keeps a row written around the triggers from
+// reading as live.
+//
 // The columns are UNQUALIFIED, so this fragment belongs in the OUTER WHERE
 // clause of a query over `items` (or the UPDATE's target table) and nowhere
 // else: spliced inside an EXISTS that joins a second copy of `items`, every
@@ -245,6 +255,17 @@ func (s *Store) MarkLiveCodexSubagentLaunchesInactive(threadID string, updatedAt
 // The rows are no longer live once the provider process group is gone, and
 // the tray must stop advertising them as running. The launch row keeps its
 // lifecycle status; terminal states belong to completion siblings.
+//
+// This writer covers the case the v74 triggers cannot: a teardown settles a
+// launch that has NO completion sibling and never will, so there is no
+// insert for a trigger to fire on. It is deliberately siblingless-only
+// (noCompletionSiblingSQL) — a launch that already has one is already
+// stamped, and re-stamping it would only move `updated_at`.
+//
+// Its one caller (markConfirmedBackgroundTasksInactiveAfterProviderCleanup)
+// truncates the thread's conversation immediately afterwards, which is what
+// makes "marked inactive, then acquires a completion" unreachable in the
+// app — see the predicate note on ListLiveBackgroundTasks.
 func (s *Store) MarkLiveBackgroundToolCallsInactive(threadID string, updatedAt int64) (int64, error) {
 	result, err := s.db.Exec(
 		`UPDATE items

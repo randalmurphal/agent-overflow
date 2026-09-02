@@ -30,7 +30,7 @@ import {
 import {
   resetProjectsForTest,
 } from '../../../stores/projects.svelte';
-import type { Item, Project, ProjectWithCounts, Thread } from '../../../types/models';
+import type { Project, ProjectWithCounts, Thread } from '../../../types/models';
 import {
   resetBindingMocks,
   setBindingMock,
@@ -80,11 +80,6 @@ describe('<Sidebar>', () => {
     resetThreadStatuses();
     resetProjectsForTest();
     resetBindingMocks();
-    setBindingMock('ListRecentThreadItems', async () => ({
-      items: [] as Item[],
-      oldestTurnIndex: -1,
-      hasMore: false,
-    }));
     setBindingMock('ListRecentTurns', async () => []);
   });
 

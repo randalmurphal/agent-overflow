@@ -128,11 +128,6 @@ export function installThreadPaneTestEnv(): void {
   }));
   // Legacy/broad tail loader. Active panes should use ListThreadSliceAround;
   // tests that intentionally touch this older RPC override the mock.
-  setBindingMock('ListRecentThreadItems', async () => ({
-    items: [] as Item[],
-    oldestTurnIndex: -1,
-    hasMore: false,
-  }));
   setBindingMock('ListItemsBeforeCursor', async () => ({
     items: [] as Item[],
     oldestTurnIndex: -1,

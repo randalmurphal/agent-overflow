@@ -60,6 +60,17 @@ transactions.
   readable end to end. Declarations only — nothing here applies anything.
   `migrate_freeze_test.go`'s completeness scan globs the whole package
   directory, so the freeze is unaffected by which file a derivation sits in.
+- `background_settle_triggers.go` — the schema-owned half of background
+  launch liveness (v74): the four `items` triggers that maintain
+  `items.meta.live_background_active`, their DROP counterpart, the
+  history backfill, and the trigger-name roster the schema tests assert
+  against. It is one const because it has two installers, exactly like
+  `historyRevTriggersSQL`: the migration, and `RestoreFrom`, which drops
+  the triggers for its whole-database row copy and recreates them after.
+  A future `items` REBUILD must re-install them the way v72 does for the
+  history-rev set —
+  `TestItemsRebuildMigrationsReinstallBackgroundSettleTriggers` fails the
+  build if one does not.
 - `items.go` / `items_read.go` / `items_write.go` /
   `items_lifecycle.go` / `payloads.go` — timeline item + heavy-payload
   tables. `items.go` carries the shared core (constants, scanners,
@@ -175,7 +186,27 @@ transactions.
   are excluded so one subagent-heavy turn can't eat the window budget
   or flash a "Load older" button that loads nothing. The background
   tray is the one read that does NOT share that filter — see
-  `thread_aggregates.go` below.
+  `thread_aggregates.go` below. Three reads remain: the cursor pagers
+  (`ListItemsBeforeCursor` / `ListItemsAfterCursor`) and
+  `ListThreadSliceAround`, which is also the cold-open entry point. The
+  turn-BUDGET generation (`ListRecentItems`, `ListItemsBeforeTurn`,
+  `ListItemsAfterTurn`, `PickInitialFloorTurn` and their floor/ceiling
+  helpers) is gone: nothing called it after the frontend moved to
+  item-coordinate cursors, and one dense turn could punch through an
+  item window it expressed in turns.
+- `timeline_arms.go` — `timelineArms` / `timelineIDSelection`, the ONE
+  renderer of the `timeline_items` view's two physical arms. **Never
+  ORDER BY or LIMIT through `timeline_items`.** A compound view whose
+  ordering keys are not in the selected result cannot have an outer
+  `ORDER BY … LIMIT` pushed into it: SQLite runs both arms whole, pours
+  them into a temp b-tree, and only then takes the first N — 18,079
+  pages (74 MB) and 52 ms warm for a 200-row tail window on a 67k-item
+  thread, against 151 pages and 1-2 ms for the same rows as a top-level
+  compound that merges two index walks. The view stays right for
+  unordered set reads, `EXISTS` probes, single-turn reads and
+  single-row lookups. `TestOrderedTimelineReadsGoThroughTheArms` is the
+  source rule, with a shrink-only allowlist; the plan tripwire and the
+  view-parity oracle are in the same file.
 - `thread_aggregates.go` — thread-wide reads backing dedicated frontend
   bindings (plan sidebar, background tray). `ListLiveBackgroundTasks` is
   the tray's item set and lists by BACKGROUNDED ANCESTRY, not by
@@ -192,7 +223,15 @@ transactions.
   the reaper and queue gates in `items_lifecycle.go` and `paging.go`'s
   `topLevelItemsFilter` keep `parent_id = ''` (invariant 24), because
   whether the tray SHOWS a nested background Bash and whether that Bash
-  blocks the flush queue are different questions.
+  blocks the flush queue are different questions. Its SEED is two index
+  reads, never a walk of the thread's background history: live launches
+  off `idx_items_running_bg_tool_calls` (which post-v74 contains only
+  genuinely live rows) UNION the launches named by a completion sibling
+  inside the retention window off `idx_items_completion_created`, which
+  is how a just-settled launch and its completion still age out
+  together. The descendant walk runs from that seed only and the outer
+  SELECT is driven FROM the resulting id set, so nothing here scans the
+  thread.
 - `subagent_items.go` — the two read surfaces that replace in-window
   subagent children: `decorateSubagentAnchors` stamps each windowed
   launch anchor with its descendant count + latest-child summary
@@ -200,12 +239,19 @@ transactions.
   full child subtree on demand when a group card expands. It also owns
   the two shared SQL fragments both this file and `thread_aggregates.go`
   build their recursive reads from:
-  - `descendantsCTE(table, rootSet)` — the `rel(root, id)` recursive walk
-    down `parent_id` from a root set, `CROSS JOIN`ed as a planner
-    directive and repeating `parent_id <> ''` so the partial index
-    applies. `descendantsCTEFromRoots(n)` is the `timeline_items`
-    bind-list form the descendants read uses; the tray passes plain
-    `items` and a subquery.
+  - `descendantsCTE(table, rootSet)` — the LOCAL-ONLY `rel(root, id)`
+    recursive walk down `parent_id` from a root set, `CROSS JOIN`ed as a
+    planner directive and repeating `parent_id <> ''` so the partial
+    index applies. Its one caller is the tray, which lists LIVE work and
+    passes plain `items` with a subquery.
+    `descendantsCTEFromRoots(n)` is the LOGICAL-timeline form, and it is
+    FOUR arms (local base, imported base, local hop, imported hop) with
+    `descendantsCTEArgs` rendering their binds. Naming `timeline_items`
+    in a recursive step made SQLite MATERIALIZE the whole thread —
+    twice, counting the final resolution join: 129 ms / 33,160 pages for
+    a 40-anchor window over a 35k-item thread, against 106 ms / 17,354
+    once every hop is an index probe, which is that window's `items`-only
+    floor. `TestSubagentWalksDoNotMaterializeTheView` is the tripwire.
   - `subagentLaunchFilterFor(alias)` — what makes a `tool_call` row a
     subagent LAUNCH. It is **structural** (a `tool_call` that has at
     least one visible child attributed to it), never a tool-name list,
@@ -587,7 +633,10 @@ baseline:
   (`ListRecoverableClaudeBackgroundLaunchesForThread`, the session-end
   settle) shares the same body and index. `idx_items_live_background` can't serve it because that index
   additionally requires `parent_id = ''` and subagent-scoped launches carry a
-  parent.
+  parent. It also serves the tray's live-launch seed and v74's backfill. Both
+  indexes were, before v74, "every launch this thread ever backgrounded" —
+  their `live_background_active` term is what v74's triggers made TRUE of live
+  rows only.
 - `idx_items_running_fg_tool_calls` (v42) serves
   `HasRunningTopLevelForegroundToolCall`, probed at every flush-queue boundary.
 - **Partial-index qualification rule** (applies to every probe in
@@ -599,6 +648,23 @@ baseline:
   lets `idx_items_completion_of` serve the probe instead of scanning the
   thread's whole items slice (seconds per call on large threads). Keep the
   term when writing new probes.
+
+## Recent schema changes (v73) — the reader-authored user_text index
+
+- `idx_items_user_text ON items(thread_id, turn_index, item_index) WHERE
+  kind = 'user_text' AND parent_id = ''`. Nothing indexed `kind`, so the
+  nav rail's ticks read — which runs on EVERY thread switch — walked the
+  thread's whole ordering index probing each row: 17,816 pages / 17 ms on
+  a 67k-item thread, against 736 / 1-3 ms with the index. The composer's
+  ArrowUp history recall, the thread-title context reads, and
+  `ListTurnUserSummaries` ask the same shape and pick it up too.
+- The index predicate is exactly the prefix
+  `readerAuthoredUserTextFilterFor` emits, by the partial-index
+  qualification rule above: neither term may be dropped or reordered
+  into a form that no longer states both. Narrow by construction —
+  reader prompts were 6,816 of 620,987 rows on the measured store.
+- `TestMigrationV73AddsUserTextIndex` pins the predicate, the membership,
+  and the plan of all three call shapes.
 
 ## Recent schema changes (v43) — unit call linkage
 
@@ -781,9 +847,11 @@ Provider forks and copied sessions can repeat large stretches of history.
 Imported rows therefore live in content-addressed, complete-turn
 chunks (`import_history_chunks` plus item/payload children) and threads attach
 them through `thread_import_chunks`. The mutable `items` / `payloads` tables
-remain the thread-owned overlay. All logical history reads use
-`timeline_items` / `timeline_payloads`; an explicit item override or local
-payload shadows only that thread's immutable base.
+remain the thread-owned overlay. Every logical history read covers both
+sources — through `timeline_items` / `timeline_payloads`, or through the
+same two arms rendered directly when the read is ordered or limited
+(`timeline_arms.go`) — and an explicit item override or local payload
+shadows only that thread's immutable base.
 
 Mutation is copy-on-write. Targeted item and payload changes localize only the
 row graph they touch; structural cuts materialize the active shared base in the
@@ -931,6 +999,31 @@ an empty `provider_turn_id`.
   saga uses instead, writing `session_ref` and the pin pair together
   (they describe one resume state) and leaving `updated_at` alone.
   Pinned by `TestUpdateThreadPreservesPendingForkPin`.
+
+## Recent schema changes (v74) — background-launch settlement
+
+- Four AFTER triggers on `items` (`background_settle_triggers.go`) maintain
+  `items.meta.live_background_active` on background `tool_call` launches, plus
+  a one-time backfill of history in the same migration. Rules, DDL rationale,
+  and the reason the AFTER UPDATE leg is load-bearing: § Triggers below.
+- `idx_items_completion_created` on `items(thread_id, created_at) WHERE
+  completion_of <> ''` backs the tray's second seed — the launches named by a
+  completion sibling inside the retention window — and the same read's
+  candidate set. Like every other completion probe, both queries repeat
+  `completion_of <> ''` so the planner can prove the partial predicate.
+- Nothing changed about what the tray SHOWS. `ListLiveBackgroundTasks`
+  redistributed one predicate on the launch branch, from
+  `flag != 0 AND (no sibling OR recent sibling)` to
+  `(flag != 0 AND no sibling) OR recent sibling`, because the trigger now
+  clears the flag AT settlement and the old form would return a completion
+  row whose launch had just dropped out. The two forms differ on exactly one
+  state — a launch a teardown marked inactive that LATER acquired a
+  completion inside the window — which
+  `markConfirmedBackgroundTasksInactiveAfterProviderCleanup`, its only
+  writer, makes unreachable by truncating the thread immediately afterwards.
+- **The migration number is the one thing a merge can renumber.** It is named
+  once, as `backgroundSettleTriggerMigrationVersion`, so the migration entry,
+  the rebuild tripwire, and the backfill test cannot disagree about it.
 
 ## Recent schema changes (v54) — the explicitly scheduled resume moment
 
@@ -1283,8 +1376,29 @@ before changing a write path.
   `thread_import_item_overrides` row exists. Chunk-order gaps and
   overlapping imported identities or timeline positions are rejected the
   same way. Dropping a thread's last chunk reference collects the chunk.
-  Logical reads go through `timeline_items` / `timeline_payloads`, never
-  raw `items` / `payloads`, or they miss the immutable base.
+  Logical reads see BOTH sources or they miss the immutable base: either
+  through `timeline_items` / `timeline_payloads`, or — for an ordered or
+  limited read — through the view's two arms rendered by `timelineArms`
+  (`timeline_arms.go`), never raw `items` / `payloads` alone.
+- **Background-launch settlement** (v74,
+  `background_settle_triggers.go`). A backgrounded `tool_call` stays
+  `status='running'` forever (invariant 24) and its terminal state is a
+  SIBLING row naming it through `completion_of`, so "live" is
+  `running AND live_background_active != 0 AND no completion sibling` — and
+  that third term is correlated, so no partial index can carry it. Four
+  AFTER triggers move it onto the launch row instead: an inserted completion
+  stamps its launch `false`; a launch inserted when its completion already
+  exists stamps itself (`materializeSharedHistoryTx`, import batches); an
+  UPDATE re-stamps a launch whose meta was replaced wholesale; and deleting
+  the last completion sibling `json_remove`s the flag again (the
+  `DeleteConversationFromTurn` rollback). The UPDATE leg is not defensive:
+  `writeBackgroundCompletionSibling` inserts the sibling and THEN calls
+  `persistFinalSubagentProgress`, which writes the launch's meta from a copy
+  read before that insert, so without it every settled launch is immediately
+  un-settled. None of them touch `updated_at`. Structural for the same
+  reason the stamps are — launches are written by triage, the importer, the
+  fork clone, and the chain — and `recursive_triggers` is off, though every
+  WHEN clause terminates the chain regardless.
 - **`threads.history_bulk_load` is the only sanctioned way to silence the
   stamp triggers**, and only inside one transaction that writes the exact
   aggregate advance itself before commit. `ApplyImportBatch` uses it to
@@ -1295,6 +1409,23 @@ before changing a write path.
 
 ## Reads that are easy to get wrong
 
+- **Never ORDER BY or LIMIT through `timeline_items`.** It is a compound
+  (`UNION ALL`) view, and an outer `ORDER BY … LIMIT` cannot be pushed
+  into one whose ordering keys are not among the selected result
+  columns: SQLite runs both arms whole, sorts them in a temp b-tree, and
+  only then takes the first N. Measured on a 67k-item thread, a 200-row
+  tail window read 18,079 pages (74 MB) and 52 ms warm that way against
+  151 pages and 1-2 ms as a top-level compound of the two physical arms.
+  Render the arms with `timelineArms` / `timelineIDSelection`
+  (`timeline_arms.go`) and let the projection name every ORDER BY key;
+  the view remains the right source for unordered set reads, `EXISTS`
+  probes, single-turn reads and single-row lookups. The same rule holds
+  for a RECURSIVE step: naming the view inside one makes SQLite
+  materialize the entire thread (129 ms vs 106 ms for one 40-anchor
+  subagent window, and 33,160 pages vs 17,354). Three tests hold the
+  line, all in `timeline_arms_test.go`: a per-read parity check against
+  the old view SQL, a plan tripwire with a negative control, and a
+  source rule over the package.
 - **Partial indexes need textual qualification.** SQLite uses one only when
   the query's predicates textually imply the index's WHERE clause. A
   correlated `c.completion_of = items.id` does NOT imply
@@ -1314,7 +1445,12 @@ before changing a write path.
   `docs/specs/agent-visibility.md` Q8). It is the DISPLAY query only: the
   reaper and the flush-queue gates keep `parent_id = ''`, because whether
   the tray SHOWS a nested background Bash and whether that Bash blocks the
-  queue are different questions.
+  queue are different questions. Its seed reads two partial indexes and
+  nothing else; `TestListLiveBackgroundTasksSeedUsesPartialIndexes` fails if
+  a plan stops using either or starts scanning the thread through
+  `idx_items_thread_turn_item_unique`, and
+  `TestListLiveBackgroundTasksMatchesThePreSettlementQuery` pins the rows and
+  their order against the pre-v74 query.
 - **`subagentLaunchFilterFor(alias)` is structural, never a tool-name
   list**: a `tool_call` with at least one visible child attributed to it,
   which is what keeps it provider-neutral. The alias argument is MANDATORY,

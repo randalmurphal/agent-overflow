@@ -98,6 +98,16 @@ subagent-aware path as guilty until it proves scope containment.
   projector stamps the flag from wire-typed signals and completions
   never carry the verdict (invariant 25), so there the launch flag stays
   authoritative. `internal/sessionimport`'s writer mirrors both rules.
+- **The completion sibling settles a background launch, and SQLite
+  stamps it.** The launch row stays `status='running'` (invariant 24),
+  so `meta.live_background_active` is its liveness; `items` triggers
+  (`store/background_settle_triggers.go`) set it false when a
+  `completion_of` row lands and re-stamp it if a later write replaces
+  the launch's meta. That second leg is what makes the order inside
+  `writeBackgroundCompletionSibling` safe: `persistFinalSubagentProgress`
+  runs AFTER the sibling insert and writes launch meta from a copy read
+  BEFORE it. Do not add a Go-side stamp, and do not reorder those two
+  writes on the assumption that one of them owns the flag.
 - A `system/task_started` meta update can precede its launch row —
   subagent-owned shells announce on the main wire before the owner's
   transcript projection persists the row. `persistToolCallLaunch`
