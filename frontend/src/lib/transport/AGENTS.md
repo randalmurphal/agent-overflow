@@ -834,8 +834,8 @@ remote browser alike. Protocol and authz rules:
 The connection's opening frame is the OTHER identity source, alongside
 the manifest. `wsClient` records it as `TransportHello` and
 `stores/transportStatus.svelte.ts` mirrors it into runes. Read it through
-`backendHasCapability()`; that is the only sanctioned compatibility
-question. No hello and an unrecognised name both answer false, so a
+`backendHasCapability()`; that, and the per-backend sibling below, are
+the only sanctioned compatibility questions. No hello and an unrecognised name both answer false, so a
 feature degrades instead of being attempted against a backend that cannot
 serve it. There is deliberately no protocol-version accessor to reach
 for: version gating guesses at what a number implies, flag gating asks
@@ -843,6 +843,13 @@ for: version gating guesses at what a number implies, flag gating asks
 backend re-checks every RPC regardless. The snapshot survives a
 disconnect on purpose, since the ladder is trying to reach the same
 backend and a flapping capability answer would be worse than a stale one.
+
+`backendHasCapability()` answers for the PAGE's own backend. A surface
+asking about an attached one reads `getTransportHelloFor(key)` — which is
+per-backend reactive — and the question gets a named helper rather than an
+inline `.includes`, so a rename has one site: `utils/browserTools.ts`'s
+`backendHasBrowser` is the pattern (`browser`, the capability a machine
+that can drive the browser tools advertises).
 
 The hello also carries the SPA that backend serves — `bundleId`,
 `bundleVersion`, `minShellBuild` — which is how a phone shell learns its

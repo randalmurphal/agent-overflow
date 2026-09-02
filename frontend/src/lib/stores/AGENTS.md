@@ -227,6 +227,38 @@ stops waking readers.
   the two share the footer badge through `hasPendingUpdate()` and the
   prop-driven `VersionPicker`, and nothing else. Settings → Updates
   renders one `MachineUpdateCard` per `supervisedMachines()` entry.
+- `devServers.svelte.ts` owns one machine's shareable dev-server ports
+  (`GetDevServers`, `AllowPreviewPort`, `DisallowPreviewPort`,
+  `MintPreviewURL`; docs/specs/remote-access.md §7). One
+  `keyedSignalRegistry` box per attached backend, because `localhost:5173`
+  names a different listener on every machine: a `devserver:list` frame is
+  keyed by its origin through `backendKeyForOrigin`, the list is replaced
+  wholesale, and the read runs on every hello the session holds
+  `preview:open` for. A dropped socket keeps the box (a machine
+  re-dialing still has the same dev servers, and blanking it would turn
+  every live preview link inert for the length of the outage); a detach
+  drops it.
+
+  Four things are decided here and nowhere else. `previewRouted` is
+  whether reaching a thread's ports has to go through the gateway at all
+  — false in exactly one case, a thread on the page's own machine with
+  `host` in hand. `previewFor` answers `open` / `not-shared` /
+  `no-address`, with `no-address` winning because a machine with nowhere
+  to serve from would send the reader to a control that changes nothing.
+  `previewLinkTargetFor` is the markdown rewrite's whole input, and it
+  answers null until the machine has spoken once — a link left plain is a
+  slow sentence, one rendered inert before the first frame is a wrong one.
+  `previewChipFor` is the command row's, gated additionally on the
+  machine's own `listening`, which is what replaces the loopback probe off
+  host.
+
+  Its `resolve` closes over a SNAPSHOT rather than reading the registry:
+  it is called from inside marked's tokenizer during a render, and a
+  reactive read there would make every markdown tree in the timeline a
+  dependent of a list frame concerning one thread. For the same class of
+  reason `patch` untracks its read of the box it is about to write — a
+  passive load is called from a mounted surface, and a tracked
+  read-then-write makes that surface a dependent of its own write.
 - A project is a REPOSITORY, and the same repository on two attached
   machines is one sidebar entry (`projects.svelte.ts`, wave 7d). The rows
   stay as the backends sent them; `projectEntries()` is the merged VIEW,

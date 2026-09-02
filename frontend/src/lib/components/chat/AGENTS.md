@@ -232,6 +232,38 @@ with a different trust model: rewritten without render-time validation,
 but ONLY on surfaces that pass a `workspacePath` (never PR or review
 bodies), and gated at click time by `editor.ResolvePath`.
 
+A `localhost:<port>` link is rewritten the same way and for a related
+reason: it names a listener on the machine the agent runs on, so read
+anywhere else it points at the reader's own machine. `ChatMarkdown` takes a
+`threadId` and builds `utils/previewLinkExtension.ts` from
+`stores/devServers#previewLinkTargetFor`, which answers null on the owner's
+own screen and until that machine has sent a list. Registered AHEAD of the
+path-link extension, which claims every `[…](…)` link it is offered.
+
+The anchor keeps the agent's href and carries `data-preview-state`
+(`open` / `not-shared` / `no-address`), `data-preview-port`,
+`data-preview-path`, `data-preview-thread`, `data-preview-machine` and
+`data-preview-via`; the `not-shared` state may be followed by a
+`[data-preview-allow]` button. `utils/externalLinks.ts`'s delegate is the
+only reader: it swallows the click in EVERY state — following it would
+load whatever answers on that port here — and only `open` mints. Both
+renderers spell the anchor from `markdown/render/previewLink.ts`, and the
+class is `.preview-link` with the `via <machine>` marker as a CSS
+`::after`, never a second element.
+
+The two actions the delegate calls are taken by REGISTRATION
+(`installPreviewLinkActions`, armed and disarmed by `initDevServers`),
+because the store opens a minted URL through `handleExternalURL` and an
+import back would close a ring around two modules that both run at boot.
+
+`DevServerChip` follows the same split. On the owner's own screen it is
+gated by the loopback probe; anywhere else that probe is asking the wrong
+computer, so the loop does not start and `previewChipFor` reads the
+machine's own list instead. A browser tool row (`meta.mcp.server ===
+BROWSER_TOOLS_SERVER`, `utils/browserTools.ts`) names its machine in
+`GenericToolCallRow`'s header actions for the same reason: off that
+machine, the row is the only sign the page exists.
+
 Copying puts TWO flavors on the clipboard and `utils/markdownClipboard.ts`
 is the only place that decides what goes where: `text/plain` is the
 markdown, `text/html` the allowlisted rendering from

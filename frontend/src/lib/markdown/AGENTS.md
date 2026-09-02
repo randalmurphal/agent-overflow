@@ -105,6 +105,9 @@ Both branches are removed. An anchor renders only for a
 non-navigable reference span. A host that wants path-shaped hrefs to DO
 something rewrites them during parsing — `utils/pathLinkExtension.ts`
 turns them into nonce'd `agent-overflow:open` editor links.
+`utils/previewLinkExtension.ts` is the second such rewrite, over
+`localhost:<port>` hrefs, and it keeps its href navigable on purpose: the
+click is swallowed by the document delegate instead.
 
 Cited by
 [`remote-access-boundaries.md`](../../../../docs/specs/remote-access-boundaries.md).
@@ -183,6 +186,18 @@ marker: `<code>.textContent` owns the source.
 - **Any prefix inspection of the streaming source flattens it.** That is
   what `ProvenAppend` exists to avoid; a new fast path takes the proof,
   never `startsWith` / `slice` on the full input.
+- **A host that wants to change how a link RENDERS supplies an
+  extension, never a `link` snippet.** A snippet takes ownership of
+  every link on the surface AND pushes both renderers off the
+  fixed-tag static path — `staticHtml.ts` bails outright whenever one
+  exists — so a thread with a single rewritten link would pay component
+  rendering for all of its prose. Both rewrites in the app are inline
+  extensions for this reason (`utils/pathLinkExtension.ts`,
+  `utils/previewLinkExtension.ts`): they claim the token, decorate it,
+  and leave the two renderers to spell it from one shared module
+  (`render/previewLink.ts`). Neither declares a `start`, because the gfm
+  inline `text` rule already stops at `[`, `<` and `protocol://`, and a
+  `start` costs a scan of the remaining tail at every OTHER position.
 - **`staticHtml.ts` must route every token the way `Element.svelte`
   does.** They are two renderers of one token stream, and a case the
   static path serializes that the component path routes to a component
@@ -243,7 +258,9 @@ Behavioral changes need a differential, not a snapshot: these paths are
 | `chat/markdown/streamingAssistantLiteralOwner.test.ts` | literal-host ownership transitions |
 | `chat/markdown/streamdownTheme.test.ts` | the flat theme table is complete — it derives the slot roster from the render path's own source |
 | `chat/ChatMarkdown.test.ts` | link/image URL policy, backslash escapes, link titles, the incomplete-link sentinel, the footnote popup |
-| `chat/ChatMarkdown.compactStaticLinkUrls.test.ts` | one href corpus through both render paths: the render decision per URL class, and that `staticHtml.ts` and `Link.svelte` agree on it |
+| `chat/ChatMarkdown.compactStaticLinkUrls.test.ts` | one href corpus through both render paths: the render decision per URL class, and that `staticHtml.ts` and `Link.svelte` agree on it; the preview-anchor corpus does the same for the `localhost:<port>` rewrite |
+| `utils/previewLinkExtension.test.ts` | what the preview tokenizer claims, driven through a real Lexer so the no-`start` claim is exercised rather than asserted |
+| `chat/ChatMarkdown.previewLinks.test.ts` | that the rewrite ARMS: the real component, the real store, the list frame arriving after first paint |
 | `chat/ChatMarkdown.compactStatic*.test.ts`, `.domBudget`, `.codeSpans*` | the compact completed path, its node budget and async island retirement |
 | `chat/ChatMarkdown.boundarySpacing.*`, `styleInvalidation.test.ts` | the `sd-*` marker seams |
 | `chat/ChatMarkdown.directReveal*.test.ts` | the extend-only mutation invariant, selection identity |
