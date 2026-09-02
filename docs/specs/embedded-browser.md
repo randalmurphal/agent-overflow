@@ -6,8 +6,9 @@ Status: implemented. Both platform spikes passed every item
 below. macOS is built to the same driver contract and verified on a
 Mac (§10). The §9 deletion wave has landed: managed Chrome, the
 screencast path and its four RPCs, and the encrypted site-data
-checkpoints are gone, and a windowless deployment now has no engine and
-no browser tools.
+checkpoints are gone, and a windowless deployment has no engine and no
+browser tools, with one exception landed in wave 9: serve mode drives a
+headless system Chromium for the TOOLS alone, never a pane (§9).
 
 ## 1. What this replaces, and why
 
