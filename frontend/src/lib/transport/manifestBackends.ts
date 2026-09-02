@@ -18,6 +18,7 @@
 
 import type { Bootstrap } from './bootstrap';
 import type { BackendDescriptor } from './backends';
+import { storedBackendEndpoints } from './homeEndpoint';
 
 let descriptors: readonly BackendDescriptor[] = [];
 const listeners = new Set<() => void>();
@@ -142,8 +143,40 @@ const ATTACHED_WS_PREFIX = '/ws/backend/';
 const ATTACHED_BOOTSTRAP_PREFIX = '/bootstrap/';
 const ATTACHED_BOOTSTRAP_SUFFIX = '.json';
 
-/** The descriptor the manifest will name for a profile id, built now. */
-export function descriptorForAttachedId(id: string, name: string): BackendDescriptor {
+/**
+ * The descriptor for one attached profile id, built now.
+ *
+ * Two realizations of one shape (spec §10, "One seam, two realizations"),
+ * and `endpoint` is which:
+ *
+ *   - **Empty (the desktop).** The local process holds the profile and
+ *     proxies it at the same-origin pair the manifest will name anyway,
+ *     `/ws/backend/<id>` + `/bootstrap/<id>.json`. Credentials never
+ *     enter page script and the CSP stays `'self'`.
+ *   - **An origin (a phone).** There is no local process and no proxy:
+ *     the client opens the socket itself to THAT backend's endpoint, with
+ *     that backend's session in its own credential slot. So both URLs are
+ *     absolute and neither carries the attached prefixes — a phone's
+ *     second machine is reached at its own `/ws` and `/bootstrap.json`,
+ *     the same routes home is reached at, because from the phone's side
+ *     there is nothing structurally different about it.
+ */
+export function descriptorForAttachedId(
+  id: string,
+  name: string,
+  endpoint = '',
+): BackendDescriptor {
+  if (endpoint !== '') {
+    const base = new URL(endpoint);
+    const scheme = base.protocol === 'https:' ? 'wss://' : 'ws://';
+    return {
+      id,
+      backendId: '',
+      name,
+      wsUrl: scheme + base.host + '/ws',
+      bootstrapUrl: base.origin + '/bootstrap.json',
+    };
+  }
   const scheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
   return {
     id,
@@ -152,6 +185,25 @@ export function descriptorForAttachedId(id: string, name: string): BackendDescri
     wsUrl: scheme + window.location.host + ATTACHED_WS_PREFIX + id,
     bootstrapUrl: ATTACHED_BOOTSTRAP_PREFIX + id + ATTACHED_BOOTSTRAP_SUFFIX,
   };
+}
+
+/**
+ * Every attached backend a shell client holds, rebuilt from the endpoint
+ * map it persisted (./homeEndpoint.ts). This is the `BackendSource` a
+ * shell installs at boot: same shape, different backing store, which is
+ * the whole reason `backends.setBackendSource` is one injectable function
+ * rather than a client-class branch.
+ *
+ * Home is excluded — it is the registry's own entry and is addressed by
+ * `setHomeEndpoint`, not by a descriptor.
+ */
+export function storedBackendDescriptors(): BackendDescriptor[] {
+  const out: BackendDescriptor[] = [];
+  for (const [id, endpoint] of Object.entries(storedBackendEndpoints())) {
+    if (id === '') continue;
+    out.push(descriptorForAttachedId(id, '', endpoint));
+  }
+  return out;
 }
 
 /** Publish the current list plus one just-attached profile. */

@@ -43,15 +43,27 @@ import (
 //   - There is NO ambient credential in play. Nothing about these
 //     requests is authorized by a cookie the browser attaches on its own,
 //     so a page at another origin can cause the request but cannot
-//     produce the ticket that makes it mean anything — and cannot read
-//     the answer either, since no Access-Control-Allow-Origin is written.
-//     That is why the Origin allow-list guarding /ws and /bootstrap.json
-//     is deliberately NOT applied here: it exists to stop a foreign page
-//     from spending a credential the browser holds ambiently, and there
-//     is none to spend. Applying it anyway would also break the
-//     `--connect` stub, whose proxied request legitimately carries the
-//     stub's origin rather than the backend's. The Host guard is kept —
-//     it costs nothing and keeps one rule across the mux.
+//     produce the ticket that makes it mean anything. That is why the
+//     Origin allow-list guarding /ws and /bootstrap.json is deliberately
+//     NOT applied here: it exists to stop a foreign page from spending a
+//     credential the browser holds ambiently, and there is none to spend.
+//     Applying it anyway would also break the `--connect` stub, whose
+//     proxied request legitimately carries the stub's origin rather than
+//     the backend's. The Host guard is kept — it costs nothing and keeps
+//     one rule across the mux.
+//
+// One origin can read the answer, and it is the single exception to the
+// sentence this header used to end on: the phone shell's
+// (shellorigin.go). It has to be, because the shell runs the SAME
+// `attachmentTransfer.ts` every other client runs — an RPC mints the
+// ticket, the bytes cross on their own connection, and the page reads
+// the created row out of the upload's response. Withholding the CORS
+// answer there would not withhold anything from anyone else; it would
+// only mean the one client that cannot be same-origin is the one client
+// that cannot upload. Nothing about the admission changes: the ticket is
+// still the whole credential, still single-use, still subject-bound, and
+// `Access-Control-Allow-Credentials` is never written, so no browser is
+// invited to attach an ambient credential to these routes.
 //
 // Neither route rides a per-peer rate budget, and that is a decision
 // rather than an omission — argued in the internal/surfaces rows.
@@ -66,6 +78,12 @@ import (
 // the handler has to think about.
 const AttachmentDownloadPath = "GET /attachments/{threadID}/{attachmentID}"
 
+// AttachmentDownloadPreflightPath is the same pattern for OPTIONS, and it
+// exists only because the pattern above is method-qualified: the mux
+// answers an unmatched method with 405, which a browser reads as a
+// refused preflight. See shellorigin.go.
+const AttachmentDownloadPreflightPath = "OPTIONS /attachments/{threadID}/{attachmentID}"
+
 // AttachmentUploadPath accepts one streamed attachment body.
 //
 // PUT rather than POST because the ticket already named exactly one
@@ -74,6 +92,10 @@ const AttachmentDownloadPath = "GET /attachments/{threadID}/{attachmentID}"
 // the download has three, so the two patterns cannot collide however Go's
 // mux orders them.
 const AttachmentUploadPath = "PUT /attachments/upload"
+
+// AttachmentUploadPreflightPath is that pattern for OPTIONS, for the
+// reason its download sibling has one.
+const AttachmentUploadPreflightPath = "OPTIONS /attachments/upload"
 
 // AttachmentTicketParam carries a transfer ticket on the request URL.
 //

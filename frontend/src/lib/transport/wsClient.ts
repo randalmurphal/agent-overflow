@@ -53,6 +53,8 @@ import {
 import { isEntityFilteredChannel } from './entityFilteredChannels';
 import { getConnectionId, getDeviceId } from './clientIdentity';
 import { hasPairedSession, mintDialTicket } from './deviceSession';
+import { HOME_BACKEND, type BackendKey } from './backendKey';
+import { homeWsUrl } from './homeEndpoint';
 import { refreshGrantedScopes } from './scopes';
 import { randomId } from '../utils/randomId';
 
@@ -550,6 +552,13 @@ interface WSClientOptions {
   // that gates the terminal 'unauthorized' state. Production reads
   // window.location through bootstrap.ts's pageServedOverLoopback.
   loopbackOrigin?: () => boolean;
+  // Which backend's credential slot this client presents. Home for the
+  // page's own connection, which is every client on a desktop; a phone's
+  // attached machines each name their own, because a session credential
+  // names a session on ONE backend (./deviceSession.ts, sessionStoreKey).
+  // Production passes it from ./backends.ts; everything else defaults to
+  // home, which is what every existing call site meant.
+  backend?: BackendKey;
   // For tests: override MAX_FRAME_BYTES. Production code MUST NOT pass
   // this — the cap matters as a defence and the symmetry with the
   // server's DefaultReadLimit is the contract. Tests pass a small
@@ -616,6 +625,7 @@ export class WSClient {
   private readonly maxFrameBytes: number;
   private readonly probeLoopbackOrigin: () => boolean;
   private readonly retryAllowlist: readonly RetryOnTransientCloseEntry[];
+  private readonly backend: BackendKey;
 
   // Cached bootstrap. The socket URL is the manifest's wsUrl verbatim:
   // it names this page's own origin, so the session cookie authenticates
@@ -787,6 +797,7 @@ export class WSClient {
 
   constructor(opts: WSClientOptions = {}) {
     this.fetchBootstrap = opts.bootstrap ?? defaultBootstrap;
+    this.backend = opts.backend ?? HOME_BACKEND;
     // Defer the global WebSocket lookup until first use so tests that
     // never connect don't trip on a missing global.
     this.WebSocketCtor = opts.WebSocketCtor ??
@@ -1550,9 +1561,9 @@ export class WSClient {
     // fully synchronous — no awaited microtask is added to every
     // ordinary dial.
     let dialTicket: string | null = null;
-    if (hasPairedSession()) {
-      dialTicket = await mintDialTicket();
-      if (dialTicket === null && hasPairedSession()) {
+    if (hasPairedSession(this.backend)) {
+      dialTicket = await mintDialTicket(fetch, this.backend);
+      if (dialTicket === null && hasPairedSession(this.backend)) {
         // No ticket, session still held: the mint could not prove the
         // stored session right now (endpoint unreachable, or the owner
         // has not confirmed the pairing yet) and did NOT conclude it is
@@ -1582,7 +1593,12 @@ export class WSClient {
     // be in place before the first RPC lands: a draft saved in the window
     // before a handshake completed would echo back into the composer that
     // typed it. Both ids are opaque and the backend re-validates their shape.
-    let url = withClientIdentity(bootstrap.wsUrl);
+    // The manifest's wsUrl, carried onto the home endpoint when this
+    // client's page is not its backend's (./homeEndpoint.ts). The
+    // identity for every same-origin client, and for an ATTACHED
+    // backend's socket in every client — homeWsUrl leaves an absolute
+    // url naming another host exactly as it found it.
+    let url = withClientIdentity(homeWsUrl(bootstrap.wsUrl));
     if (dialTicket !== null) {
       const withTicket = new URL(url);
       withTicket.searchParams.set('ticket', dialTicket);
@@ -1931,7 +1947,7 @@ export class WSClient {
   //     same-host proxy, where the page origin is a public name and the
   //     backend still sees a loopback peer.
   private pairingRequired(remoteBackend: boolean): boolean {
-    return remoteBackend && !this.probeLoopbackOrigin() && !hasPairedSession();
+    return remoteBackend && !this.probeLoopbackOrigin() && !hasPairedSession(this.backend);
   }
 
   // enterCredentialDead latches the terminal state for a refused

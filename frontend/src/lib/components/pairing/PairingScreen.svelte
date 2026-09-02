@@ -18,7 +18,7 @@
   import { suggestDeviceLabel } from '../../utils/deviceLabel';
   import {
     PairingRefusedError,
-    endpointMatchesOrigin,
+    acceptPairingEndpoint,
     probeActivation,
     redeemPairing,
     signInWithPasskey,
@@ -70,7 +70,11 @@
 
   async function pair(): Promise<void> {
     if (stage.at !== 'intro' || payload === null) return;
-    if (!endpointMatchesOrigin(payload, location.origin)) {
+    // A browser checks the payload against the origin it is on; a shell
+    // page, which can never be its backend's origin, ADOPTS what the
+    // payload names. One call, because it is one decision about where
+    // this redemption is going (transport/deviceSession.ts).
+    if (!acceptPairingEndpoint(payload, location.origin)) {
       stage = {
         at: 'failed',
         title: 'This link belongs to a different address.',

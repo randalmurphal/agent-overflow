@@ -247,6 +247,13 @@ func bearerToken(header string) string {
 // string, so it stays true across a rebind, a port change, and every
 // spelling of loopback the host resolves. In loopback mode the Host
 // header itself is already constrained by the loopback host guard.
+//
+// One origin is admitted that no request can derive: the phone shell's
+// (shellorigin.go). It serves the same bundle from its own fixed origin
+// and reaches this backend across a network, so its every request is
+// cross-origin — and it holds no cookie here, which is why admitting it
+// widens nothing this function was protecting. Every route behind it
+// still demands its own credential.
 func OriginAllowed(r *http.Request, patterns []string) bool {
 	raw := r.Header.Get("Origin")
 	if raw == "" {
@@ -263,6 +270,15 @@ func OriginAllowed(r *http.Request, patterns []string) bool {
 		scheme = "https"
 	}
 	if strings.EqualFold(origin.Host, r.Host) && strings.EqualFold(origin.Scheme, scheme) {
+		return true
+	}
+	// The phone shell's fixed page origin, which is cross-origin by
+	// construction rather than by configuration and so cannot be derived
+	// from this request. One helper answers it for both callers of this
+	// function — the HTTP routes and the WebSocket upgrade — and for the
+	// CORS middleware beside it, so "may open a socket" and "may read the
+	// answer" cannot drift apart (shellorigin.go).
+	if shellOriginAllowed(raw) {
 		return true
 	}
 	for _, pattern := range patterns {

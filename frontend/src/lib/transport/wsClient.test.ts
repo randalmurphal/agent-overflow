@@ -96,6 +96,7 @@ import { clearPairedSession, hasPairedSession, redeemPairing } from './deviceSes
 // drives the same client through the same fake, and two copies would be
 // two answers to what the client sends.
 import { FakeCtor, flushMicrotasks, MockWebSocket } from '../../test/helpers/mockWebSocket';
+import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
 
 const bootstrap = async () => ({ wsUrl: 'ws://example/ws', token: 'test-token' });
 
@@ -3609,5 +3610,54 @@ describe('lease frame', () => {
       vi.useRealTimers();
       vi.restoreAllMocks();
     }
+  });
+});
+
+// A shell page's manifest can only describe a socket at the origin that
+// served the document, which is the one origin a shell page knows is
+// wrong. So the dial carries it onto the endpoint, and an ATTACHED
+// backend's absolute wsUrl — a phone holds one client per machine, each
+// remote — is left exactly as it came.
+describe('WSClient under a shell origin', () => {
+  const ENDPOINT = 'https://desk.tail-scale.ts.net:7777';
+
+  beforeEach(() => {
+    MockWebSocket.reset();
+    sessionStorage.clear();
+    __resetHomeEndpointForTest();
+    setHomeEndpoint(ENDPOINT);
+  });
+
+  afterEach(() => {
+    __resetHomeEndpointForTest();
+    vi.restoreAllMocks();
+  });
+
+  it('dials the endpoint for a manifest that names a relative socket', async () => {
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: '/ws' }),
+    });
+    client.callByName('Anything', []).catch(() => {});
+    await flushMicrotasks();
+
+    const dialed = new URL(MockWebSocket.instances[0]!.url);
+    expect(dialed.protocol).toBe('wss:');
+    expect(dialed.host).toBe('desk.tail-scale.ts.net:7777');
+    expect(dialed.pathname).toBe('/ws');
+    client.close();
+  });
+
+  it('leaves the absolute socket of an attached machine alone', async () => {
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'wss://laptop.tail-scale.ts.net:7777/ws' }),
+    });
+    client.callByName('Anything', []).catch(() => {});
+    await flushMicrotasks();
+
+    expect(new URL(MockWebSocket.instances[0]!.url).host)
+      .toBe('laptop.tail-scale.ts.net:7777');
+    client.close();
   });
 });

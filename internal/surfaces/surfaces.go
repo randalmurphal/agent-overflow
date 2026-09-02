@@ -729,12 +729,46 @@ var Routes = []Route{
 			"Deliberately NOT behind the Origin allow-list that guards /ws " +
 			"and /bootstrap.json: that check exists to stop a foreign page " +
 			"spending an ambient cookie, and nothing here is authorized by " +
-			"one, so a foreign page can cause the request and neither " +
-			"produce the ticket nor read the answer. Deliberately not rate " +
+			"one, so a foreign page can cause the request and cannot " +
+			"produce the ticket that makes it mean anything. One origin " +
+			"may READ the answer, and only that one: the phone shell's " +
+			"fixed page origin (transport.ShellOrigin), which runs the " +
+			"same client code every other boot runs and cannot be " +
+			"same-origin by construction. No credentials flag rides that " +
+			"answer, so no browser is invited to attach an ambient " +
+			"credential here either. Deliberately not rate " +
 			"limited either: a peer cannot repeat a request whose " +
 			"admission was spent, and the work behind it was authorized " +
 			"one attachment at a time by a call that already passed the " +
 			"budgeted socket.",
+	},
+	{
+		Pattern:    "OPTIONS /attachments/{threadID}/{attachmentID}",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureNone,
+		Why: "The CORS preflight for the download route, and it exists " +
+			"only because that route is registered method-qualified: the " +
+			"mux answers an unmatched method with 405, which a browser " +
+			"reads as a refused preflight, and the transfer then never " +
+			"starts. It checks no credential because a preflight carries " +
+			"none by specification — a browser strips them — and it does " +
+			"no work and discloses nothing: an admitted origin (the phone " +
+			"shell's fixed one, transport.ShellOrigin) gets 204 and the " +
+			"allow headers, and every other caller gets the same 404 the " +
+			"listener gives a path that does not exist. What may actually " +
+			"be read is decided by the real request's ticket, which this " +
+			"route neither sees nor mints.",
+	},
+	{
+		Pattern:    "OPTIONS /attachments/upload",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureNone,
+		Why: "The upload route's preflight, for the reason its download " +
+			"sibling has one. Same shape: no credential to check, no work " +
+			"done, 204 with the allow headers for the one admitted origin " +
+			"and the listener's ordinary 404 for anybody else.",
 	},
 	{
 		Pattern:    "PUT /attachments/upload",

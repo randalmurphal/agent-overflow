@@ -18,6 +18,7 @@ import {
 } from './bootstrap';
 import { clearPairedSession, redeemPairing } from './deviceSession';
 import { __resetPageHostForTest } from './pageHost';
+import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
 
 describe('isLoopbackHostname', () => {
   it('accepts every host that names this machine', () => {
@@ -356,5 +357,65 @@ describe('defaultBootstrap', () => {
     vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ launchId: 'launch-1' })));
 
     await expect(defaultBootstrap()).rejects.toThrow(/missing wsUrl/);
+  });
+});
+
+// A shell serves the bundle from its own origin, so the manifest fetch is
+// the first thing that has to leave it. One case, because there is one
+// seam: the URL becomes absolute on the endpoint, the cookie is dropped
+// (a phone holds none for that origin and presents X-AO-Session instead),
+// and the wsUrl the manifest names is judged against the ENDPOINT rather
+// than against the page — which is the whole reason validateWsUrl took a
+// parameter.
+describe('defaultBootstrap under a shell origin', () => {
+  const ENDPOINT = 'https://desk.tail-scale.ts.net:7777';
+
+  afterEach(() => {
+    __resetHomeEndpointForTest();
+    vi.unstubAllGlobals();
+  });
+
+  it('fetches the manifest from the endpoint, with no cookie and the endpoint origin enforced', async () => {
+    setHomeEndpoint(ENDPOINT);
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ wsUrl: `wss://desk.tail-scale.ts.net:7777/ws` }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(defaultBootstrap()).resolves.toMatchObject({
+      wsUrl: 'wss://desk.tail-scale.ts.net:7777/ws',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${ENDPOINT}/bootstrap.json`,
+      expect.objectContaining({ credentials: 'omit' }),
+    );
+  });
+
+  it('still refuses a manifest naming a third authority', async () => {
+    setHomeEndpoint(ENDPOINT);
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ wsUrl: 'wss://elsewhere.test/ws' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ));
+
+    await expect(defaultBootstrap()).rejects.toThrow(/not same-origin/);
+  });
+
+  it('checks a wsUrl against whatever origin it is told to', () => {
+    // The parameter is the phone wave's whole change to this function:
+    // "the one authority this manifest may describe" is still the rule,
+    // and an attached backend's is neither home's nor the page's.
+    expect(() =>
+      validateWsUrl('wss://laptop.test:7777/ws', { protocol: 'https:', host: 'laptop.test:7777' }),
+    ).not.toThrow();
+    expect(() =>
+      validateWsUrl('wss://laptop.test:7777/ws', { protocol: 'https:', host: 'desk.test:7777' }),
+    ).toThrow(/not same-origin/);
   });
 });

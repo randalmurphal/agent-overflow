@@ -30,6 +30,7 @@ import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { clampString } from './frames';
 import { hasPairedSession, pairedSessionHeaders, renewPairedSession } from './deviceSession';
 import { awaitInjectedPageTicket, clearInjectedPageTicket, isWebviewHosted } from './pageHost';
+import { homeCredentials, homeOriginParts, homeUrl, originPartsOf } from './homeEndpoint';
 
 // BootstrapRejectedError marks the one bootstrap failure that retrying
 // cannot fix: the server answered, and refused our credential. The
@@ -219,9 +220,13 @@ export async function defaultBootstrap(): Promise<Bootstrap> {
 // re-presenting a spent ticket is harmless and a refetch mid-session
 // needs nothing from the URL.
 async function fetchManifest(ticket: string): Promise<Bootstrap> {
-  const url = ticket === ''
+  // ./homeEndpoint.ts is the one seam between "this page's origin" and
+  // "the home backend's". It is the identity for every client that was
+  // served its bundle by the backend it talks to, so this line is the
+  // same request it has always been for all of them.
+  const url = homeUrl(ticket === ''
     ? '/bootstrap.json'
-    : `/bootstrap.json?${PAGE_TICKET_PARAM}=${encodeURIComponent(ticket)}`;
+    : `/bootstrap.json?${PAGE_TICKET_PARAM}=${encodeURIComponent(ticket)}`);
   // same-origin credentials is the default for a same-origin request,
   // but state it: this fetch is the cookie's whole delivery path, and a
   // future caller passing a different mode would silently unauthenticate
@@ -230,7 +235,11 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   // backend launch that planted it, so after a restart the session
   // credential is the only thing that still names this page.
   let resp = await fetch(url, {
-    credentials: 'same-origin',
+    credentials: homeCredentials(),
+    // The PATH, never the absolute URL: a device proof binds
+    // (method, path) and the backend compares `r.URL.Path`
+    // (internal/identity/deviceproof.go), so a cross-origin fetch signs
+    // exactly what a same-origin one signs.
     headers: await pairedSessionHeaders('GET', '/bootstrap.json'),
   });
   if (!resp.ok && CREDENTIAL_REFUSED_STATUSES.has(resp.status) && hasPairedSession()) {
@@ -240,7 +249,7 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
     // clears the store, and the retry below then runs unpaired.
     if (await renewPairedSession()) {
       resp = await fetch(url, {
-        credentials: 'same-origin',
+        credentials: homeCredentials(),
         // A fresh proof: proofs are single-use, so the one the first
         // attempt carried is spent.
         headers: await pairedSessionHeaders('GET', '/bootstrap.json'),
@@ -360,13 +369,23 @@ export function wsUrlMatchesPageOrigin(
 //     deriveWSURL, and clientmode's manifestJSON via the same helper).
 //     Anything naming another authority was tampered with in flight.
 //
-// There is no exemption and no caller-supplied opt-out. The `--connect`
-// stub used to be one: it injected a manifest naming a remote backend
-// and the page opened a cross-origin socket. It now serves its own
-// origin's manifest and carries the socket to the upstream itself, so
-// the page's rule is the same in every mode — and a rule with no
-// parameter cannot be passed the wrong argument.
-export function validateWsUrl(wsUrl: string): void {
+// The `--connect` stub used to be an exemption: it injected a manifest
+// naming a remote backend and the page opened a cross-origin socket. It
+// now serves its own origin's manifest and carries the socket to the
+// upstream itself, so no client class opts out of the check.
+//
+// What the check compares against is a PARAMETER, and that is the phone
+// wave's whole change here. Origin still means "the one authority this
+// manifest is allowed to describe" — it is just that a shell page's
+// backend is not the page's own origin, and an ATTACHED backend's is
+// neither. `expected` defaults to the home backend's
+// (./homeEndpoint.ts, which answers this document's origin whenever no
+// endpoint is set), so every existing call is unchanged; the attached
+// fetcher below passes that backend's own.
+export function validateWsUrl(
+  wsUrl: string,
+  expected: { protocol: string; host: string } | null = homeOriginParts(),
+): void {
   let parsed: URL;
   try {
     parsed = new URL(wsUrl);
@@ -376,14 +395,14 @@ export function validateWsUrl(wsUrl: string): void {
   if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
     throw new Error(`bootstrap wsUrl scheme not ws/wss: ${clampString(parsed.protocol)}`);
   }
-  if (typeof window === 'undefined' || typeof window.location === 'undefined') {
+  if (expected === null) {
     // An origin requirement we cannot evaluate is a requirement we
     // cannot meet. Unreachable in practice — the only caller fetched a
     // relative '/bootstrap.json', which already needs a document base —
     // but it must fail closed, not open.
     throw new Error('bootstrap wsUrl cannot be origin-checked: no document origin');
   }
-  if (!wsUrlMatchesPageOrigin(wsUrl, window.location)) {
+  if (!wsUrlMatchesPageOrigin(wsUrl, expected)) {
     throw new Error(`bootstrap wsUrl not same-origin: ${clampString(wsUrl)}`);
   }
 }
@@ -399,13 +418,19 @@ export function validateWsUrl(wsUrl: string): void {
 // per-backend session slot supplies one instead (./deviceSession.ts,
 // keyed by the same registry id).
 //
-// `validateWsUrl` still applies, unchanged: under the proxy every attached
-// backend is same-origin by construction, so a manifest naming another
-// authority was tampered with in flight exactly as it would be for home.
-// The phone wave, whose sockets are cross-origin by design, is where that
-// rule gets its parameter — not here.
+// `validateWsUrl` still applies; what it compares against is the
+// descriptor's OWN origin. Under the desktop proxy that is the page's,
+// because every attached backend is same-origin by construction there,
+// and a manifest naming another authority was tampered with in flight
+// exactly as it would be for home. On a phone each descriptor is
+// absolute (./manifestBackends.ts, `descriptorForAttachedId`) and the
+// check follows it, so the rule is the same sentence with a different
+// subject rather than an exemption.
 setBackendManifestFetcher(async (descriptor) => {
-  const resp = await fetch(descriptor.bootstrapUrl, { credentials: 'same-origin' });
+  const remote = originPartsOf(descriptor.bootstrapUrl);
+  const resp = await fetch(descriptor.bootstrapUrl, {
+    credentials: remote === null ? 'same-origin' : 'omit',
+  });
   if (!resp.ok) {
     // Same split the page's own manifest makes: a refused credential is
     // terminal for this backend and the reconnect ladder must stop, while
@@ -417,7 +442,7 @@ setBackendManifestFetcher(async (descriptor) => {
   }
   const data = (await resp.json()) as Partial<Bootstrap>;
   const wsUrl = typeof data.wsUrl === 'string' ? data.wsUrl : descriptor.wsUrl;
-  validateWsUrl(wsUrl);
+  validateWsUrl(wsUrl, remote ?? homeOriginParts());
   setBackendIdentityFromBootstrap(
     data.backendId,
     data.replicaGeneration,

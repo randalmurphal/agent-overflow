@@ -313,7 +313,13 @@ export function attachBackend(descriptor: BackendDescriptor): BackendEntry {
   const entry = makeEntry(
     descriptor.id,
     false,
-    new WSClient({ bootstrap: () => fetchBackendManifest(descriptor) }),
+    new WSClient({
+      bootstrap: () => fetchBackendManifest(descriptor),
+      // Its own credential slot. Empty on a desktop, where the local
+      // process holds the profile and proxies same-origin; a phone's
+      // slot per machine is what makes its dial name the right session.
+      backend: descriptor.id,
+    }),
     descriptor.name,
   );
   entries.push(entry);

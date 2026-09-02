@@ -539,6 +539,75 @@ remote browser alike. Protocol and authz rules:
   exist or to pair a device that IS the host, and a false "loopback"
   leaves a phone retrying a dead session or dialing an upgrade the
   backend will not open for it.
+- `homeEndpoint.ts` is the ONE seam between "the origin that served this
+  page" and "the origin the home backend is at". Every client before wave
+  6f-c was served its bundle by the backend it then talked to, so every
+  home-backend URL in this directory could be RELATIVE and every one of
+  them was. The phone shell serves the same bundle from its own fixed
+  origin (`https://shell.agent-overflow.invalid`, which resolves nowhere)
+  and reaches the backend across the tailnet, so those URLs have to be
+  carried somewhere — and this is the only file that knows where.
+
+  **Empty is the identity, and that is the desktop's answer forever.**
+  `homeUrl` returns its argument unchanged, `homeWsUrl` is the identity,
+  `homeCredentials()` answers `same-origin`. The embedded webview,
+  `--connect` and a paired browser issue byte-identical requests to the
+  ones they issued before the file existed, which is why no call site
+  branches on a client class. What routes through it: `bootstrap.ts`'s
+  manifest fetch, every `/auth/*` exchange in `deviceSession.ts`, both
+  `attachmentTransfer.ts` fetches, and the dial in `wsClient.ts`.
+
+  **`window.__aoHomeEndpoint` is the shell's door, read once at module
+  load.** The shell's page script sets it before the bundle evaluates and
+  `e2e/tests/compact-shell-origin.spec.ts` sets the same global through
+  `page.addInitScript`, so the thing the test exercises is the thing the
+  shell uses. Read at MODULE LOAD because the first fetch of the boot has
+  to already be addressed correctly and there is no await between
+  evaluation and `defaultBootstrap`. An unusable value is warned about and
+  ignored: a bundle that refused to evaluate would take the error surface
+  down with it.
+
+  **With an endpoint set, fetches omit credentials.** A phone holds no
+  cookie for the backend's origin and could not be sent one; it presents
+  `X-AO-Session` plus a device-key proof, and the backend's CORS answer
+  deliberately carries no credentials flag (`internal/transport/AGENTS.md`
+  § the shell origin). The proof binds (method, PATH) and the Go verifier
+  compares `r.URL.Path`, so a cross-origin request signs exactly what a
+  same-origin one signs — that is what makes this one exchange rather than
+  two, and it must stay true.
+
+  **`homeWsUrl` rewrites exactly two shapes**: a relative `wsUrl`, and one
+  naming the PAGE's own host. Both are a manifest describing a socket at
+  the origin that served the document, which for a shell page is the one
+  origin that is certainly wrong. An absolute url naming another host is
+  an ATTACHED backend's own endpoint and is left alone — rewriting it
+  would point every attached machine's socket at home.
+
+  **`validateWsUrl` takes the origin it compares against.** The rule is
+  unchanged ("the one authority this manifest may describe"); what moved
+  is that a shell page's authority is the endpoint's and an attached
+  backend's is that backend's. It defaults to `homeOriginParts()`, so
+  every existing call is untouched, and `bootstrap.ts`'s attached fetcher
+  passes the descriptor's own.
+
+  **The endpoint map is stored beside the session slots it is about.**
+  `agent-overflow:backendEndpoints`, one JSON map keyed by registry id
+  with home under `''` — the same convention `deviceSession.sessionStoreKey`
+  uses, so "the page's own backend" is spelled once in this app. A phone
+  with N backends holds N session slots and N endpoints; the shell reads
+  the map at boot to set the home endpoint and to rebuild the attached
+  descriptors through `manifestBackends.storedBackendDescriptors()`, which
+  it installs as `backends.setBackendSource`. Entries are validated per
+  entry and a damaged one is DROPPED rather than coerced, the same rule
+  `readBackendDescriptors` states.
+
+  `acceptPairingEndpoint` (in `deviceSession.ts`) is where the two client
+  classes ask genuinely different questions rather than one with an
+  exemption. A browser was NAVIGATED to the pairing link, so the page it
+  is on is the backend it is pairing with and a payload naming another
+  endpoint is stale or edited. A shell can never be a backend's origin, so
+  what the QR names is where that backend lives and adopting it is the
+  point of scanning it.
 - `pageHost.ts` is the OTHER ticket channel: the page's half of the
   handshake with a Go process that owns its window. Such a page is marked
   by `?host=webview` on an otherwise bare URL, because a URL is copyable,

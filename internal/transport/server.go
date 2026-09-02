@@ -806,8 +806,15 @@ func (s *Server) buildHTTPServer() *http.Server {
 	// is the same one that starts the connection — the budget that matters
 	// for it is the ticket exchange that precedes it. /healthz and the
 	// assets are never limited (ratelimit.go says why).
-	mux.HandleFunc(BootstrapPath,
-		rateLimited(s.bootstrapLimit, s.loopbackHostGuard(s.handleBootstrap)))
+	// The routes a shell page fetches cross-origin carry the CORS answer
+	// for that ONE origin (shellorigin.go). It is composed OUTSIDE the
+	// rate limiter on purpose: a preflight carries no credential and does
+	// no work, and a shell whose preflights were being throttled would
+	// fail in a way nothing on the page could explain. The /ws upgrade is
+	// deliberately absent — a WebSocket handshake is not subject to CORS,
+	// and `OriginAllowed` is what admits the shell there.
+	mux.HandleFunc(BootstrapPath, withShellCORS(http.MethodGet,
+		rateLimited(s.bootstrapLimit, s.loopbackHostGuard(s.handleBootstrap))))
 	mux.HandleFunc(WSPath, s.loopbackHostGuard(s.handleWS))
 	mux.HandleFunc(PageURLPath,
 		rateLimited(s.pageURLLimit, s.loopbackHostGuard(s.handlePageURL)))
@@ -821,20 +828,20 @@ func (s *Server) buildHTTPServer() *http.Server {
 	// credential, so a peer that has exhausted its patience on one must
 	// not simply move to the next.
 	if s.cfg.AuthEndpoints != nil {
-		mux.HandleFunc(AuthPairPath,
-			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthPair)))
-		mux.HandleFunc(AuthTokenPath,
-			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthToken)))
+		mux.HandleFunc(AuthPairPath, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthPair))))
+		mux.HandleFunc(AuthTokenPath, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthToken))))
 		// Registered whenever the identity seam exists, not whenever a
 		// passkey could be used: availability depends on a setting the owner
 		// edits while the process runs, and a route that appeared and
 		// vanished with it would make a rebind part of changing a domain.
 		// Unavailable is an ANSWER here (`passkey_unavailable`), which is
 		// also the only one a client can explain.
-		mux.HandleFunc(AuthPasskeyBeginPath,
-			rateLimited(s.authLimit, s.loopbackHostGuard(s.handlePasskeyBegin)))
-		mux.HandleFunc(AuthPasskeyFinishPath,
-			rateLimited(s.authLimit, s.loopbackHostGuard(s.handlePasskeyFinish)))
+		mux.HandleFunc(AuthPasskeyBeginPath, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handlePasskeyBegin))))
+		mux.HandleFunc(AuthPasskeyFinishPath, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handlePasskeyFinish))))
 	}
 	// The attachment byte routes. Registered unconditionally, like every
 	// route above that answers a ticket rather than a credential: the
@@ -848,14 +855,24 @@ func (s *Server) buildHTTPServer() *http.Server {
 	// repeat for free. No Origin allow-list either; both decisions are
 	// argued at the top of attachmentroutes.go and recorded in the
 	// internal/surfaces rows.
-	mux.HandleFunc(AttachmentDownloadPath, s.loopbackHostGuard(s.handleAttachmentDownload))
-	mux.HandleFunc(AttachmentUploadPath, s.loopbackHostGuard(s.handleAttachmentUpload))
+	//
+	// Both patterns are METHOD-QUALIFIED, so the mux itself answers 405 to
+	// an OPTIONS request and a browser reads that as a refused preflight —
+	// the transfer then never starts. Each therefore registers its own
+	// OPTIONS pattern, which answers the preflight for an admitted origin
+	// and the listener's ordinary 404 for anything else.
+	mux.HandleFunc(AttachmentDownloadPath, withShellCORS(http.MethodGet,
+		s.loopbackHostGuard(s.handleAttachmentDownload)))
+	mux.HandleFunc(AttachmentDownloadPreflightPath, shellPreflightHandler(http.MethodGet))
+	mux.HandleFunc(AttachmentUploadPath, withShellCORS(http.MethodPut,
+		s.loopbackHostGuard(s.handleAttachmentUpload)))
+	mux.HandleFunc(AttachmentUploadPreflightPath, shellPreflightHandler(http.MethodPut))
 	// The ticket route needs no AuthEndpoints — it mints from the session
 	// the caller already holds — so it is registered whenever a session
 	// can be resolved at all.
 	if s.cfg.SessionForRequest != nil {
-		mux.HandleFunc(AuthTicketPath,
-			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthTicket)))
+		mux.HandleFunc(AuthTicketPath, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthTicket))))
 	}
 	if s.cfg.CDPTunnel != nil {
 		mux.HandleFunc(CDPTunnelPath, s.loopbackHostGuard(s.handleCDPTunnel))

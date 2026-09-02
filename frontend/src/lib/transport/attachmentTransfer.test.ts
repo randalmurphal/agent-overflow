@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { fetchAttachmentBytes, uploadAttachmentBytes } from './attachmentTransfer';
+import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
 
 // These tests drive the module against a fetch of their own rather than
 // through test/mocks/attachmentTransfer.ts, because what is under test IS
@@ -157,5 +158,62 @@ describe('fetchAttachmentBytes', () => {
 
     await expect(fetchAttachmentBytes('thr-1', 'att-1'))
       .rejects.toThrow(/Could not load image/);
+  });
+});
+
+// The minted URL stays relative — the backend that mints it does not know
+// which origin will present it — so a shell carries it onto the home
+// endpoint through the one seam that knows where that is. The ticket in
+// the query is the whole admission either way, which is exactly what the
+// route's own header argues, and is why dropping the cookie costs
+// nothing.
+describe('under a shell origin', () => {
+  const ENDPOINT = 'https://desk.tail-scale.ts.net:7777';
+
+  beforeEach(() => {
+    setHomeEndpoint(ENDPOINT);
+  });
+
+  afterEach(() => {
+    __resetHomeEndpointForTest();
+  });
+
+  it('puts the bytes on the endpoint and presents no cookie', async () => {
+    setBindingMock('MintAttachmentUploadTicket', () => '/attachments/upload?ticket=abc');
+    const seen: RequestInit[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ ...init, ...{ url: String(input) } } as RequestInit & { url: string });
+      return new Response(JSON.stringify({ id: 'att-1', threadId: 'thr-1' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof globalThis.fetch;
+    try {
+      await uploadAttachmentBytes('thr-1', new File([PNG], 'shot.png', { type: 'image/png' }));
+    } finally {
+      globalThis.fetch = real;
+    }
+
+    expect((seen[0] as RequestInit & { url: string }).url)
+      .toBe(`${ENDPOINT}/attachments/upload?ticket=abc`);
+    expect(seen[0].credentials).toBe('omit');
+  });
+
+  it('reads the bytes back from the endpoint too', async () => {
+    setBindingMock('MintAttachmentDownloadTicket', () => '/attachments/thr-1/att-1?ticket=xyz');
+    const seen: string[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response(PNG, { status: 200, headers: { 'Content-Type': 'image/png' } });
+    }) as typeof globalThis.fetch;
+    try {
+      await fetchAttachmentBytes('thr-1', 'att-1');
+    } finally {
+      globalThis.fetch = real;
+    }
+
+    expect(seen[0]).toBe(`${ENDPOINT}/attachments/thr-1/att-1?ticket=xyz`);
   });
 });

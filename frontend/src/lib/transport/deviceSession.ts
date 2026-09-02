@@ -4,9 +4,13 @@
 // A device that opened a pairing link redeems it here, stores the
 // credential pair this backend issued, keeps it fresh through the
 // rotating-refresh exchange, and turns it into the single-use ticket the
-// WebSocket upgrade names its session with. Everything is a same-origin
-// fetch — the pairing link lands the browser on the backend it is
-// pairing with, and the CSP allows nothing else.
+// WebSocket upgrade names its session with. On a browser every exchange
+// is a same-origin fetch — the pairing link lands it on the backend it is
+// pairing with, and the CSP allows nothing else. A SHELL page is served
+// from its own origin, so each exchange is carried onto the endpoint the
+// backend was paired at (./homeEndpoint.ts) and presents no cookie; what
+// does not change is the (method, PATH) a device proof binds, which is
+// why there is one exchange here and not two.
 //
 // Storage is the browser's own, scoped by origin, which is scoped per
 // backend (the port is stable per install):
@@ -51,6 +55,14 @@
 
 import { enrollDeviceKey, mintDeviceProof } from './deviceKey';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
+import {
+  hasHomeEndpoint,
+  homeCredentials,
+  homeUrl,
+  setHomeEndpoint,
+  storeBackendEndpoint,
+  storedBackendEndpoint,
+} from './homeEndpoint';
 import { answerChallenge, type PasskeyChallenge } from './passkey';
 
 // Mirrors internal/transport/authroutes.go. Names, not policy: the
@@ -147,6 +159,30 @@ export class PairingRefusedError extends Error {
   }
 }
 
+/**
+ * Address one auth route on the backend `backend` names.
+ *
+ * Every exchange in this module used to be same-origin, because the
+ * pairing link landed the browser on the very backend it was pairing
+ * with. A shell page is served from its own origin instead, so the route
+ * is carried onto that backend's endpoint (./homeEndpoint.ts) — and the
+ * PATH the device proof signs is unchanged either way, which is what
+ * makes the two spellings one exchange rather than two. The backend
+ * compares `r.URL.Path` and never an absolute URL
+ * (internal/identity/deviceproof.go, `boundTo`).
+ */
+function authUrl(path: string, backend: BackendKey = HOME_BACKEND): string {
+  if (backend === HOME_BACKEND) return homeUrl(path);
+  const endpoint = storedBackendEndpoint(backend);
+  return endpoint === '' ? path : endpoint + path;
+}
+
+/** The credentials mode one auth exchange uses; see homeCredentials(). */
+function authCredentials(backend: BackendKey = HOME_BACKEND): RequestCredentials {
+  if (backend === HOME_BACKEND) return homeCredentials();
+  return storedBackendEndpoint(backend) === '' ? 'same-origin' : 'omit';
+}
+
 function readLocal(key: string): string | null {
   if (typeof localStorage === 'undefined') return null;
   try {
@@ -223,6 +259,48 @@ export function endpointMatchesOrigin(payload: PairingPayload, origin: string): 
   } catch {
     return false;
   }
+}
+
+/**
+ * Settle where this pairing is going to be redeemed, and answer whether
+ * it can be.
+ *
+ * Two clients, two different questions, and they are genuinely different
+ * questions rather than one with an exemption:
+ *
+ *   - A BROWSER was navigated to the link, so the page it is on IS the
+ *     backend it is pairing with. A payload naming another endpoint is
+ *     stale or edited, the check above is the whole answer, and the
+ *     redemption would be blocked by the CSP regardless.
+ *   - A SHELL serves its own fixed origin and can never be the backend's
+ *     (`shell.agent-overflow.invalid` resolves nowhere by construction),
+ *     so there is nothing for an origin comparison to mean. What the QR
+ *     names is where this backend lives, and adopting it is the point of
+ *     scanning it. The endpoint is stored beside the session slot it is
+ *     about, so the next launch knows where to present the credential.
+ *
+ * Which client this is comes off `homeEndpoint()`: a shell has set one
+ * before any pairing surface mounts (its first-run screen does it from
+ * the scanned payload), and no browser ever has.
+ */
+export function acceptPairingEndpoint(
+  payload: PairingPayload,
+  origin: string,
+  backend: BackendKey = HOME_BACKEND,
+): boolean {
+  if (!hasHomeEndpoint()) return endpointMatchesOrigin(payload, origin);
+  try {
+    // Stored first, so a credential can never outlive the knowledge of
+    // where to present it; the live endpoint follows for home, which is
+    // the slot this launch is already addressing.
+    storeBackendEndpoint(backend, payload.endpoint);
+    if (backend === HOME_BACKEND) setHomeEndpoint(payload.endpoint);
+  } catch {
+    // A payload whose endpoint is not an absolute http(s) origin names
+    // nowhere to present a credential. Refused as the damaged link it is.
+    return false;
+  }
+  return true;
 }
 
 function readStoredSession(backend: BackendKey = HOME_BACKEND): StoredSession | null {
@@ -392,6 +470,7 @@ export async function redeemPairing(
   payload: PairingPayload,
   label: string,
   fetcher: typeof fetch = fetch,
+  backend: BackendKey = HOME_BACKEND,
 ): Promise<RedemptionOutcome> {
   // The one moment a device chooses its kind, and it chooses by what it
   // can do. A page that can sign generates its keypair here and proves it
@@ -406,8 +485,9 @@ export async function redeemPairing(
   const proof = (await enrollDeviceKey()) ? await mintDeviceProof('POST', AUTH_PAIR_PATH) : null;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (proof !== null) headers[DEVICE_KEY_HEADER] = proof;
-  const res = await fetcher(AUTH_PAIR_PATH, {
+  const res = await fetcher(authUrl(AUTH_PAIR_PATH, backend), {
     method: 'POST',
+    credentials: authCredentials(backend),
     headers,
     body: JSON.stringify({
       token: payload.token,
@@ -433,7 +513,7 @@ export async function redeemPairing(
     label,
     scopes: grantedScopesFrom(body),
     proofKind: proof === null ? 'bearer' : 'key',
-  });
+  }, backend);
   return {
     verificationNumber: body.verificationNumber ?? '',
     sessionId: body.sessionId,
@@ -463,7 +543,10 @@ export async function signInWithPasskey(
   label: string,
   fetcher: typeof fetch = fetch,
 ): Promise<void> {
-  const begun = await fetcher(AUTH_PASSKEY_BEGIN_PATH, { method: 'POST' });
+  const begun = await fetcher(authUrl(AUTH_PASSKEY_BEGIN_PATH), {
+    method: 'POST',
+    credentials: homeCredentials(),
+  });
   const challenge = (await begun.json().catch(() => ({}))) as
     | (PasskeyChallenge & { reason?: string })
     | undefined;
@@ -478,8 +561,9 @@ export async function signInWithPasskey(
     : null;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (proof !== null) headers[DEVICE_KEY_HEADER] = proof;
-  const res = await fetcher(AUTH_PASSKEY_FINISH_PATH, {
+  const res = await fetcher(authUrl(AUTH_PASSKEY_FINISH_PATH), {
     method: 'POST',
+    credentials: homeCredentials(),
     headers,
     body: JSON.stringify({
       ceremonyId: challenge.ceremonyId,
@@ -565,8 +649,9 @@ function renewSession(fetcher: typeof fetch, backend: BackendKey): Promise<boole
     }
     let res: Response;
     try {
-      res = await fetcher(AUTH_TOKEN_PATH, {
+      res = await fetcher(authUrl(AUTH_TOKEN_PATH, backend), {
         method: 'POST',
+        credentials: authCredentials(backend),
         headers: { 'Content-Type': 'application/json', ...keyHeader },
         body: JSON.stringify({ refreshSecret: held.refreshSecret }),
       });
@@ -642,7 +727,11 @@ export function mintDialTicket(
     try {
       const headers = await ticketHeaders(held, backend);
       if (!headers) return null;
-      res = await fetcher(AUTH_TICKET_PATH, { method: 'POST', headers });
+      res = await fetcher(authUrl(AUTH_TICKET_PATH, backend), {
+        method: 'POST',
+        credentials: authCredentials(backend),
+        headers,
+      });
     } catch {
       return null;
     }
@@ -660,7 +749,11 @@ export function mintDialTicket(
           // re-sending it would be refused as a replay.
           const headers = await ticketHeaders(renewed, backend);
           if (!headers) return null;
-          const retry = await fetcher(AUTH_TICKET_PATH, { method: 'POST', headers });
+          const retry = await fetcher(authUrl(AUTH_TICKET_PATH, backend), {
+            method: 'POST',
+            credentials: authCredentials(backend),
+            headers,
+          });
           if (retry.ok) {
             const grant = (await retry.json()) as { ticket?: string };
             return grant.ticket ?? null;
@@ -696,7 +789,11 @@ export async function probeActivation(
   try {
     const headers = await ticketHeaders(held, backend);
     if (!headers) return false;
-    res = await fetcher(AUTH_TICKET_PATH, { method: 'POST', headers });
+    res = await fetcher(authUrl(AUTH_TICKET_PATH, backend), {
+      method: 'POST',
+      credentials: authCredentials(backend),
+      headers,
+    });
   } catch {
     return false;
   }

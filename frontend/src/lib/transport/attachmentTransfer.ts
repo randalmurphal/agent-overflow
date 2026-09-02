@@ -11,13 +11,17 @@
 // this does not is that bindings carry JSON: a Blob body and a streamed
 // response are exactly what they cannot express.
 //
-// Three boots, one code path. The minted URL is always RELATIVE, so it
-// resolves against whatever origin served the page — the embedded
-// webview's transport, the `--connect` stub (which relays it upstream),
-// or a paired remote browser. A host baked in here would be right for
-// exactly one of the three, and the SPA does not know which one it is in.
+// Four boots, one code path. The minted URL is always RELATIVE, because
+// the backend that mints it does not know which origin will present it —
+// the embedded webview's transport, the `--connect` stub (which relays it
+// upstream), a paired remote browser, or the phone shell. The first three
+// resolve it against the page; the shell carries it onto the home
+// endpoint through the one seam that knows where that is
+// (./homeEndpoint.ts), and the ticket in the query is the admission
+// either way.
 
 import { MintAttachmentDownloadTicket, MintAttachmentUploadTicket } from '../stores/bindings';
+import { homeCredentials, homeUrl } from './homeEndpoint';
 import type { Attachment } from '../types/attachment';
 
 /**
@@ -37,7 +41,7 @@ import type { Attachment } from '../types/attachment';
  */
 export async function uploadAttachmentBytes(threadId: string, file: File): Promise<Attachment> {
   const url = await MintAttachmentUploadTicket(threadId, file.name, file.type || '', file.size);
-  const response = await fetch(url, {
+  const response = await fetch(homeUrl(url), {
     method: 'PUT',
     // The file itself, streamed. Never read into a string: the whole
     // point of the move is that a 10 MiB image is not a JS string, a
@@ -47,8 +51,10 @@ export async function uploadAttachmentBytes(threadId: string, file: File): Promi
     // cookie before relaying, so a request with no credentials would be
     // refused there while working everywhere else. Same-origin is also
     // the default — stated because the default changing would be a
-    // silent break in one boot only.
-    credentials: 'same-origin',
+    // silent break in one boot only. A shell page has no cookie for the
+    // backend's origin at all and omits instead; the ticket is the whole
+    // admission there, exactly as the route's header argues.
+    credentials: homeCredentials(),
   });
   if (!response.ok) {
     throw new Error(await transferFailure(response, 'Upload failed'));
@@ -65,7 +71,7 @@ export async function uploadAttachmentBytes(threadId: string, file: File): Promi
  */
 export async function fetchAttachmentBytes(threadId: string, attachmentId: string): Promise<Blob> {
   const url = await MintAttachmentDownloadTicket(threadId, attachmentId);
-  const response = await fetch(url, { credentials: 'same-origin' });
+  const response = await fetch(homeUrl(url), { credentials: homeCredentials() });
   if (!response.ok) {
     throw new Error(await transferFailure(response, 'Could not load image'));
   }

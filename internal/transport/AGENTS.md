@@ -765,6 +765,70 @@ header is written by the client and `Node.ts.net:443` is the same name as
 `node.ts.net`. Same rule as the canonical domain: names go INSIDE the guard,
 and the guard never switches off.
 
+**One page origin is admitted that no request can derive: the phone
+shell's** (`shellorigin.go`, `ShellOrigin` =
+`https://shell.agent-overflow.invalid`). The shell serves the SAME bundle
+from a fixed origin of its own and reaches the backend across a network,
+so every request it makes is cross-origin by construction rather than by
+configuration — there is nothing per-install to derive it from. The
+constant is safe to hard-code precisely because `.invalid` is reserved
+(RFC 6761 §6.4): no resolver answers it and no registry sells it, so no
+page on any network can hold that origin, and the shell has it only
+because Capacitor assigns its WebView document that authority locally. A
+pattern, a setting, or an "any https origin the owner adds" knob would
+each be a wider door than the one string that cannot be reached. The
+constant is mirrored in `mobile/capacitor.config.ts`; change one and the
+other stops working.
+
+`shellOriginAllowed` is the ONE place that answers it, and both
+`OriginAllowed` (which the `/ws` upgrade runs) and the CORS middleware
+call it — so "may open a socket" and "may read the answer" cannot drift
+apart. `AO_SHELL_ORIGIN_EXTRA` names one additional admitted origin and is
+HARNESS-ONLY: `e2e/tests/compact-shell-origin.spec.ts` serves the bundle
+from a throwaway server on an ephemeral port, which no fixed constant can
+predict. Nothing in a shipped build sets it and no setting writes it; it
+is an env var rather than a config field because a config field is a knob
+somebody can turn on in a running install.
+
+**The routes the shell fetches cross-origin answer CORS for that ONE
+origin, through one middleware** (`withShellCORS`, composed in
+`buildHTTPServer`): `/bootstrap.json`, the five `/auth/*` routes, and the
+two `/attachments/` routes. Four rules, each of which is what would
+otherwise go wrong:
+
+- **The origin is echoed exactly, never `*`.** A wildcard would let every
+  page on the internet read whatever a ticket in a URL authorizes.
+- **`Vary: Origin` is stamped unconditionally**, including on the
+  same-origin answer that carries no allow header at all — the header set
+  varies by origin even when it varies by becoming empty, and a cache
+  keyed without it would hand one page another's permission.
+- **`Access-Control-Allow-Credentials` is never written.** A shell page
+  holds no cookie here and presents its session in a header. The flag
+  would invite browsers to attach ambient credentials to exactly the
+  routes `OriginAllowed` exists to protect, and it is what makes the
+  wildcard ban a rule rather than a habit.
+- **A foreign origin gets nothing added** — not a refusal, not a different
+  status. The route answers as it always did and the browser withholds the
+  body, so the middleware cannot be asked which origins a backend knows.
+
+Two mechanics worth knowing before touching it. The middleware is composed
+OUTSIDE the rate limiter: a preflight carries no credential and does no
+work, and a throttled preflight fails in a way nothing on the page can
+explain. And the two `/attachments/` patterns are METHOD-QUALIFIED, so the
+mux answers 405 to an OPTIONS request and a browser reads that as a
+refused preflight — each therefore registers its own `OPTIONS` pattern
+(`AttachmentDownloadPreflightPath`, `AttachmentUploadPreflightPath`), with
+its own `internal/surfaces` row. `/ws` is deliberately absent from all of
+this: a WebSocket handshake is not subject to CORS, and `OriginAllowed` is
+the whole admission there.
+
+**The device proof binds (method, PATH) and must keep doing so.**
+`internal/identity/deviceproof.go`'s `boundTo` compares `r.URL.Path`, never
+an absolute URL, which is what lets a shell's cross-origin request sign
+byte-identically to a browser's same-origin one. Widening that comparison
+to an origin would fork the client into two exchanges that agree until one
+of them moves.
+
 **Peer locality is `loopback.PeerAddress(r.RemoteAddr)`**, captured before the
 upgrade and reused for the host-tooling receiver refusal, the host-presence
 half of the step-up proof,

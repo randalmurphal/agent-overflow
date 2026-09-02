@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   PairingRefusedError,
+  acceptPairingEndpoint,
   clearPairedSession,
   deviceKeyThumbprint,
   endpointMatchesOrigin,
@@ -20,6 +21,12 @@ import {
   signInWithPasskey,
   type PairingPayload,
 } from './deviceSession';
+import {
+  __resetHomeEndpointForTest,
+  homeEndpoint,
+  setHomeEndpoint,
+  storedBackendEndpoint,
+} from './homeEndpoint';
 
 const PAYLOAD: PairingPayload = {
   v: 1,
@@ -336,5 +343,68 @@ describe('signInWithPasskey', () => {
       signInWithPasskey('Phone', fetcher as unknown as typeof fetch),
     ).rejects.toMatchObject({ reason: 'passkey_unavailable' });
     expect(hasPairedSession()).toBe(false);
+  });
+});
+
+// Every exchange in this module was same-origin because the pairing link
+// landed the browser on the backend it was pairing with. A shell page is
+// served from its own fixed origin, which can never be a backend's, so
+// each exchange is carried onto the endpoint and presents no cookie —
+// while the (method, PATH) the device proof binds is byte-identical, which
+// is what makes this one exchange rather than two.
+describe('the auth exchanges under a shell origin', () => {
+  const ENDPOINT = 'https://desk.tail-scale.ts.net:7777';
+
+  beforeEach(() => {
+    localStorage.clear();
+    __resetHomeEndpointForTest();
+    setHomeEndpoint(ENDPOINT);
+  });
+
+  afterEach(() => {
+    __resetHomeEndpointForTest();
+    localStorage.clear();
+  });
+
+  it('redeems against the endpoint, with no cookie', async () => {
+    const fetcher = vi.fn().mockResolvedValue(grantResponse({ verificationNumber: '123456' }));
+
+    await redeemPairing(PAYLOAD, 'Phone', fetcher as unknown as typeof fetch);
+
+    const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${ENDPOINT}/auth/pair`);
+    expect(init.credentials).toBe('omit');
+  });
+
+  it('mints the dial ticket against the endpoint too', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(grantResponse())
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ticket: 'tkt-1' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    await redeemPairing(PAYLOAD, 'Phone', fetcher as unknown as typeof fetch);
+
+    await expect(mintDialTicket(fetcher as unknown as typeof fetch)).resolves.toBe('tkt-1');
+
+    const [url, init] = fetcher.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe(`${ENDPOINT}/auth/ticket`);
+    expect(init.credentials).toBe('omit');
+  });
+
+  it('adopts the endpoint a scanned payload names instead of comparing origins', () => {
+    // A browser compares, because the page it is on IS the backend. A
+    // shell adopts, because scanning the code is how it learns where the
+    // backend is at all — and it remembers, beside the session slot.
+    expect(acceptPairingEndpoint(PAYLOAD, 'https://shell.agent-overflow.invalid')).toBe(true);
+    expect(homeEndpoint()).toBe('http://192.168.1.20:8123');
+    expect(storedBackendEndpoint('')).toBe('http://192.168.1.20:8123');
+  });
+
+  it('refuses a payload whose endpoint names nowhere to present a credential', () => {
+    expect(acceptPairingEndpoint({ ...PAYLOAD, endpoint: 'not-a-url' }, 'https://shell.test'))
+      .toBe(false);
   });
 });
