@@ -72,7 +72,7 @@ func TestTaskStartedBeforeLaunchRowStampsTaskID(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("launch row missing after create: found=%v err=%v", found, err)
 	}
-	if got := taskIDFromItemMeta(launch.Meta); got != "tsk-late" {
+	if got := TaskIDFromItemMeta(launch.Meta); got != "tsk-late" {
 		t.Errorf("task_id = %q, want tsk-late (held correlation applied)", got)
 	}
 	if launch.ParentID != "agent-1" {

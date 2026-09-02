@@ -1452,6 +1452,53 @@ Per agent-overflow spec, triage keeps the `tool_call` row at
 `tool_completion` row comes later via the task lifecycle. See
 [`turn-lifecycle.md`](../architecture/turn-lifecycle.md).
 
+
+**The launch flag is a hint, never a verdict.** A `run_in_background:
+true` launch can be REFUSED: a PreToolUse hook deny, or "Permission to
+use Bash has been denied because Claude Code is running in don't ask
+mode", both answer with an ordinary `tool_result` (`is_error: true`, no
+`backgroundTaskId`, and no `system/task_started` ever follows). Three
+days of wire logs (2026-08-30 to 2026-09-02): 97 flagged launches, 91
+started a task, 6 were refused; error results ∩ `task_started` = 0. The
+parser therefore classifies from the RESULT (`backgroundTaskId`, or the
+§E2b ack text), and triage settles a flagged launch whose completion
+carries no marker in place, clearing the flag (`tool_lifecycle.go`).
+Before 2026-09-02 the flag alone sufficed, and a refused launch stood in
+the background tray as "running" with no task id to stop it by, blocking
+the session reaper and the flush queue for the life of the thread.
+
+### E2b: Sidechain Bash ack (text only)
+
+A backgrounded Bash launched by a SUBAGENT acks on the sidechain
+(`parent_tool_use_id` set) WITHOUT the `tool_use_result` envelope (0 of
+25 sidechain acks in three weeks of wire logs carried one), so the
+`backgroundTaskId` marker never appears. The text is the only evidence:
+
+```json
+{"type": "user", "parent_tool_use_id": "toolu_01Agent…",
+ "message": {"role": "user", "content": [{
+   "tool_use_id": "toolu_015…", "type": "tool_result",
+   "content": "Command running in background with ID: bkulztq41. Output is being written to: /tmp/…/bkulztq41.output",
+   "is_error": false}]}}
+```
+
+Three CLI variants (BashTool.tsx), one per trigger, all opening with
+`Command ` and naming the task as ` with ID: <id>` on the first line:
+"Command running in background with ID: …", "Command exceeded the
+assistant-mode blocking budget (…) and was moved to the background with
+ID: …", "Command was manually backgrounded by user with ID: …".
+
+**Parser behavior**: `sessionimport.BackgroundAckTaskID` (one rule,
+shared with the session importer) recognises the ack from the text and
+recovers the id. It is consulted ONLY when the launch was flagged
+`run_in_background: true` AND no `tool_use_result` is present, and it
+matches a PREFIX on the first line, never a substring, so quoted output
+cannot classify. On a hit the completion carries `is_background: true`
+and `task_id: <id>`, and the task map binds the id to the tool_use so the
+sidechain's `task_updated` / `task_notification` terminal resolves and
+the tray row has a Stop target. A miss settles the launch in place with
+whatever result it got.
+
 ### E3: TaskOutput `tool_result`
 
 TaskOutput is a regular tool. Its invocation emits a normal
@@ -1815,10 +1862,11 @@ first-binding-wins). That IS what correctly routes round-2's
 `task_updated`/`task_notification` through the map-first resolution
 both handlers already use. The parser additionally:
 
-1. Marks the resuming tool_use backgrounded via the same mechanism
-   `run_in_background` launches use, so its `EventToolComplete` (the
-   ack above) carries `is_background:true` even though the ack itself
-   has no async marker.
+1. Marks the resuming tool_use backgrounded with a WIRE-BACKED origin
+   (`backgroundFromTaskStarted`, distinct from the `run_in_background`
+   input hint, which is never a verdict on its own: §E2), so its
+   `EventToolComplete` (the ack above) carries `is_background:true`
+   even though the ack itself has no async marker.
 2. Enriches the meta-only `EventToolStart` the rebind `task_started`
    emits with `resumes_tool_use_id` (the previously-bound tool_use, which is
    the original launch) and the wire's `description` +

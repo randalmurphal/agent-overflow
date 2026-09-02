@@ -37,10 +37,11 @@ import (
 // readLoop serializes line parsing. A zero-value Parser is valid; the
 // internal maps lazily initialise on first write.
 type Parser struct {
-	// backgroundToolUses flags tool_use IDs that were started with
-	// `run_in_background: true` so the matching tool_result event can be
-	// tagged the same way.
-	backgroundToolUses map[string]bool
+	// backgroundToolUses marks tool_use IDs expected to answer with a
+	// backgrounding ack, by origin: an input `run_in_background: true`
+	// (a hint the result must confirm) or a task_started resume rebind
+	// (a verdict). See backgroundOrigin.
+	backgroundToolUses map[string]backgroundOrigin
 	// todoWriteToolUses flags tool_use IDs for the `TodoWrite` tool. The
 	// tool_use itself emits an EventTodoUpdate (not a generic tool start)
 	// so the matching tool_result must be dropped — there is no tool-call
@@ -490,26 +491,54 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 	}
 }
 
-// markBackground records that the given tool_use ID was launched with
-// `run_in_background: true`. The matching tool_result event will copy
-// the flag onto its Meta.
-func (p *Parser) markBackground(toolUseID string) {
+// backgroundOrigin says WHY a tool_use id sits in backgroundToolUses,
+// because the two reasons carry different weight at result time
+// (parse_user.go appendToolResultBlock):
+//
+//   - backgroundHintInput: the tool_use input carried
+//     `run_in_background:true`. A HINT — the CLI may still refuse the
+//     command (hook deny, permission denial), in which case no task ever
+//     starts and the result is an error, not an ack. The hint only gates
+//     the ack-text path; it never classifies on its own.
+//   - backgroundFromTaskStarted: a `system/task_started` REBOUND a live
+//     local_agent task to this tool_use (the §E6 resume carrier). A
+//     VERDICT — the wire already said the task is running under this id,
+//     and the resuming tool's own ack carries no marker of its own.
+type backgroundOrigin uint8
+
+const (
+	backgroundHintInput backgroundOrigin = iota + 1
+	backgroundFromTaskStarted
+)
+
+// markBackground records that the given tool_use ID is expected to
+// answer with a backgrounding ack, and why. A wire-backed origin is
+// never downgraded by a later input hint for the same id.
+func (p *Parser) markBackground(toolUseID string, origin backgroundOrigin) {
 	if toolUseID == "" {
 		return
 	}
 	if p.backgroundToolUses == nil {
-		p.backgroundToolUses = make(map[string]bool)
+		p.backgroundToolUses = make(map[string]backgroundOrigin)
 	}
-	p.backgroundToolUses[toolUseID] = true
+	if p.backgroundToolUses[toolUseID] == backgroundFromTaskStarted {
+		return
+	}
+	p.backgroundToolUses[toolUseID] = origin
 }
 
-// isBackground reports whether the given tool_use ID was started with
-// `run_in_background: true`. The Claude tool_use ↔ tool_result correlation
-// is one-shot; callers that consume a correlated event should also call
+// isBackground reports whether the given tool_use ID was marked (either
+// origin). The Claude tool_use ↔ tool_result correlation is one-shot;
+// callers that consume a correlated event should also call
 // clearBackground to release the entry.
 func (p *Parser) isBackground(toolUseID string) bool {
+	return p.backgroundOrigin(toolUseID) != 0
+}
+
+// backgroundOrigin returns why the id was marked, or 0 when it was not.
+func (p *Parser) backgroundOrigin(toolUseID string) backgroundOrigin {
 	if toolUseID == "" || p.backgroundToolUses == nil {
-		return false
+		return 0
 	}
 	return p.backgroundToolUses[toolUseID]
 }

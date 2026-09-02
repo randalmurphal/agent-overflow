@@ -387,41 +387,71 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	// missed the flag) but don't flip status and don't create a sibling
 	// tool_completion — that sibling now lives under
 	// handleBackgroundTaskTerminal.
-	if launch.IsBackground || meta.IsBackground {
+	//
+	// On a Claude thread the completion's OWN classification decides
+	// (`meta.IsBackground`, positive evidence read off the ack —
+	// claude-wire.md §E2/§E2b): the launch row's flag came from the
+	// tool_use INPUT (`run_in_background:true`), and a flagged launch the
+	// CLI refused (hook deny, permission denial) answers with an error
+	// result and no task. Honouring the launch flag here kept such rows
+	// `running` forever with nothing to stop them by, and a top-level
+	// one blocked the idle reaper and the flush queue for as long as the
+	// session lived (2026-09-02). A Codex row's flag is stamped by the
+	// projector from wire-typed signals (codex_background.go, invariant
+	// 25), not by its completion, so there the launch flag stays the
+	// authority.
+	if meta.IsBackground || (codexThread && launch.IsBackground) {
+		changed := false
 		if meta.IsBackground && !launch.IsBackground {
 			launch.IsBackground = true
-			launch.UpdatedAt = now
 			var identityPatch json.RawMessage
 			launch.Summary, identityPatch = r.resumeCarrierIdentity(evt.ThreadID, launch)
 			if len(identityPatch) > 0 {
 				launch.Meta = mergeItemMetaJSON(launch.Meta, identityPatch)
 			}
-			if meta.WatchTask {
-				// Selective one-key merge — the full completion meta
-				// (tool_result echo, tool_use_result) must NOT bloat the
-				// launch row; only the watch marker matters downstream
-				// (HasQueueBlockingBackgroundToolCall filters on it).
-				launch.Meta = mergeItemMetaJSON(launch.Meta, []byte(`{"watch_task":true}`))
-			}
-			return r.persistItem(launch, nil)
+			changed = true
 		}
-		// Launch row already background-flagged. Usually the placeholder
-		// completion carries no additional state — but the watch marker
-		// can still be new: §E7's real Monitor launch carries no
-		// run_in_background (the ack is what backgrounds it), and a
-		// future CLI that marks the launch up front would land in THIS
-		// arm and silently lose watch-ness, which the flush-queue drain
-		// reads (HasQueueBlockingBackgroundToolCall). Merge it whenever
-		// the completion asserts it and the row lacks it, whichever arm
-		// the flag arrived through.
+		// Selective one-key merges — the full completion meta (tool_result
+		// echo, tool_use_result) must NOT bloat the launch row. The watch
+		// marker can be new in either arm: §E7's real Monitor launch
+		// carries no run_in_background (the ack is what backgrounds it),
+		// and a future CLI that marks the launch up front would otherwise
+		// silently lose watch-ness, which the flush-queue drain reads
+		// (HasQueueBlockingBackgroundToolCall).
 		if meta.WatchTask && !launchIsWatchTask(launch) {
-			launch.UpdatedAt = now
 			launch.Meta = mergeItemMetaJSON(launch.Meta, []byte(`{"watch_task":true}`))
+			changed = true
+		}
+		// The ack's task id, for a launch whose `system/task_started`
+		// never reached the row (reconnect gap, or a sidechain row the
+		// correlation hold could not reach). First non-empty wins, so a
+		// task_started that did land is never overwritten.
+		if meta.TaskID != "" && TaskIDFromItemMeta(launch.Meta) == "" {
+			merged, err := mergeItemMetaCorrelationFields(launch.Meta, itemMetaCorrelationFields{TaskID: meta.TaskID})
+			if err != nil {
+				log.Printf("triage: stamp ack task_id on %s: %v", itemID, err)
+			} else {
+				launch.Meta = merged
+				changed = true
+			}
+		}
+		if changed {
+			launch.UpdatedAt = now
 			return r.persistItem(launch, nil)
 		}
 		// The background task terminal (task_updated / TaskOutput) will
 		// write the sibling completion row when it arrives.
 		return nil
+	}
+	if launch.IsBackground {
+		// Flagged from its input, but the result is not a backgrounding
+		// ack: no task ever started, so nothing will ever settle this row
+		// but the result in hand. Clear the flag (column AND meta — the
+		// tray, the reaper and the flush queue read the column; the
+		// stored meta is what a re-discovered launch merges from) and
+		// settle in place below like any inline tool.
+		launch.IsBackground = false
+		launch.Meta = mergeItemMetaJSON(launch.Meta, []byte(`{"is_background":false}`))
 	}
 
 	status := CompletionStatus(meta)
@@ -1057,7 +1087,7 @@ func (r *Router) settleOrphanedBackgroundLaunches(launches []store.Item) int {
 		// without a task_id (no task_started reconstruction). The sibling
 		// is keyed off the launch id, so recovery stays idempotent either
 		// way; the task_id only gates the (task_id-keyed) stash drain.
-		taskID := taskIDFromItemMeta(launch.Meta)
+		taskID := TaskIDFromItemMeta(launch.Meta)
 
 		syntheticEvt := provider.ProviderEvent{
 			ThreadID:  launch.ThreadID,
@@ -1982,12 +2012,12 @@ func completionPayload(itemID string, evt provider.ProviderEvent, meta ToolCompl
 	}
 }
 
-// taskIDFromItemMeta extracts the `task_id` field from a persisted
+// TaskIDFromItemMeta extracts the `task_id` field from a persisted
 // item's meta JSON. Returns "" when the meta is empty, malformed, or
 // missing the field. Used by startup recovery to key the synthetic
 // completion sibling by the same task_id the live wire path would have
 // produced.
-func taskIDFromItemMeta(metaJSON string) string {
+func TaskIDFromItemMeta(metaJSON string) string {
 	if strings.TrimSpace(metaJSON) == "" {
 		return ""
 	}

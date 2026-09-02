@@ -3434,3 +3434,157 @@ func TestToolCompleteWatchTaskMergesOntoAlreadyBackgroundLaunch(t *testing.T) {
 		t.Fatalf("watch_task must be merged even when the launch was already background; meta=%v", meta)
 	}
 }
+
+// TestToolCompleteUnflaggedSettlesFlaggedClaudeLaunch pins the completion
+// path's authority on a Claude thread: the launch row's is_background
+// came from the tool_use INPUT (`run_in_background:true`), and a
+// completion the parser did NOT classify as a backgrounding ack — a hook
+// deny, a permission denial — settles the row in place and clears the
+// flag. Before this the row stayed `running` forever with no task_id,
+// and a top-level one blocked the idle reaper and the flush queue for
+// the life of the session (2026-09-02).
+func TestToolCompleteUnflaggedSettlesFlaggedClaudeLaunch(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"input":         map[string]any{"command": "make apk", "run_in_background": true},
+		"is_background": true,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "refused-tool",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if live, err := st.HasLiveBackgroundToolCall("t1"); err != nil || !live {
+		t.Fatalf("precondition: flagged launch counts as live background work (live=%v err=%v)", live, err)
+	}
+
+	completeMeta, _ := json.Marshal(map[string]any{"is_error": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "refused-tool",
+		Content: "Permission to use Bash has been denied", Meta: completeMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	launches := findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(launches) != 1 {
+		t.Fatalf("expected 1 launch row, got %d", len(launches))
+	}
+	if launches[0].Status != statusErrored {
+		t.Errorf("status = %q, want %q (settled in place with the result it got)", launches[0].Status, statusErrored)
+	}
+	if launches[0].IsBackground {
+		t.Error("is_background column must be cleared: no task ever started")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(launches[0].Meta), &meta); err != nil {
+		t.Fatalf("unmarshal launch meta: %v", err)
+	}
+	if meta["is_background"] != false {
+		t.Errorf("stored meta is_background = %v, want false", meta["is_background"])
+	}
+	if live, err := st.HasLiveBackgroundToolCall("t1"); err != nil || live {
+		t.Fatalf("a refused launch must not count as live background work (live=%v err=%v)", live, err)
+	}
+	running, err := st.ListRunningBackgroundToolCalls("t1")
+	if err != nil {
+		t.Fatalf("ListRunningBackgroundToolCalls: %v", err)
+	}
+	if len(running) != 0 {
+		t.Fatalf("reaper view must be empty, got %d rows", len(running))
+	}
+}
+
+// TestToolCompleteBackgroundAckStampsTaskID pins the ack's task id
+// landing on the launch row when `system/task_started` never did
+// (reconnect gap, or a sidechain row the correlation hold could not
+// reach): the tray row then has something to stop by and the later
+// terminal can resolve to it. A task_started that DID land wins — first
+// non-empty value stays.
+func TestToolCompleteBackgroundAckStampsTaskID(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"input":         map[string]any{"command": "make apk", "run_in_background": true},
+		"is_background": true,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "acked-tool",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	completeMeta, _ := json.Marshal(map[string]any{"is_background": true, "task_id": "bkulztq41"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "acked-tool",
+		Meta: completeMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	launches := findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(launches) != 1 {
+		t.Fatalf("expected 1 launch row, got %d", len(launches))
+	}
+	if !launches[0].IsBackground || launches[0].Status != statusRunning {
+		t.Fatalf("acked launch must stay running background; got background=%v status=%q", launches[0].IsBackground, launches[0].Status)
+	}
+	if got := TaskIDFromItemMeta(launches[0].Meta); got != "bkulztq41" {
+		t.Fatalf("meta.task_id = %q, want bkulztq41", got)
+	}
+
+	// A second ack-shaped completion naming a different id must not
+	// overwrite the bound one.
+	completeMeta, _ = json.Marshal(map[string]any{"is_background": true, "task_id": "other"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "acked-tool",
+		Meta: completeMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second complete: %v", err)
+	}
+	launches = findItemsByKind(t, st, "t1", itemKindToolCall)
+	if got := TaskIDFromItemMeta(launches[0].Meta); got != "bkulztq41" {
+		t.Fatalf("meta.task_id = %q after second ack, want the first binding kept", got)
+	}
+}
+
+// TestToolCompleteUnflaggedKeepsCodexLaunchFlag is the Codex-side guard
+// for the Claude rule above: a Codex row's is_background is stamped by
+// the projector from wire-typed signals (invariant 25), never by its
+// completion, so an unflagged completion must leave a flagged Codex
+// launch exactly as it was.
+func TestToolCompleteUnflaggedKeepsCodexLaunchFlag(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createCodexTestThread(t, st, "c1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "commandExecution",
+		"input":         map[string]any{"command": "sleep 100"},
+		"is_background": true,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "c1", ItemID: "codex-bg",
+		ItemType: "commandExecution", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "c1", ItemID: "codex-bg",
+		Meta: json.RawMessage(`{}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	launches := findItemsByKind(t, st, "c1", itemKindToolCall)
+	if len(launches) != 1 {
+		t.Fatalf("expected 1 launch row, got %d", len(launches))
+	}
+	if !launches[0].IsBackground || launches[0].Status != statusRunning {
+		t.Fatalf("Codex launch flag is projector-owned; got background=%v status=%q", launches[0].IsBackground, launches[0].Status)
+	}
+}

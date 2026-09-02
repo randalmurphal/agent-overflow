@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/sessionimport"
 )
 
 // parseUser picks up the Claude `user` echo of a prior assistant tool_use.
@@ -269,10 +270,25 @@ func (p *Parser) appendToolResultBlock(
 	//
 	// Five INDEPENDENT signals mark a tool_result as a backgrounded
 	// placeholder (the real terminal arrives later via the task
-	// lifecycle), and any one is sufficient:
+	// lifecycle), and any one is sufficient — plus the §E6 resume
+	// carrier (`resumeCarrier` below), whose evidence is the wire's own
+	// task_started rebind rather than anything on the result. Every
+	// signal is POSITIVE evidence; the launch-time `run_in_background:
+	// true` INPUT flag is never a verdict on its own:
 	//
-	//   1. flaggedAtLaunch — the tool_use carried `run_in_background:true`,
-	//      recorded at assistant-parse time in `backgroundToolUses`.
+	//   1. bashAcked — the launch was flagged `run_in_background:true`
+	//      (`backgroundToolUses`, recorded at assistant-parse time), NO
+	//      `tool_use_result` is present, and the result TEXT is the Bash
+	//      backgrounding ack naming a task id (`sessionimport.BackgroundAckTaskID`,
+	//      claude-wire.md §E2b). The flag alone used to suffice, which is
+	//      how a flagged launch the CLI REFUSED (hook deny, permission
+	//      denial in don't-ask mode — `is_error:true`, no task ever
+	//      started) read as "running in the background" and sat in the
+	//      tray forever with no task_id to stop it by (2026-09-02, ten
+	//      rows across six threads). On a sidechain the ack text is the
+	//      only evidence there is: Claude omits `tool_use_result` on
+	//      sidechain acks (0 of 25 in three weeks of wire logs), so the
+	//      structured marker below never fires for a subagent's shell.
 	//   2. markedOnWire — `tool_use_result.backgroundTaskId` is present.
 	//      This is Claude's authoritative wire marker and the ONLY signal
 	//      when the CLI auto-backgrounds a foreground command that exceeds
@@ -329,9 +345,27 @@ func (p *Parser) appendToolResultBlock(
 	// Signals (2)–(4) are decoded from `tool_use_result` in a
 	// single pass — the sibling can be megabytes of Bash stdout, so
 	// per-signal re-decodes are not acceptable on this path.
-	flaggedAtLaunch := p.isBackground(toolUseID)
+	launchOrigin := p.backgroundOrigin(toolUseID)
+	flaggedAtLaunch := launchOrigin != 0
+	// §E6 — the resume carrier. A `system/task_started` REBOUND a live
+	// local_agent task to this tool_use before its ack arrived; that is
+	// the wire's own statement that the task runs under this id, and the
+	// resuming tool's ack ({success, message, resumedAgentId}) carries no
+	// marker of its own to read.
+	resumeCarrier := launchOrigin == backgroundFromTaskStarted
 	backgroundSignals := readToolResultBackgroundSignals(toolUseResultRaw)
 	markedOnWire := toolResultBackgrounded(backgroundSignals)
+	backgroundTaskID := strings.TrimSpace(backgroundSignals.backgroundTaskID)
+	// §E2b — the sidechain Bash ack. Same conjunctive gating as §E5b
+	// below: no structured sibling (a present one is the sole authority,
+	// and a present one WITHOUT `backgroundTaskId` — the permission-denial
+	// string, an ordinary inline result — is a verdict of "not
+	// backgrounded"), the launch asked for backgrounding, and the text
+	// names the task id the later terminal routes by.
+	bashAcked := false
+	if !markedOnWire && flaggedAtLaunch && len(toolUseResultRaw) == 0 {
+		backgroundTaskID, bashAcked = sessionimport.BackgroundAckTaskID(content)
+	}
 	asyncAgentID, asyncLaunched := toolResultAsyncLaunch(backgroundSignals)
 	// §E5b — the sidechain async-launch ack. A subagent launching its
 	// OWN async agent (depth 2) gets the identical ack body, but the
@@ -368,7 +402,7 @@ func (p *Parser) appendToolResultBlock(
 	}
 	monitorTaskID, monitorLaunched := toolResultMonitorLaunch(backgroundSignals)
 	liveAgentTask := len(toolUseResultRaw) == 0 && p.hasLiveAgentTask(toolUseID)
-	isBackground := flaggedAtLaunch || markedOnWire || asyncLaunched || monitorLaunched || liveAgentTask
+	isBackground := resumeCarrier || bashAcked || markedOnWire || asyncLaunched || monitorLaunched || liveAgentTask
 	// §E9 — a FORKED skill's completion. A skill whose frontmatter forks
 	// runs as a subagent whose rows land on the parent stream with
 	// `parent_tool_use_id` = this Skill tool_use, but it gets no
@@ -381,7 +415,7 @@ func (p *Parser) appendToolResultBlock(
 	forkedAgentID, forkedCommandName, skillForked := toolResultSkillFork(backgroundSignals)
 	events = appendToolResultCompletion(
 		events, threadID, toolUseID, now, line,
-		isBackground, monitorLaunched, skillForked, forkedAgentID, forkedCommandName,
+		isBackground, backgroundTaskID, monitorLaunched, skillForked, forkedAgentID, forkedCommandName,
 		block, content, toolUseResultRaw,
 	)
 	if skillForked {
@@ -404,6 +438,9 @@ func (p *Parser) appendToolResultBlock(
 	}
 	if monitorLaunched {
 		p.rememberTaskToolUse(monitorTaskID, toolUseID)
+	}
+	if (markedOnWire || bashAcked) && backgroundTaskID != "" {
+		p.rememberTaskToolUse(backgroundTaskID, toolUseID)
 	}
 	// ScheduleWakeup ack: no task lifecycle exists behind the pending
 	// wakeup timer, so surface it as its own session-level event —
@@ -542,6 +579,7 @@ func appendToolResultCompletion(
 	now time.Time,
 	line []byte,
 	isBackground bool,
+	backgroundTaskID string,
 	watchTask bool,
 	skillForked bool,
 	skillForkAgentID string,
@@ -570,6 +608,14 @@ func appendToolResultCompletion(
 	}
 	if isBackground {
 		metaFields["is_background"] = true
+		// The Bash ack's task id, so triage can stamp `meta.task_id` on a
+		// launch row whose `system/task_started` never landed (reconnect
+		// gap, or a sidechain row the correlation hold could not reach).
+		// Without it the tray row has nothing to stop by and no terminal
+		// can resolve to it.
+		if backgroundTaskID != "" {
+			metaFields["task_id"] = backgroundTaskID
+		}
 	}
 	if watchTask {
 		// A Monitor watch observes; it never produces the result a queued

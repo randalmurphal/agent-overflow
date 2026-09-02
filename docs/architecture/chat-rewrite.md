@@ -1304,7 +1304,7 @@ additionally:
 |-----------------------------|-------------------------------------------------------------------------------------------------------|
 | `EventTextDelta`            | upsert `assistant_text`; id = `text:<turnId>:<segmentIndex>`; append delta to summary; status=streaming |
 | `EventThinking`             | upsert `thinking`; id = `think:<turn_index>:<block_index>` (block_index monotonic across turn, not per-API-cycle); append delta to summary; preserve `signature` on payload/meta for API replay |
-| `EventToolStart`            | upsert `tool_call`; id = evt.ItemID; status=running; `is_background` only from provider wire facts (Claude `run_in_background` / Task tracking; Codex triage projection from `unifiedExecStartup` and `spawn_agent` child state); tool_name set |
+| `EventToolStart`            | upsert `tool_call`; id = evt.ItemID; status=running; `is_background` only from provider wire facts (Claude `run_in_background` / Task tracking, a launch-time hint the completion then confirms or clears, see turn-lifecycle.md §Status flipping; Codex triage projection from `unifiedExecStartup` and `spawn_agent` child state); tool_name set |
 | `EventToolComplete` inline  | upsert same `tool_call`; status=completed/errored (errored only when is_error=true); attach payload  |
 | `EventToolComplete` bg      | route through `maybeDeferOrPersist` for the new `tool_completion`; summary restates command          |
 | `EventDiff`                 | find/create the related `tool_call`, attach diff as its payload                                       |

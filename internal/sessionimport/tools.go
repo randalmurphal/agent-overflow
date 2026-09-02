@@ -137,7 +137,16 @@ func (b *builder) toolComplete(evt importir.Event) error {
 	if b.splitsCompletion(r.item.ToolName) {
 		return b.splitToolCompletion(evt, metaObject, r, meta, now)
 	}
-	if found && (r.item.IsBackground || meta.IsBackground) && !b.isCodexSpawnLaunch(r) {
+	flaggedAtLaunch := r.item.IsBackground
+	// On Claude the COMPLETION decides: a launch flagged
+	// `run_in_background` can be refused (hook deny, permission denial),
+	// and its result then carries no background marker. Keeping such a
+	// row running on the launch flag alone is the tray-zombie class the
+	// live path closed in triage/tool_lifecycle.go (2026-09-02). Codex
+	// keeps the launch flag authoritative: the rollout reader stamps it
+	// from wire-typed signals, never from a completion (invariant 25).
+	keepRunning := meta.IsBackground || (b.thread.Provider == string(provider.Codex) && flaggedAtLaunch)
+	if found && keepRunning && !b.isCodexSpawnLaunch(r) {
 		// A backgrounded launch's tool_result is a placeholder: the real
 		// terminal arrives later as EventBackgroundTaskTerminal, which
 		// writes the sibling row. Keep the launch running.
@@ -152,9 +161,24 @@ func (b *builder) toolComplete(evt importir.Event) error {
 		// on the completion that created it. A terminal that DOES arrive
 		// later still lands, because it settles the row by id and does not
 		// care what status it was left in.
+		if meta.TaskID != "" && triage.TaskIDFromItemMeta(r.item.Meta) == "" {
+			// A text-only sidechain ack (claude-wire.md §E2b) is the only
+			// place the task id is named; stamp it the way the live path
+			// does so the row keeps its terminal correlation. First
+			// binding wins, as in triage.
+			encoded, _ := json.Marshal(meta.TaskID)
+			r.item.Meta = triage.MergeStoredToolCallMetaObject(r.item.Meta, evt.ItemType, r.item.ToolName,
+				map[string]json.RawMessage{"task_id": encoded})
+		}
 		r.item.IsBackground = true
 		r.item.UpdatedAt = now
 		return b.markUnavailableReason(unavailableReason, r)
+	}
+	if flaggedAtLaunch {
+		// The hint was wrong: settle in place as an ordinary tool row so
+		// nothing lists it as live background work.
+		r.item.IsBackground = false
+		metaObject = cloneWithIsBackgroundFalse(metaObject)
 	}
 
 	r.item.Status = triage.CompletionStatus(meta)
@@ -457,4 +481,16 @@ func (b *builder) shapeItemToolMeta(item *store.Item, now int64) *store.Payload 
 		return nil
 	}
 	return payload
+}
+
+// cloneWithIsBackgroundFalse returns a copy of a completion's meta object
+// with `is_background` pinned to false, so the merge onto a launch row
+// that was flagged at launch overwrites the stale hint in `items.meta`.
+func cloneWithIsBackgroundFalse(metaObject map[string]json.RawMessage) map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(metaObject)+1)
+	for key, value := range metaObject {
+		out[key] = value
+	}
+	out["is_background"] = json.RawMessage("false")
+	return out
 }

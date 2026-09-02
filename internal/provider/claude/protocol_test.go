@@ -472,7 +472,7 @@ func TestParser_BackgroundToolUsePlaceholderCarriesIsBackgroundMeta(t *testing.T
 		t.Fatalf("start: expected is_background=true, got %v", startMeta["is_background"])
 	}
 
-	completeLine := []byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-bg","content":"dev server launched"}]}}`)
+	completeLine := []byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-bg","content":"Command running in background with ID: bdevsrv01. Output is being written to: /tmp/tasks/bdevsrv01.output"}]}}`)
 	completeEvents, err := parser.ParseLine(testThreadProto, completeLine)
 	if err != nil {
 		t.Fatalf("parse complete: %v", err)
@@ -574,7 +574,7 @@ func TestParser_OutOfOrderToolResults(t *testing.T) {
 	// Echo arrives with tool-b's result FIRST, then tool-a's.
 	echoLine := []byte(`{"type":"user","message":{"role":"user","content":[
 		{"type":"tool_result","tool_use_id":"tool-b","content":"127.0.0.1"},
-		{"type":"tool_result","tool_use_id":"tool-a","content":"daemon pid 1234"}
+		{"type":"tool_result","tool_use_id":"tool-a","content":"Command running in background with ID: bdaemon01. Output is being written to: /tmp/tasks/bdaemon01.output"}
 	]}}`)
 	events, err := parser.ParseLine(testThreadProto, echoLine)
 	if err != nil {

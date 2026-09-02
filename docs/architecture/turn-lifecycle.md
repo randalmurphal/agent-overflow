@@ -40,8 +40,11 @@ invocation the agent makes produces exactly one `tool_call` row.
   the exit/stdout result.
 - Backgrounded Claude tools (Bash with `run_in_background:true`,
   Task subagent): completion is the **placeholder** tool_result
-  (`backgroundTaskId: ...`); actual task result lands via the task
-  lifecycle (below).
+  (`backgroundTaskId: ...`, or on a sidechain the text-only ack of
+  claude-wire.md §E2b); actual task result lands via the task
+  lifecycle (below). The launch flag is a hint: a flagged command the
+  CLI refuses completes as an ordinary error, and the completion is
+  what decides.
 - TaskOutput: a regular inline tool the agent may call to retrieve a
   still-retained background task. Its own `tool_use_id`'s completion
   is the retrieval result. Any background-task details it surfaces are
@@ -55,6 +58,7 @@ invocation the agent makes produces exactly one `tool_call` row.
 |---|---|---|
 | No (inline) | N/A | `completed` / `errored` |
 | Yes (Claude Bash or Task) | Placeholder `tool_result` carries `backgroundTaskId` | Stays `running` per spec invariant. Sibling `tool_completion` row arrives later via task lifecycle. |
+| Flagged at launch, refused (Claude) | Ordinary `tool_result` (`is_error:true`, no marker) | `errored` / `completed`, launch flag cleared. On Claude the COMPLETION decides; on Codex the launch flag is wire-stamped (invariant 25) and stays authoritative. |
 
 This per-spec exception exists so the timeline can render both
 "agent dispatched this tool" and "the actual work that got done" as
@@ -232,10 +236,12 @@ to the original launch: the resuming tool_use becomes the resumed
 round's **background carrier**.
 
 - The parser lets `rememberTaskToolUse` rebind normally (no
-  first-binding-wins) and marks the resuming tool_use backgrounded via
-  the same mechanism `run_in_background` launches use, so its own
-  `tool_result` ack, which carries no async marker of its own,
-  still emits `EventToolComplete{is_background:true}`.
+  first-binding-wins) and marks the resuming tool_use backgrounded with
+  a wire-backed origin (`backgroundFromTaskStarted`; the
+  `run_in_background` input hint is a weaker origin that never
+  classifies on its own), so its own `tool_result` ack, which carries no
+  async marker of its own, still emits
+  `EventToolComplete{is_background:true}`.
 - Triage's keep-running flip (§1 above, the `!launch.IsBackground` →
   `IsBackground` transition) additionally resolves the ORIGINAL launch
   row (`resumeCarrierIdentity`, tool_lifecycle.go) — by

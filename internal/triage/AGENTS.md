@@ -89,6 +89,15 @@ subagent-aware path as guilty until it proves scope containment.
   `SettleBackgroundLaunchesForSessionEnd` (session close and death)
   and the boot sweep settle launches at any depth, because the gates'
   exemption is exactly what used to leave nested rows ticking forever.
+- A Claude launch's `is_background` is decided by its COMPLETION, not
+  its launch flag. `handleToolComplete` keeps a launch running only when
+  the completion carries `is_background`; a flagged launch whose
+  completion does not is settled in place with the flag cleared,
+  otherwise a refused `run_in_background` Bash stands in the tray
+  forever with no task id (2026-09-02). Codex is the opposite: the
+  projector stamps the flag from wire-typed signals and completions
+  never carry the verdict (invariant 25), so there the launch flag stays
+  authoritative. `internal/sessionimport`'s writer mirrors both rules.
 - A `system/task_started` meta update can precede its launch row —
   subagent-owned shells announce on the main wire before the owner's
   transcript projection persists the row. `persistToolCallLaunch`

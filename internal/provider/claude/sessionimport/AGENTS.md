@@ -135,6 +135,13 @@ Two translations worth knowing because they are invisible otherwise:
   `tool_use_result`. Convert emits the snake_case key so the writer never
   has to know which side produced the event, and handles both observed
   forms (an object and a bare string).
+- A tool_use's `run_in_background` input only opens a reading; the
+  completion decides. `backgroundToolResult` reads the structured
+  `toolUseResult`, and a flagged launch with none (a sidechain ack)
+  classifies on its text through `BackgroundAckTaskID`, the one rule
+  this package shares with the live parser (claude-wire.md §E2b). A
+  refused flagged launch therefore imports as an ordinary error, and
+  both readings stamp `task_id` on the completion.
 - `MetaImportUnavailableKey` (`itemmeta.ImportUnavailableKey`) is the one
   meta key this package INTRODUCES rather than mirroring from the live
   parser, and `MetaImportUnavailableToolOutputGC` (`"tool-output-gc"`) is
