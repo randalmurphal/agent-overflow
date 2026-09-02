@@ -156,6 +156,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 		return nil
 	}())
+	// The preview listeners come down with the app context, and for the
+	// same reason: they are network-facing, and every request they carry
+	// is proxied into a dev server owned by a session the steps below are
+	// about to close. Recorded only when one was ever built.
+	if a.previewGatewayBuilt() {
+		record("close preview gateway", a.closePreviewGateway())
+	}
 	if a.workflowApplication().HasDefinitionsWatcher() {
 		record("close workflow definitions watcher", a.workflowApplication().CloseDefinitionsWatcher())
 	}

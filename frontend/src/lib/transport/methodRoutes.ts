@@ -215,6 +215,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3197504008: 'thread', // MintAttachmentDownloadTicket
 	1857144453: 'thread', // MintAttachmentUploadTicket
 	400809065: 'home', // MintDevicePairing
+	1471520668: 'thread', // MintPreviewURL
 	3013708277: 'thread', // MoveThreadTerminals
 	2831503793: 'home', // NotificationActivated
 	3362740399: 'home', // OpenExternalURL

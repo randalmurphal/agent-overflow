@@ -97,13 +97,19 @@ const (
 // backend with no tailnet but LAN access on, and it is the reason the
 // gateway takes an ORDERED list of sources rather than one.
 //
-// The address is fixed at construction. A LAN IP that changed means a
-// different network, which is a rebind of the main listener too.
+// The address is answered per bind rather than captured, because LAN
+// access is a setting somebody toggles and the address itself moves with
+// the network.
 type PreviewLANSource struct {
-	// LANIP is the address to bind, or "" when this backend is on
-	// loopback only — in which case the source serves nothing and the
-	// gateway falls through to the next one, or to a note.
-	LANIP string
+	// LANIP answers this machine's LAN address, or "" when the backend
+	// is on loopback only — in which case the source serves nothing and
+	// the gateway falls through to the next one, or to a note.
+	//
+	// A FUNCTION, because the answer moves: LAN access is a setting
+	// somebody toggles, and the address itself changes with the network.
+	// A value captured at construction would leave the gateway binding
+	// an address this machine no longer has.
+	LANIP func() string
 
 	// TLS is the app's certificate configuration, the same object the
 	// main bind serves with. Nil means there is no certificate at all,
@@ -112,20 +118,20 @@ type PreviewLANSource struct {
 }
 
 // PreviewLANSource returns the LAN source for this server's certificate
-// configuration. The address is the caller's, because which of this
-// machine's addresses is "the LAN one" is a question this package does
-// not answer.
-func (s *Server) PreviewLANSource(lanIP string) *PreviewLANSource {
+// configuration. The address is the caller's to answer, because which of
+// this machine's addresses is "the LAN one" is a question this package
+// does not decide.
+func (s *Server) PreviewLANSource(lanIP func() string) *PreviewLANSource {
 	return &PreviewLANSource{LANIP: lanIP, TLS: s.tlsConfig}
 }
 
 // PreviewHost is the LAN address, or "" when there is nothing to serve
 // on or nothing to serve it with.
 func (p *PreviewLANSource) PreviewHost() string {
-	if p == nil || p.LANIP == "" || p.TLS == nil {
+	if p == nil || p.LANIP == nil || p.TLS == nil {
 		return ""
 	}
-	return p.LANIP
+	return p.LANIP()
 }
 
 // ListenPreview binds this machine's LAN address on port, under TLS.
@@ -134,10 +140,11 @@ func (p *PreviewLANSource) PreviewHost() string {
 // server already holds the same port on loopback, and a wildcard bind
 // would collide with it on every machine.
 func (p *PreviewLANSource) ListenPreview(port int) (net.Listener, error) {
-	if p.PreviewHost() == "" {
+	host := p.PreviewHost()
+	if host == "" {
 		return nil, errors.New("no LAN address to serve previews on")
 	}
-	ln, err := net.Listen("tcp", net.JoinHostPort(p.LANIP, strconv.Itoa(port)))
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return nil, err
 	}

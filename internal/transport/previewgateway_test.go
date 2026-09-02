@@ -132,7 +132,7 @@ func TestABindCollisionBecomesTheNoteAPersonReads(t *testing.T) {
 	port, _ := strconv.Atoi(portText)
 
 	gw := NewPreviewGateway(PreviewGatewayConfig{
-		Sources: []PreviewListenerSource{&PreviewLANSource{LANIP: "127.0.0.1", TLS: testTLSConfig(t)}},
+		Sources: []PreviewListenerSource{&PreviewLANSource{LANIP: func() string { return "127.0.0.1" }, TLS: testTLSConfig(t)}},
 	})
 	defer gw.Close()
 

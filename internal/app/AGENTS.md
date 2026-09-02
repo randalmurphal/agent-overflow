@@ -552,6 +552,25 @@ WHO the owners are, and WHEN a scan is worth doing.
   never errors. So the loop exits, and the RPC answers with the same
   sentence rather than an empty list, which would read as "nothing is
   listening".
+- **The gateway is the App's, one per process, built on first reconcile**
+  (`previewGateway`). It needs the transport server, so it is nil in every
+  fixture that never called `SetTransportServer` — and a nil gateway means
+  the list is still published, with nothing served behind it. `Shutdown`
+  closes it, which ends every preview URL the backend had handed out.
+- **The list may only call a port shareable when a listener is actually
+  serving it.** `reconcilePreviewListeners` runs BEFORE the list is
+  published: it hands the allowed set to `SetPorts`, then clears `allowed`
+  on every row the gateway is not serving and copies the gateway's own
+  note onto it. `MintPreviewURL` therefore agrees with the list by
+  construction rather than by a second derivation.
+- **`previewHost` asks the SOURCES, in order**, through the same
+  `previewSources` list the gateway binds through
+  (`app_preview_source.go`): the tailnet node's MagicDNS name first, this
+  machine's LAN address second. Deriving the address separately is how the
+  screen would come to show a host nothing is listening on. Both sources
+  are TLS-only, with no cleartext fallback: the preview cookie is
+  `Secure`, so a tailnet with HTTPS turned off (no `CertDomains`) has no
+  preview address at all, and says so.
 - **`previewScanner` refuses to build a real scanner inside a test
   binary**, the same shape as `resolveTextGenerationExecutor`. A real scan
   dials every candidate loopback port, and on a developer's machine those

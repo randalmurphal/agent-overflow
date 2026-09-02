@@ -409,6 +409,21 @@ func (a *App) tailnetRetryDelay() time.Duration {
 	return delay
 }
 
+// tailnetNodeStatus is the NODE's own status, not the wire projection.
+// The previews need one field the wire shape does not carry — whether
+// the tailnet has certificate domains at all — and inventing a second
+// projection for one boolean would be two answers to one question.
+// Reports false when the feature is off and no node exists.
+func (a *App) tailnetNodeStatus() (tailnet.Status, bool) {
+	a.tailnet.mu.Lock()
+	node := a.tailnet.node
+	a.tailnet.mu.Unlock()
+	if node == nil {
+		return tailnet.Status{}, false
+	}
+	return node.Status(), true
+}
+
 // tailnetStatus is the read-only half the settings screen shows.
 func (a *App) tailnetStatus() network.TailnetStatus {
 	a.tailnet.mu.Lock()

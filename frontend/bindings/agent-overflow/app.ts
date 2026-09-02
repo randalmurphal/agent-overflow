@@ -2814,6 +2814,24 @@ export function MintDevicePairing(deviceClass: string, access: string): $Cancell
 }
 
 /**
+ * MintPreviewURL returns the URL that opens a thread's dev server from
+ * the device asking. The ticket it carries is single-use, expires in a
+ * minute and is bound to (this caller, this port), so the URL is worth
+ * nothing to anyone else and nothing at all after it is opened once.
+ * 
+ * The path is the dev server's own, taken verbatim from the link the
+ * person clicked and preserved byte for byte: a dev server routes its
+ * hot-reload upgrade only when the path matches exactly.
+ * 
+ * The thread is what ROUTES the call — the preview lives on the machine
+ * running that thread — and it is deliberately not what authorizes it.
+ * `preview:open` is, on the machine that answers.
+ */
+export function MintPreviewURL(threadID: string, port: number, path: string): $CancellablePromise<string> {
+    return $Call.ByID(1471520668, threadID, port, path);
+}
+
+/**
  * MoveThreadTerminals rekeys live terminal sessions from a placeholder thread
  * id to the materialized thread id without restarting their PTYs.
  */

@@ -144,6 +144,11 @@ credential or scope gate applies to it, because none of those bytes are ours.
   will not store one from a cleartext origin that is not localhost. A tailnet
   with HTTPS turned off therefore has no preview address, which the list says
   rather than silently serving something that cannot hold a cookie.
+- **The address is asked per bind, never captured.** Every source answers
+  `PreviewHost()` immediately before each bind: a tailnet node comes and goes,
+  and `PreviewLANSource.LANIP` is a FUNCTION because LAN access is a setting
+  somebody toggles and the address moves with the network. A source that
+  answers "" is skipped, so the ordered list is the whole address policy.
 - **`SetPorts` reconciles; it does not rebuild.** It runs on every discovery
   tick, so an unchanged port keeps the listener it had — rebinding three times
   a second would drop every live HMR socket. A failed bind is a NOTE on that

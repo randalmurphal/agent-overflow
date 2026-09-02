@@ -11,8 +11,8 @@ import (
 
 	"agent-overflow/internal/devscan"
 	"agent-overflow/internal/eventchan"
-	"agent-overflow/internal/network"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/transport"
 )
 
 // The dev-server list: which loopback ports on this machine are serving
@@ -73,6 +73,11 @@ type previewState struct {
 	// last is the newest published list, so a caller that arrives between
 	// ticks is answered without a scan of its own.
 	last []devscan.DevServer
+	// gateway holds this machine's preview listeners. Built on first use
+	// from the running transport server, and nil in every fixture that
+	// never called Start, which is what makes discovery work on its own
+	// with nothing served behind it.
+	gateway *transport.PreviewGateway
 }
 
 // startDevServerPreviews starts the discovery loop. Called from Start;
@@ -141,15 +146,55 @@ func (a *App) scanDevServers(ctx context.Context) ([]devscan.DevServer, error) {
 		return nil, err
 	}
 
+	// Reconcile BEFORE publishing, so the notes the list carries describe
+	// the listeners it is describing rather than the previous pass's.
+	servers = a.reconcilePreviewListeners(servers)
+
 	a.preview.mu.Lock()
 	a.preview.last = servers
 	a.preview.mu.Unlock()
 
-	a.emit(eventchan.DevServerList, devscan.DevServerList{
+	a.emit(eventchan.DevServerList, a.devServerList(servers))
+	return servers, nil
+}
+
+// reconcilePreviewListeners moves the gateway's served set to match the
+// scan, then folds the gateway's answer back into the rows: a port that
+// is in the set but has no listener carries the sentence saying why, and
+// stops claiming it is allowed. "Allowed" on a row is a promise that a
+// link will work, and a promise nothing can keep is worse than a refusal.
+func (a *App) reconcilePreviewListeners(servers []devscan.DevServer) []devscan.DevServer {
+	gateway := a.previewGateway()
+	if gateway == nil {
+		return servers
+	}
+	gateway.SetPorts(devscan.PreviewPorts(servers))
+
+	notes := gateway.Notes()
+	served := make(map[int]struct{}, len(servers))
+	for _, port := range gateway.Ports() {
+		served[port] = struct{}{}
+	}
+	for i := range servers {
+		if !servers[i].Allowed {
+			continue
+		}
+		if _, ok := served[servers[i].Port]; ok {
+			continue
+		}
+		servers[i].Allowed = false
+		servers[i].Note = notes[servers[i].Port]
+	}
+	return servers
+}
+
+// devServerList wraps the rows with the address a preview URL on this
+// machine would name.
+func (a *App) devServerList(servers []devscan.DevServer) devscan.DevServerList {
+	return devscan.DevServerList{
 		Servers:     servers,
 		PreviewHost: a.previewHost(),
-	})
-	return servers, nil
+	}
 }
 
 // devServerScanner is what app_preview.go needs of a scan.
@@ -231,19 +276,102 @@ func (a *App) devServerOwners() []devscan.Owner {
 	return owners
 }
 
-// previewHost is the authority a preview URL on this machine names. The
-// tailnet name wins: it works from anywhere the owner's devices are,
-// while the LAN address only works on this network. Empty means this
-// backend has no address to share a preview on at all, which the client
-// renders as its own sentence rather than as a broken link.
-func (a *App) previewHost() string {
-	if status := a.tailnetStatus(); status.Running && status.DNSName != "" {
-		return status.DNSName
+// previewGateway returns the App's one gateway, building it on the first
+// reconcile. Nil until the transport server is wired, which is every
+// fixture that never called Start — and a nil gateway means the list is
+// published with no listeners behind it rather than not published.
+func (a *App) previewGateway() *transport.PreviewGateway {
+	srv := a.transportServer.Load()
+	if srv == nil {
+		return nil
 	}
-	if a.currentSettings().Network.BindAll {
-		return network.DiscoverLocalLANIP()
+
+	a.preview.mu.Lock()
+	defer a.preview.mu.Unlock()
+	if a.preview.gateway == nil {
+		a.preview.gateway = transport.NewPreviewGateway(transport.PreviewGatewayConfig{
+			// Both sources read their own state on every bind, so the
+			// list is built once and never goes stale.
+			Sources: a.previewSources(srv),
+			// The same conjunction every other path consults, asked
+			// fresh on every request: a session admits work only while
+			// its own row and its device's row are both unrevoked.
+			SessionLive: srv.SessionLive,
+		})
+	}
+	return a.preview.gateway
+}
+
+// previewGatewayBuilt reports whether a gateway was ever built, without
+// building one. Shutdown asks so a backend that served no preview does
+// not record a step it never took.
+func (a *App) previewGatewayBuilt() bool {
+	a.preview.mu.Lock()
+	defer a.preview.mu.Unlock()
+	return a.preview.gateway != nil
+}
+
+// closePreviewGateway retires every preview listener and every grant it
+// handed out. Called from Shutdown; a backend that restarted ends the
+// previews it was serving.
+func (a *App) closePreviewGateway() error {
+	a.preview.mu.Lock()
+	gateway := a.preview.gateway
+	a.preview.gateway = nil
+	a.preview.mu.Unlock()
+	if gateway != nil {
+		gateway.Close()
+	}
+	return nil
+}
+
+// previewHost is the authority a preview URL on this machine names, and
+// it is the SOURCES that answer it — the same objects the gateway binds
+// through, asked the same way. Deriving it separately here is how the
+// screen would come to show an address nothing is listening on.
+//
+// Empty means this backend has no address to share a preview on at all,
+// which the client renders as its own sentence rather than as a broken
+// link.
+func (a *App) previewHost() string {
+	srv := a.transportServer.Load()
+	if srv == nil {
+		return ""
+	}
+	for _, source := range a.previewSources(srv) {
+		if host := source.PreviewHost(); host != "" {
+			return host
+		}
 	}
 	return ""
+}
+
+// MintPreviewURL returns the URL that opens a thread's dev server from
+// the device asking. The ticket it carries is single-use, expires in a
+// minute and is bound to (this caller, this port), so the URL is worth
+// nothing to anyone else and nothing at all after it is opened once.
+//
+// The path is the dev server's own, taken verbatim from the link the
+// person clicked and preserved byte for byte: a dev server routes its
+// hot-reload upgrade only when the path matches exactly.
+//
+// The thread is what ROUTES the call — the preview lives on the machine
+// running that thread — and it is deliberately not what authorizes it.
+// `preview:open` is, on the machine that answers.
+//
+//ao:scope preview:open
+func (a *App) MintPreviewURL(ctx context.Context, threadID string, port int, path string) (string, error) {
+	if threadID == "" {
+		return "", fmt.Errorf("a preview URL is minted for a thread; none was named")
+	}
+	gateway := a.previewGateway()
+	if gateway == nil {
+		return "", fmt.Errorf("this backend is not serving previews")
+	}
+	// The caller's own session is the principal. A call with no session
+	// is the page on this machine, whose principal is the host presence
+	// itself — an empty id, which the gateway reads as exactly that.
+	return gateway.MintURL(transport.SessionFromContext(ctx), port, path)
 }
 
 // GetDevServers returns this machine's dev-server list.

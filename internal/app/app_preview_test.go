@@ -199,3 +199,100 @@ func TestDevServerOwnersAreEmptyWithNothingRunning(t *testing.T) {
 		t.Fatalf("owners = %+v, want none", owners)
 	}
 }
+
+// Nothing below binds a preview listener. A gateway on a loopback-only
+// backend with no tailnet has no address to serve on, so every port in
+// the set lands as a note, which is exactly the state these assert.
+
+// A backend nobody wired a transport server into serves no previews, and
+// says so rather than handing back a link to nowhere.
+func TestMintPreviewURLRefusesWithNoTransportServer(t *testing.T) {
+	app := newPreviewTestApp(t, &fakeScanner{})
+
+	if app.previewGateway() != nil {
+		t.Fatal("a gateway was built with no transport server behind it")
+	}
+	if _, err := app.MintPreviewURL(context.Background(), "thread-a", 5173, "/"); err == nil {
+		t.Fatal("a preview URL was minted on a backend serving no previews")
+	}
+	// The thread is what routes the call, so a call without one is a bug
+	// in the caller and is named as such.
+	if _, err := app.MintPreviewURL(context.Background(), "", 5173, "/"); err == nil {
+		t.Fatal("a preview URL was minted for no thread")
+	}
+}
+
+// One gateway per App: the listeners and the grants are its state, so a
+// second one would serve a set nobody reconciles and hand out cookies
+// nobody honours.
+func TestThePreviewGatewayIsBuiltOnceAndClosedOnce(t *testing.T) {
+	app := newPreviewTestApp(t, &fakeScanner{})
+	app.SetTransportServer(startTestTransportServer(t))
+
+	first := app.previewGateway()
+	if first == nil {
+		t.Fatal("no gateway was built with a transport server wired")
+	}
+	if second := app.previewGateway(); second != first {
+		t.Fatal("a second gateway was built")
+	}
+	if !app.previewGatewayBuilt() {
+		t.Fatal("previewGatewayBuilt said no after one was built")
+	}
+
+	if err := app.closePreviewGateway(); err != nil {
+		t.Fatalf("closePreviewGateway: %v", err)
+	}
+	if app.previewGatewayBuilt() {
+		t.Fatal("the gateway survived its close")
+	}
+}
+
+// The list may only call a port shareable when a listener is actually
+// serving it. Here nothing can be: no tailnet, loopback bind, so the row
+// comes back refused with the gateway's own sentence on it.
+func TestAllowedPortsWithNowhereToServeThemComeBackRefused(t *testing.T) {
+	scanner := &fakeScanner{servers: []devscan.DevServer{
+		{Port: 5173, ThreadID: "thread-a", Allowed: true, Source: devscan.SourceAttributed, Listening: true},
+	}}
+	app := newPreviewTestApp(t, scanner)
+	app.SetTransportServer(startTestTransportServer(t))
+	t.Cleanup(func() { _ = app.closePreviewGateway() })
+
+	list, err := app.GetDevServers(context.Background())
+	if err != nil {
+		t.Fatalf("GetDevServers: %v", err)
+	}
+	if len(list.Servers) != 1 {
+		t.Fatalf("servers = %+v", list.Servers)
+	}
+	row := list.Servers[0]
+	if row.Allowed {
+		t.Fatal("a port with no listener behind it was published as shareable")
+	}
+	if row.Note == "" {
+		t.Fatal("a refused row carries no sentence saying why")
+	}
+	// And the mint agrees with the list: one refusal, not two answers.
+	if _, err := app.MintPreviewURL(context.Background(), "thread-a", 5173, "/"); err == nil {
+		t.Fatal("a URL was minted for a port the list refused")
+	}
+}
+
+// previewHost is the sources' answer, not a second derivation of it. On
+// a loopback-only backend with no tailnet neither source can serve, so
+// the host is empty and the client renders its own sentence.
+func TestPreviewHostIsEmptyWhenNoSourceCanServe(t *testing.T) {
+	app := newPreviewTestApp(t, &fakeScanner{})
+	if host := app.previewHost(); host != "" {
+		t.Fatalf("previewHost = %q with no transport server", host)
+	}
+
+	app.SetTransportServer(startTestTransportServer(t))
+	if host := app.previewHost(); host != "" {
+		t.Fatalf("previewHost = %q on a loopback-only backend with no tailnet", host)
+	}
+	if len(app.previewSources(app.transportServer.Load())) != 2 {
+		t.Fatal("the source order is the whole address policy; both must be present")
+	}
+}

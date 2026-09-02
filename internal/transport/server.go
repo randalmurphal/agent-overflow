@@ -1279,6 +1279,12 @@ func (s *Server) sessionStillLive(sessionID string) bool {
 // entirely when nobody would receive it.
 func (s *Server) HasRemoteClient() bool { return s.remoteConns.Load() > 0 }
 
+// SessionLive is the exported form of the same conjunction every path in
+// here consults: a session admits work only while its own row and its
+// DEVICE's row are both unrevoked. Exported for the preview gateway,
+// which runs its own listeners and has to re-ask on every request.
+func (s *Server) SessionLive(sessionID string) bool { return s.sessionStillLive(sessionID) }
+
 // MarkReady releases a readiness-gated bootstrap endpoint.
 func (s *Server) MarkReady() { s.ready.Store(true) }
 
