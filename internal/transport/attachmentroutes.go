@@ -360,7 +360,7 @@ func (s *Server) handleAttachmentDownload(w http.ResponseWriter, r *http.Request
 	}
 	defer content.Content.Close()
 
-	extendAttachmentDeadline(w, false)
+	extendTransferDeadline(w, false)
 	h := w.Header()
 	WriteSecurityHeaders(h, s.csp)
 	// no-store, not no-cache: the URL that fetched these bytes carried a
@@ -407,7 +407,7 @@ func (s *Server) handleAttachmentUpload(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "size mismatch", http.StatusBadRequest)
 		return
 	}
-	extendAttachmentDeadline(w, true)
+	extendTransferDeadline(w, true)
 	upload.Body = http.MaxBytesReader(w, r.Body, upload.Size)
 
 	record, err := transfer.StoreAttachment(upload)
@@ -431,10 +431,15 @@ func (s *Server) handleAttachmentUpload(w http.ResponseWriter, r *http.Request) 
 	_, _ = w.Write(record)
 }
 
-// extendAttachmentDeadline replaces this request's read or write deadline
+// extendTransferDeadline replaces this request's read or write deadline
 // with the transfer window. Failing to set one is not fatal: the server's
 // own timeout still applies, which is the behavior without this call.
-func extendAttachmentDeadline(w http.ResponseWriter, read bool) {
+//
+// Shared with the bundle archive route (bundleroutes.go), which serves the
+// largest body on this listener and needs the same arithmetic: one window
+// for every route on this mux whose payload is bytes rather than a
+// message.
+func extendTransferDeadline(w http.ResponseWriter, read bool) {
 	controller := http.NewResponseController(w)
 	deadline := time.Now().Add(AttachmentTransferWindow)
 	var err error

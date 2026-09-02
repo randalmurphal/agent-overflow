@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"agent-overflow/internal/bundle"
 	"agent-overflow/internal/loopback"
 	"agent-overflow/internal/pagehost"
 
@@ -298,6 +299,17 @@ type Config struct {
 	// That is every boot before the App's startup wires it, and every test
 	// that does not ask for byte transfer.
 	AttachmentTransfer AttachmentTransfer
+
+	// Bundle is the SPA this backend serves, as the two bundle routes and
+	// the hello frame publish it (bundleroutes.go, internal/bundle).
+	//
+	// Optional — when nil the routes answer the same 404 an unpaired
+	// caller gets and the hello frame omits its three bundle fields,
+	// which a shell reads as "this backend does not supply bundles" and
+	// keeps running what it has. That is every test fixture and every
+	// boot whose assets are a live dev server rather than an embedded
+	// tree: a dev bundle is not something a phone should stage.
+	Bundle *bundle.Bundle
 
 	// CDPTunnel consumes the Windows launcher's CDP relay connection on
 	// CDPTunnelPath. Optional — when nil the route is not
@@ -867,6 +879,23 @@ func (s *Server) buildHTTPServer() *http.Server {
 	mux.HandleFunc(AttachmentUploadPath, withShellCORS(http.MethodPut,
 		s.loopbackHostGuard(s.handleAttachmentUpload)))
 	mux.HandleFunc(AttachmentUploadPreflightPath, shellPreflightHandler(http.MethodPut))
+	// The bundle routes. Registered unconditionally for the reason the
+	// attachment pair is: a route whose presence depended on when the mux
+	// happened to be built would be a boot whose shape varies. With no
+	// Config.Bundle they answer the same 404 a caller with no session
+	// gets.
+	//
+	// No rate limiter. Both demand a live paired session plus its device
+	// proof, so there is no request an unadmitted caller can repeat for
+	// free, and the one client that IS admitted asks at most twice per
+	// update. Method-qualified for the same reason as the attachment
+	// pair, so each brings its own OPTIONS pattern.
+	mux.HandleFunc(BundleManifestPath, withShellCORS(http.MethodGet,
+		s.loopbackHostGuard(s.handleBundleManifest)))
+	mux.HandleFunc(BundleManifestPreflightPath, shellPreflightHandler(http.MethodGet))
+	mux.HandleFunc(BundleArchivePath, withShellCORS(http.MethodGet,
+		s.loopbackHostGuard(s.handleBundleArchive)))
+	mux.HandleFunc(BundleArchivePreflightPath, shellPreflightHandler(http.MethodGet))
 	// The ticket route needs no AuthEndpoints — it mints from the session
 	// the caller already holds — so it is registered whenever a session
 	// can be resolved at all.
@@ -1923,6 +1952,22 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		backendID, _ = s.cfg.BackendIdentity()
 	}
 
+	// The bundle this backend serves, for the one client that has to
+	// compare it against something it already holds. Read per accept
+	// because the manifest is cached behind a sync.Once — the first
+	// connection of a process pays the walk on this goroutine, and every
+	// later one is a struct copy. A backend whose manifest cannot be
+	// built omits all three fields rather than advertising a partial
+	// answer; the failure is logged where the routes serve it.
+	bundleID, bundleVersion, minShellBuild := "", "", 0
+	if s.cfg.Bundle != nil {
+		if manifest, err := s.cfg.Bundle.Manifest(); err == nil {
+			bundleID = manifest.ID
+			bundleVersion = manifest.Version
+			minShellBuild = manifest.MinShellBuild
+		}
+	}
+
 	// Use the server's root context so Shutdown can cancel us promptly,
 	// not r.Context() which net/http only cancels on connection close.
 	runConnHandler(s.rootCtx, conn, s.cfg.Dispatcher, s.cfg.EventBus, connSettings{
@@ -1944,7 +1989,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			// client measure its own skew against this backend, which a
 			// value cached at boot would silently corrupt by the process
 			// uptime.
-			ServerTimeMs: time.Now().UnixMilli(),
+			ServerTimeMs:  time.Now().UnixMilli(),
+			BundleID:      bundleID,
+			BundleVersion: bundleVersion,
+			MinShellBuild: minShellBuild,
 		},
 	}, profile)
 	// Best-effort close. Read errors above already represent a closed

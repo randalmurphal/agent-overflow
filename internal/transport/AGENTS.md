@@ -297,7 +297,8 @@ needs no "have I been told yet" branch on every other frame. Racing it
 against the pump would make that guarantee probabilistic.
 
 It carries `protocolVersion`, `capabilities`, `backendId`,
-`backendName`, and `serverTimeMs`.
+`backendName`, `serverTimeMs`, and the three bundle fields
+(`bundleId`, `bundleVersion`, `minShellBuild`).
 
 - **Nothing gates on the version.** Features negotiate through capability
   flags: a client asks "does this backend have X" and degrades on the
@@ -336,6 +337,20 @@ It carries `protocolVersion`, `capabilities`, `backendId`,
 - `serverTimeMs` is sampled per accept, not cached at boot: the field
   exists so a client can measure its own skew, and a cached value would
   be wrong by the process uptime.
+- **The three bundle fields are on the frame, not behind a route**
+  (wave 6g-a). They describe the SPA this backend serves — `bundleId`
+  is `internal/bundle`'s CONTENT id, `bundleVersion` is `main.version`,
+  `minShellBuild` is the lowest Android `versionCode` this bundle's
+  native seams can run on. The one client that reads them compares them
+  against something it already holds on every connection, so a shell
+  that had to fetch a document to learn "nothing changed" would pay a
+  round trip per connect forever. All three are omitted when
+  `Config.Bundle` is nil or its manifest cannot be built, which reads as
+  "this backend does not supply bundles" — the same answer a backend too
+  old to send them gives, and the one that leaves a phone running what
+  it has. The manifest behind them is cached behind a `sync.Once`, so
+  the first connection of a process pays the walk on its own goroutine
+  and every later one is a struct copy.
 
 Every frame consumer must ignore what it does not recognize — unknown
 frame types, unknown event channels, and unknown fields on frames it does
@@ -897,6 +912,58 @@ the phone waves and is a design of its own.
 
 `GetAttachmentThumbnail` stays an RPC. ~10-30 KB is not a large body, and a grid
 would pay a mint round trip per tile.
+
+## The backend is the phone's update server
+
+`bundleroutes.go` (wave 6g-a), over `internal/bundle`. Two reads, and
+between them they are the whole update channel for the one client that
+carries a bundle of its own:
+
+| route | answers |
+|---|---|
+| `GET /bundle/manifest.json` | the SHA-256 manifest: path, digest and size per file, plus the content id and `minShellBuild` |
+| `GET /bundle/archive.zip` | exactly those files, deflated, through `http.ServeContent` |
+
+**The credential is the paired SESSION, not the page cookie.** Both run
+the check `/bootstrap.json` falls back to — `sessionAdmitsRequest`, which
+is a live session credential in `X-AO-Session` plus the device proof its
+enrolment bound. Refusing the cookie is a property of the CONSUMER rather
+than a hardening choice: the consumer is a page at `ShellOrigin`, which
+holds no cookie for this backend and could not be sent one, so admitting
+it would only widen the door to something this surface cannot revoke. A
+caller naming no session gets the same unfingerprintable 404 an unpaired
+remote gets at the manifest — loopback pages included, which is the plain
+consequence of the rule rather than an exception carved out for them.
+
+**The tier rule, and where its gate goes.** The spec states that only
+OWNER-TIER backends may supply bundles: peer and hub connections never
+push executable content, because one misbehaving owner-tier backend can
+reach the phone's device key and its other backends' credentials through
+an update. Every session this backend can issue today is owner-tier, so
+there is nothing to compare and no gate is written. When those tiers
+exist the comparison belongs in `bundleSessionAdmits`, beside the session
+lookup — one place, not a tier test in two handlers.
+
+**CORS is the shell's, exactly as the attachment routes have it.** Both
+patterns are method-qualified, so each registers its own `OPTIONS`
+pattern; without it the mux answers 405 to the preflight and the browser
+never sends the real request.
+
+**Neither route is rate limited.** Both demand a live paired session, so
+there is no request an unadmitted caller can repeat for free, and the one
+admitted client asks at most twice per update.
+
+The archive rides `http.ServeContent` so Range comes free (a phone that
+lost a 5 MB transfer at 90% resumes it) and `extendTransferDeadline`
+gives it the same window the attachment bytes get — it is the largest
+body this listener serves. No `Last-Modified` is published: the archive
+carries no timestamps by construction, and inventing one would invite
+revalidation against a clock rather than against the content id the hello
+frame already gave the client.
+
+`Config.Bundle` is nil on a dev-server boot, which leaves both routes
+answering 404 and the hello frame silent. A bundle that changes on every
+save is not something a phone should stage.
 
 ## Per-peer request budgets
 

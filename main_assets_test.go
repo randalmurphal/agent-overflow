@@ -12,7 +12,7 @@ var testAssets embed.FS
 func TestBuildAssetHandlerIgnoresDevServerEnvInProductionBinary(t *testing.T) {
 	t.Setenv("FRONTEND_DEVSERVER_URL", "http://127.0.0.1:9")
 
-	handler, devProxy, err := buildAssetHandler(testAssets, false)
+	handler, devProxy, _, err := buildAssetHandler(testAssets, false)
 	if err != nil {
 		t.Fatalf("buildAssetHandler: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestBuildAssetHandlerIgnoresDevServerEnvInProductionBinary(t *testing.T) {
 func TestBuildAssetHandlerUsesDevServerWhenAllowed(t *testing.T) {
 	t.Setenv("FRONTEND_DEVSERVER_URL", "http://127.0.0.1:9")
 
-	handler, devProxy, err := buildAssetHandler(testAssets, true)
+	handler, devProxy, _, err := buildAssetHandler(testAssets, true)
 	if err != nil {
 		t.Fatalf("buildAssetHandler: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestBuildAssetHandlerReportsNoDevProxyWithoutTheEnvVar(t *testing.T) {
 	// embedded bundle, and that boot must ship the strict policy.
 	t.Setenv("FRONTEND_DEVSERVER_URL", "")
 
-	handler, devProxy, err := buildAssetHandler(testAssets, true)
+	handler, devProxy, _, err := buildAssetHandler(testAssets, true)
 	if err != nil {
 		t.Fatalf("buildAssetHandler: %v", err)
 	}

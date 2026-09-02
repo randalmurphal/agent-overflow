@@ -794,6 +794,83 @@ var Routes = []Route{
 			"waves and every body here is at most 10 MiB.",
 	},
 	{
+		Pattern:    "GET /bundle/manifest.json",
+		Listener:   "app transport",
+		Credential: CredSessionCredential,
+		Posture:    PostureStructured,
+		Why: "The SHA-256 manifest of the SPA this backend serves, and " +
+			"half of the phone shell's update channel (internal/bundle, " +
+			"docs/specs/remote-access.md §9). The credential is the PAIRED " +
+			"session and deliberately not the page cookie — the same check " +
+			"/bootstrap.json falls back to, session credential plus the " +
+			"device proof its enrolment bound. That is a property of the " +
+			"consumer rather than a hardening choice: the consumer is a " +
+			"page at transport.ShellOrigin, which holds no cookie for this " +
+			"backend and could not be sent one, so admitting the cookie " +
+			"would only widen the door to something this surface cannot " +
+			"revoke. A caller naming no session gets the same 404 an " +
+			"unpaired remote gets at the manifest, loopback pages included. " +
+			"What leaves is a list of paths, digests and sizes — no bytes " +
+			"of the bundle itself — under no-store, because a cached copy " +
+			"would let a shell decide against a manifest the backend has " +
+			"already replaced. TIER RULE (spec §9): only owner-tier " +
+			"backends may supply bundles, since one that misbehaves can " +
+			"reach the phone's device key through an update; every session " +
+			"this backend can issue today is owner-tier, so the comparison " +
+			"has nothing to compare and the gate to add when peer and hub " +
+			"sessions exist belongs in bundleSessionAdmits. Not rate " +
+			"limited: a live paired session is required, so no unadmitted " +
+			"caller can repeat the request for free.",
+	},
+	{
+		Pattern:    "OPTIONS /bundle/manifest.json",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureNone,
+		Why: "The manifest route's CORS preflight, and it exists only " +
+			"because that route is registered method-qualified: the mux " +
+			"answers an unmatched method with 405, which a browser reads " +
+			"as a refused preflight and the fetch never starts. No " +
+			"credential by specification (a browser strips them from a " +
+			"preflight), no work, and nothing disclosed: 204 with the " +
+			"allow headers for the one admitted origin, and the " +
+			"listener's ordinary 404 for anybody else.",
+	},
+	{
+		Pattern:    "GET /bundle/archive.zip",
+		Listener:   "app transport",
+		Credential: CredSessionCredential,
+		Posture:    PostureAppOrigin,
+		Why: "The other half: the deflated zip of exactly the files the " +
+			"manifest names, which a paired shell unzips and then RUNS as " +
+			"its application. It is the build's own bundle, which is what " +
+			"makes PostureAppOrigin the honest classification even though " +
+			"nothing executes it at THIS origin — the bytes are the app, " +
+			"and the surface that hands them over is handing over code. " +
+			"Same credential and same tier rule as the manifest beside it, " +
+			"for the same reason; the spec's ruling (2026-09-01) is that " +
+			"release signing is cut and the paired session over pinned TLS " +
+			"IS the integrity boundary, with each file verified against " +
+			"the manifest served on that same session, so a bundle is " +
+			"exactly as trusted as the backend the device chose to pair " +
+			"with. Served through http.ServeContent so Range comes free — " +
+			"a phone that lost a 5 MB transfer at 90% resumes it — under " +
+			"no-store and with the transfer window that replaces the " +
+			"server's 60s write timeout, since this is the largest body " +
+			"this listener serves. No modification time is published: the " +
+			"archive carries none by construction, and inventing one would " +
+			"invite revalidation against a clock rather than against the " +
+			"content id the hello frame already gave the client.",
+	},
+	{
+		Pattern:    "OPTIONS /bundle/archive.zip",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureNone,
+		Why: "The archive route's preflight, for the reason its manifest " +
+			"sibling has one. Same shape, same answers.",
+	},
+	{
 		Pattern:    "/browser-cdp",
 		Listener:   "app transport",
 		Credential: CredPageSession,

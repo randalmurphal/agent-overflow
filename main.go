@@ -26,6 +26,7 @@ import (
 	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/attachedbackends"
+	"agent-overflow/internal/bundle"
 	"agent-overflow/internal/cdprelay"
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/harness/darwinbundle"
@@ -377,7 +378,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	appService.SetEventBus(bus)
 
 	phaseStarted = time.Now()
-	assetHandler, devAssetProxy, err := buildAssetHandler(assets, isNativeDevMode() || opts.AllowDevServerAssets)
+	assetHandler, devAssetProxy, spaBundle, err := buildAssetHandler(assets, isNativeDevMode() || opts.AllowDevServerAssets)
 	if err != nil {
 		fatalf("transport: build asset handler: %v", err)
 	}
@@ -460,6 +461,12 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// reads its attachment store per call, so the store opening during
 		// ServiceStartup is not a problem this config has to sequence.
 		AttachmentTransfer: appservice.AttachmentTransfer(appService.App),
+		// The SPA a paired phone shell downloads from this backend
+		// (internal/bundle, docs/specs/remote-access.md §9). Nil on a
+		// dev-server boot, which leaves the two routes answering 404 and
+		// the hello frame silent about bundles — the answer that keeps a
+		// shell running what it has.
+		Bundle: spaBundle,
 		// Diagnostic cross-origin isolation so the renderer exposes
 		// measureUserAgentSpecificMemory. Opt-in: COEP breaks remote
 		// subresources such as chat-markdown images.
@@ -1192,18 +1199,29 @@ func attachedBackendsSeam(manager *attachedbackends.Manager) transport.AttachedB
 // the policy is decided by the same condition that decided the handler,
 // rather than by a second reading of the environment that could drift
 // from it.
-func buildAssetHandler(embeddedAssets embed.FS, allowDevAssets bool) (handler http.Handler, devProxy bool, err error) {
+//
+// The `spa` return is the same tree seen as the BUNDLE a phone shell may
+// download (internal/bundle, transport's Config.Bundle). It comes back
+// from here for the same reason devProxy does: whether this boot has a
+// bundle to publish is exactly the question "are the assets embedded",
+// and answering it anywhere else would be a second reading of the
+// environment. A dev-server boot answers nil — a bundle that changes on
+// every save is not something a phone should stage, and there is no
+// file tree to hash.
+func buildAssetHandler(embeddedAssets embed.FS, allowDevAssets bool) (handler http.Handler, devProxy bool, spa *bundle.Bundle, err error) {
 	if devURL := os.Getenv("FRONTEND_DEVSERVER_URL"); devURL != "" && allowDevAssets {
 		parsed, err := url.Parse(devURL)
 		if err != nil {
-			return nil, false, fmt.Errorf("parse FRONTEND_DEVSERVER_URL %q: %w", devURL, err)
+			return nil, false, nil, fmt.Errorf("parse FRONTEND_DEVSERVER_URL %q: %w", devURL, err)
 		}
 		log.Printf("transport: dev mode — proxying assets to %s", devURL)
-		return httputil.NewSingleHostReverseProxy(parsed), true, nil
+		return httputil.NewSingleHostReverseProxy(parsed), true, nil, nil
 	}
 	embeddedSPA, err := fs.Sub(embeddedAssets, "frontend/dist")
 	if err != nil {
-		return nil, false, fmt.Errorf("locate embedded frontend/dist: %w", err)
+		return nil, false, nil, fmt.Errorf("locate embedded frontend/dist: %w", err)
 	}
-	return http.FileServer(http.FS(embeddedSPA)), false, nil
+	// Nothing is read here: the walk is lazy, so a backend no shell ever
+	// pairs with never hashes the tree at all.
+	return http.FileServer(http.FS(embeddedSPA)), false, bundle.New(embeddedSPA, version), nil
 }

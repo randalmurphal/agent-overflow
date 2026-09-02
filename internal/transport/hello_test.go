@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/coder/websocket"
+
+	"agent-overflow/internal/bundle"
 )
 
 // readFirstFrame reads exactly one message off a freshly dialled
@@ -185,5 +188,56 @@ func TestServer_HelloOmitsAnUnknownBackendName(t *testing.T) {
 	raw := readFirstFrame(t, f.dial(t))
 	if strings.Contains(string(raw), "backendName") {
 		t.Fatalf("hello names an unset backendName: %s", raw)
+	}
+}
+
+// TestServer_HelloCarriesTheBundleItServes pins the three additive
+// fields wave 6g-a put on this frame against the manifest they come
+// from (internal/bundle).
+//
+// They are on the FRAME rather than behind a route because the one
+// client that reads them compares them against something it already
+// holds on every connection, and a shell that had to fetch a document to
+// learn "nothing changed" would pay a round trip per connect forever.
+// The assertion is that what the frame says and what the routes serve
+// are one answer, not two that happen to agree today.
+func TestServer_HelloCarriesTheBundleItServes(t *testing.T) {
+	tree := fstest.MapFS{
+		"index.html":    &fstest.MapFile{Data: []byte("<!doctype html>")},
+		"assets/app.js": &fstest.MapFile{Data: []byte("export const a = 1;\n")},
+	}
+	spa := bundle.New(tree, "4.5.6")
+	f := newServerFixtureWith(t, func(cfg *Config) { cfg.Bundle = spa })
+
+	var hello helloFrame
+	if err := json.Unmarshal(readFirstFrame(t, f.dial(t)), &hello); err != nil {
+		t.Fatalf("decode hello: %v", err)
+	}
+	manifest, err := spa.Manifest()
+	if err != nil {
+		t.Fatalf("build manifest: %v", err)
+	}
+	if hello.BundleID != manifest.ID {
+		t.Errorf("bundleId = %q, want the manifest's %q", hello.BundleID, manifest.ID)
+	}
+	if hello.BundleVersion != "4.5.6" {
+		t.Errorf("bundleVersion = %q, want the link-time stamp", hello.BundleVersion)
+	}
+	if hello.MinShellBuild != bundle.MinShellBuild {
+		t.Errorf("minShellBuild = %d, want %d", hello.MinShellBuild, bundle.MinShellBuild)
+	}
+}
+
+// A backend that serves no bundle omits all three rather than sending
+// empty ones. Absent is what a shell reads as "this backend does not
+// supply bundles" — the same answer a backend too old to send them
+// gives, and the one that leaves the phone running what it has.
+func TestServer_HelloOmitsBundleFieldsWithoutABundle(t *testing.T) {
+	f := newServerFixture(t)
+	raw := string(readFirstFrame(t, f.dial(t)))
+	for _, field := range []string{"bundleId", "bundleVersion", "minShellBuild"} {
+		if strings.Contains(raw, field) {
+			t.Fatalf("hello names %s with no configured bundle: %s", field, raw)
+		}
 	}
 }

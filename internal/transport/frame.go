@@ -137,6 +137,31 @@ type helloFrame struct {
 	// of auth failure to debug once signed credentials arrive (spec §9),
 	// so the honest measurement is published from the first frame.
 	ServerTimeMs int64 `json:"serverTimeMs"`
+	// BundleID, BundleVersion and MinShellBuild describe the SPA bundle
+	// this backend serves (internal/bundle, bundleroutes.go). They are
+	// here rather than on a route because they are read on EVERY
+	// connection by the one client that has to compare them against
+	// something it already holds, and a shell that had to fetch a
+	// document to learn "nothing changed" would pay a round trip per
+	// connect forever.
+	//
+	// Additive, and every consumer but the phone shell ignores them. A
+	// backend that cannot build its manifest omits all three, which reads
+	// as "this backend does not supply bundles" — the same answer a
+	// backend too old to send them gives, and the answer that leaves a
+	// shell running what it has.
+	//
+	// BundleID is the CONTENT id (bundle.Manifest.ID), so the comparison
+	// a shell makes is "am I running these exact files", never "is this
+	// version newer". BundleVersion is `main.version`, and its only use
+	// is ordering: a phone attached to several machines runs the newest
+	// attached backend's bundle. MinShellBuild is the lowest Android
+	// versionCode this bundle's native seams can run on — the one version
+	// gate in the design, and it is here because the capability it names
+	// is native code this channel cannot ship.
+	BundleID      string `json:"bundleId,omitempty"`
+	BundleVersion string `json:"bundleVersion,omitempty"`
+	MinShellBuild int    `json:"minShellBuild,omitempty"`
 }
 
 // MaxReplayChannels caps the number of channels a single replay request
