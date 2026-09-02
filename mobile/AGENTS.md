@@ -79,13 +79,44 @@ barcode scanner's native library declares 26 and the manifest merge
 across that gap fails the build outright. `android/variables.gradle`
 argues it in place.
 
+## Cleartext, and why only the debug build has any
+
+The release APK declares no network security config, so it keeps the
+platform default: at `targetSdkVersion` 35, cleartext is refused for
+every host. That is the correct posture rather than an inconvenience.
+The phone's path to a backend is tailnet TLS
+(`docs/specs/remote-access.md`, "The phone client"), so a pairing link
+naming an `http://` endpoint fails at the fetch on a real device, which
+is the answer that should be given.
+
+`android/app/src/debug/` is a debug-only manifest overlay pointing at
+`res/xml/network_security_config.xml`, and that file permits cleartext to
+`127.0.0.1` and to nothing else — no `base-config`, so every other host
+keeps the refusal even in a debug build. It exists for `make e2e-android`
+alone: the harness backend runs on the developer's machine and is exposed
+to the device with `adb reverse`, which makes the DEVICE's own loopback
+the address.
+
+Loopback rather than the emulator's `10.0.2.2` host alias, for a reason
+that would bite anything else addressing a backend from here: the page's
+origin is `https://shell.agent-overflow.invalid`, and Capacitor leaves
+the WebView at `MIXED_CONTENT_NEVER_ALLOW`
+(`CapConfig.allowMixedContent` defaults false and `Bridge` only calls
+`setMixedContentMode` when it is true), so an `http://10.0.2.2:<port>`
+request is refused by the renderer before any network policy is
+consulted. Chromium treats loopback as potentially trustworthy, so
+`http://127.0.0.1` is not mixed content at all. Turning mixed content on
+in `capacitor.config.ts` would apply to the release build too, which is
+the door the tailnet-TLS ruling closes — so it stays off, and the reverse
+forward is what makes the test address a trustworthy one.
+
 ## What is committed
 
 The generated `android/` tree is committed, minus build outputs,
 `local.properties`, and the `assets/public/` copy of the SPA bundle
 (`.gitignore` says which and why). A tree regenerated on every clone
-cannot hold the edits native configuration needs, and `minSdkVersion` is
-already one of them.
+cannot hold the edits native configuration needs, and `minSdkVersion` and
+the debug source set above are already two of them.
 
 ## The seams
 
@@ -126,8 +157,12 @@ backend are genuinely different origins. That is the half of this shell
 that can be tested on a laptop.
 
 The other half — that the bundle boots under the fixed origin, that the
-plugins register, that the back button arrives — needs an emulator:
-`make e2e-android`, which exits clean when there is none.
+plugins register, that the app lock gates the app, that the back button
+arrives — needs an emulator: `make e2e-android`, which exits clean when
+there is none. It drives the shell's own WebView through Playwright's
+Android API rather than a Chromium of its own; `e2e/AGENTS.md` §
+The emulator smoke owns the details, including the fact that it was
+written against those docs and has NOT been run on a device yet.
 
 ## Deferred
 

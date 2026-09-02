@@ -42,8 +42,9 @@ directory.
 
 `make e2e` builds `bin/agent-overflow`, `bin/ao-mockprovider`, and the
 fixed-purpose `bin/ao-harness-e2e` launcher. The launcher typechecks the
-suite first (`tsc --noEmit` over `src/`, `tests/`, `scripts/`, and both
-configs), because Playwright and the flow runner only STRIP types: a
+suite first (`tsc --noEmit` over `src/`, `tests/`, `android/`,
+`scripts/`, and all three configs — `tsconfig.json` names them), because
+Playwright and the flow runner only STRIP types: a
 typo'd property in a helper's predicate would otherwise pass an emptiness
 assertion vacuously. It then runs `pnpm exec playwright test` under one
 process-tree memory boundary and host-floor watchdog. The complete
@@ -60,19 +61,62 @@ the `compact-*.spec.ts` files. Compact is a layout mode of the one app
 projects pass, and a fix found on one is checked on the other. Run one
 file with `bin/ao-harness-e2e tests/<spec>`; the file's name picks the
 project. Changes to the native seams (`frontend/src/lib/native/`) also
-rerun the emulator smoke, `make e2e-android`, which drives the same specs
-inside the Android shell.
+rerun the emulator smoke, `make e2e-android`.
 
-`make e2e-android` (`scripts/android-smoke.sh`) installs the APK
-`make apk` built and runs the compact project against the WebView on the
-first `adb` device in state `device`. It is deliberately NOT a blocking
-gate: with nothing attached it prints how to create and start an AVD and
-exits 0, because the seams' web fallbacks are already covered by
-`pnpm test` and a check that cannot run on a laptop is a check people
-learn to skip. What it answers that nothing else can is whether the
-bundle boots under the shell's fixed origin, whether the Capacitor
-plugins register, and whether the hardware back button reaches
-`showCompactList`.
+Not everything in `tests/` runs in the gate, on purpose. A
+`*.manual.spec.ts` is `testIgnore`d by `playwright.config.ts` and needs
+`playwright.manual.config.ts` plus a locally generated fixture. The
+`*-probe.spec.ts` instruments skip themselves unless `BOUNDARY_PROBE` is
+set: they dump per-frame samples for offline analysis rather than
+asserting, so they are evidence, not a gate.
+
+## The emulator smoke
+
+`make e2e-android` is a THIRD suite, not a third project: its own config
+(`playwright.android.config.ts`), its own directory (`android/`), and one
+spec, `android/shell-boot.spec.ts`. It has to be separate because its
+`page` fixture does not come from a browser Playwright launched — it is
+the shell's own WebView, reached through Playwright's Android API
+(`_android.devices()` → `device.webView({pkg})` → `webView.page()`), so a
+spec written for it is nonsense under `desktop` or `compact` and vice
+versa. Everything after that fixture is the ordinary Page API.
+
+**It has NOT been run yet.** It was written from the Playwright Android
+docs and this app's own contracts on a box with no emulator, and the
+first real execution is the Mac pass. Do not read a green
+`make e2e-android` on a laptop as evidence: it exits 0 when no device is
+attached, on purpose.
+
+`scripts/android-smoke.sh` owns what a port cannot be known for: it
+installs the APK `make apk` built, `pm clear`s it (the shell persists its
+endpoint and session in the WebView's localStorage, and each run's
+harness is on a fresh port), sets a device PIN, launches the activity,
+and clears the PIN on every exit path. The SPEC owns everything
+downstream of the port: `launchHarness`, the `adb reverse` forward that
+lets the device reach it, and the pairing. It runs through
+`bin/ao-harness-e2e --config=playwright.android.config.ts`, which is what
+typechecks the tree and what lets `launchHarness` spawn at all.
+
+**The backend is reached at `127.0.0.1` over `adb reverse`, not at
+`10.0.2.2`.** Two independent walls make the emulator's host alias
+unusable and the spec's header argues both: the page's origin is
+`https://`, and Capacitor leaves the WebView at
+`MIXED_CONTENT_NEVER_ALLOW`, so an `http://10.0.2.2:<port>` fetch is
+refused by the renderer; and `transport.Server.loopbackHostGuard` answers
+404 to a non-loopback `Host` while the listener is on loopback. A reverse
+forward makes the device's own loopback the address, which Chromium
+treats as potentially trustworthy and the guard admits, so the pairing
+payload is redeemed exactly as `MintDevicePairing` wrote it. The debug
+APK carries a network security config permitting cleartext to that one
+host and nothing else (`mobile/AGENTS.md`).
+
+It is deliberately NOT a blocking gate: with nothing attached it prints
+how to create and start an AVD and exits 0, because the seams' web
+fallbacks are already covered by `pnpm test` and a check that cannot run
+on a laptop is a check people learn to skip. What it answers that nothing
+else can is whether the bundle boots under the shell's fixed origin,
+whether the Capacitor plugins register, whether the app lock gates the
+app, and whether the hardware back button reaches `showCompactList`.
 
 What CAN be answered without a device is the transport half, and
 `compact-shell-origin.spec.ts` answers it: it serves `frontend/dist` from
@@ -81,13 +125,6 @@ backend are genuinely different origins and the browser enforces CORS
 itself. Setting `window.__aoHomeEndpoint` on a page the backend served
 would exercise the URL rewriting and prove nothing, because every request
 would still be same-origin.
-
-Not everything in `tests/` runs in the gate, on purpose. A
-`*.manual.spec.ts` is `testIgnore`d by `playwright.config.ts` and needs
-`playwright.manual.config.ts` plus a locally generated fixture. The
-`*-probe.spec.ts` instruments skip themselves unless `BOUNDARY_PROBE` is
-set: they dump per-frame samples for offline analysis rather than
-asserting, so they are evidence, not a gate.
 
 ## Owning processes
 
