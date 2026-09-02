@@ -1120,6 +1120,17 @@ package's `TestEmitSitesNameAnEventChannelConstant` catches.
   `git:operate` because `GetGitStatus` is. `ScopeHost` means host presence
   is the only key. It does not replace `Audience`; a connection subject to
   both is narrowed by both.
+
+  **`ScopeHost` on a channel whose whole audience is remote is a feature that
+  only works where it is not needed**, and the `service:update-*` pair is the
+  worked example. Both carry a supervised host's update story —
+  `service:update-status` while the flow runs, `service:update-outcome` from the
+  version that comes back — and the peer they exist for is an owner who is not
+  at that machine. `service:update-outcome` shipped in 8h1 as `host`, so no
+  session could receive it and the only client that could was the one standing
+  beside the box; 8h2 moved both to `access:admin`, which is what
+  `GetServiceUpdateStatus` (the read that answers the same fact) carries.
+  `TestChannelScopeMatchesItsReadRPC` pins both rows and the reason.
 - `Retention`: `RetentionDefault` (full ring) / `RetentionEphemeral`
   (capacity 0) / `RetentionLatestOnly` (capacity 1). Class-level doctrine,
   including the unkeyed membership rule for latest-only, lives on the constants.

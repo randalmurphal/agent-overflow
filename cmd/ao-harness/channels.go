@@ -71,6 +71,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ProviderUserInput,
 		eventchan.SessionImportProgress,
 		eventchan.ServiceUpdateOutcome,
+		eventchan.ServiceUpdateStatus,
 		eventchan.SettingsUpdated,
 		eventchan.SpinnerChanged,
 		eventchan.ThemeChanged,

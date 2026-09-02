@@ -125,6 +125,11 @@ var (
 		// ring is what lets a client reconnecting a second after the restart
 		// still find its update's outcome.
 		"service:update-outcome",
+		// ONE global flow per process — RequestServiceUpdate refuses a
+		// second while one runs — so the newest frame fully supersedes
+		// every earlier one, and a client reconnecting mid-download wants
+		// the current phase rather than the ticks it missed.
+		"service:update-status",
 		"spinner:changed",
 		"system:stats",
 		"theme:changed",

@@ -50,6 +50,9 @@ func TestChannelScopeMatchesItsReadRPC(t *testing.T) {
 		{eventchan.HighlightSeed, ScopeFilesRead, "HighlightCode is files:read"},
 		{eventchan.ProviderItemEvent, ScopeThreadsRead, "the timeline ListItems returns"},
 		{eventchan.SettingsUpdated, ScopeSettingsRead, "GetSettings is settings:read"},
+		{eventchan.ServiceUpdateStatus, ScopeAccessAdmin, "GetServiceUpdateStatus returns this exact shape"},
+		{eventchan.ServiceUpdateOutcome, ScopeAccessAdmin,
+			"the same read answers it; `host` meant the remote owner waiting on the outcome never got it"},
 		{eventchan.WebviewTrim, ScopeHost, "an imperative directive at this desktop's renderer"},
 	} {
 		policy, registered := policyForChannel(string(tc.channel))

@@ -144,14 +144,23 @@ const (
 	SessionImportProgress Channel = "session-import:progress"
 )
 
-// service:* — what a supervised serve host says about its own launch.
-// One frame per boot at most, published the moment the activation gate
-// opens, naming the update this boot is the outcome of. It is what makes
-// "the update succeeded" mean the NEW version answered rather than that
-// the old one stopped: the client that asked holds the update id and
-// waits for it to come back.
+// service:* — what a supervised serve host says about updating itself.
+//
+// update-outcome is the launch half: one frame per boot at most,
+// published the moment the activation gate opens, naming the update this
+// boot is the outcome of. It is what makes "the update succeeded" mean
+// the NEW version answered rather than that the old one stopped — the
+// client that asked holds the update id and waits for it to come back.
+//
+// update-status is the half BEFORE that: the whole ServiceUpdateStatus
+// shape on every phase change of a remote update flow (resolving,
+// downloading with progress, verifying, staging, requested) and on every
+// failure. The two are one story told by two processes: this one runs
+// until the supervisor stops it, and the version that comes back
+// publishes the outcome.
 const (
 	ServiceUpdateOutcome Channel = "service:update-outcome"
+	ServiceUpdateStatus  Channel = "service:update-status"
 )
 
 // settings:* — one frame per tier a persisted settings write moved,

@@ -822,20 +822,42 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ServiceUpdateOutcome,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
-		Scope:     ScopeHost,
+		Scope:     ScopeAccessAdmin,
 		Why: "The one frame that closes a remote update: a client that " +
 			"asked for one holds the update id, loses its connection while " +
 			"the backend restarts, and needs to learn from the backend that " +
 			"came back which update this is and how it ended. AudienceAny " +
 			"because the peer that asked is exactly the remote owner this " +
 			"feature exists for — unlike the updater:* family, whose install " +
-			"only this host can perform. It names an update id, an outcome " +
-			"word, this build's version and the recorded reason: nothing a " +
-			"session holding `host` could not read from its own request. " +
+			"only this host can perform. access:admin by the rule on Scope: " +
+			"GetServiceUpdateStatus is the read RPC that answers the same " +
+			"fact, and it is access:admin. It carried `host` until wave 8h2, " +
+			"which no session can hold — so the frame the remote owner is " +
+			"waiting on reached only the machine they cannot get to, which " +
+			"is the one place this feature was never needed. It names an " +
+			"update id, an outcome word, this build's version and the " +
+			"recorded reason: nothing that read does not already return. " +
 			"Latest-only satisfies the membership rule trivially — a process " +
 			"publishes this at most ONCE, at the moment its activation gate " +
 			"opens — and the ring is what lets a client that reconnects a " +
 			"second after boot still find it.",
+	},
+	{
+		Channel:   eventchan.ServiceUpdateStatus,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeAccessAdmin,
+		Why: "The whole ServiceUpdateStatus struct on every phase change of " +
+			"a remote update flow, and on download progress. access:admin by " +
+			"the rule on Scope: GetServiceUpdateStatus returns this exact " +
+			"shape, so the push discloses nothing the poll would not — it " +
+			"saves the client polling a multi-minute download. AudienceAny " +
+			"for the same reason the outcome row is: the peer driving the " +
+			"update is the remote owner. Latest-only, and the membership " +
+			"rule holds: ONE global flow per process (RequestServiceUpdate " +
+			"refuses a second while one runs), so the newest frame fully " +
+			"supersedes every earlier one and a reconnecting client wants " +
+			"the current phase rather than the progress ticks it missed.",
 	},
 	{
 		Channel:   eventchan.SettingsUpdated,
