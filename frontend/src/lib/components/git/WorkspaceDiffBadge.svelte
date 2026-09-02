@@ -6,9 +6,10 @@
   // The +/- counts are ALWAYS rendered — +0 -0 when the tree is clean, before
   // any status has been observed, or when the workspace isn't a repo — so the
   // control reads as "no uncommitted changes" rather than empty. The green/red
-  // numerals are the entire affordance; there is no leading icon. Ghost-styled,
-  // so there's no resting border/pill — just the hover highlight (plus the
-  // pressed tint while the panel is open), matching the sibling header toggles.
+  // numerals are the entire content; there is no leading icon. Secondary
+  // (outlined) like every sibling in the header cluster: as a ghost it was the
+  // one bare run of text between bordered pills and users read it as a label,
+  // not a button, and the pressed tint had no resting chrome to contrast with.
   //
   // Presentational: status, pressed, chord, and the activate action are passed in.
   import type { GitStatus } from '../../types/git';
@@ -32,7 +33,7 @@
 </script>
 
 <Button
-  variant="ghost"
+  variant="secondary"
   size="xs"
   {pressed}
   {ariaLabel}

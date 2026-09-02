@@ -9,6 +9,7 @@
   import Pilcrow from '@lucide/svelte/icons/pilcrow';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import WrapText from '@lucide/svelte/icons/wrap-text';
+  import X from '@lucide/svelte/icons/x';
   import ReviewCILogView from './ReviewCILogView.svelte';
   import ReviewCommentThread from './ReviewCommentThread.svelte';
   import ReviewDiffBody from './ReviewDiffBody.svelte';
@@ -488,6 +489,21 @@
           aria-hidden="true"
         ></span>
       {/if}
+    </button>
+
+    <!-- Close sits past a divider so it reads as "leave", not as one more
+         view toggle in the run. Same close the header badge / chord perform;
+         it exists because re-clicking the badge is not discoverable. -->
+    <span class="h-[18px] w-px shrink-0 bg-border-subtle" aria-hidden="true"></span>
+    <button
+      type="button"
+      class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg"
+      aria-label="Close review pane"
+      title="Close review pane"
+      data-testid="review-close"
+      onclick={() => ctx.close()}
+    >
+      <Icon icon={X} size={14} />
     </button>
   </div>
 

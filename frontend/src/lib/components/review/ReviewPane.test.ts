@@ -1,5 +1,5 @@
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReviewPane from './ReviewPane.svelte';
 import type { PanelContext } from '../../stores/panelContext.svelte';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
@@ -110,6 +110,20 @@ describe('<ReviewPane>', () => {
     const select = view.getByTestId('review-scope-select') as HTMLSelectElement;
     expect([...select.options].map((o) => o.value)).toEqual(['workspace', 'branch']);
     expect(select.disabled).toBe(false);
+  });
+
+  // The header badge is a toggle, but re-clicking it to close is not
+  // discoverable; the toolbar X is the visible way out and routes through
+  // the shell-injected close, the same path the badge and chord use.
+  it('closes the panel from the toolbar X', async () => {
+    const close = vi.fn();
+    const view = render(ReviewPane, { ctx: makeStubPanelContext({ close }) });
+    await waitFor(() => {
+      expect(view.getAllByTestId('review-file-header')).toHaveLength(2);
+    });
+
+    await fireEvent.click(view.getByTestId('review-close'));
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it('toggles collapse-all/expand-all from the toolbar', async () => {
