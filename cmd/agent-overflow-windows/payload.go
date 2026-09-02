@@ -35,43 +35,70 @@ import (
 // persistSuccessfulLaunch so a fresh install followed by a Launch
 // failure doesn't trap the user on a saved-but-broken distro on next
 // boot.
-func (a *launcherApp) ensurePayloadInstalled(ctx context.Context, distro string) (string, error) {
+// The returned `cached` is true when the path came from wsl.json without
+// asking WSL, which is the case the caller must be ready to re-resolve
+// (see launchAndShow's stale-path retry).
+func (a *launcherApp) ensurePayloadInstalled(ctx context.Context, distro string) (binPath string, cached bool, err error) {
 	started := time.Now()
 	defer logBootPhase("launcher.payload.total", started)
 
 	phaseStarted := time.Now()
-	binPath, err := wslHomePath(ctx, distro)
-	logBootPhase("launcher.payload.wsl_home", phaseStarted)
-	if err != nil {
-		return "", err
-	}
-
-	phaseStarted = time.Now()
 	cfg, _ := loadConfig()
 	if cfg == nil {
 		cfg = &wsldistro.Config{}
 	}
 	logBootPhase("launcher.payload.load_config", phaseStarted)
-	if cfg.InstalledVer == payloadVersion && cfg.InstalledDistro == distro {
-		log.Printf("boot: phase=launcher.payload.install skipped=true version=%q distro=%q", payloadVersion, distro)
-		return binPath, nil
+	installed := cfg.InstalledVer == payloadVersion && cfg.InstalledDistro == distro
+	if path := cachedPayloadPath(cfg, distro, payloadVersion); path != "" {
+		// The common warm-restart case: nothing to install and the path is
+		// on record, so no wsl.exe process is spawned at all here.
+		log.Printf("boot: phase=launcher.payload.install skipped=true version=%q distro=%q path=recorded", payloadVersion, distro)
+		return path, true, nil
 	}
 
 	phaseStarted = time.Now()
+	binPath, err = wslHomePath(ctx, distro)
+	logBootPhase("launcher.payload.wsl_home", phaseStarted)
+	if err != nil {
+		return "", false, err
+	}
+	if installed {
+		// Installed by a launcher that predates the recorded path; the
+		// post-launch persist records it for the next boot.
+		log.Printf("boot: phase=launcher.payload.install skipped=true version=%q distro=%q path=resolved", payloadVersion, distro)
+		return binPath, false, nil
+	}
+	if err := installPayload(ctx, distro, binPath); err != nil {
+		return "", false, err
+	}
+	return binPath, false, nil
+}
+
+// cachedPayloadPath returns the install path wsl.json recorded, when that
+// record is for exactly this payload version and distro. Anything else is
+// "" and the caller resolves the path through WSL.
+func cachedPayloadPath(cfg *wsldistro.Config, distro, version string) string {
+	if cfg == nil || cfg.InstalledVer != version || cfg.InstalledDistro != distro {
+		return ""
+	}
+	return strings.TrimSpace(cfg.InstalledBinPath)
+}
+
+// installPayload writes the embedded Linux binary to binPath inside the
+// distro. Shared by the first install and the stale-path retry.
+func installPayload(ctx context.Context, distro, binPath string) error {
+	phaseStarted := time.Now()
 	tmp, err := writeEmbeddedPayload()
 	logBootPhase("launcher.payload.write_embedded", phaseStarted)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer os.Remove(tmp)
 
 	phaseStarted = time.Now()
-	if err := wsllauncher.InstallPayload(ctx, distro, tmp, binPath); err != nil {
-		logBootPhase("launcher.payload.install", phaseStarted)
-		return "", err
-	}
+	err = wsllauncher.InstallPayload(ctx, distro, tmp, binPath)
 	logBootPhase("launcher.payload.install", phaseStarted)
-	return binPath, nil
+	return err
 }
 
 // writeEmbeddedPayload drops the //go:embed payload to a temp file

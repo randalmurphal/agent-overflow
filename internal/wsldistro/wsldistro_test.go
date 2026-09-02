@@ -209,3 +209,21 @@ func TestSave_RewriteIsAtomic(t *testing.T) {
 		t.Errorf("rewrite left stray temp files: %v", names)
 	}
 }
+
+func TestConfigRoundTripsInstalledBinPath(t *testing.T) {
+	dir := t.TempDir()
+	want := &Config{
+		Distro: "Ubuntu", InstalledVer: "v1.2.3", InstalledDistro: "Ubuntu",
+		InstalledBinPath: "/home/alice/.local/bin/agent-overflow",
+	}
+	if err := Save(dir, want); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got == nil || got.InstalledBinPath != want.InstalledBinPath {
+		t.Fatalf("InstalledBinPath = %+v, want %q", got, want.InstalledBinPath)
+	}
+}

@@ -76,6 +76,29 @@ Anything the backend ANSWERED (500 to `/startup-error`, 404, a never-ready
 would churn the webview origin, wiping localStorage and the IndexedDB thread
 replica, for nothing.
 
+The probe gap starts at `bootstrapProbeInitialPollInterval` (25 ms) and
+doubles up to `bootstrapProbePollInterval` (250 ms). A miss is an instant
+503 or RST, so early retries are free; the flat 250 ms gap it replaced
+cost every boot ~250 ms of sleep after the backend was already ready.
+
+
+The probe gap starts at `bootstrapProbeInitialPollInterval` (25 ms) and
+doubles up to `bootstrapProbePollInterval` (250 ms). A miss is an instant
+503 or RST, so early retries are free; the flat 250 ms gap it replaced
+cost every boot ~250 ms of sleep after the backend was already ready.
+
+## Payload path: recorded, not re-resolved
+
+`ensurePayloadInstalled` returns the path wsl.json recorded
+(`InstalledBinPath`, written with `InstalledVer` after a successful boot)
+whenever version and distro match, and spawns no wsl.exe at all on that
+path. Resolving `$HOME` through wsl.exe costs ~440 ms per boot and only
+matters when something has to be installed. The record is the one thing a
+warm boot trusts without asking WSL, so `launchAndShow` treats
+`errLaunchFailed` on a recorded path as "maybe stale": it re-resolves once,
+reinstalls at the fresh path if it differs, and retries. A path that
+resolves the same is a real launch failure.
+
 ## Self-update: acting on an install directive
 
 The WSL backend downloads and digest-verifies the new launcher `.exe`, stages
