@@ -669,3 +669,6 @@ export const ListMcpServerStatuses = dispatch('ListMcpServerStatuses');
 export const ListRunningBackgroundWork = dispatch('ListRunningBackgroundWork');
 export const StopThreadBackgroundWork = dispatch('StopThreadBackgroundWork');
 export const ReportUpdateInstallStatus = dispatch('ReportUpdateInstallStatus');
+export const GetServiceUpdateStatus = dispatch('GetServiceUpdateStatus');
+export const ListServiceReleases = dispatch('ListServiceReleases');
+export const RequestServiceUpdate = dispatch('RequestServiceUpdate');
