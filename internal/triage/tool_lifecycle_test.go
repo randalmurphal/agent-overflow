@@ -2136,6 +2136,67 @@ func TestHandleEventBackgroundTaskTerminal_AppendsAtCurrentTurn(t *testing.T) {
 	}
 }
 
+// A background task launched INSIDE a subagent gets its completion
+// sibling on the launch's turn, not the thread's current one. Every
+// other row under that launch is pinned to the launch's turn (invariant
+// 10), so a sibling parked on the main thread's later turn sorts after
+// every row the agent writes afterwards — the "done" row rode the tail
+// of the agent's newest activity run for the rest of its life (live
+// 2026-09-01). The top-level rule above is unchanged.
+func TestHandleEventBackgroundTaskTerminal_ScopedSiblingStaysOnLaunchTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	startAgentLaunch(t, router, "t1", "agent-1", "", "task-agent")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "make apk", "run_in_background": true},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-child",
+		ItemType: "Bash", Meta: startMeta, ParentToolUseID: "agent-1", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed scoped launch: %v", err)
+	}
+	// The agent keeps writing rows on the launch's turn after the shell
+	// backgrounds; the sibling has to sort AFTER this one, not after
+	// everything the agent will ever write.
+	deliverSubagentBlock(t, router, "t1", "agent-1", "msg_after#0", "text", "still working")
+
+	// The main thread has moved on by the time the shell reports.
+	seedOpenTurn(t, router, st, "t1", 2)
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "tsk-child",
+		"tool_use_id": "bg-child",
+		"status":      "completed",
+		"source":      "task_output",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-child",
+		Meta: terminalMeta, Content: "done", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("bg terminal: %v", err)
+	}
+
+	completion, ok, err := st.GetThreadItem("t1", ToolCompletionID("bg-child"))
+	if err != nil || !ok {
+		t.Fatalf("lookup completion sibling: ok=%v err=%v", ok, err)
+	}
+	if completion.TurnIndex != 0 {
+		t.Fatalf("scoped completion turn_index = %d, want 0 (the launch's turn)", completion.TurnIndex)
+	}
+	if completion.ParentID != "agent-1" {
+		t.Fatalf("scoped completion parent_id = %q, want agent-1", completion.ParentID)
+	}
+	children := childrenOfLaunch(t, st, "t1", "agent-1", 0)
+	ids := childIDs(children)
+	if len(ids) == 0 || ids[len(ids)-1] != completion.ID {
+		t.Fatalf("completion sibling must append at the scope's tail, children = %v", ids)
+	}
+}
+
 // TestHandleEventBackgroundTaskTerminal_AppendsToLatestPersistedTurn
 // covers the no-open-turn fallback. The turns table can legitimately
 // know about a later turn even when that turn produced no items; the

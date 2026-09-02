@@ -474,7 +474,8 @@ Backgrounded tool call:
 - `tool_call` row stays `running`, `is_background=true`.
 - A separate `tool_completion` row is appended at the current thread
   write head (or the latest persisted turn when no turn is open),
-  deferred behind active streaming output when necessary.
+  deferred behind active streaming output when necessary. Under a
+  subagent launch it lands on the launch's turn instead (invariant 10).
 - `tool_completion.summary` **restates the original command** plus the
   outcome, e.g. `"pnpm install → exit 0 in 12s"`. Without this the
   late-arriving row is decontextualized.

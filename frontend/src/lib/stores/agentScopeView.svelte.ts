@@ -60,12 +60,13 @@
 // - `revealBoundary`: null. The reveal gate sequences TOP-LEVEL rows of
 //   the main transcript; child rows were never reveal-sequenced, and a
 //   boundary id from the main thread must not withhold scoped rows.
-// - `timelineTurns`: the scope IS one turn. A subagent's rows are written
-//   at the main thread's write head across however many provider turns
-//   it outlives, so keying the response decorations on `item.turnIndex`
-//   plus the thread's active/settled turn put a "Response 1m 58s" pill
-//   on a still-running agent the moment the main turn settled (live
-//   regression 2026-08-22). Here every scoped row shares one key; the
+// - `timelineTurns`: the scope IS one turn. A subagent's rows all carry
+//   the LAUNCH's turn (invariants.md §10) across however many provider
+//   turns the agent outlives, so keying the response decorations on
+//   `item.turnIndex` plus the thread's active/settled turn put a
+//   "Response 1m 58s" pill on a still-running agent the moment the
+//   launching turn settled (live regression 2026-08-22). Here every
+//   scoped row shares one key, whatever turn it carries; the
 //   turn is active while the scoped launch runs and settles on the
 //   launch's own completion, with the agent's own duration.
 // - `activityRuns`: an own registry. Run membership differs per surface

@@ -96,6 +96,15 @@ subagent-aware path as guilty until it proves scope containment.
   swept with the threadState) and applies them when the row lands,
   draining any terminal stashed in the meantime. Never drop a
   correlation-bearing meta update just because the row is missing.
+- A row triage SYNTHESIZES under a scoped launch (the background
+  completion sibling, a watch task's notification row) takes the
+  scope's turn like every other row there. `backgroundCompletionTurnIndex`
+  takes the parent id the new row will carry and routes a non-empty one
+  through `turnIndexForScope`; only a top-level row follows the write
+  head. A scoped sibling filed on the main thread's later turn sorted
+  after every row the agent wrote afterwards, so a subagent's finished
+  background Bash rode the tail of its newest activity run forever
+  (2026-09-01). Pass the row's own parent, never `""` for convenience.
 
 ## Stopped-thread routing (invariant 29)
 

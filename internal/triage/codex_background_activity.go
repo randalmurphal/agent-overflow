@@ -61,7 +61,9 @@ func (r *Router) persistCodexMailboxProgress(
 			strings.TrimSpace(parsed.AgentPath) + "\x00" + strings.TrimSpace(parsed.DeliveryID),
 	))
 	itemID := fmt.Sprintf("collab-progress:%x", digest[:8])
-	turnIndex, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launch.item.TurnIndex)
+	// The progress row is top-level (no ParentID below), so it always
+	// follows the write head.
+	turnIndex, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launch.item.TurnIndex, "")
 	if err != nil {
 		return fmt.Errorf("codex progress turn index %s: %w", itemID, err)
 	}

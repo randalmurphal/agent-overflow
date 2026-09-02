@@ -244,11 +244,18 @@ provider history at the wrong turn.
 `internal/provider/codex/session.go`) stamps the subagent card's
 `turn_index` onto the re-emitted event before triage sees it. The
 Claude Task path preserves `parent_tool_use_id` which triage then
-resolves to the card's turn.
+resolves to the card's turn. Rows triage synthesizes for a scoped
+launch obey the same rule: `backgroundCompletionTurnIndex` routes a
+sibling that carries a `parent_id` through `turnIndexForScope`, and
+only a top-level sibling takes the write-head placement of invariant
+24. A scoped sibling on a later turn sorted after every row the agent
+wrote afterwards (2026-09-01).
 
 **Test.** `TestParentToolUseIDFlowsThroughInlineEmit` and
 `TestParentToolUseIDPersistsOnTurnText` in
-`internal/triage/subagent_test.go`.
+`internal/triage/subagent_test.go`;
+`TestHandleEventBackgroundTaskTerminal_ScopedSiblingStaysOnLaunchTurn`
+in `internal/triage/tool_lifecycle_test.go`.
 
 ---
 
@@ -697,10 +704,11 @@ move on. Captured Claude evidence:
 landing before the backgrounded task's `task_updated`.
 
 **Enforcement.** Triage's force-close (invariant 23) exempts
-`is_background=true` rows. Background completions append at the
-current thread write head when one is open, otherwise the latest
-persisted turn. Tray derivation clocks retention off the completion
-row's `createdAt`, not turn boundaries.
+`is_background=true` rows. A top-level background completion appends
+at the current thread write head when one is open, otherwise the
+latest persisted turn; a completion under a subagent launch stays on
+the launch's turn (invariant 10). Tray derivation clocks retention off
+the completion row's `createdAt`, not turn boundaries.
 
 **Test.** Replay `ndjson_outlives.log` through the full pipeline;
 assert the turn closes cleanly and the background task's

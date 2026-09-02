@@ -422,10 +422,14 @@ Triage writes a `tool_completion` row:
 ### Task-lifecycle events can outlive the owning turn
 
 A `task_updated` for a backgrounded task can arrive AFTER the
-turn that launched it has completed. Triage writes the
-`tool_completion` row at the current thread write head when one is
-open, otherwise at the latest persisted turn. The tray renders it on
-its own retention clock. See
+turn that launched it has completed. For a top-level launch, triage
+writes the `tool_completion` row at the current thread write head when
+one is open, otherwise at the latest persisted turn. For a launch
+inside a subagent, the row stays on the launch's turn with the rest of
+the scope (invariant 10): the main thread's write head is a later turn
+than the one the agent's rows keep landing on, so a sibling placed
+there would sort after everything the agent writes afterwards. The
+tray renders it on its own retention clock. See
 `docs/references/fixtures/claude/ndjson_outlives.log` for a captured example.
 
 ### Desired chat-history contract

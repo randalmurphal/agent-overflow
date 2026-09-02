@@ -1228,7 +1228,7 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 	parentID := stringsx.FirstNonEmptyTrimmed(launch.ParentID, eventParentID(evt), meta.ParentToolUseID)
 	toolName := launch.ToolName
 	launchSummary := launch.Summary
-	turnIndex, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launchTurnIndex)
+	turnIndex, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launchTurnIndex, parentID)
 	if err != nil {
 		log.Printf("triage: background task terminal turn index %s: %v", completionID, err)
 	}
@@ -1618,15 +1618,34 @@ func backgroundTerminalPayload(launch store.Item, evt provider.ProviderEvent, me
 }
 
 // backgroundCompletionTurnIndex returns the turn where a background
-// completion sibling should be appended. Background work can outlive
-// its launching turn by minutes or hours; when it completes during a
-// later turn, the terminal row belongs at the current write head so
-// chat history shows when the completion actually arrived. If no turn
-// is open, fall back to the newest persisted turn row and the newest
-// persisted item turn; older installs and sparse tests may have one
-// without the other. The max guard keeps a sparse or freshly-started
-// thread from placing a completion before the launch row.
-func (r *Router) backgroundCompletionTurnIndex(threadID string, launchTurnIndex int) (int, error) {
+// completion sibling should be appended. `parentID` is the parent the
+// sibling row itself will carry.
+//
+// A SCOPED row (non-empty parentID) lands on its scope's turn, the same
+// resolution every other row under that launch takes (turnIndexForScope;
+// invariant 10). The write-head rule below would file it under whatever
+// turn the main thread has moved on to, and because the scope's other
+// rows keep landing on the launch's turn, a sibling parked on a later
+// turn sorts after every row the agent will ever write — the "done"
+// row of a subagent's background Bash stuck at the tail of the agent's
+// newest activity run (live incident 2026-09-01).
+//
+// A TOP-LEVEL row follows the write head: background work can outlive
+// its launching turn by minutes or hours, and when it completes during
+// a later turn the terminal row belongs where the completion actually
+// arrived. If no turn is open, fall back to the newest persisted turn
+// row and the newest persisted item turn; older installs and sparse
+// tests may have one without the other. The max guard keeps a sparse
+// or freshly-started thread from placing a completion before the
+// launch row.
+func (r *Router) backgroundCompletionTurnIndex(threadID string, launchTurnIndex int, parentID string) (int, error) {
+	if parentID != "" {
+		turnIndex, err := r.turnIndexForScope(threadID, parentID)
+		if err != nil {
+			return launchTurnIndex, err
+		}
+		return turnIndex, nil
+	}
 	if turnIndex, ok := r.openTurnIndex(threadID); ok {
 		if turnIndex < launchTurnIndex {
 			return launchTurnIndex, nil
