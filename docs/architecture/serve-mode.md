@@ -469,6 +469,51 @@ The port is part of the origin, so it is not a cosmetic setting.
 Clearing the port back to blank does NOT move the listener. It means
 "stop pinning this", and the backend stays where it is.
 
+### Dev-server previews
+
+A serve host runs agents, and agents start dev servers. When one says
+"running at http://localhost:5173", that address means nothing on the
+device you are reading it from — so the backend can open a **preview
+listener** on the same port number of one of its own addresses and
+forward to the dev server.
+
+**What is exposed.** One TLS listener per port in the machine's preview
+set, on the tailnet name if the node is up, otherwise on the LAN address
+if LAN access is on, and nothing at all if neither. Each forwards to
+`localhost:<that same port>` and to nothing else. The port number is
+mirrored deliberately: a dev server's absolute URLs and its
+hot-reload socket both derive from the address the page was served on,
+and moving the port would break them.
+
+**The preview set** is the only thing that can be forwarded to, and it
+has two halves:
+
+- Ports the backend attributed to a thread of its own — the listening
+  process descends from that thread's agent session or one of its
+  terminals. These appear and disappear on their own, and a port stays
+  in the set for a minute after its dev server goes so a restart does
+  not break the link you are looking at.
+- Ports you named yourself, in the `network.previewPorts` setting.
+  Changing it takes an admin-capable device and no step-up: it exposes
+  your own dev server to your own devices. Use it for a dev server you
+  started by hand outside the app, which the backend has no way to
+  attribute.
+
+Anything else listening on the host is never reachable this way, however
+many ports are open on it.
+
+**Opening one.** The link in the app mints a URL carrying a single-use
+ticket good for 60 seconds. The first request spends it for a cookie
+scoped to that one port and redirects to the same address without the
+ticket, so the address bar you might paste somewhere carries nothing.
+Every request after that re-checks your device against the live session
+list: revoke the device and its previews stop on the next request, and
+restarting the backend ends all of them.
+
+A preview is always HTTPS. A tailnet with HTTPS turned off in its admin
+panel has no preview address at all, and the app says so rather than
+offering a link that cannot work.
+
 ## Credential storage
 
 A serve host stores every secret it holds in files under the config root,

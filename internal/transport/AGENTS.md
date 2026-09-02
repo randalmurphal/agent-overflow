@@ -111,6 +111,58 @@ the one live-session registry.
   the whole arrangement rests on, and `internal/tailnet`'s two-node integration
   test exercises it against a peer nothing faked.
 
+## The dev-server preview gateway
+
+`previewgateway.go` and `previewproxy.go` hold one TLS listener per port in
+this machine's preview set, each reverse-proxying to the dev server on the
+SAME port number of loopback (spec §7, the port gateway). It is the only
+listener in this tree that carries somebody else's application, and it is
+deliberately NOT an auxiliary listener: nothing about the app's mux,
+credential or scope gate applies to it, because none of those bytes are ours.
+
+- **The same port number on both sides.** A dev server's absolute URLs, its
+  `<base href>` and every HMR client that derives its socket from
+  `location.host` keep working only if the port does not move. A
+  path-prefixed proxy breaks Vite's client, which is the client that matters.
+- **The forwarding set is an allow-list, never an argument.** Only ports the
+  scan attributed to a thread's own session or terminal, plus ports the owner
+  named by hand. A loopback proxy that forwarded anywhere would reach every
+  host-local service on the box.
+- **Its own origin, never the app's.** A different port is a different browser
+  authority, so nothing served here reaches the SPA's scripts or storage. The
+  one thing a shared HOST still leaks is cookies, which is why the preview
+  cookie is named per port, why the port is checked against the grant as well
+  as against the cookie name, and why the app's page cookie is honoured only
+  by routes that also check an EXACT-PORT origin allow-list
+  (`pagecookie_contract_test.go`).
+- **The session credential never arrives.** `MintURL` returns a URL carrying
+  a single-use 60s ticket bound to `(principal, port)`; the first hit spends
+  it for an opaque cookie and 302s to the same address without it. Every later
+  request re-checks the principal through `Config.SessionLive` — nothing here
+  may cache that answer, exactly as on the WebSocket path.
+- **TLS on every path, no exception.** The cookie is `Secure` and a browser
+  will not store one from a cleartext origin that is not localhost. A tailnet
+  with HTTPS turned off therefore has no preview address, which the list says
+  rather than silently serving something that cannot hold a cookie.
+- **`SetPorts` reconciles; it does not rebuild.** It runs on every discovery
+  tick, so an unchanged port keeps the listener it had — rebinding three times
+  a second would drop every live HMR socket. A failed bind is a NOTE on that
+  port, not an error the caller handles: address-in-use means the dev server
+  already bound beyond loopback, so the page is reachable already.
+- **No `WriteSecurityHeaders`, and that is the one route excluded by name
+  from `TestEveryHTTPRouteCarriesThePolicy`.** A policy this process invented
+  for an application it did not write would silently break it.
+  `devgateway_contract_test.go` is what replaces that gate.
+
+**Every header rule is a verified fact, not a guess.**
+`docs/references/dev-server-proxy.md` records them with the version and date
+they were verified against (Vite 8.2.2, 2026-09-02). Two of them fail in ways
+that look like success: the Host check applies to the WebSocket UPGRADE as
+well as the HTTP path, and a changed path hangs the upgrade with no response
+at all. `vite-ping` bypasses the host check entirely, so a ping-only probe
+proves nothing — the contract test drives a real upgrade. Change a rule only
+with a new spike, and update that file in the same commit.
+
 ## Every new App method is also a wire RPC, so annotate it
 
 Adding an exported method to `App` puts it on the wire, so every one carries a

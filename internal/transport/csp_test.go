@@ -185,6 +185,18 @@ func TestServerPicksItsPolicyFromTheBootMode(t *testing.T) {
 // WriteSecurityHeaders ships with no CSP at all, and nothing else would
 // notice. The asset route stands in for the SPA shell, which is the one
 // response where the policy actually governs a document.
+//
+// ONE route is excluded by name: the dev-server preview, "/" on the
+// "dev-server preview" listener (previewgateway.go). It writes no policy
+// of ours on purpose — the bytes are somebody else's application, the
+// posture is theirs, and a Content-Security-Policy this process invented
+// would silently break it. What replaces this gate for that route is
+// devgateway_contract_test.go, which pins the ticket exchange, the
+// cookie flags, the per-request session check, the Host and Origin
+// rewrite, and the Location rewrite. The exclusion is safe because the
+// preview is a DIFFERENT ORIGIN: a different port is a different
+// authority, so nothing served there reaches the SPA's scripts, storage
+// or cookies.
 func TestEveryHTTPRouteCarriesThePolicy(t *testing.T) {
 	f := newServerFixtureWith(t, func(cfg *Config) {
 		cfg.AssetHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

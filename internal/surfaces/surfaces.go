@@ -208,9 +208,13 @@ const (
 	AuthorUpstream BytesAuthor = "upstream"
 
 	// AuthorAgentOrUser is content a provider process or the person
-	// using the app produced. No origin carries it today. The constant
-	// exists so that adding one is a decision somebody writes down
-	// rather than a property nobody names.
+	// using the app produced. Two origins carry it: attachment bytes on
+	// the app transport (opaque media, never a document) and the
+	// dev-server preview origin (documents that execute, on a port of
+	// their own precisely so they execute nowhere near the app). The
+	// rule the pairing with Posture keeps is the one above — never
+	// PostureAppOrigin — so adding a third is a decision somebody writes
+	// down rather than a property nobody names.
 	AuthorAgentOrUser BytesAuthor = "agent or user"
 )
 
@@ -357,6 +361,38 @@ var Listeners = []Listener{
 			"loopback bind rejects every DNS name except the configured " +
 			"canonical domain, and — once a call is authenticated — the " +
 			"per-call scope gate over the session's grants.",
+	},
+	{
+		Name:       "dev-server preview",
+		Package:    "internal/transport",
+		Binding:    BindLANCapable,
+		Credential: CredTransferTicket,
+		Posture:    PostureProxied,
+		Sites:      []string{"internal/transport/previewgateway.go"},
+		Why: "One TLS listener per port in this machine's PREVIEW SET, " +
+			"each reverse-proxying to the dev server on the same port " +
+			"number of loopback (docs/specs/remote-access.md §7). It is " +
+			"the only listener in this tree that carries somebody else's " +
+			"application, so three properties are load-bearing at once. " +
+			"The FORWARDING SET is an allow-list, never an argument: only " +
+			"ports the scan attributed to a thread's own session or " +
+			"terminal, plus ports the owner named by hand — a loopback " +
+			"proxy that forwarded anywhere would reach every host-local " +
+			"service on the box. The ORIGIN is never the app's: a " +
+			"different port is a different browser origin, so nothing " +
+			"served here reaches the SPA's scripts or storage, and the " +
+			"cookie below is named per port because a shared HOST is what " +
+			"browsers scope cookies by. The CREDENTIAL never arrives: a " +
+			"minted URL carries a single-use 60s ticket bound to " +
+			"(principal, port), the first hit spends it for an opaque " +
+			"cookie and redirects to the same address without it, and " +
+			"every later request re-checks the principal against the live " +
+			"session store — so a revoked device loses its previews on the " +
+			"next request and a restart ends them all. TLS on every path, " +
+			"because the cookie is Secure and a browser will not store one " +
+			"from a cleartext origin that is not localhost. This row is " +
+			"the LAN leg; the tailnet leg's bind is the node's own " +
+			"(internal/tailnet, the row below).",
 	},
 	{
 		Name:       "tailnet node",
@@ -569,6 +605,29 @@ var Listeners = []Listener{
 // exclusion rule is the shape of thing this package exists to avoid. The
 // extra cost is eight rows.
 var Routes = []Route{
+	// internal/transport — the dev-server preview mux. One pattern,
+	// because the whole port is one route: everything under it is the
+	// dev server's own path space and this process interprets none of it.
+	{
+		Pattern:    "/",
+		Listener:   "dev-server preview",
+		Credential: CredTransferTicket,
+		Posture:    PostureProxied,
+		Why: "The whole port, forwarded to the dev server on the same port " +
+			"number of loopback. The ticket buys a per-port cookie on the " +
+			"first hit and the cookie's principal is re-checked on every " +
+			"request after it; a request with neither gets one plain-text " +
+			"sentence and nothing else. Deliberately NOT wrapped in " +
+			"WriteSecurityHeaders — the bytes are the dev server's, the " +
+			"posture is theirs, and a Content-Security-Policy this process " +
+			"invented would silently break somebody's application. It is " +
+			"the one route excluded by name from " +
+			"TestEveryHTTPRouteCarriesThePolicy, with devgateway_contract_test.go " +
+			"holding the rules that replace it: the exchange, the cookie " +
+			"flags, the per-request session check, the Host/Origin rewrite " +
+			"and the Location rewrite.",
+	},
+
 	// internal/transport — the app transport mux.
 	{
 		Pattern:    "/bootstrap.json",
@@ -1167,6 +1226,29 @@ var Origins = []Origin{
 			"Content-Security-Policy. Same posture by construction: the " +
 			"stub serves Config.Assets and nothing else, and its /ws " +
 			"proxy carries frames rather than documents.",
+	},
+	{
+		Name:     "dev-server preview origin",
+		Listener: "dev-server preview",
+		Author:   AuthorAgentOrUser,
+		Posture:  PostureProxied,
+		Why: "Somebody's application, relayed unchanged: a dev server an " +
+			"agent started, or one the owner named by hand. The bytes are " +
+			"authored by an agent or the person, and unlike the attachment " +
+			"row above they ARE documents and they DO execute — which is " +
+			"exactly why this is a different browser origin from the SPA's " +
+			"and not a route on it. A different port is a different " +
+			"authority, so a script here reaches none of the app's " +
+			"storage, none of its cookies and none of its scripts. That " +
+			"separation is the whole reason the spec ruled port-distinct " +
+			"listeners on one node rather than a second tailnet node: the " +
+			"one thing a shared HOST still leaks is cookies, and the app's " +
+			"page cookie is honoured only by routes that also check an " +
+			"exact-port Origin allow-list (pagecookie_contract_test.go " +
+			"enumerates every reader and proves each refuses a request " +
+			"from a preview origin). No security headers are written here " +
+			"and none should be: this process must not invent a policy " +
+			"for an application it did not write.",
 	},
 	{
 		Name:     "upstream relay (claudetui gateway)",

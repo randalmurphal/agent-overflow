@@ -281,13 +281,25 @@ func (n *Node) Listen(port int) (net.Listener, error) {
 // can substitute for; the caller reports that refusal as status and
 // serves the cleartext listener alone.
 func (n *Node) ListenTLS() (net.Listener, error) {
+	return n.ListenTLSOn(HTTPSPort)
+}
+
+// ListenTLSOn is the same listener on a port the caller names, for the
+// dev-server previews: each one answers on the SAME port number the dev
+// server itself uses, so a dev server's absolute URLs and every HMR
+// client that derives its socket from `location.host` keep working.
+//
+// The certificate is the node's own either way — tsnet resolves one per
+// handshake for the node's ts.net name, whatever port it arrived on — so
+// this adds a port, not a second certificate story.
+func (n *Node) ListenTLSOn(port int) (net.Listener, error) {
 	srv, err := n.runningServer()
 	if err != nil {
 		return nil, err
 	}
-	ln, err := srv.ListenTLS("tcp", ":"+strconv.Itoa(HTTPSPort))
+	ln, err := srv.ListenTLS("tcp", ":"+strconv.Itoa(port))
 	if err != nil {
-		return nil, fmt.Errorf("tailnet: listen for HTTPS: %w", err)
+		return nil, fmt.Errorf("tailnet: listen for HTTPS on port %d: %w", port, err)
 	}
 	return ln, nil
 }
