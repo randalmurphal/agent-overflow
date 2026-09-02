@@ -510,12 +510,73 @@ RPCs, while taking no action of its own.
   sweep and the scheduler are unattended. `startWorkflowEngineForTest` calls
   both, because a fixture with an engine and no scheduler is a state no boot
   produces.
-- **`SetServiceUpdateRequester` and `ParkUnattendedWork` are bootstrap-boundary
-  FUNCTIONS**, and `serviceUpdateRequest` is unexported, for the reason every
-  input in `bootstrap.go` is one: an exported method on `App` is a wire RPC by
-  construction. A caller that could park this backend's unattended work over the
-  wire is a denial of service with a friendly name, and the update trigger gets
-  its step-up-gated bound method in the wave that adds it — not a wave early.
+- **`SetServiceUpdateRequester`, `ParkUnattendedWork` and
+  `ConfigureServiceUpdates` are bootstrap-boundary FUNCTIONS**, and
+  `serviceUpdateRequest` is unexported, for the reason every input in
+  `bootstrap.go` is one: an exported method on `App` is a wire RPC by
+  construction. A caller that could park this backend's unattended work over
+  the wire is a denial of service with a friendly name, and one that could
+  point the updater at a release feed of its choosing is worse.
+
+## The remote update trigger
+
+`app_service_update.go` is how the owner of a supervised `serve` host installs
+a different version without walking to it. It sits between two things it does
+not own: `internal/appupdate`'s `ReleaseSource` above (resolve, download,
+verify) and `internal/supervise` below (preflight, stage, request).
+
+**The order is the safety property, and it is the local command's order**
+(`internal/aocli`'s `serviceUpdate`):
+
+```
+resolving -> downloading -> verifying -> staging -> requested
+```
+
+- **Verify BEFORE stage, always.** Two refusals live in that step and both have
+  to happen while the artifact is still a temp file: a download that is not an
+  Agent Overflow binary this host can run, and one that speaks an update
+  protocol the installed supervisor does not (`supervise.CheckPreflight`). A
+  version directory is immutable and is what `acceptUpdate` selects from, so
+  either question asked after the staging would mean writing down a version the
+  supervisor then has to refuse.
+- **The version staged is the PREFLIGHT's answer, not the tag's.** A tag is
+  what the release feed calls a build; `__service-preflight` is what the binary
+  calls itself, and the directory has to be named for the second or a rollback
+  returns to a directory holding something else.
+- **The download lands in `os.CreateTemp` under `layout.Root()`, 0700, removed
+  on every exit path** including success. Under the root because
+  `StageBinary` must be a local copy on one filesystem rather than a
+  cross-device move that could tear.
+- **A failure at any step sets `Phase: error` naming the step and leaves the
+  supervisor untouched.** After `requested` the status STAYS there: this
+  process is about to be stopped by its own supervisor, and a client polling in
+  those seconds needs to see which update to wait for.
+- **One flow at a time** (`ErrServiceUpdateBusy`). Two downloads racing for one
+  staging layout is a corrupted version directory with a friendly name.
+
+**The passive check is deliberately NOT in the parked set.** One goroutine,
+one `Source.Latest`, never retried. It is a network read, which sounds like the
+parked set's shape, but the membership rule is "would restoring the database
+undo it?" and a read of a public release list undoes itself by ending. Parking
+it would only mean a trial's update surface reported no known release for as
+long as the trial ran. `TestThePassiveCheckRunsDuringATrial` pins that.
+
+**The three RPCs and their scopes.** `GetServiceUpdateStatus` (never touches
+the network, answers `Supervised:false` with no error off a supervised host)
+and `ListServiceReleases` are `access:admin`. `RequestServiceUpdate` is
+`access:admin` + `//ao:stepup`: choosing which build a machine runs is what a
+paired admin device is for, and `host` would have left the whole feature
+reachable only from the machine it exists to save a trip to — which is what
+`agent-overflow service update` already is. The step-up is what §7 admits the
+remote trigger on, and `TestStepUpMethodsAreTheSpecSet` pins the annotation.
+
+**Everything here is absent on every boot but one.** `ConfigureServiceUpdates`
+runs only from a supervised `serve` whose build has a release artifact a
+supervisor can stage as a single file (`serviceArtifactPlatform()` in package
+main: `headless-<GOOS>` for the windowless build, `<GOOS>` for the GUI one on
+linux, and `""` on darwin — an app-bundle zip — and windows, which is not a
+serve mode). An empty answer becomes the `Unavailable` sentence rather than a
+button that cannot work.
 
 ## Tests
 

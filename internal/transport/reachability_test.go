@@ -206,6 +206,8 @@ func TestStepUpMethodsAreTheSpecSet(t *testing.T) {
 		"SetWSLDistroPreference":       "WSL distro preference",
 		"SetProjectWorktreeSetup":      "worktree-setup recipe write: stores argv that runs unattended on every worktree cut",
 		"BeginPasskeyRegistration":     "registering a credential that admits a future caller, on the same argument as minting a pairing link",
+		"RequestServiceUpdate": "replacing the code this machine runs: §7's remote update trigger, " +
+			"which the spec admits precisely on the condition that it rides step-up",
 	}
 	// FinishPasskeyRegistration is deliberately absent, and it is the one
 	// omission in this table worth stating rather than inferring: it is

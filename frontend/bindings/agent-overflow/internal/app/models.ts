@@ -3850,6 +3850,110 @@ export class SendMessageOptions {
     }
 }
 
+/**
+ * ServiceUpdateStatus is everything a client needs to render the update
+ * surface for one supervised machine. Flat and additive like every other wire
+ * shape here.
+ */
+export class ServiceUpdateStatus {
+    /**
+     * Supervised is whether a supervisor is attached, so the trigger can work
+     * at all. False on a desktop install and on a `serve` started by hand.
+     */
+    "supervised": boolean;
+
+    /**
+     * Available is Supervised AND a release source exists for this host.
+     */
+    "available": boolean;
+
+    /**
+     * CurrentVersion is this build's version. Always answered, including on a
+     * host that can do nothing else here.
+     */
+    "currentVersion": string;
+
+    /**
+     * LatestVersion is the boot-time passive check's answer, empty when this
+     * host is up to date, when the check failed, or when it never ran.
+     */
+    "latestVersion"?: string;
+
+    /**
+     * LatestTag is that release's tag, which is what RequestServiceUpdate
+     * takes.
+     */
+    "latestTag"?: string;
+
+    /**
+     * Phase is where the current or last flow got to: idle, resolving,
+     * downloading, verifying, staging, requested, error.
+     */
+    "phase": string;
+
+    /**
+     * TargetTag is the tag the current or last flow was asked for.
+     */
+    "targetTag"?: string;
+
+    /**
+     * TargetVersion is what that tag resolved to, once known.
+     */
+    "targetVersion"?: string;
+
+    /**
+     * UpdateID is the supervisor's id for the accepted update, set at phase
+     * `requested`. It is what the client correlates the service:update-outcome
+     * frame against after the backend restarts.
+     */
+    "updateId"?: string;
+
+    /**
+     * Written and Total are the download's progress in bytes. Total is zero
+     * when the server sent no length.
+     */
+    "written"?: number;
+    "total"?: number;
+
+    /**
+     * Error is the last flow's failure, naming the step it failed at. Cleared
+     * when a new flow starts.
+     */
+    "error"?: string;
+
+    /**
+     * Unavailable says why Available is false on a supervised host, in a
+     * sentence. Empty otherwise.
+     */
+    "unavailable"?: string;
+
+    /** Creates a new ServiceUpdateStatus instance. */
+    constructor($$source: Partial<ServiceUpdateStatus> = {}) {
+        if (!("supervised" in $$source)) {
+            this["supervised"] = false;
+        }
+        if (!("available" in $$source)) {
+            this["available"] = false;
+        }
+        if (!("currentVersion" in $$source)) {
+            this["currentVersion"] = "";
+        }
+        if (!("phase" in $$source)) {
+            this["phase"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ServiceUpdateStatus instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ServiceUpdateStatus {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ServiceUpdateStatus($$parsedSource as Partial<ServiceUpdateStatus>);
+    }
+}
+
 export const SourceDiffReview = store$0.DiffReviewSourceRef;
 export type SourceDiffReview = store$0.DiffReviewSourceRef;
 

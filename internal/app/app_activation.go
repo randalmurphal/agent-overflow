@@ -115,8 +115,9 @@ func ParkUnattendedWork(a *App) { a.activation.Park() }
 
 // ActivateUnattendedWork opens the gate and publishes the update's outcome.
 //
-// The event is the hook the client correlation in the next wave needs: a
-// client that asked for an update reconnects to a backend it cannot otherwise
+// The event is what closes the loop for the client that asked: it holds the
+// update id RequestServiceUpdate published on `service:update-status`, and it
+// reconnects to a backend it cannot otherwise
 // tell apart from a restart, and this is the frame that names which update
 // finished and how. It is published here rather than at the transport because
 // the gate and the announcement are one moment: a backend that said "committed"
@@ -159,9 +160,11 @@ func SetServiceUpdateRequester(a *App, request func(target string) (string, erro
 // serviceUpdateRequest asks the supervisor to run target, returning the update
 // id the supervisor minted.
 //
-// Deliberately unexported and deliberately not bound: the wave that adds the
-// step-up-gated RPC adds the bound method that calls this. Exporting it now
-// would put an unauthenticated update trigger on the wire a wave early.
+// Deliberately unexported and deliberately not bound: an exported method here
+// IS a wire RPC, and the trigger that reaches this is
+// RequestServiceUpdate (app_service_update.go), which sits behind a step-up
+// proof and only reaches this call after the target has been downloaded,
+// verified against its published checksum, preflighted and staged.
 func (a *App) serviceUpdateRequest(target string) (string, error) {
 	a.serviceUpdate.mu.Lock()
 	request := a.serviceUpdate.request

@@ -101,6 +101,14 @@ var releaseTagPattern = regexp.MustCompile(`^v?[0-9A-Za-z][0-9A-Za-z.\-_+]{0,63}
 
 func validReleaseTag(tag string) bool { return releaseTagPattern.MatchString(tag) }
 
+// ValidReleaseTag is the same rule for a caller outside this package. The
+// remote update trigger (internal/app) refuses a tag SYNCHRONOUSLY, before it
+// claims the one-flow fence and hands the work to a goroutine, so a bad
+// argument comes back as a bad argument rather than as a failed update three
+// frames later. It stays one predicate: a second spelling of "is this a tag"
+// is how the two ends of one flow end up disagreeing about what they accept.
+func ValidReleaseTag(tag string) bool { return validReleaseTag(tag) }
+
 // ReleaseSummary describes one installable release for the version picker. Only
 // releases that ship an asset for the running platform AND a checksum sidecar
 // are surfaced — anything else can't be installed here, so it's omitted.

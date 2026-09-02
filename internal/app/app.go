@@ -496,14 +496,13 @@ type App struct {
 	// rollback could not undo. The zero value is OPEN: every boot except a
 	// supervisor trial never touches it. See app_activation.go.
 	activation activation
-	// serviceUpdate holds the call that asks this backend's supervisor to run
-	// an already-staged version. Installed by a supervised `serve` boot and
-	// nil everywhere else, which is what makes "this install has no
-	// supervisor" an answer rather than a nil dereference.
-	serviceUpdate struct {
-		mu      sync.Mutex
-		request func(target string) (string, error)
-	}
+	// serviceUpdate holds this backend's ability to replace itself: the call
+	// that asks its supervisor to run an already-staged version, and the
+	// release source, layout and live flow the remote trigger drives. Both
+	// halves are installed by a supervised `serve` boot and absent everywhere
+	// else, which is what makes "this install has no supervisor" an answer
+	// rather than a nil dereference. See app_service_update.go.
+	serviceUpdate serviceUpdateState
 	// credentialHomeOverride, when non-empty, replaces os.UserHomeDir()
 	// as the home that provideraccounts.Credentials operates under —
 	// slot storage, canonical credential, ephemeral probe homes, and the

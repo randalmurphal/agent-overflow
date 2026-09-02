@@ -1394,13 +1394,22 @@ whatever thread it is showing.
 
 **`home` is not a synonym for "host-scoped".** It is the honest answer for a
 method that acts on the backend serving the page — its settings, its access
-admin, its provider accounts, its update supervisor, its `ui_state` bucket —
-and it is also where the methods keyed by an id that is neither a thread nor a
+admin, its provider accounts, its in-app updater, its `ui_state` bucket — and
+it is also where the methods keyed by an id that is neither a thread nor a
 project land today (terminal ids, workflow item ids, subscription ids,
 attachment ids). Those are NOT settled: the client resolves such an id through
 its entity index, and the route column has no word for that. `home` is the
 fail-closed placeholder, and the list is in wave 7a's report; a method that
 grows a thread-id parameter should take the inference instead.
+
+The service-update trio (`GetServiceUpdateStatus`, `ListServiceReleases`,
+`RequestServiceUpdate`) is the deliberate exception, and it is `selected`
+rather than `home` because of what it names: a MACHINE, and specifically one
+of several a client may have attached. Routed `home` from a desktop with three
+backends attached, "install this release" would land on whichever one served
+the page, which is not the one the person was looking at. The in-app updater
+above it stays `home` because it updates the process serving the page and
+nothing else can.
 
 ## Per-connection policy and keepalive
 

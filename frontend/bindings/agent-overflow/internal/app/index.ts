@@ -87,6 +87,7 @@ export {
     RunningBackgroundWork,
     SendDiffReviewCommentsInput,
     SendMessageOptions,
+    ServiceUpdateStatus,
     SourceDiffReview,
     SourceProposedPlan,
     StartTerminalOptions,

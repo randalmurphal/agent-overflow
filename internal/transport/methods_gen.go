@@ -135,6 +135,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetProviderStatuses", ID: 3829328996, Scope: "access:admin", Route: "home"},                              // main.App.GetProviderStatuses
 	{Name: "GetQueueState", ID: 3079581691, Scope: "threads:operate", Route: "thread"},                               // main.App.GetQueueState
 	{Name: "GetRateLimitsSnapshots", ID: 3325141610, Scope: "threads:read", Route: "home"},                           // main.App.GetRateLimitsSnapshots
+	{Name: "GetServiceUpdateStatus", ID: 2230314013, Scope: "access:admin", Route: "selected"},                       // main.App.GetServiceUpdateStatus
 	{Name: "GetSettings", ID: 2554697378, Scope: "settings:read", Route: "home"},                                     // main.App.GetSettings
 	{Name: "GetSpinnerFiles", ID: 2622552651, Scope: "settings:read", Route: "home"},                                 // main.App.GetSpinnerFiles
 	{Name: "GetTerminalReplay", ID: 2329592604, Scope: "terminal:operate", Route: "home"},                            // main.App.GetTerminalReplay
@@ -222,6 +223,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListRecentTurns", ID: 1083162294, Scope: "threads:read", Route: "thread"},                                // main.App.ListRecentTurns
 	{Name: "ListReleases", ID: 397986043, Scope: "host", Route: "home"},                                              // main.App.ListReleases
 	{Name: "ListRunningBackgroundWork", ID: 3808352241, Scope: "threads:read", Route: "all"},                         // main.App.ListRunningBackgroundWork
+	{Name: "ListServiceReleases", ID: 4211718354, Scope: "access:admin", Route: "selected"},                          // main.App.ListServiceReleases
 	{Name: "ListSubagentDescendants", ID: 1299118478, Scope: "threads:read", Route: "thread"},                        // main.App.ListSubagentDescendants
 	{Name: "ListTerminals", ID: 2445206506, Scope: "terminal:operate", Route: "thread"},                              // main.App.ListTerminals
 	{Name: "ListThreadEditDiffs", ID: 2243533007, Scope: "threads:read", Route: "thread"},                            // main.App.ListThreadEditDiffs
@@ -277,6 +279,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ReplyToPRThread", ID: 446243420, Scope: "git:operate", Route: "selected"},                                // main.App.ReplyToPRThread
 	{Name: "ReportFrontendErrorBatch", ID: 2174329377, Scope: "host", Route: "home"},                                 // main.App.ReportFrontendErrorBatch
 	{Name: "ReportUpdateInstallStatus", ID: 314214419, Scope: "host", Route: "home"},                                 // main.App.ReportUpdateInstallStatus
+	{Name: "RequestServiceUpdate", ID: 3093237072, Scope: "access:admin", Route: "selected", StepUp: true},           // main.App.RequestServiceUpdate
 	{Name: "RequestWebviewMemoryTrim", ID: 2045178958, Scope: "host", Route: "home"},                                 // main.App.RequestWebviewMemoryTrim
 	{Name: "ResetKeybindings", ID: 2775767393, Scope: "settings:write", Route: "home"},                               // main.App.ResetKeybindings
 	{Name: "ResizeTerminal", ID: 1887984285, Scope: "terminal:operate", Route: "home"},                               // main.App.ResizeTerminal

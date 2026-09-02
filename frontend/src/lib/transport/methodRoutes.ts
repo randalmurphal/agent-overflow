@@ -106,6 +106,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3829328996: 'home', // GetProviderStatuses
 	3079581691: 'thread', // GetQueueState
 	3325141610: 'home', // GetRateLimitsSnapshots
+	2230314013: 'selected', // GetServiceUpdateStatus
 	2554697378: 'home', // GetSettings
 	2622552651: 'home', // GetSpinnerFiles
 	2329592604: 'home', // GetTerminalReplay
@@ -193,6 +194,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1083162294: 'thread', // ListRecentTurns
 	397986043: 'home', // ListReleases
 	3808352241: 'all', // ListRunningBackgroundWork
+	4211718354: 'selected', // ListServiceReleases
 	1299118478: 'thread', // ListSubagentDescendants
 	2445206506: 'thread', // ListTerminals
 	2243533007: 'thread', // ListThreadEditDiffs
@@ -248,6 +250,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	446243420: 'selected', // ReplyToPRThread
 	2174329377: 'home', // ReportFrontendErrorBatch
 	314214419: 'home', // ReportUpdateInstallStatus
+	3093237072: 'selected', // RequestServiceUpdate
 	2045178958: 'home', // RequestWebviewMemoryTrim
 	2775767393: 'home', // ResetKeybindings
 	1887984285: 'home', // ResizeTerminal
