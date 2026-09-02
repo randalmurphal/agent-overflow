@@ -4,10 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"runtime"
 	"sync"
 
 	appservice "agent-overflow/internal/app"
+	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/supervise"
 )
 
@@ -211,11 +214,75 @@ func configureServeSupervision(appService *App, sup *serveSupervisor) {
 		return
 	}
 	appservice.SetServiceUpdateRequester(appService.App, sup.RequestUpdate)
+	configureServeRemoteUpdate(appService)
 	if sup.trial {
 		appservice.ParkUnattendedWork(appService.App)
 		log.Printf("serve: booting as a trial for update %s; unattended work is parked until it commits",
 			sup.updateID)
 	}
+}
+
+// configureServeRemoteUpdate gives the App the release source, the layout and
+// the preflight the remote update trigger needs.
+//
+// Called only from configureServeSupervision, so only a SUPERVISED serve host
+// gets it: an unsupervised `serve` and every desktop boot leave the seam
+// unconfigured, and the status RPC answers Supervised:false there. It is a
+// second guard rather than a redundant one — the trigger's last step asks the
+// supervisor to run a staged version, so a host with a source and no
+// supervisor would download and stage an artifact nothing could ever select.
+//
+// Two more reasons it can decline, and each becomes a sentence rather than a
+// missing button:
+//
+//   - This binary is not one the release feed publishes for a supervised host
+//     (serviceArtifactPlatform is ""). darwin ships an app bundle the
+//     supervisor cannot stage as one file; windows is not a serve mode.
+//   - The data directory cannot be resolved, which is the same condition
+//     `supervise` itself refuses to start on, so this is only reachable in an
+//     unsupervised boot that got here by some other route.
+func configureServeRemoteUpdate(appService *App) {
+	platform := serviceArtifactPlatform()
+	if platform == "" {
+		log.Printf("serve: this build has no release artifact a supervisor can install, " +
+			"so updates over the wire are unavailable; use `agent-overflow service update`")
+		return
+	}
+	dataDir := bootSettingsDir()
+	if dataDir == "" {
+		log.Printf("serve: cannot determine the data directory, so updates over the wire are unavailable")
+		return
+	}
+	layout, err := supervise.NewLayout(dataDir)
+	if err != nil {
+		log.Printf("serve: %v; updates over the wire are unavailable", err)
+		return
+	}
+	// No global client timeout: the same client streams a tens-of-MB release
+	// binary, and http.Client.Timeout caps the WHOLE exchange including the
+	// body read, so a fixed cap would abort a download on a slow link. The
+	// flow bounds each phase with a context deadline instead.
+	source, err := appupdate.NewReleaseSource(appupdate.Config{
+		CurrentVersion: version,
+		Platform:       platform,
+		Arch:           runtime.GOARCH,
+		HTTPClient:     &http.Client{},
+	})
+	if err != nil {
+		log.Printf("serve: %v; updates over the wire are unavailable", err)
+		return
+	}
+	appservice.ConfigureServiceUpdates(appService.App, appservice.ServiceUpdateDeps{
+		Source: source,
+		Layout: layout,
+		// The supervisor's own preflight, not a copy: the answer this asks a
+		// downloaded file for is the same answer the supervisor will ask the
+		// staged one for a moment later, and two implementations would be two
+		// verdicts on one binary.
+		Preflight: supervise.PreflightBinary,
+		Log:       log.Printf,
+	})
+	log.Printf("serve: updates over the wire are available (artifact %s, version %s)", platform, version)
 }
 
 // finishServeSupervision runs after the transport is bound and the store is

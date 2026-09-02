@@ -344,6 +344,47 @@ replace the file the unit starts, then run this once. A staged version that
 speaks a newer update protocol than the installed supervisor is refused with
 that sentence, for exactly this reason.
 
+### Updating over the wire
+
+Settings → Updates on a supervised host offers the release list and installs
+the one you pick, from wherever you are. The backend does the same work the
+local command does, in the same order, and adds the download:
+
+1. **Resolve.** The tag you picked, against the published release feed. Only
+   releases that ship an artifact for THIS host and a `SHASUMS256` sidecar are
+   offered, so a release for another platform is never in the list.
+2. **Download.** Into a temporary file next to the version directories, hashed
+   as it streams. Bytes the published checksum does not cover are refused and
+   the file is deleted; nothing is installed.
+3. **Verify.** The downloaded file is asked what it is, in its own process
+   (`agent-overflow __service-preflight`), *before* anything is staged. A file
+   that is not an Agent Overflow binary this host can run, or one that speaks a
+   newer update protocol than the installed supervisor, is refused here — and
+   that second refusal names `agent-overflow service update` as the fix,
+   because replacing the supervisor is a thing only somebody at the machine can
+   do.
+4. **Stage.** Under the version the BINARY reported, not the tag, because a
+   version directory is named for what is inside it.
+5. **Request.** The supervisor takes it from there: the six states above, trial
+   and all. A failure at any earlier step leaves the supervisor untouched.
+
+The screen follows the flow live and then watches for the backend to come back.
+The update carries an id, so what it shows after the restart is the outcome of
+**your** update — committed, rolled back, or failed with the reason — rather
+than "the backend restarted".
+
+Two things it needs, and both are stated rather than assumed:
+
+- **A step-up proof.** Installing different code on a machine is in the same
+  set as minting a pairing link or changing the listener's binding: you are
+  either at the machine, or you satisfy a passkey challenge from the device
+  you are holding.
+- **A release artifact this host can install as one file.** The Linux binaries
+  qualify (the headless one takes `agent-overflow-headless-linux-amd64` and the
+  ordinary one takes `agent-overflow-linux-amd64`). macOS does not: its release
+  artifact is an app-bundle zip, which the supervisor stages nothing of, so a
+  macOS serve host says so on the screen and is updated locally.
+
 ## Bind and port
 
 Settings → Network holds both halves of the address, and a serve host
@@ -441,8 +482,9 @@ and an icon, which a server has no use for — so it is not the route here.
 **The in-app updater is not what updates a serve host.** It is wired by the
 desktop boot and by the WSL launcher's backend, and `serve` is neither, so it
 stays unconfigured on both Linux binaries. A serve host is updated by its
-supervisor instead — `agent-overflow service update` locally, or over the wire
-once that lands — and an unsupervised `serve` is updated by replacing the file
+supervisor instead — `agent-overflow service update` locally, or from any
+client through Settings → Updates ("Updating over the wire" above) — and an
+unsupervised `serve` is updated by replacing the file
 and restarting it. That is also why a desktop install can never be
 handed the headless artifact by accident: release assets are matched by exact
 name rather than by looking for "linux" somewhere in one
