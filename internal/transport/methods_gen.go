@@ -67,7 +67,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "CleanCodexBackgroundTerminals", ID: 16360282, Scope: "threads:operate", Route: "thread"},                 // main.App.CleanCodexBackgroundTerminals
 	{Name: "ClearBrowserSiteData", ID: 544013229, Scope: "terminal:operate", Route: "home"},                          // main.App.ClearBrowserSiteData
 	{Name: "ClearDraft", ID: 296814681, Scope: "threads:operate", Route: "thread"},                                   // main.App.ClearDraft
-	{Name: "ClearPushSenderCredential", ID: 1055713894, Scope: "host", Route: "home", StepUp: true},                  // main.App.ClearPushSenderCredential
+	{Name: "ClearPushSenderCredential", ID: 1055713894, Scope: "access:admin", Route: "home", StepUp: true},          // main.App.ClearPushSenderCredential
 	{Name: "CloseTerminal", ID: 2702963191, Scope: "terminal:operate", Route: "home"},                                // main.App.CloseTerminal
 	{Name: "CloseThreadTerminals", ID: 1705768020, Scope: "terminal:operate", Route: "thread"},                       // main.App.CloseThreadTerminals
 	{Name: "CompactCodexThread", ID: 4090329093, Scope: "threads:operate", Route: "thread"},                          // main.App.CompactCodexThread
@@ -312,7 +312,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetPRUpdatesActive", ID: 1078249699, Scope: "git:operate", Route: "home"},                                // main.App.SetPRUpdatesActive
 	{Name: "SetProjectWorktreeSetup", ID: 322092470, Scope: "terminal:operate", Route: "project", StepUp: true},      // main.App.SetProjectWorktreeSetup
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465, Scope: "settings:write", Route: "home", StepUp: true},          // main.App.SetProviderCustomEnvVar
-	{Name: "SetPushSenderCredential", ID: 719170063, Scope: "host", Route: "home", StepUp: true},                     // main.App.SetPushSenderCredential
+	{Name: "SetPushSenderCredential", ID: 719170063, Scope: "access:admin", Route: "home", StepUp: true},             // main.App.SetPushSenderCredential
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811, Scope: "settings:write", Route: "thread", StepUp: true},      // main.App.SetThreadMcpServerEnabled
 	{Name: "SetThreadPinGroup", ID: 3112222989, Scope: "threads:operate", Route: "thread"},                           // main.App.SetThreadPinGroup
 	{Name: "SetUIState", ID: 1514250938, Scope: "session", Route: "home"},                                            // main.App.SetUIState

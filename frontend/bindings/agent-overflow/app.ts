@@ -444,6 +444,10 @@ export function ClearDraft(threadID: string): $CancellablePromise<void> {
  * replaced in a minute, and dropping every phone's token with it would cost
  * each of them a launch to come back — while the phones themselves have not
  * changed their minds about being woken.
+ * 
+ * Same scope and proof as installing one: withdrawing the credential is the
+ * same decision from the other side, and the owner who can no longer reach
+ * the machine is the one who most needs to be able to make it.
  */
 export function ClearPushSenderCredential(): $CancellablePromise<void> {
     return $Call.ByID(1055713894);
@@ -1350,9 +1354,9 @@ export function GetProviderStatuses(): $CancellablePromise<provider$0.ProviderSt
  * GetPushSenderStatus answers whether this backend can wake a phone, and
  * how many are registered.
  * 
- * `access:admin` rather than `host`: this is the one push call an owner
- * needs to be able to make from somewhere else. "My phone stopped buzzing"
- * is answered by this shape, and answering it should not require walking to
+ * `access:admin`, like the credential writes, and without their step-up:
+ * reading whether this works changes nothing. "My phone stopped buzzing" is
+ * answered by this shape, and answering it should not require walking to
  * the machine.
  */
 export function GetPushSenderStatus(): $CancellablePromise<app$0.PushSenderStatus> {
@@ -3834,10 +3838,14 @@ export function SetProviderCustomEnvVar(providerName: string, name: string, valu
  * SetPushSenderCredential installs the service-account key this backend
  * sends with.
  * 
- * `host` because it is the owner configuring their own machine, and
- * //ao:stepup because it is a write behind a button rather than something a
- * page does on its own — the same posture every other credential-shaped
- * write on this surface has.
+ * `access:admin` plus //ao:stepup, the posture of every other
+ * credential-shaped write on the admin surface (minting a pairing link,
+ * beginning a passkey registration, the network exposure writes). NOT
+ * `host`: host presence is granted to no session, so a host annotation would
+ * make the paste reachable from nowhere but the machine's own window — and
+ * the machine this credential most needs installing on is the serve host
+ * nobody sits at. The step-up is the proof §4 asks of a write that changes
+ * what every registered phone is woken by.
  * 
  * VALIDATION IS SHAPE ONLY. Minting a token against the key would be the
  * stronger check and it is deliberately not done: it would put a network

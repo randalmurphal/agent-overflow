@@ -178,9 +178,10 @@ export {
 
   // Phone push (docs/specs/remote-access.md §9). The two registrations
   // are at the SESSION FLOOR because each reaches the calling device's own
-  // row and no other; the credential pair is host-only and step-up gated,
-  // and the status read is `access:admin` so "my phone stopped buzzing" is
-  // answerable from somewhere other than the machine.
+  // row and no other; the status read and the credential pair are
+  // `access:admin`, the pair step-up gated on top, so both "my phone
+  // stopped buzzing" and "install the key on the serve host" are done from
+  // somewhere other than the machine.
   RegisterPushToken,
   UnregisterPushToken,
   GetPushSenderStatus,

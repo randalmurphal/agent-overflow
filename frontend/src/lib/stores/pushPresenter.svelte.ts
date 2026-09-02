@@ -24,7 +24,6 @@
 
 import { isNativeShell } from '../native/platform';
 import { pushPlugin, type PushNotificationPlugin } from '../native/plugins';
-import { HOME_BACKEND } from '../transport/backendKey';
 import { clientLease } from '../transport/lease';
 import { wailsEventOn } from './wailsEvents';
 
@@ -66,23 +65,26 @@ export function stopPushPresenter(): void {
 }
 
 /**
- * The tray tag for one send, which is what makes a later state change
- * REPLACE a notification and a retraction cancel exactly it.
+ * The tray tag for one send: `<backendId>|<id>`, mirroring `push.TrayTag`
+ * and `TrayNotifier.tagFor`. It is what makes a later state change REPLACE
+ * a notification and a retraction cancel exactly it.
  *
- * HOME KEEPS THE PLAIN ID, and that is deliberate rather than an
- * omission: the pushed path tags with the plain id too, and the two
- * paths can both fire for one moment on a backgrounded phone whose
- * socket is still alive. Sharing the tag makes the second one REPLACE the
- * first, which is one notification; namespacing home would make it two.
+ * NAMESPACED BY BACKEND, home included. Not every notification id is
+ * unique across machines — `provider-auth:claude` is the same string on
+ * every backend the owner runs, and without the prefix one machine's
+ * sign-out notice would silently replace another's. And the pushed path
+ * composes the SAME tag from the message's own `backend` key, so a
+ * backgrounded phone whose socket is still alive — told about one moment
+ * on the wire and again through Google — shows one notification, the
+ * second replacing the first. `origin.backendId` is the backend's identity
+ * (`backends.ts`), the same string the backend stamps on the pushed
+ * message, which is what makes the two spellings agree.
  *
- * A second attached backend gets its own namespace, because not every
- * notification id is unique across machines — `provider-auth:claude` is
- * the same string on every backend the owner runs, and without the prefix
- * one machine's sign-out notice would silently replace another's.
+ * An unknown origin (empty) keeps the bare id, the same fallback the
+ * renderer makes for a message with no backend key.
  */
 export function pushTag(id: string, backendId: string): string {
-  if (backendId === '' || backendId === HOME_BACKEND) return id;
-  return `${backendId}|${id}`;
+  return backendId === '' ? id : `${backendId}|${id}`;
 }
 
 async function present(send: NotificationSend, backendId: string): Promise<void> {

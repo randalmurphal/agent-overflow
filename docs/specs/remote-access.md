@@ -2101,6 +2101,76 @@ the review fixes that follow them):
   against the docs and unrun; bundle sync end to end on a real phone
   is on the Mac list.
 
+**6g-b LANDED (2026-09-02).** Push, owner-only by the 2026-09-01
+ruling (f19fe7df, 603ab0a2, 96a036a7, 5d4e9ff9, c7807064, and the
+review-fix commit after them):
+- *The message* (`internal/push`): `MessageFor` is the one builder and
+  composes exactly `id`, `backend`, `kind`, `retract`, `title`, `body`,
+  `target`. `title` is one of six fixed phrases (`notify.KindPhrase`),
+  `body` is the backend's display name, `target` is the tap route as its
+  own JSON document; there is nowhere to put a thread title, which is
+  how the §9 redaction rule is enforced. DATA-ONLY always, high
+  priority, collapse key = send id, so a queued send is replaced by the
+  next one about the same moment. `ErrTokenGone` (404 / `UNREGISTERED`)
+  is the only error a caller acts on; `INVALID_ARGUMENT` deliberately is
+  not. `ParseCredential` checks shape and never dials; the tests point
+  both the OAuth exchange and the send at one `httptest` server.
+- *The fan-out* (`internal/app/app_push.go`): hangs off
+  `queueNotification`'s job after `notifyOS`, on its own serial queue;
+  the per-device gate is `notificationKindEnabledIn` over each phone's
+  device-tier bucket, the same switch the desktop asks; retractions are
+  never gated; `store.LivePushTokens` joins registered with
+  still-admitted so a revoked device is never sent to. A nil `Sender`
+  is the whole of what a friend's backend does differently, and the
+  designed relay is a different `Sender`, not a different fan-out.
+- *The RPCs*: `RegisterPushToken` / `UnregisterPushToken` at the
+  session floor, keyed by the CALLING session's device and refusing the
+  local page channel; `GetPushSenderStatus` at `access:admin`;
+  `SetPushSenderCredential` / `ClearPushSenderCredential` at
+  `access:admin` + step-up. The brief said `host` for the credential
+  pair and that was wrong on review: host presence is granted to no
+  session, so the paste would have been reachable from nowhere but the
+  machine's own window, and the machine that most needs the key is the
+  serve host nobody sits at. Same posture as minting a pairing link.
+- *The phone* (`mobile/android/.../push/`, `native/push.ts`,
+  `stores/pushPresenter.svelte.ts`): our own plugin, not
+  `@capacitor/push-notifications`, because that one renders only
+  Google-composed notifications and cannot cancel. `TrayNotifier` is
+  the one builder for BOTH paths (pushed message and socket frame) and
+  takes no Android type, so the decision half is a JVM test. A pushed
+  presentation is dropped while the app is on screen; a retraction is
+  never dropped. The socket presenter presents only while the lease is
+  `background`. **The tray tag is `<backend>|<id>` on both paths**
+  (`push.TrayTag`, `TrayNotifier.tagFor`, `pushTag`), from the
+  message's `backend` key and from the frame's origin respectively,
+  which is what makes one moment told twice one notification and two
+  machines' identical ids two; the agent's version tagged home's socket
+  frames by the bare id and the pushed message by the bare id, which
+  doubled every notification on a backgrounded phone with a live
+  socket, and that is the defect the review fix closed. Registration is
+  idempotent and runs on every attach and on token rotation; the
+  unregister rides both detach doors through `transport/detachSteps.ts`
+  because it is an RPC over the socket being taken away.
+- *The tap*: both intent doors are read (`handleOnNewIntent` and the
+  launch intent in `load()`), the cold-start tap is held until the page
+  asks (`takePendingTap`), and the route crosses as one opaque JSON
+  string that Java never parses.
+- *Verification*: `internal/push` and `internal/app` unit tests,
+  `TrayNotifierTest` on the JVM under `make apk`, the presenter's Vitest
+  suite, and `e2e/tests/push.spec.ts`, which drives a REAL turn through
+  the production mapping and dispatch into a recorder installed at the
+  `Sender` seam (`InstallHarnessPushSender`, a package-level function so
+  no session can reach it) and asserts the payload byte for byte: two
+  wakes per turn (the start's withdrawal, then the rest), the phone's
+  own toggle silencing presentations and never retractions, a revoked
+  device dropped from the live set.
+- *Only a device can prove*: Firebase accepting the message, real
+  token rotation, the tray rendering, the cold-launch tap, and the
+  `POST_NOTIFICATIONS` prompt. All on the Mac list with the Firebase
+  project, `google-services.json` and the service-account key the owner
+  creates there. `firebase-messaging` is pinned at 25.1.2, the newest
+  this box could see with the registry unreachable; re-check on the Mac.
+
 ## 10. Multi-backend clients
 
 Decide the **seams** in phase 1, not a speculative store rewrite.

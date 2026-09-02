@@ -92,9 +92,10 @@ function stubBindings() {
     distros: setBindingMock('ListWSLDistros', async () => [{ name: 'Ubuntu', default: true }]),
     distroPref: setBindingMock('GetWSLDistroPreference', async () => 'Ubuntu'),
     systems: setBindingMock('ListBackends', async () => []),
-    // The phone-push block reads with `access:admin` and WRITES with
-    // `host`. Both are stubbed so the sweep can assert that the read fires
-    // where it is granted and the write never fires from a mount at all.
+    // The phone-push block reads and writes with `access:admin` (the writes
+    // step-up gated on top). Both are stubbed so the sweep can assert that
+    // the read fires where it is granted and the write never fires from a
+    // mount at all.
     pushStatus: setBindingMock('GetPushSenderStatus', async () => ({
       configured: false,
       projectId: '',
@@ -210,22 +211,24 @@ describe('settings sections issue no passive RPC they were not granted', () => {
     });
   });
 
-  describe('NotificationsSection — the phone-push block reads with access:admin', () => {
+  describe('NotificationsSection — the phone-push block is one access:admin surface', () => {
     it('loads the push status on the owner’s own screen, and offers the credential field', async () => {
       const { getByLabelText } = render(NotificationsSection);
       await waitFor(() => expect(bindings.pushStatus).toHaveBeenCalled());
-      expect(getByLabelText('Service account key')).toBeTruthy();
+      expect(getByLabelText('Firebase service account key')).toBeTruthy();
       expect(bindings.setPushCredential).not.toHaveBeenCalled();
     });
 
-    it('loads it for a device paired with FULL access, and hides what only the host may write', async () => {
+    it('loads it for a device paired with FULL access, and offers the field there too', async () => {
       await pairFullAccess();
-      const { queryByLabelText } = render(NotificationsSection);
+      const { getByLabelText } = render(NotificationsSection);
       await waitFor(() => expect(bindings.pushStatus).toHaveBeenCalled());
-      // Hidden rather than disabled: `host` is granted to no session, so
-      // the field could only ever fail, and a control that can only fail
-      // is worse than no control.
-      expect(queryByLabelText('Service account key')).toBeNull();
+      // The write is `access:admin` + step-up, the same posture as minting
+      // a pairing link: reachable from a paired admin device, proved per
+      // call. The machine this key most needs installing on is the serve
+      // host nobody sits at, so a host-only field would guard nothing and
+      // strand that case.
+      expect(getByLabelText('Firebase service account key')).toBeTruthy();
       expect(bindings.setPushCredential).not.toHaveBeenCalled();
     });
 

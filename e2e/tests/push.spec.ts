@@ -220,6 +220,12 @@ test.describe.serial('phone push', () => {
     expect(woken.token).toBe(TOKEN);
     expect(woken.tag).toBe(`thread:${threadId}`);
     expect(woken.data.id).toBe(`thread:${threadId}`);
+    // The sending backend's identity rides EVERY message, the withdrawal
+    // included: the phone's tray tag is `<backend>|<id>`, composed the
+    // same way from a socket frame's origin, so one moment told twice is
+    // one notification and two machines' identical ids are two.
+    expect(woken.data.backend, 'a wake names the backend it came from').toBeTruthy();
+    expect(withdrawn.data.backend).toBe(woken.data.backend);
     expect(woken.data.kind).toBe('turn-complete');
     // A fixed phrase, and the machine. Never the thread.
     expect(woken.data.title).toBe('Turn complete');
@@ -246,6 +252,7 @@ test.describe.serial('phone push', () => {
     expect(retraction, 'a retraction must reach the phone as its own message').toBeTruthy();
     expect(retraction!.tag).toBe(`thread:${threadId}`);
     expect(retraction!.data.id).toBe(`thread:${threadId}`);
+    expect(retraction!.data.backend, 'the withdrawal names the backend, or cancel finds nothing').toBeTruthy();
     // Nothing to render and nowhere to go: the narrower contract
     // `notify.ValidateSend` holds a retraction to.
     expect(retraction!.data.title).toBeUndefined();

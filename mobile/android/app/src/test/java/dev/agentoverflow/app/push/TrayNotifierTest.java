@@ -44,6 +44,7 @@ public class TrayNotifierTest {
     private static Map<String, String> presentationData() {
         Map<String, String> data = new HashMap<>();
         data.put(TrayNotifier.KEY_ID, "thread:t-1");
+        data.put(TrayNotifier.KEY_BACKEND, "backend-9");
         data.put(TrayNotifier.KEY_KIND, "turn-complete");
         data.put(TrayNotifier.KEY_TITLE, "Turn complete");
         data.put(TrayNotifier.KEY_BODY, "workshop");
@@ -52,19 +53,43 @@ public class TrayNotifierTest {
     }
 
     @Test
-    public void aMessageBecomesOneNotificationTaggedWithItsId() {
+    public void aMessageBecomesOneNotificationTaggedByBackendAndId() {
         RecordingTray tray = new RecordingTray();
         new TrayNotifier(tray).apply(TrayNotifier.read(presentationData()), false);
 
-        assertEquals(List.of("post:thread:t-1"), tray.calls);
+        assertEquals(List.of("post:backend-9|thread:t-1"), tray.calls);
         TrayNotifier.Presentation posted = tray.posted.get(0);
         assertEquals("Turn complete", posted.title);
         assertEquals("workshop", posted.body);
         assertEquals("turn-complete", posted.kind);
-        // The tag IS the id. That is what makes a later state change
-        // replace this notification rather than stack a second one beside
-        // a fact that is no longer true.
-        assertEquals("thread:t-1", posted.tag);
+        // The tag is the backend and the id. The id is what makes a later
+        // state change replace this notification rather than stack a
+        // second one beside a fact that is no longer true; the backend is
+        // what keeps two machines' identical ids apart on one tray.
+        assertEquals("backend-9|thread:t-1", posted.tag);
+    }
+
+    /**
+     * The same id from two backends is two notifications. Without the
+     * namespace, one machine's sign-out notice would silently replace
+     * another's.
+     */
+    @Test
+    public void theSameIdFromTwoBackendsIsTwoNotifications() {
+        Map<String, String> other = presentationData();
+        other.put(TrayNotifier.KEY_BACKEND, "backend-2");
+
+        RecordingTray tray = new RecordingTray();
+        new TrayNotifier(tray).apply(TrayNotifier.read(presentationData()), false);
+        new TrayNotifier(tray).apply(TrayNotifier.read(other), false);
+        assertEquals(List.of("post:backend-9|thread:t-1", "post:backend-2|thread:t-1"), tray.calls);
+    }
+
+    /** The rule the socket presenter and the Go side mirror, spelled once. */
+    @Test
+    public void theTagIsBackendThenIdAndABareIdWhenThereIsNone() {
+        assertEquals("backend-9|thread:t-1", TrayNotifier.tagFor("backend-9", "thread:t-1"));
+        assertEquals("thread:t-1", TrayNotifier.tagFor("", "thread:t-1"));
     }
 
     @Test
@@ -78,9 +103,10 @@ public class TrayNotifierTest {
     }
 
     @Test
-    public void aRetractionCancelsByTagAndCarriesNothingElse() {
+    public void aRetractionCancelsByTheSameTagAndCarriesNothingElse() {
         Map<String, String> data = new HashMap<>();
         data.put(TrayNotifier.KEY_ID, "thread:t-1");
+        data.put(TrayNotifier.KEY_BACKEND, "backend-9");
         data.put(TrayNotifier.KEY_KIND, "turn-complete");
         data.put(TrayNotifier.KEY_RETRACT, TrayNotifier.RETRACT_VALUE);
 
@@ -89,8 +115,9 @@ public class TrayNotifierTest {
         assertNull(action.presentation);
 
         RecordingTray tray = new RecordingTray();
+        new TrayNotifier(tray).apply(TrayNotifier.read(presentationData()), false);
         new TrayNotifier(tray).apply(action, false);
-        assertEquals(List.of("cancel:thread:t-1"), tray.calls);
+        assertEquals(List.of("post:backend-9|thread:t-1", "cancel:backend-9|thread:t-1"), tray.calls);
     }
 
     /**
@@ -117,11 +144,12 @@ public class TrayNotifierTest {
     public void aRetractionStillCancelsWhileTheAppIsOnScreen() {
         Map<String, String> data = new HashMap<>();
         data.put(TrayNotifier.KEY_ID, "thread:t-1");
+        data.put(TrayNotifier.KEY_BACKEND, "backend-9");
         data.put(TrayNotifier.KEY_RETRACT, TrayNotifier.RETRACT_VALUE);
 
         RecordingTray tray = new RecordingTray();
         new TrayNotifier(tray).apply(TrayNotifier.read(data), true);
-        assertEquals(List.of("cancel:thread:t-1"), tray.calls);
+        assertEquals(List.of("cancel:backend-9|thread:t-1"), tray.calls);
     }
 
     /**
@@ -143,9 +171,10 @@ public class TrayNotifierTest {
 
     /**
      * A message that names only some of the presentation keys still
-     * posts. The backend composes all of them, so this is not a shape it
-     * sends — but an older backend that did not is a phone that should
-     * still buzz, not one that silently shows nothing.
+     * posts, under the bare id when it named no backend. The backend
+     * composes all of them, so this is not a shape it sends — but an older
+     * backend that did not is a phone that should still buzz, not one
+     * that silently shows nothing.
      */
     @Test
     public void aSparseMessageStillPostsWithEmptyText() {

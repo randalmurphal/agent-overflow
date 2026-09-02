@@ -20,7 +20,7 @@ func TestAPresentationCarriesAFixedPhraseAndTheBackendName(t *testing.T) {
 		Target: notify.Target{Kind: "thread", ThreadID: "t-1", BackendID: "backend-9"},
 	}
 
-	message, err := MessageFor(send, "device-token", "Studio")
+	message, err := MessageFor(send, "device-token", "backend-9", "Studio")
 	if err != nil {
 		t.Fatalf("MessageFor: %v", err)
 	}
@@ -29,14 +29,15 @@ func TestAPresentationCarriesAFixedPhraseAndTheBackendName(t *testing.T) {
 		t.Errorf("Token = %q, want the token it was given", message.Token)
 	}
 	if message.Tag != send.ID {
-		t.Errorf("Tag = %q, want the send id %q: the tag is what replace and retract find", message.Tag, send.ID)
+		t.Errorf("Tag = %q, want the send id %q: the collapse key is what replaces a queued send", message.Tag, send.ID)
 	}
 	want := map[string]string{
-		KeyID:     "thread:t-1",
-		KeyKind:   "turn-complete",
-		KeyTitle:  "Turn complete",
-		KeyBody:   "Studio",
-		KeyTarget: `{"kind":"thread","threadId":"t-1","backendId":"backend-9"}`,
+		KeyID:      "thread:t-1",
+		KeyBackend: "backend-9",
+		KeyKind:    "turn-complete",
+		KeyTitle:   "Turn complete",
+		KeyBody:    "Studio",
+		KeyTarget:  `{"kind":"thread","threadId":"t-1","backendId":"backend-9"}`,
 	}
 	for key, value := range want {
 		if message.Data[key] != value {
@@ -64,7 +65,7 @@ func TestTheTargetRidesAsItsOwnDocument(t *testing.T) {
 		Title:  "Some thread",
 		Body:   "Pending approval: Bash",
 		Target: notify.Target{Kind: "thread", ThreadID: "t-2"},
-	}, "device-token", "Studio")
+	}, "device-token", "backend-9", "Studio")
 	if err != nil {
 		t.Fatalf("MessageFor: %v", err)
 	}
@@ -88,16 +89,18 @@ func TestTheTargetRidesAsItsOwnDocument(t *testing.T) {
 }
 
 // A retraction is held to the narrower contract `notify.ValidateSend`
-// states: an id and a kind, nothing to render and nowhere to go.
-func TestARetractionCarriesOnlyItsIdAndKind(t *testing.T) {
+// states: an id and a kind, nothing to render and nowhere to go. The
+// backend rides anyway, because the tray tag it cancels is composed from it.
+func TestARetractionCarriesOnlyWhatCancelNeeds(t *testing.T) {
 	message, err := MessageFor(notify.Send{
 		ID: "thread:t-1", Kind: notify.KindTurnComplete, Retract: true,
-	}, "device-token", "Studio")
+	}, "device-token", "backend-9", "Studio")
 	if err != nil {
 		t.Fatalf("MessageFor: %v", err)
 	}
 	want := map[string]string{
 		KeyID:      "thread:t-1",
+		KeyBackend: "backend-9",
 		KeyKind:    "turn-complete",
 		KeyRetract: RetractValue,
 	}
@@ -119,13 +122,25 @@ func TestMessageForRefusesWhatNoPresenterShouldAct(t *testing.T) {
 		ID: "thread:t-1", Kind: notify.KindTurnComplete, Title: "T", Body: "B",
 		Target: notify.Target{Kind: "thread", ThreadID: "t-1"},
 	}
-	if _, err := MessageFor(valid, "", "Studio"); err == nil {
+	if _, err := MessageFor(valid, "", "backend-9", "Studio"); err == nil {
 		t.Error("a message with no registration token was accepted")
 	}
-	if _, err := MessageFor(notify.Send{Kind: notify.KindTurnComplete}, "tok", ""); err == nil {
+	if _, err := MessageFor(valid, "tok", "", "Studio"); err == nil {
+		t.Error("a message with no backend identity was accepted; it would post under a tag no retraction finds")
+	}
+	if _, err := MessageFor(notify.Send{Kind: notify.KindTurnComplete}, "tok", "backend-9", ""); err == nil {
 		t.Error("a send with no id was accepted; ValidateSend must run first")
 	}
-	if _, err := MessageFor(notify.Send{ID: "x", Kind: "invented"}, "tok", ""); err == nil {
+	if _, err := MessageFor(notify.Send{ID: "x", Kind: "invented"}, "tok", "backend-9", ""); err == nil {
 		t.Error("a send naming an undeclared kind was accepted")
+	}
+}
+
+// The tray tag the two device-side readers compose from `backend` and `id`,
+// pinned here so the rule has one home the Java and TypeScript mirrors are
+// checked against by eye.
+func TestTrayTagIsBackendThenId(t *testing.T) {
+	if got := TrayTag("backend-9", "thread:t-1"); got != "backend-9|thread:t-1" {
+		t.Errorf("TrayTag = %q, want backend|id", got)
 	}
 }

@@ -323,16 +323,20 @@ lifecycle-process`. Same answer, one fewer dependency, and it fails in
 the right direction: a process that was killed comes back with it false,
 so a message arriving before the app is up is POSTED rather than dropped.
 
-### The tag is the send id
+### The tag is `<backend>|<id>`
 
 `manager.notify(tag, 0, …)` and `manager.cancel(tag, 0)`, where the tag
-is `internal/notify`'s stable id (`thread:<id>`,
-`approval:<thread>:<request>`). That single choice is what makes a later
-state change REPLACE a notification instead of stacking a second one
-beside a fact that is no longer true, and what lets a retraction cancel
-exactly the right one. The `PendingIntent` request code is that tag's
-hash for the same reason: one shared request code would hand the second
-notification the first one's extras and open the wrong thread.
+is the sending backend's identity and `internal/notify`'s stable id
+(`thread:<id>`, `approval:<thread>:<request>`), composed by
+`TrayNotifier.tagFor` from the message's `backend` and `id` keys. The id
+is what makes a later state change REPLACE a notification instead of
+stacking a second one beside a fact that is no longer true, and what lets
+a retraction cancel exactly the right one; the backend is what keeps two
+machines' identical ids apart on one tray, and what lets the socket
+presenter below compose the SAME tag for the same moment. The
+`PendingIntent` request code is that tag's hash for the same reason: one
+shared request code would hand the second notification the first one's
+extras and open the wrong thread.
 
 ### The target is opaque here
 
@@ -369,20 +373,20 @@ doors run it — a machine detached in Settings, and `unpairHome()`.
 
 `stores/pushPresenter.svelte.ts` is the other end of the foreground drop,
 on the socket path: it presents `notification:send` only while the lease
-is `background`, and never gates a retraction. **The home backend's
-notifications keep the PLAIN send id as their tray tag**, deliberately
-colliding with what the pushed message would use, so a backgrounded phone
-whose socket is still alive shows ONE notification rather than two.
-Every other attached backend is namespaced `<backendId>|<id>`, because
-notification ids are not unique across machines: `provider-auth:claude`
-is the same string on every backend the owner runs, and without the
-prefix one machine's sign-out notice would silently replace another's.
+is `background`, and never gates a retraction. **Its tray tag is the same
+`<backendId>|<id>`**, composed from the frame's origin — the backend's
+identity, which is the string the fan-out stamps on the pushed message as
+`backend`. That is what makes a backgrounded phone whose socket is still
+alive show ONE notification for a moment it was told about twice, and
+what keeps `provider-auth:claude` from two machines as two notifications.
+The rule has one home, `push.TrayTag`, and two mirrors; a change to one
+is a change to three.
 
-Settings → Notifications carries the owner's half: the status line reads
-with `access:admin` so "my phone stopped buzzing" is answerable from
-somewhere other than the machine, while the credential field is `host`
-and hidden rather than disabled off-host, since the step-up gate refuses
-it anyway.
+Settings → Notifications carries the owner's half, all of it
+`access:admin`: the status line so "my phone stopped buzzing" is
+answerable from somewhere other than the machine, and the credential
+field, step-up gated on top, so the key can be installed on a serve host
+nobody sits at.
 
 ### `google-services.json`, and this box
 

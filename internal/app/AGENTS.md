@@ -285,6 +285,18 @@ instead of it, so a phone's tray and the desktop's toast are two views of ONE
 - **A revoked device is never sent to**, and that is one SQL join rather than a
   filter here: `store.LivePushTokens` answers "registered AND still admitted"
   as one question, so no caller can ask half of it.
+- **The message names this backend by the SAME identity every socket frame
+  carries** (`notificationBackendID`, the store's `BackendID`). The phone
+  composes its tray tag from that and the send id on both paths, so a
+  fan-out that stamped anything else — the display name, a per-boot id —
+  would make one moment two notifications. `internal/push`'s guide has the
+  tag rule.
+- **The credential writes are `access:admin` + step-up, not `host`.** Host
+  presence is granted to no session, so a host annotation would leave the
+  paste reachable from nowhere but the machine's own window — and the
+  machine that most needs the key is the serve host nobody sits at. The
+  step-up is the per-call proof the other credential-shaped admin writes
+  carry.
 - **No credential is the resting state.** A nil `push.Sender` is the whole of
   what a friend's backend does differently: it records registrations and sends
   nothing. The designed next step (the home backend as a wake relay) is a

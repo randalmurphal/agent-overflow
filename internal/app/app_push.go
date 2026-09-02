@@ -114,8 +114,7 @@ func (a *App) installPushSender(sender push.Sender, projectID, clientEmail strin
 	a.push.lastError = ""
 }
 
-// currentPushSender answers the sender and the name a message travels under,
-// in one lock.
+// currentPushSender answers the installed sender, nil when there is none.
 func (a *App) currentPushSender() push.Sender {
 	a.push.mu.Lock()
 	defer a.push.mu.Unlock()
@@ -142,12 +141,16 @@ func (a *App) pushFanout(send notify.Send) {
 	if sender == nil {
 		return
 	}
+	// The identity is the SAME one every frame this backend pushes over a
+	// socket is stamped with (`notificationBackendID`), which is what lets
+	// the phone's two presenters compose one tray tag for one moment.
+	backendID := a.notificationBackendID()
 	name := backendDisplayName()
-	a.push.queue.Go(func() { a.deliverPush(sender, name, send) })
+	a.push.queue.Go(func() { a.deliverPush(sender, backendID, name, send) })
 }
 
 // deliverPush is the fan-out body, on the push queue.
-func (a *App) deliverPush(sender push.Sender, backendName string, send notify.Send) {
+func (a *App) deliverPush(sender push.Sender, backendID, backendName string, send notify.Send) {
 	tokens, err := a.store.LivePushTokens()
 	if err != nil {
 		a.recordPushFailure(send.Kind, fmt.Errorf("read push registrations: %w", err))
@@ -157,7 +160,7 @@ func (a *App) deliverPush(sender push.Sender, backendName string, send notify.Se
 		if !a.pushAllowed(token, send) {
 			continue
 		}
-		message, err := push.MessageFor(send, token.Token, backendName)
+		message, err := push.MessageFor(send, token.Token, backendID, backendName)
 		if err != nil {
 			// The mapping produced something the contract refuses. It is
 			// the same message for every device, so one report is the
@@ -357,10 +360,14 @@ func (a *App) UnregisterPushToken(ctx context.Context) error {
 // SetPushSenderCredential installs the service-account key this backend
 // sends with.
 //
-// `host` because it is the owner configuring their own machine, and
-// //ao:stepup because it is a write behind a button rather than something a
-// page does on its own — the same posture every other credential-shaped
-// write on this surface has.
+// `access:admin` plus //ao:stepup, the posture of every other
+// credential-shaped write on the admin surface (minting a pairing link,
+// beginning a passkey registration, the network exposure writes). NOT
+// `host`: host presence is granted to no session, so a host annotation would
+// make the paste reachable from nowhere but the machine's own window — and
+// the machine this credential most needs installing on is the serve host
+// nobody sits at. The step-up is the proof §4 asks of a write that changes
+// what every registered phone is woken by.
 //
 // VALIDATION IS SHAPE ONLY. Minting a token against the key would be the
 // stronger check and it is deliberately not done: it would put a network
@@ -369,7 +376,7 @@ func (a *App) UnregisterPushToken(ctx context.Context) error {
 // GetPushSenderStatus's lastError, which is the surface the owner is already
 // watching.
 //
-//ao:scope host
+//ao:scope access:admin
 //ao:route home
 //ao:stepup
 func (a *App) SetPushSenderCredential(credentialJSON string) error {
@@ -403,7 +410,11 @@ func (a *App) SetPushSenderCredential(credentialJSON string) error {
 // each of them a launch to come back — while the phones themselves have not
 // changed their minds about being woken.
 //
-//ao:scope host
+// Same scope and proof as installing one: withdrawing the credential is the
+// same decision from the other side, and the owner who can no longer reach
+// the machine is the one who most needs to be able to make it.
+//
+//ao:scope access:admin
 //ao:route home
 //ao:stepup
 func (a *App) ClearPushSenderCredential() error {
@@ -420,9 +431,9 @@ func (a *App) ClearPushSenderCredential() error {
 // GetPushSenderStatus answers whether this backend can wake a phone, and
 // how many are registered.
 //
-// `access:admin` rather than `host`: this is the one push call an owner
-// needs to be able to make from somewhere else. "My phone stopped buzzing"
-// is answered by this shape, and answering it should not require walking to
+// `access:admin`, like the credential writes, and without their step-up:
+// reading whether this works changes nothing. "My phone stopped buzzing" is
+// answered by this shape, and answering it should not require walking to
 // the machine.
 //
 //ao:scope access:admin

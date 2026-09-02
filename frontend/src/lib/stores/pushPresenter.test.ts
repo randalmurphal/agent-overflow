@@ -9,9 +9,11 @@
 // posted while the app was away, and coming forward does not take it off
 // the tray.
 //
-// The tag is the third: home keeps the plain id so the socket path and
-// the pushed path collide on purpose, and every other backend is
-// namespaced because notification ids are not unique across machines.
+// The tag is the third: `<backendId>|<id>` for every backend, home
+// included, because notification ids are not unique across machines and
+// because the pushed path composes the same tag from its own `backend`
+// key — so the two paths collide on purpose for one moment and never
+// across two machines.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -77,7 +79,7 @@ function fakeTray(): FakeTray {
 let tray: FakeTray;
 
 /** Deliver one send the way the transport would, from one backend. */
-async function deliver(send: unknown, backendId = ''): Promise<void> {
+async function deliver(send: unknown, backendId = 'home-9'): Promise<void> {
   for (const sub of seam.subscriptions) sub.handler(send, { backendId });
   // The subscription's handler starts the presentation and does not await
   // it, the same way the transport does not await a listener.
@@ -112,7 +114,7 @@ describe('startPushPresenter', () => {
     });
     expect(tray.presented).toEqual([
       {
-        id: 'thread:t-1',
+        id: 'home-9|thread:t-1',
         kind: 'turn-complete',
         title: 'Fix the parser',
         body: 'Turn complete',
@@ -132,16 +134,18 @@ describe('startPushPresenter', () => {
     await startPushPresenter();
     seam.lease = 'active';
     await deliver({ id: 'thread:t-1', retract: true });
-    expect(tray.retracted).toEqual(['thread:t-1']);
+    expect(tray.retracted).toEqual(['home-9|thread:t-1']);
   });
 
-  it('namespaces a second machine, and leaves home alone', async () => {
+  it('keeps two machines apart on one tray, and an unknown origin bare', async () => {
     await startPushPresenter();
-    await deliver({ id: 'provider-auth:claude', kind: 'provider-signed-out' }, '');
+    await deliver({ id: 'provider-auth:claude', kind: 'provider-signed-out' }, 'home-9');
     await deliver({ id: 'provider-auth:claude', kind: 'provider-signed-out' }, 'laptop');
+    await deliver({ id: 'provider-auth:claude', kind: 'provider-signed-out' }, '');
     expect(tray.presented.map((row) => row.id)).toEqual([
-      'provider-auth:claude',
+      'home-9|provider-auth:claude',
       'laptop|provider-auth:claude',
+      'provider-auth:claude',
     ]);
   });
 
@@ -186,11 +190,12 @@ describe('startPushPresenter', () => {
 });
 
 describe('pushTag', () => {
-  it('keeps the plain id for home, so the two paths replace rather than double', () => {
-    expect(pushTag('thread:t-1', '')).toBe('thread:t-1');
+  it('is the backend and the id, the spelling the pushed message and the renderer share', () => {
+    expect(pushTag('thread:t-1', 'home-9')).toBe('home-9|thread:t-1');
+    expect(pushTag('provider-auth:claude', 'laptop')).toBe('laptop|provider-auth:claude');
   });
 
-  it('namespaces every other machine', () => {
-    expect(pushTag('provider-auth:claude', 'laptop')).toBe('laptop|provider-auth:claude');
+  it('keeps the bare id only when the origin is unknown', () => {
+    expect(pushTag('thread:t-1', '')).toBe('thread:t-1');
   });
 });

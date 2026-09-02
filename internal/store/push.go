@@ -47,6 +47,9 @@ func (s *Store) UpsertPushToken(deviceID, platform, token string, at int64) erro
 	if strings.TrimSpace(deviceID) == "" {
 		return fmt.Errorf("%w: push token device id", ErrIdentityFieldRequired)
 	}
+	if strings.TrimSpace(platform) == "" {
+		return fmt.Errorf("%w: push token platform", ErrIdentityFieldRequired)
+	}
 	if strings.TrimSpace(token) == "" {
 		return fmt.Errorf("%w: push token", ErrIdentityFieldRequired)
 	}

@@ -69,8 +69,10 @@ var ErrTokenGone = errors.New("push: this registration token is no longer valid"
 // platform's collapse key, so a send that is still queued for an offline
 // phone is REPLACED by the next send about the same moment rather than
 // delivered behind it — the offline half of the same replace-in-place rule
-// `internal/notify` states for the tray. The device-side tray tag comes
-// from the `id` data key, which is the same string.
+// `internal/notify` states for the tray. The device-side tray tag is
+// composed from the `backend` and `id` data keys (`TrayTag`), because a
+// collapse key is scoped to one sender's project while a tray is shared by
+// every backend the phone is paired with.
 type Message struct {
 	Token string
 	Tag   string
@@ -82,9 +84,22 @@ type Message struct {
 // halves of one wire contract, so a rename that missed the other end is a
 // notification the phone drops silently.
 const (
-	// KeyID is the moment's stable id: the tray tag, and what a retraction
-	// cancels.
+	// KeyID is the moment's stable id, and half of the tray tag: what a
+	// later state change replaces and what a retraction cancels.
 	KeyID = "id"
+	// KeyBackend is the sending backend's identity (`store.Identity.BackendID`),
+	// the other half of the tray tag. On EVERY message, retractions included.
+	//
+	// A phone is paired with several backends and notification ids are not
+	// unique across them — `provider-auth:claude` is the same string on every
+	// machine the owner runs — so a tag of the id alone lets one machine's
+	// sign-out notice silently replace another's. And a phone whose socket is
+	// still up while the OS has the app in the background is told about one
+	// moment TWICE, once on the wire and once through here; the two paths
+	// share this tag so the second one replaces the first rather than
+	// stacking beside it. The socket path reads the same identity off the
+	// frame's origin, so the two spell it from one source.
+	KeyBackend = "backend"
 	// KeyKind is the `notify.Kind` this moment is. The gate that reads it
 	// runs on the backend, before the send; it rides anyway because the
 	// renderer groups by it and a later per-kind channel needs no new key.
@@ -124,23 +139,30 @@ const RetractValue = "1"
 // rather than a habit: a caller cannot add a key, and the two fields a
 // person reads are a fixed phrase and the backend's name.
 //
-// backendName is `appidentity.HostDisplayName` at the call site. Empty is
-// legal and reads as "this machine did not say", which is better than
-// inventing one.
-func MessageFor(send notify.Send, token, backendName string) (Message, error) {
+// backendID is this backend's identity and is REQUIRED: it is half of the
+// tray tag, and a message without it would post under a tag no retraction
+// from this backend could ever find. backendName is
+// `appidentity.HostDisplayName` at the call site; empty is legal there and
+// reads as "this machine did not say", which is better than inventing one.
+func MessageFor(send notify.Send, token, backendID, backendName string) (Message, error) {
 	if err := notify.ValidateSend(send); err != nil {
 		return Message{}, err
 	}
 	if token == "" {
 		return Message{}, errors.New("push: a message needs a registration token")
 	}
+	if backendID == "" {
+		return Message{}, errors.New("push: a message needs the sending backend's identity")
+	}
 	data := map[string]string{
-		KeyID:   send.ID,
-		KeyKind: string(send.Kind),
+		KeyID:      send.ID,
+		KeyBackend: backendID,
+		KeyKind:    string(send.Kind),
 	}
 	if send.Retract {
 		// Held to the same narrower contract `notify.ValidateSend` holds a
 		// retraction to: an id and a kind, nothing to render, nowhere to go.
+		// The backend rides anyway, because it is part of what cancel finds.
 		data[KeyRetract] = RetractValue
 		return Message{Token: token, Tag: send.ID, Data: data}, nil
 	}
@@ -152,4 +174,15 @@ func MessageFor(send notify.Send, token, backendName string) (Message, error) {
 	data[KeyBody] = backendName
 	data[KeyTarget] = target
 	return Message{Token: token, Tag: send.ID, Data: data}, nil
+}
+
+// TrayTag is the tag a phone's tray keys one moment by: the backend's
+// identity, a separator, the send id.
+//
+// Spelled here so the Go tests pin the rule the two device-side readers
+// mirror — `TrayNotifier.tagFor` for the pushed message and
+// `stores/pushPresenter.svelte.ts`'s `pushTag` for the socket path. Nothing
+// on the backend keys by it; it exists so the contract has one home.
+func TrayTag(backendID, id string) string {
+	return backendID + "|" + id
 }

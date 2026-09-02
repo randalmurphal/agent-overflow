@@ -27,8 +27,14 @@ import java.util.Map;
  */
 final class TrayNotifier {
 
-    /** Mirrors {@code push.KeyID}: the notify.Send id, and the tray tag. */
+    /** Mirrors {@code push.KeyID}: the notify.Send id, half of the tray tag. */
     static final String KEY_ID = "id";
+
+    /**
+     * Mirrors {@code push.KeyBackend}: the sending backend's identity, the
+     * other half of the tray tag. See {@link #tagFor}.
+     */
+    static final String KEY_BACKEND = "backend";
 
     /** Mirrors {@code push.KeyKind}. */
     static final String KEY_KIND = "kind";
@@ -111,6 +117,27 @@ final class TrayNotifier {
     }
 
     /**
+     * The tray tag for one moment: {@code <backend>|<id>}, mirroring
+     * {@code push.TrayTag} and {@code pushTag} in
+     * {@code stores/pushPresenter.svelte.ts}.
+     *
+     * <p>Namespaced by BACKEND because a phone is paired with several and
+     * notification ids are not unique across them: {@code
+     * provider-auth:claude} is the same string on every machine the owner
+     * runs, and a tag of the id alone would let one machine's sign-out
+     * notice silently replace another's. The socket presenter composes
+     * the same tag from the frame's origin, so a phone told about one
+     * moment by both paths shows ONE notification.
+     *
+     * <p>A message with no backend keeps the bare id. The backend sends
+     * none such, but a retraction from a sender that omitted it omits it
+     * too, so the fallback still cancels what it posted.
+     */
+    static String tagFor(String backend, String id) {
+        return backend.isEmpty() ? id : backend + "|" + id;
+    }
+
+    /**
      * Read one message's data into an action, or {@code null} when it
      * names nothing this shell can act on.
      *
@@ -128,11 +155,12 @@ final class TrayNotifier {
         if (id.isEmpty()) {
             return null;
         }
+        String tag = tagFor(text(data.get(KEY_BACKEND)), id);
         if (RETRACT_VALUE.equals(text(data.get(KEY_RETRACT)))) {
-            return Action.retraction(id);
+            return Action.retraction(tag);
         }
         return Action.presentation(new Presentation(
-                id,
+                tag,
                 text(data.get(KEY_KIND)),
                 text(data.get(KEY_TITLE)),
                 text(data.get(KEY_BODY)),

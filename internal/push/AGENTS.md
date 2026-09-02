@@ -51,21 +51,40 @@ it composes exactly:
 
 | key | value |
 |---|---|
-| `id` | the `notify.Send` id, so the tray can replace and withdraw |
+| `id` | the `notify.Send` id, half of the tray tag |
+| `backend` | the sending backend's identity (`store.Identity.BackendID`), the other half |
 | `kind` | the notification kind, for the renderer's channel and icon |
 | `retract` | `"1"` on a withdrawal, absent otherwise |
 | `title` | `notify.KindPhrase(kind)`: one of six FIXED phrases, the same words the desktop shows |
 | `body` | the backend's display name and nothing else |
 | `target` | the tap route, as its own JSON document |
 
-A retraction carries `id`, `kind` and `retract` and stops there — it
-names no phrase, no backend and no target, because a withdrawal is not a
-presentation and none of that is needed to cancel by tag.
+A retraction carries `id`, `backend`, `kind` and `retract` and stops
+there — it names no phrase, no display name and no target, because a
+withdrawal is not a presentation and none of that is needed to cancel by
+tag.
 
-`Tag` is the send id. That single choice is what makes replace-in-place
-and retract-by-id work at the tray, and it is why the id must stay
-STABLE across the states of one fact, which is `notify`'s guarantee
-(`thread:<id>`, `approval:<thread>:<request>`).
+### The tray tag is `<backend>|<id>`, on both paths
+
+`TrayTag` spells it, and the two device-side readers mirror it:
+`TrayNotifier.tagFor` for the pushed message and `pushTag` in
+`stores/pushPresenter.svelte.ts` for a `notification:send` frame, which
+takes the backend from the frame's origin — the same identity the fan-out
+stamps on the message, so the two spellings come from one source.
+
+Two facts make the namespace load-bearing rather than tidy. Notification
+ids are not unique across machines (`provider-auth:claude` is the same
+string on every backend the owner runs), so a tag of the id alone lets one
+machine's sign-out notice silently replace another's. And a backgrounded
+phone whose socket is still up is told about one moment TWICE, on the
+wire and through Google; the shared tag makes the second REPLACE the
+first. `MessageFor` refuses an empty backend id for that reason: a message
+without one would post under a tag no retraction from this backend finds.
+
+The `id` is what must stay STABLE across the states of one fact, which is
+`notify`'s guarantee (`thread:<id>`, `approval:<thread>:<request>`).
+`Message.Tag` is that id alone: it is the platform's collapse key, scoped
+to one sender's project, where the backend adds nothing.
 
 ### Why the target is one key and not several
 

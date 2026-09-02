@@ -58,6 +58,9 @@ func (f *fakePushSender) tokens() []string {
 func pushApp(t *testing.T) (*App, *fakePushSender) {
 	t.Helper()
 	app := withTierStore(t, identityApp(t))
+	// The identity the fan-out stamps on every message, loaded the way
+	// Start loads it: without it MessageFor refuses, by design.
+	app.storeIdentity.Store(&store.Identity{BackendID: "backend-under-test"})
 	sender := &fakePushSender{answer: map[string]error{}}
 	app.installPushSender(sender, "project-under-test", "sender@project-under-test.iam")
 	return app, sender
@@ -145,6 +148,9 @@ func TestAWokenPhoneIsToldTheKindAndTheMachineAndNothingElse(t *testing.T) {
 	}
 	if message.Tag != "thread:"+mappingThreadID {
 		t.Errorf("tag = %q, want the send id, which is what replace and retract are keyed on", message.Tag)
+	}
+	if message.Data[push.KeyBackend] != "backend-under-test" {
+		t.Errorf("backend = %q, want the store identity every socket frame carries, so both tray paths compose one tag", message.Data[push.KeyBackend])
 	}
 	if message.Data[push.KeyTitle] != "Turn complete" {
 		t.Errorf("title = %q, want the kind's fixed phrase", message.Data[push.KeyTitle])
