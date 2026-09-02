@@ -24,6 +24,24 @@
 
         </activity>
 
+        <!--
+            Push (docs/specs/remote-access.md §9). Ours rather than the
+            Capacitor push plugin's, because the backend sends DATA-ONLY
+            messages so that this service runs on every one and can drop a
+            notification the app is already showing and cancel one that is
+            already on the tray. This app declares NO OTHER messaging
+            service: Android dispatches MESSAGING_EVENT to the first match,
+            so a second declaration anywhere in the merged manifest would
+            silently take the messages instead.
+        -->
+        <service
+            android:name=".push.PushMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -38,4 +56,10 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+        Runtime-prompted on API 33+ and implicit below it. The shell asks
+        for it once per cold start and remembers a refusal for that launch
+        only (frontend/src/lib/native/push.ts).
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>

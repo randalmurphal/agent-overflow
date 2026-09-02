@@ -36,6 +36,15 @@ dependencies {
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
+    // Push (docs/specs/remote-access.md §9). UNCONDITIONAL, and that was
+    // checked rather than assumed: the library needs the google-services
+    // plugin to INITIALISE, not to compile. Without google-services.json
+    // there is simply no default FirebaseApp, PushPlugin.getToken answers
+    // its typed "not configured", and the APK builds and runs with no
+    // push — which is this box's state and a state a release is allowed
+    // to be in. Making the dependency itself conditional would mean two
+    // source sets, one of which nobody compiles.
+    implementation "com.google.firebase:firebase-messaging:$firebaseMessagingVersion"
     testImplementation "junit:junit:$junitVersion"
     // The bundle state file is JSON, and `org.json` on the unit-test
     // classpath is android.jar's STUB, whose every method throws. The

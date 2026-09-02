@@ -17,9 +17,12 @@ import java.io.File;
  * to. {@code BridgeActivity.onCreate} builds the Bridge from
  * {@code bridgeBuilder} and immediately loads the WebView from whatever
  * server path that builder holds, so a path installed afterwards would
- * mean one launch of the wrong bundle every time. {@code registerPlugin}
- * is before it for the same reason: the builder collects plugins and the
- * Bridge is created from it once.
+ * mean one launch of the wrong bundle every time. Both {@code
+ * registerPlugin} calls are before it for the same reason: the builder
+ * collects plugins and the Bridge is created from it once. The push
+ * plugin in particular reads THIS launch's intent in its {@code load()},
+ * which is how a tap on a notification that woke a dead app still opens
+ * the thread.
  *
  * <p><b>The 30-second watchdog is the other half of the health check.</b>
  * The shell calls {@code Bundle.ready()} once its app has mounted and its
@@ -50,6 +53,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(BundlePlugin.class);
+        registerPlugin(dev.agentoverflow.app.push.PushPlugin.class);
 
         bundles = new BundleStore(BundlePlugin.rootFor(getFilesDir()));
         File serving = bundles.onBoot();

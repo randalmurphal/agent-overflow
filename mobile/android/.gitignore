@@ -62,7 +62,15 @@ captures/
 .cxx/
 
 # Google Services (e.g. APIs or Firebase)
-# google-services.json
+#
+# UNCOMMENTED deliberately. The Capacitor template ships this line as a
+# comment, which meant the file was not ignored at all — and it names the
+# owner's Firebase project and its API keys. Push reads it
+# (mobile/AGENTS.md, "Push"), the build applies the google-services plugin
+# only when it is present, and no APK in this repo needs it committed to
+# build.
+google-services.json
+app/google-services.json
 
 # Freeline
 freeline.py

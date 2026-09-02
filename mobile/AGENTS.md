@@ -270,6 +270,112 @@ is a stub whose methods throw, so `app/build.gradle` puts the real
 implementation on the unit-test classpath (`orgJsonVersion`); nothing
 ships it to a device.
 
+## Push
+
+The backend wakes this phone when it is not connected
+(`docs/specs/remote-access.md` §9, "Push"). `internal/push` composes the
+message, `internal/app/app_push.go` decides which phones get it, and
+`mobile/android/.../push/` is the renderer. `frontend/src/lib/native/
+push.ts` registers this device's token with every attached backend, and
+`stores/pushPresenter.svelte.ts` is the in-app half.
+
+**Our own plugin, not `@capacitor/push-notifications`.** That plugin
+builds tray notifications only for Google-composed `notification`
+messages, and it cannot cancel one — and cancelling is half of this
+feature, because a notification about a turn that has since resumed is
+exactly the stale alert retraction exists to prevent.
+
+### Three classes, and what each is for
+
+- **`TrayNotifier`** — the one place a notification is built or
+  cancelled, and the only place that decides anything. Takes a `Tray`
+  interface and no Android type, exactly as `BundleStore` takes a
+  directory, so `TrayNotifierTest` is a plain JVM JUnit test that `make
+  apk` runs before it assembles. Used by BOTH paths (the pushed message
+  and the in-app presenter), so the two cannot drift apart on channel,
+  tag, or what a retraction cancels.
+- **`AndroidTray`** — the platform half: the builder call, the channel,
+  and the launch intent. Deliberately thin, because it is the part only a
+  device can prove.
+- **`PushMessagingService`** — Google's delivery callback. Every message
+  reaches it, foreground or background, because the backend sends
+  data-only messages; `onNewToken` writes the token down and then offers
+  it to the bridge.
+- **`PushPlugin`** — the bridge: the permission prompt, the token, the
+  in-app `present` / `retract`, and the `tap` event.
+
+### The foreground drop
+
+A pushed PRESENTATION is dropped while the app is on screen: the socket's
+own `notification:send` is already showing it, exactly as on the desktop,
+and posting a tray notification over an app the person is looking at is
+the double notification this seam exists to avoid.
+
+A RETRACTION is never dropped. The notification being withdrawn was
+posted while the app was in the background, and coming to the foreground
+does not take it off the tray — gating the withdrawal on the flag that
+gated the posting would strand exactly those notifications forever. Same
+rule, same reason, as `notifyOS` on the backend.
+
+The foreground flag is a static on `PushPlugin`, set from its own
+resume/pause hooks rather than through `androidx.lifecycle:
+lifecycle-process`. Same answer, one fewer dependency, and it fails in
+the right direction: a process that was killed comes back with it false,
+so a message arriving before the app is up is POSTED rather than dropped.
+
+### The tag is the send id
+
+`manager.notify(tag, 0, …)` and `manager.cancel(tag, 0)`, where the tag
+is `internal/notify`'s stable id (`thread:<id>`,
+`approval:<thread>:<request>`). That single choice is what makes a later
+state change REPLACE a notification instead of stacking a second one
+beside a fact that is no longer true, and what lets a retraction cancel
+exactly the right one. The `PendingIntent` request code is that tag's
+hash for the same reason: one shared request code would hand the second
+notification the first one's extras and open the wrong thread.
+
+### The target is opaque here
+
+The tap route crosses as ONE JSON string, from the message to the intent
+extra to the web layer, and Java never parses it. Its field names belong
+to `internal/notify.Target` and to the page's `parseNotificationTarget`;
+a third spelling in Java would be a third thing to keep true, and this
+side needs none of them to carry it.
+
+Both intent doors are read, and they must be: `handleOnNewIntent` for a
+tap on a running app, and `getActivity().getIntent()` in `load()` for a
+tap that woke a DEAD one. Reading only the first loses every tap on a
+phone that had been idle, which is most of them. The cold-start tap is
+held until the page asks for it with `takePendingTap`, because `load()`
+runs long before any listener is attached and an event fired into nobody
+is a tap that opened nothing.
+
+### `google-services.json`, and this box
+
+The file lives at `mobile/android/app/google-services.json` and is
+**gitignored**. The owner obtains it from the Firebase console for the
+app's own project (Project settings → Your apps → Android app
+`dev.agentoverflow.app` → google-services.json) and drops it there; the
+matching service-account key goes into Settings → Notifications → Phone
+push on the owner's backend.
+
+`app/build.gradle` applies the google-services plugin only when the file
+exists, so **an APK builds and its JVM tests pass without it** — which is
+this development box's state, and the state `make apk` is verified in.
+The `firebase-messaging` dependency itself is UNCONDITIONAL, and that was
+checked rather than assumed: the library needs the plugin to INITIALISE,
+not to compile. Without the file there is simply no default
+`FirebaseApp`, `PushPlugin.getToken()` answers its typed
+`{configured: false}`, and the web seam stops there. Making the
+dependency conditional would have meant two source sets, one of which
+nobody compiles.
+
+**Only a device with that file and a real Firebase project can prove the
+last hop.** Everything up to it — what the backend composes, who it is
+sent to, what the tray does with each message — is covered by
+`internal/push`, `internal/app`, the Playwright spec, and
+`TrayNotifierTest`.
+
 ## What is committed
 
 The generated `android/` tree is committed, minus build outputs,
@@ -294,6 +400,7 @@ never resolves a Capacitor module at runtime:
 | `native/pickers.ts` | a documented stub |
 | `native/boot.ts` | what runs before anything mounts; `adoptPairingEndpoint` is the one place both pairing doors (scanned code, `#pair=` hash) point the shell at a backend |
 | `native/bundleSync.ts` | the one door for downloading a newer bundle from an attached backend, and for reporting this launch healthy (§ The bundle plugin) |
+| `native/push.ts` | permission, token, and `RegisterPushToken` on every attached backend; the unregister step rides `detachAttachedBackend` (§ Push) |
 
 Two things `main.ts` keeps true for the shell. The `#pair=` hash is
 checked BEFORE the first-run screen for every client, so a shell can be
