@@ -400,9 +400,19 @@ func TestRequestServiceUpdateRefusalsTouchNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		opts serviceUpdateOptions
-		tag  string
-		want error
+		// trial parks the activation gate, which is what a supervisor trial
+		// boot looks like from inside this process.
+		trial bool
+		tag   string
+		want  error
 	}{
+		{
+			name:  "a trial boot",
+			opts:  serviceUpdateOptions{configure: true, supervised: true},
+			trial: true,
+			tag:   "v1.5.0",
+			want:  ErrServiceUpdateTrial,
+		},
 		{
 			name: "an unsafe tag",
 			opts: serviceUpdateOptions{configure: true, supervised: true},
@@ -430,6 +440,9 @@ func TestRequestServiceUpdateRefusalsTouchNothing(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newServiceUpdateRig(t, tc.opts)
+			if tc.trial {
+				ParkUnattendedWork(rig.app)
+			}
 			if err := rig.app.RequestServiceUpdate(context.Background(), tc.tag); !errors.Is(err, tc.want) {
 				t.Fatalf("RequestServiceUpdate = %v, want %v", err, tc.want)
 			}

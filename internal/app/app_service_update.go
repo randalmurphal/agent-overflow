@@ -139,6 +139,13 @@ var ErrServiceUpdateUnavailable = errors.New(
 // snapshot later; refusing it here costs nothing and says why.
 var ErrServiceUpdateAlreadyRunning = errors.New("app: that version is the one already running")
 
+// ErrServiceUpdateTrial refuses a request made of a TRIAL boot. A trial is a
+// supervisor already mid-update: it accepts one at a time, so the request
+// would be refused after the download and the stage, both wasted. The gate
+// being parked is the fact this process has about being a trial.
+var ErrServiceUpdateTrial = errors.New(
+	"app: this backend is a trial of an update that has not committed yet, so wait for that one to settle")
+
 // ServiceUpdateStatus is everything a client needs to render the update
 // surface for one supervised machine. Flat and additive like every other wire
 // shape here.
@@ -347,6 +354,9 @@ func (a *App) RequestServiceUpdate(ctx context.Context, tag string) error {
 	}
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
+	}
+	if a.activation.Parked() {
+		return ErrServiceUpdateTrial
 	}
 	tag = strings.TrimSpace(tag)
 	if !appupdate.ValidReleaseTag(tag) {

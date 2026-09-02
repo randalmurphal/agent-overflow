@@ -553,6 +553,10 @@ resolving -> downloading -> verifying -> staging -> requested
   those seconds needs to see which update to wait for.
 - **One flow at a time** (`ErrServiceUpdateBusy`). Two downloads racing for one
   staging layout is a corrupted version directory with a friendly name.
+- **A trial boot refuses before it downloads** (`ErrServiceUpdateTrial`). A
+  trial IS a supervisor mid-update, and the supervisor accepts one at a time,
+  so the only thing a download could earn is a refusal after the stage. The
+  parked activation gate is how this process knows it is a trial.
 
 **The passive check is deliberately NOT in the parked set.** One goroutine,
 one `Source.Latest`, never retried. It is a network read, which sounds like the
