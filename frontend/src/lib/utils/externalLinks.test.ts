@@ -333,7 +333,7 @@ describe('the delegate’s preview branches', () => {
 
   it('swallows the click on a link that is inert, and opens nothing', () => {
     const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
-    for (const state of ['blocked', 'no-address']) {
+    for (const state of ['not-shared', 'no-address']) {
       document.body.innerHTML = '';
       const link = previewAnchor({
         'data-preview-state': state,
@@ -345,6 +345,28 @@ describe('the delegate’s preview branches', () => {
     }
     expect(actions.open).not.toHaveBeenCalled();
     expect(open).not.toHaveBeenCalled();
+  });
+
+  it('swallows a middle-click on a shared link, and opens nothing', () => {
+    // The href is the agent's machine's `localhost`, so "somewhere other
+    // than here" has nowhere to go: the delegate eats the gesture rather
+    // than handing this reader's browser a port it does not have.
+    const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+    const link = previewAnchor({
+      'data-preview-state': 'open',
+      'data-preview-port': '5173',
+      'data-preview-path': '/',
+      'data-preview-thread': 'thread-1',
+    });
+
+    const dispatched = link.dispatchEvent(
+      new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }),
+    );
+
+    expect(dispatched).toBe(false);
+    expect(actions.open).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    expect(window.open).not.toHaveBeenCalled();
   });
 
   it('shares the port from the inline Allow action, naming the backend it belongs to', () => {
