@@ -35,12 +35,16 @@
 // its environment. Borrowing the worker fixture's instance cannot express
 // that ordering.
 //
-// THREE CASES, and the last two exist because the first cannot see
-// everything. Chromium does not surface a preflight to the page, so the
-// OPTIONS the upload needs is asked of the running server directly; and a
-// backend that answered `*` would pass the first case perfectly, so the
-// third points a page at an origin this backend was never told about and
-// requires the manifest fetch to be refused.
+// FIVE CASES, and the four after the first exist because the first
+// cannot see everything. Chromium does not surface a preflight to the
+// page, so the OPTIONS the upload needs — and the ones the bundle routes
+// need — are asked of the running server directly. A backend that
+// answered `*` would pass every positive case perfectly, so the last one
+// points a page at an origin this backend was never told about and
+// requires the manifest fetch to be refused. And the bundle case is the
+// phone's update channel proved with no phone: a paired page on the
+// other origin downloading the archive, unzipping it and checking every
+// digest against the manifest.
 
 import { createServer, type Server } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -103,6 +107,10 @@ const PAIRED_APP_MOUNT_MS = 20_000;
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
+  // `bundle-id.txt` is in the served tree, and a type this map does not
+  // know is `application/octet-stream` — which a browser DOWNLOADS rather
+  // than renders, so a navigation to it never becomes a page.
+  '.txt': 'text/plain; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json',
@@ -378,6 +386,191 @@ test.describe.serial('the SPA served from its own origin', () => {
     // The two rules that keep this one door narrow.
     expect(preflight.headers.get('access-control-allow-credentials')).toBeNull();
     expect(preflight.headers.get('vary')?.toLowerCase()).toContain('origin');
+  });
+
+  test('the bundle routes answer their own preflights', async () => {
+    // Same reason as the upload's: both patterns are method-qualified,
+    // so each needs its own OPTIONS route or the mux answers 405 and the
+    // browser never sends the GET. A session header makes both requests
+    // non-simple, so the preflight is not optional.
+    for (const route of ['/bundle/manifest.json', '/bundle/archive.zip']) {
+      const preflight = await fetch(backendOrigin + route, {
+        method: 'OPTIONS',
+        headers: {
+          origin: bundle.origin,
+          'access-control-request-method': 'GET',
+          'access-control-request-headers': 'x-ao-session, x-ao-device-key',
+        },
+      });
+      expect(preflight.status, route).toBe(204);
+      expect(preflight.headers.get('access-control-allow-origin'), route).toBe(bundle.origin);
+      expect(preflight.headers.get('access-control-allow-methods'), route).toContain('GET');
+      expect((preflight.headers.get('access-control-allow-headers') ?? '').toLowerCase(), route)
+        .toContain('x-ao-session');
+      expect(preflight.headers.get('access-control-allow-credentials'), route).toBeNull();
+      expect(preflight.headers.get('vary')?.toLowerCase(), route).toContain('origin');
+    }
+  });
+
+  test('a paired page downloads this backend\'s bundle and the archive matches its manifest', async ({
+    browser,
+  }) => {
+    // The seam a phone updates through, proved with no phone.
+    //
+    // What only this can answer is the same thing the case above answers
+    // for the upload: whether a browser will let a page on ANOTHER origin
+    // present `X-AO-Session` to these two routes and read megabytes back.
+    // Everything else — the id rule, the zip/manifest agreement, the
+    // refusal without a session — is proved in `internal/bundle` and
+    // `internal/transport/bundleroutes_test.go`, against no browser at
+    // all.
+    //
+    // The page is `bundle-id.txt`, which is a real file in the served
+    // tree rather than the SPA: this test wants an ORIGIN to fetch from,
+    // not a running app, and that file is also the fact being compared —
+    // what a phone booted on this bundle would answer when asked what it
+    // is running (`frontend/scripts/bundleId.ts`).
+    //
+    // The device pairs over the wire from here rather than through the
+    // screen, because what is under test is two GETs and not a second
+    // copy of the pairing flow.
+    const invite = await harness.rpc<PairingInvite>('MintDevicePairing', 'phone', 'full');
+    const payload = JSON.parse(
+      Buffer.from(fragmentOf(invite).slice('#pair='.length), 'base64url').toString('utf8'),
+    ) as { token: string };
+    const deviceKey = 'e2e-bundle-reader-device';
+    const redeemed = await fetch(backendOrigin + '/auth/pair', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: payload.token,
+        keyThumbprint: deviceKey,
+        label: 'Bundle reader',
+        platform: 'playwright',
+      }),
+    });
+    expect(redeemed.ok, '/auth/pair must answer a redemption naming a live link').toBe(true);
+    const grant = (await redeemed.json()) as { credential: string; pairingId: string };
+    await harness.rpc('ConfirmDevicePairing', grant.pairingId);
+
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    // An init script rather than a script tag: it runs in the page's own
+    // world before the document loads, so it does not depend on the
+    // document having a head to append to. The UMD build assigns
+    // `self.fflate` when there is no module system, which is the page.
+    await page.addInitScript({
+      content: await readFile(
+        path.resolve(import.meta.dirname, '..', 'node_modules', 'fflate', 'umd', 'index.js'),
+        'utf8',
+      ),
+    });
+    // The CORS answer itself is read from the network side, not from the
+    // page: `Access-Control-Allow-Origin` is not a safelisted response
+    // header, so `Response.headers.get` in a page answers '' for it no
+    // matter what crossed. That the fetches SUCCEED is the browser's own
+    // verdict on the answer; this is how the answer's exact value —
+    // never `*` — is checked.
+    const allowOrigins = new Map<string, string>();
+    page.on('response', (res) => {
+      if (!res.url().startsWith(backendOrigin)) return;
+      allowOrigins.set(
+        new URL(res.url()).pathname,
+        res.headers()['access-control-allow-origin'] ?? '',
+      );
+    });
+    await page.goto(bundle.origin + '/bundle-id.txt');
+    const servedId = ((await page.locator('body').textContent()) ?? '').trim();
+    expect(servedId, 'the built bundle must record its own id').toMatch(/^[0-9a-f]{64}$/);
+
+    // Both fetches, the unzip and every digest happen inside the page:
+    // the point is that the BROWSER allowed them.
+    const read = await page.evaluate(
+      async ({ origin, credential, key }) => {
+        const headers = { 'X-AO-Session': credential, 'X-AO-Device-Key': key };
+        const withoutSession = await fetch(origin + '/bundle/manifest.json');
+        const manifestRes = await fetch(origin + '/bundle/manifest.json', { headers });
+        const manifest = (await manifestRes.json()) as {
+          id: string;
+          version: string;
+          minShellBuild: number;
+          files: Array<{ path: string; sha256: string; size: number }>;
+        };
+        const archiveRes = await fetch(origin + '/bundle/archive.zip', { headers });
+        const archive = new Uint8Array(await archiveRes.arrayBuffer());
+        const unzip = (window as unknown as {
+          fflate: { unzipSync: (data: Uint8Array) => Record<string, Uint8Array> };
+        }).fflate.unzipSync;
+        const entries = unzip(archive);
+        const hex = async (bytes: Uint8Array): Promise<string> => {
+          const digest = await crypto.subtle.digest('SHA-256', bytes as BufferSource);
+          return [...new Uint8Array(digest)]
+            .map((b) => b.toString(16).padStart(2, '0'))
+            .join('');
+        };
+        const unpacked: Array<{ path: string; sha256: string; size: number }> = [];
+        for (const [entryPath, bytes] of Object.entries(entries)) {
+          unpacked.push({ path: entryPath, sha256: await hex(bytes), size: bytes.length });
+        }
+        return {
+          refusedStatus: withoutSession.status,
+          manifestStatus: manifestRes.status,
+          archiveStatus: archiveRes.status,
+          archiveType: archiveRes.headers.get('content-type') ?? '',
+          archiveCache: archiveRes.headers.get('cache-control') ?? '',
+          archiveBytes: archive.length,
+          manifest,
+          unpacked,
+        };
+      },
+      { origin: backendOrigin, credential: grant.credential, key: deviceKey },
+    );
+
+    // A page on the shell's origin with no session is refused, and told
+    // nothing about whether the path exists.
+    expect(read.refusedStatus, 'the bundle routes admit a paired session and nothing else').toBe(404);
+
+    // Both answers were readable, and named this origin exactly. A `*`
+    // would satisfy the browser and is what this backend must not answer.
+    expect(read.manifestStatus).toBe(200);
+    expect(read.archiveStatus).toBe(200);
+    expect(read.archiveType).toBe('application/zip');
+    expect(allowOrigins.get('/bundle/manifest.json')).toBe(bundle.origin);
+    expect(allowOrigins.get('/bundle/archive.zip')).toBe(bundle.origin);
+    expect(read.archiveCache).toBe('no-store');
+    expect(read.archiveBytes).toBeGreaterThan(0);
+
+    // The manifest describes the bundle this very page was served from.
+    // That is the Go rule and the Vite rule agreeing over the real tree,
+    // end to end, and it is why there is no third implementation of the
+    // hash in this file.
+    expect(read.manifest.id, 'the served manifest must describe the served bundle').toBe(servedId);
+    expect(read.manifest.files.length).toBeGreaterThan(0);
+    expect(read.manifest.minShellBuild).toBeGreaterThan(0);
+
+    // Every manifest file arrived, with the bytes the manifest promised,
+    // and nothing arrived that the manifest did not name — which is the
+    // whole of what `stage()` will check again on the device.
+    const byPath = new Map(read.unpacked.map((f) => [f.path, f]));
+    for (const file of read.manifest.files) {
+      const got = byPath.get(file.path);
+      expect(got, `the archive must carry ${file.path}`).toBeTruthy();
+      expect(got!.sha256, `${file.path} must arrive with the digest the manifest names`)
+        .toBe(file.sha256);
+      expect(got!.size, `${file.path} must arrive at the size the manifest names`).toBe(file.size);
+    }
+    expect(
+      read.unpacked.length,
+      'the archive must carry the manifest and nothing else',
+    ).toBe(read.manifest.files.length);
+
+    // The one file a bundle never carries: it is written after the tree
+    // is hashed, so an archive containing it would describe a tree the
+    // build never produced.
+    expect(byPath.has('bundle-id.txt')).toBe(false);
+    expect(read.unpacked.some((f) => f.path.endsWith('.map'))).toBe(false);
+
+    await context.close();
   });
 
   test('a page origin the backend was not told about is refused', async ({ browser }) => {

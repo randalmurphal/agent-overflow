@@ -116,7 +116,10 @@ fallbacks are already covered by `pnpm test` and a check that cannot run
 on a laptop is a check people learn to skip. What it answers that nothing
 else can is whether the bundle boots under the shell's fixed origin,
 whether the Capacitor plugins register, whether the app lock gates the
-app, and whether the hardware back button reaches `showCompactList`.
+app, whether the hardware back button reaches `showCompactList`, and
+whether a STAGED bundle is what the WebView serves after a cold start —
+including that the shell clears the health flag before the 30-second
+watchdog rolls it back (`mobile/AGENTS.md` § The bundle plugin).
 
 What CAN be answered without a device is the transport half, and
 `compact-shell-origin.spec.ts` answers it: it serves `frontend/dist` from
@@ -124,7 +127,15 @@ a throwaway `http.createServer` on its own port, so the page and the
 backend are genuinely different origins and the browser enforces CORS
 itself. Setting `window.__aoHomeEndpoint` on a page the backend served
 would exercise the URL rewriting and prove nothing, because every request
-would still be same-origin.
+would still be same-origin. That spec also covers the update channel's
+transport half end to end: a paired page on the other origin reads
+`/bundle/manifest.json` and `/bundle/archive.zip`, unzips the archive in
+the browser (`fflate`) and checks every file's SHA-256 against the
+manifest, whose id must equal the `bundle-id.txt` in the very tree the
+page was served from. That last equality is the Go rule
+(`internal/bundle`) and the build rule (`frontend/scripts/bundleId.ts`)
+agreeing over the whole shipped bundle, which is why neither this suite
+nor that spec implements the hash a third time.
 
 ## Owning processes
 

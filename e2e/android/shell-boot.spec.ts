@@ -87,6 +87,9 @@ const run = promisify(execFile);
 /** The shell's application id (`mobile/capacitor.config.ts`, `appId`). */
 const SHELL_PACKAGE = 'dev.agentoverflow.app';
 
+/** Its one activity (`mobile/android/app/src/main/AndroidManifest.xml`). */
+const SHELL_ACTIVITY = `${SHELL_PACKAGE}/.MainActivity`;
+
 /**
  * The origin `mobile/capacitor.config.ts` fixes and
  * `internal/transport/shellorigin.go` admits as `ShellOrigin`. Asserting
@@ -175,6 +178,45 @@ async function confirmOnHost(harness: HarnessApp, shownOnDevice: string): Promis
     // reverse forward could not produce one this side matches.
     .toBe(shownOnDevice);
   await harness.rpc('ConfirmDevicePairing', redeemed!.linkId);
+}
+
+/**
+ * Pair a device from HERE rather than through the screen, and answer its
+ * session credential.
+ *
+ * The bundle case needs a paired session to read the two routes with, and
+ * the screen it would otherwise drive is already proved by the case
+ * above. `keyThumbprint` is the device IDENTITY: a fresh string enrols a
+ * new device row, which is what this is.
+ *
+ * The same three lines appear in `tests/compact-shell-origin.spec.ts` and
+ * `tests/offhost-helpers.ts`; they are inlined rather than shared because
+ * this config has no fixtures file and importing one spec directory's
+ * helpers into another's would tie two suites together for a POST.
+ */
+async function pairOverWire(
+  harness: HarnessApp,
+  endpoint: string,
+  invite: PairingInvite,
+  deviceKey: string,
+): Promise<string> {
+  const payload = JSON.parse(
+    Buffer.from(fragmentOf(invite).slice('#pair='.length), 'base64url').toString('utf8'),
+  ) as { token: string };
+  const redeemed = await fetch(endpoint + '/auth/pair', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      token: payload.token,
+      keyThumbprint: deviceKey,
+      label: 'Emulator bundle reader',
+      platform: 'playwright',
+    }),
+  });
+  expect(redeemed.ok, '/auth/pair must answer a redemption naming a live link').toBe(true);
+  const grant = (await redeemed.json()) as { credential: string; pairingId: string };
+  await harness.rpc('ConfirmDevicePairing', grant.pairingId);
+  return grant.credential;
 }
 
 interface ShellFixtures {
@@ -332,4 +374,204 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
           ?.isNativePlatform?.() === true,
     ),
   ).toBe(true);
+});
+
+// ---------------------------------------------------------------------
+// The update channel, on the one machine where it is real.
+// ---------------------------------------------------------------------
+//
+// Everything the bundle store DECIDES is proved on the JVM
+// (`BundleStoreTest`), and the transport half is proved in a real browser
+// (`tests/compact-shell-origin.spec.ts`). What is left, and what this
+// case is for, is the part that is only true on a device: that the
+// plugin registers under the name the shell calls, that a staged
+// directory actually becomes the thing the WebView serves after a cold
+// start, and that the shell's own launch clears the health flag before
+// the 30-second watchdog rolls it back.
+//
+// The bundle staged here is the HARNESS BACKEND'S. It is a different
+// build from the APK's (the APK is built with `AO_SHELL=1` and the
+// harness binary is not), so this is a genuine swap onto a bundle this
+// phone did not ship with, which is the case that has to work.
+test('the shell stages a bundle, boots on it, and refuses a damaged one', async ({
+  device,
+  harness,
+  page,
+}) => {
+  await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        name: 'shell-bundle',
+        repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
+        threads: [
+          {
+            title: 'Bundle thread',
+            turns: [{ userText: 'hello', items: [{ kind: 'assistant_text', summary: 'hi' }] }],
+          },
+        ],
+      },
+    ],
+  });
+  const endpoint = `http://127.0.0.1:${harness.bootstrap.port}`;
+
+  // The APP pairs through its own screen, the same door the case above
+  // documents. It has to be genuinely paired: the health check IS this
+  // shell reaching hello after the swap, and an unpaired shell would sit
+  // on the first-run screen until the watchdog rolled the bundle back.
+  const appInvite = await harness.rpc<PairingInvite>('MintDevicePairing', 'phone', 'full');
+  await page.goto(SHELL_ORIGIN + '/' + fragmentOf(appInvite));
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Pair this device' })).toBeVisible();
+  await page.getByLabel('Device name').fill('Emulator shell');
+  await page.getByRole('button', { name: 'Pair' }).click();
+  const shown = page.getByLabel('Verification number');
+  await expect(shown).toBeVisible();
+  await confirmOnHost(harness, ((await shown.textContent()) ?? '').trim());
+  await expect(page.getByTestId('app-lock')).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+
+  // The bytes are fetched from HERE with a second, wire-paired device, so
+  // what is under test is the plugin rather than the shell's own
+  // download timing. `stage` does not care who fetched them.
+  const deviceKey = 'e2e-emulator-bundle-reader';
+  const credential = await pairOverWire(
+    harness,
+    endpoint,
+    await harness.rpc<PairingInvite>('MintDevicePairing', 'phone', 'full'),
+    deviceKey,
+  );
+  const headers = { 'X-AO-Session': credential, 'X-AO-Device-Key': deviceKey };
+  const manifestRes = await fetch(endpoint + '/bundle/manifest.json', { headers });
+  expect(manifestRes.ok, 'a paired session must be able to read the manifest').toBe(true);
+  const manifest = (await manifestRes.json()) as {
+    id: string;
+    files: Array<{ path: string; sha256: string; size: number }>;
+  };
+  const archiveRes = await fetch(endpoint + '/bundle/archive.zip', { headers });
+  expect(archiveRes.ok, 'a paired session must be able to read the archive').toBe(true);
+  const archive = Buffer.from(await archiveRes.arrayBuffer());
+  expect(manifest.id).toMatch(/^[0-9a-f]{64}$/);
+  expect(archive.length).toBeGreaterThan(0);
+
+  /** One `stage` call in the page, answering the plugin's rejection message. */
+  const stage = (id: string, m: unknown, base64: string): Promise<string> =>
+    page.evaluate(
+      async (call) => {
+        const plugins = (window as Window & {
+          Capacitor?: { Plugins?: { Bundle?: { stage(o: unknown): Promise<void> } } };
+        }).Capacitor?.Plugins;
+        if (!plugins?.Bundle) return 'the Bundle plugin did not register';
+        try {
+          await plugins.Bundle.stage({
+            id: call.id,
+            manifest: call.manifest,
+            archiveBase64: call.base64,
+          });
+          return '';
+        } catch (err) {
+          return err instanceof Error ? err.message : String(err);
+        }
+      },
+      { id, manifest: m, base64 },
+    );
+
+  const readState = (): Promise<{
+    current: string;
+    next: string;
+    pendingHealth: string;
+    lastKnownGood: string;
+    rolledBack: string[];
+    versionCode: number;
+  }> =>
+    page.evaluate(async () => {
+      const plugins = (window as Window & {
+        Capacitor?: { Plugins?: { Bundle?: { state(): Promise<never> } } };
+      }).Capacitor?.Plugins;
+      return await plugins!.Bundle!.state();
+    });
+
+  // Nothing staged yet, and the APK's own assets are what is running.
+  const before = await readState();
+  expect(before.current, 'a phone that has never updated runs its own assets').toBe('');
+  expect(before.next).toBe('');
+  expect(before.versionCode, 'the plugin must be able to say what this APK is').toBeGreaterThan(0);
+
+  // --- A damaged archive is refused ------------------------------------
+  // Truncated: the zip's central directory is at the END, so half an
+  // archive is not a zip at all. The plugin must say so and change
+  // nothing.
+  const truncated = archive.subarray(0, Math.floor(archive.length / 2));
+  expect(await stage(manifest.id, manifest, truncated.toString('base64')))
+    .not.toBe('');
+  expect((await readState()).next, 'a refused stage must leave the state alone').toBe('');
+
+  // --- An intact archive with a lying manifest is refused --------------
+  // The other half of the verification, and the one that matters: the
+  // bytes arrive whole and the digest does not match what was promised.
+  // The message names the file, because "the update failed" is not
+  // something anybody can act on.
+  const lying = {
+    ...manifest,
+    files: manifest.files.map((f, i) => (i === 0 ? { ...f, sha256: 'f'.repeat(64) } : f)),
+  };
+  expect(await stage(manifest.id, lying, archive.toString('base64')))
+    .toContain(manifest.files[0].path);
+  expect((await readState()).next).toBe('');
+
+  // --- The real one is staged ------------------------------------------
+  expect(await stage(manifest.id, manifest, archive.toString('base64'))).toBe('');
+  const staged = await readState();
+  expect(staged.next, 'a verified bundle waits for the next cold start').toBe(manifest.id);
+  expect(staged.current, 'nothing swaps under a running app').toBe('');
+
+  // --- The cold start adopts it ----------------------------------------
+  // Force-stop rather than a back press: the swap happens in
+  // `MainActivity.onCreate` before `super.onCreate`, so it needs a
+  // process that is actually starting.
+  await device.shell(`am force-stop ${SHELL_PACKAGE}`);
+  await device.shell(`am start -n ${SHELL_ACTIVITY}`);
+  const relaunched = await (await device.webView({ pkg: SHELL_PACKAGE }, { timeout: WEBVIEW_MS }))
+    .page();
+
+  // The origin is unchanged: a bundle swap changes which FILES the
+  // WebView is served, never the origin it is served under — which is
+  // what keeps the backend's CORS answer and the stored session valid
+  // across an update.
+  expect(await relaunched.evaluate(() => window.location.origin)).toBe(SHELL_ORIGIN);
+
+  const after = await relaunched.evaluate(async () => {
+    const plugins = (window as Window & {
+      Capacitor?: { Plugins?: { Bundle?: { state(): Promise<never> } } };
+    }).Capacitor?.Plugins;
+    return (await plugins!.Bundle!.state()) as unknown as {
+      current: string;
+      next: string;
+      pendingHealth: string;
+      lastKnownGood: string;
+    };
+  });
+  expect(after.current, 'the staged bundle is what this launch is serving').toBe(manifest.id);
+  expect(after.next).toBe('');
+
+  // --- And it proves itself before the watchdog fires -------------------
+  // `pendingHealth` clears when the shell calls `ready()`, which it does
+  // once the app has mounted and its home transport has reached hello.
+  // The 30s watchdog is the other outcome, so this poll is bounded well
+  // inside it: a rollback here would mean the swap boots but cannot talk.
+  await expect
+    .poll(
+      async () =>
+        (
+          await relaunched.evaluate(async () => {
+            const plugins = (window as Window & {
+              Capacitor?: { Plugins?: { Bundle?: { state(): Promise<never> } } };
+            }).Capacitor?.Plugins;
+            return (await plugins!.Bundle!.state()) as unknown as { pendingHealth: string };
+          })
+        ).pendingHealth,
+      {
+        message: 'the shell must confirm this launch healthy before the watchdog rolls it back',
+        timeout: 25_000,
+      },
+    )
+    .toBe('');
 });
