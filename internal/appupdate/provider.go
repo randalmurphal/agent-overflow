@@ -49,46 +49,32 @@ type Config struct {
 
 // Configure wires a Wails updater handle to the GitHub release provider and
 // retains the targetable provider used by ListReleases and tagged downloads.
+//
+// The chain comes from NewReleaseSource rather than being built here, so the
+// desktop's updater and a serve host's ReleaseSource are the SAME resolve,
+// the same matcher and the same fail-closed verification wrapper. Two
+// constructors would be two answers to "which asset is this host's", and the
+// one that is wrong is the one nobody is looking at.
 func (a *Service) Configure(handle *updater.Updater, config Config) error {
 	if handle == nil {
 		return errors.New("updater: nil updater handle")
 	}
-	if config.Repository == "" {
-		config.Repository = updaterRepository
-	}
-	if config.ChecksumAsset == "" {
-		config.ChecksumAsset = updaterChecksumAsset
-	}
-	if config.HTTPClient == nil {
-		config.HTTPClient = &http.Client{}
-	}
-
-	provider, err := newGitHubProvider(config.Repository, config.ChecksumAsset, config.BaseURL, config.HTTPClient)
+	source, err := NewReleaseSource(config)
 	if err != nil {
-		return fmt.Errorf("github provider: %w", err)
-	}
-
-	req := updater.CheckRequest{
-		CurrentVersion: config.CurrentVersion,
-		Platform:       config.Platform,
-		Arch:           config.Arch,
-	}
-	targetable := newTargetableProvider(provider, config.Repository, config.ChecksumAsset, req, config.HTTPClient)
-	if config.BaseURL != "" {
-		targetable.baseURL = config.BaseURL
+		return err
 	}
 	if err := handle.Init(updater.Config{
-		CurrentVersion: req.CurrentVersion,
-		Platform:       req.Platform,
-		Arch:           req.Arch,
-		Providers:      []updater.Provider{verifiedProvider{inner: targetable}},
+		CurrentVersion: source.req.CurrentVersion,
+		Platform:       source.req.Platform,
+		Arch:           source.req.Arch,
+		Providers:      []updater.Provider{source.verified},
 		Window:         updater.WindowNone,
 	}); err != nil {
 		return fmt.Errorf("init updater: %w", err)
 	}
 
 	a.updater.handle = handle
-	a.updater.provider = targetable
+	a.updater.provider = source.targetable
 	return nil
 }
 

@@ -35,6 +35,20 @@ var platformAssetName = "agent-overflow-" + runtime.GOOS + "-" + runtime.GOARCH 
 // process that downloads it.
 const wslAssetName = "agent-overflow-wsl-amd64.exe"
 
+// headlessAssetName is the windowless serve binary, and headlessPlatform is
+// the token a serve host targets it with. It is in these fixtures because it
+// is the artifact whose name CONTAINS another target's — the collision that
+// made matchReleaseAsset exact — so a source built for either of the two must
+// resolve only its own.
+const (
+	headlessPlatform  = "headless-linux"
+	headlessArch      = "amd64"
+	headlessAssetName = "agent-overflow-headless-linux-amd64"
+	// plainLinuxAssetName is the desktop artifact headlessAssetName must never
+	// be confused with, and vice versa.
+	plainLinuxAssetName = "agent-overflow-linux-amd64"
+)
+
 // Asset payloads the mock release server hands out, and the real SHA-256 of the
 // WSL one. Tests that download end to end need a checksum sidecar that actually
 // matches the bytes; testValidDigestHex is deliberately bogus and only suits
@@ -44,7 +58,29 @@ var (
 	platformAssetBytes = []byte("agent-overflow desktop payload — deterministic test bytes\n")
 	wslAssetDigest     = sha256.Sum256(wslAssetBytes)
 	wslAssetDigestHex  = hex.EncodeToString(wslAssetDigest[:])
+
+	// The serve host's pair: the windowless binary a supervised host installs,
+	// and the desktop binary in the same release that it must not take.
+	headlessAssetBytes     = []byte("agent-overflow headless serve payload — deterministic test bytes\n")
+	headlessAssetDigest    = sha256.Sum256(headlessAssetBytes)
+	headlessAssetDigestHex = hex.EncodeToString(headlessAssetDigest[:])
+	plainLinuxAssetBytes   = []byte("agent-overflow linux desktop payload — deterministic test bytes\n")
 )
+
+// sumsForHeadless is a SHASUMS256 body whose headless entry is the TRUE digest
+// of headlessAssetBytes, so a download through the real verifier succeeds. The
+// desktop entry beside it is deliberately bogus: nothing here should be able to
+// install that one, and a wrong digest is how that shows up as a refusal.
+func sumsForHeadless(string) string {
+	return headlessAssetDigestHex + "  " + headlessAssetName + "\n" +
+		testValidDigestHex + "  " + plainLinuxAssetName + "\n"
+}
+
+// sumsForHeadlessCorrupt claims a digest the headless bytes do not have, which
+// is what a mangled upload or a truncated transfer looks like from here.
+func sumsForHeadlessCorrupt(string) string {
+	return testValidDigestHex + "  " + headlessAssetName + "\n"
+}
 
 // sumsForWSL is a SHASUMS256 body whose wsl entry is the TRUE digest of
 // wslAssetBytes, so a download through the real verifier succeeds.
@@ -61,6 +97,7 @@ type relSpec struct {
 	draft        bool
 	withPlatform bool // include an asset matching the running platform
 	withWSL      bool // include the wsl-target asset the WSL backend installs
+	withHeadless bool // include the serve host's pair: headless AND plain linux
 	withChecksum bool // include the SHASUMS256 sidecar
 	withBogus    bool // include a non-matching asset (no platform/arch tokens)
 	published    time.Time
@@ -89,6 +126,25 @@ func buildRelease(srvURL string, s relSpec) apiRelease {
 			Size:               2048,
 			BrowserDownloadURL: srvURL + "/dl/wsl/" + s.tag,
 		})
+	}
+	if s.withHeadless {
+		// Both, and the plain one FIRST: that is the ordering under which the
+		// library's substring matcher would have handed a serve host the
+		// desktop binary, so a fixture listing only one would not exercise
+		// the rule that replaced it.
+		r.Assets = append(r.Assets,
+			apiAsset{
+				Name:               plainLinuxAssetName,
+				ContentType:        "application/octet-stream",
+				Size:               4096,
+				BrowserDownloadURL: srvURL + "/dl/linux/" + s.tag,
+			},
+			apiAsset{
+				Name:               headlessAssetName,
+				ContentType:        "application/octet-stream",
+				Size:               3072,
+				BrowserDownloadURL: srvURL + "/dl/headless/" + s.tag,
+			})
 	}
 	if s.withBogus {
 		r.Assets = append(r.Assets, apiAsset{
@@ -173,6 +229,8 @@ func newMockGitHub(t *testing.T, specs []relSpec, checksumBody func(tag string) 
 	}
 	mux.HandleFunc("/dl/wsl/", serveAsset(wslAssetBytes))
 	mux.HandleFunc("/dl/bin/", serveAsset(platformAssetBytes))
+	mux.HandleFunc("/dl/headless/", serveAsset(headlessAssetBytes))
+	mux.HandleFunc("/dl/linux/", serveAsset(plainLinuxAssetBytes))
 
 	srv = httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
