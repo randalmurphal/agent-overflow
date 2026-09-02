@@ -252,8 +252,8 @@ func TestLoadScopeVocabulary_ReadsTheDeclaredSet(t *testing.T) {
 	}
 	// The count is pinned so a constant deleted from the block fails
 	// here rather than in whichever annotation used it.
-	if len(scopes) != 13 {
-		t.Errorf("collected %d scopes (%v), want the eleven grantable names plus session and host", len(scopes), scopes)
+	if len(scopes) != 14 {
+		t.Errorf("collected %d scopes (%v), want the twelve grantable names plus session and host", len(scopes), scopes)
 	}
 }
 
