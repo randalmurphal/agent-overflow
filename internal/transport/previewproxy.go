@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"crypto/tls"
 	"log"
 	"net"
 	"net/http"
@@ -32,8 +33,9 @@ const previewEndedPage = "This preview session ended. Open the link again from A
 const previewUpstreamDialTimeout = 5 * time.Second
 
 // handler builds the http.Handler for one preview port.
-func (g *PreviewGateway) handler(port int) http.Handler {
-	proxy := g.proxy(port)
+func (g *PreviewGateway) handler(target PreviewTarget) http.Handler {
+	port := target.Port
+	proxy := g.proxy(target)
 	cookieName := previewCookiePrefix + strconv.Itoa(port)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +208,8 @@ func previewEnded(w http.ResponseWriter) {
 //     Rewriting only the HTTP half yields a page that loads and an HMR
 //     socket that never connects, which is the failure that looks like
 //     success.
-//   - ORIGIN is REWRITTEN when present, never stripped. Vite does not
+//   - ORIGIN is REWRITTEN when present, never stripped, to the upstream's
+//     OWN scheme. Vite does not
 //     compare the value; what its presence does is make the HMR token
 //     mandatory, and the token reaches the browser through this proxy
 //     for free. Stripping would send a weaker request than the browser
@@ -218,8 +221,10 @@ func previewEnded(w http.ResponseWriter) {
 //   - Sec-WebSocket-Protocol is forwarded unchanged (`vite-hmr`).
 //     httputil copies it with every other header; it is named here so a
 //     future header filter does not quietly drop it.
-func (g *PreviewGateway) proxy(port int) *httputil.ReverseProxy {
+func (g *PreviewGateway) proxy(target PreviewTarget) *httputil.ReverseProxy {
+	port := target.Port
 	upstreamHost := net.JoinHostPort("localhost", strconv.Itoa(port))
+	upstreamOrigin := target.Scheme + "://" + upstreamHost
 	cookieName := previewCookiePrefix + strconv.Itoa(port)
 
 	return &httputil.ReverseProxy{
@@ -227,9 +232,17 @@ func (g *PreviewGateway) proxy(port int) *httputil.ReverseProxy {
 			DialContext:         loopback.Dialer(previewUpstreamDialTimeout),
 			MaxIdleConnsPerHost: 8,
 			IdleConnTimeout:     90 * time.Second,
+			// A dev server serving TLS on loopback with a certificate
+			// nothing can verify is the norm, and this hop never leaves
+			// the machine: loopback.Dialer connects to a literal this
+			// code chose, not to a name anything else resolved.
+			// Verifying would refuse every https dev server and prove
+			// nothing about the one hop involved. Same reasoning, same
+			// wording, as the devscan probe that found it.
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // loopback-only, see above
 		},
 		Rewrite: func(r *httputil.ProxyRequest) {
-			r.Out.URL.Scheme = "http"
+			r.Out.URL.Scheme = target.Scheme
 			r.Out.URL.Host = upstreamHost
 			// Both spellings, so a path with encoded segments in it
 			// reaches the upstream exactly as it arrived.
@@ -238,7 +251,7 @@ func (g *PreviewGateway) proxy(port int) *httputil.ReverseProxy {
 			r.Out.URL.RawQuery = r.In.URL.RawQuery
 			r.Out.Host = upstreamHost
 			if r.In.Header.Get("Origin") != "" {
-				r.Out.Header.Set("Origin", "http://"+upstreamHost)
+				r.Out.Header.Set("Origin", upstreamOrigin)
 			}
 			// The dev server's bytes are agent-authored, and this cookie
 			// is the credential that reaches its preview. It has no

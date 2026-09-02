@@ -27,6 +27,13 @@ func loopbackPort(t *testing.T, srv *httptest.Server) int {
 	return number
 }
 
+// pageOf keeps the rows below reading as the yes/no question they are
+// asking. The scheme has its own tests.
+func pageOf(p *prober, ctx context.Context, port, pid int) bool {
+	_, ok := p.pageScheme(ctx, port, pid)
+	return ok
+}
+
 func TestProbeAcceptsHTMLAndRedirectsAndRefusesTheRest(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -60,7 +67,7 @@ func TestProbeAcceptsHTMLAndRedirectsAndRefusesTheRest(t *testing.T) {
 			srv := httptest.NewServer(tc.handler)
 			defer srv.Close()
 			probe := newProber(time.Now)
-			got := probe.answersLikeAPage(context.Background(), loopbackPort(t, srv), 0)
+			got := pageOf(probe, context.Background(), loopbackPort(t, srv), 0)
 			if got != tc.want {
 				t.Fatalf("answersLikeAPage = %v, want %v", got, tc.want)
 			}
@@ -78,7 +85,7 @@ func TestProbeFallsBackToHTTPS(t *testing.T) {
 	}))
 	defer srv.Close()
 	probe := newProber(time.Now)
-	if !probe.answersLikeAPage(context.Background(), loopbackPort(t, srv), 0) {
+	if !pageOf(probe, context.Background(), loopbackPort(t, srv), 0) {
 		t.Fatal("an https dev server on loopback was not recognized")
 	}
 }
@@ -91,7 +98,7 @@ func TestProbeRefusesADeadPort(t *testing.T) {
 	srv.Close()
 
 	probe := newProber(time.Now)
-	if probe.answersLikeAPage(context.Background(), port, 0) {
+	if pageOf(probe, context.Background(), port, 0) {
 		t.Fatal("a closed port answered like a page")
 	}
 }
@@ -112,17 +119,17 @@ func TestProbeVerdictCacheIsKeyedAndExpires(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	probe := newProber(func() time.Time { return now })
 
-	if !probe.answersLikeAPage(context.Background(), port, 11) || hits != 1 {
+	if !pageOf(probe, context.Background(), port, 11) || hits != 1 {
 		t.Fatalf("first probe: hits = %d, want 1", hits)
 	}
-	if !probe.answersLikeAPage(context.Background(), port, 11) || hits != 1 {
+	if !pageOf(probe, context.Background(), port, 11) || hits != 1 {
 		t.Fatalf("second probe within the TTL dialled again: hits = %d, want 1", hits)
 	}
-	if !probe.answersLikeAPage(context.Background(), port, 22) || hits != 2 {
+	if !pageOf(probe, context.Background(), port, 22) || hits != 2 {
 		t.Fatalf("a different pid reused the verdict: hits = %d, want 2", hits)
 	}
 	now = now.Add(probeVerdictTTL + time.Second)
-	if !probe.answersLikeAPage(context.Background(), port, 11) || hits != 3 {
+	if !pageOf(probe, context.Background(), port, 11) || hits != 3 {
 		t.Fatalf("a lapsed verdict was reused: hits = %d, want 3", hits)
 	}
 }
@@ -146,7 +153,7 @@ func TestACancelledProbeIsNotAVerdict(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if probe.answersLikeAPage(ctx, port, 7) {
+	if pageOf(probe, ctx, port, 7) {
 		t.Fatal("a cancelled probe returned a verdict")
 	}
 	if _, ok := probe.cached(strconv.Itoa(port) + "/7"); ok {
@@ -154,7 +161,7 @@ func TestACancelledProbeIsNotAVerdict(t *testing.T) {
 	}
 
 	// And the next pass asks for real.
-	if !probe.answersLikeAPage(context.Background(), port, 7) {
+	if !pageOf(probe, context.Background(), port, 7) {
 		t.Fatal("the port was not probed again after a cancelled attempt")
 	}
 	if hits != 1 {

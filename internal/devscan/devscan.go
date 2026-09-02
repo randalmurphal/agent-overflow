@@ -59,6 +59,14 @@ type DevServer struct {
 	// server restarting), and for an allowed port nothing is serving.
 	Listening bool `json:"listening"`
 
+	// Scheme is what this port speaks, "http" or "https", and it is what
+	// anything proxying to it must dial. Plenty of dev servers serve TLS
+	// on loopback with a certificate nothing can verify; the probe finds
+	// them either way, and a preview that then dialled http would answer
+	// every request with a gateway error. Empty only on a row nothing was
+	// ever asked about.
+	Scheme string `json:"scheme,omitempty"`
+
 	// Note is a sentence about why this port is not proxied even though
 	// it is in the set. Written by the gateway, never by the scan.
 	Note string `json:"note,omitempty"`
@@ -146,6 +154,7 @@ type Scanner struct {
 type graceEntry struct {
 	threadID string
 	process  string
+	scheme   string
 	pid      int
 	until    time.Time
 }
@@ -208,7 +217,7 @@ func (s *Scanner) Scan(ctx context.Context, owners []Owner, allowed []int) ([]De
 		rows[listener.Port] = row
 	}
 
-	pages := s.probeCandidates(ctx, rows, allowedSet)
+	schemes := s.probePorts(ctx, rows, allowedSet)
 
 	servers := make([]DevServer, 0, len(rows)+len(allowed))
 	for port, row := range rows {
@@ -227,13 +236,21 @@ func (s *Scanner) Scan(ctx context.Context, owners []Owner, allowed []int) ([]De
 			// screen has for taking it back out of the list.
 			row.Source = SourceAllowed
 			row.Allowed = true
+			// The probe still ran, but only to learn WHICH scheme to
+			// proxy to. Its verdict is not consulted: this row is
+			// published whatever answered. A port nothing answered on
+			// gets http, which is what nearly every dev server that is
+			// merely still starting up will speak.
+			row.Scheme = schemeOrHTTP(schemes[port])
 		default:
-			if !pages[port] {
+			scheme := schemes[port]
+			if scheme == "" {
 				// Either it does not answer like a page, or this scan ran
 				// out of probe budget before reaching it. Both mean "not
 				// offered this pass"; the next pass asks again.
 				continue
 			}
+			row.Scheme = scheme
 			if row.ThreadID != "" {
 				row.Source = SourceAttributed
 				row.Allowed = true
@@ -268,6 +285,7 @@ func (s *Scanner) applyGrace(servers []DevServer) []DevServer {
 		s.grace[row.Port] = graceEntry{
 			threadID: row.ThreadID,
 			process:  row.Process,
+			scheme:   row.Scheme,
 			pid:      row.PID,
 			until:    now.Add(attributedGrace),
 		}
@@ -288,6 +306,11 @@ func (s *Scanner) applyGrace(servers []DevServer) []DevServer {
 			Allowed:   true,
 			Source:    SourceAttributed,
 			Listening: false,
+			// The scheme it was serving on before it went. A dev server
+			// restarting comes back on the same one, and the listener the
+			// gateway is holding through the grace has to keep speaking
+			// it or the first request back is a gateway error.
+			Scheme: schemeOrHTTP(entry.scheme),
 		})
 	}
 	return servers
@@ -311,61 +334,64 @@ func appendMissingAllowed(servers []DevServer, allowed []int) []DevServer {
 			Allowed:   true,
 			Source:    SourceAllowed,
 			Listening: false,
+			// Nothing is on it to ask, so http: the scheme all but every
+			// dev server speaks, and the one it will speak when it comes
+			// up. The next scan that finds it listening replaces this.
+			Scheme: "http",
 		})
 	}
 	return servers
 }
 
-// PreviewPorts returns the ports a gateway should hold a listener on: the
-// preview set, which is the attributed half of a scan plus the owner's
-// hand-named ports. Sorted and deduplicated.
-func PreviewPorts(servers []DevServer) []int {
-	ports := make([]int, 0, len(servers))
-	for _, row := range servers {
-		if !row.Allowed {
-			continue
-		}
-		ports = append(ports, row.Port)
-	}
-	sort.Ints(ports)
-	return ports
-}
-
-// probeCandidates asks, for every port this scan has to judge, whether it
-// answers like a page. Hand-named ports are not judged and are not here.
+// probePorts asks every port this scan needs an answer about which
+// scheme it speaks on, if any. The answers are two different questions
+// asked by one dial:
+//
+//   - For a CANDIDATE nobody chose, the verdict is a filter: no scheme
+//     means it is not offered at all.
+//   - For a HAND-NAMED port, the verdict is ignored and only the scheme
+//     is kept. The owner said to share it; the probe is not a second
+//     opinion on a choice already made.
 //
 // The probes run CONCURRENTLY, bounded by maxConcurrentProbes. Serially,
 // a handful of listeners that accept and then say nothing — a database, a
 // debugger, an idle language server — each cost the full probeTimeout,
 // and four of them exceed the whole scan deadline on their own. Every
-// candidate behind them would then be reached with a context that is
-// already done. They are independent loopback dials with nothing to
-// serialize, so the deadline is spent in parallel instead.
+// port behind them would then be reached with a context that is already
+// done. They are independent loopback dials with nothing to serialize,
+// so the deadline is spent in parallel instead.
 //
-// Which candidates fit under maxProbesPerScan is decided by PORT, not by
-// map order: the cap has to bite the same way twice, or a machine over
-// the limit would offer a different subset every three seconds.
-func (s *Scanner) probeCandidates(
+// maxProbesPerScan bounds the whole pass, hand-named ports FIRST: a port
+// the owner named is the one whose scheme is worth a dial, and a
+// candidate that misses the cut is simply not offered this tick. Within
+// each half the cut is taken from the ports SORTED, never from map order,
+// so the cap bites the same way twice — a machine over the limit would
+// otherwise offer a different subset every three seconds.
+func (s *Scanner) probePorts(
 	ctx context.Context, rows map[int]DevServer, allowedSet map[int]struct{},
-) map[int]bool {
+) map[int]string {
+	named := make([]int, 0, len(allowedSet))
 	candidates := make([]int, 0, len(rows))
 	for port := range rows {
 		if _, handNamed := allowedSet[port]; handNamed {
+			named = append(named, port)
 			continue
 		}
 		candidates = append(candidates, port)
 	}
+	sort.Ints(named)
 	sort.Ints(candidates)
-	if len(candidates) > maxProbesPerScan {
-		candidates = candidates[:maxProbesPerScan]
+	ports := append(named, candidates...)
+	if len(ports) > maxProbesPerScan {
+		ports = ports[:maxProbesPerScan]
 	}
 
-	pages := make(map[int]bool, len(candidates))
+	schemes := make(map[int]string, len(ports))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	inFlight := make(chan struct{}, maxConcurrentProbes)
 
-	for _, port := range candidates {
+	for _, port := range ports {
 		wg.Add(1)
 		go func(port, pid int) {
 			defer wg.Done()
@@ -376,14 +402,26 @@ func (s *Scanner) probeCandidates(
 				// now would only produce a request that cannot finish.
 				return
 			}
-			if !s.probe.answersLikeAPage(ctx, port, pid) {
+			scheme, ok := s.probe.pageScheme(ctx, port, pid)
+			if !ok {
 				return
 			}
 			mu.Lock()
-			pages[port] = true
+			schemes[port] = scheme
 			mu.Unlock()
 		}(port, rows[port].PID)
 	}
 	wg.Wait()
-	return pages
+	return schemes
+}
+
+// schemeOrHTTP is the fallback for a row that must be published without
+// an answer. http, because that is what a dev server still starting up
+// will speak once it does, and because a wrong guess here costs one
+// gateway error rather than a missing row.
+func schemeOrHTTP(scheme string) string {
+	if scheme == "" {
+		return "http"
+	}
+	return scheme
 }

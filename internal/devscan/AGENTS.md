@@ -5,9 +5,12 @@ machine's loopback, which thread it belongs to, and which of those the
 person can be offered a preview of. It publishes a list. It binds
 nothing, proxies nothing, and never spawns a process.
 
-`Scan(ctx, owners, allowed)` is the whole API, plus `PreviewPorts` for
-the ports a gateway should hold a listener on. One `Scanner` belongs to
-the App and is safe for concurrent use.
+`Scan(ctx, owners, allowed)` is the whole API. One `Scanner` belongs to
+the App and is safe for concurrent use. What to hold a listener on is the
+`Allowed` rows, which the App turns into `transport.PreviewTarget`s;
+there is no helper for it, because the gateway wants the SCHEME too and a
+helper that returned bare ports is what let an https dev server be listed
+and then dialled cleartext.
 
 ## The three sources are three different affordances
 
@@ -53,15 +56,30 @@ type, or 3xx that names where to go. The verdict is memoized per
 port-and-pid for `probeVerdictTTL`, so the steady state at the 3s scan
 cadence costs no dials.
 
-The probe gates the `attributed` and `seen` halves. It does NOT gate
-hand-named ports: the probe is a filter on candidates nobody chose, and
-re-litigating a choice the owner already made would drop exactly the
-backend API they named on purpose.
+The probe answers two questions with one dial, and they are asked of
+different rows:
+
+- **Is this a page?** Asked of `attributed` and `seen` candidates only.
+  It is NOT asked of a hand-named port: the probe is a filter on
+  candidates nobody chose, and re-litigating a choice the owner already
+  made would drop exactly the backend API they named on purpose.
+- **Which scheme does it speak?** Asked of every row, hand-named
+  included. `DevServer.Scheme` is what the gateway dials, and plenty of
+  dev servers serve TLS on loopback under a certificate nothing can
+  verify. A row that was listed without one was a preview that 502'd on
+  its first request. A row nothing answered on gets `http`, the scheme
+  it will speak once it is up.
+
+`maxProbesPerScan` covers the whole pass, hand-named ports FIRST: their
+scheme is the one worth a dial, and a candidate that misses the cut is
+simply not offered this tick.
 
 ## Two rows exist that are not listening, on purpose
 
 - An attributed port keeps its row for `attributedGrace` after its
-  socket disappears. A dev server restarting is the common case and
+  socket disappears, carrying the scheme it was serving on — it comes
+  back on the same one, and the listener held through the grace has to
+  keep speaking it. A dev server restarting is the common case and
   tearing the URL down for the two seconds that takes would make preview
   links unreliable in the one situation people use them.
 - A hand-named port with nothing serving keeps its row forever, marked

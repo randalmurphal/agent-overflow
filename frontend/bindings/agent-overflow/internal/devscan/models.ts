@@ -49,11 +49,18 @@ export class DevServer {
      * Source says WHY it is in the list, and the three values are three
      * different affordances on screen:
      * 
-     *   attributed — a thread owns it; the link is live.
      *   allowed    — the owner named it in network.previewPorts.
+     *   attributed — a thread owns it and nobody named it; the link is
+     *                live for as long as the process is.
      *   seen       — listening and answering like a page, owned by
      *                nothing this app started. The candidate list the
      *                "Allow port" action draws from.
+     * 
+     * "allowed" means "in the persisted list"; "attributed" means "shared
+     * only by attribution". A hand-named port that a thread also owns is
+     * ALLOWED — it carries ThreadID, PID and Process all the same, but
+     * calling it attributed would hide the persisted entry from the
+     * settings screen and leave no way to stop sharing it.
      */
     "source": string;
 
@@ -64,6 +71,16 @@ export class DevServer {
      * server restarting), and for an allowed port nothing is serving.
      */
     "listening": boolean;
+
+    /**
+     * Scheme is what this port speaks, "http" or "https", and it is what
+     * anything proxying to it must dial. Plenty of dev servers serve TLS
+     * on loopback with a certificate nothing can verify; the probe finds
+     * them either way, and a preview that then dialled http would answer
+     * every request with a gateway error. Empty only on a row nothing was
+     * ever asked about.
+     */
+    "scheme"?: string;
 
     /**
      * Note is a sentence about why this port is not proxied even though

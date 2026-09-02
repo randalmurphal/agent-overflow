@@ -31,12 +31,29 @@ it reaches the browser through the proxy for free — the client fetches
 of it. That means the token requirement is satisfied either way, so the
 choice is about what else depends on the header.
 
-**Rewrite `Origin` to `http://localhost:<port>` when the request carries
-one; never strip it.** Stripping makes the token optional, which is a
+**Rewrite `Origin` to `<upstream scheme>://localhost:<port>` when the
+request carries one; never strip it.** The scheme is the dev server's
+own, not a constant: a dev server configured with `server.https` is
+reached over https, and an `Origin` naming the other scheme is a
+different origin to anything that compares them. Stripping makes the token optional, which is a
 weaker request than the one the browser actually sent. Rewriting also
 satisfies Next.js 15+'s origin-based `allowedDevOrigins` check —
 **unverified for Next.js**; stated here as the reason the rule is
 "rewrite" rather than "strip", not as an observed fact.
+
+## The upstream may be https, and the proxy must dial what it speaks
+
+Not a Vite observation — a property of the setup. `server.https` is a
+supported Vite option and other frameworks default to it, so a dev server
+on loopback may be TLS. The certificate is invariably one nothing can
+verify, and the hop never leaves the machine (the dial is to a loopback
+literal this process chose), so the upstream transport skips verification
+for the same reason the discovery probe does.
+
+The scheme travels with the port, from the probe that found it
+(`devscan.DevServer.Scheme`) through `transport.PreviewTarget` to the
+dial. A port that CHANGES scheme is a different upstream and its listener
+is rebuilt rather than kept.
 
 ## Path and query go through byte for byte
 

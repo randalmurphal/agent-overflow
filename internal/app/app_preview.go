@@ -168,7 +168,7 @@ func (a *App) reconcilePreviewListeners(servers []devscan.DevServer) []devscan.D
 	if gateway == nil {
 		return servers
 	}
-	gateway.SetPorts(devscan.PreviewPorts(servers))
+	gateway.SetPorts(previewTargets(servers))
 
 	notes := gateway.Notes()
 	served := make(map[int]struct{}, len(servers))
@@ -186,6 +186,22 @@ func (a *App) reconcilePreviewListeners(servers []devscan.DevServer) []devscan.D
 		servers[i].Note = notes[servers[i].Port]
 	}
 	return servers
+}
+
+// previewTargets is the preview set as the gateway wants it: every
+// allowed row, with the scheme discovery found it speaking. The scheme
+// travels the whole way rather than being re-derived, because the only
+// thing that knows an https dev server is https is the probe that
+// reached it.
+func previewTargets(servers []devscan.DevServer) []transport.PreviewTarget {
+	targets := make([]transport.PreviewTarget, 0, len(servers))
+	for _, row := range servers {
+		if !row.Allowed {
+			continue
+		}
+		targets = append(targets, transport.PreviewTarget{Port: row.Port, Scheme: row.Scheme})
+	}
+	return targets
 }
 
 // devServerList wraps the rows with the address a preview URL on this

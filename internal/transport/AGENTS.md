@@ -115,7 +115,8 @@ the one live-session registry.
 
 `previewgateway.go` and `previewproxy.go` hold one TLS listener per port in
 this machine's preview set, each reverse-proxying to the dev server on the
-SAME port number of loopback (spec §7, the port gateway). It is the only
+SAME port number of loopback, over whichever scheme that dev server speaks
+(spec §7, the port gateway). It is the only
 listener in this tree that carries somebody else's application, and it is
 deliberately NOT an auxiliary listener: nothing about the app's mux,
 credential or scope gate applies to it, because none of those bytes are ours.
@@ -154,6 +155,16 @@ credential or scope gate applies to it, because none of those bytes are ours.
   a second would drop every live HMR socket. A failed bind is a NOTE on that
   port, not an error the caller handles: address-in-use means the dev server
   already bound beyond loopback, so the page is reachable already.
+- **A `PreviewTarget` is a port AND a scheme, and the scheme is part of the
+  listener's identity.** A dev server on loopback may be TLS; the probe that
+  found it knows which, and the value travels from `devscan.DevServer.Scheme`
+  to the dial rather than being assumed. A port whose scheme CHANGED is a
+  different upstream, so it is rebuilt rather than kept — an unchanged one
+  still is not. The upstream transport skips certificate verification for the
+  same reason the probe does: the hop is a loopback literal this process
+  chose, and verifying would refuse every https dev server while proving
+  nothing about the one hop involved. `Origin`, when present, is rewritten to
+  that same scheme.
 - **No `WriteSecurityHeaders`, and that is the one route excluded by name
   from `TestEveryHTTPRouteCarriesThePolicy`.** A policy this process invented
   for an application it did not write would silently break it.

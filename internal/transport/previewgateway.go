@@ -169,6 +169,16 @@ type PreviewListenerSource interface {
 	ListenPreview(port int) (net.Listener, error)
 }
 
+// PreviewTarget is one port to serve a preview of, and what that port
+// speaks. The scheme travels with the port from discovery all the way to
+// the dial: a dev server on https that was proxied to over http answered
+// every request with a gateway error, while the list happily called it
+// previewable.
+type PreviewTarget struct {
+	Port   int
+	Scheme string
+}
+
 // PreviewGateway holds one listener per port in the preview set.
 //
 // It is constructed once and reconciled with SetPorts. The zero value is
@@ -198,6 +208,11 @@ type previewListener struct {
 	ln   net.Listener
 	srv  *http.Server
 	host string
+	// scheme is what this listener's proxy dials the dev server with. It
+	// is part of the listener's identity: a port that changed scheme is a
+	// different upstream, so SetPorts rebuilds rather than keeping one
+	// that would 502.
+	scheme string
 }
 
 // previewGrant is what one preview cookie admits.
@@ -258,12 +273,21 @@ func NewPreviewGateway(cfg PreviewGatewayConfig) *PreviewGateway {
 // A bind that fails is not an error the caller has to handle — the other
 // ports still serve — so the reason is recorded as this port's note and
 // the next tick tries again.
-func (g *PreviewGateway) SetPorts(want []int) {
-	wanted := make(map[int]struct{}, len(want))
-	for _, port := range want {
-		if port > 0 && port <= 65535 {
-			wanted[port] = struct{}{}
+func (g *PreviewGateway) SetPorts(want []PreviewTarget) {
+	wanted := make(map[int]string, len(want))
+	for _, target := range want {
+		if target.Port <= 0 || target.Port > 65535 {
+			continue
 		}
+		scheme := target.Scheme
+		if scheme != "https" {
+			// http for anything unset or unrecognised. The two schemes
+			// are the only ones a browser would render, and defaulting
+			// is what keeps a discovery row that never got probed
+			// serving rather than refused.
+			scheme = "http"
+		}
+		wanted[target.Port] = scheme
 	}
 
 	g.mu.Lock()
@@ -273,9 +297,11 @@ func (g *PreviewGateway) SetPorts(want []int) {
 	}
 	var retire []*previewListener
 	for port, listener := range g.ports {
-		if _, keep := wanted[port]; keep {
+		if scheme, keep := wanted[port]; keep && scheme == listener.scheme {
 			continue
 		}
+		// Gone from the set, or still in it speaking something else.
+		// Either way this listener is not the one to keep.
 		retire = append(retire, listener)
 		delete(g.ports, port)
 	}
@@ -284,10 +310,10 @@ func (g *PreviewGateway) SetPorts(want []int) {
 			delete(g.notes, port)
 		}
 	}
-	var fresh []int
-	for port := range wanted {
+	var fresh []PreviewTarget
+	for port, scheme := range wanted {
 		if _, served := g.ports[port]; !served {
-			fresh = append(fresh, port)
+			fresh = append(fresh, PreviewTarget{Port: port, Scheme: scheme})
 		}
 	}
 	g.mu.Unlock()
@@ -297,14 +323,15 @@ func (g *PreviewGateway) SetPorts(want []int) {
 	}
 	// Sorted, so the log of a machine that could bind nothing reads in
 	// port order rather than in map order.
-	sort.Ints(fresh)
-	for _, port := range fresh {
-		g.bind(port)
+	sort.Slice(fresh, func(i, j int) bool { return fresh[i].Port < fresh[j].Port })
+	for _, target := range fresh {
+		g.bind(target)
 	}
 }
 
 // bind opens one port through the first source that answers.
-func (g *PreviewGateway) bind(port int) {
+func (g *PreviewGateway) bind(target PreviewTarget) {
+	port := target.Port
 	var reasons []string
 	for _, source := range g.sources {
 		host := source.PreviewHost()
@@ -320,11 +347,12 @@ func (g *PreviewGateway) bind(port int) {
 		// whole port is one route, and registering it says so where
 		// internal/surfaces' gate can read it.
 		mux := http.NewServeMux()
-		mux.Handle("/", g.handler(port))
+		mux.Handle("/", g.handler(target))
 		listener := &previewListener{
-			ln:   ln,
-			srv:  &http.Server{Handler: mux, ReadHeaderTimeout: previewReadHeaderTimeout},
-			host: host,
+			ln:     ln,
+			srv:    &http.Server{Handler: mux, ReadHeaderTimeout: previewReadHeaderTimeout},
+			host:   host,
+			scheme: target.Scheme,
 		}
 		g.mu.Lock()
 		if g.closed || g.ports[port] != nil {

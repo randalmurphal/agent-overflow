@@ -480,7 +480,10 @@ forward to the dev server.
 **What is exposed.** One TLS listener per port in the machine's preview
 set, on the tailnet name if the node is up, otherwise on the LAN address
 if LAN access is on, and nothing at all if neither. Each forwards to
-`localhost:<that same port>` and to nothing else. The port number is
+`localhost:<that same port>` and to nothing else, over whichever scheme
+that dev server actually speaks — plenty serve TLS on loopback, and a
+preview that assumed cleartext would be offered and then fail on every
+request. The port number is
 mirrored deliberately: a dev server's absolute URLs and its
 hot-reload socket both derive from the address the page was served on,
 and moving the port would break them.

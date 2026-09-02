@@ -97,11 +97,11 @@ func TestScanSeparatesOwnedFromSeenFromNotAPage(t *testing.T) {
 	}
 }
 
-// A hand-named port is published on the owner's say-so. The probe is a
-// filter on candidates nobody chose, so it must not run here at all: a
-// backend API the person deliberately named would otherwise be dropped by
-// a rule they already overrode.
-func TestScanPublishesHandNamedPortsWithoutProbing(t *testing.T) {
+// A hand-named port is published on the owner's say-so. The probe still
+// runs, but ONLY to learn which scheme to proxy to: its verdict is not
+// consulted, so a backend API the person deliberately named is published
+// even though the same answer would drop a candidate nobody chose.
+func TestScanPublishesHandNamedPortsWhateverTheyAnswer(t *testing.T) {
 	var hits atomic.Int32
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
@@ -125,8 +125,12 @@ func TestScanPublishesHandNamedPortsWithoutProbing(t *testing.T) {
 	if !row.Allowed || row.Source != SourceAllowed || !row.Listening {
 		t.Errorf("hand-named row = %+v, want allowed/allowed/listening", row)
 	}
-	if hits.Load() != 0 {
-		t.Errorf("the probe dialled a hand-named port %d times, want 0", hits.Load())
+	// The JSON answer is not a page, and the row is published anyway.
+	if hits.Load() != 1 {
+		t.Errorf("the probe dialled a hand-named port %d times, want 1 (for the scheme)", hits.Load())
+	}
+	if row.Scheme != "http" {
+		t.Errorf("scheme = %q, want the one that answered", row.Scheme)
 	}
 }
 
@@ -146,8 +150,8 @@ func TestScanKeepsAHandNamedPortWithNothingServing(t *testing.T) {
 	if !row.Allowed || row.Source != SourceAllowed || row.Listening {
 		t.Errorf("row = %+v, want an allowed port that is not listening", row)
 	}
-	if ports := PreviewPorts(servers); len(ports) != 1 || ports[0] != 4321 {
-		t.Errorf("PreviewPorts = %v, want [4321]", ports)
+	if row.Scheme != "http" {
+		t.Errorf("scheme = %q, want http: nothing was there to ask", row.Scheme)
 	}
 }
 
@@ -334,5 +338,84 @@ func TestScanProbesCandidatesInParallel(t *testing.T) {
 	// loaded machine.
 	if budget := candidates * serve / 2; elapsed > budget {
 		t.Fatalf("scan took %s, want under %s: the probes ran serially", elapsed, budget)
+	}
+}
+
+// The scheme a dev server answered on is on its row, because whatever
+// proxies to it later has to dial the same way. A row that said "https
+// server, previewable" and carried no scheme was a link that resolved to
+// a gateway error.
+func TestScanCarriesTheSchemeThatAnswered(t *testing.T) {
+	plain, plainPort := htmlServer(t)
+	_ = plain
+
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<!doctype html>"))
+	}))
+	defer secure.Close()
+	securePort := loopbackPort(t, secure)
+
+	f := newProcFixture(t)
+	f.listenRow(false, hexLoopbackV4, plainPort, 100)
+	f.listenRow(false, hexLoopbackV4, securePort, 101)
+	f.process(t, 500, 300, 300, "vite", 100)
+	f.process(t, 501, 300, 300, "vite", 101)
+	f.process(t, 300, 1, 300, "claude")
+	root := f.write(t)
+
+	scanner := newScanner(root, time.Now)
+	servers, err := scanner.Scan(context.Background(),
+		[]Owner{{ThreadID: "thread-a", PID: 300, PGID: 300}}, nil)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	if row := rowFor(t, servers, plainPort); row.Scheme != "http" {
+		t.Errorf("cleartext row scheme = %q, want http", row.Scheme)
+	}
+	if row := rowFor(t, servers, securePort); row.Scheme != "https" {
+		t.Errorf("TLS row scheme = %q, want https: it is listed, so it must be dialable", row.Scheme)
+	}
+}
+
+// A dev server restarting keeps its row through the grace, and the row
+// keeps the scheme it was serving on. It comes back on the same one, and
+// the listener held through the grace has to keep speaking it.
+func TestTheGraceRowKeepsTheScheme(t *testing.T) {
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<!doctype html>"))
+	}))
+	securePort := loopbackPort(t, secure)
+
+	f := newProcFixture(t)
+	f.listenRow(false, hexLoopbackV4, securePort, 100)
+	f.process(t, 500, 300, 300, "vite", 100)
+	f.process(t, 300, 1, 300, "claude")
+	root := f.write(t)
+
+	owners := []Owner{{ThreadID: "thread-a", PID: 300, PGID: 300}}
+	scanner := newScanner(root, time.Now)
+	if _, err := scanner.Scan(context.Background(), owners, nil); err != nil {
+		t.Fatalf("first scan: %v", err)
+	}
+
+	// The dev server goes, and so does its socket.
+	secure.Close()
+	gone := newProcFixture(t)
+	goneRoot := gone.write(t)
+	scanner.procRoot = goneRoot
+
+	servers, err := scanner.Scan(context.Background(), owners, nil)
+	if err != nil {
+		t.Fatalf("second scan: %v", err)
+	}
+	row := rowFor(t, servers, securePort)
+	if row.Listening {
+		t.Fatal("the socket is gone; the row must say so")
+	}
+	if row.Scheme != "https" {
+		t.Errorf("grace row scheme = %q, want the one it was serving on", row.Scheme)
 	}
 }

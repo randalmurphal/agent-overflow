@@ -559,9 +559,11 @@ WHO the owners are, and WHEN a scan is worth doing.
   closes it, which ends every preview URL the backend had handed out.
 - **The list may only call a port shareable when a listener is actually
   serving it.** `reconcilePreviewListeners` runs BEFORE the list is
-  published: it hands the allowed set to `SetPorts`, then clears `allowed`
-  on every row the gateway is not serving and copies the gateway's own
-  note onto it. `MintPreviewURL` therefore agrees with the list by
+  published: it hands the allowed rows to `SetPorts` as
+  `transport.PreviewTarget`s — port AND the scheme discovery found the port
+  speaking, because the gateway has to dial the same thing — then clears
+  `allowed` on every row the gateway is not serving and copies the
+  gateway's own note onto it. `MintPreviewURL` therefore agrees with the list by
   construction rather than by a second derivation.
 - **`previewHost` asks the SOURCES, in order**, through the same
   `previewSources` list the gateway binds through

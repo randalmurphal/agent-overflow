@@ -62,7 +62,12 @@ type prober struct {
 }
 
 type verdict struct {
-	page    bool
+	// scheme is what answered — "http" or "https" — and "" when nothing
+	// did. It is carried rather than a bare bool because the gateway
+	// proxies to this port later and has to speak the same thing to it:
+	// a dev server on https answered here and then 502'd there when the
+	// proxy always dialled http.
+	scheme  string
 	expires time.Time
 }
 
@@ -96,36 +101,40 @@ func newProber(now func() time.Time) *prober {
 	}
 }
 
-// answersLikeAPage reports whether the port serves something a browser
-// would render. http is tried first because nearly every dev server is
-// cleartext on loopback; https is the second attempt rather than a
-// separate configuration.
+// pageScheme reports which scheme this port serves something a browser
+// would render on, and whether anything did. http is tried first because
+// nearly every dev server is cleartext on loopback; https is the second
+// attempt rather than a separate configuration.
 //
-// The verdict is keyed by url AND pid, so a port that changed hands is
+// The scheme is the answer, not a detail of it. Whatever proxies to this
+// port has to dial the same way, and a bool would have made every https
+// dev server a listed preview that 502s.
+//
+// The verdict is keyed by port AND pid, so a port that changed hands is
 // re-probed rather than inheriting the previous occupant's answer.
-func (p *prober) answersLikeAPage(ctx context.Context, port, pid int) bool {
+func (p *prober) pageScheme(ctx context.Context, port, pid int) (string, bool) {
 	key := strconv.Itoa(port) + "/" + strconv.Itoa(pid)
-	if page, ok := p.cached(key); ok {
-		return page
+	if scheme, ok := p.cached(key); ok {
+		return scheme, scheme != ""
 	}
-	page := false
+	answered := ""
 	for _, scheme := range []string{"http", "https"} {
 		if p.request(ctx, scheme, port) {
-			page = true
+			answered = scheme
 			break
 		}
 	}
-	if !page && ctx.Err() != nil {
+	if answered == "" && ctx.Err() != nil {
 		// A deadline is not an answer. The scan is bounded, so a slow
 		// machine ends its pass mid-probe routinely; storing "not a page"
 		// there would write false into the memo for the whole TTL for a
 		// port that was never actually asked, and every later scan would
 		// read the memo instead of asking. A verdict is only ever stored
 		// for a request that got to run.
-		return false
+		return "", false
 	}
-	p.store(key, page)
-	return page
+	p.store(key, answered)
+	return answered, answered != ""
 }
 
 // request performs one GET and judges the response.
@@ -171,24 +180,27 @@ func respondsLikeAPage(resp *http.Response) bool {
 	}
 }
 
-func (p *prober) cached(key string) (bool, bool) {
+// cached returns the remembered scheme and whether one was remembered at
+// all. The two are different answers: "" with ok is a port that was asked
+// and did not serve a page.
+func (p *prober) cached(key string) (string, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	entry, ok := p.verdicts[key]
 	if !ok || !p.now().Before(entry.expires) {
-		return false, false
+		return "", false
 	}
-	return entry.page, true
+	return entry.scheme, true
 }
 
-func (p *prober) store(key string, page bool) {
+func (p *prober) store(key string, scheme string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
 	if _, exists := p.verdicts[key]; !exists && len(p.verdicts) >= maxVerdicts {
 		p.evictLocked(now)
 	}
-	p.verdicts[key] = verdict{page: page, expires: now.Add(probeVerdictTTL)}
+	p.verdicts[key] = verdict{scheme: scheme, expires: now.Add(probeVerdictTTL)}
 }
 
 // evictLocked drops lapsed entries, then the entry closest to expiry if

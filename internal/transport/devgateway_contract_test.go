@@ -75,11 +75,26 @@ type previewRig struct {
 // its upstream from the port number it was built for.
 func newPreviewRig(t *testing.T, handler http.HandlerFunc) *previewRig {
 	t.Helper()
+	return newPreviewRigOn(t, "http", handler)
+}
+
+// newPreviewRigOn is newPreviewRig for a dev server that speaks scheme.
+// An https upstream is a real one: httptest's TLS server carries a
+// certificate nothing can verify, which is exactly the shape a dev
+// server's own is.
+func newPreviewRigOn(t *testing.T, scheme string, handler http.HandlerFunc) *previewRig {
+	t.Helper()
 	seen := &upstreamSeen{}
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	record := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen.record(r)
 		handler(w, r)
-	}))
+	})
+	upstream := httptest.NewUnstartedServer(record)
+	if scheme == "https" {
+		upstream.StartTLS()
+	} else {
+		upstream.Start()
+	}
 	t.Cleanup(upstream.Close)
 
 	_, portText, err := net.SplitHostPort(upstream.Listener.Addr().String())
@@ -97,7 +112,7 @@ func newPreviewRig(t *testing.T, handler http.HandlerFunc) *previewRig {
 		SessionLive: func(sessionID string) bool { return rig.live(sessionID) },
 	})
 	t.Cleanup(rig.gw.Close)
-	rig.gw.SetPorts([]int{port})
+	rig.gw.SetPorts([]PreviewTarget{{Port: port, Scheme: scheme}})
 	rig.addr = previewAddr(t, rig.gw, port)
 	return rig
 }
@@ -453,5 +468,71 @@ func TestADevServerThatStoppedSaysSo(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "did not answer") {
 		t.Fatalf("body = %q, want a sentence naming what happened", body)
+	}
+}
+
+// A dev server that speaks https is reached over https. The probe already
+// accepts one, so listing it and then dialling it cleartext produced a
+// preview that was offered and then answered every request with a gateway
+// error. The scheme travels from discovery to the dial, and the Origin
+// the upstream sees names it.
+func TestAnHTTPSDevServerIsProxiedOverHTTPS(t *testing.T) {
+	rig := newPreviewRigOn(t, "https", helloHandler)
+	cookie := rig.open(t, "session-1", "/")
+
+	req, err := http.NewRequest(http.MethodGet, rig.url("/app/?tab=2"), nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.AddCookie(cookie)
+	req.Header.Set("Origin", "https://backend.test:"+strconv.Itoa(rig.port))
+
+	resp, err := noRedirectClient().Do(req)
+	if err != nil {
+		t.Fatalf("proxied request: %v", err)
+	}
+	body, _ := readAllAndClose(resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: the upstream was not reached at all", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "<title>dev</title>") {
+		t.Fatalf("body = %q, want the dev server's own bytes", body)
+	}
+
+	seen := rig.seen.read()
+	want := "localhost:" + strconv.Itoa(rig.port)
+	if seen.host != want {
+		t.Errorf("upstream saw Host = %q, want %q", seen.host, want)
+	}
+	if wantOrigin := "https://" + want; seen.origin != wantOrigin {
+		t.Errorf("upstream saw Origin = %q, want %q", seen.origin, wantOrigin)
+	}
+	if seen.requestURI != "/app/?tab=2" {
+		t.Errorf("upstream saw %q, want the address preserved byte for byte", seen.requestURI)
+	}
+}
+
+// A port that changed scheme is a different upstream, so its listener is
+// rebuilt rather than kept. Keeping it would leave the proxy dialling the
+// scheme the dev server stopped speaking, which is the same 502 by a
+// slower route.
+func TestAPortThatChangesSchemeIsRebound(t *testing.T) {
+	source := &stubPreviewSource{host: "backend.test"}
+	gw := newTestGateway(t, source)
+
+	gw.SetPorts([]PreviewTarget{{Port: 5173, Scheme: "http"}})
+	held := previewAddr(t, gw, 5173)
+
+	gw.SetPorts([]PreviewTarget{{Port: 5173, Scheme: "http"}})
+	if again := previewAddr(t, gw, 5173); again != held {
+		t.Fatalf("an unchanged port was rebound: %s then %s", held, again)
+	}
+
+	gw.SetPorts([]PreviewTarget{{Port: 5173, Scheme: "https"}})
+	if again := previewAddr(t, gw, 5173); again == held {
+		t.Fatal("a port that changed scheme kept the listener that dials the old one")
+	}
+	if len(source.binds) != 2 {
+		t.Fatalf("binds = %v, want two: the first bind and the rebuild", source.binds)
 	}
 }

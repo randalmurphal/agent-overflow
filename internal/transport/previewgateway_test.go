@@ -75,6 +75,16 @@ func newTestGateway(t *testing.T, sources ...PreviewListenerSource) *PreviewGate
 	return gw
 }
 
+// httpPorts is the preview set for the ordinary case: every one of these
+// ports speaks cleartext. The scheme has its own test.
+func httpPorts(ports ...int) []PreviewTarget {
+	targets := make([]PreviewTarget, 0, len(ports))
+	for _, port := range ports {
+		targets = append(targets, PreviewTarget{Port: port, Scheme: "http"})
+	}
+	return targets
+}
+
 // previewAddr is the address one served port actually listens on. Only
 // a test needs it: every other caller reaches a preview through the URL
 // MintURL built.
@@ -93,7 +103,7 @@ func TestSetPortsBindsRetiresAndLeavesTheRestAlone(t *testing.T) {
 	source := &stubPreviewSource{host: "backend.test"}
 	gw := newTestGateway(t, source)
 
-	gw.SetPorts([]int{5173, 3000})
+	gw.SetPorts(httpPorts(5173, 3000))
 	if got := gw.Ports(); len(got) != 2 || got[0] != 3000 || got[1] != 5173 {
 		t.Fatalf("ports = %v, want [3000 5173]", got)
 	}
@@ -102,7 +112,7 @@ func TestSetPortsBindsRetiresAndLeavesTheRestAlone(t *testing.T) {
 	// The unchanged port keeps the listener it had: a reconcile that
 	// rebound everything on every tick would drop live HMR sockets three
 	// times a second.
-	gw.SetPorts([]int{5173, 8080})
+	gw.SetPorts(httpPorts(5173, 8080))
 	if got := gw.Ports(); len(got) != 2 || got[0] != 5173 || got[1] != 8080 {
 		t.Fatalf("ports = %v, want [5173 8080]", got)
 	}
@@ -136,7 +146,7 @@ func TestABindCollisionBecomesTheNoteAPersonReads(t *testing.T) {
 	})
 	defer gw.Close()
 
-	gw.SetPorts([]int{port})
+	gw.SetPorts(httpPorts(port))
 	if served := gw.Ports(); len(served) != 0 {
 		t.Fatalf("ports = %v, want none: the address was already held", served)
 	}
@@ -160,7 +170,7 @@ func TestTheFirstSourceThatCanServeWins(t *testing.T) {
 	present := &stubPreviewSource{host: "backend.test"}
 	gw := newTestGateway(t, absent, present)
 
-	gw.SetPorts([]int{5173})
+	gw.SetPorts(httpPorts(5173))
 	if len(absent.binds) != 0 {
 		t.Fatalf("a source with no address to serve on was asked to bind: %v", absent.binds)
 	}
@@ -174,7 +184,7 @@ func TestTheFirstSourceThatCanServeWins(t *testing.T) {
 // things on screen.
 func TestAPortWithNoAddressAtAllSaysSo(t *testing.T) {
 	gw := newTestGateway(t, &stubPreviewSource{host: ""})
-	gw.SetPorts([]int{5173})
+	gw.SetPorts(httpPorts(5173))
 	if note := gw.Notes()[5173]; !strings.Contains(note, "No tailnet or LAN address") {
 		t.Fatalf("note = %q", note)
 	}
@@ -188,7 +198,7 @@ func TestAPortWithNoAddressAtAllSaysSo(t *testing.T) {
 // parameter.
 func TestMintURLNamesTheHostThePortAndThePath(t *testing.T) {
 	gw := newTestGateway(t)
-	gw.SetPorts([]int{5173})
+	gw.SetPorts(httpPorts(5173))
 
 	raw, err := gw.MintURL("session-1", 5173, "/app/index.html?tab=2")
 	if err != nil {
@@ -208,7 +218,7 @@ func TestMintURLNamesTheHostThePortAndThePath(t *testing.T) {
 // A ticket is spent by the FIRST presentation and buys nothing after.
 func TestAPreviewTicketIsSpentOnce(t *testing.T) {
 	gw := newTestGateway(t)
-	gw.SetPorts([]int{5173})
+	gw.SetPorts(httpPorts(5173))
 
 	raw, err := gw.MintURL("session-1", 5173, "/")
 	if err != nil {
@@ -232,7 +242,7 @@ func TestCloseEndsTheListenersAndTheGrants(t *testing.T) {
 		Sources:     []PreviewListenerSource{&stubPreviewSource{host: "backend.test"}},
 		SessionLive: func(string) bool { return true },
 	})
-	gw.SetPorts([]int{5173})
+	gw.SetPorts(httpPorts(5173))
 	addr := previewAddr(t, gw, 5173)
 	gw.storeGrant("token", previewGrant{port: 5173, expiresAtNanos: time.Now().Add(time.Hour).UnixNano()})
 
