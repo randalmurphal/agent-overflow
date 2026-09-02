@@ -27,6 +27,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.BackendAttach,
 		eventchan.BrowserCompanionState,
 		eventchan.BrowserHost,
+		eventchan.DevServerList,
 		eventchan.DiscussionMessage,
 		eventchan.DiscussionState,
 		eventchan.DraftUpdated,
