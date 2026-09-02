@@ -97,8 +97,21 @@ forever.
   routable address is somebody else's service, and the gateway could not
   bind its port anyway.
 - Every walk is bounded — `maxAncestorDepth`, `maxProbesPerScan`,
-  `maxVerdicts`, `probeTimeout`. This runs every 3 seconds; an unbounded
-  loop here is a hang in the app, not a slow scan.
+  `maxConcurrentProbes`, `maxVerdicts`, `probeTimeout`. This runs every 3
+  seconds; an unbounded loop here is a hang in the app, not a slow scan.
+- **The probes run in parallel, and which ones run is decided by port.**
+  A few loopback ports that accept and then say nothing (a database, a
+  debugger, an idle language server) each cost the full `probeTimeout`,
+  and serially four of them spend the caller's whole scan deadline; every
+  candidate behind them would be reached with a context already done.
+  They are independent dials, so up to `maxConcurrentProbes` run at once.
+  The `maxProbesPerScan` cut is taken from the ports SORTED, never from
+  map order, so a machine over the limit offers the same subset every
+  tick instead of a different one.
+- **A deadline is not a verdict.** `answersLikeAPage` stores nothing when
+  the context is done after the attempt. Storing "not a page" there would
+  write an answer for a port nothing asked, and the memo would be
+  consulted instead of the port for the whole TTL.
 - The probe dials through `loopback.Dialer`, which resolves `localhost`
   STATICALLY to `127.0.0.1` then `::1` and never asks a resolver. That
   rule and its reasons live in `internal/loopback`, shared with the

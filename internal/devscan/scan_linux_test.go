@@ -289,3 +289,50 @@ func TestAHandNamedPortStaysAllowedEvenWhenAThreadOwnsIt(t *testing.T) {
 		t.Errorf("row = %+v, want allowed and listening", row)
 	}
 }
+
+// The scan's probes run in parallel, and the reason is a real machine
+// rather than a benchmark: a few loopback ports that accept and then take
+// their time are enough to spend a whole scan deadline serially, and
+// every candidate behind them is then reached with a context that is
+// already done. Eight deliberately slow candidates take one round trip
+// here, not eight.
+func TestScanProbesCandidatesInParallel(t *testing.T) {
+	const (
+		candidates = 8
+		serve      = 200 * time.Millisecond
+	)
+
+	f := newProcFixture(t)
+	for i := range candidates {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(serve)
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("<!doctype html>"))
+		}))
+		defer srv.Close()
+		port := loopbackPort(t, srv)
+		inode := 100 + i
+		pid := 900 + i
+		f.listenRow(false, hexLoopbackV4, port, inode)
+		f.process(t, pid, 1, pid, "node", inode)
+	}
+	root := f.write(t)
+
+	scanner := newScanner(root, time.Now)
+	start := time.Now()
+	servers, err := scanner.Scan(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if len(servers) != candidates {
+		t.Fatalf("servers = %d, want %d: every slow candidate must still be judged", len(servers), candidates)
+	}
+	// Serial probing costs candidates*serve. Half of that is a bound only
+	// a parallel pass can meet, and is loose enough not to flake on a
+	// loaded machine.
+	if budget := candidates * serve / 2; elapsed > budget {
+		t.Fatalf("scan took %s, want under %s: the probes ran serially", elapsed, budget)
+	}
+}

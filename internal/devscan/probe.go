@@ -115,6 +115,15 @@ func (p *prober) answersLikeAPage(ctx context.Context, port, pid int) bool {
 			break
 		}
 	}
+	if !page && ctx.Err() != nil {
+		// A deadline is not an answer. The scan is bounded, so a slow
+		// machine ends its pass mid-probe routinely; storing "not a page"
+		// there would write false into the memo for the whole TTL for a
+		// port that was never actually asked, and every later scan would
+		// read the memo instead of asking. A verdict is only ever stored
+		// for a request that got to run.
+		return false
+	}
 	p.store(key, page)
 	return page
 }

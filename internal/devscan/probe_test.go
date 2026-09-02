@@ -126,3 +126,38 @@ func TestProbeVerdictCacheIsKeyedAndExpires(t *testing.T) {
 		t.Fatalf("a lapsed verdict was reused: hits = %d, want 3", hits)
 	}
 }
+
+// A scan that ran out of time did not learn anything, and must not
+// record that it did. The bound is real — a handful of ports that accept
+// and say nothing ends a pass mid-probe — so a stored "not a page" here
+// would blind the next fifteen seconds of scans to a port nothing ever
+// asked about.
+func TestACancelledProbeIsNotAVerdict(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<!doctype html>"))
+	}))
+	defer srv.Close()
+	port := loopbackPort(t, srv)
+
+	probe := newProber(time.Now)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if probe.answersLikeAPage(ctx, port, 7) {
+		t.Fatal("a cancelled probe returned a verdict")
+	}
+	if _, ok := probe.cached(strconv.Itoa(port) + "/7"); ok {
+		t.Fatal("a cancelled probe was remembered as a verdict")
+	}
+
+	// And the next pass asks for real.
+	if !probe.answersLikeAPage(context.Background(), port, 7) {
+		t.Fatal("the port was not probed again after a cancelled attempt")
+	}
+	if hits != 1 {
+		t.Fatalf("server hits = %d, want 1 (the cancelled attempt never reached it)", hits)
+	}
+}

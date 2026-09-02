@@ -117,6 +117,13 @@ const attributedGrace = 60 * time.Second
 // of them would make the scan itself the problem.
 const maxProbesPerScan = 32
 
+// maxConcurrentProbes bounds how many candidate dials are open at once.
+// Eight is enough that the pathological case — every candidate accepting
+// and then saying nothing — finishes four batches inside one scan
+// deadline, and small enough that a scan never looks like a port sweep of
+// this machine's own loopback.
+const maxConcurrentProbes = 8
+
 // Scanner produces the machine's dev-server list. Safe for concurrent
 // use; one belongs to the App.
 type Scanner struct {
@@ -201,7 +208,8 @@ func (s *Scanner) Scan(ctx context.Context, owners []Owner, allowed []int) ([]De
 		rows[listener.Port] = row
 	}
 
-	probes := 0
+	pages := s.probeCandidates(ctx, rows, allowedSet)
+
 	servers := make([]DevServer, 0, len(rows)+len(allowed))
 	for port, row := range rows {
 		_, handNamed := allowedSet[port]
@@ -220,11 +228,10 @@ func (s *Scanner) Scan(ctx context.Context, owners []Owner, allowed []int) ([]De
 			row.Source = SourceAllowed
 			row.Allowed = true
 		default:
-			if probes >= maxProbesPerScan {
-				continue
-			}
-			probes++
-			if !s.probe.answersLikeAPage(ctx, port, row.PID) {
+			if !pages[port] {
+				// Either it does not answer like a page, or this scan ran
+				// out of probe budget before reaching it. Both mean "not
+				// offered this pass"; the next pass asks again.
 				continue
 			}
 			if row.ThreadID != "" {
@@ -322,4 +329,61 @@ func PreviewPorts(servers []DevServer) []int {
 	}
 	sort.Ints(ports)
 	return ports
+}
+
+// probeCandidates asks, for every port this scan has to judge, whether it
+// answers like a page. Hand-named ports are not judged and are not here.
+//
+// The probes run CONCURRENTLY, bounded by maxConcurrentProbes. Serially,
+// a handful of listeners that accept and then say nothing — a database, a
+// debugger, an idle language server — each cost the full probeTimeout,
+// and four of them exceed the whole scan deadline on their own. Every
+// candidate behind them would then be reached with a context that is
+// already done. They are independent loopback dials with nothing to
+// serialize, so the deadline is spent in parallel instead.
+//
+// Which candidates fit under maxProbesPerScan is decided by PORT, not by
+// map order: the cap has to bite the same way twice, or a machine over
+// the limit would offer a different subset every three seconds.
+func (s *Scanner) probeCandidates(
+	ctx context.Context, rows map[int]DevServer, allowedSet map[int]struct{},
+) map[int]bool {
+	candidates := make([]int, 0, len(rows))
+	for port := range rows {
+		if _, handNamed := allowedSet[port]; handNamed {
+			continue
+		}
+		candidates = append(candidates, port)
+	}
+	sort.Ints(candidates)
+	if len(candidates) > maxProbesPerScan {
+		candidates = candidates[:maxProbesPerScan]
+	}
+
+	pages := make(map[int]bool, len(candidates))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	inFlight := make(chan struct{}, maxConcurrentProbes)
+
+	for _, port := range candidates {
+		wg.Add(1)
+		go func(port, pid int) {
+			defer wg.Done()
+			inFlight <- struct{}{}
+			defer func() { <-inFlight }()
+			if ctx.Err() != nil {
+				// The scan ended while this one waited its turn. Asking
+				// now would only produce a request that cannot finish.
+				return
+			}
+			if !s.probe.answersLikeAPage(ctx, port, pid) {
+				return
+			}
+			mu.Lock()
+			pages[port] = true
+			mu.Unlock()
+		}(port, rows[port].PID)
+	}
+	wg.Wait()
+	return pages
 }
