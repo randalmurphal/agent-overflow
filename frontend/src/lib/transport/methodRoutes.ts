@@ -13,6 +13,7 @@ export type MethodRoute = 'thread' | 'project' | 'home' | 'selected' | 'all';
 
 export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2629313140: 'home', // AddBackend
+	4007046465: 'selected', // AllowPreviewPort
 	2157691816: 'home', // AppendUIRenderTraceBatch
 	1352159878: 'project', // ArchiveProject
 	3655608409: 'thread', // ArchiveThread
@@ -62,6 +63,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1186337974: 'thread', // DeleteThread
 	1186757769: 'home', // DeleteUIState
 	604263015: 'home', // DevicePairingStatus
+	1061100039: 'selected', // DisallowPreviewPort
 	115027584: 'home', // DownloadUpdate
 	1601396603: 'home', // FinishPasskeyRegistration
 	1569276637: 'home', // FinishPasskeyStepUp
@@ -81,6 +83,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1018032480: 'selected', // GetCodexSkills
 	3399370629: 'thread', // GetCommitDiff
 	3416004963: 'home', // GetContextSettings
+	139818238: 'selected', // GetDevServers
 	1590634674: 'thread', // GetDiffContextLines
 	1924583939: 'selected', // GetDiscussion
 	875977146: 'thread', // GetDraft

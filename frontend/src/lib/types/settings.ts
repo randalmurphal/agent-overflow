@@ -529,6 +529,14 @@ export interface NetworkPersistedSettings {
   externalKeyFile: string;
 
   /**
+   * The owner's hand-named half of this machine's preview set: dev-server
+   * ports the scan did not attribute to a thread but that should still be
+   * reachable from their other devices. Sorted and deduplicated by the
+   * backend. The attributed half is discovered per tick and never stored.
+   */
+  previewPorts: number[];
+
+  /**
    * When true, this backend joins the owner's tailnet as its own node, so
    * it is reachable from their other devices with no public listener.
    */

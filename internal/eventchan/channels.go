@@ -8,6 +8,14 @@ type Channel string
 // String returns the wire spelling.
 func (c Channel) String() string { return string(c) }
 
+// devserver:* — this backend's dev-server list: which loopback ports are
+// serving pages, which thread owns each, and which of them a preview URL
+// can be minted for. Per-backend and whole-state, so the newest frame is
+// the only one worth having.
+const (
+	DevServerList Channel = "devserver:list"
+)
+
 // discussion:* — multi-agent deliberation channels.
 const (
 	DiscussionMessage Channel = "discussion:message"

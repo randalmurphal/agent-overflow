@@ -224,6 +224,23 @@ const unreviewedMarker = "unreviewed"
 // to answer exactly that question.
 var channelPolicies = []ChannelPolicy{
 	{
+		Channel:   eventchan.DevServerList,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopePreviewOpen,
+		Why: "Whole-state list of this backend's dev-server ports, replaced " +
+			"in full on every scan tick, so a default-depth ring would hold " +
+			"minutes of superseded frames and replay all of them to be " +
+			"overwritten by the last. Scope: the list names every loopback " +
+			"port on the host that answers like a page, plus the pid and " +
+			"command holding it — a port-scan oracle for the machine, so it " +
+			"rides the same execute-tier scope as the gateway it feeds " +
+			"rather than a read scope. Audience: reaching a preview from " +
+			"another device is the entire feature, so a LAN or tailnet " +
+			"session that holds preview:open is exactly the intended " +
+			"receiver.",
+	},
+	{
 		Channel:   eventchan.DiscussionMessage,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

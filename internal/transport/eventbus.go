@@ -446,6 +446,44 @@ func (b *EventBus) ChannelSubscriberCount(channel string) int {
 	return count
 }
 
+// RemoteReceiverCount returns the number of live subscribers that are
+// BOTH off this machine and granted the scope this channel takes. It is
+// the "is anybody out there who could use this" question, and it exists
+// for work a backend should not do at all when the answer is nobody: the
+// dev-server scan (app_preview.go) polls every 3 seconds, and a
+// desktop-only install must never pay for it.
+//
+// Channel SUBSCRIPTION is deliberately not consulted, unlike
+// ChannelSubscriberCount. An SPA subscriber takes every channel by
+// default, so subscription answers "is a client attached", not "does a
+// client want this". The grant does answer it: a session that never
+// asked for the capability cannot receive the frame either way.
+//
+// A subscriber with no origin recorded (the harness waiter and every
+// other non-connection subscriber) is not remote and does not count. Nor
+// is one whose scope filter is absent or inactive: both mean no session
+// named its grants, and this asks about a session that did.
+func (b *EventBus) RemoteReceiverCount(channel string) int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	count := 0
+	for _, subscriber := range b.subList {
+		if subscriber.closed.Load() {
+			continue
+		}
+		loopback := subscriber.loopback.Load()
+		if loopback == nil || *loopback {
+			continue
+		}
+		scopes := subscriber.scopes.Load()
+		if scopes == nil || !scopes.active || !scopes.allows(channel) {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 // Replay returns the events the client missed since lastSeqByChannel.
 // For each channel:
 //   - If lastSeq is older than the oldest event in the ring, a single

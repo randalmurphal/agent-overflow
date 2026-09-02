@@ -178,6 +178,18 @@ file, which is what the pre-database boot readers in `main.go` and
   only one of them can be wrong: an out-of-range port drops to 0, which
   means automatic — what every install did before the field existed — so
   the backend still binds and still starts.
+  `previewPorts` is a FOURTH independent half (wave 9, the port gateway):
+  the owner's hand-named dev-server ports, 1-65535, deduplicated and
+  sorted on write so two writes of the same set produce the same file and
+  the gateway's reconciler sees no change. Capped at `MaxPreviewPorts`,
+  because every entry asks the machine for a listener. The strict path
+  REFUSES an impossible port — the caller is a person naming one, and
+  losing it silently would leave them looking for a link that never
+  appears — while the lenient path drops the list whole, since a
+  hand-edited file with one bad number in it is somebody mid-edit and a
+  half-applied set would read as the whole one. Attributed ports are
+  discovered per scan tick and never persisted; only a deliberate choice
+  lives here.
 - `mutate.go`: the SINGLE persisted-write path. Every mutator in this
   package (`Update`, `AddRecentWorkspace`, the remote-endpoint CRUD, the
   provider-environment CRUD) is a closure handed to `Service.mutate`,

@@ -1203,6 +1203,19 @@ atomic count of non-loopback WS connections, so no work happens when only
 loopback clients are attached. SSH-tunneled remotes arrive as loopback and are
 invisible to that probe, so they keep the RPC path.
 
+`EventBus.RemoteReceiverCount(channel)` is the GRANT-aware sibling of that
+probe, for producers whose work is only worth doing when somebody who may
+actually receive it is out there. `HasRemoteClient` counts non-loopback
+connections; this counts the subset whose session also holds the scope the
+channel's row names. `devserver:list` is the case it was written for: the
+dev-server scan (`internal/app/app_preview.go`) walks `/proc` and dials
+loopback ports every three seconds, and a desktop-only install must never
+pay for a list nothing reads. Channel SUBSCRIPTION is deliberately NOT the
+signal — an SPA subscriber takes every channel by default, so it would
+answer yes for the webview sitting in front of the machine — and neither is
+a subscriber with no origin or no active scope filter, both of which mean
+no session named its grants.
+
 ## Events are entity-keyed
 
 A pushed frame is addressed by the entity it describes: a cwd (`git:status`), a

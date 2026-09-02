@@ -42,6 +42,7 @@ type MethodMeta struct {
 // AuthorizeSessionMethod compares a session's grants against.
 var GeneratedMethods = []MethodMeta{
 	{Name: "AddBackend", ID: 2629313140, Scope: "host", Route: "home"},                                               // main.App.AddBackend
+	{Name: "AllowPreviewPort", ID: 4007046465, Scope: "access:admin", Route: "selected"},                             // main.App.AllowPreviewPort
 	{Name: "AppendUIRenderTraceBatch", ID: 2157691816, Scope: "host", Route: "home"},                                 // main.App.AppendUIRenderTraceBatch
 	{Name: "ArchiveProject", ID: 1352159878, Scope: "threads:operate", Route: "project"},                             // main.App.ArchiveProject
 	{Name: "ArchiveThread", ID: 3655608409, Scope: "threads:operate", Route: "thread"},                               // main.App.ArchiveThread
@@ -91,6 +92,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteThread", ID: 1186337974, Scope: "threads:operate", Route: "thread"},                                // main.App.DeleteThread
 	{Name: "DeleteUIState", ID: 1186757769, Scope: "session", Route: "home"},                                         // main.App.DeleteUIState
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin", Route: "home"},                               // main.App.DevicePairingStatus
+	{Name: "DisallowPreviewPort", ID: 1061100039, Scope: "access:admin", Route: "selected"},                          // main.App.DisallowPreviewPort
 	{Name: "DownloadUpdate", ID: 115027584, Scope: "host", Route: "home"},                                            // main.App.DownloadUpdate
 	{Name: "FinishPasskeyRegistration", ID: 1601396603, Scope: "access:admin", Route: "home"},                        // main.App.FinishPasskeyRegistration
 	{Name: "FinishPasskeyStepUp", ID: 1569276637, Scope: "session", Route: "home"},                                   // main.App.FinishPasskeyStepUp
@@ -110,6 +112,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetCodexSkills", ID: 1018032480, Scope: "threads:operate", Route: "selected"},                            // main.App.GetCodexSkills
 	{Name: "GetCommitDiff", ID: 3399370629, Scope: "files:read", Route: "thread"},                                    // main.App.GetCommitDiff
 	{Name: "GetContextSettings", ID: 3416004963, Scope: "settings:read", Route: "home"},                              // main.App.GetContextSettings
+	{Name: "GetDevServers", ID: 139818238, Scope: "preview:open", Route: "selected"},                                 // main.App.GetDevServers
 	{Name: "GetDiffContextLines", ID: 1590634674, Scope: "files:read", Route: "thread"},                              // main.App.GetDiffContextLines
 	{Name: "GetDiscussion", ID: 1924583939, Scope: "threads:read", Route: "selected"},                                // main.App.GetDiscussion
 	{Name: "GetDraft", ID: 875977146, Scope: "threads:operate", Route: "thread"},                                     // main.App.GetDraft

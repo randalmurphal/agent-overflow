@@ -59,6 +59,7 @@ export const SETTINGS_DEFAULTS = {
     externalCertFile: "",
     externalKeyFile: "",
     tailnetEnabled: false,
+    previewPorts: [],
     tailnetControlUrl: "",
   },
   retention: {

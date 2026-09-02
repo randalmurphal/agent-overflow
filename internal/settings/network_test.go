@@ -98,6 +98,16 @@ func TestSetNetworkRefusesAConfigurationThatCannotServe(t *testing.T) {
 			},
 			names: "needs network.canonicalDomain",
 		},
+		{
+			name:  "a preview port outside the range",
+			in:    NetworkSettings{PreviewPorts: []int{5173, 70000}},
+			names: "network.previewPorts entries must be",
+		},
+		{
+			name:  "a preview port that is no port",
+			in:    NetworkSettings{PreviewPorts: []int{0}},
+			names: "network.previewPorts entries must be",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -379,4 +389,49 @@ func TestAHandEditedFileKeepsTheTailnetHalfSeparate(t *testing.T) {
 			t.Fatalf("the unusable tailnet half survived load: %+v", loaded)
 		}
 	})
+}
+
+// The preview set is written the same way whatever order it arrived in,
+// so two writes of the same set produce the same file and the gateway's
+// reconciler sees no change.
+func TestPreviewPortsAreSortedAndDeduplicated(t *testing.T) {
+	updated, err := NewService(t.TempDir()).SetNetwork(NetworkSettings{
+		PreviewPorts: []int{8080, 5173, 8080, 3000},
+	})
+	if err != nil {
+		t.Fatalf("SetNetwork: %v", err)
+	}
+	want := []int{3000, 5173, 8080}
+	got := updated.Network.PreviewPorts
+	if len(got) != len(want) {
+		t.Fatalf("previewPorts = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("previewPorts = %v, want %v", got, want)
+		}
+	}
+}
+
+// A hand-edited file with an impossible port in the preview list loses
+// that list and nothing else. The whole point of the lenient path is
+// that one unusable value does not strand the rest of the group.
+func TestAnUnusablePreviewSetDropsWithoutTakingTheGroup(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{
+		"network": {
+			"bindAll": true,
+			"canonicalDomain": "backend.example",
+			"previewPorts": [5173, 99999]
+		}
+	}`), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	loaded := NewService(dir).Get().Network
+	if len(loaded.PreviewPorts) != 0 {
+		t.Fatalf("the unusable preview set survived load: %v", loaded.PreviewPorts)
+	}
+	if !loaded.BindAll || loaded.CanonicalDomain != "backend.example" {
+		t.Fatalf("the rest of the group went with it: %+v", loaded)
+	}
 }

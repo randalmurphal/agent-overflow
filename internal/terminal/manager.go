@@ -131,6 +131,35 @@ func (m *Manager) List(threadID string) []SessionSummary {
 	return summaries
 }
 
+// ThreadProcess is one running PTY, named by the thread that owns it.
+// The dev-server scan (internal/devscan) traces a listening socket back
+// to a thread through these, so a dev server the person started by hand
+// in a thread's terminal is attributed to that thread.
+type ThreadProcess struct {
+	ThreadID string
+	// PID is the shell. Every PTY spawn sets Setpgid, so it is also the
+	// group id everything typed into that terminal inherits.
+	PID int
+}
+
+// ThreadProcesses returns the running PTY of every thread, in one pass.
+// List answers for one thread; this is the whole-manager view the
+// dev-server scan needs, and it is deliberately not List in a loop over
+// thread ids the caller would have to know first.
+func (m *Manager) ThreadProcesses() []ThreadProcess {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	processes := make([]ThreadProcess, 0, len(m.sessions))
+	for _, sess := range m.sessions {
+		summary := sess.Summary()
+		if !summary.Running || summary.PID <= 0 {
+			continue
+		}
+		processes = append(processes, ThreadProcess{ThreadID: summary.ThreadID, PID: summary.PID})
+	}
+	return processes
+}
+
 // MoveThread reassigns all active sessions from one thread key to another.
 // The PTYs keep running; only their owner key and future output/exit events
 // change. Returns updated summaries for the moved sessions.

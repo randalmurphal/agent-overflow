@@ -102,6 +102,16 @@ func (a *App) Start(ctx context.Context) error {
 	// rolled back leaves nothing behind.
 	a.startSystemStatsSampler()
 
+	// Start the dev-server discovery loop. It reads this machine's
+	// listening sockets, and ONLY while a session that is both off this
+	// machine and granted `preview:open` is attached — so a desktop-only
+	// install never scans at all. See app_preview.go.
+	//
+	// NOT behind the activation gate, for the same reason as the sampler
+	// above: it reads and publishes, takes no action, and leaves nothing
+	// behind for a rollback to undo.
+	a.startDevServerPreviews()
+
 	// Fill in the repository identity of projects that have none, so a
 	// client attached to several backends can recognise the same repo
 	// checked out on two machines. In a goroutine because each

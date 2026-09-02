@@ -117,6 +117,10 @@ var (
 		"webview:trim", // 2026-08-25: replaying a stale trim would GC an active session
 	}
 	frozenLatestOnlyChannels = []string{
+		// Wave 9: whole-state, replaced in full every scan tick, so a
+		// default ring would hold minutes of superseded lists and replay
+		// all of them to be overwritten by the last.
+		"devserver:list",
 		// A LEVEL, not an edge: a reconnecting launcher replays with a
 		// zero cursor and must converge on the current keep-awake state.
 		"power:keepawake",

@@ -526,6 +526,45 @@ while the feature is enabled and the node is not yet Running.
   Tailscale sign-in, a real `ts.net` certificate, and DERP-relayed reach
   between two machines.
 
+## The dev-server list
+
+`app_preview.go` is the App's half of the port gateway
+(`docs/specs/remote-access.md` §7). `internal/devscan` knows how to look at
+the machine and nothing else; this file owns the two things around it —
+WHO the owners are, and WHEN a scan is worth doing.
+
+- **The loop is gated on somebody off-machine who may actually receive
+  the list**, `EventBus.RemoteReceiverCount("devserver:list") > 0`. A scan
+  walks `/proc` and dials loopback ports every three seconds; on a
+  desktop-only install nobody ever reads the answer, so the loop does no
+  work at all and `GetDevServers` scans on demand for the one caller
+  there will ever be. Channel subscription is not the signal: an SPA
+  subscriber takes every channel by default.
+- **Owners are the provider session and the running terminals of every
+  thread**, through `sessionruntime.Manager.ThreadProcesses` and
+  `terminal.Manager.ThreadProcesses`. Each is handed over with PGID equal
+  to PID, because both spawn paths call `procutil.ConfigureGroup` — and
+  the group is the half that still matches after a dev server daemonises
+  out of the ancestor chain.
+- **A scan error stops discovery and is remembered.** Every error a scan
+  can return comes from the enumerator (this platform cannot look, or the
+  socket tables cannot be read) and neither changes on a retry; the probe
+  never errors. So the loop exits, and the RPC answers with the same
+  sentence rather than an empty list, which would read as "nothing is
+  listening".
+- **`previewScanner` refuses to build a real scanner inside a test
+  binary**, the same shape as `resolveTextGenerationExecutor`. A real scan
+  dials every candidate loopback port, and on a developer's machine those
+  are their own work. A fixture that wants list behaviour installs a fake
+  through `app.preview.scanner`.
+- **`GetDevServers` carries `preview:open`, not a read scope.** The list
+  names every loopback port on the host that answers like a page and the
+  process holding it, which is a port-scan of the machine;
+  `TestChannelScopeMatchesItsReadRPC` pins the channel to the same grant.
+  `AllowPreviewPort` / `DisallowPreviewPort` carry `access:admin` and NO
+  step-up: they expose the owner's own dev server to the owner's own
+  devices and change nothing about what this backend binds.
+
 ## The activation gate
 
 `app_activation.go` is the backend half of `internal/supervise`: a boot that is

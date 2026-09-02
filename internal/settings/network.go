@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -75,6 +76,20 @@ type NetworkSettings struct {
 	// that writes this group demands a step-up proof.
 	TailnetEnabled bool `json:"tailnetEnabled,omitempty"`
 
+	// PreviewPorts is the owner's hand-named half of this machine's
+	// preview set (docs/specs/remote-access.md §7, the port gateway):
+	// ports the dev-server scan did not attribute to a thread but that
+	// the owner nonetheless wants reachable from their other devices.
+	// The attributed half is discovered per tick and never persisted;
+	// only a deliberate choice lives here.
+	//
+	// Sorted and deduplicated on write, so two writes of the same set
+	// produce the same file and the reconciler sees no change. Changing
+	// it takes `access:admin` and no step-up: it exposes the owner's own
+	// dev server to the owner's own devices, which is a smaller act than
+	// changing what the transport itself binds.
+	PreviewPorts []int `json:"previewPorts,omitempty"`
+
 	// TailnetControlURL is the coordination server the node registers
 	// with. Empty means the Tailscale service, which is what nearly
 	// every install wants; a self-hosted control plane (Headscale) is
@@ -113,6 +128,12 @@ const MaxListenPort = 65535
 // argument vector to every attached client.
 const MaxACMEDNSHookArgs = 32
 
+// MaxPreviewPorts bounds the hand-named preview set. Every port in it
+// holds a listener and a row in the dev-server list, so the bound is
+// what keeps one settings write from asking the machine for an unbounded
+// number of binds.
+const MaxPreviewPorts = 64
+
 // validateNetwork is the strict path, used by SetNetwork and by the
 // whole-struct validation. Every rule here answers a question the
 // serving side would otherwise have to answer at handshake time, where
@@ -125,6 +146,33 @@ func validateNetwork(n NetworkSettings) (NetworkSettings, error) {
 		return NetworkSettings{}, fmt.Errorf(
 			"network.listenPort must be 0 (automatic) or 1-%d, got %d", MaxListenPort, n.ListenPort)
 	}
+
+	if len(n.PreviewPorts) > MaxPreviewPorts {
+		return NetworkSettings{}, fmt.Errorf(
+			"network.previewPorts has %d entries, max is %d", len(n.PreviewPorts), MaxPreviewPorts)
+	}
+	previewPorts := make([]int, 0, len(n.PreviewPorts))
+	seenPort := make(map[int]struct{}, len(n.PreviewPorts))
+	for _, port := range n.PreviewPorts {
+		if port < 1 || port > MaxListenPort {
+			// Refused rather than dropped, on the strict path: the caller
+			// is a person naming a port, and silently losing the one they
+			// typed would leave them looking for a link that never
+			// appears.
+			return NetworkSettings{}, fmt.Errorf(
+				"network.previewPorts entries must be 1-%d, got %d", MaxListenPort, port)
+		}
+		if _, dupe := seenPort[port]; dupe {
+			continue
+		}
+		seenPort[port] = struct{}{}
+		previewPorts = append(previewPorts, port)
+	}
+	sort.Ints(previewPorts)
+	if len(previewPorts) == 0 {
+		previewPorts = nil
+	}
+	n.PreviewPorts = previewPorts
 
 	n.CanonicalDomain = strings.ToLower(strings.TrimSpace(n.CanonicalDomain))
 	if n.CanonicalDomain != "" {
@@ -231,6 +279,12 @@ func validateNetwork(n NetworkSettings) (NetworkSettings, error) {
 // drops to zero. Dropping it means "automatic", which is the behaviour
 // every install had before the field existed, so the backend still binds
 // and still starts — and the log line above says which value went.
+//
+// The PREVIEW half drops whole rather than per entry. A hand-edited list
+// with one impossible number in it is a file somebody was editing, and
+// keeping the rest would leave them reading a half-applied set with
+// nothing on screen saying so; the log line names the value, and the
+// setting is re-typed once.
 func sanitizeNetwork(n NetworkSettings) NetworkSettings {
 	sanitized, err := validateNetwork(n)
 	if err == nil {
@@ -251,6 +305,9 @@ func sanitizeNetwork(n NetworkSettings) NetworkSettings {
 		kept.ACMEDNSHook = tls.ACMEDNSHook
 		kept.ExternalCertFile = tls.ExternalCertFile
 		kept.ExternalKeyFile = tls.ExternalKeyFile
+	}
+	if preview, previewErr := validateNetwork(NetworkSettings{PreviewPorts: n.PreviewPorts}); previewErr == nil {
+		kept.PreviewPorts = preview.PreviewPorts
 	}
 	if tailnet, tailnetErr := validateNetwork(NetworkSettings{
 		TailnetEnabled:    n.TailnetEnabled,

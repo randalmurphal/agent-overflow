@@ -467,6 +467,12 @@ type App struct {
 	// fixture that never calls Start and every install that leaves the
 	// feature off. See app_tailnet.go.
 	tailnet tailnetState
+	// preview owns this machine's dev-server list: the scanner, the one
+	// goroutine that polls it while somebody off-machine is watching, and
+	// the platform refusal once a platform has given one. Zero value is
+	// an App with no loop and no scanner, which is every fixture that
+	// never calls Start. See app_preview.go.
+	preview previewState
 	// providerExtraEnv is merged into the environment of every provider
 	// spawn something outside the process has to STEER: sessions
 	// (sessionProcessEnv) and account sign-ins (Deps.LoginSpawnEnv on the

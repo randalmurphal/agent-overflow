@@ -275,6 +275,22 @@ export class NetworkSettings {
     "tailnetEnabled"?: boolean;
 
     /**
+     * PreviewPorts is the owner's hand-named half of this machine's
+     * preview set (docs/specs/remote-access.md §7, the port gateway):
+     * ports the dev-server scan did not attribute to a thread but that
+     * the owner nonetheless wants reachable from their other devices.
+     * The attributed half is discovered per tick and never persisted;
+     * only a deliberate choice lives here.
+     * 
+     * Sorted and deduplicated on write, so two writes of the same set
+     * produce the same file and the reconciler sees no change. Changing
+     * it takes `access:admin` and no step-up: it exposes the owner's own
+     * dev server to the owner's own devices, which is a smaller act than
+     * changing what the transport itself binds.
+     */
+    "previewPorts"?: number[];
+
+    /**
      * TailnetControlURL is the coordination server the node registers
      * with. Empty means the Tailscale service, which is what nearly
      * every install wants; a self-hosted control plane (Headscale) is
@@ -296,9 +312,13 @@ export class NetworkSettings {
      */
     static createFrom($$source: any = {}): NetworkSettings {
         const $$createField3_0 = $$createType0;
+        const $$createField7_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("acmeDnsHook" in $$parsedSource) {
             $$parsedSource["acmeDnsHook"] = $$createField3_0($$parsedSource["acmeDnsHook"]);
+        }
+        if ("previewPorts" in $$parsedSource) {
+            $$parsedSource["previewPorts"] = $$createField7_0($$parsedSource["previewPorts"]);
         }
         return new NetworkSettings($$parsedSource as Partial<NetworkSettings>);
     }
@@ -1205,22 +1225,22 @@ export class Settings {
         const $$createField5_0 = $$createType0;
         const $$createField21_0 = $$createType0;
         const $$createField22_0 = $$createType0;
-        const $$createField23_0 = $$createType2;
-        const $$createField24_0 = $$createType2;
-        const $$createField25_0 = $$createType4;
-        const $$createField26_0 = $$createType4;
+        const $$createField23_0 = $$createType3;
+        const $$createField24_0 = $$createType3;
+        const $$createField25_0 = $$createType5;
+        const $$createField26_0 = $$createType5;
         const $$createField27_0 = $$createType0;
         const $$createField28_0 = $$createType0;
-        const $$createField31_0 = $$createType5;
-        const $$createField32_0 = $$createType6;
-        const $$createField34_0 = $$createType7;
-        const $$createField52_0 = $$createType8;
-        const $$createField53_0 = $$createType9;
-        const $$createField54_0 = $$createType10;
+        const $$createField31_0 = $$createType6;
+        const $$createField32_0 = $$createType7;
+        const $$createField34_0 = $$createType8;
+        const $$createField52_0 = $$createType9;
+        const $$createField53_0 = $$createType10;
+        const $$createField54_0 = $$createType11;
         const $$createField56_0 = $$createType0;
         const $$createField61_0 = $$createType0;
         const $$createField63_0 = $$createType0;
-        const $$createField73_0 = $$createType11;
+        const $$createField73_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -1285,14 +1305,15 @@ export class Settings {
 
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = ProviderEnvVar.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = PromptOverride.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = ClaudeCrossSession.createFrom;
-const $$createType6 = ClaudeSubagentLimits.createFrom;
-const $$createType7 = ClaudeThinking.createFrom;
-const $$createType8 = NetworkSettings.createFrom;
-const $$createType9 = EditorSettings.createFrom;
-const $$createType10 = RetentionSettings.createFrom;
-const $$createType11 = windowgeom$0.Geometry.createFrom;
+const $$createType1 = $Create.Array($Create.Any);
+const $$createType2 = ProviderEnvVar.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = PromptOverride.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = ClaudeCrossSession.createFrom;
+const $$createType7 = ClaudeSubagentLimits.createFrom;
+const $$createType8 = ClaudeThinking.createFrom;
+const $$createType9 = NetworkSettings.createFrom;
+const $$createType10 = EditorSettings.createFrom;
+const $$createType11 = RetentionSettings.createFrom;
+const $$createType12 = windowgeom$0.Geometry.createFrom;

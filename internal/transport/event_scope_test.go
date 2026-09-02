@@ -54,6 +54,7 @@ func TestChannelScopeMatchesItsReadRPC(t *testing.T) {
 		{eventchan.ServiceUpdateOutcome, ScopeAccessAdmin,
 			"the same read answers it; `host` meant the remote owner waiting on the outcome never got it"},
 		{eventchan.WebviewTrim, ScopeHost, "an imperative directive at this desktop's renderer"},
+		{eventchan.DevServerList, ScopePreviewOpen, "GetDevServers returns this exact shape"},
 	} {
 		policy, registered := policyForChannel(string(tc.channel))
 		if !registered {
