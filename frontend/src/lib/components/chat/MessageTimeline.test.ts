@@ -14,6 +14,7 @@ import {
 import { getToasts } from '../../stores/toast.svelte';
 import { clearThreadScrollSnapshotsForTest } from '../../utils/threadScrollSnapshots';
 import MessageTimeline from './MessageTimeline.svelte';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -1624,5 +1625,33 @@ describe('<MessageTimeline>', () => {
         __setSmoothingClockForTest(undefined);
       }
     });
+  });
+});
+
+// The nav rail is a desktop affordance: compact drops it and the row
+// gutter it reserved, so the transcript is symmetric on a phone.
+describe('<MessageTimeline> under compact', () => {
+  beforeEach(async () => {
+    resetBindingMocks();
+    clearThreadScrollSnapshotsForTest();
+    setBindingMock('GetSettings', async () => null);
+    await loadSettings();
+  });
+
+  it('mounts no nav rail and no rail gutter', async () => {
+    setCompactLayoutForTest(true);
+    try {
+      const pane = await buildPane(undefined, [
+        makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
+      ]);
+      const { queryByTestId, container } = render(MessageTimeline, { props: { pane } });
+      await tick();
+      expect(queryByTestId('message-nav-rail')).toBeNull();
+      const shells = [...container.querySelectorAll<HTMLElement>('[style*="max-width"]')];
+      expect(shells.length).toBeGreaterThan(0);
+      for (const el of shells) expect(el.style.paddingLeft).toBe(el.style.paddingRight);
+    } finally {
+      setCompactLayoutForTest(false);
+    }
   });
 });

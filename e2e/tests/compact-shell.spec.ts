@@ -55,6 +55,8 @@ test('opening a thread swaps to the thread screen and back returns to the list',
   await expect(page.getByTestId('sidebar')).toHaveAttribute('inert', '');
   await expect(page.getByTestId('pane-close')).toHaveCount(0);
   await expect(page.getByTestId('pane-divider')).toHaveCount(0);
+  // Desktop affordances that have no phone equivalent are gone.
+  await expect(page.getByTestId('message-nav-rail')).toHaveCount(0);
   const pane = page.locator('section[data-pane-id]').first();
   const widths = await pane.evaluate((el) => [
     el.getBoundingClientRect().width,
