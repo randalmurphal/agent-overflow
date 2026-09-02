@@ -86,6 +86,33 @@ func KnownKind(kind Kind) bool {
 	return ok
 }
 
+// kindPhrases is what each moment is called when the thread it happened to
+// may not be named — one fixed phrase per kind, no variable part at all.
+//
+// THE PHONE PUSH IS WHAT THIS EXISTS FOR. A desktop notification names the
+// thread in its title, because it renders on the machine the thread lives
+// on. A push transits Google (§9's redaction rule), so the phone is told
+// which MOMENT happened and which machine is asking, and it fetches the
+// rest over the paired session once the person taps. `internal/push` reads
+// this; nothing else may compose a phrase of its own, or two surfaces would
+// call one moment two things.
+//
+// TOTAL over `kinds`, and TestKindPhraseCoversEveryKind fails when a new
+// kind arrives without one: a moment with no phrase would push an empty
+// title, which reads on a lock screen as a notification from nothing.
+var kindPhrases = map[Kind]string{
+	KindTurnComplete:      "Turn complete",
+	KindApprovalNeeded:    "Approval needed",
+	KindError:             "Turn failed",
+	KindProviderSignedOut: "Provider signed out",
+	KindWorkflowAttention: "Workflow needs you",
+	KindAppUpdate:         "Update notice",
+}
+
+// KindPhrase is what a notification says when it may not name its thread.
+// An undeclared kind answers "", which ValidateSend has already refused.
+func KindPhrase(kind Kind) string { return kindPhrases[kind] }
+
 // Notification is one mapped moment: the wire payload, and nothing else.
 //
 // Kind lives on Send rather than beside it because the preference gate and

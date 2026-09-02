@@ -216,6 +216,27 @@ func TargetToMap(target Target) (map[string]any, error) {
 	return data, nil
 }
 
+// TargetJSON encodes a validated target as the ONE document a presenter
+// that cannot carry a nested map has to pass along — today the phone push
+// payload, whose data map is flat strings (`internal/push`, KeyTarget).
+//
+// Beside TargetToMap rather than inside it because the two answer different
+// questions and share the one thing that matters: both validate first, and
+// both produce exactly the field spellings `TargetFromMap` and the SPA's
+// `parseNotificationTarget` read back. A caller that marshalled a Target
+// itself would skip the validation and, sooner or later, spell a field
+// differently.
+func TargetJSON(target Target) (string, error) {
+	if err := ValidateTarget(target); err != nil {
+		return "", err
+	}
+	raw, err := json.Marshal(target)
+	if err != nil {
+		return "", fmt.Errorf("encode notification target: %w", err)
+	}
+	return string(raw), nil
+}
+
 // TargetFromMap decodes a platform user-info payload back into a validated
 // Target. Click callbacks route through this before any navigation happens.
 func TargetFromMap(data map[string]any) (Target, error) {

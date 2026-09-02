@@ -1463,6 +1463,15 @@ ALTER TABLE threads ADD COLUMN created_head_commit TEXT NOT NULL DEFAULT '';`,
 		SQL: `ALTER TABLE projects ADD COLUMN remote_url TEXT NOT NULL DEFAULT '';
 ALTER TABLE projects ADD COLUMN root_commit TEXT NOT NULL DEFAULT '';`,
 	},
+	{
+		Version: 80,
+		Name:    "push",
+		// A device's phone-push registration token, and the singleton
+		// service-account credential this backend sends with. See the
+		// const's doc comment for why the token table is keyed by device
+		// and why the sender is one row.
+		SQL: pushV80SQL,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

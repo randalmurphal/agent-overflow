@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -584,5 +585,66 @@ func TestValidateSend(t *testing.T) {
 				t.Fatalf("validate %#v unexpectedly succeeded", tt.send)
 			}
 		})
+	}
+}
+
+// TestKindPhraseCoversEveryKind is what keeps the phone push from having an
+// empty title. A kind added without a phrase would push a notification with
+// no heading at all, and a lock screen reads that as an alert from nothing.
+func TestKindPhraseCoversEveryKind(t *testing.T) {
+	seen := map[string]Kind{}
+	for kind := range kinds {
+		phrase := KindPhrase(kind)
+		if phrase == "" {
+			t.Errorf("kind %q has no phrase; a push carries the phrase and never the thread title", kind)
+			continue
+		}
+		if other, taken := seen[phrase]; taken {
+			t.Errorf("kinds %q and %q share the phrase %q; two moments would read as one", kind, other, phrase)
+		}
+		seen[phrase] = kind
+	}
+	if got := KindPhrase("invented"); got != "" {
+		t.Errorf("KindPhrase(undeclared) = %q, want the empty answer ValidateSend already refuses", got)
+	}
+}
+
+// A phrase is FIXED: no thread title, no tool name, no provider prose. That
+// is the redaction rule restated where a future edit would break it.
+func TestEveryKindPhraseIsFixedText(t *testing.T) {
+	thread := ThreadRef{ID: "t-1", Title: "Rewrite the parser"}
+	notification, ok := MapTurnRest(TurnRest{Thread: thread, TopLevel: true})
+	if !ok {
+		t.Fatal("MapTurnRest declined a top-level rest")
+	}
+	if phrase := KindPhrase(notification.Send.Kind); strings.Contains(phrase, thread.Title) {
+		t.Fatalf("the phrase for %q carries the thread title", notification.Send.Kind)
+	}
+}
+
+func TestTargetJSONIsTheSameSpellingTargetToMapProduces(t *testing.T) {
+	target := Target{Kind: "thread", ThreadID: threadID, BackendID: "backend-9"}
+	encoded, err := TargetJSON(target)
+	if err != nil {
+		t.Fatalf("TargetJSON: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(encoded), &decoded); err != nil {
+		t.Fatalf("TargetJSON produced %q, which is not JSON: %v", encoded, err)
+	}
+	fromMap, err := TargetToMap(target)
+	if err != nil {
+		t.Fatalf("TargetToMap: %v", err)
+	}
+	if len(decoded) != len(fromMap) {
+		t.Fatalf("TargetJSON keys %v, TargetToMap keys %v: the two must spell one shape", decoded, fromMap)
+	}
+	for key, value := range fromMap {
+		if decoded[key] != value {
+			t.Errorf("key %q: TargetJSON has %v, TargetToMap has %v", key, decoded[key], value)
+		}
+	}
+	if _, err := TargetJSON(Target{Kind: "thread"}); err == nil {
+		t.Error("TargetJSON encoded a target ValidateTarget refuses")
 	}
 }
