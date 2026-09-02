@@ -221,6 +221,14 @@ export {
   // so a remote session's probe fails and the chip stays hidden there.
   ProbeDevServerURL,
 
+  // The port gateway (docs/specs/remote-access.md §7): one machine's
+  // shareable dev-server ports, and a single-use URL to open one from
+  // another device. Read through stores/devServers.svelte.ts.
+  GetDevServers,
+  AllowPreviewPort,
+  DisallowPreviewPort,
+  MintPreviewURL,
+
   // The other machines this installation drives. Host-scoped: attaching
   // one is something only the person at this keyboard does.
   ListBackends,
@@ -590,6 +598,12 @@ export {
 export {
   Settings as NetworkSettings,
 } from '../../../bindings/agent-overflow/internal/network/models.js';
+// Dev-server rows are read-only views of one machine's scan, never
+// constructed by a component.
+export type {
+  DevServer,
+  DevServerList,
+} from '../../../bindings/agent-overflow/internal/devscan/models.js';
 // Device-access DTOs are read-only views; components never construct
 // one, so type-only exports keep the classes out of the bundle.
 export type {
@@ -899,73 +913,4 @@ export function SyncThreadWindow(
     threadId,
     new SyncThreadWindowRequestClass(req),
   ) as unknown as Promise<SyncThreadWindowResult>;
-}
-
-// ---------------------------------------------------------------------------
-// Wave 9 preview, generated bindings pending
-//
-// The four port-gateway RPCs, hand-declared while the Go half lands. They
-// are the one deliberate exception to "never hand-wrap a binding" in this
-// file, and they sit together so the swap is a deletion: once
-// `wails3 generate bindings -ts` has emitted them, delete this block and
-// add the four names to the re-export list above. Nothing outside the
-// block changes -- the call shape, the argument order and the types below
-// are the contract the generator will produce.
-//
-// `Call.ByName` rather than `Call.ByID`: the id is an FNV-1a hash of the
-// fully-qualified method name that the generator emits, and a hash
-// restated by hand is a number nobody can check by reading. The name
-// resolves on the backend the same way, and both doors honour a pinned
-// backend target (`withBackendTarget`), so a call aimed at a second
-// machine lands on the same socket either way.
-// ---------------------------------------------------------------------------
-
-import { Call as PreviewCall } from '@wailsio/runtime';
-
-/** One listener the discovery pass found on a machine. */
-export interface DevServer {
-  port: number;
-  pid?: number;
-  process?: string;
-  /** The thread whose provider session or terminal owns it, when attributed. */
-  threadId?: string;
-  /** In the machine's preview set, so a preview listener exists for it. */
-  allowed: boolean;
-  source: 'attributed' | 'allowed' | 'seen' | string;
-  listening: boolean;
-  note?: string;
-}
-
-/** One machine's answer, as `devserver:list` and `GetDevServers` both spell it. */
-export interface DevServerList {
-  servers: DevServer[];
-  /** Empty when that machine has no tailnet or LAN address to share on. */
-  previewHost: string;
-}
-
-/** The machine's dev servers and its preview address. Scope `preview:open`. */
-export function GetDevServers(): Promise<DevServerList> {
-  return PreviewCall.ByName('GetDevServers') as Promise<DevServerList>;
-}
-
-/** Add a port to the machine's preview set. Scope `access:admin`. */
-export function AllowPreviewPort(port: number): Promise<void> {
-  return PreviewCall.ByName('AllowPreviewPort', port) as Promise<void>;
-}
-
-/** Take a port back out of the machine's preview set. Scope `access:admin`. */
-export function DisallowPreviewPort(port: number): Promise<void> {
-  return PreviewCall.ByName('DisallowPreviewPort', port) as Promise<void>;
-}
-
-/**
- * The absolute URL to open for `port` on the thread's machine, carrying a
- * single-use ticket. Scope `preview:open`, routed by `threadID`.
- */
-export function MintPreviewURL(
-  threadID: string,
-  port: number,
-  path: string,
-): Promise<string> {
-  return PreviewCall.ByName('MintPreviewURL', threadID, port, path) as Promise<string>;
 }

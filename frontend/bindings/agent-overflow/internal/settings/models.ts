@@ -533,6 +533,16 @@ export class Settings {
     "browserEnabled": boolean;
     "browserPersistSiteData": boolean;
     "browserAllowOutsideWorkspace"?: boolean;
+
+    /**
+     * BrowserChromiumPath names the Chromium the HEADLESS engine runs, on a
+     * deployment that has one: serve mode, which has no window to host a
+     * browser view in and drives a Chromium process instead
+     * (docs/specs/remote-access.md §7). Empty means "find one on PATH", and
+     * nothing is ever downloaded. It has no effect on a windowed
+     * deployment, whose engine is the platform's own.
+     */
+    "browserChromiumPath"?: string;
     "confirmArchive": boolean;
     "confirmDelete": boolean;
     "autoPinNewThreads": boolean;
@@ -1223,81 +1233,81 @@ export class Settings {
      */
     static createFrom($$source: any = {}): Settings {
         const $$createField5_0 = $$createType0;
-        const $$createField21_0 = $$createType0;
         const $$createField22_0 = $$createType0;
-        const $$createField23_0 = $$createType3;
+        const $$createField23_0 = $$createType0;
         const $$createField24_0 = $$createType3;
-        const $$createField25_0 = $$createType5;
+        const $$createField25_0 = $$createType3;
         const $$createField26_0 = $$createType5;
-        const $$createField27_0 = $$createType0;
+        const $$createField27_0 = $$createType5;
         const $$createField28_0 = $$createType0;
-        const $$createField31_0 = $$createType6;
-        const $$createField32_0 = $$createType7;
-        const $$createField34_0 = $$createType8;
-        const $$createField52_0 = $$createType9;
-        const $$createField53_0 = $$createType10;
-        const $$createField54_0 = $$createType11;
-        const $$createField56_0 = $$createType0;
-        const $$createField61_0 = $$createType0;
-        const $$createField63_0 = $$createType0;
-        const $$createField73_0 = $$createType12;
+        const $$createField29_0 = $$createType0;
+        const $$createField32_0 = $$createType6;
+        const $$createField33_0 = $$createType7;
+        const $$createField35_0 = $$createType8;
+        const $$createField53_0 = $$createType9;
+        const $$createField54_0 = $$createType10;
+        const $$createField55_0 = $$createType11;
+        const $$createField57_0 = $$createType0;
+        const $$createField62_0 = $$createType0;
+        const $$createField64_0 = $$createType0;
+        const $$createField74_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
         }
         if ("claudeHiddenModels" in $$parsedSource) {
-            $$parsedSource["claudeHiddenModels"] = $$createField21_0($$parsedSource["claudeHiddenModels"]);
+            $$parsedSource["claudeHiddenModels"] = $$createField22_0($$parsedSource["claudeHiddenModels"]);
         }
         if ("codexHiddenModels" in $$parsedSource) {
-            $$parsedSource["codexHiddenModels"] = $$createField22_0($$parsedSource["codexHiddenModels"]);
+            $$parsedSource["codexHiddenModels"] = $$createField23_0($$parsedSource["codexHiddenModels"]);
         }
         if ("claudeCustomEnv" in $$parsedSource) {
-            $$parsedSource["claudeCustomEnv"] = $$createField23_0($$parsedSource["claudeCustomEnv"]);
+            $$parsedSource["claudeCustomEnv"] = $$createField24_0($$parsedSource["claudeCustomEnv"]);
         }
         if ("codexCustomEnv" in $$parsedSource) {
-            $$parsedSource["codexCustomEnv"] = $$createField24_0($$parsedSource["codexCustomEnv"]);
+            $$parsedSource["codexCustomEnv"] = $$createField25_0($$parsedSource["codexCustomEnv"]);
         }
         if ("claudePromptOverrides" in $$parsedSource) {
-            $$parsedSource["claudePromptOverrides"] = $$createField25_0($$parsedSource["claudePromptOverrides"]);
+            $$parsedSource["claudePromptOverrides"] = $$createField26_0($$parsedSource["claudePromptOverrides"]);
         }
         if ("codexPromptOverrides" in $$parsedSource) {
-            $$parsedSource["codexPromptOverrides"] = $$createField26_0($$parsedSource["codexPromptOverrides"]);
+            $$parsedSource["codexPromptOverrides"] = $$createField27_0($$parsedSource["codexPromptOverrides"]);
         }
         if ("claudeDisabledTools" in $$parsedSource) {
-            $$parsedSource["claudeDisabledTools"] = $$createField27_0($$parsedSource["claudeDisabledTools"]);
+            $$parsedSource["claudeDisabledTools"] = $$createField28_0($$parsedSource["claudeDisabledTools"]);
         }
         if ("codexDisabledTools" in $$parsedSource) {
-            $$parsedSource["codexDisabledTools"] = $$createField28_0($$parsedSource["codexDisabledTools"]);
+            $$parsedSource["codexDisabledTools"] = $$createField29_0($$parsedSource["codexDisabledTools"]);
         }
         if ("claudeCrossSession" in $$parsedSource) {
-            $$parsedSource["claudeCrossSession"] = $$createField31_0($$parsedSource["claudeCrossSession"]);
+            $$parsedSource["claudeCrossSession"] = $$createField32_0($$parsedSource["claudeCrossSession"]);
         }
         if ("claudeSubagentLimits" in $$parsedSource) {
-            $$parsedSource["claudeSubagentLimits"] = $$createField32_0($$parsedSource["claudeSubagentLimits"]);
+            $$parsedSource["claudeSubagentLimits"] = $$createField33_0($$parsedSource["claudeSubagentLimits"]);
         }
         if ("claudeThinking" in $$parsedSource) {
-            $$parsedSource["claudeThinking"] = $$createField34_0($$parsedSource["claudeThinking"]);
+            $$parsedSource["claudeThinking"] = $$createField35_0($$parsedSource["claudeThinking"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField52_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField53_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField53_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField54_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField54_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField55_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField56_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField57_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("spinnerCustomVerbs" in $$parsedSource) {
-            $$parsedSource["spinnerCustomVerbs"] = $$createField61_0($$parsedSource["spinnerCustomVerbs"]);
+            $$parsedSource["spinnerCustomVerbs"] = $$createField62_0($$parsedSource["spinnerCustomVerbs"]);
         }
         if ("spinnerDisabledAnimations" in $$parsedSource) {
-            $$parsedSource["spinnerDisabledAnimations"] = $$createField63_0($$parsedSource["spinnerDisabledAnimations"]);
+            $$parsedSource["spinnerDisabledAnimations"] = $$createField64_0($$parsedSource["spinnerDisabledAnimations"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField73_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField74_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

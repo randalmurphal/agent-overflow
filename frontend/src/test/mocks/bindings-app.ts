@@ -302,6 +302,12 @@ export const OpenInEditor = dispatch('OpenInEditor');
 export const OpenExternalURL = dispatch('OpenExternalURL');
 export const ProbeDevServerURL = dispatch('ProbeDevServerURL');
 export const ListAvailableEditors = dispatch('ListAvailableEditors');
+
+// The port gateway (docs/specs/remote-access.md §7).
+export const GetDevServers = dispatch('GetDevServers');
+export const AllowPreviewPort = dispatch('AllowPreviewPort');
+export const DisallowPreviewPort = dispatch('DisallowPreviewPort');
+export const MintPreviewURL = dispatch('MintPreviewURL');
 export const GetEditorSettings = dispatch('GetEditorSettings');
 export const SetEditorSettings = dispatch('SetEditorSettings');
 export const ListBackends = dispatch('ListBackends');
