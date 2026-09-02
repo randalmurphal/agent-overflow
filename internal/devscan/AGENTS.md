@@ -99,9 +99,10 @@ forever.
 - Every walk is bounded — `maxAncestorDepth`, `maxProbesPerScan`,
   `maxVerdicts`, `probeTimeout`. This runs every 3 seconds; an unbounded
   loop here is a hang in the app, not a slow scan.
-- The probe dial resolves `localhost` STATICALLY to `127.0.0.1` then
-  `::1` and never asks a resolver, exactly as `internal/devserverprobe`
-  does. A resolver answer is configuration this app must not be
+- The probe dials through `loopback.Dialer`, which resolves `localhost`
+  STATICALLY to `127.0.0.1` then `::1` and never asks a resolver. That
+  rule and its reasons live in `internal/loopback`, shared with the
+  preview proxy; a resolver answer is configuration neither may be
   steerable by.
 - The `json` tags on `DevServer` and `DevServerList` are the wire
   contract. Renaming one without the client half breaks the list

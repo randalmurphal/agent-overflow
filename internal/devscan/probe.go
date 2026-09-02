@@ -4,12 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"agent-overflow/internal/loopback"
 )
 
 // The candidate probe: does this port answer like a page?
@@ -20,11 +21,10 @@ import (
 // GET decides, and the verdict is the same shape t3code shipped: HTML, or
 // a redirect that names where the HTML is.
 //
-// The dial resolves `localhost` STATICALLY to 127.0.0.1 and ::1 and never
-// asks a resolver, exactly as internal/devserverprobe does and for the
-// same two reasons: the targets stay deterministic, and a dev server
-// bound to only one address family is still found. A resolver answer for
-// `localhost` is configuration this app must not be steerable by.
+// The dial goes through loopback.Dialer, which resolves `localhost`
+// statically to 127.0.0.1 and ::1 and never asks a resolver. The reasons
+// live there; the one that matters here is that a verdict must not be
+// steerable by a resolver answer.
 const (
 	// probeTimeout bounds one candidate. Loopback answers in
 	// milliseconds, so a second is generous; what it really bounds is a
@@ -71,7 +71,7 @@ func newProber(now func() time.Time) *prober {
 	// the address net/http hands it is discarded and the two loopback
 	// literals are tried in order.
 	transport := &http.Transport{
-		DialContext:         dialLoopback,
+		DialContext:         loopback.Dialer(probeTimeout),
 		MaxIdleConnsPerHost: 2,
 		IdleConnTimeout:     probeVerdictTTL,
 		// A dev server serving TLS with a certificate nothing can verify
@@ -94,23 +94,6 @@ func newProber(now func() time.Time) *prober {
 		now:      now,
 		verdicts: make(map[string]verdict),
 	}
-}
-
-// dialLoopback ignores the address it is handed and dials 127.0.0.1 then
-// ::1 on that port. The host is always `localhost` by construction (the
-// request URL below), so discarding it loses nothing and closes the door
-// on a resolver deciding where this connects.
-func dialLoopback(ctx context.Context, network, address string) (net.Conn, error) {
-	_, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return nil, err
-	}
-	dialer := &net.Dialer{Timeout: probeTimeout}
-	conn, err := dialer.DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
-	if err == nil {
-		return conn, nil
-	}
-	return dialer.DialContext(ctx, network, net.JoinHostPort("::1", port))
 }
 
 // answersLikeAPage reports whether the port serves something a browser

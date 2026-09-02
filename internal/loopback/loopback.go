@@ -1,8 +1,9 @@
-// Package loopback holds the predicates that decide whether a host,
-// authority, or peer address names this machine. Stdlib-only and
-// importable from anywhere, because the packages that need it —
-// transport, clientmode, browser, claudetui, cdpclient, harnessrpc —
-// have no other reason to know about each other.
+// Package loopback holds this app's loopback policy: the predicates that
+// decide whether a host, authority, or peer address names this machine,
+// and the dialer that reaches it (dial.go). Stdlib-only and importable
+// from anywhere, because the packages that need it — transport,
+// clientmode, browser, claudetui, cdpclient, harnessrpc, devscan — have
+// no other reason to know about each other.
 //
 // The predicates are deliberately DIFFERENT, and the differences are the
 // point. What existed before this package was seven private copies of
@@ -32,6 +33,11 @@
 //     resolved at bind time, so accepting a name there would mean
 //     accepting whatever it resolves to then; that is a stricter rule
 //     than any predicate here and it belongs beside the bind.
+//   - internal/devserverprobe dials loopback too, but from a URL it was
+//     handed rather than a port this process chose: it validates that the
+//     URL is loopback at all and keeps the literal the URL named. Dialer
+//     discards the host on purpose, so one of the two would have to give
+//     up what it exists for.
 //   - internal/triage's normalizeLoopbackHost is a normalizer, not a
 //     predicate: it rewrites wildcard bind addresses to "localhost" and
 //     returns a canonical spelling for a dev-server URL. Sharing a

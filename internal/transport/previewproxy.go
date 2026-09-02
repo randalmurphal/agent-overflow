@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"context"
 	"log"
 	"net"
 	"net/http"
@@ -10,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/loopback"
 )
 
 // One preview port's handler: the ticket exchange, the cookie, the
@@ -223,7 +224,7 @@ func (g *PreviewGateway) proxy(port int) *httputil.ReverseProxy {
 
 	return &httputil.ReverseProxy{
 		Transport: &http.Transport{
-			DialContext:         previewDialLoopback,
+			DialContext:         loopback.Dialer(previewUpstreamDialTimeout),
 			MaxIdleConnsPerHost: 8,
 			IdleConnTimeout:     90 * time.Second,
 		},
@@ -330,23 +331,4 @@ func stripCookie(r *http.Request, name string) {
 	for _, cookie := range kept {
 		r.AddCookie(cookie)
 	}
-}
-
-// previewDialLoopback resolves `localhost` STATICALLY to 127.0.0.1 and
-// then ::1, never asking a resolver — the same rule internal/devscan and
-// internal/devserverprobe apply, for the same two reasons: the target
-// stays deterministic, and a dev server bound to only one address family
-// is still reached. A resolver answer for `localhost` is configuration
-// this proxy must not be steerable by.
-func previewDialLoopback(ctx context.Context, network, address string) (net.Conn, error) {
-	_, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return nil, err
-	}
-	dialer := &net.Dialer{Timeout: previewUpstreamDialTimeout}
-	conn, err := dialer.DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
-	if err == nil {
-		return conn, nil
-	}
-	return dialer.DialContext(ctx, network, net.JoinHostPort("::1", port))
 }
