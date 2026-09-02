@@ -116,10 +116,15 @@ fallbacks are already covered by `pnpm test` and a check that cannot run
 on a laptop is a check people learn to skip. What it answers that nothing
 else can is whether the bundle boots under the shell's fixed origin,
 whether the Capacitor plugins register, whether the app lock gates the
-app, whether the hardware back button reaches `showCompactList`, and
-whether a STAGED bundle is what the WebView serves after a cold start —
-including that the shell clears the health flag before the 30-second
-watchdog rolls it back (`mobile/AGENTS.md` § The bundle plugin).
+app, whether the hardware back button reaches `showCompactList`, whether a
+STAGED bundle is what the WebView serves after a cold start — including
+that the shell clears the health flag before the 30-second watchdog rolls
+it back (`mobile/AGENTS.md` § The bundle plugin) — and whether a
+NOTIFICATION TAP that cold-launched the app lands on its thread once the
+lock is answered. That last one is delivered as `am start` with the
+extras `AndroidTray` writes rather than by clicking a real tray entry:
+the extras ARE the contract, and driving the system tray would add a
+surface no assertion is about.
 
 What CAN be answered without a device is the transport half, and
 `compact-shell-origin.spec.ts` answers it: it serves `frontend/dist` from
@@ -245,6 +250,18 @@ missing value over one that skips. Two rules keep the evidence real:
   or opens an approval, and withdraws it when the thread resumes. A spec
   asserting on notification traffic must therefore filter by thread id or
   kind rather than by "the next send".
+- **Push is real up to the last hop, and that hop is a recorder.** A
+  harness boot installs one in the `push.Sender` seam
+  (`InstallHarnessPushSender`, only where no credential is configured),
+  so the mapping, the fan-out, the per-device preference gate and
+  `push.MessageFor` are all production and `HarnessPushSent` reads back
+  exactly what would have gone to Google. `HarnessReset` clears that
+  ledger with the other per-test state, but NOT the device rows or their
+  registrations — those are access state, which is why `push.spec.ts` is
+  `test.describe.serial` and pairs once. The wire's `notification:send`
+  is the BARRIER for a push assertion rather than the assertion: the
+  fan-out runs on its own queue behind the notification queue, so the
+  ledger is polled after the event, never read on it.
 - **Navigate with `harness.open(page)`, never `page.goto(harness.url)`.**
   A page URL carries a one-time ticket the first load exchanges for an
   HttpOnly session cookie, and each Playwright context is a fresh cookie

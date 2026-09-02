@@ -104,3 +104,11 @@ fixture credential's `token_uri` points at the `httptest` server, and
 `newFCMSenderAt` injects the send endpoint, so the OAuth exchange and
 the send are both local. **Nothing in `make go-test` may reach the
 network**, and there is no code path here that would try.
+
+`make e2e` reaches nothing either, and for the same reason: the harness
+boot installs a RECORDER in the `Sender` seam
+(`internal/app/app_push_harness.go`, read back through
+`HarnessPushSent`). That seam exists for the relay this package's header
+names; the harness is simply its second implementation, which is why
+proving the fan-out end to end costs no test-only branch anywhere above
+it.

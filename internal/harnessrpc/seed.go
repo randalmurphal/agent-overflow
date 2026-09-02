@@ -574,6 +574,10 @@ func (h *Harness) HarnessReset() (err error) {
 	// longer exist for up to its TTL. Nothing else invalidates it (the
 	// production reset is an import run finishing), so reset drops it here.
 	h.config.Host.ResetSessionImporter()
+	// One spec's wakes must not be readable by the next: HarnessPushSent
+	// is a ledger with the same per-test lifetime as the mock registrations
+	// above, and an unbounded one, so nothing else would ever drop it.
+	h.config.Host.ForgetPushSent()
 	// Generated seed workspaces live under <dataRoot>/workspaces only —
 	// removing the tree lets the next test seed the same project names
 	// (CreateRepo refuses a surviving .git). User-supplied Path projects

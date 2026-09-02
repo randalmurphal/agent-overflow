@@ -461,7 +461,8 @@ that can be tested on a laptop.
 
 The other half — that the bundle boots under the fixed origin, that the
 plugins register, that the app lock gates the app, that the back button
-arrives — needs an emulator: `make e2e-android`, which exits clean when
+arrives, that a notification tap's extras cold-launch onto the right
+thread — needs an emulator: `make e2e-android`, which exits clean when
 there is none. It drives the shell's own WebView through Playwright's
 Android API rather than a Chromium of its own; `e2e/AGENTS.md` §
 The emulator smoke owns the details, including the fact that it was

@@ -99,6 +99,14 @@ const SHELL_ACTIVITY = `${SHELL_PACKAGE}/.MainActivity`;
 const SHELL_ORIGIN = 'https://shell.agent-overflow.invalid';
 
 /**
+ * The intent extras `AndroidTray` puts on a notification's content
+ * intent, spelled here rather than imported because Java constants do not
+ * cross into TypeScript. A rename on either side is what this pair is for.
+ */
+const EXTRA_TARGET = 'dev.agentoverflow.app.push.TARGET';
+const EXTRA_ID = 'dev.agentoverflow.app.push.ID';
+
+/**
  * The PIN `scripts/android-smoke.sh` sets before the run and clears after.
  * The emulator has no biometric, and `native/lock.ts` passes
  * `allowDeviceCredential: true` precisely so a device without one falls
@@ -575,4 +583,104 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
       },
     )
     .toBe('');
+});
+
+// ---------------------------------------------------------------------
+// A notification tap, on the one machine where the intent is real.
+// ---------------------------------------------------------------------
+//
+// WHAT ONLY THIS CAN ANSWER. `TrayNotifierTest` proves the decision (post
+// or drop, cancel or build) on the JVM. `tests/push.spec.ts` proves what
+// the backend composes and who it is sent to. `native/push.test.ts`
+// proves the web seam's handling of a tap once it arrives. What none of
+// them can reach is the seam BETWEEN them: that a launch intent carrying
+// the extras `AndroidTray` writes is read by `PushPlugin.load()`, held
+// until the page asks with `takePendingTap`, and routed by
+// `applyNotificationActivated` to the right thread — through the app
+// LOCK, which is up when the app comes back from a tap on a dead process.
+//
+// The tap is delivered with `am start` and the extras, not by posting a
+// real notification and clicking it: the payload of a tap is exactly its
+// extras, and driving the system tray adds a UI surface no assertion here
+// is about. The extras are the contract, so the extras are what is sent.
+//
+// The cold-start door is the one under test, so the process is force-stopped
+// first. `handleOnNewIntent` is the other door and is deliberately not
+// exercised here: it is the easy half, and a running app would not have
+// been woken by a push in the first place.
+test('a notification tap opens its thread after the lock is answered', async ({
+  device,
+  harness,
+  page,
+}) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        name: 'shell-push-tap',
+        repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
+        threads: [
+          {
+            title: 'Ignored thread',
+            turns: [{ userText: 'hello', items: [{ kind: 'assistant_text', summary: 'hi' }] }],
+          },
+          {
+            title: 'Tapped thread',
+            turns: [{ userText: 'hello', items: [{ kind: 'assistant_text', summary: 'hi' }] }],
+          },
+        ],
+      },
+    ],
+  });
+  const [, tappedThreadId] = seed.projects[0].threadIds;
+  expect(tappedThreadId, 'the fixture must seed a second, distinct thread').toBeTruthy();
+
+  const invite = await harness.rpc<PairingInvite>('MintDevicePairing', 'phone', 'full');
+  await page.goto(SHELL_ORIGIN + '/' + fragmentOf(invite));
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Pair this device' })).toBeVisible();
+  await page.getByLabel('Device name').fill('Emulator shell');
+  await page.getByRole('button', { name: 'Pair' }).click();
+  const shown = page.getByLabel('Verification number');
+  await expect(shown).toBeVisible();
+  await confirmOnHost(harness, ((await shown.textContent()) ?? '').trim());
+  await expect(page.getByTestId('app-lock')).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+
+  // The target document is exactly what `push.MessageFor` puts under its
+  // `target` key and what `AndroidTray` copies onto the intent: one JSON
+  // string, opaque to Java, parsed by the page's own
+  // `parseNotificationTarget`.
+  const target = JSON.stringify({ kind: 'thread', threadId: tappedThreadId });
+  const tag = `thread:${tappedThreadId}`;
+
+  // A dead process is the case: a phone woken by a push was not running.
+  await device.shell(`am force-stop ${SHELL_PACKAGE}`);
+  await device.shell(
+    `am start -n ${SHELL_ACTIVITY} --es ${EXTRA_TARGET} '${target}' --es ${EXTRA_ID} '${tag}'`,
+  );
+
+  const tapped = await (await device.webView({ pkg: SHELL_PACKAGE }, { timeout: WEBVIEW_MS })).page();
+
+  // The lock is in front of it, and the tap survives being held there:
+  // the activation queue waits for hydration and the app under the lock
+  // is mounted and inert, not absent.
+  const lock = tapped.getByTestId('app-lock');
+  await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+  await expect
+    .poll(
+      async () => {
+        const focus = await focusedWindow(device);
+        return focus !== '' && !focus.includes(SHELL_PACKAGE);
+      },
+      { message: "the platform's own credential prompt must take focus off the app" },
+    )
+    .toBe(true);
+  await device.shell(`input text ${LOCK_PIN}`);
+  await device.shell('input keyevent 66');
+  await expect(lock).toBeHidden();
+
+  // And it lands on the thread the extras named, rather than on the list.
+  await expect(tapped.locator('html')).toHaveAttribute('data-compact-screen', 'thread', {
+    timeout: PAIRED_MOUNT_MS,
+  });
+  await expect(tapped.getByTestId('chat-header-title')).toHaveText('Tapped thread');
 });

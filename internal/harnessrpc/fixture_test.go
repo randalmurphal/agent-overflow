@@ -33,6 +33,7 @@ type testHost struct {
 	sent              []string
 	browserScroll     func(string, string, float64, float64) error
 	browserScreenshot func(string, string) ([]byte, error)
+	pushSent          []PushMessage
 }
 
 func newHarnessTestHost(t *testing.T) (*Harness, *testHost) {
@@ -89,6 +90,11 @@ func (h *testHost) Emit(channel eventchan.Channel, data any) {
 	}
 }
 func (h *testHost) Notify(string, string, notify.Target) error { return nil }
+
+// The fixture never installs a push recorder, which is what a boot with no
+// push configured looks like.
+func (h *testHost) PushSent() []PushMessage { return h.pushSent }
+func (h *testHost) ForgetPushSent()         { h.pushSent = nil }
 func (h *testHost) BrowserPressKey(string, string, keybindings.Accelerator) error {
 	return errors.New("no browser engine in the fixture")
 }

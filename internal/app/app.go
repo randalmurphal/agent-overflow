@@ -99,10 +99,14 @@ type App struct {
 	// owner reads. Its own queue because a send to Google can hang for its
 	// whole timeout and the desktop's toast must not wait behind it. See
 	// app_push.go.
-	push     pushDispatch
-	store    *store.Store
-	git      *gitops.Core
-	gitWatch *gitwatch.Manager
+	push pushDispatch
+	// harnessPush is the recorder a harness boot installs in place of the
+	// FCM sender, and the only harness-shaped field on this struct. It is
+	// nil in every shipping boot. See app_push_harness.go.
+	harnessPush atomic.Pointer[harnessPushSender]
+	store       *store.Store
+	git         *gitops.Core
+	gitWatch    *gitwatch.Manager
 	// gitApp owns gitwatch wire fan-out and the unattended background-fetch
 	// lifecycle. This shell retains the stable Wails façades and event projection.
 	gitAppOnce sync.Once

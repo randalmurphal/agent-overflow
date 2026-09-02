@@ -63,6 +63,12 @@ func NewHarness(app *App, paths HarnessPaths) *harnessrpc.Harness {
 
 func (h *harnessHost) Store() *store.Store { return h.app.store }
 
+// PushSent and ForgetPushSent expose the harness push recorder. Both are
+// no-ops on a boot that never installed one (app_push_harness.go).
+func (h *harnessHost) PushSent() []harnessrpc.PushMessage { return h.app.harnessPushMessages() }
+
+func (h *harnessHost) ForgetPushSent() { h.app.harnessPushForget() }
+
 func (h *harnessHost) ReplayLog() *replaylog.Manager { return h.app.replay }
 
 func (h *harnessHost) Shutdown(ctx context.Context) error { return h.app.Shutdown(ctx) }

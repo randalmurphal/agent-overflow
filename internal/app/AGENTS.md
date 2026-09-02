@@ -292,6 +292,15 @@ instead of it, so a phone's tray and the desktop's toast are two views of ONE
 - **`ErrTokenGone` is the only error with a reaction** — drop that row, say
   nothing, let the phone re-register. Everything else becomes the standing
   `lastError` the owner reads and one log line per kind.
+- **The harness swaps the LAST hop and nothing above it.**
+  `InstallHarnessPushSender` (`app_push_harness.go`) puts a recorder in the
+  `push.Sender` seam at harness boot, so `make e2e` proves the real
+  composition and `HarnessPushSent` reads back the real payload. It is a
+  PACKAGE-LEVEL function rather than a method on `*App`, and structurally
+  so: every exported method on `*App` becomes a wire RPC, and a way to
+  replace the push sender is not something any session should reach. It
+  also refuses to displace a configured credential, so it is safe to call
+  unconditionally.
 
 ## The device-access surface
 

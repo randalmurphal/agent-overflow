@@ -145,6 +145,11 @@ func runHarness(flags cliFlags) {
 	}
 	srv.MarkReady()
 
+	// After Start, because Start is what reads any configured credential:
+	// the recorder is installed only where there is none, so a harness
+	// instance can never lose a real sender to it (app_push_harness.go).
+	appservice.InstallHarnessPushSender(appService.App)
+
 	if err := writeHarnessBootstrap(bootstrapOut, srv, paths, nil, instanceIdentityFor(paths, instanceinfo.ModeHarness, flags.window, 0, "", "", "", "")); err != nil {
 		shutdownHeadless(appService, srv)
 		fatalf("harness: write bootstrap: %v", err)
