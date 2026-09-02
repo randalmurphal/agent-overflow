@@ -60,15 +60,21 @@ with the defaults below and can be overridden by exporting them:
 | `JAVA_HOME` | `~/.jdks/temurin-21` | JDK 21 |
 | `ANDROID_HOME` | `~/Android/Sdk` | `platform-tools`, `platforms;android-36`, `build-tools;36.0.0` |
 
-**`AO_SHELL=1` is what makes a build a shell build.** The three Capacitor
-plugins are dependencies of THIS package, never of `frontend/`, so the
+**`AO_SHELL=1` is what makes a build a shell build.** The Capacitor
+packages are dependencies of THIS package, never of `frontend/`, so the
 desktop bundle cannot carry them; `frontend/vite.config.ts` aliases their
 specifiers at `mobile/node_modules` when `AO_SHELL=1` and at a
 null-exporting stub (`frontend/src/lib/native/capacitorAbsent.ts`)
 otherwise. `build-apk.sh` is the only thing that sets it. The same
 mapping is repeated in `frontend/vitest.config.ts` and
 `frontend/tsconfig.json` so the type check and the unit tests resolve the
-same three names; adding a plugin means adding it in all four places.
+same names; adding a plugin means adding it in all four places.
+
+Four specifiers are aliased today: the three published plugins
+(`@capacitor/app`, `@capacitor/barcode-scanner`,
+`@aparajita/capacitor-biometric-auth`) and `@capacitor/core` — the bridge
+itself, needed because the `Bundle` plugin has no npm package at all and
+is reached with `registerPlugin('Bundle')` (§ The bundle plugin).
 
 A side effect worth knowing: `make apk` leaves `frontend/dist` holding a
 SHELL bundle. Anything that serves `dist` afterwards (`make e2e`,
@@ -216,6 +222,36 @@ failed" is not something anybody can act on.
 
 The archive arrives base64-encoded because that is what a Capacitor call
 can carry. It is a few MB once per update, on a background thread.
+
+### What the shell decides, and where
+
+`native/bundleSync.ts` is the whole JS half: it watches every attached
+backend's hello (through `stores/transportStatus.svelte.ts`, because a
+wire subscription lives in `stores/`), decides, downloads over the paired
+session, and hands the bytes to `stage`. Four things about it are worth
+knowing before changing it:
+
+- **Which backend.** The newest attached one — highest `bundleVersion`,
+  home on ties and whenever the versions do not parse. One app cannot run
+  two bundles; picking home would strand a phone on an old desktop, and
+  picking the most recently attached would make the answer depend on
+  pairing order.
+- **The decision is a pure function** (`decideBundleSync`), one row per
+  case, and each row has a unit test. Add a case by adding a row and a
+  test, not by adding a branch to the driver around it.
+- **A phone running the APK's own bundle knows its id from
+  `bundle-id.txt`**, written into `frontend/dist` at build time by
+  `frontend/scripts/bundleId.ts` with the same rule `internal/bundle`
+  uses. The two implementations are pinned against each other by one
+  fixture directory and one golden id under `internal/bundle/testdata/`.
+  Without that file a phone that has never staged anything would download
+  the bundle it is already running, on every connection, forever.
+- **Two sentences, and nothing else is ever shown.** Downloads,
+  verifications, retries and rollbacks are silent; the person hears about
+  a bundle only once it is staged and a restart would pick it up, or when
+  this APK is below a backend's `minShellBuild`. Both live in
+  `stores/bundleNotice.svelte.ts` and render through the transport
+  banner.
 
 ### Two dependencies worth knowing
 

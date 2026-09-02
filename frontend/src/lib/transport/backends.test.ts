@@ -12,6 +12,8 @@ const { homeClient } = vi.hoisted(() => ({
     setLease: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onStatusChange: vi.fn(() => () => undefined),
+    getHello: vi.fn(() => null),
+    onHelloChange: vi.fn(() => () => undefined),
     close: vi.fn(),
   },
 }));
@@ -57,6 +59,8 @@ function fakeClient(): FakeClient {
     setLease: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onStatusChange: vi.fn(() => () => undefined),
+    getHello: vi.fn(() => null),
+    onHelloChange: vi.fn(() => () => undefined),
     close: vi.fn(),
   };
 }

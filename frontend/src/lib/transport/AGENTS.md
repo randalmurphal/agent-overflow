@@ -826,6 +826,32 @@ backend re-checks every RPC regardless. The snapshot survives a
 disconnect on purpose, since the ladder is trying to reach the same
 backend and a flapping capability answer would be worse than a stale one.
 
+The hello also carries the SPA that backend serves — `bundleId`,
+`bundleVersion`, `minShellBuild` — which is how a phone shell learns its
+backend has a newer app than the one it is running. That is the only
+consumer; every other client ignores all three. The mechanic, the
+decision table and what happens on the device are in
+[../../../../mobile/AGENTS.md](../../../../mobile/AGENTS.md) § The bundle
+plugin, and the routes the bytes come over are in
+[internal/transport/AGENTS.md](../../../../internal/transport/AGENTS.md)
+§ The backend is the phone's update server. Two rules hold here:
+
+- The subscription is `onBackendHelloChange` in
+  `stores/transportStatus.svelte.ts`, never a client's `onHelloChange`
+  directly. A wire subscription lives in `stores/`
+  (`lib/architecture.test.ts` rule 2), and the shell needs EVERY attached
+  backend's hello rather than home's, because the rule is "run the newest
+  attached backend's bundle".
+- An absent field is "supplies no bundle", never a wildcard and never an
+  error. A dev-server boot and every backend older than the routes both
+  answer nothing, and a shell reads that as "keep running what I have".
+
+`backendUrl` / `backendCredentials` in `homeEndpoint.ts` are how any
+route is addressed on any attached backend, home included — the auth
+exchanges and the bundle download are the two callers. The PATH is
+unchanged whichever backend it names, which is what makes a device proof
+signed over it verify on either spelling.
+
 Three boot-derived flags, each with a different reactivity contract.
 None of them is a capability — that axis is `scopes.ts` above:
 
@@ -877,6 +903,7 @@ moved. The set, and the one field that is deliberately NOT per backend:
 | history identity + name | `backendIdentity.ts` | today's answer |
 | capability snapshot | `scopes.ts` | today's answer; `onHost` is home's ALONE, and every remote backend answers `onHost: false` |
 | transport status | `stores/transportStatus.svelte.ts` | the unkeyed readers, so the banner is unchanged |
+| hello snapshot | `stores/transportStatus.svelte.ts` | the unkeyed `getTransportHello()` |
 | replica session | `replica/session.ts` | today's token; the DB was already named per backend |
 | `ui_state` bucket | `stores/appStorage.ts` | today's localStorage cache key |
 | paired session slot | `deviceSession.ts` | today's localStorage key, so no stored session is lost |

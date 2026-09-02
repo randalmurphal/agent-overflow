@@ -499,6 +499,17 @@ export interface TransportHello {
    *  from clock skew is undebuggable without it. Includes one-way
    *  network latency, so it is an indication, not a measurement. */
   clockSkewMs: number;
+  /** The content id of the SPA this backend serves, or '' when it
+   *  serves none. The phone shell compares it against what it is
+   *  running (lib/native/bundleSync.ts); every other client ignores it.
+   *  '' is "no bundle here", never a wildcard. */
+  bundleId: string;
+  /** That bundle's app version, or ''. Compared only to pick the newest
+   *  among several attached backends — nothing gates on it. */
+  bundleVersion: string;
+  /** The lowest Android `versionCode` the bundle's native seams can run
+   *  on, or 0 for "no floor stated". */
+  minShellBuild: number;
 }
 
 export interface TransportStatusSnapshot {
@@ -2322,6 +2333,12 @@ export class WSClient {
       backendName: typeof frame.backendName === 'string' ? frame.backendName : '',
       serverTimeMs,
       clockSkewMs: serverTimeMs === 0 ? 0 : serverTimeMs - Date.now(),
+      bundleId: typeof frame.bundleId === 'string' ? frame.bundleId : '',
+      bundleVersion: typeof frame.bundleVersion === 'string' ? frame.bundleVersion : '',
+      // A floor is a whole number of builds. Anything else is a backend
+      // this build cannot read, and 0 — "no floor" — is the neutral
+      // value that lets the shell decide on the id alone.
+      minShellBuild: Number.isSafeInteger(frame.minShellBuild) ? Number(frame.minShellBuild) : 0,
     };
     const previous = this.helloSnapshot;
     this.helloSnapshot = next;
@@ -2605,6 +2622,11 @@ function sameHello(a: TransportHello, b: TransportHello): boolean {
   return a.protocolVersion === b.protocolVersion
     && a.backendId === b.backendId
     && a.backendName === b.backendName
+    // A backend that rebuilt its SPA between two connections is a real
+    // change and the one the shell is subscribed for.
+    && a.bundleId === b.bundleId
+    && a.bundleVersion === b.bundleVersion
+    && a.minShellBuild === b.minShellBuild
     && a.capabilities.length === b.capabilities.length
     && a.capabilities.every((cap, i) => cap === b.capabilities[i]);
 }

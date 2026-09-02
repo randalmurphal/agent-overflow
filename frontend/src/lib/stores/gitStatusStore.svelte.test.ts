@@ -38,6 +38,8 @@ function fakeBackendClient(): never {
     installStepUpProver: () => undefined,
     getStatus: () => ({ status: 'connected', nextAttemptAt: null }),
     onStatusChange: () => () => undefined,
+    getHello: () => null,
+    onHelloChange: () => () => undefined,
     close: () => undefined,
   } as never;
 }

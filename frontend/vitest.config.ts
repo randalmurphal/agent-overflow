@@ -36,6 +36,9 @@ const happyDomResolve = {
     { find: '@capacitor/app', replacement: resolve(import.meta.dirname, 'src/lib/native/capacitorAbsent.ts') },
     { find: '@capacitor/barcode-scanner', replacement: resolve(import.meta.dirname, 'src/lib/native/capacitorAbsent.ts') },
     { find: '@aparajita/capacitor-biometric-auth', replacement: resolve(import.meta.dirname, 'src/lib/native/capacitorAbsent.ts') },
+    // The bridge, for the in-app `Bundle` plugin, which has no npm
+    // package at all: same stub, same reason.
+    { find: '@capacitor/core', replacement: resolve(import.meta.dirname, 'src/lib/native/capacitorAbsent.ts') },
   ],
 };
 

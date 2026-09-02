@@ -74,19 +74,29 @@ export function adoptPairingEndpoint(payload: PairingPayload): string {
 
 /**
  * Everything a paired shell installs once the endpoint is known: the
- * lifecycle subscriptions and the app lock. Split from the function above
- * because the first-run screen needs the endpoint decision and not these
- * — a device that has not paired has nothing to lock and no lease to
- * state.
+ * lifecycle subscriptions, the app lock, and the update channel. Split
+ * from the function above because the first-run screen needs the
+ * endpoint decision and not these — a device that has not paired has
+ * nothing to lock, no lease to state, and no backend to take a bundle
+ * from.
  */
 export async function installNativeShell(
   onLockChange: (locked: boolean) => void,
 ): Promise<AppLock> {
-  const [{ installNativeLifecycle }, { installAppLock }] = await Promise.all([
+  const [{ installNativeLifecycle }, { installAppLock }, bundles] = await Promise.all([
     import('./lifecycle'),
     import('./lock'),
+    import('./bundleSync'),
   ]);
   await installNativeLifecycle();
+  // Neither is awaited, and neither may be. The update channel is
+  // background work behind a lock screen that is already up: a download
+  // that took a minute must not hold the gate, and the health
+  // confirmation deliberately waits for a hello that may never come
+  // (./bundleSync.ts). The lock below is what this function's caller is
+  // waiting for.
+  void bundles.startBundleSync();
+  void bundles.confirmLaunchHealthy();
   // The lock is handed back rather than kept here: the caller owns the
   // screen the gate is in front of, so it owns the retry button too.
   return await installAppLock({ onChange: onLockChange });

@@ -73,6 +73,17 @@ export interface ServerHelloFrame {
    *  TransportHello.backendName in wsClient.ts. */
   backendName?: string;
   serverTimeMs: number;
+  /** The content id of the SPA this backend serves
+   *  (internal/bundle). Absent on a backend that supplies no bundle —
+   *  a dev-server boot, or one too old to have the routes at all —
+   *  which reads as "nothing to sync from" and is never an error. */
+  bundleId?: string;
+  /** That bundle's app version, for picking the newest among several
+   *  attached backends. */
+  bundleVersion?: string;
+  /** The lowest Android `versionCode` that bundle's native seams can
+   *  run on. A shell below it declines the download and says why. */
+  minShellBuild?: number;
 }
 
 export type ServerFrame =

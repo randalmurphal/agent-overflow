@@ -67,19 +67,45 @@ export function getTransportStatus(): TransportStatusSnapshot {
 // `snapshot` above, so a surface that asks by id gets the same answer the
 // banner does rather than a second, subtly-later copy.
 const statusByBackend = createKeyedSignalRegistry<TransportStatusSnapshot>(DISCONNECTED);
+// The same shape for the hello frame, and for the same reason: it is one
+// fact per connection, and the shell's bundle sync reads every attached
+// backend's rather than home's alone.
+const helloByBackend = createKeyedSignalRegistry<TransportHello | null>(null);
 const backendStatusSubscriptions = new Map<BackendKey, () => void>();
+
+type BackendHelloListener = (backendId: BackendKey, hello: TransportHello | null) => void;
+
+// Declared here rather than beside `onBackendHelloChange` below, because
+// the module-load sweep publishes into it: a `const` further down the
+// file would be in its temporal dead zone when the first hello lands.
+const helloEdgeListeners = new Set<BackendHelloListener>();
+
+function publishHello(id: BackendKey, next: TransportHello | null): void {
+  for (const listener of helloEdgeListeners) {
+    try {
+      listener(id, next);
+    } catch (err) {
+      console.warn('transportStatus: a hello listener threw', err);
+    }
+  }
+}
 
 function watchBackendStatus(id: BackendKey): void {
   if (backendStatusSubscriptions.has(id)) return;
   const entry = id === HOME_BACKEND ? homeBackend() : undefined;
   const client = entry?.client ?? attachedBackends().find((b) => b.id === id)?.client;
   if (client === undefined) return;
-  backendStatusSubscriptions.set(
-    id,
-    client.onStatusChange((next) => {
-      statusByBackend.set(id, next);
-    }),
-  );
+  const cancelStatus = client.onStatusChange((next) => {
+    statusByBackend.set(id, next);
+  });
+  const cancelHello = client.onHelloChange((next) => {
+    helloByBackend.set(id, next);
+    publishHello(id, next);
+  });
+  backendStatusSubscriptions.set(id, () => {
+    cancelStatus();
+    cancelHello();
+  });
 }
 
 function syncBackendStatusSubscriptions(): void {
@@ -93,6 +119,8 @@ function syncBackendStatusSubscriptions(): void {
     cancel();
     backendStatusSubscriptions.delete(id);
     statusByBackend.drop(id);
+    helloByBackend.drop(id);
+    publishHello(id, null);
   }
 }
 
@@ -110,6 +138,42 @@ export function getTransportStatusFor(
   backendId: BackendKey = HOME_BACKEND,
 ): TransportStatusSnapshot {
   return statusByBackend.get(backendId);
+}
+
+/**
+ * One backend's hello, or null before it has sent one. Reactive on that
+ * backend's box alone.
+ *
+ * Omitting the id answers for the page's own backend, which is what
+ * `getTransportHello()` answers.
+ */
+export function getTransportHelloFor(
+  backendId: BackendKey = HOME_BACKEND,
+): TransportHello | null {
+  return helloByBackend.get(backendId);
+}
+
+/**
+ * Subscribe to every attached backend's hello, imperatively.
+ *
+ * Fires once per attached backend with what it has said so far — which
+ * may be null — and then on every change, including the null a detached
+ * backend publishes on its way out.
+ *
+ * This is the door the shell's bundle sync uses, and it is here rather
+ * than in `native/` because a wire subscription belongs in `stores/`
+ * (frontend/AGENTS.md, and `lib/architecture.test.ts` rule 2). For
+ * RENDERING, read `getTransportHelloFor()` from a `$derived`; this is
+ * for a consumer that acts on the edge and paints nothing.
+ */
+export function onBackendHelloChange(listener: BackendHelloListener): () => void {
+  for (const backend of attachedBackends()) {
+    listener(backend.id, helloByBackend.get(backend.id));
+  }
+  helloEdgeListeners.add(listener);
+  return () => {
+    helloEdgeListeners.delete(listener);
+  };
 }
 
 // The hello frame's contents, mirrored into runes for the same reason as
@@ -299,6 +363,8 @@ export function resetTransportStatusForTest(): void {
   for (const cancel of backendStatusSubscriptions.values()) cancel();
   backendStatusSubscriptions.clear();
   statusByBackend.reset();
+  helloByBackend.reset();
+  helloEdgeListeners.clear();
   if (unsubscribe) {
     unsubscribe();
     unsubscribe = null;

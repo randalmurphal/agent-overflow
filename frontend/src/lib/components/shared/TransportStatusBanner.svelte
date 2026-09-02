@@ -52,6 +52,13 @@
     redialAfterSignIn,
     retryTransport,
   } from '../../stores/transportStatus.svelte';
+  // The phone shell's update channel says at most two things, and this
+  // strip is where they are said: it is already the place this client
+  // states facts about its relationship with its backend, and "your desk
+  // has a newer app than your phone" is one of those
+  // (stores/bundleNotice.svelte.ts). Empty on every other client, which
+  // is every client that cannot install a bundle.
+  import { getBundleNotice } from '../../stores/bundleNotice.svelte';
 
   // Tick once per second so the countdown stays in sync. We only mount
   // when the banner is visible; on a steady-state connection the
@@ -92,8 +99,14 @@
     return () => clearTimeout(t);
   });
 
+  let bundleNotice = $derived(getBundleNotice());
+
+  // A connection problem outranks a bundle notice: one is happening now
+  // and the other is about the next launch. The notice keeps the strip
+  // up on its own once the transport is healthy again.
   let visible = $derived(
-    snapshot.status !== 'connected' && (hasEverConnected || bootGraceExpired),
+    (snapshot.status !== 'connected' && (hasEverConnected || bootGraceExpired))
+      || bundleNotice !== '',
   );
 
   // A page that mounted while the transport was TERMINAL loaded nothing.
@@ -163,6 +176,9 @@
   });
 
   let bannerClasses = $derived.by(() => {
+    if (snapshot.status === 'connected') {
+      return 'bg-fg/10 border-fg/20 text-fg-muted';
+    }
     if (snapshot.status === 'reconnecting') {
       return 'bg-warning/15 border-warning/30 text-warning';
     }
@@ -170,6 +186,7 @@
   });
 
   let message = $derived.by(() => {
+    if (snapshot.status === 'connected') return bundleNotice;
     if (snapshot.status === 'reconnecting') {
       if (countdown !== null) {
         return `Reconnecting in ${countdown}s…`;

@@ -1,6 +1,6 @@
-// What `@capacitor/app`, `@capacitor/barcode-scanner` and
-// `@aparajita/capacitor-biometric-auth` resolve to in every build that is
-// not the shell's.
+// What `@capacitor/app`, `@capacitor/barcode-scanner`,
+// `@aparajita/capacitor-biometric-auth` and `@capacitor/core` resolve to
+// in every build that is not the shell's.
 //
 // The Capacitor packages are dependencies of `mobile/`, not of
 // `frontend/`, because the desktop app must not carry them and
@@ -9,7 +9,7 @@
 // specifiers in a dynamic `import()`, and a specifier a bundler cannot
 // resolve is a build error rather than a runtime null.
 //
-// So `vite.config.ts` aliases all three at THIS file by default and at
+// So `vite.config.ts` aliases all four at THIS file by default and at
 // `mobile/node_modules/...` when `AO_SHELL=1` — which is what
 // `mobile/scripts/build-apk.sh` sets, and the only build that does. The
 // alias is the mechanism rather than an `optionalDependencies` entry or
@@ -34,3 +34,14 @@ export const CapacitorBarcodeScanner = null;
 
 /** The scanner's hint enum, absent outside the shell. */
 export const CapacitorBarcodeScannerTypeHint = null;
+
+/**
+ * The bridge's plugin registry, absent outside the shell.
+ *
+ * `@capacitor/core` is aliased here for the one plugin that has no npm
+ * package: `Bundle` is Java inside `mobile/android/`, so its JS side is
+ * `registerPlugin('Bundle')` rather than an import. Null for the same
+ * reason as the rest — `plugins.ts` type-tests it before calling, so a
+ * build that resolved here answers "no plugin" rather than throwing.
+ */
+export const registerPlugin = null;

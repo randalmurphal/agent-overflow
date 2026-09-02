@@ -16,6 +16,8 @@ const { homeClient } = vi.hoisted(() => ({
     installStepUpProver: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onStatusChange: vi.fn(() => () => undefined),
+    getHello: vi.fn(() => null),
+    onHelloChange: vi.fn(() => () => undefined),
     close: vi.fn(),
   },
 }));
@@ -58,6 +60,8 @@ function fakeClient(): FakeClient {
     installStepUpProver: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onStatusChange: vi.fn(() => () => undefined),
+    getHello: vi.fn(() => null),
+    onHelloChange: vi.fn(() => () => undefined),
     close: vi.fn(),
   };
 }

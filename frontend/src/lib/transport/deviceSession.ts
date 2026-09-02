@@ -56,13 +56,13 @@
 import { enrollDeviceKey, mintDeviceProof } from './deviceKey';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import {
+  backendCredentials,
+  backendUrl,
   forgetBackendEndpoint,
   hasHomeEndpoint,
   homeCredentials,
-  homeUrl,
   setHomeEndpoint,
   storeBackendEndpoint,
-  storedBackendEndpoint,
 } from './homeEndpoint';
 import { answerChallenge, type PasskeyChallenge } from './passkey';
 
@@ -173,15 +173,12 @@ export class PairingRefusedError extends Error {
  * (internal/identity/deviceproof.go, `boundTo`).
  */
 function authUrl(path: string, backend: BackendKey = HOME_BACKEND): string {
-  if (backend === HOME_BACKEND) return homeUrl(path);
-  const endpoint = storedBackendEndpoint(backend);
-  return endpoint === '' ? path : endpoint + path;
+  return backendUrl(path, backend);
 }
 
 /** The credentials mode one auth exchange uses; see homeCredentials(). */
 function authCredentials(backend: BackendKey = HOME_BACKEND): RequestCredentials {
-  if (backend === HOME_BACKEND) return homeCredentials();
-  return storedBackendEndpoint(backend) === '' ? 'same-origin' : 'omit';
+  return backendCredentials(backend);
 }
 
 function readLocal(key: string): string | null {

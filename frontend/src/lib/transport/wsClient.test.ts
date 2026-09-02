@@ -772,7 +772,87 @@ describe('WSClient', () => {
     expect(hello.backendId).toBe('');
     expect(hello.serverTimeMs).toBe(0);
     expect(hello.clockSkewMs).toBe(0);
+    // A backend that says nothing about a bundle reads as "supplies
+    // none", which is what a dev-server boot is and what every backend
+    // older than the routes is.
+    expect(hello.bundleId).toBe('');
+    expect(hello.bundleVersion).toBe('');
+    expect(hello.minShellBuild).toBe(0);
     expect(client.hasCapability('demo.feature')).toBe(true);
+
+    client.close();
+  });
+
+  it('carries the bundle the backend serves, and neutralises a floor it cannot read', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.pushFrame({
+      type: 'hello',
+      protocolVersion: 1,
+      capabilities: [],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: Date.now(),
+      bundleId: 'a'.repeat(64),
+      bundleVersion: '0.0.14',
+      minShellBuild: 2,
+    });
+    expect(client.getHello()?.bundleId).toBe('a'.repeat(64));
+    expect(client.getHello()?.bundleVersion).toBe('0.0.14');
+    expect(client.getHello()?.minShellBuild).toBe(2);
+
+    // A floor is a whole number of builds. Anything else is unreadable,
+    // and 0 — "no floor" — lets the shell decide on the id alone rather
+    // than refusing an update it could probably run.
+    ws.pushFrame({
+      type: 'hello',
+      protocolVersion: 1,
+      capabilities: [],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: Date.now(),
+      bundleId: 'a'.repeat(64),
+      bundleVersion: 7,
+      minShellBuild: '2',
+    });
+    expect(client.getHello()?.bundleVersion).toBe('');
+    expect(client.getHello()?.minShellBuild).toBe(0);
+
+    client.close();
+  });
+
+  it('publishes a rebuilt bundle on the same backend as a change', async () => {
+    // The one edge the shell's bundle sync is subscribed for: same
+    // machine, same capabilities, new SPA. A change check that compared
+    // identity alone would never wake it.
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const seen: string[] = [];
+    client.onHelloChange((hello) => {
+      if (hello) seen.push(hello.bundleId);
+    });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    const hello = {
+      type: 'hello',
+      protocolVersion: 1,
+      capabilities: [],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: 1_000,
+      bundleId: 'a'.repeat(64),
+      bundleVersion: '0.0.14',
+      minShellBuild: 1,
+    };
+    ws.pushFrame(hello);
+    ws.pushFrame({ ...hello, serverTimeMs: 2_000 });
+    ws.pushFrame({ ...hello, bundleId: 'b'.repeat(64), bundleVersion: '0.0.15' });
+    expect(seen).toEqual(['a'.repeat(64), 'b'.repeat(64)]);
 
     client.close();
   });
@@ -812,8 +892,12 @@ describe('WSClient', () => {
       capabilities: ['demo.feature'],
       backendId: 'backend-uuid-1',
       serverTimeMs: Date.now(),
+      bundleId: 'a'.repeat(64),
+      bundleVersion: '0.0.14',
+      minShellBuild: 1,
       negotiatedCiphers: ['x'],
       leaseTtlMs: 30_000,
+      bundleSignature: { alg: 'future', sig: 'x' },
     });
 
     // Frame types from a dialect that does not exist yet.
@@ -862,8 +946,12 @@ describe('WSClient', () => {
     // on either side of the unaddressable one.
     expect(known).toEqual([{ id: 't1' }, { id: 't2' }]);
     expect(futureChannel).toEqual([{ future: true }, { future: true }]);
-    // Unknown fields did not disturb the hello this build understands.
+    // Unknown fields did not disturb the hello this build understands,
+    // the bundle fields included — a shell in the swap window has to
+    // keep being able to see the bundle that would end it.
     expect(client.getHello()?.backendId).toBe('backend-uuid-1');
+    expect(client.getHello()?.bundleId).toBe('a'.repeat(64));
+    expect(client.getHello()?.minShellBuild).toBe(1);
     expect(client.hasCapability('demo.feature')).toBe(true);
 
     // Everything unaddressable was COUNTED, never thrown on.

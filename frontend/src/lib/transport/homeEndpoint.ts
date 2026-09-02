@@ -123,6 +123,32 @@ export function homeCredentials(): RequestCredentials {
 }
 
 /**
+ * Address one route on ANY attached backend, home included.
+ *
+ * `homeUrl` with the id filled in: home reads the endpoint this module
+ * holds, and every other backend reads the one stored beside its session
+ * slot. The PATH is unchanged either way, which is what makes a device
+ * proof signed over it verify on both spellings — the backend compares
+ * `r.URL.Path`, never an absolute URL (internal/identity/deviceproof.go).
+ *
+ * Two callers today and both need every backend rather than home alone:
+ * the auth exchanges (./deviceSession.ts) and the shell's bundle sync,
+ * which downloads from whichever attached backend serves the newest
+ * bundle.
+ */
+export function backendUrl(path: string, backend: BackendKey = HOME_BACKEND): string {
+  if (backend === HOME_BACKEND) return homeUrl(path);
+  const stored = storedBackendEndpoint(backend);
+  return stored === '' ? path : stored + path;
+}
+
+/** The credentials mode a fetch to `backend` uses; see homeCredentials(). */
+export function backendCredentials(backend: BackendKey = HOME_BACKEND): RequestCredentials {
+  if (backend === HOME_BACKEND) return homeCredentials();
+  return storedBackendEndpoint(backend) === '' ? 'same-origin' : 'omit';
+}
+
+/**
  * The origin every home-backend URL resolves against: the endpoint when
  * one is set, else this document's own. Null when neither exists, so a
  * caller that must fail closed can.

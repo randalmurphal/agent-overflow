@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
+import { bundleIdPlugin } from "./scripts/bundleId";
 
 // Phase B aliases @wailsio/runtime to the local transport shim. The shim
 // exposes the same surface the generated bindings depend on (Call.ByID,
@@ -12,7 +13,7 @@ import { resolve } from "node:path";
 // localhost WS server.
 const transportShim = resolve(import.meta.dirname, "src/lib/transport/runtime.ts");
 
-// The three Capacitor plugins the phone shell uses are dependencies of
+// The Capacitor packages the phone shell uses are dependencies of
 // `mobile/`, not of this package: the desktop app must not carry them,
 // and `pnpm install` here must not fetch an Android toolchain's worth of
 // JS to build a webview bundle. But `src/lib/native/plugins.ts` names
@@ -38,6 +39,11 @@ const CAPACITOR_PLUGINS = [
   "@capacitor/app",
   "@capacitor/barcode-scanner",
   "@aparajita/capacitor-biometric-auth",
+  // The bridge itself, for the ONE plugin that is not a published
+  // package: `Bundle` is Java in `mobile/android/`, so the JS side of it
+  // is `registerPlugin('Bundle')` rather than an import of somebody's
+  // npm module (`src/lib/native/plugins.ts`).
+  "@capacitor/core",
 ] as const;
 const capacitorAlias = Object.fromEntries(
   CAPACITOR_PLUGINS.map((name) => [
@@ -59,7 +65,12 @@ export default defineConfig({
   // tree is first-party `src/` code now — every warning in it is ours to
   // fix. Stating the absence keeps the plugin from logging a "no Svelte
   // config found" line on every build, test and dev start.
-  plugins: [tailwindcss(), svelte({ configFile: false })],
+  // `bundleIdPlugin` is build-only and stamps `dist/bundle-id.txt` with
+  // the same content id `internal/bundle` computes over the same tree.
+  // It is what lets a phone running the bundle its APK shipped with
+  // recognise that id in a hello and decline to download itself
+  // (`scripts/bundleId.ts` argues both halves).
+  plugins: [tailwindcss(), svelte({ configFile: false }), bundleIdPlugin()],
   server: {
     watch: {
       // Belt-and-braces: `.claude/worktrees/agent-*/` and

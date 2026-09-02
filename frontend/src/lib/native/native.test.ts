@@ -14,7 +14,13 @@ import { installNativeLifecycle } from './lifecycle';
 import { DEFAULT_LOCK_WINDOW_MS, installAppLock, lockWindowMs, shouldLock } from './lock';
 import { captureImage, pickFile } from './pickers';
 import { isNativeShell, nativePlatform } from './platform';
-import { appPlugin, biometricPlugin, scannerPlugin } from './plugins';
+import { appPlugin, biometricPlugin, bundlePlugin, scannerPlugin } from './plugins';
+import {
+  confirmLaunchHealthy,
+  reportBundleHealthy,
+  startBundleSync,
+  stopBundleSync,
+} from './bundleSync';
 import { scanPairingQr } from './qr';
 import { adoptPairingEndpoint, prepareNativeShell } from './boot';
 import { __resetHomeEndpointForTest, homeEndpoint } from '../transport/homeEndpoint';
@@ -43,6 +49,25 @@ describe('the web fallbacks', () => {
     await expect(appPlugin()).resolves.toBeNull();
     await expect(biometricPlugin()).resolves.toBeNull();
     await expect(scannerPlugin()).resolves.toBeNull();
+    // The registered one answers null through the same guard, and would
+    // answer null anyway: `registerPlugin` is one of the stub's null
+    // exports, and the seam type-tests it before calling.
+    await expect(bundlePlugin()).resolves.toBeNull();
+  });
+
+  it('sync no bundle, and confirm nothing, without ever reaching a plugin', async () => {
+    // The update channel is the one seam that runs unattended on a
+    // timer's cadence, so its no-shell answer has to be a no-op that
+    // subscribes to nothing rather than a subscription that never fires.
+    const stop = await startBundleSync();
+    expect(typeof stop).toBe('function');
+    stop();
+    // Neither of these may throw, and neither may hang: a browser has no
+    // plugin to confirm a launch to, and `confirmLaunchHealthy` waits on
+    // a hello only after it has one.
+    await expect(reportBundleHealthy()).resolves.toBeUndefined();
+    await expect(confirmLaunchHealthy()).resolves.toBeUndefined();
+    stopBundleSync();
   });
 
   it('scan nothing and pick nothing', async () => {

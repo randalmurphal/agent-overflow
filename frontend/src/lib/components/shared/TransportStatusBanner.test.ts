@@ -22,6 +22,11 @@ vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => ({
 }));
 
 import TransportStatusBanner from './TransportStatusBanner.svelte';
+import {
+  __resetBundleNoticeForTest,
+  noteBundleReady,
+  noteBundleTooOld,
+} from '../../stores/bundleNotice.svelte';
 import { hasPairedSession } from '../../transport/deviceSession';
 import {
   __resetHomeEndpointForTest,
@@ -155,5 +160,64 @@ describe('<TransportStatusBanner>', () => {
     const { queryByTestId } = render(TransportStatusBanner);
     await settleBootGrace();
     expect(queryByTestId('transport-status-pair-again')).toBeNull();
+  });
+});
+
+// The phone shell's update channel says at most two things, and this is
+// the strip they are said in. Everything else bundle sync does — picking
+// a backend, downloading, verifying, staging, rolling back — is silent
+// (stores/bundleNotice.svelte.ts).
+describe('<TransportStatusBanner> and the bundle notice', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    h.snapshot = { status: 'connected', nextAttemptAt: null };
+    __resetBundleNoticeForTest();
+  });
+
+  afterEach(() => {
+    __resetBundleNoticeForTest();
+    vi.useRealTimers();
+  });
+
+  it('says nothing on a connected client with no bundle news', async () => {
+    const { queryByTestId } = render(TransportStatusBanner);
+    await tick();
+    expect(queryByTestId('transport-status-banner')).toBeNull();
+  });
+
+  it('shows a staged bundle as a restart, with no button to press', async () => {
+    noteBundleReady();
+    const { getByTestId, queryByTestId } = render(TransportStatusBanner);
+    await tick();
+
+    const banner = getByTestId('transport-status-banner');
+    expect(banner.textContent).toContain(
+      'A newer Agent Overflow is ready. It loads the next time the app starts.',
+    );
+    // Nothing to retry: the transport is fine, and the swap happens on
+    // the next cold start whether or not anybody acknowledges it.
+    expect(queryByTestId('transport-status-retry')).toBeNull();
+  });
+
+  it('names the machine a phone is too old for', async () => {
+    noteBundleTooOld('desk');
+    const { getByTestId } = render(TransportStatusBanner);
+    await tick();
+    expect(getByTestId('transport-status-banner').textContent).toContain(
+      "This phone's app is too old for desk. Update Agent Overflow on the phone.",
+    );
+  });
+
+  it('lets a staged bundle outrank a floor this phone is under', async () => {
+    // A restart is an action; "update from the app store" is not one
+    // this app can perform, and replacing the actionable sentence with
+    // the unactionable one would be the wrong trade.
+    noteBundleReady();
+    noteBundleTooOld('laptop');
+    const { getByTestId } = render(TransportStatusBanner);
+    await tick();
+    expect(getByTestId('transport-status-banner').textContent).toContain(
+      'A newer Agent Overflow is ready.',
+    );
   });
 });
