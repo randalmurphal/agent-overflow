@@ -24,6 +24,12 @@
   import { relativeTime } from '../../utils/format';
   import { isClientMode } from '../../transport/runMode';
   import { hasScope } from '../../transport/scopes';
+  import { isNativeShell } from '../../native/platform';
+  import {
+    attachBackendFromLink,
+    awaitAttachedActivation,
+  } from '../../transport/backendAttach';
+  import { scanPairingQr } from '../../native/qr';
   import { backendReachable } from '../../stores/attachedBackends.svelte';
   import {
     addSystem,
@@ -37,8 +43,17 @@
   } from '../../stores/systems.svelte';
 
   const clientMode = isClientMode();
+  // The phone shell attaches machines CLIENT-SIDE: it has no local
+  // process to hold a profile, so the redemption is the same exchange it
+  // already performs for its own backend, one more session slot down
+  // (transport/backendAttach.ts). That is why it may add a machine while
+  // holding no `host` scope, and why the LIST below stays host-gated —
+  // that list is the desktop's profiles, and asking for it from a phone
+  // would spend one refusal per open (the passive-load rule).
+  const nativeShell = isNativeShell();
   let offHost = $derived(!hasScope('host'));
   let unavailable = $derived(clientMode || offHost);
+  let canAdd = $derived(!clientMode && (!offHost || nativeShell));
 
   let systems = $derived(getSystems());
   let pending = $derived(getPendingAttachments());
@@ -60,6 +75,22 @@
     if (!raw || adding) return;
     adding = true;
     try {
+      if (nativeShell) {
+        const attached = await attachBackendFromLink(raw);
+        link = '';
+        addToast(
+          'info',
+          `On ${attached.name}, allow this device only if it shows ${attached.verificationNumber}.`,
+        );
+        const admitted = await awaitAttachedActivation(attached.id);
+        addToast(
+          admitted ? 'success' : 'warning',
+          admitted
+            ? `${attached.name} is attached.`
+            : `${attached.name} was not confirmed in time. Ask for a new pairing link.`,
+        );
+        return;
+      }
       await addSystem(raw);
       link = '';
     } catch (err) {
@@ -67,6 +98,17 @@
     } finally {
       adding = false;
     }
+  }
+
+  // The camera is the phone's paste. What it reads is the same string the
+  // field takes, so it fills the field and the submit path below is
+  // untouched — there is one way to attach a machine here, and scanning
+  // is a second way to reach it rather than a second copy of it.
+  async function scan(): Promise<void> {
+    const text = await scanPairingQr();
+    // Null is a cancelled scan, which is not a failure and gets no
+    // message: the person is exactly where they were.
+    if (text !== null) link = text;
   }
 
   async function remove(id: string): Promise<void> {
@@ -120,7 +162,7 @@
         : 'Other machines running Agent Overflow. Their threads appear in the sidebar beside this machine’s, and the composer picks which one a new thread starts on.'}
   />
 
-  {#if !unavailable}
+  {#if canAdd}
     <form
       class="mt-3 flex items-center gap-2"
       onsubmit={(e) => {
@@ -138,11 +180,24 @@
         autocomplete="off"
         spellcheck={false}
       />
+      {#if nativeShell}
+        <Button
+          variant="secondary"
+          size="sm"
+          class="shrink-0 whitespace-nowrap"
+          disabled={adding}
+          onclick={() => void scan()}
+        >
+          Scan
+        </Button>
+      {/if}
       <Button type="submit" variant="primary" size="sm" class="shrink-0 whitespace-nowrap" disabled={adding || !link.trim()}>
         Attach
       </Button>
     </form>
+  {/if}
 
+  {#if !unavailable}
     <div class="mt-3 flex flex-col gap-1.5">
       {#each pending as row (row.id)}
         <div

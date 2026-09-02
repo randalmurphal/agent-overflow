@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e
+.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e apk
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -515,6 +515,13 @@ endif
 e2e: harness-build
 	cd e2e && pnpm install --frozen-lockfile
 	bin/ao-harness-e2e
+
+# The Android shell (mobile/). Builds the SPA with the shell aliases on,
+# syncs it into the native project, and assembles the debug APK. See
+# mobile/AGENTS.md for the toolchain this needs and what is deferred.
+apk:
+	cd mobile && pnpm install --frozen-lockfile
+	mobile/scripts/build-apk.sh
 
 # AO_PERF_CONTRACT=1 enforces the wall-clock timing contracts (see
 # frontend/src/test/helpers/perfContract.ts). They are gated off by

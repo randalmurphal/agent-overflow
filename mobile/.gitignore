@@ -1,0 +1,26 @@
+# The generated Android tree IS committed (see AGENTS.md: it is edited
+# once native config diverges from the template, and a tree that is
+# regenerated on every clone cannot hold those edits). What is not
+# committed is anything a build produces or anything that names this
+# machine.
+node_modules/
+
+# Build outputs.
+android/build/
+android/app/build/
+android/.gradle/
+android/captures/
+android/.idea/
+android/local.properties
+
+# `cap sync` copies the SPA bundle in. It is frontend/dist's output, and
+# committing a second copy of it would put every bundle change in this
+# tree's history twice.
+android/app/src/main/assets/public/
+
+# Signing material. Release signing is CUT for this wave (the paired
+# session over TLS is the trust root, docs/specs/remote-access.md § "The
+# phone client"), so nothing here should exist yet — the rule is written
+# down before there is something to catch.
+*.keystore
+*.jks

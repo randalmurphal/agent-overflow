@@ -1,0 +1,22 @@
+ext {
+    // 26, not the Capacitor template's 23. The barcode scanner's native
+    // library (io.ionic.libs:ionbarcode-android) declares 26 itself, and
+    // a manifest merge across that gap fails the build outright rather
+    // than degrading. Overriding the merge instead would ship a scanner
+    // that compiles and then fails on the devices the override covers,
+    // so the floor moves up: Android 8.0, August 2017.
+    minSdkVersion = 26
+    compileSdkVersion = 35
+    targetSdkVersion = 35
+    androidxActivityVersion = '1.9.2'
+    androidxAppCompatVersion = '1.7.0'
+    androidxCoordinatorLayoutVersion = '1.2.0'
+    androidxCoreVersion = '1.15.0'
+    androidxFragmentVersion = '1.8.4'
+    coreSplashScreenVersion = '1.0.1'
+    androidxWebkitVersion = '1.12.1'
+    junitVersion = '4.13.2'
+    androidxJunitVersion = '1.2.1'
+    androidxEspressoCoreVersion = '3.6.1'
+    cordovaAndroidVersion = '10.1.1'
+}
