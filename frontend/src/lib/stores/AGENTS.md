@@ -241,8 +241,13 @@ stops waking readers.
 
   Four things are decided here and nowhere else. `previewRouted` is
   whether reaching a thread's ports has to go through the gateway at all
-  — false in exactly one case, a thread on the page's own machine with
-  `host` in hand. `previewFor` answers `open` / `not-shared` /
+  — the negation of `attachedBackends.svelte.ts#threadActsHere`, which is
+  where "the thread runs on the page's own machine AND this session holds
+  `host` there" is spelled out once. The click delegate asks the same
+  question about the companion browser (`browserCompanionAct` routes to
+  the THREAD's backend, so `host` alone would mint a page in an engine
+  this window cannot paint), which is why the test lives in the backend
+  module rather than here. `previewFor` answers `open` / `not-shared` /
   `no-address`, with `no-address` winning because a machine with nowhere
   to serve from would send the reader to a control that changes nothing.
   `previewLinkTargetFor` is the markdown rewrite's whole input, and it

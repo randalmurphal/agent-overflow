@@ -41,6 +41,7 @@ import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   attachedBackendEntry,
   backendDisplayName,
+  threadActsHere,
   threadMachine,
 } from './attachedBackends.svelte';
 import { isMethodUnavailableError, onBackendHelloChange } from './transportStatus.svelte';
@@ -49,7 +50,7 @@ import {
   backendKeyForOrigin,
   withBackendTarget,
 } from '../transport/backends';
-import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import type { BackendKey } from '../transport/backendKey';
 import { hasScope } from '../transport/scopes';
 import { isScopeRefusal } from '../transport/scopeRefusal';
 import { handleExternalURL, installPreviewLinkActions } from '../utils/externalLinks';
@@ -202,10 +203,12 @@ export function devServerListening(key: BackendKey, port: number): boolean {
  *
  * False in exactly one case, the ordinary desktop one: the thread runs on the
  * page's own machine AND this session can act there, so `localhost` already
- * means what it says.
+ * means what it says. That is `threadActsHere`, and this is preview's name
+ * for its negation: the click delegate asks the same question about the
+ * companion browser, so neither spells the test out a second time.
  */
 export function previewRouted(threadId: string): boolean {
-  return threadMachine(threadId, null) !== HOME_BACKEND || !hasScope('host');
+  return !threadActsHere(threadId);
 }
 
 // ---------------------------------------------------------------------------

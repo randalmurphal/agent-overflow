@@ -1,8 +1,8 @@
 import { OpenExternalURL } from '../stores/bindings';
+import { threadActsHere } from '../stores/attachedBackends.svelte';
 import { browserCompanionAct, browserCompanionState } from '../stores/browserCompanion.svelte';
 import { addToast } from '../stores/toast.svelte';
 import { runMode } from '../transport/runMode';
-import { hasScope } from '../transport/scopes';
 import type { BackendKey } from '../transport/backendKey';
 import { errString } from './errors';
 import { isModClick } from './modClick';
@@ -201,14 +201,18 @@ function handleExternalLinkClick(event: MouseEvent): void {
   event.preventDefault();
 
   // Mod+click opens the link in the thread's companion browser, which is a
-  // NATIVE view of the host process — so off host it is not a degraded
-  // version of the gesture, there is nothing there to open, and the click
-  // falls back to the plain behaviour. Middle-click is deliberately not in
-  // this branch: it means "somewhere other than here" in every browser, and
-  // the system browser is that somewhere.
-  if (event.button === 0 && isModClick(event) && hasScope('host')) {
+  // NATIVE view of ONE host process — the thread's, since that is where
+  // `browserCompanionAct` routes. So the gesture needs more than `host` in
+  // hand: with the thread on another machine it would mint a page in that
+  // machine's engine, which this window has no way to show, and the person
+  // would see nothing happen. `threadActsHere` is both halves of the
+  // question, and off it the click falls back to the plain behaviour.
+  // Middle-click is deliberately not in this branch: it means "somewhere
+  // other than here" in every browser, and the system browser is that
+  // somewhere.
+  if (event.button === 0 && isModClick(event)) {
     const threadId = threadIdForTarget(event.target);
-    if (threadId) {
+    if (threadId && threadActsHere(threadId)) {
       void openInCompanionBrowser(threadId, safeURL);
       return;
     }

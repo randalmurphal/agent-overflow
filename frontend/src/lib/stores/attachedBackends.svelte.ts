@@ -19,6 +19,7 @@ import {
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { getBackendIdentity } from '../transport/backendIdentity';
 import { projectBackend, threadBackend } from '../transport/entityIndex';
+import { hasScope } from '../transport/scopes';
 import { getTransportStatusFor } from './transportStatus.svelte';
 
 let list = $state.raw<readonly BackendEntry[]>(registryBackends().slice());
@@ -79,6 +80,20 @@ export function backendReachable(key: BackendKey): boolean {
  */
 export function threadMachine(threadId: string, projectId: string | null | undefined): BackendKey {
   return threadBackend(threadId) ?? (projectId ? projectBackend(projectId) : undefined) ?? HOME_BACKEND;
+}
+
+/**
+ * Whether this page can act on a thread's machine ITSELF, rather than
+ * through the backend that machine is attached to.
+ *
+ * True in exactly the ordinary desktop case: the thread runs on the page's
+ * own machine and this session holds `host` there. Two questions reduce to
+ * this one — whether `localhost` in a thread's output means this reader's
+ * `localhost`, and whether the thread's companion browser is an engine
+ * this window can show — so they share an answer instead of drifting.
+ */
+export function threadActsHere(threadId: string): boolean {
+  return threadMachine(threadId, null) === HOME_BACKEND && hasScope('host');
 }
 
 /**

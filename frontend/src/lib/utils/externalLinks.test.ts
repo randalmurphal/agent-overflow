@@ -16,6 +16,7 @@ import { resetRunMode, setRunMode } from '../../test/runMode';
 import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../test/helpers/scopes';
 import { __resetScopesForTest } from '../transport/scopes';
 import { resetBrowserCompanionForTest } from '../stores/browserCompanion.svelte';
+import { noteThread, __resetEntityIndexForTest } from '../transport/entityIndex';
 
 describe('safeExternalURL', () => {
   beforeEach(() => {
@@ -406,6 +407,7 @@ describe('mod+click on an ordinary external link', () => {
     resetRunMode();
     resetToLocalPage();
     resetBrowserCompanionForTest();
+    __resetEntityIndexForTest();
     originalOpen = window.open;
     window.open = vi.fn();
     document.body.innerHTML = '';
@@ -416,6 +418,7 @@ describe('mod+click on an ordinary external link', () => {
     cleanup();
     cleanup = () => {};
     resetBrowserCompanionForTest();
+    __resetEntityIndexForTest();
     window.open = originalOpen;
     resetRunMode();
     resetToLocalPage();
@@ -460,6 +463,22 @@ describe('mod+click on an ordinary external link', () => {
     // not this branch's, so the assertion is that the click took the
     // ordinary external path at all.
     await pairWithScopes(OBSERVE_SCOPES);
+    const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ threadId: 'thread-1', kind: 'state', pages: [] })));
+
+    expect(modClick(linkInThread())).toBe(false);
+    await waitFor(() =>
+      expect(openedExternally(systemOpen, 'https://example.com/docs')).toBe(true),
+    );
+    expect(act).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the plain behaviour when the thread runs on another machine', async () => {
+    // `host` in hand says nothing about WHERE the pane would open:
+    // `browserCompanionAct` routes to the thread's backend, so on a thread
+    // attached to another machine the tab would be minted in an engine
+    // this window cannot paint, and the person would see nothing happen.
+    noteThread('thread-1', 'laptop');
     const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ threadId: 'thread-1', kind: 'state', pages: [] })));
 
