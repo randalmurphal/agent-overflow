@@ -113,11 +113,14 @@ func TestScopeValidationRefusesWhatItCannotName(t *testing.T) {
 // `settings:read` joined in the phase-3 enforcement wave: §5's ten could
 // not spell a settings or preference read, so ten getters carried
 // `settings:write` and enforced reading a preference as the authority to
-// change one.
+// change one. `preview:open` joined in wave 9 with the dev-server port
+// gateway: a named reviewer may look at a preview without being able to
+// run terminals on the machine serving it, and `terminal:operate` reused
+// there could only have granted both.
 func TestScopeSetMatchesTheSpecTable(t *testing.T) {
 	want := []string{
 		"threads:read", "files:read", "threads:operate", "approvals:respond",
-		"threads:autonomy", "terminal:operate", "git:operate",
+		"threads:autonomy", "terminal:operate", "preview:open", "git:operate",
 		"attachments:write", "settings:read", "settings:write", "access:admin",
 	}
 	if !slices.Equal(asStrings(Scopes), want) {

@@ -42,6 +42,20 @@ const (
 	// ScopeTerminalOperate covers PTY create/attach/write/replay and
 	// worktree-setup output.
 	ScopeTerminalOperate Scope = "terminal:operate"
+	// ScopePreviewOpen covers opening this machine's dev-server previews
+	// from another machine: listing the dev servers discovery found, and
+	// minting the ticketed preview URL for one (the port gateway,
+	// docs/specs/remote-access.md §7).
+	//
+	// Its own name rather than a reuse of ScopeTerminalOperate, and the
+	// vocabulary is exactly where that distinction has to be expressible:
+	// a named reviewer may legitimately be allowed to LOOK at a running
+	// preview and not to run terminals on the machine serving it, and a
+	// scope set that cannot say so can only answer by granting both.
+	// Execute tier, because the list is a port-scan oracle for the host
+	// and the gateway reaches a local service — a view-only device holds
+	// neither.
+	ScopePreviewOpen Scope = "preview:open"
 	// ScopeGitOperate covers git mutations, worktrees, and the PR
 	// surface.
 	ScopeGitOperate Scope = "git:operate"
@@ -83,7 +97,7 @@ const (
 // with the two values that are not grants last: the floor, then `host`.
 var Scopes = []Scope{
 	ScopeThreadsRead, ScopeFilesRead, ScopeThreadsOperate, ScopeApprovalsRespond,
-	ScopeThreadsAutonomy, ScopeTerminalOperate, ScopeGitOperate,
+	ScopeThreadsAutonomy, ScopeTerminalOperate, ScopePreviewOpen, ScopeGitOperate,
 	ScopeAttachmentsWrite, ScopeSettingsRead, ScopeSettingsWrite,
 	ScopeAccessAdmin, ScopeSession, ScopeHost,
 }
@@ -130,6 +144,7 @@ var scopeTiers = map[Scope]ScopeTier{
 	ScopeApprovalsRespond: TierExecute,
 	ScopeThreadsAutonomy:  TierExecute,
 	ScopeTerminalOperate:  TierExecute,
+	ScopePreviewOpen:      TierExecute,
 	ScopeGitOperate:       TierExecute,
 	ScopeAttachmentsWrite: TierExecute,
 	ScopeSettingsWrite:    TierExecute,

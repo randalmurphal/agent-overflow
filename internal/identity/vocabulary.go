@@ -189,6 +189,12 @@ const (
 	// ScopeTerminalOperate covers PTY create/attach/write/replay and
 	// worktree-setup output.
 	ScopeTerminalOperate Scope = "terminal:operate"
+	// ScopePreviewOpen covers opening this machine's dev-server previews
+	// from another machine: the discovered list, and the ticketed preview
+	// URL for one port. Deliberately NOT ScopeTerminalOperate — a named
+	// reviewer may look at a preview without running terminals, and the
+	// vocabulary is where that has to be sayable.
+	ScopePreviewOpen Scope = "preview:open"
 	// ScopeGitOperate covers git mutations, worktrees, and the PR surface.
 	ScopeGitOperate Scope = "git:operate"
 	// ScopeAttachmentsWrite covers uploads; reads ride payload auth.
@@ -210,7 +216,7 @@ const (
 // them.
 var Scopes = []Scope{
 	ScopeThreadsRead, ScopeFilesRead, ScopeThreadsOperate, ScopeApprovalsRespond,
-	ScopeThreadsAutonomy, ScopeTerminalOperate, ScopeGitOperate,
+	ScopeThreadsAutonomy, ScopeTerminalOperate, ScopePreviewOpen, ScopeGitOperate,
 	ScopeAttachmentsWrite, ScopeSettingsRead, ScopeSettingsWrite,
 	ScopeAccessAdmin,
 }
