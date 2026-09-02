@@ -266,6 +266,33 @@ WHERE each one is observed and how the sentence is finished.
   stderr tail, the failed turn's error message and the approval's command line
   are all deliberately left behind in the tap.
 
+### The same mapping wakes the phones
+
+`app_push.go` hangs off `queueNotification`'s job, after `notifyOS` and not
+instead of it, so a phone's tray and the desktop's toast are two views of ONE
+`notify.Send` — including its withdrawal, which reaches both or neither.
+`internal/push` composes what travels; this file decides who gets it.
+
+- **Its own queue.** A send to Google can hang for its whole ten-second
+  timeout, and the desktop's next toast must not wait behind it. Serial for
+  the same reason the notification queue is: order is the retraction contract.
+- **One kind gate, two screens.** `notificationKindEnabledIn` takes a
+  `settings.Settings` and answers whether a kind may interrupt THAT screen.
+  The desktop asks it of the backend machine's own settings; the fan-out asks
+  it of each registered phone's device-tier bucket. Two copies of that switch
+  would eventually disagree, and the disagreement is a phone buzzing for
+  something its owner turned off.
+- **A revoked device is never sent to**, and that is one SQL join rather than a
+  filter here: `store.LivePushTokens` answers "registered AND still admitted"
+  as one question, so no caller can ask half of it.
+- **No credential is the resting state.** A nil `push.Sender` is the whole of
+  what a friend's backend does differently: it records registrations and sends
+  nothing. The designed next step (the home backend as a wake relay) is a
+  different `Sender`, not a different fan-out.
+- **`ErrTokenGone` is the only error with a reaction** — drop that row, say
+  nothing, let the phone re-register. Everything else becomes the standing
+  `lastError` the owner reads and one log line per kind.
+
 ## The device-access surface
 
 `app_access.go` is the settings pane's half of the same core: which

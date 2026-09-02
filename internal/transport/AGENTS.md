@@ -137,8 +137,11 @@ The two non-grants:
   authority is decided per ARGUMENT (`UpdateSettings`, gated key by key
   against §6's three tiers) or is simply "this session is writing its own
   bucket" (`GetUIState` / `SetUIState` / `DeleteUIState`, whose bucket comes
-  from the connection and never from a parameter). A view-only device setting
-  its own font size is the case it exists for. The step-up ceremony pair
+  from the connection and never from a parameter, and `RegisterPushToken` /
+  `UnregisterPushToken`, whose DEVICE comes from the connection's session for
+  exactly the same reason — a device id taken as an argument would be a way to
+  have somebody else's phone woken). A view-only device setting its own font
+  size is the case it exists for. The step-up ceremony pair
   (`BeginPasskeyStepUp` / `FinishPasskeyStepUp`) is there for a stronger reason:
   it is how a session SATISFIES the gate that just refused it, so requiring any
   grant would leave step-up reachable only to sessions already holding
@@ -150,8 +153,10 @@ The two non-grants:
 `//ao:stepup` marks the calls §4 requires a fresh per-call proof for: minting a
 pairing link, BEGINNING a passkey registration, network bind / exposure
 changes, provider custom-env writes, MCP config writes, the WSL distro
-preference, and worktree-setup recipe writes (stored argv that runs unattended
-on every worktree cut).
+preference, worktree-setup recipe writes (stored argv that runs unattended
+on every worktree cut), and installing or withdrawing the push sender
+credential (the service-account key this backend wakes every registered phone
+with).
 `TestStepUpMethodsAreTheSpecSet` pins that list, because a dropped directive
 turns a mandatory proof into an ambient standing grant and nothing else in the
 tree would notice.

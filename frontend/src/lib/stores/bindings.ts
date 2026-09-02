@@ -176,6 +176,17 @@ export {
   RestoreAccessDevice,
   ForgetAccessDevice,
 
+  // Phone push (docs/specs/remote-access.md §9). The two registrations
+  // are at the SESSION FLOOR because each reaches the calling device's own
+  // row and no other; the credential pair is host-only and step-up gated,
+  // and the status read is `access:admin` so "my phone stopped buzzing" is
+  // answerable from somewhere other than the machine.
+  RegisterPushToken,
+  UnregisterPushToken,
+  GetPushSenderStatus,
+  SetPushSenderCredential,
+  ClearPushSenderCredential,
+
   // Passkeys, on the same `access:admin` surface. Registration is
   // additionally step-up gated, because it issues something that admits a
   // future caller; the two ceremony calls below are the FLOOR, since they

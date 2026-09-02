@@ -208,6 +208,8 @@ func TestStepUpMethodsAreTheSpecSet(t *testing.T) {
 		"BeginPasskeyRegistration":     "registering a credential that admits a future caller, on the same argument as minting a pairing link",
 		"RequestServiceUpdate": "replacing the code this machine runs: §7's remote update trigger, " +
 			"which the spec admits precisely on the condition that it rides step-up",
+		"SetPushSenderCredential":   "installing the service-account key this backend wakes phones with",
+		"ClearPushSenderCredential": "withdrawing it, which stops every registered phone being woken",
 	}
 	// FinishPasskeyRegistration is deliberately absent, and it is the one
 	// omission in this table worth stating rather than inferring: it is
@@ -282,6 +284,12 @@ func TestSessionFloorMethodsAreTheSpecSet(t *testing.T) {
 		// end in requires a signature from a credential on this account.
 		"BeginPasskeyStepUp":  "starts a proof for the calling connection's own session and no other",
 		"FinishPasskeyStepUp": "ends a proof for the session its own ceremony recorded, not one this call names",
+		// The two push registrations, on the ui_state argument exactly: each
+		// reaches the CALLING session's own device row and no other, because
+		// the device is derived from the session rather than named by a
+		// parameter. A session granted nothing still owns its own phone.
+		"RegisterPushToken":   "writes the calling session's own device registration and no other",
+		"UnregisterPushToken": "deletes the calling session's own device registration and no other",
 	}
 	got := map[string]bool{}
 	for _, method := range GeneratedMethods {

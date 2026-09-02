@@ -315,6 +315,11 @@ func (a *App) initStores() (string, *store.Store, error) {
 	// keeps it clear of initThemeDirectory's one-shot read of the retired
 	// `theme` key further down the boot.
 	a.settings.AttachTierStore(st, "client:"+EnsureClientIDIn(dbDir))
+	// The phone-push sender, if this backend has one (docs/specs/
+	// remote-access.md §9). Absent is the resting state and costs nothing;
+	// it is read here because the fan-out's own no-credential branch must
+	// be a nil check and not a per-notification database read.
+	a.loadPushSender()
 	accountStore, err := provideraccounts.NewStore(dbDir)
 	if err != nil {
 		closeErr := st.Close()

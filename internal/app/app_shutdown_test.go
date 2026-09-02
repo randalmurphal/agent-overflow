@@ -247,6 +247,10 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// and it joins the other reactor drains because the events it
 		// reacts to stop arriving once triage has drained.
 		"drain notifications",
+		// "drain push" MUST follow "drain notifications" and precede
+		// "close store" — the notification queue is what FEEDS it, and a
+		// fan-out job reads the live registrations out of SQLite.
+		"drain push",
 		"close replay manager",
 		"shutdown telemetry",
 		"stop idle session reaper",

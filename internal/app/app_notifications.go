@@ -124,6 +124,19 @@ func (a *App) notificationKindEnabled(kind notify.Kind) bool {
 	if a.settings != nil {
 		current = a.settings.BackendScreen().Get()
 	}
+	return notificationKindEnabledIn(current, kind)
+}
+
+// notificationKindEnabledIn is that question with the screen taken out of
+// it: given ONE screen's settings, may this kind interrupt it?
+//
+// ONE COPY, TWO SCREENS. The desktop asks it of the backend machine's own
+// settings; the push fan-out asks it of each registered phone's device-tier
+// bucket (app_push.go). They are the same question about different screens,
+// and two copies of this switch would eventually disagree about a kind — at
+// which point a phone would buzz for something the person had turned off, or
+// stay silent for something they had not.
+func notificationKindEnabledIn(current settings.Settings, kind notify.Kind) bool {
 	if !current.NotificationsEnabled {
 		return false
 	}

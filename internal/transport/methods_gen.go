@@ -67,6 +67,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "CleanCodexBackgroundTerminals", ID: 16360282, Scope: "threads:operate", Route: "thread"},                 // main.App.CleanCodexBackgroundTerminals
 	{Name: "ClearBrowserSiteData", ID: 544013229, Scope: "terminal:operate", Route: "home"},                          // main.App.ClearBrowserSiteData
 	{Name: "ClearDraft", ID: 296814681, Scope: "threads:operate", Route: "thread"},                                   // main.App.ClearDraft
+	{Name: "ClearPushSenderCredential", ID: 1055713894, Scope: "host", Route: "home", StepUp: true},                  // main.App.ClearPushSenderCredential
 	{Name: "CloseTerminal", ID: 2702963191, Scope: "terminal:operate", Route: "home"},                                // main.App.CloseTerminal
 	{Name: "CloseThreadTerminals", ID: 1705768020, Scope: "terminal:operate", Route: "thread"},                       // main.App.CloseThreadTerminals
 	{Name: "CompactCodexThread", ID: 4090329093, Scope: "threads:operate", Route: "thread"},                          // main.App.CompactCodexThread
@@ -133,6 +134,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetProjectWorktreeSetup", ID: 471350242, Scope: "terminal:operate", Route: "project"},                    // main.App.GetProjectWorktreeSetup
 	{Name: "GetProviderLoginState", ID: 84914540, Scope: "access:admin", Route: "home"},                              // main.App.GetProviderLoginState
 	{Name: "GetProviderStatuses", ID: 3829328996, Scope: "access:admin", Route: "home"},                              // main.App.GetProviderStatuses
+	{Name: "GetPushSenderStatus", ID: 447579616, Scope: "access:admin", Route: "home"},                               // main.App.GetPushSenderStatus
 	{Name: "GetQueueState", ID: 3079581691, Scope: "threads:operate", Route: "thread"},                               // main.App.GetQueueState
 	{Name: "GetRateLimitsSnapshots", ID: 3325141610, Scope: "threads:read", Route: "home"},                           // main.App.GetRateLimitsSnapshots
 	{Name: "GetServiceUpdateStatus", ID: 2230314013, Scope: "access:admin", Route: "selected"},                       // main.App.GetServiceUpdateStatus
@@ -267,6 +269,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RefreshProviderAccountUsage", ID: 2539237007, Scope: "access:admin", Route: "home"},                      // main.App.RefreshProviderAccountUsage
 	{Name: "RefreshTerminal", ID: 2618043580, Scope: "terminal:operate", Route: "home"},                              // main.App.RefreshTerminal
 	{Name: "RegenerateThreadTitle", ID: 3682640111, Scope: "threads:operate", Route: "thread"},                       // main.App.RegenerateThreadTitle
+	{Name: "RegisterPushToken", ID: 2641306153, Scope: "session", Route: "home"},                                     // main.App.RegisterPushToken
 	{Name: "RegisterQueueItem", ID: 1034543696, Scope: "threads:operate", Route: "thread"},                           // main.App.RegisterQueueItem
 	{Name: "RemoveBackend", ID: 3005272623, Scope: "host", Route: "home"},                                            // main.App.RemoveBackend
 	{Name: "RemoveOtherWorktree", ID: 2899196344, Scope: "git:operate", Route: "thread"},                             // main.App.RemoveOtherWorktree
@@ -309,6 +312,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetPRUpdatesActive", ID: 1078249699, Scope: "git:operate", Route: "home"},                                // main.App.SetPRUpdatesActive
 	{Name: "SetProjectWorktreeSetup", ID: 322092470, Scope: "terminal:operate", Route: "project", StepUp: true},      // main.App.SetProjectWorktreeSetup
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465, Scope: "settings:write", Route: "home", StepUp: true},          // main.App.SetProviderCustomEnvVar
+	{Name: "SetPushSenderCredential", ID: 719170063, Scope: "host", Route: "home", StepUp: true},                     // main.App.SetPushSenderCredential
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811, Scope: "settings:write", Route: "thread", StepUp: true},      // main.App.SetThreadMcpServerEnabled
 	{Name: "SetThreadPinGroup", ID: 3112222989, Scope: "threads:operate", Route: "thread"},                           // main.App.SetThreadPinGroup
 	{Name: "SetUIState", ID: 1514250938, Scope: "session", Route: "home"},                                            // main.App.SetUIState
@@ -338,6 +342,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UnarchiveProject", ID: 2561521885, Scope: "threads:operate", Route: "project"},                           // main.App.UnarchiveProject
 	{Name: "UnarchiveThread", ID: 3655125512, Scope: "threads:operate", Route: "thread"},                             // main.App.UnarchiveThread
 	{Name: "UnpinThread", ID: 3175043037, Scope: "threads:operate", Route: "thread"},                                 // main.App.UnpinThread
+	{Name: "UnregisterPushToken", ID: 3065043012, Scope: "session", Route: "home"},                                   // main.App.UnregisterPushToken
 	{Name: "UnsubscribePRUpdates", ID: 2888550814, Scope: "git:operate", Route: "home"},                              // main.App.UnsubscribePRUpdates
 	{Name: "UpdateContextSettingsProfile", ID: 1472386383, Scope: "settings:write", Route: "home"},                   // main.App.UpdateContextSettingsProfile
 	{Name: "UpdateDiffReviewComment", ID: 2452201652, Scope: "threads:operate", Route: "thread"},                     // main.App.UpdateDiffReviewComment

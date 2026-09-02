@@ -79,6 +79,7 @@ export {
     ProjectDeletionResult,
     ProviderSessionAccountEvent,
     ProviderTerminalHandle,
+    PushSenderStatus,
     QueueFlushedItem,
     QueuedItem,
     ReleaseSummary,

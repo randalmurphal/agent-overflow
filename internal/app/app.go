@@ -94,9 +94,15 @@ type App struct {
 	// ordered queue its moments dispatch on, and the small edge state the
 	// pure mapping is handed. See app_notification_mapping.go.
 	notifications notificationDispatch
-	store         *store.Store
-	git           *gitops.Core
-	gitWatch      *gitwatch.Manager
+	// push is the PHONE half of the same path: its own ordered queue, the
+	// sender this backend wakes phones through, and the standing fault the
+	// owner reads. Its own queue because a send to Google can hang for its
+	// whole timeout and the desktop's toast must not wait behind it. See
+	// app_push.go.
+	push     pushDispatch
+	store    *store.Store
+	git      *gitops.Core
+	gitWatch *gitwatch.Manager
 	// gitApp owns gitwatch wire fan-out and the unattended background-fetch
 	// lifecycle. This shell retains the stable Wails façades and event projection.
 	gitAppOnce sync.Once

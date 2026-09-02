@@ -226,6 +226,13 @@ func (a *App) queueNotification(build func() (notify.Notification, bool)) {
 			send.Target.BackendID = a.notificationBackendID()
 		}
 		a.logNotificationFailure(a.notifyOS(send))
+		// The phones get the SAME send, not a second mapping of the same
+		// moment. Handing it on after notifyOS rather than instead of it is
+		// what makes a phone's tray and the desktop's toast two views of one
+		// fact — including the withdrawal, which reaches both or neither.
+		// The fan-out hands the work to its own queue and returns; a slow
+		// Google cannot delay the next toast. See app_push.go.
+		a.pushFanout(send)
 	})
 }
 

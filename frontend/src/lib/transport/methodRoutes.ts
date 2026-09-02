@@ -38,6 +38,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	16360282: 'thread', // CleanCodexBackgroundTerminals
 	544013229: 'home', // ClearBrowserSiteData
 	296814681: 'thread', // ClearDraft
+	1055713894: 'home', // ClearPushSenderCredential
 	2702963191: 'home', // CloseTerminal
 	1705768020: 'thread', // CloseThreadTerminals
 	4090329093: 'thread', // CompactCodexThread
@@ -104,6 +105,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	471350242: 'project', // GetProjectWorktreeSetup
 	84914540: 'home', // GetProviderLoginState
 	3829328996: 'home', // GetProviderStatuses
+	447579616: 'home', // GetPushSenderStatus
 	3079581691: 'thread', // GetQueueState
 	3325141610: 'home', // GetRateLimitsSnapshots
 	2230314013: 'selected', // GetServiceUpdateStatus
@@ -238,6 +240,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2539237007: 'home', // RefreshProviderAccountUsage
 	2618043580: 'home', // RefreshTerminal
 	3682640111: 'thread', // RegenerateThreadTitle
+	2641306153: 'home', // RegisterPushToken
 	1034543696: 'thread', // RegisterQueueItem
 	3005272623: 'home', // RemoveBackend
 	2899196344: 'thread', // RemoveOtherWorktree
@@ -280,6 +283,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1078249699: 'home', // SetPRUpdatesActive
 	322092470: 'project', // SetProjectWorktreeSetup
 	2118904465: 'home', // SetProviderCustomEnvVar
+	719170063: 'home', // SetPushSenderCredential
 	1041195811: 'thread', // SetThreadMcpServerEnabled
 	3112222989: 'thread', // SetThreadPinGroup
 	1514250938: 'home', // SetUIState
@@ -309,6 +313,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2561521885: 'project', // UnarchiveProject
 	3655125512: 'thread', // UnarchiveThread
 	3175043037: 'thread', // UnpinThread
+	3065043012: 'home', // UnregisterPushToken
 	2888550814: 'home', // UnsubscribePRUpdates
 	1472386383: 'home', // UpdateContextSettingsProfile
 	2452201652: 'thread', // UpdateDiffReviewComment

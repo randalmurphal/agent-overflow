@@ -3488,6 +3488,53 @@ export class ProviderTerminalHandle {
 }
 
 /**
+ * PushSenderStatus is what the owner is shown about this backend's ability
+ * to wake a phone.
+ * 
+ * The credential itself is NOT here and cannot be: it is backend-local
+ * secret material of the same class as `signing_keys.secret`, and this shape
+ * is read by an admin device that is not at the machine. The project and the
+ * service account are what identify it; `LastError` is what says whether it
+ * still works.
+ */
+export class PushSenderStatus {
+    "configured": boolean;
+    "projectId": string;
+    "clientEmail": string;
+    "lastError": string;
+    "registeredDevices": number;
+
+    /** Creates a new PushSenderStatus instance. */
+    constructor($$source: Partial<PushSenderStatus> = {}) {
+        if (!("configured" in $$source)) {
+            this["configured"] = false;
+        }
+        if (!("projectId" in $$source)) {
+            this["projectId"] = "";
+        }
+        if (!("clientEmail" in $$source)) {
+            this["clientEmail"] = "";
+        }
+        if (!("lastError" in $$source)) {
+            this["lastError"] = "";
+        }
+        if (!("registeredDevices" in $$source)) {
+            this["registeredDevices"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PushSenderStatus instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PushSenderStatus {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PushSenderStatus($$parsedSource as Partial<PushSenderStatus>);
+    }
+}
+
+/**
  * QueueFlushedItem is one entry inside a QueueFlushedEvent. Carries
  * the original frontend-allocated queueItemId, the backend-allocated
  * userItemId (deterministic row id), and the message text so the
