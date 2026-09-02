@@ -9,6 +9,7 @@ import { encodeTerminalInput } from '../../types/terminal';
 import { eventEscapesTerminalToCommand } from '../../stores/keybindings.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { addToast } from '../../stores/toast.svelte';
+import { applySettingsSnapshot, resetSettingsForTest } from '../../stores/settings.svelte';
 
 // xterm can't render under happy-dom (no real canvas/WebGL context), and these
 // tests need to observe the exact ORDER of write() calls — so swap in a fake
@@ -32,9 +33,12 @@ const mocks = vi.hoisted(() => {
     // Captured so a test can invoke the registered handler directly.
     keyEventHandler: ((event: KeyboardEvent) => boolean) | null = null;
     // Clipboard surface: a test sets `selection`, and `pastes` records every
-    // term.paste(...) the handler issues.
+    // term.paste(...) the handler issues. `clears` counts term.clear() calls
+    // (the terminal.clear command reaching this xterm through the handle).
     selection = '';
     pastes: string[] = [];
+    clears = 0;
+    unicode = { activeVersion: '6' };
     constructor(options: Record<string, unknown> = {}) {
       this.options = { ...options };
       lastTerminal = this;
@@ -47,8 +51,14 @@ const mocks = vi.hoisted(() => {
     getSelection(): string {
       return this.selection;
     }
+    clearSelection(): void {
+      this.selection = '';
+    }
     paste(data: string): void {
       this.pastes.push(data);
+    }
+    clear(): void {
+      this.clears += 1;
     }
     attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void {
       this.keyEventHandler = handler;
@@ -98,6 +108,7 @@ vi.mock('../../stores/keybindings.svelte', () => ({
 
 vi.mock('@xterm/xterm', () => ({ Terminal: mocks.FakeTerminal }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} } }));
+vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }));
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }));
 vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class {
@@ -558,14 +569,66 @@ describe('TerminalBody copy/paste', () => {
     expect(vi.mocked(copyToClipboard)).not.toHaveBeenCalled();
   });
 
-  it('leaves plain Ctrl+C for the PTY (SIGINT), not copy', async () => {
+  it('leaves plain Ctrl+C with NO selection for the PTY (SIGINT)', async () => {
     const { term, handler } = await handlerFor('t-sigint');
-    term.selection = 'sel';
+    term.selection = '';
     const event = clip({ key: 'c', ctrlKey: true, shiftKey: false });
-    // Not a copy chord → reaches the escape predicate (false) → true for the PTY.
+    // Not a copy without a selection → straight to the PTY, never the
+    // escape predicate.
     expect(handler(event)).toBe(true);
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(vi.mocked(copyToClipboard)).not.toHaveBeenCalled();
+    expect(vi.mocked(eventEscapesTerminalToCommand)).not.toHaveBeenCalled();
+  });
+
+  it('plain Ctrl+C over a selection copies it, clears the highlight and never reaches the PTY', async () => {
+    const { term, handler } = await handlerFor('t-ctrl-c-copy');
+    term.selection = 'picked';
+    const event = clip({ key: 'c', ctrlKey: true, shiftKey: false });
+    expect(handler(event)).toBe(false);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(event.stopPropagation).toHaveBeenCalledOnce();
+    expect(vi.mocked(copyToClipboard)).toHaveBeenCalledWith('picked');
+    await Promise.resolve();
+    await Promise.resolve();
+    // Highlight dropped → the NEXT Ctrl+C is a SIGINT again.
+    expect(term.selection).toBe('');
+    const again = clip({ key: 'c', ctrlKey: true, shiftKey: false });
+    expect(handler(again)).toBe(true);
+  });
+
+  it('keeps the highlight when the copy fails so the user can retry', async () => {
+    vi.mocked(copyToClipboard).mockResolvedValue(false);
+    const { term, handler } = await handlerFor('t-copy-keeps-sel');
+    term.selection = 'picked';
+    expect(handler(clip({ key: 'c', ctrlKey: true, shiftKey: true }))).toBe(false);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(term.selection).toBe('picked');
+  });
+
+  it('Ctrl+Insert copies and Shift+Insert pastes', async () => {
+    readText.mockResolvedValue('ins');
+    const { term, handler } = await handlerFor('t-insert');
+    term.selection = 'sel';
+    expect(handler(clip({ key: 'Insert', ctrlKey: true }))).toBe(false);
+    expect(vi.mocked(copyToClipboard)).toHaveBeenCalledWith('sel');
+    expect(handler(clip({ key: 'Insert', shiftKey: true }))).toBe(false);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(term.pastes).toEqual(['ins']);
+  });
+
+  it('releases the font-zoom chords to the window without touching the PTY', async () => {
+    const { handler } = await handlerFor('t-zoom');
+    for (const key of ['=', '-', '0']) {
+      const event = clip({ key, ctrlKey: true });
+      // false = xterm skips it; no preventDefault so it bubbles to zoom.ts.
+      expect(handler(event)).toBe(false);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(event.stopPropagation).not.toHaveBeenCalled();
+    }
+    expect(vi.mocked(eventEscapesTerminalToCommand)).not.toHaveBeenCalled();
   });
 
   it('pastes clipboard text through term.paste on Ctrl+Shift+V', async () => {
@@ -616,5 +679,95 @@ describe('TerminalBody copy/paste', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(term.pastes).toEqual([]);
+  });
+
+  // Right-click is VS Code's `copyPaste`: copy (and drop the highlight) when
+  // there is a selection, otherwise paste. The webview context menu never
+  // shows for either.
+  describe('right-click', () => {
+    function mountFor(id: string) {
+      const mount = document.querySelector<HTMLElement>(`[data-testid="terminal-body-${id}"] > div`);
+      expect(mount).toBeTruthy();
+      return mount!;
+    }
+
+    function rightClick(mount: HTMLElement): boolean {
+      const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+      mount.dispatchEvent(event);
+      return event.defaultPrevented;
+    }
+
+    it('with a selection copies it, clears the highlight and suppresses the menu', async () => {
+      const { term } = await handlerFor('t-rc-copy');
+      term.selection = 'chosen';
+      expect(rightClick(mountFor('t-rc-copy'))).toBe(true);
+      expect(vi.mocked(copyToClipboard)).toHaveBeenCalledWith('chosen');
+      expect(readText).not.toHaveBeenCalled();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(term.selection).toBe('');
+    });
+
+    it('without a selection pastes the clipboard', async () => {
+      readText.mockResolvedValue('from clipboard');
+      const { term } = await handlerFor('t-rc-paste');
+      expect(rightClick(mountFor('t-rc-paste'))).toBe(true);
+      expect(vi.mocked(copyToClipboard)).not.toHaveBeenCalled();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(term.pastes).toEqual(['from clipboard']);
+    });
+
+    it('copy then a second right-click pastes (the highlight is gone)', async () => {
+      readText.mockResolvedValue('next');
+      const { term } = await handlerFor('t-rc-twice');
+      const mount = mountFor('t-rc-twice');
+      term.selection = 'first';
+      rightClick(mount);
+      await Promise.resolve();
+      await Promise.resolve();
+      rightClick(mount);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(vi.mocked(copyToClipboard)).toHaveBeenCalledTimes(1);
+      expect(term.pastes).toEqual(['next']);
+    });
+  });
+});
+
+describe('TerminalBody app integration', () => {
+  beforeEach(() => {
+    mocks.GetTerminalReplay.mockReset();
+    resetSettingsForTest();
+  });
+
+  afterEach(() => {
+    cleanup();
+    resetSettingsForTest();
+  });
+
+  async function mounted(id: string) {
+    const { handle, resolveReplay } = await mountWithPendingReplay(id);
+    resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
+    await tick();
+    return { handle, term: mocks.getLastTerminal()! };
+  }
+
+  it('builds with the app font size and follows the setting live', async () => {
+    applySettingsSnapshot({ fontSize: 15 });
+    const { term } = await mounted('t-font');
+    expect(term.options.fontSize).toBe(15);
+    applySettingsSnapshot({ fontSize: 17 });
+    await tick();
+    expect(term.options.fontSize).toBe(17);
+  });
+
+  it('terminal.clear reaches the mounted xterm through the handle, and not after unmount', async () => {
+    const { handle, term } = await mounted('t-clear');
+    expect(handle.clearActive()).toBe(true);
+    expect(term.clears).toBe(1);
+    cleanup();
+    expect(handle.clearActive()).toBe(false);
+    expect(term.clears).toBe(1);
   });
 });

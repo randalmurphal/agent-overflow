@@ -19,6 +19,7 @@
     ProviderTerminalSetControl,
   } from '../../stores/bindings';
   import { getResolvedTheme } from '../../stores/themeMode.svelte';
+  import { getSettings } from '../../stores/settings.svelte';
   import {
     decodeTerminalOutput,
     encodeTerminalInput,
@@ -225,6 +226,16 @@
     term.options.theme = theme;
   });
 
+  // Follow the app font-size setting (the mod+/- zoom chords) live; same
+  // shape as TerminalBody — the mount box doesn't change, so the refit (and
+  // its PTY resize) has to be requested here.
+  $effect(() => {
+    const fontSize = getSettings().fontSize;
+    if (!term) return;
+    term.options.fontSize = fontSize;
+    scheduleFit();
+  });
+
   async function toggleControl(): Promise<void> {
     if (controlTransitionPending) return;
     controlTransitionPending = true;
@@ -332,6 +343,6 @@
       Could not attach to the Claude TUI session: {attachError}
     </div>
   {:else}
-    <div bind:this={mountEl} class="flex-1 min-h-0 bg-terminal-bg"></div>
+    <div bind:this={mountEl} class="flex-1 min-h-0 bg-terminal-bg" data-testid="take-control-mount"></div>
   {/if}
 </div>

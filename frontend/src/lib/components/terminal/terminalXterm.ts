@@ -5,23 +5,32 @@
 //   - The WebGL renderer (with DOM fallback) — required, not just for perf, so
 //     box-drawing and block/quadrant glyphs (the ▀ ▄ █ ▌ ▐ TUI sprite art) tile
 //     seamlessly instead of falling back to a seam-prone system font.
-//   - The custom key handler: Shift+Enter → newline (not submit), Cmd/
-//     Ctrl+Shift+C/V clipboard, and the app-chord escape predicate that lets
-//     pane-nav / refresh / tab chords bubble to the window handler.
+//   - Unicode 11 width tables, so emoji occupy the two cells the provider
+//     TUIs lay them out at (xterm's default Unicode 6 tables give every emoji
+//     one cell and shift the rest of the line left).
+//   - The custom key handler: Shift+Enter → newline (not submit), the
+//     clipboard chords (terminalKeys.ts), the font-zoom chords bubbling to the
+//     app, and the app-chord escape predicate that lets pane-nav / refresh /
+//     tab chords bubble to the window handler.
+//   - Right-click: copy the selection if there is one, otherwise paste (the
+//     VS Code `copyPaste` behavior), instead of the webview's context menu.
 //
 // Keeping this in one place means the two surfaces can't drift on glyph
 // rendering or key handling. The only thing the caller owns is where input
 // goes: `onInput` receives every keystroke the widget produces internally
 // (currently the Shift+Enter newline), and the caller separately wires
 // `term.onData(onInput)` for the main keystroke stream — so a single gate (e.g.
-// the take-control read-only lease) governs both paths.
+// the take-control read-only lease) governs both paths. Paste goes through
+// `term.paste`, which emits onData, so the same gate covers it.
 
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { getResolvedTheme } from '../../stores/themeMode.svelte';
+import { getSettings } from '../../stores/settings.svelte';
 import { getXtermTheme } from './terminalTheme';
 import { eventEscapesTerminalToCommand } from '../../stores/keybindings.svelte';
 import { TERMINAL_ESCAPE_COMMAND_IDS } from '../../stores/paneNavCommands';
@@ -29,7 +38,7 @@ import { copyToClipboard } from '../../utils/clipboard';
 import { handleExternalURL } from '../../utils/externalLinks';
 import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
-import { isClipboardChord } from './terminalKeys';
+import { clipboardChordFor, isFontZoomChord } from './terminalKeys';
 import { isMacPlatform } from '../../utils/platform';
 
 const isMac = isMacPlatform();
@@ -60,7 +69,9 @@ export function buildTerminal(
     convertEol: false,
     cursorBlink: true,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-    fontSize: 13,
+    // The app font-size setting (the mod+/- zoom chords). The surface keeps
+    // `options.fontSize` in step with the setting afterwards and refits.
+    fontSize: getSettings().fontSize,
     // 1.0 so Unicode half-block / box-drawing glyphs (▀ ▄ █) tile with no
     // vertical gap — TUI sprite art and box borders render contiguously. A
     // larger line-height makes each cell taller than the glyph and breaks block
@@ -73,6 +84,14 @@ export function buildTerminal(
 
   const fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
+  // Emoji width. xterm's built-in tables are Unicode 6, under which every
+  // emoji (😀 🚀 ✅ ⚡ …) is ONE cell; Claude Code's Ink layout (string-width)
+  // and Codex's ratatui both lay them out as TWO, so each emoji on a line
+  // shifted everything after it one column left and broke box borders. The
+  // Unicode 11 tables agree with the TUIs on the emoji class (VS Code ships
+  // the same addon as its default). Measured in /tmp/xterm-uni, 2026-09-02.
+  terminal.loadAddon(new Unicode11Addon());
+  terminal.unicode.activeVersion = '11';
   // A dev server started in this terminal prints its URL here, so xterm's
   // link provider IS the open-in-browser affordance for this surface — no
   // extra chrome needed. What it must not do is use its default handler:
@@ -84,14 +103,55 @@ export function buildTerminal(
   terminal.loadAddon(new WebLinksAddon((_event, uri) => void handleExternalURL(uri)));
   terminal.open(mount);
 
+  // Copy the selection and drop the highlight, so the next Ctrl+C / right-
+  // click is a SIGINT / paste again rather than a second copy. The highlight
+  // stays on a failed write so the user can retry after the toast.
+  function copySelection(): void {
+    void copyToClipboard(terminal.getSelection()).then((ok) => {
+      if (!ok) {
+        addToast('error', 'Copy failed: clipboard unavailable');
+        return;
+      }
+      if (!isDisposed?.()) terminal.clearSelection();
+    });
+  }
+
+  // Read the clipboard and feed it through term.paste so xterm honors
+  // bracketed-paste mode (multi-line safety) and the caller's onData gate sees
+  // it. readText can reject (permission/focus) — surface it, never swallow.
+  function pasteClipboard(): void {
+    navigator.clipboard
+      .readText()
+      .then((text) => {
+        // The surface may have unmounted while the clipboard read was in
+        // flight; never write into a disposed xterm.
+        if (text && !isDisposed?.()) terminal.paste(text);
+      })
+      .catch((err) => {
+        console.error('terminal: clipboard paste failed', err);
+        addToast('error', `Paste failed: ${errString(err)}`);
+      });
+  }
+
+  // Right-click is copy-or-paste (VS Code's `copyPaste`): with a selection it
+  // copies and clears it; without one it pastes. The webview's own context
+  // menu is suppressed either way. xterm's own contextmenu listener (on its
+  // inner element, so it runs first) only repositions the hidden textarea.
+  mount.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    if (terminal.hasSelection()) copySelection();
+    else pasteClipboard();
+  });
+
   // Runs on every keydown in a focused xterm. It first fully consumes the
-  // in-widget special cases handled below — Shift+Enter (newline) and copy/
-  // paste (Cmd, or Ctrl+Shift+C/V) — so they never reach the shell. Everything
-  // else falls to the escape predicate: app chords that stay active inside a
+  // in-widget special cases handled below — Shift+Enter (newline) and the
+  // clipboard chords — so they never reach the shell. The font-zoom chords are
+  // released to the window (xterm skips them, no preventDefault) so the app's
+  // zoom listener resizes everything, this terminal included. Everything else
+  // falls to the escape predicate: app chords that stay active inside a
   // focused terminal bubble to App.svelte's window keydown handler instead of
   // being encoded to the PTY — pane navigation (alt+h/l, alt+shift+h/l),
-  // terminal.refresh (alt+shift+r → repaint), terminal tab management
-  // (mod+shift+t/w, ctrl+tab/ctrl+shift+tab), and new pane (mod+shift+~).
+  // terminal.refresh (alt+shift+r), and terminal tab/pane management.
   // Returning false makes xterm skip its own handling WITHOUT preventDefault/
   // stopPropagation, so the event reaches the app. Chords still gated on
   // !terminalFocus are not matched by the predicate and fall through to the
@@ -122,40 +182,20 @@ export function buildTerminal(
       onInput('\n');
       return false;
     }
-    // Copy: Cmd+C (macOS) / Ctrl+Shift+C. Copy the selection to the clipboard
-    // and fully consume the event so it never reaches the PTY. A copy chord
-    // with no selection is a no-op but still consumed (never meant for the
-    // shell).
-    if (isClipboardChord(event, 'c', isMac)) {
+    const chord = clipboardChordFor(event, isMac);
+    if (chord) {
+      // Plain Ctrl+C is a copy only over a selection; otherwise it is the
+      // shell's SIGINT and must reach the PTY untouched.
+      if (chord === 'copyIfSelected' && !terminal.hasSelection()) return true;
       event.preventDefault();
       event.stopPropagation();
-      if (terminal.hasSelection()) {
-        void copyToClipboard(terminal.getSelection()).then((ok) => {
-          if (!ok) addToast('error', 'Copy failed: clipboard unavailable');
-        });
-      }
+      if (chord === 'paste') pasteClipboard();
+      // A copy chord with no selection is a no-op but still consumed (never
+      // meant for the shell).
+      else if (terminal.hasSelection()) copySelection();
       return false;
     }
-    // Paste: Cmd+V (macOS) / Ctrl+Shift+V. Read the clipboard and feed it
-    // through term.paste so xterm honors bracketed-paste mode (multi-line
-    // safety). readText can reject (permission/focus) — surface it, never
-    // swallow.
-    if (isClipboardChord(event, 'v', isMac)) {
-      event.preventDefault();
-      event.stopPropagation();
-      navigator.clipboard
-        .readText()
-        .then((text) => {
-          // The surface may have unmounted while the clipboard read was in
-          // flight; never write into a disposed xterm.
-          if (text && !isDisposed?.()) terminal.paste(text);
-        })
-        .catch((err) => {
-          console.error('terminal: clipboard paste failed', err);
-          addToast('error', `Paste failed: ${errString(err)}`);
-        });
-      return false;
-    }
+    if (isFontZoomChord(event)) return false;
     return !eventEscapesTerminalToCommand(event, TERMINAL_ESCAPE_COMMAND_IDS);
   });
 

@@ -20,17 +20,18 @@ export const PANE_NAV_COMMAND_IDS: ReadonlySet<string> = new Set([
 export const TERMINAL_REFRESH_COMMAND_ID = 'terminal.refresh';
 
 // Terminal tab/pane management commands that must escape a focused xterm to run
-// the app command instead of being encoded to the PTY: new/close/switch tab and
-// new pane (the latter un-gated so Ctrl+Shift+~ opens a terminal pane from
-// inside a terminal too, mirroring the alt+h/l vim pane-nav chords). Each is a
-// registered command (asserted in builtinCommands tests) and `editableReachable`
-// so it fires from the xterm <textarea>. Kept distinct from PANE_NAV/refresh so
-// the grouping reads clearly.
+// the app command instead of being encoded to the PTY: new/close/switch tab,
+// clear (buffer + scrollback), and new pane (the latter un-gated so
+// Ctrl+Shift+~ opens a terminal pane from inside a terminal too, mirroring the
+// alt+h/l vim pane-nav chords). Each is a registered command (asserted in
+// builtinCommands tests) and `editableReachable` so it fires from the xterm
+// <textarea>. Kept distinct from PANE_NAV/refresh so the grouping reads clearly.
 export const TERMINAL_MANAGEMENT_COMMAND_IDS: ReadonlySet<string> = new Set([
   'terminal.newTab',
   'terminal.closeTab',
   'terminal.nextTab',
   'terminal.prevTab',
+  'terminal.clear',
   'terminal.newPane',
 ]);
 

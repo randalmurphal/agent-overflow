@@ -8,6 +8,7 @@
     GetTerminalReplay,
   } from '../../stores/bindings';
   import { getResolvedTheme } from '../../stores/themeMode.svelte';
+  import { getSettings } from '../../stores/settings.svelte';
   import { decodeTerminalOutput, encodeTerminalInput, normalizeTerminalReplay } from '../../types/terminal';
   import { getXtermTheme } from './terminalTheme';
   import {
@@ -35,6 +36,9 @@
   let fit: FitAddon | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let dataDisposable: { dispose(): void } | null = null;
+  // Unregisters this xterm from the store handle (terminal.clear reaches the
+  // active tab's xterm through it). Null until hydrate() has built the term.
+  let detachXterm: (() => void) | null = null;
   let destroyed = false;
   // Track whether we've already told the focus registry we're focused so
   // we don't double-decrement on teardown.
@@ -86,6 +90,7 @@
     const built = buildTerminal(mountEl, { onInput: writeInput, isDisposed: () => destroyed });
     term = built.term;
     fit = built.fit;
+    detachXterm = handle.attachXterm(terminalID, term);
 
     // Wire focus/blur listeners on the xterm mount. xterm puts a focusable
     // textarea inside mountEl, so focusin/focusout bubble up reliably.
@@ -206,6 +211,19 @@
     term.options.theme = theme;
   });
 
+  // Follow the app font-size setting (the mod+/- zoom chords) live. Writing
+  // options.fontSize re-measures the cell grid; the mount box hasn't changed,
+  // so no ResizeObserver tick follows and the refit has to be requested here
+  // (it also round-trips the new rows/cols to the PTY). buildTerminal read the
+  // setting for the initial size, so a tick without a term registers only the
+  // dependency.
+  $effect(() => {
+    const fontSize = getSettings().fontSize;
+    if (!term) return;
+    term.options.fontSize = fontSize;
+    scheduleFit();
+  });
+
   onMount(() => {
     hydrate();
   });
@@ -224,6 +242,8 @@
     }
     dataDisposable?.dispose();
     dataDisposable = null;
+    detachXterm?.();
+    detachXterm = null;
     inputWriter.dispose();
     resizeWriter.dispose();
     resizeObserver?.disconnect();

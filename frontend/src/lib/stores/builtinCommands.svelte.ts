@@ -1036,6 +1036,25 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     run: (ctx) => switchTerminalTab(ctx, -1),
   });
 
+  // Wipes the active tab's xterm buffer AND scrollback (VS Code's "Terminal:
+  // Clear"). Ctrl+L at the shell only clears the visible screen. Frontend-
+  // only: nothing is written to the PTY, so it is safe mid-command.
+  registerCommand({
+    id: 'terminal.clear',
+    label: 'Terminal: Clear',
+    description: 'Clear the active terminal, scrollback included.',
+    icon: '⌧',
+    when: 'terminalFocus || terminalOpen',
+    editableReachable: true,
+    run: (ctx) => {
+      const pane = ctx.pane;
+      if (!pane) return;
+      getExistingThreadTerminalState(
+        terminalStateKeyForPane(pane.threadId, pane.paneId),
+      )?.clearActive();
+    },
+  });
+
   registerCommand({
     id: 'git.commit',
     label: 'Git: Commit All',

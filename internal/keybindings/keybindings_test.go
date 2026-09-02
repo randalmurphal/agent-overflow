@@ -281,6 +281,7 @@ func TestTerminalTabAndPaneDefaultBindings(t *testing.T) {
 		{"terminal.closeTab", "mod+shift+w"},
 		{"terminal.nextTab", "ctrl+tab"},
 		{"terminal.prevTab", "ctrl+shift+tab"},
+		{"terminal.clear", "mod+shift+l"},
 	}
 	for _, tc := range cases {
 		b := only(tc.command)

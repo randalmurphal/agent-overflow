@@ -155,12 +155,16 @@ var Defaults = []Keybinding{
 	// close-tab use mod+shift (Cmd on macOS); tab-switching uses LITERAL ctrl+tab,
 	// not mod+tab — mod+tab is Cmd+Tab on macOS (the OS app switcher), and ctrl+tab
 	// is the cross-platform tab-cycle convention, distinct from plain Tab (shell
-	// completion). Copy/paste are handled inside TerminalBody, not here (platform
-	// split + native-clipboard access).
+	// completion). terminal.clear (buffer + scrollback) is mod+shift+l rather
+	// than VS Code's Cmd+K: off macOS ctrl+k is the shell's kill-line and mod+k
+	// is the sidebar cursor here. Copy/paste and the font-zoom chords are
+	// handled inside the xterm key handler (frontend terminalXterm.ts), not
+	// here (platform split + native-clipboard access).
 	{Key: "mod+shift+t", Command: "terminal.newTab", When: "terminalFocus", DefaultID: "terminal.newTab"},
 	{Key: "mod+shift+w", Command: "terminal.closeTab", When: "terminalFocus", DefaultID: "terminal.closeTab"},
 	{Key: "ctrl+tab", Command: "terminal.nextTab", When: "terminalFocus", DefaultID: "terminal.nextTab"},
 	{Key: "ctrl+shift+tab", Command: "terminal.prevTab", When: "terminalFocus", DefaultID: "terminal.prevTab"},
+	{Key: "mod+shift+l", Command: "terminal.clear", When: "terminalFocus", DefaultID: "terminal.clear"},
 	{Key: "mod+shift+o", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.alternate"},
 	{Key: "mod+shift+d", Command: "thread.new.discussion", When: "!terminalFocus", DefaultID: "thread.new.discussion"},
 	{Key: "mod+w", Command: "pane.close", When: "!terminalFocus", DefaultID: "pane.close"},

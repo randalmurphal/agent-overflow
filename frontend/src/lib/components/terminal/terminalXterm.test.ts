@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => {
   return {
     linkHandlers,
     FakeTerminal: class {
+      unicode = { activeVersion: '6' };
       loadAddon(): void {}
       open(): void {}
       attachCustomKeyEventHandler(): void {}
@@ -23,6 +24,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@xterm/xterm', () => ({ Terminal: mocks.FakeTerminal }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} } }));
+vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }));
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: mocks.FakeWebLinksAddon }));
 vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class {
