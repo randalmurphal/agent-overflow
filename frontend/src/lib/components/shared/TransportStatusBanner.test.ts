@@ -22,6 +22,13 @@ vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => ({
 }));
 
 import TransportStatusBanner from './TransportStatusBanner.svelte';
+import { hasPairedSession } from '../../transport/deviceSession';
+import {
+  __resetHomeEndpointForTest,
+  setHomeEndpoint,
+  storeBackendEndpoint,
+  storedBackendEndpoint,
+} from '../../transport/homeEndpoint';
 
 // The banner is gated behind a 1s boot grace (so a momentary pre-handshake
 // disconnect doesn't flash on mount). Trip it with fake timers.
@@ -116,5 +123,37 @@ describe('<TransportStatusBanner>', () => {
 
     await fireEvent.click(getByTestId('transport-status-retry'));
     expect(h.retry).toHaveBeenCalledOnce();
+  });
+
+  // A page whose origin is not its backend's (the phone shell) cannot be
+  // navigated to a new pairing link and cannot run a passkey ceremony
+  // bound to the backend's domain. Its recovery is to forget home and
+  // boot into "scan a code" again.
+  it('offers Pair again, and no passkey, when the page is served from its own origin', async () => {
+    setHomeEndpoint('https://desk.tail-scale.ts.net:7777');
+    storeBackendEndpoint('', 'https://desk.tail-scale.ts.net:7777');
+    try {
+      h.snapshot = { status: 'unauthorized', nextAttemptAt: null };
+      const { getByTestId, queryByTestId } = render(TransportStatusBanner);
+      await settleBootGrace();
+
+      expect(queryByTestId('transport-status-passkey')).toBeNull();
+      const again = getByTestId('transport-status-pair-again');
+      expect(storedBackendEndpoint('')).toBe('https://desk.tail-scale.ts.net:7777');
+
+      await fireEvent.click(again);
+      expect(storedBackendEndpoint('')).toBe('');
+      expect(hasPairedSession()).toBe(false);
+    } finally {
+      __resetHomeEndpointForTest();
+      localStorage.clear();
+    }
+  });
+
+  it('offers no Pair again on a page that is its backend\'s own origin', async () => {
+    h.snapshot = { status: 'unauthorized', nextAttemptAt: null };
+    const { queryByTestId } = render(TransportStatusBanner);
+    await settleBootGrace();
+    expect(queryByTestId('transport-status-pair-again')).toBeNull();
   });
 });

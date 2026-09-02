@@ -9,14 +9,15 @@
 // two timestamps and is the only logic in this directory that is not a
 // forwarding call.
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installNativeLifecycle } from './lifecycle';
 import { DEFAULT_LOCK_WINDOW_MS, installAppLock, lockWindowMs, shouldLock } from './lock';
 import { captureImage, pickFile } from './pickers';
 import { isNativeShell, nativePlatform } from './platform';
 import { appPlugin, biometricPlugin, scannerPlugin } from './plugins';
 import { scanPairingQr } from './qr';
-import { prepareNativeShell } from './boot';
+import { adoptPairingEndpoint, prepareNativeShell } from './boot';
+import { __resetHomeEndpointForTest, homeEndpoint } from '../transport/homeEndpoint';
 
 describe('the web fallbacks', () => {
   it('answer no shell', () => {
@@ -119,5 +120,31 @@ describe('the lock window setting', () => {
       expect(lockWindowMs(), raw).toBe(DEFAULT_LOCK_WINDOW_MS);
     }
     localStorage.removeItem('agent-overflow:lockWindowMs');
+  });
+});
+
+// Both doors into pairing on a shell (the scanned code and a `#pair=`
+// hash) point the shell at the payload's endpoint through this one
+// function, before the pairing screen's first request.
+describe('adoptPairingEndpoint', () => {
+  const payload = {
+    v: 1 as const,
+    token: 't',
+    endpoint: 'https://desk.tail-scale.ts.net:7777',
+    backendId: 'b-home',
+  };
+
+  afterEach(() => {
+    __resetHomeEndpointForTest();
+  });
+
+  it('sets the home endpoint from the payload and answers no problem', () => {
+    expect(adoptPairingEndpoint(payload)).toBe('');
+    expect(homeEndpoint()).toBe('https://desk.tail-scale.ts.net:7777');
+  });
+
+  it('answers a sentence for a payload that names nowhere, and sets nothing', () => {
+    expect(adoptPairingEndpoint({ ...payload, endpoint: 'nowhere' })).toMatch(/Ask for a new one/);
+    expect(homeEndpoint()).toBe('');
   });
 });

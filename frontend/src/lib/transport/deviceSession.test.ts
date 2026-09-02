@@ -19,12 +19,14 @@ import {
   probeActivation,
   redeemPairing,
   signInWithPasskey,
+  unpairHome,
   type PairingPayload,
 } from './deviceSession';
 import {
   __resetHomeEndpointForTest,
   homeEndpoint,
   setHomeEndpoint,
+  storeBackendEndpoint,
   storedBackendEndpoint,
 } from './homeEndpoint';
 
@@ -406,5 +408,21 @@ describe('the auth exchanges under a shell origin', () => {
   it('refuses a payload whose endpoint names nowhere to present a credential', () => {
     expect(acceptPairingEndpoint({ ...PAYLOAD, endpoint: 'not-a-url' }, 'https://shell.test'))
       .toBe(false);
+  });
+
+  it('unpairing home forgets the session and the endpoint, and nothing else', async () => {
+    // The shell's only way back to "scan a code": a fixed origin cannot
+    // be navigated to a new link, so it stops knowing where home is.
+    const fetcher = vi.fn().mockResolvedValue(grantResponse());
+    await redeemPairing(PAYLOAD, 'Phone', fetcher as unknown as typeof fetch);
+    expect(acceptPairingEndpoint(PAYLOAD, 'https://shell.agent-overflow.invalid')).toBe(true);
+    storeBackendEndpoint('b-1', 'https://laptop.test:7777');
+    expect(hasPairedSession()).toBe(true);
+
+    unpairHome();
+
+    expect(hasPairedSession()).toBe(false);
+    expect(storedBackendEndpoint('')).toBe('');
+    expect(storedBackendEndpoint('b-1')).toBe('https://laptop.test:7777');
   });
 });

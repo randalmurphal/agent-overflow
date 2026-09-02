@@ -17,6 +17,7 @@
 // is the QR code on the owner's own desktop.
 
 import { setBackendSource, syncAttachedBackends } from '../transport/backends';
+import type { PairingPayload } from '../transport/deviceSession';
 import { setHomeEndpoint, storedBackendEndpoint } from '../transport/homeEndpoint';
 import { storedBackendDescriptors } from '../transport/manifestBackends';
 import type { AppLock } from './lock';
@@ -51,6 +52,24 @@ export function prepareNativeShell(): ShellBoot {
   setHomeEndpoint(home);
   syncAttachedBackends();
   return { shell: true, paired: true };
+}
+
+/**
+ * Point a shell that has not paired at the backend a pairing payload
+ * names, before the pairing screen's first request. Both doors into
+ * pairing on a shell come through here, the scanned QR and a `#pair=`
+ * hash, so "where does this pairing go" is decided in one place.
+ *
+ * Answers a sentence for a person when the payload names nowhere a
+ * credential could be presented, else `''`.
+ */
+export function adoptPairingEndpoint(payload: PairingPayload): string {
+  try {
+    setHomeEndpoint(payload.endpoint);
+  } catch {
+    return 'That pairing link does not say where the app is. Ask for a new one.';
+  }
+  return '';
 }
 
 /**

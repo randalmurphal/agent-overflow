@@ -607,7 +607,13 @@ remote browser alike. Protocol and authz rules:
   is on is the backend it is pairing with and a payload naming another
   endpoint is stale or edited. A shell can never be a backend's origin, so
   what the QR names is where that backend lives and adopting it is the
-  point of scanning it.
+  point of scanning it. The way BACK is `unpairHome()`: a browser whose
+  credential died is one navigation away from a new link, a fixed-origin
+  page is not, so `TransportStatusBanner` offers "Pair again" exactly
+  when `hasHomeEndpoint()` (and no passkey there, since a passkey is
+  bound to the backend's domain and the browser refuses the ceremony
+  from any other origin). It forgets the session and then the endpoint,
+  and the next boot is a first run.
 - `backendAttach.ts` is how a client with no local process attaches a
   SECOND machine. A desktop hands the link to its Go side, which holds a
   profile and proxies the machine; a phone has nothing to hand it to, so

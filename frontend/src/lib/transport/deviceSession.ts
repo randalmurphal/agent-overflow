@@ -56,6 +56,7 @@
 import { enrollDeviceKey, mintDeviceProof } from './deviceKey';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import {
+  forgetBackendEndpoint,
   hasHomeEndpoint,
   homeCredentials,
   homeUrl,
@@ -423,6 +424,21 @@ export function pairedSessionScopes(
 /** Drop the stored session. The device key survives — it names the device, not the session. */
 export function clearPairedSession(backend: BackendKey = HOME_BACKEND): void {
   storeSession(null, backend);
+}
+
+/**
+ * Forget the home backend entirely: its session AND where it was.
+ *
+ * A browser whose credential died is one navigation away from a new
+ * pairing link. A shell page is not: its origin is fixed and nothing can
+ * be typed into it, so its way back to "scan a code" is to stop knowing
+ * where home is, at which point the next boot is a first run again
+ * (native/boot.ts). Session first, then the endpoint, so there is never
+ * a moment with a credential and nowhere to present it.
+ */
+export function unpairHome(): void {
+  clearPairedSession(HOME_BACKEND);
+  forgetBackendEndpoint(HOME_BACKEND);
 }
 
 interface GrantBody {

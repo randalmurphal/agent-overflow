@@ -4,6 +4,11 @@ import { appTitleForEnv } from './appTitle';
 import { installBrowserHistoryGuard } from './lib/utils/browserHistoryGuard';
 import { installFrontendErrorCapture } from './lib/utils/frontendErrorCapture';
 import { installStepUpProof } from './lib/transport/stepUp';
+import {
+  adoptPairingEndpoint,
+  installNativeShell,
+  prepareNativeShell,
+} from './lib/native/boot';
 import type { MemoryReport } from './lib/utils/memoryReport';
 import {
   revealDrainStats,
@@ -64,18 +69,19 @@ installStepUpProof();
 async function mountApp(): Promise<void> {
   const target = document.getElementById('app')!;
   // The shell's boot, and the only thing in this file that is not the
-  // same for every client. It has to run before anything mounts, because
-  // a phone's home backend is not the origin that served it and the very
+  // same for every client. It runs before anything mounts, because a
+  // phone's home backend is not the origin that served it and the very
   // first fetch of the app's boot fan-out has to be addressed correctly
-  // (lib/native/boot.ts, lib/transport/homeEndpoint.ts).
-  const { prepareNativeShell } = await import('./lib/native/boot');
+  // (lib/native/boot.ts, lib/transport/homeEndpoint.ts). A static import:
+  // everything it needs is already in App's graph, and a lazy chunk here
+  // would cost every desktop boot one round trip for a check that
+  // answers "no shell" in a microsecond.
   const shell = prepareNativeShell();
 
-  if (shell.shell && !shell.paired) {
-    await mountFirstRun(target);
-    return;
-  }
-
+  // The pairing hash is checked FIRST, for every client. A shell can
+  // arrive with one too (the emulator smoke navigates to it, and an app
+  // link would), and a shell that has never paired learns its endpoint
+  // from the payload exactly as the first-run scanner's does.
   if (location.hash.startsWith('#pair=')) {
     const session = await import('./lib/transport/deviceSession');
     let payload: import('./lib/transport/deviceSession').PairingPayload | null = null;
@@ -85,7 +91,19 @@ async function mountApp(): Promise<void> {
     } catch (err) {
       parseError = err instanceof Error ? err.message : String(err);
     }
+    if (shell.shell && payload !== null) {
+      const problem = adoptPairingEndpoint(payload);
+      if (problem !== '') {
+        payload = null;
+        parseError = problem;
+      }
+    }
     await mountPairing(target, payload, parseError, shell.shell);
+    return;
+  }
+
+  if (shell.shell && !shell.paired) {
+    await mountFirstRun(target);
     return;
   }
 
@@ -179,10 +197,7 @@ async function mountFirstRun(target: HTMLElement): Promise<void> {
  * transcript on its way to being locked.
  */
 async function mountUnderLock(target: HTMLElement): Promise<void> {
-  const [{ installNativeShell }, { default: LockScreen }] = await Promise.all([
-    import('./lib/native/boot'),
-    import('./lib/components/native/LockScreen.svelte'),
-  ]);
+  const { default: LockScreen } = await import('./lib/components/native/LockScreen.svelte');
   const overlay = document.createElement('div');
   overlay.id = 'app-lock';
   document.body.appendChild(overlay);
@@ -190,6 +205,10 @@ async function mountUnderLock(target: HTMLElement): Promise<void> {
   let lockScreen: ReturnType<typeof mount> | null = null;
   let unlock: () => void = () => {};
   const show = (locked: boolean): void => {
+    // The app under the gate is INERT while it is locked: the lock
+    // screen paints over it, and inert is what keeps focus, the
+    // keyboard and a screen reader from reaching what the paint hides.
+    target.inert = locked;
     if (locked && lockScreen === null) {
       lockScreen = mount(LockScreen, { target: overlay, props: { onUnlock: () => unlock() } });
       return;

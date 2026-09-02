@@ -101,7 +101,15 @@ never resolves a Capacitor module at runtime:
 | `native/lock.ts` | biometric gate on cold start and on resume past a window |
 | `native/qr.ts` | `scanPairingQr()` |
 | `native/pickers.ts` | a documented stub |
-| `native/boot.ts` | what runs before anything mounts |
+| `native/boot.ts` | what runs before anything mounts; `adoptPairingEndpoint` is the one place both pairing doors (scanned code, `#pair=` hash) point the shell at a backend |
+
+Two things `main.ts` keeps true for the shell. The `#pair=` hash is
+checked BEFORE the first-run screen for every client, so a shell can be
+handed a pairing link (an app link, or the emulator smoke navigating to
+one) and takes it. And the lock screen is a FIXED, full-bleed element
+mounted after the app's root with the root marked `inert` while locked:
+the app underneath stays mounted and warm, and nothing under the paint
+can take focus or a tap.
 
 Read `frontend/src/lib/native/lifecycle.ts`'s header before touching the
 lifecycle: the pause signal is the ONLY visibility signal this client

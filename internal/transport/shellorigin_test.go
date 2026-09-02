@@ -3,6 +3,7 @@ package transport
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -184,51 +185,10 @@ func TestAdmittedResponseExposesWhatTheClientReads(t *testing.T) {
 // containsHeaderName compares one entry of a comma-separated header list
 // case-insensitively, which is how header names compare everywhere else.
 func containsHeaderName(list, name string) bool {
-	for _, part := range splitHeaderList(list) {
-		if equalFoldTrim(part, name) {
+	for _, part := range strings.Split(list, ",") {
+		if strings.EqualFold(strings.TrimSpace(part), name) {
 			return true
 		}
 	}
 	return false
-}
-
-func splitHeaderList(list string) []string {
-	out := []string{}
-	start := 0
-	for i := 0; i <= len(list); i++ {
-		if i == len(list) || list[i] == ',' {
-			out = append(out, list[start:i])
-			start = i + 1
-		}
-	}
-	return out
-}
-
-func equalFoldTrim(a, b string) bool {
-	trim := func(s string) string {
-		for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
-			s = s[1:]
-		}
-		for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-			s = s[:len(s)-1]
-		}
-		return s
-	}
-	a, b = trim(a), trim(b)
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		x, y := a[i], b[i]
-		if 'A' <= x && x <= 'Z' {
-			x += 'a' - 'A'
-		}
-		if 'A' <= y && y <= 'Z' {
-			y += 'a' - 'A'
-		}
-		if x != y {
-			return false
-		}
-	}
-	return true
 }

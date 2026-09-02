@@ -627,9 +627,10 @@ export class WSClient {
   private readonly retryAllowlist: readonly RetryOnTransientCloseEntry[];
   private readonly backend: BackendKey;
 
-  // Cached bootstrap. The socket URL is the manifest's wsUrl verbatim:
-  // it names this page's own origin, so the session cookie authenticates
-  // the upgrade with nothing added to the URL.
+  // Cached bootstrap. The socket URL is the manifest's wsUrl, carried
+  // onto the home endpoint only when this page is not its backend's
+  // (./homeEndpoint.ts); for every same-origin client it is verbatim,
+  // and the session cookie authenticates the upgrade with nothing added.
   private bootstrap: Bootstrap | null = null;
   private bootstrapPromise: Promise<Bootstrap> | null = null;
 

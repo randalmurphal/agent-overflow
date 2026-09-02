@@ -22,7 +22,7 @@
 // this phone rather than about the backend, so it belongs beside the
 // other client-local preferences whenever those get a compact screen.
 
-import { biometricPlugin } from './plugins';
+import { appPlugin, biometricPlugin } from './plugins';
 import { isNativeShell } from './platform';
 
 const LOCK_WINDOW_STORE_KEY = 'agent-overflow:lockWindowMs';
@@ -137,7 +137,6 @@ export async function installAppLock(options: AppLockOptions = {}): Promise<AppL
     return true;
   };
 
-  const { appPlugin } = await import('./plugins');
   const app = await appPlugin();
   const handles = app
     ? await Promise.all([
@@ -149,6 +148,10 @@ export async function installAppLock(options: AppLockOptions = {}): Promise<AppL
           if (!shouldLock(lastPausedAt, Date.now(), windowMs)) return;
           locked = true;
           publish();
+          // The prompt comes up on its own, as it does on a cold start.
+          // A person who just picked the phone back up should be looking
+          // at the platform's prompt, not at a button that asks for it.
+          void unlock();
         }),
       ])
     : [];

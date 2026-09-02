@@ -44,7 +44,8 @@
     isTerminalConnectionStatus,
   } from '../../transport/connectionRefusal';
   import { PasskeyAbandonedError, passkeysUsable } from '../../transport/passkey';
-  import { signInWithPasskey } from '../../transport/deviceSession';
+  import { signInWithPasskey, unpairHome } from '../../transport/deviceSession';
+  import { hasHomeEndpoint } from '../../transport/homeEndpoint';
   import { errString } from '../../utils/errors';
   import {
     getTransportStatus,
@@ -187,10 +188,23 @@
 
   // Offered only where it can work: a terminal state (the ladder has
   // stopped, so there is something to recover FROM), a backend with a
-  // domain, and a page that can hold a credential.
-  let signInOffered = $derived(isTerminalConnectionStatus(snapshot.status) && passkeysUsable());
+  // domain, and a page that can hold a credential. A page whose origin is
+  // not its backend's (the phone shell) is excluded: a passkey is bound
+  // to the backend's domain, and the browser refuses the ceremony from
+  // any other origin, so the button could only fail.
+  let terminal = $derived(isTerminalConnectionStatus(snapshot.status));
+  let signInOffered = $derived(terminal && !hasHomeEndpoint() && passkeysUsable());
+  // The shell's recovery instead. A browser is one navigation away from a
+  // new pairing link; a fixed-origin page has nothing to navigate to, so
+  // it forgets home and boots into "scan a code" again.
+  let pairAgainOffered = $derived(terminal && hasHomeEndpoint());
   let signingIn = $state(false);
   let signInError = $state('');
+
+  function handlePairAgain(): void {
+    unpairHome();
+    location.reload();
+  }
 
   async function handleSignIn(): Promise<void> {
     if (signingIn) return;
@@ -245,6 +259,16 @@
         class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-60"
       >
         Sign in with a passkey
+      </button>
+    {/if}
+    {#if pairAgainOffered}
+      <button
+        type="button"
+        onclick={handlePairAgain}
+        data-testid="transport-status-pair-again"
+        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        Pair again
       </button>
     {/if}
     {#if snapshot.status !== 'connected'}
