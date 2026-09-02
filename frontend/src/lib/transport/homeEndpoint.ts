@@ -258,6 +258,23 @@ export function storeBackendEndpoint(backend: BackendKey, origin: string): void 
   writeEndpointMap(map);
 }
 
+/**
+ * The host part of an endpoint, or `''` when it names none.
+ *
+ * The placeholder name an attached machine carries until its manifest
+ * publishes its own: an address is the one thing every backend has from
+ * the moment it is stored, and it is what a person just typed or scanned.
+ * It lives beside the map it is read out of so both readers — the
+ * descriptor rebuild and the attach flow — spell it once.
+ */
+export function endpointHost(endpoint: string): string {
+  try {
+    return new URL(endpoint).host;
+  } catch {
+    return '';
+  }
+}
+
 /** Forget one backend's endpoint. Detaching a machine's last step. */
 export function forgetBackendEndpoint(backend: BackendKey): void {
   const map = readEndpointMap();

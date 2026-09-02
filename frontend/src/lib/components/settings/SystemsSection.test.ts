@@ -1,10 +1,19 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import SystemsSection from './SystemsSection.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetRunMode, setRunMode } from '../../../test/runMode';
+import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
+import { SCOPES } from '../../transport/scopes';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { __resetManifestBackendsForTest } from '../../transport/manifestBackends';
+import { __resetPendingAttachmentsForTest } from '../../transport/backendAttach';
+import { hasPairedSession } from '../../transport/deviceSession';
+import {
+  __resetHomeEndpointForTest,
+  storeBackendEndpoint,
+  storedBackendEndpoint,
+} from '../../transport/homeEndpoint';
 import { __resetSystemsForTest } from '../../stores/systems.svelte';
 
 const LAPTOP = {
@@ -95,5 +104,66 @@ describe('<SystemsSection>', () => {
     expect(list).not.toHaveBeenCalled();
     expect(getByTestId('systems-section-unavailable')).toBeTruthy();
     expect(queryByLabelText('Pairing link')).toBeNull();
+  });
+
+  // The other realization. A phone holds the credential itself, so its
+  // list is its own transport registry and its removal is the transport's
+  // three stores rather than an RPC. It holds no `host` scope and must
+  // ask this backend for nothing at all — the passive-load rule read from
+  // the side where the answer is "there is nothing to ask".
+  describe('on the phone shell', () => {
+    beforeEach(async () => {
+      localStorage.clear();
+      __resetHomeEndpointForTest();
+      __resetPendingAttachmentsForTest();
+      vi.stubGlobal('Capacitor', { isNativePlatform: () => true, getPlatform: () => 'android' });
+      // A phone is a paired device: full access, and never `host`.
+      await pairWithScopes(SCOPES);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      resetToLocalPage();
+      __resetPendingAttachmentsForTest();
+      __resetHomeEndpointForTest();
+      localStorage.clear();
+    });
+
+    it('lists the machines it attached, with live reachability, and asks the backend nothing', async () => {
+      storeBackendEndpoint('laptop', LAPTOP.endpoint);
+      const staged = stageBackend({ status: 'reconnecting' });
+      const list = setBindingMock('ListBackends', async () => [LAPTOP]);
+      const { findByTestId, getByTestId } = render(SystemsSection);
+
+      const row = await findByTestId('attached-machine');
+      expect(row.textContent).toMatch(/Laptop/);
+      expect(row.textContent).toMatch(/laptop\.example:8123/);
+      expect(row.textContent).toMatch(/Unreachable/);
+      staged.setStatus('connected');
+      await waitFor(() =>
+        expect(getByTestId('attached-machine').textContent).toMatch(/Connected/),
+      );
+      // The host list is the desktop's profiles. A phone asking for it
+      // would spend one refusal per open.
+      expect(list).not.toHaveBeenCalled();
+    });
+
+    it('detaches on the second press, taking the socket, the credential and the address', async () => {
+      storeBackendEndpoint('laptop', LAPTOP.endpoint);
+      localStorage.setItem(
+        'agent-overflow:deviceSession:laptop',
+        JSON.stringify({ sessionId: 's', credential: 'c', expiresAtMs: Date.now() + 60_000 }),
+      );
+      stageBackend();
+      const { findByText, getByText, queryByTestId } = render(SystemsSection);
+
+      await fireEvent.click(await findByText('Detach'));
+      expect(queryByTestId('attached-machine')).not.toBeNull();
+      await fireEvent.click(getByText('Confirm detach'));
+
+      await waitFor(() => expect(queryByTestId('attached-machine')).toBeNull());
+      expect(hasPairedSession('laptop')).toBe(false);
+      expect(storedBackendEndpoint('laptop')).toBe('');
+    });
   });
 });

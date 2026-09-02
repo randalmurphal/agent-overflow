@@ -18,7 +18,7 @@
 
 import type { Bootstrap } from './bootstrap';
 import type { BackendDescriptor } from './backends';
-import { storedBackendEndpoints } from './homeEndpoint';
+import { endpointHost, storedBackendEndpoints } from './homeEndpoint';
 
 let descriptors: readonly BackendDescriptor[] = [];
 const listeners = new Set<() => void>();
@@ -196,12 +196,19 @@ export function descriptorForAttachedId(
  *
  * Home is excluded — it is the registry's own entry and is addressed by
  * `setHomeEndpoint`, not by a descriptor.
+ *
+ * The name is the ENDPOINT HOST, which is what `attachBackendFromLink`
+ * already writes for a payload that published no `backendName`. An empty
+ * one here would leave every surface that labels a machine — the machine
+ * picker, Settings → Systems, the sidebar's row — showing a blank until
+ * that backend's manifest resolves, which on an unreachable machine is
+ * never. An address is the one thing this client is sure of.
  */
 export function storedBackendDescriptors(): BackendDescriptor[] {
   const out: BackendDescriptor[] = [];
   for (const [id, endpoint] of Object.entries(storedBackendEndpoints())) {
     if (id === '') continue;
-    out.push(descriptorForAttachedId(id, '', endpoint));
+    out.push(descriptorForAttachedId(id, endpointHost(endpoint), endpoint));
   }
   return out;
 }

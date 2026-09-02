@@ -4,14 +4,24 @@
   // performs, driven from here instead of a terminal; the pairing link
   // comes from the OTHER machine's Settings → Network → Devices.
   //
-  // Host-only by nature: the profiles live in this machine's own
-  // directory, so a `--connect` window and every paired device see why
-  // rather than a control that would edit the wrong machine. The list
-  // load asks for `host` before it fires (the passive-load rule).
+  // Host-only on the DESKTOP by nature: those profiles live in this
+  // machine's own directory, so a `--connect` window sees why rather than
+  // a control that would edit the wrong machine. The list load asks for
+  // `host` before it fires (the passive-load rule).
   //
-  // Reachability here is live: each row reads its own socket's status
-  // from the transport registry, the same answer the composer's machine
-  // picker dims on.
+  // THE SHELL IS THE OTHER REALIZATION, and it is one branch, here.
+  // A phone has no local process to hold a profile, so it redeems the
+  // pairing link itself into one more session slot
+  // (transport/backendAttach.ts) — and for the same reason its LIST is
+  // its own transport registry rather than an RPC. It holds no `host`
+  // scope and needs none: nothing below asks this backend about machines
+  // that are this client's own business, so a phone spends no refusal
+  // opening this screen (the passive-load rule again, from the other
+  // side).
+  //
+  // Reachability here is live on both paths: each row reads its own
+  // socket's status from the transport registry, the same answer the
+  // composer's machine picker dims on.
 
   import { onMount } from 'svelte';
   import MonitorIcon from '@lucide/svelte/icons/monitor';
@@ -27,10 +37,15 @@
   import { isNativeShell } from '../../native/platform';
   import {
     attachBackendFromLink,
+    attachedMachines,
     awaitAttachedActivation,
+    detachAttachedBackend,
+    onPendingAttachmentsChanged,
+    pendingAttachments,
+    type PendingAttachedBackend,
   } from '../../transport/backendAttach';
   import { scanPairingQr } from '../../native/qr';
-  import { backendReachable } from '../../stores/attachedBackends.svelte';
+  import { backendReachable, getAttachedBackends } from '../../stores/attachedBackends.svelte';
   import {
     addSystem,
     getPendingAttachments,
@@ -43,21 +58,28 @@
   } from '../../stores/systems.svelte';
 
   const clientMode = isClientMode();
-  // The phone shell attaches machines CLIENT-SIDE: it has no local
-  // process to hold a profile, so the redemption is the same exchange it
-  // already performs for its own backend, one more session slot down
-  // (transport/backendAttach.ts). That is why it may add a machine while
-  // holding no `host` scope, and why the LIST below stays host-gated —
-  // that list is the desktop's profiles, and asking for it from a phone
-  // would spend one refusal per open (the passive-load rule).
-  const nativeShell = isNativeShell();
+  // A phone shell holds its own credentials and manages its own list; a
+  // `--connect` window manages nobody's and cannot be a shell. Stating
+  // that here rather than assuming it keeps every gate below a single
+  // question.
+  const nativeShell = isNativeShell() && !clientMode;
   let offHost = $derived(!hasScope('host'));
-  let unavailable = $derived(clientMode || offHost);
-  let canAdd = $derived(!clientMode && (!offHost || nativeShell));
+  // The desktop's own profile list, which is what `host` gates.
+  let hostList = $derived(!clientMode && !offHost);
+  let unavailable = $derived(!hostList && !nativeShell);
+  let canAdd = $derived(hostList || nativeShell);
 
   let systems = $derived(getSystems());
   let pending = $derived(getPendingAttachments());
   let loaded = $derived(systemsLoaded());
+
+  // The shell's two lists. `getAttachedBackends()` is the reactive mirror
+  // of the transport registry and moves on exactly the attach and detach
+  // these rows change with, so reading it inside the `$derived` is what
+  // makes the join re-run; the pending map has no rune of its own and
+  // gets one here, fed by the transport's change listener.
+  let shellPending = $state.raw<readonly PendingAttachedBackend[]>([]);
+  let machines = $derived(nativeShell ? attachedMachines(getAttachedBackends()) : []);
 
   let link = $state('');
   let adding = $state(false);
@@ -67,7 +89,12 @@
   let renameValue = $state('');
 
   onMount(() => {
-    if (!unavailable) void loadSystems().catch((err) => addToast('error', errString(err)));
+    if (hostList) void loadSystems().catch((err) => addToast('error', errString(err)));
+    if (!nativeShell) return;
+    shellPending = pendingAttachments();
+    return onPendingAttachmentsChanged(() => {
+      shellPending = pendingAttachments();
+    });
   });
 
   async function submitLink(): Promise<void> {
@@ -78,17 +105,25 @@
       if (nativeShell) {
         const attached = await attachBackendFromLink(raw);
         link = '';
-        addToast(
-          'info',
-          `On ${attached.name}, allow this device only if it shows ${attached.verificationNumber}.`,
-        );
-        const admitted = await awaitAttachedActivation(attached.id);
-        addToast(
-          admitted ? 'success' : 'warning',
-          admitted
-            ? `${attached.name} is attached.`
-            : `${attached.name} was not confirmed in time. Ask for a new pairing link.`,
-        );
+        // The form is free the moment the REDEMPTION lands, and the
+        // pending row below carries the rest. Holding `adding` for the
+        // confirmation window would disable the field for up to ten
+        // minutes while somebody walks to another machine, and the number
+        // to compare is on the row rather than in a toast that scrolls
+        // away before they get there.
+        void awaitAttachedActivation(attached.id)
+          .then((admitted) => {
+            addToast(
+              admitted ? 'success' : 'warning',
+              admitted
+                ? `${attached.name} is attached.`
+                : `${attached.name} was not confirmed in time. Ask for a new pairing link.`,
+            );
+          })
+          // Outside the try below, which has already returned: a failure
+          // to open the socket after the confirmation still has somebody
+          // waiting to be told.
+          .catch((err) => addToast('error', errString(err)));
         return;
       }
       await addSystem(raw);
@@ -127,6 +162,24 @@
     }
   }
 
+  /**
+   * The shell's removal. Armed in two steps like the desktop's, and one
+   * call: the socket, the credential and the stored address all belong to
+   * the transport, and it closes them in the order that keeps a session
+   * from ever outliving the address it is presented at
+   * (transport/backendAttach.ts).
+   *
+   * Synchronous, so there is no in-flight state to disable rows for.
+   */
+  function detachMachine(id: string): void {
+    if (armedRemove !== id) {
+      armedRemove = id;
+      return;
+    }
+    detachAttachedBackend(id);
+    armedRemove = null;
+  }
+
   function startRename(id: string, current: string): void {
     renaming = id;
     renameValue = current;
@@ -150,6 +203,15 @@
     if (backendReachable(id)) return 'Connected';
     return lastReachedMs ? `Unreachable · last seen ${relativeTime(lastReachedMs)}` : 'Unreachable';
   }
+
+  // One row shape for both realizations. The desktop's pending pairing
+  // comes off the host list and the shell's off the transport, but what a
+  // person has to see is the same number either way, so the markup is
+  // written once and the source is the branch.
+  let pendingRows = $derived(nativeShell ? shellPending : pending);
+  let nothingAttached = $derived(
+    nativeShell ? machines.length === 0 : loaded && systems.length === 0,
+  );
 </script>
 
 <section data-testid={unavailable ? 'systems-section-unavailable' : 'systems-section'}>
@@ -157,9 +219,11 @@
     title="Systems"
     description={clientMode
       ? 'Systems are attached from the machine that runs Agent Overflow. This window is attached remotely, so that list lives on that install’s own screen.'
-      : offHost
-        ? 'Attaching another machine stays on the computer running Agent Overflow. This device sees every attached machine’s threads, but the list is managed there.'
-        : 'Other machines running Agent Overflow. Their threads appear in the sidebar beside this machine’s, and the composer picks which one a new thread starts on.'}
+      : nativeShell
+        ? 'The machines this phone is paired with. Their threads appear in the sidebar beside each other, and the composer picks which one a new thread starts on.'
+        : offHost
+          ? 'Attaching another machine stays on the computer running Agent Overflow. This device sees every attached machine’s threads, but the list is managed there.'
+          : 'Other machines running Agent Overflow. Their threads appear in the sidebar beside this machine’s, and the composer picks which one a new thread starts on.'}
   />
 
   {#if canAdd}
@@ -199,7 +263,7 @@
 
   {#if !unavailable}
     <div class="mt-3 flex flex-col gap-1.5">
-      {#each pending as row (row.id)}
+      {#each pendingRows as row (row.id)}
         <div
           class="flex flex-col gap-2 rounded-[var(--radius-field)] border border-accent/30 bg-accent/5 px-3 py-2.5"
           data-testid="pending-attachment"
@@ -219,6 +283,34 @@
             >
               {row.verificationNumber}
             </p>
+          </div>
+        </div>
+      {/each}
+
+      {#each machines as machine (machine.id)}
+        <!-- The shell's row. No Rename: a nickname on the desktop is a
+             field of the PROFILE the local process holds, and this client
+             holds no profile — what it has is the machine's own name and
+             the address it was paired at. -->
+        <div
+          class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-3 py-2.5"
+          data-testid="attached-machine"
+        >
+          <div class="flex items-center gap-3">
+            <span class="text-fg-hint"><Icon icon={MonitorIcon} size={18} strokeWidth={1.75} /></span>
+            <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+              <p class="truncate text-[0.75rem] font-medium text-fg">{machine.name}</p>
+              <p class="truncate text-[0.6875rem] text-fg-hint">
+                {machine.host} · {backendReachable(machine.id) ? 'Connected' : 'Unreachable'}
+              </p>
+            </div>
+            <Button
+              variant={armedRemove === machine.id ? 'danger' : 'danger-ghost'}
+              size="xs"
+              onclick={() => detachMachine(machine.id)}
+            >
+              {armedRemove === machine.id ? 'Confirm detach' : 'Detach'}
+            </Button>
           </div>
         </div>
       {/each}
@@ -270,7 +362,7 @@
         </div>
       {/each}
 
-      {#if loaded && systems.length === 0 && pending.length === 0}
+      {#if nothingAttached && pendingRows.length === 0}
         <p class="px-0.5 text-[0.71875rem] text-fg-muted" data-testid="systems-empty">
           No other machines attached.
         </p>

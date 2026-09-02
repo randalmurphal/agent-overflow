@@ -614,12 +614,12 @@ remote browser alike. Protocol and authz rules:
   bound to the backend's domain and the browser refuses the ceremony
   from any other origin). It forgets the session and then the endpoint,
   and the next boot is a first run.
-- `backendAttach.ts` is how a client with no local process attaches a
-  SECOND machine. A desktop hands the link to its Go side, which holds a
-  profile and proxies the machine; a phone has nothing to hand it to, so
-  it redeems the link itself into one more session slot and one more
-  endpoint. That is a transport exchange rather than a settings screen's
-  business, which is why it lives here and
+- `backendAttach.ts` is how a client with no local process attaches,
+  lists and removes a SECOND machine. A desktop hands the link to its Go
+  side, which holds a profile and proxies the machine; a phone has nothing
+  to hand it to, so it redeems the link itself into one more session slot
+  and one more endpoint. That is a transport exchange rather than a
+  settings screen's business, which is why it lives here and
   `components/settings/SystemsSection.svelte` only calls it: the registry
   id is the payload's `backendId`, an id that is empty or holds a space is
   refused (it becomes a storage key and a `/ws/backend/<id>` path
@@ -628,6 +628,35 @@ remote browser alike. Protocol and authz rules:
   `awaitAttachedActivation` then polls that slot's `probeActivation` until
   the owner confirms on the other machine, and publishes the new
   descriptor through `syncAttachedBackends()`.
+
+  **Removing is ONE door, `detachAttachedBackend`, and its order is the
+  reason.** Such a machine is held in three places this directory owns —
+  the socket in `backends.ts`, the credential in `deviceSession.ts`, the
+  address in `homeEndpoint.ts` — and each one left behind is its own bug:
+  a socket that keeps dialing, a credential with nowhere to present it,
+  or an address the next boot's `storedBackendDescriptors()` sync
+  re-attaches from. Socket first so nothing dials against a half-removed
+  credential, then the credential, then the address, which is the same
+  rule the pairing paths keep in the other direction (a stored session
+  never outlives the knowledge of where to present it).
+
+  **The pending pairing lives here too**, in a plain module map with a
+  change listener, the shape `manifestBackends.ts` uses. It has to outlive
+  the call that started it: the owner confirms on the OTHER machine,
+  minutes later, so a section holding its own "waiting" flag across that
+  wait would be a form disabled for ten minutes. The map is also the
+  activation poll's LIVENESS — a machine removed mid-wait ends the poll on
+  its next tick instead of probing a cleared credential for the rest of
+  the window.
+
+  **An attached machine is never nameless.** `attachedMachines()` joins
+  the registry with the endpoint map and falls back to the endpoint HOST,
+  and `storedBackendDescriptors()` writes the same placeholder. An empty
+  name would leave the machine picker and Settings → Systems blank for a
+  backend whose manifest has not resolved, which on an unreachable machine
+  is never. Reachability is deliberately NOT in that join: an entry's
+  `status` is a getter that moves without the list moving, so a row reads
+  it per render through `stores/attachedBackends.backendReachable`.
 - `pageHost.ts` is the OTHER ticket channel: the page's half of the
   handshake with a Go process that owns its window. Such a page is marked
   by `?host=webview` on an otherwise bare URL, because a URL is copyable,
