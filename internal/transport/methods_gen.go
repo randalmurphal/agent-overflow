@@ -83,9 +83,9 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetDiffContextLines", ID: 1590634674},                  // main.App.GetDiffContextLines
 	{Name: "GetDiscussion", ID: 1924583939},                        // main.App.GetDiscussion
 	{Name: "GetDraft", ID: 875977146},                              // main.App.GetDraft
+	{Name: "GetEditDiffContextLines", ID: 949275134},               // main.App.GetEditDiffContextLines
 	{Name: "GetEditorSettings", ID: 1655853383},                    // main.App.GetEditorSettings
 	{Name: "GetGitStatus", ID: 4123560639},                         // main.App.GetGitStatus
-	{Name: "GetGitStatusFastForProject", ID: 2193133889},           // main.App.GetGitStatusFastForProject
 	{Name: "GetKeybindings", ID: 3015840904},                       // main.App.GetKeybindings
 	{Name: "GetLocalImageData", ID: 3247514443},                    // main.App.GetLocalImageData
 	{Name: "GetMcpServerStatus", ID: 4139359668},                   // main.App.GetMcpServerStatus
@@ -125,36 +125,28 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetUIState", ID: 3380106838},                           // main.App.GetUIState
 	{Name: "GetUsageStats", ID: 3135466533},                        // main.App.GetUsageStats
 	{Name: "GetWSLDistroPreference", ID: 294719565},                // main.App.GetWSLDistroPreference
-	{Name: "GetWorkingTreeDiff", ID: 1858968113},                   // main.App.GetWorkingTreeDiff
 	{Name: "GetWorkspaceActivity", ID: 673985705},                  // main.App.GetWorkspaceActivity
 	{Name: "GetWorkspaceCurrentDiff", ID: 736820142},               // main.App.GetWorkspaceCurrentDiff
 	{Name: "GitCheckout", ID: 1598126927},                          // main.App.GitCheckout
-	{Name: "GitCheckoutForProject", ID: 585511915},                 // main.App.GitCheckoutForProject
 	{Name: "GitCommit", ID: 1971060042},                            // main.App.GitCommit
-	{Name: "GitCreateBranch", ID: 2582897723},                      // main.App.GitCreateBranch
 	{Name: "GitCreateBranchFrom", ID: 429779991},                   // main.App.GitCreateBranchFrom
 	{Name: "GitCreatePR", ID: 4106667105},                          // main.App.GitCreatePR
 	{Name: "GitCreateWorktree", ID: 3327650914},                    // main.App.GitCreateWorktree
 	{Name: "GitListBranchPruneCandidates", ID: 3795082615},         // main.App.GitListBranchPruneCandidates
 	{Name: "GitListBranches", ID: 2693102179},                      // main.App.GitListBranches
-	{Name: "GitListBranchesForProject", ID: 2675387767},            // main.App.GitListBranchesForProject
 	{Name: "GitListWorktrees", ID: 3232495403},                     // main.App.GitListWorktrees
-	{Name: "GitListWorktreesForProject", ID: 409101231},            // main.App.GitListWorktreesForProject
 	{Name: "GitMaybeFetchRemotes", ID: 2000020570},                 // main.App.GitMaybeFetchRemotes
-	{Name: "GitMaybeFetchRemotesForProject", ID: 338919746},        // main.App.GitMaybeFetchRemotesForProject
 	{Name: "GitPruneBranches", ID: 3331815821},                     // main.App.GitPruneBranches
 	{Name: "GitPull", ID: 3933172764},                              // main.App.GitPull
 	{Name: "GitPush", ID: 4036251239},                              // main.App.GitPush
 	{Name: "GitRemoveWorktree", ID: 4002429606},                    // main.App.GitRemoveWorktree
-	{Name: "GitStageAll", ID: 548906954},                           // main.App.GitStageAll
 	{Name: "GitStatusSubscribe", ID: 3282404643},                   // main.App.GitStatusSubscribe
 	{Name: "GitStatusUnsubscribe", ID: 3263989430},                 // main.App.GitStatusUnsubscribe
 	{Name: "GitSyncBranch", ID: 1057032236},                        // main.App.GitSyncBranch
-	{Name: "GitSyncBranchForProject", ID: 3862053920},              // main.App.GitSyncBranchForProject
 	{Name: "GitWorktreeStatus", ID: 1333748060},                    // main.App.GitWorktreeStatus
-	{Name: "GitWorktreeStatusForProject", ID: 71861776},            // main.App.GitWorktreeStatusForProject
 	{Name: "HighlightClassNames", ID: 2772816619},                  // main.App.HighlightClassNames
 	{Name: "HighlightCode", ID: 4080150350},                        // main.App.HighlightCode
+	{Name: "HighlightEditPatchWithContext", ID: 3749810774},        // main.App.HighlightEditPatchWithContext
 	{Name: "HighlightPatch", ID: 834878499},                        // main.App.HighlightPatch
 	{Name: "HighlightPatchWithContext", ID: 3722752402},            // main.App.HighlightPatchWithContext
 	{Name: "HighlightSchemaVersion", ID: 2896867980},               // main.App.HighlightSchemaVersion
@@ -233,7 +225,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RegenerateThreadTitle", ID: 3682640111},                // main.App.RegenerateThreadTitle
 	{Name: "RegisterQueueItem", ID: 1034543696},                    // main.App.RegisterQueueItem
 	{Name: "RemoveOtherWorktree", ID: 2899196344},                  // main.App.RemoveOtherWorktree
-	{Name: "RemoveOtherWorktreeForProject", ID: 574548500},         // main.App.RemoveOtherWorktreeForProject
 	{Name: "RemoveProviderAccount", ID: 684418419},                 // main.App.RemoveProviderAccount
 	{Name: "RenameProject", ID: 3728890856},                        // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435},                          // main.App.RenameThread
@@ -371,7 +362,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowUnbindThread", ID: 2006703348},                 // main.App.WorkflowUnbindThread
 	{Name: "WorkflowUpdateAutomation", ID: 536579134},              // main.App.WorkflowUpdateAutomation
 	{Name: "WriteTerminal", ID: 146795716},                         // main.App.WriteTerminal
-	{Name: "WriteThreadWorkspaceFile", ID: 3895036895},             // main.App.WriteThreadWorkspaceFile
+	{Name: "WriteWorkspaceFile", ID: 1859440887},                   // main.App.WriteWorkspaceFile
 }
 
 // NewMethodAllowList returns a name set suitable for

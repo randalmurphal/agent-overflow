@@ -48,7 +48,7 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 		t.Fatalf("expected sanitized worktree path, got %q", worktreePath)
 	}
 
-	worktrees, err := app.GitListWorktrees(thread.ID)
+	worktrees, err := app.GitListWorktrees(workspaceRefForThread(thread))
 	if err != nil {
 		t.Fatalf("GitListWorktrees() error = %v", err)
 	}
@@ -334,7 +334,8 @@ func TestGetWorkspaceCurrentDiffUsesLinkedWorktree(t *testing.T) {
 		t.Fatalf("write linked worktree change: %v", err)
 	}
 
-	diff, err := app.GetWorkspaceCurrentDiff(thread.ID, false)
+	worktreeRef := WorkspaceRef{ProjectID: project.ID, WorkspacePath: worktreePath}
+	diff, err := app.GetWorkspaceCurrentDiff(worktreeRef, false)
 	if err != nil {
 		t.Fatalf("GetWorkspaceCurrentDiff() error = %v", err)
 	}
@@ -348,7 +349,7 @@ func TestGetWorkspaceCurrentDiffUsesLinkedWorktree(t *testing.T) {
 	testutil.RunGit(t, worktreePath, "add", "README.txt")
 	testutil.RunGit(t, worktreePath, "commit", "-m", "commit linked worktree change")
 
-	diff, err = app.GetWorkspaceCurrentDiff(thread.ID, false)
+	diff, err = app.GetWorkspaceCurrentDiff(worktreeRef, false)
 	if err != nil {
 		t.Fatalf("GetWorkspaceCurrentDiff(clean worktree) error = %v", err)
 	}
@@ -375,7 +376,7 @@ func TestGetBranchBaseDiffIncludesCommittedAndUncommittedChanges(t *testing.T) {
 		t.Fatalf("write untracked file: %v", err)
 	}
 
-	diff, err := app.GetBranchBaseDiff(thread.ID, "main", false)
+	diff, err := app.GetBranchBaseDiff(workspaceRefForThread(thread), "main", false)
 	if err != nil {
 		t.Fatalf("GetBranchBaseDiff() error = %v", err)
 	}
@@ -406,7 +407,7 @@ func TestGetBranchBaseDiffBaseEqualsCurrentShowsOnlyUncommitted(t *testing.T) {
 		t.Fatalf("write workspace file: %v", err)
 	}
 
-	diff, err := app.GetBranchBaseDiff(thread.ID, "main", false)
+	diff, err := app.GetBranchBaseDiff(workspaceRefForThread(thread), "main", false)
 	if err != nil {
 		t.Fatalf("GetBranchBaseDiff() error = %v", err)
 	}
@@ -423,7 +424,7 @@ func TestGetBranchBaseDiffMissingBranchErrors(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	thread := createGitDiffTestThread(t, app, repo, "thread-branch-base-missing")
 
-	_, err := app.GetBranchBaseDiff(thread.ID, "missing-branch", false)
+	_, err := app.GetBranchBaseDiff(workspaceRefForThread(thread), "missing-branch", false)
 	if err == nil {
 		t.Fatal("GetBranchBaseDiff() error = nil, want missing branch error")
 	}
@@ -505,7 +506,7 @@ func TestGitCreateWorktreePreservesExplicitBranchCase(t *testing.T) {
 		t.Fatalf("upper Branch = %q, want BLITZ-73", upperStored.Branch)
 	}
 
-	branches, err := app.GitListBranches(lowerThread.ID)
+	branches, err := app.GitListBranches(workspaceRefForThread(lowerThread))
 	if err != nil {
 		t.Fatalf("GitListBranches() error = %v", err)
 	}
@@ -1206,7 +1207,7 @@ func TestGitWorktreeStatusReportsDirtyAndAttached(t *testing.T) {
 		t.Fatalf("CreateThread(other): %v", err)
 	}
 
-	status, err := app.GitWorktreeStatus(thread.ID, worktreePath)
+	status, err := app.GitWorktreeStatus(workspaceRefForThread(thread), worktreePath)
 	if err != nil {
 		t.Fatalf("GitWorktreeStatus() error = %v", err)
 	}
@@ -1224,7 +1225,7 @@ func TestGitWorktreeStatusReportsDirtyAndAttached(t *testing.T) {
 	}
 }
 
-func TestGitWorktreeStatusForProjectDoesNotRequireThreadID(t *testing.T) {
+func TestGitWorktreeStatusDoesNotRequireAnOccupantThread(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
 
@@ -1248,9 +1249,9 @@ func TestGitWorktreeStatusForProjectDoesNotRequireThreadID(t *testing.T) {
 		t.Fatalf("dirty write: %v", err)
 	}
 
-	status, err := app.GitWorktreeStatusForProject(project.ID, worktreePath)
+	status, err := app.GitWorktreeStatus(WorkspaceRef{ProjectID: project.ID}, worktreePath)
 	if err != nil {
-		t.Fatalf("GitWorktreeStatusForProject() error = %v", err)
+		t.Fatalf("GitWorktreeStatus() error = %v", err)
 	}
 	if !status.Dirty {
 		t.Fatalf("Dirty = false, want true")
@@ -1287,14 +1288,14 @@ func TestRemoveOtherWorktreeRefusesDirtyWithoutForce(t *testing.T) {
 		t.Fatalf("dirty write: %v", err)
 	}
 
-	if err := app.RemoveOtherWorktree(owner.ID, worktreePath, false); err == nil {
+	if _, err := app.RemoveOtherWorktree(workspaceRefForThread(owner), worktreePath, false); err == nil {
 		t.Fatal("expected RemoveOtherWorktree to refuse a dirty worktree without force")
 	}
 	if _, err := os.Stat(worktreePath); err != nil {
 		t.Fatalf("dirty worktree should still exist after refused remove: %v", err)
 	}
 
-	if err := app.RemoveOtherWorktree(owner.ID, worktreePath, true); err != nil {
+	if _, err := app.RemoveOtherWorktree(workspaceRefForThread(owner), worktreePath, true); err != nil {
 		t.Fatalf("RemoveOtherWorktree(force=true) error = %v", err)
 	}
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
@@ -1302,7 +1303,7 @@ func TestRemoveOtherWorktreeRefusesDirtyWithoutForce(t *testing.T) {
 	}
 }
 
-func TestRemoveOtherWorktreeForProjectRemovesAndReturnsPlaceholderState(t *testing.T) {
+func TestRemoveOtherWorktreeRemovesAndReturnsPlaceholderState(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
 
@@ -1323,9 +1324,10 @@ func TestRemoveOtherWorktreeForProjectRemovesAndReturnsPlaceholderState(t *testi
 		t.Fatalf("GitCreateWorktree() error = %v", err)
 	}
 
-	state, err := app.RemoveOtherWorktreeForProject(project.ID, worktreePath, worktreePath, true)
+	state, err := app.RemoveOtherWorktree(
+		WorkspaceRef{ProjectID: project.ID, WorkspacePath: worktreePath}, worktreePath, true)
 	if err != nil {
-		t.Fatalf("RemoveOtherWorktreeForProject() error = %v", err)
+		t.Fatalf("RemoveOtherWorktree() error = %v", err)
 	}
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
 		t.Fatalf("worktree should be removed; stat err = %v", err)
@@ -1367,7 +1369,7 @@ func TestRemoveOtherWorktreeRefusesProjectRoot(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	if err := app.RemoveOtherWorktree(thread.ID, repo, true); err == nil {
+	if _, err := app.RemoveOtherWorktree(workspaceRefForThread(thread), repo, true); err == nil {
 		t.Fatal("expected RemoveOtherWorktree to refuse the project root")
 	}
 	if _, err := os.Stat(repo); err != nil {
@@ -1412,7 +1414,7 @@ func TestRemoveOtherWorktreeAllowsBusyCallerOnUnoccupiedWorktree(t *testing.T) {
 		t.Fatalf("InsertTurn(): %v", err)
 	}
 
-	if err := app.RemoveOtherWorktree(caller.ID, worktreePath, false); err != nil {
+	if _, err := app.RemoveOtherWorktree(workspaceRefForThread(caller), worktreePath, false); err != nil {
 		t.Fatalf("RemoveOtherWorktree() during caller's own turn error = %v, want success for unoccupied worktree", err)
 	}
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
@@ -1462,15 +1464,15 @@ func TestRemoveOtherWorktreeRejectsRunningBackgroundTaskOnSibling(t *testing.T) 
 	}
 	insertRunningBackgroundToolCall(t, app.store, sibling.ID, "item-bg-live", 0, 0)
 
-	err = app.RemoveOtherWorktree(owner.ID, worktreePath, true)
+	_, err = app.RemoveOtherWorktree(workspaceRefForThread(owner), worktreePath, true)
 	if err == nil {
 		t.Fatal("expected RemoveOtherWorktree to refuse while sibling has a running background task")
 	}
-	if !strings.Contains(err.Error(), sibling.ID) {
-		t.Fatalf("error should name the busy sibling: got %v", err)
-	}
-	if !strings.Contains(err.Error(), "cannot remove worktree while 1 background task(s) are running") {
+	if !strings.Contains(err.Error(), "cannot remove this worktree while 1 background task(s) are running in it") {
 		t.Fatalf("final error segment should be self-contained about background tasks: got %v", err)
+	}
+	if strings.Contains(err.Error(), sibling.ID) {
+		t.Fatalf("refusal must not leak a thread uuid: got %v", err)
 	}
 	if _, err := os.Stat(worktreePath); err != nil {
 		t.Fatalf("worktree should still exist after refused remove: %v", err)
@@ -1480,7 +1482,7 @@ func TestRemoveOtherWorktreeRejectsRunningBackgroundTaskOnSibling(t *testing.T) 
 // The placeholder-pane path (no caller thread row) must apply the same
 // occupancy gate — callerThreadID=="" skips the caller lock append, never
 // the attached-thread check.
-func TestRemoveOtherWorktreeForProjectRejectsBusyOccupant(t *testing.T) {
+func TestRemoveOtherWorktreeRejectsBusyOccupantWithoutACallerThread(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
 
@@ -1511,12 +1513,12 @@ func TestRemoveOtherWorktreeForProjectRejectsBusyOccupant(t *testing.T) {
 		t.Fatalf("InsertTurn(): %v", err)
 	}
 
-	_, err = app.RemoveOtherWorktreeForProject(project.ID, "", worktreePath, true)
+	_, err = app.RemoveOtherWorktree(WorkspaceRef{ProjectID: project.ID}, worktreePath, true)
 	if err == nil {
 		t.Fatal("expected placeholder-path removal to refuse while an occupant is mid-turn")
 	}
-	if !strings.Contains(err.Error(), occupant.ID) {
-		t.Fatalf("error should name the busy occupant: got %v", err)
+	if !strings.Contains(err.Error(), "cannot remove this worktree while an agent is responding in it") {
+		t.Fatalf("error should word the busy occupant like the lock tooltip: got %v", err)
 	}
 	if _, err := os.Stat(worktreePath); err != nil {
 		t.Fatalf("worktree should still exist after refused remove: %v", err)
@@ -1557,9 +1559,9 @@ func TestRemoveOtherWorktreeHandlesWorkspaceOnlyOccupant(t *testing.T) {
 	}
 	insertRunningBackgroundToolCall(t, app.store, occupant.ID, "item-wsonly-live", 0, 0)
 
-	err = app.RemoveOtherWorktree(caller.ID, worktreePath, true)
-	if err == nil || !strings.Contains(err.Error(), occupant.ID) {
-		t.Fatalf("expected refusal naming the workspace-only occupant, got %v", err)
+	_, err = app.RemoveOtherWorktree(workspaceRefForThread(caller), worktreePath, true)
+	if err == nil || !strings.Contains(err.Error(), "cannot remove this worktree while") {
+		t.Fatalf("expected refusal describing the busy workspace-only occupant, got %v", err)
 	}
 
 	// Drain the background task; the same removal must now succeed and
@@ -1567,7 +1569,7 @@ func TestRemoveOtherWorktreeHandlesWorkspaceOnlyOccupant(t *testing.T) {
 	if _, err := app.store.MarkLiveBackgroundToolCallsInactive(occupant.ID, time.Now().UnixMilli()); err != nil {
 		t.Fatalf("MarkLiveBackgroundToolCallsInactive(): %v", err)
 	}
-	if err := app.RemoveOtherWorktree(caller.ID, worktreePath, true); err != nil {
+	if _, err := app.RemoveOtherWorktree(workspaceRefForThread(caller), worktreePath, true); err != nil {
 		t.Fatalf("RemoveOtherWorktree() after drain error = %v", err)
 	}
 	refreshed, err := app.store.GetThread(occupant.ID)
@@ -1609,7 +1611,7 @@ func TestRemoveOtherWorktreeForceRejectsNonWorktreePath(t *testing.T) {
 		t.Fatalf("MkdirAll(): %v", err)
 	}
 
-	err = app.RemoveOtherWorktree(thread.ID, victim, true)
+	_, err = app.RemoveOtherWorktree(workspaceRefForThread(thread), victim, true)
 	if err == nil {
 		t.Fatal("expected force removal of a non-worktree path to be refused")
 	}
@@ -1672,7 +1674,7 @@ func TestRemoveOtherWorktreeBusyCallerReattachesAllIdleOccupants(t *testing.T) {
 		t.Fatalf("InsertTurn(): %v", err)
 	}
 
-	if err := app.RemoveOtherWorktree(caller.ID, worktreePath, false); err != nil {
+	if _, err := app.RemoveOtherWorktree(workspaceRefForThread(caller), worktreePath, false); err != nil {
 		t.Fatalf("RemoveOtherWorktree() error = %v, want success — caller is busy but not attached, occupants are idle", err)
 	}
 	for _, id := range occupants {
@@ -1724,8 +1726,8 @@ func TestGitRemoveWorktreeRejectsBusyCallerOnOwnWorktree(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected GitRemoveWorktree to refuse while the occupying caller is mid-turn")
 	}
-	if !strings.Contains(err.Error(), thread.ID) {
-		t.Fatalf("error should name the busy occupying thread: got %v", err)
+	if !strings.Contains(err.Error(), "cannot remove this worktree while an agent is responding in it") {
+		t.Fatalf("error should word the busy occupant like the lock tooltip: got %v", err)
 	}
 	if _, err := os.Stat(worktreePath); err != nil {
 		t.Fatalf("worktree should still exist after refused remove: %v", err)
@@ -1771,7 +1773,7 @@ func TestRemoveOtherWorktreeRejectsActiveTurnOnSibling(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertTurn(): %v", err)
 	}
-	worktrees, err := app.GitListWorktrees(owner.ID)
+	worktrees, err := app.GitListWorktrees(workspaceRefForThread(owner))
 	if err != nil {
 		t.Fatalf("GitListWorktrees() error = %v", err)
 	}
@@ -1788,12 +1790,12 @@ func TestRemoveOtherWorktreeRejectsActiveTurnOnSibling(t *testing.T) {
 		t.Fatalf("worktree %q not found in list: %+v", worktreePath, worktrees)
 	}
 
-	err = app.RemoveOtherWorktree(owner.ID, worktreePath, true)
+	_, err = app.RemoveOtherWorktree(workspaceRefForThread(owner), worktreePath, true)
 	if err == nil {
 		t.Fatal("expected RemoveOtherWorktree to refuse while sibling is mid-turn")
 	}
-	if !strings.Contains(err.Error(), sibling.ID) {
-		t.Fatalf("error should name the offending sibling: got %v", err)
+	if !strings.Contains(err.Error(), "cannot remove this worktree while an agent is responding in it") {
+		t.Fatalf("error should word the offending sibling's turn like the lock tooltip: got %v", err)
 	}
 	// Worktree must still exist — the rejection happens before any git op.
 	if _, err := os.Stat(worktreePath); err != nil {
@@ -1838,7 +1840,7 @@ func TestGitListWorktreesMarksDeleteBlockedBySiblingBackgroundTask(t *testing.T)
 	}
 	insertRunningBackgroundToolCall(t, app.store, sibling.ID, "bg-list-worktree", 0, 0)
 
-	worktrees, err := app.GitListWorktrees(owner.ID)
+	worktrees, err := app.GitListWorktrees(workspaceRefForThread(owner))
 	if err != nil {
 		t.Fatalf("GitListWorktrees() error = %v", err)
 	}
@@ -1901,7 +1903,7 @@ func TestRemoveOtherWorktreeIgnoresObsoleteInflightTurnOnSibling(t *testing.T) {
 		t.Fatalf("UpdateTurnCompleted(done): %v", err)
 	}
 
-	if err := app.RemoveOtherWorktree(owner.ID, worktreePath, true); err != nil {
+	if _, err := app.RemoveOtherWorktree(workspaceRefForThread(owner), worktreePath, true); err != nil {
 		t.Fatalf("RemoveOtherWorktree() error = %v", err)
 	}
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
@@ -1966,7 +1968,7 @@ func TestRemoveOtherWorktreeBroadcastsSiblingUpdates(t *testing.T) {
 		}
 	}
 
-	if err := app.RemoveOtherWorktree(owner.ID, worktreePath, true); err != nil {
+	if _, err := app.RemoveOtherWorktree(workspaceRefForThread(owner), worktreePath, true); err != nil {
 		t.Fatalf("RemoveOtherWorktree() error = %v", err)
 	}
 

@@ -23,7 +23,7 @@ type PRMergeConflictsResult struct {
 	Messages []string `json:"messages"`
 }
 
-func (a *App) GetPRMergeConflicts(threadID string, pr gitops.PRReference, baseRef, headRefName string) (PRMergeConflictsResult, error) {
+func (a *App) GetPRMergeConflicts(ws WorkspaceRef, pr gitops.PRReference, baseRef, headRefName string) (PRMergeConflictsResult, error) {
 	if a.shuttingDown.Load() {
 		return PRMergeConflictsResult{}, ErrShuttingDown
 	}
@@ -37,7 +37,7 @@ func (a *App) GetPRMergeConflicts(threadID string, pr gitops.PRReference, baseRe
 	if err := gitops.ValidateBranchName(baseRef); err != nil {
 		return PRMergeConflictsResult{}, err
 	}
-	workspace, err := a.conflictWorkspace(threadID)
+	workspace, err := a.conflictWorkspace(ws)
 	if err != nil {
 		return PRMergeConflictsResult{}, err
 	}
@@ -74,35 +74,35 @@ func (a *App) GetPRMergeConflicts(threadID string, pr gitops.PRReference, baseRe
 	}, nil
 }
 
-func (a *App) GetMergeConflictFile(threadID, treeOID, path string) (string, error) {
+func (a *App) GetMergeConflictFile(ws WorkspaceRef, treeOID, path string) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
 	}
-	workspace, err := a.conflictWorkspace(threadID)
+	workspace, err := a.conflictWorkspace(ws)
 	if err != nil {
 		return "", err
 	}
 	return a.gitCore().ShowTreeFile(workspace, treeOID, path)
 }
 
-func (a *App) conflictWorkspace(threadID string) (string, error) {
-	workspace, ok := a.localCloneWorkspace(threadID)
+func (a *App) conflictWorkspace(ws WorkspaceRef) (string, error) {
+	workspace, ok := a.localCloneWorkspace(ws)
 	if !ok {
 		return "", errors.New("viewing conflicts requires a local clone")
 	}
 	return workspace, nil
 }
 
-// localCloneWorkspace resolves the thread's workspace when it is a real
-// local git clone. ok=false means no clone is available (a pr-anchor
-// thread with no matching local checkout); callers decide whether that is
-// an error (conflict viewer) or a fall-back-to-API signal (PR diff).
-func (a *App) localCloneWorkspace(threadID string) (string, bool) {
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
+// localCloneWorkspace resolves a workspace ref to a real local git clone.
+// ok=false means there is none — a ZERO ref (a pr-anchor thread that never
+// had a checkout), a ref that fails validation, or a directory that is not a
+// repository. Callers decide whether that is an error (conflict viewer) or a
+// fall-back-to-the-forge-API signal (PR diff).
+func (a *App) localCloneWorkspace(ws WorkspaceRef) (string, bool) {
+	if strings.TrimSpace(ws.ProjectID) == "" {
 		return "", false
 	}
-	_, workspace, err := a.resolveGitPaths(thread)
+	_, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil || strings.TrimSpace(workspace) == "" {
 		return "", false
 	}

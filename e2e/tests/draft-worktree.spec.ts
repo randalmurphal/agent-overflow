@@ -52,8 +52,8 @@ async function registeredWorktree(
   branch: string,
 ): Promise<WorktreeListItem | undefined> {
   const list = await harness.rpc<WorktreeListItem[] | null>(
-    'GitListWorktreesForProject',
-    projectId,
+    'GitListWorktrees',
+    { projectId, workspacePath: '' },
   );
   return (list ?? []).find((wt) => wt.branch === branch);
 }

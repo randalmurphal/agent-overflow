@@ -5,11 +5,14 @@
 //   - search-generation counter so a slow SearchWorkspaceFiles response
 //     can't overwrite fresher results
 //
-// The caller provides a textarea reference + thread-id getter. UI
-// rendering lives in Composer.svelte / ComposerMentionPopover — this
-// module is purely state + dispatch.
+// The caller provides a textarea reference + workspace getter. The search
+// reads a CHECKOUT, so it is keyed on the workspace and works on a draft
+// placeholder exactly as it does on a persisted thread. UI rendering lives
+// in Composer.svelte / ComposerMentionPopover — this module is purely state
+// + dispatch.
 
 import { SearchWorkspaceFiles } from '../../stores/bindings';
+import type { WorkspaceRef } from '../../types/git';
 import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import type { WorkspaceFile, WorkspaceFileSearchResult } from '../../types/workspaceFile';
@@ -19,8 +22,8 @@ import { replaceTextareaRange } from './textareaEdit';
 export interface ComposerMentionsOptions {
   /** Returns the textarea DOM element. May be undefined before mount. */
   getTextarea: () => HTMLTextAreaElement | undefined;
-  /** Thread-id getter — used to scope search requests. */
-  getThreadId: () => string | null;
+  /** Workspace getter — the checkout the search runs in. */
+  getWorkspace: () => WorkspaceRef | null;
 }
 
 export interface ComposerMentionsHandle {
@@ -48,15 +51,15 @@ export function createComposerMentions(opts: ComposerMentionsOptions): ComposerM
   let mentionSearchGeneration = 0;
 
   async function loadMentionResults(query: string): Promise<void> {
-    const threadId = opts.getThreadId();
-    if (!threadId) {
+    const workspace = opts.getWorkspace();
+    if (!workspace) {
       mentionResults = [];
       return;
     }
     const generation = ++mentionSearchGeneration;
     mentionLoading = true;
     try {
-      const result = (await SearchWorkspaceFiles(threadId, query, 50)) as WorkspaceFileSearchResult;
+      const result = (await SearchWorkspaceFiles(workspace, query, 50)) as WorkspaceFileSearchResult;
       if (generation !== mentionSearchGeneration) return;
       mentionResults = result?.files ?? [];
       mentionActiveIndex = 0;

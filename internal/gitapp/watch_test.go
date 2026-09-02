@@ -21,12 +21,6 @@ func newWatchTestService(t *testing.T) (*Service, string) {
 	if err := database.CreateProject(store.Project{ID: "project", Path: workspace, Name: "project", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if err := database.CreateThread(store.Thread{
-		ID: "thread", ProjectID: "project", WorkspacePath: workspace,
-		Provider: "claude", Model: "test", Title: "thread", CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
 	manager := gitwatch.NewManager(gitwatch.ManagerConfig{
 		StatusFn: func(string) (gitops.GitStatus, error) {
 			return gitops.GitStatus{IsRepo: true, Branch: "main"}, nil
@@ -39,7 +33,7 @@ func newWatchTestService(t *testing.T) (*Service, string) {
 
 func TestSubscribeReplacesDeadPumpWithoutDroppingSuccessor(t *testing.T) {
 	service, _ := newWatchTestService(t)
-	first, err := service.Subscribe("thread")
+	first, err := service.Subscribe(WorkspaceRef{ProjectID: "project"})
 	if err != nil {
 		t.Fatalf("Subscribe first: %v", err)
 	}
@@ -53,7 +47,7 @@ func TestSubscribeReplacesDeadPumpWithoutDroppingSuccessor(t *testing.T) {
 	dying.dead = true
 	service.status.mu.Unlock()
 
-	second, err := service.Subscribe("thread")
+	second, err := service.Subscribe(WorkspaceRef{ProjectID: "project"})
 	if err != nil {
 		t.Fatalf("Subscribe second: %v", err)
 	}

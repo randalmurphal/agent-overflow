@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/highlightapp"
+	"agent-overflow/internal/testutil"
 )
 
 func TestHighlightWireProjectionsPreserveEveryField(t *testing.T) {
@@ -121,12 +122,18 @@ func TestHighlightPatch(t *testing.T) {
 
 func TestHighlightPatchWithContextWorkspaceScope(t *testing.T) {
 	app := newTestAppWithStore(t)
-	workspace := t.TempDir()
-	thread := testThread("thread-highlight-ctx")
-	thread.WorkspacePath = workspace
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
+	repo := testutil.InitGitRepo(t)
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
 	}
+	// A REGISTERED worktree, not the project root: the ref addresses a
+	// checkout, and a worktree is one of the two things it may name.
+	workspace := filepath.Join(t.TempDir(), "wt")
+	testutil.RunGit(t, repo, "worktree", "add", "-b", "feature/highlight", workspace)
+	t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, workspace, true) })
+	ref := WorkspaceRef{ProjectID: project.ID, WorkspacePath: workspace}
+
 	fileContent := "def handler(request):\n" +
 		"    \"\"\"Docstring prose already open.\n" +
 		"    New line with for and while keywords.\n" +
@@ -136,7 +143,10 @@ func TestHighlightPatchWithContextWorkspaceScope(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	res, err := app.HighlightPatchWithContext(thread.ID, HighlightPatchContextRequest{
+	// Membership resolves from git's on-disk layout, so no git binary is
+	// needed to answer it.
+	t.Setenv("PATH", "")
+	res, err := app.HighlightPatchWithContext(ref, HighlightPatchContextRequest{
 		Scope: "workspace",
 		Path:  "route.py",
 		Patch: testDocstringPatch,
@@ -170,10 +180,11 @@ func TestHighlightPatchWithContextWorkspaceScope(t *testing.T) {
 }
 
 func TestHighlightPatchWithContextFallsBackWithoutContent(t *testing.T) {
-	// Missing thread/store: content resolution fails, the RPC degrades
-	// to the unprimed result instead of erroring.
+	// A resolvable checkout with no such file: content resolution fails and
+	// the RPC degrades to the unprimed result instead of erroring.
 	app := newTestAppWithStore(t)
-	res, err := app.HighlightPatchWithContext("no-such-thread", HighlightPatchContextRequest{
+	ref := testWorkspaceRef(t, app, t.TempDir())
+	res, err := app.HighlightPatchWithContext(ref, HighlightPatchContextRequest{
 		Scope: "workspace",
 		Path:  "route.py",
 		Patch: testDocstringPatch,
@@ -184,6 +195,52 @@ func TestHighlightPatchWithContextFallsBackWithoutContent(t *testing.T) {
 	lines := strings.Split(strings.TrimSuffix(testDocstringPatch, "\n"), "\n")
 	if len(res.Lines) != len(lines) {
 		t.Fatalf("len(Lines) = %d, want %d", len(res.Lines), len(lines))
+	}
+}
+
+// Priming is best-effort; naming the checkout is not. A ref that resolves to
+// nothing — or to a directory that is not a checkout of the project — is a
+// caller error and comes back as one, never as silently unprimed spans.
+func TestHighlightPatchWithContextRefusesUnresolvableRefs(t *testing.T) {
+	app := newTestAppWithStore(t)
+	project := testWorkspaceRef(t, app, testutil.InitGitRepo(t))
+
+	for name, ref := range map[string]WorkspaceRef{
+		"zero ref":        {},
+		"unknown project": {ProjectID: "nope"},
+		"non-checkout directory": {
+			ProjectID: project.ProjectID, WorkspacePath: t.TempDir(),
+		},
+	} {
+		if _, err := app.HighlightPatchWithContext(ref, HighlightPatchContextRequest{
+			Scope: "workspace", Path: "route.py", Patch: testDocstringPatch,
+		}); err == nil {
+			t.Fatalf("%s: HighlightPatchWithContext accepted an unresolvable ref", name)
+		}
+	}
+}
+
+// The two entry points are each other's tripwire: neither serves the other's
+// subject, so a caller cannot reach a thread's history through the checkout
+// RPC or a checkout through the thread RPC.
+func TestHighlightPatchWithContextScopesAreExclusive(t *testing.T) {
+	app := newTestAppWithStore(t)
+	ref := testWorkspaceRef(t, app, t.TempDir())
+	thread := testThread("thread-highlight-scope-split")
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	if _, err := app.HighlightPatchWithContext(ref, HighlightPatchContextRequest{
+		Scope: "edits", Path: "route.py", Patch: testDocstringPatch,
+	}); err == nil {
+		t.Fatal("HighlightPatchWithContext accepted the edits scope")
+	}
+	if _, err := app.HighlightEditPatchWithContext(thread.ID, HighlightPatchContextRequest{
+		Scope: "workspace", Path: "route.py", Patch: testDocstringPatch,
+	}); err == nil {
+		t.Fatal("HighlightEditPatchWithContext accepted a live scope")
 	}
 }
 
@@ -204,12 +261,15 @@ func TestHighlightGuardsShutdown(t *testing.T) {
 	if _, err := app.HighlightPatch(HighlightPatchRequest{Path: "a.go", Patch: ""}); err == nil {
 		t.Error("HighlightPatch should refuse during shutdown")
 	}
-	if _, err := app.HighlightPatchWithContext("t", HighlightPatchContextRequest{}); err == nil {
+	if _, err := app.HighlightPatchWithContext(WorkspaceRef{}, HighlightPatchContextRequest{}); err == nil {
 		t.Error("HighlightPatchWithContext should refuse during shutdown")
+	}
+	if _, err := app.HighlightEditPatchWithContext("t", HighlightPatchContextRequest{}); err == nil {
+		t.Error("HighlightEditPatchWithContext should refuse during shutdown")
 	}
 }
 
-func TestHighlightPatchWithContextEditsScope(t *testing.T) {
+func TestHighlightEditPatchWithContextEditsScope(t *testing.T) {
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()
 	thread := testThread("thread-highlight-edits")
@@ -227,13 +287,13 @@ func TestHighlightPatchWithContextEditsScope(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	res, err := app.HighlightPatchWithContext(thread.ID, HighlightPatchContextRequest{
+	res, err := app.HighlightEditPatchWithContext(thread.ID, HighlightPatchContextRequest{
 		Scope: "edits",
 		Path:  "route.py",
 		Patch: testDocstringPatch,
 	})
 	if err != nil {
-		t.Fatalf("HighlightPatchWithContext(edits) error = %v", err)
+		t.Fatalf("HighlightEditPatchWithContext(edits) error = %v", err)
 	}
 	if !res.Primed {
 		t.Fatal("matching workspace must produce a primed result")
@@ -244,13 +304,13 @@ func TestHighlightPatchWithContextEditsScope(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "route.py"), []byte("completely different\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(drift) error = %v", err)
 	}
-	drifted, err := app.HighlightPatchWithContext(thread.ID, HighlightPatchContextRequest{
+	drifted, err := app.HighlightEditPatchWithContext(thread.ID, HighlightPatchContextRequest{
 		Scope: "edits",
 		Path:  "route.py",
 		Patch: testDocstringPatch,
 	})
 	if err != nil {
-		t.Fatalf("HighlightPatchWithContext(drifted) error = %v", err)
+		t.Fatalf("HighlightEditPatchWithContext(drifted) error = %v", err)
 	}
 	if drifted.Primed {
 		t.Fatal("drifted workspace must not produce a primed result")

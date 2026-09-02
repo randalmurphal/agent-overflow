@@ -18,12 +18,18 @@
   let generating = $state(false);
   let error = $state<string | null>(null);
 
+  // The commit is a fact about the CHECKOUT, so both calls take the pane's
+  // workspace ref. Null means this pane names no repository; the control
+  // that opens this dialog does not render in that case.
+  let workspace = $derived(pane.workspace);
+
   async function handleGenerate() {
-    if (generating || committing || !pane.threadId) return;
+    const ws = workspace;
+    if (generating || committing || !ws) return;
     generating = true;
     error = null;
     try {
-      const message = await GenerateCommitMessage(pane.threadId);
+      const message = await GenerateCommitMessage(ws);
       subject = message.subject ?? '';
       body = message.body ?? '';
     } catch (err) {
@@ -35,11 +41,12 @@
   }
 
   async function handleCommit() {
-    if (!subject.trim() || !pane.threadId || committing) return;
+    const ws = workspace;
+    if (!subject.trim() || !ws || committing) return;
     committing = true;
     error = null;
     try {
-      const result = await GitCommit(pane.threadId, subject.trim(), body.trim());
+      const result = await GitCommit(ws, subject.trim(), body.trim());
       const r = result as GitActionResult;
       if (r.error) {
         error = r.error;

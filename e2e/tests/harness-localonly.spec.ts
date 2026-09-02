@@ -157,7 +157,7 @@ test.describe('LAN-bound authorization', () => {
       // name out of `LocalOnlyMethods`.
       for (const [method, ...params] of [
         ['HarnessInfo'],
-        ['GetGitStatus', 'unused-thread-id'],
+        ['GetGitStatus', { projectId: 'unused-project-id', workspacePath: '/nonexistent' }],
         ['OpenInEditor', '/etc/passwd', 0, 0, '/tmp', ''],
       ] as Array<[string, ...unknown[]]>) {
         const outcome = await remote.call(method, ...params);

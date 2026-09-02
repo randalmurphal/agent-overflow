@@ -7,7 +7,8 @@
 //
 //   - `locked` / `reason`: "would mutating THIS CHECKOUT break something
 //     running in it?" Remove Worktree runs `git worktree remove` on the
-//     directory; a local branch create moves HEAD under every thread in it.
+//     directory. (Branch changes are NOT gated: the user switches branches
+//     whenever they like, agent or no agent.)
 //     Two threads sharing one worktree is first-class (project-root threads
 //     default to it, and "implement this plan in a new thread" inherits the
 //     source worktree), so a thread-keyed lock left the destructive action
@@ -19,7 +20,7 @@
 //     directory it leaves is unaffected. Gating this on the directory answer
 //     froze every idle thread at the project root for as long as any one
 //     thread was responding. The backend's own gate for these RPCs is
-//     ensureWorkspaceChangeAllowed(threadID), thread-keyed, and the
+//     ensureThreadChangeAllowed(threadID), thread-keyed, and the
 //     affordance must not be stricter than the refusal. Only this pane's
 //     thread locks this, resolved from the same payload's busyThreads.
 //
@@ -215,8 +216,8 @@ export function createWorkspaceChangeLockState(
     // touched, so a busy sibling in the project root is no reason to refuse
     // the choice. The one destructive affordance a draft reaches — the
     // picker's per-row worktree trash — is gated by the backend's own
-    // `deleteBlocked` per row and by RemoveOtherWorktreeForProject's
-    // refusal, never by this lock.
+    // `deleteBlocked` per row and by RemoveOtherWorktree's refusal, never
+    // by this lock.
     if (!pane.threadId) return '';
     return workspaceKeyForThread(pane.thread) ?? '';
   });

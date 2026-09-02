@@ -5,14 +5,10 @@ import (
 	"agent-overflow/internal/prthread"
 )
 
-// Status returns a fresh thread-workspace status and schedules the same refresh
-// through the shared workspace stream.
-func (s *Service) Status(threadID string) (gitops.GitStatus, error) {
-	thread, err := s.store.GetThread(threadID)
-	if err != nil {
-		return gitops.GitStatus{}, err
-	}
-	_, workspace, err := s.ResolveThreadPaths(thread)
+// Status returns a fresh status for the referenced workspace and schedules the
+// same refresh through the shared workspace stream.
+func (s *Service) Status(ref WorkspaceRef) (gitops.GitStatus, error) {
+	_, workspace, err := s.ResolveWorkspace(ref)
 	if err != nil {
 		return gitops.GitStatus{}, err
 	}
@@ -25,72 +21,24 @@ func (s *Service) Status(threadID string) (gitops.GitStatus, error) {
 	return status, nil
 }
 
-func (s *Service) StatusFastForProject(projectID string) (gitops.GitStatus, error) {
-	project, err := s.ProjectPath(projectID)
-	if err != nil {
-		return gitops.GitStatus{}, err
-	}
-	return s.core.StatusFast(project)
-}
-
-func (s *Service) WorkingTreeDiff(threadID string) (string, error) {
-	thread, err := s.store.GetThread(threadID)
-	if err != nil {
-		return "", err
-	}
-	_, workspace, err := s.ResolveThreadPaths(thread)
-	if err != nil {
-		return "", err
-	}
-	return s.core.WorkingTreeDiff(workspace)
-}
-
-func (s *Service) ListBranches(threadID string) ([]gitops.GitBranch, error) {
-	thread, err := s.store.GetThread(threadID)
-	if err != nil {
-		return nil, err
-	}
-	project, _, err := s.ResolveThreadPaths(thread)
+func (s *Service) ListBranches(ref WorkspaceRef) ([]gitops.GitBranch, error) {
+	project, _, err := s.ResolveWorkspace(ref)
 	if err != nil {
 		return nil, err
 	}
 	return s.core.ListBranches(project)
 }
 
-func (s *Service) ListBranchesForProject(projectID string) ([]gitops.GitBranch, error) {
-	project, err := s.ProjectPath(projectID)
-	if err != nil {
-		return nil, err
-	}
-	return s.core.ListBranches(project)
-}
-
-func (s *Service) MaybeFetchRemotes(threadID string) (bool, error) {
-	thread, err := s.store.GetThread(threadID)
-	if err != nil {
-		return false, err
-	}
-	project, _, err := s.ResolveThreadPaths(thread)
+func (s *Service) MaybeFetchRemotes(ref WorkspaceRef) (bool, error) {
+	project, _, err := s.ResolveWorkspace(ref)
 	if err != nil {
 		return false, err
 	}
 	return s.core.MaybeFetchRemotes(project)
 }
 
-func (s *Service) MaybeFetchRemotesForProject(projectID string) (bool, error) {
-	project, err := s.ProjectPath(projectID)
-	if err != nil {
-		return false, err
-	}
-	return s.core.MaybeFetchRemotes(project)
-}
-
-func (s *Service) Commit(threadID, subject, body string) (gitops.GitActionResult, error) {
-	thread, err := s.store.GetThread(threadID)
-	if err != nil {
-		return gitops.GitActionResult{}, err
-	}
-	_, workspace, err := s.ResolveThreadPaths(thread)
+func (s *Service) Commit(ref WorkspaceRef, subject, body string) (gitops.GitActionResult, error) {
+	_, workspace, err := s.ResolveWorkspace(ref)
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}
@@ -104,24 +52,8 @@ func (s *Service) Commit(threadID, subject, body string) (gitops.GitActionResult
 	return gitops.GitActionResult{Action: "commit", Branch: s.core.CurrentBranch(workspace), Commit: sha, Message: "Committed changes"}, nil
 }
 
-func (s *Service) StageAll(threadID string) error {
-	thread, err := s.store.GetThread(threadID)
-	if err != nil {
-		return err
-	}
-	_, workspace, err := s.ResolveThreadPaths(thread)
-	if err != nil {
-		return err
-	}
-	return s.core.StageAll(workspace)
-}
-
-func (s *Service) Push(threadID string) (gitops.GitActionResult, error) {
-	thread, err := s.store.GetThread(threadID)
-	if err != nil {
-		return gitops.GitActionResult{}, err
-	}
-	_, workspace, err := s.ResolveThreadPaths(thread)
+func (s *Service) Push(ref WorkspaceRef) (gitops.GitActionResult, error) {
+	_, workspace, err := s.ResolveWorkspace(ref)
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}
@@ -131,12 +63,8 @@ func (s *Service) Push(threadID string) (gitops.GitActionResult, error) {
 	return gitops.GitActionResult{Action: "push", Branch: s.core.CurrentBranch(workspace), Message: "Pushed branch"}, nil
 }
 
-func (s *Service) Pull(threadID string) (gitops.GitActionResult, error) {
-	thread, err := s.store.GetThread(threadID)
-	if err != nil {
-		return gitops.GitActionResult{}, err
-	}
-	_, workspace, err := s.ResolveThreadPaths(thread)
+func (s *Service) Pull(ref WorkspaceRef) (gitops.GitActionResult, error) {
+	_, workspace, err := s.ResolveWorkspace(ref)
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}
@@ -149,24 +77,8 @@ func (s *Service) Pull(threadID string) (gitops.GitActionResult, error) {
 	return gitops.GitActionResult{Action: "pull", Branch: s.core.CurrentBranch(workspace), Message: "Pulled latest changes"}, nil
 }
 
-func (s *Service) CreateBranch(threadID, name string) error {
-	thread, err := s.store.GetThread(threadID)
-	if err != nil {
-		return err
-	}
-	project, _, err := s.ResolveThreadPaths(thread)
-	if err != nil {
-		return err
-	}
-	return s.core.CreateBranch(project, name)
-}
-
-func (s *Service) CreatePR(threadID, title, body string, draft bool) (gitops.GitActionResult, error) {
-	thread, err := s.store.GetThread(threadID)
-	if err != nil {
-		return gitops.GitActionResult{}, err
-	}
-	_, workspace, err := s.ResolveThreadPaths(thread)
+func (s *Service) CreatePR(ref WorkspaceRef, title, body string, draft bool) (gitops.GitActionResult, error) {
+	_, workspace, err := s.ResolveWorkspace(ref)
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}

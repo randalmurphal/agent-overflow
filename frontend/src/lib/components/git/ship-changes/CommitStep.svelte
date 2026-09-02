@@ -26,10 +26,11 @@
 
   async function handleGenerate(): Promise<void> {
     if (generating || busy || nothingToCommit) return;
-    if (!ship.threadId) return;
+    const ws = ship.workspace;
+    if (!ws) return;
     generating = true;
     try {
-      const message = await GenerateCommitMessage(ship.threadId);
+      const message = await GenerateCommitMessage(ws);
       ship.setCommitSubject(message.subject ?? '');
       ship.setCommitBody(message.body ?? '');
     } catch (err) {

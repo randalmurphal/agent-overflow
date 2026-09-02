@@ -147,6 +147,7 @@ export {
     WorkflowRunSpend,
     WorkspaceActivity,
     WorkspaceFileSearchResult,
+    WorkspaceRef,
     WorktreeListItem,
     WorktreeSetupConfig,
     WorktreeSetupRunState,

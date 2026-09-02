@@ -72,12 +72,11 @@ func (s *Service) computePatchSpanSeeds(patch string, prime func(string) string)
 	return seeds
 }
 
-func (s *Service) workspacePrimer(threadID string) func(string) string {
-	if s.config.WorkspaceForThread == nil || s.config.ReadWorkspaceFile == nil {
-		return nil
-	}
-	workspace, err := s.config.WorkspaceForThread(threadID)
-	if err != nil || workspace == "" {
+// workspacePrimer memoizes reads of the thread's own checkout while a diff
+// payload is seeded. workspace arrives already resolved: this package holds no
+// thread-to-directory lookup, and an empty string simply means "no priming".
+func (s *Service) workspacePrimer(workspace string) func(string) string {
+	if workspace == "" || s.config.ReadWorkspaceFile == nil {
 		return nil
 	}
 	contents := map[string]string{}
@@ -96,14 +95,17 @@ func (s *Service) workspacePrimer(threadID string) func(string) string {
 	}
 }
 
-func (s *Service) ObserveDiffPayload(threadID, payloadID string, previews []string, patch string) {
+// ObserveDiffPayload seeds spans for a persisted diff payload. Its subject IS
+// the thread — these are that conversation's own edits — so the caller supplies
+// both the thread and the checkout it was working in.
+func (s *Service) ObserveDiffPayload(threadID, workspace, payloadID string, previews []string, patch string) {
 	if s.diffWorkers.Add(1) > diffSeedMaxWorkers {
 		s.diffWorkers.Add(-1)
 		return
 	}
 	go func() {
 		defer s.diffWorkers.Add(-1)
-		prime := s.workspacePrimer(threadID)
+		prime := s.workspacePrimer(workspace)
 		s.persistEditSnapshots(threadID, payloadID, patch, prime)
 		var previewSeeds []PatchSpanSeed
 		total := 0

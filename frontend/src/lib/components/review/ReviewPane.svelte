@@ -21,6 +21,7 @@
   import {
     disposeReviewStateForPane,
     reviewStateForPane,
+    reviewSubjectForPane,
     type ReviewScope,
   } from '../../stores/reviewPane.svelte';
   import { GitListBranches } from '../../stores/bindings';
@@ -45,16 +46,24 @@
   // body, and the selection survives rail tab switches.
   const activeExtensions = new SvelteSet<string>();
   let extensionsFilterDiff = $state(false);
-  // Captured at init, NOT $derived: ctx.threadId is fixed for this
-  // instance (CompanionPane keys the panel body on `${thread.id}:${kind}`,
-  // so a thread change remounts it), and reviewStateForPane is
-  // side-effectful — its thread-mismatch branch disposes the replaced
-  // state, which writes $state and is therefore illegal inside a derived
+  // Captured at init, NOT $derived: the subject is fixed for this instance
+  // (CompanionPane keys the panel body on `${thread.id}:${kind}`, so a
+  // thread change — including a draft placeholder materializing into a real
+  // row — remounts it), and reviewStateForPane is side-effectful: its
+  // subject-mismatch branch disposes the replaced state, which writes
+  // $state and is therefore illegal inside a derived
   // (state_unsafe_mutation). As a derived, a source-pane thread switch
   // could re-evaluate it on the OLD instance before the {#key} teardown
   // and crash the render flush.
   // svelte-ignore state_referenced_locally
-  const review = ctx.threadId ? reviewStateForPane(ctx.paneId, ctx.threadId, ctx.thread) : null;
+  const subject = reviewSubjectForPane(ctx);
+  // svelte-ignore state_referenced_locally
+  const review = subject ? reviewStateForPane(ctx.paneId, subject) : null;
+  // The diff body identifies itself by `review.identity` — the subject's
+  // row id, synthetic on a draft placeholder. It is a plain string on the
+  // state, available in exactly the branches that render a body, so scroll
+  // memory and span-cache ownership are per-review rather than collapsing
+  // every placeholder onto one shared bucket.
   let branches: GitBranch[] = $state([]);
   let branchesError: string | null = $state(null);
   const storedTreeVisible = readTreeVisiblePref();
@@ -121,11 +130,11 @@
   });
 
   $effect(() => {
-    const threadId = ctx.threadId;
+    const workspace = ctx.workspace;
     const scope = review?.scope;
-    if (!threadId || scope !== 'branch') return;
+    if (!workspace || scope !== 'branch') return;
     let cancelled = false;
-    void GitListBranches(threadId)
+    void GitListBranches(workspace)
       .then((next) => {
         if (cancelled) return;
         branches = ((next ?? []) as GitBranch[]).filter((branch) => branch.name);
@@ -142,7 +151,7 @@
   });
 
   onDestroy(() => {
-    disposeReviewStateForPane(ctx.paneId, ctx.threadId ?? undefined);
+    disposeReviewStateForPane(ctx.paneId, ctx.thread?.id);
   });
 
   function setScope(value: string): void {
@@ -280,11 +289,13 @@
       onchange={(event) => setScope(event.currentTarget.value)}
       disabled={!review}
     >
-      {#if ctx.workspacePath}
+      {#if ctx.workspace}
         <option value="workspace">Workspace</option>
         <option value="branch">Branch</option>
       {/if}
-      <option value="edits">Edits</option>
+      {#if ctx.threadId}
+        <option value="edits">Edits</option>
+      {/if}
       {#if review?.prRef}
         <option value="pr">{review.prScopeLabel ?? 'PR'}</option>
       {/if}
@@ -480,9 +491,9 @@
     </button>
   </div>
 
-  {#if !ctx.threadId}
+  {#if !review}
     <div class="p-3 text-sm text-fg-muted">No thread selected.</div>
-  {:else if review}
+  {:else}
     {#if review.error}
       <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-error">
         {review.error}
@@ -517,7 +528,7 @@
     {#if review.scope === 'pr' && review.prDetail}
       <ReviewPRHeader
         detail={review.prDetail}
-        hasWorkspace={!!ctx.workspacePath}
+        hasWorkspace={ctx.workspace !== null}
         onViewConflicts={() => { void review?.openConflictView(); }}
         ciPipeline={review.ciPipeline}
         ciLoading={review.ciLoading}
@@ -576,7 +587,7 @@
                draft editors, or PR thread rows. The tree is hidden here to
                keep the conflict surface scoped to the marker-bearing files. -->
           <ReviewDiffBody
-            threadId={review.threadId}
+            subjectId={review.identity}
             scope={`${review.scope}:conflicts`}
             files={review.conflictFiles}
             viewMode={review.viewMode}
@@ -621,7 +632,7 @@
           </div>
         {:else}
         <ReviewDiffBody
-          threadId={review.threadId}
+          subjectId={review.identity}
           scope={review.scope}
           files={diffFiles}
           viewMode={review.viewMode}
@@ -633,7 +644,7 @@
           openEditors={review.openEditors}
           prThreads={review.prThreads}
           expandedPRThreadIds={review.expandedPRThreadIds}
-          onAddComment={(anchor) => review?.openDraftEditor(anchor)}
+          onAddComment={ctx.threadId ? (anchor) => review?.openDraftEditor(anchor) : undefined}
           onExpandGap={(path, gap, dir) => { void review?.expandDiffContext(path, gap, dir); }}
           jumpToFilePath={jumpFilePath ?? review.pendingJumpFilePath}
           onJumpConsumed={onJumpConsumed}
@@ -675,7 +686,7 @@
               onToggle={() => review?.togglePRThread(thread.id)}
               onBodyChange={(body) => review?.setReplyBody(thread.id, body)}
               onSendReply={() => review?.sendPRThreadReply(thread)}
-              onSendToAgent={() => review?.sendPRThreadToAgent(thread)}
+              onSendToAgent={ctx.threadId ? () => review?.sendPRThreadToAgent(thread) : undefined}
             />
           {/snippet}
         </ReviewDiffBody>

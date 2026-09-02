@@ -44,11 +44,7 @@ func TestReadWorkspaceFile(t *testing.T) {
 func TestGetDiffContextLinesWorkspaceScope(t *testing.T) {
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()
-	thread := testThread("thread-diff-context")
-	thread.WorkspacePath = workspace
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
 	var lines []string
 	for i := 1; i <= 50; i += 1 {
@@ -65,7 +61,7 @@ func TestGetDiffContextLinesWorkspaceScope(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	result, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+	result, err := app.GetDiffContextLines(ref, DiffContextRequest{
 		Scope:     "workspace",
 		Path:      "src/main.go",
 		StartLine: 11,
@@ -86,7 +82,7 @@ func TestGetDiffContextLinesWorkspaceScope(t *testing.T) {
 
 	// Range past EOF clamps and flags EOF; trailing newline does not
 	// count as an extra line.
-	tail, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+	tail, err := app.GetDiffContextLines(ref, DiffContextRequest{
 		Scope:     "workspace",
 		Path:      "src/main.go",
 		StartLine: 41,
@@ -101,7 +97,7 @@ func TestGetDiffContextLinesWorkspaceScope(t *testing.T) {
 
 	// Fully past EOF: empty but EOF-flagged, not an error (a trailing
 	// gap probe when the last hunk already reached the file end).
-	past, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+	past, err := app.GetDiffContextLines(ref, DiffContextRequest{
 		Scope:     "workspace",
 		Path:      "src/main.go",
 		StartLine: 51,
@@ -118,11 +114,7 @@ func TestGetDiffContextLinesWorkspaceScope(t *testing.T) {
 func TestGetDiffContextLinesCommitScope(t *testing.T) {
 	app := newTestAppWithStore(t)
 	workspace := testutil.InitGitRepo(t)
-	thread := testThread("thread-diff-context-commit")
-	thread.WorkspacePath = workspace
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
 	writeAndCommit := func(content, message string) {
 		if err := os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte(content), 0o644); err != nil {
@@ -140,7 +132,7 @@ func TestGetDiffContextLinesCommitScope(t *testing.T) {
 	// commit's tree, not the file on disk.
 	writeAndCommit("one\nedited\nthree\nfour\n", "second")
 
-	result, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+	result, err := app.GetDiffContextLines(ref, DiffContextRequest{
 		Scope:     "commit",
 		CommitSHA: strings.TrimSpace(sha),
 		Path:      "notes.txt",
@@ -157,7 +149,7 @@ func TestGetDiffContextLinesCommitScope(t *testing.T) {
 		t.Fatalf("meta = {eof:%v total:%d}, want {true 3}", result.EOF, result.TotalLines)
 	}
 
-	if _, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+	if _, err := app.GetDiffContextLines(ref, DiffContextRequest{
 		Scope:     "commit",
 		Path:      "notes.txt",
 		StartLine: 1,
@@ -170,11 +162,7 @@ func TestGetDiffContextLinesCommitScope(t *testing.T) {
 func TestGetDiffContextLinesValidation(t *testing.T) {
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()
-	thread := testThread("thread-diff-context-validate")
-	thread.WorkspacePath = workspace
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
 	cases := []DiffContextRequest{
 		{Scope: "workspace", Path: "a.txt", StartLine: 0, EndLine: 5},
@@ -184,11 +172,20 @@ func TestGetDiffContextLinesValidation(t *testing.T) {
 		{Scope: "workspace", Path: "/etc/passwd", StartLine: 1, EndLine: 5},
 		{Scope: "nonsense", Path: "a.txt", StartLine: 1, EndLine: 5},
 		{Scope: "pr", HeadSHA: "", Path: "a.txt", StartLine: 1, EndLine: 5},
+		// The edits scope is the other entry point's subject.
+		{Scope: "edits", Path: "a.txt", StartLine: 1, EndLine: 5},
 	}
 	for _, req := range cases {
-		if _, err := app.GetDiffContextLines(thread.ID, req); err == nil {
+		if _, err := app.GetDiffContextLines(ref, req); err == nil {
 			t.Fatalf("GetDiffContextLines(%+v) expected error", req)
 		}
+	}
+
+	// And the edits entry point serves only its own scope.
+	if _, err := app.GetEditDiffContextLines("thread-diff-context-validate", DiffContextRequest{
+		Scope: "workspace", Path: "a.txt", StartLine: 1, EndLine: 5,
+	}); err == nil {
+		t.Fatal("GetEditDiffContextLines accepted a live scope")
 	}
 }
 
@@ -242,7 +239,7 @@ func TestGetDiffContextLinesEditsScope(t *testing.T) {
 
 	// Verified: the workspace still matches this historical patch, so
 	// its lines serve as context.
-	result, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+	result, err := app.GetEditDiffContextLines(thread.ID, DiffContextRequest{
 		Scope:       "edits",
 		Path:        "notes.txt",
 		StartLine:   1,
@@ -250,14 +247,14 @@ func TestGetDiffContextLinesEditsScope(t *testing.T) {
 		VerifyPatch: verifyPatch,
 	})
 	if err != nil {
-		t.Fatalf("GetDiffContextLines(verified) error = %v", err)
+		t.Fatalf("GetEditDiffContextLines(verified) error = %v", err)
 	}
 	if len(result.Lines) != 5 || result.Lines[0] != "line 1" || result.TotalLines != 20 {
 		t.Fatalf("verified result = %+v", result)
 	}
 
 	// No verification patch → default-closed refusal.
-	if _, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+	if _, err := app.GetEditDiffContextLines(thread.ID, DiffContextRequest{
 		Scope: "edits", Path: "notes.txt", StartLine: 1, EndLine: 5,
 	}); err == nil {
 		t.Fatal("missing VerifyPatch must refuse")
@@ -266,7 +263,7 @@ func TestGetDiffContextLinesEditsScope(t *testing.T) {
 	// The file drifted (line 11 rewritten since the edit) → refusal, so
 	// current lines can never masquerade as historical context.
 	writeFile(strings.Join(lines[:10], "\n") + "\nrewritten since\n" + strings.Join(lines[11:], "\n") + "\n")
-	if _, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+	if _, err := app.GetEditDiffContextLines(thread.ID, DiffContextRequest{
 		Scope: "edits", Path: "notes.txt", StartLine: 1, EndLine: 5, VerifyPatch: verifyPatch,
 	}); err == nil {
 		t.Fatal("drifted workspace must refuse edits-scope expansion")
@@ -365,12 +362,12 @@ func TestGetDiffContextLinesEditsScopeSnapshotFirst(t *testing.T) {
 	}
 
 	// Single-edit selection resolves that payload's snapshot.
-	result, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+	result, err := app.GetEditDiffContextLines(thread.ID, DiffContextRequest{
 		Scope: "edits", Path: "notes.txt", StartLine: 1, EndLine: 5,
 		VerifyPatch: verifyPatch, EditPayloadID: "payload-late", EditTurnIndex: -1,
 	})
 	if err != nil {
-		t.Fatalf("GetDiffContextLines(snapshot) error = %v", err)
+		t.Fatalf("GetEditDiffContextLines(snapshot) error = %v", err)
 	}
 	if len(result.Lines) != 5 || result.Lines[0] != "line 1" || result.TotalLines != 20 {
 		t.Fatalf("snapshot result = %+v", result)
@@ -379,12 +376,12 @@ func TestGetDiffContextLinesEditsScopeSnapshotFirst(t *testing.T) {
 	// Whole-turn selection resolves the LAST matching snapshot of the
 	// path in item order (both payloads sit in the same turn; the later
 	// one wins and is the one that verifies).
-	result, err = app.GetDiffContextLines(thread.ID, DiffContextRequest{
+	result, err = app.GetEditDiffContextLines(thread.ID, DiffContextRequest{
 		Scope: "edits", Path: "notes.txt", StartLine: 10, EndLine: 12,
 		VerifyPatch: verifyPatch, EditTurnIndex: 0,
 	})
 	if err != nil {
-		t.Fatalf("GetDiffContextLines(turn snapshot) error = %v", err)
+		t.Fatalf("GetEditDiffContextLines(turn snapshot) error = %v", err)
 	}
 	if len(result.Lines) != 3 || result.Lines[1] != "line 11" {
 		t.Fatalf("turn snapshot result = %+v", result)
@@ -393,7 +390,7 @@ func TestGetDiffContextLinesEditsScopeSnapshotFirst(t *testing.T) {
 	// A snapshot that does not match the verification patch (the early
 	// edit's state predates the verified section) must not serve — and
 	// with no workspace file either, the request refuses.
-	if _, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+	if _, err := app.GetEditDiffContextLines(thread.ID, DiffContextRequest{
 		Scope: "edits", Path: "notes.txt", StartLine: 1, EndLine: 5,
 		VerifyPatch: verifyPatch, EditPayloadID: "payload-early", EditTurnIndex: -1,
 	}); err == nil {
@@ -406,12 +403,12 @@ func TestGetDiffContextLinesEditsScopeSnapshotFirst(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte(historical), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	result, err = app.GetDiffContextLines(thread.ID, DiffContextRequest{
+	result, err = app.GetEditDiffContextLines(thread.ID, DiffContextRequest{
 		Scope: "edits", Path: "notes.txt", StartLine: 1, EndLine: 5,
 		VerifyPatch: verifyPatch, EditPayloadID: "payload-early", EditTurnIndex: -1,
 	})
 	if err != nil {
-		t.Fatalf("GetDiffContextLines(workspace fallthrough) error = %v", err)
+		t.Fatalf("GetEditDiffContextLines(workspace fallthrough) error = %v", err)
 	}
 	if len(result.Lines) != 5 || result.Lines[0] != "line 1" {
 		t.Fatalf("workspace fallthrough result = %+v", result)
@@ -452,7 +449,7 @@ func TestGetDiffContextLinesEditsScopeTabMangledPatch(t *testing.T) {
 		"+  call()\n" +
 		"   after()\n"
 
-	result, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+	result, err := app.GetEditDiffContextLines(thread.ID, DiffContextRequest{
 		Scope:       "edits",
 		Path:        "x.go",
 		StartLine:   1,
@@ -460,7 +457,7 @@ func TestGetDiffContextLinesEditsScopeTabMangledPatch(t *testing.T) {
 		VerifyPatch: verifyPatch,
 	})
 	if err != nil {
-		t.Fatalf("GetDiffContextLines(tab-mangled) error = %v", err)
+		t.Fatalf("GetEditDiffContextLines(tab-mangled) error = %v", err)
 	}
 	if len(result.Lines) != 7 {
 		t.Fatalf("len(Lines) = %d, want 7", len(result.Lines))

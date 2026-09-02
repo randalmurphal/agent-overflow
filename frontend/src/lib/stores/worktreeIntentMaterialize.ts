@@ -9,9 +9,11 @@
 
 import {
   AttachThreadWorktree,
+  GetThread,
   GitCreateBranchFrom,
   PrepareThreadWorktree,
 } from './bindings';
+import { workspaceRefForThread } from '../utils/workspaceKey';
 import { syncThread } from './panes.svelte';
 import { recordBranchSelection } from './branchMru';
 import type { Thread } from '../types/models';
@@ -145,13 +147,29 @@ async function runThreadMutation(
       intent.attachBranch || (targetThread.branch ?? ''),
     )) as Thread;
   } else if (intent.creatingBranch) {
+    const workspace = workspaceRefForThread(targetThread);
+    // A staged branch intent was applied to a thread that names no checkout.
+    // Nothing upstream can produce that: the picker only stages against a
+    // project-bound row. Returning null here would swallow the bug as a
+    // click that quietly did nothing, so it throws and the caller's error
+    // path reports it.
+    if (!workspace) {
+      throw new Error(
+        `Cannot create a branch for thread ${targetThread.id}: it names no project workspace.`,
+      );
+    }
     const wire = resolveBaseForWire(intent.newBranchBase, targetThread.branch ?? '');
-    updated = (await GitCreateBranchFrom(
-      targetThread.id,
+    // Workspace-keyed: the branch is created in a DIRECTORY, and the backend
+    // re-branches every thread row in it. This caller wants its own row back,
+    // so it re-reads it rather than guessing the fields locally — the returned
+    // GitWorkspaceState describes the checkout, not the thread.
+    await GitCreateBranchFrom(
+      workspace,
       intent.newBranchName,
       wire.baseBranch,
       wire.carryLocalChanges,
-    )) as Thread;
+    );
+    updated = (await GetThread(targetThread.id)) as Thread | null;
   }
   if (!updated) return null;
 

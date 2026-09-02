@@ -667,7 +667,7 @@ func TestComposer_SendMessageClearsDraft(t *testing.T) {
 // threads with DIFFERENT workspace paths, drops a marker file in each, and
 // confirms SearchWorkspaceFiles returns files from the caller's thread
 // workspace — not the other thread's.
-func TestComposer_MentionPopoverSearchRespectsThreadWorkspace(t *testing.T) {
+func TestComposer_MentionPopoverSearchRespectsWorkspaceRef(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	wsA := t.TempDir()
 	wsB := t.TempDir()
@@ -677,10 +677,10 @@ func TestComposer_MentionPopoverSearchRespectsThreadWorkspace(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wsB, "beta.txt"), []byte("B"), 0o644); err != nil {
 		t.Fatalf("write beta: %v", err)
 	}
-	composerSeedThread(t, app, "thr-ws-a", wsA)
-	composerSeedThread(t, app, "thr-ws-b", wsB)
+	refA := testWorkspaceRef(t, app, wsA)
+	refB := testWorkspaceRef(t, app, wsB)
 
-	a, err := app.SearchWorkspaceFiles("thr-ws-a", "", 50)
+	a, err := app.SearchWorkspaceFiles(refA, "", 50)
 	if err != nil {
 		t.Fatalf("SearchWorkspaceFiles A: %v", err)
 	}
@@ -700,7 +700,7 @@ func TestComposer_MentionPopoverSearchRespectsThreadWorkspace(t *testing.T) {
 		t.Fatalf("A scope wrong: foundAlpha=%v sawBeta=%v files=%+v", foundAlpha, sawBeta, a.Files)
 	}
 
-	b, err := app.SearchWorkspaceFiles("thr-ws-b", "", 50)
+	b, err := app.SearchWorkspaceFiles(refB, "", 50)
 	if err != nil {
 		t.Fatalf("SearchWorkspaceFiles B: %v", err)
 	}

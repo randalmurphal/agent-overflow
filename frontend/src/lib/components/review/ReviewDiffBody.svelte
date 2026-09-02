@@ -43,7 +43,10 @@
     && typeof window !== 'undefined' && 'happyDOM' in window;
 
   interface Props {
-    threadId: string;
+    /** The review SUBJECT's identity — the thread row id, or a draft
+     * placeholder's synthetic one. Keys scroll-position memory and owns
+     * the span-cache entries this body requests. */
+    subjectId: string;
     /** Review scope key segment for scroll-position memory. */
     scope: string;
     files: PatchFile[];
@@ -80,7 +83,7 @@
   }
 
   let {
-    threadId,
+    subjectId,
     scope,
     files,
     viewMode,
@@ -118,7 +121,7 @@
   const getKey = (_row: ReviewRow, index: number) => built.rowKeys[index];
 
   const geometryKey = $derived(`${viewMode}:${wordWrap}`);
-  const scrollKey = $derived(reviewScrollKey(threadId, scope, viewMode, wordWrap));
+  const scrollKey = $derived(reviewScrollKey(subjectId, scope, viewMode, wordWrap));
 
   let scrollEl: HTMLElement | undefined = $state();
   let listRef: TimelineVirtualizerHandle | undefined = $state();
@@ -457,7 +460,7 @@
               splitRows={row.splitRows}
               {file}
               path={file.path}
-              {threadId}
+              {subjectId}
               {spanContext}
               {wordWrap}
               gutterCh={gutterChars.get(row.fileIndex) ?? 2}

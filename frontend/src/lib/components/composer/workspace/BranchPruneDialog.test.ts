@@ -23,11 +23,13 @@ const RISKY = {
   reason: 'has commits not on the default branch and no matching merged PR — may hold unpushed work',
 };
 
+const PRUNE_WS = { projectId: 'project-1', workspacePath: '/workspace' };
+
 function renderDialog() {
   let closed = false;
   const utils = render(BranchPruneDialog, {
     props: {
-      threadId: 'thread-1',
+      workspace: PRUNE_WS,
       open: true,
       onClose: () => {
         closed = true;
@@ -69,7 +71,7 @@ describe('<BranchPruneDialog>', () => {
 
     await waitFor(() => {
       expect(getBindingMock('GitPruneBranches')!.mock.calls[0]).toEqual([
-        'thread-1',
+        PRUNE_WS,
         [{ branch: SAFE.branch, tip: SAFE.tip }],
       ]);
       expect(wasClosed()).toBe(true);
@@ -94,7 +96,7 @@ describe('<BranchPruneDialog>', () => {
 
     await waitFor(() => {
       expect(getBindingMock('GitPruneBranches')!.mock.calls[0]).toEqual([
-        'thread-1',
+        PRUNE_WS,
         [
           { branch: SAFE.branch, tip: SAFE.tip },
           { branch: RISKY.branch, tip: RISKY.tip },

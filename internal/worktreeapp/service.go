@@ -75,7 +75,11 @@ func New(deps Deps) *Service {
 	}
 }
 
-// Find resolves a path to one of the project's registered worktrees.
+// Find resolves a path to one of the project's registered worktrees, and
+// returns that worktree's RECORD — the branch it has checked out, which only
+// `git worktree list` knows. That is why this asks git and gitapp's
+// ResolveWorkspace does not: membership alone is answerable from git's on-disk
+// layout with no subprocess, but the branch is not.
 func (s *Service) Find(project, candidate string) (gitops.Worktree, bool, error) {
 	worktrees, err := s.core.ListWorktrees(project)
 	if err != nil {

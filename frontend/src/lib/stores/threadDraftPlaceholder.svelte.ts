@@ -27,6 +27,7 @@ import {
   seedDefaultWorktreeIntentForDraft,
 } from './worktreeIntent.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
+import { adoptDiffSpanOwner } from '../utils/diffSpanCache.svelte';
 import { errString } from '../utils/errors';
 import { sameNormalizedPath } from '../utils/path';
 import { seedContextWindow } from './threadContextWindow';
@@ -278,6 +279,13 @@ export function createThreadDraftPlaceholder(
         // placeholder otherwise become orphaned when lookups switch to
         // the materialized thread id.
         migrateWorktreeIntent(placeholderId, created.id);
+        // Same re-keying for the diff-span cache's OWNERSHIP records: a
+        // review pane open on the placeholder filed its entries under the
+        // synthetic id, and switch/close/delete only ever evict the real
+        // one. The cached spans themselves are keyed by their workspace
+        // subject, which this transition does not change, so the
+        // remounted review companion re-reads them without a refetch.
+        adoptDiffSpanOwner(placeholderId, created.id);
         seedDefaultWorktreeIntentForDraft(created);
         prependThread(created);
         adoptMaterializedDraftThread(created);

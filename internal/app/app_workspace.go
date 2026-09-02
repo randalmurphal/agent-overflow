@@ -8,15 +8,16 @@ import (
 	"agent-overflow/internal/workspacepath"
 )
 
-// WriteThreadWorkspaceFile writes content to a path relative to the thread's
-// active workspace and returns the normalized relative path.
-func (a *App) WriteThreadWorkspaceFile(threadID, relativePath, content string) (string, error) {
-	thread, err := a.store.GetThread(threadID)
+// WriteWorkspaceFile writes content to a path relative to the referenced
+// checkout and returns the normalized relative path. Workspace-keyed because
+// the subject is the directory, not a thread: the thread is only how the
+// caller found it. The ref goes through ResolveWorkspace, so an arbitrary
+// caller-supplied directory cannot be written to — only the project root or
+// one of its registered worktrees.
+func (a *App) WriteWorkspaceFile(ws WorkspaceRef, relativePath, content string) (string, error) {
+	_, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
-		return "", err
-	}
-	if thread.WorkspacePath == "" {
-		return "", fmt.Errorf("thread %s does not have a workspace path", threadID)
+		return "", fmt.Errorf("write workspace file: %w", err)
 	}
 
 	normalizedPath, err := workspacepath.NormalizeRelative(relativePath)
@@ -24,7 +25,7 @@ func (a *App) WriteThreadWorkspaceFile(threadID, relativePath, content string) (
 		return "", err
 	}
 
-	absolutePath := filepath.Join(thread.WorkspacePath, normalizedPath)
+	absolutePath := filepath.Join(workspace, normalizedPath)
 	if err := os.MkdirAll(filepath.Dir(absolutePath), 0o755); err != nil {
 		return "", fmt.Errorf("create parent directories: %w", err)
 	}

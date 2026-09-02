@@ -74,7 +74,7 @@
   // allowlist for the same plan markdown.
   const pathRefs = $derived(getPathRefsFromMeta(currentPlan?.meta) ?? EMPTY_PATH_REFS);
 
-  const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => ctx.threadId);
+  const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => ctx.workspace);
 
   $effect(() => {
     const id = threadId;

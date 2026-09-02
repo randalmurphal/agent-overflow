@@ -57,6 +57,16 @@ State is keyed by its ENTITY, never by its consumer. Before adding
   workspace-change lock, which answers two questions off one fetch.
   `locked` blocks removing the CHECKOUT (any busy thread in it),
   `threadLocked` blocks MOVING one thread (only its own activity).
+  Every workspace-scoped git RPC names the checkout with a
+  `WorkspaceRef` (`{projectId, workspacePath}`), never a thread id, so a
+  DRAFT PLACEHOLDER — a pane with a project and a directory and no thread
+  row — runs the same status subscription, the same split-button actions
+  and the same review scopes as a real thread. `pane.workspace` is the
+  one ref a component reads, and `utils/workspaceKey.ts`
+  (`workspaceRefForThread` / `workspaceRefForProject`) is the one place
+  that builds one: never assemble the object literal at a call site. A
+  null `pane.workspace` (a terminal-only thread names no project) means
+  the control DOES NOT RENDER — never renders and swallows the click.
 - **PR**: detail, review threads, live head SHA, CI pipeline, conflicts.
 - **thread**: items, streaming, approvals.
 - **pane**: view concerns only, including the head a loaded diff was

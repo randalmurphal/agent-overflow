@@ -54,8 +54,8 @@ type BranchPruneResult struct {
 //
 // Same locking rationale as GitMaybeFetchRemotes — fetch touches
 // refs/remotes/* only; classification is read-only.
-func (a *App) GitListBranchPruneCandidates(threadID string) (BranchPruneCandidates, error) {
-	result, err := a.gitApplication().ListBranchPruneCandidates(threadID)
+func (a *App) GitListBranchPruneCandidates(ws WorkspaceRef) (BranchPruneCandidates, error) {
+	result, err := a.gitApplication().ListBranchPruneCandidates(ws)
 	if err != nil {
 		return BranchPruneCandidates{}, err
 	}
@@ -71,14 +71,14 @@ func (a *App) GitListBranchPruneCandidates(threadID string) (BranchPruneCandidat
 // is no longer gone-upstream/unattached (checked out meanwhile, default
 // flipped), or whose tip no longer matches the one the preview showed,
 // is refused rather than deleted — a stale preview can never
-// force-delete work the user did not see. No thread lock is needed: git
+// force-delete work the user did not see. No workspace lock is needed: git
 // itself refuses to delete any checked-out branch, and every other
 // precondition is enforced by the fresh candidate check at delete time.
-func (a *App) GitPruneBranches(threadID string, selections []BranchPruneSelection) (BranchPruneResult, error) {
+func (a *App) GitPruneBranches(ws WorkspaceRef, selections []BranchPruneSelection) (BranchPruneResult, error) {
 	projected := make([]gitapp.BranchPruneSelection, len(selections))
 	for index := range selections {
 		projected[index] = gitapp.BranchPruneSelection(selections[index])
 	}
-	result, err := a.gitApplication().PruneBranches(threadID, projected)
+	result, err := a.gitApplication().PruneBranches(ws, projected)
 	return BranchPruneResult(result), err
 }

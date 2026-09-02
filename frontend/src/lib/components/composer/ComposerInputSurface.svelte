@@ -69,7 +69,7 @@
 
   const mentions = createComposerMentions({
     getTextarea: () => textarea,
-    getThreadId: () => pane.threadId,
+    getWorkspace: () => pane.workspace,
   });
 
   const slash = createComposerSlash({ getTextarea: () => textarea, getPane: () => pane });

@@ -6,11 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	gitops "agent-overflow/internal/git"
-	"agent-overflow/internal/provider"
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 )
 
@@ -20,18 +17,7 @@ func TestGetPRMergeConflictsHappyPath(t *testing.T) {
 	}
 	app := newTestAppWithStore(t)
 	workspace := testutil.InitGitRepo(t)
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID:            "thread-conflicts",
-		ProjectID:     defaultTestProjectID,
-		Title:         "Conflicts",
-		Provider:      string(provider.Codex),
-		WorkspacePath: workspace,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
 	binDir := t.TempDir()
 	logPath := filepath.Join(binDir, "git.log")
@@ -91,7 +77,7 @@ esac
 	app.git = gitops.NewCore()
 
 	pr := gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo", Number: 9}
-	result, err := app.GetPRMergeConflicts("thread-conflicts", pr, "main", "feature-branch")
+	result, err := app.GetPRMergeConflicts(ref, pr, "main", "feature-branch")
 	if err != nil {
 		t.Fatalf("GetPRMergeConflicts: %v", err)
 	}
@@ -102,7 +88,7 @@ esac
 		t.Fatalf("paths = %v", result.Paths)
 	}
 
-	content, err := app.GetMergeConflictFile("thread-conflicts", treeOID, "main.go")
+	content, err := app.GetMergeConflictFile(ref, treeOID, "main.go")
 	if err != nil {
 		t.Fatalf("GetMergeConflictFile: %v", err)
 	}
@@ -140,19 +126,11 @@ func readAppTestFile(t *testing.T, path string) string {
 
 func TestGetPRMergeConflictsRequiresLocalClone(t *testing.T) {
 	app := newTestAppWithStore(t)
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID:        "thread-no-clone",
-		ProjectID: defaultTestProjectID,
-		Title:     "No clone",
-		Provider:  string(provider.Codex),
-		CreatedAt: now,
-		UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	// A pr-anchor caller has no project of its own: the zero ref is exactly
+	// what the frontend sends for one, and it must read as "no local clone"
+	// rather than a project-resolution failure.
 	pr := gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo", Number: 9}
-	_, err := app.GetPRMergeConflicts("thread-no-clone", pr, "main", "")
+	_, err := app.GetPRMergeConflicts(WorkspaceRef{}, pr, "main", "")
 	if err == nil {
 		t.Fatal("expected local clone error")
 	}

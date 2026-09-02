@@ -26,32 +26,22 @@ import (
 // this matches internal/git/github_test.go's existing convention and lets the
 // live `gh` resolution in internal/git/core.go pick it up.
 
-// shipTestSetup returns a thread that is already persisted in the app store
-// and configured against a fresh repo with a bare "origin" remote. Callers
-// can stage / commit / push and the wizard's state will mirror reality.
-func shipTestSetup(t *testing.T) (*App, string, string) {
+// shipTestSetup returns the ref addressing a fresh repo with a bare "origin"
+// remote, plus that repo's path. Callers can stage / commit / push and the
+// wizard's state will mirror reality.
+func shipTestSetup(t *testing.T) (app *App, ref WorkspaceRef, workspace string, remote string) {
 	t.Helper()
 
-	app := newTestAppWithStore(t)
-	repo := testutil.InitGitRepo(t)
+	app = newTestAppWithStore(t)
+	workspace = testutil.InitGitRepo(t)
 
 	// Bare remote for push testing. Using a dedicated parent dir so the
 	// temp-cleanup doesn't interfere with the working repo.
 	remoteParent := t.TempDir()
-	remote := filepath.Join(remoteParent, "origin.git")
+	remote = filepath.Join(remoteParent, "origin.git")
 	testutil.RunGit(t, remoteParent, "init", "--bare", remote)
 
-	thread := testThread("thread-ship-" + t.Name())
-	project, err := app.ensureProjectForWorkspace(repo)
-	if err != nil {
-		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
-	}
-	thread.ProjectID = project.ID
-	thread.WorkspacePath = repo
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-	return app, thread.ID, remote
+	return app, testWorkspaceRef(t, app, workspace), workspace, remote
 }
 
 // installMockGhShip prepends a mock gh on PATH for a ship-flow test. The mock
@@ -79,14 +69,7 @@ exit %d
 // TestShip_FullWizardFlow: stage-commit-push-PR end-to-end against a bare
 // remote. Each step must succeed and leave the workspace in the expected state.
 func TestShip_FullWizardFlow(t *testing.T) {
-	app, threadID, remote := shipTestSetup(t)
-
-	// Get workspace path back from the stored thread so we can write files.
-	stored, err := app.store.GetThread(threadID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	workspace := stored.WorkspacePath
+	app, ref, workspace, remote := shipTestSetup(t)
 
 	// Wire the remote: fetch URL classifies as github (so the forge
 	// dispatcher routes Create PR through the github forge / gh mock),
@@ -103,7 +86,7 @@ func TestShip_FullWizardFlow(t *testing.T) {
 
 	// Step 1: commit.
 	installMockGhShip(t, "https://example.com/pr/1", "", 0)
-	result, err := app.GitCommit(threadID, "ship: add feature", "body")
+	result, err := app.GitCommit(ref, "ship: add feature", "body")
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
 	}
@@ -115,7 +98,7 @@ func TestShip_FullWizardFlow(t *testing.T) {
 	}
 
 	// Step 2: push to the bare remote.
-	pushResult, err := app.GitPush(threadID)
+	pushResult, err := app.GitPush(ref)
 	if err != nil {
 		t.Fatalf("GitPush() error = %v", err)
 	}
@@ -128,7 +111,7 @@ func TestShip_FullWizardFlow(t *testing.T) {
 	}
 
 	// Step 3: create PR via mock gh.
-	prResult, err := app.GitCreatePR(threadID, "Ship feature", "details", false)
+	prResult, err := app.GitCreatePR(ref, "Ship feature", "details", false)
 	if err != nil {
 		t.Fatalf("GitCreatePR() error = %v", err)
 	}
@@ -144,18 +127,14 @@ func TestShip_FullWizardFlow(t *testing.T) {
 // assert that no PR side-effects happen — GitCommit is self-contained, no
 // calls to GitPush or GitCreatePR are wired from that single binding.
 func TestShip_CommitOnlyPath(t *testing.T) {
-	app, threadID, _ := shipTestSetup(t)
-	stored, err := app.store.GetThread(threadID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
+	app, ref, workspace, _ := shipTestSetup(t)
 
-	readme := filepath.Join(stored.WorkspacePath, "README.txt")
+	readme := filepath.Join(workspace, "README.txt")
 	if err := os.WriteFile(readme, []byte("hello\nupdated\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	result, err := app.GitCommit(threadID, "update readme", "body")
+	result, err := app.GitCommit(ref, "update readme", "body")
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
 	}
@@ -173,26 +152,22 @@ func TestShip_CommitOnlyPath(t *testing.T) {
 // TestShip_CommitAndPushNoPR: commit and push, but stop before PR. Remote
 // must have the new commit reachable.
 func TestShip_CommitAndPushNoPR(t *testing.T) {
-	app, threadID, remote := shipTestSetup(t)
-	stored, err := app.store.GetThread(threadID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
+	app, ref, workspace, remote := shipTestSetup(t)
 
-	testutil.RunGit(t, stored.WorkspacePath, "remote", "add", "origin", "https://github.com/test/test.git")
-	testutil.RunGit(t, stored.WorkspacePath, "remote", "set-url", "--push", "origin", remote)
+	testutil.RunGit(t, workspace, "remote", "add", "origin", "https://github.com/test/test.git")
+	testutil.RunGit(t, workspace, "remote", "set-url", "--push", "origin", remote)
 
-	extra := filepath.Join(stored.WorkspacePath, "extra.txt")
+	extra := filepath.Join(workspace, "extra.txt")
 	if err := os.WriteFile(extra, []byte("extra\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	commitResult, err := app.GitCommit(threadID, "ship: extra", "body")
+	commitResult, err := app.GitCommit(ref, "ship: extra", "body")
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
 	}
 
-	pushResult, err := app.GitPush(threadID)
+	pushResult, err := app.GitPush(ref)
 	if err != nil {
 		t.Fatalf("GitPush() error = %v", err)
 	}
@@ -211,9 +186,9 @@ func TestShip_CommitAndPushNoPR(t *testing.T) {
 // wrapper surfaces the error -- the wizard must then tell the user there's
 // nothing to commit.
 func TestShip_CommitFailsOnNoChanges(t *testing.T) {
-	app, threadID, _ := shipTestSetup(t)
+	app, ref, _, _ := shipTestSetup(t)
 
-	_, err := app.GitCommit(threadID, "nothing", "")
+	_, err := app.GitCommit(ref, "nothing", "")
 	if err == nil {
 		t.Fatal("GitCommit() on clean tree error = nil, want failure (nothing to commit)")
 	}
@@ -227,11 +202,11 @@ func TestShip_CommitFailsOnNoChanges(t *testing.T) {
 // cannot push. The wizard must surface the missing-remote message from the
 // Core, not an obscure git crash.
 func TestShip_PushFailsOnNoUpstream(t *testing.T) {
-	app, threadID, _ := shipTestSetup(t)
+	app, ref, _, _ := shipTestSetup(t)
 
 	// No remote added to the repo. Push should fail with the remote-missing
 	// error from internal/git/actions.go.
-	_, err := app.GitPush(threadID)
+	_, err := app.GitPush(ref)
 	if err == nil {
 		t.Fatal("GitPush() without remote error = nil, want failure")
 	}
@@ -243,17 +218,13 @@ func TestShip_PushFailsOnNoUpstream(t *testing.T) {
 // TestShip_CreatePRFailsWhenNotPushed: if gh exits non-zero (branch has no
 // upstream / no PR can be created), the wrapper must surface the error.
 func TestShip_CreatePRFailsWhenNotPushed(t *testing.T) {
-	app, threadID, _ := shipTestSetup(t)
-	stored, err := app.store.GetThread(threadID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
+	app, ref, workspace, _ := shipTestSetup(t)
 	// Forge dispatch needs a classifiable origin to route to gh.
-	testutil.RunGit(t, stored.WorkspacePath, "remote", "add", "origin", "https://github.com/test/test.git")
+	testutil.RunGit(t, workspace, "remote", "add", "origin", "https://github.com/test/test.git")
 
 	installMockGhShip(t, "", "must push first", 1)
 
-	_, err = app.GitCreatePR(threadID, "PR title", "body", false)
+	_, err := app.GitCreatePR(ref, "PR title", "body", false)
 	if err == nil {
 		t.Fatal("GitCreatePR() with failing gh error = nil, want failure")
 	}
@@ -266,28 +237,25 @@ func TestShip_CreatePRFailsWhenNotPushed(t *testing.T) {
 }
 
 // TestShip_NewBranchFromCurrent: the wizard may create a branch before
-// committing. GitCreateBranch + a subsequent checkout then commit must land
-// the commit on the new branch.
+// committing. Cutting the branch off the current base and committing must
+// land the commit on the new branch.
 func TestShip_NewBranchFromCurrent(t *testing.T) {
-	app, threadID, _ := shipTestSetup(t)
+	app, ref, workspace, _ := shipTestSetup(t)
 
-	if err := app.GitCreateBranch(threadID, "ship/feature"); err != nil {
-		t.Fatalf("GitCreateBranch() error = %v", err)
-	}
-	if err := app.GitCheckout(threadID, "ship/feature"); err != nil {
-		t.Fatalf("GitCheckout() error = %v", err)
-	}
-
-	stored, err := app.store.GetThread(threadID)
+	state, err := app.GitCreateBranchFrom(ref, "ship/feature", "main", true)
 	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
+		t.Fatalf("GitCreateBranchFrom() error = %v", err)
 	}
-	feature := filepath.Join(stored.WorkspacePath, "feature.txt")
+	if state.Branch != "ship/feature" {
+		t.Fatalf("state Branch = %q, want ship/feature", state.Branch)
+	}
+
+	feature := filepath.Join(workspace, "feature.txt")
 	if err := os.WriteFile(feature, []byte("on branch\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	commitResult, err := app.GitCommit(threadID, "ship: feature", "")
+	commitResult, err := app.GitCommit(ref, "ship: feature", "")
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
 	}
@@ -296,7 +264,7 @@ func TestShip_NewBranchFromCurrent(t *testing.T) {
 	}
 
 	// Verify the commit is reachable only from ship/feature, not main.
-	branches, err := app.GitListBranches(threadID)
+	branches, err := app.GitListBranches(ref)
 	if err != nil {
 		t.Fatalf("GitListBranches() error = %v", err)
 	}
@@ -315,17 +283,13 @@ func TestShip_NewBranchFromCurrent(t *testing.T) {
 // step twice, which matters because drawer retry buttons wire to the same
 // binding.
 func TestShip_StackedActionsIdempotent(t *testing.T) {
-	app, threadID, _ := shipTestSetup(t)
-	stored, err := app.store.GetThread(threadID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
+	app, ref, workspace, _ := shipTestSetup(t)
 
-	feature := filepath.Join(stored.WorkspacePath, "feature.txt")
+	feature := filepath.Join(workspace, "feature.txt")
 	if err := os.WriteFile(feature, []byte("shipped\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	first, err := app.GitCommit(threadID, "ship: first", "")
+	first, err := app.GitCommit(ref, "ship: first", "")
 	if err != nil {
 		t.Fatalf("first GitCommit() error = %v", err)
 	}
@@ -335,7 +299,7 @@ func TestShip_StackedActionsIdempotent(t *testing.T) {
 
 	// Second call: tree is now clean because we committed everything. Must
 	// error out, not silently produce a duplicate commit.
-	_, err = app.GitCommit(threadID, "ship: second", "")
+	_, err = app.GitCommit(ref, "ship: second", "")
 	if err == nil {
 		t.Fatal("second GitCommit() on clean tree error = nil, want failure")
 	}
@@ -348,13 +312,9 @@ func TestShip_StackedActionsIdempotent(t *testing.T) {
 // `draft` parameter threads through to `gh pr create --draft`. When draft is
 // false the flag is absent; when true it's present.
 func TestShip_CreatePRWithDraftFlag(t *testing.T) {
-	app, threadID, _ := shipTestSetup(t)
-	stored, err := app.store.GetThread(threadID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
+	app, ref, workspace, _ := shipTestSetup(t)
 	// Forge dispatch needs a classifiable origin to route to gh.
-	testutil.RunGit(t, stored.WorkspacePath, "remote", "add", "origin", "https://github.com/test/test.git")
+	testutil.RunGit(t, workspace, "remote", "add", "origin", "https://github.com/test/test.git")
 
 	// Write a mock gh that records whether --draft was present. We emit the
 	// flag state to stdout so the caller can observe it.
@@ -378,7 +338,7 @@ echo "https://example.com/pr/draft-flag=$found_draft"
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	// draft=false: gh is invoked without --draft.
-	result, err := app.GitCreatePR(threadID, "PR title", "body", false)
+	result, err := app.GitCreatePR(ref, "PR title", "body", false)
 	if err != nil {
 		t.Fatalf("GitCreatePR(draft=false) error = %v", err)
 	}
@@ -387,7 +347,7 @@ echo "https://example.com/pr/draft-flag=$found_draft"
 	}
 
 	// draft=true: gh is invoked with --draft.
-	result, err = app.GitCreatePR(threadID, "PR title", "body", true)
+	result, err = app.GitCreatePR(ref, "PR title", "body", true)
 	if err != nil {
 		t.Fatalf("GitCreatePR(draft=true) error = %v", err)
 	}

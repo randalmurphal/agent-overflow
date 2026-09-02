@@ -3,10 +3,13 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import CommitStep from './CommitStep.svelte';
 import { createShipChangesState } from '../../../stores/shipChanges.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
+import type { WorkspaceRef } from '../../../types/git';
+
+const WS: WorkspaceRef = { projectId: 'project-1', workspacePath: '/workspace' };
 
 function makeStateWithChanges() {
   const state = createShipChangesState();
-  state.open('thread-1');
+  state.open('thread-1', WS);
   state.setStatus({
     isRepo: true,
     branch: 'feature/x',
@@ -26,7 +29,7 @@ function makeStateWithChanges() {
 
 function makeStateClean() {
   const state = createShipChangesState();
-  state.open('thread-1');
+  state.open('thread-1', WS);
   state.setStatus({
     isRepo: true,
     branch: 'feature/x',

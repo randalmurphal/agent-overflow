@@ -27,7 +27,10 @@ vi.mock('../../utils/diffSpanCache.svelte', () => ({
   diffSpanCacheGeneration: vi.fn(() => 0),
 }));
 
-vi.mock('../../stores/reviewPane.svelte', () => ({
+// The subject derivation stays real: what the card hands the companion is
+// part of what these tests assert.
+vi.mock('../../stores/reviewPane.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/reviewPane.svelte')>()),
   openReviewCompanion: vi.fn(async () => null),
 }));
 
@@ -121,11 +124,26 @@ function makeMultiHunkPatchFile(): PatchFile {
   };
 }
 
+const PANE_THREAD = {
+  id: 'thread-1',
+  projectId: 'project-1',
+  workspacePath: '/tmp/workspace',
+} as ThreadPane['thread'];
+
+/** What `openReviewForItem` derives from `fakePane()`. */
+const PANE_SUBJECT = {
+  identity: 'thread-1',
+  threadId: 'thread-1',
+  workspace: { projectId: 'project-1', workspacePath: '/tmp/workspace' },
+  thread: PANE_THREAD,
+};
+
 function fakePane(): Partial<ThreadPane> {
   return {
     paneId: 'pane-1',
     threadId: 'thread-1',
-    thread: { id: 'thread-1', workspacePath: '/tmp/workspace' } as ThreadPane['thread'],
+    thread: PANE_THREAD,
+    workspace: { projectId: 'project-1', workspacePath: '/tmp/workspace' },
   } as Partial<ThreadPane>;
 }
 
@@ -247,7 +265,7 @@ describe('<DiffFileBlock>', () => {
     expect(bodyText).toContain('line 15;');
     expect(bodyText).not.toContain('line 16;');
     await fireEvent.click(cta);
-    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
+    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', PANE_SUBJECT, {
       scope: 'workspace',
       filePath: 'src/big.ts',
     });
@@ -296,7 +314,7 @@ describe('<DiffFileBlock>', () => {
       props: { pane, file, payloadId: 'p-1', threadId: 'thread-1' },
     });
     await fireEvent.click(getByTestId('diff-file-open-sidebar'));
-    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
+    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', PANE_SUBJECT, {
       scope: 'workspace',
       filePath: 'src/foo.ts',
     });
@@ -309,7 +327,7 @@ describe('<DiffFileBlock>', () => {
       props: { pane, file, payloadId: 'p-2', threadId: 'thread-1' },
     });
     await fireEvent.click(getByTestId('diff-file-show-full'));
-    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
+    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', PANE_SUBJECT, {
       scope: 'workspace',
       filePath: 'src/long.ts',
     });
@@ -322,7 +340,7 @@ describe('<DiffFileBlock>', () => {
       props: { pane, file, payloadId: 'p-3', threadId: 'thread-1' },
     });
     await fireEvent.click(getByTestId('diff-file-header'), { metaKey: true });
-    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
+    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', PANE_SUBJECT, {
       scope: 'workspace',
       filePath: 'src/foo.ts',
     });
@@ -585,7 +603,7 @@ describe('<DiffFileBlock>', () => {
 
       // One promote (the toggle bails and lets the wrapper handle it),
       // and the card stays expanded.
-      expect(openReviewCompanion).toHaveBeenCalledExactlyOnceWith('pane-1', 'thread-1', {
+      expect(openReviewCompanion).toHaveBeenCalledExactlyOnceWith('pane-1', PANE_SUBJECT, {
         scope: 'workspace',
         filePath: 'src/foo.ts',
       });

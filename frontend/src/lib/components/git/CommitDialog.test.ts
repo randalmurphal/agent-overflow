@@ -37,7 +37,7 @@ describe('<CommitDialog> — Generate commit message', () => {
       expect(subject.value).toBe('Add login flow');
       expect(body.value).toBe('Supports SSO.');
     });
-    expect(generate).toHaveBeenCalledWith(pane.threadId);
+    expect(generate).toHaveBeenCalledWith(pane.workspace);
   });
 
   it('keeps the drafted fields editable after a failed generation', async () => {

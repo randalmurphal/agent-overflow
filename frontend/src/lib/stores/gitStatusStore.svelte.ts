@@ -12,10 +12,10 @@
 // The backend pumps one `git:status` stream per canonical cwd and addresses
 // its events by that cwd. This module maps canonical cwd back to the local
 // key(s) that asked for it, so the wire stays entity-keyed and the store
-// stays keyed on what the frontend actually knows: the thread row's
-// workspace_path.
+// stays keyed on what the frontend actually knows: the workspace path a
+// pane is pointed at — a persisted thread's or a draft placeholder's alike.
 
-import type { GitStatus } from '../types/git';
+import type { GitStatus, WorkspaceRef } from '../types/git';
 import type { Thread } from '../types/models';
 import {
   GetGitStatus,
@@ -28,18 +28,21 @@ import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
 import { isTransportClassError } from './transportStatus.svelte';
 import { wailsEventOn } from './wailsEvents';
 import { errString } from '../utils/errors';
-import { workspaceKeyForThread } from '../utils/workspaceKey';
+import { workspaceKeyForThread, workspaceRefForThread } from '../utils/workspaceKey';
 
 /** What a source needs from whoever is holding the key. */
 export interface GitStatusCtx {
   /**
-   * A thread that currently lives in this workspace — the subscribe RPC
-   * resolves the workspace FROM a thread row. May be declared as a getter:
-   * one attacher holds one workspace key across every thread it shows, so
-   * a re-source (reconnect, retry) has to run against a thread that still
-   * exists, not the one that happened to be current when it attached.
+   * The checkout this key names, as the subscribe RPC takes it. May be
+   * declared as a getter, and is READ AT SOURCE TIME: one attacher holds one
+   * workspace key across every thread (and placeholder) it shows, so a
+   * re-source (reconnect, retry) has to run against what the pane points at
+   * now, not what it happened to point at when it attached.
+   *
+   * Null is a pane that stopped naming a checkout under a re-source; the
+   * source fails loudly rather than subscribing to nothing.
    */
-  readonly threadId: string;
+  readonly workspace: WorkspaceRef | null;
 }
 
 // Wire payload shape for "git:status" events. Wails generates no TS type for
@@ -84,7 +87,11 @@ const store = createEntityStore<GitStatus, GitStatusCtx>({
   name: 'gitStatus',
   source: async ({ key, getCtx, apply, signal }) => {
     const owner: AliasOwner = Symbol(key);
-    const result = (await GitStatusSubscribe(getCtx().threadId)) as GitStatusSubscriptionResult;
+    const workspace = getCtx().workspace;
+    if (workspace === null) {
+      throw new Error(`git status: no workspace to subscribe for ${key}`);
+    }
+    const result = (await GitStatusSubscribe(workspace)) as GitStatusSubscriptionResult;
     const cwd = result.cwd;
     // Only a run that is still the live one may claim the alias; a
     // superseded run's cleanup then finds an owner that is not its own and
@@ -245,22 +252,21 @@ export function peekGitStatusError(key: string | null): string | null {
  * chokepoint, so branch reconciliation happens here too; the backend also
  * pushes the same refresh to every other client on this workspace.
  *
- * `currentKey` is re-read after the await and must still name `key`:
- * GetGitStatus resolves the workspace FROM the thread, so a worktree switch
- * landing mid-flight would describe a different checkout than the key names
- * — and applying it would both paint the wrong status and persist the wrong
+ * `currentKey` is re-read after the await and must still name `key`: the
+ * caller can be re-pointed at another checkout mid-flight, and applying the
+ * answer anyway would both paint the wrong status and persist the wrong
  * branch onto every thread still in the old workspace. The CALLER supplies
- * it, because the caller is what holds the thread this refresh is about;
- * resolving the thread through the pane registry made the verdict depend on
- * UI mount state and dragged this module into the pane graph.
+ * it, because the caller is what holds the pane this refresh is about;
+ * resolving it through the pane registry made the verdict depend on UI mount
+ * state and dragged this module into the pane graph.
  */
 export async function refreshGitStatus(
   key: string,
-  threadId: string,
+  workspace: WorkspaceRef,
   currentKey: () => string | null,
 ): Promise<void> {
   try {
-    const result = (await GetGitStatus(threadId)) as GitStatus;
+    const result = (await GetGitStatus(workspace)) as GitStatus;
     if (currentKey() !== key) return;
     store.apply(key, result);
   } catch (err) {
@@ -283,10 +289,7 @@ export interface GitStatusView {
   refreshNow(): Promise<void>;
 }
 
-export function createGitStatusView(
-  getThread: () => Thread | null,
-  getThreadId: () => string | null,
-): GitStatusView {
+export function createGitStatusView(getThread: () => Thread | null): GitStatusView {
   const key = (): string | null => workspaceKeyForThread(getThread());
   return {
     get status() {
@@ -297,9 +300,9 @@ export function createGitStatusView(
     },
     async refreshNow() {
       const workspacePath = key();
-      const threadId = getThreadId();
-      if (workspacePath === null || !threadId) return;
-      await refreshGitStatus(workspacePath, threadId, key);
+      const workspace = workspaceRefForThread(getThread());
+      if (workspacePath === null || workspace === null) return;
+      await refreshGitStatus(workspacePath, workspace, key);
     },
   };
 }
@@ -342,7 +345,11 @@ function ensureTestHold(key: string): void {
     store.suspend();
     seedingForTest = true;
   }
-  if (!testHolds.has(key)) testHolds.set(key, store.attach(key, { threadId: '__seed__' }));
+  if (!testHolds.has(key)) {
+    // The store is suspended while seeding, so this reference never sources
+    // and the ref is never read.
+    testHolds.set(key, store.attach(key, { workspace: null }));
+  }
 }
 
 /**

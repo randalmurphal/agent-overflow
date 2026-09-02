@@ -9,7 +9,8 @@
 // fetch + normalize on click.
 
 import { addToast } from '../stores/toast.svelte';
-import { WriteThreadWorkspaceFile } from '../stores/bindings';
+import { WriteWorkspaceFile } from '../stores/bindings';
+import type { WorkspaceRef } from '../types/git';
 import { buildProposedPlanMarkdownFilename, normalizePlanMarkdownForExport } from './proposedPlan';
 
 export interface PlanSaveDialog {
@@ -25,7 +26,10 @@ export interface PlanSaveDialog {
 
 export function createPlanSaveDialog(
   getMarkdown: () => Promise<string>,
-  getThreadId: () => string | null,
+  // The CHECKOUT the plan file lands in (`pane.workspace`). Read at save
+  // time, not at construction: a draft placeholder's checkout can change
+  // before the user clicks save.
+  getWorkspace: () => WorkspaceRef | null,
 ): PlanSaveDialog {
   let savePath = $state('');
   let saving = $state(false);
@@ -45,8 +49,14 @@ export function createPlanSaveDialog(
   }
 
   async function handleSave(): Promise<void> {
-    const tid = getThreadId();
-    if (!tid || saving) return;
+    if (saving) return;
+    const workspace = getWorkspace();
+    if (!workspace) {
+      // A plan only ever arrives on a project-bound thread, so this is a
+      // bug upstream, not a state to absorb silently.
+      addToast('error', 'This thread names no workspace to save the plan into');
+      return;
+    }
     const relativePath = savePath.trim();
     if (!relativePath) {
       addToast('warning', 'Enter a workspace-relative path');
@@ -57,8 +67,8 @@ export function createPlanSaveDialog(
 
     saving = true;
     try {
-      const writtenPath = await WriteThreadWorkspaceFile(
-        tid,
+      const writtenPath = await WriteWorkspaceFile(
+        workspace,
         relativePath,
         normalizePlanMarkdownForExport(markdown),
       );

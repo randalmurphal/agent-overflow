@@ -13,6 +13,9 @@ import * as flushqueue$0 from "../flushqueue/models.js";
 import * as git$0 from "../git/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as gitapp$0 from "../gitapp/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as gitdiff$0 from "../gitdiff/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -1238,6 +1241,11 @@ export class GitStatusSubscriptionResult {
     }
 }
 
+/**
+ * GitWorkspaceState is the caller's checkout after a mutation that may have
+ * moved its branch. WorktreePath is empty when the workspace is the project
+ * root.
+ */
 export class GitWorkspaceState {
     "workspacePath": string;
     "worktreePath"?: string;
@@ -7025,6 +7033,20 @@ export class WorkspaceFileSearchResult {
         return new WorkspaceFileSearchResult($$parsedSource as Partial<WorkspaceFileSearchResult>);
     }
 }
+
+/**
+ * WorkspaceRef is the subject of every workspace-scoped git RPC: a checkout,
+ * named by project id + directory. A thread id on a git RPC now means the
+ * subject IS the thread — its own history, or its workspace assignment.
+ */
+export const WorkspaceRef = gitapp$0.WorkspaceRef;
+
+/**
+ * WorkspaceRef is the subject of every workspace-scoped git RPC: a checkout,
+ * named by project id + directory. A thread id on a git RPC now means the
+ * subject IS the thread — its own history, or its workspace assignment.
+ */
+export type WorkspaceRef = gitapp$0.WorkspaceRef;
 
 /**
  * WorktreeListItem is the picker-facing worktree shape. DeleteBlocked is true

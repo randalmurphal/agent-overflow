@@ -19,6 +19,11 @@ import { __setTransportStatusForTest } from './transportStatus.svelte';
 import { prKey, type PRRef } from '../utils/prReference';
 import type { PRDetail, ReviewThread } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import type { WorkspaceRef } from '../types/git';
+
+// The checkout merge-tree runs in. A pr-anchor thread would pass the zero
+// ref instead and the backend would refuse — see reviewPane's pr scope.
+const CONFLICT_WS: WorkspaceRef = { projectId: 'project-1', workspacePath: '/workspace' };
 import { applyTransportGap } from './eventsTransportGap';
 
 const REF: PRRef = { forge: 'github', namespace: 'owner', repo: 'repo', number: 5 };
@@ -792,14 +797,14 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     const a = attachPR(KEY, { ref: REF });
     await flush();
 
-    await openPRConflicts(KEY, 'thread-1', REF, detailStub());
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
     expect(conflicts).toHaveBeenCalledTimes(1);
     expect(file).toHaveBeenCalledTimes(1);
     expect(peekPRConflicts(KEY).state?.treeOID).toBe('tree-1');
     expect(peekPRConflicts(KEY).contentByPath.get('main.go')).toBe('merged content');
 
     // A second pane opening the same view pays nothing.
-    await openPRConflicts(KEY, 'thread-1', REF, detailStub());
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
     expect(conflicts).toHaveBeenCalledTimes(1);
     a.release();
   });
@@ -811,7 +816,7 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     const a = attachPR(KEY, { ref: REF });
     await flush();
     const viewing = permitPRConflictReconcile(KEY);
-    await openPRConflicts(KEY, 'thread-1', REF, detailStub());
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
     expect(peekPRConflicts(KEY).contentByPath.get('main.go')).toBe('content for sha-a');
 
     setBindingMock('GetPRMergeConflicts', async () => ({
@@ -870,7 +875,7 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     await flush();
     const viewing = permitPRConflictReconcile(KEY);
 
-    const opening = openPRConflicts(KEY, 'thread-1', REF, detailStub());
+    const opening = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
     await flush();
     expect(peekPRConflicts(KEY).loading).toBe(true);
 
@@ -923,7 +928,7 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     await flush();
     const viewing = permitPRConflictReconcile(KEY);
 
-    const opening = openPRConflicts(KEY, 'thread-1', REF, detailStub());
+    const opening = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
     await flush();
     expect(peekPRConflicts(KEY).loading).toBe(true);
 
@@ -980,7 +985,7 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     const a = attachPR(KEY, { ref: REF });
     await flush();
 
-    await openPRConflicts(KEY, 'thread-1', REF, detailStub());
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
     await flush();
 
     const conflicts = peekPRConflicts(KEY);
@@ -997,7 +1002,7 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     const a = attachPR(KEY, { ref: REF });
     await flush();
     const viewing = permitPRConflictReconcile(KEY);
-    await openPRConflicts(KEY, 'thread-1', REF, detailStub());
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
 
     const recompute = setBindingMock('GetPRMergeConflicts', async () => ({
       conflicted: false,
@@ -1029,7 +1034,7 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     const a = attachPR(KEY, { ref: REF });
     await flush();
     const viewing = permitPRConflictReconcile(KEY);
-    await openPRConflicts(KEY, 'thread-1', REF, detailStub());
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
 
     const recompute = setBindingMock('GetPRMergeConflicts', async () => {
       throw new Error('must not recompute');
@@ -1075,7 +1080,7 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     const a = attachPR(KEY, { ref: REF });
     await flush();
     const viewing = permitPRConflictReconcile(KEY);
-    await openPRConflicts(KEY, 'thread-1', REF, detailStub());
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
     // The user closes the conflict view and goes back to the diff.
     viewing();
 
@@ -1105,7 +1110,7 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     // Reopening is what recomputes it — lazily, against the head that is
     // live by then, so the closed view is never a stale-render hole.
     const reopened = permitPRConflictReconcile(KEY);
-    await openPRConflicts(KEY, 'thread-1', REF, detailStub({ headSHA: 'sha-b' }));
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub({ headSHA: 'sha-b' }));
     expect(recompute).toHaveBeenCalledTimes(1);
     expect(peekPRConflicts(KEY).state?.treeOID).toBe('tree-2');
     reopened();
@@ -1117,7 +1122,7 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     installConflictMocks();
     const a = attachPR(KEY, { ref: REF });
     await flush();
-    await openPRConflicts(KEY, 'thread-1', REF, detailStub());
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
     expect(peekPRConflicts(KEY).state).not.toBeNull();
 
     a.release();

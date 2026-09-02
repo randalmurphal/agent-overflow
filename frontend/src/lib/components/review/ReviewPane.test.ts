@@ -89,6 +89,29 @@ describe('<ReviewPane>', () => {
     expect(view.getAllByTestId('review-line-block')).toHaveLength(1);
   });
 
+  // A draft placeholder has a synthetic thread row and NO thread id: it names
+  // a checkout, so the checkout scopes are its whole vocabulary. The Edits
+  // scope is the thread's own history, so it must not be offered at all —
+  // an offered-then-refused option is a click that does nothing.
+  it('offers only the checkout scopes on a draft placeholder', async () => {
+    const ctx = makeStubPanelContext({
+      threadId: null,
+      thread: {
+        id: 'draft:source-pane:project-1:chat:1',
+        projectId: 'project-1',
+        workspacePath: '/repo',
+      } as Thread,
+    });
+    const view = render(ReviewPane, { ctx });
+
+    await waitFor(() => {
+      expect(view.getAllByTestId('review-file-header')).toHaveLength(2);
+    });
+    const select = view.getByTestId('review-scope-select') as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(['workspace', 'branch']);
+    expect(select.disabled).toBe(false);
+  });
+
   it('toggles collapse-all/expand-all from the toolbar', async () => {
     const view = render(ReviewPane, { ctx: makeCtx() });
     await waitFor(() => {

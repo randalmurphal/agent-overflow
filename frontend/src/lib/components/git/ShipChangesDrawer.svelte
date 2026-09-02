@@ -53,10 +53,14 @@
   // prop updates — swapping the state store mid-wizard would be a bug.
   // Named `wizard` to avoid colliding with Svelte's `$state` rune.
   const wizard: ShipChangesState = untrack(() => externalState ?? createShipChangesState());
-  // Track the thread the wizard was opened for so we can detect a switch
-  // while the drawer is still open and bail out rather than silently
-  // resetting the user's typed content onto a different thread's state.
-  let openedForThreadId: string | null = null;
+  // Track the thread identity the wizard was opened for so we can detect a
+  // switch while the drawer is still open and bail out rather than silently
+  // resetting the user's typed content onto a different thread's state. A
+  // draft placeholder's synthetic id counts: materializing it IS a switch,
+  // and the user's typed commit copy must not silently move.
+  let openedForIdentity: string | null = null;
+  // The checkout every step below acts on.
+  let workspace = $derived(pane.workspace);
 
   // The workspace's live status feeds the wizard. setStatus auto-advances
   // only out of `idle`, so once the user is inside a step this is purely
@@ -74,26 +78,31 @@
       untrack(() => {
         wizard.close();
       });
-      openedForThreadId = null;
+      openedForIdentity = null;
       return;
     }
-    const threadId = pane.threadId;
-    if (!threadId) return;
+    const identity = pane.thread?.id;
+    if (!identity) return;
 
     // The user switched the active thread while the drawer was open.
     // Silently resetting wizard state onto a different thread would
     // throw away the commit subject/body they typed. Close the drawer
     // with an informative toast so the user knows what happened.
-    if (openedForThreadId !== null && openedForThreadId !== threadId) {
+    // Checked BEFORE the workspace: the thread they switched TO may have
+    // no checkout at all, and that is still a switch they must be told
+    // about rather than a reason to sit on stale wizard state.
+    if (openedForIdentity !== null && openedForIdentity !== identity) {
       untrack(() => {
         addToast('info', 'Ship Changes closed (thread switched)');
         onClose();
       });
       return;
     }
+    const ws = workspace;
+    if (!ws) return;
 
     untrack(() => {
-      wizard.open(threadId);
+      wizard.open(identity, ws);
       // Seed synchronously: open() resets to idle, and the feed effect
       // above has already run for this flush (its deps did not change
       // again), so without this the wizard would sit on "Loading…" until
@@ -102,19 +111,19 @@
       const status = pane.gitStatus.status;
       if (status !== null) wizard.setStatus(status);
     });
-    openedForThreadId = threadId;
+    openedForIdentity = identity;
   });
 
   async function handleCommit(): Promise<void> {
-    const threadId = pane.threadId;
-    if (!threadId) return;
+    const ws = workspace;
+    if (!ws) return;
     if (!wizard.canCommit) return;
     const subject = wizard.commitSubject.trim();
     const body = wizard.commitBody.trim();
     const startGeneration = wizard.generation;
     wizard.beginCommit();
     try {
-      const result = (await GitCommit(threadId, subject, body)) as GitActionResult;
+      const result = (await GitCommit(ws, subject, body)) as GitActionResult;
       // Dialog may have been closed (or reopened on a new thread) while the
       // commit was in flight; resuming would blow up the state machine.
       if (wizard.generation !== startGeneration) return;
@@ -139,13 +148,13 @@
   }
 
   async function handlePush(): Promise<void> {
-    const threadId = pane.threadId;
-    if (!threadId) return;
+    const ws = workspace;
+    if (!ws) return;
     if (!wizard.canPush) return;
     const startGeneration = wizard.generation;
     wizard.beginPush();
     try {
-      const result = (await GitPush(threadId)) as GitActionResult;
+      const result = (await GitPush(ws)) as GitActionResult;
       if (wizard.generation !== startGeneration) return;
       if (result.error) {
         wizard.failPush(result.error);
@@ -165,8 +174,8 @@
   }
 
   async function handleCreatePR(): Promise<void> {
-    const threadId = pane.threadId;
-    if (!threadId) return;
+    const ws = workspace;
+    if (!ws) return;
     if (!wizard.canCreatePR) return;
     const title = wizard.prTitle.trim();
     const body = wizard.prBody.trim();
@@ -174,7 +183,7 @@
     const startGeneration = wizard.generation;
     wizard.beginCreatePR();
     try {
-      const result = (await GitCreatePR(threadId, title, body, draft)) as GitActionResult;
+      const result = (await GitCreatePR(ws, title, body, draft)) as GitActionResult;
       if (wizard.generation !== startGeneration) return;
       if (result.error) {
         wizard.failCreatePR(result.error);

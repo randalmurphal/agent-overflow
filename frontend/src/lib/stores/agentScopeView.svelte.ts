@@ -371,6 +371,7 @@ export function createAgentScopeView(
   const forwarded = {
     get thread() { return sourcePane.thread; },
     get threadId() { return sourcePane.threadId; },
+    get workspace() { return sourcePane.workspace; },
     get activeModel() { return sourcePane.activeModel; },
     get effectiveModel() { return sourcePane.effectiveModel; },
     get terminalThreadId() { return sourcePane.terminalThreadId; },

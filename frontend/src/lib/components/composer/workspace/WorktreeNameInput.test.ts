@@ -123,7 +123,7 @@ describe('<WorktreeNameInput>', () => {
 
     await waitFor(() => {
       expect(create.mock.calls[0]).toEqual([
-        'thread-1',
+        { projectId: 'project-1', workspacePath: '/repo' },
         'feat/enter',
         'main',
         false,

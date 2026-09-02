@@ -34,6 +34,10 @@ export function makeThread(overrides: Partial<Thread> = {}): Thread {
     id: 'thread-1',
     title: 'Test thread',
     provider: 'claude',
+    // Both halves of the checkout: git and review affordances address a
+    // WorkspaceRef, so a fixture without a projectId is a thread whose git
+    // controls correctly refuse to render.
+    projectId: 'project-1',
     workspacePath: '/tmp/workspace',
     projectPath: '/tmp/workspace',
     mode: 'chat',

@@ -35,6 +35,9 @@ import * as flushqueue$0 from "./internal/flushqueue/models.js";
 import * as git$0 from "./internal/git/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as gitapp$0 from "./internal/gitapp/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as gitdiff$0 from "./internal/gitdiff/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -659,7 +662,7 @@ export function ForkThreadFromMessage(sourceThreadID: string, userItemID: string
 }
 
 /**
- * GenerateCommitMessage inspects the thread's working tree, stages all
+ * GenerateCommitMessage inspects the referenced workspace, stages all
  * changes, and asks the configured text-generation CLI (Codex by
  * default, Claude as an alternative) to draft a structured commit
  * subject + body. Routing mirrors t3-code's RoutingTextGeneration.
@@ -672,7 +675,7 @@ export function ForkThreadFromMessage(sourceThreadID: string, userItemID: string
  * as long as Claude is installed.
  * 
  * Errors short-circuit in four shapes the frontend can render cleanly:
- *   - unknown thread
+ *   - unresolvable workspace
  *   - empty staged diff ("nothing to commit")
  *   - CLI missing on PATH
  *   - CLI exited non-zero (stderr bubbled into the error)
@@ -681,8 +684,8 @@ export function ForkThreadFromMessage(sourceThreadID: string, userItemID: string
  * present the result (or the error) to the user for edit before
  * actually committing.
  */
-export function GenerateCommitMessage(threadID: string): $CancellablePromise<app$0.GeneratedCommitMessage> {
-    return $Call.ByID(1669373286, threadID).then(($result: any) => {
+export function GenerateCommitMessage(ws: app$0.WorkspaceRef): $CancellablePromise<app$0.GeneratedCommitMessage> {
+    return $Call.ByID(1669373286, ws).then(($result: any) => {
         return $$createType13($result);
     });
 }
@@ -716,13 +719,13 @@ export function GetAttachmentThumbnail(threadID: string, attachmentID: string): 
 }
 
 /**
- * GetBranchBaseDiff returns the combined diff of the thread's workspace
+ * GetBranchBaseDiff returns the combined diff of the referenced workspace
  * (committed work since merge-base plus uncommitted changes) against the
  * merge base of baseBranch and the workspace HEAD — i.e. what a PR onto
  * baseBranch would contain.
  */
-export function GetBranchBaseDiff(threadID: string, baseBranch: string, ignoreWhitespace: boolean): $CancellablePromise<string> {
-    return $Call.ByID(1342635161, threadID, baseBranch, ignoreWhitespace);
+export function GetBranchBaseDiff(ws: app$0.WorkspaceRef, baseBranch: string, ignoreWhitespace: boolean): $CancellablePromise<string> {
+    return $Call.ByID(1342635161, ws, baseBranch, ignoreWhitespace);
 }
 
 /**
@@ -852,8 +855,8 @@ export function GetCodexSkills(workspacePath: string, forceReload: boolean): $Ca
  * GetCommitDiff returns the unified patch a single local commit
  * introduced (first-parent diff; empty-tree diff for a root commit).
  */
-export function GetCommitDiff(threadID: string, sha: string, ignoreWhitespace: boolean): $CancellablePromise<string> {
-    return $Call.ByID(3399370629, threadID, sha, ignoreWhitespace);
+export function GetCommitDiff(ws: app$0.WorkspaceRef, sha: string, ignoreWhitespace: boolean): $CancellablePromise<string> {
+    return $Call.ByID(3399370629, ws, sha, ignoreWhitespace);
 }
 
 export function GetContextSettings(providerName: string, model: string): $CancellablePromise<app$0.ContextSettingsProfile> {
@@ -864,11 +867,14 @@ export function GetContextSettings(providerName: string, model: string): $Cancel
 
 /**
  * GetDiffContextLines returns new-side source lines for review-diff
- * hunk-gap expansion. Same wire-exposure class as the diff getters:
- * classified LocalOnlyMethods.
+ * hunk-gap expansion in the LIVE scopes — workspace, branch, commit and pr —
+ * whose new side is content the referenced checkout already holds. The edits
+ * scope is a different subject (one thread's own history) and has its own
+ * entry point. Same wire-exposure class as the diff getters: classified
+ * LocalOnlyMethods.
  */
-export function GetDiffContextLines(threadID: string, req: app$0.DiffContextRequest): $CancellablePromise<app$0.DiffContextResult> {
-    return $Call.ByID(1590634674, threadID, req).then(($result: any) => {
+export function GetDiffContextLines(ws: app$0.WorkspaceRef, req: app$0.DiffContextRequest): $CancellablePromise<app$0.DiffContextResult> {
+    return $Call.ByID(1590634674, ws, req).then(($result: any) => {
         return $$createType24($result);
     });
 }
@@ -893,6 +899,18 @@ export function GetDraft(threadID: string): $CancellablePromise<app$0.Draft> {
 }
 
 /**
+ * GetEditDiffContextLines serves the edits scope, whose new side is a
+ * historical file state: the snapshot persisted with the edit, falling back to
+ * the THREAD's own workspace for edits that predate snapshots. Both sources
+ * are verified against the request's patch before a line is served.
+ */
+export function GetEditDiffContextLines(threadID: string, req: app$0.DiffContextRequest): $CancellablePromise<app$0.DiffContextResult> {
+    return $Call.ByID(949275134, threadID, req).then(($result: any) => {
+        return $$createType24($result);
+    });
+}
+
+/**
  * GetEditorSettings returns the user's persisted open-in-editor
  * preferences. Empty preference means the catalog default applies at
  * open time — surfaced verbatim so the settings UI can render an
@@ -905,7 +923,7 @@ export function GetEditorSettings(): $CancellablePromise<settings$0.EditorSettin
 }
 
 /**
- * GetGitStatus returns git status for the thread's active workspace.
+ * GetGitStatus returns git status for the referenced workspace.
  * 
  * The answer is not the caller's alone: every other client watching this
  * workspace is looking at the same checkout, so the fresh status is also
@@ -915,22 +933,8 @@ export function GetEditorSettings(): $CancellablePromise<settings$0.EditorSettin
  * missed-event detection — a refresh that observes a change the fs watches
  * never reported is how a silently dead watchpoint gets reinstalled.
  */
-export function GetGitStatus(threadID: string): $CancellablePromise<git$0.GitStatus> {
-    return $Call.ByID(4123560639, threadID).then(($result: any) => {
-        return $$createType28($result);
-    });
-}
-
-/**
- * GetGitStatusFastForProject returns git status for a project root using only
- * cached open-PR info — no gh/glab network call — and without requiring a
- * thread row. The one caller is the composer's draft placeholder: it has no
- * thread, so it can hold no git-status subscription, and it wants the local
- * dirty bit rather than a forge round-trip. Every thread-backed surface reads
- * the shared workspace-keyed git-status store instead.
- */
-export function GetGitStatusFastForProject(projectID: string): $CancellablePromise<git$0.GitStatus> {
-    return $Call.ByID(2193133889, projectID).then(($result: any) => {
+export function GetGitStatus(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitStatus> {
+    return $Call.ByID(4123560639, ws).then(($result: any) => {
         return $$createType28($result);
     });
 }
@@ -976,8 +980,8 @@ export function GetMcpServerStatus(providerName: string, name: string, force: bo
     });
 }
 
-export function GetMergeConflictFile(threadID: string, treeOID: string, path: string): $CancellablePromise<string> {
-    return $Call.ByID(3176695009, threadID, treeOID, path);
+export function GetMergeConflictFile(ws: app$0.WorkspaceRef, treeOID: string, path: string): $CancellablePromise<string> {
+    return $Call.ByID(3176695009, ws, treeOID, path);
 }
 
 /**
@@ -1021,12 +1025,12 @@ export function GetPRCIJobs(pr: git$0.PRReference): $CancellablePromise<git$0.CI
 
 /**
  * GetPRCommitDiff returns the unified patch a single PR commit
- * introduced (first-parent diff), read from the thread's local clone.
+ * introduced (first-parent diff), read from the referenced local clone.
  * Requires a clone — the selector that feeds it only renders when
  * ListPRCommits found one.
  */
-export function GetPRCommitDiff(threadID: string, pr: git$0.PRReference, sha: string, ignoreWhitespace: boolean): $CancellablePromise<string> {
-    return $Call.ByID(1737292419, threadID, pr, sha, ignoreWhitespace);
+export function GetPRCommitDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, sha: string, ignoreWhitespace: boolean): $CancellablePromise<string> {
+    return $Call.ByID(1737292419, ws, pr, sha, ignoreWhitespace);
 }
 
 export function GetPRDetail(pr: git$0.PRReference): $CancellablePromise<git$0.PRDetail> {
@@ -1035,12 +1039,12 @@ export function GetPRDetail(pr: git$0.PRReference): $CancellablePromise<git$0.PR
     });
 }
 
-export function GetPRDiff(threadID: string, pr: git$0.PRReference, baseRef: string): $CancellablePromise<string> {
-    return $Call.ByID(1867413234, threadID, pr, baseRef);
+export function GetPRDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, baseRef: string): $CancellablePromise<string> {
+    return $Call.ByID(1867413234, ws, pr, baseRef);
 }
 
-export function GetPRMergeConflicts(threadID: string, pr: git$0.PRReference, baseRef: string, headRefName: string): $CancellablePromise<app$0.PRMergeConflictsResult> {
-    return $Call.ByID(106351482, threadID, pr, baseRef, headRefName).then(($result: any) => {
+export function GetPRMergeConflicts(ws: app$0.WorkspaceRef, pr: git$0.PRReference, baseRef: string, headRefName: string): $CancellablePromise<app$0.PRMergeConflictsResult> {
+    return $Call.ByID(106351482, ws, pr, baseRef, headRefName).then(($result: any) => {
         return $$createType38($result);
     });
 }
@@ -1404,13 +1408,6 @@ export function GetWSLDistroPreference(): $CancellablePromise<string> {
 }
 
 /**
- * GetWorkingTreeDiff returns the current combined staged and unstaged diff.
- */
-export function GetWorkingTreeDiff(threadID: string): $CancellablePromise<string> {
-    return $Call.ByID(1858968113, threadID);
-}
-
-/**
  * GetWorkspaceActivity answers "is anything running in this directory, and
  * which threads are they?" for the frontend's workspace-change lock. The
  * counters gate the directory-destructive affordances (remove worktree,
@@ -1440,30 +1437,28 @@ export function GetWorkspaceActivity(workspacePath: string): $CancellablePromise
 
 /**
  * GetWorkspaceCurrentDiff returns the unified patch of everything
- * currently uncommitted in the thread's workspace (tracked changes
+ * currently uncommitted in the referenced workspace (tracked changes
  * against HEAD plus untracked-not-ignored files). Empty for non-git
  * workspaces.
  * 
  * ignoreWhitespace is the review pane's "hide whitespace changes"
  * toggle (`-w`); see gitdiff.Options.
  */
-export function GetWorkspaceCurrentDiff(threadID: string, ignoreWhitespace: boolean): $CancellablePromise<string> {
-    return $Call.ByID(736820142, threadID, ignoreWhitespace);
+export function GetWorkspaceCurrentDiff(ws: app$0.WorkspaceRef, ignoreWhitespace: boolean): $CancellablePromise<string> {
+    return $Call.ByID(736820142, ws, ignoreWhitespace);
 }
 
 /**
- * GitCheckout switches the workspace to an existing branch.
+ * GitCheckout switches the workspace to an existing branch and returns the
+ * checkout's resulting state.
+ * 
+ * Every thread row in the directory is re-branched through the same
+ * workspace-keyed write UpdateThreadBranch uses (and broadcast the same way),
+ * so a sibling thread sharing the worktree syncs without the frontend
+ * guessing which rows moved.
  */
-export function GitCheckout(threadID: string, branch: string): $CancellablePromise<void> {
-    return $Call.ByID(1598126927, threadID, branch);
-}
-
-/**
- * GitCheckoutForProject switches a project/worktree placeholder workspace to an
- * existing branch without requiring a thread row.
- */
-export function GitCheckoutForProject(projectID: string, workspacePath: string, branch: string): $CancellablePromise<app$0.GitWorkspaceState> {
-    return $Call.ByID(585511915, projectID, workspacePath, branch).then(($result: any) => {
+export function GitCheckout(ws: app$0.WorkspaceRef, branch: string): $CancellablePromise<app$0.GitWorkspaceState> {
+    return $Call.ByID(1598126927, ws, branch).then(($result: any) => {
         return $$createType67($result);
     });
 }
@@ -1471,25 +1466,18 @@ export function GitCheckoutForProject(projectID: string, workspacePath: string, 
 /**
  * GitCommit stages all changes and commits workspace changes.
  * WARNING: This stages everything (git add -A) before committing, including
- * untracked files. Use GitStageAll + a direct Commit call for more control.
+ * untracked files.
  */
-export function GitCommit(threadID: string, subject: string, body: string): $CancellablePromise<git$0.GitActionResult> {
-    return $Call.ByID(1971060042, threadID, subject, body).then(($result: any) => {
+export function GitCommit(ws: app$0.WorkspaceRef, subject: string, body: string): $CancellablePromise<git$0.GitActionResult> {
+    return $Call.ByID(1971060042, ws, subject, body).then(($result: any) => {
         return $$createType68($result);
     });
 }
 
 /**
- * GitCreateBranch creates a branch in the thread's repository.
- */
-export function GitCreateBranch(threadID: string, name: string): $CancellablePromise<void> {
-    return $Call.ByID(2582897723, threadID, name);
-}
-
-/**
- * GitCreateBranchFrom creates a new branch in the thread's current
- * workspace (project root or the worktree the thread occupies), pointed
- * at baseBranch, then checks it out.
+ * GitCreateBranchFrom creates a new branch in the referenced workspace
+ * (project root or one of its worktrees), pointed at baseBranch, then checks
+ * it out.
  * 
  * carryLocalChanges has three meaningful combinations with baseBranch:
  *   - base = current branch, carry = true: the "Local with changes" path —
@@ -1503,13 +1491,12 @@ export function GitCreateBranch(threadID: string, name: string): $CancellablePro
  *   - base != current branch, carry = true: rejected. "Local with changes"
  *     only makes sense when both ends agree on the base.
  * 
- * Returns the refreshed thread (Branch updated). Does not call
- * restartSessionIfAffected because the cwd is unchanged — the provider
- * session keeps running.
+ * Thread rows in the workspace are re-branched as for GitCheckout. Does not
+ * restart provider sessions because the cwd is unchanged.
  */
-export function GitCreateBranchFrom(threadID: string, name: string, baseBranch: string, carryLocalChanges: boolean): $CancellablePromise<store$0.Thread> {
-    return $Call.ByID(429779991, threadID, name, baseBranch, carryLocalChanges).then(($result: any) => {
-        return $$createType1($result);
+export function GitCreateBranchFrom(ws: app$0.WorkspaceRef, name: string, baseBranch: string, carryLocalChanges: boolean): $CancellablePromise<app$0.GitWorkspaceState> {
+    return $Call.ByID(429779991, ws, name, baseBranch, carryLocalChanges).then(($result: any) => {
+        return $$createType67($result);
     });
 }
 
@@ -1517,8 +1504,8 @@ export function GitCreateBranchFrom(threadID: string, name: string, baseBranch: 
  * GitCreatePR opens a pull request for the workspace's current branch. When
  * draft is true the PR is opened as a GitHub draft (gh pr create --draft).
  */
-export function GitCreatePR(threadID: string, title: string, body: string, draft: boolean): $CancellablePromise<git$0.GitActionResult> {
-    return $Call.ByID(4106667105, threadID, title, body, draft).then(($result: any) => {
+export function GitCreatePR(ws: app$0.WorkspaceRef, title: string, body: string, draft: boolean): $CancellablePromise<git$0.GitActionResult> {
+    return $Call.ByID(4106667105, ws, title, body, draft).then(($result: any) => {
         return $$createType68($result);
     });
 }
@@ -1542,46 +1529,27 @@ export function GitCreateWorktree(threadID: string, branch: string): $Cancellabl
  * Same locking rationale as GitMaybeFetchRemotes — fetch touches
  * refs/remotes/* only; classification is read-only.
  */
-export function GitListBranchPruneCandidates(threadID: string): $CancellablePromise<app$0.BranchPruneCandidates> {
-    return $Call.ByID(3795082615, threadID).then(($result: any) => {
+export function GitListBranchPruneCandidates(ws: app$0.WorkspaceRef): $CancellablePromise<app$0.BranchPruneCandidates> {
+    return $Call.ByID(3795082615, ws).then(($result: any) => {
         return $$createType69($result);
     });
 }
 
 /**
- * GitListBranches lists repository branches from the thread's project root.
+ * GitListBranches lists repository branches from the workspace's project root.
  */
-export function GitListBranches(threadID: string): $CancellablePromise<git$0.GitBranch[]> {
-    return $Call.ByID(2693102179, threadID).then(($result: any) => {
+export function GitListBranches(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitBranch[]> {
+    return $Call.ByID(2693102179, ws).then(($result: any) => {
         return $$createType71($result);
     });
 }
 
 /**
- * GitListBranchesForProject lists repository branches from a project root
- * without requiring a thread row.
+ * GitListWorktrees lists the worktrees of the referenced workspace's
+ * repository.
  */
-export function GitListBranchesForProject(projectID: string): $CancellablePromise<git$0.GitBranch[]> {
-    return $Call.ByID(2675387767, projectID).then(($result: any) => {
-        return $$createType71($result);
-    });
-}
-
-/**
- * GitListWorktrees lists worktrees for the thread's repository.
- */
-export function GitListWorktrees(threadID: string): $CancellablePromise<app$0.WorktreeListItem[]> {
-    return $Call.ByID(3232495403, threadID).then(($result: any) => {
-        return $$createType73($result);
-    });
-}
-
-/**
- * GitListWorktreesForProject lists worktrees for a project without requiring
- * a thread row.
- */
-export function GitListWorktreesForProject(projectID: string): $CancellablePromise<app$0.WorktreeListItem[]> {
-    return $Call.ByID(409101231, projectID).then(($result: any) => {
+export function GitListWorktrees(ws: app$0.WorkspaceRef): $CancellablePromise<app$0.WorktreeListItem[]> {
+    return $Call.ByID(3232495403, ws).then(($result: any) => {
         return $$createType73($result);
     });
 }
@@ -1593,20 +1561,12 @@ export function GitListWorktreesForProject(projectID: string): $CancellablePromi
  * fresh. Callers re-list branches after a true return to surface any
  * new ahead/behind counts.
  * 
- * No threadLocks().Lock or ensureWorkspaceChangeAllowed — `git fetch`
- * only touches `refs/remotes/*` and never HEAD/index/working tree, so
- * running it concurrently with an active turn is safe.
+ * No workspace locks or ensureWorkspaceChangeAllowed — `git fetch` only
+ * touches `refs/remotes/*` and never HEAD/index/working tree, so running it
+ * concurrently with an active turn is safe.
  */
-export function GitMaybeFetchRemotes(threadID: string): $CancellablePromise<boolean> {
-    return $Call.ByID(2000020570, threadID);
-}
-
-/**
- * GitMaybeFetchRemotesForProject is the project-root counterpart to
- * GitMaybeFetchRemotes for draft placeholders.
- */
-export function GitMaybeFetchRemotesForProject(projectID: string): $CancellablePromise<boolean> {
-    return $Call.ByID(338919746, projectID);
+export function GitMaybeFetchRemotes(ws: app$0.WorkspaceRef): $CancellablePromise<boolean> {
+    return $Call.ByID(2000020570, ws);
 }
 
 /**
@@ -1615,12 +1575,12 @@ export function GitMaybeFetchRemotesForProject(projectID: string): $CancellableP
  * is no longer gone-upstream/unattached (checked out meanwhile, default
  * flipped), or whose tip no longer matches the one the preview showed,
  * is refused rather than deleted — a stale preview can never
- * force-delete work the user did not see. No thread lock is needed: git
+ * force-delete work the user did not see. No workspace lock is needed: git
  * itself refuses to delete any checked-out branch, and every other
  * precondition is enforced by the fresh candidate check at delete time.
  */
-export function GitPruneBranches(threadID: string, selections: app$0.BranchPruneSelection[]): $CancellablePromise<app$0.BranchPruneResult> {
-    return $Call.ByID(3331815821, threadID, selections).then(($result: any) => {
+export function GitPruneBranches(ws: app$0.WorkspaceRef, selections: app$0.BranchPruneSelection[]): $CancellablePromise<app$0.BranchPruneResult> {
+    return $Call.ByID(3331815821, ws, selections).then(($result: any) => {
         return $$createType74($result);
     });
 }
@@ -1628,8 +1588,8 @@ export function GitPruneBranches(threadID: string, selections: app$0.BranchPrune
 /**
  * GitPull fast-forwards the workspace's current branch.
  */
-export function GitPull(threadID: string): $CancellablePromise<git$0.GitActionResult> {
-    return $Call.ByID(3933172764, threadID).then(($result: any) => {
+export function GitPull(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitActionResult> {
+    return $Call.ByID(3933172764, ws).then(($result: any) => {
         return $$createType68($result);
     });
 }
@@ -1637,32 +1597,25 @@ export function GitPull(threadID: string): $CancellablePromise<git$0.GitActionRe
 /**
  * GitPush pushes the workspace's current branch.
  */
-export function GitPush(threadID: string): $CancellablePromise<git$0.GitActionResult> {
-    return $Call.ByID(4036251239, threadID).then(($result: any) => {
+export function GitPush(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitActionResult> {
+    return $Call.ByID(4036251239, ws).then(($result: any) => {
         return $$createType68($result);
     });
 }
 
 /**
  * GitRemoveWorktree removes the worktree the thread is currently attached to.
- * Thin wrapper over RemoveOtherWorktree using the thread's own worktree path
- * so the auto-reattach behavior stays unified.
+ * Stays thread-keyed because its subject IS the thread's own attachment (the
+ * sidebar row action, archived threads, proposed-plan implementation); it
+ * resolves that attachment and hands the workspace-keyed removal the answer.
  */
 export function GitRemoveWorktree(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(4002429606, threadID);
 }
 
 /**
- * GitStageAll runs `git add -A` in the thread's workspace, staging all changes
- * including untracked files. Use before GitCommit when explicit staging is desired.
- */
-export function GitStageAll(threadID: string): $CancellablePromise<void> {
-    return $Call.ByID(548906954, threadID);
-}
-
-/**
  * GitStatusSubscribe begins streaming git-status updates for the
- * thread's workspace. Returns the initial status synchronously so the
+ * referenced workspace. Returns the initial status synchronously so the
  * caller can render immediately, plus the canonical cwd the stream is
  * keyed on and a handle used to call GitStatusUnsubscribe.
  * 
@@ -1676,8 +1629,8 @@ export function GitStageAll(threadID: string): $CancellablePromise<void> {
  * SHOULD still call GitStatusUnsubscribe on unmount; the
  * connection-tied cleanup is the safety net for unclean disconnects.
  */
-export function GitStatusSubscribe(threadID: string): $CancellablePromise<app$0.GitStatusSubscriptionResult> {
-    return $Call.ByID(3282404643, threadID).then(($result: any) => {
+export function GitStatusSubscribe(ws: app$0.WorkspaceRef): $CancellablePromise<app$0.GitStatusSubscriptionResult> {
+    return $Call.ByID(3282404643, ws).then(($result: any) => {
         return $$createType75($result);
     });
 }
@@ -1693,43 +1646,23 @@ export function GitStatusUnsubscribe(subscriptionID: string): $CancellablePromis
 }
 
 /**
- * GitSyncBranch fast-forwards branch from its configured upstream.
- * The thread lock is held across the current-branch read so a concurrent
- * checkout can't flip the path between the check and the operation.
+ * GitSyncBranch fast-forwards branch from its configured upstream. Every
+ * thread in the workspace is locked across the current-branch read so a
+ * concurrent checkout can't flip the path between the check and the
+ * operation.
  */
-export function GitSyncBranch(threadID: string, branch: string): $CancellablePromise<git$0.GitBranch[]> {
-    return $Call.ByID(1057032236, threadID, branch).then(($result: any) => {
+export function GitSyncBranch(ws: app$0.WorkspaceRef, branch: string): $CancellablePromise<git$0.GitBranch[]> {
+    return $Call.ByID(1057032236, ws, branch).then(($result: any) => {
         return $$createType71($result);
     });
 }
 
 /**
- * GitSyncBranchForProject fast-forwards a branch for a draft placeholder
- * without requiring a thread row.
+ * GitWorktreeStatus classifies any worktree of the referenced workspace's
+ * project for the cleanup UI.
  */
-export function GitSyncBranchForProject(projectID: string, workspacePath: string, branch: string): $CancellablePromise<git$0.GitBranch[]> {
-    return $Call.ByID(3862053920, projectID, workspacePath, branch).then(($result: any) => {
-        return $$createType71($result);
-    });
-}
-
-/**
- * GitWorktreeStatus classifies a worktree under the thread's project for the
- * cleanup UI. The thread parameter is just used to resolve the project root;
- * the path can be any worktree of that project.
- */
-export function GitWorktreeStatus(threadID: string, worktreePath: string): $CancellablePromise<app$0.WorktreeStatus> {
-    return $Call.ByID(1333748060, threadID, worktreePath).then(($result: any) => {
-        return $$createType76($result);
-    });
-}
-
-/**
- * GitWorktreeStatusForProject classifies a project worktree without requiring a
- * thread row.
- */
-export function GitWorktreeStatusForProject(projectID: string, worktreePath: string): $CancellablePromise<app$0.WorktreeStatus> {
-    return $Call.ByID(71861776, projectID, worktreePath).then(($result: any) => {
+export function GitWorktreeStatus(ws: app$0.WorkspaceRef, worktreePath: string): $CancellablePromise<app$0.WorktreeStatus> {
+    return $Call.ByID(1333748060, ws, worktreePath).then(($result: any) => {
         return $$createType76($result);
     });
 }
@@ -1756,6 +1689,18 @@ export function HighlightCode(req: app$0.HighlightCodeRequest): $CancellableProm
 }
 
 /**
+ * HighlightEditPatchWithContext serves the edits scope, whose new side is a
+ * historical file state belonging to ONE thread: the snapshot persisted with
+ * the edit, falling back to that thread's own checkout. Thread-keyed for the
+ * same reason GetEditDiffContextLines is, and it accepts no other scope.
+ */
+export function HighlightEditPatchWithContext(threadID: string, req: app$0.HighlightPatchContextRequest): $CancellablePromise<app$0.HighlightResult> {
+    return $Call.ByID(3749810774, threadID, req).then(($result: any) => {
+        return $$createType78($result);
+    });
+}
+
+/**
  * HighlightPatch returns patch-aligned spans for one file's unified
  * diff: result line i corresponds to patch line i, add/del spans cover
  * the prefix-stripped body, context spans include a 1-byte plain pad
@@ -1769,16 +1714,20 @@ export function HighlightPatch(req: app$0.HighlightPatchRequest): $CancellablePr
 
 /**
  * HighlightPatchWithContext is HighlightPatch primed with the file
- * content above each hunk, resolved through the same scope switch as
- * GetDiffContextLines — a hunk that starts mid-docstring highlights
- * correctly because the parser has seen the opening. Content
- * resolution is best-effort: if the scope lookup fails (file gone at
- * ref, no local clone), the unprimed result is returned instead of an
- * error. LocalOnlyMethods category 1: it reads workspace/ref file
- * content by path; remote clients use HighlightPatch.
+ * content above each hunk, for the LIVE scopes (workspace, branch, commit,
+ * pr) — a hunk that starts mid-docstring highlights correctly because the
+ * parser has seen the opening. Subject is the CHECKOUT, so it takes a
+ * WorkspaceRef and shares GetDiffContextLines' scope switch; the edits scope
+ * is a different subject with its own entry point below.
+ * 
+ * Content resolution is best-effort: if the scope lookup fails (file gone at
+ * ref, unreadable path), the unprimed result is returned instead of an error.
+ * Resolving the WORKSPACE is not: an unresolvable ref is a caller error and
+ * is returned as one. LocalOnlyMethods category 1: it reads workspace/ref
+ * file content by path; remote clients use HighlightPatch.
  */
-export function HighlightPatchWithContext(threadID: string, req: app$0.HighlightPatchContextRequest): $CancellablePromise<app$0.HighlightResult> {
-    return $Call.ByID(3722752402, threadID, req).then(($result: any) => {
+export function HighlightPatchWithContext(ws: app$0.WorkspaceRef, req: app$0.HighlightPatchContextRequest): $CancellablePromise<app$0.HighlightResult> {
+    return $Call.ByID(3722752402, ws, req).then(($result: any) => {
         return $$createType78($result);
     });
 }
@@ -1920,8 +1869,8 @@ export function ListAvailableEditors(): $CancellablePromise<app$0.EditorInfo[]> 
  * onto baseBranch would carry (`base..HEAD`, newest first). Empty for
  * non-git workspaces.
  */
-export function ListBranchCommits(threadID: string, baseBranch: string): $CancellablePromise<app$0.BranchCommit[]> {
-    return $Call.ByID(352990129, threadID, baseBranch).then(($result: any) => {
+export function ListBranchCommits(ws: app$0.WorkspaceRef, baseBranch: string): $CancellablePromise<app$0.BranchCommit[]> {
+    return $Call.ByID(352990129, ws, baseBranch).then(($result: any) => {
         return $$createType88($result);
     });
 }
@@ -2063,10 +2012,9 @@ export function ListMcpServerStatuses(providerName: string): $CancellablePromise
 
 /**
  * ListPRCommits returns the commits a PR carries (`origin/base..head`,
- * newest first), computed from the thread's local clone. Empty — not
- * an error — when the thread has no local clone (a pr-anchor thread
- * with no checkout): the frontend hides the commit selector instead of
- * failing the PR load.
+ * newest first), computed from the referenced local clone. Empty — not
+ * an error — for a zero ref (a pr-anchor thread with no checkout): the
+ * frontend hides the commit selector instead of failing the PR load.
  * 
  * headSHA is an optimization contract, not a filter: when the caller
  * already knows the PR head OID (GetPRDiff fetched it moments earlier)
@@ -2074,8 +2022,8 @@ export function ListMcpServerStatuses(providerName: string): $CancellablePromise
  * round-trips are skipped. Empty, unknown, or not-yet-fetched values
  * fall back to a full fetch.
  */
-export function ListPRCommits(threadID: string, pr: git$0.PRReference, baseRef: string, headSHA: string): $CancellablePromise<app$0.BranchCommit[]> {
-    return $Call.ByID(4110818691, threadID, pr, baseRef, headSHA).then(($result: any) => {
+export function ListPRCommits(ws: app$0.WorkspaceRef, pr: git$0.PRReference, baseRef: string, headSHA: string): $CancellablePromise<app$0.BranchCommit[]> {
+    return $Call.ByID(4110818691, ws, pr, baseRef, headSHA).then(($result: any) => {
         return $$createType88($result);
     });
 }
@@ -2127,11 +2075,11 @@ export function ListProviderAccounts(): $CancellablePromise<app$0.ManagedProvide
 /**
  * ListRecentCommits returns the workspace's most recent commits (plain
  * `git log` from HEAD, newest first) — the same source codex's own
- * review picker uses, so a thread on the default branch still gets a
+ * review picker uses, so a workspace on the default branch still gets a
  * list. Empty for non-git workspaces.
  */
-export function ListRecentCommits(threadID: string): $CancellablePromise<app$0.BranchCommit[]> {
-    return $Call.ByID(1937809620, threadID).then(($result: any) => {
+export function ListRecentCommits(ws: app$0.WorkspaceRef): $CancellablePromise<app$0.BranchCommit[]> {
+    return $Call.ByID(1937809620, ws).then(($result: any) => {
         return $$createType88($result);
     });
 }
@@ -2815,27 +2763,17 @@ export function RegisterQueueItem(threadID: string, message: string, opts: app$0
 }
 
 /**
- * RemoveOtherWorktree removes a worktree at an explicit path, optionally
- * forcing through dirty/unpushed safety. Threads attached to the worktree
- * (including the calling thread) are reset back to the project root and
- * their sessions restart so the workspace switch takes effect.
+ * RemoveOtherWorktree removes one of the project's worktrees, optionally
+ * forcing through dirty/unpushed safety. Every thread attached to it is reset
+ * back to the project root and its session restarts so the workspace switch
+ * takes effect.
  * 
- * Differs from GitRemoveWorktree in that the path is explicit (not derived
- * from the calling thread) and other threads referencing the worktree are
- * auto-reattached rather than blocking the call.
+ * The returned state is the CALLER's workspace after the removal: unchanged
+ * when it removed some other worktree, reset to the project root when it
+ * removed its own.
  */
-export function RemoveOtherWorktree(threadID: string, worktreePath: string, force: boolean): $CancellablePromise<void> {
-    return $Call.ByID(2899196344, threadID, worktreePath, force);
-}
-
-/**
- * RemoveOtherWorktreeForProject removes a project worktree without requiring a
- * thread row. currentWorkspacePath is the caller's transient workspace state;
- * when it points at the removed worktree the returned state resets the caller
- * to the project root.
- */
-export function RemoveOtherWorktreeForProject(projectID: string, currentWorkspacePath: string, worktreePath: string, force: boolean): $CancellablePromise<app$0.GitWorkspaceState> {
-    return $Call.ByID(574548500, projectID, currentWorkspacePath, worktreePath, force).then(($result: any) => {
+export function RemoveOtherWorktree(ws: app$0.WorkspaceRef, worktreePath: string, force: boolean): $CancellablePromise<app$0.GitWorkspaceState> {
+    return $Call.ByID(2899196344, ws, worktreePath, force).then(($result: any) => {
         return $$createType67($result);
     });
 }
@@ -3111,10 +3049,12 @@ export function SearchThreadMessages(query: string, limit: number): $Cancellable
 
 /**
  * SearchWorkspaceFiles returns workspace files matching the query, scoped to
- * the workspace of the given thread.
+ * the referenced checkout. Workspace-keyed because the answer is a property
+ * of the directory: the composer's @-mention picker asks it from a draft
+ * placeholder that has no thread row yet.
  */
-export function SearchWorkspaceFiles(threadID: string, query: string, limit: number): $CancellablePromise<app$0.WorkspaceFileSearchResult> {
-    return $Call.ByID(3852272821, threadID, query, limit).then(($result: any) => {
+export function SearchWorkspaceFiles(ws: app$0.WorkspaceRef, query: string, limit: number): $CancellablePromise<app$0.WorkspaceFileSearchResult> {
+    return $Call.ByID(3852272821, ws, query, limit).then(($result: any) => {
         return $$createType123($result);
     });
 }
@@ -4581,11 +4521,15 @@ export function WriteTerminal(terminalID: string, dataB64: string): $Cancellable
 }
 
 /**
- * WriteThreadWorkspaceFile writes content to a path relative to the thread's
- * active workspace and returns the normalized relative path.
+ * WriteWorkspaceFile writes content to a path relative to the referenced
+ * checkout and returns the normalized relative path. Workspace-keyed because
+ * the subject is the directory, not a thread: the thread is only how the
+ * caller found it. The ref goes through ResolveWorkspace, so an arbitrary
+ * caller-supplied directory cannot be written to — only the project root or
+ * one of its registered worktrees.
  */
-export function WriteThreadWorkspaceFile(threadID: string, relativePath: string, content: string): $CancellablePromise<string> {
-    return $Call.ByID(3895036895, threadID, relativePath, content);
+export function WriteWorkspaceFile(ws: app$0.WorkspaceRef, relativePath: string, content: string): $CancellablePromise<string> {
+    return $Call.ByID(1859440887, ws, relativePath, content);
 }
 
 // Private type creation functions

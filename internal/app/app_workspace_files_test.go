@@ -5,13 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/workspacefiles"
 )
 
-func newWorkspaceFilesApp(t *testing.T) (*App, string) {
+func newWorkspaceFilesApp(t *testing.T) (*App, WorkspaceRef, string) {
 	t.Helper()
 	app := newTestAppWithStore(t)
 	app.workspaceFiles = workspacefiles.NewSearcher(workspacefiles.Config{})
@@ -36,27 +34,13 @@ func newWorkspaceFilesApp(t *testing.T) (*App, string) {
 		}
 	}
 
-	thread := store.Thread{
-		ID:            "thr-ws",
-		ProjectID:     defaultTestProjectID,
-		Title:         "Ws",
-		Provider:      "claude",
-		WorkspacePath: workspace,
-		Model:         "claude",
-		Mode:          "chat",
-		CreatedAt:     time.Now().UnixMilli(),
-		UpdatedAt:     time.Now().UnixMilli(),
-	}
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	return app, workspace
+	return app, testWorkspaceRef(t, app, workspace), workspace
 }
 
 func TestSearchWorkspaceFilesReturnsMatches(t *testing.T) {
-	app, workspace := newWorkspaceFilesApp(t)
+	app, ref, workspace := newWorkspaceFilesApp(t)
 
-	got, err := app.SearchWorkspaceFiles("thr-ws", "main", 10)
+	got, err := app.SearchWorkspaceFiles(ref, "main", 10)
 	if err != nil {
 		t.Fatalf("SearchWorkspaceFiles: %v", err)
 	}
@@ -72,8 +56,8 @@ func TestSearchWorkspaceFilesReturnsMatches(t *testing.T) {
 }
 
 func TestSearchWorkspaceFilesEmptyQueryReturnsAll(t *testing.T) {
-	app, _ := newWorkspaceFilesApp(t)
-	got, err := app.SearchWorkspaceFiles("thr-ws", "", 50)
+	app, ref, _ := newWorkspaceFilesApp(t)
+	got, err := app.SearchWorkspaceFiles(ref, "", 50)
 	if err != nil {
 		t.Fatalf("SearchWorkspaceFiles: %v", err)
 	}
@@ -82,19 +66,19 @@ func TestSearchWorkspaceFilesEmptyQueryReturnsAll(t *testing.T) {
 	}
 }
 
-func TestSearchWorkspaceFilesMissingThread(t *testing.T) {
+func TestSearchWorkspaceFilesUnresolvableWorkspace(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.workspaceFiles = workspacefiles.NewSearcher(workspacefiles.Config{})
 
-	_, err := app.SearchWorkspaceFiles("nope", "foo", 10)
+	_, err := app.SearchWorkspaceFiles(WorkspaceRef{ProjectID: "nope"}, "foo", 10)
 	if err == nil {
-		t.Fatal("expected error for missing thread")
+		t.Fatal("expected error for unknown project")
 	}
 }
 
 func TestSearchWorkspaceFilesUnsetSearcher(t *testing.T) {
 	app := newTestAppWithStore(t)
-	_, err := app.SearchWorkspaceFiles("x", "foo", 10)
+	_, err := app.SearchWorkspaceFiles(WorkspaceRef{ProjectID: "x"}, "foo", 10)
 	if err == nil || !strings.Contains(err.Error(), "not initialized") {
 		t.Fatalf("expected init error, got %v", err)
 	}

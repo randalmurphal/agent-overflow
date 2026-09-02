@@ -2,8 +2,9 @@
 //
 // OWNS the pane's side of its companion surfaces — plan sidebar, review
 // pane and the agent companion: which of them is open,
-// what opening each one actually means (the review pane needs a thread id
-// and an async open; closing the
+// what opening each one actually means (the review pane needs a review
+// SUBJECT — the checkout, plus the thread row when there is one — and an
+// async open; closing the
 // agent pane drops its breadcrumb trail), and the close-them-all sweep a
 // pane clear runs.
 //
@@ -23,12 +24,16 @@ import {
   openCompanion,
   toggleCompanion,
 } from './companionPanes.svelte';
-import { openReviewCompanion } from './reviewPane.svelte';
+import { openReviewCompanion, type ReviewSubject } from './reviewPane.svelte';
 import { disposeAgentStateForPane, openAgentCompanion } from './agentPane.svelte';
 
 export interface ThreadPaneCompanionsOptions {
   paneId: string;
   getThread(): Thread | null;
+  /** The review pane's subject, read lazily from the composition root
+   *  (`reviewSubjectForPane`). A draft placeholder has one — a checkout with
+   *  no thread row yet — so this is not `getThread()?.id`. */
+  getReviewSubject(): ReviewSubject | null;
 }
 
 export function createThreadPaneCompanions(options: ThreadPaneCompanionsOptions) {
@@ -78,14 +83,14 @@ export function createThreadPaneCompanions(options: ThreadPaneCompanionsOptions)
         closeCompanion(companion.paneId);
         return;
       }
-      const threadId = options.getThread()?.id;
-      if (threadId) void openReviewCompanion(paneId, threadId);
+      const subject = options.getReviewSubject();
+      if (subject) void openReviewCompanion(paneId, subject);
     },
 
     setShowReviewPane(value: boolean): void {
       if (value) {
-        const threadId = options.getThread()?.id;
-        if (threadId) void openReviewCompanion(paneId, threadId);
+        const subject = options.getReviewSubject();
+        if (subject) void openReviewCompanion(paneId, subject);
       }
       else closeFor('review');
     },

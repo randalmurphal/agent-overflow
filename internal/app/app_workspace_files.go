@@ -14,23 +14,19 @@ type WorkspaceFileSearchResult struct {
 }
 
 // SearchWorkspaceFiles returns workspace files matching the query, scoped to
-// the workspace of the given thread.
-func (a *App) SearchWorkspaceFiles(threadID, query string, limit int) (WorkspaceFileSearchResult, error) {
+// the referenced checkout. Workspace-keyed because the answer is a property
+// of the directory: the composer's @-mention picker asks it from a draft
+// placeholder that has no thread row yet.
+func (a *App) SearchWorkspaceFiles(ws WorkspaceRef, query string, limit int) (WorkspaceFileSearchResult, error) {
 	if a.workspaceFiles == nil {
 		return WorkspaceFileSearchResult{}, fmt.Errorf("workspace file searcher not initialized")
 	}
-	if a.store == nil {
-		return WorkspaceFileSearchResult{}, fmt.Errorf("store not initialized")
-	}
-	thread, err := a.store.GetThread(threadID)
+	_, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
 		return WorkspaceFileSearchResult{}, fmt.Errorf("search workspace files: %w", err)
 	}
-	if thread.WorkspacePath == "" {
-		return WorkspaceFileSearchResult{}, fmt.Errorf("thread %s has no workspace path", threadID)
-	}
 
-	files, truncated, err := a.workspaceFiles.Search(thread.WorkspacePath, query, limit)
+	files, truncated, err := a.workspaceFiles.Search(workspace, query, limit)
 	if err != nil {
 		return WorkspaceFileSearchResult{}, err
 	}
@@ -40,6 +36,6 @@ func (a *App) SearchWorkspaceFiles(threadID, query string, limit int) (Workspace
 	return WorkspaceFileSearchResult{
 		Files:     files,
 		Truncated: truncated,
-		Root:      thread.WorkspacePath,
+		Root:      workspace,
 	}, nil
 }

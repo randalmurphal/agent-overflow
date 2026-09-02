@@ -41,7 +41,10 @@ attachments, add its name to `LocalOnlyMethods` in the same change.
 The classification list is the source of truth and method bodies do not re-check
 origin. `methods_gen_test.go` fails on a generated method nobody classified
 (`TestGeneratedMethods_AllClassified`) and on a classified name that no longer
-exists. A reverse proxy on the same host makes remote peers appear loopback and
+exists. Renaming or deleting a LocalOnly method is therefore THREE edits, not
+one: `LocalOnlyMethods`, the regenerated `methods_gen.go`, and the matching
+`privilegedApp` stub in `dispatcher_test.go` — without the stub the LAN-bind
+enforcement test has nothing to call and cannot exercise the refusal path. A reverse proxy on the same host makes remote peers appear loopback and
 defeats this locality, so proxy from a different host instead.
 
 ## Credentials and refusal shapes

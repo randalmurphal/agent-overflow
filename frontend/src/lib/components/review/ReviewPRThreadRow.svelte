@@ -17,7 +17,10 @@
     onToggle: () => void;
     onBodyChange: (body: string) => void;
     onSendReply: () => Promise<void> | void;
-    onSendToAgent: () => Promise<void> | void;
+    /** Absent when the pane has no thread to steer (a draft placeholder
+     *  reviewing its workspace's PR): the button is not rendered rather
+     *  than rendered and inert. */
+    onSendToAgent?: () => Promise<void> | void;
   }
 
   let {
@@ -72,15 +75,18 @@
     <button type="button" class="rounded px-1.5 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2" onclick={() => { replying = !replying; }}>
       Reply
     </button>
-    <button
-      type="button"
-      class="rounded px-1.5 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 disabled:opacity-45"
-      disabled={isTurnActive}
-      title={isTurnActive ? 'Agent turn is active' : 'Send to agent'}
-      onclick={() => { void onSendToAgent(); }}
-    >
-      Send to agent
-    </button>
+    {#if onSendToAgent}
+      {@const sendToAgent = onSendToAgent}
+      <button
+        type="button"
+        class="rounded px-1.5 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 disabled:opacity-45"
+        disabled={isTurnActive}
+        title={isTurnActive ? 'Agent turn is active' : 'Send to agent'}
+        onclick={() => { void sendToAgent(); }}
+      >
+        Send to agent
+      </button>
+    {/if}
   </div>
 
   {#if !collapsed}

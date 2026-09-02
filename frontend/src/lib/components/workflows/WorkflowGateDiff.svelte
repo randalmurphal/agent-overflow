@@ -12,18 +12,24 @@
   import type { PatchFile } from '../../utils/patchFiles';
   import { extractPatchFile, parsePatchFileSummaries, parsePatchFiles } from '../../utils/patchFiles';
   import { GetBranchBaseDiff } from '../../stores/bindings';
+  import type { WorkspaceRef } from '../../types/git';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { isViewOnlySession } from '../../transport/runMode';
   import { openWorkflowFullReview } from '../../stores/workflowThreads';
 
   interface Props {
-    /** The phase thread whose workspace holds the changes. */
+    /** The run's checkout — its worktree, or the project root when it cut
+     *  none. The subject of the diff, and it exists whether or not a phase
+     *  thread survived. */
+    workspace: WorkspaceRef | null;
+    /** The phase thread the full-review companion mounts on. Empty when no
+     *  attempt ran, which is the one thing "Open full review" needs. */
     threadId: string;
     baseBranch: string;
     expandFirst: boolean;
   }
-  let { threadId, baseBranch, expandFirst }: Props = $props();
+  let { workspace, threadId, baseBranch, expandFirst }: Props = $props();
 
   let viewOnly = $derived(isViewOnlySession());
   let patch = $state('');
@@ -36,7 +42,7 @@
   // A run whose detail reloads under a live event must not keep another run's
   // patch on screen; the key is the exact input the patch was fetched for.
   $effect(() => {
-    const key = `${threadId}\n${baseBranch}`;
+    const key = `${workspace?.projectId ?? ''}\n${workspace?.workspacePath ?? ''}\n${baseBranch}`;
     if (key === loadedKey) return;
     loadedKey = key;
     patch = '';
@@ -46,13 +52,13 @@
   });
 
   async function load(): Promise<void> {
-    if (loading || viewOnly || !threadId) return;
+    if (loading || viewOnly || !workspace) return;
     loading = true;
     error = '';
     try {
       // Never ignore whitespace here: a gate decision is made against the
       // exact change, and this surface has no toggle to say otherwise.
-      const raw = String((await GetBranchBaseDiff(threadId, baseBranch, false)) ?? '');
+      const raw = String((await GetBranchBaseDiff(workspace, baseBranch, false)) ?? '');
       patch = raw;
       files = parsePatchFileSummaries(raw);
       loaded = true;
@@ -100,7 +106,7 @@
     <button
       class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
       onclick={() => { void load(); }}
-      disabled={viewOnly || !threadId}
+      disabled={viewOnly || !workspace}
       title={viewOnly ? 'Local only' : undefined}
       data-testid="workflow-diff-load"
     >Load changes</button>

@@ -326,7 +326,7 @@ describe('<ShipChangesDrawer>', () => {
     await findByTestId('ship-changes-step-commit');
     // The drawer must have mutated the *external* state, proving the prop
     // was respected.
-    expect(external.threadId).toBe('t-1');
+    expect(external.identity).toBe('t-1');
   });
 
   it('renders the 3-step indicator with Commit active on entry', async () => {

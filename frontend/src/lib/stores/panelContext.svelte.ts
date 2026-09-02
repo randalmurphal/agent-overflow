@@ -1,4 +1,5 @@
 import type { Item, Thread } from '../types/models';
+import type { WorkspaceRef } from '../types/git';
 import { mountThreadInPane, syncThread } from './panes.svelte';
 import type { ThreadPane } from './thread.svelte';
 
@@ -36,6 +37,13 @@ export interface PanelContext {
   paneId: string;
   /** Workspace root for resolving relative paths in panel content. */
   workspacePath: string | undefined;
+  /**
+   * The CHECKOUT this panel's backend calls address, or null when the pane
+   * names none. Built once, here, from the pane's thread — a panel body must
+   * not re-derive it, because the review pane and the chat header have to
+   * agree on which directory they are looking at.
+   */
+  workspace: WorkspaceRef | null;
   /** The source pane's loaded timeline window. Agent panel only. */
   readonly items: Item[];
   /** Bumped on every structural timeline change — the cutoff a projection
@@ -85,6 +93,7 @@ export function makePanelContext(pane: ThreadPane, close: () => void): PanelCont
     get threadId() { return pane.threadId; },
     get thread() { return pane.thread; },
     get workspacePath() { return pane.thread?.workspacePath; },
+    get workspace() { return pane.workspace; },
     get items() { return pane.items; },
     get timelineRevision() { return pane.timelineRevision; },
     getItemById: (itemId) => pane.getItemById(itemId),

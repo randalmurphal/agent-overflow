@@ -149,7 +149,7 @@ export const UpdateThreadRuntimeMode = dispatch('UpdateThreadRuntimeMode');
 export const UpdateThreadBranch = dispatch('UpdateThreadBranch');
 export const UpdateThreadWorkspace = dispatch('UpdateThreadWorkspace');
 export const UpdateNewThreadDefaults = dispatch('UpdateNewThreadDefaults');
-export const WriteThreadWorkspaceFile = dispatch('WriteThreadWorkspaceFile');
+export const WriteWorkspaceFile = dispatch('WriteWorkspaceFile');
 export const SearchThreadMessages = dispatch('SearchThreadMessages');
 export const SearchThreadItems = dispatch('SearchThreadItems');
 export const GenerateCommitMessage = dispatch('GenerateCommitMessage');
@@ -330,7 +330,6 @@ export const RecheckClaudeAccount = dispatch('RecheckClaudeAccount');
 export const RecheckCodexAccount = dispatch('RecheckCodexAccount');
 
 export const GetGitStatus = dispatch('GetGitStatus');
-export const GetGitStatusFastForProject = dispatch('GetGitStatusFastForProject');
 export const GitStatusSubscribe = dispatch('GitStatusSubscribe');
 export const GitStatusUnsubscribe = dispatch('GitStatusUnsubscribe');
 // Class re-export mirroring the generated GitStatusSubscriptionResult.
@@ -347,31 +346,23 @@ export class GitStatusSubscriptionResult {
   }
 }
 export const GitListBranches = dispatch('GitListBranches');
-export const GitListBranchesForProject = dispatch('GitListBranchesForProject');
 export const GitListWorktrees = dispatch('GitListWorktrees');
-export const GitListWorktreesForProject = dispatch('GitListWorktreesForProject');
 export const GitCommit = dispatch('GitCommit');
 export const GitPush = dispatch('GitPush');
 export const GitPull = dispatch('GitPull');
 export const GitCheckout = dispatch('GitCheckout');
-export const GitCheckoutForProject = dispatch('GitCheckoutForProject');
-export const GitCreateBranch = dispatch('GitCreateBranch');
 export const GitCreateBranchFrom = dispatch('GitCreateBranchFrom');
 export const GitCreatePR = dispatch('GitCreatePR');
 export const GitCreateWorktree = dispatch('GitCreateWorktree');
 export const GitMaybeFetchRemotes = dispatch('GitMaybeFetchRemotes');
-export const GitMaybeFetchRemotesForProject = dispatch('GitMaybeFetchRemotesForProject');
 export const GitListBranchPruneCandidates = dispatch('GitListBranchPruneCandidates');
 export const GitPruneBranches = dispatch('GitPruneBranches');
 export const GitSyncBranch = dispatch('GitSyncBranch');
-export const GitSyncBranchForProject = dispatch('GitSyncBranchForProject');
 export const GitWorktreeStatus = dispatch('GitWorktreeStatus');
-export const GitWorktreeStatusForProject = dispatch('GitWorktreeStatusForProject');
 export const PrepareThreadWorktree = dispatch('PrepareThreadWorktree');
 export const AttachThreadWorktree = dispatch('AttachThreadWorktree');
 export const GitRemoveWorktree = dispatch('GitRemoveWorktree');
 export const RemoveOtherWorktree = dispatch('RemoveOtherWorktree');
-export const RemoveOtherWorktreeForProject = dispatch('RemoveOtherWorktreeForProject');
 // WorktreeStatus mirrors the generated class; tests stub the binding
 // to return plain object literals, so the class shape is only here so
 // `import type { WorktreeStatus }` resolves through the mock module.
@@ -437,12 +428,14 @@ export const GetCommitDiff = dispatch('GetCommitDiff');
 export const ListThreadEditDiffs = dispatch('ListThreadEditDiffs');
 export const GetTurnEditsDiff = dispatch('GetTurnEditsDiff');
 export const GetDiffContextLines = dispatch('GetDiffContextLines');
+export const GetEditDiffContextLines = dispatch('GetEditDiffContextLines');
 export const VerifyEditDiffs = dispatch('VerifyEditDiffs');
 export const HighlightClassNames = dispatch('HighlightClassNames');
 export const HighlightSchemaVersion = dispatch('HighlightSchemaVersion');
 export const HighlightCode = dispatch('HighlightCode');
 export const HighlightPatch = dispatch('HighlightPatch');
 export const HighlightPatchWithContext = dispatch('HighlightPatchWithContext');
+export const HighlightEditPatchWithContext = dispatch('HighlightEditPatchWithContext');
 export const ForkThreadFromMessage = dispatch('ForkThreadFromMessage');
 export const RevertConversationAndResendMessage = dispatch('RevertConversationAndResendMessage');
 
@@ -602,8 +595,6 @@ export const ListReleases = dispatch('ListReleases');
 export const ReconfigureObservability = dispatch('ReconfigureObservability');
 export const ProbeCodexAccount = dispatch('ProbeCodexAccount');
 export const SavePayloadToFile = dispatch('SavePayloadToFile');
-export const GetWorkingTreeDiff = dispatch('GetWorkingTreeDiff');
-export const GitStageAll = dispatch('GitStageAll');
 export const ListArchivedThreads = dispatch('ListArchivedThreads');
 export const UpdateProjectSortPositions = dispatch('UpdateProjectSortPositions');
 export const ProviderTerminalAttach = dispatch('ProviderTerminalAttach');

@@ -37,7 +37,7 @@ describe('<ComposerWorkspaceStrip>', () => {
     // on the thread; this fixture intentionally omits it.) A revert
     // or accidental re-order would otherwise sail past the
     // existence-only assertion above.
-    const pane = await buildPane(makeThread());
+    const pane = await buildPane(makeThread({ projectId: undefined }));
     const { getByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
     const strip = getByTestId('composer-workspace-strip');
     const triggers = Array.from(

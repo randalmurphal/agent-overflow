@@ -40,12 +40,8 @@ type BranchPruneResult struct {
 
 // ListBranchPruneCandidates refreshes remote-tracking refs and builds the
 // consent preview from gone-upstream branches only.
-func (s *Service) ListBranchPruneCandidates(threadID string) (BranchPruneCandidates, error) {
-	thread, err := s.store.GetThread(threadID)
-	if err != nil {
-		return BranchPruneCandidates{}, err
-	}
-	project, _, err := s.ResolveThreadPaths(thread)
+func (s *Service) ListBranchPruneCandidates(ref WorkspaceRef) (BranchPruneCandidates, error) {
+	project, _, err := s.ResolveWorkspace(ref)
 	if err != nil {
 		return BranchPruneCandidates{}, err
 	}
@@ -107,12 +103,8 @@ func (s *Service) classifyPruneCandidates(project string, candidates []gitops.Pr
 }
 
 // PruneBranches revalidates eligibility and exact tips before each deletion.
-func (s *Service) PruneBranches(threadID string, selections []BranchPruneSelection) (BranchPruneResult, error) {
-	thread, err := s.store.GetThread(threadID)
-	if err != nil {
-		return BranchPruneResult{}, err
-	}
-	project, _, err := s.ResolveThreadPaths(thread)
+func (s *Service) PruneBranches(ref WorkspaceRef, selections []BranchPruneSelection) (BranchPruneResult, error) {
+	project, _, err := s.ResolveWorkspace(ref)
 	if err != nil {
 		return BranchPruneResult{}, err
 	}

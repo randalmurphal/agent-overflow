@@ -17,6 +17,7 @@
   import { workflowAge, workflowMetaLine } from '../../stores/workflowData';
   import { workflowClosedDuration } from '../../utils/format';
   import { runMapNodeStyle, type RunMapNodeStyle } from '../../utils/workflowRunMapStyle';
+  import { workspaceRefForProject } from '../../utils/workspaceKey';
 
   interface Props {
     item: WorkItem;
@@ -49,7 +50,11 @@
     const checks = new Set(detail.checkPhaseIds ?? []);
     return (detail.phases ?? []).filter((phase) => checks.has(phase.phaseId));
   });
-  // The thread whose workspace holds the changes: the newest attempt that ran.
+  // The CHECKOUT the changes live in: the run's own worktree, or the project
+  // root when it cut none. A property of the RUN, not of any attempt — the
+  // diff is loadable even when every phase thread is gone.
+  let diffWorkspace = $derived(workspaceRefForProject(item.projectId, item.worktreePath ?? ''));
+  // The thread the full-review companion mounts on: the newest attempt that ran.
   let diffThreadId = $derived([...(detail.phases ?? [])].reverse().find((phase) => phase.threadId)?.threadId ?? '');
   let question = $derived(workflowQuestionText(detail));
   let partialOutputs = $derived(workflowPartialOutputs(detail));
@@ -128,7 +133,7 @@
   {/if}
 
   {#if kind === 'gate' || kind === 'done'}
-    <WorkflowGateDiff threadId={diffThreadId} baseBranch={item.baseBranch ?? ''} expandFirst={expandFirstDiff} />
+    <WorkflowGateDiff workspace={diffWorkspace} threadId={diffThreadId} baseBranch={item.baseBranch ?? ''} expandFirst={expandFirstDiff} />
   {/if}
 
   {#if kind === 'question'}

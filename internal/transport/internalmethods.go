@@ -131,42 +131,32 @@ var LocalOnlyMethods = map[string]bool{
 	"BrowserCompanionPaneRect":   true,
 	// RevealPageFile spawns the host OS file manager on a local path.
 	"BrowserCompanionRevealPageFile": true,
-	"WriteThreadWorkspaceFile":     true,
-	"GitPush":                      true,
-	"GitStatusSubscribe":           true,
-	"GitStatusUnsubscribe":         true,
-	"GetGitStatus":                 true,
+	"WriteWorkspaceFile":             true,
+	"GitPush":                        true,
+	"GitStatusSubscribe":             true,
+	"GitStatusUnsubscribe":           true,
+	"GetGitStatus":                   true,
 	// GetWorkspaceActivity answers two integer counters, but it takes a
 	// caller-supplied path and resolves it through EvalSymlinks — a
 	// filesystem probe, and therefore an existence-and-shape oracle for a
 	// LAN token-holder over any path they care to name. It sits with the
 	// rest of the workspace-path surface for that reason, not for what it
 	// returns.
-	"GetWorkspaceActivity":           true,
-	"GetGitStatusFastForProject":     true,
-	"GitCheckout":                    true,
-	"GitCheckoutForProject":          true,
-	"GitCreateBranch":                true,
-	"GitCreateBranchFrom":            true,
-	"GitCreateWorktree":              true,
-	"GitRemoveWorktree":              true,
-	"RemoveOtherWorktree":            true,
-	"RemoveOtherWorktreeForProject":  true,
-	"GitWorktreeStatus":              true,
-	"GitWorktreeStatusForProject":    true,
-	"GitListBranches":                true,
-	"GitListBranchesForProject":      true,
-	"GitListWorktrees":               true,
-	"GitListWorktreesForProject":     true,
-	"GitCommit":                      true,
-	"GitPull":                        true,
-	"GitStageAll":                    true,
-	"GitMaybeFetchRemotes":           true,
-	"GitMaybeFetchRemotesForProject": true,
-	"GitListBranchPruneCandidates":   true,
-	"GitPruneBranches":               true,
-	"GitSyncBranch":                  true,
-	"GitSyncBranchForProject":        true,
+	"GetWorkspaceActivity":         true,
+	"GitCheckout":                  true,
+	"GitCreateBranchFrom":          true,
+	"GitCreateWorktree":            true,
+	"GitRemoveWorktree":            true,
+	"RemoveOtherWorktree":          true,
+	"GitWorktreeStatus":            true,
+	"GitListBranches":              true,
+	"GitListWorktrees":             true,
+	"GitCommit":                    true,
+	"GitPull":                      true,
+	"GitMaybeFetchRemotes":         true,
+	"GitListBranchPruneCandidates": true,
+	"GitPruneBranches":             true,
+	"GitSyncBranch":                true,
 	// GitCreatePR shells out to `gh` — same RCE-equivalent class as
 	// the rest of the git/external-CLI surface.
 	"GitCreatePR": true,
@@ -207,7 +197,6 @@ var LocalOnlyMethods = map[string]bool{
 	// nobody currently depends on, and locking down later (after a remote
 	// workflow grows to need them) would be a breaking change.
 	"GetBranchBaseDiff":       true,
-	"GetWorkingTreeDiff":      true,
 	"GetWorkspaceCurrentDiff": true,
 	"ListBranchCommits":       true,
 	"ListRecentCommits":       true,
@@ -216,21 +205,26 @@ var LocalOnlyMethods = map[string]bool{
 	"GetPRCommitDiff":         true,
 	// GetDiffContextLines reads arbitrary workspace/ref file content by
 	// line range (review hunk-gap expansion) — same bulk-content class.
-	// VerifyEditDiffs runs the same content resolution (it only reports
+	// GetEditDiffContextLines is the same read for the edits scope, and
+	// VerifyEditDiffs runs that same content resolution (it only reports
 	// servability, but the resolution reads workspace files by path).
-	"GetDiffContextLines": true,
-	"VerifyEditDiffs":     true,
+	"GetDiffContextLines":     true,
+	"GetEditDiffContextLines": true,
+	"VerifyEditDiffs":         true,
 	// HighlightPatchWithContext resolves workspace/ref file content by
-	// path to prime span parsing — same class. The wire-safe
+	// path to prime span parsing — same class, and split by subject the
+	// same way the diff-context pair is: the checkout scopes here, the
+	// edits scope in HighlightEditPatchWithContext. The wire-safe
 	// HighlightCode / HighlightPatch / HighlightClassNames RPCs are
 	// pure text-in/metadata-out and deliberately NOT in this set.
-	"HighlightPatchWithContext":  true,
-	"ListDiffReviewComments":     true,
-	"CreateDiffReviewComment":    true,
-	"UpdateDiffReviewComment":    true,
-	"DeleteDiffReviewComment":    true,
-	"MarkDiffReviewCommentsSent": true,
-	"SendDiffReviewComments":     true,
+	"HighlightPatchWithContext":     true,
+	"HighlightEditPatchWithContext": true,
+	"ListDiffReviewComments":        true,
+	"CreateDiffReviewComment":       true,
+	"UpdateDiffReviewComment":       true,
+	"DeleteDiffReviewComment":       true,
+	"MarkDiffReviewCommentsSent":    true,
+	"SendDiffReviewComments":        true,
 	// Codex model discovery spawns the configured `codex app-server`
 	// subprocess. It looks like a catalog read, but the local process
 	// execution makes it loopback-only.
@@ -252,7 +246,9 @@ var LocalOnlyMethods = map[string]bool{
 	// cwd with --dangerously-skip-permissions and the model emits a
 	// commit message from the staged diff. That's a local-process
 	// invocation under user-attacker control (the workspace path is
-	// derived from the thread); same class as the Git*/CLI surface.
+	// caller-supplied, validated against the project by
+	// gitapp.ResolveWorkspace but still a local directory of the user's
+	// choosing); same class as the Git*/CLI surface.
 	"GenerateCommitMessage": true,
 	// RegenerateThreadTitle runs `claude` / `codex` in the thread's
 	// workspace cwd to re-title it from its own history. Same
@@ -260,10 +256,10 @@ var LocalOnlyMethods = map[string]bool{
 	// GenerateCommitMessage — the workspace path comes off the thread
 	// record — so it takes the same classification.
 	"RegenerateThreadTitle": true,
-	// SearchWorkspaceFiles shells `git ls-files` inside the thread's
-	// workspace cwd. The argv is fixed but the cwd is user-supplied
-	// through the thread record — keep with the rest of the local-CLI
-	// invocations for doctrine consistency.
+	// SearchWorkspaceFiles shells `git ls-files` inside the referenced
+	// workspace cwd. The argv is fixed but the cwd is user-supplied —
+	// keep with the rest of the local-CLI invocations for doctrine
+	// consistency.
 	"SearchWorkspaceFiles": true,
 	// Payload reads (GetPayloadPreview, GetPayloadChunk,
 	// GetPayloadData) moved to wireSafeMethods — remote clients need

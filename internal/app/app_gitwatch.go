@@ -50,7 +50,7 @@ type GitStatusEvent struct {
 }
 
 // GitStatusSubscribe begins streaming git-status updates for the
-// thread's workspace. Returns the initial status synchronously so the
+// referenced workspace. Returns the initial status synchronously so the
 // caller can render immediately, plus the canonical cwd the stream is
 // keyed on and a handle used to call GitStatusUnsubscribe.
 //
@@ -63,11 +63,11 @@ type GitStatusEvent struct {
 // connection drops (via transport.ConnState cleanup). The frontend
 // SHOULD still call GitStatusUnsubscribe on unmount; the
 // connection-tied cleanup is the safety net for unclean disconnects.
-func (a *App) GitStatusSubscribe(ctx context.Context, threadID string) (GitStatusSubscriptionResult, error) {
+func (a *App) GitStatusSubscribe(ctx context.Context, ws WorkspaceRef) (GitStatusSubscriptionResult, error) {
 	if a.shuttingDown.Load() {
 		return GitStatusSubscriptionResult{}, ErrShuttingDown
 	}
-	result, err := a.gitApplication().Subscribe(threadID)
+	result, err := a.gitApplication().Subscribe(ws)
 	if err != nil {
 		if errors.Is(err, gitapp.ErrTooManyStatusSubscriptions) {
 			return GitStatusSubscriptionResult{}, ErrTooManyGitStatusSubscriptions

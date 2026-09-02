@@ -40,6 +40,7 @@ Core Principle 7.
 |---|---|
 | **project** | The git repo (the main root, via `--git-common-dir` semantics). A linked worktree resolves to the repository it was cut from, not to itself. |
 | **workspace** | Where the provider operates: the project root or a separate worktree. Threads track both. Git status, MCP listing, and the workspace-change lock are workspace-keyed, never thread-keyed. |
+| **`WorkspaceRef`** | The wire spelling of a workspace: `{projectId, workspacePath}` (`internal/gitapp`). Every workspace-scoped git RPC takes one, so a draft placeholder with no thread row addresses a checkout the same way a real thread does. `gitapp.Service.ResolveWorkspace` is the only place the path is accepted: it must be empty, the project root, or one of that project's registered worktrees. |
 | **sub-worktree** | The per-unit checkout cut from a work item's branch for a writing fan-out unit; the branch name encodes item/phase/attempt/unit/try so a retry never inherits a failed try's tree (`workflows-system.md` §9). |
 | **worktree setup** | The per-project recipe (copy globs + argv commands) run at worktree creation. Project app settings, not the workflow profile, so chat and workflow worktrees share it (`internal/worktreesetup/AGENTS.md`). |
 

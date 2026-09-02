@@ -95,7 +95,7 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 		return store.Thread{}, err
 	}
 
-	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
+	if err := a.ensureThreadChangeAllowed(threadID); err != nil {
 		return store.Thread{}, err
 	}
 
@@ -210,7 +210,7 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 		return store.Thread{}, err
 	}
 
-	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
+	if err := a.ensureThreadChangeAllowed(threadID); err != nil {
 		return store.Thread{}, err
 	}
 
@@ -265,8 +265,9 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 }
 
 // GitRemoveWorktree removes the worktree the thread is currently attached to.
-// Thin wrapper over RemoveOtherWorktree using the thread's own worktree path
-// so the auto-reattach behavior stays unified.
+// Stays thread-keyed because its subject IS the thread's own attachment (the
+// sidebar row action, archived threads, proposed-plan implementation); it
+// resolves that attachment and hands the workspace-keyed removal the answer.
 func (a *App) GitRemoveWorktree(threadID string) error {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -276,45 +277,30 @@ func (a *App) GitRemoveWorktree(threadID string) error {
 	if worktreePath == "" {
 		return fmt.Errorf("thread %s has no worktree path", threadID)
 	}
-	return a.RemoveOtherWorktree(threadID, worktreePath, false)
+	_, err = a.RemoveOtherWorktree(workspaceRefForThread(thread), worktreePath, false)
+	return err
 }
 
-// RemoveOtherWorktree removes a worktree at an explicit path, optionally
-// forcing through dirty/unpushed safety. Threads attached to the worktree
-// (including the calling thread) are reset back to the project root and
-// their sessions restart so the workspace switch takes effect.
+// RemoveOtherWorktree removes one of the project's worktrees, optionally
+// forcing through dirty/unpushed safety. Every thread attached to it is reset
+// back to the project root and its session restarts so the workspace switch
+// takes effect.
 //
-// Differs from GitRemoveWorktree in that the path is explicit (not derived
-// from the calling thread) and other threads referencing the worktree are
-// auto-reattached rather than blocking the call.
-func (a *App) RemoveOtherWorktree(threadID, worktreePath string, force bool) error {
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		return err
-	}
-	project, _, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return err
-	}
-	return a.removeProjectWorktree(project, threadID, worktreePath, force)
-}
-
-// RemoveOtherWorktreeForProject removes a project worktree without requiring a
-// thread row. currentWorkspacePath is the caller's transient workspace state;
-// when it points at the removed worktree the returned state resets the caller
-// to the project root.
-func (a *App) RemoveOtherWorktreeForProject(projectID, currentWorkspacePath, worktreePath string, force bool) (GitWorkspaceState, error) {
-	project, err := a.gitProjectPath(projectID)
+// The returned state is the CALLER's workspace after the removal: unchanged
+// when it removed some other worktree, reset to the project root when it
+// removed its own.
+func (a *App) RemoveOtherWorktree(ws WorkspaceRef, worktreePath string, force bool) (GitWorkspaceState, error) {
+	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
 		return GitWorkspaceState{}, err
 	}
-	if err := a.removeProjectWorktree(project, "", worktreePath, force); err != nil {
+	if err := a.removeProjectWorktree(project, worktreePath, force); err != nil {
 		return GitWorkspaceState{}, err
 	}
-	return a.resolveProjectWorkspaceStateAfterRemoval(project, currentWorkspacePath, worktreePath)
+	return a.resolveProjectWorkspaceStateAfterRemoval(project, workspace, worktreePath)
 }
 
-func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string, force bool) error {
+func (a *App) removeProjectWorktree(project, worktreePath string, force bool) error {
 	worktreePath = strings.TrimSpace(worktreePath)
 	if worktreePath == "" {
 		return fmt.Errorf("worktree path is required")
@@ -351,40 +337,15 @@ func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string
 		}
 	}
 
-	// Identify every thread that points at the worktree. Each of them gets
-	// reattached to the project root by the best-effort sweep below, so
-	// each must be idle and locked against concurrent workspace mutations
-	// before we touch git.
-	attached, err := a.threadsReferencingWorkspace(worktreePath)
+	// Identify and lock every thread that points at the worktree. Each of
+	// them gets reattached to the project root by the best-effort sweep
+	// below, so each must be idle and locked against concurrent workspace
+	// mutations before we touch git.
+	attached, release, err := a.lockWorkspaceThreads(worktreePath)
 	if err != nil {
 		return err
 	}
-	// Sorted + deduped so the post-lock recompute below can compare sets.
-	slices.Sort(attached)
-	attached = slices.Compact(attached)
-	// The caller is locked too (serializing its other workspace ops against
-	// this removal) but is only activity-checked when it actually occupies
-	// the worktree: a running thread may clean up worktrees it isn't in.
-	// Clone before append/sort — sharing attached's backing array would let
-	// the in-place sort swap the caller into attached's view and silently
-	// drop an occupying thread from the check and the reattach sweep.
-	locked := slices.Clone(attached)
-	if callerThreadID != "" && !slices.Contains(locked, callerThreadID) {
-		locked = append(locked, callerThreadID)
-	}
-	slices.Sort(locked)
-	locked = slices.Compact(locked)
-
-	unlocks := make([]func(), 0, len(locked))
-	defer func() {
-		// Release in reverse order to match LIFO mutex hygiene.
-		for i := len(unlocks) - 1; i >= 0; i-- {
-			unlocks[i]()
-		}
-	}()
-	for _, id := range locked {
-		unlocks = append(unlocks, a.threadLocks().Lock(id))
-	}
+	defer release()
 
 	// The occupancy snapshot above ran unlocked; a thread can have
 	// switched into the worktree in that window (it only holds its own
@@ -405,16 +366,8 @@ func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string
 		return fmt.Errorf("worktree %s occupancy changed during removal; retry", worktreePath)
 	}
 
-	for _, id := range attached {
-		reason, err := a.threadActivityBlockReason(id)
-		if err != nil {
-			return fmt.Errorf("thread %s: %w", id, err)
-		}
-		if reason != "" {
-			// The final colon segment must stand alone: the frontend's
-			// userFacingError keeps only the last `: `-segment for toasts.
-			return fmt.Errorf("worktree %s in use by thread %s: cannot remove worktree while %s", worktreePath, id, reason)
-		}
+	if err := a.ensureWorkspaceChangeAllowed("remove this worktree", worktreePath); err != nil {
+		return err
 	}
 
 	// Cancel by directory and block on the join. A recipe still writing into the
@@ -651,25 +604,10 @@ func (a *App) threadsReferencingWorkspace(path string) ([]string, error) {
 	return a.worktreeApplication().ThreadsReferencingWorkspace(path)
 }
 
-// GitWorktreeStatus classifies a worktree under the thread's project for the
-// cleanup UI. The thread parameter is just used to resolve the project root;
-// the path can be any worktree of that project.
-func (a *App) GitWorktreeStatus(threadID, worktreePath string) (WorktreeStatus, error) {
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		return WorktreeStatus{}, err
-	}
-	project, _, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return WorktreeStatus{}, err
-	}
-	return a.computeWorktreeStatus(project, worktreePath)
-}
-
-// GitWorktreeStatusForProject classifies a project worktree without requiring a
-// thread row.
-func (a *App) GitWorktreeStatusForProject(projectID, worktreePath string) (WorktreeStatus, error) {
-	project, err := a.gitProjectPath(projectID)
+// GitWorktreeStatus classifies any worktree of the referenced workspace's
+// project for the cleanup UI.
+func (a *App) GitWorktreeStatus(ws WorkspaceRef, worktreePath string) (WorktreeStatus, error) {
+	project, _, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
 		return WorktreeStatus{}, err
 	}
@@ -684,32 +622,13 @@ func (a *App) computeWorktreeStatus(project, worktreePath string) (WorktreeStatu
 	return WorktreeStatus(status), err
 }
 
-// GitListWorktrees lists worktrees for the thread's repository.
-func (a *App) GitListWorktrees(threadID string) ([]WorktreeListItem, error) {
-	thread, err := a.store.GetThread(threadID)
+// GitListWorktrees lists the worktrees of the referenced workspace's
+// repository.
+func (a *App) GitListWorktrees(ws WorkspaceRef) ([]WorktreeListItem, error) {
+	project, _, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
 		return nil, err
 	}
-
-	project, _, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return nil, err
-	}
-
-	return a.listWorktreesForPicker(project)
-}
-
-// GitListWorktreesForProject lists worktrees for a project without requiring
-// a thread row.
-func (a *App) GitListWorktreesForProject(projectID string) ([]WorktreeListItem, error) {
-	project, err := a.gitProjectPath(projectID)
-	if err != nil {
-		return nil, err
-	}
-	return a.listWorktreesForPicker(project)
-}
-
-func (a *App) listWorktreesForPicker(project string) ([]WorktreeListItem, error) {
 	items, err := a.worktreeApplication().List(project)
 	if err != nil {
 		return nil, err
@@ -740,7 +659,7 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
-	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
+	if err := a.ensureThreadChangeAllowed(threadID); err != nil {
 		return store.Thread{}, err
 	}
 

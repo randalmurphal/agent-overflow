@@ -11,6 +11,7 @@ import {
   disposeReviewStateForPane,
   openReviewCompanion,
   reviewStateForPane,
+  type ReviewSubject,
 } from './reviewPane.svelte';
 import {
   draftAnchorExists,
@@ -25,7 +26,8 @@ import { createThreadPane } from './thread.svelte';
 import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import type { DiffReviewComment, PRDetail, ReviewThread, Thread } from '../types/models';
-import type { GitStatus } from '../types/git';
+import type { GitStatus, WorkspaceRef } from '../types/git';
+import { NO_WORKSPACE_REF } from '../utils/workspaceKey';
 import { diffSourceKey } from '../utils/diffSourceKey';
 import { expansionPredecessor } from '../utils/diffContextExpansion';
 import { filePatchDisplayRows, parsePatchFilesCached } from '../utils/patchFiles';
@@ -51,6 +53,16 @@ async function waitLoaded(state: ReturnType<typeof reviewStateForPane>): Promise
 }
 
 const REVIEW_WORKSPACE = '/tmp/ws';
+const REVIEW_WS: WorkspaceRef = { projectId: 'project-1', workspacePath: REVIEW_WORKSPACE };
+
+/**
+ * The ordinary subject: a started thread whose checkout is the review
+ * workspace. Every workspace-scoped RPC is asserted against `REVIEW_WS`;
+ * `threadId` is what the thread-scoped ones (edits, comments, steer) take.
+ */
+function subjectFor(threadId: string | null = 'thread-1', thread: Thread | null = null): ReviewSubject {
+  return { identity: threadId ?? 'draft:pane-1', threadId, workspace: REVIEW_WS, thread };
+}
 
 /**
  * The mount/reload PR probe resolves the thread's own `prRef` first and falls
@@ -185,12 +197,12 @@ describe('reviewPane store', () => {
       { name: 'develop', isCurrent: false, isDefault: true },
     ]);
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
-    expect(workspace).toHaveBeenCalledWith('thread-1', false);
+    expect(workspace).toHaveBeenCalledWith(REVIEW_WS, false);
 
     await state.setScope('branch');
-    expect(branch).toHaveBeenCalledWith('thread-1', 'develop', false);
+    expect(branch).toHaveBeenCalledWith(REVIEW_WS, 'develop', false);
     expect(state.baseBranch).toBe('develop');
     expect(state.patchText).toBe('branch patch');
     expect(state.commits.map((commit) => commit.shortSha)).toEqual(['aaaaaaa', 'bbbbbbb']);
@@ -198,7 +210,7 @@ describe('reviewPane store', () => {
   });
 
   it('persists and restores last-used scope per thread', async () => {
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     await state.setScope('branch', { baseBranch: 'release' });
@@ -209,18 +221,18 @@ describe('reviewPane store', () => {
 
     disposeReviewStateForPane('pane-1');
     const branch = setBindingMock('GetBranchBaseDiff', async () => 'release patch');
-    const restored = reviewStateForPane('pane-2', 'thread-1');
+    const restored = reviewStateForPane('pane-2', subjectFor());
     await waitLoaded(restored);
 
     expect(restored.scope).toBe('branch');
     expect(restored.baseBranch).toBe('release');
-    expect(branch).toHaveBeenCalledWith('thread-1', 'release', false);
+    expect(branch).toHaveBeenCalledWith(REVIEW_WS, 'release', false);
   });
 
   it('defaults first open to workspace scope', async () => {
     const workspace = setBindingMock('GetWorkspaceCurrentDiff', async () => 'workspace patch');
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     expect(state.scope).toBe('workspace');
@@ -236,7 +248,7 @@ describe('reviewPane store', () => {
     ]);
     const commitDiff = setBindingMock('GetCommitDiff', async () => 'commit patch');
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('branch');
 
@@ -245,7 +257,7 @@ describe('reviewPane store', () => {
     expect(state.selectedCommitSHA).toBe(sha);
     expect(state.patchText).toBe('commit patch');
     expect(state.sourceKey).toBe(`commit:${sha}`);
-    expect(commitDiff).toHaveBeenLastCalledWith('thread-1', sha, false);
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, sha, false);
 
     // Back to the full range.
     await state.selectCommit(null);
@@ -261,7 +273,7 @@ describe('reviewPane store', () => {
     ]);
     setBindingMock('GetCommitDiff', async () => 'commit patch');
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('branch');
     await state.selectCommit(sha);
@@ -282,7 +294,7 @@ describe('reviewPane store', () => {
     ]);
     setBindingMock('GetCommitDiff', async () => 'commit patch');
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('branch');
     await state.selectCommit(sha);
@@ -296,7 +308,7 @@ describe('reviewPane store', () => {
     setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
     setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
 
-    const state = await openReviewCompanion('pane-1', 'thread-1', {
+    const state = await openReviewCompanion('pane-1', subjectFor(), {
       scope: 'branch',
       filePath: 'src/app.ts',
     });
@@ -306,7 +318,7 @@ describe('reviewPane store', () => {
     expect(state!.scope).toBe('branch');
     expect(state!.pendingJumpFilePath).toBe('src/app.ts');
 
-    const same = reviewStateForPane('pane-1', 'thread-1');
+    const same = reviewStateForPane('pane-1', subjectFor());
     expect(same.pendingJumpFilePath).toBe('src/app.ts');
     same.consumePendingJumpFilePath();
     expect(same.pendingJumpFilePath).toBeNull();
@@ -320,7 +332,7 @@ describe('reviewPane store', () => {
     ].join('\n');
     setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     expect(state.collapsedPaths.has('src/small.ts')).toBe(false);
@@ -332,7 +344,7 @@ describe('reviewPane store', () => {
     const patch = [patchFor('src/small.ts', 2), patchFor('pnpm-lock.yaml', 2)].join('\n');
     setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     expect(state.collapsedPaths.has('pnpm-lock.yaml')).toBe(true);
 
@@ -382,7 +394,7 @@ describe('reviewPane store', () => {
     const patch = [patchFor('src/small.ts', 2), patchFor('pnpm-lock.yaml', 2)].join('\n');
     setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     expect(state.allCollapsed).toBe(false);
 
@@ -401,7 +413,7 @@ describe('reviewPane store', () => {
     setBindingMock('GetWorkspaceCurrentDiff', async () => {
       throw new Error('diff exploded');
     });
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     expect(state.error).toBe('diff exploded');
@@ -418,11 +430,11 @@ describe('reviewPane store', () => {
     appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'branch', baseBranch: 'develop' }));
     const branch = setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     expect(state.scope).toBe('branch');
-    expect(branch).toHaveBeenCalledWith('thread-1', 'develop', false);
+    expect(branch).toHaveBeenCalledWith(REVIEW_WS, 'develop', false);
   });
 
   it('falls back to workspace scope for a persisted scope that no longer exists', async () => {
@@ -431,11 +443,11 @@ describe('reviewPane store', () => {
     appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'turn', baseBranch: null }));
     const workspace = setBindingMock('GetWorkspaceCurrentDiff', async () => 'workspace patch');
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     expect(state.scope).toBe('workspace');
-    expect(workspace).toHaveBeenCalledWith('thread-1', false);
+    expect(workspace).toHaveBeenCalledWith(REVIEW_WS, false);
   });
 
   it('refreshes comments and records the active diff source after loading a patch', async () => {
@@ -446,7 +458,7 @@ describe('reviewPane store', () => {
     ]);
     setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     expect(state.sourceKey).toBe(sourceKey);
@@ -466,7 +478,7 @@ describe('reviewPane store', () => {
     setBindingMock('CreateDiffReviewComment', async () => draft({ sourceKey, body: 'Looks good.' }));
     setBindingMock('ListDiffReviewComments', async () => [draft({ sourceKey, body: 'Looks good.' })]);
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     const anchor = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
     state.openDraftEditor(anchor);
@@ -485,7 +497,7 @@ describe('reviewPane store', () => {
       throw new Error('create failed');
     });
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     const anchor = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
     state.openDraftEditor(anchor);
@@ -499,7 +511,7 @@ describe('reviewPane store', () => {
   it('keeps draft-editor text in the store and focuses exactly once per open', async () => {
     const patch = patchFor('src/app.ts', 1);
     setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     const anchor = { filePath: 'src/app.ts', side: 'new' as const, newLine: 1, selectedText: 'line 1' };
 
@@ -531,7 +543,7 @@ describe('reviewPane store', () => {
     setBindingMock('GetWorkspaceCurrentDiff', async () => patch);
     const send = setBindingMock('SendDiffReviewComments', async () => ({}));
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     replaceDiffReviewCommentsForTest('thread-1', 'workspace', sourceKey, [
       draft({ sourceKey }),
@@ -617,7 +629,7 @@ describe('reviewPane store — PR scope', () => {
   it('enter subscribes and loads the PR diff; leaving unsubscribes exactly once', async () => {
     const { subscribe, unsubscribe } = installPRMocks();
     const diff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
 
     await state.setScope('pr');
@@ -625,7 +637,7 @@ describe('reviewPane store — PR scope', () => {
     // The diff is fetched with the thread id + base ref from the detail so
     // the backend can compute a local diff (past gh/glab's 20k-line cap).
     expect(diff).toHaveBeenCalledWith(
-      'thread-1',
+      REVIEW_WS,
       expect.objectContaining({ Number: 5 }),
       'main',
     );
@@ -647,19 +659,19 @@ describe('reviewPane store — PR scope', () => {
     ]);
     const commitDiff = setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
 
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     // The known head SHA rides along so the backend can skip its fetch
     // when the objects are already in the local clone.
-    expect(list).toHaveBeenCalledWith('thread-1', expect.objectContaining({ Number: 5 }), 'main', 'sha-a');
+    expect(list).toHaveBeenCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), 'main', 'sha-a');
     expect(state.commits.map((commit) => commit.sha)).toEqual([sha]);
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
 
     await state.selectCommit(sha);
     expect(state.selectedCommitSHA).toBe(sha);
     expect(state.sourceKey).toBe(`commit:${sha}`);
-    expect(commitDiff).toHaveBeenLastCalledWith('thread-1', expect.objectContaining({ Number: 5 }), sha, false);
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), sha, false);
 
     // Back to the whole PR.
     await state.selectCommit(null);
@@ -675,7 +687,7 @@ describe('reviewPane store — PR scope', () => {
     ]);
     setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
 
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     expect(subscribe).toHaveBeenCalledTimes(1);
@@ -699,7 +711,7 @@ describe('reviewPane store — PR scope', () => {
     setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
     const submit = setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0 }));
 
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     state.setSubmitTarget('pr');
@@ -726,7 +738,7 @@ describe('reviewPane store — PR scope', () => {
     setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
     const fullDiff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
 
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     await state.selectCommit(sha);
@@ -741,7 +753,7 @@ describe('reviewPane store — PR scope', () => {
 
   it('shows no PR commit selector without a local clone (empty commit list)', async () => {
     installPRMocks(); // default ListPRCommits mock resolves []
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -760,7 +772,7 @@ describe('reviewPane store — PR scope', () => {
       releaseDiff = resolve;
     }));
     setBindingMock('GetWorkspaceCurrentDiff', async () => patchFor('src/app.ts', 2));
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
 
     const prSwitch = state.setScope('pr'); // hangs on the PR diff
@@ -784,7 +796,7 @@ describe('reviewPane store — PR scope', () => {
     setBindingMock('GetPRDiff', async () => {
       throw new Error('diff exploded');
     });
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
 
     await state.setScope('pr');
@@ -807,7 +819,7 @@ describe('reviewPane store — PR scope', () => {
       resolveSubscribe = resolve;
     }));
 
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     const entering = state.setScope('pr');
     await vi.waitFor(() => {
@@ -828,18 +840,18 @@ describe('reviewPane store — PR scope', () => {
 
   it('replacing a pane state on thread switch disposes the old PR subscription', async () => {
     const { unsubscribe } = installPRMocks();
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
 
-    reviewStateForPane('pane-1', 'thread-2');
+    reviewStateForPane('pane-1', subjectFor('thread-2'));
 
     expect(unsubscribe).toHaveBeenCalledWith('sub-1');
   });
 
   it('pr:updated applies live on same head and flags stale on a moved head without touching the diff', async () => {
     installPRMocks();
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     const filesBefore = state.files;
@@ -873,7 +885,7 @@ describe('reviewPane store — PR scope', () => {
 
   it('leaving the PR drops the head its diff was anchored to', async () => {
     installPRMocks();
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     expect(state.prHeadSHA).toBe('sha-a');
@@ -906,7 +918,7 @@ describe('reviewPane store — PR scope', () => {
       headSHA: pr.Number === 5 ? 'sha-a' : 'sha-z',
     }));
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('pr');
     expect(state.prRef?.number).toBe(5);
@@ -945,7 +957,7 @@ describe('reviewPane store — PR scope', () => {
 
   it('a pr:updated error surfaces as pane state and clears on the next good snapshot', async () => {
     installPRMocks();
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     const filesBefore = state.files;
@@ -967,8 +979,8 @@ describe('reviewPane store — PR scope', () => {
 
   it('one poll heals every pane on the PR, and staleness stays per pane', async () => {
     const { subscribe } = installPRMocks();
-    const first = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
-    const second = reviewStateForPane('pane-2', 'thread-1', prThreadStub());
+    const first = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const second = reviewStateForPane('pane-2', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(first);
     await waitLoaded(second);
     await first.setScope('pr');
@@ -1000,8 +1012,8 @@ describe('reviewPane store — PR scope', () => {
 
   it('the last pane to leave the PR releases the shared subscription', async () => {
     const { subscribe, unsubscribe } = installPRMocks();
-    const first = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
-    const second = reviewStateForPane('pane-2', 'thread-1', prThreadStub());
+    const first = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    const second = reviewStateForPane('pane-2', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(first);
     await waitLoaded(second);
     await first.setScope('pr');
@@ -1040,7 +1052,7 @@ describe('reviewPane store — PR scope', () => {
       '>>>>>>> theirs',
       'after',
     ].join('\n'));
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -1051,7 +1063,7 @@ describe('reviewPane store — PR scope', () => {
     expect(state.conflictView).toBe(true);
     expect(state.conflicts?.paths).toEqual(['main.go']);
     expect(getFile).toHaveBeenCalledTimes(1);
-    expect(getFile).toHaveBeenCalledWith('thread-1', 'tree-1', 'main.go');
+    expect(getFile).toHaveBeenCalledWith(REVIEW_WS, 'tree-1', 'main.go');
     expect(state.conflictCollapsedPaths.has('main.go')).toBe(false);
     // Pseudo-diff shape: hunk header, then ours as del / theirs as add
     // between visible marker rows, relabeled with base/head labels.
@@ -1094,7 +1106,7 @@ describe('reviewPane store — PR scope', () => {
       'right',
       '>>>>>>> theirs',
     ].join('\n'));
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     await state.openConflictView();
@@ -1129,7 +1141,7 @@ describe('reviewPane store — PR scope', () => {
       if (path === 'other.go') throw new Error('path not in merged tree');
       return '<<<<<<< ours\nleft\n=======\nright\n>>>>>>> theirs';
     });
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     await state.openConflictView();
@@ -1165,7 +1177,7 @@ describe('reviewPane store — PR scope', () => {
       'right',
       '>>>>>>> theirs',
     ].join('\n'));
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -1194,7 +1206,7 @@ describe('reviewPane store — PR scope', () => {
       paths: [],
       messages: [],
     }));
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -1216,7 +1228,7 @@ describe('reviewPane store — PR scope', () => {
       paths: ['main.go'],
       messages: [],
     }));
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     const filesBefore = state.files;
@@ -1254,7 +1266,7 @@ describe('reviewPane store — PR scope', () => {
       'right',
       '>>>>>>> theirs',
     ].join('\n'));
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     await state.openConflictView();
@@ -1293,7 +1305,7 @@ describe('reviewPane store — PR scope', () => {
       truncated: false,
       totalBytes: 14,
     }));
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -1331,7 +1343,7 @@ describe('reviewPane store — PR scope', () => {
       messages: [],
     }));
     setBindingMock('GetPRCIJobLog', async () => ({ text: 'x\n', truncated: false, totalBytes: 2 }));
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -1352,7 +1364,7 @@ describe('reviewPane store — PR scope', () => {
     installPRMocks();
     setBindingMock('GetPRCIJobLog', async () => ({ text: 'boom\n', truncated: false, totalBytes: 5 }));
     const save = setBindingMock('SavePRCIJobLog', async () => '/data/ci-logs/github-owner-repo-pr5-20-unit.log');
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -1390,7 +1402,7 @@ describe('reviewPane store — PR scope', () => {
       openPrNumber: 7,
     });
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     await vi.waitFor(() => {
@@ -1401,7 +1413,7 @@ describe('reviewPane store — PR scope', () => {
   });
 
   it('detects a PR opened after mount on the next reload', async () => {
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     expect(state.prRef).toBeNull();
 
@@ -1421,9 +1433,15 @@ describe('reviewPane store — PR scope', () => {
 
   it('a workspace-less thread with a prRef defaults to pr scope', async () => {
     const { subscribe } = installPRMocks();
-    const state = reviewStateForPane('pane-1', 'thread-1', {
-      prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
-    } as Thread);
+    const state = reviewStateForPane('pane-1', {
+      identity: 'thread-1',
+      threadId: 'thread-1',
+      // No local clone: the PR RPCs read the zero ref and take the forge path.
+      workspace: NO_WORKSPACE_REF,
+      thread: {
+        prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
+      } as Thread,
+    });
     await waitLoaded(state);
 
     expect(state.scope).toBe('pr');
@@ -1435,7 +1453,7 @@ describe('reviewPane store — PR scope', () => {
     setBindingMock('GetThread', async () => prThreadStub());
     appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'pr' }));
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     expect(state.scope).toBe('pr');
@@ -1446,7 +1464,7 @@ describe('reviewPane store — PR scope', () => {
   it('submit success marks drafts sent against the head SHA and clears the summary', async () => {
     installPRMocks();
     const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
@@ -1470,7 +1488,7 @@ describe('reviewPane store — PR scope', () => {
       partialFailure: 'boom',
     }));
     const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
@@ -1494,7 +1512,7 @@ describe('reviewPane store — PR scope', () => {
       partialFailure: 'glab api approve merge request failed',
     }));
     const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
@@ -1515,7 +1533,7 @@ describe('reviewPane store — PR scope', () => {
       throw new Error('gh api submit review failed');
     });
     const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
@@ -1546,7 +1564,7 @@ describe('reviewPane store — PR scope', () => {
   it('pauses the pump while the document is hidden and resumes it on visible', async () => {
     installPRMocks();
     const setActive = setBindingMock('SetPRUpdatesActive', async () => undefined);
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     expect(setActive).not.toHaveBeenCalled();
@@ -1566,7 +1584,7 @@ describe('reviewPane store — PR scope', () => {
   it('a PR load that finishes while the document is hidden starts its pump paused', async () => {
     installPRMocks();
     const setActive = setBindingMock('SetPRUpdatesActive', async () => undefined);
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
 
     setDocumentVisibility('hidden');
@@ -1589,7 +1607,7 @@ describe('hunk-gap context expansion', () => {
 
   it('fetches the gap slice and merges it into the derived files', async () => {
     setBindingMock('GetWorkspaceCurrentDiff', async () => gappedPatch);
-    const fetchLines = setBindingMock('GetDiffContextLines', async (_threadId, req) => {
+    const fetchLines = setBindingMock('GetDiffContextLines', async (_ws, req) => {
       const { startLine, endLine } = req as { startLine: number; endLine: number };
       return {
         lines: Array.from({ length: endLine - startLine + 1 }, (_, i) => `src ${startLine + i}`),
@@ -1599,13 +1617,13 @@ describe('hunk-gap context expansion', () => {
       };
     });
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     const leading = filePatchDisplayRows(state.files[0]).find((row) => row.gap)?.gap;
     expect(leading).toMatchObject({ location: 'leading', startNew: 1, endNew: 9 });
 
     await state.expandDiffContext('src/app.ts', leading!, 'all');
-    expect(fetchLines).toHaveBeenCalledWith('thread-1', expect.objectContaining({
+    expect(fetchLines).toHaveBeenCalledWith(REVIEW_WS, expect.objectContaining({
       scope: 'workspace',
       path: 'src/app.ts',
       startLine: 1,
@@ -1627,7 +1645,7 @@ describe('hunk-gap context expansion', () => {
       totalLines: 14,
     }));
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     const trailing = filePatchDisplayRows(state.files[0])
       .find((row) => row.gap?.location === 'trailing')?.gap;
@@ -1648,7 +1666,7 @@ describe('hunk-gap context expansion', () => {
       throw new Error('no clone available');
     });
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     const leading = filePatchDisplayRows(state.files[0]).find((row) => row.gap)?.gap;
 
@@ -1674,7 +1692,7 @@ describe('hunk-gap context expansion', () => {
 describe('collapse overrides across reloads', () => {
   it('keeps user collapse/expand choices through a reload, resets on scope switch', async () => {
     setBindingMock('GetWorkspaceCurrentDiff', async () => patchFor('src/app.ts', 2));
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     expect(state.collapsedPaths.has('src/app.ts')).toBe(false);
 
@@ -1706,7 +1724,7 @@ describe('comments-only PR refresh', () => {
     installPRMocks();
     const diff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
     setBindingMock('GetPRDetail', async () => prDetailStub());
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
     expect(diff).toHaveBeenCalledTimes(1);
@@ -1726,7 +1744,7 @@ describe('comments-only PR refresh', () => {
     installPRMocks();
     const diff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
     setBindingMock('GetPRDetail', async () => prDetailStub({ headSHA: 'sha-b' }));
-    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
     await waitLoaded(state);
     await state.setScope('pr');
 
@@ -1742,7 +1760,7 @@ describe('comments-only PR refresh', () => {
 
   it('is a no-op outside pr scope', async () => {
     const detail = setBindingMock('GetPRDetail', async () => prDetailStub());
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.refreshPRThreads();
     expect(detail).not.toHaveBeenCalled();
@@ -1798,7 +1816,7 @@ describe('reviewPane store — edits scope', () => {
 
   it('defaults to the latest turn and keys comments by turn', async () => {
     const { turnDiff } = installEditMocks();
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     await state.setScope('edits');
@@ -1813,13 +1831,13 @@ describe('reviewPane store — edits scope', () => {
 
   it('emits gap rows for single-section edit files and verifies expansion', async () => {
     installEditMocks();
-    const contextLines = setBindingMock('GetDiffContextLines', async () => ({
+    const contextLines = setBindingMock('GetEditDiffContextLines', async () => ({
       lines: ['top 1', 'top 2', 'top 3', 'top 4'],
       startLine: 1,
       eof: false,
       totalLines: 20,
     }));
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     await state.setScope('edits');
@@ -1842,10 +1860,10 @@ describe('reviewPane store — edits scope', () => {
 
   it('retires a file\'s gaps when edits-scope expansion is refused', async () => {
     installEditMocks();
-    setBindingMock('GetDiffContextLines', async () => {
+    setBindingMock('GetEditDiffContextLines', async () => {
       throw new Error('x.go has changed since this edit');
     });
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('edits');
     await waitGapsVerified(state, 'x.go');
@@ -1865,7 +1883,7 @@ describe('reviewPane store — edits scope', () => {
   it('gates gap arrows on load-time verification', async () => {
     const { verify } = installEditMocks();
     setBindingMock('VerifyEditDiffs', async () => ({ expandablePaths: [] }));
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('edits');
 
@@ -1891,7 +1909,7 @@ describe('reviewPane store — edits scope', () => {
     setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
     const { payload } = installEditMocks();
 
-    const state = await openReviewCompanion('pane-1', 'thread-1', {
+    const state = await openReviewCompanion('pane-1', subjectFor(), {
       editItemId: 'tool:2a',
       filePath: 'lexer.go',
     });
@@ -1907,7 +1925,7 @@ describe('reviewPane store — edits scope', () => {
 
   it('selection changes reuse the loaded list (fast path)', async () => {
     const { list, payload, turnDiff } = installEditMocks();
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('edits');
     expect(list).toHaveBeenCalledTimes(1);
@@ -1951,7 +1969,7 @@ describe('reviewPane store — edits scope', () => {
     ].join('\n');
     setBindingMock('GetTurnEditsDiff', async () => ({ data: twiceEdited }));
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('edits');
 
@@ -1993,7 +2011,7 @@ describe('reviewPane store — edits scope', () => {
       '+new',
     ].join('\n');
     setBindingMock('GetTurnEditsDiff', async () => ({ data: outsideEdit }));
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('edits');
 
@@ -2033,13 +2051,13 @@ describe('reviewPane store — edits scope', () => {
       '+later',
     ].join('\n');
     setBindingMock('GetTurnEditsDiff', async () => ({ data: twiceEdited }));
-    setBindingMock('GetDiffContextLines', async () => ({
+    setBindingMock('GetEditDiffContextLines', async () => ({
       lines: ['l1', 'l2', 'l3', 'l4'],
       startLine: 1,
       eof: false,
       totalLines: 20,
     }));
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('edits');
     await waitGapsVerified(state, 'x.go');
@@ -2062,7 +2080,7 @@ describe('reviewPane store — edits scope', () => {
 
   it('shows an empty surface for a thread with no edits', async () => {
     setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     await state.setScope('edits');
@@ -2113,30 +2131,30 @@ describe('reviewPane hide-whitespace toggle', () => {
         (ignoreWhitespace ? IGNORED_PATCH : CANONICAL_PATCH),
     );
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     expect(state.ignoreWhitespace).toBe(false);
-    expect(workspace).toHaveBeenLastCalledWith('thread-1', false);
+    expect(workspace).toHaveBeenLastCalledWith(REVIEW_WS, false);
     expect(state.files.map((file) => file.path)).toEqual(['src/indent.ts', 'src/real.ts']);
 
     await state.setIgnoreWhitespace(true);
     await waitLoaded(state);
     expect(state.ignoreWhitespace).toBe(true);
     // The flip is a full re-request, not a client-side filter.
-    expect(workspace).toHaveBeenLastCalledWith('thread-1', true);
+    expect(workspace).toHaveBeenLastCalledWith(REVIEW_WS, true);
     expect(state.patchText).toBe(IGNORED_PATCH);
     expect(state.files.map((file) => file.path)).toEqual(['src/real.ts']);
 
     await state.setIgnoreWhitespace(false);
     await waitLoaded(state);
     expect(state.ignoreWhitespace).toBe(false);
-    expect(workspace).toHaveBeenLastCalledWith('thread-1', false);
+    expect(workspace).toHaveBeenLastCalledWith(REVIEW_WS, false);
     expect(state.files.map((file) => file.path)).toEqual(['src/indent.ts', 'src/real.ts']);
   });
 
   it('ignores a flip to the value already set', async () => {
     const workspace = setBindingMock('GetWorkspaceCurrentDiff', async () => CANONICAL_PATCH);
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     expect(workspace).toHaveBeenCalledTimes(1);
 
@@ -2174,7 +2192,7 @@ describe('reviewPane hide-whitespace toggle', () => {
     const payload = setBindingMock('GetPayloadData', async () => ({ data: CANONICAL_PATCH }));
     setBindingMock('VerifyEditDiffs', async () => ({ verified: [] }));
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     expect(state.canIgnoreWhitespace).toBe(true);
 
@@ -2210,7 +2228,7 @@ describe('reviewPane hide-whitespace toggle', () => {
       async (_threadId: string, ignoreWhitespace: boolean) =>
         (ignoreWhitespace ? IGNORED_PATCH : CANONICAL_PATCH),
     );
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
 
     const canonicalKey = diffSourceKey(CANONICAL_PATCH);
@@ -2257,7 +2275,7 @@ describe('reviewPane hide-whitespace toggle', () => {
         (ignoreWhitespace ? IGNORED_PATCH : CANONICAL_PATCH),
     );
 
-    const state = reviewStateForPane('pane-1', 'thread-1');
+    const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     await state.setScope('branch');
     await state.selectCommit(sha);

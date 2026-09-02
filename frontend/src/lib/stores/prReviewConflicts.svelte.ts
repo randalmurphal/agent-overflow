@@ -11,6 +11,8 @@ import { SvelteMap } from 'svelte/reactivity';
 import { GetMergeConflictFile, GetPRMergeConflicts } from './bindings';
 import { errString } from '../utils/errors';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
+import { NO_WORKSPACE_REF } from '../utils/workspaceKey';
+import type { WorkspaceRef } from '../types/git';
 import type { PRDetail } from '../types/models';
 
 export interface PRConflicts {
@@ -46,10 +48,11 @@ class PRConflictEntry {
   /** In-flight per-path content loads, so N panes expanding the same file
    * share one read. */
   readonly inFlight = new Map<string, Promise<void>>();
-  /** The thread whose clone computed the tree — merge-tree needs a local
-   * checkout, and a head move has to recompute without an attacher
-   * present to supply one. */
-  threadId = '';
+  /** The checkout that computed the tree — merge-tree needs a local clone,
+   * and a head move has to recompute without an attacher present to supply
+   * one. The zero ref is "no local clone" (a pr-anchor thread): the backend
+   * refuses, which is the honest answer for a merge that cannot be run. */
+  workspace: WorkspaceRef = NO_WORKSPACE_REF;
   /** The (base, head) pair that moved WHILE a load was running. The view is
    * open, so it has to converge on it once the in-flight load settles —
    * dropping it left the pane pinned to a superseded merge forever, because
@@ -144,7 +147,7 @@ export function peekPRConflicts(key: string | null): PRConflictsView {
  */
 export async function openPRConflicts(
   key: string,
-  threadId: string,
+  workspace: WorkspaceRef,
   ref: PRRef,
   detail: PRDetail,
 ): Promise<void> {
@@ -155,18 +158,18 @@ export async function openPRConflicts(
   if (entry.state && entry.state.headSHA === headSHA && entry.state.baseRefName === baseRefName) {
     return;
   }
-  await loadPRConflicts(entry, key, threadId, ref, detail);
+  await loadPRConflicts(entry, key, workspace, ref, detail);
 }
 
 async function loadPRConflicts(
   entry: PRConflictEntry,
   key: string,
-  threadId: string,
+  workspace: WorkspaceRef,
   ref: PRRef,
   detail: PRDetail,
 ): Promise<void> {
   const seq = ++entry.seq;
-  entry.threadId = threadId;
+  entry.workspace = workspace;
   entry.loading = true;
   entry.treeError = null;
   entry.errorByPath.clear();
@@ -176,7 +179,7 @@ async function loadPRConflicts(
   entry.inFlight.clear();
   try {
     const result = await GetPRMergeConflicts(
-      threadId,
+      workspace,
       prReferenceWire(ref),
       detail.baseRefName,
       detail.headRefName,
@@ -225,10 +228,10 @@ export async function ensurePRConflictFile(key: string, path: string): Promise<v
   }
   const seq = entry.seq;
   const treeOID = entry.state?.treeOID ?? '';
-  const threadId = entry.threadId;
+  const workspace = entry.workspace;
   const load = (async () => {
     try {
-      const content = await GetMergeConflictFile(threadId, treeOID, path);
+      const content = await GetMergeConflictFile(workspace, treeOID, path);
       if (seq !== entry.seq) return;
       entry.contentByPath.set(path, String(content ?? ''));
       // Only THIS path's failure is resolved. The reads run in parallel, so
@@ -291,8 +294,7 @@ export function reconcileConflictsWithHead(
   } else if (entry.state.headSHA === headSHA && entry.state.baseRefName === baseRefName) {
     return;
   }
-  if (!entry.threadId) return;
-  void loadPRConflicts(entry, key, entry.threadId, ref, detail);
+  void loadPRConflicts(entry, key, entry.workspace, ref, detail);
 }
 
 /**

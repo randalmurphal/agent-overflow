@@ -36,7 +36,7 @@ type statusState struct {
 // Subscribe begins one workspace-keyed status stream and returns its initial
 // snapshot. The caller owns connection-lifetime cleanup and must call
 // Unsubscribe if it cannot register that cleanup.
-func (s *Service) Subscribe(threadID string) (StatusSubscription, error) {
+func (s *Service) Subscribe(ref WorkspaceRef) (StatusSubscription, error) {
 	if s.shuttingDown() {
 		if s.shuttingDownError != nil {
 			return StatusSubscription{}, s.shuttingDownError
@@ -46,14 +46,7 @@ func (s *Service) Subscribe(threadID string) (StatusSubscription, error) {
 	if s.watch == nil {
 		return StatusSubscription{}, fmt.Errorf("gitwatch: manager not initialised")
 	}
-	if s.store == nil {
-		return StatusSubscription{}, fmt.Errorf("gitwatch: store not initialised")
-	}
-	thread, err := s.store.GetThread(threadID)
-	if err != nil {
-		return StatusSubscription{}, err
-	}
-	_, workspace, err := s.ResolveThreadPaths(thread)
+	_, workspace, err := s.ResolveWorkspace(ref)
 	if err != nil {
 		return StatusSubscription{}, err
 	}
