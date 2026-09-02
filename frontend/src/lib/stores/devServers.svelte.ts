@@ -52,6 +52,7 @@ import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { hasScope } from '../transport/scopes';
 import { isScopeRefusal } from '../transport/scopeRefusal';
 import { handleExternalURL, installPreviewLinkActions } from '../utils/externalLinks';
+import { parsePreviewTarget } from '../utils/previewLinkExtension';
 import { userFacingError } from '../utils/userFacingError';
 
 export type { DevServer, DevServerList };
@@ -170,6 +171,32 @@ function portIsAllowed(list: DevServerList, port: number): boolean {
   return false;
 }
 
+/**
+ * Whether that machine can see something answering on `port` right now.
+ *
+ * Off the owner's own screen this replaces the loopback probe entirely: the
+ * machine is the only party that can reach its own `localhost`, and its list
+ * already says which of its ports have a listener.
+ */
+export function devServerListening(key: BackendKey, port: number): boolean {
+  for (const server of machines.get(key).list?.servers ?? []) {
+    if (server.port === port) return server.listening;
+  }
+  return false;
+}
+
+/**
+ * Whether reaching a thread's `localhost` ports has to go through the port
+ * gateway rather than straight out of this page.
+ *
+ * False in exactly one case, the ordinary desktop one: the thread runs on the
+ * page's own machine AND this session can act there, so `localhost` already
+ * means what it says.
+ */
+export function previewRouted(threadId: string): boolean {
+  return threadMachine(threadId, null) !== HOME_BACKEND || !hasScope('host');
+}
+
 // ---------------------------------------------------------------------------
 // What the markdown rewrite reads
 // ---------------------------------------------------------------------------
@@ -208,9 +235,8 @@ export interface PreviewLinkTarget {
  * says.
  */
 export function previewLinkTargetFor(threadId: string): PreviewLinkTarget | null {
-  if (threadId === '') return null;
+  if (threadId === '' || !previewRouted(threadId)) return null;
   const backend = threadMachine(threadId, null);
-  if (backend === HOME_BACKEND && hasScope('host')) return null;
   const machineState = machines.get(backend);
   if (machineState.signature === '') return null;
   const list = machineState.list;
@@ -239,9 +265,8 @@ export function previewLinkTargetFor(threadId: string): PreviewLinkTarget | null
  * than the rewrite is; empty means the rewrite is off.
  */
 export function previewRewriteKey(threadId: string): string {
-  if (threadId === '') return '';
+  if (threadId === '' || !previewRouted(threadId)) return '';
   const backend = threadMachine(threadId, null);
-  if (backend === HOME_BACKEND && hasScope('host')) return '';
   const signature = machines.get(backend).signature;
   if (signature === '') return '';
   const entry = attachedBackendEntry(backend);
@@ -314,6 +339,45 @@ async function changePreviewPort(key: BackendKey, port: number, allow: boolean):
       ),
     });
   }
+}
+
+/** A live, reachable dev server on another machine, ready to be offered. */
+export interface PreviewChip {
+  /** The URL the command announced, kept for the label and the title. */
+  url: string;
+  threadId: string;
+  port: number;
+  path: string;
+  /** What the reader calls the machine it is on. */
+  machine: string;
+}
+
+/**
+ * The dev-server chip for a command row, when the row's thread is not on the
+ * machine reading it. Null means the row falls back to the loopback probe,
+ * which is the only thing that works when it IS.
+ *
+ * Three ways to be null besides that: the URL is not a loopback dev server,
+ * the machine sees nothing answering on the port, or the port is not shared.
+ * The chip is an affordance this app adds, so it appears only when pressing
+ * it lands somewhere; the states that go nowhere are said by the link in the
+ * prose that named the port, not by a dead button.
+ */
+export function previewChipFor(threadId: string, url: string): PreviewChip | null {
+  if (threadId === '' || url === '' || !previewRouted(threadId)) return null;
+  const parsed = parsePreviewTarget(url);
+  if (!parsed) return null;
+  const backend = threadMachine(threadId, null);
+  if (!devServerListening(backend, parsed.port)) return null;
+  if (previewFor(backend, parsed.port).kind !== 'open') return null;
+  const entry = attachedBackendEntry(backend);
+  return {
+    url,
+    threadId,
+    port: parsed.port,
+    path: parsed.path,
+    machine: entry ? backendDisplayName(entry) : 'that machine',
+  };
 }
 
 /**

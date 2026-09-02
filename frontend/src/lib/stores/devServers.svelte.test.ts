@@ -31,15 +31,21 @@ import type { DevServer, DevServerList } from './bindings';
 import {
   allowPreviewPort,
   allowedPreviewPorts,
+  devServerListening,
   disallowPreviewPort,
   initDevServers,
   loadDevServers,
   machineDevServers,
   openPreview,
+  previewChipFor,
   previewFor,
+  previewLinkTargetFor,
+  previewRewriteKey,
+  previewRouted,
   previewSignature,
   resetDevServersForTest,
 } from './devServers.svelte';
+import { forgetThread, noteThread } from '../transport/entityIndex';
 
 function server(port: number, overrides: Partial<DevServer> = {}): DevServer {
   return {
@@ -197,6 +203,136 @@ describe('devServers store', () => {
       );
       expect(previewFor(HOME_BACKEND, 5173).kind).toBe('not-shared');
       expect(allowedPreviewPorts(HOME_BACKEND)).toEqual([]);
+    });
+  });
+
+  // Where a thread's `localhost` really is, and what this page may do about
+  // it. Every one of these reads the same three inputs — which machine the
+  // thread is on, whether this session can act on the page's own machine, and
+  // what that machine last said — so they are stated once and read by the
+  // markdown rewrite, the command row's chip, and the render-context memo
+  // alike.
+  describe('where a thread’s localhost is', () => {
+    const THREAD = 'thread-on-laptop';
+
+    afterEach(() => forgetThread(THREAD));
+
+    it('is this page’s own port on the owner’s screen, and nothing is routed', () => {
+      expect(previewRouted('thread-at-home')).toBe(false);
+      expect(previewRewriteKey('thread-at-home')).toBe('');
+      expect(previewLinkTargetFor('thread-at-home')).toBeNull();
+    });
+
+    it('is routed for a thread on another machine', () => {
+      stageBackend();
+      noteThread(THREAD, 'laptop');
+      expect(previewRouted(THREAD)).toBe(true);
+    });
+
+    it('is routed for a page that cannot act on the machine it is reading', async () => {
+      await pairViewOnly();
+      expect(previewRouted('thread-at-home')).toBe(true);
+    });
+
+    it('stays unarmed until that machine has answered, so no link goes wrongly inert', () => {
+      initDevServers();
+      stageBackend();
+      noteThread(THREAD, 'laptop');
+      expect(previewRewriteKey(THREAD)).toBe('');
+      expect(previewLinkTargetFor(THREAD)).toBeNull();
+
+      emitWailsEvent('devserver:list', list(), REMOTE_BACKEND_UUID);
+      expect(previewRewriteKey(THREAD)).not.toBe('');
+      const target = previewLinkTargetFor(THREAD);
+      expect(target?.machine).toBe('Laptop');
+      expect(target?.backend).toBe('laptop');
+      expect(target?.resolve(5173).kind).toBe('open');
+      expect(target?.resolve(3000).kind).toBe('not-shared');
+    });
+
+    it('answers a target that does not change with the frames that change no link', () => {
+      initDevServers();
+      stageBackend();
+      noteThread(THREAD, 'laptop');
+      emitWailsEvent('devserver:list', list(), REMOTE_BACKEND_UUID);
+      const first = previewRewriteKey(THREAD);
+
+      emitWailsEvent(
+        'devserver:list',
+        list({ servers: [server(5173, { pid: 91, process: 'node' })] }),
+        REMOTE_BACKEND_UUID,
+      );
+      expect(previewRewriteKey(THREAD)).toBe(first);
+
+      emitWailsEvent(
+        'devserver:list',
+        list({ servers: [server(5173), server(3000)] }),
+        REMOTE_BACKEND_UUID,
+      );
+      expect(previewRewriteKey(THREAD)).not.toBe(first);
+    });
+
+    it('reads that machine’s own listeners rather than probing this one', () => {
+      initDevServers();
+      stageBackend();
+      emitWailsEvent(
+        'devserver:list',
+        list({ servers: [server(5173), server(3000, { listening: false })] }),
+        REMOTE_BACKEND_UUID,
+      );
+      expect(devServerListening('laptop', 5173)).toBe(true);
+      expect(devServerListening('laptop', 3000)).toBe(false);
+      expect(devServerListening('laptop', 9999)).toBe(false);
+    });
+  });
+
+  describe('the chip a command row offers', () => {
+    const THREAD = 'thread-on-laptop';
+
+    beforeEach(() => {
+      initDevServers();
+      stageBackend();
+      noteThread(THREAD, 'laptop');
+    });
+
+    afterEach(() => forgetThread(THREAD));
+
+    it('offers a live shared port, split into what a mint call takes', () => {
+      emitWailsEvent('devserver:list', list(), REMOTE_BACKEND_UUID);
+      expect(previewChipFor(THREAD, 'http://localhost:5173/app?a=1')).toEqual({
+        url: 'http://localhost:5173/app?a=1',
+        threadId: THREAD,
+        port: 5173,
+        path: '/app?a=1',
+        machine: 'Laptop',
+      });
+    });
+
+    it('offers nothing before that machine has answered', () => {
+      expect(previewChipFor(THREAD, 'http://localhost:5173/')).toBeNull();
+    });
+
+    it('offers nothing for a port nothing is answering on', () => {
+      emitWailsEvent(
+        'devserver:list',
+        list({ servers: [server(5173, { listening: false })] }),
+        REMOTE_BACKEND_UUID,
+      );
+      expect(previewChipFor(THREAD, 'http://localhost:5173/')).toBeNull();
+    });
+
+    it('offers nothing for a live port that is not shared, rather than a dead button', () => {
+      emitWailsEvent(
+        'devserver:list',
+        list({ servers: [server(5173, { allowed: false, source: 'seen' })] }),
+        REMOTE_BACKEND_UUID,
+      );
+      expect(previewChipFor(THREAD, 'http://localhost:5173/')).toBeNull();
+    });
+
+    it('offers nothing on the owner’s own screen, where the loopback probe is the answer', () => {
+      emitWailsEvent('devserver:list', list());
+      expect(previewChipFor('thread-at-home', 'http://localhost:5173/')).toBeNull();
     });
   });
 

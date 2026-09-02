@@ -10,6 +10,15 @@ import {
   resetDevServerProbeForTest,
 } from '../../utils/devServerProbe';
 import type { CommandOutputMeta } from '../../types/models';
+import {
+  REMOTE_BACKEND_UUID,
+  resetStagedBackends,
+  stageBackend,
+} from '../../../test/helpers/backends';
+import { emitWailsEvent, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
+import { forgetThread, noteThread } from '../../transport/entityIndex';
+import { initDevServers, resetDevServersForTest } from '../../stores/devServers.svelte';
+import type { DevServerList } from '../../stores/devServers.svelte';
 
 // Some Svelte transitions call Element.prototype.animate; jsdom doesn't
 // implement it. Stub it so expand/collapse doesn't throw.
@@ -765,6 +774,128 @@ describe('<CommandOutput>', () => {
       await vi.advanceTimersByTimeAsync(DEV_SERVER_PROBE_RETRY_MS);
       expect(probe).toHaveBeenCalledTimes(2);
       expect(queryByTestId('dev-server-chip')).not.toBeNull();
+    });
+
+    // The row's thread is on another machine, so `localhost` here is not the
+    // port the command announced. The probe binding asks the PAGE's backend
+    // and therefore cannot answer for it; the machine's own list can, and
+    // does, for both halves of the question the probe was asking.
+    describe('when the command ran on another machine', () => {
+      const THREAD = 'thread-on-laptop';
+
+      function laptopPane() {
+        return {
+          paneId: 'pane-1',
+          threadId: THREAD,
+          expansionStateFor: () => ({
+            expanded: false, displayData: '', loading: false, error: '',
+            toggle() {}, sizeLabel: '', truncated: false,
+            loadedBytes: 0, totalBytes: 0,
+          }),
+          leaseItemExpansion: () => () => {},
+        } as unknown as import('../../stores/thread.svelte').ThreadPane;
+      }
+
+      function laptopFrame(overrides: Partial<DevServerList> = {}): DevServerList {
+        return {
+          servers: [{ port: 5173, allowed: true, source: 'attributed', listening: true }],
+          previewHost: 'laptop.tail.ts.net',
+          ...overrides,
+        };
+      }
+
+      beforeEach(() => {
+        resetWailsMocks();
+        resetDevServersForTest();
+        resetStagedBackends();
+        noteThread(THREAD, 'laptop');
+        stageBackend();
+        initDevServers();
+      });
+
+      afterEach(() => {
+        forgetThread(THREAD);
+        resetDevServersForTest();
+        resetStagedBackends();
+      });
+
+      it('never probes, and offers the chip once that machine says the port is live and shared', async () => {
+        const probe = setBindingMock('ProbeDevServerURL', vi.fn(async () => true));
+        const mint = setBindingMock(
+          'MintPreviewURL',
+          vi.fn(async () => 'https://laptop.tail.ts.net/preview/5173/app?t=1'),
+        );
+        const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+
+        const { queryByTestId } = render(CommandOutput, {
+          props: {
+            pane: laptopPane(),
+            item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
+            meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/app' }),
+          },
+        });
+
+        expect(queryByTestId('dev-server-chip')).toBeNull();
+        emitWailsEvent('devserver:list', laptopFrame(), REMOTE_BACKEND_UUID);
+
+        const chip = await waitFor(() => {
+          const found = queryByTestId('dev-server-chip');
+          expect(found).not.toBeNull();
+          return found as HTMLElement;
+        });
+        expect(chip.getAttribute('aria-label')).toBe('Open localhost:5173 on Laptop');
+        expect(probe).not.toHaveBeenCalled();
+
+        await fireEvent.click(chip);
+        await waitFor(() => expect(mint).toHaveBeenCalledWith(THREAD, 5173, '/app'));
+        await waitFor(() =>
+          expect(open).toHaveBeenCalledWith('https://laptop.tail.ts.net/preview/5173/app?t=1'),
+        );
+      });
+
+      it('offers nothing when that machine sees no listener on the port', async () => {
+        setBindingMock('ProbeDevServerURL', vi.fn(async () => true));
+        const { queryByTestId } = render(CommandOutput, {
+          props: {
+            pane: laptopPane(),
+            item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
+            meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' }),
+          },
+        });
+
+        emitWailsEvent(
+          'devserver:list',
+          laptopFrame({
+            servers: [{ port: 5173, allowed: true, source: 'allowed', listening: false }],
+          }),
+          REMOTE_BACKEND_UUID,
+        );
+
+        await waitFor(() => expect(queryByTestId('command-output-command')).not.toBeNull());
+        expect(queryByTestId('dev-server-chip')).toBeNull();
+      });
+
+      it('offers nothing when the port is live but not shared', async () => {
+        setBindingMock('ProbeDevServerURL', vi.fn(async () => true));
+        const { queryByTestId } = render(CommandOutput, {
+          props: {
+            pane: laptopPane(),
+            item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
+            meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' }),
+          },
+        });
+
+        emitWailsEvent(
+          'devserver:list',
+          laptopFrame({
+            servers: [{ port: 5173, allowed: false, source: 'seen', listening: true }],
+          }),
+          REMOTE_BACKEND_UUID,
+        );
+
+        await waitFor(() => expect(queryByTestId('command-output-command')).not.toBeNull());
+        expect(queryByTestId('dev-server-chip')).toBeNull();
+      });
     });
 
     it('stops retrying an unconfirmed candidate after the dead-probe budget', async () => {
