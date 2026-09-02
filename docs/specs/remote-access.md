@@ -1266,6 +1266,75 @@ pane host, DevTools, and site-data listing are not implemented
 `chromium` script that advertises a fake CDP server, never a real
 browser; a real launch is the manual `AO_HEADLESS_CHROMIUM_SMOKE=1`
 gate beside the provider smoke.
+
+**Wave 9 LANDED 2026-09-02 (1d48b49c..271b926d): the port gateway, the
+link and tool-row affordances, the headless Chromium engine.** Built as
+the section reads, with these calls made where it was silent or where
+the build corrected it. **Discovery** (`internal/devscan`): a listener
+is attributed by process group FIRST and the ancestor walk second
+(bounded at 64), never by command name; `DevServer` rows carry a
+`scheme`, because the probe accepts an https-only dev server and a
+proxy that then dialled cleartext was a listed preview that failed on
+its first request, so the scheme travels probe → row →
+`transport.PreviewTarget` → dial (loopback hop, verification skipped
+for the same reason the probe skips it; `Origin` is rewritten to
+`<scheme>://localhost:<port>`, not the constant above). Probes run
+concurrently (8 in flight, the per-scan cap taken from the ports
+sorted so a machine over the cap offers the same subset every tick),
+and a probe the scan deadline cut short is never memoized: a deadline
+is not a verdict. A hand-named port is ALWAYS `source: "allowed"`,
+even when a thread also owns it, or the settings screen would lose the
+persisted entry it offers to take back; it is probed for its scheme
+only and published whatever answers. The loop's signal is
+`EventBus.RemoteReceiverCount("devserver:list")` (an off-loopback
+connection whose scope filter admits the channel), not subscription.
+**Gateway** (`internal/transport/previewgateway.go`, `previewproxy.go`):
+the LAN source binds the LAN ADDRESS, never `0.0.0.0`, because the dev
+server holds the same port on loopback; a port the gateway could not
+bind is flipped to `allowed: false` with the gateway's own note BEFORE
+the list is published, so `MintPreviewURL` and the list agree by
+construction; a port whose scheme changed is rebuilt, an unchanged one
+keeps its listener (live HMR sockets survive the 3s reconcile).
+`network.previewPorts` is deliberately NOT in the `network.Settings`
+wire record: Settings → Network reads the `GetDevServers` rows, which
+are the only truth about what is served. `AllowPreviewPort` /
+`DisallowPreviewPort` answer with the set and take no step-up. The
+exact-port `OriginPatterns` fix and `pagecookie_contract_test.go` (an
+AST gate: every reader of the page cookie calls `OriginAllowed` in the
+same body, plus a behavioural check that the six cookie-reading routes
+404 a preview-shaped Origin) close the cookie leak structurally. One
+loopback dialer (`loopback.Dialer`) serves the probe and the proxy;
+`devserverprobe` keeps its own on purpose (it validates a URL it was
+handed). **Affordances**: the markdown rewrite is an inline marked
+extension AHEAD of the path-link one, both renderers spelling the
+anchor from `markdown/render/previewLink.ts`; the delegate swallows
+the click in EVERY state (following it would load whatever answers on
+that port on the reader's own machine), middle-click included, and only
+`open` mints. The rewrite arms only after a machine's first list frame,
+so a link is plain rather than wrongly inert before the machine has
+spoken; a pushed frame outranks a read in flight. One deviation from
+"mod+click ... when the page holds `host`": the companion browser is
+the THREAD's machine's engine, so the gesture is gated on
+`threadActsHere` (thread on the page's own machine AND `host` held);
+with `host` alone it would mint a page in an engine this window cannot
+paint. `previewRouted` is that predicate's negation, stated once in
+`attachedBackends.svelte.ts`. Settings → Network lists attributed ports
+as a sentence ("Shared while vite runs it") with no control, because
+`DisallowPreviewPort` edits only the persisted set. **Headless engine**
+(`internal/browser`): as specified; `no-sandbox` is asserted PRESENT
+and false in the launch flags, `browserChromiumPath` is a host-tier
+setting with a Settings input, and the hello advertises `browser` only
+when the engine is available. **Only live use proves**: a real tsnet
+`ListenTLSOn` on a joined node, a real Vite HMR session through the
+proxy, a real Chromium launched on a serve host (the manual
+`AO_HEADLESS_CHROMIUM_SMOKE=1` gate), a LAN bind reached from a second
+physical machine, a revoked device's open preview tab going to the
+"session ended" page mid-session, and a backend restart ending every
+grant. No two-backend Playwright rig exists, so the "thread on an
+attached machine" leg of the link rewrite and the mod+click fallback
+are unit-tested (`devServers.svelte.test.ts`, `externalLinks.test.ts`)
+rather than driven end to end.
+
 ### Anywhere access
 
 tsnet embedded (BSD-3, userspace, works in WSL2 without TUN): the
