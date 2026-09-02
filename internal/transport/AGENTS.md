@@ -312,7 +312,7 @@ It carries `protocolVersion`, `capabilities`, `backendId`,
   means; adding a frame type, field, or channel is additive and does not
   move it. Additive-only is what makes the swap window — an old bundle
   live against a just-updated backend — safe.
-- **`serverCapabilities` is frozen by a test**, and the frozen list spells
+- **Both capability sets are frozen by a test**, and the frozen lists spell
   each name as a literal so a rename cannot slip through it. A name is
   stable forever once shipped, because a client on an older bundle may
   still ask about it; retiring one means the backend stops advertising
@@ -324,6 +324,17 @@ It carries `protocolVersion`, `capabilities`, `backendId`,
   nothing reads it yet. The reader can come later; the flag cannot.
 - `capabilities` serializes as `[]`, never `null`, so "advertises
   nothing" stays distinguishable from "too old to send this frame".
+- **One flag varies by DEPLOYMENT, and none varies by caller.**
+  `CapabilityBrowser` is advertised only when the backend actually has a
+  browser engine (`Config.BrowserAvailable`, resolved per accept because
+  the Manager picks its engine during the App's startup): a serve host
+  advertises it only when a Chromium is installed on the machine, and a
+  `--connect` backend never does. That is still a property of the
+  BACKEND, which is the line that matters — anything that varies by who
+  is asking is authorization and belongs in the scope table. The
+  conditional set is a second package-level slice
+  (`serverCapabilitiesWithBrowser`), so an accept picks one rather than
+  allocating, and the frozen prefix's bytes are identical either way.
 - **`backendName` is display, never identity.** It is the host's name
   (`internal/appidentity.HostDisplayName`, the same string the pairing
   payload shows a device deciding whether to trust an offer) and it exists

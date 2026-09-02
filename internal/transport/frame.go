@@ -3,6 +3,7 @@ package transport
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 )
 
 // FrameType discriminates the wire frames. Encoded as the "type" field
@@ -68,6 +69,29 @@ var serverCapabilities = []string{
 	CapabilityPasskeys,
 }
 
+// serverCapabilitiesWithBrowser is that list plus the one flag whose
+// answer is not the same on every deployment. Built once, at init, so an
+// accept PICKS a slice instead of allocating one, and appended at the end
+// so the frozen prefix's bytes are byte-identical either way.
+var serverCapabilitiesWithBrowser = append(slices.Clone(serverCapabilities), CapabilityBrowser)
+
+// advertisedCapabilities answers the set one connection is told about.
+//
+// The list above is still the rule — a capability names a behavior every
+// connection to THIS backend shares, never who is asking. CapabilityBrowser
+// is the first entry whose answer is a property of the deployment rather
+// than of the build (a serve host with no Chromium installed does not have
+// the behavior at all), so it is resolved from the backend once per accept
+// and never from the caller.
+//
+// A nil hook means the same thing false does: no browser tools here.
+func advertisedCapabilities(browserAvailable func() bool) []string {
+	if browserAvailable != nil && browserAvailable() {
+		return serverCapabilitiesWithBrowser
+	}
+	return serverCapabilities
+}
+
 // CapabilityRemoteNotifications says this backend delivers the
 // notification channels (`notification:send`, `notification:activated`)
 // to non-loopback connections. Before it, both were loopback-only, so an
@@ -93,6 +117,23 @@ const CapabilityRemoteNotifications = "notifications.remote"
 // answers (Bootstrap.PasskeysAvailable), because a backend with no
 // canonical domain has nothing to be a relying party for.
 const CapabilityPasskeys = "passkeys"
+
+// CapabilityBrowser says this backend can drive a web browser for an
+// agent: the browser MCP server is offered to threads, and the browser
+// surfaces have something behind them.
+//
+// It is the one flag that is not settled by the build. A windowed boot
+// has an engine because it has a window to host views in; a serve host
+// has one only if a Chromium is installed on the machine, and nothing is
+// ever downloaded to change that (docs/specs/remote-access.md §7). A
+// `--connect` backend has none at all. Without the flag a client cannot
+// tell "browser tools turned off in Settings" from "this machine has no
+// browser", and only the second one is worth telling somebody how to fix.
+//
+// It says the tools CAN exist here. Whether they are switched on is the
+// owner's setting, and whether a given thread may use one is
+// authorization; neither is answered by a hello flag.
+const CapabilityBrowser = "browser"
 
 // helloFrame is the first frame written on every upgraded connection.
 //

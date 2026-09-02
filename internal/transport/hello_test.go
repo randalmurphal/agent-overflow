@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -132,19 +133,65 @@ func TestServer_HelloOmitsBackendIDWhenIdentityIsUnknown(t *testing.T) {
 // from an older bundle, so the set is a compatibility contract. Growing
 // it is fine and additive; changing what a shipped name MEANS is not,
 // and this list is where that decision has to be written down.
+//
+// Both spellings are pinned. The browser flag is conditional, so the
+// unconditional list must keep NOT carrying it — a deployment fact that
+// leaked into the always-advertised set would tell every windowless
+// backend it can drive a browser.
 func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 	want := []string{
 		"notifications.remote",
 		"passkeys",
 	}
-	if len(serverCapabilities) != len(want) {
+	assertCapabilities(t, serverCapabilities, want)
+	assertCapabilities(t, serverCapabilitiesWithBrowser, append(append([]string{}, want...), "browser"))
+}
+
+func assertCapabilities(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
 		t.Fatalf("advertised capabilities = %v, want %v — update this list and the name's doc comment in the same change",
-			serverCapabilities, want)
+			got, want)
 	}
 	for i, name := range want {
-		if serverCapabilities[i] != name {
-			t.Fatalf("capability %d = %q, want %q", i, serverCapabilities[i], name)
+		if got[i] != name {
+			t.Fatalf("capability %d = %q, want %q", i, got[i], name)
 		}
+	}
+}
+
+// The browser flag is advertised if and only if this backend has an
+// engine. Nothing about the CALLER moves it: a serve host with no
+// Chromium installed has no browser tools for anyone, and a client told
+// otherwise would offer a browser surface that can never work
+// (docs/specs/remote-access.md §7).
+func TestServer_HelloAdvertisesBrowserOnlyWhenTheEngineExists(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		available func() bool
+		want      bool
+	}{
+		{name: "no hook wired", available: nil, want: false},
+		{name: "no engine on this machine", available: func() bool { return false }, want: false},
+		{name: "engine available", available: func() bool { return true }, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newServerFixtureWith(t, func(cfg *Config) { cfg.BrowserAvailable = tc.available })
+			var hello helloFrame
+			if err := json.Unmarshal(readFirstFrame(t, f.dial(t)), &hello); err != nil {
+				t.Fatalf("decode hello: %v", err)
+			}
+			if got := slices.Contains(hello.Capabilities, CapabilityBrowser); got != tc.want {
+				t.Fatalf("capabilities = %v, browser advertised = %v, want %v", hello.Capabilities, got, tc.want)
+			}
+			// The rest of the set is unconditional and must be unaffected
+			// either way: this flag is additive, not a replacement.
+			for _, always := range []string{CapabilityRemoteNotifications, CapabilityPasskeys} {
+				if !slices.Contains(hello.Capabilities, always) {
+					t.Fatalf("capabilities = %v, missing %q", hello.Capabilities, always)
+				}
+			}
+		})
 	}
 }
 

@@ -269,6 +269,15 @@ type Config struct {
 	// is the behavior before passkeys.
 	StepUpProof func(sessionID, token string) bool
 
+	// BrowserAvailable reports whether this backend has a browser engine
+	// at all, which is what CapabilityBrowser advertises. A getter for the
+	// reason BackendIdentity is one: the Manager chooses its engine during
+	// the App's startup, after New().
+	//
+	// Optional — nil means the same as false, which is the answer for every
+	// boot that has no browser and every test that does not wire one.
+	BrowserAvailable func() bool
+
 	// PageSessionCredential returns the session credential to plant on
 	// the page as an HttpOnly cookie during the bootstrap exchange, or ""
 	// when there is none.
@@ -1982,7 +1991,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		sessionRecheck:    s.cfg.SessionRecheckInterval,
 		maxLifetime:       s.cfg.MaxRemoteConnLifetime,
 		hello: helloFrame{
-			Capabilities: serverCapabilities,
+			// Resolved per accept, not at boot: the browser Manager picks
+			// its engine during the App's startup, which runs after this
+			// Config is built.
+			Capabilities: advertisedCapabilities(s.cfg.BrowserAvailable),
 			BackendID:    backendID,
 			BackendName:  s.cfg.BackendName,
 			// Sampled per accept: the field's whole purpose is letting a
