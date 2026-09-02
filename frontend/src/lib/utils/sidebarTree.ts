@@ -436,11 +436,12 @@ export function toggleSidebarTreeThreadExpansion(
 }
 
 /**
- * Slice a sorted top-level node list into a preview window. If
- * the active thread sits outside that window we surface it alongside
- * (mirrors t3-code: 6 + active = up to 7 rows). Pinned threads always
- * stay visible — they don't consume preview slots; the limit only
- * truncates the unpinned tail.
+ * Slice a sorted top-level node list into a preview window. A thread that
+ * is open in a pane never hides behind the cut: any that land in the tail
+ * float back into view after the head, in tail order (t3-code's "6 +
+ * active" generalised to every pane, since the focused pane's thread is
+ * one of them). Pinned threads always stay visible — they don't consume
+ * preview slots; the limit only truncates the unpinned tail.
  */
 export interface PreviewThreadsResult {
   visibleNodes: SidebarTreeNode[];
@@ -449,7 +450,8 @@ export interface PreviewThreadsResult {
 
 export function previewSidebarThreads(input: {
   nodes: readonly SidebarTreeNode[];
-  activeThreadId: string | null;
+  /** Threads mounted in any pane; the cut never hides these. */
+  openThreadIds: ReadonlySet<string>;
   limit?: number;
 }): PreviewThreadsResult {
   const limit = input.limit ?? THREAD_PREVIEW_LIMIT;
@@ -473,37 +475,30 @@ export function previewSidebarThreads(input: {
     return { visibleNodes: [...drafts, ...pinned, ...head], hiddenNodes: [] };
   }
 
-  // Active thread might already be in drafts/pinned/head; if so, hide the tail.
-  const activeId = input.activeThreadId;
-  const isActive = (n: SidebarTreeNode) => n.thread.id === activeId;
-  const activeAboveTail = !activeId
-    ? false
-    : drafts.some(isActive) || pinned.some(isActive) || head.some(isActive);
-  if (!activeId || activeAboveTail) {
-    return { visibleNodes: [...drafts, ...pinned, ...head], hiddenNodes: tail };
-  }
-
-  // Active thread sits in the tail — float it back to visibility but
-  // keep the rest of the tail hidden.
-  const activeNode = tail.find(isActive);
-  if (!activeNode) {
-    return { visibleNodes: [...drafts, ...pinned, ...head], hiddenNodes: tail };
+  // Open threads in the tail float back into view, in tail order; the rest
+  // of the tail stays hidden. An open thread already in drafts / pinned /
+  // head is visible as-is.
+  const floated: SidebarTreeNode[] = [];
+  const hidden: SidebarTreeNode[] = [];
+  for (const node of tail) {
+    if (input.openThreadIds.has(node.thread.id)) floated.push(node);
+    else hidden.push(node);
   }
   return {
-    visibleNodes: [...drafts, ...pinned, ...head, activeNode],
-    hiddenNodes: tail.filter((n) => n.thread.id !== activeId),
+    visibleNodes: [...drafts, ...pinned, ...head, ...floated],
+    hiddenNodes: hidden,
   };
 }
 
 export function nextSidebarThreadRevealLimit(input: {
   nodes: readonly SidebarTreeNode[];
-  activeThreadId: string | null;
+  openThreadIds: ReadonlySet<string>;
   currentLimit: number;
   revealCount: number;
 }): number {
   const currentPreview = previewSidebarThreads({
     nodes: input.nodes,
-    activeThreadId: input.activeThreadId,
+    openThreadIds: input.openThreadIds,
     limit: input.currentLimit,
   });
   const targetHiddenCount = Math.max(0, currentPreview.hiddenNodes.length - input.revealCount);
@@ -514,7 +509,7 @@ export function nextSidebarThreadRevealLimit(input: {
     nextLimit += 1;
     nextPreview = previewSidebarThreads({
       nodes: input.nodes,
-      activeThreadId: input.activeThreadId,
+      openThreadIds: input.openThreadIds,
       limit: nextLimit,
     });
   }

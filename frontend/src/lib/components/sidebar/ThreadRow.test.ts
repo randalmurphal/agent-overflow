@@ -3,7 +3,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadRow from './ThreadRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
+import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { refreshThreads } from '../../stores/threads.svelte';
@@ -90,6 +90,49 @@ describe('<ThreadRow> archive action', () => {
     const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread, pane } });
     expect(getByTestId('thread-row-archive')).toBeInTheDocument();
     expect(queryByTestId('thread-row-delete')).toBeNull();
+  });
+});
+
+describe('<ThreadRow> open / focused marker', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+    resetKeybindingsStore();
+    resetKeyboardModifiersForTest();
+  });
+
+  it('marks open when mounted in a non-focused pane, open + focused in the focused one', async () => {
+    const thread = makeThread();
+    const focused = createThreadPane();
+    const other = createThreadPane();
+    registerPaneForTest('main', focused);
+    registerPaneForTest('right', other);
+    other.replaceThread(thread);
+
+    // Row rendered against the FOCUSED pane (what the sidebar passes), while
+    // the thread lives in the other one.
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane: focused } });
+    const shell = getByTestId('thread-row-shell');
+    expect(shell.dataset.open).toBe('true');
+    expect(shell.dataset.focused).toBeUndefined();
+    expect(getByTestId('thread-row').classList.contains('text-fg')).toBe(true);
+
+    // Transition: the thread moves into the focused pane.
+    other.replaceThread(makeThread({ id: 'elsewhere' }));
+    focused.replaceThread(thread);
+    await tick();
+    expect(shell.dataset.open).toBe('true');
+    expect(shell.dataset.focused).toBe('true');
+
+    // Transition: closed everywhere.
+    focused.replaceThread(makeThread({ id: 'another' }));
+    await tick();
+    expect(shell.dataset.open).toBeUndefined();
+    expect(shell.dataset.focused).toBeUndefined();
+    expect(getByTestId('thread-row').classList.contains('text-fg-muted')).toBe(true);
   });
 });
 

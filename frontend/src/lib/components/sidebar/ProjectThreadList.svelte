@@ -32,6 +32,7 @@
     getEffectiveThreadStatus,
   } from '../../stores/threadStatuses.svelte';
   import { getThreadLiveActivityAt } from '../../stores/threads.svelte';
+  import { openThreadIds } from '../../stores/panes.svelte';
   import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import Plus from '@lucide/svelte/icons/plus';
   import Icon from '../primitives/Icon.svelte';
@@ -73,6 +74,9 @@
     }),
   );
 
+  // Threads mounted in any pane never hide behind the cut. Re-minted only
+  // when a pane opens, closes, or swaps thread.
+  let openIds = $derived(openThreadIds());
   let listExpanded = $derived(isThreadListExpanded(projectId));
   let visibleLimit = $derived(getThreadListVisibleLimit(projectId));
 
@@ -81,7 +85,7 @@
   let preview = $derived.by(() => {
     return previewSidebarThreads({
       nodes: tree,
-      activeThreadId: pane?.threadId ?? null,
+      openThreadIds: openIds,
       limit: visibleLimit,
     });
   });
@@ -140,7 +144,7 @@
     e.stopPropagation();
     const nextLimit = nextSidebarThreadRevealLimit({
       nodes: tree,
-      activeThreadId: pane?.threadId ?? null,
+      openThreadIds: openIds,
       currentLimit: visibleLimit,
       revealCount: THREAD_REVEAL_INCREMENT,
     });

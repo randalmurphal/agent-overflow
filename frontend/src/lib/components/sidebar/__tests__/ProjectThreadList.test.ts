@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import ProjectThreadList from '../ProjectThreadList.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
+import { registerPaneForTest, resetPanesForTest } from '../../../stores/panes.svelte';
 import type { Thread } from '../../../types/models';
 import { resetSidebarForTest } from '../../../stores/sidebar.svelte';
 import { replaceAllThreads, touchThreadActivity } from '../../../stores/threads.svelte';
@@ -26,6 +27,7 @@ function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
 
 describe('<ProjectThreadList>', () => {
   beforeEach(() => {
+    resetPanesForTest();
     resetSidebarForTest();
     resetThreadStatuses();
   });
@@ -187,6 +189,7 @@ describe('<ProjectThreadList>', () => {
 
   it('reveals 20 hidden threads when the active thread is already floated into view', async () => {
     const pane = createThreadPane();
+    registerPaneForTest('main', pane);
     const threads = Array.from({ length: 31 }, (_, i) => mkThread(`t${i}`, {
       title: `Thread ${i}`,
       updatedAt: 100 - i,
@@ -209,6 +212,44 @@ describe('<ProjectThreadList>', () => {
     await fireEvent.click(firstShowMore);
     expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(27);
     expect(getByTestId('project-thread-list-show-more')).toHaveTextContent('Show 4 More');
+  });
+
+  it('floats a thread open in a NON-focused pane above the cut, marked open but not focused', async () => {
+    // The sidebar is handed the focused pane only; a thread mounted in any
+    // other pane must still escape "Show N More", and its row must carry
+    // the open marker without the focused fill.
+    const focused = createThreadPane();
+    const other = createThreadPane();
+    registerPaneForTest('main', focused);
+    registerPaneForTest('right', other);
+    const threads = Array.from({ length: 31 }, (_, i) => mkThread(`t${i}`, {
+      title: `Thread ${i}`,
+      updatedAt: 100 - i,
+    }));
+    focused.replaceThread(threads[0]);
+    other.replaceThread(threads[20]);
+
+    const { getByTestId } = render(ProjectThreadList, {
+      props: { projectId: 'p1', threads, pane: focused },
+    });
+
+    const list = getByTestId('project-thread-list');
+    const rows = Array.from(list.querySelectorAll<HTMLElement>('[data-sidebar-thread-id]'));
+    expect(rows.map((row) => row.dataset.sidebarThreadId)).toEqual([
+      't0', 't1', 't2', 't3', 't4', 't5', 't20',
+    ]);
+    expect(getByTestId('project-thread-list-show-more')).toHaveTextContent('Show 20 More (24)');
+
+    const shells = Array.from(list.querySelectorAll<HTMLElement>('[data-testid="thread-row-shell"]'));
+    const shellFor = (id: string) => shells.find(
+      (shell) => shell.querySelector<HTMLElement>('[data-sidebar-thread-id]')?.dataset.sidebarThreadId === id,
+    )!;
+    expect(shellFor('t0').dataset.open).toBe('true');
+    expect(shellFor('t0').dataset.focused).toBe('true');
+    expect(shellFor('t20').dataset.open).toBe('true');
+    expect(shellFor('t20').dataset.focused).toBeUndefined();
+    expect(shellFor('t1').dataset.open).toBeUndefined();
+    expect(shellFor('t1').dataset.focused).toBeUndefined();
   });
 
   it('a live-activity beat does not reconcile the FLIP each-block; a real reorder does', async () => {

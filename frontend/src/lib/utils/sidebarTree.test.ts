@@ -485,7 +485,7 @@ describe('previewSidebarThreads', () => {
 
   it('returns all nodes when below the limit', () => {
     const tree = buildAt([mkThread('a'), mkThread('b'), mkThread('c')]);
-    const result = previewSidebarThreads({ nodes: tree, activeThreadId: null });
+    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set() });
     expect(result.visibleNodes).toHaveLength(3);
     expect(result.hiddenNodes).toHaveLength(0);
   });
@@ -494,7 +494,7 @@ describe('previewSidebarThreads', () => {
     const tree = buildAt(
       Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
     );
-    const result = previewSidebarThreads({ nodes: tree, activeThreadId: null });
+    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set() });
     expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT);
     expect(result.hiddenNodes).toHaveLength(6);
   });
@@ -503,7 +503,7 @@ describe('previewSidebarThreads', () => {
     const tree = buildAt(
       Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
     );
-    const result = previewSidebarThreads({ nodes: tree, activeThreadId: 't11' });
+    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(['t11']) });
     expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 1);
     expect(result.visibleNodes.at(-1)?.thread.id).toBe('t11');
     expect(result.hiddenNodes.map((n) => n.thread.id)).not.toContain('t11');
@@ -513,16 +513,28 @@ describe('previewSidebarThreads', () => {
     const tree = buildAt(
       Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
     );
-    const result = previewSidebarThreads({ nodes: tree, activeThreadId: 't1' });
+    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(['t1']) });
     expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT);
     expect(result.visibleNodes.filter((n) => n.thread.id === 't1')).toHaveLength(1);
+  });
+
+  it('floats every open thread from the tail, in tail order, below the head', () => {
+    const tree = buildAt(
+      Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
+    );
+    // Set insertion order is deliberately NOT tail order.
+    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(['t11', 't2', 't8']) });
+    expect(result.visibleNodes.map((n) => n.thread.id)).toEqual([
+      't0', 't1', 't2', 't3', 't4', 't5', 't8', 't11',
+    ]);
+    expect(result.hiddenNodes.map((n) => n.thread.id)).toEqual(['t6', 't7', 't9', 't10']);
   });
 
   it('keeps pinned threads visible without consuming preview slots', () => {
     const pinned = mkThread('pinned', { pinnedAt: 1000, updatedAt: 1 });
     const rest = Array.from({ length: 9 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
     const tree = buildAt([pinned, ...rest]);
-    const result = previewSidebarThreads({ nodes: tree, activeThreadId: null });
+    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set() });
     expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 1);
     expect(result.visibleNodes[0].thread.id).toBe('pinned');
     expect(result.hiddenNodes).toHaveLength(3);
@@ -533,7 +545,7 @@ describe('previewSidebarThreads', () => {
     const back = mkThread('back', { pinnedAt: 900, pinGroup: 1, updatedAt: 1 });
     const rest = Array.from({ length: 9 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
     const tree = buildAt([front, back, ...rest]);
-    const result = previewSidebarThreads({ nodes: tree, activeThreadId: null });
+    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set() });
 
     expect(result.visibleNodes.slice(0, 2).map((node) => node.thread.id)).toEqual(['front', 'back']);
     expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 2);
@@ -545,7 +557,7 @@ describe('previewSidebarThreads', () => {
     const pinned = mkThread('pinned', { pinnedAt: 1000, updatedAt: 1 });
     const rest = Array.from({ length: 9 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
     const tree = buildAt([draft, pinned, ...rest]);
-    const result = previewSidebarThreads({ nodes: tree, activeThreadId: null });
+    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set() });
     // Drafts AND pinned ride above the head; the hidden tail shrinks
     // by the same amount whether the extras are drafts or pinned.
     expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 2);
@@ -558,7 +570,7 @@ describe('previewSidebarThreads', () => {
     const draft = mkThread('draft', { isDraft: true, createdAt: 5000 });
     const rest = Array.from({ length: 9 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i }));
     const tree = buildAt([draft, ...rest]);
-    const result = previewSidebarThreads({ nodes: tree, activeThreadId: 'draft' });
+    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(['draft']) });
     const ids = result.visibleNodes.map((n) => n.thread.id);
     expect(ids.filter((id) => id === 'draft')).toHaveLength(1);
     expect(result.hiddenNodes).toHaveLength(3);
@@ -568,7 +580,7 @@ describe('previewSidebarThreads', () => {
     const tree = buildAt(
       Array.from({ length: 30 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
     );
-    const result = previewSidebarThreads({ nodes: tree, activeThreadId: null, limit: 26 });
+    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(), limit: 26 });
     expect(result.visibleNodes).toHaveLength(26);
     expect(result.hiddenNodes).toHaveLength(4);
   });
@@ -585,17 +597,17 @@ describe('nextSidebarThreadRevealLimit', () => {
     );
     const current = previewSidebarThreads({
       nodes: tree,
-      activeThreadId: 't10',
+      openThreadIds: new Set(['t10']),
       limit: THREAD_PREVIEW_LIMIT,
     });
 
     const nextLimit = nextSidebarThreadRevealLimit({
       nodes: tree,
-      activeThreadId: 't10',
+      openThreadIds: new Set(['t10']),
       currentLimit: THREAD_PREVIEW_LIMIT,
       revealCount: 20,
     });
-    const next = previewSidebarThreads({ nodes: tree, activeThreadId: 't10', limit: nextLimit });
+    const next = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(['t10']), limit: nextLimit });
 
     expect(current.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 1);
     expect(current.hiddenNodes).toHaveLength(24);

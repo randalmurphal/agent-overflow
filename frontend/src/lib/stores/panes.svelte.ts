@@ -245,6 +245,19 @@ export function isThreadVisible(threadId: string): boolean {
 }
 
 /**
+ * Ids of every thread mounted in some pane. Reactive over the registry and
+ * each pane's threadId; callers that read it inside a $derived re-run only
+ * when a pane opens, closes, or swaps thread.
+ */
+export function openThreadIds(): Set<string> {
+  const ids = new Set<string>();
+  for (const pane of panes.values()) {
+    if (pane.threadId) ids.add(pane.threadId);
+  }
+  return ids;
+}
+
+/**
  * Every pane currently hosting a draft placeholder for `projectId`.
  *
  * A placeholder has no thread row, so nothing the backend broadcasts can

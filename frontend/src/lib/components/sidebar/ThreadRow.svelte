@@ -9,7 +9,12 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById, getThreadLiveActivityAt } from '../../stores/threads.svelte';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
-  import { openThreadFromNavigation, openThreadInNewPane, openThreadInPane } from '../../stores/panes.svelte';
+  import {
+    findPaneShowingThread,
+    openThreadFromNavigation,
+    openThreadInNewPane,
+    openThreadInPane,
+  } from '../../stores/panes.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import {
     getEffectiveThreadStatus,
@@ -83,7 +88,10 @@
     displayStatus?: ThreadStatusPill | null;
   } = $props();
 
+  // isActive: this thread is what the FOCUSED pane shows (the sidebar's
+  // `pane` prop). isOpen: it is mounted in some pane, focused or not.
   let isActive = $derived(pane?.threadId === thread.id);
+  let isOpen = $derived(findPaneShowingThread(thread.id) !== null);
   let isCursorTarget = $derived(getSidebarCursorThreadId() === thread.id);
   // Terminals aren't archivable — the row offers Delete (X) instead of
   // Archive, and the leading glyph is the terminal icon.
@@ -323,12 +331,23 @@
   let worktreeRightPaddingPx = $derived(52);
 </script>
 
+<!--
+  Open-thread marker: a 2px accent bar on the shell's left edge (left of
+  the pin gutter) for every thread mounted in some pane; the focused
+  pane's thread adds a fill on top. Both derive from the theme's accent
+  token. The keyboard cursor keeps its own inset ring, so the two never
+  share a channel.
+-->
 <div
-  class="group/thread-item rounded-[var(--radius-field)] transition-colors
-    {selected ? 'bg-accent/15' : isActive ? 'bg-accent/10' : 'hover:bg-surface-2/30'}
+  class="group/thread-item relative rounded-[var(--radius-field)] transition-colors
+    {selected ? 'bg-accent/15' : isActive ? 'bg-accent/20' : 'hover:bg-surface-2/30'}
+    {isOpen ? 'before:absolute before:left-0 before:inset-y-1 before:w-0.5 before:rounded-full before:bg-accent' : ''}
+    {isOpen && !isActive ? 'before:opacity-70' : ''}
     {isCursorTarget ? 'ring-1 ring-accent/70 ring-inset' : ''}
     {pill?.glowClass ?? ''}"
   data-testid="thread-row-shell"
+  data-open={isOpen || null}
+  data-focused={isActive || null}
   data-cursor-target={isCursorTarget || null}
 >
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -344,7 +363,7 @@
     draggable={!editing}
     aria-pressed={selected}
     class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
-      {selected || isActive ? 'text-fg' : 'text-fg-muted group-hover/thread-item:text-fg'}"
+      {selected || isOpen ? 'text-fg' : 'text-fg-muted group-hover/thread-item:text-fg'}"
     style="padding-left: {rowPaddingLeftPx}px"
     data-testid="thread-row"
     data-sidebar-thread-id={thread.id}
