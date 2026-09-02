@@ -116,8 +116,26 @@ function patch(key: BackendKey, changes: Partial<MachineDevServers>): void {
   machines.set(key, { ...untrack(() => machines.get(key)), ...changes });
 }
 
-function applyList(key: BackendKey, list: DevServerList): void {
-  patch(key, { list, signature: signatureOf(list), loadError: '', loading: false });
+function listChanges(list: DevServerList): Partial<MachineDevServers> {
+  return { list, signature: signatureOf(list), loadError: '' };
+}
+
+/**
+ * Count of PUSHED frames applied to one machine, which a read in flight
+ * snapshots so it can tell whether its answer is still the newest thing
+ * known about that machine. Deliberately not a field on the box: it is a
+ * concurrency detail, and a render has no reason to wake for it.
+ */
+const framesApplied = new Map<BackendKey, number>();
+
+function framesSeen(key: BackendKey): number {
+  return framesApplied.get(key) ?? 0;
+}
+
+/** Apply a pushed `devserver:list` frame. */
+function applyFrame(key: BackendKey, list: DevServerList): void {
+  framesApplied.set(key, framesSeen(key) + 1);
+  patch(key, listChanges(list));
 }
 
 /** One machine's dev-server state. Reactive on that machine's box alone. */
@@ -312,10 +330,15 @@ function previewRewriteKeyFrom(
 export async function loadDevServers(key: BackendKey): Promise<void> {
   if (!hasScope('preview:open', key)) return;
   if (untrack(() => machines.get(key).loading)) return;
+  // The machine pushes frames on its own clock, so one can land while this
+  // read is in flight — and it is the newer of the two. Dropping the stale
+  // answer costs a comparison; keeping it would show a list the machine has
+  // already moved on from until the next tick corrected it.
+  const seen = framesSeen(key);
   patch(key, { loading: true });
   try {
     const list = await withBackendTarget(key, () => GetDevServers());
-    applyList(key, list);
+    patch(key, framesSeen(key) === seen ? { ...listChanges(list), loading: false } : { loading: false });
   } catch (err) {
     patch(key, { loading: false });
     if (isScopeRefusal(err) || isMethodUnavailableError(err)) return;
@@ -429,7 +452,7 @@ export function initDevServers(): () => void {
   installPreviewLinkActions({ open: openPreview, allow: allowPreviewPort });
   const cancels = [
     wailsEventOn<DevServerList>('devserver:list', (list, origin) => {
-      applyList(backendKeyForOrigin(origin.backendId), list);
+      applyFrame(backendKeyForOrigin(origin.backendId), list);
     }),
     onBackendHelloChange((key, hello) => {
       if (hello !== null) {
@@ -440,7 +463,9 @@ export function initDevServers(): () => void {
       // second forgets: a machine whose socket is re-dialing still has the
       // same dev servers, and blanking the list would turn every live
       // preview link inert for the length of the outage.
-      if (!registryBackends().some((b) => b.id === key)) machines.drop(key);
+      if (registryBackends().some((b) => b.id === key)) return;
+      machines.drop(key);
+      framesApplied.delete(key);
     }),
   ];
   cancel = () => {
@@ -459,4 +484,5 @@ export function stopDevServers(): void {
 export function resetDevServersForTest(): void {
   stopDevServers();
   machines.reset();
+  framesApplied.clear();
 }

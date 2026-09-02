@@ -25,17 +25,6 @@ function frame(ports: number[], previewHost = 'desk.tail.ts.net'): DevServerList
   };
 }
 
-// The pane's own read resolves a microtask after mount, so a pushed frame
-// stated before it lands would be overwritten by the answer already in
-// flight. Every case that pushes one mounts through here first.
-async function mounted(initial: DevServerList = frame([])) {
-  const read = setBindingMock('GetDevServers', vi.fn(async () => initial));
-  const view = render(NetworkPreviewPorts);
-  await waitFor(() => expect(read).toHaveBeenCalled());
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  return view;
-}
-
 describe('<NetworkPreviewPorts>', () => {
   beforeEach(() => {
     resetBindingMocks();
@@ -70,7 +59,7 @@ describe('<NetworkPreviewPorts>', () => {
 
   it('renders a row per shared port, in the order the machine sent them', async () => {
     initDevServers();
-    const { getAllByTestId } = await mounted();
+    const { getAllByTestId } = render(NetworkPreviewPorts);
     emitWailsEvent('devserver:list', frame([5173, 3000]));
 
     await waitFor(() => expect(getAllByTestId('preview-port-row')).toHaveLength(2));
@@ -83,7 +72,7 @@ describe('<NetworkPreviewPorts>', () => {
   it('shares a typed port and clears the field, leaving the list to the next frame', async () => {
     initDevServers();
     const allow = setBindingMock('AllowPreviewPort', vi.fn(async () => undefined));
-    const { getByTestId, queryByTestId } = await mounted();
+    const { getByTestId, queryByTestId } = render(NetworkPreviewPorts);
 
     const input = getByTestId('preview-port-input') as HTMLInputElement;
     await fireEvent.input(input, { target: { value: '5173' } });
@@ -100,7 +89,7 @@ describe('<NetworkPreviewPorts>', () => {
   it('stops sharing a port from its own row', async () => {
     initDevServers();
     const disallow = setBindingMock('DisallowPreviewPort', vi.fn(async () => undefined));
-    const { getByTestId } = await mounted();
+    const { getByTestId } = render(NetworkPreviewPorts);
     emitWailsEvent('devserver:list', frame([5173]));
 
     await waitFor(() => expect(getByTestId('preview-port-row')).toBeTruthy());
@@ -124,7 +113,7 @@ describe('<NetworkPreviewPorts>', () => {
 
   it('refuses a port that is already shared, rather than calling to no effect', async () => {
     initDevServers();
-    const { getByTestId } = await mounted();
+    const { getByTestId } = render(NetworkPreviewPorts);
     emitWailsEvent('devserver:list', frame([5173]));
 
     await fireEvent.input(getByTestId('preview-port-input'), { target: { value: '5173' } });
@@ -138,7 +127,7 @@ describe('<NetworkPreviewPorts>', () => {
 
   it('says when the machine has no address to serve any of them on', async () => {
     initDevServers();
-    const { getByTestId, queryByTestId } = await mounted();
+    const { getByTestId, queryByTestId } = render(NetworkPreviewPorts);
 
     emitWailsEvent('devserver:list', frame([5173], ''));
     await waitFor(() => expect(getByTestId('preview-ports-no-address')).toBeTruthy());
@@ -152,7 +141,7 @@ describe('<NetworkPreviewPorts>', () => {
     setBindingMock('AllowPreviewPort', async () => {
       throw new Error('port already in use');
     });
-    const { getByTestId } = await mounted();
+    const { getByTestId } = render(NetworkPreviewPorts);
 
     await fireEvent.input(getByTestId('preview-port-input'), { target: { value: '5173' } });
     await fireEvent.click(getByTestId('preview-port-add'));

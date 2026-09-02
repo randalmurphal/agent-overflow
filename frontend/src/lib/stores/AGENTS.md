@@ -264,6 +264,15 @@ stops waking readers.
   reason `patch` untracks its read of the box it is about to write — a
   passive load is called from a mounted surface, and a tracked
   read-then-write makes that surface a dependent of its own write.
+
+  The passive read and the pushed frame race, and the frame always wins:
+  the machine pushes on its own clock, so one that lands while a read is
+  in flight is the newer of two facts about the same list. `loadDevServers`
+  snapshots a per-machine count of frames applied, and drops its own answer
+  if the count moved. The count is a plain `Map`, not a field on the box:
+  a render has no reason to wake for it. Any store that both reads a list
+  and is pushed the same list wants this — a mount plus one tick is enough
+  to hit it, which is how the pane's tests found it.
 - A project is a REPOSITORY, and the same repository on two attached
   machines is one sidebar entry (`projects.svelte.ts`, wave 7d). The rows
   stay as the backends sent them; `projectEntries()` is the merged VIEW,

@@ -135,6 +135,40 @@ describe('devServers store', () => {
       await loadDevServers(HOME_BACKEND);
       expect(machineDevServers(HOME_BACKEND).loadError).toBe('Socket closed.');
     });
+
+    it('keeps a frame that landed while the read was in flight', async () => {
+      initDevServers();
+      let release = (): void => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      setBindingMock('GetDevServers', async () => {
+        await held;
+        return list({ servers: [server(5173)], previewHost: 'stale.tail.ts.net' });
+      });
+
+      const reading = loadDevServers(HOME_BACKEND);
+      await tick();
+      // The machine pushes on its own clock, and this frame is the newer
+      // of the two facts. The read must not overwrite it on the way back.
+      emitWailsEvent(
+        'devserver:list',
+        list({ servers: [server(3000)], previewHost: 'fresh.tail.ts.net' }),
+      );
+      release();
+      await reading;
+
+      expect(machineDevServers(HOME_BACKEND).list?.previewHost).toBe('fresh.tail.ts.net');
+      expect(allowedPreviewPorts(HOME_BACKEND)).toEqual([3000]);
+      expect(machineDevServers(HOME_BACKEND).loading).toBe(false);
+    });
+
+    it('takes its own answer when no frame landed under it', async () => {
+      initDevServers();
+      setBindingMock('GetDevServers', async () => list({ previewHost: 'desk.tail.ts.net' }));
+      await loadDevServers(HOME_BACKEND);
+      expect(machineDevServers(HOME_BACKEND).list?.previewHost).toBe('desk.tail.ts.net');
+    });
   });
 
   describe('the channel', () => {
