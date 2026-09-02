@@ -190,6 +190,19 @@ missing value over one that skips. Two rules keep the evidence real:
   real refusals (2026-08-31). Wait on the state the guarded path
   produces, and assert the capture itself saw traffic, so a broken probe
   reads as a failure rather than as a clean bill.
+- **A listener this process opens is one the backend genuinely
+  discovers.** The harness runs on the same machine as the spec, so a
+  `node:http` server the spec binds on `127.0.0.1:0` is found by
+  `internal/devscan`'s /proc walk with nothing faked and no scanner
+  injected — and because it belongs to the Playwright process rather than
+  to anything the backend spawned, it is attributed to no thread and
+  arrives as a `seen` candidate. That is what lets the preview-gateway
+  pair drive the real allow-then-open flow, and it is also the only way
+  to assert what CROSSED the proxy: the fake server records the `Host`,
+  `Origin`, raw request target and cookies of every request, so a
+  rewrite that would have made a real dev server answer 403 fails on the
+  record rather than passing on a green screen. Bind port 0 and read the
+  port back; never pin one.
 - **Ask the harness RPC, not the production reader, for a negative.**
   `App.ListThreads` hides the item-less draft row several bugs create, so
   "no row exists" goes through `HarnessListThreadRows`. Turn liveness
@@ -223,9 +236,12 @@ missing value over one that skips. Two rules keep the evidence real:
   `--host-resolver-rules` is process-wide — owns its browsers too.
   `harness-remote-device-lifecycle.spec.ts`,
   `harness-passkey-lifecycle.spec.ts`,
-  `harness-provider-signin.spec.ts` and `compact-shell-origin.spec.ts`
-  are the four, and each header argues its own constraints where they
-  bite. The cross-origin one owns its backend for a different reason than
+  `harness-provider-signin.spec.ts`, `compact-shell-origin.spec.ts` and
+  the preview-gateway pair (`preview-gateway.spec.ts` /
+  `compact-preview-gateway.spec.ts`, whose backend also holds a LAN
+  preview LISTENER open on somebody else's port for the length of the
+  file) are the five, and each header argues its own constraints where
+  they bite. The cross-origin one owns its backend for a different reason than
   persistence: the page origin it has to admit is an ephemeral port that
   does not exist until a listener has one, so the backend has to be
   LAUNCHED with that origin in its environment. Read the passkey one before

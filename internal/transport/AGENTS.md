@@ -168,7 +168,11 @@ credential or scope gate applies to it, because none of those bytes are ours.
 - **No `WriteSecurityHeaders`, and that is the one route excluded by name
   from `TestEveryHTTPRouteCarriesThePolicy`.** A policy this process invented
   for an application it did not write would silently break it.
-  `devgateway_contract_test.go` is what replaces that gate.
+  `devgateway_contract_test.go` is what replaces that gate, and the e2e pair
+  `preview-gateway.spec.ts` / `compact-preview-gateway.spec.ts` drives the
+  same rules from a paired browser against a dev server that RECORDS what it
+  received, so a rewrite that would have made a real one refuse fails on the
+  record rather than on a green screen.
 
 **Every header rule is a verified fact, not a guess.**
 `docs/references/dev-server-proxy.md` records them with the version and date
