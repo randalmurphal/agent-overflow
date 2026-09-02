@@ -1078,43 +1078,190 @@ unsupported, not silently degraded.
 
 ### Dev-server preview across machines (the port gateway)
 
-The in-app browser must reach a dev server the agent started on the
-thread's host — from any attached UI, over any path. t3code never
-built this (its relay case errors with "needs the planned
-authenticated preview gateway"; only tailnet-direct works, and only
-when the dev server binds beyond loopback). We build the gateway:
+An agent on machine M says "running at http://localhost:5173". The
+person reading that is on a phone, or a laptop at an airport, or the
+desktop beside M. Each has to be able to open that page, and the
+in-app browser story has to stay honest about which machine a page is
+rendering on. Ruled 2026-09-01 (wave 9 design), reasoned from what
+t3code shipped and did not: its relay case errors with "needs the
+planned authenticated preview gateway", and its `ssh -L` branch never
+merged.
 
-- The backend proxies HTTP **and WebSocket upgrades** (HMR) to
-  `localhost:<port>` on its own machine; the in-app browser points at
-  the gateway when the thread's host is not the local machine. Works
-  over LAN and tailnet alike; the dev server needs no
-  `--host` flag and never binds beyond loopback.
-- **Reachable ports are an allowlist, never arbitrary**: ports the
-  dev-server scanner attributed to this thread's sessions, plus ports
-  the user adds explicitly. A localhost proxy that forwards anywhere
-  reaches every host-local service on the box; this one forwards only
-  to declared dev servers. Gateway access requires an execute-tier scope.
-- **The gateway is its own origin**: proxied content is
-  agent/app-authored and never shares the SPA origin, and the session
-  credential is never visible to it — access rides a short-lived
-  ticket bound to the gateway origin. Without a domain, "its own
-  origin" means its own loopback listener on its own pinned port.
-  One interaction to get right, because it makes the Origin
-  allow-list load-bearing rather than defense in depth: **cookies are
-  scoped by host, not by port**, so a document on the gateway origin
-  still has the boot cookie attached to requests it makes to the SPA
-  origin — including a WS upgrade, which CORS does not cover. The
-  upgrade must therefore refuse any `Origin` outside the allow-list,
-  and the gateway origin is never in it. This is the surface that
-  reintroduces the hazard `/design/` used to carry, so it inherits
-  the posture that route was going to be given rather than starting
-  from scratch.
-- Detection reuses t3code's proven shape, server-side: enumerate
-  loopback listeners (`lsof`/PowerShell), publish only candidates
-  whose bounded 1s probe returns HTML or a redirect, cache probe
-  results (~15s), poll (~3s) only while something subscribes,
-  attribute PIDs to the owning thread's sessions.
+**What "reach the dev server" means, per path.** The viewer's page is
+on machine V and the thread is on machine M.
 
+- V = M and the page holds `host`: the link is a plain link to
+  `localhost:5173`. Nothing changes.
+- Otherwise the link is rewritten to a URL on M's **preview listener**
+  for that port: M's tailnet node opens a TLS listener on the **same
+  port number** as the dev server (`https://<node>.<tailnet>.ts.net:5173`),
+  so a dev server's own absolute URLs, `<base href>`, and every HMR
+  client that derives its socket from `location.host` keep working
+  unmodified. Vite's dev client is the one that matters and it derives
+  from the page origin; a path-prefixed proxy would break it.
+- No tailnet on M but LAN bind on: the same listeners bind
+  `<lanIP>:5173` under the in-app TLS certificate. Same posture, same
+  ticket, the LAN reach ceiling of §2 applies. If the dev server itself
+  already bound beyond loopback on that port, the bind fails and the
+  entry reports "already reachable on the LAN" rather than proxying.
+- Neither: the link renders disabled with the reason.
+
+**Why the same node and a different port, not a second node.** Proxied
+content is agent-authored and must never share the SPA origin (§13,
+`AuthorAgentOrUser`). A different port IS a different origin, so
+scripts on a preview page reach nothing of the SPA's; what a shared
+host leaks is cookies, which browsers scope by host. A second tsnet
+node would make the boundary a hostname the browser enforces, but each
+tsnet node is its own interactive sign-in, its own row in the admin
+console and its own ACL subject, and that is a second enrollment flow
+in Settings for every install. Ruled: one node, port-distinct
+listeners, and the cookie leak closed structurally instead. The page
+cookie (`ao_page_<port>`) is honoured only by routes that also check
+the Origin allow-list, which is now **exact-port** (the wildcard-port
+defect, fixed in this wave: `OriginPatterns` admitted
+`http://localhost:*`, so a document on any local port could open the
+SPA's socket with the page cookie attached), and a contract test
+enumerates every reader of that cookie and proves each refuses a
+request from a preview origin. The preview cookie is its own name per
+port and is never read by the main listener. The LAN leg is the same
+design on the LAN address.
+
+**The allow-list, never arbitrary.** A loopback proxy that forwards
+anywhere reaches every host-local service on the box. This one
+forwards only to ports in the machine's **preview set**: ports the
+discovery below attributed to a thread's provider session or
+terminal, plus ports the user allowed by hand (host-tier setting
+`network.previewPorts`, `access:admin` to change, no step-up: it exposes
+the owner's own dev server to the owner's own devices). One preview
+listener exists per port in the set; the set is reconciled on every
+discovery tick, and a port leaves it 60 seconds after its listener
+disappears so a dev-server restart does not tear the URL down.
+
+**Discovery.** Server-side, no `lsof` dependency on Linux:
+`/proc/net/tcp` + `/proc/net/tcp6` for LISTEN sockets bound to loopback
+or wildcard, `/proc/<pid>/fd` for the socket inode → pid, `/proc/<pid>/stat`
+for the parent chain. macOS: `lsof -iTCP -sTCP:LISTEN -P -n -F pcn`
+plus `ps -eo pid=,ppid=` for the chain. Windows is the WSL payload and
+takes the Linux path. Attribution: a listener belongs to a thread when
+its pid's ancestor chain reaches a provider session's pid, a thread
+terminal's pid, or shares a provider session's process group (the
+group survives a daemonising dev server that reparented to init).
+Only candidates whose bounded 1s probe answers HTML or a redirect are
+published (t3code's shape, proven); probe results cache 15s keyed
+`url+pid`; the 3s poll runs only while a non-loopback session holding
+`preview:open` is connected (an SPA subscriber receives every channel,
+so channel subscription is not the signal), and `GetDevServers` scans
+on demand when the loop is idle, so a desktop-only install never
+scans. The channel `devserver:list` is per-backend, `LatestOnly`,
+scope `preview:open`: the list is a port-scan oracle for the host, so
+it is execute-tier like the gateway.
+
+**Credential.** The session credential never reaches a preview origin.
+`MintPreviewURL(threadID, port, path)` (scope `preview:open`, routed to
+the thread's machine) returns the preview URL carrying a 60-second,
+single-use ticket bound to `(principal, port)`; the preview listener's
+first hit consumes it, sets a cookie, and 302s to the same URL without
+the ticket parameter so a reload or a share of the address bar carries
+nothing. The cookie value is an opaque server-side token mapped to
+`{principal, expiry}` in memory, checked on every request against the
+live session store, so revoking the device ends its previews on the
+next request and a backend restart ends them all. Name `ao_preview_<port>`, because the host is
+shared with the SPA and with the other previews. `HttpOnly; Secure;
+SameSite=Strict`, 12h. The principal for
+an owner's local page is the host presence itself. A request with no
+valid cookie gets one plain page: "This preview session ended. Open
+the link again from Agent Overflow."
+
+**`preview:open` is a new execute-tier scope**, not `terminal:operate`
+reused. A future named reviewer (§11) who may look at a preview but
+not run terminals is a real shape; the scope vocabulary is exactly
+where that distinction has to be expressible, and the two vocabulary
+gates (`TestFrontendScopeVocabularyMatches`,
+`TestScopeVocabularyMatchesIdentity`) carry it through. View-only
+devices cannot open previews, which is what execute tier means.
+
+**The proxy.** One `http.Server` per preview listener,
+`httputil.ReverseProxy` to loopback (the upstream dials `localhost`
+resolved statically to `127.0.0.1` and `::1`, because a `::1`-only
+dev server is common). WebSocket upgrades forward unchanged (HMR).
+Toward the upstream, `Host` and `Origin` are rewritten to
+`localhost:<port>`: Vite (5.4.12+, 6, 7, 8) refuses any other `Host`
+with a 403 "Blocked request" and its HMR socket refuses a foreign
+`Origin`, and Next.js 15+ warns and will block cross-origin dev
+requests; a dev server must see the request the way it would from the
+owner's own browser on M. `Location` headers pointing at the upstream
+are rewritten back to the preview origin. No `WriteSecurityHeaders` on
+proxied responses: the bytes are the dev server's, posture
+`PostureProxied`, and the route is excluded by name in
+`TestEveryHTTPRouteCarriesThePolicy` with a contract test of its own
+(`devgateway_contract_test.go`) pinning the ticket exchange, the
+cookie flags, the per-request session check, the Host/Origin rewrite
+and the Location rewrite. Surfaces rows: one Listener (the preview
+port set), one Route (the whole port), one Origin (`AuthorAgentOrUser`,
+`PostureProxied`).
+
+**What the person sees.** In transcripts and tool output, a
+`localhost:<port>` / `127.0.0.1:<port>` / `0.0.0.0:<port>` link on a
+thread whose machine is not the page's:
+
+- port in the preview set: the link opens the preview URL, with a
+  small "via <machine>" marker after the text (native `title` says
+  "Opens on <machine> through its preview listener").
+- port not in the set: the link renders inert with the reason
+  ("Not reachable from here. Port 5173 on <machine> is not shared.")
+  and an inline **Allow port** action beside it (hidden without
+  `access:admin`). Allowing adds the port to `network.previewPorts` on
+  that machine and the link becomes live on the next list frame.
+- no preview address at all on that machine: inert with "<machine> has
+  no tailnet or LAN address to share it on."
+
+Both the markdown path and `CommandOutput`'s dev-server chip read the
+same per-backend list store; the chip stops probing off-host and uses
+the list. The rewrite happens at marked-extension token time (the
+`pathLinkExtension` model) with data attributes, so the static HTML
+fast path stays.
+
+**Link clicks in general.** Plain click on an external link opens the
+system browser (`OpenExternalURL` on host, `window.open` elsewhere;
+the phone shell's external-URL seam). **Mod+click opens the link in
+the in-app browser pane** of that thread when the page holds `host`
+(the pane is a native view of the host process). Off host, mod+click
+falls back to the plain behaviour. One shared predicate for "modifier
+held" replaces the inline `metaKey || ctrlKey` sites.
+
+**Browser tool rows say where the page is.** A tool call from the
+`ao-browser-tools` server rendered on a page that is not the thread's
+machine (or holds no `host`) carries an indicator in its header
+actions: "Browsing on <machine>. The page is only visible there."
+The machine chip in the sidebar and the composer's machine picker note
+"No browser on this machine" when that backend's hello does not
+advertise the `browser` capability, which a backend advertises when its
+engine is available.
+
+**Headless Chromium engine (serve mode).** `docs/specs/embedded-browser.md`
+§9 said a windowless deployment gets no engine; that sentence is
+reversed here. A serve-mode backend selects a **headless Chromium
+engine** as an explicit positive option set by `runServe` before
+`App.Start` (never inferred from the absence of a window:
+`TestSelectEngineWithoutAWindowHasNoEngine` keeps passing). It finds a
+system Chromium (`chromium`, `chromium-browser`, `google-chrome`,
+`google-chrome-stable`, the macOS app bundle paths, or the host-tier
+setting `browserChromiumPath`) and **never downloads one**; not found
+means `unavailableEngine`, no `browser` capability, one boot log line
+naming the setting. Lifecycle mirrors the hosted engine's policy: one
+Chromium process per profile started on first page, `--headless=new`,
+`--user-data-dir` under `browser-profiles/<hash>/chromium` (temp dir
+removed on Dispose when site data does not persist), downloads pinned
+to the profile's `DownloadDir` via `Browser.setDownloadBehavior`, the
+existing idle close after two minutes, page and profile caps
+unchanged. Strictly no `--no-sandbox`: a launch that fails for lack of
+a sandbox surfaces the engine's error and serve-mode.md says to run
+the service as a non-root user. `cdp_page.go` is reused whole. The
+pane host, DevTools, and site-data listing are not implemented
+(omission = refusal, as the seam already reads). Tests spawn a fake
+`chromium` script that advertises a fake CDP server, never a real
+browser; a real launch is the manual `AO_HEADLESS_CHROMIUM_SMOKE=1`
+gate beside the provider smoke.
 ### Anywhere access
 
 tsnet embedded (BSD-3, userspace, works in WSL2 without TUN): the
