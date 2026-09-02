@@ -36,9 +36,13 @@
   let windowRows = $derived(activityRunWindowRows());
 </script>
 
-<section data-testid="settings-activity-runs">
+<section
+  data-testid="settings-activity-runs"
+  data-settings-field="chat.activity-run-default"
+  data-settings-label="Activity runs"
+>
   <SettingsHeader
-    title="Activity Runs"
+    title="Activity runs"
     description="Consecutive tool calls and thinking are grouped into one run so a long stretch of activity can't push the conversation off screen."
   />
   <div
@@ -77,6 +81,7 @@
   </div>
   <div class="mt-1 flex flex-col gap-1">
     <SettingsField
+      id="chat.activity-run-window-rows"
       label="Rows kept mounted"
       hint="How many of a run's newest rows stay rendered. Scrolling to the top of a run loads the next chunk of older rows."
       htmlFor="activity-run-window-rows"

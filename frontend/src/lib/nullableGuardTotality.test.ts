@@ -113,7 +113,7 @@ function ifBlocks(template: string): IfBlock[] {
 /**
  * Every expression in a body that becomes a render effect: mustaches, attribute
  * and directive values, and `{@const}` initializers. `{@const}` is included on
- * purpose — AppearanceSection's instance of the class WAS a `{@const}` folding
+ * purpose — ThemeSettings's instance of the class WAS a `{@const}` folding
  * the extra dep, read by two attributes.
  */
 function renderExpressions(body: string): string[] {
@@ -228,7 +228,7 @@ describe('nullable-guarded branches render total expressions', () => {
   // 2026-08-29 crash must still gate existence through their `{#if}`.
   const STILL_GATED: Array<[string, string]> = [
     ['lib/components/chat/MessageNavRail.svelte', 'previewCard'],
-    ['lib/components/settings/AppearanceSection.svelte', 'benchedUiTheme'],
+    ['lib/components/settings/ThemeSettings.svelte', 'benchedUiTheme'],
     ['lib/components/chat/ProviderStatusBanner.svelte', 'providerStatus'],
     ['lib/components/review/ReviewDiffBody.svelte', 'stickyFile'],
     ['lib/components/composer/ActivityRail.svelte', 'liveTodo'],

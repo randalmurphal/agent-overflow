@@ -92,13 +92,13 @@ describe('overlay commands', () => {
   // It is armed by the settings store's module init — importing that module is
   // the whole wiring, and no reset disarms it.
   it('closes settings on every path that opens the overlay', () => {
-    openSettingsOverlay('general');
+    openSettingsOverlay('theme');
     runCommand('workflows.toggle', ctx());
     expect(isWorkflowsOverlayOpen()).toBe(true);
     expect(isSettingsOpen()).toBe(false);
 
     closeWorkflowsOverlay();
-    openSettingsOverlay('general');
+    openSettingsOverlay('theme');
     // The sidebar chip and the OS-notification deep link both land here
     // rather than on the command.
     openWorkflowsOverlay();

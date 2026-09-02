@@ -123,7 +123,7 @@ export async function updateSetting<K extends keyof Settings>(
 /**
  * Serializes the UpdateSettings round trips. The transport dispatches RPCs
  * concurrently per connection, and a single gesture can issue two DEPENDENT
- * whole-list writes — Settings → Prompts & Tools commits a textarea on blur
+ * whole-list writes — the System prompt section commits a textarea on blur
  * and then handles the click of the button that took the focus, each sending
  * the entire override list. Landed out of order, the earlier list is what
  * persists AND its full-snapshot answer overwrites the store, so the typing

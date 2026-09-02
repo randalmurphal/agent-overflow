@@ -43,8 +43,8 @@ export const DANGER_BUTTON_CLASS =
 export const SECTION_PROSE_CLASS =
   'max-w-2xl text-[0.71875rem] leading-snug text-fg-muted';
 
-// Model chips. Two sections render them with opposite polarity — Providers
-// as a hide-list, Prompts & Tools as a selection — so the vocabulary lives
+// Model chips. Two sections render them with opposite polarity — Setup as a
+// hide-list, System prompt as a selection — so the vocabulary lives
 // here rather than being copied between them. It was copied once, and the
 // two had already drifted (the empty-state prose) by the time the second
 // section shipped.

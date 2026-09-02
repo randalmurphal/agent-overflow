@@ -21,10 +21,18 @@
   import type { ProviderEnvVar, Settings } from '../../types/settings';
   import type { ProviderDefinition } from '../../providers/catalog';
   import SettingsField from './SettingsField.svelte';
+  import type { ProviderFieldId } from './fields';
   import { INPUT_CLASS, PRIMARY_BUTTON_CLASS, GHOST_BUTTON_CLASS } from './styles';
   import { isImeComposingEvent } from '../../utils/imeComposition';
 
   let { provider }: { provider: ProviderDefinition } = $props();
+
+  // ProviderDefinition.id spans every provider; the field index only covers
+  // the two that have a page, and this section only ever renders on one of
+  // them. The ternary narrows without a cast.
+  let fieldId = $derived<ProviderFieldId>(
+    provider.id === 'codex' ? 'codex.env' : 'claude.env',
+  );
 
   let settings = $derived(getSettings());
   let vars = $derived<ProviderEnvVar[]>(settings[provider.settings.customEnvKey] ?? []);
@@ -133,8 +141,9 @@
   }
 </script>
 
-<div class="mt-5" data-testid="settings-provider-env-{provider.id}">
+<div data-testid="settings-provider-env-{provider.id}">
   <SettingsField
+    id={fieldId}
     label="Environment variables"
     hint="Passed to every {provider.label} process this app starts. Takes effect on the next session or account check."
     align="start"

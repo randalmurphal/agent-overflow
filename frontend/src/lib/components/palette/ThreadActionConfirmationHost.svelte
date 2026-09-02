@@ -30,7 +30,7 @@
 <ConfirmDialog
   open={pending?.kind === 'archive'}
   title="Archive Thread"
-  description="This will hide the thread from the sidebar. Open Settings → Archived to find it later."
+  description="This will hide the thread from the sidebar. Open Settings → Storage to find it later."
   confirmLabel="Archive"
   onConfirm={confirm}
   onCancel={cancel}

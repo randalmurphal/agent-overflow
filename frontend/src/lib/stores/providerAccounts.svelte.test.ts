@@ -1,5 +1,5 @@
-// providerAccounts is the ONE account path shared by Settings → Providers and
-// the account-switcher picker, so these tests cover the contract both surfaces
+// providerAccounts is the ONE account path shared by the provider settings
+// pages and the account-switcher picker, so these tests cover the contract both surfaces
 // depend on: what a listing projects into accountInfo / rateLimitsInfo, what a
 // switch resolves to (the picker closes only on true), and the optimistic
 // removal projection that keeps the active badge from blanking.

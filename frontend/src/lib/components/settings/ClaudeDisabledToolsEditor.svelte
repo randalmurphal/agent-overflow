@@ -122,6 +122,7 @@
 
 <div data-testid="settings-claude-tools-{provider.id}">
   <SettingsField
+    id="claude.disabled-tools"
     label="Disabled tools"
     hint="Their schemas never reach the model. Names are passed to the {provider.cliLabel} verbatim, so a name it doesn't recognise is harmless."
     align="start"
@@ -201,10 +202,16 @@
         </div>
       {/if}
 
+      <!--
+        A grouped switch with its own disclosure, not a SettingsField row, so
+        it stamps the search index's anchor and label itself. See fields.ts.
+      -->
       <div
         class="flex flex-col rounded-[var(--radius-control)] border border-border-subtle/70 bg-surface-0/40"
         data-testid="settings-claude-todo-group"
         data-active={todoGroupActive}
+        data-settings-field="claude.todo-tools"
+        data-settings-label="Todo tools"
       >
         <div class="flex items-center justify-between gap-4 px-3 py-2">
           <div class="min-w-0">

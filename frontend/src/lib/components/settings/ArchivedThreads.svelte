@@ -91,9 +91,13 @@
     'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors';
 </script>
 
-<section data-testid="settings-archived-threads">
+<section
+  data-testid="settings-archived-threads"
+  data-settings-field="storage.archived-threads"
+  data-settings-label="Archived threads"
+>
   <SettingsHeader
-    title="Archived Threads"
+    title="Archived threads"
     description="Hidden from the sidebar. Unarchive to bring one back, or delete to remove it permanently."
   />
 

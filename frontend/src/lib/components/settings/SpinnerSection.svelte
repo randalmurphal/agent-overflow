@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Settings → General → Working indicator: spinner verbs and sprite
+  // Settings → Working indicator: spinner verbs and sprite
   // animations for the composer's activity rail.
   //
   // Verbs default ON (text-only), animations default OFF (the LED chase
@@ -11,7 +11,6 @@
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
-  import SettingsHeader from './SettingsHeader.svelte';
   import WorkingSprite from '../composer/WorkingSprite.svelte';
   import { mergedSprites } from '../../spinners/select';
   import { ensureCustomSpinners, peekCustomSpinners } from '../../stores/spinners.svelte';
@@ -51,9 +50,9 @@
 </script>
 
 <section data-testid="settings-spinner-section">
-  <SettingsHeader title="Working indicator" />
   <div class="flex flex-col gap-1">
     <SettingsField
+      id="spinner.verbs"
       label="Spinner verbs"
       hint={'One verb per turn in place of "Working", from Claude Code’s list plus yours.'}
     >
@@ -66,6 +65,7 @@
 
     {#if settings.spinnerVerbsEnabled}
       <SettingsField
+        id="spinner.builtin-verbs"
         label="Built-in verbs"
         hint="Draw from the 186 verbs Claude Code ships. Off uses only your own."
       >
@@ -77,6 +77,7 @@
       </SettingsField>
 
       <SettingsField
+        id="spinner.custom-verbs"
         label="Custom verbs"
         hint="One per line. Added to the draw."
         htmlFor="spinner-custom-verbs"
@@ -95,6 +96,7 @@
     {/if}
 
     <SettingsField
+      id="spinner.animated"
       label="Animated spinner"
       hint="A sprite in place of the LED chase, random per turn from the pool below."
     >
@@ -106,7 +108,12 @@
     </SettingsField>
 
     {#if settings.spinnerAnimationsEnabled}
-      <SettingsField label="Pool" hint="Checked animations are in the per-turn draw." stacked>
+      <SettingsField
+        id="spinner.pool"
+        label="Pool"
+        hint="Checked animations are in the per-turn draw."
+        stacked
+      >
         <div class="grid grid-cols-1 gap-1 sm:grid-cols-2" data-testid="settings-spinner-pool">
           {#each allSprites as sprite (sprite.custom ? `custom:${sprite.id}` : sprite.id)}
             <label
@@ -128,6 +135,7 @@
       </SettingsField>
 
       <SettingsField
+        id="spinner.compaction-animation"
         label="Compaction animation"
         hint="Shown while the provider compacts the thread's context."
         htmlFor="spinner-compaction-select"

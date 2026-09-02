@@ -1,7 +1,7 @@
 // Saved native provider accounts (Claude + Codex): the ONE load / login /
 // switch / refresh / remove path in the app.
 //
-// Two surfaces consume it — Settings → Providers → Accounts (per-provider
+// Two surfaces consume it — the provider settings pages → Accounts (per-provider
 // slice, with removal) and the account-switcher picker (all providers, switch
 // + refresh only). They share this module rather than each owning a copy so a
 // switch made in one is immediately visible in the other, and so there is

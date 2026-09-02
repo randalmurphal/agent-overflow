@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Per-provider Accounts block inside Settings → Providers. The account
+  // The Accounts section of a provider's settings page. The account
   // logic itself lives in stores/providerAccounts.svelte.ts — shared with the
   // account-switcher picker, so a switch made in either surface is the same
   // state change. This component owns only the settings-side chrome: the
@@ -28,10 +28,11 @@
     switchProviderAccount,
   } from '../../stores/providerAccounts.svelte';
   import { getProviderRateLimits } from '../../stores/rateLimitsInfo.svelte';
-  import type { ProviderID } from '../../types/providers';
+  import { providerFieldId, type SettingsProvider } from './fields';
+  import SettingsHeader from './SettingsHeader.svelte';
   import { PRIMARY_BUTTON_CLASS, GHOST_BUTTON_CLASS } from './styles';
 
-  let { provider }: { provider: ProviderID } = $props();
+  let { provider }: { provider: SettingsProvider } = $props();
 
   let providerLabel = $derived(resolveProviderLabel(provider));
   let accounts = $derived(getProviderAccountsFor(provider));
@@ -77,32 +78,37 @@
   }
 </script>
 
-<div class="mt-5 border-t border-border-subtle pt-4" data-testid="provider-accounts-{provider}">
-  <div class="flex items-center justify-between gap-3">
-    <div>
-      <h4 class="text-[0.75rem] font-medium text-fg">Accounts</h4>
-      <p class="mt-0.5 text-[0.6875rem] text-fg-hint">
-        Saved native logins and their last-known limits.
-      </p>
-    </div>
-    <button
-      type="button"
-      class={PRIMARY_BUTTON_CLASS}
-      disabled={credentialOpInFlight}
-      onclick={() => void loginProviderAccount(provider)}
-    >
-      {actions.loggingIn ? 'Waiting for login…' : 'Log in to another account'}
-    </button>
-  </div>
+<!--
+  Not a SettingsField — the block is a header, a button and a list of cards
+  rather than one labelled row — so it stamps the search index's anchor and
+  label itself. See fields.ts.
+-->
+<div
+  data-testid="provider-accounts-{provider}"
+  data-settings-field={providerFieldId(provider, 'accounts')}
+  data-settings-label="Accounts"
+>
+  <SettingsHeader title="Accounts" description="Saved native logins and their last-known limits.">
+    {#snippet badge()}
+      <button
+        type="button"
+        class={PRIMARY_BUTTON_CLASS}
+        disabled={credentialOpInFlight}
+        onclick={() => void loginProviderAccount(provider)}
+      >
+        {actions.loggingIn ? 'Waiting for login…' : 'Log in to another account'}
+      </button>
+    {/snippet}
+  </SettingsHeader>
 
   {#if loading}
-    <p class="mt-3 text-[0.71875rem] text-fg-hint">Loading accounts…</p>
+    <p class="text-[0.71875rem] text-fg-hint">Loading accounts…</p>
   {:else if accounts.length === 0}
-    <p class="mt-3 text-[0.71875rem] text-fg-hint">
+    <p class="text-[0.71875rem] text-fg-hint">
       The current native login will be saved automatically when detected.
     </p>
   {:else}
-    <div class="mt-3 flex flex-col gap-2">
+    <div class="flex flex-col gap-2">
       {#each accounts as account (account.id)}
         {@const limits = getProviderRateLimits(provider, account.id)}
         {@const orgLabel = providerAccountOrgLabel(account)}

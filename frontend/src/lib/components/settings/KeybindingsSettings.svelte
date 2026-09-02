@@ -21,7 +21,6 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import SettingsCallout from './SettingsCallout.svelte';
-  import SettingsHeader from './SettingsHeader.svelte';
   import { GHOST_BUTTON_CLASS, SECONDARY_BUTTON_CLASS } from './styles';
 
   let loaded = $derived(isKeybindingsLoaded());
@@ -136,11 +135,6 @@
 </script>
 
 <div class="flex flex-col gap-6">
-  <SettingsHeader
-    title="Keybindings"
-    description="Customize keyboard shortcuts. Click a chord to re-bind; press the desired key combination or Escape to cancel. Shortcuts use mod as ⌘ on macOS and Ctrl elsewhere."
-  />
-
   {#if loadError}
     <SettingsCallout tone="error">
       <p class="font-semibold">Your keybindings file could not be read</p>

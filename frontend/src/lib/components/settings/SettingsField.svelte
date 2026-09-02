@@ -11,10 +11,20 @@
   // Layout: label + optional hint on the left; control(s) on the right.
   // For controls that need full width below the label (sliders, large
   // inputs), pass `stacked`.
+  //
+  // `id` is the field's entry in the search index (`fields.ts`). It is
+  // required so a control cannot be added without becoming searchable, and
+  // typed against the index so a typo is a compile error. The root carries
+  // it as `data-settings-field` — the hook search scrolls to and flashes —
+  // and the label and hint as `data-settings-label` / `data-settings-hint`,
+  // which `fields.test.ts` compares against the index so the two cannot
+  // drift.
 
   import type { Snippet } from 'svelte';
+  import type { SettingsFieldId } from './fields';
 
   let {
+    id,
     label,
     hint,
     htmlFor,
@@ -22,6 +32,7 @@
     align = 'center',
     children,
   }: {
+    id: SettingsFieldId;
     label: string;
     hint?: string;
     htmlFor?: string;
@@ -34,7 +45,12 @@
 </script>
 
 {#if stacked}
-  <div class="flex flex-col gap-2 py-1.5">
+  <div
+    class="flex flex-col gap-2 rounded-[var(--radius-field)] py-1.5"
+    data-settings-field={id}
+    data-settings-label={label}
+    data-settings-hint={hint}
+  >
     <div class="flex flex-col gap-0.5">
       {#if htmlFor}
         <label for={htmlFor} class="text-[0.8125rem] font-medium text-fg">{label}</label>
@@ -48,7 +64,12 @@
     <div>{@render children()}</div>
   </div>
 {:else}
-  <div class="flex {alignClass} justify-between gap-4 py-1.5">
+  <div
+    class="flex {alignClass} justify-between gap-4 rounded-[var(--radius-field)] py-1.5"
+    data-settings-field={id}
+    data-settings-label={label}
+    data-settings-hint={hint}
+  >
     <div class="min-w-0 flex-1">
       {#if htmlFor}
         <label for={htmlFor} class="block text-[0.8125rem] font-medium text-fg">{label}</label>

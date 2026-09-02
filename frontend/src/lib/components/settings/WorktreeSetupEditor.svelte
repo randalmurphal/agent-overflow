@@ -136,6 +136,7 @@
 
 <div class="space-y-1" data-testid="worktree-setup-editor">
   <SettingsField
+    id="projects.worktree-setup"
     label="Worktree setup"
     hint="Runs whenever this project creates a new worktree. Commands run from the worktree root with AO_PROJECT_ROOT and AO_WORKTREE_PATH set to the two checkouts."
     align="start"

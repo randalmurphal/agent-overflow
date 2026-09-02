@@ -72,7 +72,7 @@ describe('<AccountSwitcher> — visibility', () => {
 
     expect(onClose).toHaveBeenCalled();
     expect(isSettingsOpen()).toBe(true);
-    expect(getSettingsSection()).toBe('providers');
+    expect(getSettingsSection()).toBe('claude');
   });
 });
 

@@ -272,7 +272,7 @@
   const publishFootnoteSource = (node: HTMLElement) =>
     registerFootnoteSource(node, () => processedSource);
 
-  // "Streaming enabled" (Settings → Live Updates) governs whether the
+  // "Streaming enabled" (Settings → Performance) governs whether the
   // in-progress markdown block is shown while a turn streams. When it is
   // off, the volatile tail is withheld: the row reveals one committed
   // block at a time, each appearing only once it stabilises at a markdown

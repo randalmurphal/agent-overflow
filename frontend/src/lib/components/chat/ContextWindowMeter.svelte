@@ -3,6 +3,7 @@
   import type { Thread } from '../../types/models';
   import { formatTokens } from '../../utils/format';
   import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
+  import { providerSettingsSection } from '../settings/sections';
   import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
   import Icon from '../primitives/Icon.svelte';
   import { useHoverPopover } from './hoverPopover.svelte';
@@ -59,7 +60,7 @@
   );
 
   function openContextSettings(): void {
-    openSettingsOverlay('providers');
+    openSettingsOverlay(thread ? providerSettingsSection(thread.provider) : 'claude');
     popover.show = false;
   }
 </script>

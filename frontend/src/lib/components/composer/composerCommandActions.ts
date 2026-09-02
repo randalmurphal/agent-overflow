@@ -130,7 +130,7 @@ async function runFast(pane: ThreadPane): Promise<CommandActionResult> {
 }
 
 function runConfig(): CommandActionResult {
-  openSettingsOverlay('general');
+  openSettingsOverlay('theme');
   return DONE;
 }
 

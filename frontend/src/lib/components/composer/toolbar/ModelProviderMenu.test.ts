@@ -523,7 +523,7 @@ describe('<ModelProviderMenu>', () => {
 
   // The claude-tui visibility toggle. Default-off, so the shipped default is
   // the interesting case: the picker must NOT offer the TUI until the user
-  // turns it on under Settings → Providers → Claude.
+  // turns it on in Settings → Claude Code → Setup.
   it('omits Claude TUI from a fresh thread while its toggle is off (the default)', async () => {
     const pane = await buildPane(
       makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),

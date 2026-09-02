@@ -32,9 +32,13 @@
   let currentMode = $derived(getPaneDensityMode());
 </script>
 
-<section data-testid="settings-pane-density">
+<section
+  data-testid="settings-pane-density"
+  data-settings-field="chat.pane-density"
+  data-settings-label="Pane density"
+>
   <SettingsHeader
-    title="Pane Density"
+    title="Pane density"
     description="Choose the minimum width each workspace pane keeps before horizontal scrolling starts."
   />
   <div

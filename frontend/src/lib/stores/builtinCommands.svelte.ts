@@ -764,7 +764,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 
   // Provider accounts: switching one and reading its remaining quota is the
   // one settings trip that recurs, so it gets a chord of its own. The picker
-  // and Settings → Providers share stores/providerAccounts.svelte.ts, so this
+  // and the provider settings pages share stores/providerAccounts.svelte.ts, so this
   // is a second surface over the same state, not a second implementation.
   //
   // Every provider-account RPC is LocalOnly on the transport
@@ -790,7 +790,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'settings.open',
     label: 'Settings: Open',
     icon: '⚙',
-    run: () => openSettingsOverlay('general'),
+    run: () => openSettingsOverlay('theme'),
   });
 
   registerCommand({

@@ -75,8 +75,8 @@ lacks the binary.
 short flags differ. A user with `SHELL=fish` will see the primary
 shell fail and the candidate loop fall through to `/bin/bash` (which
 in their setup probably doesn't have nvm, but at least it doesn't
-break). The Settings → Provider Binaries override is the explicit
-escape hatch when an unusual shell setup defeats the probe.
+break). The Binary path override on the provider's settings page is the
+explicit escape hatch when an unusual shell setup defeats the probe.
 
 ## Why sentinels (and not just `printenv PATH`)
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Settings → General → Appearance: the mode plus one theme per axis.
+  // Settings → Theme: the mode plus one theme per axis.
   //
   // Three controls, and the shape of the third is the whole design: the UI
   // axis and the code axis are INDEPENDENT (docs/architecture/theme-system.md §6.1),
@@ -52,7 +52,6 @@
   import Icon from '../primitives/Icon.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
-  import SettingsHeader from './SettingsHeader.svelte';
   import { SELECT_CLASS } from './styles';
 
   const MODE_OPTIONS: Array<{ value: AppearanceMode; label: string }> = [
@@ -225,12 +224,13 @@
 </script>
 
 <section data-testid="settings-appearance">
-  <SettingsHeader
-    title="Appearance"
-    description="Light/dark mode and the two theme axes. Themes are JSON files you or an agent can edit; the app reloads them as they are saved."
-  />
   <div class="flex flex-col gap-1">
-    <SettingsField label="Mode" hint="Choose your preferred color scheme." htmlFor="theme-mode-select">
+    <SettingsField
+      id="theme.mode"
+      label="Mode"
+      hint="Choose your preferred color scheme."
+      htmlFor="theme-mode-select"
+    >
       <select
         id="theme-mode-select"
         data-testid="settings-theme-mode"
@@ -246,6 +246,7 @@
     </SettingsField>
 
     <SettingsField
+      id="theme.interface"
       label="Interface theme"
       hint="Surfaces, text, borders, accent and status colors."
       htmlFor="ui-theme-select"
@@ -282,6 +283,7 @@
     </SettingsField>
 
     <SettingsField
+      id="theme.code"
       label="Code theme"
       hint="Syntax highlighting, ANSI output and the grounds behind code blocks and the terminal."
       htmlFor="code-theme-select"

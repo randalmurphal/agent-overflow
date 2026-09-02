@@ -191,8 +191,11 @@
   booting a local one.
 {/snippet}
 
-<div class="flex flex-col gap-6">
-  <section>
+<div class="settings-sections">
+  <section
+    data-settings-field="remote.connect-targets"
+    data-settings-label="Saved --connect targets"
+  >
     <SettingsHeader
       title="Saved --connect targets"
       description={clientMode

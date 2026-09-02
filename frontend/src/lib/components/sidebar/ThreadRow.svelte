@@ -560,7 +560,7 @@
 <ConfirmDialog
   open={showArchiveConfirm}
   title="Archive Thread"
-  description="This will hide the thread from the sidebar. Open Settings → Archived to find it later."
+  description="This will hide the thread from the sidebar. Open Settings → Storage to find it later."
   confirmLabel="Archive"
   onConfirm={() => { showArchiveConfirm = false; void archiveThreadAction(ctx()); }}
   onCancel={() => { showArchiveConfirm = false; }}

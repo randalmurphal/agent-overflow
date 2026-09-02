@@ -514,7 +514,7 @@
   <div bind:this={appContentEl} class="relative flex flex-1 min-h-0 w-full">
     <Sidebar
       pane={sidebarPane}
-      onOpenSettings={() => openSettingsOverlay('general')}
+      onOpenSettings={() => openSettingsOverlay('theme')}
       registerFocusSearch={(focus) => (searchFocuser = focus)}
       registerOpenFromPR={(cb) => (openFromPR = cb)}
     />

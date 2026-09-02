@@ -46,7 +46,7 @@ type Palette = Partial<Record<TokenName, string>>;
 // The value is baked verbatim into rendered SVG, so it gets the same
 // OMIT-never-pass-through policy the colors get. Theme FILES cannot reach
 // `--font-sans` (the token registry is colors-only, deliberately), but
-// Settings → Appearance can, and a user font name is user input either way.
+// Settings → Typography can, and a user font name is user input either way.
 const SAFE_FONT_FAMILY = /^[A-Za-z0-9 ,"'\-.]{1,256}$/;
 
 const TOKEN_NAMES = Object.values(TOKENS);

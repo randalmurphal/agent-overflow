@@ -1,7 +1,7 @@
 import type { PromptOverride, Settings } from '../types/settings';
 
-// Prompt-override / disabled-tool lookups for the Settings → Prompts & Tools
-// section. Mirrors internal/settings exactly: `claude` and `claude-tui` share
+// Prompt-override / disabled-tool lookups for the System prompt and Tools
+// sections of a provider's settings page. Mirrors internal/settings exactly: `claude` and `claude-tui` share
 // the Claude keys (same binary — the interactive TUI honors
 // `--system-prompt-file` and `--disallowedTools` exactly as headless does,
 // spike-verified on 2.1.234, and `claudetui/launch.go` passes both), `codex`

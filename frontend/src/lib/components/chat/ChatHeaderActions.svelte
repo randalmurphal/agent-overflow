@@ -190,8 +190,8 @@
   <!-- Collapse/expand every activity run in this thread. Also the only
          VISIBLE affordance for the run collapse mechanic: a single run is
          toggled by its rail, which consumes no width and so shows nothing
-         until you find it. The setting under Settings → General → Activity
-         Runs is the durable default; this is the per-thread override. -->
+         until you find it. The setting under Settings → Chat → Activity
+         runs is the durable default; this is the per-thread override. -->
     <Button
       variant="secondary"
       size="xs"

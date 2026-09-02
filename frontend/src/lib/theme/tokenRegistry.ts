@@ -441,7 +441,7 @@ export function isSharedDefaultToken(token: TokenEntry): boolean {
 export const EXCLUDED_VAR_PREFIXES: Readonly<Record<string, string>> = {
   '--radius-': 'radius scale — geometry, not palette',
   '--shadow-': 'shadow roles — already derived from the palette by color-mix',
-  '--font-': 'font stacks — owned by Settings → Appearance, not by theme files',
+  '--font-': 'font stacks — owned by Settings → Typography, not by theme files',
   '--color-': 'the @theme mapping layer, which re-exports tokens as utilities',
   '--animate-': 'animation registrations, not colors',
   '--run-map-': 'run-map lane geometry (lengths)',

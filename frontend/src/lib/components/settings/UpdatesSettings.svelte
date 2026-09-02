@@ -3,7 +3,6 @@
   // check / download / restart flow. Every state-changing action is an explicit
   // button press — nothing downloads or installs on its own. The "Advanced"
   // version picker (rollback included) lives in VersionPicker.
-  import SettingsHeader from './SettingsHeader.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import VersionPicker from './VersionPicker.svelte';
   import { PRIMARY_BUTTON_CLASS, SECONDARY_BUTTON_CLASS } from './styles';
@@ -56,11 +55,6 @@
 </script>
 
 <div class="flex flex-col gap-6">
-  <SettingsHeader
-    title="Updates"
-    description="Check for and install new versions of Agent Overflow. Nothing is downloaded or installed without your confirmation."
-  />
-
   {#if !s.supported}
     <p class="text-[0.75rem] text-fg-muted">{unsupportedMessage}</p>
   {:else}

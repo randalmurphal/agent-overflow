@@ -1849,7 +1849,7 @@ describe('settings commands', () => {
   it('opens the settings overlay on its General tab', () => {
     expect(runCommand('settings.open', makeCommandContext(null, {}) as CommandContext)).toBe(true);
     expect(isSettingsOpen()).toBe(true);
-    expect(getSettingsSection()).toBe('general');
+    expect(getSettingsSection()).toBe('theme');
   });
 
   // `settingsOpen` is DERIVED in makeCommandContext, not supplied by the
@@ -1861,7 +1861,7 @@ describe('settings commands', () => {
     expect(isCommandEnabled('settings.close', closedCtx)).toBe(false);
     expect(runCommand('settings.close', closedCtx)).toBe(false);
 
-    openSettingsOverlay('general');
+    openSettingsOverlay('theme');
     const openCtx = makeCommandContext(null, {}) as CommandContext;
     expect(openCtx.flags.settingsOpen).toBe(true);
     expect(isCommandEnabled('settings.close', openCtx)).toBe(true);
@@ -1882,7 +1882,7 @@ describe('settings commands', () => {
   // the stores now: `openSettingsOverlay` calls `closeWorkflowsOverlay`, and
   // the settings store arms the reverse hook at module init.
   it('is mutually exclusive with the workflows overlay, both directions', () => {
-    openSettingsOverlay('general');
+    openSettingsOverlay('theme');
     runCommand('workflows.toggle', makeCommandContext(null, {}) as CommandContext);
     expect(isWorkflowsOverlayOpen()).toBe(true);
     expect(isSettingsOpen()).toBe(false);

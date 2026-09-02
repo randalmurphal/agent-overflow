@@ -24,7 +24,7 @@ asked to have rewritten. Match the file you are editing.
 Area guides: [`stores/`](src/lib/stores/AGENTS.md),
 [`transport/`](src/lib/transport/AGENTS.md), and under
 `src/lib/components/`: `chat/`, `composer/`, `panes/`, `review/`,
-`virtual/`, `workflows/`.
+`settings/`, `virtual/`, `workflows/`.
 
 ## Reuse before reimplementing
 

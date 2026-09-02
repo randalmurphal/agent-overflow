@@ -12,13 +12,11 @@
   // button, no profile concept, no per-thread mode.
 
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
-  import {
-    getProviderDefinition,
-    type ProviderID,
-  } from '../../providers/catalog';
+  import { getProviderDefinition } from '../../providers/catalog';
   import type { Settings } from '../../types/settings';
+  import { providerFieldId, type SettingsProvider } from './fields';
 
-  let { provider }: { provider: ProviderID } = $props();
+  let { provider }: { provider: SettingsProvider } = $props();
 
   let settings = $derived(getSettings());
   let providerDefinition = $derived(getProviderDefinition(provider));
@@ -52,9 +50,15 @@
   }
 </script>
 
+<!--
+  Not a SettingsField — two sliders under one caption, not one labelled row —
+  so it stamps the search index's anchor and label itself. See fields.ts.
+-->
 <div
   class="rounded-[var(--radius-control)] border border-border-subtle/70 bg-surface-1/40 px-4 py-3.5"
   data-testid="settings-context-{provider}"
+  data-settings-field={providerFieldId(provider, 'auto-compact')}
+  data-settings-label="Auto-compact"
 >
   <div class="flex items-baseline gap-2">
     <span class="text-[0.65625rem] font-medium uppercase tracking-[0.16em] text-fg-hint">

@@ -240,7 +240,7 @@ export const UpdateThreadContextSettings = dispatch('UpdateThreadContextSettings
 export const GetNetworkSettings = dispatch('GetNetworkSettings');
 export const SetNetworkSettings = dispatch('SetNetworkSettings');
 
-// WSL distro switcher (Settings → Network → WSL Distro section).
+// WSL distro switcher (Settings → Remote access → WSL distro).
 // IsWSL gates whether the section renders at all; the other three
 // drive the dropdown + persist on change.
 export const IsWSL = dispatch('IsWSL');

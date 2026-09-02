@@ -4,7 +4,7 @@
   // one". Top-aligned picker over every saved Claude and Codex account.
   //
   // It owns no account logic: load / switch / login / refresh all run through
-  // stores/providerAccounts.svelte.ts, the same module Settings → Providers
+  // stores/providerAccounts.svelte.ts, the same module the provider settings pages
   // uses, so the two surfaces can never disagree about what is active.
 
   import { untrack } from 'svelte';
@@ -14,6 +14,7 @@
   import IconButton from '../primitives/IconButton.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import ProviderAccountLimits from '../shared/ProviderAccountLimits.svelte';
+  import { SETTINGS_PROVIDERS } from '../settings/fields';
   import type { ManagedProviderAccount } from '../../stores/bindings';
   import {
     getProviderAccountActions,
@@ -165,7 +166,7 @@
 
   function openProviderSettings(): void {
     onClose();
-    openSettingsOverlay('providers');
+    openSettingsOverlay(SETTINGS_PROVIDERS[0]);
   }
 </script>
 
@@ -192,7 +193,7 @@
             class="mt-2 cursor-pointer rounded-[var(--radius-field)] py-1 text-[0.71875rem] text-fg-hint transition-colors hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             onclick={openProviderSettings}
           >
-            Open Settings → Providers
+            Open provider settings
           </button>
         </div>
       {:else}

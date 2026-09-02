@@ -14,10 +14,13 @@ import {
   closeWorkflowsOverlay,
   setWorkflowsOverlayExclusion,
 } from './workflowsOverlay.svelte';
-import type { SettingsSection } from '../components/settings/sections';
+import {
+  DEFAULT_SETTINGS_SECTION,
+  type SettingsSection,
+} from '../components/settings/sections';
 
 let open = $state(false);
-let section = $state<SettingsSection>('general');
+let section = $state<SettingsSection>(DEFAULT_SETTINGS_SECTION);
 
 export function isSettingsOpen(): boolean {
   return open;
@@ -67,5 +70,5 @@ setWorkflowsOverlayExclusion(closeSettingsOverlay);
 
 export function resetSettingsOverlayForTest(): void {
   open = false;
-  section = 'general';
+  section = DEFAULT_SETTINGS_SECTION;
 }
