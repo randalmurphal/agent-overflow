@@ -1,6 +1,6 @@
 # The Android shell
 
-A Capacitor 7 project whose entire job is to put the SPA on a phone.
+A Capacitor 8 project whose entire job is to put the SPA on a phone.
 There is no mobile app here: `webDir` is `../frontend/dist`, the same
 bundle the desktop ships, and the compact layout it renders is a layout
 mode of that one app chosen from the viewport
@@ -57,7 +57,7 @@ with the defaults below and can be overridden by exporting them:
 | Variable | Default | Needs |
 |---|---|---|
 | `JAVA_HOME` | `~/.jdks/temurin-21` | JDK 21 |
-| `ANDROID_HOME` | `~/Android/Sdk` | `platform-tools`, `platforms;android-35`, `build-tools;35.0.0` |
+| `ANDROID_HOME` | `~/Android/Sdk` | `platform-tools`, `platforms;android-36`, `build-tools;36.0.0` |
 
 **`AO_SHELL=1` is what makes a build a shell build.** The three Capacitor
 plugins are dependencies of THIS package, never of `frontend/`, so the
@@ -74,7 +74,7 @@ SHELL bundle. Anything that serves `dist` afterwards (`make e2e`,
 `make build`) rebuilds it, but a hand-run of a Go binary that embeds it
 will not.
 
-`minSdkVersion` is 26, not the Capacitor template's 23, because the
+`minSdkVersion` is 26, not the Capacitor template's 24, because the
 barcode scanner's native library declares 26 and the manifest merge
 across that gap fails the build outright. `android/variables.gradle`
 argues it in place.
@@ -82,7 +82,7 @@ argues it in place.
 ## Cleartext, and why only the debug build has any
 
 The release APK declares no network security config, so it keeps the
-platform default: at `targetSdkVersion` 35, cleartext is refused for
+platform default: at `targetSdkVersion` 36, cleartext is refused for
 every host. That is the correct posture rather than an inconvenience.
 The phone's path to a backend is tailnet TLS
 (`docs/specs/remote-access.md`, "The phone client"), so a pairing link

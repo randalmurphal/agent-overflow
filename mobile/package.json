@@ -8,14 +8,14 @@
     "apk": "./scripts/build-apk.sh"
   },
   "dependencies": {
-    "@aparajita/capacitor-biometric-auth": "9.1.2",
-    "@capacitor/android": "7.6.9",
-    "@capacitor/app": "7.1.2",
-    "@capacitor/barcode-scanner": "2.2.6",
-    "@capacitor/core": "7.6.9"
+    "@aparajita/capacitor-biometric-auth": "10.0.0",
+    "@capacitor/android": "8.5.1",
+    "@capacitor/app": "8.1.1",
+    "@capacitor/barcode-scanner": "3.1.1",
+    "@capacitor/core": "8.5.1"
   },
   "devDependencies": {
-    "@capacitor/cli": "7.6.9",
+    "@capacitor/cli": "8.5.1",
     "typescript": "6.0.2"
   }
 }

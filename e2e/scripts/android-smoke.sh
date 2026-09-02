@@ -58,8 +58,8 @@ if [[ -z "$devices" ]]; then
 No Android device or emulator is attached, so the shell smoke is skipped.
 
 To run it:
-  $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "system-images;android-35;google_apis;x86_64"
-  $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd -n ao -k "system-images;android-35;google_apis;x86_64"
+  $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "system-images;android-36;google_apis;x86_64"
+  $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd -n ao -k "system-images;android-36;google_apis;x86_64"
   $ANDROID_HOME/emulator/emulator -avd ao &
   make apk && make e2e-android
 MSG

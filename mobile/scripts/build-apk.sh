@@ -30,7 +30,7 @@ if [[ ! -x "$JAVA_HOME/bin/java" ]]; then
   exit 1
 fi
 if [[ ! -d "$ANDROID_HOME/platforms" ]]; then
-  echo "no Android SDK at ANDROID_HOME=$ANDROID_HOME — install platform-tools, platforms;android-35 and build-tools;35.0.0" >&2
+  echo "no Android SDK at ANDROID_HOME=$ANDROID_HOME — install platform-tools, platforms;android-36 and build-tools;36.0.0" >&2
   exit 1
 fi
 
