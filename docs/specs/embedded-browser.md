@@ -33,6 +33,7 @@ engine, so the agent/user shared-session model is unchanged.
 | Windows (WSL build) | WebView2 (Chromium) | second WebView2 environment in the launcher process, controllers positioned in the launcher's Win32 window | CDP (chromedp), relayed — §5 |
 | macOS | WKWebView (WebKit) | subviews of the Wails NSWindow, in-process | native driver — §6 |
 | Linux | WebKitGTK 6.0 (WebKit) | sibling GTK widgets in the Wails GTK4 window, in-process | native driver — §6 |
+| Serve mode (any platform) | headless Chromium (a SYSTEM install, never downloaded) | one process per workspace profile, launched by this backend, no window and no pane | CDP (chromedp), in-process — `docs/specs/remote-access.md` §7 |
 
 The engine renders real pixels in the real compositor: audio, video,
 IME, drag-drop, cursor, tooltips, selects, site context menus, find,
@@ -334,13 +335,21 @@ reopen chip and `BrowserCompanionThreadState` hydration survive
 (thread browser state still exists). The MCP server, Access model,
 bounds, and artifact quota code survive untouched.
 
-Remote `--connect` clients and future headless serve mode get **no
-browser pane and no browser tools**: the engines live in the desktop
-app instance. The remote-access campaign's port gateway (its spec §
-"Dev-server preview") is the remote answer for dev servers; anything
-more is that campaign's scope. This is a deliberate regression for
-headless deployments (which don't exist yet) in exchange for deleting
-the streamed pane.
+Remote `--connect` clients get **no browser pane and no browser
+tools**: the windowed engines live in the desktop app instance. The
+remote-access campaign's port gateway (its spec § "Dev-server preview")
+is the remote answer for dev servers; anything more is that campaign's
+scope.
+
+**Serve mode is the exception, and only for the TOOLS.** It gets no pane
+— there is no window to put one in, and the streamed pane stays deleted
+— but it does get the browser tools, over a headless Chromium engine
+this backend launches (`docs/specs/remote-access.md` §7, "Headless
+Chromium engine (serve mode)"). That Chromium is a SYSTEM install the
+operator provided, never a downloaded one, so a serve host without one
+falls back to exactly what this section originally described: no engine,
+no tools, one line in the boot log. The deliberate regression stands for
+every other windowless deployment.
 
 ## 10. Testing
 

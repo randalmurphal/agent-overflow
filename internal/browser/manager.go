@@ -106,6 +106,15 @@ type ManagerOptions struct {
 	// which that deployment never sets.
 	PaneHost *PaneHostOptions
 
+	// HeadlessChromium, when set, selects the headless Chromium engine:
+	// pages become targets in a Chromium this process launches, one per
+	// workspace profile (headless_engine.go). Set ONLY by the serve boot,
+	// which has no window to host a browser view in and asks for this
+	// engine on purpose. It is never inferred from the absence of a
+	// window — that absence is exactly what leaves `go test` and a remote
+	// `--connect` backend with no engine at all.
+	HeadlessChromium *HeadlessChromiumOptions
+
 	// NativeWindow returns the desktop window an in-process engine hosts its
 	// views inside (spec docs/specs/embedded-browser.md §6), or nil when this
 	// process has none — a remote `--connect` backend, a headless serve mode,
