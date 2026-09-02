@@ -556,6 +556,12 @@ type Subscriber struct {
 	// means wildcard, which is what every subscriber gets until the first
 	// such frame arrives and what every non-SPA client keeps forever.
 	watched atomic.Pointer[subscriberWatchFilter]
+	// background is this connection's lease (lease.go): true while the
+	// client says its whole app is paused. A plain bool rather than the
+	// pointer shape beside it, because "never leased" and "leased active"
+	// want the same behavior — the frame states a lifecycle, not a filter
+	// that latches out of wildcard.
+	background atomic.Bool
 	// gapped records the channels this subscriber has dropped events on
 	// since it last learned about the loss. Written only inside deliver,
 	// which runs under the bus mutex (Emit's fanout is its sole call
@@ -603,6 +609,15 @@ func (s *Subscriber) SetWatchedThreads(entityIDs []string) {
 		filter[id] = struct{}{}
 	}
 	s.watched.Store(&filter)
+}
+
+// SetBackground records this subscriber's lease state (lease.go). Unlike
+// SetChannels and SetWatchedThreads this is NOT a latch: a client that
+// backgrounds and resumes says so both times, and `active` restores exactly
+// the delivery it had. Read on the fanout path, so it is stored as an
+// atomic and never read under a lock.
+func (s *Subscriber) SetBackground(background bool) {
+	s.background.Store(background)
 }
 
 // SetOriginLoopback arms enqueue-time origin-visibility filtering for a
@@ -687,6 +702,15 @@ func (s *Subscriber) deliver(e Event) {
 	// exempted for these channels for the same reason
 	// (frontend/src/lib/transport/entityFilteredChannels.ts).
 	if !s.watches(e.Channel, e.EntityKey) {
+		return
+	}
+	// The last of the withholding filters, and ahead of gap accounting for
+	// the same reason all of them are: a cache warmer this paused client
+	// was not sent is not a frame it lost, so it must not flag the channel
+	// (lease.go). The atomic is read FIRST because it is false on every
+	// connection that never leased background, which short-circuits the
+	// map probe away on the fanout hot path.
+	if s.background.Load() && backgroundWithheldChannel(e.Channel) {
 		return
 	}
 	if len(s.gapped) > 0 {

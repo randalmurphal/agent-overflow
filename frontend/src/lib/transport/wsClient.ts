@@ -43,6 +43,7 @@ import {
 import {
   type ClientFrame,
   type ClientRPCFrame,
+  type LeaseState,
   type ServerEventFrame,
   type ServerHelloFrame,
   type ServerFrame,
@@ -778,6 +779,11 @@ export class WSClient {
   // this holding the previous value, so the next composition change differs
   // from it and re-sends.
   private watchedThreads: string[] | null = null;
+  // This connection's lease state (./frames.ts). `'active'` is BOTH the
+  // never-set value and the resting one, deliberately: the backend starts
+  // every connection active, so the two are the same fact on the wire and a
+  // client that never calls `setLease` sends nothing and restates nothing.
+  private lease: LeaseState = 'active';
 
   constructor(opts: WSClientOptions = {}) {
     this.fetchBootstrap = opts.bootstrap ?? defaultBootstrap;
@@ -952,6 +958,30 @@ export class WSClient {
     if (this.watchedThreads !== null && sameStringList(this.watchedThreads, next)) return;
     this.watchedThreads = next;
     this.sendFrame({ type: 'watch', threads: next });
+  }
+
+  /**
+   * State whether this CLIENT is in the foreground, for this connection.
+   *
+   * The whole-app native lifecycle — the phone shell's pause/resume — and
+   * nothing finer. Never a pane, never document visibility, never focus:
+   * off-view work shedding is a rejected design here, and a surface that
+   * stopped receiving would render wrongly the moment it is looked at. A
+   * backgrounded whole client is the one case where nothing on it is being
+   * looked at at all.
+   *
+   * Idempotent, and `'active'` is the resting state: a client that never
+   * calls this never puts a byte on the wire, which is every desktop and
+   * browser client. The one door meant for callers is
+   * ./lease.ts `setClientLease`, which states it to every attached backend.
+   *
+   * Returns silently when disconnected: the state is retained and restated
+   * on the next open, beside the watch set.
+   */
+  setLease(state: LeaseState): void {
+    if (this.lease === state) return;
+    this.lease = state;
+    this.sendFrame({ type: 'lease', state });
   }
 
   /** Current transport status snapshot. Cheap; safe to call repeatedly. */
@@ -1632,6 +1662,14 @@ export class WSClient {
     // that has composed no set skips this and stays wildcard.
     if (this.watchedThreads !== null) {
       this.sendFrame({ type: 'watch', threads: this.watchedThreads });
+    }
+    // And restate the lease, for the same reason and on the same terms: the
+    // backend starts every connection ACTIVE, so a phone that went to sleep
+    // and reconnected on the OS's schedule would otherwise be streamed at
+    // full rate while its screen is off. Only a non-active state is worth a
+    // frame — `active` is what the new connection already is.
+    if (this.lease !== 'active') {
+      this.sendFrame({ type: 'lease', state: this.lease });
     }
     // First-frame after open: replay any missed events. The server
     // only acts on this if the map is non-empty; it's still cheap

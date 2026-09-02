@@ -9,6 +9,7 @@ const { homeClient } = vi.hoisted(() => ({
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn<(channel: string, handler: (data: unknown) => void) => () => void>(),
     installStepUpProver: vi.fn(),
+    setLease: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onStatusChange: vi.fn(() => () => undefined),
     close: vi.fn(),
@@ -35,6 +36,7 @@ import {
   homeBackend,
   installStepUpProverEverywhere,
   mergeBackendResults,
+  setLeaseEverywhere,
   subscribeEveryBackend,
   type BackendDescriptor,
 } from './backends';
@@ -52,6 +54,7 @@ function fakeClient(): FakeClient {
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn<(channel: string, handler: (data: unknown) => void) => () => void>(),
     installStepUpProver: vi.fn(),
+    setLease: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onStatusChange: vi.fn(() => () => undefined),
     close: vi.fn(),
@@ -160,6 +163,22 @@ describe('the registry', () => {
     expect(homeClient.installStepUpProver).toHaveBeenCalledWith(prover);
     const { client } = attachFake();
     expect(client.installStepUpProver).toHaveBeenCalledWith(prover);
+  });
+
+  it('states the client lease on every backend, including one attached later', () => {
+    // One OS pauses one app, so there is no shape in which one attached
+    // machine is backgrounded and another is not.
+    setLeaseEverywhere('background');
+    expect(homeClient.setLease).toHaveBeenCalledWith('background');
+    const { client } = attachFake();
+    expect(client.setLease).toHaveBeenCalledWith('background');
+
+    // And a resume reaches both. A backend attached after THAT is told
+    // nothing, because active is what a fresh connection already is.
+    setLeaseEverywhere('active');
+    expect(client.setLease).toHaveBeenLastCalledWith('active');
+    const later = attachFake({ id: 'desktop', backendId: '' });
+    expect(later.client.setLease).not.toHaveBeenCalled();
   });
 });
 

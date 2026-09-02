@@ -341,6 +341,25 @@ remote browser alike. Protocol and authz rules:
   together with the Go row, and never widen the exemption past "a filter has
   been sent" and "this channel is filtered" — an explicit `gap:true` marker
   is the server stating a loss and is always honoured.
+- `lease.ts` is the ONE door for the client's foreground lifecycle, and it
+  is a NATIVE signal: the phone shell's pause/resume, arriving through a
+  Capacitor plugin in wave 6f-c. Nothing in the SPA calls it today, on
+  purpose — the wire, the fan-out and the door ship together so nobody
+  wires the capability by reaching past the seam. `setClientLease(state)`
+  states it to EVERY attached backend (`backends.setLeaseEverywhere`, and
+  to every backend attached afterwards), because one OS pausing one app is
+  not a per-connection fact. Each `wsClient.setLease` dedups, drops the
+  send while disconnected, and restates a non-active state after the next
+  hello beside the watch frame.
+
+  **It is not `document.visibilityState`, and it must never become it.** A
+  hidden tab, a minimised window, a blurred document and an off-screen
+  pane all stay `active`: off-view work shedding is a rejected design
+  here, and the one case this frame exists for is the platform having
+  stopped running the app. A backgrounded connection is served withheld
+  highlight seeds and merged transcript deltas
+  (`internal/transport/lease.go`); everything else is untouched, so badges
+  and the push mapping keep working while the screen is off.
 - `authReason.ts` is the ONE place a credential refusal becomes a
   sentence. The backend answers `auth_failed` plus a `reason` from a
   closed set (`internal/identity/reason.go`), and a component that

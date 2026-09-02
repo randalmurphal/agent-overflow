@@ -1102,12 +1102,65 @@ row and an `updatedAt` patch), and the workspace-change lock onto
 "what does the off-pane consumer actually need, and what is the cheapest
 wildcard frame that says it" — never "can we live without the consumer".
 
+## A paused client is leased down, and only a paused one
+
+`lease.go` holds the doctrine. A `lease` frame states the CLIENT's lifecycle —
+`active` or `background` — and a backgrounded connection is served less: its
+`highlight:seed` frames are withheld, and its `provider:item_event` deltas are
+merged to one frame per (thread, item) per 250ms. Nothing else changes, which
+is what keeps turn completions, approvals, errors, thread rows and
+notifications reaching a phone whose screen is off.
+
+The rule that decides every question about it: **it is the whole-client
+NATIVE lifecycle and nothing finer.** The platform paused the app. Not a
+pane, not `document.visibilityState`, not focus, not a minimised window — all
+of those keep receiving, for the reason the watch set does not read them
+either (a surface that stops receiving renders wrongly the moment it is
+looked at). Anything proposing a second, softer trigger for this frame is
+proposing off-view work shedding under a new name.
+
+Four properties, each with a test in `lease_test.go` / `conn_lease_test.go`:
+
+- **Active until told otherwise, and it survives nothing.** A connection that
+  never sends the frame behaves exactly as before it existed; a reconnect
+  starts active and the client restates a non-active state after hello, on
+  the same socket as its watch set.
+- **Withholding precedes gap accounting**, in `Subscriber.deliver` beside the
+  origin, grant and watch filters. A seed a paused client was not sent is not
+  a frame it lost, so the channel is never flagged and no `gap:true` is
+  minted. The channel is also `RetentionEphemeral` and `EntityFiltered`, so
+  the advancing seq neither replays nor trips the client's forward-skip
+  heuristic.
+- **Seq never goes backwards.** A merged frame carries the LAST merged
+  frame's seq, and a client drops anything at or below its channel cursor —
+  so a late merge is LOST text, not late text. Two rules produce the order:
+  any pass-through on the coalesced channel flushes every pending row first
+  (not just its own), and a resumed connection flushes before it forwards.
+  The first is also what preserves the frontend's contract that a row's
+  deltas land ahead of the `meta` or `patch` that re-states it.
+- **The withheld list is for cache warmers only.** A channel qualifies when
+  its consumers already have a working path without it — `highlight:seed`
+  falls back to the highlight RPC it uses for every late-mounting fence
+  anyway. A channel whose absence a consumer cannot recover from is dropping
+  frames, not leasing down, however cheap it looks.
+
+The merge decodes `provider:item_event` through a LOCAL shape
+(`leaseItemFrame`), because transport must not import triage's store types.
+`TestLeaseItemFrameMatchesItemStreamEvent` pins the two by their bytes, so a
+field rename fails there rather than shipping merged frames a client ignores.
+
 ## Wire frames and the gap marker
 
 `frame.go` is the frame catalog: `ClientFrame` and `ServerFrame` document every
 type, field, and bound (`MaxReplayChannels`, `MaxSubscribeChannels`,
 `MaxRPCParams`, `MaxWatchThreads`, `MaxWatchThreadIDBytes`) beside the decoder.
 What a gap means to a client is not.
+
+A client may send five frame types: `rpc`, `replay`, `subscribe`, `watch` and
+`lease`. `TestClientFrameVocabularyIsFrozen` pins the list, because each one
+is a contract two codebases hold — a new type also needs a word in
+`frontend/src/lib/transport/frames.ts` and a route in `readLoop`, and the
+freeze is what makes that a deliberate edit rather than a compile.
 
 `gap:true` means "your replay seq fell outside the in-memory ring, re-fetch
 through the list endpoints". It is a resync instruction rather than a late

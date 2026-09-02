@@ -129,7 +129,36 @@ export interface ClientWatchFrame {
   threads: string[];
 }
 
-export type ClientFrame = ClientRPCFrame | ClientReplayFrame | ClientWatchFrame;
+/**
+ * Whether this CLIENT is in the foreground. The whole-app native lifecycle
+ * and nothing finer: never a pane, never `document.visibilityState`, never
+ * focus. A backgrounded connection is one the OS has paused, which is the
+ * only case in which nothing on it is being looked at.
+ */
+export type LeaseState = 'active' | 'background';
+
+/**
+ * State this client's lifecycle for one connection. While it says
+ * `background` the backend withholds highlight seeds and merges transcript
+ * deltas into one frame per row per 250ms; turns, approvals, errors and
+ * thread rows are untouched, so badges and push mapping keep working.
+ *
+ * `active` is what every connection starts in, so a client that never sends
+ * one — every desktop and browser client — behaves exactly as it did before
+ * the frame existed. The state survives nothing: a reconnect starts active
+ * and the client restates a non-active one after hello, the same way it
+ * restates its watch set.
+ */
+export interface ClientLeaseFrame {
+  type: 'lease';
+  state: LeaseState;
+}
+
+export type ClientFrame =
+  | ClientRPCFrame
+  | ClientReplayFrame
+  | ClientWatchFrame
+  | ClientLeaseFrame;
 
 // Logged strings (channel names, error messages) get clamped before
 // reaching console / toast surfaces. Caps the worst-case noise from a

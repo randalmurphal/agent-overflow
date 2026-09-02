@@ -182,3 +182,49 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+func TestClientFrame_LeaseRoundTrip(t *testing.T) {
+	in := ClientFrame{Type: frameTypeLease, State: leaseStateBackground}
+	buf, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The wire shape the phone shell writes, spelled out: what a client
+	// reads is this string, not this struct.
+	if string(buf) != `{"type":"lease","state":"background"}` {
+		t.Fatalf("lease frame on the wire = %s", buf)
+	}
+	var out ClientFrame
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Type != in.Type || out.State != in.State {
+		t.Fatalf("lease fields lost: in=%+v out=%+v", in, out)
+	}
+}
+
+// TestClientFrameVocabularyIsFrozen pins the set of frame types a client may
+// send. A frame type is a wire contract two codebases hold: adding one means
+// teaching frontend/src/lib/transport/frames.ts the same word, documenting it
+// on ClientFrame, and routing it in readLoop. Freezing the list makes that a
+// deliberate edit rather than something the compiler waves through.
+func TestClientFrameVocabularyIsFrozen(t *testing.T) {
+	frozen := []string{
+		frameTypeRPC,
+		frameTypeReplay,
+		frameTypeSubscribe,
+		frameTypeWatch,
+		frameTypeLease,
+	}
+	want := map[string]bool{
+		"rpc": true, "replay": true, "subscribe": true, "watch": true, "lease": true,
+	}
+	if len(frozen) != len(want) {
+		t.Fatalf("client frame vocabulary changed: %v", frozen)
+	}
+	for _, name := range frozen {
+		if !want[name] {
+			t.Fatalf("unfrozen client frame type %q", name)
+		}
+	}
+}

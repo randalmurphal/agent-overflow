@@ -24,6 +24,12 @@ export interface SentFrame {
 export interface ReceivedEvent {
   channel: string;
   threadId: string;
+  /**
+   * `provider:item_event` only: which action the frame carried. The lease
+   * spec counts `delta` frames, which is the only question that needs to
+   * distinguish one item_event from another; every other spec ignores it.
+   */
+  action?: string;
 }
 
 export interface WireLog {
@@ -37,7 +43,11 @@ export interface WireLog {
  */
 export async function recordWire(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    const scope = window as unknown as { __aoWire?: WireLog; WebSocket: typeof WebSocket };
+    const scope = window as unknown as {
+      __aoWire?: WireLog;
+      __aoWireSocket?: WebSocket;
+      WebSocket: typeof WebSocket;
+    };
     const log: WireLog = { sent: [], received: [] };
     scope.__aoWire = log;
 
@@ -51,10 +61,12 @@ export async function recordWire(page: Page): Promise<void> {
         // carries `threadId` is ever mis-keyed.
         const data = (frame.data ?? {}) as Record<string, unknown>;
         const thread = (data.thread ?? {}) as Record<string, unknown>;
-        log.received.push({
+        const entry: ReceivedEvent = {
           channel: String(frame.channel ?? ''),
           threadId: String(data.threadId ?? data.id ?? thread.id ?? ''),
-        });
+        };
+        if (typeof data.action === 'string') entry.action = data.action;
+        log.received.push(entry);
       } else if (frame.type === 'batch' && Array.isArray(frame.events)) {
         for (const entry of frame.events as Array<Record<string, unknown>>) note(entry);
       }
@@ -64,6 +76,11 @@ export async function recordWire(page: Page): Promise<void> {
     class RecordingWebSocket extends Base {
       constructor(url: string | URL, protocols?: string | string[]) {
         super(url, protocols);
+        // The page's live socket, so a spec can put a frame on the wire the
+        // SPA has no caller for yet. The lease spec is the one user: the
+        // frame's producer is a native shell that does not exist in a
+        // browser, so driving it any other way would be testing a stub.
+        scope.__aoWireSocket = this as unknown as WebSocket;
         this.addEventListener('message', (event: MessageEvent) => {
           if (typeof event.data !== 'string') return;
           try {
@@ -96,6 +113,23 @@ export async function recordWire(page: Page): Promise<void> {
 
 export function readWire(page: Page): Promise<WireLog> {
   return page.evaluate(() => (window as unknown as { __aoWire: WireLog }).__aoWire);
+}
+
+/**
+ * Write one client frame on the page's own live socket.
+ *
+ * For frames the SPA has no caller for. The transport module exposes the
+ * lease as `setClientLease`, but its producer is a native app-lifecycle
+ * plugin that no browser has, so a spec that reached for a stub would be
+ * proving the stub. This puts the real bytes on the real connection and
+ * lets the backend answer.
+ */
+export async function sendClientFrame(page: Page, frame: Record<string, unknown>): Promise<void> {
+  await page.evaluate((text) => {
+    const socket = (window as unknown as { __aoWireSocket?: WebSocket }).__aoWireSocket;
+    if (!socket || socket.readyState !== socket.OPEN) throw new Error('no open socket to write on');
+    socket.send(text);
+  }, JSON.stringify(frame));
 }
 
 /** The threads named by the most recent watch frame, or null if none sent. */

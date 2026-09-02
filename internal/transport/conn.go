@@ -214,6 +214,21 @@ type connHandler struct {
 	// resolved once at upgrade (see connEventScopes).
 	eventScopes eventScopeFilter
 
+	// leaseBackground is this connection's lease (lease.go), written by
+	// the read loop and read by the pump — two goroutines, so the VALUE is
+	// an atomic rather than a field. It is authoritative; leaseWake only
+	// says "re-read me".
+	leaseBackground atomic.Bool
+	// leaseWake nudges the pump, which otherwise parks in select and would
+	// not learn about a resume until the next event arrived — exactly the
+	// wrong moment, since resuming must FLUSH what the window is holding.
+	//
+	// Buffered by one and sent to non-blockingly, so a read loop never
+	// waits on a pump that is mid-write. Dropping a nudge is safe because
+	// the store happens BEFORE the send: a send that finds a token already
+	// queued is a send whose value the pending token will deliver anyway.
+	leaseWake chan struct{}
+
 	// inRead is true exactly while the read loop sits in ws.Read.
 	// coder/websocket only surfaces pongs from inside Read, so a
 	// missing pong while the reader is off processing a frame
@@ -279,6 +294,7 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		sessionScopes:     settings.sessionScopes,
 		stepUpProof:       settings.stepUpProof,
 		eventScopes:       eventScopes,
+		leaseWake:         make(chan struct{}, 1),
 	}
 	h.lastReadAt.Store(time.Now().UnixNano())
 	defer h.sub.Close()
@@ -611,6 +627,8 @@ func (h *connHandler) readLoop(ctx context.Context) error {
 			h.handleSubscribe(ctx, frame)
 		case frameTypeWatch:
 			h.handleWatch(ctx, frame)
+		case frameTypeLease:
+			h.handleLease(ctx, frame)
 		default:
 			h.writeError(ctx, frame.ID, &FrameError{
 				Code:    ErrCodeBadParams,
@@ -663,6 +681,45 @@ func (h *connHandler) handleWatch(ctx context.Context, frame ClientFrame) {
 		}
 	}
 	h.sub.SetWatchedThreads(frame.Threads)
+}
+
+// handleLease records whether this connection's CLIENT is in the foreground
+// (lease.go). Idempotent, and not a latch: a phone that pauses and resumes
+// states both, and `active` restores exactly the delivery it had.
+//
+// An unrecognised state is refused and changes nothing. "The client sent a
+// spelling this build does not know" and "the client meant active" are
+// different facts, and the only reading that cannot silently un-background a
+// connection — or silently background one — is the refusal.
+//
+// The verdict lands in TWO places because it is read on two goroutines:
+//
+//   - The subscriber, for the withheld channels. That check runs at ENQUEUE
+//     time on the bus fanout goroutine, beside the origin, grant and watch
+//     filters, so a withheld frame never occupies a buffer slot and never
+//     reaches gap accounting.
+//   - The pump, for the delta window. It owns the pending merges, so it
+//     must both learn the new state and be WOKEN by it: resuming has to
+//     flush immediately rather than at the next event.
+func (h *connHandler) handleLease(ctx context.Context, frame ClientFrame) {
+	var background bool
+	switch frame.State {
+	case leaseStateActive:
+	case leaseStateBackground:
+		background = true
+	default:
+		h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid lease state"})
+		return
+	}
+	h.sub.SetBackground(background)
+	// Store, then nudge. The order is what makes a dropped nudge safe: a
+	// token already queued is one the pump has not consumed yet, so it will
+	// read this value when it does.
+	h.leaseBackground.Store(background)
+	select {
+	case h.leaseWake <- struct{}{}:
+	default:
+	}
 }
 
 // dispatchRPC enforces the per-conn concurrency cap and spawns a
@@ -856,12 +913,31 @@ func (h *connHandler) pumpEvents(ctx context.Context) {
 	})
 	defer buf.stop()
 
+	// The lease's delta window (lease.go). A value, not a pointer, and it
+	// allocates nothing until a frame is actually merged — a connection
+	// that never leases background pays two idle select arms and no more.
+	// Stopped BEFORE the batch buffer (defers run LIFO) because it feeds
+	// into it: held text has to reach buf before buf makes its last write.
+	deltas := deltaCoalescer{window: leaseDeltaWindow, emit: buf.add}
+	defer deltas.stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-h.sub.Done():
 			return
+		case <-h.leaseWake:
+			// Resuming flushes NOW rather than at the window's next tick,
+			// which is the difference between a phone that paints on the
+			// first frame after resume and one that paints a quarter second
+			// later. The event branch flushes too, so this nudge is what
+			// covers a resume into silence.
+			if !h.leaseBackground.Load() {
+				deltas.flushAll()
+			}
+		case <-deltas.timerC():
+			deltas.flushAll()
 		case <-buf.timerC():
 			buf.flushNow()
 		case e := <-h.sub.Events():
@@ -871,6 +947,26 @@ func (h *connHandler) pumpEvents(ctx context.Context) {
 			// any event enqueued before the filters were armed.
 			if !h.eventVisible(e.Channel) {
 				continue
+			}
+			// The lease is read here, per event, rather than mirrored from
+			// the nudge: the read loop's store then strictly precedes every
+			// event the pump has not yet taken, so a lease applies to
+			// exactly the frames emitted after the client stated it. A
+			// mirror would apply it to "the frames after the pump noticed",
+			// which is a different and unpredictable set.
+			if h.leaseBackground.Load() {
+				// Absorbed into a pending merge, or handed back unchanged
+				// with everything that had to precede it already emitted.
+				if deltas.intercept(e) {
+					continue
+				}
+			} else {
+				// Resumed since the last event. Whatever the window still
+				// holds goes out AHEAD of this frame: its seq is lower, and
+				// a client drops any frame at or below its channel cursor,
+				// so a late merge is lost text rather than late text. No-op
+				// (one length check) on every connection that never leased.
+				deltas.flushAll()
 			}
 			buf.add(e)
 		}

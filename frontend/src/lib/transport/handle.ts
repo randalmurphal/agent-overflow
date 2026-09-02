@@ -21,6 +21,7 @@
 
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import { backendById, homeBackend } from './backends';
+import type { LeaseState } from './frames';
 import type { StepUpProver } from './wsClient';
 
 /**
@@ -49,6 +50,13 @@ export interface TransportHandle {
    * later attach — and ./wsClient.ts owns what happens under it.
    */
   installStepUpProver(prover: StepUpProver | null): void;
+  /**
+   * State this client's foreground lifecycle on this connection. Whole
+   * client, so ./backends.ts fans it out to every attached backend and
+   * ./lease.ts is the single door — a per-handle call is the mechanism, not
+   * the interface a caller reaches for.
+   */
+  setLease(state: LeaseState): void;
   subscribe(channel: string, handler: (data: unknown) => void): () => void;
 }
 

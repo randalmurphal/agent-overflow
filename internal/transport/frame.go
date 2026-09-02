@@ -13,6 +13,7 @@ const (
 	frameTypeReplay    = "replay"
 	frameTypeSubscribe = "subscribe"
 	frameTypeWatch     = "watch"
+	frameTypeLease     = "lease"
 	frameTypeBatch     = "batch"
 	frameTypePing      = "ping"
 	frameTypeHello     = "hello"
@@ -185,6 +186,13 @@ const MaxRPCParams = 64
 //     (event_entity.go); every other channel is unaffected. The set is
 //     absolute and idempotent, an empty array is legal and means "watching
 //     nothing", and a connection that never sends one stays wildcard.
+//   - "lease": state this CLIENT's whole-app lifecycle in State, either
+//     "active" (the default every connection starts in) or "background".
+//     A backgrounded connection has its highlight seeds withheld and its
+//     transcript deltas coalesced; everything else flows unchanged. Any
+//     other spelling is a bad_params refusal that leaves the lease as it
+//     was, and a connection that never sends one behaves exactly as it did
+//     before the frame existed. Doctrine and mechanism: lease.go.
 //
 // Deliberately a SEPARATE frame type from "subscribe" rather than another
 // field on it. The two answer different questions — subscribe narrows by
@@ -211,6 +219,14 @@ type ClientFrame struct {
 	// mean the same thing on that frame — watching nothing — and no other
 	// frame type is affected by its absence.
 	Threads []string `json:"threads,omitempty"`
+	// State carries a lease frame's whole-client lifecycle: "active" or
+	// "background", and nothing else (lease.go). Read only for a frame
+	// whose Type is already "lease", so `omitempty` costs nothing and no
+	// other frame type is affected by its absence — but an ABSENT state on
+	// a lease frame is a refusal, not a default, because "the client meant
+	// active" and "the client serialized the field wrong" are the two
+	// readings and only one of them is safe to act on.
+	State string `json:"state,omitempty"`
 	// StepUpToken carries a fresh step-up proof for THIS call and no
 	// other: the single-use token a passkey assertion minted, bound to
 	// the session this connection named (§4 "Step-up"). Empty on every

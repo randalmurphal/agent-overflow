@@ -228,6 +228,43 @@ document (`frontend/src/lib/stores/watchedThreads.ts`). A surface that stopped
 receiving while off-screen would render stale the moment it is looked at again,
 and the recovery is a resync the user waits through.
 
+### A client states whether it is running at all
+
+A client sends `{"type":"lease","state":"background"}` when the PLATFORM has
+paused it — the phone shell's app-lifecycle pause, and nothing else. The server
+then serves that connection less: `highlight:seed` is withheld entirely, and
+`provider:item_event` deltas are merged to one frame per (thread, item) per
+250ms. `{"state":"active"}` restores full streaming and flushes whatever the
+window was holding; any other spelling is a `bad_params` refusal that leaves
+the lease unchanged. Everything else — turns, approvals, errors, thread rows,
+notifications — is untouched, which is what keeps a sleeping phone's badges and
+its push mapping correct.
+
+The distinction from the watch frame above is the whole design. Watching is
+about WHICH entities a client has surfaces for; the lease is about whether the
+client is running. So it is never per pane, never `document.visibilityState`,
+never focus: a hidden tab and a minimised window keep streaming, for the same
+reason an off-screen pane keeps watching.
+
+The rules the two ends agree on:
+
+- **Active by default, and it survives nothing.** A connection that never sends
+  one behaves exactly as it did before the frame existed — every desktop
+  client, every browser client, every Go client in the tree. A reconnect starts
+  active and the client restates a non-active state after hello, beside its
+  watch set.
+- **A withheld seed is not a gap**, by the same ordering rule the watch filter
+  obeys: the check runs ahead of drop accounting. The channel is also ephemeral
+  and entity-filtered, so its advancing seq neither replays nor trips the
+  client's forward-skip heuristic.
+- **A merged frame carries the last merged frame's seq**, and the merged
+  frames of one channel never leave seq order. A client drops anything at or
+  below its channel cursor, so an out-of-order merge would be lost text rather
+  than late text; the server therefore flushes every pending row ahead of any
+  pass-through on that channel, and flushes before forwarding once resumed.
+  That same flush is what keeps a row's deltas ahead of the `meta` or `patch`
+  that re-states it.
+
 ## The credential channel
 
 One launch, one session token, one validation function

@@ -35,6 +35,7 @@
 // one backend never enters the fan-out path at all (./runtime.ts
 // dispatches straight to the home handle), so it pays what it paid before.
 
+import type { LeaseState } from './frames';
 import type { EventOrigin, TransportHandle } from './handle';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import {
@@ -146,6 +147,14 @@ const standing = new Set<StandingSubscription>();
 // somebody remembers to wire).
 let installedProver: StepUpProver | null = null;
 
+// The client's foreground lifecycle, held here for the same reason the prover
+// is: "every attached backend, and every one attached afterwards" is a fact
+// this module owns. The lifecycle is whole-CLIENT — one OS pausing one app —
+// so a second machine's connection is exactly as backgrounded as the first,
+// and a backend attached while the phone is asleep must be told so at attach
+// rather than at the next resume.
+let clientLease: LeaseState = 'active';
+
 // The handle for one entry. Identical in shape to the single-connection
 // handle it replaced.
 function createHandle(entry: () => Entry, id: string): TransportHandle {
@@ -164,6 +173,9 @@ function createHandle(entry: () => Entry, id: string): TransportHandle {
     },
     installStepUpProver(prover: StepUpProver | null): void {
       entry().client.installStepUpProver(prover);
+    },
+    setLease(state: LeaseState): void {
+      entry().client.setLease(state);
     },
     subscribe(channel: string, handler: (data: unknown) => void): () => void {
       return entry().client.subscribe(channel, handler);
@@ -310,6 +322,9 @@ export function attachBackend(descriptor: BackendDescriptor): BackendEntry {
     byId.set(descriptor.backendId, entry);
   }
   if (installedProver !== null) entry.handle.installStepUpProver(installedProver);
+  // A backend attached while the client is asleep is told so now, not at
+  // the next resume: it would otherwise stream at full rate to a paused app.
+  if (clientLease !== 'active') entry.handle.setLease(clientLease);
   // Resolve this backend's grant set from the credential stored for it,
   // BEFORE anything renders against it. A surface that mounted on the
   // unresolved snapshot would hide every control the backend would in fact
@@ -412,6 +427,20 @@ export function subscribeEveryBackend(
 export function installStepUpProverEverywhere(prover: StepUpProver | null): void {
   installedProver = prover;
   for (const entry of entries) entry.handle.installStepUpProver(prover);
+}
+
+/**
+ * State the client's foreground lifecycle on every attached backend, and on
+ * every backend attached afterwards.
+ *
+ * ./lease.ts is the door; this is the fan-out. It is unconditional across
+ * backends by construction: the signal is one app being paused by one OS,
+ * not a per-connection preference, so there is no shape in which one
+ * attached machine is backgrounded and another is not.
+ */
+export function setLeaseEverywhere(state: LeaseState): void {
+  clientLease = state;
+  for (const entry of entries) entry.handle.setLease(state);
 }
 
 // ---------------------------------------------------------------------------
@@ -619,6 +648,7 @@ export function __resetBackendsForTest(): void {
   }
   homeEntry.lastFanoutError = null;
   installedProver = null;
+  clientLease = 'active';
   backendSource = manifestBackendDescriptors;
 }
 
@@ -638,6 +668,9 @@ export function __attachBackendForTest(
     byId.set(descriptor.backendId, entry);
   }
   if (installedProver !== null) entry.handle.installStepUpProver(installedProver);
+  // A backend attached while the client is asleep is told so now, not at
+  // the next resume: it would otherwise stream at full rate to a paused app.
+  if (clientLease !== 'active') entry.handle.setLease(clientLease);
   refreshGrantedScopes(entry.id);
   for (const sub of standing) attachStanding(sub, entry);
   notifyBackendsChanged();

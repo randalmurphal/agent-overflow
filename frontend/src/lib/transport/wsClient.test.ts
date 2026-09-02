@@ -3470,3 +3470,144 @@ describe('WSClient', () => {
     }
   });
 });
+
+// The client half of the lifecycle lease (internal/transport/lease.go).
+//
+// Coverage:
+//   - a state is sent once and an identical one sends nothing
+//   - a client that never leases puts NO lease byte on the wire, on the
+//     first connection or any later one — the desktop and browser floor
+//   - a state set while disconnected is retained and stated on open
+//   - a non-active state is restated after every reconnect, and resuming
+//     stops the restatement (the backend starts every connection active)
+describe('lease frame', () => {
+  beforeEach(() => {
+    MockWebSocket.reset();
+    sessionStorage.clear();
+    __resetRunModeForTest();
+  });
+
+  afterEach(() => {
+    __resetRunModeForTest();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function leaseFrames(ws: MockWebSocket): Array<Record<string, unknown>> {
+    return ws.sent.filter((frame) => frame.type === 'lease');
+  }
+
+  async function connectedClient() {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    return { client, ws };
+  }
+
+  it('states a background lease once and dedups a repeat', async () => {
+    const { client, ws } = await connectedClient();
+
+    client.setLease('background');
+    client.setLease('background');
+    expect(leaseFrames(ws)).toEqual([{ type: 'lease', state: 'background' }]);
+
+    client.setLease('active');
+    expect(leaseFrames(ws)).toEqual([
+      { type: 'lease', state: 'background' },
+      { type: 'lease', state: 'active' },
+    ]);
+
+    client.close();
+  });
+
+  it('sends nothing for a client that never leases, on any connection', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    try {
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      client.subscribe('thread:updated', () => {});
+      await vi.advanceTimersByTimeAsync(0);
+      const first = MockWebSocket.instances[0]!;
+      first.acceptOpen();
+      await vi.advanceTimersByTimeAsync(0);
+      // `active` is the resting state AND the never-set one, so even
+      // stating it explicitly here would be a change; stating nothing is
+      // what every desktop and browser client does.
+      expect(leaseFrames(first)).toHaveLength(0);
+
+      first.triggerClose();
+      await vi.advanceTimersByTimeAsync(125);
+      const second = MockWebSocket.instances[1]!;
+      second.acceptOpen();
+      await flushMicrotasks();
+      expect(leaseFrames(second)).toHaveLength(0);
+
+      client.close();
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('retains a lease set while disconnected and states it on open', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    // No socket yet — the send is dropped, the state is kept.
+    client.setLease('background');
+
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    expect(leaseFrames(ws)).toEqual([{ type: 'lease', state: 'background' }]);
+
+    client.close();
+  });
+
+  it('restates a background lease after a reconnect, and stops once resumed', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    try {
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      client.subscribe('thread:updated', () => {});
+      await vi.advanceTimersByTimeAsync(0);
+      const first = MockWebSocket.instances[0]!;
+      first.acceptOpen();
+      await vi.advanceTimersByTimeAsync(0);
+      client.setLease('background');
+
+      first.triggerClose();
+      await vi.advanceTimersByTimeAsync(125);
+      const second = MockWebSocket.instances[1]!;
+      second.acceptOpen();
+      await flushMicrotasks();
+
+      // A fresh connection starts ACTIVE on the backend, so a phone that
+      // slept through the drop would otherwise be streamed at full rate.
+      // Beside the watch restatement and ahead of the replay it precedes.
+      expect(leaseFrames(second)).toEqual([{ type: 'lease', state: 'background' }]);
+      expect(second.sent.at(-1)).toMatchObject({ type: 'replay' });
+
+      client.setLease('active');
+      second.triggerClose();
+      // Second reconnect of this client: the backoff ladder has climbed, so
+      // the wait is longer than the first one's.
+      await vi.advanceTimersByTimeAsync(2000);
+      const third = MockWebSocket.instances[2]!;
+      third.acceptOpen();
+      await flushMicrotasks();
+      // Nothing to restate: the new connection already is what we want.
+      expect(leaseFrames(third)).toHaveLength(0);
+
+      client.close();
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+});
