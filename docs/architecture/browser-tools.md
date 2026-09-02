@@ -9,9 +9,11 @@ server advertises an empty tool list and never starts the engine. This keeps
 the off-state cheap while allowing a live provider to rediscover the tools
 without restarting its process.
 
-A deployment with no engine — a remote `--connect` backend, a headless serve
-mode, `go test` — registers no server at all, so a session there is offered no
-browser tools rather than tools that could only refuse.
+A deployment with no engine — a remote `--connect` backend, `go test`, a serve
+host with no Chromium installed on it — registers no server at all, so a
+session there is offered no browser tools rather than tools that could only
+refuse. Serve mode with a Chromium installed HAS an engine, headless and
+windowless; see "Serve mode drives a headless Chromium" below.
 
 Three settings are independent:
 
@@ -24,6 +26,12 @@ Three settings are independent:
   copy of it.
 - `browserAllowOutsideWorkspace` (default `false`) widens direct-file opening
   beyond the current workspace/project roots.
+
+A fourth, `browserChromiumPath` (host tier, default empty), is deployment
+wiring rather than behavior: it names the Chromium a serve host launches when
+the one it wants is not on `PATH`. It must be an absolute path, it is ignored
+by every deployment whose engine is the platform's own, and it never causes a
+download.
 
 Browser pages start hidden — parked out of the window's layout rather than
 opened anywhere the user can see. An agent explicitly presents a page with
@@ -264,11 +272,25 @@ launcher's relay tunnel. The tool surface is identical, because the operations
 are the same CDP calls; the user-visible half is a real browser view the
 launcher positions over the pane's host rect.
 
-Every windowless run — `--connect`, a headless serve mode, `go test`, and any
-desktop whose OS is too old for its native engine — has **no browser engine and
-no browser tools**. There is no fallback browser to launch: the engines live in
-the desktop app instance, and a browser tool call on a windowless deployment
-answers one sentence saying browser tools are not available there. The mocked
+**Serve mode drives a headless Chromium** (`docs/specs/remote-access.md` §7,
+and the operator's copy in [serve-mode.md](serve-mode.md) § Browser tools). A
+backend with no window cannot host a view, so it launches its own browser
+instead: one process per workspace profile, started by that profile's first
+page and stopped with it, sandbox on. The tool surface is again identical, for
+the same reason the WSL one is — the operations are the same CDP calls. What
+is absent is the PANE, which is window chrome: an agent on a serve host gets
+the tools, and nobody gets a view of them. Selection is an explicit request
+that only the serve boot makes, never an inference from the absence of a
+window, or `go test` would start browsers. And nothing is ever downloaded: the
+Chromium has to already be installed, or the host keeps the windowless answer.
+
+Every OTHER windowless run — `--connect`, `go test`, and any desktop whose OS
+is too old for its native engine — has **no browser engine and no browser
+tools**, as does a serve host with no Chromium on it. There is no fallback
+browser to launch, and a browser tool call on such a deployment answers one
+sentence saying browser tools are not available there. The hello frame carries
+the same answer as `browser` in its capability list, so a client can tell "no
+browser on that machine" from "turned off in Settings". The mocked
 boot modes (`--harness`, `--soak`) are the one exception: they pin a fake engine
 so the companion pane's chrome, tab strip, and host rect render with nothing
 behind them. That pin is default-on and lifted by one manual gate —

@@ -25,6 +25,21 @@ func SetBrowserNativeWindow(a *App, window func() unsafe.Pointer) {
 	a.browser.nativeWindow = window
 }
 
+// headlessChromiumOptions builds the headless engine's wiring, or nil when
+// this deployment did not ask for it. Only the serve boot does
+// (UseHeadlessBrowserEngine); every other windowless deployment shares the
+// same absent window and must keep getting no engine.
+//
+// The one thing it carries is the operator's browserChromiumPath. Empty is
+// the normal value and means "find a Chromium on PATH"; nothing is ever
+// downloaded, so a machine with no browser simply has no browser tools.
+func (a *App) headlessChromiumOptions(current settings.Settings) *appbrowser.HeadlessChromiumOptions {
+	if !a.browser.headlessChromium {
+		return nil
+	}
+	return &appbrowser.HeadlessChromiumOptions{Binary: current.BrowserChromiumPath}
+}
+
 func browserConfigFromSettings(current settings.Settings) appbrowser.Config {
 	return appbrowser.Config{
 		Enabled:               current.BrowserEnabled,

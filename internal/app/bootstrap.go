@@ -63,6 +63,39 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 // entire point of leaving it running.
 func UseFileKeychain(a *App) { a.fileKeychainOverride = true }
 
+// UseHeadlessBrowserEngine asks for the headless Chromium browser engine.
+// Call before Start, like the two above: the Manager is built during startup
+// and its engine is chosen once, for the life of the process.
+//
+// It is a separate function from ConfigureIsolation for the same reason
+// UseFileKeychain is — serve is not an isolated boot — and it is a REQUEST
+// rather than an inference for a much sharper reason. Every other windowless
+// deployment (a `--connect` backend, the harness, `go test` itself) also has
+// no window, and inferring "no window, therefore launch a browser" would make
+// the suite start browsers on the developer's machine. So the serve boot,
+// which is the one deployment that wants one, says so by name
+// (docs/specs/remote-access.md §7).
+//
+// Asking does not guarantee an engine: the browser has to already be on the
+// machine, because nothing is ever downloaded. A serve host without one keeps
+// the windowless answer — no engine, no MCP server, one line in the log.
+func UseHeadlessBrowserEngine(a *App) { a.browser.headlessChromium = true }
+
+// BrowserToolsAvailable reports whether this backend has a browser engine
+// at all, which is what the transport advertises as CapabilityBrowser.
+//
+// Deployment, not settings and not authorization: the engine is chosen once
+// during Start, so this answers "could browser tools work on this machine"
+// and never "are they switched on" or "may this caller use one". A serve
+// host with no Chromium installed answers false, and a client reading that
+// can say why instead of offering a surface with nothing behind it.
+//
+// False before Start, and false on a bare fixture with no Manager, which is
+// the same answer both deserve.
+func BrowserToolsAvailable(a *App) bool {
+	return a.browser.manager != nil && a.browser.manager.Available()
+}
+
 // HasEnrolledDevice reports whether any device could still sign in to this
 // backend from somewhere else.
 //

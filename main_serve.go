@@ -64,7 +64,7 @@ func checkBackendVerbFlags(verb string, flags cliFlags) error {
 // runServe boots the windowless backend and runs until it is signalled.
 //
 // It is runHeadless's shape — transport, App.Start, signal wait, ordered
-// shutdown — with four differences, and each one is the reason this is not
+// shutdown — with five differences, and each one is the reason this is not
 // a parameter on that function:
 //
 //  1. The persisted network preferences apply. A serve host's bind is
@@ -79,6 +79,10 @@ func checkBackendVerbFlags(verb string, flags cliFlags) error {
 //     carries the argument.
 //  4. A first boot with nothing paired turns the console into the owner
 //     surface (main_serve_enroll.go).
+//  5. The browser engine is asked for by name. Every other windowless boot
+//     shares this one's absent window and must keep getting no engine, so
+//     "launch a headless Chromium" is a request only this mode makes
+//     (app.UseHeadlessBrowserEngine).
 func runServe(flags cliFlags) {
 	// Before the App exists: a supervisor's opening frame decides whether
 	// this boot is a TRIAL, and a trial boots with its activation gate
@@ -96,6 +100,14 @@ func runServe(flags cliFlags) {
 	// Before Start, which is where initStores decides which credential
 	// backend to build.
 	appservice.UseFileKeychain(appService.App)
+	// Also before Start, which is where the browser Manager picks its engine.
+	// This mode opens no window, so the platform engines cannot run here —
+	// but the browser TOOLS still can, over a headless Chromium this backend
+	// launches itself (docs/specs/embedded-browser.md §2, and the operator
+	// walkthrough in docs/architecture/serve-mode.md § Browser tools). It is
+	// a request, not a promise: the browser has to already be installed,
+	// because nothing is ever downloaded.
+	appservice.UseHeadlessBrowserEngine(appService.App)
 	configureServeSupervision(appService, supervisor)
 	// Same reason runHeadless does it here: the updater RPC handlers must
 	// see a fully wired App before the transport can dispatch to them.

@@ -640,19 +640,20 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		dbDir,
 		browserConfigFromSettings(browserSettings),
 		appbrowser.ManagerOptions{
-			FakeEngine:   a.browser.mockEngine,
-			PaneHost:     a.paneHostOptions(),
-			NativeWindow: a.browser.nativeWindow,
-			Accelerators: a.browserAccelerators,
+			FakeEngine:       a.browser.mockEngine,
+			PaneHost:         a.paneHostOptions(),
+			HeadlessChromium: a.headlessChromiumOptions(browserSettings),
+			NativeWindow:     a.browser.nativeWindow,
+			Accelerators:     a.browserAccelerators,
 		},
 	)
 	a.browser.manager.SetEventSink(func(event appbrowser.CompanionEvent) {
 		a.emit(eventchan.BrowserCompanionState, event)
 	})
-	// No engine, no browser MCP server. A deployment without a window hosts
-	// no pages (spec §9), so offering a thread 28 tools that can only refuse
-	// would be worse than offering none: the absence is what the model and
-	// the UI can both read.
+	// No engine, no browser MCP server. A deployment with neither a window
+	// nor a headless engine hosts no pages (spec §9), so offering a thread 28
+	// tools that can only refuse would be worse than offering none: the
+	// absence is what the model and the UI can both read.
 	if a.browser.manager.Available() {
 		a.browser.mcp = appbrowser.NewMCPServer(a.browser.manager, browserSettings.BrowserEnabled)
 	}

@@ -450,6 +450,14 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		StepUpProof: func(sessionID, token string) bool {
 			return appservice.StepUpProof(appService.App, sessionID, token)
 		},
+		// Whether this backend can drive a browser for an agent at all.
+		// Late-bound like the seams above: the browser Manager picks its
+		// engine during ServiceStartup, and on a serve host that choice
+		// depends on finding a Chromium installed on the machine
+		// (docs/specs/remote-access.md §7).
+		BrowserAvailable: func() bool {
+			return appservice.BrowserToolsAvailable(appService.App)
+		},
 		PageSessionCredential: func() string {
 			return appservice.PageSessionCredential(appService.App)
 		},

@@ -219,6 +219,45 @@ changes, the flag wins, and nothing says why. Set the bind toggle and the port
 below instead, and keep `--listen` for a host whose address must be fixed
 outside the app.
 
+### Browser tools
+
+A serve host can drive a real browser for its agents, and it is the one
+thing on this list you have to install yourself.
+
+Install a Chromium. Any of `chromium`, `chromium-browser`,
+`google-chrome`, `google-chrome-stable` or `chrome` on `PATH` is found
+automatically; on macOS the two usual app bundles are found too. If yours
+is somewhere else, name it in Settings → Browser as
+`browserChromiumPath`, which must be an absolute path.
+
+```sh
+sudo apt install chromium            # Debian/Ubuntu
+sudo dnf install chromium            # Fedora
+```
+
+**Nothing is ever downloaded.** A host with no browser on it simply has
+no browser tools: the backend starts normally, the browser MCP server is
+not offered to any thread, and the log says so once, at boot:
+
+```
+browser tools off: no Chromium found on this machine (set browserChromiumPath or install chromium)
+```
+
+**Run the backend as an ordinary user, not as root.** The browser is
+launched with its sandbox on, and Chromium's sandbox refuses to start
+under uid 0. The units `service install` writes are user units, so this
+is already true if you installed with that command; a hand-written system
+unit needs a `User=` naming a real account. Turning the sandbox off is not
+an option this backend offers.
+
+One browser process runs per workspace a thread is using, started by the
+first page that needs it and stopped when the last one closes, with its
+profile under the config root. An idle host runs no browser at all.
+
+There is no browser PANE on a serve host: that is a piece of window
+chrome, and this mode has no window. Agents get the tools; you do not get
+a view of them.
+
 ## The supervisor
 
 A serve host is two processes: `agent-overflow supervise`, which the service
