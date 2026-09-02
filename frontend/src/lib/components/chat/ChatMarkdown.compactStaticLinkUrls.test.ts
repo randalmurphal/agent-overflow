@@ -7,6 +7,7 @@ import type {
   PreviewAvailability,
   PreviewLinkTarget,
 } from '../../stores/devServers.svelte';
+import type { Extension } from '../../markdown';
 
 // One href corpus, both render paths, per-case naming.
 //
@@ -218,6 +219,18 @@ function previewTarget(
   };
 }
 
+/**
+ * The rewrite, armed. `buildPreviewLinkExtension` answers undefined for a
+ * machine that has not spoken; every case here hands it a target, so an
+ * undefined means the builder changed and the case is no longer testing
+ * what it says it is.
+ */
+function previewExtension(kind: PreviewAvailability['kind'], canAllow: boolean): Extension {
+  const extension = buildPreviewLinkExtension(previewTarget(kind, canAllow));
+  if (!extension) throw new Error('preview rewrite was not built for a stated target');
+  return extension;
+}
+
 interface PreviewRender {
   href: string | null;
   title: string | null;
@@ -307,7 +320,7 @@ describe('preview link rendering across both render paths', () => {
     const { container } = render(CompactStaticMarkdownHarness, {
       source: '[' + LABEL + '](' + PREVIEW_SOURCE_URL + ')',
       allowedLinkPrefixes: ['*', PATH_LINK_HREF_PREFIX],
-      extensions: [buildPreviewLinkExtension(previewTarget(kind, canAllow))],
+      extensions: [previewExtension(kind, canAllow)],
     });
 
     const componentPath = container.querySelector('[data-full-token-tree] > div');
@@ -329,7 +342,7 @@ describe('preview link rendering across both render paths', () => {
     const { container } = render(CompactStaticMarkdownHarness, {
       source: '[' + LABEL + '](https://example.test/x)',
       allowedLinkPrefixes: ['*', PATH_LINK_HREF_PREFIX],
-      extensions: [buildPreviewLinkExtension(previewTarget('open', true))],
+      extensions: [previewExtension('open', true)],
     });
 
     const staticPath = container.querySelector('[data-compact-static] > div');
