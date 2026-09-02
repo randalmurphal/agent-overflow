@@ -126,7 +126,7 @@ forever.
   The `maxProbesPerScan` cut is taken from the ports SORTED, never from
   map order, so a machine over the limit offers the same subset every
   tick instead of a different one.
-- **A deadline is not a verdict.** `answersLikeAPage` stores nothing when
+- **A deadline is not a verdict.** `pageScheme` stores nothing when
   the context is done after the attempt. Storing "not a page" there would
   write an answer for a port nothing asked, and the memo would be
   consulted instead of the port for the whole TTL.

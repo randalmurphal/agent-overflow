@@ -69,7 +69,7 @@ func TestProbeAcceptsHTMLAndRedirectsAndRefusesTheRest(t *testing.T) {
 			probe := newProber(time.Now)
 			got := pageOf(probe, context.Background(), loopbackPort(t, srv), 0)
 			if got != tc.want {
-				t.Fatalf("answersLikeAPage = %v, want %v", got, tc.want)
+				t.Fatalf("pageScheme answered %v, want %v", got, tc.want)
 			}
 		})
 	}
