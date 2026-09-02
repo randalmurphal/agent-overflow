@@ -29,7 +29,11 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { emitItemEventUpsert } from '../../../test/helpers/chat';
 import { THREAD_ROW_DRAG_MIME } from '../../utils/threadDragPayload';
-import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import {
+  REMOTE_BACKEND_UUID,
+  resetStagedBackends,
+  stageBackend,
+} from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transport/entityIndex';
 import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
@@ -1169,6 +1173,45 @@ describe('<ThreadRow> machine chip', () => {
     const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread, pane } });
     expect(getByTestId('thread-row-machine-name').textContent?.trim()).toBe('Desk');
     expect(queryByTestId('thread-row-worktree-label')).toBeNull();
+  });
+
+  // A machine with no browser tools cannot open a page at all, which is
+  // worth knowing before sending a turn there. Said on the chip that already
+  // names the machine, because that is where the reader is already looking.
+  it('says so on the chip when that machine has no browser tools', async () => {
+    await seedRepoOnBothMachines();
+    noteThread('thread-1', 'laptop');
+    const thread = makeThread({ projectId: 'p-laptop' });
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(getByTestId('thread-row-machine').getAttribute('title')).toBe(
+      'Machine: Laptop. No browser on this machine.',
+    );
+  });
+
+  it('says only the machine when it has them', async () => {
+    stageBackend({
+      hello: {
+        protocolVersion: 1,
+        capabilities: ['browser'],
+        backendId: REMOTE_BACKEND_UUID,
+        backendName: 'Laptop',
+        serverTimeMs: 0,
+        clockSkewMs: 0,
+        bundleId: '',
+      } as never,
+    });
+    setBindingMock('ListProjects', async () => [
+      { project: { id: 'p-home', path: '/home/me/app', name: 'app', remoteURL: 'git@github.com:me/app.git', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+      { project: { id: 'p-laptop', path: '/Users/me/app', name: 'app', remoteURL: 'https://github.com/me/app', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+    ]);
+    await refreshProjects();
+    noteProject('p-laptop', 'laptop');
+    noteThread('thread-1', 'laptop');
+    const thread = makeThread({ projectId: 'p-laptop' });
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(getByTestId('thread-row-machine').getAttribute('title')).toBe('Machine: Laptop');
   });
 
   it('shows nothing when the project lives on one machine', async () => {

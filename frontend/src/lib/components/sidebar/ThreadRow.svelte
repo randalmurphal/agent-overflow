@@ -14,6 +14,7 @@
     threadMachine,
     threadMachineUnreachable,
   } from '../../stores/attachedBackends.svelte';
+  import { backendHasBrowser } from '../../utils/browserTools';
   import { projectSpansBackends } from '../../stores/projects.svelte';
   import MonitorIcon from '@lucide/svelte/icons/monitor';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
@@ -337,6 +338,17 @@
     const entry = attachedBackendEntry(threadMachine(thread.id, thread.projectId));
     return entry ? backendDisplayName(entry) : '';
   });
+  // An agent on a machine with no browser tools cannot open a page at all.
+  // Said on the chip that already names the machine rather than on a row of
+  // its own: it is a property of that machine, and the chip is where the
+  // reader is already looking to find out which one this thread is on.
+  let machineTitle = $derived(
+    machineName === ''
+      ? ''
+      : backendHasBrowser(threadMachine(thread.id, thread.projectId))
+        ? `Machine: ${machineName}`
+        : `Machine: ${machineName}. No browser on this machine.`,
+  );
   let showWorktreeMeta = $derived(
     !editing && (Boolean(thread.worktreePath && worktreeName) || machineName !== ''),
   );
@@ -532,7 +544,7 @@
     <div
       class="relative -mt-1.5 flex h-3.5 items-center text-[0.625rem] leading-none text-fg-hint"
       style="padding-left: {worktreeIndentPx}px; padding-right: {worktreeRightPaddingPx}px"
-      title={worktreeName ? `Worktree: ${thread.worktreePath}` : `Machine: ${machineName}`}
+      title={worktreeName ? `Worktree: ${thread.worktreePath}` : machineTitle}
       aria-label={worktreeName ? `Worktree ${worktreeName}` : `Machine ${machineName}`}
       data-testid="thread-row-worktree"
     >
@@ -540,7 +552,7 @@
         <span
           class="inline-flex min-w-0 max-w-full shrink-0 items-center gap-1 px-1 py-0 text-fg-hint"
           data-testid="thread-row-machine"
-          title="Machine: {machineName}"
+          title={machineTitle}
         >
           <Icon icon={MonitorIcon} size={10} strokeWidth={1.8} class="shrink-0 opacity-85" />
           <span class="min-w-0 truncate text-[0.625rem]" data-testid="thread-row-machine-name">

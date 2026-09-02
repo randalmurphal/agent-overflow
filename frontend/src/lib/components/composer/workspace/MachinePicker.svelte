@@ -34,6 +34,7 @@
     getAttachedBackends,
     threadMachine,
   } from '../../../stores/attachedBackends.svelte';
+  import { backendHasBrowser } from '../../../utils/browserTools';
   import { projectBackend } from '../../../transport/entityIndex';
   import { HOME_BACKEND, type BackendKey } from '../../../transport/backendKey';
   import { addToast } from '../../../stores/toast.svelte';
@@ -144,14 +145,25 @@
       role="none"
     >
       <Menu ariaLabel="Machine" onClose={closeMenu}>
+        <!--
+          A machine with no browser tools is still a machine you can send
+          work to, so it stays selectable and only says so. Unreachable is
+          the louder of the two and wins the one description line: a machine
+          this client cannot talk to has no browser here either way.
+        -->
         {#each backends as entry (entry.id)}
           {@const reachable = backendReachable(entry.id)}
+          {@const noBrowser = !backendHasBrowser(entry.id)}
           <MenuItem
             label={backendDisplayName(entry)}
-            description={reachable ? undefined : 'Unreachable'}
+            description={!reachable ? 'Unreachable' : noBrowser ? 'No browser' : undefined}
             checked={entry.id === activeKey}
             disabled={!reachable}
-            title={reachable ? undefined : 'This machine cannot be reached right now'}
+            title={!reachable
+              ? 'This machine cannot be reached right now'
+              : noBrowser
+                ? 'An agent on this machine cannot open a browser'
+                : undefined}
             onSelect={() => void selectMachine(entry.id)}
           />
         {/each}

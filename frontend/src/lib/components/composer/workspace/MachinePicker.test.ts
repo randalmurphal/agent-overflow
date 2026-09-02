@@ -13,7 +13,11 @@ import { __resetSelectedBackendForTest, selectedBackend } from '../../../stores/
 import { __resetEntityIndexForTest, noteProject } from '../../../transport/entityIndex';
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../../transport/backendIdentity';
 import { HOME_BACKEND } from '../../../transport/backendKey';
-import { resetStagedBackends, stageBackend } from '../../../../test/helpers/backends';
+import {
+  REMOTE_BACKEND_UUID,
+  resetStagedBackends,
+  stageBackend,
+} from '../../../../test/helpers/backends';
 import { getToasts } from '../../../stores/toast.svelte';
 
 const HOME_UUID = '11111111-2222-4333-8444-555555555555';
@@ -103,6 +107,10 @@ describe('<MachinePicker>', () => {
     expect(laptop.textContent ?? '').not.toMatch(/\u2713/);
     expect(laptop).toHaveAttribute('aria-disabled', 'true');
     expect(laptop.textContent ?? '').toMatch(/Unreachable/);
+    // Unreachable is the louder of the two and owns the one description
+    // line: a machine this client cannot talk to has no browser here either
+    // way, so saying both would be saying one thing twice.
+    expect(laptop.textContent ?? '').not.toMatch(/No browser/);
   });
 
   it('flips the draft onto the chosen machine’s first project and stages the route', async () => {
@@ -166,5 +174,48 @@ describe('<MachinePicker>', () => {
     expect(defaults).not.toHaveBeenCalled();
     expect(pane.hasDraftPlaceholder).toBe(true);
     expect(selectedBackend()).toBe(HOME_BACKEND);
+  });
+
+  // A machine that cannot run a headless browser is still a machine you can
+  // send work to, so it stays selectable and only says so. Absence of the
+  // capability is the answer: a backend too old to advertise anything reads
+  // as having no browser rather than as unknown.
+  describe('browser capability', () => {
+    it('marks a reachable machine with no browser tools, without disabling it', async () => {
+      stageBackend();
+      await seedProjects([makeProject()]);
+      const pane = buildPlaceholderPane();
+      const { getByTestId, findByRole } = render(MachinePicker, { props: { pane } });
+
+      await fireEvent.click(getByTestId('machine-picker-trigger'));
+      const laptop = await findByRole('menuitem', { name: /Laptop/ });
+      expect(laptop.textContent ?? '').toMatch(/No browser/);
+      expect(laptop).not.toHaveAttribute('aria-disabled', 'true');
+      expect(laptop.getAttribute('title')).toBe(
+        'An agent on this machine cannot open a browser',
+      );
+    });
+
+    it('says nothing about a machine that has them', async () => {
+      stageBackend({
+        hello: {
+          protocolVersion: 1,
+          capabilities: ['browser'],
+          backendId: REMOTE_BACKEND_UUID,
+          backendName: 'Laptop',
+          serverTimeMs: 0,
+          clockSkewMs: 0,
+          bundleId: '',
+        } as never,
+      });
+      await seedProjects([makeProject()]);
+      const pane = buildPlaceholderPane();
+      const { getByTestId, findByRole } = render(MachinePicker, { props: { pane } });
+
+      await fireEvent.click(getByTestId('machine-picker-trigger'));
+      const item = await findByRole('menuitem', { name: /Laptop/ });
+      expect(item.textContent ?? '').not.toMatch(/No browser/);
+      expect(item.getAttribute('title')).toBeNull();
+    });
   });
 });

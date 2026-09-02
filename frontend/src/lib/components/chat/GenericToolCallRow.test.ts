@@ -6,6 +6,13 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { makeItem } from '../../../test/helpers/chat';
 import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
 import type { Item } from '../../types/models';
+import {
+  REMOTE_BACKEND_UUID,
+  resetStagedBackends,
+  stageBackend,
+} from '../../../test/helpers/backends';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
 
 // Minimal fake pane that satisfies the expansion-registry surface
 // GenericToolCallRow reads from. Shared between tests that need a pane
@@ -577,5 +584,70 @@ describe('<GenericToolCallRow> permission-denial chip', () => {
     });
     const { getByTestId } = render(GenericToolCallRow, { props: { item } });
     expect(getByTestId('tool-decision-chip').getAttribute('title')).toBeNull();
+  });
+});
+
+// A browser tool drives a real page. On the owner's own screen that page is
+// the companion browser and the row says nothing extra. Read from anywhere
+// else, the row is the only sign the page exists at all, so it names the
+// machine — otherwise "browser_click" reads as something that happened here.
+describe('<GenericToolCallRow> browser tools on another machine', () => {
+  const THREAD = 'thread-on-laptop';
+
+  function browserItem(server = BROWSER_TOOLS_SERVER): Item {
+    return makeItem({
+      id: 'tool-browser',
+      kind: 'tool_call',
+      toolName: 'MCP/browser_click',
+      summary: 'browser_click',
+      meta: JSON.stringify({ mcp: { server, tool: 'browser_click' } }),
+    });
+  }
+
+  beforeEach(() => {
+    resetBindingMocks();
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+    setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: '', size: 0, isComplete: true })));
+  });
+
+  it('names the machine on a row whose thread runs somewhere else', () => {
+    stageBackend();
+    noteThread(THREAD, 'laptop');
+    const { getByTestId } = render(GenericToolCallRow, {
+      props: { pane: makeFakePane({ threadId: THREAD }), item: browserItem() },
+    });
+
+    const badge = getByTestId('tool-call-card-browser-machine');
+    expect(badge.getAttribute('title')).toBe(
+      'Browsing on Laptop. The page is only visible there.',
+    );
+    expect(badge.dataset.machine).toBe('Laptop');
+  });
+
+  it('says nothing on the machine the page is actually on', () => {
+    const { queryByTestId } = render(GenericToolCallRow, {
+      props: { pane: makeFakePane({ threadId: 'thread-at-home' }), item: browserItem() },
+    });
+    expect(queryByTestId('tool-call-card-browser-machine')).toBeNull();
+  });
+
+  it('says nothing for an unrelated MCP server on the same machine', () => {
+    stageBackend();
+    noteThread(THREAD, 'laptop');
+    const { queryByTestId } = render(GenericToolCallRow, {
+      props: { pane: makeFakePane({ threadId: THREAD }), item: browserItem('docs') },
+    });
+    expect(queryByTestId('tool-call-card-browser-machine')).toBeNull();
+  });
+
+  it('keeps the row actions the host passed alongside it', () => {
+    stageBackend({ hello: { capabilities: ['browser'] } as never, backendId: REMOTE_BACKEND_UUID });
+    noteThread(THREAD, 'laptop');
+    const { getByTestId } = render(GenericToolCallRow, {
+      props: { pane: makeFakePane({ threadId: THREAD }), item: browserItem() },
+    });
+    expect(getByTestId('tool-call-card-browser-machine')).toBeTruthy();
+    expect(getByTestId('tool-call-card-status-slot')).toBeTruthy();
   });
 });
