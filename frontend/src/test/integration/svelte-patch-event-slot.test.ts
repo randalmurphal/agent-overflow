@@ -1,9 +1,11 @@
-// Regression test for the "event-slot-release" hunk of
-// frontend/patches/svelte@5.56.8.patch.
+// Regression test for the delegated-event slot leak. This was the
+// "event-slot-release" hunk of frontend/patches/svelte@5.56.8.patch; the
+// hunk was DROPPED on the 5.57.0 re-roll because upstream landed
+// sveltejs/svelte#18569, which is that hunk verbatim. The suite stays as
+// the tripwire — it must keep passing UNPATCHED.
 //
-// Pristine svelte (through 5.56.8; PR sveltejs/svelte#18569 is this hunk
-// verbatim but is still open as of 2026-08)
-// stores every delegated event in a module-level slot
+// Pristine svelte through 5.56.8 stores every delegated event in a
+// module-level slot
 // (`last_propagated_event` in internal/client/dom/elements/events.js) as
 // a deliberate Firefox workaround: if the event wrapper is GC'd
 // mid-propagation, its `__root` expando is lost and the event is
@@ -15,14 +17,14 @@
 // survived GC indefinitely on an idle window (2026-07-20 heap
 // analysis).
 //
-// The patch hunk schedules a macrotask after each dispatch that nulls
-// the slot: strictly after propagation and its trailing microtasks
-// settle, so the Firefox workaround window is fully preserved.
+// The fix schedules a macrotask after each dispatch that nulls the slot:
+// strictly after propagation and its trailing microtasks settle, so the
+// Firefox workaround window is fully preserved.
 //
 // This test clicks a delegated handler, unmounts the component, and
 // asserts the clicked element becomes collectable WITHOUT any further
-// events. On pristine svelte it fails (the slot pins the button). Drop
-// the hunk when this passes on an unpatched release.
+// events. It failed on svelte 5.56.8 and must keep passing from 5.57.0
+// on, with or without a patch.
 //
 // Needs --expose-gc; skips loudly without it:
 //   NODE_OPTIONS=--expose-gc pnpm exec vitest run --project unit \
@@ -80,7 +82,7 @@ describe.runIf(gc)('svelte patch: delegated-event slot releases after dispatch',
     // Phase 2 — after macrotasks run, the patch's scheduled clear has
     // nulled the slot and the element must be collectable.
     await collectHard();
-    expect(ref.deref(), 'clicked element still retained — is the event-slot-release hunk applied?').toBeUndefined();
+    expect(ref.deref(), 'clicked element still retained — did the upstream slot clear regress?').toBeUndefined();
   });
 });
 

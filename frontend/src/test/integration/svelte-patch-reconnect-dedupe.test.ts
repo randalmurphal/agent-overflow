@@ -1,5 +1,5 @@
 // Regression suite for the "reconnect-dedupe" hunk of
-// frontend/patches/svelte@5.56.8.patch.
+// frontend/patches/svelte@5.57.0.patch.
 //
 // Pristine svelte (5.56.8 and main as of 2026-08-23): `get()` on a derived
 // that was DISCONNECTED (lost its last reaction earlier), has run before,

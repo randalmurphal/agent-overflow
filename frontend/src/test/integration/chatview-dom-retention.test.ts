@@ -21,10 +21,10 @@
 //  - stack locals count as GC roots: element/pane references must stay
 //    confined to inner function scopes.
 //  - svelte keeps the last delegated event in a module slot
-//    (`last_propagated_event`); pristine svelte never clears it, so its
-//    `target` would retain a just-closed tree until the next user event.
-//    The "event-slot-release" hunk of patches/svelte@5.56.8.patch clears
-//    the slot a macrotask after each dispatch (focused regression:
+//    (`last_propagated_event`); svelte through 5.56.8 never cleared it,
+//    so its `target` would retain a just-closed tree until the next user
+//    event. Upstream 5.57.0 clears the slot a macrotask after each
+//    dispatch (sveltejs/svelte#18569; focused regression:
 //    svelte-patch-event-slot.test.ts), so this suite needs no flush —
 //    the settle waits in collectHard let the clear fire.
 //
@@ -317,7 +317,7 @@ describe.runIf(gc)('closed pane after the rate-limit popover was re-hovered post
     // sources, so the dep list past `sessionAccount` is new next run) →
     // hover is exactly "a disconnected derived reconnects while dirty with
     // a changed dep list" — the sequence pristine svelte double-registers
-    // (reconnect-dedupe hunk of patches/svelte@5.56.8.patch; focused
+    // (reconnect-dedupe hunk of patches/svelte@5.57.0.patch; focused
     // regression in svelte-patch-reconnect-dedupe.test.ts). The leftover
     // registration pinned `selectedAccount` in the global accounts signal
     // and, through the derived's closure context, the closed pane's whole

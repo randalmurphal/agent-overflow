@@ -1,5 +1,5 @@
 // Regression test for the "destroy-pass-errors" hunk of
-// frontend/patches/svelte@5.56.8.patch.
+// frontend/patches/svelte@5.57.0.patch.
 //
 // Pristine svelte destroys sibling effects in a loop (keyed {#each}
 // reconcile, branch teardown, component unmount). A throwing user

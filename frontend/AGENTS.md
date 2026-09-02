@@ -370,15 +370,16 @@ pnpm patch. Fix parser bugs there, never duplicating the fix in
 map, the host seams, the path-relative URL security boundary and the test
 map.
 
-`patches/svelte@5.56.8.patch` has six hunks, each dropping when its suite
-passes against an unpatched release. `svelte-patch-zombie-leak.test.ts`
-is a seventh suite with no hunk left, guarding a leak class upstream
-fixed in 5.56.5.
+`patches/svelte@5.57.0.patch` has five hunks, each dropping when its
+suite passes against an unpatched release.
+`svelte-patch-zombie-leak.test.ts` and
+`svelte-patch-event-slot.test.ts` are two more suites with no hunk
+left, guarding leak classes upstream fixed in 5.56.5 and 5.57.0; both
+must keep passing UNPATCHED.
 
 | Hunk | What it fixes | Suite |
 |---|---|---|
 | ownerless-roots | `$effect.root` inherited the creating component's context and parent, so store-level roots pinned dead row instances. Deliberate divergence, no upstream issue: carry forward, re-evaluate every bump. | `svelte-patch-ownerless-roots.test.ts` |
-| event-slot-release | The delegated-event dispatcher never cleared `last_propagated_event`, so `event.target` anchored a closed pane's detached subtree until the next event. Upstream PR [#18569](https://github.com/sveltejs/svelte/pull/18569). | `svelte-patch-event-slot.test.ts`, `chatview-dom-retention.test.ts` |
 | destroy-pass-errors | A throwing user `$effect` teardown aborted the sibling-destroy loop, leaving queued effects subscribed and detached DOM retained for the parent's lifetime. Upstream PR [#18566](https://github.com/sveltejs/svelte/pull/18566). | `svelte-patch-destroy-pass.test.ts` |
 | flush-loop-caps | Both synchronous flush loops were unbounded, so a cycle was an unreportable renderer freeze (2026-08-07: WebView2 wedged 8+ minutes, no paint, no error, nothing in any log). The caps abort and throw a svelte-shaped error that `utils/frontendErrorCapture.ts` persists, message kept in production. PR candidate. | `svelte-patch-flush-caps.test.ts` |
 | reconnect-dedupe | `get()` on a disconnected, dirty, previously-run derived registered it twice in one dep, so losing its last reader left that dep and everything upstream connected for the app's life (2026-08-23 heap snapshot: a closed pane's 3.4k detached nodes). PR candidate. | `svelte-patch-reconnect-dedupe.test.ts`, `chatview-dom-retention.test.ts` |

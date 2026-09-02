@@ -1,8 +1,8 @@
 diff --git a/src/internal/client/dom/blocks/boundary.js b/src/internal/client/dom/blocks/boundary.js
-index 4f655a369504c2fd27f511744159694c2377a8da..845f0e31f6b6c8bd74d2cefd3839187446394168 100644
+index fd6bbdf..20feb00 100644
 --- a/src/internal/client/dom/blocks/boundary.js
 +++ b/src/internal/client/dom/blocks/boundary.js
-@@ -13,6 +13,7 @@ import {
+@@ -7,6 +7,7 @@ import {
  	block,
  	branch,
  	destroy_effect,
@@ -10,7 +10,7 @@ index 4f655a369504c2fd27f511744159694c2377a8da..845f0e31f6b6c8bd74d2cefd38391874
  	move_effect,
  	pause_effect
  } from '../../reactivity/effects.js';
-@@ -459,19 +460,32 @@ export class Boundary {
+@@ -468,19 +469,32 @@ export class Boundary {
  	 * @param {unknown} error
  	 */
  	#handle_error(error) {
@@ -55,7 +55,7 @@ index 4f655a369504c2fd27f511744159694c2377a8da..845f0e31f6b6c8bd74d2cefd38391874
  
  		if (hydrating) {
 diff --git a/src/internal/client/dom/blocks/branches.js b/src/internal/client/dom/blocks/branches.js
-index 141b914537e3e9a463061a34eab08cba85bff86e..dd3e4a22147ceacaa1b3708052c4f811b464fa84 100644
+index 141b914..dd3e4a2 100644
 --- a/src/internal/client/dom/blocks/branches.js
 +++ b/src/internal/client/dom/blocks/branches.js
 @@ -3,6 +3,7 @@ import { Batch, current_batch } from '../../reactivity/batch.js';
@@ -209,7 +209,7 @@ index 141b914537e3e9a463061a34eab08cba85bff86e..dd3e4a22147ceacaa1b3708052c4f811
  	};
  
 diff --git a/src/internal/client/dom/blocks/each.js b/src/internal/client/dom/blocks/each.js
-index 2df1d6ffa144e138c868bceec406d0899d74a864..ec6add0bb39554bb19975b0b190e4f9cbedca9b6 100644
+index 9a2504f..1eaf4c8 100644
 --- a/src/internal/client/dom/blocks/each.js
 +++ b/src/internal/client/dom/blocks/each.js
 @@ -29,6 +29,7 @@ import {
@@ -220,7 +220,7 @@ index 2df1d6ffa144e138c868bceec406d0899d74a864..ec6add0bb39554bb19975b0b190e4f9c
  	move_effect,
  	pause_effect,
  	resume_effect
-@@ -147,17 +148,30 @@ function destroy_effects(state, to_destroy, remove_dom = true) {
+@@ -151,17 +152,30 @@ function destroy_effects(state, to_destroy, remove_dom = true) {
  		}
  	}
  
@@ -259,7 +259,7 @@ index 2df1d6ffa144e138c868bceec406d0899d74a864..ec6add0bb39554bb19975b0b190e4f9c
  	}
  }
  
-@@ -646,6 +660,15 @@ function reconcile(state, array, anchor, flags, get_key) {
+@@ -650,6 +664,15 @@ function reconcile(state, array, anchor, flags, get_key) {
  	if (is_animated) {
  		queue_micro_task(() => {
  			if (to_animate === undefined) return;
@@ -276,7 +276,7 @@ index 2df1d6ffa144e138c868bceec406d0899d74a864..ec6add0bb39554bb19975b0b190e4f9c
  				effect.nodes?.a?.apply();
  			}
 diff --git a/src/internal/client/dom/elements/attributes.js b/src/internal/client/dom/elements/attributes.js
-index 589685b5f2e4468a4ecd7e94dedcd49398898a81..fd4c44d15db3fd6aaf90169ee0e03ebbe0111907 100644
+index 0fe1b8b..0f6fd49 100644
 --- a/src/internal/client/dom/elements/attributes.js
 +++ b/src/internal/client/dom/elements/attributes.js
 @@ -25,7 +25,13 @@ import { clsx } from '../../../shared/attributes.js';
@@ -291,11 +291,11 @@ index 589685b5f2e4468a4ecd7e94dedcd49398898a81..fd4c44d15db3fd6aaf90169ee0e03ebb
 +	flush_destroy_errors,
 +	managed
 +} from '../../reactivity/effects.js';
- import { init_select, select_option } from './bindings/select.js';
- import { flatten } from '../../reactivity/async.js';
- 
-@@ -537,19 +543,32 @@ export function attribute_effect(
- 				select_option(/** @type {HTMLSelectElement} */ (element), next.value);
+ import {
+ 	init_select,
+ 	select_option,
+@@ -533,19 +539,32 @@ export function attribute_effect(
+ 				}
  			}
  
 -			for (let symbol of Object.getOwnPropertySymbols(effects)) {
@@ -336,58 +336,8 @@ index 589685b5f2e4468a4ecd7e94dedcd49398898a81..fd4c44d15db3fd6aaf90169ee0e03ebb
  			}
  
  			prev = current;
-diff --git a/src/internal/client/dom/elements/events.js b/src/internal/client/dom/elements/events.js
-index 45e042a8c6ddb6837fad161f0f3ecba2f11fdf97..4047e16c477b54f260a795b5713c383d3cc74a64 100644
---- a/src/internal/client/dom/elements/events.js
-+++ b/src/internal/client/dom/elements/events.js
-@@ -159,12 +159,17 @@ export function delegate(events) {
- }
- 
- // used to store the reference to the currently propagated event
--// to prevent garbage collection between microtasks in Firefox
-+// to prevent garbage collection between microtasks in Firefox (<= 141)
- // If the event object is GCed too early, the expando __root property
- // set on the event object is lost, causing the event delegation
- // to process the event twice
- let last_propagated_event = null;
- 
-+// PATCH(event-slot-release): whether a task is already queued to clear
-+// `last_propagated_event`.
-+// Upstream: https://github.com/sveltejs/svelte/pull/18569
-+let last_propagated_event_clear_scheduled = false;
-+
- /**
-  * @this {EventTarget}
-  * @param {Event} event
-@@ -179,6 +184,26 @@ export function handle_event_propagation(event) {
- 
- 	last_propagated_event = event;
- 
-+	// PATCH(event-slot-release): the reference is only needed while the event
-+	// can still reach another delegated root, i.e. during the current
-+	// (synchronous) dispatch and its microtask checkpoints. Clearing it in a
-+	// later task preserves the Firefox workaround while making sure the slot
-+	// doesn't retain the last event forever — through `event.target` it would
-+	// otherwise keep the entire detached subtree of whatever the user last
-+	// clicked in alive until the next delegated event happens to arrive
-+	// (in this app: a whole closed pane).
-+	// Upstream: https://github.com/sveltejs/svelte/pull/18569
-+	// Regression tests: src/test/integration/svelte-patch-event-slot.test.ts
-+	// and src/test/integration/chatview-dom-retention.test.ts. Drop this hunk
-+	// when they pass on an unpatched svelte release.
-+	if (!last_propagated_event_clear_scheduled) {
-+		last_propagated_event_clear_scheduled = true;
-+		setTimeout(() => {
-+			last_propagated_event_clear_scheduled = false;
-+			last_propagated_event = null;
-+		});
-+	}
-+
- 	// composedPath contains list of nodes the event has propagated through.
- 	// We check `event_symbol` to skip all nodes below it in case this is a
- 	// parent of the `event_symbol` node, which indicates that there's nested
 diff --git a/src/internal/client/dom/elements/transitions.js b/src/internal/client/dom/elements/transitions.js
-index 7c4d3858073c7dfd68182bc7a4c0b7a928a75510..ffc09ebfe28e2d7efac695495b4f58270f3d359b 100644
+index 67b1778..4d4865b 100644
 --- a/src/internal/client/dom/elements/transitions.js
 +++ b/src/internal/client/dom/elements/transitions.js
 @@ -102,11 +102,22 @@ export function animation(element, get_fn, get_params) {
@@ -417,7 +367,7 @@ index 7c4d3858073c7dfd68182bc7a4c0b7a928a75510..ffc09ebfe28e2d7efac695495b4f5827
  				from.left !== to.left ||
  				from.right !== to.right ||
 diff --git a/src/internal/client/dom/task.js b/src/internal/client/dom/task.js
-index 8c513614672b07a41e4626dc041f8d216345e014..8c593df62edc70e76c065a3e30a2e2d6e31633e1 100644
+index 8c51361..8c593df 100644
 --- a/src/internal/client/dom/task.js
 +++ b/src/internal/client/dom/task.js
 @@ -1,13 +1,20 @@
@@ -480,10 +430,10 @@ index 8c513614672b07a41e4626dc041f8d216345e014..8c593df62edc70e76c065a3e30a2e2d6
  	}
  }
 diff --git a/src/internal/client/error-handling.js b/src/internal/client/error-handling.js
-index 7c404dd933422cff8e735145c3b8101aea0db078..5b3674592e8d3f5ec2ab4a9da623c157dc9114ef 100644
+index a46281d..ff4da7c 100644
 --- a/src/internal/client/error-handling.js
 +++ b/src/internal/client/error-handling.js
-@@ -43,10 +43,16 @@ export function handle_error(error) {
+@@ -50,10 +50,16 @@ export function handle_error(error) {
  /**
   * @param {unknown} error
   * @param {Effect | null} effect
@@ -501,7 +451,7 @@ index 7c404dd933422cff8e735145c3b8101aea0db078..5b3674592e8d3f5ec2ab4a9da623c157
  	}
  
  	while (effect !== null) {
-@@ -58,7 +64,7 @@ export function invoke_error_boundary(error, effect) {
+@@ -66,7 +72,7 @@ export function invoke_error_boundary(error, effect) {
  
  			try {
  				/** @type {Boundary} */ (effect.b).error(error);
@@ -512,7 +462,7 @@ index 7c404dd933422cff8e735145c3b8101aea0db078..5b3674592e8d3f5ec2ab4a9da623c157
  			}
 diff --git a/src/internal/client/flush-caps.js b/src/internal/client/flush-caps.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..95f077b4370fb89cb11c9487bfca75cff187d4d1
+index 0000000..95f077b
 --- /dev/null
 +++ b/src/internal/client/flush-caps.js
 @@ -0,0 +1,63 @@
@@ -572,7 +522,7 @@ index 0000000000000000000000000000000000000000..95f077b4370fb89cb11c9487bfca75cf
 +	const error = new Error(
 +		`flush_loop_exceeded\nSvelte's \`${loop}\` loop did not settle after ${limit} ${
 +			loop === 'flushSync' ? 'laps' : 'tasks'
-+		}. A reactive cycle is producing new work on every iteration; the flush was aborted to release the main thread. (agent-overflow patch: patches/svelte@5.56.8.patch, hunk flush-loop-caps)`
++		}. A reactive cycle is producing new work on every iteration; the flush was aborted to release the main thread. (agent-overflow patch: patches/svelte@5.57.0.patch, hunk flush-loop-caps)`
 +	);
 +
 +	error.name = 'Svelte error';
@@ -580,7 +530,7 @@ index 0000000000000000000000000000000000000000..95f077b4370fb89cb11c9487bfca75cf
 +	throw error;
 +}
 diff --git a/src/internal/client/reactivity/batch.js b/src/internal/client/reactivity/batch.js
-index 5becae2dc971bcf9edc12063739070d527fbebd9..3dad28dce362f11f129455b55f9219939a46ff69 100644
+index 8251f79..794a023 100644
 --- a/src/internal/client/reactivity/batch.js
 +++ b/src/internal/client/reactivity/batch.js
 @@ -30,7 +30,8 @@ import {
@@ -593,7 +543,7 @@ index 5becae2dc971bcf9edc12063739070d527fbebd9..3dad28dce362f11f129455b55f921993
  import { DEV } from 'esm-env';
  import { invoke_error_boundary } from '../error-handling.js';
  import { flush_eager_effects, old_values, set_eager_effects, source, update } from './sources.js';
-@@ -1024,7 +1025,26 @@ export function flushSync(fn) {
+@@ -1025,7 +1026,26 @@ export function flushSync(fn) {
  			result = fn();
  		}
  
@@ -620,7 +570,7 @@ index 5becae2dc971bcf9edc12063739070d527fbebd9..3dad28dce362f11f129455b55f921993
  			flush_tasks();
  
  			if (current_batch === null) {
-@@ -1073,7 +1093,16 @@ function infinite_loop_guard() {
+@@ -1074,7 +1094,16 @@ function infinite_loop_guard() {
  
  		// Best effort: invoke the boundary nearest the most recent
  		// effect and hope that it's relevant to the infinite loop
@@ -639,7 +589,7 @@ index 5becae2dc971bcf9edc12063739070d527fbebd9..3dad28dce362f11f129455b55f921993
  }
  
 diff --git a/src/internal/client/reactivity/deriveds.js b/src/internal/client/reactivity/deriveds.js
-index 6b48bc8a2320b895773eb0d222eb7bed92a5e0e9..323a31ac973e85fc06db8c4208a32e90834433a1 100644
+index 6b48bc8..323a31a 100644
 --- a/src/internal/client/reactivity/deriveds.js
 +++ b/src/internal/client/reactivity/deriveds.js
 @@ -37,6 +37,7 @@ import {
@@ -675,10 +625,10 @@ index 6b48bc8a2320b895773eb0d222eb7bed92a5e0e9..323a31ac973e85fc06db8c4208a32e90
  	}
  }
 diff --git a/src/internal/client/reactivity/effects.js b/src/internal/client/reactivity/effects.js
-index c5d195dfaeb41422bbdd2923f239b248be0240c9..dd2ce22bbaa90ca2ff5185d3e8d595cb9bc95350 100644
+index e69a639..a9263bd 100644
 --- a/src/internal/client/reactivity/effects.js
 +++ b/src/internal/client/reactivity/effects.js
-@@ -40,7 +40,12 @@ import * as e from '../errors.js';
+@@ -42,7 +42,12 @@ import * as e from '../errors.js';
  import { DEV } from 'esm-env';
  import { define_property } from '../../shared/utils.js';
  import { get_next_sibling } from '../dom/operations.js';
@@ -692,7 +642,7 @@ index c5d195dfaeb41422bbdd2923f239b248be0240c9..dd2ce22bbaa90ca2ff5185d3e8d595cb
  import { Batch, collected_effects, current_batch } from './batch.js';
  import { flatten } from './async.js';
  import { without_reactive_context } from '../dom/elements/bindings/shared.js';
-@@ -262,11 +267,44 @@ export function eager_effect(fn) {
+@@ -264,11 +269,44 @@ export function eager_effect(fn) {
   */
  export function effect_root(fn) {
  	Batch.ensure();
@@ -742,7 +692,7 @@ index c5d195dfaeb41422bbdd2923f239b248be0240c9..dd2ce22bbaa90ca2ff5185d3e8d595cb
  }
  
  /**
-@@ -437,6 +475,52 @@ export function branch(fn) {
+@@ -439,6 +477,52 @@ export function branch(fn) {
  	return create_effect(BRANCH_EFFECT | EFFECT_PRESERVED, fn);
  }
  
@@ -795,7 +745,7 @@ index c5d195dfaeb41422bbdd2923f239b248be0240c9..dd2ce22bbaa90ca2ff5185d3e8d595cb
  /**
   * @param {Effect} effect
   */
-@@ -447,6 +531,10 @@ export function execute_effect_teardown(effect) {
+@@ -449,6 +533,10 @@ export function execute_effect_teardown(effect) {
  		const previous_reaction = active_reaction;
  		set_is_destroying_effect(true);
  		set_active_reaction(null);
@@ -805,8 +755,8 @@ index c5d195dfaeb41422bbdd2923f239b248be0240c9..dd2ce22bbaa90ca2ff5185d3e8d595cb
 +		// pass and throws synchronously — no state to isolate
  		try {
  			teardown.call(null);
- 		} finally {
-@@ -459,9 +547,27 @@ export function execute_effect_teardown(effect) {
+ 		} catch (error) {
+@@ -466,9 +554,27 @@ export function execute_effect_teardown(effect) {
  /**
   * @param {Effect} signal
   * @param {boolean} remove_dom
@@ -835,7 +785,7 @@ index c5d195dfaeb41422bbdd2923f239b248be0240c9..dd2ce22bbaa90ca2ff5185d3e8d595cb
  	var effect = signal.first;
  	signal.first = signal.last = null;
  
-@@ -480,7 +586,7 @@ export function destroy_effect_children(signal, remove_dom = false) {
+@@ -487,7 +593,7 @@ export function destroy_effect_children(signal, remove_dom = false) {
  			// this is now an independent root
  			effect.parent = null;
  		} else {
@@ -844,7 +794,7 @@ index c5d195dfaeb41422bbdd2923f239b248be0240c9..dd2ce22bbaa90ca2ff5185d3e8d595cb
  		}
  
  		effect = next;
-@@ -489,15 +595,33 @@ export function destroy_effect_children(signal, remove_dom = false) {
+@@ -496,15 +602,33 @@ export function destroy_effect_children(signal, remove_dom = false) {
  
  /**
   * @param {Effect} signal
@@ -880,7 +830,7 @@ index c5d195dfaeb41422bbdd2923f239b248be0240c9..dd2ce22bbaa90ca2ff5185d3e8d595cb
  		}
  		effect = next;
  	}
-@@ -506,9 +630,38 @@ export function destroy_block_effect_children(signal) {
+@@ -513,9 +637,38 @@ export function destroy_block_effect_children(signal) {
  /**
   * @param {Effect} effect
   * @param {boolean} [remove_dom]
@@ -920,7 +870,7 @@ index c5d195dfaeb41422bbdd2923f239b248be0240c9..dd2ce22bbaa90ca2ff5185d3e8d595cb
  	var removed = false;
  
  	if (
-@@ -521,7 +674,7 @@ export function destroy_effect(effect, remove_dom = true) {
+@@ -528,7 +681,7 @@ export function destroy_effect(effect, remove_dom = true) {
  	}
  
  	effect.f |= DESTROYING;
@@ -929,7 +879,7 @@ index c5d195dfaeb41422bbdd2923f239b248be0240c9..dd2ce22bbaa90ca2ff5185d3e8d595cb
  	remove_reactions(effect, 0);
  
  	var transitions = effect.nodes && effect.nodes.t;
-@@ -532,7 +685,26 @@ export function destroy_effect(effect, remove_dom = true) {
+@@ -539,7 +692,26 @@ export function destroy_effect(effect, remove_dom = true) {
  		}
  	}
  
@@ -958,10 +908,10 @@ index c5d195dfaeb41422bbdd2923f239b248be0240c9..dd2ce22bbaa90ca2ff5185d3e8d595cb
  	effect.f ^= DESTROYING;
  	effect.f |= DESTROYED;
 diff --git a/src/internal/client/runtime.js b/src/internal/client/runtime.js
-index 4458595d3520ca57feb3775b4cb8764ae669d661..6bd7568b17c90d38e5d2627fef6e2d8fbf2a4aee 100644
+index a881403..1a84153 100644
 --- a/src/internal/client/runtime.js
 +++ b/src/internal/client/runtime.js
-@@ -720,7 +720,18 @@ function reconnect(derived) {
+@@ -732,7 +732,18 @@ function reconnect(derived) {
  	if (derived.deps === null) return;
  
  	for (const dep of derived.deps) {
