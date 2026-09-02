@@ -2,6 +2,11 @@ import { render, waitFor } from '@testing-library/svelte';
 import { describe, expect, it } from 'vitest';
 import CompactStaticMarkdownHarness from './CompactStaticMarkdownHarness.svelte';
 import { PATH_LINK_HREF_PREFIX } from '../../utils/pathLinkExtension';
+import { buildPreviewLinkExtension } from '../../utils/previewLinkExtension';
+import type {
+  PreviewAvailability,
+  PreviewLinkTarget,
+} from '../../stores/devServers.svelte';
 
 // One href corpus, both render paths, per-case naming.
 //
@@ -191,5 +196,146 @@ describe('link URL classification across both render paths', () => {
 
     expect(linkRenderOf(componentPath)).toEqual(expected);
     expect(linkRenderOf(staticPath)).toEqual(expected);
+  });
+});
+
+// The preview rewrite is the same fork in the same place: it replaces one
+// link token's rendering with an anchor plus data attributes plus, in one
+// state, a sibling control. Both renderers spell it from
+// `markdown/render/previewLink.ts`, and these cases are what holds them to it.
+
+function previewTarget(
+  kind: PreviewAvailability['kind'],
+  canAllow: boolean,
+): PreviewLinkTarget {
+  return {
+    threadId: 'thread-1',
+    backend: 'backend-a',
+    machine: 'laptop',
+    canAllow,
+    key: kind + String(canAllow),
+    resolve: () => ({ kind }) as PreviewAvailability,
+  };
+}
+
+interface PreviewRender {
+  href: string | null;
+  title: string | null;
+  state: string | null;
+  port: string | null;
+  path: string | null;
+  thread: string | null;
+  machine: string | null;
+  via: string | null;
+  classed: boolean;
+  allow: string | null;
+  allowBackend: string | null;
+}
+
+function previewRenderOf(root: Element): PreviewRender {
+  const link = root.querySelector('a[data-preview-port]');
+  if (!link) throw new Error('no preview anchor rendered');
+  const allow = root.querySelector('button[data-preview-allow]');
+  return {
+    href: link.getAttribute('href'),
+    title: link.getAttribute('title'),
+    state: link.getAttribute('data-preview-state'),
+    port: link.getAttribute('data-preview-port'),
+    path: link.getAttribute('data-preview-path'),
+    thread: link.getAttribute('data-preview-thread'),
+    machine: link.getAttribute('data-preview-machine'),
+    via: link.getAttribute('data-preview-via'),
+    classed: link.classList.contains('preview-link'),
+    allow: allow?.getAttribute('data-preview-allow') ?? null,
+    allowBackend: allow?.getAttribute('data-preview-backend') ?? null,
+  };
+}
+
+const PREVIEW_SOURCE_URL = 'http://localhost:5173/app?a=1#top';
+
+function previewRender(
+  state: string,
+  title: string,
+  allow: string | null,
+): PreviewRender {
+  return {
+    href: PREVIEW_SOURCE_URL,
+    title,
+    state,
+    port: '5173',
+    path: '/app?a=1#top',
+    thread: 'thread-1',
+    machine: 'laptop',
+    via: 'via laptop',
+    classed: true,
+    allow,
+    allowBackend: allow === null ? null : 'backend-a',
+  };
+}
+
+const PREVIEW_CORPUS: Array<
+  [string, PreviewAvailability['kind'], boolean, PreviewRender]
+> = [
+  [
+    'a shared port opens, and the link says where',
+    'open',
+    false,
+    previewRender('open', 'Opens on laptop.', null),
+  ],
+  [
+    'an unshared port offers to be shared when this session may',
+    'not-shared',
+    true,
+    previewRender('not-shared', 'Port 5173 is not shared from laptop.', '5173'),
+  ],
+  [
+    'an unshared port offers nothing when it may not',
+    'not-shared',
+    false,
+    previewRender('not-shared', 'Port 5173 is not shared from laptop.', null),
+  ],
+  [
+    'a machine with no address never offers to share, because it would change nothing',
+    'no-address',
+    true,
+    previewRender('no-address', 'laptop has no address this page can reach it on.', null),
+  ],
+];
+
+describe('preview link rendering across both render paths', () => {
+  it.each(PREVIEW_CORPUS)('%s', async (_name, kind, canAllow, expected) => {
+    const { container } = render(CompactStaticMarkdownHarness, {
+      source: '[' + LABEL + '](' + PREVIEW_SOURCE_URL + ')',
+      allowedLinkPrefixes: ['*', PATH_LINK_HREF_PREFIX],
+      extensions: [buildPreviewLinkExtension(previewTarget(kind, canAllow))],
+    });
+
+    const componentPath = container.querySelector('[data-full-token-tree] > div');
+    const staticPath = container.querySelector('[data-compact-static] > div');
+    if (!componentPath || !staticPath) {
+      throw new Error('differential Streamdown roots did not mount');
+    }
+
+    await waitFor(() => {
+      expect(componentPath.textContent).toContain(LABEL);
+      expect(staticPath.textContent).toContain(LABEL);
+    });
+
+    expect(previewRenderOf(componentPath)).toEqual(expected);
+    expect(previewRenderOf(staticPath)).toEqual(expected);
+  });
+
+  it('leaves an ordinary link on the plain path with the rewrite armed', async () => {
+    const { container } = render(CompactStaticMarkdownHarness, {
+      source: '[' + LABEL + '](https://example.test/x)',
+      allowedLinkPrefixes: ['*', PATH_LINK_HREF_PREFIX],
+      extensions: [buildPreviewLinkExtension(previewTarget('open', true))],
+    });
+
+    const staticPath = container.querySelector('[data-compact-static] > div');
+    if (!staticPath) throw new Error('static root did not mount');
+    await waitFor(() => expect(staticPath.textContent).toContain(LABEL));
+    expect(staticPath.querySelector('[data-preview-port]')).toBeNull();
+    expect(linkRenderOf(staticPath)).toEqual(anchor('https://example.test/x'));
   });
 });

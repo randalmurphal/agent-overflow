@@ -1,6 +1,15 @@
 <script lang="ts">
 	import { useStreamdown } from '../context.svelte';
 	import { transformUrl } from './url';
+	import {
+		PREVIEW_ALLOW_CLASS,
+		PREVIEW_ALLOW_LABEL,
+		previewAllowAttributes,
+		previewAllowVisible,
+		previewAnchorAttributes,
+		previewAnchorClass,
+		previewOfToken
+	} from '../previewLink';
 	import Slot from './Slot.svelte';
 	import type { Tokens } from '../../parser/engine';
 	import type { Snippet } from 'svelte';
@@ -49,9 +58,30 @@
 			!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(token.href) &&
 			!token.href.startsWith('//')
 	);
+
+	// A `localhost:<port>` link the parse rewrote because the port is on
+	// another machine (markdown/render/previewLink.ts). It renders as an
+	// ordinary anchor plus the data the click delegate reads, and it does
+	// NOT route through the host's link snippet: `staticHtml.ts` bails to
+	// this component whenever that snippet exists, so routing it there
+	// would be the only case where the two renderers disagreed.
+	const preview = $derived(previewOfToken(token));
 </script>
 
-{#if transformedUrl || token.href === 'streamdown:incomplete-link'}
+{#if preview && transformedUrl}
+	<a
+		data-streamdown-link={id}
+		class={previewAnchorClass(streamdown.theme.link.base)}
+		href={transformedUrl}
+		target="_blank"
+		rel="noopener noreferrer"
+		title={token.title ?? undefined}
+		{...previewAnchorAttributes(preview)}
+	>{@render children()}</a>{#if previewAllowVisible(preview)}<button
+			type="button"
+			class={PREVIEW_ALLOW_CLASS}
+			{...previewAllowAttributes(preview)}>{PREVIEW_ALLOW_LABEL}</button>{/if}
+{:else if transformedUrl || token.href === 'streamdown:incomplete-link'}
 	<Slot
 		props={{
 			href: transformedUrl,

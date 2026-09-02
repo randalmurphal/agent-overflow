@@ -54,6 +54,10 @@ export interface StreamingAssistantRenderContext {
   pathLinksInert: boolean;
   /** Base path used by the markdown link extension. */
   workspacePath: string;
+  /** What the `localhost:<port>` link rewrite would render, as one string.
+   *  Empty when the rewrite is off for this thread. See
+   *  `stores/devServers#previewRewriteKey`. */
+  previewKey: string;
 }
 
 export type StreamingAssistantCommitMode = 'authoritative' | 'direct';
@@ -161,7 +165,8 @@ function sameRenderContext(
   return left.streaming === right.streaming &&
     left.volatileTailVisible === right.volatileTailVisible &&
     left.pathLinksInert === right.pathLinksInert &&
-    left.workspacePath === right.workspacePath;
+    left.workspacePath === right.workspacePath &&
+    left.previewKey === right.previewKey;
 }
 
 /**

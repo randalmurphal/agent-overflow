@@ -37,14 +37,18 @@ import {
 } from './bindings';
 import { wailsEventOn } from './wailsEvents';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
-import { threadMachine } from './attachedBackends.svelte';
+import {
+  attachedBackendEntry,
+  backendDisplayName,
+  threadMachine,
+} from './attachedBackends.svelte';
 import { isMethodUnavailableError, onBackendHelloChange } from './transportStatus.svelte';
 import {
   attachedBackends as registryBackends,
   backendKeyForOrigin,
   withBackendTarget,
 } from '../transport/backends';
-import type { BackendKey } from '../transport/backendKey';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { hasScope } from '../transport/scopes';
 import { isScopeRefusal } from '../transport/scopeRefusal';
 import { handleExternalURL, installPreviewLinkActions } from '../utils/externalLinks';
@@ -151,11 +155,113 @@ const PREVIEW_NO_ADDRESS: PreviewAvailability = Object.freeze({ kind: 'no-addres
 export function previewFor(key: BackendKey, port: number): PreviewAvailability {
   const list = machines.get(key).list;
   if (!list) return PREVIEW_NOT_SHARED;
-  if ((list.previewHost ?? '') === '') return PREVIEW_NO_ADDRESS;
+  return availability((list.previewHost ?? '') !== '', portIsAllowed(list, port));
+}
+
+function availability(hasAddress: boolean, allowed: boolean): PreviewAvailability {
+  if (!hasAddress) return PREVIEW_NO_ADDRESS;
+  return allowed ? PREVIEW_OPEN : PREVIEW_NOT_SHARED;
+}
+
+function portIsAllowed(list: DevServerList, port: number): boolean {
   for (const server of list.servers ?? []) {
-    if (server.port === port && server.allowed) return PREVIEW_OPEN;
+    if (server.port === port && server.allowed) return true;
   }
-  return PREVIEW_NOT_SHARED;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// What the markdown rewrite reads
+// ---------------------------------------------------------------------------
+
+/**
+ * The answer the markdown link rewrite needs, resolved ONCE per change and
+ * then read without touching this store again.
+ *
+ * `resolve` closes over a snapshot rather than reading the registry, and
+ * that is deliberate: it is called from inside marked's tokenizer, during a
+ * render, and a reactive read there would make every markdown tree in the
+ * timeline a dependent of a list frame that concerns one thread.
+ */
+export interface PreviewLinkTarget {
+  /** The thread whose machine the ports belong to. */
+  threadId: string;
+  /** That machine. */
+  backend: BackendKey;
+  /** What the reader calls it. */
+  machine: string;
+  /** Whether this session may offer to share a port that is not shared. */
+  canAllow: boolean;
+  /** Changes exactly when a rewritten link would render differently. */
+  key: string;
+  resolve(port: number): PreviewAvailability;
+}
+
+/**
+ * Whether a thread's `localhost` links are the reader's own, and the state
+ * they resolve against when they are not.
+ *
+ * Null means leave the markdown alone, for one of three reasons: the surface
+ * names no thread, the machine has not answered yet (`signature` empty), or
+ * the thread runs on the page's own machine AND this session can act there,
+ * which is the ordinary desktop case where `localhost` already means what it
+ * says.
+ */
+export function previewLinkTargetFor(threadId: string): PreviewLinkTarget | null {
+  if (threadId === '') return null;
+  const backend = threadMachine(threadId, null);
+  if (backend === HOME_BACKEND && hasScope('host')) return null;
+  const machineState = machines.get(backend);
+  if (machineState.signature === '') return null;
+  const list = machineState.list;
+  const hasAddress = (list?.previewHost ?? '') !== '';
+  const allowed = new Set<number>();
+  for (const server of list?.servers ?? []) {
+    if (server.allowed) allowed.add(server.port);
+  }
+  const entry = attachedBackendEntry(backend);
+  const machine = entry ? backendDisplayName(entry) : 'that machine';
+  const canAllow = hasScope('access:admin', backend);
+  return {
+    threadId,
+    backend,
+    machine,
+    canAllow,
+    key: previewRewriteKeyFrom(threadId, backend, machine, canAllow, machineState.signature),
+    resolve: (port) => availability(hasAddress, allowed.has(port)),
+  };
+}
+
+/**
+ * The same decision as `previewLinkTargetFor`, as a plain string and without
+ * building anything. A memoised render context folds this in to decide
+ * whether a markdown tree has to be rebuilt, so it is called far more often
+ * than the rewrite is; empty means the rewrite is off.
+ */
+export function previewRewriteKey(threadId: string): string {
+  if (threadId === '') return '';
+  const backend = threadMachine(threadId, null);
+  if (backend === HOME_BACKEND && hasScope('host')) return '';
+  const signature = machines.get(backend).signature;
+  if (signature === '') return '';
+  const entry = attachedBackendEntry(backend);
+  return previewRewriteKeyFrom(
+    threadId,
+    backend,
+    entry ? backendDisplayName(entry) : 'that machine',
+    hasScope('access:admin', backend),
+    signature,
+  );
+}
+
+function previewRewriteKeyFrom(
+  threadId: string,
+  backend: BackendKey,
+  machine: string,
+  canAllow: boolean,
+  signature: string,
+): string {
+  return `${threadId}|${backend}|${machine}|${canAllow ? '1' : '0'}|${signature}`;
 }
 
 /**

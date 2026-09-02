@@ -22,6 +22,7 @@
     volatileTailVisible: true,
     pathLinksInert: false,
     workspacePath: '',
+    previewKey: '',
   } as const;
   const revealRouter = new StreamingAssistantRevealRouter();
 

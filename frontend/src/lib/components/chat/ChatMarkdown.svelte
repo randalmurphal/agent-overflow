@@ -32,7 +32,7 @@
   // markdown (`utils/markdownClipboard.ts`), so a paste into a rich
   // target keeps the structure this component renders.
 
-  import { getContext } from 'svelte';
+  import { getContext, untrack } from 'svelte';
   import { Streamdown, type ProvenAppend } from '../../markdown';
   import {
     CHAT_MARKDOWN_PRESENCE_CONTEXT,
@@ -56,6 +56,11 @@
     PATH_LINK_HREF_PREFIX,
     buildPathLinkExtension,
   } from '../../utils/pathLinkExtension';
+  import { buildPreviewLinkExtension } from '../../utils/previewLinkExtension';
+  import {
+    previewLinkTargetFor,
+    previewRewriteKey,
+  } from '../../stores/devServers.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import StreamdownImageHost from './markdown/StreamdownImageHost.svelte';
   import {
@@ -77,6 +82,7 @@
     streaming = false,
     workspacePath = '',
     pathRefs,
+    threadId = '',
     class: className = '',
   }: {
     source: string;
@@ -100,6 +106,12 @@
      *  explicit local-link and local-image href rewriting. `[]` has the
      *  same behavior; use EMPTY_PATH_REFS rather than a fresh literal. */
     pathRefs?: PathRef[];
+    /** The thread this prose belongs to, when it belongs to one. Enables the
+     *  `localhost:<port>` link rewrite: which machine those ports are on, and
+     *  whether this page can reach them, is a property of the THREAD, not of
+     *  the surface. Surfaces with no thread (settings previews, PR bodies)
+     *  leave every link exactly as written. */
+    threadId?: string;
     class?: string;
   } = $props();
 
@@ -152,7 +164,31 @@
       ? undefined
       : buildPathLinkExtension(pathRefs ?? EMPTY_PATH_REFS, workspacePath),
   );
-  const extensions = $derived(pathLinkExtension ? [pathLinkExtension] : undefined);
+
+  // `localhost:<port>` rewriting, for prose about a machine that is not the
+  // one reading it. Two derivations rather than one, because the store's
+  // answer is refreshed on every discovery tick and only a FEW of those
+  // ticks change what a link renders as: the key is a short string that
+  // stands still across the rest, and the untracked build below runs only
+  // when it moves. Rebuilding the extension per tick would re-lex every
+  // block of every message in the timeline.
+  const previewKey = $derived(previewRewriteKey(threadId));
+  const previewLinkExtension = $derived.by(() => {
+    const key = previewKey;
+    if (key === '') return undefined;
+    return untrack(() => buildPreviewLinkExtension(previewLinkTargetFor(threadId)));
+  });
+
+  // Preview first: the path-link extension claims every `[…](…)` link it is
+  // offered, so behind it the preview one would never see one.
+  const extensions = $derived.by(() => {
+    if (previewLinkExtension && pathLinkExtension) {
+      return [previewLinkExtension, pathLinkExtension];
+    }
+    if (previewLinkExtension) return [previewLinkExtension];
+    if (pathLinkExtension) return [pathLinkExtension];
+    return undefined;
+  });
 
   // The path-link prefix carries a per-page-load nonce so only links
   // emitted by our marked extension pass Streamdown's `transformUrl`

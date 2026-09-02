@@ -14,6 +14,7 @@ const RENDER_CONTEXT: StreamingAssistantRenderContext = {
   volatileTailVisible: true,
   pathLinksInert: false,
   workspacePath: '/workspace',
+  previewKey: '',
 };
 
 function literalSink(): StreamingAssistantRevealSink {

@@ -794,6 +794,7 @@ describe('threadRevealGate', () => {
           volatileTailVisible: true,
           pathLinksInert: false,
           workspacePath: '/workspace',
+          previewKey: '',
         } as const;
         pane.upsertItem(
           makeItem({

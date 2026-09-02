@@ -51,6 +51,7 @@ const RENDER_CONTEXT = {
   volatileTailVisible: true,
   pathLinksInert: false,
   workspacePath: '/workspace',
+  previewKey: '',
 } as const;
 
 function parserSource(
