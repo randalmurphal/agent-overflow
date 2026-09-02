@@ -118,7 +118,7 @@ describe('devServers store', () => {
       expect(machineDevServers(HOME_BACKEND).loading).toBe(false);
 
       setBindingMock('GetDevServers', async () => {
-        throw new TransportError('scope_required', 'refused', { scope: 'preview:open' });
+        throw new TransportError('scope_required', 'refused', undefined, 'preview:open');
       });
       await loadDevServers(HOME_BACKEND);
       expect(machineDevServers(HOME_BACKEND).loadError).toBe('');

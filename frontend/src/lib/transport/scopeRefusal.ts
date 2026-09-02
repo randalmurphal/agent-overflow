@@ -63,6 +63,7 @@ const CAPABILITY_NOUNS: Record<Exclude<Scope, 'host' | 'session'>, string> = {
   'approvals:respond': 'answering approvals',
   'threads:autonomy': 'running workflows and autonomous modes',
   'terminal:operate': 'using the terminal',
+  'preview:open': 'opening dev-server previews',
   'git:operate': 'git actions',
   'attachments:write': 'uploading attachments',
   'settings:read': 'reading settings',
