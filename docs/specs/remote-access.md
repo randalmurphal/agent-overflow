@@ -3008,6 +3008,15 @@ Each phase leaves `make check` green.
    backends stay read-only + fork regardless), and who may answer
    approvals on a hub thread: any member holding the scope, the
    thread starter, or a role gate.
+5. The team-sharing GRANT model itself (§11). Two shapes are on the
+   table and neither is chosen: enrollment-as-grant over shared
+   workspaces (what §11 states today), or per-request consent, where a
+   teammate asks and the author approves each view and each fork.
+   Ruled 2026-09-01 (user): team sharing is not in the cards yet, and
+   nothing built before then may foreclose either shape. Concretely,
+   nothing may assume that a peer session's reads are unconditional, or
+   that a fork needs no author-side moment; both stay behind the peer
+   principal and the scope gate, where either answer can be wired.
 
 Ruled 2026-08-31 (user): `access:admin` exists as a standing remote
 scope. Device revoke and rename from a paired device ride the standing
