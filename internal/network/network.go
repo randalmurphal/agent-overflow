@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 
 	"agent-overflow/internal/transport"
@@ -243,8 +244,8 @@ func BindHost(bindAll bool) string {
 }
 
 // OriginPatterns returns the extra origins the WS upgrade accepts
-// beyond the one it is addressed to, for the given LAN toggle and
-// discovered LAN IP.
+// beyond the one it is addressed to, for the given LAN toggle, the
+// discovered LAN IP, and the PORT this listener actually bound.
 //
 // On loopback the list is nil, which is not "accept anything": the
 // upgrade always accepts a request carrying no Origin (every client
@@ -255,9 +256,23 @@ func BindHost(bindAll bool) string {
 // it — cookies are scoped by host, not by port. See
 // transport.OriginAllowed.
 //
-// On LAN bind the list adds the spellings a shared URL can legitimately
-// be opened under: the loopback aliases and the discovered LAN IP. A
-// browser tab from any other origin still cannot open a socket here.
+// EVERY PATTERN NAMES ONE PORT, and that is the whole point of the port
+// parameter. Until wave 9 the LAN entries were `http://127.0.0.1:*`,
+// `http://localhost:*` and `http://<lanIP>:*`, so a document served by
+// ANY port on this machine named an origin the allow-list accepted, and
+// the browser attached this backend's page cookie to the handshake it
+// opened. No case ever needed the wildcard: it was written when the list
+// was handed to the WebSocket library's own matcher and the bound port
+// was simply not threaded down to the helper. The port is load-bearing
+// now for a second reason as well — this machine's preview listeners
+// (docs/specs/remote-access.md §7, "the port gateway") serve
+// agent-authored bytes on OTHER ports of these same hosts.
+//
+// Each host is named under both schemes because the listener answers
+// both on the one port it binds: with a certificate configured it
+// classifies each connection by its first byte (transport's TLS sniffer),
+// so `https://<host>:<port>` and `http://<host>:<port>` are two spellings
+// of the same listener rather than two surfaces.
 //
 // A canonical domain adds its https origins whatever the bind is, and
 // the port-bearing spelling is the load-bearing one: a page served at
@@ -267,22 +282,33 @@ func BindHost(bindAll bool) string {
 // the page's own origin. Naming the origin is how that deployment is
 // answered rather than half-broken. It does NOT relax the Host guard —
 // that reads the bind address and the canonical name, not this list.
-func OriginPatterns(bindAll bool, lanIP, canonicalDomain string) []string {
+//
+// A port outside 1-65535 is a bind this process has not resolved yet, so
+// every port-bearing pattern is DROPPED rather than guessed at. The
+// caller's remaining admission — the request's own authority — is exact
+// by construction, so the failure mode is a refusal, never a widening.
+func OriginPatterns(bindAll bool, lanIP, canonicalDomain string, port int) []string {
+	known := port > 0 && port <= 65535
 	var patterns []string
-	if bindAll {
-		patterns = append(patterns,
-			"http://127.0.0.1:*",
-			"http://localhost:*",
-		)
+	if bindAll && known {
+		hosts := []string{"127.0.0.1", "localhost"}
 		if lanIP != "" {
-			patterns = append(patterns, fmt.Sprintf("http://%s:*", lanIP))
+			hosts = append(hosts, lanIP)
+		}
+		for _, host := range hosts {
+			authority := net.JoinHostPort(host, strconv.Itoa(port))
+			patterns = append(patterns, "http://"+authority, "https://"+authority)
 		}
 	}
 	if canonicalDomain != "" {
-		patterns = append(patterns,
-			fmt.Sprintf("https://%s", canonicalDomain),
-			fmt.Sprintf("https://%s:*", canonicalDomain),
-		)
+		// The bare name first: a proxy fronting this backend on 443 is
+		// the deployment the canonical domain exists for, and a browser
+		// spells that origin with no port at all.
+		patterns = append(patterns, "https://"+canonicalDomain)
+		if known {
+			patterns = append(patterns,
+				"https://"+net.JoinHostPort(canonicalDomain, strconv.Itoa(port)))
+		}
 	}
 	return patterns
 }

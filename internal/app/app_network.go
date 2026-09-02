@@ -144,7 +144,13 @@ func (a *App) SetNetworkSettings(ctx context.Context, s network.Settings) (netwo
 	if stored.BindAll {
 		lanIP = network.DiscoverLocalLANIP()
 	}
-	originPatterns := network.OriginPatterns(stored.BindAll, lanIP, stored.CanonicalDomain)
+	// Every pattern names ONE port (internal/network.OriginPatterns), so
+	// the list cannot be built until the port this listener will answer on
+	// is settled. Both branches below know it, and the rebind branch
+	// re-checks the number it actually got.
+	originPatterns := func(port int) []string {
+		return network.OriginPatterns(stored.BindAll, lanIP, stored.CanonicalDomain, port)
+	}
 	srv.SetCanonicalHost(stored.CanonicalDomain)
 
 	// The address has two halves and either can move. The HOST comes from
@@ -164,7 +170,7 @@ func (a *App) SetNetworkSettings(ctx context.Context, s network.Settings) (netwo
 	}
 	if prev.BindAll != stored.BindAll || wantPort != currentPort {
 		addr := fmt.Sprintf("%s:%d", network.BindHost(stored.BindAll), wantPort)
-		if err := srv.Rebind(addr, &transport.RebindOptions{OriginPatterns: originPatterns}); err != nil {
+		if err := srv.Rebind(addr, &transport.RebindOptions{OriginPatterns: originPatterns(wantPort)}); err != nil {
 			// Roll the file back so we don't lie about the transport
 			// state. The rollback uses the previously-persisted value,
 			// not the patch input, so a partial write doesn't strand
@@ -178,10 +184,18 @@ func (a *App) SetNetworkSettings(ctx context.Context, s network.Settings) (netwo
 			}
 			return network.Settings{}, fmt.Errorf("rebind transport: %w", err)
 		}
+		if bound := portFromAddr(srv.Addr()); bound != wantPort {
+			// An ephemeral bind (wantPort was 0 because nothing is saved
+			// and the listener had no address to read) landed somewhere
+			// only the listener knows. The list handed to Rebind names a
+			// port nothing answers on, so replace it with the real one
+			// rather than leave every LAN page refused.
+			srv.SetOriginPatterns(originPatterns(bound))
+		}
 	} else {
 		// No address change, so no listener swap: rotate the allow-list
 		// in place. A domain edit must not drop every open socket.
-		srv.SetOriginPatterns(originPatterns)
+		srv.SetOriginPatterns(originPatterns(currentPort))
 	}
 
 	// Keep the transport-port cache naming where this listener actually

@@ -42,6 +42,37 @@ domain with no hook and no file pair is a legitimate third state — somebody
 else's proxy terminates TLS in front — and it publishes the http URL,
 because from here nothing can tell what that proxy does.
 
+## The origin allow-list names EXACT PORTS
+
+`OriginPatterns(bindAll, lanIP, canonicalDomain, port)` takes the port the
+listener actually bound, and every pattern it emits carries it. That is a
+wave-9 correction, not a refinement: the LAN entries were
+`http://127.0.0.1:*`, `http://localhost:*` and `http://<lanIP>:*` from the
+day the transport landed, so a document served by ANY port on this machine
+named an origin the WS upgrade accepted — with this backend's page cookie
+attached to the handshake, because cookies are scoped by host and not by
+port. Nothing ever needed the wildcard; it was written when the list went
+straight to the WebSocket library's matcher and the bound port was not
+threaded down here.
+
+Two consequences for callers:
+
+- **The list cannot be built before the bind.** `main.go` installs it
+  after `Server.Start` (an ephemeral bind has no port until then) and
+  `internal/app/app_network.go` builds it per branch: the rebind branch
+  from the port it asked for, re-set from `Addr()` when the listener
+  landed somewhere else, and the no-move branch from the current port.
+- **Each host appears under both schemes.** The listener classifies a
+  connection by its first byte and answers TLS and cleartext on the one
+  port (`internal/transport/AGENTS.md`, § Same-port TLS), so
+  `http://<host>:<port>` and `https://<host>:<port>` are two spellings of
+  the same listener.
+
+An unresolved port (0, or out of range) drops every port-bearing pattern
+rather than guessing one. The request's own authority is still admitted by
+`transport.OriginAllowed` and is exact by construction, so the failure
+mode is a refusal.
+
 ## The tailnet URL is a third answer, on its own terms
 
 `TailnetStatus` is the node's observed state as `internal/app`'s reconciler
@@ -131,8 +162,12 @@ page ticket and it is not ours to mint.
 - Do NOT call `DiscoverLocalLANIP` more than once per Set flow. The
   origin allow-list and the URL must use the *same* discovered IP
   or the user can see a URL their browser can't reach without an
-  origin failure. Use `OriginPatterns(bindAll, lanIP, domain)` +
+  origin failure. Use `OriginPatterns(bindAll, lanIP, domain, port)` +
   `AppURLWithLAN(srv, settings, lanIP)`.
+- Do NOT reintroduce a wildcard port in an origin pattern. This machine
+  serves agent-authored bytes on other ports of these same hosts (the
+  dev-server preview listeners, `docs/specs/remote-access.md` §7), and the
+  port is the only thing separating them from the SPA's own origin.
 - Do NOT change the JSON tags on `Settings` without a coordinated
   frontend change. The SPA's hand-maintained TS mirror plus the
   Wails-generated bindings both rely on the shape.

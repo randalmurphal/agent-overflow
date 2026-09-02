@@ -511,6 +511,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		cfg.Port = port
 	}
 	settingsPort := 0
+	canonicalDomain := ""
 	if opts.LoadPersistedNetwork {
 		// Honor the persisted network preferences at boot so a user who
 		// turned these on in a previous session doesn't see the server
@@ -526,11 +527,11 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// whole three-way precedence and the cache interaction.
 		settingsPort = persisted.ListenPort
 		cfg.CanonicalHost = persisted.CanonicalDomain
-		cfg.OriginPatterns = network.OriginPatterns(
-			cfg.BindAddr == "0.0.0.0",
-			bootLANIP(cfg.BindAddr == "0.0.0.0"),
-			persisted.CanonicalDomain,
-		)
+		// The origin allow-list is NOT computed here. Every pattern it
+		// emits names the bound port, and this boot has not resolved one
+		// yet — the pin below and then the bind itself decide it. It is
+		// installed after Start, where the number is a fact.
+		canonicalDomain = persisted.CanonicalDomain
 	}
 
 	// Resolve the listen port: --listen, else the saved network.listenPort,
@@ -592,6 +593,17 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		fatalf("transport: start server: %v", err)
 	}
 	portPin.adopt(srv.Addr())
+	// The WS origin allow-list, installed now that the listener has a
+	// port. Every pattern names it exactly (internal/network.OriginPatterns
+	// argues why), so it can only be built once the bind has happened —
+	// --listen, the saved port and the pin all feed the same answer, and
+	// an ephemeral bind has no answer at all until Start returns. Nothing
+	// has been accepted yet, so there is no window where a connection is
+	// judged against an empty list.
+	bindAll := cfg.BindAddr == "0.0.0.0"
+	srv.SetOriginPatterns(network.OriginPatterns(
+		bindAll, bootLANIP(bindAll), canonicalDomain, portFromAddr(srv.Addr()),
+	))
 	log.Printf("transport: serving on %s", srv.Addr())
 	logBootPhase("transport.start", phaseStarted)
 	return srv

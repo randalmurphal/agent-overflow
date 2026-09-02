@@ -747,7 +747,17 @@ one) and passes to the credential and peer rules. A request *with* an `Origin`
 passes only when it names the authority this request was addressed to — scheme
 from the TLS state, authority from the `Host` header, so the answer stays true
 across a rebind, a port change, and every spelling of loopback — or matches a
-pattern the LAN bind adds. The TLS state, deliberately, not `requestIsHTTPS`: a
+pattern the LAN bind adds. Those patterns name EXACT PORTS
+(`internal/network.OriginPatterns`, which takes the bound port): until wave 9
+they were `http://localhost:*` and its siblings, so a document served by any
+other port on this machine named an admitted origin — and this machine now
+also runs the dev-server preview listeners on other ports of the same hosts.
+`pagecookie_contract_test.go` is the structural half: it reads the source of
+this package and `internal/clientmode` and fails on any function that reads the
+page cookie without asking the origin question in the same body, and it drives
+the real routes with a real cookie and a preview-shaped Origin. A reader that
+fails it gets the check, never an entry on its exemption list. The TLS state,
+deliberately, not `requestIsHTTPS`: a
 caller-supplied header must not widen an authorization check, so a deployment
 behind a TLS-terminating proxy allow-lists its origin explicitly rather than
 talking its way past this one (the spec calls a reverse proxy unsupported until

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -27,80 +28,129 @@ func TestBindHost_BranchesOnFlag(t *testing.T) {
 	}
 }
 
-// TestOriginPatterns_LoopbackIsNil documents the InsecureSkipVerify
-// case: on loopback, the upgrader sees nil and waives the origin
-// check. LAN bind tightens this to an explicit allow-list, so a page
-// loaded from some other origin cannot open a socket with a token it
-// happened to learn.
+// TestOriginPatterns_LoopbackIsNil documents the loopback case: with no
+// LAN bind and no canonical domain there is nothing to add, and nil is
+// not "accept anything" — transport.OriginAllowed still admits only the
+// authority the request was addressed to.
 func TestOriginPatterns_LoopbackIsNil(t *testing.T) {
-	if got := OriginPatterns(false, "", ""); got != nil {
+	if got := OriginPatterns(false, "", "", 34115); got != nil {
 		t.Fatalf("loopback patterns should be nil, got %v", got)
 	}
 }
 
-// TestOriginPatterns_BindAllIncludesLAN pins the LAN allow-list
-// shape: loopback variants plus the discovered LAN IP. Without the
-// LAN entry, a browser on the LAN would fail the origin check and
-// the toggle would be useless. Without the loopback entries, opening
-// the URL on this same machine would also fail.
-func TestOriginPatterns_BindAllIncludesLAN(t *testing.T) {
-	patterns := OriginPatterns(true, "192.168.1.10", "")
-	want := []string{"http://127.0.0.1:*", "http://localhost:*", "http://192.168.1.10:*"}
-	if len(patterns) != len(want) {
-		t.Fatalf("bind-all patterns = %v, want %v", patterns, want)
-	}
-	for i, p := range patterns {
-		if p != want[i] {
-			t.Fatalf("bind-all patterns[%d] = %q, want %q", i, p, want[i])
+// TestOriginPatterns_BindAllIsExactPort is the wave-9 defect fix. Every
+// entry names the bound port, under both schemes the one listener
+// answers. A wildcard port here admitted a document served by ANY port on
+// this machine — including this machine's own dev-server preview
+// listeners — and the browser attaches the page cookie to the handshake
+// such a document opens.
+func TestOriginPatterns_BindAllIsExactPort(t *testing.T) {
+	patterns := OriginPatterns(true, "192.168.1.10", "", 34115)
+	assertPatterns(t, "bind-all", patterns, []string{
+		"http://127.0.0.1:34115", "https://127.0.0.1:34115",
+		"http://localhost:34115", "https://localhost:34115",
+		"http://192.168.1.10:34115", "https://192.168.1.10:34115",
+	})
+	for _, pattern := range patterns {
+		if strings.Contains(pattern, "*") {
+			t.Fatalf("pattern %q carries a wildcard; every origin must name one port", pattern)
 		}
 	}
 }
 
-// TestOriginPatterns_BindAllNoLAN proves the LAN-IP-missing case
-// still produces a usable allow-list. The user's browser may not be
-// reachable in this branch (the URL falls back to loopback upstream)
-// but at least the loopback origins still work.
+// TestOriginPatterns_BindAllNoLAN proves the LAN-IP-missing case still
+// produces a usable allow-list. The user's browser may not be reachable
+// in this branch (the URL falls back to loopback upstream) but the
+// loopback origins on the bound port still work.
 func TestOriginPatterns_BindAllNoLAN(t *testing.T) {
-	patterns := OriginPatterns(true, "", "")
-	want := []string{"http://127.0.0.1:*", "http://localhost:*"}
-	if len(patterns) != len(want) {
-		t.Fatalf("bind-all patterns (no LAN) = %v, want %v", patterns, want)
-	}
-	for i, p := range patterns {
-		if p != want[i] {
-			t.Fatalf("bind-all patterns[%d] = %q, want %q", i, p, want[i])
-		}
-	}
+	assertPatterns(t, "bind-all, no LAN", OriginPatterns(true, "", "", 8080), []string{
+		"http://127.0.0.1:8080", "https://127.0.0.1:8080",
+		"http://localhost:8080", "https://localhost:8080",
+	})
 }
 
-// A canonical domain names its own origins on either bind. The
-// port-bearing spelling is the one that matters when something in front
-// terminates TLS: the page's origin is https://<domain> and the request
+// A canonical domain names its own origins on either bind. Two
+// spellings, both exact: the bare name for the proxy that fronts this
+// backend on 443, and the bound port for one that does not. The
+// port-bearing spelling is what matters when something in front
+// terminates TLS — the page's origin is https://<domain> and the request
 // reaching this backend is cleartext, so the authority it computes for
 // itself would not match.
 func TestOriginPatterns_CanonicalDomainOnEitherBind(t *testing.T) {
-	loopbackBind := OriginPatterns(false, "", "backend.example")
-	want := []string{"https://backend.example", "https://backend.example:*"}
-	if len(loopbackBind) != len(want) {
-		t.Fatalf("loopback patterns = %v, want %v", loopbackBind, want)
+	assertPatterns(t, "loopback", OriginPatterns(false, "", "backend.example", 34115), []string{
+		"https://backend.example", "https://backend.example:34115",
+	})
+	assertPatterns(t, "LAN", OriginPatterns(true, "192.168.1.10", "backend.example", 34115), []string{
+		"http://127.0.0.1:34115", "https://127.0.0.1:34115",
+		"http://localhost:34115", "https://localhost:34115",
+		"http://192.168.1.10:34115", "https://192.168.1.10:34115",
+		"https://backend.example", "https://backend.example:34115",
+	})
+}
+
+// A port this process has not resolved yet drops every port-bearing
+// pattern rather than guessing one. Failing closed leaves the request's
+// own authority as the whole admission, which is exact by construction.
+func TestOriginPatterns_UnresolvedPortDropsPortBearingEntries(t *testing.T) {
+	for _, port := range []int{0, -1, 70000} {
+		assertPatterns(t, fmt.Sprintf("port %d, bind-all", port),
+			OriginPatterns(true, "192.168.1.10", "", port), nil)
+		assertPatterns(t, fmt.Sprintf("port %d, domain", port),
+			OriginPatterns(false, "", "backend.example", port),
+			[]string{"https://backend.example"})
 	}
-	for i, pattern := range loopbackBind {
-		if pattern != want[i] {
-			t.Fatalf("loopback patterns[%d] = %q, want %q", i, pattern, want[i])
+}
+
+func assertPatterns(t *testing.T, label string, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s patterns = %v, want %v", label, got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("%s patterns[%d] = %q, want %q", label, i, got[i], want[i])
+		}
+	}
+}
+
+// TestOriginPatternsRefuseAnotherPortOnThisHost is the enforcement half
+// of the exact-port rule, run through the function that actually gates
+// the socket. A bind-all install used to admit `http://localhost:5173`,
+// which is any dev server, any preview listener, and any other tool that
+// serves a document on this machine; the browser attaches this backend's
+// page cookie to a handshake such a document opens, because cookies are
+// scoped by host and not by port.
+func TestOriginPatternsRefuseAnotherPortOnThisHost(t *testing.T) {
+	patterns := OriginPatterns(true, "192.168.1.10", "", 34115)
+
+	// The SPA's own origin, on the port this listener bound.
+	for _, origin := range []string{
+		"http://localhost:34115",
+		"http://127.0.0.1:34115",
+		"http://192.168.1.10:34115",
+		"https://192.168.1.10:34115",
+	} {
+		request := httptest.NewRequest(http.MethodGet, "http://192.168.1.10:34115/ws", nil)
+		request.Header.Set("Origin", origin)
+		if !transport.OriginAllowed(request, patterns) {
+			t.Errorf("origin %q was refused; it is this listener's own page origin", origin)
 		}
 	}
 
-	lanBind := OriginPatterns(true, "192.168.1.10", "backend.example")
-	wantLAN := []string{
-		"http://127.0.0.1:*", "http://localhost:*", "http://192.168.1.10:*",
-		"https://backend.example", "https://backend.example:*",
-	}
-	if len(lanBind) != len(wantLAN) {
-		t.Fatalf("LAN patterns = %v, want %v", lanBind, wantLAN)
-	}
-	for i, pattern := range lanBind {
-		if pattern != wantLAN[i] {
-			t.Fatalf("LAN patterns[%d] = %q, want %q", i, pattern, wantLAN[i])
+	// Any other port on the same hosts, and the LAN neighbour that is not
+	// this machine.
+	for _, origin := range []string{
+		"http://localhost:5173",
+		"https://localhost:5173",
+		"http://127.0.0.1:5173",
+		"http://192.168.1.10:5173",
+		"https://192.168.1.10:3000",
+		"http://192.168.1.11:34115",
+	} {
+		request := httptest.NewRequest(http.MethodGet, "http://192.168.1.10:34115/ws", nil)
+		request.Header.Set("Origin", origin)
+		if transport.OriginAllowed(request, patterns) {
+			t.Errorf("origin %q was admitted; only this listener's own port may open a socket here", origin)
 		}
 	}
 }
