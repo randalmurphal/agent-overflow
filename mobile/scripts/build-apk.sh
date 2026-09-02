@@ -45,6 +45,14 @@ AO_SHELL=1 pnpm --dir "$repo/frontend" run build
 echo "==> cap sync android"
 (cd "$mobile" && pnpm exec cap sync android)
 
+echo "==> testDebugUnitTest"
+# The JVM half of the native code, run BEFORE the APK is assembled so a
+# broken bundle store cannot be packaged. `BundleStore` deliberately takes
+# a directory and no Android type precisely so the update mechanic — state
+# transitions, unzip, verification, rollback — is provable here rather than
+# on an emulator (mobile/AGENTS.md § The bundle plugin).
+(cd "$mobile/android" && ./gradlew --no-daemon testDebugUnitTest)
+
 echo "==> assembleDebug"
 (cd "$mobile/android" && ./gradlew --no-daemon assembleDebug)
 

@@ -46,10 +46,11 @@ make apk
 ```
 
 which is `mobile/scripts/build-apk.sh`: build the SPA, `cap sync
-android`, `./gradlew assembleDebug`. The order is strict — `cap sync`
-copies whatever is in `frontend/dist` into the Android assets, so a run
-that skipped the SPA step would package a stale bundle and say nothing
-about it.
+android`, `./gradlew testDebugUnitTest`, `./gradlew assembleDebug`. The
+order is strict — `cap sync` copies whatever is in `frontend/dist` into
+the Android assets, so a run that skipped the SPA step would package a
+stale bundle and say nothing about it, and the JVM tests run before the
+assemble so a broken bundle store cannot be packaged.
 
 The toolchain is not on PATH on the development box. Both are discovered
 with the defaults below and can be overridden by exporting them:
@@ -110,6 +111,123 @@ in `capacitor.config.ts` would apply to the release build too, which is
 the door the tailnet-TLS ruling closes — so it stays off, and the reverse
 forward is what makes the test address a trustworthy one.
 
+## The bundle plugin
+
+The APK ships with the SPA it was built with and runs it until the
+backend it paired with says it has a newer one. `BundlePlugin` (local to
+this app, registered in `MainActivity`, the only native code wave 6g-a
+adds) is what puts that bundle on disk; `frontend/src/lib/native/
+bundleSync.ts` decides when, and `internal/bundle` +
+`internal/transport/bundleroutes.go` are the other end. Design
+authority: `docs/specs/remote-access.md` §9, "Bundle sync".
+
+**Everything that decides anything lives in `BundleStore`, which takes a
+directory and no Android type.** That is deliberate: the state
+transitions, the unzip, the verification and the rollback are the part
+of this feature that decides whether a phone boots, and none of it
+should need an emulator to be proved. `BundleStoreTest` is a plain JVM
+JUnit test — no Robolectric — and `make apk` runs it before it
+assembles. What is left for the emulator is the part only a device has:
+that the WebView really serves from the staged directory, and that the
+plugin registers at all.
+
+### The state file
+
+One small JSON document at `filesDir/bundles/state.json`, beside one
+directory per bundle named by its content id:
+
+```
+{current, next, pendingHealth, lastKnownGood, rolledBack: []}
+```
+
+Each of the four strings is a bundle id or `""`. **An empty `current`
+means the APK's own assets** — the bundle this build shipped with. It is
+the resting state of a phone that has never updated, the state a
+rollback returns to when there is no last known good, and what a damaged
+state file reads as. There is deliberately no separate "using assets"
+flag: a second spelling of one fact is a second thing to keep true.
+
+The file is written whole through a temporary name and a rename, because
+it is read on the next cold start and a process killed mid-rewrite would
+leave the one document that decides which bundle boots half-written.
+Every read-modify-write holds one process-wide lock: Capacitor runs
+plugin methods on its own task thread while the boot transition and the
+watchdog run on the main one.
+
+### The boot order, and why it is before `super.onCreate`
+
+`MainActivity.onCreate` reads the state, applies this launch's
+transition, and calls `bridgeBuilder.setServerPath(BASE_PATH, dir)` —
+all **before** `super.onCreate`. It has to:
+`BridgeActivity.onCreate` builds the Bridge from that builder and
+immediately loads the WebView from whatever path it holds, so a path
+installed afterwards would mean one launch of the wrong bundle every
+time. `registerPlugin` is before it for the same reason.
+
+The transition, in this order:
+
+1. **`pendingHealth` is still set** → the previous launch swapped onto a
+   bundle and never reported healthy. `current` becomes `lastKnownGood`,
+   the bad id joins `rolledBack`, its directory is deleted.
+2. **`next` is set** → adopt it, and arm the health check by setting
+   `pendingHealth` to it. From here until the app reports healthy, case
+   1 is what happens on any launch.
+3. Otherwise nothing moves.
+
+Then the directory is checked for real: a `current` whose directory is
+missing or has no `index.html` falls back to the assets and is cleared,
+so a bundle lost to a wipe or an interrupted install cannot become a
+white screen.
+
+### The 30-second watchdog
+
+`ready()` is the health check, and the shell calls it once per launch
+after the app has mounted and its home transport has reached hello — a
+bundle that boots and talks to its backend is a bundle that works.
+
+A bundle that hangs before then would otherwise sit on a dead screen
+until the person killed the app, and killing it is what ARMS the
+rollback, so they would have to work out that killing it is the fix. So
+`MainActivity` arms a 30 s handler when the health flag is set: if it is
+still set when the timer fires, the rollback runs in place and
+`setServerBasePath` / `setServerAssetPath` points the WebView back at the
+last known good bundle or at the APK's own assets. Thirty seconds is far
+past a healthy boot on a cold WebView and far short of a person's
+patience with a blank screen.
+
+### `rolledBack`, and when it is cleared
+
+`rolledBack` is what stops the shell downloading a bundle it has already
+watched fail. It is cleared **only when a DIFFERENT id succeeds** —
+which is exactly the launch that had `pendingHealth` set. A relaunch on
+the existing bundle keeps the list, or the phone would fetch the same
+failure again on the next hello.
+
+### Staging
+
+`stage({id, manifest, archiveBase64})` unzips into `<id>.staging`,
+verifying as it goes: every entry must be a path the manifest names,
+must resolve inside the staging directory (checked against the CANONICAL
+path, not by looking for `..`), must match its digest and its size, and
+every manifest path must have been delivered. Only then is the directory
+renamed to `<id>` and `next` set. Any failure deletes the staging
+directory and rejects with a message naming the file — "the update
+failed" is not something anybody can act on.
+
+The archive arrives base64-encoded because that is what a Capacitor call
+can carry. It is a few MB once per update, on a background thread.
+
+### Two dependencies worth knowing
+
+`state()` reads the APK's own `versionCode` itself rather than through
+`@capacitor/app`, so this seam has exactly one native dependency: the
+shell compares that number against the bundle's `minShellBuild` before
+downloading, and a seam that needed a second plugin to answer would be a
+second plugin an update could not ship. And `android.jar`'s `org.json`
+is a stub whose methods throw, so `app/build.gradle` puts the real
+implementation on the unit-test classpath (`orgJsonVersion`); nothing
+ships it to a device.
+
 ## What is committed
 
 The generated `android/` tree is committed, minus build outputs,
@@ -133,6 +251,7 @@ never resolves a Capacitor module at runtime:
 | `native/qr.ts` | `scanPairingQr()` |
 | `native/pickers.ts` | a documented stub |
 | `native/boot.ts` | what runs before anything mounts; `adoptPairingEndpoint` is the one place both pairing doors (scanned code, `#pair=` hash) point the shell at a backend |
+| `native/bundleSync.ts` | the one door for downloading a newer bundle from an attached backend, and for reporting this launch healthy (§ The bundle plugin) |
 
 Two things `main.ts` keeps true for the shell. The `#pair=` hash is
 checked BEFORE the first-run screen for every client, so a shell can be

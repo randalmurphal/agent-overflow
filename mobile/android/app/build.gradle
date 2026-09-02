@@ -37,6 +37,12 @@ dependencies {
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
+    // The bundle state file is JSON, and `org.json` on the unit-test
+    // classpath is android.jar's STUB, whose every method throws. The
+    // real implementation from Maven shadows it, which is what lets
+    // BundleStoreTest exercise the whole update mechanic on the JVM
+    // instead of needing an emulator for it (mobile/AGENTS.md).
+    testImplementation "org.json:json:$orgJsonVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
