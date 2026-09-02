@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// The store reaches the backend through these RPC wrappers; replace the module
-// so each test controls their resolution. The store imports nothing else from
-// ./bindings, so a minimal factory is sufficient.
-vi.mock('./bindings', () => ({
+// The store reaches the backend through these RPC wrappers; replace them so
+// each test controls their resolution. An importOriginal spread rather than
+// a factory (frontend/AGENTS.md § Testing): the badge predicate now reads the
+// service-update store beside this one, and a factory would hand that store
+// `undefined` for every RPC it imports.
+vi.mock('./bindings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./bindings')>()),
   CheckForUpdate: vi.fn(),
   ListReleases: vi.fn(),
   DownloadUpdate: vi.fn(),

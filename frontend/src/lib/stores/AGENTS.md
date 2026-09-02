@@ -212,6 +212,21 @@ stops waking readers.
   and a removal detaches the socket as well as forgetting the descriptor.
   All four RPCs are `host`: a `--connect` window and every paired device
   see an explanation, and the passive load asks `hasScope('host')` first.
+- `serviceUpdate.svelte.ts` owns updating a SUPERVISED machine over the
+  wire (`GetServiceUpdateStatus`, `ListServiceReleases`,
+  `RequestServiceUpdate`; docs/architecture/serve-mode.md § Updating over
+  the wire). One `keyedSignalRegistry` box per attached backend, because
+  the question is per machine: a status frame is keyed by its origin
+  through `backendKeyForOrigin`, the status is replaced WHOLESALE (every
+  frame and the read answer the same shape, so nothing merges), and the
+  outcome frame sits beside it. The load runs on every hello the session
+  holds `access:admin` for, which is also what re-reads a machine after
+  its restart; a dropped socket keeps the box (a machine mid-restart is
+  still `requested`), a detach drops it. It is NOT the in-app updater
+  (`updates.svelte.ts`, `host`-scoped, the build this page runs inside);
+  the two share the footer badge through `hasPendingUpdate()` and the
+  prop-driven `VersionPicker`, and nothing else. Settings → Updates
+  renders one `MachineUpdateCard` per `supervisedMachines()` entry.
 - A project is a REPOSITORY, and the same repository on two attached
   machines is one sidebar entry (`projects.svelte.ts`, wave 7d). The rows
   stay as the backends sent them; `projectEntries()` is the merged VIEW,

@@ -76,6 +76,7 @@ const EDITORS_STORE = 'lib/stores/editors.svelte.ts';
 const BROWSER_COMPANION_STORE = 'lib/stores/browserCompanion.svelte.ts';
 const PROVIDER_ACCOUNTS_STORE = 'lib/stores/providerAccounts.svelte.ts';
 const SYSTEMS_STORE = 'lib/stores/systems.svelte.ts';
+const SERVICE_UPDATE_STORE = 'lib/stores/serviceUpdate.svelte.ts';
 
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionPaneAttach: owned(BROWSER_COMPANION_STORE, 'attachBrowserCompanion()'),
@@ -139,6 +140,14 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   AddBackend: owned(SYSTEMS_STORE, 'addSystem()'),
   RemoveBackend: owned(SYSTEMS_STORE, 'removeSystem()'),
   RenameBackend: owned(SYSTEMS_STORE, 'renameSystem()'),
+  // Updating a supervised machine is one status box per backend fed by two
+  // channels and one request. A card calling RequestServiceUpdate itself
+  // would start a flow the box the card renders from never marked as its
+  // own, and a second reader of GetServiceUpdateStatus would hold a status
+  // the frames never converge.
+  GetServiceUpdateStatus: owned(SERVICE_UPDATE_STORE, 'loadMachineUpdate()'),
+  ListServiceReleases: owned(SERVICE_UPDATE_STORE, 'loadServiceReleases()'),
+  RequestServiceUpdate: owned(SERVICE_UPDATE_STORE, 'requestServiceUpdate()'),
   ListAvailableEditors: owned(EDITORS_STORE, 'startLoad()'),
   GetEditorSettings: owned(EDITORS_STORE, 'startLoad()'),
   SetEditorSettings: owned(EDITORS_STORE, 'setEditorPreference()'),

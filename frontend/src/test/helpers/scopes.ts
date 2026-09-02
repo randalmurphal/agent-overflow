@@ -14,6 +14,7 @@ import {
   type PairingPayload,
 } from '../../lib/transport/deviceSession';
 import { refreshGrantedScopes, setPageGrantsFromBootstrap } from '../../lib/transport/scopes';
+import type { BackendKey } from '../../lib/transport/backendKey';
 
 const PAYLOAD: PairingPayload = {
   v: 1,
@@ -58,4 +59,33 @@ export function resetToLocalPage(): void {
   clearPairedSession();
   setPageGrantsFromBootstrap(false);
   refreshGrantedScopes();
+}
+
+/**
+ * Grant a SECOND attached backend an exact set, the way attaching a
+ * machine does: its own paired session, resolved for its own key. The
+ * page's locality is untouched, because the common shape is the owner's
+ * desktop attached to a serve host, not a paired page attached to one.
+ */
+export async function grantBackendScopes(
+  backend: BackendKey,
+  scopes: readonly string[],
+): Promise<void> {
+  const fetcher = vi.fn(async () => new Response(
+    JSON.stringify({
+      sessionId: `sess-${backend}`,
+      credential: `cred-${backend}`,
+      expiresAtMs: Date.now() + 15 * 60_000,
+      scopes: [...scopes],
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )) as unknown as typeof fetch;
+  await redeemPairing({ ...PAYLOAD, backendId: backend }, 'an attached machine', fetcher, backend);
+  refreshGrantedScopes(backend);
+}
+
+/** Forget that backend's grant again. */
+export function revokeBackendScopes(backend: BackendKey): void {
+  clearPairedSession(backend);
+  refreshGrantedScopes(backend);
 }

@@ -477,6 +477,14 @@ export {
   DownloadUpdate,
   RestartToUpdate,
 
+  // Updating a SUPERVISED serve host from wherever you are
+  // (docs/architecture/serve-mode.md § Updating over the wire). All three
+  // are `access:admin` and `route selected`; the request is step-up gated
+  // on top, and the interception in the dispatch path collects that proof.
+  GetServiceUpdateStatus,
+  ListServiceReleases,
+  RequestServiceUpdate,
+
   // Workflows
   WorkflowAnswerQuestion,
   WorkflowBindThread,
@@ -597,6 +605,7 @@ export type {
   PasskeyChallengeResult,
   PasskeyStepUpGrant,
   PushSenderStatus,
+  ServiceUpdateStatus,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 export {
   Distro as WSLDistro,

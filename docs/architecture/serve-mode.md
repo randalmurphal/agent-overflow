@@ -346,8 +346,9 @@ that sentence, for exactly this reason.
 
 ### Updating over the wire
 
-Settings → Updates on a supervised host offers the release list and installs
-the one you pick, from wherever you are. The backend does the same work the
+Settings → Updates lists every attached machine that reports a supervisor,
+from wherever you are and on any session holding `access:admin` there, and
+installs the release you pick on it. The backend does the same work the
 local command does, in the same order, and adds the download:
 
 1. **Resolve.** The tag you picked, against the published release feed. Only

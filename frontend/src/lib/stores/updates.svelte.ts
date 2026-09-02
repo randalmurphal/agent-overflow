@@ -18,6 +18,7 @@ import { isScopeRefusal } from '../transport/scopeRefusal';
 import { hasScope } from '../transport/scopes';
 import { isMethodUnavailableError } from './transportStatus.svelte';
 import { userFacingError } from '../utils/userFacingError';
+import { hasPendingServiceUpdate } from './serviceUpdate.svelte';
 
 export type { ReleaseSummary };
 
@@ -98,9 +99,14 @@ export function getUpdateState(): UpdateState {
  * installed+restarted. Drives the sidebar badge. A successful restart relaunches
  * into the new version, whose on-launch check returns up-to-date and clears
  * latestVersion, so the badge naturally goes dark.
+ *
+ * The same badge also lights for a SUPERVISED machine this client is attached
+ * to with a newer release waiting (`serviceUpdate.svelte.ts`): the two
+ * updaters are different mechanisms, but "something on Settings → Updates
+ * wants you" is one fact, and the badge sites ask it here once.
  */
 export function hasPendingUpdate(): boolean {
-  return state.supported && state.latestVersion !== '';
+  return (state.supported && state.latestVersion !== '') || hasPendingServiceUpdate();
 }
 
 /** isDownloadInFlight reports whether the phase is one of the active

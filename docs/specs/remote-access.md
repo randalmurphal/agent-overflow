@@ -1356,9 +1356,27 @@ trial refusal in review):
   on windows). An empty answer is the `Unavailable` sentence, not a
   button that cannot work. The passive `Latest` check runs once,
   unparked, during a trial too.
-- *Not yet*: the Settings → Updates surface, the footer badge for a
-  selected machine, and the rollback picker (frontend half, hands-on,
-  after 6g-b lands). Live-only: a real GitHub release feed and a real
+- *Frontend half LANDED (2026-09-02)*: `stores/serviceUpdate.svelte.ts`,
+  one box per attached backend keyed by the frame origin, status
+  replaced wholesale, read on every hello the session holds
+  `access:admin` for (the hello after the restart is what shows the
+  new version), box kept through a dropped socket and dropped on
+  detach. Settings → Updates gains a "Machines" section below the
+  in-app updater with one card per machine that reports a supervisor:
+  what it runs, the newer release with an Update button (step-up
+  collected by the dispatch interception), the phases with a progress
+  bar, `requested` as "Restarting into version X…", the outcome
+  callout (committed / rolled back with the reason), the flow error,
+  the `Unavailable` sentence with no button, and the rollback picker
+  (`VersionPicker` became prop-driven so the in-app updater and each
+  machine drive one component). The footer badge lights through
+  `hasPendingUpdate()` for any supervised machine with a newer
+  release. Nothing renders on a desktop with no supervised backend
+  attached, which is every harness run, so the e2e suite proves only
+  that; unit suites (`serviceUpdate.svelte.test.ts`,
+  `MachineUpdates.test.ts`) cover the keying, the scope gate on a second
+  backend (`test/helpers/scopes.ts#grantBackendScopes`), the flow and
+  the picker. Live-only: a real GitHub release feed and a real
   supervised restart.
 
 ### Provider accounts and remote login
@@ -3109,8 +3127,8 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    LANDED 2026-09-01 (wave 8i — §7 "Provider accounts and remote
    login"). Release signing: CUT by
    2026-09-01 ruling (§9 bundle sync states the trust line that
-   replaces it); the W8h2 remote update trigger's Go half LANDED
-   2026-09-02 behind step-up, its Settings surface still to come.
+   replaces it); the W8h2 remote update trigger LANDED
+   2026-09-02 behind step-up, Go half and Settings surface both.
 6. **Phone preparation.** Subscription narrowing (LANDED 2026-09-01,
    wave 6d — §9 "Phone-era efficiency": the watch frame + entity
    filter on the two highlight channels; the six-consumer re-home

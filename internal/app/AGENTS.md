@@ -630,6 +630,11 @@ linux, and `""` on darwin — an app-bundle zip — and windows, which is not a
 serve mode). An empty answer becomes the `Unavailable` sentence rather than a
 button that cannot work.
 
+The frontend half is `frontend/src/lib/stores/serviceUpdate.svelte.ts` (one box
+per attached backend, fed by both channels and re-read on every hello) and
+`components/settings/MachineUpdates.svelte`; its guide entry is
+`frontend/src/lib/stores/AGENTS.md`.
+
 ## Tests
 
 Application tests stay beside the shell. `main_test.go` changes their working

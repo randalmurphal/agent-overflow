@@ -96,6 +96,7 @@
   import { addToast } from './lib/stores/toast.svelte';
   import { userFacingError } from './lib/utils/userFacingError';
   import { initUpdates } from './lib/stores/updates.svelte';
+  import { initServiceUpdates } from './lib/stores/serviceUpdate.svelte';
 
   let discussionStartFor = $state<Thread | null>(null);
   let searchFocuser = $state<(() => void) | null>(null);
@@ -370,6 +371,10 @@
     // Passive on-launch update check + updater:* event bridge. No-op on builds
     // without an updater; never downloads or installs without an explicit click.
     const cleanupUpdates = initUpdates();
+    // The supervised machines this client can update over the wire: their
+    // status on every hello, and their flow frames. Silent where no backend
+    // reports a supervisor.
+    const cleanupServiceUpdates = initServiceUpdates();
     // appStorage hydration gates the view-state consumers: pane layout
     // restore reads the per-client bucket, and the sidebar syncs adopt
     // the durable copies over the pre-hydration cache. A failed
@@ -494,6 +499,7 @@
       cleanupAppearance();
       cleanupLayoutMode();
       cleanupUpdates();
+      cleanupServiceUpdates();
       cleanupExternalLinks();
       cleanupZoomKeys();
       cleanupLoafTrace();
