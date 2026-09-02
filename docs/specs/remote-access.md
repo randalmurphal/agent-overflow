@@ -1330,7 +1330,16 @@ proxy, a real Chromium launched on a serve host (the manual
 `AO_HEADLESS_CHROMIUM_SMOKE=1` gate), a LAN bind reached from a second
 physical machine, a revoked device's open preview tab going to the
 "session ended" page mid-session, and a backend restart ending every
-grant. No two-backend Playwright rig exists, so the "thread on an
+grant. **E2E:** `e2e/tests/preview-gateway.spec.ts` and its compact twin drive
+the whole chain from a browser paired through the real screen: a
+`node:http` dev server in the spec process that discovery finds on its
+own as a `seen` candidate, the inert link and its Allow action, the
+live link and chip, the minted URL spent against the real LAN preview
+listener, and every crossing (Host, Origin, path and query byte for
+byte, the stripped cookie, the rewritten Location) asserted on what
+that server RECORDED; then the spent ticket refused, revocation ending
+the grant, and Stop sharing closing the listener (ECONNREFUSED, not a
+timeout). No two-backend Playwright rig exists, so the "thread on an
 attached machine" leg of the link rewrite and the mod+click fallback
 are unit-tested (`devServers.svelte.test.ts`, `externalLinks.test.ts`)
 rather than driven end to end.
