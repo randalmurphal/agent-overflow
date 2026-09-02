@@ -246,6 +246,17 @@ Only LIFETIME differs.
   the GUID-named file it writes (`downloads.go`), and events are what make a
   download reportable and cappable at all.
 
+- **Never call the Manager inline from a chromedp listener.** This is one rule
+  for BOTH CDP engines, and the reason is in chromedp: browser listeners run on
+  the single goroutine reading that browser's connection, under its listeners
+  mutex. `engineEvents.PageClosed` is `Manager.removeClosedPage`, which on a
+  workspace's last page reaches `disposeScope` and then the profile's
+  `Dispose` — which waits on that same connection (the headless one blocks
+  until Chromium is reaped). Inline, that is a deadlock, not an ordering
+  choice, so both engines hand `targetDestroyed` to a goroutine. A
+  non-listener caller, such as the hosted engine's launcher report path, calls
+  it inline and should.
+
 ## The WebKitGTK engine (native Linux desktop)
 
 `webkit_cgo_linux.go` is the ONLY cgo in the engine; `webkitglue_linux.c` holds

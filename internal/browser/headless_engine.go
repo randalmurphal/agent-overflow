@@ -133,12 +133,20 @@ func (e *headlessEngine) Interrupt() {
 
 // Stop disposes every profile, which is what kills every process: this
 // engine holds no process of its own.
+//
+// One profile's refusal does not stop the others, or a shutdown that gave up
+// halfway would leave the rest of the browsers running. It is not swallowed
+// either: a Dispose that fails means a Chromium may still be alive holding a
+// user-data directory this backend believes it released, and the profile
+// handle is what names both.
 func (e *headlessEngine) Stop() {
 	e.mu.Lock()
 	e.started = false
 	e.mu.Unlock()
 	for _, p := range e.liveProfiles() {
-		_ = p.Dispose(context.Background())
+		if err := p.Dispose(context.Background()); err != nil {
+			e.logf("browser: profile %s did not stop cleanly: %v", p.Handle(), err)
+		}
 	}
 }
 

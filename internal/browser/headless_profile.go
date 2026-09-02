@@ -290,8 +290,16 @@ func (p *headlessProfile) dispatchEvent(ev any) {
 		if !p.engine.unbindPage(handle) {
 			return
 		}
-		// Off the CDP event goroutine: the Manager's own teardown for a
-		// closed page must not block this profile's event stream.
+		// Off the CDP listener goroutine, and REQUIRED to be: the same rule
+		// the hosted engine follows for this same event, for the same
+		// reason. chromedp runs browser listeners inline on the one
+		// goroutine reading that browser's connection, under its listeners
+		// mutex, so a listener that waits on the browser waits on itself.
+		// PageClosed is Manager.removeClosedPage, which on the workspace's
+		// last page calls disposeScope, which calls this profile's Dispose,
+		// which cancels the allocator and BLOCKS until Chromium is reaped —
+		// and the reap needs this read loop to finish. Inline, that is a
+		// deadlock rather than an ordering difference.
 		go p.engine.events.PageClosed(handle)
 	}
 }

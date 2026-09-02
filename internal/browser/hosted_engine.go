@@ -567,6 +567,10 @@ func (e *hostedEngine) dispatchEvent(ev any) {
 	switch event := ev.(type) {
 	case *target.EventTargetDestroyed:
 		if pageID, ok := e.pageForTarget(string(event.TargetID)); ok {
+			// Off the CDP listener goroutine, which is the rule both CDP
+			// engines follow and headless_profile.go's dispatchEvent spells
+			// out: retirePage ends in the Manager's teardown, and that
+			// teardown waits on this same browser connection.
 			go e.retirePage(pageID)
 		}
 	case *target.EventTargetInfoChanged:
@@ -626,6 +630,11 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 
 // retirePage drops the engine's bookkeeping and tells the Manager the page
 // is gone. The Manager alone decides what that means for its registry.
+//
+// PageClosed is called inline here because every SYNCHRONOUS caller is the
+// launcher's report path, which is an RPC goroutine of its own. The one
+// caller that is a CDP listener goroutine starts this on a goroutine
+// instead, and must (dispatchEvent above).
 func (e *hostedEngine) retirePage(pageID string) {
 	e.mu.Lock()
 	targetID, known := e.targetByPage[pageID]

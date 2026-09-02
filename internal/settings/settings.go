@@ -96,9 +96,9 @@ type Settings struct {
 	// checkpoints encrypted cookies and local storage per workspace. Both
 	// default on. Outside-workspace
 	// file access is the separate, deliberately off-by-default authority grant.
-	BrowserEnabled               bool   `json:"browserEnabled"`
-	BrowserPersistSiteData       bool   `json:"browserPersistSiteData"`
-	BrowserAllowOutsideWorkspace bool   `json:"browserAllowOutsideWorkspace,omitempty"`
+	BrowserEnabled               bool `json:"browserEnabled"`
+	BrowserPersistSiteData       bool `json:"browserPersistSiteData"`
+	BrowserAllowOutsideWorkspace bool `json:"browserAllowOutsideWorkspace,omitempty"`
 	// BrowserChromiumPath names the Chromium the HEADLESS engine runs, on a
 	// deployment that has one: serve mode, which has no window to host a
 	// browser view in and drives a Chromium process instead
@@ -106,13 +106,13 @@ type Settings struct {
 	// nothing is ever downloaded. It has no effect on a windowed
 	// deployment, whose engine is the platform's own.
 	BrowserChromiumPath string `json:"browserChromiumPath,omitempty"`
-	ConfirmArchive               bool   `json:"confirmArchive"`
-	ConfirmDelete                bool   `json:"confirmDelete"`
-	AutoPinNewThreads            bool   `json:"autoPinNewThreads"`
-	ClaudeBinaryPath             string `json:"claudeBinaryPath"`
-	CodexBinaryPath              string `json:"codexBinaryPath"`
-	ClaudeEnabled                bool   `json:"claudeEnabled"`
-	CodexEnabled                 bool   `json:"codexEnabled"`
+	ConfirmArchive      bool   `json:"confirmArchive"`
+	ConfirmDelete       bool   `json:"confirmDelete"`
+	AutoPinNewThreads   bool   `json:"autoPinNewThreads"`
+	ClaudeBinaryPath    string `json:"claudeBinaryPath"`
+	CodexBinaryPath     string `json:"codexBinaryPath"`
+	ClaudeEnabled       bool   `json:"claudeEnabled"`
+	CodexEnabled        bool   `json:"codexEnabled"`
 
 	// ClaudeTUIEnabled surfaces the claude-tui provider — the real
 	// interactive Claude TUI driven inside a PTY — in the model/provider
