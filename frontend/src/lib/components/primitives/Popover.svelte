@@ -63,6 +63,7 @@
 
   import type { Snippet } from 'svelte';
   import { airspaceSurface } from '../../utils/paneAirspace.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import {
     hasOpenPopoverOwnedBy,
     popoverAnchorChainReaches,
@@ -114,6 +115,13 @@
      * put focus where the user asked for it.
      */
     restoreFocusTo?: HTMLElement;
+    /**
+     * Under the compact layout the popover is a bottom sheet: full width,
+     * pinned to the bottom edge, no anchor geometry. Menus and pickers
+     * want that; a completion list that must sit ON the caret's textarea
+     * (the composer's mention and slash popovers) opts out.
+     */
+    sheet?: boolean;
     children: Snippet;
   }
 
@@ -128,8 +136,11 @@
     ariaLabel,
     claimTab = false,
     restoreFocusTo,
+    sheet = true,
     children,
   }: Props = $props();
+
+  let asSheet = $derived(sheet && isCompactLayout());
 
   let floatingEl: HTMLDivElement | undefined = $state(undefined);
   let top = $state(0);
@@ -527,6 +538,9 @@
   // measured we paint the div with `visibility: hidden` so there's no
   // flash at (0,0) before the first layout frame.
   let floatingStyle = $derived.by(() => {
+    if (asSheet) {
+      return 'position: fixed; left: 0; right: 0; bottom: 0; max-height: 70vh; overflow-y: auto; padding-bottom: env(safe-area-inset-bottom);';
+    }
     const widthRule = width !== undefined ? `width: ${width}px;` : '';
     const maxHeightRule = maxHeight !== undefined ? `max-height: ${maxHeight}px; overflow-y: auto;` : '';
     const visibility = resolvedPlacement === null ? 'visibility: hidden;' : '';
@@ -567,7 +581,8 @@
     aria-label={ariaLabel}
     style={floatingStyle}
     data-popover
-    data-placement={resolvedPlacement ?? placement}
+    data-popover-sheet={asSheet ? '' : undefined}
+    data-placement={asSheet ? 'sheet' : (resolvedPlacement ?? placement)}
     class="z-[80]"
     use:airspaceSurface
   >

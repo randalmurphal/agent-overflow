@@ -27,6 +27,7 @@
   } from './lib/stores/settingsOverlay.svelte';
   import { hydrateWorkflowAttention } from './lib/stores/workflowRuns.svelte';
   import { syncSidebarLayoutFromAppStorage } from './lib/stores/sidebarLayout.svelte';
+  import { installLayoutMode } from './lib/stores/layoutMode.svelte';
   import { syncUsagePeriodFromSettings } from './lib/stores/usagePeriod.svelte';
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
   import { applyThemeClass } from './lib/utils/theme';
@@ -365,6 +366,7 @@
     // the agent-edit loop (write themes/*.json, see the app repaint).
     void loadAppearance();
     const cleanupAppearance = installAppearanceEvents();
+    const cleanupLayoutMode = installLayoutMode();
     // Passive on-launch update check + updater:* event bridge. No-op on builds
     // without an updater; never downloads or installs without an explicit click.
     const cleanupUpdates = initUpdates();
@@ -490,6 +492,7 @@
       flushPaneLayout();
       cleanupEvents();
       cleanupAppearance();
+      cleanupLayoutMode();
       cleanupUpdates();
       cleanupExternalLinks();
       cleanupZoomKeys();

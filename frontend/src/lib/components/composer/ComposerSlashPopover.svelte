@@ -60,7 +60,7 @@
   });
 </script>
 
-<Popover {anchor} {open} {onClose} placement="top-start" role="listbox" ariaLabel="Composer Commands">
+<Popover {anchor} {open} {onClose} placement="top-start" role="listbox" ariaLabel="Composer Commands" sheet={false}>
   {#snippet children()}
     <div
       bind:this={listEl}

@@ -37,6 +37,12 @@ stops waking readers.
   is private for that reason. The duplicate scan in `panes.svelte.ts` is a
   deliberately non-dev-gated tripwire for a path that mounts around it.
   Two panes on one WORKSPACE stay first-class.
+- **The layout mode is viewport state, and it has one door.**
+  `layoutMode.svelte.ts` owns `isCompactLayout()` and the compact SCREEN
+  (list or thread). `revealPane` is the only writer that flips to the
+  thread screen, so a new "open this pane" path that bypasses it leaves
+  the phone on the list; route through `revealPane`. Tests use
+  `setCompactLayoutForTest` and never drive `matchMedia` themselves.
 - **What a session may do is NOT a store.** `hasScope('git:operate')`
   and friends come from `transport/scopes.ts`, imported directly by
   components, stores and utils alike, and no store re-exports them. It is

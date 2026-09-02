@@ -16,6 +16,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Harness from './PopoverHarness.svelte';
 import NestedHarness from './NestedPopoverHarness.svelte';
+import { setCompactLayoutForTest } from '../../../stores/layoutMode.svelte';
 
 // happy-dom lacks ResizeObserver. Minimal stub — our tests don't depend
 // on it firing, they just need construction to not throw.
@@ -35,6 +36,7 @@ const originalInnerHeight = window.innerHeight;
 
 afterEach(() => {
   vi.restoreAllMocks();
+  setCompactLayoutForTest(false);
   setViewport(originalInnerWidth, originalInnerHeight);
 });
 
@@ -710,5 +712,38 @@ describe('<Popover>', () => {
       await vi.waitFor(() => expect(onInnerClose).toHaveBeenCalledWith('anchor-gone'));
       expect(onOuterClose).not.toHaveBeenCalled();
     });
+  });
+});
+
+// Compact layout: a popover is a bottom sheet unless the caller opts out
+// (the composer's completion lists must stay on the caret).
+describe('compact sheet', () => {
+  it('pins to the bottom edge with no anchor geometry', async () => {
+    setCompactLayoutForTest(true);
+    const { getByTestId } = render(Harness, { props: { open: true, role: 'menu' } });
+    await tick();
+    const floating = getByTestId('popover-content').closest('[data-popover]') as HTMLElement;
+    expect(floating.hasAttribute('data-popover-sheet')).toBe(true);
+    expect(floating.dataset.placement).toBe('sheet');
+    expect(floating.style.bottom).toBe('0px');
+    expect(floating.style.left).toBe('0px');
+    expect(floating.style.right).toBe('0px');
+    expect(floating.style.visibility).not.toBe('hidden');
+  });
+
+  it('sheet={false} keeps anchored placement', async () => {
+    setCompactLayoutForTest(true);
+    const { getByTestId } = render(Harness, { props: { open: true, sheet: false } });
+    await tick();
+    const floating = getByTestId('popover-content').closest('[data-popover]') as HTMLElement;
+    expect(floating.hasAttribute('data-popover-sheet')).toBe(false);
+    expect(floating.dataset.placement).not.toBe('sheet');
+  });
+
+  it('full layout never renders a sheet', async () => {
+    const { getByTestId } = render(Harness, { props: { open: true, role: 'menu' } });
+    await tick();
+    const floating = getByTestId('popover-content').closest('[data-popover]') as HTMLElement;
+    expect(floating.hasAttribute('data-popover-sheet')).toBe(false);
   });
 });

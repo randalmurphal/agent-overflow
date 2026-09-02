@@ -15,6 +15,7 @@
     persistSidebarWidth,
     setSidebarWidthLive,
   } from '../../stores/sidebarLayout.svelte';
+  import { getCompactScreen, isCompactLayout } from '../../stores/layoutMode.svelte';
   import SidebarToggleButton from './SidebarToggleButton.svelte';
   import SidebarSearch from './SidebarSearch.svelte';
   import ProjectsSection from './ProjectsSection.svelte';
@@ -66,7 +67,12 @@
   const releaseJumpHints = subscribeJumpHints();
   onDestroy(releaseJumpHints);
 
-  let collapsed = $derived(isSidebarCollapsed());
+  let compact = $derived(isCompactLayout());
+  // Compact has no rail and no resizer: the list IS the root screen, so
+  // collapsing it would leave nothing. The stored flag is kept, not
+  // cleared, so a window widened back honours the user's choice.
+  let collapsed = $derived(isSidebarCollapsed() && !compact);
+  let listInert = $derived(compact && getCompactScreen() !== 'list');
 </script>
 
 <!--
@@ -94,13 +100,16 @@
   </aside>
 {:else}
   <aside
-    class="relative shrink-0 border-r border-border-subtle bg-transparent flex flex-col h-full"
-    style="width: {getSidebarWidth()}px"
+    class="compact-screen compact-screen-list relative shrink-0 border-r border-border-subtle bg-transparent flex flex-col h-full compact:border-r-0"
+    style={compact ? undefined : `width: ${getSidebarWidth()}px`}
+    inert={listInert}
     data-testid="sidebar"
   >
     <div class="flex items-center gap-1 px-3 pt-3 pb-2">
       <SidebarSearch {registerFocusSearch} />
-      <SidebarToggleButton />
+      {#if !compact}
+        <SidebarToggleButton />
+      {/if}
     </div>
     <ProjectsSection {pane} />
     <UsageFooter />
@@ -114,12 +123,14 @@
       "collapsed" at 250px. mod+b and the rail button are the only two
       ways out, and both restore the stored width exactly.
     -->
-    <SidebarResizer
-      width={getSidebarWidth()}
-      onResizeLive={setSidebarWidthLive}
-      onResizeEnd={persistSidebarWidth}
-      pane={pane ?? undefined}
-    />
+    {#if !compact}
+      <SidebarResizer
+        width={getSidebarWidth()}
+        onResizeLive={setSidebarWidthLive}
+        onResizeEnd={persistSidebarWidth}
+        pane={pane ?? undefined}
+      />
+    {/if}
   </aside>
 {/if}
 

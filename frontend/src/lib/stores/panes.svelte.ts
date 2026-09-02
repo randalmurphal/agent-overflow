@@ -1,3 +1,4 @@
+import { showCompactThread } from './layoutMode.svelte';
 import type { Thread } from '../types/models';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
 import {
@@ -91,6 +92,8 @@ function requestPanePersistence(): void {
  */
 export function revealPane(paneId: string): void {
   if (typeof window === 'undefined' || !paneId) return;
+  // Under the compact layout "show this pane" also means "leave the list".
+  showCompactThread();
   window.dispatchEvent(new CustomEvent(REVEAL_PANE_EVENT, {
     detail: { paneId },
   }));

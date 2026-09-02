@@ -39,6 +39,7 @@ import {
   resetThreadTitleGenerationForTest,
 } from '../../stores/threadTitleGeneration.svelte';
 import type { Project, Thread } from '../../types/models';
+import { setCompactLayoutForTest, getCompactScreen, showCompactThread } from '../../stores/layoutMode.svelte';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 
 // The terminal button's ctrl/cmd-click opens a fresh terminal pane via
@@ -609,5 +610,40 @@ describe('<ChatHeader>', () => {
     } finally {
       setPageGrantsFromBootstrap(false);
     }
+  });
+});
+
+// Compact layout: the header leads with the way back to the list and
+// drops the pane close control (closing the only pane would leave the
+// thread screen empty with no list under it).
+describe('<ChatHeader> under compact', () => {
+  beforeEach(() => {
+    setCompactLayoutForTest(true);
+  });
+
+  it('shows a back button that returns to the list, and no close button', async () => {
+    const pane = createThreadPane({ paneId: 'main' });
+    await pane.switchThread(makeThread({ id: 'compact-thread', title: 'Compact' }));
+    registerPaneForTest('main', pane);
+    setPaneLayoutItemsForTest([{ id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 }]);
+    showCompactThread();
+    const { getByTestId, queryByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+    expect(queryByTestId('pane-close')).toBeNull();
+    await fireEvent.click(getByTestId('compact-back'));
+    expect(getCompactScreen()).toBe('list');
+    setCompactLayoutForTest(false);
+  });
+
+  it('full layout has no back button', async () => {
+    setCompactLayoutForTest(false);
+    const pane = createThreadPane({ paneId: 'main' });
+    await pane.switchThread(makeThread({ id: 'full-thread', title: 'Full' }));
+    registerPaneForTest('main', pane);
+    setPaneLayoutItemsForTest([{ id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 }]);
+    const { queryByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+    expect(queryByTestId('compact-back')).toBeNull();
+    expect(queryByTestId('pane-close')).not.toBeNull();
   });
 });

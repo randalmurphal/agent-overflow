@@ -198,6 +198,12 @@ export interface ComposerInputKeydownDeps {
   placeholderKeydown: (event: KeyboardEvent) => boolean;
   /** A plain Enter that nothing above claimed, i.e. "submit this". */
   submitEnter: () => void;
+  /**
+   * False under the compact layout: a phone's Return key inserts a
+   * newline and the Send button is the one way to send. Defaults to
+   * sending.
+   */
+  enterSends?: boolean;
 }
 
 /**
@@ -250,6 +256,7 @@ export function dispatchComposerInputKeydown(
   if (e.key === 'Enter' && isImeComposingEvent(e)) return;
 
   if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (deps.enterSends === false) return;
     e.preventDefault();
     deps.submitEnter();
   }

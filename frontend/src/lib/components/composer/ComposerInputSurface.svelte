@@ -4,6 +4,7 @@
   // outside. See composerInputSurface.ts for the contract, and its doc
   // comment for what deliberately does NOT live here.
 
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { flushSync, onDestroy } from 'svelte';
   import { paneWorkspacePath } from '../../stores/thread.svelte';
   import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
@@ -152,6 +153,7 @@
       claimAfterPopovers: onKeydownAfterPopovers,
       placeholderKeydown: (e) => imagePlaceholders.handleAtomicPlaceholderKeydown(e),
       submitEnter: onSubmitEnter,
+      enterSends: !isCompactLayout(),
     });
   }
 

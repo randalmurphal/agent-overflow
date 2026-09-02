@@ -20,6 +20,7 @@
     claimTab = false,
     restoreFocusToAnchor = false,
     withClipBoundary = false,
+    sheet = true,
   }: {
     open?: boolean;
     placement?: PopoverPlacement;
@@ -31,6 +32,7 @@
     restoreFocusToAnchor?: boolean;
     /** Wrap the anchor in a `[data-popover-clip-boundary]` container. */
     withClipBoundary?: boolean;
+    sheet?: boolean;
   } = $props();
 
   let anchor: HTMLButtonElement | undefined = $state(undefined);
@@ -52,6 +54,7 @@
   {matchAnchorWidth}
   {claimTab}
   restoreFocusTo={restoreFocusToAnchor ? anchor : undefined}
+  {sheet}
 >
   {#snippet children()}
     <div data-testid="popover-content">

@@ -11,6 +11,7 @@
   import { getPaneLayoutItems, isCompanionKind } from '../../stores/paneLayout.svelte';
   import { getPaneWidth, setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
   import { REVEAL_PANE_EVENT } from '../../stores/eventNames';
+  import { getCompactScreen, isCompactLayout } from '../../stores/layoutMode.svelte';
   import PaneDivider from './PaneDivider.svelte';
   import { measurePane } from './measurePane';
   import { createPaneThreadDrag } from './usePaneThreadDrag.svelte';
@@ -20,6 +21,11 @@
 
   let layoutItems = $derived(getPaneLayoutItems());
   let minPaneWidth = $derived(getMinPaneWidth());
+  // Compact: every pane is exactly one screen wide and the strip has no
+  // dividers, so the existing reveal glide IS the screen switch between
+  // a thread and its companions. Nothing is unmounted.
+  let compact = $derived(isCompactLayout());
+  let threadInert = $derived(compact && getCompactScreen() !== 'thread');
   let focusedPaneId = $derived(getFocusedPaneId());
   // Source panes that currently have a paired take-control terminal pane. Both
   // halves of the pair carry the shared top-border indicator so the user reads
@@ -410,6 +416,7 @@
   // class list keeps a narrower window as horizontal scroll instead of
   // squeezing below the stored width.
   function paneSectionStyle(widthPx: number): string {
+    if (compact) return 'flex:0 0 100%;min-width:100%';
     return `flex-grow:${widthPx};flex-basis:${widthPx}px;min-width:${minPaneWidth}px`;
   }
 
@@ -422,7 +429,8 @@
      over it. See utils/popoverOwnership.ts#resolvePopoverClipBoundary. -->
 <div
   bind:this={hostEl}
-  class="relative flex-1 flex min-w-0 min-h-0 overflow-x-auto overflow-y-hidden"
+  class="compact-screen compact-screen-thread relative flex-1 flex min-w-0 min-h-0 overflow-x-auto overflow-y-hidden compact:overflow-x-hidden"
+  inert={threadInert}
   data-popover-clip-boundary
   data-testid="pane-host"
   ondragover={drag.onHostDragOver}
@@ -522,7 +530,7 @@
           </section>
         {/if}
       {/if}
-      {#if index < layoutItems.length - 1}
+      {#if index < layoutItems.length - 1 && !compact}
         <!-- `flex` is load-bearing: it stretches the divider to the
              full strip height. Without it the divider is a block box
              whose only child is absolutely positioned, so it collapses
@@ -541,14 +549,16 @@
     <!-- End handle: the far-right pane has no divider on its right, so
          the strip's right edge itself is draggable to resize it. The
          `flex` wrapper stretches it to full height (see above). -->
-    <div data-pane-gap-index={layoutItems.length} class="flex shrink-0">
-      <PaneDivider
-        leftPaneId={layoutItems[layoutItems.length - 1].paneId}
-        leftPaneWidthPx={layoutItems[layoutItems.length - 1].widthPx}
-        getHostEl={() => hostEl}
-        onDragEnd={schedulePaneHostGeometryReconcile}
-      />
-    </div>
+    {#if !compact}
+      <div data-pane-gap-index={layoutItems.length} class="flex shrink-0">
+        <PaneDivider
+          leftPaneId={layoutItems[layoutItems.length - 1].paneId}
+          leftPaneWidthPx={layoutItems[layoutItems.length - 1].widthPx}
+          getHostEl={() => hostEl}
+          onDragEnd={schedulePaneHostGeometryReconcile}
+        />
+      </div>
+    {/if}
     {#if drag.threadDropTarget}
       <div
         class="pointer-events-none absolute top-0 bottom-0 z-40 rounded-[var(--radius-field)] border-2 border-accent/70 bg-accent/10"

@@ -89,6 +89,39 @@ that rehydrates on expansion. See "Live Window Bounds" in
 Two panes on one WORKSPACE are first-class, two panes on one THREAD are a
 bug ([`stores/AGENTS.md`](src/lib/stores/AGENTS.md)).
 
+## Compact is a layout mode, not a second app
+
+`stores/layoutMode.svelte.ts` picks `compact` from the viewport alone
+(narrow AND coarse pointer), stamps `layout-compact` on `<html>`, and
+that class is what the `compact:` Tailwind variant in `app.css` keys on.
+The phone shell, a phone-sized browser tab and Playwright's compact
+project all reach the same layout by that one door; nothing reads the
+run mode or the device class to decide it. Every component renders in
+both modes, so a surface is done only when it holds in both.
+
+What compact changes, and where:
+
+- **Two screens, both mounted.** The sidebar is the root screen and the
+  pane strip is the thread screen (`compact-screen-list` /
+  `compact-screen-thread`); the inactive one is `visibility: hidden` and
+  `inert`, never unmounted, so a trip back to the list keeps the
+  timeline's observers and scroll position. `revealPane` flips to the
+  thread screen because every "show me this pane" path already passes
+  through it; the chat header's back button flips to the list.
+- **One pane per screen.** `PaneHost` sizes every pane to the strip and
+  drops the dividers; companions still open and the existing reveal
+  glide is the switch between a thread and its companion. No pane close
+  control, no resizer, no rail.
+- **Popovers are bottom sheets** (`Popover`'s `sheet` prop, on by
+  default); the composer's mention and slash lists opt out because they
+  belong on the caret. Overlays fill the screen.
+- **Return inserts a newline** (`enterSends` in `composerKeyboard.ts`) and
+  the Send button is the way to send.
+
+Host-only surfaces already hide by scope, so compact adds no second set
+of gates. Do not fork a component for the phone; add a `compact:` class
+or read `isCompactLayout()` at the one branch that differs.
+
 ## Rules with structural tests
 
 `src/lib/architecture.test.ts` enforces six. Each carries a shrink-only

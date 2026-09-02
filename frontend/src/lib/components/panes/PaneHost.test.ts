@@ -44,6 +44,7 @@ import {
 import { prependThread } from '../../stores/threads.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
+import { getCompactScreen, setCompactLayoutForTest, showCompactList } from '../../stores/layoutMode.svelte';
 import {
   encodeThreadDragPayload,
   PANE_REORDER_DRAG_MIME,
@@ -1196,5 +1197,56 @@ describe('PaneHost', () => {
       expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', 'right']);
       expect(getFocusedPaneId()).toBe('left');
     });
+  });
+});
+
+// Compact layout: one screen-wide pane at a time, no dividers, and the
+// strip is inert while the list screen is up. Nothing is unmounted.
+describe('PaneHost under compact', () => {
+  beforeEach(() => {
+    (globalThis as unknown as { ResizeObserver: typeof FireableResizeObserver }).ResizeObserver =
+      FireableResizeObserver;
+    resetLayoutMetricsForTest();
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    resetSettingsForTest();
+    setCompactLayoutForTest(true);
+  });
+
+  afterEach(() => {
+    setCompactLayoutForTest(false);
+    cleanup();
+  });
+
+  it('sizes every pane to the screen and drops the dividers', async () => {
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
+    setPaneLayoutItemsForTest([
+      { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1200 },
+      { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 880 },
+    ]);
+    const rendered = render(PaneHost);
+    await tick();
+    const left = rendered.container.querySelector<HTMLElement>('[data-pane-id="left"]');
+    expect(left?.style.minWidth).toBe('100%');
+    expect(left?.style.flexBasis).toBe('100%');
+    expect(rendered.queryAllByTestId('pane-divider')).toHaveLength(0);
+    expect(rendered.queryByTestId('pane-end-handle')).toBeNull();
+    expect(rendered.container.querySelectorAll('section[data-pane-id]')).toHaveLength(2);
+  });
+
+  it('is inert on the list screen and live on the thread screen', async () => {
+    registerPaneForTest('main', createThreadPane({ paneId: 'main' }));
+    setPaneLayoutItemsForTest([{ id: 'main-item', paneId: 'main', kind: 'thread', widthPx: 1 }]);
+    showCompactList();
+    const rendered = render(PaneHost);
+    await tick();
+    const host = rendered.getByTestId('pane-host');
+    expect(host.classList.contains('compact-screen-thread')).toBe(true);
+    expect(host.hasAttribute('inert')).toBe(true);
+    revealPane('main');
+    await tick();
+    expect(getCompactScreen()).toBe('thread');
+    expect(host.hasAttribute('inert')).toBe(false);
   });
 });
