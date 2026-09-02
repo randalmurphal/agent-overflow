@@ -28,7 +28,11 @@ directory.
   before merging any bound-signature change.
 - `tests/*-helpers.ts` and `tests/probe-wire.ts` hold the wire builders
   and seeds their spec families share. Put a new provider wire shape
-  there, not inline in one spec. `offhost-helpers.ts` also owns
+  there, not inline in one spec. `offhost-helpers.ts` also owns the
+  PAIRING CEREMONY every off-host spec starts with — mint the link,
+  redeem it on the real screen, compare the number the device shows
+  against the one the host holds, confirm — because one flow with two
+  implementations is one that drifts, and it owns
   `answered(outcome, why)`: a wire-level spec that wants the PAYLOAD of a
   call needs the outcome union narrowed, and `expect(outcome.ok).toBe(true)`
   narrows nothing, so reading `.result` after it fails the launcher's

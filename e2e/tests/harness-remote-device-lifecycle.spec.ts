@@ -41,61 +41,35 @@
 // are one choreography on one device row, so they run `.serial` and
 // carry state forward deliberately rather than re-staging a pairing per
 // case.
+//
+// The pairing ceremony itself — mint, redeem on the screen, compare the
+// number, confirm — and the access wire shapes it reads live in
+// `offhost-helpers.ts`, because the preview-gateway pair pairs a browser
+// the same way and one flow with two implementations is one that drifts.
 
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {
+  PAIRED_APP_MOUNT_MS,
+  confirmOnHost,
   instrument,
+  mintInvite,
   mintLink,
   nonLoopbackIPv4,
   pairDeviceOverWire,
-  type PairingInvite,
+  pairedDevices,
+  redeemOnScreen,
+  solePairedDevice,
+  type DeviceRevocationResult,
   type Surfaced,
 } from './offhost-helpers.js';
 
 // ---------------------------------------------------------------------
-// Wire shapes (internal/app/app_access_types.go).
+// Wire shapes this file alone reads. The access ones
+// (internal/app/app_access_types.go) are in `offhost-helpers.ts` with the
+// pairing ceremony that answers them.
 // ---------------------------------------------------------------------
-
-interface AccessSession {
-  id: string;
-  binding: string;
-  awaitingConfirmation?: boolean;
-  lastUsedAtMs?: number;
-  connections?: number;
-  scopes?: string[];
-  survivedRevocation?: boolean;
-}
-
-interface AccessDevice {
-  id: string;
-  label: string;
-  class: string;
-  platform?: string;
-  channel?: string;
-  lastSeenAtMs?: number;
-  revokedAtMs?: number;
-  sessions?: AccessSession[];
-}
-
-interface PendingPairing {
-  linkId: string;
-  redeemed?: boolean;
-  deviceLabel?: string;
-  verificationNumber?: string;
-}
-
-interface AccessOverview {
-  devices: AccessDevice[];
-  pendingPairings?: PendingPairing[];
-}
-
-interface DeviceRevocationResult {
-  deviceMoved: boolean;
-  sessionsEnded: number;
-  connectionsClosed: number;
-}
 
 interface SeedResult {
   projects: Array<{ projectId: string; path: string; threadIds: string[] }>;
@@ -104,15 +78,10 @@ interface SeedResult {
 // ---------------------------------------------------------------------
 // Budgets. Every one of these is wall-clock against a mechanism whose
 // own constant is named, never a count of loop turns
-// (frontend/AGENTS.md § Testing).
+// (frontend/AGENTS.md § Testing). `PAIRED_APP_MOUNT_MS`, the third, is
+// shared with the preview-gateway pair and lives with the ceremony it
+// bounds.
 // ---------------------------------------------------------------------
-
-// The pairing screen probes for the owner's confirmation every 3s
-// (PairingScreen.PROBE_INTERVAL_MS), holds the confirmed frame for 700ms,
-// and then AWAITS `redialAfterPairing`, which is itself bounded at
-// REDIAL_SETTLE_BUDGET_MS (5s). ~9s is the designed worst case, so this
-// is roughly twice it.
-const PAIRED_APP_MOUNT_MS = 20_000;
 
 // A stopped reconnect ladder publishes no further status. RECONNECT_INITIAL_MS
 // is 250ms and the ladder grows from there, so this window is ~8 attempts
@@ -132,74 +101,6 @@ const lanIP = nonLoopbackIPv4();
 // The label the phone enrolls under, carried across cases: cluster 5
 // reads the device list back and has to find this row by name.
 const PHONE_LABEL = 'Couch browser';
-
-async function mintInvite(
-  harness: HarnessApp,
-  access: 'full' | 'view-only',
-): Promise<PairingInvite> {
-  const invite = await harness.rpc<PairingInvite>('MintDevicePairing', 'browser', access);
-  // The precondition the whole file rests on: a link that points at
-  // loopback would pair a device that is not off-host, and every
-  // assertion below would be about the wrong peer.
-  expect(
-    new URL(invite.url.split('#')[0]).hostname,
-    'the pairing link must point at this host by a LAN address, not by loopback',
-  ).toBe(lanIP);
-  return invite;
-}
-
-/**
- * Walk the pairing screen to the point where it is showing a number and
- * waiting: name the device, spend the link, display the verification
- * number. Answers the number the phone is showing.
- */
-async function redeemOnScreen(page: Page, invite: PairingInvite, label: string): Promise<string> {
-  await page.goto(invite.url);
-  await expect(page.getByRole('heading', { name: 'Pair this device' })).toBeVisible();
-  await page.getByLabel('Device name').fill(label);
-  await page.getByRole('button', { name: 'Pair' }).click();
-  const shown = page.getByLabel('Verification number');
-  await expect(shown).toBeVisible();
-  return ((await shown.textContent()) ?? '').trim();
-}
-
-/**
- * The owner's half: find the redeemed link, compare the number, confirm.
- * The comparison is not decoration — the number is an HMAC over the key
- * the device actually presented (internal/identity/pairing.go), so a
- * device that redeemed with a different key could not display one this
- * side matches.
- */
-async function confirmOnHost(harness: HarnessApp, shownOnDevice: string): Promise<void> {
-  let redeemed: PendingPairing | undefined;
-  await expect
-    .poll(
-      async () => {
-        const overview = await harness.rpc<AccessOverview>('GetAccessOverview');
-        redeemed = (overview.pendingPairings ?? []).find((p) => p.redeemed);
-        return redeemed?.verificationNumber ?? '';
-      },
-      { message: 'the redemption must reach the host as a pairing awaiting confirmation' },
-    )
-    // The comparison IS the gate, so it is the poll's own predicate: a
-    // number that never matches fails here rather than confirming
-    // whatever happened to be pending.
-    .toBe(shownOnDevice);
-  await harness.rpc('ConfirmDevicePairing', redeemed!.linkId);
-}
-
-/** Every device row that is not this backend's own page channel. */
-async function pairedDevices(harness: HarnessApp): Promise<AccessDevice[]> {
-  const overview = await harness.rpc<AccessOverview>('GetAccessOverview');
-  return overview.devices.filter((d) => d.channel !== 'local');
-}
-
-/** The one paired device row, asserted to be the only one. */
-async function solePairedDevice(harness: HarnessApp): Promise<AccessDevice> {
-  const devices = await pairedDevices(harness);
-  expect(devices, 'exactly one paired device is expected at this point').toHaveLength(1);
-  return devices[0];
-}
 
 test.describe.serial('remote device lifecycle', () => {
   // Not green-washed: a host with no non-loopback interface (a locked-down
