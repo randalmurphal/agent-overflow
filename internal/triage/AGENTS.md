@@ -47,6 +47,13 @@ the file list. A `Handle` case in `router.go` makes a handler reachable.
   code-block rendering here, no rendered cache column, no server-side
   kind-to-renderer dispatch. The frontend renders; it knows what is
   mounted.
+- **A command row carries a failure message only when it FAILED.**
+  `buildCommandOutputPayloadMeta` reads the explicit message out of
+  provider meta whose fallbacks (`tool_use_result.stdout`,
+  `tool_result.content`) are a successful command's ordinary output, so
+  the read is gated on `exit_code != 0 || is_error`; before that gate a
+  dev server's startup banner was persisted as the `errorMessage` of
+  every row that exited 0 (found by the wave-9 preview e2e, 2026-09-02).
 
 ## Subagent scope stays subagent scope
 
