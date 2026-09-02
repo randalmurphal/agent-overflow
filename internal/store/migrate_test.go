@@ -5341,3 +5341,31 @@ func TestMigrationV73AddsUserTextIndex(t *testing.T) {
 		})
 	}
 }
+
+// v75's DEFAULT is its backfill: every attachment written before the
+// column existed was an image, so an existing row must read as one
+// without any data rewrite.
+func TestMigrationV75BackfillsAttachmentKind(t *testing.T) {
+	db := migrateThrough(t, 74)
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v75', '/v75', 'v75', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (
+		id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived
+	) VALUES ('t-v75', 'p-v75', 'v75', 'claude', '/v75', '', 1, 1, 0)`)
+	mustExec(t, db, `INSERT INTO attachments
+		(id, thread_id, filename, mime_type, size, relative_path, created_at)
+		VALUES ('a-v75', 't-v75', 'shot.png', 'image/png', 4, 't-v75/a-v75.png', 1)`)
+
+	if err := applyMigration(db, migrationByVersion(t, 75)); err != nil {
+		t.Fatalf("apply migration v75: %v", err)
+	}
+
+	var kind string
+	if err := db.QueryRow(`SELECT kind FROM attachments WHERE id = 'a-v75'`).Scan(&kind); err != nil {
+		t.Fatalf("read backfilled kind: %v", err)
+	}
+	if kind != AttachmentKindImage {
+		t.Fatalf("pre-v75 attachment kind = %q, want %q", kind, AttachmentKindImage)
+	}
+}

@@ -24,6 +24,7 @@ func TestAttachmentInsertAndGetRoundTrip(t *testing.T) {
 		Size:         1024,
 		RelativePath: "thread-attach/att-1.png",
 		CreatedAt:    time.Now().UnixMilli(),
+		Kind:         AttachmentKindImage,
 	}
 	if err := s.InsertAttachment(a); err != nil {
 		t.Fatalf("InsertAttachment: %v", err)
@@ -67,9 +68,9 @@ func TestAttachmentListFiltersByThread(t *testing.T) {
 
 	base := time.Now().UnixMilli()
 	records := []Attachment{
-		{ID: "a1", ThreadID: threadA.ID, Filename: "one.png", MimeType: "image/png", Size: 10, RelativePath: "thread-a/a1.png", CreatedAt: base},
-		{ID: "a2", ThreadID: threadA.ID, Filename: "two.png", MimeType: "image/png", Size: 20, RelativePath: "thread-a/a2.png", CreatedAt: base + 1},
-		{ID: "b1", ThreadID: threadB.ID, Filename: "three.png", MimeType: "image/png", Size: 30, RelativePath: "thread-b/b1.png", CreatedAt: base + 2},
+		{ID: "a1", ThreadID: threadA.ID, Filename: "one.png", MimeType: "image/png", Size: 10, RelativePath: "thread-a/a1.png", CreatedAt: base, Kind: AttachmentKindImage},
+		{ID: "a2", ThreadID: threadA.ID, Filename: "two.png", MimeType: "image/png", Size: 20, RelativePath: "thread-a/a2.png", CreatedAt: base + 1, Kind: AttachmentKindImage},
+		{ID: "b1", ThreadID: threadB.ID, Filename: "three.png", MimeType: "image/png", Size: 30, RelativePath: "thread-b/b1.png", CreatedAt: base + 2, Kind: AttachmentKindImage},
 	}
 	for _, rec := range records {
 		if err := s.InsertAttachment(rec); err != nil {
@@ -105,6 +106,7 @@ func TestAttachmentDeleteRemovesRow(t *testing.T) {
 		Size:         1,
 		RelativePath: "thread-del/to-delete.png",
 		CreatedAt:    time.Now().UnixMilli(),
+		Kind:         AttachmentKindImage,
 	}
 	if err := s.InsertAttachment(a); err != nil {
 		t.Fatalf("InsertAttachment: %v", err)
@@ -147,6 +149,7 @@ func TestAttachmentCascadesOnThreadDelete(t *testing.T) {
 		Size:         1,
 		RelativePath: "thread-cascade/cascade-att.png",
 		CreatedAt:    time.Now().UnixMilli(),
+		Kind:         AttachmentKindImage,
 	}
 	if err := s.InsertAttachment(a); err != nil {
 		t.Fatalf("InsertAttachment: %v", err)
@@ -179,6 +182,7 @@ func TestAttachmentThumbnailRoundTrip(t *testing.T) {
 		Size:         123,
 		RelativePath: "thread-thumb/att-thumb.png",
 		CreatedAt:    time.Now().UnixMilli(),
+		Kind:         AttachmentKindImage,
 	}
 	if err := s.InsertAttachment(a); err != nil {
 		t.Fatalf("InsertAttachment: %v", err)
@@ -251,6 +255,7 @@ func TestAttachmentThumbnailRejectsEmpty(t *testing.T) {
 		Size:         1,
 		RelativePath: "thread-thumb-empty/att-empty.png",
 		CreatedAt:    time.Now().UnixMilli(),
+		Kind:         AttachmentKindImage,
 	}
 	if err := s.InsertAttachment(a); err != nil {
 		t.Fatalf("InsertAttachment: %v", err)
@@ -274,8 +279,49 @@ func TestAttachmentInsertRequiresThread(t *testing.T) {
 		Size:         1,
 		RelativePath: "orphan.png",
 		CreatedAt:    time.Now().UnixMilli(),
+		Kind:         AttachmentKindImage,
 	})
 	if err == nil {
 		t.Fatal("expected foreign-key error inserting orphan attachment")
+	}
+}
+
+// The kind vocabulary is closed and enforced by the table's one writer
+// rather than by a CHECK, so a row can never carry a third value a reader
+// would have to guess about.
+func TestAttachmentInsertRefusesUnknownKind(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("thread-kind", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	base := Attachment{
+		ID:           "kind-1",
+		ThreadID:     thread.ID,
+		Filename:     "notes.pdf",
+		MimeType:     "application/pdf",
+		Size:         3,
+		RelativePath: "thread-kind/kind-1/notes.pdf",
+		CreatedAt:    1,
+	}
+	for _, kind := range []string{"", "IMAGE", "document"} {
+		rec := base
+		rec.Kind = kind
+		if err := s.InsertAttachment(rec); err == nil {
+			t.Fatalf("InsertAttachment accepted kind %q", kind)
+		}
+	}
+
+	rec := base
+	rec.Kind = AttachmentKindFile
+	if err := s.InsertAttachment(rec); err != nil {
+		t.Fatalf("InsertAttachment(file): %v", err)
+	}
+	got, ok, err := s.GetAttachment(rec.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetAttachment: %v ok=%v", err, ok)
+	}
+	if got.Kind != AttachmentKindFile {
+		t.Fatalf("Kind = %q, want %q", got.Kind, AttachmentKindFile)
 	}
 }

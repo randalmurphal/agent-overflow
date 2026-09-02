@@ -140,7 +140,11 @@ transactions.
   away. The single-row getters still return the decode error: that caller
   asked for exactly the unreadable row.
 - `attachments.go` — attachment metadata (bytes on disk are the
-  `internal/attachment` package's problem).
+  `internal/attachment` package's problem). `kind` (v75) is a CLOSED
+  vocabulary — `AttachmentKindImage` / `AttachmentKindFile` — and
+  `InsertAttachment` refuses anything else, so no reader needs a third
+  branch and no CHECK had to rebuild the FK-parent table. See "Recent
+  schema changes (v75)" below.
 - `message_anchors.go` — per-real-user-message provider correlation
   rows (`turn_index` + Claude wire uuids) backing fork-from-message
   and revert-on-interrupt. Pure SQLite; no git side.
@@ -999,6 +1003,27 @@ an empty `provider_turn_id`.
   saga uses instead, writing `session_ref` and the pin pair together
   (they describe one resume state) and leaving `updated_at` alone.
   Pinned by `TestUpdateThreadPreservesPendingForkPin`.
+
+## Recent schema changes (v75) — attachment kind
+
+- `attachments.kind` (`TEXT NOT NULL DEFAULT 'image'`) is what an attachment
+  IS to every reader: an `image` reaches the provider as inline bytes or a
+  `localImage` path, is bound positionally to a `[Image #N]` marker, and is
+  the only kind whose bytes are ever served back to a client; a `file`
+  reaches the provider as one path line appended to the prompt and is never
+  decoded, thumbnailed, or served. Spec: `docs/specs/file-attachments.md`.
+- **The DEFAULT is the backfill.** Every attachment written before this
+  column was an image, so an existing row reads as the thing it actually is
+  with no data rewrite. Pinned by `TestMigrationV75BackfillsAttachmentKind`.
+- A plain `ADD COLUMN` with no CHECK, so the FK-parent `attachments` table
+  is not rebuilt. The closed value set is enforced by `InsertAttachment`
+  instead — it is the table's ONE writer (`internal/attachment`'s `Upload`
+  and `CopyToThread`), so the enforcement is exhaustive without the rebuild.
+  Pinned by `TestAttachmentInsertRefusesUnknownKind`.
+- The images-only MIME allowlist used to be what made the attachments
+  directory safe to serve. That guarantee now lives on the KIND: the
+  directory holds arbitrary bytes, and `GetAttachmentData` /
+  `GetAttachmentThumbnail` refuse anything that is not an `image` row.
 
 ## Recent schema changes (v74) — background-launch settlement
 
