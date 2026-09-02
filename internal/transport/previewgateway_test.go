@@ -291,3 +291,48 @@ func TestAGrantForAnotherPortIsRefused(t *testing.T) {
 		t.Fatal("a grant minted on port 3000 admitted a request to port 5173")
 	}
 }
+
+// The Location rule in one table. Every row is a redirect a dev server
+// really answers with; the question each asks is whether the browser is
+// sent back to the preview origin or off this machine.
+func TestPreviewLocationRewrite(t *testing.T) {
+	const upstream = "localhost:5173"
+
+	for _, row := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"a relative Location already names the preview origin", "/app/", "/app/"},
+		{"the upstream by the name we dialled", "http://localhost:5173/app/", "/app/"},
+		{"the upstream by its own literal", "http://127.0.0.1:5173/app/", "/app/"},
+		{"the upstream over IPv6", "http://[::1]:5173/app/", "/app/"},
+		{"the upstream over TLS", "https://localhost:5173/app/", "/app/"},
+		// An authority with no path names the root. Rewriting it to ""
+		// would leave no Location at all: a browser resolves the empty
+		// string against the current URL, so the redirect becomes a loop
+		// on the page that issued it.
+		{"the upstream with no path at all", "http://localhost:5173", "/"},
+		{"the upstream with no path but a query", "http://localhost:5173?next=/x", "/?next=/x"},
+		{"query and fragment survive", "http://localhost:5173/app/?a=1#top", "/app/?a=1#top"},
+		// Another port on the same machine is a different dev server, and
+		// somewhere else entirely is somewhere else entirely. Neither is
+		// ours to rewrite.
+		{"a different port on loopback", "http://localhost:5174/app/", "http://localhost:5174/app/"},
+		{"an address that is not this machine", "https://example.test/app/", "https://example.test/app/"},
+		{"no Location at all", "", ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			resp := &http.Response{Header: http.Header{}}
+			if row.in != "" {
+				resp.Header.Set("Location", row.in)
+			}
+			if err := previewRewriteLocation(upstream)(resp); err != nil {
+				t.Fatalf("rewrite: %v", err)
+			}
+			if got := resp.Header.Get("Location"); got != row.want {
+				t.Fatalf("Location = %q, want %q", got, row.want)
+			}
+		})
+	}
+}

@@ -281,6 +281,13 @@ func previewRewriteLocation(upstreamHost string) func(*http.Response) error {
 		// was, and does not need to.
 		target.Scheme = ""
 		target.Host = ""
+		if target.Path == "" {
+			// `http://localhost:5173` with no path would rewrite to the
+			// empty string, which is not a Location at all: a browser
+			// resolves it against the current URL and the redirect
+			// becomes a loop. The authority-only form names the root.
+			target.Path = "/"
+		}
 		resp.Header.Set("Location", target.String())
 		return nil
 	}
