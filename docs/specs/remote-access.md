@@ -1184,12 +1184,16 @@ devices cannot open previews, which is what execute tier means.
 `httputil.ReverseProxy` to loopback (the upstream dials `localhost`
 resolved statically to `127.0.0.1` and `::1`, because a `::1`-only
 dev server is common). WebSocket upgrades forward unchanged (HMR).
-Toward the upstream, `Host` and `Origin` are rewritten to
-`localhost:<port>`: Vite (5.4.12+, 6, 7, 8) refuses any other `Host`
-with a 403 "Blocked request" and its HMR socket refuses a foreign
-`Origin`, and Next.js 15+ warns and will block cross-origin dev
-requests; a dev server must see the request the way it would from the
-owner's own browser on M. `Location` headers pointing at the upstream
+Toward the upstream, `Host` is rewritten to `localhost:<port>` on every
+request including the upgrade (spiked 2026-09-02 against Vite 8.2.2:
+it refuses any other `Host` with 403 on HTTP and 400 on the HMR
+socket, on both paths), and `Origin` is rewritten, never stripped, to
+`http://localhost:<port>` (Vite never compares its value but its
+presence keeps the HMR token check mandatory; Next.js 15+ checks the
+origin instead, unverified). Path and query are forwarded byte for
+byte: the HMR upgrade is routed only on Vite's exact `base` path and
+carries its per-boot token in the query. Facts and versions:
+`docs/references/dev-server-proxy.md`. `Location` headers pointing at the upstream
 are rewritten back to the preview origin. No `WriteSecurityHeaders` on
 proxied responses: the bytes are the dev server's, posture
 `PostureProxied`, and the route is excluded by name in
