@@ -27,6 +27,7 @@
 // allow / disallow pair is `access:admin`, because it edits that machine's
 // `network.previewPorts`.
 
+import { untrack } from 'svelte';
 import {
   AllowPreviewPort,
   DisallowPreviewPort,
@@ -100,8 +101,18 @@ function signatureOf(list: DevServerList): string {
   return `${list.previewHost ?? ''}|${ports}`;
 }
 
+/**
+ * Fold changes into one machine's box.
+ *
+ * The read of the current value is UNTRACKED, and every mutator below goes
+ * through here for that reason. A passive load is called from a mounted
+ * surface, so a tracked read-then-write would make that surface a dependent
+ * of the box the write moves, and it would run again, and load again. The
+ * subscriber the writes exist for reads through the accessors instead, which
+ * track normally.
+ */
 function patch(key: BackendKey, changes: Partial<MachineDevServers>): void {
-  machines.set(key, { ...machines.get(key), ...changes });
+  machines.set(key, { ...untrack(() => machines.get(key)), ...changes });
 }
 
 function applyList(key: BackendKey, list: DevServerList): void {
@@ -297,7 +308,7 @@ function previewRewriteKeyFrom(
  */
 export async function loadDevServers(key: BackendKey): Promise<void> {
   if (!hasScope('preview:open', key)) return;
-  if (machines.get(key).loading) return;
+  if (untrack(() => machines.get(key).loading)) return;
   patch(key, { loading: true });
   try {
     const list = await withBackendTarget(key, () => GetDevServers());

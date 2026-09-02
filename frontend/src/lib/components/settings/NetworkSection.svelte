@@ -14,6 +14,7 @@
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import NetworkDomainEditor from './NetworkDomainEditor.svelte';
   import NetworkPortEditor from './NetworkPortEditor.svelte';
+  import NetworkPreviewPorts from './NetworkPreviewPorts.svelte';
   import NetworkTailnetEditor from './NetworkTailnetEditor.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
@@ -336,6 +337,13 @@
       onsave={saveTailnet}
       onforget={forgetTailnetNode}
     />
+
+    <!--
+      Under the tailnet block because that is where a machine gets the
+      address these ports are served on, and inside the `access:admin` arm
+      with everything else that changes how this backend is exposed.
+    -->
+    <NetworkPreviewPorts />
 
     <section>
       {#if shareURLWithheld}
