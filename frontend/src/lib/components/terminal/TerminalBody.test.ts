@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/svelte';
+import { cleanup, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
@@ -7,6 +7,7 @@ import { createThreadTerminalState } from './terminalStore.svelte';
 import type { TerminalSessionSummary } from '../../types/terminal';
 import { encodeTerminalInput } from '../../types/terminal';
 import { eventEscapesTerminalToCommand } from '../../stores/keybindings.svelte';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { addToast } from '../../stores/toast.svelte';
 
@@ -35,12 +36,26 @@ const mocks = vi.hoisted(() => {
     // term.paste(...) the handler issues.
     selection = '';
     pastes: string[] = [];
+    // Stand-in for xterm's hidden helper textarea, so focus tests have a real
+    // focusable node inside the mount to observe.
+    textarea: HTMLTextAreaElement | null = null;
     constructor(options: Record<string, unknown> = {}) {
       this.options = { ...options };
       lastTerminal = this;
     }
     loadAddon(): void {}
-    open(): void {}
+    open(mount?: HTMLElement): void {
+      if (!mount) return;
+      const el = mount.ownerDocument.createElement('textarea');
+      el.setAttribute('data-testid', 'fake-xterm-textarea');
+      mount.appendChild(el);
+      this.textarea = el;
+    }
+    // Real xterm routes term.input through the same pipeline a keystroke takes,
+    // so onData fires. The key row depends on exactly that.
+    input(data: string): void {
+      this.dataHandler?.(data);
+    }
     hasSelection(): boolean {
       return this.selection.length > 0;
     }
@@ -67,7 +82,9 @@ const mocks = vi.hoisted(() => {
       this.dataHandler = handler;
       return { dispose(): void {} };
     }
-    focus(): void {}
+    focus(): void {
+      this.textarea?.focus();
+    }
     dispose(): void {}
     get rows(): number {
       return 24;
@@ -616,5 +633,179 @@ describe('TerminalBody copy/paste', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(term.pastes).toEqual([]);
+  });
+});
+
+// The compact (phone) layout docks a key row under the terminal for the keys a
+// soft keyboard cannot produce. It presses through term.input, so its bytes
+// land on the SAME onData path a typed key takes — one PTY writer, and one
+// place sticky Ctrl applies (which is why a soft-keyboard letter is converted
+// too, not just a key-row one).
+describe('TerminalBody compact key row', () => {
+  beforeEach(() => {
+    mocks.GetTerminalReplay.mockReset();
+    mocks.WriteTerminal.mockReset();
+    mocks.WriteTerminal.mockResolvedValue(undefined);
+    vi.mocked(eventEscapesTerminalToCommand).mockReset();
+    vi.mocked(eventEscapesTerminalToCommand).mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    cleanup();
+    setCompactLayoutForTest(false);
+  });
+
+  async function mountCompact(id: string) {
+    setCompactLayoutForTest(true);
+    const { resolveReplay } = await mountWithPendingReplay(id);
+    resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
+    await tick();
+    await Promise.resolve();
+    await tick();
+    mocks.WriteTerminal.mockClear();
+    return { term: mocks.getLastTerminal()! };
+  }
+
+  function key(id: string): HTMLButtonElement {
+    return screen.getByTestId(`terminal-key-${id}`) as HTMLButtonElement;
+  }
+
+  // Each press has to settle its queued write before the next one is dequeued
+  // (the input writer serializes on the in-flight WriteTerminal).
+  async function flushWrites(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
+    await tick();
+  }
+
+  it('does not render the key row outside compact layout', async () => {
+    const { resolveReplay } = await mountWithPendingReplay('t-row-desktop');
+    resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
+    await tick();
+    expect(screen.queryByTestId('terminal-key-row')).toBeNull();
+  });
+
+  it('renders the key row under compact layout', async () => {
+    await mountCompact('t-row-compact');
+    expect(screen.queryByTestId('terminal-key-row')).not.toBeNull();
+  });
+
+  it('writes each key through the keyboard input path, not a second writer', async () => {
+    await mountCompact('t-row-bytes');
+    for (const [id, data] of [
+      ['esc', '\x1b'],
+      ['tab', '\t'],
+      ['up', '\x1b[A'],
+      ['down', '\x1b[B'],
+      ['left', '\x1b[D'],
+      ['right', '\x1b[C'],
+      ['dash', '-'],
+      ['slash', '/'],
+      ['pipe', '|'],
+      ['tilde', '~'],
+    ] as const) {
+      mocks.WriteTerminal.mockClear();
+      key(id).click();
+      await flushWrites();
+      // Exactly one write: the press entered via term.input, fired onData once,
+      // and the existing input queue carried it.
+      expect(mocks.WriteTerminal).toHaveBeenCalledTimes(1);
+      expect(mocks.WriteTerminal).toHaveBeenCalledWith(
+        't-row-bytes',
+        encodeTerminalInput(data),
+      );
+    }
+  });
+
+  it('arms Ctrl without writing anything and shows it as pressed', async () => {
+    await mountCompact('t-ctrl-arm');
+    expect(key('ctrl').getAttribute('aria-pressed')).toBe('false');
+
+    key('ctrl').click();
+    await tick();
+
+    expect(key('ctrl').getAttribute('aria-pressed')).toBe('true');
+    // A modifier emits no bytes on its own.
+    expect(mocks.WriteTerminal).not.toHaveBeenCalled();
+  });
+
+  it('converts a soft-keyboard letter arriving via onData and then disarms', async () => {
+    const { term } = await mountCompact('t-ctrl-onData');
+    key('ctrl').click();
+    await tick();
+
+    // The phone keyboard's own 'c' reaches xterm, not the key row — sticky Ctrl
+    // has to catch it there, which is why the conversion lives on the input
+    // path rather than on the button.
+    term.dataHandler!('c');
+    await flushWrites();
+    expect(mocks.WriteTerminal).toHaveBeenCalledWith('t-ctrl-onData', encodeTerminalInput('\x03'));
+    expect(key('ctrl').getAttribute('aria-pressed')).toBe('false');
+
+    // The arm is spent: the next letter is literal again.
+    mocks.WriteTerminal.mockClear();
+    term.dataHandler!('c');
+    await flushWrites();
+    expect(mocks.WriteTerminal).toHaveBeenCalledWith('t-ctrl-onData', encodeTerminalInput('c'));
+  });
+
+  it('spends the arm on a key-row press that has no control code', async () => {
+    await mountCompact('t-ctrl-literal');
+    key('ctrl').click();
+    await tick();
+
+    key('slash').click();
+    await flushWrites();
+
+    expect(mocks.WriteTerminal).toHaveBeenCalledWith('t-ctrl-literal', encodeTerminalInput('/'));
+    expect(key('ctrl').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('leaves an arrow sequence intact while spending the arm', async () => {
+    await mountCompact('t-ctrl-arrow');
+    key('ctrl').click();
+    await tick();
+
+    key('up').click();
+    await flushWrites();
+
+    expect(mocks.WriteTerminal).toHaveBeenCalledWith(
+      't-ctrl-arrow',
+      encodeTerminalInput('\x1b[A'),
+    );
+    expect(key('ctrl').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('disarms when Ctrl is pressed a second time', async () => {
+    const { term } = await mountCompact('t-ctrl-toggle');
+    key('ctrl').click();
+    await tick();
+    key('ctrl').click();
+    await tick();
+
+    expect(key('ctrl').getAttribute('aria-pressed')).toBe('false');
+    term.dataHandler!('c');
+    await flushWrites();
+    // Disarmed, so 'c' is the literal letter — never SIGINT.
+    expect(mocks.WriteTerminal).toHaveBeenCalledWith('t-ctrl-toggle', encodeTerminalInput('c'));
+  });
+
+  it('keeps focus on the terminal across a key-row press', async () => {
+    const { term } = await mountCompact('t-row-focus');
+    term.focus();
+    expect(document.activeElement).toBe(term.textarea);
+
+    // The press sequence a real tap produces. Cancelling pointerdown is what
+    // stops the browser moving focus to the button (and, on a phone, dismissing
+    // the soft keyboard).
+    const button = key('slash');
+    const down = new PointerEvent('pointerdown', { bubbles: true, cancelable: true });
+    button.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
+    button.click();
+    await flushWrites();
+
+    expect(document.activeElement).toBe(term.textarea);
+    expect(mocks.WriteTerminal).toHaveBeenCalledWith('t-row-focus', encodeTerminalInput('/'));
   });
 });

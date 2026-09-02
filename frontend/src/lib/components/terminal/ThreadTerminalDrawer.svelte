@@ -4,6 +4,7 @@
     terminalStateKeyForPane,
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import Drawer from '../primitives/Drawer.svelte';
   import TerminalSurface from './TerminalSurface.svelte';
   import type { ThreadTerminalDrawerProps } from './terminalDrawerTypes';
@@ -28,14 +29,25 @@
   function handleResize(size: number): void {
     handle.setDrawerHeight(size);
   }
+
+  // Compact (phone) layout has one screen and no room for a split: the terminal
+  // is a stacked screen over the chat column, not a bottom drawer, so the
+  // keyboard and the key row own the bottom edge. The wrapper stops being a
+  // flow sibling of the timeline and covers the (relative) chat column; `fill`
+  // drops the Drawer's inline height and its resize handle so the classes here
+  // are what size it. Desktop is untouched — the `compact:` variant only
+  // matches under `.layout-compact`.
+  const compact = $derived(isCompactLayout());
 </script>
 
-<div data-testid="terminal-drawer">
+<div class="compact:absolute compact:inset-0 compact:z-30" data-testid="terminal-drawer">
   <Drawer
     position="bottom"
     size={handle.drawerHeight}
     minSize={120}
     resizable={true}
+    fill={compact}
+    class="compact:h-full"
     onResize={handleResize}
     acquireResizeLease={surface.acquireResizeLease}
   >

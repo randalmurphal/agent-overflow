@@ -18,6 +18,13 @@
     minSize?: number;
     maxSize?: number;
     resizable?: boolean;
+    /**
+     * Drop the inline size and the resize handle, so the drawer is sized
+     * entirely by the caller's classes. What the compact (phone) layout needs:
+     * the terminal drawer becomes the whole screen there, and an inline
+     * `height` from a persisted desktop size would win over any class.
+     */
+    fill?: boolean;
     class?: string;
     children: Snippet;
     onResize?: (size: number) => void;
@@ -37,6 +44,7 @@
     minSize = 120,
     maxSize,
     resizable = true,
+    fill = false,
     class: className = '',
     children,
     onResize,
@@ -92,8 +100,12 @@
   }
 
   const sizeStyle = $derived(
-    position === 'bottom' ? `height: ${size}px;` : `width: ${size}px;`,
+    fill ? undefined : position === 'bottom' ? `height: ${size}px;` : `width: ${size}px;`,
   );
+
+  // A filled drawer has nothing to resize against — it is already the whole
+  // available box — so the handle would only be a dead grab target.
+  const showHandle = $derived(resizable && !fill);
 
   const chromeClass = $derived(
     position === 'bottom'
@@ -118,7 +130,7 @@
   style={sizeStyle}
   data-drawer-position={position}
 >
-  {#if resizable}
+  {#if showHandle}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       role="separator"

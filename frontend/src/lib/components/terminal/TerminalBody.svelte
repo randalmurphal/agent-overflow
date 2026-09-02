@@ -8,6 +8,7 @@
     GetTerminalReplay,
   } from '../../stores/bindings';
   import { getResolvedTheme } from '../../stores/themeMode.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { decodeTerminalOutput, encodeTerminalInput, normalizeTerminalReplay } from '../../types/terminal';
   import { getXtermTheme } from './terminalTheme';
   import {
@@ -15,6 +16,8 @@
     type ThreadTerminalStateHandle,
   } from './terminalStore.svelte';
   import { buildTerminal } from './terminalXterm';
+  import { applyStickyCtrl } from './terminalKeys';
+  import TerminalKeyRow from './TerminalKeyRow.svelte';
   import {
     createTerminalInputWriter,
     createTerminalResizeWriter,
@@ -72,12 +75,41 @@
     notifyTerminalFocus(paneId, false);
   }
 
+  // Compact (phone) layout docks a key row under the terminal for the keys a
+  // soft keyboard has no way to produce. Nothing below this point runs on
+  // desktop, where `compact` is false and the row never mounts.
+  const compact = $derived(isCompactLayout());
+  // Sticky Ctrl, armed by the key row's Ctrl button and spent by the next input
+  // chunk on the path below — whatever its source.
+  let ctrlArmed = $state(false);
+
   // Every keystroke (main stream via term.onData, plus the Shift+Enter newline
-  // the widget produces internally) routes through here to the app terminal
-  // manager. Passed to buildTerminal as `onInput` and wired to term.onData so a
-  // single path owns input.
+  // the widget produces internally, plus every compact key-row press, which
+  // enters through term.input so it lands on onData too) routes through here to
+  // the app terminal manager. Passed to buildTerminal as `onInput` and wired to
+  // term.onData so a single path owns input — and so sticky Ctrl catches soft-
+  // keyboard letters, not just key-row ones.
   function writeInput(data: string): void {
+    if (ctrlArmed) {
+      // Armed is the rare branch; the common path stays one boolean read.
+      const spent = applyStickyCtrl(data, true);
+      ctrlArmed = spent.armed;
+      inputWriter.write(spent.data);
+      return;
+    }
     inputWriter.write(data);
+  }
+
+  // Key-row press. Goes in through term.input (wasUserInput: true) rather than
+  // straight to inputWriter, so the row shares the keyboard's path: one PTY
+  // writer, one place sticky Ctrl applies, and xterm's own user-input side
+  // effects (selection clear, scroll-to-bottom) still happen.
+  function pressKeyRow(data: string): void {
+    term?.input(data, true);
+  }
+
+  function toggleStickyCtrl(): void {
+    ctrlArmed = !ctrlArmed;
   }
 
   async function hydrate() {
@@ -252,4 +284,7 @@
 
 <div class="flex-1 min-h-0 flex flex-col bg-terminal-bg" data-testid={`terminal-body-${terminalID}`}>
   <div bind:this={mountEl} class="flex-1 min-h-0 bg-terminal-bg"></div>
+  {#if compact}
+    <TerminalKeyRow onKey={pressKeyRow} {ctrlArmed} onToggleCtrl={toggleStickyCtrl} />
+  {/if}
 </div>
