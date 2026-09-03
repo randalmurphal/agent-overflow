@@ -21,6 +21,13 @@ export class Attachment {
     "relativePath": string;
     "createdAt": number;
 
+    /**
+     * Kind is AttachmentKindImage or AttachmentKindFile (migration v75).
+     * Rows written before the column existed default to `image`, which is
+     * what every attachment was.
+     */
+    "kind": string;
+
     /** Creates a new Attachment instance. */
     constructor($$source: Partial<Attachment> = {}) {
         if (!("id" in $$source)) {
@@ -43,6 +50,9 @@ export class Attachment {
         }
         if (!("createdAt" in $$source)) {
             this["createdAt"] = 0;
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
         }
 
         Object.assign(this, $$source);

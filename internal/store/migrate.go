@@ -1420,6 +1420,21 @@ CREATE INDEX idx_items_completion_created
 
 ` + backgroundSettleTriggersSQL,
 	},
+	{
+		Version: 75,
+		Name:    "attachment_kind",
+		// Every attachment ever written was an image, so the DEFAULT is
+		// the backfill: no data rewrite, and a pre-v75 row reads as the
+		// thing it actually is. `file` is the new kind — copied to the
+		// attachments root and referenced by path in the prompt rather
+		// than decoded, so it is also the kind whose bytes are never
+		// served back to a client.
+		//
+		// A plain ADD COLUMN with no CHECK, so the FK-parent
+		// `attachments` table is not rebuilt; the closed value set is
+		// enforced by InsertAttachment, which is the table's one writer.
+		SQL: `ALTER TABLE attachments ADD COLUMN kind TEXT NOT NULL DEFAULT 'image';`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

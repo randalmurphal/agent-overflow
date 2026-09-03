@@ -20,7 +20,7 @@ serialisation boundary.
 | Symbol | Purpose |
 |---|---|
 | `Meta` | Top-level wire shape persisted in `store.Item.Meta`. All fields are `omitempty` so a zero meta serialises to `""`. |
-| `AttachmentMeta` | Per-attachment slice element. The frontend renders these alongside the user row; storage-internal columns (path, hashes, timestamps) deliberately do not appear. |
+| `AttachmentMeta` | Per-attachment slice element. The frontend renders these alongside the user row; storage-internal columns (path, hashes, timestamps) deliberately do not appear. `kind` (`image` / `file`, `omitempty`) is what the row renders as, and EMPTY MEANS IMAGE — every row written before the kind existed carried one, so an absent value is the truth about that row, never a gap to repair. The MIME type cannot stand in for it: `image/heic` is a `file`, because no provider ingests one. |
 | `Input` | The per-entry-point projection `Marshal` encodes. A struct, not a positional list: several fields share a type, so a swapped pair used to compile clean. |
 | `Marshal(in Input) (string, error)` | Builds the JSON blob from the per-entry-point inputs. Returns `("", nil)` when every input is zero-valued so callers can persist an empty Meta column. |
 | `CommandWords(content) []string` | Every command-shaped word in a message, in order of appearance and without its slash (D31). Any word position counts, duplicates are preserved. Shape only: whether a name is REGISTERED is the caller's question, and the table lives in `internal/app`. |

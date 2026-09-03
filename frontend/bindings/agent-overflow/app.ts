@@ -503,9 +503,15 @@ export function CreateThreadFromPR(project: string, $number: number, providerNam
 
 /**
  * DeleteAttachment removes both the metadata row and the disk file.
+ * 
+ * The thread id is not decoration: it is the ownership boundary, checked
+ * against the row before anything is removed, so a stale id from a closed
+ * composer or a foreign one from any client cannot delete another thread's
+ * attachment. Every other thread-scoped accessor takes it for the same
+ * reason.
  */
-export function DeleteAttachment(attachmentID: string): $CancellablePromise<void> {
-    return $Call.ByID(2428457759, attachmentID);
+export function DeleteAttachment(threadID: string, attachmentID: string): $CancellablePromise<void> {
+    return $Call.ByID(2428457759, threadID, attachmentID);
 }
 
 export function DeleteDiffReviewComment(threadID: string, commentID: string): $CancellablePromise<void> {
@@ -1410,10 +1416,9 @@ export function GetWSLDistroPreference(): $CancellablePromise<string> {
 /**
  * GetWorkspaceActivity answers "is anything running in this directory, and
  * which threads are they?" for the frontend's workspace-change lock. The
- * counters gate the directory-destructive affordances (remove worktree,
- * branch switch in place); BusyThreads lets the same fetch gate the
- * thread-scoped ones (moving a thread to another checkout) on that thread
- * alone, matching the backend's own ensureWorkspaceChangeAllowed(threadID).
+ * counters gate the directory-destructive affordance (remove worktree);
+ * BusyThreads lets the same fetch gate the thread-scoped ones (moving a
+ * thread to another checkout) on that thread alone, matching the backend's own ensureThreadChangeAllowed(threadID).
  * 
  * It is deliberately the same computation the removal gate performs while
  * holding the thread locks (removeProjectWorktree →

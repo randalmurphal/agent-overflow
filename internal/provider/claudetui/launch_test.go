@@ -301,3 +301,29 @@ func TestBuildEnvStatesTheCrossSessionGateWhenEnabled(t *testing.T) {
 		t.Fatalf("the inherited gate value survived beside the stated one: %v", env)
 	}
 }
+
+// The interactive launch carries the same `--add-dir` the headless one
+// does: one binary, one attachments root, and a take-control session must
+// not be the surface that prompts for a file AO put there itself.
+func TestBuildLaunchOptionsEmitsAddDir(t *testing.T) {
+	opts, err := buildLaunchOptions(Config{
+		Binary:         "claude",
+		WorkDir:        "/tmp/work",
+		AdditionalDirs: []string{"/var/attachments", "/var/other"},
+	}, "", "http://127.0.0.1:1/", "http://127.0.0.1:2/hook", "tok")
+	if err != nil {
+		t.Fatalf("buildLaunchOptions: %v", err)
+	}
+	var dirs []string
+	for i, arg := range opts.Args {
+		if arg == "--add-dir" {
+			if i+1 >= len(opts.Args) {
+				t.Fatal("--add-dir is the last argument, with no directory")
+			}
+			dirs = append(dirs, opts.Args[i+1])
+		}
+	}
+	if len(dirs) != 2 || dirs[0] != "/var/attachments" || dirs[1] != "/var/other" {
+		t.Fatalf("--add-dir values = %v, want both directories in order", dirs)
+	}
+}

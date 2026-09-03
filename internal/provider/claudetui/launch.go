@@ -76,6 +76,11 @@ func buildLaunchOptions(cfg Config, systemPromptPath, gatewayURL, hookURL, hookT
 	if cfg.Resume != "" {
 		args = append(args, "--resume", cfg.Resume)
 	}
+	for _, dir := range cfg.AdditionalDirs {
+		// One flag per directory, exactly as the headless buildArgs emits
+		// it; the CLI's variadic option concatenates repeated occurrences.
+		args = append(args, "--add-dir", dir)
+	}
 	if systemPromptPath != "" {
 		// The settings-level system-prompt override
 		// (docs/specs/prompt-tool-overrides.md). The interactive TUI honors

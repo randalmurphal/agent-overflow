@@ -26,9 +26,19 @@ type Config struct {
 	// available": the one reader (findReplayUserParent) reports "could not
 	// verify" instead of guessing a home.
 	ProjectsDir string
-	Resume      string // session ID to resume, empty for new
-	ResumeAt    string // transcript UUID to resume at inside Resume
-	ForkSession bool
+	// AdditionalDirs are extra roots the session may read outside its
+	// workspace, one `--add-dir <dir>` each. The app stamps the attachments
+	// root here so a Read of an attached file never raises a permission
+	// prompt (docs/specs/file-attachments.md).
+	//
+	// Stamped at spawn like ProjectsDir rather than carried on
+	// provider.SessionOptions, because the value is a process constant:
+	// letting the reconciler see it would put a never-changing field in
+	// every restart diff.
+	AdditionalDirs []string
+	Resume         string // session ID to resume, empty for new
+	ResumeAt       string // transcript UUID to resume at inside Resume
+	ForkSession    bool
 	// SystemPrompt REPLACES the CLI's default system prompt. It reaches the
 	// process as `--system-prompt-file <path>` (a 0600 temp file written at
 	// spawn and removed on Close) rather than as an argv value — the two
@@ -412,6 +422,15 @@ func buildArgs(cfg Config, systemPromptPath string) []string {
 	}
 	if mcpJSON, ok := mcpConfigForCLI(cfg); ok {
 		args = append(args, "--mcp-config", mcpJSON)
+	}
+	// One `--add-dir <dir>` per entry. The CLI declares the option variadic
+	// (`--add-dir <directories...>` in main.tsx), and commander CONCATENATES
+	// a repeated variadic option's values (Option._concatValue), so repeating
+	// the flag builds the same array a single space-separated occurrence
+	// would — without any chance of a following argv token being swallowed
+	// into the list.
+	for _, dir := range cfg.AdditionalDirs {
+		args = append(args, "--add-dir", dir)
 	}
 	// PermissionFlags is either nil (default CLI prompting) or a complete
 	// permission-related CLI flag sequence for the selected runtime mode.

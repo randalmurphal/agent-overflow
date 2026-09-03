@@ -539,38 +539,38 @@ func TestResolveSendMessageAttachmentsByProvider(t *testing.T) {
 	}
 
 	// claude → inline bytes, no path.
-	claudeResolved, _, err := app.resolveSendMessageAttachments(claudeThread.ID, []string{claudeAtt.ID})
+	claudeResolved, err := app.resolveSendMessageAttachments(claudeThread.ID, []string{claudeAtt.ID})
 	if err != nil {
 		t.Fatalf("resolve(claude): %v", err)
 	}
-	if len(claudeResolved) != 1 {
-		t.Fatalf("resolve(claude): got %d attachments, want 1", len(claudeResolved))
+	if len(claudeResolved.images) != 1 {
+		t.Fatalf("resolve(claude): got %d attachments, want 1", len(claudeResolved.images))
 	}
-	if len(claudeResolved[0].Data) == 0 {
+	if len(claudeResolved.images[0].Data) == 0 {
 		t.Error("claude attachment must carry image bytes")
 	}
-	if claudeResolved[0].Path != "" {
-		t.Errorf("claude attachment must not carry a path, got %q", claudeResolved[0].Path)
+	if claudeResolved.images[0].Path != "" {
+		t.Errorf("claude attachment must not carry a path, got %q", claudeResolved.images[0].Path)
 	}
 
 	// claude-tui → on-disk path, no bytes.
-	tuiResolved, _, err := app.resolveSendMessageAttachments(tuiThread.ID, []string{tuiAtt.ID})
+	tuiResolved, err := app.resolveSendMessageAttachments(tuiThread.ID, []string{tuiAtt.ID})
 	if err != nil {
 		t.Fatalf("resolve(claude-tui): %v", err)
 	}
-	if len(tuiResolved) != 1 {
-		t.Fatalf("resolve(claude-tui): got %d attachments, want 1", len(tuiResolved))
+	if len(tuiResolved.images) != 1 {
+		t.Fatalf("resolve(claude-tui): got %d attachments, want 1", len(tuiResolved.images))
 	}
-	if len(tuiResolved[0].Data) != 0 {
-		t.Errorf("claude-tui attachment must be path-only, got %d image bytes", len(tuiResolved[0].Data))
+	if len(tuiResolved.images[0].Data) != 0 {
+		t.Errorf("claude-tui attachment must be path-only, got %d image bytes", len(tuiResolved.images[0].Data))
 	}
-	if tuiResolved[0].Path == "" {
+	if tuiResolved.images[0].Path == "" {
 		t.Fatal("claude-tui attachment must carry the on-disk path")
 	}
-	if !strings.HasPrefix(tuiResolved[0].Path, rootDir) {
-		t.Errorf("claude-tui path %q is not under the attachment root %q", tuiResolved[0].Path, rootDir)
+	if !strings.HasPrefix(tuiResolved.images[0].Path, rootDir) {
+		t.Errorf("claude-tui path %q is not under the attachment root %q", tuiResolved.images[0].Path, rootDir)
 	}
-	if _, err := os.Stat(tuiResolved[0].Path); err != nil {
+	if _, err := os.Stat(tuiResolved.images[0].Path); err != nil {
 		t.Errorf("claude-tui path is not a real file on disk: %v", err)
 	}
 }

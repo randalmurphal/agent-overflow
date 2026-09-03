@@ -17,6 +17,22 @@ func (a *App) UploadAttachment(threadID, filename, mimeType, dataB64 string) (st
 	return a.attachments.Upload(threadID, filename, mimeType, dataB64, time.Now().UnixMilli())
 }
 
+// claudeAdditionalDirs is what every Claude spawn (headless and
+// claude-tui) passes as `--add-dir`: the attachments root, so a session
+// can Read a file the user attached without raising a permission prompt
+// for a path outside its workspace (docs/specs/file-attachments.md).
+//
+// The path comes from the store rather than being re-derived from the
+// config dir, so there is one answer to "where do attachments live". A
+// boot with no attachment store adds no directory rather than guessing
+// one — and then no file could have been attached either.
+func (a *App) claudeAdditionalDirs() []string {
+	if a.attachments == nil {
+		return nil
+	}
+	return []string{a.attachments.Root()}
+}
+
 // ListAttachments returns every attachment metadata row for a thread.
 func (a *App) ListAttachments(threadID string) ([]store.Attachment, error) {
 	if a.attachments == nil {
@@ -33,11 +49,17 @@ func (a *App) ListAttachments(threadID string) ([]store.Attachment, error) {
 }
 
 // DeleteAttachment removes both the metadata row and the disk file.
-func (a *App) DeleteAttachment(attachmentID string) error {
+//
+// The thread id is not decoration: it is the ownership boundary, checked
+// against the row before anything is removed, so a stale id from a closed
+// composer or a foreign one from any client cannot delete another thread's
+// attachment. Every other thread-scoped accessor takes it for the same
+// reason.
+func (a *App) DeleteAttachment(threadID, attachmentID string) error {
 	if a.attachments == nil {
 		return fmt.Errorf("attachment store not initialized")
 	}
-	return a.attachments.Delete(attachmentID)
+	return a.attachments.Delete(threadID, attachmentID)
 }
 
 // GetAttachmentData returns the base64-encoded raw bytes for rendering a

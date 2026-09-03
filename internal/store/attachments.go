@@ -5,6 +5,18 @@ import (
 	"fmt"
 )
 
+// Attachment kinds. The kind decides what an attachment IS to every reader:
+// an image is delivered to the provider as bytes or a `localImage` path and
+// is the only kind whose bytes are ever served back to a client; a file is
+// delivered as a path reference in the prompt and never decoded.
+//
+// The set is closed. InsertAttachment refuses anything else, so a reader can
+// treat "not image" as "file" without a third branch to get wrong.
+const (
+	AttachmentKindImage = "image"
+	AttachmentKindFile  = "file"
+)
+
 // Attachment is the persisted metadata for a file attached to a thread.
 type Attachment struct {
 	ID           string `json:"id"`
@@ -14,14 +26,18 @@ type Attachment struct {
 	Size         int64  `json:"size"`
 	RelativePath string `json:"relativePath"`
 	CreatedAt    int64  `json:"createdAt"`
+	// Kind is AttachmentKindImage or AttachmentKindFile (migration v75).
+	// Rows written before the column existed default to `image`, which is
+	// what every attachment was.
+	Kind string `json:"kind"`
 }
 
-const attachmentColumns = `id, thread_id, filename, mime_type, size, relative_path, created_at`
+const attachmentColumns = `id, thread_id, filename, mime_type, size, relative_path, created_at, kind`
 
 func scanAttachment(scanner interface{ Scan(...any) error }) (Attachment, error) {
 	var a Attachment
 	if err := scanner.Scan(
-		&a.ID, &a.ThreadID, &a.Filename, &a.MimeType, &a.Size, &a.RelativePath, &a.CreatedAt,
+		&a.ID, &a.ThreadID, &a.Filename, &a.MimeType, &a.Size, &a.RelativePath, &a.CreatedAt, &a.Kind,
 	); err != nil {
 		return Attachment{}, err
 	}
@@ -31,10 +47,13 @@ func scanAttachment(scanner interface{ Scan(...any) error }) (Attachment, error)
 // InsertAttachment persists attachment metadata. The on-disk file must already
 // exist at RelativePath (resolved against the attachment root).
 func (s *Store) InsertAttachment(a Attachment) error {
+	if a.Kind != AttachmentKindImage && a.Kind != AttachmentKindFile {
+		return fmt.Errorf("store: insert attachment %s: unknown kind %q", a.ID, a.Kind)
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO attachments (id, thread_id, filename, mime_type, size, relative_path, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, a.ThreadID, a.Filename, a.MimeType, a.Size, a.RelativePath, a.CreatedAt,
+		`INSERT INTO attachments (id, thread_id, filename, mime_type, size, relative_path, created_at, kind)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.ThreadID, a.Filename, a.MimeType, a.Size, a.RelativePath, a.CreatedAt, a.Kind,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert attachment %s: %w", a.ID, err)
@@ -103,7 +122,7 @@ func (s *Store) GetAttachmentWithThumbnail(id string) (AttachmentWithThumbnail, 
 	var out AttachmentWithThumbnail
 	var thumbMime sql.NullString
 	if err := row.Scan(
-		&out.ID, &out.ThreadID, &out.Filename, &out.MimeType, &out.Size, &out.RelativePath, &out.CreatedAt,
+		&out.ID, &out.ThreadID, &out.Filename, &out.MimeType, &out.Size, &out.RelativePath, &out.CreatedAt, &out.Kind,
 		&out.ThumbnailData, &thumbMime,
 	); err != nil {
 		if err == sql.ErrNoRows {

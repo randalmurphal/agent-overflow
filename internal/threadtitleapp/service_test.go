@@ -456,7 +456,9 @@ func TestAutoPassesOnlyOwnedExistingImagePaths(t *testing.T) {
 		{ID: "owned", ThreadID: thread.ID, Filename: "owned.png", MimeType: "image/png"},
 		{ID: "foreign", ThreadID: thread.ID, Filename: "foreign.png", MimeType: "image/png"},
 		{ID: "missing", ThreadID: thread.ID, Filename: "missing.png", MimeType: "image/png"},
-		{ID: "text", ThreadID: thread.ID, Filename: "notes.txt", MimeType: "text/plain"},
+		// A `file` kind that EXISTS on disk and belongs to the thread, so
+		// the only thing that can exclude it is the kind check.
+		{ID: "text", ThreadID: thread.ID, Filename: "notes.txt", MimeType: "text/plain", Kind: store.AttachmentKindFile},
 	}
 	resolved := &fakeAttachments{rows: map[string]struct {
 		record store.Attachment
@@ -465,6 +467,7 @@ func TestAutoPassesOnlyOwnedExistingImagePaths(t *testing.T) {
 		"owned":   {record: attachments[0], path: ownedPath},
 		"foreign": {record: store.Attachment{ID: "foreign", ThreadID: "other"}, path: ownedPath},
 		"missing": {record: attachments[2], path: missingPath},
+		"text":    {record: attachments[3], path: ownedPath},
 	}}
 	events := &recordedEvents{}
 	service := New(Config{
@@ -472,7 +475,7 @@ func TestAutoPassesOnlyOwnedExistingImagePaths(t *testing.T) {
 		Attachments: resolved,
 		Generate: func(_ store.Thread, prompt string, paths []string) (string, error) {
 			if len(paths) != 1 || paths[0] != ownedPath {
-				t.Fatalf("image paths = %v", paths)
+				t.Fatalf("image paths = %v; want only the owned, existing IMAGE row", paths)
 			}
 			if !strings.Contains(prompt, "Attachment metadata:") {
 				t.Fatalf("prompt missing attachment metadata: %q", prompt)

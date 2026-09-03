@@ -294,7 +294,7 @@ describe('<ComposerInputSurface>', () => {
     await tick();
 
     expect(draft.attachments).toHaveLength(0);
-    await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith('att-1'));
+    await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith('thread-1', 'att-1'));
   });
 
   it('shouldDeleteAttachmentRecord=false drops it from the draft but keeps the record', async () => {

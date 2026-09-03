@@ -30,6 +30,13 @@ type Config struct {
 	WorkDir string
 	// Resume, when set, is the provider session ref to resume (--resume).
 	Resume string
+	// AdditionalDirs are extra roots the session may read outside its
+	// workspace, one `--add-dir <dir>` each — same flag, same reason as the
+	// headless provider's field: the app stamps the attachments root so a
+	// Read of an attached file never raises a permission prompt. One binary,
+	// one answer; a take-control session must not be the surface that
+	// prompts.
+	AdditionalDirs []string
 	// SystemPrompt REPLACES the CLI's default system prompt for this
 	// session. It reaches the TUI as `--system-prompt-file <path>`, never as
 	// an argv value — same MAX_ARG_STRLEN / /proc reasoning as the headless

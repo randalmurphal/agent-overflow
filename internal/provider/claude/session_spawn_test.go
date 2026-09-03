@@ -318,3 +318,42 @@ func TestWithClaudeSessionEnvDefaults(t *testing.T) {
 		}
 	})
 }
+
+// One `--add-dir <dir>` per entry, and always before PermissionFlags so a
+// following token can never be swallowed. The CLI declares the option
+// variadic; commander concatenates a repeated variadic option's values
+// (Option._concatValue), so repeating the flag builds the same array a
+// single space-separated occurrence would — verified against commander
+// 11.1.0 and `--add-dir <directories...>` in the CLI's main.tsx.
+func TestBuildArgsEmitsOneAddDirPerAdditionalDir(t *testing.T) {
+	args := buildArgs(Config{
+		AdditionalDirs:  []string{"/var/attachments", "/var/other"},
+		PermissionFlags: []string{"--permission-mode", "acceptEdits"},
+	}, "")
+
+	var dirs []string
+	addDirEnd := -1
+	for i, arg := range args {
+		if arg == "--add-dir" {
+			if i+1 >= len(args) {
+				t.Fatal("--add-dir is the last argument, with no directory")
+			}
+			dirs = append(dirs, args[i+1])
+			addDirEnd = i + 1
+		}
+	}
+	if len(dirs) != 2 || dirs[0] != "/var/attachments" || dirs[1] != "/var/other" {
+		t.Fatalf("--add-dir values = %v, want both directories in order", dirs)
+	}
+	if got := slices.Index(args, "--permission-mode"); got < addDirEnd {
+		t.Fatalf("--add-dir must precede the permission flags; args = %v", args)
+	}
+}
+
+// The zero value says nothing, so a session with no additional directory
+// keeps the argv it has always had.
+func TestBuildArgsOmitsAddDirWhenUnset(t *testing.T) {
+	if args := buildArgs(Config{}, ""); slices.Contains(args, "--add-dir") {
+		t.Fatalf("expected no --add-dir with no AdditionalDirs; got %v", args)
+	}
+}

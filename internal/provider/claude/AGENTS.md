@@ -47,6 +47,25 @@ to "clean up" by mistake.
   or on what counts as one safe CLI argument. `mergeDisallowedTools`
   stays unexported: the read-only mode strip it unions in is
   headless-only, because `EnforcesRuntimeMode` is false on claude-tui.
+- `Config.AdditionalDirs` emits one `--add-dir <dir>` per entry. The app
+  stamps the attachments root there on every spawn so a Read of a file
+  the user attached is not a permission prompt for a path outside the
+  workspace (`docs/specs/file-attachments.md`). The root is a process
+  constant, which is why it rides `Config` like `ProjectsDir` rather
+  than `SessionOptions` — a never-changing field in the restart diff
+  would be noise.
+
+  **Verified, not assumed:** the CLI declares the option VARIADIC
+  (`--add-dir <directories...>`, `src/main.tsx`), and commander
+  concatenates a repeated variadic option's values rather than replacing
+  them (`Option._concatValue` in commander 11.1.0), so one flag per
+  directory builds the same array a single space-separated occurrence
+  would. The repeated form is also the safe one: a variadic option
+  consumes following argv tokens until the next `-`-prefixed one, so the
+  flag is emitted before `PermissionFlags` and never at the tail.
+  `claudetui`'s PTY launch passes the same flag for the same reason —
+  one binary, one attachments root, and a take-control session must not
+  be the surface that prompts.
 - Put a spawn-time-only axis on `Config` and NOT on
   `provider.SessionOptions`. `PlanLiveUpdate` diffs
   `ConfigFromOptions(prev)` against `ConfigFromOptions(next)`, so a field

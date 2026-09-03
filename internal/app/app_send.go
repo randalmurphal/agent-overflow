@@ -130,7 +130,7 @@ func (a *App) resolveUserMessageEnvelope(
 	threadID, content string,
 	inputs userMessageInputs,
 ) (resolvedUserMessage, error) {
-	providerAttachments, persistedAttachments, err := a.resolveSendMessageAttachments(threadID, inputs.attachmentIDs)
+	attachments, err := a.resolveSendMessageAttachments(threadID, inputs.attachmentIDs)
 	if err != nil {
 		return resolvedUserMessage{}, fmt.Errorf("attachments: %w", err)
 	}
@@ -198,9 +198,10 @@ func (a *App) resolveUserMessageEnvelope(
 			return resolvedUserMessage{}, fmt.Errorf("composer command: %w", err)
 		}
 	}
+	providerContent = appendFileAttachmentLines(providerContent, attachments.fileLines)
 
 	userMeta, err := usermessage.Marshal(usermessage.Input{
-		Attachments:            persistedAttachments,
+		Attachments:            attachments.records,
 		SourcePlan:             sourcePlan,
 		RevisionSourcePlan:     revisionSourcePlan,
 		RevisionCommentIDs:     revisionCommentIDs,
@@ -217,8 +218,8 @@ func (a *App) resolveUserMessageEnvelope(
 		content:                content,
 		providerContent:        providerContent,
 		command:                command,
-		providerAttachments:    providerAttachments,
-		persistedAttachments:   persistedAttachments,
+		providerAttachments:    attachments.images,
+		persistedAttachments:   attachments.records,
 		sourcePlan:             sourcePlan,
 		revisionSourcePlan:     revisionSourcePlan,
 		revisionPlanCommentIDs: revisionCommentIDs,
@@ -759,17 +760,37 @@ func (a *App) recordSendFailureAndCompleteTurn(threadID string, turnIndex int, s
 	}
 }
 
+// turnAttachments is what one turn's attachment ids resolve to. A struct
+// rather than three returns because the three are not interchangeable and
+// two of them are slices of near-identical shape: `images` is positional
+// and binds to the `[Image #N]` markers, `records` is everything for the
+// persisted meta, and `fileLines` is prompt text.
+type turnAttachments struct {
+	// images is the provider slice, in attachmentIDs order over the IMAGE
+	// subset. Files are excluded: they have no marker and no slot.
+	images []provider.ImageAttachment
+	// records is every requested attachment, both kinds, in order. The
+	// timeline row's meta is built from this.
+	records []store.Attachment
+	// fileLines is one attachment.PromptLine per `file`, in order. The
+	// envelope appends them to providerContent; nothing persists them.
+	fileLines []string
+}
+
 // resolveSendMessageAttachments validates the requested attachment IDs,
-// checks thread ownership, and loads the provider-ready bytes.
-func (a *App) resolveSendMessageAttachments(threadID string, attachmentIDs []string) ([]provider.ImageAttachment, []store.Attachment, error) {
+// checks thread ownership, and loads what each kind needs: bytes or a path
+// for an image, a prompt line for a file.
+func (a *App) resolveSendMessageAttachments(threadID string, attachmentIDs []string) (turnAttachments, error) {
 	if len(attachmentIDs) == 0 {
-		return nil, nil, nil
+		return turnAttachments{}, nil
 	}
+	// The cap is on the UNION: an attachment costs the user a slot whether
+	// it arrives as an image block or as a path line.
 	if len(attachmentIDs) > attachmentstore.DefaultMaxCount {
-		return nil, nil, fmt.Errorf("too many attachments: got %d, max %d", len(attachmentIDs), attachmentstore.DefaultMaxCount)
+		return turnAttachments{}, fmt.Errorf("too many attachments: got %d, max %d", len(attachmentIDs), attachmentstore.DefaultMaxCount)
 	}
 	if a.attachments == nil {
-		return nil, nil, fmt.Errorf("attachment store not initialized")
+		return turnAttachments{}, fmt.Errorf("attachment store not initialized")
 	}
 
 	// Two providers ingest an image by its on-disk PATH and read the file
@@ -782,44 +803,86 @@ func (a *App) resolveSendMessageAttachments(threadID string, attachmentIDs []str
 	// bytes it won't use.
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load thread: %w", err)
+		return turnAttachments{}, fmt.Errorf("load thread: %w", err)
 	}
 	pathOnly := provider.CapabilitiesForProvider(thread.Provider).ImageIngestion == provider.PathImageIngestion
 
-	// Order is load-bearing: providerAttachments comes out in attachmentIDs order,
-	// the same order the composer numbered its "[Image #N]" markers against. Every
-	// provider's send splits the message at those markers and indexes this slice
-	// positionally (image #i → providerAttachments[i-1]; see
-	// provider.SplitContentByImageMarkers), so this loop must stay a straight 1:1
-	// walk — don't reorder or dedup here or inline images would bind to the wrong file.
-	providerAttachments := make([]provider.ImageAttachment, 0, len(attachmentIDs))
-	persistedAttachments := make([]store.Attachment, 0, len(attachmentIDs))
+	// Order is load-bearing: `images` comes out in attachmentIDs order over the
+	// image subset, the same order the composer numbered its "[Image #N]" markers
+	// against — the composer numbers markers over images only, so a file between
+	// two images does not consume a number. Every provider's send splits the
+	// message at those markers and indexes this slice positionally (image #i →
+	// images[i-1]; see provider.SplitContentByImageMarkers), so this loop must stay
+	// a straight walk — don't reorder or dedup here or inline images would bind to
+	// the wrong file.
+	out := turnAttachments{
+		images:  make([]provider.ImageAttachment, 0, len(attachmentIDs)),
+		records: make([]store.Attachment, 0, len(attachmentIDs)),
+	}
 	for _, attachmentID := range attachmentIDs {
-		var (
-			record store.Attachment
-			att    provider.ImageAttachment
-			err    error
-		)
+		// A file is always resolved by path, whatever the provider ingests
+		// images as: the path IS its delivery, and its bytes are never read
+		// into this process.
+		record, path, err := a.attachments.PathForThread(threadID, attachmentID)
+		if err != nil {
+			return turnAttachments{}, err
+		}
+		out.records = append(out.records, record)
+		if record.Kind == store.AttachmentKindFile {
+			out.fileLines = append(out.fileLines, attachmentstore.PromptLine(record, path))
+			continue
+		}
+		att := provider.ImageAttachment{
+			ID:       record.ID,
+			Filename: record.Filename,
+			MimeType: record.MimeType,
+			Size:     record.Size,
+		}
 		if pathOnly {
-			var path string
-			record, path, err = a.attachments.PathForThread(threadID, attachmentID)
 			att.Path = path
 		} else {
-			var data []byte
-			record, data, err = a.attachments.ReadThreadBytes(threadID, attachmentID)
-			att.Data = data
+			// The inline bytes come through ReadThreadBytes rather than off
+			// `path`, because that accessor is the ONE place "only an
+			// image's bytes are ever read" is enforced; the cost is a second
+			// single-row metadata lookup, against a read of up to 10 MiB, on
+			// a send that carries attachments at all.
+			if _, att.Data, err = a.attachments.ReadThreadBytes(threadID, attachmentID); err != nil {
+				return turnAttachments{}, err
+			}
 		}
-		if err != nil {
-			return nil, nil, err
-		}
-		att.ID = record.ID
-		att.Filename = record.Filename
-		att.MimeType = record.MimeType
-		att.Size = record.Size
-		persistedAttachments = append(persistedAttachments, record)
-		providerAttachments = append(providerAttachments, att)
+		out.images = append(out.images, att)
 	}
-	return providerAttachments, persistedAttachments, nil
+	return out, nil
+}
+
+// appendFileAttachmentLines returns providerContent with one
+// `[Attached file …]` line per file attachment, after a blank line.
+//
+// It runs LAST, after composer-command expansion, so every content
+// transform is already applied and a new one cannot be sandwiched between
+// the user's text and the lines that describe what they attached. The
+// lines go on providerContent only — the persisted content and the
+// timeline row carry the attachment in `meta`, not as text — and they
+// carry no `[Image #N]` marker, so the positional split is untouched.
+func appendFileAttachmentLines(providerContent string, fileLines []string) string {
+	if len(fileLines) == 0 {
+		return providerContent
+	}
+	size := len(providerContent) + 2
+	for _, line := range fileLines {
+		size += len(line) + 1
+	}
+	var b strings.Builder
+	b.Grow(size)
+	b.WriteString(providerContent)
+	b.WriteString("\n\n")
+	for i, line := range fileLines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(line)
+	}
+	return b.String()
 }
 
 // nextSequenceForScope returns the next available sequence number for

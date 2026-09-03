@@ -2,7 +2,6 @@ package app
 
 import (
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -256,17 +255,11 @@ func (a *App) cloneUserMessageAttachmentsForDraft(
 			clonedIDs = append(clonedIDs, sourceAttachmentID)
 			continue
 		}
-		record, data, err := a.attachments.ReadThreadBytes(sourceThreadID, sourceAttachmentID)
-		if err != nil {
-			return nil, fmt.Errorf("clone draft attachment %s: %w", sourceAttachmentID, err)
-		}
-		cloned, err := a.attachments.Upload(
-			targetThreadID,
-			record.Filename,
-			record.MimeType,
-			base64.StdEncoding.EncodeToString(data),
-			createdAt,
-		)
+		// Copied on disk, not round-tripped through base64 Upload: the
+		// store already accepted these bytes, so re-validating them would
+		// re-DERIVE a kind the original write settled — and a 50 MiB file
+		// would sit in memory twice on its way to the same place.
+		cloned, err := a.attachments.CopyToThread(sourceThreadID, targetThreadID, sourceAttachmentID, createdAt)
 		if err != nil {
 			return nil, fmt.Errorf("clone draft attachment %s: %w", sourceAttachmentID, err)
 		}

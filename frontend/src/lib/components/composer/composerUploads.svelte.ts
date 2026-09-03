@@ -35,6 +35,9 @@ export interface UploadInsertionPoint {
  * edit session's uploads, say, where no message references the ids and
  * the draft holding them is gone.
  *
+ * Takes the owning thread because deletion is thread-scoped at the
+ * boundary: the backend refuses an id that belongs to another thread.
+ *
  * Here rather than at the caller because this layer owns attachment
  * record deletion; a second `DeleteAttachment` call site would be a
  * second error policy to keep in step. It is a DIFFERENT policy from the
@@ -44,9 +47,9 @@ export interface UploadInsertionPoint {
  * a leaked blob is a housekeeping miss rather than something to interrupt
  * them with. Fire-and-forget, never silent.
  */
-export function discardAbandonedAttachmentRecords(ids: Iterable<string>): void {
+export function discardAbandonedAttachmentRecords(threadId: string, ids: Iterable<string>): void {
   for (const id of ids) {
-    void DeleteAttachment(id).catch((err) => {
+    void DeleteAttachment(threadId, id).catch((err) => {
       console.error('Failed to delete abandoned attachment record:', err);
     });
   }
@@ -173,8 +176,14 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
   }
 
   async function deleteAttachmentRecord(id: string): Promise<void> {
+    // The record's thread is the composer's current one: `uploadOne` only
+    // stamps a record into the draft while `getThreadId()` still matches
+    // the thread it uploaded to, so anything the user can remove here
+    // belongs to the thread showing it.
+    const threadId = opts.getThreadId();
+    if (!threadId) return;
     try {
-      await DeleteAttachment(id);
+      await DeleteAttachment(threadId, id);
     } catch (err) {
       console.error('DeleteAttachment failed:', err);
       addToast('warning', userFacingError(err));
