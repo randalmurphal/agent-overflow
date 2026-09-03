@@ -496,10 +496,17 @@ func (b *EventBus) RemoteReceiverCount(channel string) int {
 //   - If lastSeq equals or exceeds the current head, returns nothing
 //     for that channel.
 //
-// Channels not present in lastSeqByChannel are skipped. Channels in the
-// map that the bus has never seen are silently ignored. Caller must
-// cap the input map size before invoking — see MaxReplayChannels in
-// frame.go for the wire-level cap.
+// Channels not present in lastSeqByChannel are skipped. A channel the
+// bus has NO RING for is answered with a gap marker at seq 0 whenever
+// the cursor is non-zero: rings are created lazily at the first Emit,
+// so "no ring" after a restart means this cursor belongs to the
+// previous process's sequence space and every frame the new one is
+// about to send would be dropped as a duplicate. Seq 0 is below every
+// seq this bus can mint, so the client resets to it and the next live
+// frame passes. A zero cursor asks for nothing and gets nothing.
+//
+// Caller must cap the input map size before invoking — see
+// MaxReplayChannels in frame.go for the wire-level cap.
 func (b *EventBus) Replay(lastSeqByChannel map[string]uint64) []Event {
 	if len(lastSeqByChannel) == 0 {
 		return nil
@@ -511,6 +518,19 @@ func (b *EventBus) Replay(lastSeqByChannel map[string]uint64) []Event {
 	for channel, lastSeq := range lastSeqByChannel {
 		r, ok := b.rings[channel]
 		if !ok {
+			// No ring: nothing has been emitted on this channel in THIS
+			// process. A non-zero cursor therefore names a sequence space
+			// that is not ours, which is exactly the condition
+			// replayAfter's above-head branch exists for and cannot reach
+			// here because there is no ring to ask. Answer the marker
+			// itself, at seq 0, so the client's cursor drops below every
+			// seq this bus can mint (Emit pre-increments, so the first
+			// frame is 1). Without it the client silently discards every
+			// live frame on this channel until the new sequence overtakes
+			// the stale cursor.
+			if lastSeq > 0 {
+				out = append(out, replayGapMarker(channel, 0))
+			}
 			continue
 		}
 		evts, hadGap := r.replayAfter(lastSeq)
@@ -526,24 +546,32 @@ func (b *EventBus) Replay(lastSeqByChannel map[string]uint64) []Event {
 			evts, hadGap = r.replayAfter(r.seq - 1)
 		}
 		if hadGap {
-			gap := Event{
-				Channel: channel,
-				Seq:     r.seq,
-				Gap:     true,
-				Data:    json.RawMessage(`null`),
-			}
-			// Pre-encode the gap marker so the conn pump can write
-			// it without falling back to marshal — the live-pump path
-			// is the hot path but we keep replay symmetric.
-			if wire, err := encodeEventFrame(gap); err == nil {
-				gap.WireBytes = wire
-			}
-			out = append(out, gap)
+			out = append(out, replayGapMarker(channel, r.seq))
 			continue
 		}
 		out = append(out, evts...)
 	}
 	return out
+}
+
+// replayGapMarker builds the {gap:true} frame Replay answers a
+// re-fetch-needed cursor with. One constructor for both callers, so the
+// ring-absent marker and the out-of-ring one cannot differ in shape.
+//
+// Pre-encoded here so the conn pump can write it without falling back to
+// marshal: the live-pump path is the hot path, but replay stays
+// symmetric with it.
+func replayGapMarker(channel string, seq uint64) Event {
+	gap := Event{
+		Channel: channel,
+		Seq:     seq,
+		Gap:     true,
+		Data:    json.RawMessage(`null`),
+	}
+	if wire, err := encodeEventFrame(gap); err == nil {
+		gap.WireBytes = wire
+	}
+	return gap
 }
 
 // Close stops accepting new emissions and signals every subscriber.

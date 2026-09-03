@@ -10,6 +10,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"agent-overflow/internal/loopback"
 	"agent-overflow/internal/servercert"
 )
 
@@ -344,6 +345,51 @@ func TestUpgradeAdmitsANonLoopbackPeerOnATicketAlone(t *testing.T) {
 	}
 	if got := f.dial(t, f.remote, WSTicketParam+"="+ticket, nil); got != http.StatusSwitchingProtocols {
 		t.Fatalf("ticketed upgrade status = %d, want %d", got, http.StatusSwitchingProtocols)
+	}
+}
+
+// admissionLocalSessionID is a session whose BINDING CLASS is
+// loopback-only: the posture the backend mints for its own page.
+const admissionLocalSessionID = "sess-admission-local"
+
+// The ticket arm is the one presentation path that never reaches
+// SessionForRequest, so the binding-class comparison every other path
+// gets for free has to be asked for here. A ticket is minted by a request
+// that presented the credential and spent by whoever holds the URL, and
+// the mint says nothing about where it will be spent. Without the second
+// question, the backend's own loopback-only session would open a socket
+// for a peer that is not on this machine.
+func TestUpgradeRefusesALoopbackOnlySessionsTicketOffHost(t *testing.T) {
+	f := newAdmissionFixtureWith(t, func(cfg *Config) {
+		cfg.SessionLive = func(id string) bool {
+			return id == admissionSessionID || id == admissionLocalSessionID
+		}
+		// The app-side rule, in the shape internal/app satisfies it:
+		// loopback-only is the one class with a listener restriction.
+		cfg.SessionAdmitsPeer = func(id, remoteAddr string) bool {
+			if id != admissionLocalSessionID {
+				return true
+			}
+			return loopback.PeerAddress(remoteAddr)
+		}
+	})
+
+	offHost, err := f.srv.wsTickets.mint(admissionLocalSessionID)
+	if err != nil {
+		t.Fatalf("mint ws ticket: %v", err)
+	}
+	if got := f.dial(t, f.remote, WSTicketParam+"="+offHost, nil); got != http.StatusNotFound {
+		t.Fatalf("off-host ticketed upgrade status = %d, want %d", got, http.StatusNotFound)
+	}
+
+	// The same session on the listener its class DOES reach, so the
+	// refusal above is the binding class rather than the ticket book.
+	onHost, err := f.srv.wsTickets.mint(admissionLocalSessionID)
+	if err != nil {
+		t.Fatalf("mint ws ticket: %v", err)
+	}
+	if got := f.dial(t, f.loopback, WSTicketParam+"="+onHost, nil); got != http.StatusSwitchingProtocols {
+		t.Fatalf("loopback ticketed upgrade status = %d, want %d", got, http.StatusSwitchingProtocols)
 	}
 }
 

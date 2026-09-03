@@ -1165,6 +1165,47 @@ describe('WSClient', () => {
     client.close();
   });
 
+  // The RING-ABSENT marker, which is the other half of the same restart
+  // story (internal/transport/eventbus.go Replay). Rings are created at
+  // the first Emit, so a channel the restarted backend has not emitted
+  // on yet answers a stale cursor with a marker at seq 0 rather than
+  // with silence. Seq 0 is below every seq the bus can mint, so this
+  // asserts the cursor resets far enough for the very first live frame
+  // (seq 1) to pass the dedup check.
+  it('accepts a gap marker at seq 0 and lets the next live seq 1 through', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const gaps: unknown[] = [];
+    const channel: unknown[] = [];
+    client.subscribe(transportGapChannel, (data) => gaps.push(data));
+    client.subscribe('provider:item_event', (data) => channel.push(data));
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    // Climb against the backend that is about to restart.
+    ws.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 4200, data: 'old' });
+    expect(channel).toEqual(['old']);
+
+    // The restarted backend has no ring for this channel, so its replay
+    // answers the reset marker.
+    ws.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 0, data: null, gap: true });
+    expect(gaps).toEqual([{ channel: 'provider:item_event', seq: 0 }]);
+
+    // Without the reset this frame is dropped as a duplicate of 4200,
+    // and so is every frame after it until the new sequence overtakes.
+    ws.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 1, data: 'fresh' });
+    expect(channel).toEqual(['old', null, 'fresh']);
+
+    // No spurious drop report: seq 1 is exactly one past the reset
+    // cursor, so the forward-skip heuristic must stay quiet.
+    expect(gaps).toEqual([{ channel: 'provider:item_event', seq: 0 }]);
+
+    client.close();
+  });
+
   // A gap-flagged event that is genuinely stale still resyncs: gap is an
   // instruction, and the marker's seq is authoritative in both
   // directions. This is the same code path as above driven from the
@@ -2347,7 +2388,7 @@ describe('WSClient', () => {
     client.close();
   });
 
-  it('does not force-close a remote socket while RPCs are in flight (mid-transfer guard)', async () => {
+  it('does not force-close a remote socket while a RECENT RPC is in flight (mid-transfer guard)', async () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
@@ -2363,11 +2404,11 @@ describe('WSClient', () => {
     await vi.advanceTimersByTimeAsync(0);
     first.pushFrame({ type: 'ping' });
 
-    // Silence past the threshold with the RPC still pending: a single
-    // huge response frame can legitimately hold the wire that long on a
-    // remote link, so the watchdog must stand down and let the RPC
-    // timeout arbitrate.
-    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS + STALE_CHECK_INTERVAL_MS);
+    // Silence INSIDE the threshold with the RPC still pending: a single
+    // large response frame yields no message event until it is fully
+    // received and blocks the heartbeats queued behind it, so the
+    // watchdog stands down and lets the RPC timeout arbitrate.
+    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS - STALE_CHECK_INTERVAL_MS);
     expect(first.readyState).toBe(1);
 
     // Once the response lands (no pending RPCs), renewed silence
@@ -2377,6 +2418,43 @@ describe('WSClient', () => {
     await expect(p).resolves.toBe('ok');
     await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS + STALE_CHECK_INTERVAL_MS);
     expect(first.readyState).toBe(3);
+
+    client.close();
+  });
+
+  // The other side of that guard, and the reason it is a WINDOW rather
+  // than "is anything pending". A half-open remote socket keeps its
+  // in-flight calls pending forever (no response is coming and no close
+  // event is either), so a guard that stood down for any pending call
+  // switched the watchdog off on exactly the connections it exists for,
+  // and the app sat in `connected` until each RPC's own 60s timeout.
+  it('force-closes a remote socket whose every pending RPC is older than the threshold', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't', remote: true }),
+    });
+    const p = client.callByID(5, []);
+    p.catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.pushFrame({ type: 'ping' });
+
+    // The call stays pending and nothing arrives. Past the threshold it
+    // can no longer be a transfer in progress: a response that had not
+    // delivered a byte in that window IS the stall.
+    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS + STALE_CHECK_INTERVAL_MS);
+    expect(first.readyState).toBe(3);
+
+    // And the reconnect path took over rather than the client sitting in
+    // `connected` until the RPC's own 60s timeout.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(2);
 
     client.close();
   });

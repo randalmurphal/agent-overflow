@@ -72,12 +72,26 @@ import (
 // An empty Host is refused. HTTP/1.1 requires one, so a request without
 // it is hand-built, and admitting it would be a hole in the same guard.
 //
-// Callers: internal/transport's loopbackHostGuard, which wraps
-// /bootstrap.json, /ws, /pageurl and /rpc whenever the origin allow-list
-// is empty; and internal/clientmode's loopbackOnly, which wraps the
+// Callers: internal/transport's loopbackHostGuard, which wraps every
+// route on that mux except the SPA assets: /bootstrap.json, /ws,
+// /pageurl, /healthz, /rpc, the five /auth/* routes, both /attachments/
+// routes, both /bundle/ routes, /browser-cdp and the three
+// attached-backend subtrees, each cross-origin route's OPTIONS preflight
+// included; and internal/clientmode's loopbackOnly, which wraps the
 // --connect stub's routes. Both rely on the name refusal specifically —
 // PeerAddress would answer "yes" for such a request, because the packets
 // really did arrive over the loopback interface.
+//
+// The transport guard's MODE SIGNAL is the live BIND ADDRESS: it applies
+// while the listener is bound to loopback and stands down once the bind
+// reaches beyond it. It read the origin allow-list's emptiness until
+// wave 8d, and that was the wrong signal twice. A boot honouring a
+// persisted LAN preference set no patterns, so every LAN client got a
+// 404, and naming a canonical domain would have switched the guard off
+// for every OTHER name as a side effect. A canonical domain and an
+// auxiliary listener's names are admitted INSIDE the guard instead
+// (transport's SetCanonicalHost / SetAuxiliaryHosts), which is why this
+// predicate stays the strict three-spelling rule it always was.
 func HostHeader(host string) bool {
 	if host == "" {
 		return false

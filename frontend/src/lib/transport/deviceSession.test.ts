@@ -30,6 +30,7 @@ import {
   storedBackendEndpoint,
 } from './homeEndpoint';
 import { __resetDetachStepsForTest, onBeforeBackendDetach } from './detachSteps';
+import { renewalLeaseKey, withRenewalLease } from './renewalLease';
 
 const PAYLOAD: PairingPayload = {
   v: 1,
@@ -441,5 +442,100 @@ describe('the auth exchanges under a shell origin', () => {
 
     expect(seen).toEqual([{ backend: '', held: true }]);
     __resetDetachStepsForTest();
+  });
+});
+
+// Rotation is single-use on the backend, and presenting a spent refresh
+// secret is REUSE EVIDENCE that ends the whole session family
+// (internal/identity). The in-realm single-flight Map cannot see a second
+// TAB, which is a second realm over the same localStorage, so two tabs
+// waking together on a near-expiry credential each renewed and logged the
+// person out of both. The cross-context half is ./renewalLease.ts.
+//
+// Two realms are the fixture: `vi.resetModules()` plus a dynamic import
+// gives a genuinely separate module instance, which is what a second tab
+// is, over the localStorage happy-dom already shares between them.
+describe('renewal across browsing contexts', () => {
+  type Tab = typeof import('./deviceSession');
+
+  async function openTab(): Promise<Tab> {
+    vi.resetModules();
+    return await import('./deviceSession');
+  }
+
+  /** A near-expiry stored session, so any dial renews before it tickets. */
+  async function pairNearExpiry(tab: Tab): Promise<void> {
+    const fetcher = vi.fn(async () => grantResponse({ expiresAtMs: Date.now() + 1_000 }));
+    await tab.redeemPairing(PAYLOAD, 'My phone', fetcher as unknown as typeof fetch);
+  }
+
+  it('rotates once for two tabs dialing at the same moment', async () => {
+    const tabA = await openTab();
+    const tabB = await openTab();
+    await pairNearExpiry(tabA);
+
+    let rotations = 0;
+    const fetcher = (async (path: string) => {
+      if (path === '/auth/token') {
+        rotations++;
+        return grantResponse({
+          credential: `cred-${rotations + 1}`,
+          refreshSecret: `refresh-${rotations + 1}`,
+          expiresAtMs: Date.now() + 15 * 60_000,
+        });
+      }
+      return new Response(JSON.stringify({ ticket: 'tik' }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const [a, b] = await Promise.all([tabA.mintDialTicket(fetcher), tabB.mintDialTicket(fetcher)]);
+
+    // A second POST here is the defect: it presents the secret the first
+    // one just spent, and the backend reads that as reuse.
+    expect(rotations).toBe(1);
+    // And both tabs are dialing, not just the winner. The loser's answer
+    // is the winner's rotation, read back out of the shared store.
+    expect([a, b]).toEqual(['tik', 'tik']);
+    expect(hasPairedSession()).toBe(true);
+  });
+
+  it('renews through a lease left behind by a tab that was killed', async () => {
+    const tab = await openTab();
+    await pairNearExpiry(tab);
+    // No context can release a lease it died holding, so time is the only
+    // release there is. Without the expiry this renewal never happens.
+    localStorage.setItem(
+      renewalLeaseKey('agent-overflow:deviceSession'),
+      JSON.stringify({ id: 'a-tab-that-is-gone', at: Date.now() - 60_000 }),
+    );
+
+    let rotations = 0;
+    const fetcher = (async (path: string) => {
+      if (path === '/auth/token') {
+        rotations++;
+        return grantResponse({ credential: 'cred-2', refreshSecret: 'refresh-2' });
+      }
+      return new Response(JSON.stringify({ ticket: 'tik-2' }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    expect(await tab.mintDialTicket(fetcher)).toBe('tik-2');
+    expect(rotations).toBe(1);
+  });
+
+  it('tells the work it has lost the lease the moment another context claims it', async () => {
+    // The tie two contexts can both win: each writes, each reads its own
+    // value back. The verdict is therefore re-read at the step that
+    // cannot be taken back, which is what this pins.
+    const key = renewalLeaseKey('agent-overflow:deviceSession');
+    const seen: boolean[] = [];
+    await withRenewalLease(key, async (hold) => {
+      seen.push(hold.held());
+      localStorage.setItem(key, JSON.stringify({ id: 'another-tab', at: Date.now() }));
+      seen.push(hold.held());
+    });
+
+    expect(seen).toEqual([true, false]);
+    // And the release left the other context's lease alone: removing it
+    // would put two contexts inside at once.
+    expect(localStorage.getItem(key)).toContain('another-tab');
   });
 });

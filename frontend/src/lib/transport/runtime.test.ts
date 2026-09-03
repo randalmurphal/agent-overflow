@@ -36,7 +36,17 @@ vi.mock('./wsClient', () => ({
 }));
 
 import { Call, CancellablePromise, Create, Events } from './runtime';
-import { __setHomeClientForTest } from './backends';
+import {
+  __attachBackendForTest,
+  __resetBackendsForTest,
+  __setHomeClientForTest,
+  withBackendTarget,
+} from './backends';
+import {
+  __resetEntityIndexForTest,
+  subscriptionBackend,
+  terminalBackend,
+} from './entityIndex';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 
 // `src/test/setup.ts` loads the real `wsClient` before this file's
@@ -251,5 +261,79 @@ describe('CancellablePromise', () => {
   it('static cancel() resolves to undefined rather than rejecting', async () => {
     await expect(CancellablePromise.cancel()).resolves.toBeUndefined();
     await expect(MockCancellablePromise.cancel()).resolves.toBeUndefined();
+  });
+});
+
+
+// A pinned call is still a call that can MINT an id. The pin names the
+// machine, which is exactly the fact the index wants, so the pinned path
+// has to index its answer the way the routed path does. Skipping it left
+// the minted id unknown, and the NEXT call about it resolved home.
+describe('Call.ByID indexes what a pinned call answers with', () => {
+  const REMOTE = 'laptop';
+  const GIT_STATUS_SUBSCRIBE = 3282404643;
+  const LIST_TERMINALS = 2445206506;
+
+  function remoteClient(result: unknown) {
+    const callByID = vi.fn(async () => result);
+    __attachBackendForTest(
+      {
+        id: REMOTE,
+        backendId: '99999999-8888-4777-8666-555555555555',
+        name: 'Laptop',
+        wsUrl: 'ws://localhost:3000/ws/backend/laptop',
+        bootstrapUrl: '/bootstrap/laptop.json',
+      },
+      {
+        callByID,
+        callByName: vi.fn(),
+        subscribe: vi.fn(() => () => undefined),
+        installStepUpProver: vi.fn(),
+        setLease: vi.fn(),
+        getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
+        onStatusChange: vi.fn(() => () => undefined),
+        getHello: vi.fn(() => null),
+        onHelloChange: vi.fn(() => () => undefined),
+        close: vi.fn(),
+      } as never,
+    );
+    return callByID;
+  }
+
+  beforeEach(() => {
+    __setHomeClientForTest(mockClient as unknown as Parameters<typeof __setHomeClientForTest>[0]);
+    __resetBackendsForTest();
+    __resetEntityIndexForTest();
+  });
+
+  afterEach(() => {
+    __resetBackendsForTest();
+    __resetEntityIndexForTest();
+  });
+
+  it('notes a single minted id against the pinned backend', async () => {
+    const callByID = remoteClient({ id: 'sub-1' });
+
+    await withBackendTarget(REMOTE, () => Call.ByID(GIT_STATUS_SUBSCRIBE, 'p1'));
+
+    expect(callByID).toHaveBeenCalledTimes(1);
+    expect(subscriptionBackend('sub-1')).toBe(REMOTE);
+  });
+
+  it('notes every row of a pinned list call', async () => {
+    remoteClient([{ terminalID: 'term-a' }, { terminalID: 'term-b' }]);
+
+    await withBackendTarget(REMOTE, () => Call.ByID(LIST_TERMINALS, 't1'));
+
+    expect(terminalBackend('term-a')).toBe(REMOTE);
+    expect(terminalBackend('term-b')).toBe(REMOTE);
+  });
+
+  it('hands the caller the result untouched', async () => {
+    remoteClient({ id: 'sub-1', extra: 7 });
+
+    const result = await withBackendTarget(REMOTE, () => Call.ByID(GIT_STATUS_SUBSCRIBE, 'p1'));
+
+    expect(result).toEqual({ id: 'sub-1', extra: 7 });
   });
 });

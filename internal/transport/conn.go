@@ -88,9 +88,10 @@ const (
 	// closeCauseRevoked is the live-session registry force-closing this
 	// socket because its session was revoked.
 	closeCauseRevoked
-	// closeCauseSessionEnded is the periodic re-check finding the session
-	// no longer live: expired, or revoked by something that is not this
-	// process.
+	// closeCauseSessionEnded is a liveness re-check finding the session no
+	// longer live: expired, or revoked by something that is not this
+	// process. Two re-checks set it, the periodic one and the single one
+	// the handler runs right after joining the live-session registry.
 	closeCauseSessionEnded
 	// closeCauseLifetime is the connection reaching its own cap.
 	closeCauseLifetime
@@ -330,6 +331,25 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		// The connection was already closing when we got here. Nothing
 		// will run the cleanup list again, so undo the attach ourselves.
 		detach()
+	}
+
+	// The attach closes a window rather than opening one. The upgrade read
+	// this session's liveness BEFORE the socket joined the registry, so a
+	// revocation landing in between iterated a registry this connection
+	// was not in yet and reached nothing: CloseSession returned having
+	// closed every socket except the one that was still arriving. Asking
+	// once more, now that a CloseSession would find us, is what makes a
+	// revocation mean closed instead of closed whenever watchSession next
+	// ticks. At that cadence the local page's connection is 60 seconds of
+	// streaming under a credential the database already ended.
+	//
+	// Ordered after the attach for the same reason: re-checking before it
+	// would leave the identical window one instruction narrower.
+	if profile.sessionID != "" && h.sessionLive != nil && !h.sessionLive(profile.sessionID) {
+		log.Printf("transport: ws %s session %s ended during the upgrade; closing",
+			profile.remoteAddr, profile.sessionID)
+		h.closeWithCause(closeCauseSessionEnded, cancel)()
+		return
 	}
 
 	// Hello first, synchronously, before the pump and keepalive

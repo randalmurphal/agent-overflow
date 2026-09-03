@@ -109,6 +109,15 @@ const (
 	// cap the OLDEST entry is dropped rather than the request refused —
 	// refusing would let a flood of begins lock the owner out of their own
 	// sign-in, which is the failure this bound must not create.
+	//
+	// passkeyCeremonyLimit is PER PURPOSE, and eviction only ever considers
+	// entries of the same purpose. Sign-in is the one ceremony reachable
+	// with no credential at all (/auth/passkey/begin), so a single book
+	// would let a run of sign-in begins flush the registration and step-up
+	// challenges a session-bound surface had just minted, and the person at
+	// that surface would see their touch refused for no reason they could
+	// act on. Three purposes therefore bound the whole book at 3x this
+	// number, which is still a fixed, tiny ceiling.
 	passkeyCeremonyLimit = 16
 	stepUpTokenLimit     = 16
 )
@@ -913,8 +922,12 @@ func (s *Sessions) recordCeremony(ceremony passkeyCeremony, options any) (Passke
 		s.ceremonies = make(map[string]passkeyCeremony)
 	}
 	s.expireCeremoniesLocked()
-	if len(s.ceremonies) >= passkeyCeremonyLimit {
-		dropOldest(s.ceremonies, func(c passkeyCeremony) int64 { return c.expiresAt })
+	if countPurpose(s.ceremonies, ceremony.purpose) >= passkeyCeremonyLimit {
+		dropOldest(
+			s.ceremonies,
+			func(c passkeyCeremony) int64 { return c.expiresAt },
+			func(c passkeyCeremony) bool { return c.purpose == ceremony.purpose },
+		)
 	}
 	s.ceremonies[id] = ceremony
 	s.passkeyMu.Unlock()
@@ -960,7 +973,7 @@ func (s *Sessions) recordStepUp(token string, grant stepUpGrant) {
 		}
 	}
 	if len(s.stepUps) >= stepUpTokenLimit {
-		dropOldest(s.stepUps, func(g stepUpGrant) int64 { return g.expiresAt })
+		dropOldest(s.stepUps, func(g stepUpGrant) int64 { return g.expiresAt }, nil)
 	}
 	s.stepUps[token] = grant
 }
@@ -974,12 +987,21 @@ func (s *Sessions) expireCeremoniesLocked() {
 	}
 }
 
-// dropOldest removes the entry expiring soonest. Used only at the cap, so
-// the scan is paid once per overflowing begin rather than per call.
-func dropOldest[V any](book map[string]V, expiry func(V) int64) {
+// dropOldest removes the entry expiring soonest among those match accepts; a
+// nil match considers every entry. Used only at the cap, so the scan is paid
+// once per overflowing begin rather than per call.
+//
+// The predicate is what keeps the ceremony book's cap PER PURPOSE: an
+// eviction may only ever spend an entry of the purpose that is over its own
+// bound, so the one ceremony a caller holding nothing can begin cannot reach
+// the challenges a session-bound surface minted.
+func dropOldest[V any](book map[string]V, expiry func(V) int64, match func(V) bool) {
 	var oldestKey string
 	var oldest int64
 	for key, value := range book {
+		if match != nil && !match(value) {
+			continue
+		}
 		at := expiry(value)
 		if oldestKey == "" || at < oldest {
 			oldestKey, oldest = key, at
@@ -988,6 +1010,18 @@ func dropOldest[V any](book map[string]V, expiry func(V) int64) {
 	if oldestKey != "" {
 		delete(book, oldestKey)
 	}
+}
+
+// countPurpose counts the ceremonies of one purpose. Paid only on the begin
+// path, over a map whose whole size is three small caps.
+func countPurpose(book map[string]passkeyCeremony, purpose passkeyPurpose) int {
+	n := 0
+	for _, ceremony := range book {
+		if ceremony.purpose == purpose {
+			n++
+		}
+	}
+	return n
 }
 
 // refusePasskey maps a library error onto this package's closed reason set

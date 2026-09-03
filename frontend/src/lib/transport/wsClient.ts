@@ -358,7 +358,32 @@ export interface StepUpProver {
    * backend that refused the ceremony — and the caller is then settled
    * with the ORIGINAL refusal rather than with whatever happened in here.
    */
-  prove(): Promise<string>;
+  prove(target: StepUpTarget): Promise<string>;
+}
+
+// StepUpTarget is the connection that REFUSED, handed to the ceremony so
+// it runs where the token will be spent.
+//
+// A step-up token is minted for the session that began the ceremony and
+// judged against the session of the connection presenting it
+// (transport.Config.StepUpProof). One client is one backend and one
+// session, so a ceremony that issued its two RPCs through the generated
+// bindings would run them on whichever backend those methods ROUTE to,
+// `home` for both, and a refusal on any attached machine would be
+// answered with a proof minted somewhere else, which that machine refuses
+// on a wire nobody can read the reason off. Passing the refusing handle
+// is what makes the mint and the spend one session by construction rather
+// than by the route table happening to agree.
+//
+// Minimal on purpose: the ceremony needs to issue two calls and nothing
+// else, and a wider surface would invite a second thing to be done with
+// the connection that just refused somebody.
+//
+// `callByID`, never `callByName`: a ceremony reaching for a name would be
+// one more place a method rename fails silently, and the ids are pinned to
+// the generated bindings (./stepUp.ts).
+export interface StepUpTarget {
+  callByID(methodId: number, args: unknown[]): Promise<unknown>;
 }
 
 // DispatchSpec names one outgoing call: the method, by id or by name, and
@@ -384,6 +409,14 @@ interface Pending {
   // the send completes. Nulled when the one retry is spent, so a call
   // cannot be re-sent twice.
   retry: ClientRPCFrame | null;
+  // When this call's frame was last written to a socket, which is what
+  // the staleness watchdog reads to tell "a response may still be
+  // arriving" from "nothing has come back for a long time". Refreshed on
+  // a transient-close re-send, because that is a fresh issue on a fresh
+  // socket. It is deliberately NOT the caller's await time: an RPC parked
+  // behind a backoff has been issued nowhere and says nothing about the
+  // silence of a socket.
+  sentAt: number;
 }
 
 type EventHandler = (data: unknown) => void;
@@ -791,15 +824,22 @@ export class WSClient {
   private notificationReplayPending = false;
   private notificationReplayBuffer: ServerEventFrame[] = [];
   private notificationCheckpointScope: string | null = null;
-  // The watched-thread set last WRITTEN to a socket, sorted. `null` means
-  // no watch frame has ever been sent, which is the wildcard state the
-  // backend starts every connection in — so a client that never composes a
-  // set behaves exactly as it did before the frame existed.
+  // The watched-thread set this client is DESIRING, sorted. `null` means
+  // no set has ever been composed, which is the wildcard state the backend
+  // starts every connection in, so a client that never composes one
+  // behaves exactly as it did before the frame existed.
   //
-  // The SENT set, not the desired one, because it is both the dedup key and
-  // what has to be restated after a reconnect. A send that failed leaves
-  // this holding the previous value, so the next composition change differs
-  // from it and re-sends.
+  // The desired set, not the set last written to a socket: it is recorded
+  // before the frame is sent, and a send that fails (a closed or
+  // still-connecting socket) leaves it holding the new value anyway. That
+  // is safe because it is RESTATED on every open, ahead of the replay
+  // request and on the same socket, so a dropped frame costs nothing past
+  // the current connection and a reconnect always re-establishes what this
+  // client is actually looking at. Tracking the sent set instead would
+  // make a failed send re-send on the NEXT composition change, which is
+  // the same restatement one arbitrary delay later.
+  //
+  // It is also the dedup key, so an unchanged composition writes nothing.
   private watchedThreads: string[] | null = null;
   // This connection's lease state (./frames.ts). `'active'` is BOTH the
   // never-set value and the resting one, deliberately: the backend starts
@@ -1240,6 +1280,22 @@ export class WSClient {
     }
   }
 
+  // Whether any in-flight RPC was issued inside the silence threshold,
+  // and so could still be the response this socket is mid-way through
+  // receiving. Scanned rather than tracked as a max: the map holds the
+  // handful of calls a screen has outstanding, the scan runs once per
+  // watchdog tick (10s) and stops at the first recent entry, and a
+  // maintained maximum would have to be recomputed on every settle
+  // anyway.
+  private hasRecentlyIssuedRPC(): boolean {
+    if (this.pending.size === 0) return false;
+    const cutoff = Date.now() - STALE_TRAFFIC_THRESHOLD_MS;
+    for (const pending of this.pending.values()) {
+      if (pending.sentAt > cutoff) return true;
+    }
+    return false;
+  }
+
   private checkStaleness(): void {
     if (this.closed || !this.serverSendsHeartbeats) return;
     // A hidden renderer may throttle both this interval and WebSocket message
@@ -1249,10 +1305,20 @@ export class WSClient {
     if (!this.ws || this.ws.readyState !== WS_OPEN) return;
     // A single huge response frame on a slow remote link yields no
     // message event until fully received — and it blocks the
-    // heartbeats queued behind it on the wire. While RPCs are in
-    // flight against a remote backend, let their own 60s timeout
-    // arbitrate instead of killing a socket mid-transfer.
-    if (this.remoteBackend && this.pending.size > 0) return;
+    // heartbeats queued behind it on the wire. So a RECENTLY issued RPC
+    // against a remote backend suspends the verdict, and its own 60s
+    // timeout arbitrates instead of this killing a socket mid-transfer.
+    //
+    // Recently, not merely outstanding. Any pending call used to suspend
+    // it, which made the watchdog unreachable on exactly the connections
+    // it exists for: a half-open remote socket keeps its in-flight calls
+    // pending forever (no response is coming and no close event is
+    // either), so the one thing that would have force-closed it was
+    // switched off by the same failure. A call issued longer ago than the
+    // silence threshold cannot be the transfer holding the heartbeats
+    // back: a transfer that had not delivered a byte in that window is
+    // the stall itself.
+    if (this.remoteBackend && this.hasRecentlyIssuedRPC()) return;
     const idleMs = Date.now() - this.lastFrameAt;
     if (idleMs <= STALE_TRAFFIC_THRESHOLD_MS) return;
     const idleSeconds = Math.round(idleMs / 1000);
@@ -1387,7 +1453,11 @@ export class WSClient {
   private async runCeremony(prover: StepUpProver): Promise<string> {
     this.ceremonyInFlight = true;
     try {
-      return await prover.prove();
+      // `this`, so the ceremony's calls ride the connection that refused:
+      // the token is bound to the session that began the ceremony, and
+      // that has to be the session about to spend it. It is also what
+      // makes the guard above cover them, since it is per client.
+      return await prover.prove(this);
     } finally {
       this.ceremonyInFlight = false;
     }
@@ -1438,7 +1508,7 @@ export class WSClient {
       // Allowlist resolved HERE, once, so a call that will never be
       // retried does not pin its params for the RPC's lifetime.
       const retry = matchesRetryAllowlist(this.retryAllowlist, spec) ? frame : null;
-      this.pending.set(id, { resolve, reject, timer, retry });
+      this.pending.set(id, { resolve, reject, timer, retry, sentAt: Date.now() });
 
       // An RPC is live demand: if reconnection is sitting in a queued
       // backoff, run the attempt now instead of making the caller wait
@@ -1976,7 +2046,7 @@ export class WSClient {
         cause: err,
       },
       `wsClient: backend refused this session's credential (${err.message}); ` +
-        'reconnect stopped — the credential is minted per backend launch, so ' +
+        'reconnect stopped. The credential is minted per backend launch, so ' +
         'only a freshly-opened share link can restore this session',
     );
   }
@@ -2610,7 +2680,12 @@ export class WSClient {
     if (this.retryQueue.length === 0) return;
     const parked = this.retryQueue.splice(0, this.retryQueue.length);
     for (const frame of parked) {
-      if (this.pending.has(frame.id)) this.sendFrame(frame);
+      const pending = this.pending.get(frame.id);
+      if (!pending) continue;
+      this.sendFrame(frame);
+      // Re-issued on a new socket, so the watchdog's window starts again
+      // from here rather than from the send that died with the old one.
+      pending.sentAt = Date.now();
     }
   }
 }

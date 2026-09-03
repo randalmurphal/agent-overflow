@@ -184,7 +184,7 @@ function warnOnceForMethod(methodId: number, why: string): void {
  * beyond the two Map lookups the entity index costs.
  */
 function resolveRoute(methodId: number, args: unknown[]): BackendKey | null {
-  // The ID-FAMILY table first. 59 methods are keyed by an id that is
+  // The ID-FAMILY table first. 49 methods are keyed by an id that is
   // neither a thread nor a project — a workflow item, an automation, a
   // terminal, a subscription — and the generated table parks all of them
   // on `home` because it has no vocabulary to infer them. Home is the
@@ -242,7 +242,21 @@ export const Call = {
     if (attachedBackendCount() === 1) {
       return wrap(homeBackend().handle.callByID(methodId, args));
     }
-    if (pinned !== null) return wrap(resolveTransport(pinned).callByID(methodId, args));
+    // A pinned call is still a call that can MINT an id (a git-status
+    // subscribe is pinned by its own store), and an id nobody indexed
+    // routes home on the next call about it. So the pinned path indexes
+    // its answer exactly as the routed path below does: the pin names the
+    // machine, which is the fact the index wants.
+    if (pinned !== null) {
+      return wrap(
+        resolveTransport(pinned)
+          .callByID(methodId, args)
+          .then((result) => {
+            noteFamilyRowsFromCall(methodId, result, pinned);
+            return result;
+          }),
+      );
+    }
     const target = resolveRoute(methodId, args);
     if (target === null) {
       return wrap(

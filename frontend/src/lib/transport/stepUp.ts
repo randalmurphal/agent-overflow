@@ -24,15 +24,42 @@
 // (internal/transport/AGENTS.md), so a passive load — a pane mounting, a
 // background refresh — has nothing here to trip.
 
-// Through stores/bindings.ts like every other RPC in the app, and NOT a
-// cycle: that module is a re-export of the generated tree, whose own
-// runtime shim lands on ./handle.ts. Nothing in that chain reaches back
-// here, because the transport holds this module through a slot it FILLS
-// at boot rather than through an import.
-import { BeginPasskeyStepUp, FinishPasskeyStepUp } from '../stores/bindings';
+// The ceremony's two RPCs go through the REFUSING connection rather than
+// through stores/bindings.ts, and that is the one thing this module does
+// not get to choose freely. Both methods are routed `home`
+// (./methodRoutes.ts), so a call refused on an ATTACHED machine would be
+// answered with a token minted on the page's own backend: bound to a
+// different session, refused on arrival, and the person would see the
+// change fail after touching their sensor. The transport hands the
+// ceremony the handle that refused (`StepUpTarget`), so mint and spend
+// are the same session by construction.
 import { installStepUpProverEverywhere } from './backends';
 import { answerChallenge, passkeysUsable, type PasskeyChallenge } from './passkey';
 import { isStepUpRefusal } from './scopeRefusal';
+import type { StepUpTarget } from './wsClient';
+
+// The two method ids the ceremony calls by, hand-written because the
+// generated tables carry no name-to-id map at runtime: `methodRoutes.ts`
+// is keyed BY id and names the method only in a comment.
+//
+// A Wails method id is a hash of the method's name, so a rename moves it
+// and a stale constant fails at the wire rather than at the compiler.
+// `stepUp.test.ts` reads the generated bindings and pins both, which is
+// the same tripwire `methodFamilies.test.ts` is for the route families.
+export const BEGIN_PASSKEY_STEP_UP_ID = 3214812657;
+export const FINISH_PASSKEY_STEP_UP_ID = 1569276637;
+
+/**
+ * The shape BeginPasskeyStepUp answers with (app.PasskeyChallengeResult),
+ * which is `PasskeyChallenge` itself: the ceremony id plus the WebAuthn
+ * options blob, crossing this layer unread.
+ */
+type BegunCeremony = PasskeyChallenge;
+
+/** The shape FinishPasskeyStepUp answers with (app.PasskeyStepUpGrant). */
+interface StepUpGrant {
+  token: string;
+}
 
 /**
  * Install the passkey ceremony as the transport's step-up prover. Called
@@ -65,22 +92,27 @@ function canProve(err: unknown): boolean {
 }
 
 /**
- * Run the step-up ceremony and answer the single-use token it minted.
+ * Run the step-up ceremony ON THE CONNECTION THAT REFUSED, and answer the
+ * single-use token it minted.
  *
  * The token is bound to the session that BEGAN the ceremony, not to
  * anything a later call names, and the backend judges it against the
- * presenting connection when it is spent — so it is worth nothing to any
- * other session and there is nothing to protect it as it sits here.
+ * presenting connection when it is spent, which is exactly why the
+ * ceremony runs on the refusing handle. Running it anywhere else mints a
+ * proof for the wrong session, and it is worth nothing to any other
+ * session, so there is nothing to protect it as it sits here.
  *
  * Rejecting means there was nothing to try: an abandoned prompt
  * (`PasskeyAbandonedError`), or a backend that refused the ceremony. The
  * transport turns either into the original refusal, so nobody is shown a
  * WebAuthn error for a change that simply did not go through.
  */
-async function proveStepUp(): Promise<string> {
-  const begun = await BeginPasskeyStepUp();
-  const challenge: PasskeyChallenge = { ceremonyId: begun.ceremonyId, options: begun.options };
-  const response = await answerChallenge(challenge, 'get');
-  const grant = await FinishPasskeyStepUp(begun.ceremonyId, JSON.parse(response) as unknown);
+async function proveStepUp(target: StepUpTarget): Promise<string> {
+  const begun = (await target.callByID(BEGIN_PASSKEY_STEP_UP_ID, [])) as BegunCeremony;
+  const response = await answerChallenge(begun, 'get');
+  const grant = (await target.callByID(FINISH_PASSKEY_STEP_UP_ID, [
+    begun.ceremonyId,
+    JSON.parse(response) as unknown,
+  ])) as StepUpGrant;
   return grant.token;
 }

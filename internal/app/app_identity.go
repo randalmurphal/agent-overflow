@@ -269,6 +269,32 @@ func SessionLive(a *App, sessionID string) bool {
 	return !reason.Refused()
 }
 
+// SessionAdmitsPeer reports whether a session id may be presented from
+// this peer address. Satisfies transport.Config.SessionAdmitsPeer.
+//
+// The same comparison SessionForRequest makes, asked by the one path that
+// does not go through it: a `/ws` upgrade whose session came off a spent
+// ticket. Without it the ticket route was the way a loopback-only session
+// reached a peer that is not on this machine, and the binding class the
+// store has recorded since wave 5b would have gone uncompared on exactly
+// the credential the backend mints for its own page.
+//
+// It resolves through Live rather than a plain row read, so a session that
+// stopped being live between the ticket's mint and its spend answers false
+// here too. That is a second answer to a question the caller already asked
+// through SessionLive, and re-asking is the cheaper mistake.
+func SessionAdmitsPeer(a *App, sessionID, remoteAddr string) bool {
+	state := a.identityState()
+	if state == nil {
+		return false
+	}
+	session, reason := state.sessions.Live(sessionID)
+	if reason.Refused() {
+		return false
+	}
+	return bindingAdmitsPeer(session, remoteAddr)
+}
+
 // SessionScopes reports the grants a session holds right now, or the
 // closed-vocabulary reason it holds none. Satisfies
 // transport.Config.SessionScopes, which the per-RPC scope gate reads.

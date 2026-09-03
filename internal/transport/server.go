@@ -233,6 +233,27 @@ type Config struct {
 	// before any client presents a session.
 	SessionLive func(sessionID string) bool
 
+	// SessionAdmitsPeer reports whether a session id may be presented from
+	// one peer address: the BINDING CLASS half of admission
+	// (docs/specs/remote-access.md §2), which SessionForRequest already
+	// applies to every request that carries a credential.
+	//
+	// Shaped like SessionLive, and for the same reason: its caller holds
+	// an id and no credential. A `/ws` upgrade naming its session through
+	// a spent ticket never reaches SessionForRequest at all, so without
+	// this hook the ticket route was the one presentation path where a
+	// loopback-only session admitted an off-host peer. A ticket is minted
+	// by a request that DID present the credential, but it is spent by
+	// whoever holds the URL, and the mint says nothing about where.
+	//
+	// Binding classes are internal/identity's vocabulary and this package
+	// cannot import it, so the comparison stays app-side and this is the
+	// question asked of it.
+	//
+	// Optional. Nil admits every peer, which is the behavior before any
+	// client presents a session.
+	SessionAdmitsPeer func(sessionID, remoteAddr string) bool
+
 	// SessionScopes resolves the capability grants a session holds RIGHT
 	// NOW, or refuses it outright.
 	//
@@ -1273,6 +1294,24 @@ func (s *Server) sessionStillLive(sessionID string) bool {
 	return true
 }
 
+// sessionAdmitsPeer answers the binding-class question for a session id,
+// admitting everything when no hook is installed.
+//
+// The ticket arm of the upgrade is its one caller, and it is the arm that
+// bypasses SessionForRequest, where every other presentation path gets
+// this comparison for free. A ticket names a session; it does not say
+// where that session may be presented from, and a loopback-only session
+// is precisely the one the backend mints for its own page.
+func (s *Server) sessionAdmitsPeer(sessionID, remoteAddr string) bool {
+	if sessionID == "" {
+		return false
+	}
+	if admits := s.cfg.SessionAdmitsPeer; admits != nil {
+		return admits(sessionID, remoteAddr)
+	}
+	return true
+}
+
 // HasRemoteClient reports whether at least one non-loopback WebSocket
 // connection is currently attached. Producers of remote-only event
 // channels (see event_visibility.go) consult this to skip the work
@@ -1892,7 +1931,8 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	ticketProven := false
 	if ticket := r.URL.Query().Get(WSTicketParam); ticket != "" {
 		subject, spent := s.wsTickets.consume(ticket)
-		if !spent || !s.sessionStillLive(subject) {
+		if !spent || !s.sessionStillLive(subject) ||
+			!s.sessionAdmitsPeer(subject, r.RemoteAddr) {
 			http.NotFound(w, r)
 			return
 		}

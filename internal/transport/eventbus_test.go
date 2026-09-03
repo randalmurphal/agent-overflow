@@ -236,8 +236,61 @@ func TestEventBus_Replay_UnknownChannelSkipped(t *testing.T) {
 	}
 }
 
-// Replay with a mix of known + unknown channels returns only the
-// known channels' events; unknown channels silently no-op.
+// A cursor on a channel this process has NEVER emitted on is the
+// restart signature: rings are created lazily at the first Emit, so
+// "no ring" plus a non-zero cursor means the client is carrying the
+// PREVIOUS process's sequence space. Without the marker the client
+// drops every live frame below that cursor as a duplicate, silently,
+// for as long as it takes the new sequence to overtake it.
+//
+// The marker's seq is 0, which is below every seq this bus can mint
+// (Emit pre-increments), so the client resets to it and the very next
+// live frame passes.
+func TestEventBus_Replay_AbsentRingWithStaleCursorGaps(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+
+	const channel = "provider:item_event"
+	out := bus.Replay(map[string]uint64{channel: 4200})
+	if len(out) != 1 {
+		t.Fatalf("expected exactly one gap marker, got %d events: %+v", len(out), out)
+	}
+	if out[0].Channel != channel || !out[0].Gap {
+		t.Fatalf("replay = %+v, want a gap marker on %s", out[0], channel)
+	}
+	if out[0].Seq != 0 {
+		t.Fatalf("gap marker seq = %d, want 0 so the next live seq passes the client's cursor", out[0].Seq)
+	}
+	if len(out[0].WireBytes) == 0 {
+		t.Fatal("gap marker must be pre-encoded like every other replay frame")
+	}
+
+	// And the very next frame this bus mints must sit ABOVE the marker,
+	// which is the whole property the seq choice buys.
+	first, err := bus.Emit(eventchan.Channel(channel), "after the restart")
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if first.Seq <= out[0].Seq {
+		t.Fatalf("first live seq %d is not above the gap marker's %d", first.Seq, out[0].Seq)
+	}
+}
+
+// A ZERO cursor on a channel with no ring asks for nothing and gets
+// nothing: a fresh client has no sequence space to be wrong about, and
+// a marker there would make every boot log a gap.
+func TestEventBus_Replay_AbsentRingWithZeroCursorIsSilent(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+
+	if out := bus.Replay(map[string]uint64{"never-emitted": 0}); len(out) != 0 {
+		t.Fatalf("zero cursor on an absent ring = %+v, want nothing", out)
+	}
+}
+
+// Replay with a mix of known + unknown channels returns the known
+// channel's events; an unknown channel named with a stale cursor gets
+// the reset marker beside them.
 func TestEventBus_Replay_MixedKnownUnknown(t *testing.T) {
 	bus := NewEventBus(10)
 	defer bus.Close()
@@ -247,8 +300,22 @@ func TestEventBus_Replay_MixedKnownUnknown(t *testing.T) {
 		"ch1":     0,
 		"unknown": 5,
 	})
-	if len(out) != 1 || out[0].Channel != "ch1" {
-		t.Fatalf("expected single ch1 event, got %+v", out)
+	if len(out) != 2 {
+		t.Fatalf("expected the ch1 event plus one gap marker, got %+v", out)
+	}
+	var events, gaps int
+	for _, e := range out {
+		switch {
+		case e.Channel == "ch1" && !e.Gap:
+			events++
+		case e.Channel == "unknown" && e.Gap && e.Seq == 0:
+			gaps++
+		default:
+			t.Fatalf("unexpected replay entry %+v", e)
+		}
+	}
+	if events != 1 || gaps != 1 {
+		t.Fatalf("replay = %+v, want one ch1 event and one unknown gap", out)
 	}
 }
 

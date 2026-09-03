@@ -250,8 +250,13 @@ func TestRevokeUnderConcurrentLiveNeverResurrects(t *testing.T) {
 					return
 				default:
 				}
+				// Read the flag BEFORE the call. A read admitted before the
+				// revoke landed, then descheduled past the store, is not an
+				// admission after revocation; only a call that BEGAN after the
+				// revoke returned may be counted against the session core.
+				wasRevoked := revoked.Load()
 				_, reason := sessions.Live(session.ID)
-				if !reason.Refused() && revoked.Load() {
+				if !reason.Refused() && wasRevoked {
 					admittedAfterRevoke.Add(1)
 				}
 			}

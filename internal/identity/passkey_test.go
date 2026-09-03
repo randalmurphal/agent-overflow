@@ -575,6 +575,59 @@ func TestTheCeremonyBookIsBoundedAndKeepsTheNewest(t *testing.T) {
 	}
 }
 
+// The cap is PER PURPOSE, and eviction never crosses a purpose boundary.
+// Sign-in is the one ceremony a caller holding nothing can begin, so a
+// single book would let a run of them flush the registration and step-up
+// challenges a session-bound surface had just minted, and the person at
+// that surface would see their touch refused for no reason they could act
+// on.
+func TestTheCeremonyBookIsCappedPerPurpose(t *testing.T) {
+	sessions, _, c, owner := newPasskeyFixture(t)
+	auth := newSoftAuthenticator(t)
+	enroll(t, sessions, owner.ID, auth)
+	signedIn, reason := signIn(t, sessions, auth, "thumb-laptop")
+	if reason.Refused() {
+		t.Fatalf("sign-in: %s", reason)
+	}
+
+	// Both session-bound ceremonies are minted FIRST, so under a shared
+	// book they are the oldest entries and the ones a cap would spend.
+	registration, reason := sessions.BeginPasskeyRegistration(owner.ID, "Phone")
+	if reason.Refused() {
+		t.Fatalf("BeginPasskeyRegistration: %s", reason)
+	}
+	c.advance(time.Millisecond)
+	stepUp, reason := sessions.BeginPasskeyStepUp(signedIn.Tokens.SessionID)
+	if reason.Refused() {
+		t.Fatalf("BeginPasskeyStepUp: %s", reason)
+	}
+
+	// Well past the cap, and inside the ceremony TTL throughout so nothing
+	// here is expiry rather than eviction.
+	for range passkeyCeremonyLimit * 3 {
+		c.advance(time.Millisecond)
+		if _, reason := sessions.BeginPasskeySignIn(); reason.Refused() {
+			t.Fatalf("BeginPasskeySignIn: %s", reason)
+		}
+	}
+
+	sessions.passkeyMu.Lock()
+	_, keptRegistration := sessions.ceremonies[registration.CeremonyID]
+	_, keptStepUp := sessions.ceremonies[stepUp.CeremonyID]
+	signIns := countPurpose(sessions.ceremonies, purposeSignIn)
+	sessions.passkeyMu.Unlock()
+
+	if !keptRegistration {
+		t.Fatal("a run of sign-in begins evicted a registration challenge")
+	}
+	if !keptStepUp {
+		t.Fatal("a run of sign-in begins evicted a step-up challenge")
+	}
+	if signIns > passkeyCeremonyLimit {
+		t.Fatalf("the book held %d sign-in challenges, want at most %d", signIns, passkeyCeremonyLimit)
+	}
+}
+
 // The account's handle is minted once and never re-minted, because it is
 // what an authenticator stored alongside the credential: a second one
 // would make every existing credential resolve to nothing.

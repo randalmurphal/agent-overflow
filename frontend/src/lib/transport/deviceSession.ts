@@ -54,6 +54,7 @@
 // honest recovery is to let that happen and pair again.
 
 import { runBeforeBackendDetach } from './detachSteps';
+import { purgeClientState } from './clientPurge';
 import { enrollDeviceKey, mintDeviceProof } from './deviceKey';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import {
@@ -66,6 +67,7 @@ import {
   storeBackendEndpoint,
 } from './homeEndpoint';
 import { answerChallenge, type PasskeyChallenge } from './passkey';
+import { renewalLeaseKey, withRenewalLease } from './renewalLease';
 
 // Mirrors internal/transport/authroutes.go. Names, not policy: the
 // backend decides what they mean.
@@ -443,6 +445,13 @@ export function unpairHome(): void {
   runBeforeBackendDetach(HOME_BACKEND);
   clearPairedSession(HOME_BACKEND);
   forgetBackendEndpoint(HOME_BACKEND);
+  // Sign-out, so EVERY backend's replica and ui_state bucket go, not just
+  // home's: the next boot is a first run, and what this device already
+  // synced must not be readable by whoever opens the page after it. Spec
+  // §9 names this the purge primitive's caller. Last of the four, because
+  // the three above are what stop new data arriving and this is what
+  // removes what already did.
+  purgeClientState(null);
 }
 
 interface GrantBody {
@@ -640,6 +649,13 @@ async function ticketHeaders(
 // global, because two backends' exchanges are unrelated and sharing one
 // latch would make a second machine's renewal silently return the first
 // machine's answer.
+//
+// This Map is the IN-REALM half and stays, because it is the cheap one:
+// it settles two callers in one page with no storage read at all. The
+// cross-context half is ./renewalLease.ts, and it is the half that was
+// missing. A second TAB is a second realm, this Map cannot see it, and
+// two tabs renewing at once presented the same secret twice and ended the
+// session family for both.
 const renewalInFlight = new Map<BackendKey, Promise<boolean>>();
 const ticketInFlight = new Map<BackendKey, Promise<string | null>>();
 
@@ -656,9 +672,19 @@ const ticketInFlight = new Map<BackendKey, Promise<string | null>>();
 function renewSession(fetcher: typeof fetch, backend: BackendKey): Promise<boolean> {
   const held0 = renewalInFlight.get(backend);
   if (held0) return held0;
-  const run = (async () => {
+  // Read BEFORE the lease is waited on, so what "already moved" means is
+  // "moved since this caller decided to renew" rather than "differs from
+  // whatever is there now".
+  const before = readStoredSession(backend);
+  const run = withRenewalLease(renewalLeaseKey(sessionStoreKey(backend)), async (lease) => {
+    // Re-read INSIDE the lease. Waiting for another context's exchange and
+    // then presenting the secret it just spent is the exact failure this
+    // guards, and the rotated pair is already in storage by now: every
+    // context of this origin shares it, so there is nothing left to do and
+    // this caller's answer is the other one's success.
     const held = readStoredSession(backend);
     if (!held?.refreshSecret) return false;
+    if (before?.refreshSecret && refreshedSince(before, held)) return true;
     const keyHeader = await deviceKeyHeader(held, 'POST', AUTH_TOKEN_PATH);
     if (!keyHeader) {
       // A key-bound session whose key is gone. Renewal is the one exchange
@@ -666,6 +692,13 @@ function renewSession(fetcher: typeof fetch, backend: BackendKey): Promise<boole
       // reach the wire: clear it here and let the page ask to pair.
       clearPairedSession(backend);
       return false;
+    }
+    if (!lease.held()) {
+      // Another context claimed the lease while this one was minting its
+      // proof. Not ours to spend: answer from storage instead, which is
+      // where the winner's rotation lands.
+      const now = readStoredSession(backend);
+      return !!now && refreshedSince(held, now);
     }
     let res: Response;
     try {
@@ -687,6 +720,10 @@ function renewSession(fetcher: typeof fetch, backend: BackendKey): Promise<boole
       // credential and clears nothing.
       if (res.status === 401 && body.reason !== 'pending_confirmation') {
         clearPairedSession(backend);
+        // The session family has ended and no retry brings it back, so
+        // this is a revocation from where the client sits. What that
+        // backend already synced to this device goes with the credential.
+        purgeClientState(backend);
       }
       return false;
     }
@@ -708,11 +745,26 @@ function renewSession(fetcher: typeof fetch, backend: BackendKey): Promise<boole
       scopes: grantedScopesFrom(body) ?? held.scopes,
     }, backend);
     return true;
-  })().finally(() => {
+  }).finally(() => {
     renewalInFlight.delete(backend);
   });
   renewalInFlight.set(backend, run);
   return run;
+}
+
+/**
+ * Whether `now` is a LATER credential pair than `before`: a different
+ * refresh secret, or an access credential that expires further out.
+ *
+ * Both, because either alone answers wrongly for a real case. A backend
+ * that rotates only the access half leaves the secret equal, and a clock
+ * comparison alone would call a re-read of the same pair progress. What
+ * this must never do is answer true for the pair a caller was about to
+ * present, since that is what turns "somebody else already renewed" into
+ * "renewal succeeded" when nothing happened.
+ */
+function refreshedSince(before: StoredSession, now: StoredSession): boolean {
+  return now.refreshSecret !== before.refreshSecret || now.expiresAtMs > before.expiresAtMs;
 }
 
 /**

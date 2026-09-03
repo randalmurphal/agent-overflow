@@ -364,6 +364,20 @@ this file's.** Each is a hole the library documents rather than closes:
   two discoverable ceremonies are byte-identical on the wire and mint
   very different things.
 
+**The ceremony book's cap is PER PURPOSE, and eviction never crosses one.**
+`passkeyCeremonyLimit` bounds sign-in, registration and step-up
+separately, and `dropOldest` takes the predicate that keeps an eviction
+inside the purpose that is over its own bound. The reason is which
+ceremony a caller holding NOTHING can begin: sign-in is a route
+(`/auth/passkey/begin`), while registration and step-up are bound methods
+a session already reached. One shared book therefore let a run of
+sign-in begins flush the challenge a person was in the middle of
+answering, and the failure they saw was their own touch refused with no
+remedy they could act on. Three purposes bound the whole book at three
+times the cap, which is still a fixed, tiny ceiling. Any ceremony purpose
+added later gets its own bound by construction, and none may be given a
+shared one.
+
 **A passkey is not a device.** One synced credential appears on every
 phone a person owns, so credentials hang off the ACCOUNT and the DEVICE a
 sign-in produces is resolved separately, from the device-key proof the

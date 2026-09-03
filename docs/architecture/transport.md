@@ -130,6 +130,11 @@ That answer is `gap:true` on the next frame for that channel.
   ours, because a restarted backend re-seeds every channel from 1. Answering
   "nothing missed" would leave it dropping every live event below its stale
   cursor forever, since the client dedups on seq.
+- **No ring at all.** Rings are created lazily at the channel's first `Emit`, so
+  a backend that restarted and has not yet emitted on a channel holds nothing to
+  compare a cursor against. That is the same stale sequence space as the case
+  above and gets the same marker, at seq 0; only a cursor of 0, which has missed
+  nothing by definition, is answered in silence.
 
 ### The marker is a resync instruction, not a late event
 
@@ -364,11 +369,21 @@ session (spec §4, "Local clients") — through the spent `?ticket=`, the
 kernel-reported peer, the same predicate the event filter, the host-presence half
 of the step-up proof and `internal/app`'s `bindingAdmitsPeer` use.
 
+Naming a live session is necessary and not sufficient: the session's DEVICE also
+has a binding class, and a `loopback-only` device is one whose credential was
+never meant to leave the machine. `Config.SessionAdmitsPeer` is that second
+question, and all three carriers ask it — the header and cookie arms through
+`SessionForRequest`, the ticket arm through the hook directly, because a spent
+ticket already names its subject and takes the short path. One carrier that
+skipped it would be a full admission, since any of the three alone opens a
+socket.
+
 | Peer | Presents | Upgrade |
 |---|---|---|
 | loopback | launch credential, no session | admitted — the webview, `ao-harness`, the e2e rig, the launcher's notification socket, the `--connect` stub's carried hop when it is same-host |
 | loopback | a live session | admitted |
-| non-loopback | a live session (ticket, header, or cookie) | admitted — a paired browser, and a `--connect` stub that paired with this backend (`internal/deviceclient`), both on a ticket |
+| non-loopback | a live session (ticket, header, or cookie) whose device's binding class admits this peer | admitted — a paired browser, and a `--connect` stub that paired with this backend (`internal/deviceclient`), both on a ticket |
+| non-loopback | a live session bound `loopback-only` | `http.NotFound` |
 | non-loopback | launch credential alone | `http.NotFound` |
 | non-loopback | nothing | `http.NotFound` |
 
@@ -569,8 +584,12 @@ WebSocket message delivery; becoming visible resets the traffic clock before
 verdicts resume. The watchdog arms per connection: the first ping frame proves
 this server heartbeats, and the proof resets on close,
 so version skew in either direction cannot reconnect-loop an idle but healthy
-connection. It also stands down while a remote backend has RPCs in flight, since
-one large response frame can legitimately silence the wire past the threshold.
+connection. It also stands down while a remote backend has a RECENTLY issued RPC
+outstanding, since one large response frame can legitimately silence the wire
+past the threshold. Recently, not merely outstanding: a call issued longer ago
+than the threshold is itself evidence of a dead socket, and suspending on any
+pending call meant a half-open connection whose calls all hung was the one case
+the watchdog never fired for, leaving their 60s timeouts as the only exit.
 
 **Protocol-level pings**, on every third tick, with a pong timeout. These detect
 half-open connections server-side, where writes into a dead TCP window buffer
@@ -718,6 +737,15 @@ resource.
 The registry keeps no record of a revoked session, so a later connection on that
 id attaches like any other. Refusing it is the database row's job, checked per
 call rather than latched at upgrade time.
+
+**The attach closes a window rather than opening one.** Liveness is read during
+the upgrade, before the socket joins the registry, so a revocation landing
+between those two moments iterates a registry the arriving connection is not in
+yet and reaches nothing: `CloseSession` returns having closed every socket
+except that one. So the handler asks once more immediately AFTER attaching, and
+closes with `session ended` if the answer changed. Ordered after the attach for
+the same reason a re-check before it would not help: that only moves the window,
+it does not close it.
 
 Revocation reaches open sockets synchronously, but two other ways a session stops
 reach nothing at all: it EXPIRES, or something outside this process revokes it.

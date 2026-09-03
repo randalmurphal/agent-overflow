@@ -8,12 +8,20 @@
 // against a stubbed `call()` could not see any of that — the token
 // reaches a frame at construction time, and "exactly one retry" is a
 // statement about what the socket saw.
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeCtor, flushMicrotasks, MockWebSocket } from '../../test/helpers/mockWebSocket';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { resetBindingMocks } from '../../test/mocks/bindings-app';
 import { PasskeyAbandonedError, setPasskeysAvailableFromBootstrap } from './passkey';
 import { isStepUpRefusal } from './scopeRefusal';
-import { installStepUpProof } from './stepUp';
+import {
+  BEGIN_PASSKEY_STEP_UP_ID,
+  FINISH_PASSKEY_STEP_UP_ID,
+  installStepUpProof,
+} from './stepUp';
 import { createWSClient, TransportError, wsClient, type StepUpProver, type WSClient } from './wsClient';
 
 const bootstrap = async () => ({ wsUrl: 'ws://example/ws', token: 'test-token' });
@@ -317,15 +325,44 @@ function installAuthenticator(): { prompts: number } {
   return counter;
 }
 
-function stubCeremony(token = 'ceremony-token') {
-  setBindingMock('BeginPasskeyStepUp', async () => ({
-    ceremonyId: 'cer-1',
-    options: { challenge: 'AQID' },
-  }));
-  return setBindingMock('FinishPasskeyStepUp', async () => ({
-    token,
-    expiresAtMs: Date.now() + 120_000,
-  }));
+/** The ceremony's own frames on the connection that refused. */
+function ceremonyFrames(ws: MockWebSocket, methodId: number): SentFrame[] {
+  return rpcs(ws).filter((frame) => frame.methodId === methodId);
+}
+
+/**
+ * Answer the ceremony the way the REFUSING backend does, over its own
+ * socket. The ceremony no longer goes through stores/bindings.ts: both
+ * its methods route `home`, so a refusal on an attached machine would be
+ * answered with a token minted on the wrong backend. What a test stubs is
+ * frames, not bindings.
+ */
+async function answerBegin(ws: MockWebSocket): Promise<SentFrame> {
+  await until(
+    'the ceremony to begin on the refusing connection',
+    () => ceremonyFrames(ws, BEGIN_PASSKEY_STEP_UP_ID).length === 1,
+  );
+  const begin = ceremonyFrames(ws, BEGIN_PASSKEY_STEP_UP_ID)[0]!;
+  ws.pushFrame({
+    type: 'rpc',
+    id: begin.id,
+    result: { ceremonyId: 'cer-1', options: { challenge: 'AQID' } },
+  });
+  return begin;
+}
+
+async function answerFinish(ws: MockWebSocket, token: string): Promise<SentFrame> {
+  await until(
+    'the ceremony to finish on the refusing connection',
+    () => ceremonyFrames(ws, FINISH_PASSKEY_STEP_UP_ID).length === 1,
+  );
+  const finish = ceremonyFrames(ws, FINISH_PASSKEY_STEP_UP_ID)[0]!;
+  ws.pushFrame({
+    type: 'rpc',
+    id: finish.id,
+    result: { token, expiresAtMs: Date.now() + 120_000 },
+  });
+  return finish;
 }
 
 /**
@@ -373,30 +410,77 @@ describe('the installed passkey prover', () => {
   it('runs begin, assertion, finish — and the retried frame carries what the finish minted', async () => {
     const prompts = installAuthenticator();
     setPasskeysAvailableFromBootstrap(true);
-    const finish = stubCeremony('minted-token');
     const { client, ws } = await openClient();
     client.installStepUpProver(installedProver());
 
     const call = client.callByName('MintDevicePairing', ['phone', 'full']);
     await until('the call to reach the socket', () => rpcs(ws).length === 1);
     refuse(ws, rpcs(ws)[0]!);
-    await until('the retry', () => rpcs(ws).length === 2);
 
-    expect(rpcs(ws)[1]).toMatchObject({
+    // Both ceremony calls are on THIS connection, which is the whole
+    // point: the token is minted for the session that began the ceremony
+    // and judged against the session presenting it, so a ceremony run on
+    // the page's own backend would prove nothing about an attached one.
+    await answerBegin(ws);
+    const finish = await answerFinish(ws, 'minted-token');
+    // The finish names the ceremony the begin on THIS connection minted,
+    // and carries the authenticator's answer to it.
+    expect((finish.params as unknown[])[0]).toBe('cer-1');
+    expect((finish.params as unknown[])[1]).toMatchObject({ id: 'cred-id' });
+
+    await until('the retry', () => rpcs(ws).length === 4);
+    expect(rpcs(ws)[3]).toMatchObject({
       method: 'MintDevicePairing',
       stepUpToken: 'minted-token',
     });
     expect(prompts.prompts).toBe(1);
-    expect(finish).toHaveBeenCalledTimes(1);
 
-    ws.pushFrame({ type: 'rpc', id: rpcs(ws)[1]!.id, result: { linkId: 'l1' } });
+    ws.pushFrame({ type: 'rpc', id: rpcs(ws)[3]!.id, result: { linkId: 'l1' } });
     await expect(call).resolves.toEqual({ linkId: 'l1' });
     client.close();
   });
 
+  // The reason the handle is passed rather than resolved: a client
+  // attached to a second machine refuses there, and both ceremony methods
+  // are routed `home`. A ceremony that went through the generated
+  // bindings would mint on the page's own backend, and the retry would
+  // present a token for a session the refusing machine never issued.
+  it('runs the ceremony on the ATTACHED connection that refused, not on the page own backend', async () => {
+    installAuthenticator();
+    setPasskeysAvailableFromBootstrap(true);
+    const homeClient = await openClient();
+    const attached = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    attached.subscribe('probe', () => {});
+    await flushMicrotasks();
+    const attachedWs = MockWebSocket.instances[1]!;
+    attachedWs.acceptOpen();
+    await flushMicrotasks();
+    attached.installStepUpProver(installedProver());
+
+    const call = attached.callByName('SetNetworkSettings', [{ bindAll: true }]);
+    await until('the call to reach the attached socket', () => rpcs(attachedWs).length === 1);
+    refuse(attachedWs, rpcs(attachedWs)[0]!);
+
+    await answerBegin(attachedWs);
+    await answerFinish(attachedWs, 'attached-token');
+    await until('the retry on the attached socket', () => rpcs(attachedWs).length === 4);
+
+    expect(rpcs(attachedWs)[3]).toMatchObject({
+      method: 'SetNetworkSettings',
+      stepUpToken: 'attached-token',
+    });
+    // Nothing at all crossed the page's own connection: not the begin,
+    // not the finish, not the retry.
+    expect(rpcs(homeClient.ws)).toHaveLength(0);
+
+    attachedWs.pushFrame({ type: 'rpc', id: rpcs(attachedWs)[3]!.id, result: 'saved' });
+    await expect(call).resolves.toBe('saved');
+    attached.close();
+    homeClient.client.close();
+  });
+
   it('turns a dismissed prompt back into the refusal, not into a WebAuthn error', async () => {
     setPasskeysAvailableFromBootstrap(true);
-    stubCeremony();
     // A prompt answered with nothing is `PasskeyAbandonedError`: somebody
     // changed their mind, which is not a fault to report to them.
     Object.defineProperty(window, 'PublicKeyCredential', {
@@ -413,6 +497,7 @@ describe('the installed passkey prover', () => {
     const call = client.callByName('SetNetworkSettings', [{ bindAll: true }]);
     await until('the call to reach the socket', () => rpcs(ws).length === 1);
     refuse(ws, rpcs(ws)[0]!);
+    await answerBegin(ws);
 
     const err = await call.then(
       () => null,
@@ -420,7 +505,33 @@ describe('the installed passkey prover', () => {
     );
     expect(err).toBeInstanceOf(TransportError);
     expect((err as TransportError).code).toBe('step_up_required');
-    expect(rpcs(ws)).toHaveLength(1);
+    // The begin, and nothing after it: no finish, no retry.
+    expect(rpcs(ws)).toHaveLength(2);
     client.close();
+  });
+});
+
+// A Wails method id is a hash of the method's NAME, so a rename moves it
+// and a stale constant fails on the wire rather than at the compiler --
+// the same failure mode `methodFamilies.test.ts` guards for the route
+// families. The generated bindings are the reference because they are
+// what methodgen wrote from the receiver itself.
+describe('the ceremony method ids', () => {
+  const generated = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), '../../../bindings/agent-overflow/app.ts'),
+    'utf8',
+  );
+
+  function generatedId(methodName: string): number {
+    const declaration = generated.indexOf(`export function ${methodName}(`);
+    expect(declaration, `${methodName} is not a bound method any more`).toBeGreaterThan(-1);
+    const call = /\$Call\.ByID\((\d+)/.exec(generated.slice(declaration));
+    expect(call, `${methodName} issues no Call.ByID`).not.toBeNull();
+    return Number(call![1]);
+  }
+
+  it('match the generated bindings', () => {
+    expect(BEGIN_PASSKEY_STEP_UP_ID).toBe(generatedId('BeginPasskeyStepUp'));
+    expect(FINISH_PASSKEY_STEP_UP_ID).toBe(generatedId('FinishPasskeyStepUp'));
   });
 });

@@ -145,7 +145,7 @@ const PRESENTATIONS: Record<AuthReasonCode, AuthReasonPresentation> = {
   // hint that names only one reads as though the other will not work.
   revoked_device: {
     title: "This device's access was removed.",
-    hint: 'Under Settings → Remote access → Devices on the computer, either restore this device or remove it — then pair again with a new link.',
+    hint: 'Under Settings → Remote access → Devices on the computer, either restore this device or remove it, then pair again with a new link.',
     retryable: false,
   },
   // A proof this device already spent. Every proof is single-use, so the

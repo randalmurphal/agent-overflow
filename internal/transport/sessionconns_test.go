@@ -387,18 +387,60 @@ func waitForSessionConns(t *testing.T, registry *SessionConns, sessionID string,
 }
 
 // readUntilClosed drains a connection until it errors, which is what a
-// force-close looks like from the client side. Returns the terminal error.
+// force-close looks like from the client side. Returns the terminal error,
+// and NIL when the deadline passed with the connection still open.
+//
+// The deadline check runs BEFORE the error check, and that ordering is the
+// whole assertion. Read answers a cancelled context with an error too, so
+// returning it made this helper report "closed" for a socket that was
+// never closed -- and every caller here spells the failure as
+// `if err == nil`, so the arm that catches a connection staying open could
+// not be reached. Two revocation tests were passing vacuously.
 func readUntilClosed(conn *websocket.Conn) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	for {
-		if _, _, err := conn.Read(ctx); err != nil {
+		_, _, err := conn.Read(ctx)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err != nil {
 			return err
 		}
-		if ctx.Err() != nil {
-			return errors.New("connection stayed open")
-		}
 	}
+}
+
+// A revocation that lands DURING an upgrade reaches nothing: the liveness
+// answer that admitted this request was read before the socket joined the
+// registry, so CloseSession iterated a registry the arriving connection
+// was not in yet. The one re-check after the attach is what closes that
+// window; without it the socket streams under a dead credential until
+// watchSession next ticks, which for the local page is a minute of it.
+func TestUpgradeClosesASessionRevokedDuringTheUpgrade(t *testing.T) {
+	var f *sessionFixture
+	f = newSessionFixtureWith(t, func(cfg *Config) {
+		admit := cfg.SessionForRequest
+		cfg.SessionForRequest = func(r *http.Request) (string, bool) {
+			sessionID, ok := admit(r)
+			if !ok {
+				return "", false
+			}
+			// The revocation, staged exactly where the race puts it:
+			// after this request was admitted, before its socket is
+			// attached. The sweep closes nothing, which is the defect.
+			f.setSessionDead(sessionID)
+			if closed := f.srv.SessionConns().CloseSession(sessionID); closed != 0 {
+				t.Errorf("the staged revocation closed %d sockets, want 0", closed)
+			}
+			return sessionID, ok
+		}
+	})
+
+	conn := f.dial(t)
+	if err := readUntilClosed(conn); err == nil {
+		t.Fatal("a connection admitted by a session revoked mid-upgrade stayed open")
+	}
+	waitForSessionConns(t, f.srv.SessionConns(), "sess-1", 0)
 }
 
 // TestRevokedConnectionsAreNamedInTheCloseLog — revocation tears a socket
