@@ -160,6 +160,19 @@ and anti-changes that live only here:
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.
 
+## Review pane
+
+- Icon buttons with hovertext, never text buttons, for thread actions
+  (owner preference, stated for the comments overhaul; applies to new
+  review chrome).
+- PR comments live in the header's collapsible Conversation section
+  beside Description, not a separate view or tab; all threads, verdicts
+  first, unresolved leading. Reading is protected from updates: ordering
+  freezes while the section is open, arrivals wait behind an "N new"
+  chip, and a remote resolve never collapses or moves an open card
+  ("nothing worse than GitLab"). Mechanism:
+  `frontend/src/lib/components/review/AGENTS.md`.
+
 ## Miscellany
 
 - Same-pane outside-click dismissal leaving focus on body (Enter-to-send
