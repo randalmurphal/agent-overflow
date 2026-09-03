@@ -1,10 +1,18 @@
 <script lang="ts">
-  import ChatMarkdown from '../chat/ChatMarkdown.svelte';
-  import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
-  import { relativeTime } from '../../utils/format';
+  import Bot from '@lucide/svelte/icons/bot';
+  import Check from '@lucide/svelte/icons/check';
+  import MessagesSquare from '@lucide/svelte/icons/messages-square';
+  import Reply from '@lucide/svelte/icons/reply';
+  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+  import ReviewIconButton from './ReviewIconButton.svelte';
+  import ReviewThreadComments from './ReviewThreadComments.svelte';
+  import { commentSnippet } from '../../utils/reviewComments';
   import type { ReviewThread } from '../../types/models';
   import type { CommentAnchor } from '../../stores/reviewPane.svelte';
-  import { isImeComposingEvent } from '../../utils/imeComposition';
+
+  // A PR review thread's strip on the diff surface. Unresolved threads
+  // carry a warning edge and render expanded (reviewRows collapses only
+  // resolved/outdated ones); settled threads fold to one line.
 
   interface Props {
     thread: ReviewThread;
@@ -15,6 +23,8 @@
     error: string | null;
     sending: boolean;
     isTurnActive: boolean;
+    resolving: boolean;
+    resolveError: string | null;
     onToggle: () => void;
     onBodyChange: (body: string) => void;
     onSendReply: () => Promise<void> | void;
@@ -22,6 +32,11 @@
      *  reviewing its workspace's PR): the button is not rendered rather
      *  than rendered and inert. */
     onSendToAgent?: () => Promise<void> | void;
+    /** Absent for non-resolvable threads: no resolve control renders. */
+    onResolve?: (resolved: boolean) => void;
+    /** Opens the PR header's Conversation section at this thread; absent
+     *  when that section does not exist (no PR header on screen). */
+    onJumpToConversation?: () => void;
   }
 
   let {
@@ -33,10 +48,14 @@
     error,
     sending,
     isTurnActive,
+    resolving,
+    resolveError,
     onToggle,
     onBodyChange,
     onSendReply,
     onSendToAgent,
+    onResolve,
+    onJumpToConversation,
   }: Props = $props();
   // Rows are virtualized: a windowing remount must not collapse a composer
   // that still holds drafted text (the text itself is store-backed). Only
@@ -44,7 +63,8 @@
   // svelte-ignore state_referenced_locally
   let replying = $state(body !== '');
 
-  const summary = $derived((thread.comments[0]?.body ?? '').replace(/\s+/g, ' ').slice(0, 96));
+  const unresolved = $derived(thread.isResolvable && !thread.isResolved && !thread.isOutdated && !orphaned);
+  const summary = $derived(commentSnippet(thread.comments[0]?.body ?? ''));
   const location = $derived(anchor.side === 'file'
     ? anchor.filePath
     : `${anchor.filePath}:${anchor.newLine || anchor.oldLine || ''}`);
@@ -54,32 +74,16 @@
     const slash = location.lastIndexOf('/');
     return slash < 0 ? location : location.slice(slash + 1);
   });
-
-  function commentTime(createdAt: string): string {
-    const ms = Date.parse(createdAt);
-    return Number.isNaN(ms) ? createdAt : relativeTime(ms);
-  }
-
-  function onKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      replying = false;
-      return;
-    }
-    // Mid-composition the reply text is still in the IME buffer, so the
-    // submit chord would post a truncated comment.
-    if (event.key === 'Enter' && isImeComposingEvent(event)) return;
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      void onSendReply();
-    }
-  }
 </script>
 
-<article class="border-y border-border-subtle bg-surface-0/50 px-3 py-2 text-xs" data-testid="review-pr-thread">
-  <div class="flex items-center gap-2">
+<article
+  class="border-y border-border-subtle bg-surface-0/50 px-3 py-2 text-xs {unresolved ? 'border-l-2 border-l-warning' : ''}"
+  data-testid="review-pr-thread"
+>
+  <div class="flex items-center gap-1.5">
     <button type="button" class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-left" onclick={onToggle} title={location}>
       <span class="min-w-0 truncate font-mono text-[0.6875rem] text-fg-muted">{shortLocation}</span>
+      {#if unresolved}<span class="shrink-0 rounded-full bg-warning/12 px-1.5 py-px text-[0.625rem] text-warning">unresolved</span>{/if}
       {#if thread.isResolved}<span class="shrink-0 rounded-full bg-success/12 px-1.5 py-px text-[0.625rem] text-success">resolved</span>{/if}
       {#if thread.isOutdated || orphaned}<span class="shrink-0 rounded-full bg-surface-2 px-1.5 py-px text-[0.625rem] text-fg-muted">outdated</span>{/if}
       <!-- Basis-0 so the summary only takes leftover width: with basis
@@ -87,59 +91,62 @@
            span to an ellipsis even when the summary itself truncates. -->
       {#if collapsed}<span class="min-w-0 flex-1 truncate text-fg-subtle">{summary}</span>{/if}
     </button>
-    <button
-      type="button"
-      class="shrink-0 rounded-[var(--radius-control)] border border-border-subtle px-2 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg"
+    <ReviewIconButton
+      icon={Reply}
+      label={replying ? 'Hide reply box' : 'Reply'}
+      testid="review-pr-thread-reply"
       onclick={() => { replying = !replying; }}
-    >
-      Reply
-    </button>
+    />
+    {#if onResolve}
+      {@const resolve = onResolve}
+      <ReviewIconButton
+        icon={thread.isResolved ? RotateCcw : Check}
+        label={thread.isResolved ? 'Unresolve thread' : 'Resolve thread'}
+        spinning={resolving}
+        disabled={resolving}
+        testid="review-pr-thread-resolve"
+        onclick={() => resolve(!thread.isResolved)}
+      />
+    {/if}
     {#if onSendToAgent}
       {@const sendToAgent = onSendToAgent}
-      <button
-        type="button"
-        class="shrink-0 rounded-[var(--radius-control)] border border-border-subtle px-2 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
+      <ReviewIconButton
+        icon={Bot}
+        label="Send to agent"
         disabled={isTurnActive}
-        title={isTurnActive ? 'Agent turn is active' : 'Send to agent'}
+        disabledLabel="Agent turn is active"
+        testid="review-pr-thread-send-agent"
         onclick={() => { void sendToAgent(); }}
-      >
-        Send to agent
-      </button>
+      />
+    {/if}
+    {#if onJumpToConversation}
+      {@const jump = onJumpToConversation}
+      <ReviewIconButton
+        icon={MessagesSquare}
+        label="Open in conversation"
+        testid="review-pr-thread-jump-conversation"
+        onclick={() => jump()}
+      />
     {/if}
   </div>
 
-  {#if !collapsed}
-    <div class="mt-2 space-y-2">
-      {#each thread.comments as comment (`${comment.databaseID}:${comment.createdAt}`)}
-        <div class="rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 px-2.5 py-2">
-          <div class="mb-1 flex items-baseline gap-1.5 text-[0.6875rem]">
-            <span class="font-medium text-fg">{comment.authorLogin}</span>
-            <span class="text-fg-subtle">{commentTime(comment.createdAt)}</span>
-          </div>
-          <ChatMarkdown source={comment.body} pathRefs={EMPTY_PATH_REFS} />
-        </div>
-      {/each}
-    </div>
+  {#if resolveError}
+    <div class="mt-1 text-[0.6875rem] text-error">{resolveError}</div>
   {/if}
 
-  {#if replying}
-    <textarea
-      class="mt-2 w-full resize-none rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-1.5 text-xs text-fg focus:border-accent/60 focus:outline-none"
-      rows="3"
-      value={body}
-      oninput={(event) => onBodyChange(event.currentTarget.value)}
-      onkeydown={onKeydown}
-    ></textarea>
-    {#if error}<div class="mt-1 text-[0.6875rem] text-error">{error}</div>{/if}
-    <div class="mt-2 flex justify-end">
-      <button
-        type="button"
-        class="rounded-[var(--radius-control)] bg-accent px-2 py-1 text-[0.6875rem] font-medium text-accent-fg disabled:opacity-45"
-        disabled={sending || body.trim() === ''}
-        onclick={() => { void onSendReply(); }}
-      >
-        Reply
-      </button>
+  {#if !collapsed || replying}
+    <div class="mt-2">
+      <ReviewThreadComments
+        {thread}
+        {body}
+        {error}
+        {sending}
+        {replying}
+        showComments={!collapsed}
+        {onBodyChange}
+        {onSendReply}
+        onCloseReply={() => { replying = false; }}
+      />
     </div>
   {/if}
 </article>

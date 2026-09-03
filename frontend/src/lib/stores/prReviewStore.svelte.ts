@@ -22,6 +22,7 @@
 // The backend pumps one `pr:updated` stream per PR key and addresses its
 // events by that key, so nothing here has to route by subscription id.
 
+import { SvelteMap } from 'svelte/reactivity';
 import {
   SetPRUpdatesActive,
   SubscribePRUpdates,
@@ -269,6 +270,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
   },
   onApply: (key, value) => {
     reconcileConflictsWithHead(key, refByKey.get(key), value.detail, value.headSHA);
+    reconcileResolveOverrides(key, value.threads);
   },
   // The two caches derived from this entity but not sourced by it. They
   // hang off the primitive's one teardown hook instead of a second
@@ -284,11 +286,78 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
   onDrop: (key) => {
     refByKey.delete(key);
     appliedSeqByKey.delete(key);
+    resolveOverridesByKey.delete(key);
     dropPRCI(key);
     dropPRConflicts(key);
     rejectReady(key, new Error('PR updates released'));
   },
 });
+
+// ---------------------------------------------------------------------------
+// Resolve overrides (optimistic, anti-flap)
+// ---------------------------------------------------------------------------
+
+// A resolve/unresolve flips its button the moment it is clicked, but the
+// poll pump may have a snapshot in flight that was fetched BEFORE the forge
+// applied the mutation — applying it verbatim would flap the thread back
+// for one poll interval. The override is the optimistic verdict, held at
+// the PR entity (both panes on one PR agree) until a snapshot AGREES with
+// it. It is not time-boxed: the backend read-back-verifies the mutation
+// before answering, so the next successful poll observes the new state.
+//
+// Both maps are Svelte-reactive because the projection below runs inside
+// panes' $deriveds: creating a key's first override must wake them.
+const resolveOverridesByKey = new SvelteMap<string, SvelteMap<string, boolean>>();
+
+/** Record the optimistic resolved state for one thread. */
+export function setPRThreadResolveOverride(key: string, threadId: string, resolved: boolean): void {
+  let overrides = resolveOverridesByKey.get(key);
+  if (!overrides) {
+    overrides = new SvelteMap<string, boolean>();
+    resolveOverridesByKey.set(key, overrides);
+  }
+  overrides.set(threadId, resolved);
+}
+
+/** Drop one override — the RPC failed, so the forge state stands. */
+export function clearPRThreadResolveOverride(key: string, threadId: string): void {
+  resolveOverridesByKey.get(key)?.delete(threadId);
+}
+
+/**
+ * Project a snapshot's threads through the live overrides. Identity-stable
+ * when nothing is overridden: callers re-anchor the reader on prThreads
+ * identity change, so a fresh array is minted only when it differs.
+ */
+export function overriddenPRThreads(
+  key: string,
+  threads: readonly ReviewThread[],
+): readonly ReviewThread[] {
+  const overrides = resolveOverridesByKey.get(key);
+  if (!overrides || overrides.size === 0) return threads;
+  let changed = false;
+  const out = threads.map((thread) => {
+    const want = overrides.get(thread.id);
+    if (want === undefined || thread.isResolved === want) return thread;
+    changed = true;
+    return { ...thread, isResolved: want };
+  });
+  return changed ? out : threads;
+}
+
+// Runs at the apply chokepoint: an override whose thread the snapshot now
+// agrees with has done its job, and one whose thread vanished (deleted on
+// the forge) has nothing left to override.
+function reconcileResolveOverrides(key: string, threads: readonly ReviewThread[]): void {
+  const overrides = resolveOverridesByKey.get(key);
+  if (!overrides || overrides.size === 0) return;
+  const resolvedById = new Map(threads.map((thread) => [thread.id, thread.isResolved]));
+  for (const [threadId, want] of [...overrides]) {
+    const observed = resolvedById.get(threadId);
+    if (observed === undefined || observed === want) overrides.delete(threadId);
+  }
+  if (overrides.size === 0) resolveOverridesByKey.delete(key);
+}
 
 // First-observation waiters. A PR load needs the detail's base ref before
 // it can ask for a diff, so the pane awaits the first snapshot; every
@@ -598,6 +667,7 @@ export function __resetPRReviewStoreForTest(): void {
   refByKey.clear();
   subscriptionIdByKey.clear();
   localKeysByWireKey.clear();
+  resolveOverridesByKey.clear();
   bufferedFrameByWireKey.clear();
   appliedSeqByKey.clear();
   pumpVotes.clear();

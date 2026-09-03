@@ -23,7 +23,7 @@ function item(overrides: Partial<CommentListItem>): CommentListItem {
 }
 
 describe('<ReviewCommentsList>', () => {
-  it('jumps in-diff items and expands non-jumpable items inline', async () => {
+  it('selects every thread item (diff jump or conversation), expands only stranded drafts inline', async () => {
     const onSelect = vi.fn();
     const groups: CommentFileGroup[] = [
       {
@@ -43,24 +43,50 @@ describe('<ReviewCommentsList>', () => {
         ],
       },
       { filePath: 'src/a.ts', inDiff: true, items: [item({})] },
+      {
+        filePath: 'zz/gone.ts',
+        inDiff: false,
+        items: [
+          item({
+            rowKey: 't:d1',
+            kind: 'draft',
+            threadId: null,
+            filePath: 'zz/gone.ts',
+            state: 'draft',
+            inDiff: false,
+            author: 'You',
+            snippet: 'my stranded draft',
+            comments: [{ author: 'You', body: 'my stranded draft\n\nLong body text here.' }],
+          }),
+        ],
+      },
     ];
     const view = render(ReviewCommentsList, { groups, onSelect });
 
     // The conversation group renders with its own label.
     expect(view.getByText('Conversation')).toBeInTheDocument();
 
-    // Non-jumpable item: click toggles the inline full body, no jump.
+    // A conversation thread has a card in the header's Conversation
+    // section, so its click routes through onSelect (jumpToComment opens
+    // the section) instead of expanding inline.
     const conv = view.getAllByTestId('review-comments-item')[0]!;
     await fireEvent.click(conv);
-    expect(onSelect).not.toHaveBeenCalled();
-    expect(view.getByTestId('review-comments-item-body')).toHaveTextContent('Long body text here.');
-    await fireEvent.click(conv);
-    expect(view.queryByTestId('review-comments-item-body')).toBeNull();
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ rowKey: 'pt:conv' }));
 
     // In-diff item: click jumps.
     const diffItem = view.getAllByTestId('review-comments-item')[1]!;
     await fireEvent.click(diffItem);
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ rowKey: 'pt:t1' }));
+
+    // A draft on a file outside the diff has neither a diff row nor a
+    // conversation card — the ONLY inline-expanding case left.
+    onSelect.mockClear();
+    const draft = view.getAllByTestId('review-comments-item')[2]!;
+    await fireEvent.click(draft);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(view.getByTestId('review-comments-item-body')).toHaveTextContent('Long body text here.');
+    await fireEvent.click(draft);
+    expect(view.queryByTestId('review-comments-item-body')).toBeNull();
   });
 
   it('shows the snippet as primary text with author demoted to the meta line', () => {

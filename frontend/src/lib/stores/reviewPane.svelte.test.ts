@@ -2333,3 +2333,164 @@ describe('reviewPane hide-whitespace toggle', () => {
     expect([...state.orphanedDraftIds()]).toEqual([]);
   });
 });
+
+describe('reviewPane store — conversation section and resolve', () => {
+  function convThread(id: string, overrides: Partial<ReviewThread> = {}): ReviewThread {
+    return {
+      ...reviewThreadStub(id),
+      comments: [{ authorLogin: 'alice', body: `body of ${id}`, createdAt: '2026-01-01', databaseID: 1 }],
+      ...overrides,
+    };
+  }
+
+  async function statePRWithThreads(threads: ReviewThread[]) {
+    installPRMocks();
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1',
+      prKey: PR_KEY,
+      detail: prDetailStub(),
+      threads,
+      headSHA: 'sha-a',
+    }));
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    await waitLoaded(state);
+    await state.setScope('pr');
+    return state;
+  }
+
+  it('freezes ordering while open: arrivals wait behind the new chip, reveal folds them in', async () => {
+    const resolvedEarly = convThread('t-resolved', {
+      isResolved: true,
+      comments: [{ authorLogin: 'bob', body: 'old', createdAt: '2026-01-01', databaseID: 1 }],
+    });
+    const openLater = convThread('t-open', {
+      comments: [{ authorLogin: 'alice', body: 'new', createdAt: '2026-01-02', databaseID: 2 }],
+    });
+    const state = await statePRWithThreads([resolvedEarly, openLater]);
+
+    state.setConversationOpen(true);
+    // Unresolved leads despite being chronologically later.
+    expect(state.conversationThreads.map((thread) => thread.id)).toEqual(['t-open', 't-resolved']);
+    expect(state.conversationThreadExpanded('t-open')).toBe(true);
+    expect(state.conversationThreadExpanded('t-resolved')).toBe(false);
+
+    // A thread arriving mid-read neither reorders nor appears; it counts.
+    applyPRUpdatedEvent({
+      prKey: PR_KEY,
+      detail: prDetailStub(),
+      threads: [resolvedEarly, openLater, convThread('t-arrived')],
+      headSHA: 'sha-a',
+    });
+    expect(state.conversationThreads.map((thread) => thread.id)).toEqual(['t-open', 't-resolved']);
+    expect(state.conversationNewCount).toBe(1);
+
+    state.revealNewConversationThreads();
+    expect(state.conversationNewCount).toBe(0);
+    expect(state.conversationThreads.map((thread) => thread.id)).toEqual([
+      't-arrived', 't-open', 't-resolved',
+    ]);
+
+    // Closing forgets the frozen view; leaving pr scope closes it.
+    state.setConversationOpen(false);
+    expect(state.conversationThreads).toEqual([]);
+    state.setConversationOpen(true);
+    await state.setScope('workspace');
+    expect(state.conversationOpen).toBe(false);
+  });
+
+  it('a remote resolve never collapses a card the reader has open', async () => {
+    const open = convThread('t-1');
+    const state = await statePRWithThreads([open]);
+    state.setConversationOpen(true);
+    expect(state.conversationThreadExpanded('t-1')).toBe(true);
+
+    applyPRUpdatedEvent({
+      prKey: PR_KEY,
+      detail: prDetailStub(),
+      threads: [{ ...open, isResolved: true }],
+      headSHA: 'sha-a',
+    });
+    // Content converges (the pill flips), position and expansion hold.
+    expect(state.conversationThreads[0]?.isResolved).toBe(true);
+    expect(state.conversationThreadExpanded('t-1')).toBe(true);
+
+    // ...even across a reveal (new arrivals fold in, open cards stay open).
+    applyPRUpdatedEvent({
+      prKey: PR_KEY,
+      detail: prDetailStub(),
+      threads: [{ ...open, isResolved: true }, convThread('t-2')],
+      headSHA: 'sha-a',
+    });
+    state.revealNewConversationThreads();
+    expect(state.conversationThreadExpanded('t-1')).toBe(true);
+  });
+
+  it('openConversationAt opens, reveals, expands, and stages the scroll target', async () => {
+    const resolved = convThread('t-1', { isResolved: true });
+    const state = await statePRWithThreads([resolved]);
+
+    state.openConversationAt('t-1');
+    expect(state.conversationOpen).toBe(true);
+    expect(state.conversationThreadExpanded('t-1')).toBe(true);
+    expect(state.pendingConversationThreadId).toBe('t-1');
+    state.consumePendingConversationThreadId();
+    expect(state.pendingConversationThreadId).toBeNull();
+
+    // The rail routes a conversation thread's row here too.
+    state.jumpToComment({
+      rowKey: 'pt:t-1', kind: 'pr-thread', threadId: 't-1', filePath: '', line: null,
+      author: 'alice', snippet: '', state: 'resolved', orphaned: false, inDiff: false,
+      replies: 0, createdAtMs: null, comments: [],
+    });
+    expect(state.pendingConversationThreadId).toBe('t-1');
+  });
+
+  it('resolves optimistically, outranks stale polls, and reverts on failure', async () => {
+    const open = convThread('t-1');
+    const state = await statePRWithThreads([open]);
+    const resolve = setBindingMock('SetPRThreadResolved', async () => undefined);
+
+    await state.setPRThreadResolved(state.prThreads[0]!, true);
+    expect(resolve).toHaveBeenCalledWith(
+      expect.objectContaining({ Number: 5 }), 't-1', true,
+    );
+    expect(state.prThreads[0]?.isResolved).toBe(true);
+
+    // A poll snapshot fetched before the mutation landed must not flap it.
+    applyPRUpdatedEvent({
+      prKey: PR_KEY,
+      detail: prDetailStub(),
+      threads: [open],
+      headSHA: 'sha-a',
+    });
+    expect(state.prThreads[0]?.isResolved).toBe(true);
+
+    // One that agrees retires the override; a genuine reopen then shows.
+    applyPRUpdatedEvent({
+      prKey: PR_KEY, detail: prDetailStub(), threads: [{ ...open, isResolved: true }], headSHA: 'sha-a',
+    });
+    applyPRUpdatedEvent({
+      prKey: PR_KEY, detail: prDetailStub(), threads: [open], headSHA: 'sha-a',
+    });
+    expect(state.prThreads[0]?.isResolved).toBe(false);
+
+    // Failure: revert and surface, never silently.
+    setBindingMock('SetPRThreadResolved', async () => {
+      throw new Error('forge said no');
+    });
+    await state.setPRThreadResolved(state.prThreads[0]!, true);
+    expect(state.prThreads[0]?.isResolved).toBe(false);
+    expect(state.resolveErrorFor('t-1')).toBe('forge said no');
+  });
+
+  it('jumpToDiffThread expands the file and thread and stages the row key', async () => {
+    const anchored = convThread('t-1');
+    const state = await statePRWithThreads([anchored]);
+    state.toggleCollapsed('src/app.ts');
+
+    state.jumpToDiffThread(state.prThreads[0]!);
+    expect(state.collapsedPaths.has('src/app.ts')).toBe(false);
+    expect(state.expandedPRThreadIds.has('t-1')).toBe(true);
+    expect(state.pendingJumpRowKey).toBe('pt:t-1');
+  });
+});

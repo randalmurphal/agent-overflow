@@ -10,6 +10,7 @@ import {
   MarkDiffReviewCommentsSent,
   ReplyToPRThread,
   SendMessage,
+  SetPRThreadResolved,
   SendDiffReviewComments,
   SubmitPRReview,
   VerifyEditDiffs,
@@ -31,8 +32,11 @@ import {
   applyPRSnapshot,
   applyPRThreads,
   attachPR,
+  clearPRThreadResolveOverride,
+  overriddenPRThreads,
   peekPRError,
   peekPRSnapshot,
+  setPRThreadResolveOverride,
   type PRAttachment,
   type PRSnapshot,
 } from './prReviewStore.svelte';
@@ -229,6 +233,38 @@ export interface ReviewPaneState {
   sendPRThreadToAgent(thread: ReviewThread): Promise<void>;
   replyErrorFor(threadId: string): string | null;
   sendingReply(threadId: string): boolean;
+  /** Optimistic resolve/unresolve: the thread flips at once (entity-level,
+   * so every pane on the PR agrees) and the override holds against stale
+   * poll snapshots until one agrees. A failure reverts and surfaces. */
+  setPRThreadResolved(thread: ReviewThread, resolved: boolean): Promise<void>;
+  resolveErrorFor(threadId: string): string | null;
+  resolvingThread(threadId: string): boolean;
+  /** Jump the diff body to a thread's row (conversation → diff). */
+  jumpToDiffThread(thread: ReviewThread): void;
+  // ------------------------------------------------------------------
+  // The PR header's Conversation section. Ordering is FROZEN while the
+  // section is open: remote updates never reorder or hide what the reader
+  // is looking at. Threads that arrive after the capture count into
+  // `conversationNewCount` and join only on reveal.
+  // ------------------------------------------------------------------
+  readonly conversationOpen: boolean;
+  /** All threads in the frozen triage order (unresolved first, then
+   * chronological). Empty while the section is closed. */
+  readonly conversationThreads: readonly ReviewThread[];
+  /** Threads that arrived after the frozen order was captured. */
+  readonly conversationNewCount: number;
+  /** Thread the section should scroll to; consumed by the section. */
+  readonly pendingConversationThreadId: string | null;
+  setConversationOpen(open: boolean): void;
+  /** Fold the arrived-since-capture threads in (fresh triage order;
+   * threads already expanded stay expanded). */
+  revealNewConversationThreads(): void;
+  conversationThreadExpanded(threadId: string): boolean;
+  toggleConversationThread(threadId: string): void;
+  /** Open the conversation section scrolled to one thread (inline strip
+   * or rail row → conversation). */
+  openConversationAt(threadId: string): void;
+  consumePendingConversationThreadId(): void;
   /** PR scope: re-fetches detail + review threads WITHOUT reloading the
    * diff. A moved head raises the stale banner like the poll pump. */
   refreshPRThreads(): Promise<void>;
@@ -422,6 +458,17 @@ function createReviewPaneState(
   const replyBodies = new SvelteMap<string, string>();
   const replyErrors = new SvelteMap<string, string>();
   const sendingReplyIds: SvelteSet<string> = $state(new SvelteSet<string>());
+  const resolvingThreadIds: SvelteSet<string> = $state(new SvelteSet<string>());
+  const resolveErrors = new SvelteMap<string, string>();
+  // The PR header's Conversation section. The order and the
+  // expanded-by-default set are CAPTURED, not derived: they must hold
+  // still while the reader is in the section, whatever the poll pump
+  // replaces underneath (see the interface comment).
+  let conversationOpen = $state(false);
+  let conversationOrder: readonly string[] = $state([]);
+  let conversationDefaultExpanded: ReadonlySet<string> = $state(new Set<string>());
+  const conversationExpandOverrides = new SvelteMap<string, boolean>();
+  let pendingConversationThreadId: string | null = $state(null);
   let expandedPRThreadIds: SvelteSet<string> = $state(new SvelteSet<string>());
   let commits: BranchCommit[] = $state([]);
   let selectedCommitSHA: string | null = $state(null);
@@ -484,6 +531,35 @@ function createReviewPaneState(
   // deliberately NOT `error` (which owns the diff): the rendered diff is
   // still valid, only the live PR data behind it went stale.
   const prUpdateError = $derived(peekPRError(prEntityKey));
+  // The snapshot's threads through the optimistic resolve overrides.
+  // A $derived, not a getter, for identity stability: ReviewDiffBody
+  // re-anchors the reader on prThreads identity change, so a fresh
+  // projection per read would look like the threads moved constantly.
+  const prThreads = $derived.by<readonly ReviewThread[]>(() => {
+    const threads = prSnapshot?.threads ?? EMPTY_PR_THREADS;
+    return prEntityKey ? overriddenPRThreads(prEntityKey, threads) : threads;
+  });
+  // The frozen conversation order projected onto the live threads: content
+  // updates (new replies, resolve flips) flow through, position does not.
+  const conversationThreads = $derived.by<readonly ReviewThread[]>(() => {
+    if (!conversationOpen || conversationOrder.length === 0) return EMPTY_PR_THREADS;
+    const byId = new Map(prThreads.map((thread) => [thread.id, thread]));
+    const out: ReviewThread[] = [];
+    for (const id of conversationOrder) {
+      const thread = byId.get(id);
+      if (thread) out.push(thread);
+    }
+    return out;
+  });
+  const conversationNewCount = $derived.by(() => {
+    if (!conversationOpen) return 0;
+    const known = new Set(conversationOrder);
+    let count = 0;
+    for (const thread of prThreads) {
+      if (!known.has(thread.id)) count += 1;
+    }
+    return count;
+  });
   const ciState = $derived(peekPRCI(prEntityKey));
   const conflictsState = $derived(peekPRConflicts(prEntityKey));
   // The loaded head, but only while it still describes the PR on screen.
@@ -728,6 +804,8 @@ function createReviewPaneState(
     if (scopeChanged) {
       resetConflictView();
       closeCILogView();
+      // The frozen ordering describes the previous scope's threads.
+      setConversationOpen(false);
     }
     if (scope === 'pr' && nextScope !== 'pr') {
       releasePR();
@@ -1332,6 +1410,89 @@ function createReviewPaneState(
     }
   }
 
+  async function setPRThreadResolved(thread: ReviewThread, resolved: boolean): Promise<void> {
+    const key = prEntityKey;
+    if (!prRef || !key || resolvingThreadIds.has(thread.id)) return;
+    resolvingThreadIds.add(thread.id);
+    resolveErrors.delete(thread.id);
+    // Optimistic and entity-level: every pane on the PR flips together,
+    // and the override outranks in-flight poll snapshots until one agrees.
+    setPRThreadResolveOverride(key, thread.id, resolved);
+    try {
+      await SetPRThreadResolved(prReferenceWire(prRef), thread.id, resolved);
+    } catch (err) {
+      clearPRThreadResolveOverride(key, thread.id);
+      resolveErrors.set(thread.id, userFacingError(err));
+    } finally {
+      resolvingThreadIds.delete(thread.id);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Conversation section
+  // ------------------------------------------------------------------
+
+  function conversationRank(thread: ReviewThread): number {
+    // Actionable first; flat comments and settled threads read after.
+    return thread.isResolvable && !thread.isResolved && !thread.isOutdated ? 0 : 1;
+  }
+
+  function conversationTime(thread: ReviewThread): number {
+    const parsed = Date.parse(thread.comments[0]?.createdAt ?? '');
+    return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
+  }
+
+  // Captures the triage order and the expanded-by-default set from the
+  // threads in hand. `preserveExpanded` keeps threads that were already
+  // reading as expanded expanded — a reveal must not collapse a thread
+  // that was remotely resolved while the reader had it open.
+  function captureConversationOrder(preserveExpanded: boolean): void {
+    const sorted = [...prThreads].sort((a, b) =>
+      conversationRank(a) - conversationRank(b)
+      || conversationTime(a) - conversationTime(b)
+      || a.id.localeCompare(b.id));
+    conversationOrder = sorted.map((thread) => thread.id);
+    const expanded = new Set<string>();
+    for (const thread of sorted) {
+      if (conversationRank(thread) === 0) expanded.add(thread.id);
+    }
+    if (preserveExpanded) {
+      const present = new Set(conversationOrder);
+      for (const id of conversationDefaultExpanded) {
+        if (present.has(id)) expanded.add(id);
+      }
+    }
+    conversationDefaultExpanded = expanded;
+  }
+
+  function setConversationOpen(open: boolean): void {
+    if (open === conversationOpen) return;
+    conversationOpen = open;
+    if (open) {
+      // A fresh visit is a fresh triage view: defaults recompute and the
+      // previous visit's manual expand/collapse choices are let go.
+      conversationExpandOverrides.clear();
+      captureConversationOrder(false);
+    } else {
+      conversationOrder = [];
+      conversationDefaultExpanded = new Set<string>();
+      pendingConversationThreadId = null;
+    }
+  }
+
+  function conversationThreadExpanded(prThreadId: string): boolean {
+    return conversationExpandOverrides.get(prThreadId) ?? conversationDefaultExpanded.has(prThreadId);
+  }
+
+  function openConversationAt(prThreadId: string): void {
+    setConversationOpen(true);
+    // The target may still be behind the "N new" chip (it just arrived on
+    // a poll); fold the arrivals in so the jump has somewhere to land.
+    if (!conversationOrder.includes(prThreadId)) captureConversationOrder(true);
+    if (!conversationThreadExpanded(prThreadId)) conversationExpandOverrides.set(prThreadId, true);
+    pendingConversationThreadId = prThreadId;
+  }
+
   // The merged tree and every conflicted file's content belong to the PR
   // (one merge-tree run serves every pane); what this pane owns is
   // whether the surface is showing and which files it has collapsed.
@@ -1554,7 +1715,11 @@ function createReviewPaneState(
     get error() { return error; },
     get sendingComments() { return sendingComments; },
     get prDetail() { return prSnapshot?.detail ?? null; },
-    get prThreads() { return prSnapshot?.threads ?? EMPTY_PR_THREADS; },
+    get prThreads() { return prThreads; },
+    get conversationOpen() { return conversationOpen; },
+    get conversationThreads() { return conversationThreads; },
+    get conversationNewCount() { return conversationNewCount; },
+    get pendingConversationThreadId() { return pendingConversationThreadId; },
     get prHeadSHA() { return loadedPRHeadSHA; },
     get prUpdateError() { return prUpdateError; },
     get spanContext(): PatchScopeContext {
@@ -1599,7 +1764,13 @@ function createReviewPaneState(
       pendingJumpFilePath = null;
     },
     jumpToComment(item: CommentListItem): void {
-      if (!item.inDiff) return;
+      if (!item.inDiff) {
+        // No diff row to land on. A PR thread still has a conversation
+        // card; a draft on a file outside the diff has neither, and the
+        // rail expands it inline instead.
+        if (item.threadId) openConversationAt(item.threadId);
+        return;
+      }
       // The comment rows live on the diff surface — leave any
       // replacement view first.
       closeCILogView();
@@ -1657,6 +1828,35 @@ function createReviewPaneState(
     },
     sendingReply(prThreadId: string): boolean {
       return sendingReplyIds.has(prThreadId);
+    },
+    setPRThreadResolved,
+    resolveErrorFor(prThreadId: string): string | null {
+      return resolveErrors.get(prThreadId) ?? null;
+    },
+    resolvingThread(prThreadId: string): boolean {
+      return resolvingThreadIds.has(prThreadId);
+    },
+    jumpToDiffThread(thread: ReviewThread): void {
+      if (!thread.path) return;
+      // Same choreography as jumpToComment: the row lives on the diff
+      // surface, so leave any replacement view first.
+      closeCILogView();
+      closeConflictView();
+      collapsedPaths.delete(thread.path);
+      expandedPRThreadIds.add(thread.id);
+      pendingJumpRowKey = `pt:${thread.id}`;
+    },
+    setConversationOpen,
+    revealNewConversationThreads(): void {
+      captureConversationOrder(true);
+    },
+    conversationThreadExpanded,
+    toggleConversationThread(prThreadId: string): void {
+      conversationExpandOverrides.set(prThreadId, !conversationThreadExpanded(prThreadId));
+    },
+    openConversationAt,
+    consumePendingConversationThreadId(): void {
+      pendingConversationThreadId = null;
     },
     openConflictView,
     closeConflictView,

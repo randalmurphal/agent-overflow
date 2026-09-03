@@ -12,13 +12,13 @@
 
   // The rail's Comments tab: every PR thread (file-anchored and PR-level
   // conversation) and local draft in the current scope, grouped by file,
-  // actionable items first. The snippet is the row's primary text —
-  // author/line/state are demoted to a small meta line (full author on
-  // hover). Clicking an in-diff item jumps the diff body to its row;
-  // items with no diff row (conversation threads, files outside the
-  // diff) expand inline so their full text is still readable here.
+  // actionable items first. Each row reads author + state pill + time,
+  // snippet below. Clicking an in-diff item jumps the diff body to its
+  // row; a PR thread with no diff row opens the header's Conversation
+  // section at its card (both via jumpToComment). Only a draft on a file
+  // outside the diff — which has neither surface — expands inline.
   // PR-scope review summaries (approve / request-changes verdict bodies)
-  // render as a group at the top — they have no diff anchor.
+  // render as a group at the top.
 
   interface Props {
     groups: readonly CommentFileGroup[];
@@ -30,12 +30,17 @@
 
   const empty = $derived(groups.length === 0 && reviews.length === 0);
 
-  // Expansion is view-local by design: the list is not virtualized and
-  // holds no user input, so losing it on a tab switch is fine.
+  // Inline expansion survives only for the items with nowhere to jump
+  // (drafts on files outside the diff). View-local by design: the list is
+  // not virtualized and holds no user input.
   const expandedKeys = new SvelteSet<string>();
 
+  function expandsInline(item: CommentListItem): boolean {
+    return !item.inDiff && item.threadId === null;
+  }
+
   function activate(item: CommentListItem): void {
-    if (item.inDiff) {
+    if (!expandsInline(item)) {
       onSelect(item);
       return;
     }
@@ -43,13 +48,13 @@
     else expandedKeys.add(item.rowKey);
   }
 
-  function stateDotClass(state: CommentItemState): string {
+  function statePillClass(state: CommentItemState): string {
     switch (state) {
-      case 'draft': return 'bg-accent';
-      case 'unresolved': return 'bg-warning';
-      case 'resolved': return 'bg-success';
-      case 'outdated': return 'bg-fg-subtle';
-      case 'comment': return 'bg-info';
+      case 'draft': return 'bg-accent/12 text-accent';
+      case 'unresolved': return 'bg-warning/12 text-warning';
+      case 'resolved': return 'bg-success/12 text-success';
+      case 'outdated': return 'bg-surface-2 text-fg-muted';
+      case 'comment': return '';
     }
   }
 
@@ -109,34 +114,33 @@
         class="block w-full px-2.5 py-2 text-left hover:bg-surface-2/50"
         data-testid="review-comments-item"
         data-row-key={item.rowKey}
-        aria-expanded={item.inDiff ? undefined : expanded}
+        aria-expanded={expandsInline(item) ? expanded : undefined}
         onclick={() => activate(item)}
       >
-        {#if item.snippet}
-          <div class="line-clamp-2 text-fg">{item.snippet}</div>
-        {/if}
-        <div class="flex items-center gap-1.5 text-[0.625rem] text-fg-subtle {item.snippet ? 'mt-1' : ''}">
-          <span class="h-1.5 w-1.5 shrink-0 rounded-full {stateDotClass(item.state)}"></span>
+        <div class="flex items-center gap-1.5 text-[0.6875rem]">
+          <span class="min-w-0 truncate font-medium text-fg" title={item.author}>{item.author}</span>
           {#if item.line !== null}
-            <span class="shrink-0 tabular-nums">L{item.line}</span>
+            <span class="shrink-0 tabular-nums text-fg-subtle">L{item.line}</span>
           {/if}
-          <span class="min-w-0 truncate" title={item.author}>{item.author}</span>
+          {#if item.replies > 0}
+            <span class="shrink-0 tabular-nums text-fg-subtle">+{item.replies}</span>
+          {/if}
           <span class="min-w-0 flex-1"></span>
+          {#if stateLabel(item)}
+            <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {statePillClass(item.state)}">{stateLabel(item)}</span>
+          {/if}
           {#if item.createdAtMs !== null}
             <!-- Deliberately unskewed (transport/backendClock.ts). A
                  forge comment's createdAt is GitHub's or GitLab's clock,
                  not any backend's, and this list mixes those with local
                  drafts. Correcting the whole column by one machine's skew
                  would make the majority of it wrong to fix a minority. -->
-            <span class="shrink-0" data-testid="review-comments-item-time">{relativeTime(item.createdAtMs)}</span>
-          {/if}
-          {#if item.replies > 0}
-            <span class="shrink-0 tabular-nums">+{item.replies}</span>
-          {/if}
-          {#if stateLabel(item)}
-            <span class="shrink-0">{stateLabel(item)}</span>
+            <span class="shrink-0 text-[0.625rem] text-fg-subtle" data-testid="review-comments-item-time">{relativeTime(item.createdAtMs)}</span>
           {/if}
         </div>
+        {#if item.snippet}
+          <div class="mt-0.5 line-clamp-2 text-fg-muted">{item.snippet}</div>
+        {/if}
       </button>
       {#if expanded}
         <!-- Sibling of the row button, not a child: the rendered

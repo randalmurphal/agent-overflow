@@ -93,10 +93,13 @@ read/write APIs and per-PR-key polling.
 - **Forge review APIs.** `internal/git/forge.go` gains `PRDetail`
   (metadata, body, verdicts, check summary), `ListReviewThreads`,
   `SubmitReview` (verdict + body + line comments in one call),
-  `ReplyToThread`. GitHub: `gh pr view --json` for detail;
-  `gh api graphql` for `reviewThreads` (porcelain can't return line
-  anchors); `gh api` REST for review submission (porcelain can't attach
-  line comments). GitLab: `glab api` MR discussions with position objects.
+  `ReplyToThread`, `SetThreadResolved`. GitHub: `gh pr view --json` for
+  detail; `gh api graphql` for `reviewThreads` (porcelain can't return
+  line anchors) and for the `resolveReviewThread` /
+  `unresolveReviewThread` mutations; `gh api` REST for review submission
+  (porcelain can't attach line comments). GitLab: `glab api` MR
+  discussions with position objects, and a `PUT` on the discussion itself
+  carrying `?resolved=`.
   Provider specifics stay in `github.go` / `gitlab.go`; the normalized
   types are ours (the same pattern `forge.go` already uses, not the
   Claude/Codex unified-abstraction anti-pattern).

@@ -4,10 +4,13 @@ import {
   applyPRThreads,
   applyPRUpdatedEvent,
   attachPR,
+  clearPRThreadResolveOverride,
   handlePRVisibilityChange,
+  overriddenPRThreads,
   peekPRError,
   peekPRSnapshot,
   prReviewKeys,
+  setPRThreadResolveOverride,
 } from './prReviewStore.svelte';
 import { loadPRCIJobs, peekPRCI } from './prReviewCI.svelte';
 import {
@@ -1337,6 +1340,69 @@ describe('prReviewStore — transport gap', () => {
     applyTransportGap({ channel: 'system:stats', seq: 4 });
     await flush();
     expect(subscribe).toHaveBeenCalledTimes(1);
+
+    a.release();
+    await flush();
+  });
+});
+
+describe('prReviewStore — resolve overrides', () => {
+  function resolved(id: string): ReviewThread {
+    return { ...threadStub(id), isResolved: true };
+  }
+
+  it('projects the optimistic state over a stale snapshot until one agrees', async () => {
+    installSubscribeMock();
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    applyPRThreads(KEY, [threadStub('t-1'), threadStub('t-2')]);
+
+    // No overrides: the projection is identity-stable (re-anchoring keys
+    // off prThreads identity, so a fresh array here would thrash it).
+    const before = a.snapshot!.threads;
+    expect(overriddenPRThreads(KEY, before)).toBe(before);
+
+    setPRThreadResolveOverride(KEY, 't-1', true);
+    const projected = overriddenPRThreads(KEY, a.snapshot!.threads);
+    expect(projected.find((t) => t.id === 't-1')?.isResolved).toBe(true);
+    expect(projected.find((t) => t.id === 't-2')?.isResolved).toBe(false);
+
+    // A snapshot fetched BEFORE the mutation landed still says false —
+    // the override wins (no flap) and survives the apply.
+    applyPRThreads(KEY, [threadStub('t-1'), threadStub('t-2')]);
+    const afterStale = overriddenPRThreads(KEY, a.snapshot!.threads);
+    expect(afterStale.find((t) => t.id === 't-1')?.isResolved).toBe(true);
+
+    // A snapshot that AGREES retires the override: a later genuine
+    // unresolve (someone reopened it on the forge) must flow through.
+    applyPRThreads(KEY, [resolved('t-1'), threadStub('t-2')]);
+    applyPRThreads(KEY, [threadStub('t-1'), threadStub('t-2')]);
+    const afterReopen = overriddenPRThreads(KEY, a.snapshot!.threads);
+    expect(afterReopen.find((t) => t.id === 't-1')?.isResolved).toBe(false);
+
+    a.release();
+    await flush();
+  });
+
+  it('clears on RPC failure and for threads that left the snapshot', async () => {
+    installSubscribeMock();
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    applyPRThreads(KEY, [threadStub('t-1'), threadStub('t-2')]);
+
+    // Failure revert: the forge state stands.
+    setPRThreadResolveOverride(KEY, 't-1', true);
+    clearPRThreadResolveOverride(KEY, 't-1');
+    const reverted = overriddenPRThreads(KEY, a.snapshot!.threads);
+    expect(reverted.find((t) => t.id === 't-1')?.isResolved).toBe(false);
+
+    // A thread deleted on the forge has nothing left to override; its
+    // entry must not linger for the PR's lifetime.
+    setPRThreadResolveOverride(KEY, 't-2', true);
+    applyPRThreads(KEY, [threadStub('t-1')]);
+    applyPRThreads(KEY, [threadStub('t-1'), threadStub('t-2')]);
+    const afterReturn = overriddenPRThreads(KEY, a.snapshot!.threads);
+    expect(afterReturn.find((t) => t.id === 't-2')?.isResolved).toBe(false);
 
     a.release();
     await flush();

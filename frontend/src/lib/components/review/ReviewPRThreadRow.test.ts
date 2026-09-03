@@ -31,6 +31,8 @@ function setup() {
       error: null,
       sending: false,
       isTurnActive: false,
+      resolving: false,
+      resolveError: null,
       onToggle: vi.fn(),
       onBodyChange: vi.fn(),
       onSendReply,

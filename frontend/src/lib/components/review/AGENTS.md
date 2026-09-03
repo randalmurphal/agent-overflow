@@ -35,7 +35,24 @@ one.
 - `ReviewPRHeader.svelte` renders in normal flow above the diff body, not
   as a virtual row. Its CI chips are the ONLY checks surface, and the
   state badge and base/head refs live in the `ReviewPane` toolbar stats
-  area rather than here.
+  area rather than here. It hosts two `ReviewCollapsibleSection`s:
+  Description (local open state) and Conversation
+  (`ReviewConversation` + `ReviewConversationThread`), whose open state
+  lives on the review store because its ordering FREEZES while open —
+  captured at open (unresolved first, then chronological), remote
+  arrivals wait behind an "N new" chip, and a remote resolve never
+  collapses or moves a card the reader has open
+  (`conversationThreads` / `captureConversationOrder` in
+  `stores/reviewPane.svelte.ts`). The section body is height-capped so
+  the diff below stays reachable.
+- Forge-authored bodies (PR description, review thread comments, verdict
+  summaries) render `ChatMarkdown` with `embeddedHtml` — the sanitized
+  forge-HTML surface (`markdown/AGENTS.md` § Security boundary) — and
+  comments whose `visibleBody` is empty (marker-only bot replies) render
+  nothing. `ReviewThreadComments.svelte` is the one comment-list +
+  reply-composer body, shared by the inline strip (`ReviewPRThreadRow`)
+  and the conversation card so the two cannot drift; icon actions come
+  from `ReviewIconButton` (hovertext buttons, never text buttons).
 - `ReviewCILogView.svelte` REPLACES the diff body (the conflict-viewer
   pattern) rather than mounting beside it.
 - Comment bodies render through `ChatMarkdown` as a SIBLING of the row
@@ -202,6 +219,12 @@ read tail-first.
   `prStale` is DERIVED from those two heads, so a push observed by one
   pane can never mark another pane's freshly-loaded diff stale, and it
   still never swaps the diff out from under the user (banner only).
+  Resolve/unresolve is optimistic THROUGH the entity: `setPRThreadResolved`
+  records an override in `prReviewStore` (`overriddenPRThreads`) that
+  every pane's `prThreads` projects through, outranking poll snapshots
+  fetched before the mutation landed until one AGREES (the backend
+  read-back-verifies, so the next poll does). A failed RPC reverts the
+  override and surfaces per-thread (`resolveErrorFor`).
   Backend side, `SubscribePRUpdates` is refcounted per PR key too
   (`prUpdateKey` in `app_forge_review.go`, the same string
   `utils/prReference.ts#prKey` builds): one ticker, one change-detection

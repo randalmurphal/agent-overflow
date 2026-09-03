@@ -8,8 +8,9 @@ import type { PatchFile } from './patchFiles';
 // drafts) leading within each group. Each item carries the ROW KEY of
 // its diff row (`pt:<threadId>` / `t:<draftId>` — the same keys
 // buildReviewRows emits) so clicking a list entry can jump the diff
-// body straight to the row; items with no diff row (conversation
-// threads, files outside the diff) expand inline instead.
+// body straight to the row. A PR thread with no diff row opens the PR
+// header's Conversation section at its card instead; only a draft on a
+// file outside the diff — which has neither surface — expands inline.
 
 /** 'comment' = a non-resolvable thread (flat conversation comment) —
  * neutral, so it doesn't masquerade as "unresolved". */
@@ -34,13 +35,13 @@ export interface CommentListItem {
   state: CommentItemState;
   orphaned: boolean;
   /** False when there is no diff row to jump to (file outside the
-   * current diff, or a conversation thread) — the list expands the
-   * item inline instead. */
+   * current diff, or a conversation thread) — threads route to the
+   * conversation section, stranded drafts expand inline. */
   inDiff: boolean;
   replies: number;
   /** First comment's creation time (epoch ms); null when unparseable. */
   createdAtMs: number | null;
-  /** Full thread bodies for the inline expansion of non-jumpable items. */
+  /** Full bodies for the stranded-draft inline expansion. */
   comments: readonly CommentEntry[];
 }
 
@@ -91,9 +92,16 @@ export function commentSnippet(body: string): string {
 }
 
 function stripInlineMarkdown(line: string): string {
-  return line
-    .replace(/<[^>]+>/g, ' ') // HTML tags (<details>, <summary>, <img …>)
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1') // links/images → text
+  let text = line.replace(/<[^>]+>/g, ' '); // HTML tags (<details>, <summary>, <img …>)
+  // Links/images → their text, applied until stable: a badge row is a
+  // link WRAPPING an image (`[![alt](img)](href)`), and one pass leaves
+  // the outer link's `](href)` tail as visible syntax.
+  for (let pass = 0; pass < 4; pass++) {
+    const next = text.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1');
+    if (next === text) break;
+    text = next;
+  }
+  return text
     .replace(/^#{1,6}\s+/, '') // heading marker
     .replace(/^(>\s*)+/, '') // blockquote markers
     .replace(/^([-*+]|\d+[.)])\s+/, '') // list marker
@@ -104,6 +112,15 @@ function stripInlineMarkdown(line: string): string {
     .replace(/_+(\s|[.,;:!?)]|$)/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** A comment's body with HTML comments removed. Bot reviewers leave
+ * marker-only replies (`<!-- coderabbit resolve -->`) that render as an
+ * empty card; a surface renders a comment only when this is non-empty,
+ * and shows THIS so a marker glued to real prose never paints the
+ * marker. */
+export function visibleBody(body: string): string {
+  return body.replace(/<!--[\s\S]*?(?:-->|$)/g, '').trim();
 }
 
 /** Forge timestamps are ISO strings; unparseable input maps to null so

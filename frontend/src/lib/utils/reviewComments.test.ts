@@ -4,6 +4,7 @@ import {
   commentCountsByFile,
   commentSnippet,
   commentTally,
+  visibleBody,
 } from './reviewComments';
 import type { PatchFile } from './patchFiles';
 import type { DiffReviewComment, ReviewThread } from '../types/models';
@@ -242,6 +243,28 @@ describe('commentSnippet', () => {
   it('returns empty for bodies with no prose', () => {
     expect(commentSnippet('🎉 ✅ | 🚀')).toBe('');
     expect(commentSnippet('')).toBe('');
+  });
+
+  it('unwraps badge rows (a link wrapping an image) with no syntax residue', () => {
+    expect(commentSnippet('[![Build passing](https://img/b.svg)](https://ci/run) ready to merge')).toBe(
+      'Build passing ready to merge',
+    );
+  });
+});
+
+describe('visibleBody', () => {
+  it('is empty for marker-only bot replies', () => {
+    expect(visibleBody('<!-- coderabbit resolve -->')).toBe('');
+    expect(visibleBody(' <!-- a -->\n<!-- b --> ')).toBe('');
+    expect(visibleBody('')).toBe('');
+  });
+
+  it('strips markers glued to real prose and keeps the prose', () => {
+    expect(visibleBody('<!-- fingerprint:abc -->\nReal reply.')).toBe('Real reply.');
+  });
+
+  it('drops an unterminated trailing comment', () => {
+    expect(visibleBody('Prose first.\n<!-- truncated marker')).toBe('Prose first.');
   });
 });
 

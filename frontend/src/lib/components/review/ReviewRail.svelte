@@ -24,6 +24,9 @@
     onSelectFile: (filePath: string) => void;
     commentCounts: ReadonlyMap<string, number>;
     commentGroups: readonly CommentFileGroup[];
+    /** Unresolved-thread count: the tab badge shows THIS (warning-tinted)
+     *  when nonzero, so triage state reads from the tab itself. */
+    openCommentCount?: number;
     onSelectComment: (item: CommentListItem) => void;
     /** PR-scope review summaries (verdict + body), shown atop the Comments tab. */
     reviews?: readonly ReviewVerdict[];
@@ -41,6 +44,7 @@
     onSelectFile,
     commentCounts,
     commentGroups,
+    openCommentCount = 0,
     onSelectComment,
     reviews = [],
     activeExtensions,
@@ -124,7 +128,9 @@
       onclick={() => onTabChange('comments')}
     >
       Comments
-      {#if commentCount > 0}
+      {#if openCommentCount > 0}
+        <span class="rounded-full bg-warning/12 px-1.5 text-[0.625rem] tabular-nums text-warning" data-testid="review-rail-open-count">{openCommentCount}</span>
+      {:else if commentCount > 0}
         <span class="rounded-full bg-surface-2 px-1.5 text-[0.625rem] tabular-nums text-fg-muted">{commentCount}</span>
       {/if}
     </button>

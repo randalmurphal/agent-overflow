@@ -551,6 +551,8 @@
         ciError={review.ciError}
         onOpenCIJob={(stageName, job) => { void review?.openCIJobLog(stageName, job); }}
         onRefreshCI={() => { void review?.loadCIJobs(); }}
+        {review}
+        canSendToAgent={ctx.threadId !== null}
       />
     {/if}
     {#if review.ciLogView}
@@ -635,6 +637,7 @@
             onSelectFile={jumpToFile}
             {commentCounts}
             {commentGroups}
+            openCommentCount={tally.unresolved}
             onSelectComment={(item) => review?.jumpToComment(item)}
             reviews={review.scope === 'pr' ? (review.prDetail?.latestReviews ?? []) : []}
             {activeExtensions}
@@ -699,10 +702,18 @@
               error={review?.replyErrorFor(thread.id) ?? null}
               sending={review?.sendingReply(thread.id) ?? false}
               isTurnActive={review?.isTurnActive ?? false}
+              resolving={review?.resolvingThread(thread.id) ?? false}
+              resolveError={review?.resolveErrorFor(thread.id) ?? null}
               onToggle={() => review?.togglePRThread(thread.id)}
               onBodyChange={(body) => review?.setReplyBody(thread.id, body)}
               onSendReply={() => review?.sendPRThreadReply(thread)}
               onSendToAgent={ctx.threadId ? () => review?.sendPRThreadToAgent(thread) : undefined}
+              onResolve={thread.isResolvable
+                ? (resolved) => { void review?.setPRThreadResolved(thread, resolved); }
+                : undefined}
+              onJumpToConversation={review?.scope === 'pr' && review.prDetail
+                ? () => review?.openConversationAt(thread.id)
+                : undefined}
             />
           {/snippet}
         </ReviewDiffBody>
