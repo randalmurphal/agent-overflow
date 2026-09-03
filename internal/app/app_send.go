@@ -1090,12 +1090,15 @@ func (a *App) applyProposedPlanAcceptance(threadID string, userItem store.Item, 
 			log.Printf("apply plan acceptance: mark revision comments sent %s/%s: %v", rp.ThreadID, rp.ItemID, err)
 		} else {
 			a.refreshProposedPlanItem(rp.ThreadID, rp.ItemID)
+			a.announcePlanCommentsChanged(rp.ThreadID, rp.ItemID)
 		}
 	}
 
 	if rd := resolved.revisionSourceDiff; rd != nil && len(resolved.revisionDiffCommentIDs) > 0 {
 		if err := a.store.MarkDiffReviewCommentsSent(threadID, rd.Scope, rd.SourceKey, resolved.revisionDiffCommentIDs, now, sentTurnID); err != nil {
 			log.Printf("apply plan acceptance: mark diff review comments sent: %v", err)
+		} else {
+			a.announceDiffCommentsChanged(threadID, rd.Scope, rd.SourceKey)
 		}
 	}
 }

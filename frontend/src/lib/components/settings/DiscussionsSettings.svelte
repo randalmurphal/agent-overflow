@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import type { DiscussionDefinition, DiscussionScope } from '../../types/discussion';
   import { createEmptyDiscussionDefinition } from '../../types/discussion';
   import { ListDiscussions } from '../../stores/bindings';
+  import { discussionDefinitionsRevision } from '../../stores/discussionDefinitions.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import DiscussionListPanel from '../discussion/DiscussionListPanel.svelte';
@@ -18,7 +20,14 @@
   let mode = $state<Mode>({ kind: 'new' });
   let draftForNew = $state<DiscussionDefinition>(createEmptyDiscussionDefinition());
 
+  // A local save calls loadAll with a selection to restore, and the wire
+  // signal calls it without one; the two can now be in flight together, so
+  // the newest request wins and an older completion drops rather than
+  // installing a list it fetched first and moving the editor's selection.
+  let loadSeq = 0;
+
   async function loadAll(selectAfter: { scope: DiscussionScope; name: string } | null = null): Promise<void> {
+    const seq = ++loadSeq;
     loading = true;
     loadError = null;
     try {
@@ -26,6 +35,7 @@
         ListDiscussions('global') as Promise<DiscussionDefinition[] | null>,
         ListDiscussions('project') as Promise<DiscussionDefinition[] | null>,
       ]);
+      if (seq !== loadSeq) return;
       discussions = [...(global ?? []), ...(project ?? [])];
       if (selectAfter) {
         const match = discussions.find((d) => d.scope === selectAfter.scope && d.name === selectAfter.name);
@@ -46,16 +56,25 @@
         }
       }
     } catch (err) {
+      if (seq !== loadSeq) return;
       console.error('Failed to load discussions:', err);
       loadError = String(err);
       addToast('error', `Failed to load discussions: ${errString(err)}`);
     } finally {
-      loading = false;
+      if (seq === loadSeq) loading = false;
     }
   }
 
+  // Re-runs on the first mount and on every definition write, from this
+  // client or any other (`discussion:definitions-changed`). `loadAll` already
+  // reconciles the editor's selection with what came back — it drops back to
+  // the new-definition form when the row being edited is gone — so a write
+  // made elsewhere lands the same way a local delete does. `untrack` keeps
+  // the effect depending on the revision alone rather than on everything the
+  // load touches.
   $effect(() => {
-    void loadAll();
+    discussionDefinitionsRevision();
+    untrack(() => { void loadAll(); });
   });
 
   function handleSelect(def: DiscussionDefinition): void {

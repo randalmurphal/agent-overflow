@@ -21,6 +21,7 @@
 //   - eventsSessionImport.ts — session-import:progress run frames (+ the
 //                              transport-loss end condition a run has no
 //                              other way to learn about)
+//   - eventsReviewComments.ts — inline plan / diff-review comment sets
 //
 // This file itself stays a thin fan-in: channel names, generics, and the
 // teardown order live here; the reaction logic lives in the domain modules.
@@ -45,6 +46,7 @@ import type {
 } from '../types/events';
 import type {
   TerminalExitEventPayload,
+  TerminalHandle,
   TerminalOutputEventPayload,
 } from '../types/terminal';
 import type { UserMessageRevertedEvent } from '../types/messageRevert';
@@ -69,7 +71,22 @@ import {
   flushItemEventQueue,
   resetItemEventQueue,
 } from './eventsItemStream';
-import { applyBackendAttach, type BackendAttachEvent } from './systems.svelte';
+import {
+  applyBackendAttach,
+  applyBackendSetChange,
+  type BackendAttachEvent,
+  type BackendSetChangeEvent,
+} from './systems.svelte';
+import { applyChatBarFavorites } from './chatBarFavorites.svelte';
+import { applyNewThreadDefaults, type NewThreadDefaultsChangedEvent } from './newThreadDefaults';
+import { applyDiscussionDefinitionsChanged } from './discussionDefinitions.svelte';
+import { applyProviderAccountsChanged } from './providerAccounts.svelte';
+import { resyncKeybindings } from './keybindings.svelte';
+import { resyncEditorPreference } from './editors.svelte';
+import {
+  applyReviewCommentsChanged,
+  type ReviewCommentsChangedEvent,
+} from './eventsReviewComments';
 import {
   applyThreadErrorNotice,
   type ThreadErrorNoticeEvent,
@@ -107,7 +124,7 @@ import {
   hydrateProviderLogins,
 } from './providerAccounts.svelte';
 import type { ProviderLoginState } from './bindings';
-import { applyTerminalOutput, applyTerminalExit } from './eventsTerminal';
+import { applyTerminalOutput, applyTerminalExit, applyTerminalOpened } from './eventsTerminal';
 import {
   applyQueueStateChanged,
   applyQueueFlushed,
@@ -308,7 +325,59 @@ export function setupEventListeners(): () => void {
   // any in-flight local write. See resyncSettings.
   const cancelSettingsUpdated = wailsEventOn<SettingsUpdatedEvent>(
     'settings:updated',
-    () => { void resyncSettings(); },
+    (payload) => {
+      void resyncSettings();
+      // The editor preference is a settings value with its own RPC and its
+      // own store, sitting behind a catalog TTL that nothing invalidated —
+      // so a change made anywhere else left every open header icon pointing
+      // at the previous editor. Gated on the KEY the frame names, because
+      // the re-read this triggers is a second RPC and every other settings
+      // write would otherwise pay for it.
+      if (payload?.keys?.includes('editor')) void resyncEditorPreference();
+    },
+  );
+  // keybindings:updated — the user keybindings file was rewritten or reset,
+  // on this client or another. Payload-less: GetKeybindings is where the
+  // effective list AND the file-read error both come from, so there is one
+  // answer and one place that produces it.
+  const cancelKeybindingsUpdated = wailsEventOn('keybindings:updated', () => {
+    void resyncKeybindings();
+  });
+  // chatbar:favorites — the starred model / discussion list, whole, after any
+  // client's write. `SetChatBarFavorite` answers with the same slice, so the
+  // writer's own echo settles on bytes it already applied.
+  const cancelChatBarFavorites = wailsEventOn<unknown>(
+    'chatbar:favorites',
+    (payload) => { applyChatBarFavorites(payload as never); },
+  );
+  // chatbar:new-thread-defaults — the seed a future thread gets, plus the
+  // project whose open draft placeholders adopt it. Without this a second
+  // device's "+ New" composer kept the superseded model, effort and runtime
+  // mode, and would have created a thread with them.
+  const cancelNewThreadDefaults = wailsEventOn<NewThreadDefaultsChangedEvent>(
+    'chatbar:new-thread-defaults',
+    applyNewThreadDefaults,
+  );
+  // provider:accounts_changed — the saved-account SET moved (sign-in, switch,
+  // removal). Distinct from provider:account, which reports one card's
+  // contents on every usage probe and can express neither an addition nor a
+  // removal.
+  const cancelProviderAccountsChanged = wailsEventOn('provider:accounts_changed', () => {
+    applyProviderAccountsChanged();
+  });
+  // discussion:definitions-changed — a discussion definition was created,
+  // renamed, edited or deleted. Payload-less, the same shape
+  // workflow:definitions-changed carries: the list is read by SCOPE and a
+  // rename moves a definition between names, so only a re-read can say what
+  // any reader's list now holds.
+  const cancelDiscussionDefinitions = wailsEventOn('discussion:definitions-changed', () => {
+    applyDiscussionDefinitionsChanged();
+  });
+  // review:comments-changed — one inline review comment SET moved: a plan's
+  // (keyed by plan item) or a diff review's (keyed by scope + source key).
+  const cancelReviewComments = wailsEventOn<ReviewCommentsChangedEvent>(
+    'review:comments-changed',
+    applyReviewCommentsChanged,
   );
   // provider:session_died — provider subprocess exited mid-turn. Drives
   // the per-pane Reconnect banner (separately from the synthesized
@@ -330,6 +399,15 @@ export function setupEventListeners(): () => void {
   const cancelTerminalExit = wailsEventOn<TerminalExitEventPayload>(
     'terminal:exit',
     applyTerminalExit,
+  );
+  // terminal:opened — the other half of terminal:exit. The surface reads the
+  // set once at mount, so a terminal opened on another client was invisible
+  // here and its output frames were dropped as belonging to an unknown id.
+  // Closing needs no counterpart: it kills the process, and the exit carries
+  // it.
+  const cancelTerminalOpened = wailsEventOn<TerminalHandle>(
+    'terminal:opened',
+    applyTerminalOpened,
   );
 
   // provider:queue_state_changed — backend per-thread queue snapshot.
@@ -441,6 +519,15 @@ export function setupEventListeners(): () => void {
       if (outcome.error) addToast('error', `Could not attach ${outcome.name}: ${outcome.error}`);
       else addToast('success', `Attached ${outcome.name}`);
     },
+  );
+
+  // backend:set-changed — a removal or a rename of an attached machine, made
+  // by any page on this host. Its own channel rather than a second meaning on
+  // backend:attach, which answers how one pairing ended and retires a pending
+  // row. Origin-checked for the same reason (see `applyBackendSetChange`).
+  const cancelBackendSetChanged = wailsEventOn<BackendSetChangeEvent>(
+    'backend:set-changed',
+    (evt, origin) => { applyBackendSetChange(evt, backendKeyForOrigin(origin.backendId)); },
   );
 
   // project:updated — one frame per project row a persisted write moved. The
@@ -616,10 +703,17 @@ export function setupEventListeners(): () => void {
     cancelTurnCompleted();
     cancelThreadCost();
     cancelSettingsUpdated();
+    cancelKeybindingsUpdated();
+    cancelChatBarFavorites();
+    cancelNewThreadDefaults();
+    cancelProviderAccountsChanged();
+    cancelDiscussionDefinitions();
+    cancelReviewComments();
     cancelSessionDied();
     cancelTodoUpdate();
     cancelTerminalOutput();
     cancelTerminalExit();
+    cancelTerminalOpened();
     cancelQueueStateChanged();
     cancelQueueFlushed();
     cancelQueueRestored();
@@ -632,6 +726,7 @@ export function setupEventListeners(): () => void {
     cancelThreadUpdated();
     cancelThreadErrorNotice();
     cancelBackendAttach();
+    cancelBackendSetChanged();
     cancelProjectUpdated();
     cancelDraftUpdated();
     cancelThreadGroupUpdated();

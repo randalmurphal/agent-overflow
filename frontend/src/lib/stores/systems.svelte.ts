@@ -47,6 +47,17 @@ export interface BackendAttachEvent {
   error?: string;
 }
 
+/**
+ * What the `backend:set-changed` channel carries (internal/app
+ * BackendSetChange): every mutation of the set that is not a pairing
+ * ceremony ending.
+ */
+export interface BackendSetChangeEvent {
+  action: 'removed' | 'renamed';
+  id: string;
+  nickname?: string;
+}
+
 /** A pairing this page started and is waiting on. */
 export interface PendingAttachment {
   id: string;
@@ -111,6 +122,20 @@ export async function addSystem(pairingLink: string): Promise<PendingAttachment>
 
 export async function removeSystem(id: string): Promise<void> {
   await RemoveBackend(id);
+  forgetSystem(id);
+}
+
+/**
+ * Everything a removal does to THIS page, with no RPC. The chokepoint the
+ * acting page and every other page on this host both go through, so a
+ * removal made in one window cannot leave another one holding a socket to a
+ * profile that no longer exists.
+ *
+ * Idempotent: the acting page runs it and then receives its own echo. The
+ * filters no-op, the transport calls are already-detached no-ops, and
+ * `purgeClientState` is a deletion of state that is by then gone.
+ */
+function forgetSystem(id: string): void {
   systems = systems.filter((s) => s.id !== id);
   pending = pending.filter((p) => p.id !== id);
   // Both: the manifest list forgets it so the next sync does not re-open
@@ -127,7 +152,37 @@ export async function removeSystem(id: string): Promise<void> {
 
 export async function renameSystem(id: string, nickname: string): Promise<void> {
   await RenameBackend(id, nickname);
+  applySystemNickname(id, nickname);
+}
+
+function applySystemNickname(id: string, nickname: string): void {
   systems = systems.map((s) => (s.id === id ? { ...s, nickname } : s));
+}
+
+/**
+ * `backend:set-changed` — a removal or a rename, made by any page on this
+ * host. Called by events.ts.
+ *
+ * Its own channel rather than a second meaning on `backend:attach`: that one
+ * answers "how did the pairing I started end" and retires a pending row,
+ * which a rename must not do.
+ *
+ * Origin is checked for the same reason `applyBackendAttach` checks it — the
+ * event hub subscribes every attached backend, the channel is loopback-only
+ * rather than home-only, and these four RPCs act on THIS machine's profile
+ * directory. Another backend's frame names an id in its own profile
+ * directory, which would drop the wrong row here.
+ */
+export function applyBackendSetChange(
+  evt: BackendSetChangeEvent,
+  origin: BackendKey = HOME_BACKEND,
+): void {
+  if (origin !== HOME_BACKEND || !evt?.id) return;
+  if (evt.action === 'removed') {
+    forgetSystem(evt.id);
+    return;
+  }
+  if (evt.action === 'renamed') applySystemNickname(evt.id, evt.nickname ?? '');
 }
 
 /** The name a person sees for a system: their nickname, else the machine's own. */

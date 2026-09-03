@@ -16,6 +16,42 @@ import (
 	"github.com/google/uuid"
 )
 
+// ReviewCommentsChangedEvent names the review-comment SET a write moved, and
+// nothing else. It is a refetch nudge in the shape of the read RPC's
+// arguments: PlanItemID names a proposed-plan set, Scope + SourceKey name a
+// diff-review set, and exactly one of the two forms is filled.
+//
+// No comment rides it, because a "delete" is a DELETE-OR-RESOLVE depending on
+// whether the comment was already sent — so a frame carrying one row could
+// not say what the set now holds. Receivers re-read through
+// ListProposedPlanComments / ListDiffReviewComments, which is also the grant
+// the channel is gated on.
+type ReviewCommentsChangedEvent struct {
+	ThreadID   string `json:"threadId"`
+	PlanItemID string `json:"planItemId,omitempty"`
+	Scope      string `json:"scope,omitempty"`
+	SourceKey  string `json:"sourceKey,omitempty"`
+}
+
+// announcePlanCommentsChanged tells every client holding one plan's comment
+// set that it moved.
+func (a *App) announcePlanCommentsChanged(threadID, planItemID string) {
+	a.emit(eventchan.ReviewCommentsChanged, ReviewCommentsChangedEvent{
+		ThreadID:   threadID,
+		PlanItemID: planItemID,
+	})
+}
+
+// announceDiffCommentsChanged is the same for one diff-review set, which is
+// identified by the scope + source key pair its read RPC takes.
+func (a *App) announceDiffCommentsChanged(threadID, scope, sourceKey string) {
+	a.emit(eventchan.ReviewCommentsChanged, ReviewCommentsChangedEvent{
+		ThreadID:  threadID,
+		Scope:     scope,
+		SourceKey: sourceKey,
+	})
+}
+
 // ListProposedPlanComments returns inline comments for one immutable plan
 // version. Resolved comments stay persisted and visible on older versions so
 // review history does not disappear when the agent proposes a revision.
@@ -63,6 +99,7 @@ func (a *App) CreateProposedPlanComment(threadID string, input store.ProposedPla
 		// should not make the edit look rejected.
 		log.Printf("create proposed plan comment: emit plan upsert: %v", err)
 	}
+	a.announcePlanCommentsChanged(threadID, input.PlanItemID)
 	return created, nil
 }
 
@@ -75,6 +112,7 @@ func (a *App) UpdateProposedPlanComment(threadID, commentID string, input store.
 	if err := a.emitProposedPlanUpsert(threadID, updated.PlanItemID); err != nil {
 		log.Printf("update proposed plan comment: emit plan upsert: %v", err)
 	}
+	a.announcePlanCommentsChanged(threadID, updated.PlanItemID)
 	return updated, nil
 }
 
@@ -90,6 +128,7 @@ func (a *App) DeleteProposedPlanComment(threadID, commentID string) error {
 	if err := a.emitProposedPlanUpsert(threadID, comment.PlanItemID); err != nil {
 		log.Printf("delete proposed plan comment: emit plan upsert: %v", err)
 	}
+	a.announcePlanCommentsChanged(threadID, comment.PlanItemID)
 	return nil
 }
 
@@ -222,6 +261,7 @@ func (a *App) CreateDiffReviewComment(threadID string, input store.DiffReviewCom
 	if err != nil {
 		return store.DiffReviewComment{}, fmt.Errorf("create diff review comment: %w", err)
 	}
+	a.announceDiffCommentsChanged(threadID, created.Scope, created.SourceKey)
 	return created, nil
 }
 
@@ -231,14 +271,22 @@ func (a *App) UpdateDiffReviewComment(threadID, commentID string, input store.Di
 	if err != nil {
 		return store.DiffReviewComment{}, fmt.Errorf("update diff review comment: %w", err)
 	}
+	a.announceDiffCommentsChanged(threadID, updated.Scope, updated.SourceKey)
 	return updated, nil
 }
 
 //ao:scope threads:operate
 func (a *App) DeleteDiffReviewComment(threadID, commentID string) error {
+	// Read the row before it moves: a delete names only the comment, and the
+	// set a receiver has to re-read is identified by scope + source key.
+	comment, err := a.store.GetDiffReviewComment(threadID, commentID)
+	if err != nil {
+		return fmt.Errorf("delete diff review comment: %w", err)
+	}
 	if err := a.store.DeleteOrResolveDiffReviewComment(threadID, commentID, time.Now().UnixMilli()); err != nil {
 		return fmt.Errorf("delete diff review comment: %w", err)
 	}
+	a.announceDiffCommentsChanged(threadID, comment.Scope, comment.SourceKey)
 	return nil
 }
 
@@ -247,6 +295,9 @@ func (a *App) MarkDiffReviewCommentsSent(threadID, scope, sourceKey string, comm
 	if err := a.store.MarkDiffReviewCommentsSent(threadID, scope, sourceKey, commentIDs, time.Now().UnixMilli(), sentTurnID); err != nil {
 		return fmt.Errorf("mark diff review comments sent: %w", err)
 	}
+	// Sending is a set change like any other: a draft that became sent renders
+	// differently, and only a re-read can say which ones moved.
+	a.announceDiffCommentsChanged(threadID, scope, sourceKey)
 	return nil
 }
 

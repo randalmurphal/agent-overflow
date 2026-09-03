@@ -44,6 +44,30 @@ type BackendAttachOutcome struct {
 	Error string `json:"error,omitempty"`
 }
 
+// BackendSetChange is the frame the backend:set-changed channel carries:
+// every mutation of the attached-machine SET that is not the end of a
+// pairing ceremony.
+//
+// Its own channel rather than a second meaning on backend:attach, because
+// the two answer different questions — "how did the pairing I started end"
+// and "the list moved" — and a receiver that conflated them would retire a
+// pending row on a rename. Two pages open on this host, and the same page
+// after a reload, converge on it.
+type BackendSetChange struct {
+	// Action is `removed` or `renamed`.
+	Action string `json:"action"`
+	ID     string `json:"id"`
+	// Nickname is what this installation now calls the machine, empty when
+	// the name was cleared or the row was removed.
+	Nickname string `json:"nickname,omitempty"`
+}
+
+// Backend set actions.
+const (
+	BackendSetRemoved = "removed"
+	BackendSetRenamed = "renamed"
+)
+
 // errNoBackendProfiles is what every method here answers when this boot
 // keeps no device profile directory.
 var errNoBackendProfiles = errors.New("this installation has nowhere to keep pairings, so it cannot attach to other machines")
@@ -127,7 +151,11 @@ func (a *App) RemoveBackend(id string) error {
 	if a.backends == nil {
 		return errNoBackendProfiles
 	}
-	return a.backends.Remove(id)
+	if err := a.backends.Remove(id); err != nil {
+		return err
+	}
+	a.emit(eventchan.BackendSetChanged, BackendSetChange{Action: BackendSetRemoved, ID: id})
+	return nil
 }
 
 // RenameBackend sets what this installation calls one machine, or clears
@@ -140,7 +168,15 @@ func (a *App) RenameBackend(id, nickname string) error {
 	if a.backends == nil {
 		return errNoBackendProfiles
 	}
-	return a.backends.Rename(id, nickname)
+	if err := a.backends.Rename(id, nickname); err != nil {
+		return err
+	}
+	a.emit(eventchan.BackendSetChanged, BackendSetChange{
+		Action:   BackendSetRenamed,
+		ID:       id,
+		Nickname: nickname,
+	})
+	return nil
 }
 
 // AttachedBackends exposes the manager to the transport, which serves one

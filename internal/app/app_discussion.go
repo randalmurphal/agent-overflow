@@ -35,7 +35,11 @@ func (a *App) GetDiscussion(name, scope string) (store.DiscussionDefinition, err
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) CreateDiscussion(def store.DiscussionDefinition) error {
-	return a.discussionService().Create(def)
+	if err := a.discussionService().Create(def); err != nil {
+		return err
+	}
+	a.announceDiscussionDefinitionsChanged()
+	return nil
 }
 
 // UpdateDiscussion replaces an existing persisted discussion definition.
@@ -43,7 +47,11 @@ func (a *App) CreateDiscussion(def store.DiscussionDefinition) error {
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) UpdateDiscussion(prevName, prevScope string, def store.DiscussionDefinition) error {
-	return a.discussionService().Update(prevName, prevScope, def)
+	if err := a.discussionService().Update(prevName, prevScope, def); err != nil {
+		return err
+	}
+	a.announceDiscussionDefinitionsChanged()
+	return nil
 }
 
 // DeleteDiscussion removes a persisted discussion definition.
@@ -51,7 +59,24 @@ func (a *App) UpdateDiscussion(prevName, prevScope string, def store.DiscussionD
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) DeleteDiscussion(name, scope string) error {
-	return a.discussionService().Delete(name, scope)
+	if err := a.discussionService().Delete(name, scope); err != nil {
+		return err
+	}
+	a.announceDiscussionDefinitionsChanged()
+	return nil
+}
+
+// announceDiscussionDefinitionsChanged nudges every connected client to
+// re-read the definition list after one was created, renamed, edited or
+// deleted.
+//
+// Payload-less on purpose, the same shape workflow:definitions-changed
+// carries: the list is read by SCOPE (and a rename moves a definition between
+// names), so a frame naming one row could not say what any receiver's list now
+// holds. Receivers re-read through ListDiscussions, which is the grant the
+// channel is gated on.
+func (a *App) announceDiscussionDefinitionsChanged() {
+	a.emit(eventchan.DiscussionDefinitionsChanged, nil)
 }
 
 // StartDiscussion creates a deliberation channel and marks the thread as operating in discussion mode.

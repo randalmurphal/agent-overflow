@@ -162,6 +162,14 @@ func (s providerAccountEventSink) PublishCleared(providerName string, generation
 	})
 }
 
+// PublishAccountsChanged is a payload-less refetch nudge: the listing carries
+// per-account quota snapshots and a `needsLogin` verdict that only
+// ListProviderAccounts can compute, so a frame trying to carry the set would
+// be a second, divergent projection of it.
+func (s providerAccountEventSink) PublishAccountsChanged() {
+	s.app.emit(eventchan.ProviderAccountsChanged, nil)
+}
+
 func (s providerAccountEventSink) PublishUsageError(providerName, accountID string, err error) {
 	s.app.emit(eventchan.ProviderAccountUsageError, map[string]string{
 		"provider": providerName, "accountId": accountID, "message": err.Error(),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { tick } from 'svelte';
 import {
+  applyChatBarFavorites,
   ensureChatBarFavorites,
   peekChatBarFavorites,
   peekChatBarFavoritesError,
@@ -77,5 +78,48 @@ describe('chatBarFavorites', () => {
     await flush();
     expect(list).toHaveBeenCalledTimes(2);
     expect(peekChatBarFavorites()).toHaveLength(1);
+  });
+
+  // Star and unstar used to reach only the client that clicked: the RPC
+  // answers with the new list and nothing else was ever told, so a second
+  // device kept showing the old stars in every menu until reload.
+  it('adopts the whole list another client’s write produced', async () => {
+    setBindingMock('ListChatBarFavorites', async () => [favorite('opus')]);
+    ensureChatBarFavorites();
+    await flush();
+
+    applyChatBarFavorites([favorite('opus'), favorite('haiku')]);
+    await flush();
+
+    expect(peekChatBarFavorites().map((f) => f.value)).toEqual(['opus', 'haiku']);
+  });
+
+  it('takes an emptied list, and treats a malformed frame as empty', async () => {
+    setBindingMock('ListChatBarFavorites', async () => [favorite('opus')]);
+    ensureChatBarFavorites();
+    await flush();
+
+    applyChatBarFavorites([]);
+    await flush();
+    expect(peekChatBarFavorites()).toEqual([]);
+
+    applyChatBarFavorites(null);
+    await flush();
+    expect(peekChatBarFavorites()).toEqual([]);
+  });
+
+  // Applying before anything holds the list would seed an entry no menu is
+  // reading, and the first ensureChatBarFavorites sources it anyway.
+  it('ignores a frame that arrives before any menu has asked', async () => {
+    const list = setBindingMock('ListChatBarFavorites', async () => []);
+
+    applyChatBarFavorites([favorite('opus')]);
+    await flush();
+    expect(peekChatBarFavorites()).toEqual([]);
+    expect(list).not.toHaveBeenCalled();
+
+    ensureChatBarFavorites();
+    await flush();
+    expect(peekChatBarFavorites()).toEqual([]);
   });
 });

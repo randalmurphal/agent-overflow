@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/chatmodel"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
@@ -160,7 +161,17 @@ func (a *App) SetChatBarFavorite(fav store.ChatBarFavorite, starred bool) ([]sto
 	if err != nil {
 		return nil, err
 	}
-	return a.store.ListChatBarFavorites()
+	favorites, err := a.store.ListChatBarFavorites()
+	if err != nil {
+		return nil, err
+	}
+	// The list is app state every open model menu renders, on every client.
+	// Answering the writer alone left a second device starring into a list it
+	// had already read and could no longer see change. The frame is the same
+	// slice this call returns, so the writer's own echo is a repeat of the
+	// answer it applied.
+	a.emit(eventchan.ChatBarFavorites, favorites)
+	return favorites, nil
 }
 
 //ao:scope threads:operate

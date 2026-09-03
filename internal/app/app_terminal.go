@@ -70,11 +70,29 @@ func (a *App) OpenTerminal(threadID string, opts TerminalOpenOptions) (TerminalH
 	if err != nil {
 		return TerminalHandle{}, err
 	}
-	return TerminalHandle{
+	return a.announceTerminalOpened(summary), nil
+}
+
+// announceTerminalOpened broadcasts a terminal that has just come into
+// existence and returns the handle its RPC answers with. The `terminal:opened`
+// frame IS that handle, so the initiator's own echo is byte-identical to the
+// answer it already applied and needs no suppression.
+//
+// The surface reads the set once at mount through ListTerminals, so before
+// this channel existed a terminal opened on one client stayed invisible on
+// every other one until reload — and its output frames, which DO arrive,
+// were dropped by the store as belonging to an unknown id. Worse, a second
+// device whose list came back empty auto-opened a terminal of its own.
+// Closing needs no counterpart: Manager.Close kills the process, and the
+// exit callback already tells everyone.
+func (a *App) announceTerminalOpened(summary terminal.SessionSummary) TerminalHandle {
+	handle := TerminalHandle{
 		TerminalID: summary.TerminalID,
 		ThreadID:   summary.ThreadID,
 		Summary:    summary,
-	}, nil
+	}
+	a.emit(eventchan.TerminalOpened, handle)
+	return handle
 }
 
 // WriteTerminal writes base64-encoded data to the given terminal. The
@@ -194,11 +212,10 @@ func (a *App) RestartTerminal(terminalID string) (TerminalHandle, error) {
 	if err != nil {
 		return TerminalHandle{}, err
 	}
-	return TerminalHandle{
-		TerminalID: summary.TerminalID,
-		ThreadID:   summary.ThreadID,
-		Summary:    summary,
-	}, nil
+	// A restart is a close plus an open, and the close already emitted
+	// terminal:exit — so without this every other client would watch the tab
+	// disappear and never see the replacement.
+	return a.announceTerminalOpened(summary), nil
 }
 
 // GetTerminalReplay returns the base64-encoded replay buffer plus a sequence

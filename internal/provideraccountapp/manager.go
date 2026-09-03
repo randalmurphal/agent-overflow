@@ -38,6 +38,14 @@ type UsageBackoff interface {
 type AccountSink interface {
 	PublishAccount(providerName string, account provideraccounts.Account, info provider.AccountInfo, generation uint64)
 	PublishCleared(providerName string, generation uint64)
+	// PublishAccountsChanged says the SET of saved accounts for a provider
+	// moved — one was added, removed, or made active. It is deliberately
+	// separate from PublishAccount, which reports one card's contents and
+	// fires on every usage probe: a receiver that re-listed on those would
+	// spend an RPC per probe, and one that never re-lists (the state before
+	// this existed) misses a removal entirely. It names no provider: the one
+	// read behind it, ListProviderAccounts, answers for every provider at once.
+	PublishAccountsChanged()
 	PublishUsageError(providerName, accountID string, err error)
 	PublishLogin(state LoginState)
 }

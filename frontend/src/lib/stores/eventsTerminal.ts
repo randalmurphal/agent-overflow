@@ -4,6 +4,7 @@
 // target of events.ts's setupEventListeners.
 import type {
   TerminalExitEventPayload,
+  TerminalHandle,
   TerminalOutputEventPayload,
 } from '../types/terminal';
 import { decodeTerminalOutput } from '../types/terminal';
@@ -12,6 +13,7 @@ import { getThreadById, removeThread } from './threads.svelte';
 import { addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 import {
+  getExistingThreadTerminalState,
   getTerminalFocused,
   getThreadTerminalStateForTerminalEvent,
 } from '../components/terminal/terminalStore.svelte';
@@ -26,6 +28,30 @@ type TerminalFocusPane = Pick<ThreadPane, 'paneId' | 'requestTerminalFocus'>;
 
 function terminalFocusPanes(threadID: string): TerminalFocusPane[] {
   return panesShowingThread(threadID);
+}
+
+/**
+ * A PTY this backend just started, opened from any client.
+ *
+ * The surface reads the set once at mount (`ListTerminals`) and nothing told
+ * it about a terminal opened afterwards, so a second device dropped that
+ * terminal's output as belonging to an id it had never seen — and, if its own
+ * list had come back empty, auto-opened a second shell beside it.
+ *
+ * Only threads that ALREADY hold terminal state converge: a client with no
+ * surface for the thread has nothing to show and would otherwise retain a tab
+ * list nobody is looking at, and its next mount reads the list anyway.
+ * `addTab` is the same call the opening client makes with the same summary, so
+ * the initiator's echo is idempotent. It does NOT take the active tab: which
+ * tab a person is typing into is this client's own state, and a shell opened
+ * from a phone must not pull the desktop off the one it is using. A surface
+ * with no active tab adopts it, since there is nothing to pull away from.
+ */
+export function applyTerminalOpened(payload: TerminalHandle): void {
+  const threadID = payload?.threadID;
+  const summary = payload?.summary;
+  if (!threadID || !summary?.terminalID) return;
+  getExistingThreadTerminalState(threadID)?.addTab(summary, { activate: false });
 }
 
 export function applyTerminalOutput(payload: TerminalOutputEventPayload): void {

@@ -172,6 +172,36 @@ stops waking readers.
   including the defaults its DEVICE CLASS starts from — a paired phone reads
   `lowPowerMode` on without the frontend knowing a class exists
   (`internal/settings/residency.go`, `classdefaults.go`).
+- **An app-state surface converges too, and the frame carries what its own
+  RPC answered with.** Eleven writes persisted and answered their caller and
+  told nobody, so a second device kept the superseded state until reload
+  (wave 2026-09-03). Each is now a channel, and there are exactly three
+  shapes:
+
+  | Shape | Channels | Handler does |
+  |---|---|---|
+  | The whole answer | `chatbar:favorites`, `chatbar:new-thread-defaults`, `terminal:opened`, `backend:set-changed` | applies the payload, byte-identical to what the writer's RPC returned |
+  | Named set, no rows | `review:comments-changed` | re-reads that set THROUGH its own RPC, and only where already held |
+  | Nothing but the fact | `keybindings:updated`, `discussion:definitions-changed`, `provider:accounts_changed` | re-reads wholesale |
+
+  Which shape is not a taste call. A frame carries rows only when the
+  writer's own apply is exactly reproducible from them: a delete that is
+  really a delete-OR-RESOLVE, a rename that moves a definition between names,
+  and a listing whose `needsLogin` verdict only the backend can compute all
+  fail that test, so those channels carry the SET and the reader asks. The
+  payload-carrying half then gets the echo-equals-optimistic-apply property
+  for free, and no client needs to suppress its own frame.
+
+  Two rules the payload-free half owes. **Re-read only where this client is
+  already holding it** — `resyncPlanComments` and `resyncDiffReviewComments`
+  both return early on a cache miss, because their channel is wildcard rather
+  than thread-filtered and reacting unconditionally would make every client
+  cache every set anyone comments on. And **re-read only what moved**:
+  `resyncEditorPreference` re-reads `GetEditorSettings` and never the editor
+  catalog, which is a PATH and `/mnt/c` walk that no settings write can
+  change. A re-read also skips while a local write is in flight, and drops
+  its own answer when the value moved across the await — the optimistic value
+  is newer than anything the backend can answer with.
 - Every delivered event carries the connection it arrived on as
   `wailsEventOn`'s SECOND argument (`{backendId}`), and it is now filled
   per DELIVERY: `transport/backends.ts` subscribes each attached backend's

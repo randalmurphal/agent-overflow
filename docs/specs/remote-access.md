@@ -3582,6 +3582,36 @@ ephemeral prefix with no owner marker is never reclaimed by design.
 `backends.ts` (747 lines) and `app_preview.go` (591) are flagged for a
 split when either is next touched.
 
+**Polish pass, first two waves LANDED (2026-09-03).** Adjudicated from
+the four polish audits (subscription cleanup, cross-device convergence,
+single-client assumptions, desktop regressions). Take-control: a
+claude-tui PTY attachment now belongs to the CONNECTION that made it;
+a socket that dies mid-take-control releases its own lease through
+`ConnState` cleanup (one cleanup per connection, releasing every claim
+it holds), a second client's attach takes nothing from the first, and
+its acquire is refused while another holds the keyboard (§7 "Anywhere
+access", the take-control rule). `TestArmingMethodsAreTiedToTheirConnection`
+holds the class: an `App` method whose name arms or releases a
+per-client resource reads `ConnStateFromContext` or says why not.
+Convergence: eleven write paths that persisted and answered only their
+caller now emit, under the real-time ruling (§5, §8): worktree cut and
+attach ride the thread-row chokepoint; `terminal:opened` completes
+`terminal:exit`; `keybindings:updated`, `chatbar:favorites`,
+`chatbar:new-thread-defaults`, `discussion:definitions-changed`,
+`provider:accounts_changed` (which also fixes a removal of an inactive
+account announcing nothing) and `review:comments-changed` are new rows;
+`backend:set-changed` is a host-directive row beside `backend:attach`;
+the editor preference re-reads on a `settings:updated` naming its key;
+session import announces every imported project and thread as the
+ordinary `listed` frame and the importing client's whole-sidebar resync
+is gone. A terminal another client opened lands beside the active tab,
+never over it. `SetAppearance` is `host` (theme-system decision 4: the
+file is this desktop's own), and the appearance store gates on
+`hasScope('host')`. Residuals, recorded and left: the review-comment
+nudge is wildcard rather than thread-filtered, so a client re-reads only
+sets it already holds; an in-process take-control caller (a saga, a
+test) has no `ConnState` and owes its own detach.
+
 ## 17. Testing
 
 - **Generator gate**: every bound method must declare a scope or the

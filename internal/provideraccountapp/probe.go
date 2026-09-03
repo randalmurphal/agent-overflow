@@ -225,6 +225,15 @@ func (m *Manager) PublishAccountIfCurrent(
 	m.emitProviderAccountIfCurrent(providerName, account, info)
 }
 
+// emitProviderAccountsChanged reports that the saved-account SET moved. The
+// three callers are the three set mutations a person makes: signing in, making
+// a saved account active, and removing one.
+func (m *Manager) emitProviderAccountsChanged() {
+	if m.deps.Accounts != nil {
+		m.deps.Accounts.PublishAccountsChanged()
+	}
+}
+
 func (m *Manager) emitProviderAccountCleared(providerName string, generation uint64) {
 	if m.deps.Accounts != nil {
 		m.deps.Accounts.PublishCleared(providerName, generation)

@@ -1338,6 +1338,22 @@ of state channels that must stay `AudienceAny`, one of host-directive channels
 that must stay loopback-only, and a sweep that fails on any third loopback-only
 row appearing on neither.
 
+**A write path that persists and answers only its caller is a channel that
+was never added, and the registry cannot see the hole.** Every test here
+asks whether an existing row is right; none asks whether a row is MISSING,
+because the missing half is a Go write path in another package with nothing
+to parse. Eleven of them were found by reading write paths rather than rows
+(wave 2026-09-03): worktree cut and attach, `OpenTerminal`, keybindings,
+chat-bar favorites, review comments, new-thread defaults, discussion
+definitions, provider-account listing, backend add/remove/rename, the editor
+preference and session import all persisted and returned, and no other
+connected client learned of them until reload. So the question belongs at
+the write, not here: after a write persists, name the clients that can SEE
+what it changed and say how each of them learns. The answers are the
+ordinary ones — an existing row channel (a thread or project row moved: use
+the `broadcast*Row` chokepoint, never a second emit beside it), an existing
+state channel, or a new row here.
+
 **Opening a channel to remote clients decides the RECEIVE side only, and
 whatever PRODUCES that channel must be re-checked in the same change.** A
 channel whose frames drive UI on every attached client is a steering primitive

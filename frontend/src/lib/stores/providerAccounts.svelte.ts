@@ -210,6 +210,28 @@ function reloadProviderAccounts(): Promise<void> {
   return startLoad();
 }
 
+/**
+ * `provider:accounts_changed` — the saved-account SET moved on some client:
+ * a sign-in added a card, a switch moved which one is active, a removal took
+ * one away.
+ *
+ * Its own channel rather than a reaction to `provider:account`, which reports
+ * one card's CONTENTS and fires on every usage probe: re-listing on those
+ * would spend an RPC per probe, and never re-listing (the state before this
+ * existed) missed a removal outright — removing an account that was not the
+ * active one published nothing at all, so the card stayed on every other
+ * client's Settings screen until reload.
+ *
+ * A reload rather than a merge, because the listing carries per-account quota
+ * snapshots and a `needsLogin` verdict only the backend can compute. Refuses
+ * without the grant for the same reason `loadProviderAccounts` does: an
+ * ungranted session would turn each frame into an unexplained error toast.
+ */
+export function applyProviderAccountsChanged(): void {
+  if (!hasScope('access:admin')) return;
+  void reloadProviderAccounts();
+}
+
 function startLoad(): Promise<void> {
   const load = runLoad();
   pendingLoad = load;

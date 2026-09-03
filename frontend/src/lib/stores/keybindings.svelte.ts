@@ -284,6 +284,24 @@ function compileAll(input: KeybindingRule[]): {
 }
 
 export async function loadKeybindings(): Promise<void> {
+  await readKeybindings(true);
+}
+
+/**
+ * Re-read after the user file was rewritten or reset — on this client or any
+ * other. `keybindings:updated` carries no bindings, because the read is also
+ * where the file-read error the result reports comes from, so there is one
+ * answer and one place that produces it.
+ *
+ * Silent: the toast belongs to a load the user asked for. This one is a
+ * convergence, and the initiator's own save already reloads, so announcing
+ * here would say the same thing twice for one gesture.
+ */
+export async function resyncKeybindings(): Promise<void> {
+  await readKeybindings(false);
+}
+
+async function readKeybindings(announce: boolean): Promise<void> {
   try {
     const result = await GetKeybindings();
     rules = Array.isArray(result?.bindings) ? result.bindings : [];
@@ -294,7 +312,7 @@ export async function loadKeybindings(): Promise<void> {
     loadError = result?.loadError || null;
     compileEffectiveRules();
     loaded = true;
-    if (loadError !== null) {
+    if (announce && loadError !== null) {
       addToast(
         'error',
         `Could not read your keybindings file (${loadError}). Showing defaults — saving a shortcut replaces the file.`,
@@ -302,7 +320,7 @@ export async function loadKeybindings(): Promise<void> {
     }
   } catch (err) {
     console.error('Failed to load keybindings:', err);
-    addToast('error', 'Failed to load keybindings');
+    if (announce) addToast('error', 'Failed to load keybindings');
     rules = [];
     resolved = [];
     issues = [];

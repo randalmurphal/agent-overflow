@@ -27,11 +27,16 @@ import (
 // lists rather than a row somebody flipped in passing.
 var (
 	audienceAnyStateChannels = []eventchan.Channel{
+		eventchan.ChatBarFavorites,
+		eventchan.ChatBarNewThreadDefaults,
+		eventchan.DiscussionDefinitionsChanged,
 		eventchan.DraftUpdated,
 		eventchan.GitStatus,
+		eventchan.KeybindingsUpdated,
 		eventchan.MCPOAuthCompleted,
 		eventchan.MCPStatus,
 		eventchan.PRUpdated,
+		eventchan.ProviderAccountsChanged,
 		eventchan.ProviderApproval,
 		eventchan.ProviderBackgroundTaskState,
 		eventchan.ProviderCommandLifecycle,
@@ -41,14 +46,17 @@ var (
 		eventchan.ProviderSessionAccount,
 		eventchan.ProviderTerminalOutput,
 		eventchan.ProviderUserInput,
+		eventchan.ReviewCommentsChanged,
 		eventchan.SessionImportProgress,
 		eventchan.TerminalExit,
+		eventchan.TerminalOpened,
 		eventchan.TerminalOutput,
 		eventchan.UsageThreadCost,
 		eventchan.WorktreeSetup,
 	}
 	audienceLoopbackOnlyHostChannels = []eventchan.Channel{
 		eventchan.BackendAttach,
+		eventchan.BackendSetChanged,
 		eventchan.BrowserCompanionState,
 		eventchan.BrowserHost,
 		eventchan.HarnessMock,

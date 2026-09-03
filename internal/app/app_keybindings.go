@@ -3,6 +3,7 @@ package app
 import (
 	"runtime"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/keybindings"
 )
 
@@ -49,8 +50,20 @@ func (a *App) UpdateKeybindings(bindings []keybindings.Keybinding) error {
 	if err := svc.Update(bindings); err != nil {
 		return err
 	}
-	a.refreshBrowserAccelerators()
+	a.announceKeybindingsChange()
 	return nil
+}
+
+// announceKeybindingsChange re-derives this process's accelerator set and
+// tells every connected client the user file moved.
+//
+// The nudge carries no bindings: every receiver re-reads through
+// GetKeybindings, which is also where the user-file read error the result
+// carries comes from. Startup calls refreshBrowserAccelerators directly —
+// a boot is not a change, and there is nobody listening yet.
+func (a *App) announceKeybindingsChange() {
+	a.refreshBrowserAccelerators()
+	a.emit(eventchan.KeybindingsUpdated, nil)
 }
 
 // refreshBrowserAccelerators recomputes the bound-chord set the browser's
@@ -91,6 +104,6 @@ func (a *App) ResetKeybindings() error {
 	if err := svc.Reset(); err != nil {
 		return err
 	}
-	a.refreshBrowserAccelerators()
+	a.announceKeybindingsChange()
 	return nil
 }

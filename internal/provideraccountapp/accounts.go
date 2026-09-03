@@ -235,6 +235,9 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 	m.invalidateProviderAccountProbe(providerName, binary)
 	info := AccountInfo(account)
 	m.emitProviderAccount(providerName, account, info, generation)
+	// Which card is active is part of the listing, and the per-account frame
+	// above carries no `active` flag for the card that just LOST it.
+	m.emitProviderAccountsChanged()
 	m.applySelection(providerName, generation, account.ID)
 	reconcileMu.Unlock()
 	reconcileLocked = false

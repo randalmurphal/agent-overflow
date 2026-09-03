@@ -257,6 +257,23 @@ var channelPolicies = []ChannelPolicy{
 			"receiver.",
 	},
 	{
+		Channel:   eventchan.DiscussionDefinitionsChanged,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeThreadsRead,
+		Why: "Retention: payload-less refetch signal, the same matched set " +
+			"as workflow:definitions-changed and theme:changed — see " +
+			"spinner:changed for the full reasoning. Unkeyed (one " +
+			"definitions catalog, one global answer), so it satisfies the " +
+			"latest-only membership rule. Scope by the rule: ListDiscussions " +
+			"/ ListDiscussionsForThread / GetDiscussion are the reads that " +
+			"answer the same data and all three are threads:read, so the " +
+			"nudge reaches exactly the sessions the listing already answers. " +
+			"Audience any because the composer's Discussions menu and the " +
+			"settings editor render on a phone too, and an editor showing a " +
+			"definition another device deleted offers a start that fails.",
+	},
+	{
 		Channel:   eventchan.DiscussionMessage,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
@@ -410,6 +427,23 @@ var channelPolicies = []ChannelPolicy{
 			"for the same reason as highlight:diff_seed.",
 	},
 	{
+		Channel:   eventchan.KeybindingsUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeSettingsRead,
+		Why: "Retention: payload-less refetch signal fired after the user " +
+			"keybindings file is rewritten or reset, the same matched set as " +
+			"theme:changed and spinner:changed. Unkeyed (one file, one global " +
+			"answer), so the latest-only membership rule holds and N retained " +
+			"frames would be N identical refetches. Scope by the rule: " +
+			"GetKeybindings is the read that answers the same data and it is " +
+			"settings:read, one tier below the settings:write the two writes " +
+			"carry — a session that may READ the bindings may hear that they " +
+			"moved. Audience any: chord dispatch runs on every client, so a " +
+			"page that never hears the change keeps dispatching the old " +
+			"chords until it is reloaded.",
+	},
+	{
 		Channel:   eventchan.MCPOAuthCompleted,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
@@ -552,6 +586,27 @@ var channelPolicies = []ChannelPolicy{
 			"class and same grant as provider:account, and widened " +
 			"alongside it — a remote sign-in that lands but cannot read " +
 			"its quota has to say so rather than go quiet.",
+	},
+	{
+		Channel:   eventchan.ProviderAccountsChanged,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeAccessAdmin,
+		Why: "Payload-less refetch signal for the account LISTING, fired " +
+			"when a switch or a removal moved the set. Its own channel " +
+			"rather than a second meaning on provider:account, which says " +
+			"only that the ACTIVE identity changed: removing an account " +
+			"that was not the active one moves the list and moves no " +
+			"identity, so it emitted nothing at all and every other client " +
+			"kept offering an account that is gone. Scope by the rule: " +
+			"ListProviderAccounts returns the set and is access:admin, the " +
+			"same grant SwitchProviderAccount and RemoveProviderAccount " +
+			"carry, so the nudge reaches exactly the sessions the listing " +
+			"answers. Audience any for the reason provider:account is: " +
+			"managing these accounts is something a remote admin device " +
+			"does. Latest-only and unkeyed — the frame carries nothing, so " +
+			"N retained frames are N identical refetches, and retaining the " +
+			"newest is what tells a client that reconnected to re-read.",
 	},
 	{
 		Channel:   eventchan.ProviderApproval,
@@ -872,6 +927,62 @@ var channelPolicies = []ChannelPolicy{
 			"that says how it ended.",
 	},
 	{
+		Channel:   eventchan.BackendSetChanged,
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionDefault,
+		Scope:     ScopeHost,
+		Why: "Every mutation of the attached-machine SET that is not an " +
+			"attach ceremony: a removal, a rename. A HOST DIRECTIVE class " +
+			"row, exactly as backend:attach is, and for the same reason — " +
+			"the four ListBackends/AddBackend/RemoveBackend/RenameBackend " +
+			"methods act on THIS process's own profile directory and are " +
+			"`host`, so the push and the pull are refused to the same " +
+			"callers, and its only legitimate consumer is a page on this " +
+			"machine. Its own channel rather than a second meaning on " +
+			"backend:attach: that one answers \"how did the pairing I " +
+			"started end\", this one answers \"the list moved\", and a " +
+			"receiver that conflated them would retire a pending row on a " +
+			"rename. Retained on the ordinary ring, like backend:attach " +
+			"beside it: a frame names ONE machine, so a latest-only slot " +
+			"would drop the first of two removals for a page that was " +
+			"reloading while both happened.",
+	},
+	{
+		Channel:   eventchan.ChatBarFavorites,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeSettingsRead,
+		Why: "The whole starred model / discussion list, byte-identical to " +
+			"what ListChatBarFavorites answers and what SetChatBarFavorite " +
+			"already returned to the client that wrote it. Scope " +
+			"settings:read because that read is settings:read: the list is " +
+			"a preference, and the push and the pull are refused to the " +
+			"same callers. Audience any — it is app state a second device " +
+			"renders in every model menu it opens, and withholding it only " +
+			"left that device starring into a list it could already read. " +
+			"Latest-only, and the membership rule holds: the channel is " +
+			"unkeyed and each frame REPLACES the list, so N retained " +
+			"frames are N stale copies of one answer.",
+	},
+	{
+		Channel:   eventchan.ChatBarNewThreadDefaults,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsOperate,
+		Why: "The model profile a future thread seeds from, plus the " +
+			"project whose open draft placeholders adopt it — the same " +
+			"pair UpdateNewThreadDefaults returns and applies locally, so " +
+			"the initiator's echo repeats an apply it already made. Scope " +
+			"threads:operate because GetThreadDefaults is threads:operate " +
+			"and it answers this exact shape. Audience any: a second " +
+			"device with a \"+ New\" composer open is about to create a " +
+			"thread with the superseded model, effort and runtime mode, " +
+			"which is the one thing the frame exists to stop. Ordinary " +
+			"ring rather than latest-only, because the frame is KEYED by " +
+			"project and a newest-frame slot would hide a change to any " +
+			"other one.",
+	},
+	{
 		Channel:   eventchan.BrowserCompanionState,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionEphemeral,
@@ -917,6 +1028,26 @@ var channelPolicies = []ChannelPolicy{
 			"Audience any because an import started from a device has to " +
 			"finish there — a progress bar frozen on its first frame reads as " +
 			"a hung run over one that completed.",
+	},
+	{
+		Channel:   eventchan.ReviewCommentsChanged,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "Names the inline-review comment SET a persisted write moved — " +
+			"a thread plus either a plan item or a diff scope and source " +
+			"key — and carries no comment body. It cannot carry one: " +
+			"deleting a comment is a delete-or-RESOLVE depending on whether " +
+			"it was already sent, so only a re-read says what the set now " +
+			"holds. Scope by the rule: ListProposedPlanComments and " +
+			"ListDiffReviewComments are the reads that answer the same data " +
+			"and both are threads:read; the writes sit a tier up in " +
+			"threads:operate, so a session told a set moved may read it a " +
+			"call later. Audience any because reviewing a diff from another " +
+			"device is one of the things that grant is for, and a comment " +
+			"list that never converges shows a resolved comment as open. " +
+			"Never latest-only: each frame names a DIFFERENT set, and the " +
+			"newest supersedes none of the others.",
 	},
 	{
 		Channel:   eventchan.ServiceUpdateOutcome,
@@ -1014,6 +1145,22 @@ var channelPolicies = []ChannelPolicy{
 			"same data class, the same terminal:operate gate, the same " +
 			"audience. A session that ended and never said so leaves a " +
 			"live-looking pane on every client that missed the frame.",
+	},
+	{
+		Channel:   eventchan.TerminalOpened,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeTerminalOperate,
+		Why: "The other half of terminal:exit: one frame per PTY this " +
+			"backend starts, carrying the terminal.SessionSummary " +
+			"ListTerminals answers with (id, thread, shell, cwd, size). Same " +
+			"data class, same terminal:operate gate, same audience as the " +
+			"pair it completes. Without it a second client drops every byte " +
+			"of a terminal it never saw open — appendOutput has no tab to " +
+			"put them on — and a surface that mounted empty opens a SECOND " +
+			"terminal beside the one already running. Never latest-only: " +
+			"each frame names a different session, and a dropped one is a " +
+			"terminal that stays invisible for its whole life.",
 	},
 	{
 		Channel:   eventchan.TerminalOutput,

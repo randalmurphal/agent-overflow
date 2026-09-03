@@ -4,7 +4,7 @@
 // switch resolves to (the picker closes only on true), and the optimistic
 // removal projection that keeps the active badge from blanking.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getProviderAccountActions,
   getProviderAccountGroups,
@@ -12,6 +12,7 @@ import {
   isProviderAccountsLoading,
   isProviderCredentialOpInFlight,
   loadProviderAccounts,
+  applyProviderAccountsChanged,
   applyProviderLogin,
   cancelProviderLogin,
   getProviderLogin,
@@ -679,5 +680,58 @@ describe('providerAccountActionLabel', () => {
     expect(
       providerAccountActionLabel(account({ displayName: 'Work', active: true, needsLogin: true })),
     ).toBe('Sign in again to Work');
+  });
+});
+
+// `provider:accounts_changed` is the SET moving on some client. Its own
+// channel rather than a reaction to `provider:account` (one card's CONTENTS,
+// fired on every usage probe): removing an account that was not the active one
+// published nothing at all, so the card stayed on every other client's
+// Settings screen until reload.
+describe('applyProviderAccountsChanged', () => {
+  it('re-lists, so a removal made elsewhere drops the card here', async () => {
+    let rows = [
+      account({ id: 'claude-a', displayName: 'Work', active: true }),
+      account({ id: 'claude-b', displayName: 'Personal' }),
+    ];
+    setBindingMock('ListProviderAccounts', async () => rows);
+    await loadProviderAccounts();
+    expect(getProviderAccountsFor('claude')).toHaveLength(2);
+
+    rows = [account({ id: 'claude-a', displayName: 'Work', active: true })];
+    applyProviderAccountsChanged();
+    await vi.waitFor(() => expect(getProviderAccountsFor('claude')).toHaveLength(1));
+    expect(getProviderAccountsFor('claude')[0]?.id).toBe('claude-a');
+  });
+
+  it('takes a switch made on another device, active badge and all', async () => {
+    let rows: ManagedProviderAccount[] = [
+      account({ id: 'claude-a', active: true }),
+      account({ id: 'claude-b' }),
+    ];
+    setBindingMock('ListProviderAccounts', async () => rows);
+    await loadProviderAccounts();
+    expect(getProviderAccount('claude')?.accountId).toBe('claude-a');
+
+    rows = [account({ id: 'claude-a' }), account({ id: 'claude-b', active: true })];
+    applyProviderAccountsChanged();
+    await vi.waitFor(() => expect(getProviderAccount('claude')?.accountId).toBe('claude-b'));
+  });
+
+  // The RPC needs `access:admin`, so an ungranted session would turn each
+  // frame into an unexplained error toast.
+  it('asks for nothing in a view-only session', async () => {
+    const list = setBindingMock('ListProviderAccounts', async () => [account()]);
+    setPageGrantsFromBootstrap(true);
+    try {
+      applyProviderAccountsChanged();
+      await Promise.resolve();
+      await Promise.resolve();
+    } finally {
+      setPageGrantsFromBootstrap(false);
+    }
+
+    expect(list).not.toHaveBeenCalled();
+    expect(toastMessages()).toHaveLength(0);
   });
 });

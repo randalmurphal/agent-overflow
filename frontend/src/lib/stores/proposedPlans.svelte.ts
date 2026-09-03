@@ -168,6 +168,24 @@ export async function refreshPlanComments(
   }
 }
 
+/**
+ * Re-read one plan's comment set after any client wrote to it, but only where
+ * this client is already holding it.
+ *
+ * The "only where held" half is the point: `refreshPlanComments` creates a
+ * cache entry, so reacting unconditionally would make every client hold a
+ * comment list for every plan anyone commented on, on a channel that is
+ * wildcard rather than thread-filtered.
+ */
+export async function resyncPlanComments(
+  threadId: string | null | undefined,
+  planItemId: string | null | undefined,
+): Promise<void> {
+  if (!threadId || !planItemId) return;
+  if (!commentCache[commentCacheKey(threadId, planItemId)]) return;
+  await refreshPlanComments(threadId, planItemId);
+}
+
 function evictOldPlanCacheEntries(): void {
   const entries = Object.entries(cache);
   if (entries.length <= MAX_CACHED_THREADS) return;

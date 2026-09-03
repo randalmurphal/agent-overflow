@@ -239,6 +239,8 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	reconcileLocked = false
 	m.invalidateProviderAccountProbe(providerName, binary)
 	m.emitProviderAccount(providerName, account, info, generation)
+	// A sign-in adds a card, which no per-account frame can express.
+	m.emitProviderAccountsChanged()
 	m.applySelection(providerName, generation, account.ID)
 	if err := m.RefreshProviderAccountUsage(providerName, account.ID); err != nil {
 		// Login and activation succeeded. Quota refresh is independently

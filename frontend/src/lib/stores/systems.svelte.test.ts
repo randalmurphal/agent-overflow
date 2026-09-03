@@ -8,6 +8,7 @@ import {
   __resetSystemsForTest,
   addSystem,
   applyBackendAttach,
+  applyBackendSetChange,
   getPendingAttachments,
   getSystems,
   loadSystems,
@@ -122,5 +123,61 @@ describe('systems store', () => {
     expect(systemLabel(getSystems()[0])).toBe('Work laptop');
     expect(systemLabel({ id: 'x', name: 'Named', nickname: '' })).toBe('Named');
     expect(systemLabel({ id: 'x', name: '', nickname: '' })).toBe('x');
+  });
+
+  // `backend:attach` reported only how a pairing ENDED, so a removal or a
+  // rename made in one window left every other page on this host showing a
+  // machine that is gone, or the superseded nickname, until reload.
+  it('drops a row another page removed', async () => {
+    stageBackend();
+    setBindingMock('ListBackends', async () => [LAPTOP]);
+    await loadSystems();
+
+    applyBackendSetChange({ action: 'removed', id: 'laptop' });
+
+    expect(getSystems()).toEqual([]);
+    // The same purge a local removeSystem does: the door is closed too, not
+    // just the row forgotten.
+    expect(attachedBackends().some((b) => b.id === 'laptop')).toBe(false);
+  });
+
+  it('takes a rename another page made', async () => {
+    setBindingMock('ListBackends', async () => [LAPTOP]);
+    await loadSystems();
+
+    applyBackendSetChange({ action: 'renamed', id: 'laptop', nickname: 'Work laptop' });
+
+    expect(systemLabel(getSystems()[0])).toBe('Work laptop');
+  });
+
+  it('clears a nickname a rename emptied', async () => {
+    setBindingMock('ListBackends', async () => [{ ...LAPTOP, nickname: 'Old' }]);
+    await loadSystems();
+
+    applyBackendSetChange({ action: 'renamed', id: 'laptop' });
+
+    expect(systemLabel(getSystems()[0])).toBe('Laptop');
+  });
+
+  // The event hub subscribes EVERY attached backend, and these four RPCs act
+  // on THIS machine's profile directory: another backend's frame names an id
+  // in its own directory, which would drop the wrong row here.
+  it('refuses a frame that did not come from home', async () => {
+    setBindingMock('ListBackends', async () => [LAPTOP]);
+    await loadSystems();
+
+    applyBackendSetChange({ action: 'removed', id: 'laptop' }, 'desktop');
+
+    expect(getSystems().map((s) => s.id)).toEqual(['laptop']);
+  });
+
+  it('ignores an unnamed row and an action it does not know', async () => {
+    setBindingMock('ListBackends', async () => [LAPTOP]);
+    await loadSystems();
+
+    applyBackendSetChange({ action: 'removed', id: '' });
+    applyBackendSetChange({ action: 'attached' as never, id: 'laptop' });
+
+    expect(getSystems().map((s) => s.id)).toEqual(['laptop']);
   });
 });

@@ -117,6 +117,22 @@ export async function deleteDiffReviewComment(
   await refreshDiffReviewComments(threadId, scope, sourceKey);
 }
 
+/**
+ * Re-read one diff-review set after any client wrote to it, but only where
+ * this client is already holding it — `refreshDiffReviewComments` creates the
+ * cache entry, so an unconditional reaction would make every client cache
+ * every set anyone comments on.
+ */
+export async function resyncDiffReviewComments(
+  threadId: string | null | undefined,
+  scope: DiffReviewScope | null | undefined,
+  sourceKey: string | null | undefined,
+): Promise<void> {
+  if (!threadId || !scope || !sourceKey) return;
+  if (!commentsBySource.has(cacheKey(threadId, scope, sourceKey))) return;
+  await refreshDiffReviewComments(threadId, scope, sourceKey);
+}
+
 export function replaceDiffReviewCommentsForTest(
   threadId: string,
   scope: DiffReviewScope,

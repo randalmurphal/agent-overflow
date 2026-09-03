@@ -217,6 +217,44 @@ export function setEditorPreference(id: string): Promise<void> {
   return mutation;
 }
 
+/**
+ * Re-read the saved default after a settings write moved the `editor` key —
+ * on this client or any other.
+ *
+ * The preference is a settings value with its own RPC, and this store held it
+ * behind a 60-second catalog TTL with nothing invalidating it, so a change
+ * made anywhere else left every open header icon pointing at the previous
+ * editor for up to a minute (and forever, on a store whose TTL kept being
+ * refreshed by an unrelated load).
+ *
+ * Only the PREFERENCE is re-read. The catalog is a PATH and /mnt/c walk and
+ * nothing about a settings write changes what is installed, so refetching it
+ * here would spend the expensive half of the load for the cheap half's
+ * answer.
+ *
+ * Three skips, each of which is a real bug without it: no snapshot yet (the
+ * first consumer's own load will read it), a local write still in flight (the
+ * pending value is newer than anything the backend can answer with), and a
+ * preference revision that moved across the await (same reason, one lap
+ * later).
+ */
+export async function resyncEditorPreference(): Promise<void> {
+  if (!hasSnapshot || pendingPreferenceMutations > 0) return;
+  const epoch = storeEpoch;
+  const revisionAtStart = preferenceRevision;
+  try {
+    const current = await GetEditorSettings();
+    if (storeEpoch !== epoch) return;
+    if (preferenceRevision !== revisionAtStart || pendingPreferenceMutations > 0) return;
+    preference = (current as { preference?: string } | null)?.preference ?? '';
+    persistedPreference = preference;
+  } catch (err) {
+    // The catalog on screen is still valid; a failed re-read leaves the
+    // previous preference rather than blanking a working picker.
+    console.error('Failed to re-read the editor preference:', err);
+  }
+}
+
 onTransportStatusChange((next) => {
   if (next.status !== 'connected' || !retryAfterReconnect || inflight) return;
   retryAfterReconnect = false;

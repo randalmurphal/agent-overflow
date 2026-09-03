@@ -531,10 +531,6 @@ export function applyImportProgress(evt: SessionImportProgressEvent): void {
     current.terminal = true;
     current.active = false;
     current.stopRequested = false;
-    // Imported threads and auto-created projects arrive without per-row
-    // thread:updated events (replaceThread only maps rows the sidebar already
-    // has), so the sidebar learns about them from a merge-aware resync.
-    refreshSidebarProjections();
     settleFinishedRun(current);
   }
 }
@@ -622,6 +618,11 @@ export function markImportConnectionLost(): void {
   // The gap hides what the run got through, so the catalog cannot be
   // trusted to still be an accurate offer.
   catalogStale = true;
+  // A gap also means the imported rows' own `project:updated` /
+  // `thread:updated` frames were among the ones dropped, and those are the
+  // only thing that puts an imported thread in the sidebar. This is the one
+  // place a whole-list resync is still owed: on the ordinary path the
+  // per-row frames arrive and this call would repeat them.
   refreshSidebarProjections();
 }
 

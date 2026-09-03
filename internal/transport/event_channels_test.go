@@ -60,6 +60,11 @@ var (
 		// to another machine is something only the person at this keyboard
 		// does, and the frame names a machine they work on.
 		"backend:attach",
+		// 2026-09-03 (the convergence wave): a removal or a rename of an
+		// attached machine, same posture as backend:attach — the four RPCs
+		// that move the set are `host` and act on this process's own
+		// profile directory.
+		"backend:set-changed",
 		"browser:companion-state",  // local URLs and file paths
 		"browser:host",             // 2026-08-31: launcher pane directive, same posture as webview:trim
 		"harness:mock",             // 2026-08-25 pass
@@ -117,6 +122,13 @@ var (
 		"updater:progress", // 2026-08-25 pass
 		"workflow:definitions-changed",
 		"workflow:engine-state", // 2026-08-25 pass
+		// 2026-09-03 (the convergence wave): each an UNKEYED whole-answer or
+		// payload-less refetch nudge, so N retained frames would be N
+		// identical refetches — the same membership as spinner:changed.
+		"chatbar:favorites",
+		"discussion:definitions-changed",
+		"keybindings:updated",
+		"provider:accounts_changed",
 	}
 	// Wave 6d, extended in 6d2. Membership means a watching connection
 	// stops receiving the channel for threads it did not name, so a row
