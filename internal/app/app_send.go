@@ -841,13 +841,11 @@ func (a *App) resolveSendMessageAttachments(threadID string, attachmentIDs []str
 		if pathOnly {
 			att.Path = path
 		} else {
-			// Headless Claude has no local-path image source on the Anthropic
-			// API, so it base64-encodes the bytes inline. The bytes come
-			// through ReadThreadBytes rather than off `path`, because that
-			// accessor is the ONE place "only an image's bytes are ever
-			// read" is enforced; the cost is a second single-row metadata
-			// lookup, against a read of up to 10 MiB, on a send that
-			// carries attachments at all.
+			// The inline bytes come through ReadThreadBytes rather than off
+			// `path`, because that accessor is the ONE place "only an
+			// image's bytes are ever read" is enforced; the cost is a second
+			// single-row metadata lookup, against a read of up to 10 MiB, on
+			// a send that carries attachments at all.
 			if _, att.Data, err = a.attachments.ReadThreadBytes(threadID, attachmentID); err != nil {
 				return turnAttachments{}, err
 			}
@@ -870,8 +868,12 @@ func appendFileAttachmentLines(providerContent string, fileLines []string) strin
 	if len(fileLines) == 0 {
 		return providerContent
 	}
+	size := len(providerContent) + 2
+	for _, line := range fileLines {
+		size += len(line) + 1
+	}
 	var b strings.Builder
-	b.Grow(len(providerContent) + 2 + len(fileLines)*96)
+	b.Grow(size)
 	b.WriteString(providerContent)
 	b.WriteString("\n\n")
 	for i, line := range fileLines {
