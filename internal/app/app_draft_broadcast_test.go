@@ -145,9 +145,9 @@ func TestDraftWritesBroadcastAndCarryTheWriter(t *testing.T) {
 		}
 	})
 
-	// Content never rides the channel: GetDraft is loopback-only for the
-	// disclosure reason, and a push carrying the text would be the way around
-	// that. Receivers re-read instead.
+	// Content never rides the channel: GetDraft takes `threads:operate` for
+	// the disclosure reason, and a push carrying the text would be the way
+	// around the grant that read enforces. Receivers re-read instead.
 	t.Run("the frame carries no draft text", func(t *testing.T) {
 		app := draftTestApp(t, "thr-1")
 		broadcasts := captureDraftBroadcasts(t, app)

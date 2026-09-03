@@ -26,9 +26,9 @@ import (
 //     anywhere else in the app: the composer autosaves, so a buffer nobody
 //     touched would otherwise wake every attached client on a timer.
 //   - The frame carries the thread, the timestamp and WHO wrote it — never the
-//     draft text. Receivers re-read through GetDraft, which is loopback-only
-//     for the disclosure reason; a push carrying the text would be the way
-//     around that.
+//     draft text. Receivers re-read through GetDraft, which takes
+//     `threads:operate` for the disclosure reason; a push carrying the text
+//     would be the way around the grant that read enforces.
 //
 // Last write wins, and the losing client finds out: there is no merge here and
 // no lock. Two screens typing into one composer is a state the app can report

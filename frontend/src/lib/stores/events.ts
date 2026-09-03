@@ -497,8 +497,9 @@ export function setupEventListeners(): () => void {
 
   // worktree:setup — the per-project setup recipe streaming over a worktree a
   // chat thread just had cut. Its own channel because only the setup panel
-  // consumes it and its frames carry local command output (transport keeps it
-  // loopback-only). GetThreadWorktreeSetup is the reconnect companion; see
+  // consumes it, and its frames carry local command output, so transport
+  // gates it on `terminal:operate` — the same grant
+  // GetThreadWorktreeSetup takes. That read is the reconnect companion; see
   // stores/worktreeSetup.svelte.ts for the sequence/hydration contract.
   const cancelWorktreeSetup = wailsEventOn<WorktreeSetupEvent>(
     'worktree:setup',

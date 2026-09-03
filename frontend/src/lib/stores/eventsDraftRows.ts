@@ -20,9 +20,9 @@ function ingestPanes(): Iterable<ThreadPaneIngest> {
 /**
  * `draft:updated` — the thread's draft row moved, and this is who moved it.
  *
- * Carries no draft text: `GetDraft` is loopback-only because a composer holds
- * in-progress user work, and a push carrying that text would be the one path
- * around it. The frame is a re-read nudge.
+ * Carries no draft text: `GetDraft` takes `threads:operate` because a composer
+ * holds in-progress user work, and a push carrying that text would be the one
+ * path around the grant that read enforces. The frame is a re-read nudge.
  */
 export interface DraftUpdatedEvent {
   threadId: string;

@@ -65,13 +65,29 @@ type Audience uint8
 const (
 	// AudienceAny reaches every connected client, loopback or LAN.
 	AudienceAny Audience = iota
-	// AudienceLoopbackOnly reaches loopback connections only. For frames
-	// carrying local filesystem paths, local-terminal bytes, provider
-	// identity/billing data, or imperative host directives. Note this is a
-	// THIRD DOOR concern independently of the per-call scope gate: a
-	// channel's RPCs being `host`-scoped stops an off-host session arming
-	// the stream, but once a local pane subscribes the push side fans out
-	// to every subscriber regardless of who armed it.
+	// AudienceLoopbackOnly reaches loopback connections only. It is for
+	// frames whose ONLY legitimate consumer is a process on this host:
+	// launcher directives (the sleep inhibitor, the browser pane, the
+	// binary swap, the renderer trim), harness tooling, and the desktop
+	// self-updater's own lifecycle.
+	//
+	// It is NOT a disclosure control for thread or workspace state. Since
+	// wave 6d1 every off-host connection names a session, so SCOPE is the
+	// gate for that state — a channel carrying it rides the scope its pull
+	// RPC carries, and the audience is `any` because a session granted
+	// that scope is granted the state. Wave 6d2 deleted the per-method
+	// local-only table, and nineteen rows here went on citing it for another
+	// three months: a phone could call RegisterQueueItem, RespondToApproval,
+	// GetGitStatus and OpenTerminal while every matching push was withheld,
+	// so it showed stale queue rows, never saw an approval prompt live, and
+	// got a terminal with no output (re-adjudicated 2026-09-03).
+	//
+	// The column still exists for the directive channels because it is a
+	// THIRD DOOR independently of the per-call scope gate: a channel's RPCs
+	// being `host`-scoped stops an off-host session arming the stream, but
+	// once a local pane subscribes the push side fans out to every
+	// subscriber regardless of who armed it. Those rows carry `host` on
+	// Scope AND loopback-only here, so neither has to be the only answer.
 	AudienceLoopbackOnly
 	// AudienceRemoteOnly reaches non-loopback connections only. For frames
 	// that exist purely to hide WAN round-trip latency and are pure waste
@@ -263,31 +279,37 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.DraftUpdated,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeThreadsOperate,
 		Why: "Names a thread whose composer draft moved and the screen that " +
 			"moved it; the draft TEXT never rides it, because receivers " +
-			"re-read through GetDraft. Loopback-only regardless: GetDraft / " +
-			"SaveDraft / ClearDraft are all CategorySessionControl for the " +
-			"disclosure reason (in-progress user-typed work), and a push " +
-			"telling a LAN peer WHICH thread someone is typing in is the " +
-			"same class of answer one turn smaller. Never latest-only: a " +
-			"clear and a save are different edges on the same thread, and " +
-			"collapsing them loses the one the client needed.",
+			"re-read through GetDraft. Scope is the gate: GetDraft / " +
+			"SaveDraft / ClearDraft are all threads:operate for the " +
+			"disclosure reason (in-progress user-typed work), so the only " +
+			"session told WHICH thread someone is typing in is one that may " +
+			"read the text a call later — the push is not a way around the " +
+			"pull. Audience any because that is the grant: a phone sharing " +
+			"the composer converges on the same draft, and one that hears " +
+			"nothing overwrites the work the desk just saved. Never " +
+			"latest-only: a clear and a save are different edges on the same " +
+			"thread, and collapsing them loses the one the client needed.",
 	},
 	{
 		Channel:   eventchan.GitStatus,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeGitOperate,
 		Why: "Addressed by the CANONICAL ABSOLUTE workspace path (it has to " +
 			"be — one frame serves every pane on that worktree), so every " +
-			"frame discloses where the user's repositories live on disk. " +
-			"Load-bearing for path disclosure, not merely sparing a LAN peer " +
-			"the watcher cost: GitStatusSubscribe is LocalOnly so a remote " +
-			"peer cannot arm the stream, but once a local pane does, the push " +
-			"side reaches every subscriber. Keyed by cwd — never latest-only.",
+			"frame discloses where the user's repositories live on disk. That " +
+			"disclosure is exactly what git:operate grants, and the Scope " +
+			"column is the gate: GetGitStatus returns the same paths and the " +
+			"same porcelain, so the push cannot reach a session the pull " +
+			"would refuse. Audience any because a review pane on a phone has " +
+			"to see the working tree move as it moves; a stale file list is " +
+			"what a commit gets built from. Keyed by cwd — never " +
+			"latest-only.",
 	},
 	{
 		Channel:   eventchan.HarnessMock,
@@ -389,25 +411,31 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.MCPOAuthCompleted,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeSettingsWrite,
 		Why: "Carries provider-reported MCP error strings verbatim " +
 			"(sanitizeMCPError bounds length and collapses newlines — it does " +
 			"not redact, and an `invalid_grant` body can quote token " +
-			"material). Every MCP RPC is LocalOnly, so a LAN peer can neither " +
-			"list nor act on MCP servers and these frames buy it nothing; " +
-			"keeping the push side loopback-only closes the third door.",
+			"material). Scope is the gate, and it is the WRITE tier for that " +
+			"reason: every MCP RPC is settings:write (GetMcpServerStatus, " +
+			"TriggerMcpAuth, ReconnectMcpServer), so the only session told how " +
+			"a sign-in ended is one that could have started it. Audience any " +
+			"because an MCP sign-in opens a browser, and on a headless host " +
+			"the browser is on the device that asked — the frame that says it " +
+			"worked has to reach the same screen.",
 	},
 	{
 		Channel:   eventchan.MCPStatus,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeSettingsWrite,
-		Why: "Same disclosure class as mcp:oauth-completed — verbatim " +
-			"provider MCP error strings, with every MCP RPC already LocalOnly. " +
-			"Keyed by server, so it must never become latest-only: capacity 1 " +
-			"would evict other servers' latest frames.",
+		Why: "Same disclosure class and same gate as mcp:oauth-completed — " +
+			"verbatim provider MCP error strings, reaching the settings:write " +
+			"sessions that ListMcpServerStatuses already answers, which is " +
+			"what makes the MCP panel render at all on a paired device. Keyed " +
+			"by server, so it must never become latest-only: capacity 1 would " +
+			"evict other servers' latest frames.",
 	},
 	{
 		Channel:   eventchan.NotificationActivated,
@@ -469,16 +497,18 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.PRUpdated,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeGitOperate,
 		Why: "Carries a pull request's full detail and every review thread on " +
 			"it — private-repo titles, branch names, reviewer logins and " +
-			"comment bodies — plus a poll-failure summary. Every one of its " +
-			"RPCs (SubscribePRUpdates / UnsubscribePRUpdates / " +
-			"SetPRUpdatesActive) is LocalOnly, so a LAN peer can neither arm " +
-			"nor pause the stream, but once a local pane subscribes the pump " +
-			"emits to every subscriber: the push side is the third door.",
+			"comment bodies — plus a poll-failure summary. Scope is the gate: " +
+			"SubscribePRUpdates / UnsubscribePRUpdates / SetPRUpdatesActive " +
+			"are all git:operate and the subscribe call ANSWERS with this same " +
+			"detail, so the push reaches exactly the sessions the pull does. " +
+			"Audience any because reading a review away from the desk is one " +
+			"of the things that grant is for, and a PR pane that never hears " +
+			"a new comment presents a stale review as a live one.",
 	},
 	{
 		Channel:   eventchan.ProjectUpdated,
@@ -525,22 +555,34 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.ProviderApproval,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeApprovalsRespond,
 		Why: "Tool-use approval requests quote the exact command line, file " +
 			"path, or patch the provider wants to run against the user's " +
-			"machine. Approving is RCE-equivalent and the resolve RPCs are " +
-			"LocalOnly; the request side stays loopback-only to match.",
+			"machine, and approving is equivalent to running it. Scope is the " +
+			"gate, and it is its own capability rather than a shade of " +
+			"threads:read for exactly that reason: approvals:respond is what " +
+			"RespondToApproval carries, so the prompt reaches precisely the " +
+			"sessions that could answer it and no observe-tier device is " +
+			"shown one at all. Audience any because answering every approval " +
+			"from the phone is the feature (spec §9): a prompt that arrives " +
+			"only at the desk is a turn that waits until somebody walks back " +
+			"to it.",
 	},
 	{
 		Channel:   eventchan.ProviderBackgroundTaskState,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeThreadsRead,
-		Why: "Background terminal/task state carries the local command and " +
-			"its output-derived state — the same local-execution data class as " +
-			"terminal:output.",
+		Why: "Background terminal/task state: the local command and its " +
+			"output-derived state. Scope is the gate, and threads:read is the " +
+			"honest one — the same command lines already reach the same grant " +
+			"on provider:item_event, which is where a reader sees them first, " +
+			"so this discloses nothing the transcript does not. Audience any " +
+			"because the activity rail renders it wherever the thread is " +
+			"open, and a task that never leaves `running` on the phone is a " +
+			"workspace lock nobody can clear.",
 	},
 	{
 		Channel:   eventchan.ProviderBackgroundTasksChanged,
@@ -554,15 +596,19 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.ProviderCommandLifecycle,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeThreadsRead,
-		Why: "Queue UX is loopback: GetQueueState and every queue RPC are " +
-			"LocalOnly, and the provider:queue_* siblings are already " +
-			"loopback-only — a remote peer cannot render the rows these " +
-			"frames label. States are a progression (queued→started→" +
-			"terminal) correlated by userItemId, so every frame matters: " +
-			"never latest-only or ephemeral.",
+		Why: "Ids and enums only — thread, command uuid, user item id, state, " +
+			"delivery — never a message body; the bodies ride the " +
+			"provider:queue_* siblings at threads:operate. threads:read is " +
+			"therefore the observe-tier scope a client needs to render the " +
+			"queue rows this frame LABELS, and the label discloses nothing the " +
+			"row it labels does not. Audience any because the phone shows " +
+			"those rows: a state that never advances reads as a wedged send. " +
+			"States are a progression (queued→started→terminal) correlated by " +
+			"userItemId, so every frame matters: never latest-only or " +
+			"ephemeral.",
 	},
 	{
 		Channel:   eventchan.ProviderCommands,
@@ -633,33 +679,53 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.ProviderQueueFlushed,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeThreadsOperate,
 		Why: "Per-thread flush-queue frames carry the queued user message " +
-			"bodies and their attachment metadata (local file names), and the " +
-			"queue-mutating RPCs are LocalOnly.",
+			"bodies and their attachment metadata (local file names). Scope is " +
+			"the gate: GetQueueState returns the same bodies and " +
+			"RegisterQueueItem puts them there, both threads:operate, so the " +
+			"push reaches the sessions the pull answers and no others. " +
+			"Audience any because a queue row the phone cannot see is a " +
+			"message the user believes was dropped.",
 	},
 	{
 		Channel:   eventchan.ProviderQueueRestored,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeThreadsOperate,
-		Why:       "Same payload class as provider:queue_flushed — queued user message bodies restored into the composer.",
+		Why: "Same payload class, same gate and same audience as " +
+			"provider:queue_flushed — queued user message bodies restored " +
+			"into the composer, reaching the threads:operate sessions " +
+			"GetQueueState already answers. A client that misses it holds a " +
+			"queue row the backend has already moved back into the draft.",
 	},
 	{
 		Channel:   eventchan.ProviderQueueStateChanged,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeThreadsOperate,
-		Why:       "Same payload class as provider:queue_flushed — the queue snapshot it announces carries the queued message bodies.",
+		Why: "Same payload class, same gate and same audience as " +
+			"provider:queue_flushed — the queue snapshot it announces carries " +
+			"the queued message bodies, and GetQueueState is the " +
+			"threads:operate read that returns them. This is the frame a " +
+			"second screen converges its composer queue on, so withholding it " +
+			"is what left a phone showing rows that had already been sent.",
 	},
 	{
 		Channel:   eventchan.ProviderSessionAccount,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeAccessAdmin,
-		Why:       "Per-session binding of a thread to a provider account identity; same identity class as provider:account.",
+		Why: "Per-session binding of a thread to a provider account identity; " +
+			"same identity class as provider:account and the same gate — " +
+			"access:admin is what ListProviderAccounts carries, so the push " +
+			"names an account only to a session that may already enumerate " +
+			"them. Audience any for the reason provider:account is: a remote " +
+			"admin device is where a provider sign-in happens on a headless " +
+			"host, and which account a thread is spending is how that device " +
+			"confirms the switch took.",
 	},
 	{
 		Channel:   eventchan.ProviderSessionDied,
@@ -720,14 +786,17 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.ProviderTerminalOutput,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeTerminalOperate,
 		Why: "Raw PTY bytes of a claude-tui take-control session — command " +
 			"output, file contents, anything on the TUI's screen — the same " +
-			"data class as terminal:output. The ProviderTerminal* RPCs are " +
-			"LocalOnly, so a LAN peer cannot arm the fan-out, but once a local " +
-			"pane attaches the sink emits to every subscriber.",
+			"data class as terminal:output. Scope is the gate: " +
+			"ProviderTerminalReplay returns these same bytes and " +
+			"ProviderTerminalAttach / Write drive the same PTY, all " +
+			"terminal:operate, so the push cannot reach a session the replay " +
+			"would refuse. Audience any because the phone has a terminal " +
+			"(spec §9) and take-control without output is a blank screen.",
 	},
 	{
 		Channel:   eventchan.ProviderTodoUpdate,
@@ -770,12 +839,22 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.ProviderUserInput,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeThreadsRead,
 		Why: "Interactive provider questions quote whatever the provider is " +
-			"asking about — local paths, command lines, file content — and the " +
-			"answer RPCs are LocalOnly. Same class as provider:approval.",
+			"asking about — local paths, command lines, file content — which " +
+			"is the same content the transcript carries to the same grant on " +
+			"provider:item_event, and that is what threads:read covers. " +
+			"Audience any because a question nobody sees is a turn that never " +
+			"finishes, and answering from the phone is the point (spec §9). " +
+			"READING and ANSWERING are deliberately different grants on this " +
+			"one: RespondToUserInput is approvals:respond, so an observe-tier " +
+			"device sees the question and is refused the answer. That is the " +
+			"asymmetry a viewer needs — a turn parked on a question it cannot " +
+			"see is a turn that looks hung — whereas provider:approval quotes " +
+			"a command the viewer has no business reading before it runs, so " +
+			"it carries approvals:respond on both halves.",
 	},
 	{
 		Channel:   eventchan.BackendAttach,
@@ -826,14 +905,18 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.SessionImportProgress,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeThreadsOperate,
 		Why: "Reports on files in the user's provider homes: each frame names " +
 			"the scan row it settled, and a failure carries the reader's own " +
-			"message, which quotes the absolute transcript path. Its RPCs are " +
-			"all LocalOnly, so keeping the push side loopback-only closes the " +
-			"third door.",
+			"message, which quotes the absolute transcript path. Scope is the " +
+			"gate: ListImportableSessions returns those same rows and paths " +
+			"and ImportSessions starts the run, both threads:operate, so the " +
+			"progress reaches the sessions the listing already answers. " +
+			"Audience any because an import started from a device has to " +
+			"finish there — a progress bar frozen on its first frame reads as " +
+			"a hung run over one that completed.",
 	},
 	{
 		Channel:   eventchan.ServiceUpdateOutcome,
@@ -924,17 +1007,26 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.TerminalExit,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeTerminalOperate,
-		Why:       "Local PTY session lifecycle; paired with terminal:output and the same local-execution class.",
+		Why: "Local PTY session lifecycle; paired with terminal:output, the " +
+			"same data class, the same terminal:operate gate, the same " +
+			"audience. A session that ended and never said so leaves a " +
+			"live-looking pane on every client that missed the frame.",
 	},
 	{
 		Channel:   eventchan.TerminalOutput,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeTerminalOperate,
-		Why:       "Raw local PTY bytes — command output, file contents, anything on the terminal's screen.",
+		Why: "Raw local PTY bytes — command output, file contents, anything " +
+			"on the terminal's screen. Scope is the gate: GetTerminalReplay " +
+			"returns the same bytes and OpenTerminal / WriteTerminal drive the " +
+			"same PTY, all terminal:operate, so the push discloses nothing the " +
+			"replay would not to the same session. Audience any because the " +
+			"phone has a terminal (spec §9), and a terminal that shows no " +
+			"output is not one.",
 	},
 	{
 		Channel:   eventchan.ThemeChanged,
@@ -1097,14 +1189,20 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.UsageThreadCost,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeThreadsRead,
-		Why: "threadId-only nudge, but both RPCs it triggers " +
-			"(GetThreadContextUsage, GetCodexAccountUsage) are LocalOnly — " +
-			"a remote peer receiving it cannot act on it, so frames off " +
-			"loopback are pure waste (mcp:status reasoning). Keyed per " +
-			"thread.",
+		Why: "threadId-only nudge: no figure rides it, receivers re-read. " +
+			"Scope is the gate and it matches the read the nudge actually " +
+			"causes — the handler bumps a version the usage surfaces refetch " +
+			"GetUsageStats on, and that is threads:read too, so the push and " +
+			"its pull need the same grant. (The two exact reads a user can " +
+			"reach by hand sit higher — GetThreadContextUsage at " +
+			"threads:operate, GetCodexAccountUsage at access:admin — and both " +
+			"are scope-gated or silently caught on the client, so a device " +
+			"holding only threads:read is never shown a refusal it did not " +
+			"ask for.) Audience any because a context meter that never moves " +
+			"is a wrong number presented as a live one. Keyed per thread.",
 	},
 	{
 		Channel:   eventchan.UserMessageReverted,
@@ -1209,16 +1307,20 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   eventchan.WorktreeSetup,
-		Audience:  AudienceLoopbackOnly,
+		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeTerminalOperate,
 		Why: "Streams the stdout/stderr of the project's own setup commands " +
 			"running against the user's checkout — the same data class as " +
 			"terminal:output, and it can carry anything a build or install " +
-			"script prints, tokens in an env dump included. Its RPCs are " +
-			"LocalOnly in both key spaces (the thread pair and the workspace " +
-			"pair for pre-thread runs), so keeping the push side loopback-only " +
-			"closes the third door.",
+			"script prints, tokens in an env dump included. Scope is the gate " +
+			"and terminal:operate is what that content is worth: " +
+			"GetThreadWorktreeSetup returns the same buffered output in both " +
+			"key spaces (the thread pair, and the workspace pair for " +
+			"pre-thread runs), so the stream reaches the sessions the read " +
+			"answers. Audience any because a worktree cut from the phone has " +
+			"to show its setup running, or the thread looks wedged for as " +
+			"long as the recipe takes.",
 	},
 }
 

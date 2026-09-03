@@ -171,9 +171,9 @@ const store = createEntityStore<WorkspaceActivity, void>({
       // Background-task state events fire on host-process exit
       // (state=exited) and on agent-observation drain (state=drained). Both
       // transitions can flip the lock if a backgrounded task drops out of
-      // the live set. Loopback-only (it names the local command), so this
-      // one is a local-client refinement on top of the nudge above rather
-      // than coverage of its own.
+      // the live set. Gated on `threads:read`, which every client that can
+      // read the thread already holds, so this one reaches the same clients
+      // as the nudge above and refines it rather than replacing it.
       wailsEventOn('provider:background_task_state', () => refresh.request()),
     ];
     let released = false;

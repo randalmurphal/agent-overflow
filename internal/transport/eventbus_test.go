@@ -1035,9 +1035,14 @@ func TestEventBus_ConcurrentSameChannelEmit_PreservesLiveSequence(t *testing.T) 
 // subscribers.
 func TestEventBus_SubscriberOriginFilterAtEnqueue(t *testing.T) {
 	channels := []string{
-		"terminal:output", // loopback-only
-		"highlight:seed",  // remote-only
-		"thread:update",   // universal
+		// backend:attach, not one of the state channels: loopback-only is
+		// a host-directive residue now (see
+		// TestLoopbackOnlyIsForHostDirectivesOnly), and this fixture needs
+		// a member of each class with the DEFAULT retention so every
+		// channel below is really retained and really drained.
+		"backend:attach", // loopback-only
+		"highlight:seed", // remote-only
+		"thread:updated", // universal
 	}
 	cases := []struct {
 		name     string

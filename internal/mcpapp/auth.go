@@ -80,11 +80,12 @@ func (a *Service) triggerMcpAuth(threadID, name string) (MCPAuthInitResult, erro
 // sanitizeMCPError bounds an error string surfaced by a provider's
 // MCP channel before it lands on the wire (mcp:status,
 // mcp:oauth-completed, provider:item_event) or in a user-facing
-// toast. mcp:status and mcp:oauth-completed are loopback-only
-// (internal/transport/event_visibility.go — every MCP RPC is LocalOnly,
-// so the push side is the third door), but provider:item_event and
-// toasts are not, and the bound also keeps a provider's stderr dump out
-// of the UI wholesale. The Claude CLI and Codex app-server both inherit
+// toast. Every one of those three reaches any connected client whose
+// session holds the channel's scope — settings:write for the two MCP
+// channels, threads:read for the timeline — so this is the only bound
+// between a provider's stderr and a screen that may not be on this
+// machine. It also keeps a stderr dump out of the UI wholesale. The
+// Claude CLI and Codex app-server both inherit
 // AO's `os.Environ()` (intentionally — env vars resolve MCP
 // bearer-token indirection), so a future provider panic that dumped its
 // env could otherwise channel a token through verbatim. 256B + newline

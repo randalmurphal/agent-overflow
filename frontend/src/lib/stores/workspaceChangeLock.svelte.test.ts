@@ -437,9 +437,11 @@ describe('createWorkspaceChangeLockState', () => {
     expect(workspaceChangeLockKeys()).toEqual([]);
   });
 
-  // GetWorkspaceActivity is loopback-only. A remote session's refusal is
-  // permanent, so the fail-safe posture holds (unverified is locked) but the
-  // reason must say why instead of leaking the transport's own shape.
+  // A backend that does not register GetWorkspaceActivity at all refuses it
+  // for good on this connection (a session merely lacking `git:operate` is
+  // stopped by the scope check before any call). The fail-safe posture
+  // holds (unverified is locked) but the reason must say why instead of
+  // leaking the transport's own shape.
   it('reads as locked with the local-only reason when the backend refuses the call', async () => {
     setBindingMock('GetWorkspaceActivity', async () => {
       throw Object.assign(new Error('method not registered'), { code: 'method_not_found' });

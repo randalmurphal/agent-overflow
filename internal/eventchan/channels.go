@@ -24,8 +24,9 @@ const (
 
 // draft:* — one frame per persisted composer-draft write, naming the thread
 // and the screen that wrote it. Carries no draft TEXT: receivers re-read
-// through GetDraft, which takes `threads:operate` for the same reason this
-// channel is loopback-only (in-progress user-typed work).
+// through GetDraft, which takes `threads:operate` for the disclosure reason
+// (in-progress user-typed work) and is the same grant the registry gates
+// this channel on.
 const (
 	DraftUpdated Channel = "draft:updated"
 )
@@ -147,7 +148,8 @@ const (
 
 // session-import:* — one frame per session an import run finishes, plus
 // exactly one terminal frame. The frames name provider-home file paths,
-// which is why the registry keeps the channel loopback-only.
+// which is why the registry gates the channel on `threads:operate` — the
+// grant ListImportableSessions and ImportSessions already carry.
 const (
 	SessionImportProgress Channel = "session-import:progress"
 )
@@ -268,7 +270,7 @@ const (
 // worktree:* — per-project worktree setup command output. Its own
 // channel rather than a phase discriminator on an existing one: only the
 // setup panel subscribes, and the frames carry local command output (the
-// registry keeps it loopback-only, like terminal:output).
+// registry gates it on `terminal:operate`, like terminal:output).
 const (
 	WorktreeSetup Channel = "worktree:setup"
 )

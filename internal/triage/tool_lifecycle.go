@@ -999,9 +999,9 @@ func (r *Router) stashBackgroundTaskTerminal(evt provider.ProviderEvent, meta ba
 		State:     "exited",
 		UpdatedAt: now,
 	})
-	// The state event above is loopback-only (it names the local command's
-	// output-derived state), so a remote client learns this transition only
-	// here. Same nudge, same refetch, no command data.
+	// The state event above is gated on `threads:read` and carries the
+	// local command, so a client whose grants stop short of it learns this
+	// transition only here. Same nudge, same refetch, no command data.
 	r.emitBackgroundTasksChangedNudge(evt.ThreadID)
 	return nil
 }

@@ -47,47 +47,26 @@ func TestChannelPolicyEveryRowHasAWhy(t *testing.T) {
 // deliberate behavior change, not a refactor — the registry row's Why and
 // this list move together.
 var (
+	// Re-adjudicated 2026-09-03: the nineteen thread- and
+	// workspace-state channels that used to be here are AudienceAny now,
+	// and TestLoopbackOnlyIsForHostDirectivesOnly holds both halves of
+	// that split by name. What is left is the host-directive residue —
+	// launcher instructions, harness tooling, the desktop self-updater,
+	// the native browser pane — for which loopback-only is a statement
+	// about the CONSUMER rather than a disclosure control.
 	frozenLoopbackOnlyChannels = []string{
 		// Wave 7a: how one attach ended. Same posture as the four
 		// host-scoped methods it belongs to — attaching this installation
 		// to another machine is something only the person at this keyboard
 		// does, and the frame names a machine they work on.
 		"backend:attach",
-		"browser:companion-state", // local URLs and file paths
-		"browser:host",            // 2026-08-31: launcher pane directive, same posture as webview:trim
-		// Wave 4b: names the thread whose composer draft moved. Same posture
-		// as its own RPCs (GetDraft / SaveDraft / ClearDraft are all
-		// CategorySessionControl) — in-progress user-typed work, and "who is
-		// typing where" is the same answer one turn smaller.
-		"draft:updated",
-		"git:status",
-		"harness:mock",     // 2026-08-25 pass
-		"harness:perf",     // W3 bridge: per-process RSS + host detail
-		"harness:replay",   // 2026-08-25 pass
-		"harness:ui-query", // W3 bridge: a directive carrying DOM reads back
-		"mcp:oauth-completed",
-		"mcp:status",
-		"power:keepawake", // 2026-08-25: launcher power directive, same posture as webview:trim
-		"pr:updated",
-		// provider:account, provider:account_usage_error and
-		// provider:status left this list in wave 8i (provider remote
-		// re-auth): signing a provider account in is now something a
-		// paired admin device does, because a headless host has no
-		// browser to open the page in. All three are scoped
-		// access:admin, which is the grant that already lets that
-		// device list, switch and remove the same accounts over RPC.
-		"provider:approval",
-		"provider:background_task_state",
-		"provider:command_lifecycle", // 2026-08-25 pass
-		"provider:queue_flushed",
-		"provider:queue_restored",
-		"provider:queue_state_changed",
-		"provider:session_account",
-		"provider:terminal_output",
-		"provider:user_input",
-		"session-import:progress",
-		"terminal:exit",
-		"terminal:output",
+		"browser:companion-state",  // local URLs and file paths
+		"browser:host",             // 2026-08-31: launcher pane directive, same posture as webview:trim
+		"harness:mock",             // 2026-08-25 pass
+		"harness:perf",             // W3 bridge: per-process RSS + host detail
+		"harness:replay",           // 2026-08-25 pass
+		"harness:ui-query",         // W3 bridge: a directive carrying DOM reads back
+		"power:keepawake",          // 2026-08-25: launcher power directive, same posture as webview:trim
 		"updater:download-started", // 2026-08-25 pass
 		"updater:error",            // 2026-08-25 pass
 		"updater:install",
@@ -95,9 +74,7 @@ var (
 		"updater:progress",   // 2026-08-25 pass
 		"updater:ready",      // 2026-08-25 pass
 		"updater:verifying",  // 2026-08-25 pass
-		"usage:thread_cost",  // 2026-08-25 pass
 		"webview:trim",       // 2026-08-25: launcher GC directive, same posture as updater:install
-		"worktree:setup",
 	}
 	frozenRemoteOnlyChannels = []string{
 		"highlight:seed",

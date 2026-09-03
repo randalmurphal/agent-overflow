@@ -556,6 +556,18 @@ The scopes are separate *names* because peers, viewers, and the audit
 log need to distinguish them, **not** because the owner's own devices
 should be gated against each other.
 
+The same names gate SERVER PUSH, and they are the whole gate for it.
+Ruled 2026-09-03: every event about a thread or a workspace must
+reach, in real time, any connected client that has visibility of it, a
+sidebar row or an open pane, the phone and the `--connect` browser
+included. A channel therefore carries the scope of the pull RPC that
+returns the same data, and its audience is `any`, because a session
+granted that scope is granted that state and the push must not be a
+second, narrower answer to a question the pull already answered.
+`loopback-only` on a channel is a statement about its CONSUMER (a
+launcher directive, harness tooling, the self-updater) and never a
+disclosure control.
+
 Default profiles:
 
 - **Owner devices: every scope except `scope: host`, on every device
@@ -1767,8 +1779,10 @@ Prerequisite sweep, valuable standalone:
   `did`/`conn` on the WS upgrade URL, readable before the first RPC)
   and never the text; echo suppression keys on the CONNECTION so two
   tabs of one browser do not sit on each other's stale text. The
-  channel is loopback-only, matching GetDraft's classification. The
-  "edited on <device>" affordance remains cuttable polish.
+  channel reaches any client whose session holds `threads:operate`,
+  the grant `GetDraft` takes for the same text (re-adjudicated
+  2026-09-03; it shipped loopback-only). The "edited on <device>"
+  affordance remains cuttable polish.
 - Queue: LANDED 2026-08-31 (wave 4b), with the brief's premise
   corrected — `GetThreadLiveState` already bootstrapped queue state on
   every authoritative attach, so no second bootstrap was added. What
@@ -2027,7 +2041,7 @@ Prerequisite sweep, valuable standalone:
   (foreground tool completions never changed its answer) and
   `provider:background_tasks_changed` now fires on Claude's exit,
   drain and orphan-recovery transitions, which previously reached only
-  the loopback-only `background_task_state`. Discussion child threads
+  the `threads:read`-gated `background_task_state`. Discussion child threads
   were already watched via the live-tail roster. The eviction branch
   stays as written and simply stops firing for unwatched threads: both
   the warm-reentry cache and the replica window are stamp-validated on
@@ -2129,7 +2143,16 @@ Prerequisite sweep, valuable standalone:
 
 Rulings (user, 2026-09-01): the phone is the FULL app — anything the
 desktop can do, the phone can do, unless the surface is physically
-host-bound. All approvals are answerable from the phone. Opening the app
+host-bound. All approvals are answerable from the phone. Answerable means
+ASKED: the `provider:approval` frame reaches the phone the moment the
+provider raises it, not on its next attach, and the same holds for every
+channel carrying thread or workspace state (queue, drafts, terminal
+output, git status, session import, MCP status, PR, usage). Nineteen of
+them were withheld from every off-host client until 2026-09-03, on
+`Why` strings citing a per-method local-only table wave 6d2 had already
+deleted, so the phone could drive a thread it then watched go stale.
+`e2e/tests/harness-offhost-live-thread-state.spec.ts` walks the whole
+path for the two that made it visible. Opening the app
 requires the strongest local gate the platform offers (the phone is more
 sensitive than anything else on it). Voice input is wanted. The phone is
 for the owner and a few friends, each running their OWN backend on their
@@ -2984,6 +3007,17 @@ WebView2 / WebKitGTK child view clipped into the pane):
 Rules that follow: a new listener declares its binding class and what it
 accepts; a new route declares tier + scope + content posture; a new
 event channel declares its scope. Unclassified means unbuilt.
+
+A channel's AUDIENCE is declared on that same row, and it is declared
+by DATA CLASS: `loopback-only` means the only legitimate consumer is a
+process on this host, and it may never be justified by the reachability
+of an RPC. A `Why` that cites what some method admits today goes stale
+the moment that method's reachability changes, which is exactly how
+nineteen rows outlived the local-only table by three months
+(re-adjudicated 2026-09-03). `internal/transport`'s
+`TestLoopbackOnlyIsForHostDirectivesOnly` holds both lists by name and
+fails on any third loopback-only row, so the next re-classification is
+a deliberate edit of two lists rather than a row nobody reviewed.
 
 ## 14. Performance and resource budget
 

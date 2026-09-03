@@ -1,8 +1,9 @@
-// session-import:progress ingestion. The channel is loopback-only on the
-// wire, but a frame that reaches the store drives a progress bar, closes the
-// modal and toasts "imported N sessions" — so this handler is the place a
-// malformed frame has to die, whole. Every case below asserts BOTH halves:
-// the frame is rejected, and the run state is untouched.
+// session-import:progress ingestion. A frame that reaches the store drives a
+// progress bar, closes the modal and toasts "imported N sessions" — and the
+// channel reaches any client granted `threads:operate`, this device or
+// another — so this handler is the place a malformed frame has to die,
+// whole. Every case below asserts BOTH halves: the frame is rejected, and
+// the run state is untouched.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';

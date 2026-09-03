@@ -1261,6 +1261,36 @@ conversion; Go would still assign a bare string literal silently, which the root
 package's `TestEmitSitesNameAnEventChannelConstant` catches.
 
 - `Audience`: `AudienceAny` / `AudienceLoopbackOnly` / `AudienceRemoteOnly`.
+
+  **`AudienceLoopbackOnly` says who can CONSUME a frame, not how sensitive
+  it is.** It is for frames whose only legitimate consumer is a process on
+  this host: the launcher's directives (`power:keepawake`, `browser:host`,
+  `updater:install`, `webview:trim`), harness tooling, the desktop
+  self-updater's own lifecycle, and the native browser pane. Those rows
+  carry `host` on `Scope` as well, and the column survives for them because
+  it is a THIRD DOOR the scope gate does not close: `host` stops an off-host
+  session ARMING a stream, but once a local pane subscribes the push side
+  fans out to every subscriber regardless of who armed it.
+
+  It is **not** a disclosure control for thread or workspace state. Since
+  wave 6d1 every off-host connection names a session, so `Scope` is the gate
+  for that state, and a channel carrying it is `AudienceAny` with the scope
+  its pull RPC carries. Every event about a thread or a workspace must reach,
+  in real time, any connected client that has visibility of it — a sidebar
+  row or an open pane — the phone and the `--connect` browser included (user
+  ruling 2026-09-03). `TestLoopbackOnlyIsForHostDirectivesOnly` holds both
+  lists by name in both directions.
+
+  **The lesson, and it is the reason nineteen rows were wrong for three
+  months: a `Why` that justifies an audience by citing an RPC's
+  REACHABILITY goes stale the moment reachability changes.** Those rows read
+  "the resolve RPCs are LocalOnly" and "every MCP RPC is LocalOnly"; wave 6d2
+  deleted that table and nothing in this file pointed at them, so a phone
+  could call `RegisterQueueItem`, `RespondToApproval`, `GetGitStatus` and
+  `OpenTerminal` while every matching push was withheld — stale queue rows,
+  no live approval prompt, a terminal with no output. Justify an audience by
+  the DATA CLASS and by `Scope` instead. Both survive a reachability change,
+  because `Scope` is what reachability is now made of.
 - `Scope`: the grant a session-carrying connection must hold. **Pick it by
   finding the RPC that reads the same data** — a push must not be a way
   around the authorization its pull half enforces, so `git:status` is
@@ -1302,7 +1332,11 @@ unregistrable by construction; both spell the explicit conversion at the call
 site so the escape hatch stays visible.
 `TestChannelPolicyPreservesFrozenClassification` freezes every non-default
 classification, so changing one of those lists is a behavior change, not a
-refactor.
+refactor. Its loopback-only list is now the host-directive residue only, and
+`TestLoopbackOnlyIsForHostDirectivesOnly` is its two-sided companion: one list
+of state channels that must stay `AudienceAny`, one of host-directive channels
+that must stay loopback-only, and a sweep that fails on any third loopback-only
+row appearing on neither.
 
 **Opening a channel to remote clients decides the RECEIVE side only, and
 whatever PRODUCES that channel must be re-checked in the same change.** A
