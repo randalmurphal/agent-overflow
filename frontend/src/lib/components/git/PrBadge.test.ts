@@ -75,6 +75,52 @@ describe('<PrBadge>', () => {
     expect(getByTestId('chat-header-pr-badge').textContent?.replace(/\s+/g, '')).toBe('PR');
   });
 
+  it('plain click opens the review pane and suppresses the external link', () => {
+    let opened = 0;
+    const { getByTestId } = render(PrBadge, {
+      props: {
+        status: status({ forge: 'gitlab', openPrUrl: 'https://gitlab.com/o/r/-/merge_requests/45', openPrNumber: 45 }),
+        onOpenReview: () => {
+          opened += 1;
+          return true;
+        },
+      },
+    });
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+    getByTestId('chat-header-pr-badge').dispatchEvent(event);
+    expect(opened).toBe(1);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('mod+click falls through to the external link', () => {
+    let opened = 0;
+    const { getByTestId } = render(PrBadge, {
+      props: {
+        status: status({ forge: 'gitlab', openPrUrl: 'https://gitlab.com/o/r/-/merge_requests/45', openPrNumber: 45 }),
+        onOpenReview: () => {
+          opened += 1;
+          return true;
+        },
+      },
+    });
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true });
+    getByTestId('chat-header-pr-badge').dispatchEvent(event);
+    expect(opened).toBe(0);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('falls through to the external link when review reports unhandled', () => {
+    const { getByTestId } = render(PrBadge, {
+      props: {
+        status: status({ forge: 'gitlab', openPrUrl: 'https://gitlab.com/o/r/-/merge_requests/45', openPrNumber: 45 }),
+        onOpenReview: () => false,
+      },
+    });
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+    getByTestId('chat-header-pr-badge').dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
   it('renders nothing when the url is not a valid http(s) url (defensive)', () => {
     const { queryByTestId } = render(PrBadge, {
       props: { status: status({ openPrUrl: 'javascript:alert(1)', openPrNumber: 1 }) },
