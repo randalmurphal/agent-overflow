@@ -34,6 +34,16 @@ export {
   UpdateThreadBranch,
   UpdateThreadWorkspace,
 
+  // Thread groups (sidebar grouping rows; docs/specs/sidebar-thread-groups.md)
+  ListThreadGroups,
+  CreateThreadGroup,
+  RenameThreadGroup,
+  DeleteThreadGroup,
+  PinThreadGroup,
+  UnpinThreadGroup,
+  SetThreadGroupPinGroup,
+  SetThreadGroup,
+
   // Session management
   StartSession,
   AutoResumeThread,

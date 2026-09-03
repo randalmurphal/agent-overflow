@@ -5,6 +5,7 @@
   import { setupEventListeners } from './lib/stores/events';
   import { OPEN_SHIP_CHANGES_EVENT } from './lib/stores/eventNames';
   import { getThreads, loadThreads } from './lib/stores/threads.svelte';
+  import { refreshThreadGroups } from './lib/stores/threadGroups.svelte';
   import { markNotificationHydrated } from './lib/stores/eventsNotification';
   import {
     installPaneLayoutPersistence,
@@ -387,6 +388,10 @@
       try {
         const threads = await loadThreads();
         threadRegistryHydrated = true;
+        // Groups load beside the threads they contain, but never gate the
+        // layout restore below: a failed group load must not be read as a
+        // failed boot (refreshThreadGroups owns its own error surface).
+        void refreshThreadGroups();
         await appStorageReady;
         syncSidebarLayoutFromAppStorage();
         syncSidebarFromAppStorage();

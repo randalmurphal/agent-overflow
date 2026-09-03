@@ -16,7 +16,7 @@
   //     single row underneath the collapsed header so the user never
   //     loses sight of where they are.
 
-  import type { ProjectWithCounts, Thread } from '../../types/models';
+  import type { ProjectWithCounts, Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { RenameProject } from '../../stores/bindings';
   import { getProjectLabel, updateProjectLocal } from '../../stores/projects.svelte';
@@ -32,19 +32,22 @@
   import { userFacingError } from '../../utils/userFacingError';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import FolderOpen from '@lucide/svelte/icons/folder-open';
+  import FolderPlus from '@lucide/svelte/icons/folder-plus';
   import Plus from '@lucide/svelte/icons/plus';
   import Terminal from '@lucide/svelte/icons/terminal';
   import Icon from '../primitives/Icon.svelte';
   import ProjectContextMenu from './ProjectContextMenu.svelte';
   import ProjectThreadList from './ProjectThreadList.svelte';
   import ThreadRow from './ThreadRow.svelte';
-  import { buildSidebarThreadTree, rollupDisplayStatus } from '../../utils/sidebarTree';
+  import { buildSidebarThreadTree } from '../../utils/sidebarTree';
+  import { rollupDisplayStatus } from '../../utils/sidebarTreeView';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import {
     shouldOpenProjectThreadInNewPane,
     type ProjectNewThreadHandler,
     type ProjectNewTerminalHandler,
   } from './projectNewThread';
+  import { newThreadGroupInProject } from './threadGroupActions';
   import {
     beginProjectDrag,
     computeReorderedIds,
@@ -58,6 +61,8 @@
   interface Props {
     project: ProjectWithCounts;
     threads: Thread[];
+    /** The project's groups, already search-filtered by ProjectsSection. */
+    groups?: readonly ThreadGroup[];
     pane: ThreadPane | null;
     /** Called with the project id when the user clicks the new-thread button
      * (or otherwise signals "create a new thread in this project"). */
@@ -78,6 +83,7 @@
   let {
     project,
     threads,
+    groups = [],
     pane,
     onNewThread,
     onNewTerminal,
@@ -87,8 +93,11 @@
   }: Props = $props();
 
   let rowEl: HTMLDivElement | undefined = $state(undefined);
+  // The header line, not `rowEl`: an expanded project's container runs
+  // the full height of its thread list, and a menu anchored to it opens
+  // under the last thread instead of under the header the user clicked.
+  let headerEl: HTMLDivElement | undefined = $state(undefined);
   let contextMenuOpen = $state(false);
-  let contextMenuAnchor: HTMLElement | undefined = $state(undefined);
   let lastNewThreadContextMenuAt = 0;
 
   // Inline rename state — mirrors the pattern in ThreadRow.
@@ -164,13 +173,15 @@
     onNewTerminal?.(project.project.id);
   }
 
+  function handleNewGroupClick(e: MouseEvent): void {
+    e.stopPropagation();
+    void newThreadGroupInProject(project.project.id);
+  }
+
   function handleContextMenu(e: MouseEvent): void {
     e.preventDefault();
     e.stopPropagation();
-    if (rowEl) {
-      contextMenuAnchor = rowEl;
-      contextMenuOpen = true;
-    }
+    if (headerEl) contextMenuOpen = true;
   }
 
   function closeContextMenu(): void {
@@ -297,6 +308,7 @@
     ></div>
   {/if}
   <div
+    bind:this={headerEl}
     role="button"
     tabindex={0}
     aria-expanded={expanded}
@@ -392,6 +404,16 @@
       {/if}
       <button
         type="button"
+        onclick={handleNewGroupClick}
+        title="New Group in This Project"
+        aria-label="New Group in This Project"
+        data-testid="project-item-new-group"
+        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      >
+        <Icon icon={FolderPlus} size={12} strokeWidth={2} class="opacity-90" />
+      </button>
+      <button
+        type="button"
         onclick={handleNewTerminalClick}
         title="New Terminal in This Project"
         aria-label="New Terminal in This Project"
@@ -415,7 +437,7 @@
   </div>
 
   {#if expanded}
-    <ProjectThreadList projectId={project.project.id} {threads} {pane} {onNewThread} />
+    <ProjectThreadList projectId={project.project.id} {threads} {groups} {pane} {onNewThread} />
   {:else if activeWhenCollapsed}
     <!--
       Active-thread pin: the user is reading this thread but the project
@@ -439,7 +461,7 @@
 
 <ProjectContextMenu
   {project}
-  anchor={contextMenuAnchor}
+  anchor={headerEl}
   open={contextMenuOpen}
   onClose={closeContextMenu}
   onRename={beginRename}

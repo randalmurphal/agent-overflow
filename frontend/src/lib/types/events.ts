@@ -1,4 +1,4 @@
-import type { Item } from './models';
+import type { Item, ThreadGroup } from './models';
 import type { ProviderID } from './providers';
 
 export type ApprovalKind =
@@ -615,4 +615,16 @@ export interface BackgroundTaskRef {
   toolUseId?: string;
   taskType?: string;
   description?: string;
+}
+
+/**
+ * thread-group:updated — one frame per thread-group write, so a second
+ * connected client stays current. `delete` carries only the id in
+ * `group.id`; the rest of the row is whatever the backend last knew.
+ * Thread membership changes ride the existing thread:updated channel
+ * (`action: 'full'`) rather than this one.
+ */
+export interface ThreadGroupUpdateEvent {
+  action: 'create' | 'patch' | 'delete';
+  group: ThreadGroup;
 }

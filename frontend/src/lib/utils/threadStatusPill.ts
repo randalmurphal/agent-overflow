@@ -1,10 +1,11 @@
-// Pure classification for the thread-row status pill and unread signal.
+// Pure classification for the thread-row status signal and unread state.
 //
-// Replaces the older threadRowStatus.ts which only emitted a dot class.
-// This version produces a richer {label, dotClass, labelClass, pulse}
-// record so the sidebar can show the mode-aware forge-style pill
-// ("Planning", "Designing", "Working", "Discussing", "Pending approval",
-// "Interrupted", "Failed", "Completed") next to the title.
+// The sidebar shows NO status text (ruling 2026-09-02): a state is told
+// apart by its dot (color, filled or hollow, pulsing or still), by the
+// row glow for a provider blocked on the user, and by a thin row ring for
+// the two "needs your attention" states (Completed, Plan Ready). `label`
+// is the accessible name and tooltip only. The palette picker and the
+// pane attention dot read the same record.
 //
 // Keep this file free of Svelte imports so its behaviour stays
 // table-drivable from unit tests.
@@ -13,12 +14,16 @@ import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread } from '../types/models';
 
 export interface ThreadStatusPill {
-  /** Visible text next to the title. `null` → no pill, only the dot. */
+  /** Accessible name and tooltip of the dot. Never rendered as text. */
   label: string;
   /** Tailwind classes applied to the leading dot. */
   dotClass: string;
-  /** Tailwind classes applied to the label text. */
-  labelClass: string;
+  /**
+   * Optional inset ring on the row shell: the attention states a user has
+   * to act on or read (Completed, Plan Ready). The cursor ring wins over
+   * it in the row. `undefined` → no ring.
+   */
+  ringClass?: string;
   /** True when the dot should animate (running / awaiting input). */
   pulse: boolean;
   /**
@@ -42,7 +47,6 @@ export interface EffectiveThreadStatusOptions {
 
 const RUNNING_SUCCESS = {
   dotClass: 'bg-success',
-  labelClass: 'text-success',
   pulse: true,
 } as const;
 
@@ -99,9 +103,12 @@ export function resolveEffectiveThreadStatus(
  *   8. idle + unread    → "Completed"
  *   9. idle + read      → null (no pill)
  *
- * Priority and colors: running / completed
- * states use success green, discussion uses the running-blue outline,
- * awaiting-input uses info blue, and plan-ready uses the app primary accent.
+ * Visual grammar, with no text to lean on: running / completed are
+ * success green (pulsing while running); discussion is a hollow info ring;
+ * awaiting-input is info blue and pending-approval amber, both pulsing with
+ * a row glow; failed is red; setup-failed is a filled amber dot and
+ * interrupted a hollow one; plan-ready is the accent. Completed and
+ * plan-ready add the row ring.
  */
 export function resolveThreadStatusPill(
   thread: Pick<Thread, 'mode' | 'lastReadAt' | 'latestTurnCompletedAt'>,
@@ -111,7 +118,6 @@ export function resolveThreadStatusPill(
     return {
       label: 'Failed',
       dotClass: 'bg-error',
-      labelClass: 'text-error',
       pulse: false,
     };
   }
@@ -119,7 +125,6 @@ export function resolveThreadStatusPill(
     return {
       label: 'Pending Approval',
       dotClass: 'bg-warning',
-      labelClass: 'text-warning',
       pulse: true,
       glowClass: 'status-glow-warning',
     };
@@ -128,7 +133,6 @@ export function resolveThreadStatusPill(
     return {
       label: 'Awaiting Input',
       dotClass: 'bg-info',
-      labelClass: 'text-info',
       pulse: true,
       glowClass: 'status-glow-info',
     };
@@ -141,7 +145,6 @@ export function resolveThreadStatusPill(
         return {
           label: 'Discussing',
           dotClass: 'border border-info bg-transparent',
-          labelClass: 'text-info',
           pulse: false,
         };
       default:
@@ -155,7 +158,6 @@ export function resolveThreadStatusPill(
     return {
       label: 'Setup Failed',
       dotClass: 'bg-warning',
-      labelClass: 'text-warning',
       pulse: false,
     };
   }
@@ -163,15 +165,16 @@ export function resolveThreadStatusPill(
     return {
       label: 'Plan Ready',
       dotClass: 'bg-accent',
-      labelClass: 'text-accent',
       pulse: false,
+      ringClass: 'ring-1 ring-inset ring-accent/40',
     };
   }
   if (liveStatus === 'interrupted') {
     return {
       label: 'Interrupted',
-      dotClass: 'bg-warning',
-      labelClass: 'text-warning',
+      // Hollow: same amber as Setup Failed, and with no text the fill is
+      // the only thing that tells a stopped turn from a broken worktree.
+      dotClass: 'border border-warning bg-transparent',
       pulse: false,
     };
   }
@@ -180,8 +183,8 @@ export function resolveThreadStatusPill(
     return {
       label: 'Completed',
       dotClass: 'bg-success',
-      labelClass: 'text-success',
       pulse: false,
+      ringClass: 'ring-1 ring-inset ring-success/40',
     };
   }
   return null;

@@ -1,4 +1,7 @@
-// Sidebar thread tree + multi-key sort.
+// Sidebar thread tree: the BUILD half — node shapes, the sort comparator,
+// status bubbling, and buildSidebarThreadTree itself. The VIEW half (flatten,
+// the preview cut, the identity cutoffs and the active-thread expand sync)
+// lives in `sidebarTreeView.ts` and imports from here; nothing imports back.
 //
 // Pure logic, no Svelte / DOM imports — table-drivable from unit tests.
 //
@@ -23,15 +26,13 @@
 //     row is stale.
 
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
-import type { Thread } from '../types/models';
+import type { Thread, ThreadGroup } from '../types/models';
 import {
   resolveEffectiveThreadStatus,
   resolveThreadStatusPill,
   type ThreadStatusPill,
 } from './threadStatusPill';
-import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
 import { isHiddenThreadMode } from './threadModes';
-import { reportFrontendDiagnostic } from './frontendErrorCapture';
 
 export const DEFAULT_SIDEBAR_TREE_MAX_DEPTH = 2;
 
@@ -76,8 +77,13 @@ const STATUS_PRIORITY: Record<ThreadLiveStatus, number> = {
   idle: 0,
 };
 
-export interface SidebarTreeNode {
-  thread: Thread;
+/**
+ * Fields every sidebar row carries, whatever it is a row FOR. A group has
+ * no status of its own — `ownLiveStatus` is always 'idle' and `ownStatus`
+ * null — but it does carry a bubbled display status, a sort tier and an
+ * activity timestamp, because those are exactly what the sort reads.
+ */
+export interface SidebarTreeNodeBase {
   depth: number;
   children: SidebarTreeNode[];
   /** Live status for this thread alone — does not include child bubbling. */
@@ -98,19 +104,37 @@ export interface SidebarTreeNode {
   sortGroup: ThreadStatusSortGroup;
   /** Status tier without the pin override; orders rows inside a pin block. */
   normalSortGroup: NormalThreadStatusSortGroup;
-  /** Max(thread.updatedAt, max(child.latestActivityAt)). Unix ms. */
+  /** Max(own updatedAt, max(child.latestActivityAt)). Unix ms. */
   latestActivityAt: number;
 }
 
-export interface SidebarTreeVisibleNode extends SidebarTreeNode {
-  isExpanded: boolean;
-  isExpandable: boolean;
-  /** True only on the first top-level back-burner row when both blocks exist. */
-  startsBackBurnerBlock: boolean;
+export interface SidebarThreadTreeNode extends SidebarTreeNodeBase {
+  kind: 'thread';
+  thread: Thread;
 }
+
+export interface SidebarGroupTreeNode extends SidebarTreeNodeBase {
+  kind: 'group';
+  group: ThreadGroup;
+}
+
+/**
+ * A sidebar row: either a thread (the discussion tree's rows) or a thread
+ * group (a named container whose top row is not a thread). Discriminate on
+ * `kind` — never on the presence of a field.
+ */
+export type SidebarTreeNode = SidebarThreadTreeNode | SidebarGroupTreeNode;
 
 export interface BuildSidebarThreadTreeInput {
   threads: readonly Thread[];
+  /**
+   * The project's groups. A TOP-LEVEL thread whose `groupId` names one of
+   * them becomes that group's child; a `groupId` naming a group that is not
+   * here (deleted, or filtered out by search) leaves the thread at the top
+   * level rather than dropping it. Groups with no members still render —
+   * an empty group persists until it is deleted.
+   */
+  groups?: readonly ThreadGroup[];
   statusOf?: (thread: Thread) => ThreadLiveStatus;
   liveStatusOf?: (threadId: string) => ThreadLiveStatus;
   /**
@@ -123,16 +147,12 @@ export interface BuildSidebarThreadTreeInput {
   maxDepth?: number;
 }
 
-export interface FlattenSidebarThreadTreeInput {
-  nodes: readonly SidebarTreeNode[];
-  expandedThreadIds: ReadonlySet<string>;
-}
-
 /**
  * statusPriority — null collapses to 0 (lowest) so an idle+read thread
- * loses the bubble check against any child that has any pill.
+ * loses the bubble check against any child that has any pill. Exported for
+ * `sidebarTreeView.ts`'s rollup, which ranks the same statuses.
  */
-function statusPriority(status: ThreadLiveStatus): number {
+export function statusPriority(status: ThreadLiveStatus): number {
   return STATUS_PRIORITY[status] ?? 0;
 }
 
@@ -169,17 +189,41 @@ function getStatusSortGroup(
   return getNormalStatusSortGroup(liveStatus, status);
 }
 
-export function sidebarPinGroup(thread: Thread): SidebarPinGroup {
-  if (thread.pinnedAt == null) return null;
-  return thread.pinGroup === 1 ? 'back' : 'front';
+/** The pin fields a row carries. Thread and ThreadGroup both satisfy it. */
+export interface SidebarPinnable {
+  pinnedAt?: number;
+  pinGroup?: number;
+}
+
+export function sidebarPinGroup(row: SidebarPinnable): SidebarPinGroup {
+  if (row.pinnedAt == null) return null;
+  return row.pinGroup === 1 ? 'back' : 'front';
+}
+
+/** The row a node renders: its thread, or its group. Both carry pin fields. */
+export function sidebarNodeRow(node: SidebarTreeNode): Thread | ThreadGroup {
+  return node.kind === 'thread' ? node.thread : node.group;
+}
+
+/** Stable id for a node of either kind — the each-block key and sort tie-break. */
+export function sidebarTreeNodeId(node: SidebarTreeNode): string {
+  return node.kind === 'thread' ? node.thread.id : node.group.id;
+}
+
+export function sidebarNodePinGroup(node: SidebarTreeNode): SidebarPinGroup {
+  return sidebarPinGroup(sidebarNodeRow(node));
+}
+
+/** A thread node the user is actively composing. Groups are never drafts. */
+export function isDraftNode(node: SidebarTreeNode): boolean {
+  return node.kind === 'thread' && node.thread.isDraft === true;
 }
 
 function resolveLatestActivityAt(
-  thread: Thread,
+  ownActivityAt: number,
   children: readonly SidebarTreeNode[],
-  activityOf: ((thread: Thread) => number) | undefined,
 ): number {
-  let latest = activityOf ? activityOf(thread) : (thread.updatedAt ?? 0);
+  let latest = ownActivityAt;
   for (const child of children) {
     if (child.latestActivityAt > latest) latest = child.latestActivityAt;
   }
@@ -238,10 +282,12 @@ function resolveDisplay(
  * them surfaced regardless of pin state.
  */
 function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number {
-  const leftDraft = left.thread.isDraft === true;
-  const rightDraft = right.thread.isDraft === true;
+  // Drafts are a THREAD concept: a group is a container the user curates,
+  // never something being composed, so it never wins the draft block.
+  const leftDraft = isDraftNode(left);
+  const rightDraft = isDraftNode(right);
   if (leftDraft !== rightDraft) return leftDraft ? -1 : 1;
-  if (leftDraft && rightDraft) {
+  if (leftDraft && rightDraft && left.kind === 'thread' && right.kind === 'thread') {
     if (right.thread.createdAt !== left.thread.createdAt) {
       return right.thread.createdAt > left.thread.createdAt ? 1 : -1;
     }
@@ -249,8 +295,8 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
     return left.thread.id < right.thread.id ? 1 : -1;
   }
 
-  const leftPinGroup = sidebarPinGroup(left.thread);
-  const rightPinGroup = sidebarPinGroup(right.thread);
+  const leftPinGroup = sidebarNodePinGroup(left);
+  const rightPinGroup = sidebarNodePinGroup(right);
   if (leftPinGroup !== rightPinGroup) {
     if (leftPinGroup === null) return 1;
     if (rightPinGroup === null) return -1;
@@ -269,8 +315,10 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
   // Lexicographic tie-break for stability. Plain `<` / `>` is faster
   // than localeCompare for ASCII UUIDs (the only id source) and the
   // ordering only needs to be stable, not locale-correct.
-  if (left.thread.id === right.thread.id) return 0;
-  return left.thread.id < right.thread.id ? 1 : -1;
+  const leftId = sidebarTreeNodeId(left);
+  const rightId = sidebarTreeNodeId(right);
+  if (leftId === rightId) return 0;
+  return leftId < rightId ? 1 : -1;
 }
 
 /**
@@ -283,6 +331,13 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
  * Depth cap: grandchildren beyond `maxDepth` collapse — they appear in
  * the input but won't be emitted as children of any node. This keeps the
  * indented display readable in narrow sidebars (forge ships at 2).
+ *
+ * Groups: a top-level thread whose `groupId` names one of `input.groups`
+ * is built at depth 1 under that group's node instead (its own discussion
+ * children then land at depth 2 — the three-row render depth the spec
+ * allows inside a group). Group nodes sort among top-level rows by the
+ * same comparator, so a group with a running member rises exactly the way
+ * a discussion parent does.
  */
 export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): SidebarTreeNode[] {
   const maxDepth = input.maxDepth ?? DEFAULT_SIDEBAR_TREE_MAX_DEPTH;
@@ -315,9 +370,13 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
     const ownPill = resolveThreadStatusPill(thread, ownLiveStatus);
     const ownGroup = getStatusSortGroup(thread, ownLiveStatus, ownPill);
     const display = resolveDisplay(ownLiveStatus, ownPill, ownGroup, children);
-    const latestActivityAt = resolveLatestActivityAt(thread, children, input.activityOf);
+    const latestActivityAt = resolveLatestActivityAt(
+      input.activityOf ? input.activityOf(thread) : (thread.updatedAt ?? 0),
+      children,
+    );
 
     return {
+      kind: 'thread',
       thread,
       depth,
       children,
@@ -331,274 +390,62 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
     };
   };
 
+  const buildGroupNode = (group: ThreadGroup, children: SidebarTreeNode[]): SidebarTreeNode => {
+    // A group has no status of its own, so the display resolve always
+    // yields the most important member status (an 'idle' own group is
+    // passive, so no member is ever suppressed).
+    const display = resolveDisplay('idle', null, 'idle', children);
+    return {
+      kind: 'group',
+      group,
+      depth: 0,
+      children,
+      ownLiveStatus: 'idle',
+      ownStatus: null,
+      displayLiveStatus: display.displayLiveStatus,
+      displayStatus: display.displayStatus,
+      sortGroup: group.pinnedAt != null
+        ? 'pinned'
+        : getNormalStatusSortGroup(display.displayLiveStatus, display.displayStatus),
+      normalSortGroup: getNormalStatusSortGroup(display.displayLiveStatus, display.displayStatus),
+      // An empty group has nothing to bubble, so it sorts on its own last
+      // write — which is when it was created or renamed.
+      latestActivityAt: resolveLatestActivityAt(
+        children.length === 0 ? (group.updatedAt ?? 0) : 0,
+        children,
+      ),
+    };
+  };
+
   const topLevel = visibleThreads.filter((thread) => {
     const parentId = thread.parentThreadId;
     if (!parentId) return true;
     return !threadsById.has(parentId);
   });
 
-  return topLevel.map((t) => buildNode(t, 0)).sort(compareTreeNodes);
-}
-
-/**
- * flattenSidebarThreadTree — depth-first walk, descending into a node's
- * children only when its id is in `expandedThreadIds`. Returned nodes
- * carry their depth so the renderer can indent without a second pass.
- */
-export function flattenSidebarThreadTree(
-  input: FlattenSidebarThreadTreeInput,
-): SidebarTreeVisibleNode[] {
-  const visibleNodes: SidebarTreeVisibleNode[] = [];
-
-  const visit = (node: SidebarTreeNode, startsBackBurnerBlock = false) => {
-    const isExpandable = node.children.length > 0;
-    const isExpanded = isExpandable && input.expandedThreadIds.has(node.thread.id);
-    visibleNodes.push({ ...node, isExpanded, isExpandable, startsBackBurnerBlock });
-    if (!isExpanded) return;
-    for (const child of node.children) visit(child);
-  };
-
-  const hasFrontBurner = input.nodes.some((node) => sidebarPinGroup(node.thread) === 'front');
-  const hasBackBurner = input.nodes.some((node) => sidebarPinGroup(node.thread) === 'back');
-  let markedBackBurner = false;
-  for (const node of input.nodes) {
-    const startsBackBurnerBlock = hasFrontBurner
-      && hasBackBurner
-      && !markedBackBurner
-      && sidebarPinGroup(node.thread) === 'back';
-    if (startsBackBurnerBlock) markedBackBurner = true;
-    visit(node, startsBackBurnerBlock);
-  }
-  return visibleNodes;
-}
-
-/**
- * Content equality for status pills. Pills are minted fresh on every
- * tree build, so the identity cutoffs below must compare fields, not
- * references.
- */
-export function sameThreadStatusPill(
-  a: ThreadStatusPill | null,
-  b: ThreadStatusPill | null,
-): boolean {
-  if (a === b) return true;
-  if (a === null || b === null) return false;
-  return a.label === b.label
-    && a.dotClass === b.dotClass
-    && a.labelClass === b.labelClass
-    && a.pulse === b.pulse
-    && a.glowClass === b.glowClass;
-}
-
-/**
- * Render-content equality for the flattened sidebar list. The
- * ProjectThreadList derived returns its PREVIOUS array when this holds,
- * so svelte's derived cutoff stops the animated each-block from
- * reconciling — and the FLIP measure pass (getBoundingClientRect per
- * visible row, a forced layout mid-flush) only runs when membership,
- * order, or a row's rendered fields actually changed. latestActivityAt
- * is deliberately NOT compared: it moves on every streaming beat, it is
- * sort input rather than render input, and comparing it would defeat
- * the cutoff.
- */
-export function sameSidebarVisibleNodes(
-  a: readonly SidebarTreeVisibleNode[],
-  b: readonly SidebarTreeVisibleNode[],
-): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    const x = a[i];
-    const y = b[i];
-    if (x.thread !== y.thread) return false;
-    if (x.depth !== y.depth) return false;
-    if (x.isExpanded !== y.isExpanded || x.isExpandable !== y.isExpandable) return false;
-    if (x.startsBackBurnerBlock !== y.startsBackBurnerBlock) return false;
-    if (x.ownLiveStatus !== y.ownLiveStatus || x.displayLiveStatus !== y.displayLiveStatus) return false;
-    if (!sameThreadStatusPill(x.ownStatus, y.ownStatus)) return false;
-    if (!sameThreadStatusPill(x.displayStatus, y.displayStatus)) return false;
-  }
-  return true;
-}
-
-/**
- * toggleSidebarTreeThreadExpansion — pure helper for the discussion
- * expand/collapse store. Returns a new Set so callers can swap state
- * without mutating shared references.
- */
-export function toggleSidebarTreeThreadExpansion(
-  expandedThreadIds: ReadonlySet<string>,
-  threadId: string,
-): Set<string> {
-  const next = new Set(expandedThreadIds);
-  if (next.has(threadId)) next.delete(threadId);
-  else next.add(threadId);
-  return next;
-}
-
-/**
- * Slice a sorted top-level node list into a preview window. A thread that
- * is open in a pane never hides behind the cut: any that land in the tail
- * float back into view after the head, in tail order (t3-code's "6 +
- * active" generalised to every pane, since the focused pane's thread is
- * one of them). Pinned threads always stay visible — they don't consume
- * preview slots; the limit only truncates the unpinned tail.
- */
-export interface PreviewThreadsResult {
-  visibleNodes: SidebarTreeNode[];
-  hiddenNodes: SidebarTreeNode[];
-}
-
-export function previewSidebarThreads(input: {
-  nodes: readonly SidebarTreeNode[];
-  /** Threads mounted in any pane; the cut never hides these. */
-  openThreadIds: ReadonlySet<string>;
-  limit?: number;
-}): PreviewThreadsResult {
-  const limit = input.limit ?? THREAD_PREVIEW_LIMIT;
-
-  // Drafts and pinned both render outside the truncated unpinned tail.
-  // Drafts come first to match compareTreeNodes (the user is actively
-  // composing them; pin state is a slower-moving curation choice).
-  const drafts: SidebarTreeNode[] = [];
-  const pinned: SidebarTreeNode[] = [];
-  const rest: SidebarTreeNode[] = [];
-  for (const node of input.nodes) {
-    if (node.thread.isDraft === true) drafts.push(node);
-    else if (node.thread.pinnedAt != null) pinned.push(node);
-    else rest.push(node);
+  const groups = input.groups ?? [];
+  if (groups.length === 0) {
+    return topLevel.map((t) => buildNode(t, 0)).sort(compareTreeNodes);
   }
 
-  const head = rest.slice(0, limit);
-  const tail = rest.slice(limit);
-
-  if (tail.length === 0) {
-    return { visibleNodes: [...drafts, ...pinned, ...head], hiddenNodes: [] };
-  }
-
-  // Open threads in the tail float back into view, in tail order; the rest
-  // of the tail stays hidden. An open thread already in drafts / pinned /
-  // head is visible as-is.
-  const floated: SidebarTreeNode[] = [];
-  const hidden: SidebarTreeNode[] = [];
-  for (const node of tail) {
-    if (input.openThreadIds.has(node.thread.id)) floated.push(node);
-    else hidden.push(node);
-  }
-  return {
-    visibleNodes: [...drafts, ...pinned, ...head, ...floated],
-    hiddenNodes: hidden,
-  };
-}
-
-export function nextSidebarThreadRevealLimit(input: {
-  nodes: readonly SidebarTreeNode[];
-  openThreadIds: ReadonlySet<string>;
-  currentLimit: number;
-  revealCount: number;
-}): number {
-  const currentPreview = previewSidebarThreads({
-    nodes: input.nodes,
-    openThreadIds: input.openThreadIds,
-    limit: input.currentLimit,
-  });
-  const targetHiddenCount = Math.max(0, currentPreview.hiddenNodes.length - input.revealCount);
-  let nextLimit = input.currentLimit;
-  let nextPreview = currentPreview;
-
-  while (nextPreview.hiddenNodes.length > targetHiddenCount) {
-    nextLimit += 1;
-    nextPreview = previewSidebarThreads({
-      nodes: input.nodes,
-      openThreadIds: input.openThreadIds,
-      limit: nextLimit,
-    });
-  }
-
-  return nextLimit;
-}
-
-/**
- * Roll up the most-important display status across a list of nodes —
- * used both for the "Show more" hidden-status pill and the per-project
- * status dot when the project is collapsed.
- */
-export function rollupDisplayStatus(
-  nodes: readonly SidebarTreeNode[],
-): { liveStatus: ThreadLiveStatus; pill: ThreadStatusPill } | null {
-  let best: { liveStatus: ThreadLiveStatus; pill: ThreadStatusPill } | null = null;
-  let bestPriority = 0;
-  for (const node of nodes) {
-    if (node.displayStatus == null) continue;
-    const priority = statusPriority(node.displayLiveStatus);
-    if (priority > bestPriority) {
-      best = { liveStatus: node.displayLiveStatus, pill: node.displayStatus };
-      bestPriority = priority;
+  const groupsById = new Map(groups.map((group) => [group.id, group] as const));
+  const membersByGroup = new Map<string, Thread[]>();
+  const nodes: SidebarTreeNode[] = [];
+  for (const thread of topLevel) {
+    const groupId = thread.groupId;
+    if (groupId && groupsById.has(groupId)) {
+      const bucket = membersByGroup.get(groupId);
+      if (bucket) bucket.push(thread);
+      else membersByGroup.set(groupId, [thread]);
+      continue;
     }
+    nodes.push(buildNode(thread, 0));
   }
-  return best;
-}
-
-/**
- * Auto-expand the chain of ancestors leading to the active thread so
- * the active row is always visible in the rendered tree. Drops any
- * expanded ids that no longer correspond to expandable nodes (a child
- * was deleted, parent is now leaf).
- */
-export function syncExpandedTreeForActiveThread(input: {
-  nodes: readonly SidebarTreeNode[];
-  expandedThreadIds: ReadonlySet<string>;
-  activeThreadId: string | null;
-}): Set<string> {
-  const expandableIds = new Set<string>();
-  const parentByThreadId = new Map<string, string | null>();
-
-  const visit = (node: SidebarTreeNode) => {
-    parentByThreadId.set(node.thread.id, node.thread.parentThreadId ?? null);
-    if (node.children.length > 0) expandableIds.add(node.thread.id);
-    for (const child of node.children) visit(child);
-  };
-  for (const node of input.nodes) visit(node);
-
-  const next = new Set([...input.expandedThreadIds].filter((id) => expandableIds.has(id)));
-
-  // `parentThreadId` is backend data, and a cycle in it (A's parent is B,
-  // B's parent is A) would spin this walk forever inside one macrotask —
-  // a wedged renderer with nothing reported. Bound it by the ancestors
-  // already seen, and report, because a cycle here means the thread tree is
-  // corrupt and the sidebar is only the first place it shows up.
-  //
-  // Defence in depth, deliberately: a cycle cannot reach this walk TODAY
-  // through `buildSidebarThreadTree`, which excludes cycle members from its
-  // roots and bounds nesting by `maxDepth` — so `parentByThreadId` above
-  // never contains a cyclic chain that starts at a rendered node. That is a
-  // property of the builder, not of this function's inputs, and this function
-  // is exported and callable with any node array. The Set is therefore
-  // allocated only if the loop is entered at all, which is the common case's
-  // cost (zero) versus a corrupt tree's (one Set).
-  let cursor = input.activeThreadId ? parentByThreadId.get(input.activeThreadId) ?? null : null;
-  let walked: Set<string> | null = null;
-  while (cursor !== null) {
-    if (walked === null) {
-      walked = new Set<string>(input.activeThreadId ? [input.activeThreadId] : []);
-    }
-    if (walked.has(cursor)) {
-      // Constant message, variables in `detail`: ids in the message would mint
-      // a signature per corrupt thread and bypass the per-signature cap.
-      // Console too — a remote session cannot persist (the reporter is
-      // LocalOnly), so there the console line is the only evidence.
-      const detail = `revisited ${cursor} expanding ancestors of ${input.activeThreadId}`;
-      console.warn(`[sidebarTree] parentThreadId cycle; walk stopped (${detail})`);
-      reportFrontendDiagnostic(
-        'sidebarTree: parentThreadId cycle — an ancestor was reached twice while expanding ' +
-          'the active thread; walk stopped',
-        detail,
-      );
-      break;
-    }
-    walked.add(cursor);
-    if (expandableIds.has(cursor)) next.add(cursor);
-    cursor = parentByThreadId.get(cursor) ?? null;
+  for (const group of groups) {
+    const members = (membersByGroup.get(group.id) ?? [])
+      .map((thread) => buildNode(thread, 1))
+      .sort(compareTreeNodes);
+    nodes.push(buildGroupNode(group, members));
   }
-
-  return next;
+  return nodes.sort(compareTreeNodes);
 }

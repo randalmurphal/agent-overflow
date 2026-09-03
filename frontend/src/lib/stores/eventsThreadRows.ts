@@ -10,6 +10,7 @@ import type { Item, Thread } from '../types/models';
 import { ListThreads } from './bindings';
 import { findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
+import { refreshThreadGroups } from './threadGroups.svelte';
 import { addToast } from './toast.svelte';
 import { getThreadById, getThreadLiveActivityAt, getThreads, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
@@ -186,6 +187,10 @@ async function resyncThreadRows(): Promise<void> {
 export function refreshSidebarProjections(): void {
   void resyncThreadRows();
   void refreshProjects();
+  // Groups have no per-row merge to do (nothing local ever runs ahead of
+  // the backend on them), so the boot-time wholesale load is also the
+  // correct gap recovery.
+  void refreshThreadGroups();
 }
 
 function mergeReadMarkersPreservingUnread(readMarkers: Array<number | undefined>): number | undefined {

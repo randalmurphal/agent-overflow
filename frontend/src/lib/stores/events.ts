@@ -38,6 +38,7 @@ import type {
   UsageEvent,
   UserInputEvent,
   WorktreeSetupEvent,
+  ThreadGroupUpdateEvent,
 } from '../types/events';
 import type {
   TerminalExitEventPayload,
@@ -45,6 +46,7 @@ import type {
 } from '../types/terminal';
 import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { setSystemStats } from './systemStats.svelte';
+import { applyThreadGroupUpdated } from './threadGroups.svelte';
 import { transportGapChannel } from '../transport/wsClient';
 // wailsEventOn lives in a leaf module so low-level stores can subscribe to
 // backend events without importing this handler module; imported here for
@@ -349,6 +351,15 @@ export function setupEventListeners(): () => void {
 
   const cancelThreadUpdated = wailsEventOn<ThreadUpdateEvent>('thread:updated', applyThreadUpdated);
 
+  // thread-group:updated — one frame per thread-group write. Membership is
+  // NOT on this channel: a group write that moved threads also emits
+  // thread:updated `replace` for each row, so the thread registry stays
+  // the one owner of `groupId`.
+  const cancelThreadGroupUpdated = wailsEventOn<ThreadGroupUpdateEvent>(
+    'thread-group:updated',
+    applyThreadGroupUpdated,
+  );
+
   // thread:title_generation — the completion frame of one title-generation
   // run (auto first-turn, heal, or user-triggered regeneration). Clears the
   // pending flag the regenerate affordance renders from; the redacted error
@@ -490,6 +501,7 @@ export function setupEventListeners(): () => void {
     cancelProviderCommands();
     cancelUserMessageReverted();
     cancelThreadUpdated();
+    cancelThreadGroupUpdated();
     cancelThreadTitleGeneration();
     cancelWorktreeSetup();
     cancelTransportGap();

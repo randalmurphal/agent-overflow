@@ -3,8 +3,9 @@
   // row. Virtualization via VirtualList when scale warrants; flat
   // iteration is fine at ~50 projects / 1000 threads.
 
-  import type { ProjectWithCounts, Thread } from '../../types/models';
+  import type { ProjectWithCounts, Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { NO_GROUPS } from '../../stores/threadGroups.svelte';
   import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import ProjectItem from './ProjectItem.svelte';
   import type { ProjectNewThreadHandler, ProjectNewTerminalHandler } from './projectNewThread';
@@ -13,6 +14,8 @@
     projects: readonly ProjectWithCounts[];
     /** Map of project id -> visible threads for that project. */
     threadsByProject: Map<string, Thread[]>;
+    /** Map of project id -> visible thread groups for that project. */
+    groupsByProject?: Map<string, ThreadGroup[]>;
     pane: ThreadPane | null;
     onNewThread?: ProjectNewThreadHandler;
     onNewTerminal?: ProjectNewTerminalHandler;
@@ -21,8 +24,15 @@
     onReorder?: (newOrderedIds: string[]) => void;
   }
 
-  let { projects, threadsByProject, pane, onNewThread, onNewTerminal, onReorder }: Props =
-    $props();
+  let {
+    projects,
+    threadsByProject,
+    groupsByProject,
+    pane,
+    onNewThread,
+    onNewTerminal,
+    onReorder,
+  }: Props = $props();
 
   let orderedIds = $derived(projects.map((p) => p.project.id));
 </script>
@@ -47,6 +57,7 @@
       <ProjectItem
         {project}
         threads={threadsByProject.get(project.project.id) ?? []}
+        groups={groupsByProject?.get(project.project.id) ?? NO_GROUPS}
         {pane}
         {onNewThread}
         {onNewTerminal}

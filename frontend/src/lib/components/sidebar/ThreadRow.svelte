@@ -27,7 +27,6 @@
   import Terminal from '@lucide/svelte/icons/terminal';
   import Icon from '../primitives/Icon.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
-  import { relativeTime } from '../../utils/format';
   import ThreadRowActions from './ThreadRowActions.svelte';
   import ThreadRowBadges from './ThreadRowBadges.svelte';
   import ThreadRowForkAffordance from './ThreadRowForkAffordance.svelte';
@@ -36,7 +35,12 @@
   import {
     archiveThreadAction,
     deleteThreadAction,
+    PIN_GROUP_BACK,
+    PIN_GROUP_FRONT,
+    pinThreadAction,
     renameThreadAction,
+    setThreadPinGroupAction,
+    unpinThreadAction,
     type ThreadActionCtx,
   } from './threadRowActions';
   import {
@@ -46,7 +50,14 @@
   } from '../../utils/threadStatusPill';
   import { pathBasename } from '../../utils/pathDisplay';
   import { isImeComposingEvent } from '../../utils/imeComposition';
-  import { encodeThreadDragPayload, THREAD_ROW_DRAG_MIME } from '../../utils/threadDragPayload';
+  import {
+    beginThreadRowDrag,
+    encodeThreadDragPayload,
+    endThreadRowDrag,
+    THREAD_ROW_DRAG_MIME,
+    type ThreadDragPayload,
+  } from '../../utils/threadDragPayload';
+  import { sidebarRowPaddingLeftPx, sidebarTimeLabel } from '../../utils/sidebarRowMetrics';
 
   let {
     thread,
@@ -54,6 +65,7 @@
     selected = false,
     onSelectClick,
     indent = 0,
+    inGroup = false,
     hasChildren = false,
     expanded = false,
     onToggleExpand,
@@ -73,6 +85,8 @@
     onSelectClick?: (modifier: 'toggle' | 'range' | 'single' | null) => boolean;
     /** Visual indent level. 0 = top, 1 = direct child of a discussion parent. */
     indent?: number;
+    /** Rendered inside a group's rail: no pin gutter (see sidebarRowMetrics). */
+    inGroup?: boolean;
     /** True when this row represents a parent with at least one child below it. */
     hasChildren?: boolean;
     /** Controls the chevron direction when hasChildren is true. */
@@ -232,10 +246,12 @@
     }
   }
 
-  // The pin affordance only shows for top-level rows. Nested discussion
-  // children don't pin individually — the parent thread is the pin
-  // target for that whole subtree.
-  let showPinAffordance = $derived(indent <= 1);
+  // The pin affordance only shows for top-level rows that are not in a
+  // group. Nested discussion children don't pin individually — the parent
+  // thread is the pin target for that whole subtree — and a grouped thread
+  // cannot hold a pin at all (one pin per visible row: the GROUP carries it,
+  // and the schema refuses a pin on a grouped row).
+  let showPinAffordance = $derived(indent <= 1 && !thread.groupId);
   let isPinned = $derived(thread.pinnedAt != null);
 
   // Jump-hint label for this row when the user holds Cmd/Ctrl. Reactive:
@@ -253,12 +269,6 @@
     // user cleared.
     return chordHintForCommand(`thread.jump.${jumpLabel}`);
   });
-
-  function sidebarTimeLabel(timestampMs: number): string {
-    const label = relativeTime(timestampMs, getSettings().timestampFormat);
-    if (getSettings().timestampFormat !== 'locale') return label;
-    return label === 'just now' ? 'now' : label.replace(/ ago$/, '');
-  }
 
   // The row's activity stamp. getThreadLiveActivityAt folds in the
   // per-thread streaming box (row objects no longer churn per beat),
@@ -283,12 +293,18 @@
       e.preventDefault();
       return;
     }
-    e.dataTransfer.effectAllowed = 'copy';
-    e.dataTransfer.setData(THREAD_ROW_DRAG_MIME, encodeThreadDragPayload({
+    const payload: ThreadDragPayload = {
       threadId: thread.id,
       title: thread.title || 'Untitled',
-    }));
+      projectId: thread.projectId ?? '',
+      ...(thread.groupId ? { groupId: thread.groupId } : {}),
+    };
+    e.dataTransfer.effectAllowed = 'copyMove';
+    e.dataTransfer.setData(THREAD_ROW_DRAG_MIME, encodeThreadDragPayload(payload));
     e.dataTransfer.setData('text/plain', thread.id);
+    // The group drop targets read this during dragover, where the
+    // DataTransfer is in protected mode and hands back nothing.
+    beginThreadRowDrag(payload);
 
     const ghost = document.createElement('div');
     ghost.className = 'fixed -top-96 left-0 flex items-center gap-2 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-1 text-xs text-fg shadow-menu';
@@ -309,20 +325,9 @@
     ctxOpen = false;
   }
 
-  // Indent scale for discussion children. Depth 1 (top-level threads
-  // under a project) sits flush against the rail container's padding —
-  // the rail itself provides the visual nesting cue. Depths 2-3 step
-  // 8px per level, with a clamp at depth 3 so malformed deep chains
-  // can't push titles off-screen.
-  const INDENT_PX = [0, 0, 8, 16];
-  // PIN_SLOT_PX reserves the leading gutter (between the project rail
-  // and the row's first flex child) for the pin affordance. Every row
-  // reserves it — top-level rows render the pin button absolutely into
-  // it; nested rows leave it empty so titles stay aligned with their
-  // parents.
-  const PIN_SLOT_PX = 24;
-  let indentPx = $derived(INDENT_PX[Math.min(indent, INDENT_PX.length - 1)]);
-  let rowPaddingLeftPx = $derived(PIN_SLOT_PX + indentPx);
+  // Indent + pin gutter come from utils/sidebarRowMetrics so a group row and
+  // the member rows under it line up to the pixel.
+  let rowPaddingLeftPx = $derived(sidebarRowPaddingLeftPx(indent, inGroup));
 
   let worktreeName = $derived(pathBasename(thread.worktreePath));
   let showWorktreeMeta = $derived(!editing && Boolean(thread.worktreePath && worktreeName));
@@ -336,14 +341,17 @@
   the pin gutter) for every thread mounted in some pane; the focused
   pane's thread adds a fill on top. Both derive from the theme's accent
   token. The keyboard cursor keeps its own inset ring, so the two never
-  share a channel.
+  share a channel. The bar is the shell's ::after because the approval /
+  input glow (`.status-glow-*` in app.css) owns ::before: an open row
+  that is also blocked on the user needs both, and one pseudo-element
+  cannot be a 2px bar and a full-row ring at once.
 -->
 <div
   class="group/thread-item relative rounded-[var(--radius-field)] transition-colors
     {selected ? 'bg-accent/15' : isActive ? 'bg-accent/20' : 'hover:bg-surface-2/30'}
-    {isOpen ? 'before:absolute before:left-0 before:inset-y-1 before:w-0.5 before:rounded-full before:bg-accent' : ''}
-    {isOpen && !isActive ? 'before:opacity-70' : ''}
-    {isCursorTarget ? 'ring-1 ring-accent/70 ring-inset' : ''}
+    {isOpen ? 'after:absolute after:left-0 after:inset-y-1 after:w-0.5 after:rounded-full after:bg-accent' : ''}
+    {isOpen && !isActive ? 'after:opacity-70' : ''}
+    {isCursorTarget ? 'ring-1 ring-accent/70 ring-inset' : (pill?.ringClass ?? '')}
     {pill?.glowClass ?? ''}"
   data-testid="thread-row-shell"
   data-open={isOpen || null}
@@ -357,6 +365,7 @@
     ondblclick={startRename}
     oncontextmenu={handleContextMenu}
     ondragstart={handleDragStart}
+    ondragend={endThreadRowDrag}
     onkeydown={(e) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); } if (!editing && e.key === 'F2') { e.preventDefault(); startRename(); } }}
     role="button"
     tabindex={0}
@@ -379,7 +388,17 @@
       the button inside opts back in to pointer events when visible.
     -->
     <div class="absolute inset-y-0 left-0 flex items-center justify-center w-6 pointer-events-none">
-      <ThreadRowPinButton {isPinned} pinGroup={thread.pinGroup} buildCtx={ctx} />
+      <ThreadRowPinButton
+        {isPinned}
+        pinGroup={thread.pinGroup}
+        pinLabel="Pin Thread"
+        unpinLabel="Unpin Thread"
+        onToggle={() => { if (isPinned) void unpinThreadAction(ctx()); else void pinThreadAction(ctx()); }}
+        onCycleBurner={() => void setThreadPinGroupAction(
+          ctx(),
+          thread.pinGroup === PIN_GROUP_BACK ? PIN_GROUP_FRONT : PIN_GROUP_BACK,
+        )}
+      />
     </div>
   {/if}
   {#if hasChildren}
@@ -413,12 +432,6 @@
       data-testid="thread-row-status-dot"
       data-status={effectiveStatus}
     ></span>
-    <span
-      class="text-[0.625rem] font-medium whitespace-nowrap shrink-0 hidden min-[260px]:inline {pill.labelClass}"
-      aria-hidden="true"
-    >
-      {pill.label}
-    </span>
   {/if}
 
   {#if editing}

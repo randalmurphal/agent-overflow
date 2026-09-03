@@ -21,6 +21,7 @@
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
+  import MenuSubmenuItem from '../primitives/MenuSubmenuItem.svelte';
   import {
     archiveThreadAction,
     copyThreadIdAction,
@@ -46,6 +47,13 @@
     isThreadSelected,
   } from '../../stores/threadFilter.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
+  import { getThreadGroupsForProject } from '../../stores/threadGroups.svelte';
+  import { expandProject } from '../../stores/sidebar.svelte';
+  import {
+    createThreadGroupAndMoveAction,
+    moveThreadsToGroupAction,
+    removeThreadsFromGroupAction,
+  } from './threadGroupActions';
   import { providerSupports } from '../../providers/catalog';
   import { openThreadFromNavigation, openThreadInNewPane } from '../../stores/panes.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -239,12 +247,97 @@
       void deleteThreadAction(ctx());
     }
   }
+
+  // ── Groups ───────────────────────────────────────────────────────────────
+  //
+  // Only a TOP-LEVEL row can move: a discussion tree joins a group as a unit
+  // (the backend moves children with their root), so offering the items on a
+  // child would promise a move it cannot make.
+  //
+  // Bulk moves need one project, because a group belongs to one — the store
+  // would refuse the cross-project half of the call and roll the rest back.
+  let bulkProjectId = $derived.by(() => {
+    if (!inBulkContext) return '';
+    let shared: string | null = null;
+    for (const t of selectedThreads) {
+      const id = t.projectId ?? '';
+      if (!id) return '';
+      if (shared === null) shared = id;
+      else if (shared !== id) return '';
+    }
+    return shared ?? '';
+  });
+  let groupProjectId = $derived(inBulkContext ? bulkProjectId : (thread.projectId ?? ''));
+  // Children are dropped from a bulk move rather than travelling with it:
+  // they already follow their root, and a selection of nothing but children
+  // has no move to offer.
+  let moveTargetIds = $derived.by(() => {
+    if (!inBulkContext) return thread.parentThreadId ? [] : [thread.id];
+    return selectedThreads.filter((t) => !t.parentThreadId).map((t) => t.id);
+  });
+  // Ungroup writes only the rows that are IN a group; passing the rest would
+  // spend a round trip per row to change nothing.
+  let removeTargetIds = $derived.by(() => {
+    if (!inBulkContext) return thread.groupId ? moveTargetIds : [];
+    return selectedThreads
+      .filter((t) => !t.parentThreadId && t.groupId)
+      .map((t) => t.id);
+  });
+  let canMoveToGroup = $derived(Boolean(groupProjectId) && moveTargetIds.length > 0);
+  let currentGroupId = $derived(inBulkContext ? '' : (thread.groupId ?? ''));
+  let canRemoveFromGroup = $derived(canMoveToGroup && removeTargetIds.length > 0);
+  // Sorted by name so the submenu reads as a list the user curated, not as
+  // backend insertion order.
+  let projectGroups = $derived.by(() => {
+    if (!canMoveToGroup) return [];
+    return [...getThreadGroupsForProject(groupProjectId)]
+      .sort((a, b) => a.name.localeCompare(b.name));
+  });
+
+  // The project is expanded first for the same reason the project header
+  // does it: the new group's row opens inline rename, and a row inside a
+  // collapsed project would never render the editor.
+  async function createGroupAndMove(): Promise<void> {
+    expandProject(groupProjectId);
+    await createThreadGroupAndMoveAction(groupProjectId, moveTargetIds);
+  }
 </script>
+
+<!--
+  The "Move to Group" submenu body, shared by the single-row and bulk menus:
+  the project's groups, then the create-and-move escape hatch. The row's
+  CURRENT group is rendered checked and inert — it is the answer to "where is
+  this?", not an action.
+-->
+{#snippet groupTargets()}
+  {#each projectGroups as group (group.id)}
+    <MenuItem
+      label={group.name}
+      checked={group.id === currentGroupId}
+      disabled={group.id === currentGroupId}
+      onSelect={() => {
+        onClose();
+        void moveThreadsToGroupAction(moveTargetIds, group.id);
+      }}
+    />
+  {/each}
+  {#if projectGroups.length > 0}
+    <MenuDivider />
+  {/if}
+  <MenuItem
+    label="New Group…"
+    onSelect={() => {
+      onClose();
+      void createGroupAndMove();
+    }}
+  />
+{/snippet}
 
 <Popover
   {anchor}
   {open}
   {onClose}
+  dismissOnAnchorClick
   placement="bottom-start"
   role="none"
 >
@@ -262,6 +355,20 @@
               void runBulk(markThreadUnreadAction);
             }}
           />
+          {#if canMoveToGroup}
+            <MenuSubmenuItem label="Move to Group">
+              {@render groupTargets()}
+            </MenuSubmenuItem>
+          {/if}
+          {#if canRemoveFromGroup}
+            <MenuItem
+              label="Remove from Group"
+              onSelect={() => {
+                onClose();
+                void removeThreadsFromGroupAction(removeTargetIds);
+              }}
+            />
+          {/if}
           <MenuItem
             label={`Archive (${selectedIds.size})`}
             onSelect={() => {
@@ -317,32 +424,51 @@
               void markThreadUnreadAction(ctx());
             }}
           />
-          {#if isPinned}
+          {#if canMoveToGroup}
+            <MenuSubmenuItem label="Move to Group">
+              {@render groupTargets()}
+            </MenuSubmenuItem>
+          {/if}
+          {#if canRemoveFromGroup}
             <MenuItem
-              label={isBackBurner ? 'Move to Front Burner' : 'Move to Back Burner'}
+              label="Remove from Group"
               onSelect={() => {
                 onClose();
-                void setThreadPinGroupAction(
-                  ctx(),
-                  isBackBurner ? PIN_GROUP_FRONT : PIN_GROUP_BACK,
-                );
+                void removeThreadsFromGroupAction(removeTargetIds);
               }}
             />
-            <MenuItem
-              label="Unpin Thread"
-              onSelect={() => {
-                onClose();
-                void unpinThreadAction(ctx());
-              }}
-            />
-          {:else}
-            <MenuItem
-              label="Pin Thread"
-              onSelect={() => {
-                onClose();
-                void pinThreadAction(ctx());
-              }}
-            />
+          {/if}
+          <!-- One pin per visible row: a grouped thread's pin lives on the
+               GROUP, and the schema refuses a pin here — so the items go
+               away rather than offering a write that would fail. -->
+          {#if !currentGroupId}
+            {#if isPinned}
+              <MenuItem
+                label={isBackBurner ? 'Move to Front Burner' : 'Move to Back Burner'}
+                onSelect={() => {
+                  onClose();
+                  void setThreadPinGroupAction(
+                    ctx(),
+                    isBackBurner ? PIN_GROUP_FRONT : PIN_GROUP_BACK,
+                  );
+                }}
+              />
+              <MenuItem
+                label="Unpin Thread"
+                onSelect={() => {
+                  onClose();
+                  void unpinThreadAction(ctx());
+                }}
+              />
+            {:else}
+              <MenuItem
+                label="Pin Thread"
+                onSelect={() => {
+                  onClose();
+                  void pinThreadAction(ctx());
+                }}
+              />
+            {/if}
           {/if}
           <MenuItem
             label="Copy Path"

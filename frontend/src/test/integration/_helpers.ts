@@ -103,6 +103,8 @@ export function installAppDefaults(): void {
   setBindingMock('UpdateSettings', async (patch: unknown) => makeSettings(patch as Parameters<typeof makeSettings>[0]));
   setBindingMock('Version', async () => '0.0.1');
   setBindingMock('ListThreads', async () => []);
+  // Sidebar boot loads thread groups beside the threads they contain.
+  setBindingMock('ListThreadGroups', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('GetProviderStatuses', async () => []);
   setBindingMock('GetModelsForProvider', async () => []);

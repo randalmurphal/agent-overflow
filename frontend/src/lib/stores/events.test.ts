@@ -119,6 +119,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:turn_started')).toBe(1);
     expect(wailsListenerCount('provider:turn_completed')).toBe(1);
     expect(wailsListenerCount('thread:updated')).toBe(1);
+    expect(wailsListenerCount('thread-group:updated')).toBe(1);
     expect(wailsListenerCount('workflow:error')).toBe(1);
 
     cleanup();
@@ -133,6 +134,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:turn_started')).toBe(0);
     expect(wailsListenerCount('provider:turn_completed')).toBe(0);
     expect(wailsListenerCount('thread:updated')).toBe(0);
+    expect(wailsListenerCount('thread-group:updated')).toBe(0);
     expect(wailsListenerCount('workflow:error')).toBe(0);
 
     cleanup = setupEventListeners();
@@ -1495,6 +1497,27 @@ describe('setupEventListeners', () => {
     expect(getThreads()[0]?.model).toBe('claude-opus-4-1');
     expect(getThreads()[0]?.lastReadAt).toBe(300);
     expect(getThreads()[0]?.latestTurnCompletedAt).toBe(300);
+  });
+
+  it("carries group membership on a SetThreadGroup 'full' row", async () => {
+    // SetThreadGroup emits a full row per touched thread rather than a
+    // patch, so the sidebar's group membership arrives on this path and
+    // nowhere else — including for a second connected client.
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', pinnedAt: 900, pinGroup: 1 }),
+    ]);
+    await refreshThreads();
+    const pane = await buildPane(makeThread({ id: 'thread-1', pinnedAt: 900, pinGroup: 1 }));
+
+    emitWailsEvent('thread:updated', {
+      action: 'full',
+      thread: makeThread({ id: 'thread-1', groupId: 'group-1' }),
+    });
+
+    expect(getThreads()[0]?.groupId).toBe('group-1');
+    // Grouping strips the pin, and the row is the whole truth here.
+    expect(getThreads()[0]?.pinnedAt).toBeUndefined();
+    expect(pane.thread?.groupId).toBe('group-1');
   });
 
   it('merges a sessionRef patch into the sidebar row and pane copies', async () => {

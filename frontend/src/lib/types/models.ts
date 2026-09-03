@@ -134,6 +134,31 @@ export interface Thread {
    * item: every thread that has run a turn has one.)
    */
   importSource?: string;
+  /**
+   * FK into thread_groups. Set means the thread renders inside that named
+   * sidebar group instead of at the project's top level. A grouped thread
+   * cannot hold a pin (the store CHECK refuses it): the group carries the
+   * pin for the whole block. Only a top-level node's value is read by the
+   * sidebar tree — a discussion child follows its root.
+   */
+  groupId?: string;
+}
+
+/**
+ * A named, collapsible sidebar row gathering threads of ONE project.
+ * Mirrors store.ThreadGroup. It is not a thread: no session, no status of
+ * its own, and everything it displays (status dot, activity, sort position)
+ * bubbles from its members. Pinnable like a thread — pinnedAt / pinGroup
+ * carry the same meaning they do on Thread.
+ */
+export interface ThreadGroup {
+  id: string;
+  projectId: string;
+  name: string;
+  pinnedAt?: number;
+  pinGroup?: number;
+  createdAt: number;
+  updatedAt: number;
 }
 
 /**

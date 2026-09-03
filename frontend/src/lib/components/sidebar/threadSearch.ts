@@ -1,4 +1,4 @@
-import type { Thread } from '../../types/models';
+import type { Thread, ThreadGroup } from '../../types/models';
 import { isHiddenThreadMode } from '../../utils/threadModes';
 
 /**
@@ -14,4 +14,17 @@ export function threadMatchesQuery(thread: Thread, query: string): boolean {
   if (!query) return true;
   const hay = `${thread.title ?? ''} ${thread.workspacePath ?? ''}`.toLowerCase();
   return hay.includes(query);
+}
+
+/**
+ * Does a thread group match the active sidebar search query?
+ *
+ * Same contract as threadMatchesQuery: `query` is pre-normalised and `''`
+ * always matches. A group matches on its NAME only — its members are
+ * matched by threadMatchesQuery, and a name match is what pulls the
+ * non-matching ones back into view (ProjectsSection).
+ */
+export function threadGroupMatchesQuery(group: ThreadGroup, query: string): boolean {
+  if (!query) return true;
+  return group.name.toLowerCase().includes(query);
 }

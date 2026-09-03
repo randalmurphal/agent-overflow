@@ -40,6 +40,11 @@ export type { ProjectSortMode };
 const COLLAPSED_KEY = 'sidebar:collapsedProjects';
 const EXPANDED_DISCUSSIONS_KEY = 'sidebar:expandedDiscussions';
 const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:threadListVisibleLimits';
+// Groups default to EXPANDED, so the persisted set holds the COLLAPSED
+// ids — the same inversion collapsedProjects uses, for the same reason:
+// a group the user has never touched must show its members. No legacy
+// key: the feature never existed before appStorage.
+const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
 
 // Pre-appStorage localStorage keys, adopted once at module init.
 const LEGACY_COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
@@ -70,12 +75,14 @@ function parseStringArray(raw: string): string[] | null {
   }
 }
 
-function stringSetFromStorage(key: string, legacyKey: string): Set<string> {
+function stringSetFromStorage(key: string, legacyKey?: string): Set<string> {
   const raw =
     appStorageGet(key) ??
-    appStorageAdoptLegacyKey(key, legacyKey, (legacy) =>
-      parseStringArray(legacy) === null ? null : legacy,
-    );
+    (legacyKey === undefined
+      ? null
+      : appStorageAdoptLegacyKey(key, legacyKey, (legacy) =>
+          parseStringArray(legacy) === null ? null : legacy,
+        ));
   if (raw === null) return new Set();
   return new Set(parseStringArray(raw) ?? []);
 }
@@ -163,6 +170,7 @@ let collapsedProjects: Set<string> = $state(readCollapsed());
 let expandedDiscussions: Set<string> = $state(
   stringSetFromStorage(EXPANDED_DISCUSSIONS_KEY, LEGACY_EXPANDED_DISCUSSIONS_KEY),
 );
+let collapsedGroups: Set<string> = $state(stringSetFromStorage(COLLAPSED_GROUPS_KEY));
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
@@ -245,6 +253,12 @@ export function syncSidebarFromAppStorage(): void {
   if (!setsEqual(discussions, expandedDiscussions)) {
     expandedDiscussions = discussions;
   }
+  const groups = new Set(
+    parseStringArray(appStorageGet(COLLAPSED_GROUPS_KEY) ?? '[]') ?? [],
+  );
+  if (!setsEqual(groups, collapsedGroups)) {
+    collapsedGroups = groups;
+  }
   const rawLimits = appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY);
   threadListVisibleLimits = rawLimits === null ? {} : (parseThreadListVisibleLimits(rawLimits) ?? {});
 }
@@ -291,6 +305,41 @@ export function setExpandedDiscussions(next: ReadonlySet<string>): void {
   const copy = new Set(next);
   expandedDiscussions = copy;
   writeStringSet(EXPANDED_DISCUSSIONS_KEY, copy);
+}
+
+/**
+ * Thread-group collapse state — the inverse of the discussion set above.
+ * A group the user has never touched is EXPANDED, so only explicit
+ * collapses persist and a newly created group shows its members. Global
+ * across projects: a group id is unique, and a per-project map would
+ * carry the same information with a project id nobody reads.
+ */
+export function isGroupExpanded(id: string): boolean {
+  return !collapsedGroups.has(id);
+}
+
+export function getCollapsedGroups(): ReadonlySet<string> {
+  return collapsedGroups;
+}
+
+export function toggleGroup(id: string): void {
+  const next = new Set(collapsedGroups);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  collapsedGroups = next;
+  writeStringSet(COLLAPSED_GROUPS_KEY, next);
+}
+
+/**
+ * Replace the whole collapsed-group set. Used by the auto-expand effect
+ * that un-collapses the group containing the active thread, the same way
+ * setExpandedDiscussions is used for discussion ancestors.
+ */
+export function setCollapsedGroups(next: ReadonlySet<string>): void {
+  if (setsEqual(next, collapsedGroups)) return;
+  const copy = new Set(next);
+  collapsedGroups = copy;
+  writeStringSet(COLLAPSED_GROUPS_KEY, copy);
 }
 
 /**
@@ -345,6 +394,7 @@ function visibleLimitsWith(id: string, limit: number): Record<string, number> {
 export function resetSidebarForTest(): void {
   collapsedProjects = new Set();
   expandedDiscussions = new Set();
+  collapsedGroups = new Set();
   threadListVisibleLimits = {};
   projectSortMode = DEFAULT_PROJECT_SORT_MODE;
   removeLocalStorageKey(SORT_MODE_KEY);

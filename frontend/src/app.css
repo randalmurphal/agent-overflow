@@ -959,6 +959,8 @@ input[type="search"]::-webkit-search-cancel-button {
  * Reduced-motion users get the static border: the ticker withholds
  * writes and the var() fallback (t=0) is the rest state.
  */
+/* ::before is this ring's. A host that draws something else on the same
+   element uses ::after (the sidebar row's open-thread bar). */
 .status-glow-warning,
 .status-glow-info {
   position: relative;

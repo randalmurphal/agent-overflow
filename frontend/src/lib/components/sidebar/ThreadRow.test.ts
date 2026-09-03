@@ -245,7 +245,12 @@ describe('<ThreadRow> drag source', () => {
   });
 
   it('publishes a sidebar-thread drag payload', async () => {
-    const thread = makeThread({ id: 'drag-source', title: 'Drag Source' });
+    const thread = makeThread({
+      id: 'drag-source',
+      title: 'Drag Source',
+      projectId: 'project-1',
+      groupId: 'group-1',
+    });
     const pane = createThreadPane();
     const rendered = render(ThreadRow, { props: { thread, pane } });
     const row = rendered.getByTestId('thread-row');
@@ -254,9 +259,14 @@ describe('<ThreadRow> drag source', () => {
     await fireEvent.dragStart(row, { dataTransfer });
 
     expect(dataTransfer.types).toContain(THREAD_ROW_DRAG_MIME);
+    // Project and current group ride along: a group drop target refuses a
+    // cross-project thread, and the ungroup drop needs to know what the
+    // thread left.
     expect(JSON.parse(dataTransfer.getData(THREAD_ROW_DRAG_MIME))).toEqual({
       threadId: 'drag-source',
       title: 'Drag Source',
+      projectId: 'project-1',
+      groupId: 'group-1',
     });
   });
 });
@@ -636,6 +646,15 @@ describe('<ThreadRow> pin affordance placement', () => {
     expect(pin.className).toContain('group-hover/thread-item:opacity-100');
   });
 
+  it('hides the pin affordance on a grouped row — the GROUP carries the pin', () => {
+    const pane = createThreadPane();
+    const { queryByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ groupId: 'g1' }), pane },
+    });
+
+    expect(queryByTestId('thread-row-pin')).toBeNull();
+  });
+
   it('keeps the pin action out of nested discussion participant rows', () => {
     const pane = createThreadPane();
     const { queryByTestId } = render(ThreadRow, {
@@ -902,6 +921,21 @@ describe('<ThreadRow> live status dot', () => {
     expect(shell.classList.contains('status-glow-warning')).toBe(false);
   });
 
+  it('an open row that is pending approval keeps both the accent bar and the glow', () => {
+    // The glow ring is the shell's ::before; the open-thread bar must live on
+    // ::after or the two collapse into one hybrid pseudo-element.
+    setThreadStatus('t-open-glow', 'pending-approval');
+    const thread = makeThread({ id: 't-open-glow' });
+    const pane = createThreadPane();
+    registerPaneForTest('main', pane);
+    pane.replaceThread(thread);
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    const shell = getByTestId('thread-row-shell');
+    expect(shell.classList.contains('status-glow-warning')).toBe(true);
+    expect(shell.classList.contains('after:bg-accent')).toBe(true);
+    expect(Array.from(shell.classList).some((c) => c.startsWith('before:'))).toBe(false);
+  });
+
   it('does not apply a glow class when the row is merely running', () => {
     markThreadRunning('t-glow-run');
     const pane = createThreadPane();
@@ -950,7 +984,8 @@ describe('<ThreadRow> live status dot', () => {
     const dot = getByTestId('thread-row-status-dot');
     expect(dot.getAttribute('data-status')).toBe('interrupted');
     expect(dot.getAttribute('aria-label')).toBe('Interrupted');
-    expect(dot.classList.contains('bg-warning')).toBe(true);
+    expect(dot.classList.contains('border-warning')).toBe(true);
+    expect(dot.classList.contains('bg-transparent')).toBe(true);
     expect(dot.classList.contains('animate-pulse')).toBe(false);
   });
 
@@ -1115,5 +1150,80 @@ describe('<ThreadRow> nested row chrome', () => {
     // Compact layout: every row reserves a 24px leading pin gutter, then
     // depth 2+ steps 8px per nesting level. indent=2 -> 24 + 8 = 32px.
     expect(outer.style.paddingLeft).toBe('32px');
+  });
+
+  it('reserves no pin gutter inside a group: the rail carries the nesting', () => {
+    const pane = createThreadPane();
+    const { container } = render(ThreadRow, {
+      props: { thread: makeThread({ groupId: 'g1' }), pane, indent: 2, inGroup: true },
+    });
+    const outer = container.querySelector('[role="button"]') as HTMLElement;
+    expect(outer.style.paddingLeft).toBe('8px');
+  });
+});
+
+describe('<ThreadRow> context menu dismissal', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+  });
+
+  it('a left click on the row itself closes its open context menu', async () => {
+    const pane = createThreadPane();
+    const { getByTestId, queryByRole } = render(ThreadRow, {
+      props: { thread: makeThread(), pane },
+    });
+
+    await fireEvent.contextMenu(getByTestId('thread-row'));
+    await tick();
+    expect(queryByRole('menu', { name: 'Thread Actions' })).not.toBeNull();
+
+    // The row is the menu's anchor, not a toggle: the click must reach the
+    // row (open the thread) with the menu out of the way.
+    await fireEvent.mouseDown(getByTestId('thread-row'));
+    await tick();
+    expect(queryByRole('menu', { name: 'Thread Actions' })).toBeNull();
+  });
+});
+
+describe('<ThreadRow> status is visual only', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+  });
+
+  it('renders no status text: the label is the dot’s accessible name only', () => {
+    const { getByTestId, queryByText } = render(ThreadRow, {
+      props: { thread: makeThread({ lastReadAt: 1_000, latestTurnCompletedAt: 2_000 }), pane: createThreadPane() },
+    });
+    expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Completed');
+    expect(queryByText('Completed')).toBeNull();
+  });
+
+  it('Completed rings the row shell; a read row has no ring', () => {
+    const unread = render(ThreadRow, {
+      props: { thread: makeThread({ id: 'a', lastReadAt: 1_000, latestTurnCompletedAt: 2_000 }), pane: createThreadPane() },
+    });
+    const read = render(ThreadRow, {
+      props: { thread: makeThread({ id: 'b', lastReadAt: 3_000, latestTurnCompletedAt: 2_000 }), pane: createThreadPane() },
+    });
+    const shellOf = (view: typeof unread) =>
+      view.container.querySelector('[data-testid="thread-row-shell"]') as HTMLElement;
+    expect(shellOf(unread).className).toContain('ring-success/40');
+    expect(shellOf(read).className).not.toContain('ring-');
+  });
+
+  it('Interrupted is a hollow amber dot', () => {
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ hasIncompleteTurn: true }), pane: createThreadPane() },
+    });
+    const dot = getByTestId('thread-row-status-dot');
+    expect(dot.getAttribute('data-status')).toBe('interrupted');
+    expect(dot.className).toContain('border-warning');
+    expect(dot.className).toContain('bg-transparent');
   });
 });

@@ -422,7 +422,8 @@ describe('<UnifiedThreadPicker> — status dots', () => {
     const dot = getByTestId('thread-picker-status-dot');
     expect(dot.getAttribute('data-status')).toBe('interrupted');
     expect(dot.getAttribute('aria-label')).toBe('Interrupted');
-    expect(dot.classList.contains('bg-warning')).toBe(true);
+    expect(dot.classList.contains('border-warning')).toBe(true);
+    expect(dot.classList.contains('bg-transparent')).toBe(true);
   });
 
   it('lets live status override durable Interrupted', async () => {
