@@ -246,8 +246,14 @@ eight `CategoryDeviceAccess` RPCs in `internal/app/app_access.go`
 (overview / mint / status / confirm / cancel / revoke-session /
 revoke-device / restore-device — restore being the remedy the
 revoked-key redemption refusal names) and the redeeming client — `#pair=` fragment parse,
-`frontend/src/lib/transport/deviceSession.ts` (thumbprint mint, single-
-flight ticket renewal, store-before-use rotation discipline), and the
+`frontend/src/lib/transport/deviceSession.ts` (thumbprint mint,
+ticket renewal single-flight ACROSS BROWSING CONTEXTS via
+`renewalLease.ts`: `navigator.locks` where the context is secure, a
+short-TTL localStorage lease where it is not, since a plain-HTTP LAN
+page has neither Web Locks nor `crypto.subtle`; store-before-use
+rotation, never retried unread, re-reading its own stored state inside
+the lease so a lost race answers with the other context's success
+instead of spending the secret twice), and the
 full-page `PairingScreen`. Step 6's fingerprint field is reserved in
 the payload and the row (phase 5 fills it); step 7 (mDNS) is not
 built.
@@ -321,12 +327,20 @@ LANDED 2026-08-31 (wave 5b): one `ticketBook`
 (`internal/transport/ticket.go`) behind both the page ticket and the
 session-named `/auth/ticket` (30s TTL, spent on the upgrade whether or
 not it succeeds, subject re-checked against `SessionLive` so a ticket
-cannot resurrect a session revoked in flight). Key-binding rides
+cannot resurrect a session revoked in flight, and compared against its
+session's binding class through `Config.SessionAdmitsPeer`, since the
+mint says only that a credentialled request asked for a ticket, never
+where it will be redeemed). Key-binding rides
 `/auth/ticket`'s use of the same `SessionForRequest` hook, which runs
 `CheckDeviceProof`; the DPoP proof itself is phase 5. The interval
 re-check (60s default) and the 12h non-loopback lifetime cap live in
 `conn.go`'s `watchSession`, with the loopback exemption argued at
-`resolveWatchWindows`. `/ws` still ALSO admits launch-credential
+`resolveWatchWindows`. Liveness is also asked once more immediately
+AFTER the socket joins the live-session registry: the upgrade's read
+happens before the attach, so a revocation landing between them
+iterates a registry the arriving connection is not yet in and closes
+every socket but that one; the post-attach re-check is what makes a
+revocation mean closed rather than closed at the next 60s tick. `/ws` still ALSO admits launch-credential
 clients naming no session; migrating them off is phase 3.
 
 ### Revocation
@@ -416,7 +430,13 @@ hanging); the retry goes below the interception so exactly one retry;
 the token still reaches a frame only through `withStepUpToken`'s
 frame-construction drain; ceremonies serialize (one prompt at a time,
 each refusal gets its own token — a token proves one call); any
-ceremony failure settles the caller with the ORIGINAL refusal. One
+ceremony failure settles the caller with the ORIGINAL refusal; the
+ceremony's two RPCs are issued on the CONNECTION THAT REFUSED, handed
+to the prover as a `StepUpTarget` rather than through the generated
+bindings, because both methods route `home` and a refusal on an
+attached backend would otherwise be answered with a token minted on
+the page's own backend, bound to a different session and refused on
+arrival after the person had already touched their sensor. One
 deliberate narrowing, documented and pinned: a call dispatched WHILE
 a prompt is open gets its refusal rather than queueing (press again).
 Proven remotely end to end: MintDevicePairing (e2e drives it from a
@@ -500,7 +520,7 @@ class is enforced at presentation.
 
 ## 5. Authorization
 
-### Two enforcement tiers, eleven grantable labels
+### Two enforcement tiers, twelve grantable labels
 
 Scope names are the audit vocabulary; the enforced boundary is
 **observe vs. execute**, crossed with binding class (§2). Two more
@@ -516,6 +536,7 @@ the floor (its own tier below observe — wave 7b, §6), and `host`
 | `approvals:respond` | execute | answering tool-use approvals |
 | `threads:autonomy` | execute | creating or moving threads into auto / auto-accept-edits / full-access; running workflows & automations |
 | `terminal:operate` | execute | PTY create/attach/write/replay, worktree-setup output |
+| `preview:open` | execute | opening this machine's dev-server previews from another machine: the discovered port list and the ticketed preview URL for one port (§7; deliberately not `terminal:operate`) |
 | `git:operate` | execute | git mutations, worktrees, PR surface |
 | `attachments:write` | execute | uploads (reads ride payload auth) |
 | `settings:read` | observe | settings and preference reads: settings snapshot, keybindings, themes, spinners, chat-bar favorites (added wave 6b — the original ten could not spell a settings read) |
@@ -681,10 +702,13 @@ only way onto a networked page.
 
 LANDED 2026-08-31 (wave 6d2). The local-channel session's
 `loopback-only` binding class is enforced at presentation
-(`bindingAdmitsPeer` inside the one `SessionForRequest` hook, so
-`/ws`, the manifest fallback, and `/auth/ticket` inherit it; a
-binding-refused presentation resolves NO session and falls to the
-sessionless rules), and `/bootstrap.json` plants the session cookie
+(`bindingAdmitsPeer` inside the one `SessionForRequest` hook, so the
+manifest fallback, `/auth/ticket` and `/ws`'s header and cookie arms
+inherit it; `/ws`'s TICKET arm asks the same question directly through
+`Config.SessionAdmitsPeer`, because a spent ticket names its subject
+and never reaches that hook, and one carrier that skipped the class
+would be a full admission; a binding-refused presentation resolves NO
+session and falls to the sessionless rules), and `/bootstrap.json` plants the session cookie
 only for loopback peers — a LAN share-URL page gets the page cookie
 and reaches the pairing prompt with no local channel. On that
 foundation the origin gate is DELETED: `LocalOnlyMethods`, the
@@ -987,9 +1011,10 @@ mint (ECDSA P-256, PKCS#8 0600), per-request JWS proofs matching
 payload), redemption + terminal verification-number ceremony
 (`main_connect.go`; the number is in the `/auth/pair` RESPONSE, derived
 from the key the device just proved), activation polling via ticket
-mints, rotating session store (single-flight, store-before-use, never
-retry an unread exchange; every ended-session refusal collapses to one
-re-pair remedy), and the pinned dial —
+mints, rotating session store (single-flight, which for the browser
+client spans browsing contexts through `renewalLease.ts`;
+store-before-use, never retry an unread exchange; every ended-session
+refusal collapses to one re-pair remedy), and the pinned dial —
 `InsecureSkipVerify+VerifyPeerCertificate` equality against the leaf's
 `servercert.Fingerprint`, http→https promotion iff a fingerprint is
 present, WebPKI when none (no encrypted-but-unverified state).
@@ -1123,8 +1148,12 @@ defect, fixed in this wave: `OriginPatterns` admitted
 SPA's socket with the page cookie attached), and a contract test
 enumerates every reader of that cookie and proves each refuses a
 request from a preview origin. The preview cookie is its own name per
-port and is never read by the main listener. The LAN leg is the same
-design on the LAN address.
+port and is never read by the main listener. In the other direction
+the proxy strips every cookie in the reserved `ao_` namespace out of
+the request it forwards, by PREFIX rather than by name, so a dev
+server never receives the page cookie, the session cookie, or another
+port's preview cookie, and a fourth cookie added later is covered
+before it exists. The LAN leg is the same design on the LAN address.
 
 **The allow-list, never arbitrary.** A loopback proxy that forwards
 anywhere reaches every host-local service on the box. This one
@@ -1132,7 +1161,12 @@ forwards only to ports in the machine's **preview set**: ports the
 discovery below attributed to a thread's provider session or
 terminal, plus ports the user allowed by hand (host-tier setting
 `network.previewPorts`, `access:admin` to change, no step-up: it exposes
-the owner's own dev server to the owner's own devices). One preview
+the owner's own dev server to the owner's own devices). Never a port
+THIS backend is listening on: several of its own loopback listeners
+answer a GET like a page and so appear in the list as candidates with
+an Allow action; the scan already reports the PID holding each socket,
+so one comparison against `os.Getpid()` refuses them on the list, in
+`AllowPreviewPort` before the set is written, and at the mint. One preview
 listener exists per port in the set; the set is reconciled on every
 discovery tick, and a port leaves it 60 seconds after its listener
 disappears so a dev-server restart does not tear the URL down.
@@ -1162,10 +1196,21 @@ the thread's machine) returns the preview URL carrying a 60-second,
 single-use ticket bound to `(principal, port)`; the preview listener's
 first hit consumes it, sets a cookie, and 302s to the same URL without
 the ticket parameter so a reload or a share of the address bar carries
-nothing. The cookie value is an opaque server-side token mapped to
+nothing. The path is validated before the ticket is minted: the book
+is bounded and evicts its oldest entry, so a call that was always going
+to be refused would otherwise spend a slot and invalidate a ticket
+another page was about to present. The cookie value is an opaque server-side token mapped to
 `{principal, expiry}` in memory, checked on every request against the
 live session store, so revoking the device ends its previews on the
-next request and a backend restart ends them all. Name `ao_preview_<port>`, because the host is
+next request and a backend restart ends them all. An UPGRADED
+connection makes no further requests, so each preview listener also
+tracks the connections it is carrying and, on a coarse 10-second
+sweep, re-asks each one the question its last request was admitted on
+(grant present, for this port, not lapsed, principal live) and cuts
+the ones refused; retiring a port cuts every socket it handed out
+before the graceful shutdown starts, because net/http stops tracking a
+connection once a handler takes it over and neither `Shutdown` nor
+`Listener.Close` reaches one. Name `ao_preview_<port>`, because the host is
 shared with the SPA and with the other previews. `HttpOnly; Secure;
 SameSite=Strict`, 12h. The principal for
 an owner's local page is the host presence itself. A request with no
@@ -1249,7 +1294,7 @@ engine** as an explicit positive option set by `runServe` before
 `App.Start` (never inferred from the absence of a window:
 `TestSelectEngineWithoutAWindowHasNoEngine` keeps passing). It finds a
 system Chromium (`chromium`, `chromium-browser`, `google-chrome`,
-`google-chrome-stable`, the macOS app bundle paths, or the host-tier
+`google-chrome-stable`, `chrome`, the macOS app bundle paths, or the host-tier
 setting `browserChromiumPath`) and **never downloads one**; not found
 means `unavailableEngine`, no `browser` capability, one boot log line
 naming the setting. Lifecycle mirrors the hosted engine's policy: one
@@ -1258,7 +1303,13 @@ Chromium process per profile started on first page, `--headless=new`,
 removed on Dispose when site data does not persist), downloads pinned
 to the profile's `DownloadDir` via `Browser.setDownloadBehavior`, the
 existing idle close after two minutes, page and profile caps
-unchanged. Strictly no `--no-sandbox`: a launch that fails for lack of
+unchanged. An ephemeral directory carries a marker naming the process
+that made it, and engine start removes every `ao-browser-ephemeral-*`
+root whose owner is no longer alive and no unmarked directory at all,
+which is what reclaims a profile left by a backend that was killed; a
+per-profile watcher on the chromedp browser context reports every
+bound page closed and disposes the profile when the browser dies, so a
+dead Chromium leaves no pages a tool call could still address. Strictly no `--no-sandbox`: a launch that fails for lack of
 a sandbox surfaces the engine's error and serve-mode.md says to run
 the service as a non-root user. `cdp_page.go` is reused whole. The
 pane host, DevTools, and site-data listing are not implemented
@@ -1373,7 +1424,10 @@ registry — its own `http.Server` (so a Rebind cannot close it), its
 failures to the caller's sink never `ServeErr`, no TLS sniffer
 (WireGuard already encrypted the bytes), and
 `SetAuxiliaryHosts` admits the node's MagicDNS name and addresses
-inside the Host guard only while a listener answers on them. The app
+inside the Host guard only while a listener answers on them. Each
+auxiliary attach is identified by a slot created before serving
+begins, so one listener failing drops only itself and the host names
+are withdrawn only when no listener is left. The app
 reconciler (`app_tailnet.go`, domain-cert shape; a lifecycle mutex
 serializes passes against `ForgetTailnetNode`) attaches the cleartext
 listener on the SAME numeric port as the main bind the moment the
@@ -1506,10 +1560,18 @@ never an error, so a bare `serve` is untouched forever), the durable
 `service-state.json` whose five-row selection table lives in ONE
 function (invalid state FAILS CLOSED: exit non-zero, start nothing),
 the immutable `versions/<v>/` layout, and the SQLite-triple snapshot
-taken only between child stop and trial start, restored marker-first
-(marker fsynced → live triple removed → manifest's exact set copied
-back → dir synced → marker cleared; `ResumeRestore` runs before the
-state file is even read). The supervisor loop is ONE goroutine, one
+taken only between child stop and trial start — at the first trial
+SPAWN (`Attempts == 0`), where the record is consumed, never where the
+update was accepted, so a death in the response-grace window cannot
+leave a pending record with no snapshot beside it; a record already
+mid-trial with no snapshot fails closed, naming `agent-overflow
+service update` as the remedy — restored manifest-first, then
+marker-first (snapshot manifest confirmed present → marker fsynced →
+live triple removed → manifest's exact set copied back → dir synced →
+marker cleared; `ResumeRestore` runs before the state file is even
+read). The manifest check comes first because the marker is the one
+durable thing nothing else clears: a marker fsynced for a snapshot
+that does not exist fails every later boot at `ResumeRestore`. The supervisor loop is ONE goroutine, one
 select — no lock exists and none must. Two of its rules were bugs its
 own tests caught first: the child's exit is a FACT (closed channel +
 field), not a one-shot message, or a crashed trial wedges the
@@ -1528,7 +1590,14 @@ closed; `finishServeSupervision` runs on its own goroutine so the
 SIGTERM wait stays live; a trial reports prepared → awaits commit →
 activates, and a non-trial boot publishes the PRECEDING update's
 outcome — including a rollback, which only the version that came back
-can report. The activation gate (`internal/app/app_activation.go`) is
+can report. A settled outcome is announced exactly ONCE: the record's
+`reported` flag is set in the commit write itself (the committing
+child publishes from the commit frame) or when a non-trial child says
+hello, and `Select` withholds the outcome once it is set. The activate
+frame carries TWO versions, the one running and the one the update
+aimed at, because on a rollback they differ and only the record knows
+both; the client renders "The update to version X was rolled back.
+Running Y." The activation gate (`internal/app/app_activation.go`) is
 one gate, zero-value OPEN; the parked set is every subsystem whose
 work a database restore could not undo (probes, rate-limit loops,
 reaper, retention, git fetch, cert/tailnet reconcilers, workflow
@@ -1563,7 +1632,9 @@ trial refusal in review):
   downloading → verifying → staging → requested`, the local command's
   order. Download to `os.CreateTemp` under the layout root (one
   filesystem, so `StageBinary` is a local copy), preflight BEFORE
-  stage, the staged version is the preflight's answer, temp removed on
+  stage, the staged version is the preflight's answer, "is this the
+  version already running" asked TWICE (the tag before the fetch, the
+  binary's own reported version before staging), temp removed on
   every exit, 20 min ceiling under the app's life context, progress
   throttled to 250 ms on `service:update-status` (AudienceAny,
   LatestOnly, `access:admin`). After `requested` the status stays put
@@ -1903,7 +1974,12 @@ Prerequisite sweep, valuable standalone:
   a withheld frame is never a loss, and the SPA exempts exactly these
   channels from its forward-skip resync heuristic while a filter is
   armed (TS list drift-guarded against the Go table in both
-  directions). Explicit `gap:true` markers keep full meaning. Watch is
+  directions). Explicit `gap:true` markers keep full meaning. Replay
+  rings are created lazily at a channel's first emit, so a channel
+  with NO ring and a non-zero cursor is answered with a `gap:true`
+  marker at seq 0 rather than skipped: a cursor this process cannot
+  place is answered with a reset, never with silence, and a zero
+  cursor asks for nothing and gets nothing. Watch is
   deliberately NOT the `subscribe` frame: channel-subscribe stays a
   bridge-client mechanism, which is what keeps
   `ChannelSubscriberCount`'s "no connected launcher subscriber"
@@ -2122,13 +2198,21 @@ better than anything a laptop has. No plugin, no permission, nothing to
 build. A dedicated mic button that streams to a recognizer is a later
 option, not a first-shell need.
 
-**Opening the app.** The device key lives in the Android keystore
-(StrongBox when the phone has it), created with user-authentication
-required, so the key is unusable until the platform's biometric or
-credential prompt succeeds. That prompt IS the app lock: it runs on
-cold start and on resume after a configurable background window
-(default 5 minutes; per-device setting), and the WebView sits behind a
-native lock screen until it passes. No passkey ceremony is needed in
+**Opening the app.** The app lock is the platform's biometric or
+credential prompt, run on cold start and on a resume past a
+configurable background window (default 5 minutes; per-device
+setting). The cover goes up when the OS PAUSES the app, not on resume,
+so the app's own pixels never reach the task switcher's thumbnail or
+the frame before a resume handler runs; `FLAG_SECURE` on the Activity
+blanks the thumbnail itself. What resume decides is only whether to
+prompt, and a prompt that was outstanding when the app paused is still
+owed when it comes back. As shipped the prompt is an INDEPENDENT gate
+in front of the WebView, not the device key's own unlock: the key is a
+non-extractable WebCrypto P-256 pair in IndexedDB, and neither it nor
+the thread replica is sealed by the ceremony. Binding the key to the
+Android keystore with user-authentication required, and wrapping the
+replica under it, is deferred and named in `mobile/AGENTS.md`
+§ Deferred. No passkey ceremony is needed in
 the WebView: step-up already lives at pairing-mint on the GRANTING side,
 which is the owner's desktop with its passkey. The phone's job at
 pairing is to scan a QR and prove its fresh key; the desktop's job is
@@ -2194,8 +2278,8 @@ suites plus the compact-specific specs (root list → thread → back, sheet
 open/dismiss, composer above keyboard, approval sheet from a deep link)
 with no device involved. The APK builds from the Android SDK installed
 in WSL and is sideloaded for the on-device checks that only a phone can
-prove: biometric lock, push tap-through,
-keystore-bound signing, background lease timing.
+prove: biometric lock, push tap-through, background lease timing
+(keystore-bound signing is deferred; see "Opening the app").
 
 **Order.** Phase 7 (machine picker, the phone's root context) first, then
 the shell with lease work designed against its real lifecycle, then push
@@ -2328,9 +2412,12 @@ the review fixes that follow them):
   runs before it assembles.
 - *The decision* (`frontend/src/lib/native/bundleSync.ts`): a pure
   `decideBundleSync` with one row per case; the newest attached backend
-  wins, home on ties; deferred while the OS has the app paused; six
-  attempts per id; two sentences and nothing else, through the
-  transport banner.
+  wins, home on ties; deferred while the OS has the app paused; the
+  attempt cap is an INPUT to the decision (`attempts`, six per id per
+  launch) with its own `exhausted` row, because a cap the decision
+  could not see only slowed the schedule; only a SUCCESS re-evaluates
+  inline, a failure leaves the next look to the retry timer; two
+  sentences and nothing else, through the transport banner.
 - Deviations from the text above: (1) the swap is next-cold-start only.
   "Swaps when ready" is not built: a live swap under a running app
   would drop in-flight composer and scroll state, and a phone's next
@@ -2577,9 +2664,15 @@ word means one thing in the strip), Settings "Systems", the machine
 chip. 7d: project identity and merged entries.
 
 **7a LANDED 2026-09-01 (842d78e5).** Route column + generated TS mirror
-(155 thread, 21 project, 153 home, 38 selected, 6 all; 59 methods keyed
-by workflow item, automation, terminal or subscription ids are parked
-`home` in the table and resolved by the client's index instead);
+(155 thread, 21 project, 153 home, 38 selected, 6 all at landing;
+122 / 14 / 162 / 43 / 7 plus 31 `workspace` after the 2026-09-03 main
+merge added that inferred route; the methods keyed by workflow item,
+automation, terminal, subscription, thread-group or thread-batch ids
+are parked `home` in the table, and the client's index resolves the
+49 of them that carry that id as argument 0, a count
+`methodFamilies.test.ts` asserts; the `WorkflowAgent*` methods whose
+id sits inside a struct argument stay on home, a gap named in
+`methodFamilies.ts`);
 `backendName` on hello and manifest; `internal/backendproxy` extracted
 from `clientmode`; the attached routes `/ws/backend/<id>`,
 `/bootstrap/<id>.json`, `/backend/<id>/attachments/…`. One narrowing
@@ -2724,7 +2817,10 @@ workspace-keyed git RPCs, thread groups, the settings search index):
   images) is refused for the price of one RPC, and the transfer window
   scales with the declared length (`AttachmentTransferWindowFor`, a
   5-minute floor at 35 KiB/s) instead of cutting a large file at the
-  old fixed deadline. Download tickets refuse the `file` kind at mint:
+  old fixed deadline, and it replaces BOTH of the request's deadlines,
+  since net/http arms the write deadline when the request headers
+  finish reading, before the handler runs, and a slow upload was
+  otherwise cut by a clock started before its first byte arrived. Download tickets refuse the `file` kind at mint:
   files reach the provider by path only, never the browser.
 - **Settings pages.** main replaced the free-form settings view with a
   paged rail and a search index that every control registers in. The
@@ -3423,6 +3519,32 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    scope grants land alongside as workflows-system work (§11).
 
 Each phase leaves `make check` green.
+
+**Whole-branch review pass LANDED (2026-09-03).** After the 2026-09-03
+main merge, four review waves went over every seam on the branch for
+dropped connections, partial failure and polish. Serve: the supervisor
+reports an outcome once, snapshots the manifest at spawn, and asks
+"already running" twice (§7, §8). Transport: the no-ring replay gap
+marker, the renewal lease across tabs, the step-up target on the
+refusing handle, the post-attach session re-check, and
+`SessionAdmitsPeer` on the ticket arm (§4, §7, §12). Frontend: the
+phone lock keeps "covered" and "owed" apart, a detach drops rows and
+panes and returns a compact client to the list, and the review pane's
+PR calls are pinned to the thread's machine (§9, §10). Attachments and
+previews: the reserved cookie namespace, both transfer deadlines, the
+held-socket sweep, the self-port refusal, ephemeral profile reclaim
+and the browser-death watcher (§7, §14). Residuals, recorded and left:
+(transport) a `localStorage` write that fails mid-renewal is logged
+rather than surfaced; an RPC in flight when its socket dies waits out
+its own timeout rather than the socket's; the ticket book is one
+global 64-entry ring, so a burst of activation probes can evict a live
+page ticket. (frontend) Sheets under the software keyboard are
+verified on-device only; nothing enforces one pane per compact client
+beyond the UI that opens them; the `WorkflowAgent*` struct-argument
+routing gap named in the 7a note. (previews) A directory under the
+ephemeral prefix with no owner marker is never reclaimed by design.
+`backends.ts` (747 lines) and `app_preview.go` (591) are flagged for a
+split when either is next touched.
 
 ## 17. Testing
 
