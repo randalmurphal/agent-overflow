@@ -80,6 +80,7 @@
 import { createSubscriber } from 'svelte/reactivity';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import { pairedSessionScopes } from './deviceSession';
+import { inTrackingContext } from './scopesTracking.svelte';
 
 /**
  * One capability name. Mirrors internal/transport/scopes.go — same
@@ -205,6 +206,11 @@ const snapshots = new Map<BackendKey, ScopeSnapshot>([[HOME_BACKEND, UNRESOLVED]
 // that the pairing store triggers. A property of the PAGE, so there is one
 // of it however many backends are attached.
 let pageOnHost = false;
+// Whether the bootstrap manifest has answered locality at least once. Until
+// it has, the home snapshot is UNRESOLVED and every answer is a placeholder.
+let pageGrantsSettled = false;
+let settleWaiters: Array<() => void> = [];
+let unresolvedReadReported = false;
 
 let notifyScopesChanged: (() => void) | null = null;
 const subscribeScopes = createSubscriber((update) => {
@@ -221,6 +227,49 @@ function sameSnapshot(a: ScopeSnapshot, b: ScopeSnapshot): boolean {
     if (!b.scopes.has(scope)) return false;
   }
   return true;
+}
+
+/**
+ * Resolves once the bootstrap manifest has answered this page's locality;
+ * immediately when it already has.
+ *
+ * The manifest is fetched by the WS client, which connects AFTER App mounts,
+ * so any INSTALL-TIME decision keyed on `hasScope` (a detector armed in
+ * `onMount`, a launch-time passive load) reads the placeholder and never
+ * revisits it. Such a caller awaits this first. A reactive reader
+ * (`$derived`, `$effect`, template) needs nothing: it re-runs when the
+ * answer lands.
+ */
+export function pageGrantsResolved(): Promise<void> {
+  if (pageGrantsSettled) return Promise.resolve();
+  return new Promise((settle) => {
+    settleWaiters.push(settle);
+  });
+}
+
+/**
+ * The home answer read OUTSIDE a reactive context before the manifest has
+ * spoken is a lie the caller will never see corrected: the merged idle
+ * memory trim did exactly that at mount, answered "not on host", and
+ * stayed a no-op for the life of every page (2026-09-03: zero renderer
+ * trims in an hour on a build whose predecessor fired one every five
+ * minutes, ~50MB of idle renderer growth). Tests get a throw so the suite
+ * names the site; a running app reports once and keeps the placeholder.
+ */
+function readSnapshot(backendId: BackendKey, caller: string): ScopeSnapshot {
+  subscribeScopes();
+  if (backendId === HOME_BACKEND && !pageGrantsSettled && !inTrackingContext()) {
+    const message =
+      `scopes: ${caller} read before the bootstrap manifest resolved, outside a reactive `
+      + 'context; the answer is a placeholder that nothing will revisit. Await '
+      + 'pageGrantsResolved() first, or read from a $derived / $effect.';
+    if (import.meta.env.MODE === 'test') throw new Error(message);
+    if (!unresolvedReadReported) {
+      unresolvedReadReported = true;
+      console.error(message, new Error().stack);
+    }
+  }
+  return snapshots.get(backendId) ?? UNRESOLVED;
 }
 
 // resolve rebuilds one backend's snapshot from the two sources and
@@ -266,8 +315,7 @@ function resolve(backend: BackendKey): void {
  * because no session holds it — see the module header.
  */
 export function hasScope(scope: Scope, backendId: BackendKey = HOME_BACKEND): boolean {
-  subscribeScopes();
-  const snapshot = snapshots.get(backendId) ?? UNRESOLVED;
+  const snapshot = readSnapshot(backendId, `hasScope(${scope})`);
   if (scope === 'host') return snapshot.onHost;
   return snapshot.everyScope || snapshot.scopes.has(scope);
 }
@@ -278,8 +326,7 @@ export function hasScope(scope: Scope, backendId: BackendKey = HOME_BACKEND): bo
  * subscription `hasScope` uses.
  */
 export function grantedScopes(backendId: BackendKey = HOME_BACKEND): ScopeSnapshot {
-  subscribeScopes();
-  return snapshots.get(backendId) ?? UNRESOLVED;
+  return readSnapshot(backendId, 'grantedScopes');
 }
 
 /**
@@ -309,8 +356,7 @@ export function grantedScopes(backendId: BackendKey = HOME_BACKEND): ScopeSnapsh
  *    as a working read-only app.
  */
 export function isViewOnly(backendId: BackendKey = HOME_BACKEND): boolean {
-  subscribeScopes();
-  const snapshot = snapshots.get(backendId) ?? UNRESOLVED;
+  const snapshot = readSnapshot(backendId, 'isViewOnly');
   if (snapshot.everyScope) return false;
   return isViewOnlyGrantSet(snapshot.scopes);
 }
@@ -353,7 +399,11 @@ export function isViewOnlyGrantSet(scopes: Iterable<string>): boolean {
  */
 export function setPageGrantsFromBootstrap(remote: boolean): void {
   pageOnHost = remote !== true;
+  pageGrantsSettled = true;
   resolve(HOME_BACKEND);
+  const waiters = settleWaiters;
+  settleWaiters = [];
+  for (const settle of waiters) settle();
 }
 
 /**
@@ -381,6 +431,9 @@ export function refreshGrantedScopes(backendId: BackendKey = HOME_BACKEND): void
  */
 export function __resetScopesForTest(): void {
   pageOnHost = false;
+  pageGrantsSettled = false;
+  settleWaiters = [];
+  unresolvedReadReported = false;
   snapshots.clear();
   snapshots.set(HOME_BACKEND, UNRESOLVED);
   notifyScopesChanged?.();

@@ -15,6 +15,7 @@ vi.mock('./bindings', async (importOriginal) => ({
 
 import { CheckForUpdate, ListReleases, DownloadUpdate, RestartToUpdate } from './bindings';
 import { TransportError } from '../transport/wsClient';
+import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/scopes';
 import {
   getUpdateState,
   hasPendingUpdate,
@@ -135,6 +136,23 @@ describe('updates store', () => {
   });
 
   describe('runUpdateCheck', () => {
+    it('waits for the manifest before judging host presence', async () => {
+      // The launch check starts from initUpdates, before the WS client has
+      // fetched the manifest; judging on the placeholder marked every launch
+      // of the merged build unsupported.
+      __resetScopesForTest();
+      mockCheck.mockResolvedValue(availability({ available: false }));
+      const running = runUpdateCheck();
+      await tick();
+      expect(mockCheck).not.toHaveBeenCalled();
+      expect(getUpdateState().supported).toBe(true);
+
+      setPageGrantsFromBootstrap(false);
+      await running;
+      expect(mockCheck).toHaveBeenCalledTimes(1);
+      expect(getUpdateState().phase).toBe('up-to-date');
+    });
+
     it('flips to "available" and records release metadata when an update exists', async () => {
       mockCheck.mockResolvedValue(
         availability({

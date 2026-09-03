@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { flushSync } from 'svelte';
 import { clearPairedSession, redeemPairing, type PairingPayload } from './deviceSession';
 import {
   SCOPES,
@@ -8,6 +9,7 @@ import {
   isScope,
   isViewOnly,
   isViewOnlyGrantSet,
+  pageGrantsResolved,
   refreshGrantedScopes,
   setPageGrantsFromBootstrap,
 } from './scopes';
@@ -47,11 +49,55 @@ describe('scopes', () => {
     __resetScopesForTest();
   });
 
-  it('answers nothing before the manifest resolves', () => {
+  it('answers nothing before the manifest resolves, and only to a reactive reader', () => {
     // A control that appears a frame late is better than one that appears
     // and is then taken away, so the pre-bootstrap answer holds nothing.
-    expect(grantedScopes().source).toBe('unpaired');
-    for (const scope of SCOPES) expect(hasScope(scope)).toBe(false);
+    // But only a reader that will be re-run when the answer lands may ask
+    // this early: a plain read at mount keeps the placeholder forever (the
+    // idle memory trim did exactly that, 2026-09-03), so the suite refuses
+    // it by name.
+    expect(() => grantedScopes()).toThrow(/before the bootstrap manifest resolved/);
+    expect(() => hasScope('host')).toThrow(/before the bootstrap manifest resolved/);
+    expect(() => isViewOnly()).toThrow(/before the bootstrap manifest resolved/);
+
+    let source = '';
+    let held: boolean[] = [];
+    const dispose = $effect.root(() => {
+      $effect(() => {
+        source = grantedScopes().source;
+        held = SCOPES.map((scope) => hasScope(scope));
+      });
+    });
+    flushSync();
+    expect(source).toBe('unpaired');
+    expect(held.some(Boolean)).toBe(false);
+
+    // The same reader sees the manifest land without being asked again.
+    setPageGrantsFromBootstrap(false);
+    flushSync();
+    expect(source).toBe('local-page');
+    expect(held.every(Boolean)).toBe(true);
+    dispose();
+  });
+
+  it('settles pageGrantsResolved when the manifest lands, and at once thereafter', async () => {
+    let settled = false;
+    const waiting = pageGrantsResolved().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    setPageGrantsFromBootstrap(true);
+    await waiting;
+    expect(settled).toBe(true);
+    // A later caller does not wait on a manifest that already spoke.
+    let again = false;
+    void pageGrantsResolved().then(() => {
+      again = true;
+    });
+    await Promise.resolve();
+    expect(again).toBe(true);
   });
 
   it('gives the local page every grantable scope', () => {
@@ -205,8 +251,17 @@ describe('scopes', () => {
       // Both hold an EMPTY set, which says "nothing was granted to me" —
       // not "I was granted a read-only slice". Answering true would flash
       // the indicator on every boot and would label the pairing prompt as
-      // a working read-only app.
-      expect(isViewOnly()).toBe(false);
+      // a working read-only app. The pre-resolution read is a reactive one,
+      // as the marker's is; a plain read that early is refused.
+      let viewOnly: boolean | null = null;
+      const dispose = $effect.root(() => {
+        $effect(() => {
+          viewOnly = isViewOnly();
+        });
+      });
+      flushSync();
+      expect(viewOnly).toBe(false);
+      dispose();
 
       setPageGrantsFromBootstrap(true);
       expect(isViewOnly()).toBe(false);

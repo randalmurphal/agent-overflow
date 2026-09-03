@@ -10,6 +10,8 @@ import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.
 import { createPane, focusPane, getFocusedPaneId, resetPanesForTest } from './panes.svelte';
 import { makeThread } from '../../test/helpers/chat';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { flushSync } from 'svelte';
+import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/scopes';
 
 const page = (url: string, title: string) => ({ id: 'page-1', url, title, canGoBack: false, canGoForward: false });
 
@@ -120,6 +122,28 @@ describe('browser companion state routing', () => {
       pages: [page('https://example.com', 'Example')],
     });
     expect(companionForSource('main', 'browser')?.kind).toBe('browser');
+  });
+
+  it('hydrates from the mount effect once host presence lands, not never', () => {
+    // Pane mount runs before the WS client has fetched the manifest. The
+    // effect re-runs when the answer lands; the thread must not have been
+    // pinned as hydrated on the placeholder.
+    const read = setBindingMock('BrowserCompanionThreadState', vi.fn(async () => ({
+      kind: 'state', threadId: 'thread-browser', activePageId: '', visible: false, pages: [],
+    })));
+    __resetScopesForTest();
+    const dispose = $effect.root(() => {
+      $effect(() => {
+        reconcileBrowserCompanionForPane('main', 'thread-browser');
+      });
+    });
+    flushSync();
+    expect(read).not.toHaveBeenCalled();
+
+    setPageGrantsFromBootstrap(false);
+    flushSync();
+    expect(read).toHaveBeenCalledTimes(1);
+    dispose();
   });
 });
 

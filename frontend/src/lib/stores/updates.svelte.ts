@@ -15,7 +15,7 @@ import {
 import type { ReleaseSummary } from './bindings';
 import { wailsEventOn } from './wailsEvents';
 import { isScopeRefusal } from '../transport/scopeRefusal';
-import { hasScope } from '../transport/scopes';
+import { hasScope, pageGrantsResolved } from '../transport/scopes';
 import { isMethodUnavailableError } from './transportStatus.svelte';
 import { userFacingError } from '../utils/userFacingError';
 import { hasPendingServiceUpdate } from './serviceUpdate.svelte';
@@ -200,6 +200,10 @@ export async function runUpdateCheck(): Promise<void> {
   // launch. Off-host that call can only be refused, so ask first and land in
   // the same resting state the refusal would have produced — the reactive
   // catch below stays as the backstop for a refusal nobody predicted.
+  // The answer lands with the bootstrap manifest, AFTER App mounts and this
+  // check starts; reading it earlier marked updates unsupported on every
+  // launch of the merged build.
+  await pageGrantsResolved();
   if (!hasScope('host')) {
     markUnsupported();
     return;

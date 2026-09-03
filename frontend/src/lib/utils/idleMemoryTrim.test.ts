@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
+import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/scopes';
 import {
   startIdleMemoryTrim,
   IDLE_TRIM_THRESHOLD_MS,
@@ -128,5 +129,41 @@ describe('idleMemoryTrim', () => {
     stop = null;
     await vi.advanceTimersByTimeAsync(4 * IDLE_TRIM_THRESHOLD_MS);
     expect(trimCalls()).toBe(0);
+  });
+  describe('host presence arrives after mount', () => {
+    // The real page: App mounts, THEN the WS client fetches the manifest
+    // that answers locality. The detector is installed from onMount.
+    afterEach(() => {
+      setPageGrantsFromBootstrap(false);
+    });
+
+    it('installs once the manifest resolves to the host page', async () => {
+      __resetScopesForTest();
+      stop = startIdleMemoryTrim();
+      await vi.advanceTimersByTimeAsync(IDLE_TRIM_THRESHOLD_MS + 2 * IDLE_TRIM_CHECK_MS);
+      expect(trimCalls()).toBe(0);
+
+      setPageGrantsFromBootstrap(false);
+      await vi.advanceTimersByTimeAsync(IDLE_TRIM_THRESHOLD_MS + 2 * IDLE_TRIM_CHECK_MS);
+      expect(trimCalls()).toBe(1);
+    });
+
+    it('never installs on a networked page', async () => {
+      __resetScopesForTest();
+      stop = startIdleMemoryTrim();
+      setPageGrantsFromBootstrap(true);
+      await vi.advanceTimersByTimeAsync(IDLE_TRIM_THRESHOLD_MS + 2 * IDLE_TRIM_CHECK_MS);
+      expect(trimCalls()).toBe(0);
+    });
+
+    it('a stop before the manifest resolves installs nothing later', async () => {
+      __resetScopesForTest();
+      stop = startIdleMemoryTrim();
+      stop();
+      stop = null;
+      setPageGrantsFromBootstrap(false);
+      await vi.advanceTimersByTimeAsync(IDLE_TRIM_THRESHOLD_MS + 2 * IDLE_TRIM_CHECK_MS);
+      expect(trimCalls()).toBe(0);
+    });
   });
 });

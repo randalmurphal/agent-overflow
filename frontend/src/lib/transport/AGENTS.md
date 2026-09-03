@@ -543,6 +543,21 @@ remote browser alike. Protocol and authz rules:
   RPC, so the worst a wrong answer does is offer a control that is
   refused or hide one that would have worked.
 
+  The home answer RESOLVES LATE. `setPageGrantsFromBootstrap` runs from
+  the manifest fetch inside `wsClient.connect()`, which starts after App
+  mounts, so anything armed from `onMount` or a launch-time call sees
+  the placeholder ("not on host, granted nothing") if it reads then. A
+  reactive reader (`$derived`, `$effect`, a template) is fine, it re-runs
+  when the answer lands; an install-time decision awaits
+  `pageGrantsResolved()` first. `hasScope` / `grantedScopes` / `isViewOnly`
+  throw in test mode, and report once in a running app, when the home
+  answer is read before resolution outside a tracking context: the idle
+  memory trim did exactly that at mount and shipped as a permanent no-op
+  (2026-09-03, ~50MB of idle renderer growth, found only from the
+  launcher log because `test/setup.ts` pre-resolves grants before every
+  test). `test/integration/scopes-resolve-after-mount.test.ts` mounts App
+  with the manifest still pending and is the sweep for that class.
+
   `isViewOnly()` is the one exception to "ask for the capability, not the
   mode", and it exists for exactly one consumer: the ambient marker in
   `components/sidebar/SettingsFooter.svelte`. It is derived from the GRANT

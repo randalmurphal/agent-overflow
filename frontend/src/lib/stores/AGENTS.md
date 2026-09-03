@@ -69,6 +69,14 @@ stops waking readers.
   `viewOnlyPassiveLoads.test.ts` is the sweep, and it asserts both
   directions so a guard cannot pass by never firing at all.
 
+  **Ask AFTER the answer exists.** A passive load that runs from a mount
+  `$effect` re-runs when the manifest lands, so it must not pin any state
+  ("this thread is hydrated") before its `hasScope` check; a load that
+  runs from a plain launch-time call (`initUpdates` → `runUpdateCheck`)
+  awaits `pageGrantsResolved()` before asking. Reading at mount and
+  deciding once answers the placeholder forever
+  (`transport/AGENTS.md` § scopes.ts).
+
   **The rule is not about stores.** A section that calls its RPCs from its
   own mount effect is the same passive load one layer out, and that sweep
   cannot see it: all four settings sections under Network — bind

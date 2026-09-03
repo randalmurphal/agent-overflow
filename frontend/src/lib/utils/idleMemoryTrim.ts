@@ -40,7 +40,7 @@
 import { RequestWebviewMemoryTrim } from '../stores/bindings';
 import { isMethodUnavailableError } from '../stores/transportStatus.svelte';
 import { runMode } from '../transport/runMode';
-import { hasScope } from '../transport/scopes';
+import { hasScope, pageGrantsResolved } from '../transport/scopes';
 import { revealDrainStats } from './revealDrainProbe';
 
 /** Input silence before a trim request. A pause this long means reading,
@@ -75,9 +75,26 @@ export function startIdleMemoryTrim(): () => void {
   // stub trims the wrong renderer. Host presence is authorization, and a
   // remote LAN browser boots with mode 'local' too, so only the manifest's
   // locality marks it. Both are fixed for the page's lifetime, so this is
-  // an install-time decision.
-  if (runMode() !== 'local' || !hasScope('host')) return () => {};
+  // a one-time decision, but NOT a mount-time one: the manifest is fetched
+  // by the WS client, which connects after App mounts. Reading
+  // `hasScope('host')` here answered the placeholder "no" and made the
+  // trim a permanent no-op on the merged build (2026-09-03: zero renderer
+  // GCs in an hour, ~50MB of idle renderer growth). Wait for the answer.
+  if (runMode() !== 'local') return () => {};
+  let stopped = false;
+  let stopInstalled: (() => void) | null = null;
+  void pageGrantsResolved().then(() => {
+    if (stopped || !hasScope('host')) return;
+    stopInstalled = installIdleMemoryTrim();
+  });
+  return () => {
+    stopped = true;
+    stopInstalled?.();
+    stopInstalled = null;
+  };
+}
 
+function installIdleMemoryTrim(): () => void {
   let lastInputAt = Date.now();
   let lastAttemptAt = 0;
   // When the backend last ACCEPTED a trim from this page. The input fact
