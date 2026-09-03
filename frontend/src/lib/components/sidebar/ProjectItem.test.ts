@@ -3,12 +3,14 @@
 // (with the classic truncate span), a duplicate gains a dim parent-dir
 // prefix that must never ellipsize.
 
-import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render } from '@testing-library/svelte';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { tick } from 'svelte';
+import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import ProjectItem from './ProjectItem.svelte';
 import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import type { Project, ProjectWithCounts } from '../../types/models';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 
 function makeProject(id: string, name: string, path: string): Project {
   return {
@@ -98,5 +100,30 @@ describe('ProjectItem label', () => {
     await Promise.resolve();
     const label = view.getByTestId('project-item-label');
     expect(label.textContent?.replace(/\s+/g, '')).toBe('web');
+  });
+});
+
+// The phone has no hover: the header's create controls cannot be revealed,
+// so the row carries a visible menu button whose menu lists them, and the
+// header does not drag.
+describe('ProjectItem compact layout', () => {
+  afterEach(() => {
+    setCompactLayoutForTest(false);
+  });
+
+  it('opens the project menu, carrying New Terminal, from its menu button', async () => {
+    setCompactLayoutForTest(true);
+    const p = makeProject('a', 'web', '/work/web');
+    addProjectLocal(p);
+    const onNewTerminal = vi.fn();
+    const { getByTestId, getByRole } = render(ProjectItem, {
+      props: { project: withCounts(p), threads: [], pane: null, onNewTerminal } as never,
+    });
+    expect(getByTestId('project-item').querySelector('[draggable]')?.getAttribute('draggable')).toBe('false');
+    await fireEvent.click(getByTestId('project-item-menu'));
+    await tick();
+    expect(document.querySelector('[data-popover-sheet]')).not.toBeNull();
+    await fireEvent.click(getByRole('menuitem', { name: 'New Terminal' }));
+    expect(onNewTerminal).toHaveBeenCalledWith('a');
   });
 });

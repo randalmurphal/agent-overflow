@@ -37,6 +37,7 @@
   import Terminal from '@lucide/svelte/icons/terminal';
   import Icon from '../primitives/Icon.svelte';
   import ProjectContextMenu from './ProjectContextMenu.svelte';
+  import SidebarRowMenuButton from './SidebarRowMenuButton.svelte';
   import ProjectThreadList from './ProjectThreadList.svelte';
   import ThreadRow from './ThreadRow.svelte';
   import { buildSidebarThreadTree } from '../../utils/sidebarTree';
@@ -58,6 +59,7 @@
     updateDropTarget,
   } from '../../stores/projectDnd.svelte';
   import { hasScope } from '../../transport/scopes';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   interface Props {
     project: ProjectWithCounts;
@@ -100,6 +102,10 @@
   // The hover-reveal is untouched, so nothing new is visible at rest.
   let newThreadUngranted = $derived(!hasScope('threads:operate'));
   let newTerminalUngranted = $derived(!hasScope('terminal:operate'));
+  // Compact: no drag (a phone's long press is the menu, and Android starts a
+  // drag on a held draggable), no text selection under a hold, a taller
+  // header, and the create controls the hover would have revealed.
+  let compact = $derived(isCompactLayout());
 
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   // The header line, not `rowEl`: an expanded project's container runs
@@ -321,12 +327,12 @@
     role="button"
     tabindex={0}
     aria-expanded={expanded}
-    draggable={manualMode}
+    draggable={manualMode && !compact}
     ondragstart={handleDragStart}
     onclick={handleRowClick}
     onkeydown={handleRowKeydown}
     class={
-      'flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius-field)] text-fg hover:bg-surface-2/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ' +
+      'flex items-center gap-1.5 px-2 py-1 compact:py-2 compact:select-none rounded-[var(--radius-field)] text-fg hover:bg-surface-2/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ' +
       (manualMode ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer')
     }
   >
@@ -417,7 +423,7 @@
         title="New Group in This Project"
         aria-label="New Group in This Project"
         data-testid="project-item-new-group"
-        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        class="compact:hidden opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
         <Icon icon={FolderPlus} size={12} strokeWidth={2} class="opacity-90" />
       </button>
@@ -428,7 +434,7 @@
         title={newTerminalUngranted ? 'Not granted to this device' : 'New Terminal in This Project'}
         aria-label="New Terminal in This Project"
         data-testid="project-item-new-terminal"
-        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-fg-subtle disabled:hover:text-fg-subtle disabled:hover:bg-surface-2/0"
+        class="compact:hidden opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-fg-subtle disabled:hover:text-fg-subtle disabled:hover:bg-surface-2/0"
       >
         <Icon icon={Terminal} size={12} strokeWidth={2} class="opacity-90" />
       </button>
@@ -440,10 +446,11 @@
         title={newThreadUngranted ? 'Not granted to this device' : 'New Thread in This Project'}
         aria-label="New Thread in This Project"
         data-testid="project-item-new-thread"
-        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-fg-subtle disabled:hover:text-fg-subtle disabled:hover:bg-surface-2/0"
+        class="compact:opacity-100 compact:h-9 compact:w-9 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-fg-subtle disabled:hover:text-fg-subtle disabled:hover:bg-surface-2/0"
       >
         <Icon icon={Plus} size={12} strokeWidth={2} class="opacity-90" />
       </button>
+      <SidebarRowMenuButton label="Project actions" testId="project-item-menu" onOpen={handleContextMenu} />
     {/if}
   </div>
 
@@ -472,6 +479,8 @@
 
 <ProjectContextMenu
   {project}
+  onNewThread={() => onNewThread?.(project.project.id, { openInNewPane: false })}
+  onNewTerminal={() => onNewTerminal?.(project.project.id)}
   anchor={headerEl}
   open={contextMenuOpen}
   onClose={closeContextMenu}

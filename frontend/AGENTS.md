@@ -136,6 +136,28 @@ What compact changes, and where:
   belong on the caret. Overlays fill the screen.
 - **Return inserts a newline** (`enterSends` in `composerKeyboard.ts`) and
   the Send button is the way to send.
+- **A long press is the right-click.** `utils/longPressContextMenu.ts` is
+  one window-level detector, live only under compact, that turns a held
+  touch into a synthetic `contextmenu` at the pressed element, so every
+  existing `oncontextmenu` site (rows, the project header, terminal tabs,
+  the pane title's rename, the delegated link and diagram hosts) opens on
+  the phone with no per-site wiring, and the e2e compact project drives the
+  same path a device does. Exactly one `contextmenu` reaches handlers per
+  press, a handled press swallows the compatibility mouse sequence the
+  engine sends on release, and an unhandled one (chat prose, the composer)
+  is left to the engine. Do not add a per-component long-press handler.
+- **Menus are sheets from both primitives.** `ContextMenu` renders as a
+  bottom sheet under compact (`data-placement="sheet"`), the shape
+  `Popover` already takes; `MenuItem` rows grow to 40px there.
+- **A hidden gesture is not an affordance.** Every sidebar row carries
+  `SidebarRowMenuButton` (`hidden compact:flex`), the visible door into the
+  same handler right-click runs; the project header shows its New Thread
+  control and moves New Terminal into its menu, compact only. Rows are
+  36px (`compact:h-9`) and `compact:select-none`, and nothing drags:
+  `ThreadRow`, the project header and the pane title all set `draggable`
+  false there, because Android starts a drag on a held draggable and that
+  fights the long press. The chat header carries a command-palette button
+  (`palette-open`), the phone's stand-in for the `palette.open` chord.
 
 Host-only surfaces already hide by scope, so compact adds no second set
 of gates. Do not fork a component for the phone; add a `compact:` class

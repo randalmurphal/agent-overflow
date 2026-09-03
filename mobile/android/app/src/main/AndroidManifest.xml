@@ -62,4 +62,11 @@
         only (frontend/src/lib/native/push.ts).
     -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!--
+        Install-time, no prompt. The long-press detector
+        (frontend/src/lib/utils/longPressContextMenu.ts) taps the motor for
+        10ms when a hold opened a menu; without this the WebView makes
+        `navigator.vibrate` a silent no-op.
+    -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 </manifest>

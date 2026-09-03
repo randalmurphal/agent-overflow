@@ -3,7 +3,10 @@
 // cases prove the shell's contract (frontend/AGENTS.md § Compact): the
 // list is the root screen, opening a thread swaps to the thread screen
 // without unmounting either, the header's back button returns, Return
-// is a newline, and a menu opens as a bottom sheet.
+// is a newline, a menu opens as a bottom sheet, a long press or the row's
+// own menu button opens a row menu without opening the thread, and the
+// header carries the command palette.
+import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 
 test.beforeEach(async ({ harness }) => {
@@ -103,4 +106,73 @@ test('a menu opens as a bottom sheet', async ({ harness, page }) => {
   expect(box.left).toBe(0);
   expect(box.right).toBe(box.vw);
   expect(box.bottom).toBe(box.vh);
+});
+
+/**
+ * A held touch, the way a device produces one: raw touch events through
+ * CDP, so the app's own long-press detector (utils/longPressContextMenu.ts)
+ * is what turns it into a menu. Playwright's `tap` is a tap, and no engine
+ * under emulation raises `contextmenu` for a hold on its own.
+ */
+async function longPress(page: Page, target: Locator): Promise<void> {
+  const box = await target.boundingBox();
+  if (!box) throw new Error('long-press target is not visible');
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    await page.waitForTimeout(700);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  } finally {
+    await cdp.detach();
+  }
+}
+
+test('a long press on a thread row opens its menu as a sheet and leaves the thread closed', async ({
+  harness,
+  page,
+}) => {
+  await harness.open(page);
+  const row = page.getByTestId('thread-row').filter({ hasText: 'First task' });
+  await longPress(page, row);
+  const sheet = page.locator('[data-popover-sheet]');
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByRole('menu', { name: 'Thread Actions' })).toBeVisible();
+  await expect(sheet.getByRole('menuitem', { name: 'Rename Thread' })).toBeVisible();
+  // The release did not open the thread under the sheet, and the sheet
+  // survived the release.
+  await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
+  await page.keyboard.press('Escape');
+  await expect(sheet).toHaveCount(0);
+  await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
+});
+
+test('the row menu button is the visible way into the same menu', async ({ harness, page }) => {
+  await harness.open(page);
+  const row = page.getByTestId('thread-row').filter({ hasText: 'Second task' });
+  const button = row.getByTestId('thread-row-menu');
+  await expect(button).toBeVisible();
+  const size = await button.boundingBox();
+  expect(size!.width).toBeGreaterThanOrEqual(36);
+  expect(size!.height).toBeGreaterThanOrEqual(36);
+  await button.tap();
+  const sheet = page.locator('[data-popover-sheet]');
+  await expect(sheet.getByRole('menuitem', { name: 'Rename Thread' })).toBeVisible();
+  await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
+});
+
+test('the project header carries its menu, with New Terminal inside', async ({ harness, page }) => {
+  await harness.open(page);
+  await page.getByTestId('project-item-menu').first().tap();
+  const sheet = page.locator('[data-popover-sheet]');
+  await expect(sheet.getByRole('menuitem', { name: 'New Terminal' })).toBeVisible();
+  await expect(sheet.getByRole('menuitem', { name: 'Rename Project' })).toBeVisible();
+});
+
+test('the chat header opens the command palette', async ({ harness, page }) => {
+  await harness.open(page);
+  await page.getByTestId('thread-row').filter({ hasText: 'First task' }).click();
+  await page.getByTestId('palette-open').tap();
+  await expect(page.getByTestId('command-palette-input')).toBeVisible();
 });

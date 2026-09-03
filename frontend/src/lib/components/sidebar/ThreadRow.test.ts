@@ -37,6 +37,7 @@ import {
 import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transport/entityIndex';
 import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -1377,5 +1378,48 @@ describe('<ThreadRow> machine chip', () => {
     const pane = createThreadPane();
     const { queryByTestId } = render(ThreadRow, { props: { thread, pane } });
     expect(queryByTestId('thread-row-worktree')).toBeNull();
+  });
+});
+
+describe('<ThreadRow> compact layout', () => {
+  // The phone has no hover and no right button: the row carries a visible
+  // menu button that raises the same menu right-click does, and it does
+  // not drag (Android starts a drag on a held draggable, which would fight
+  // the long press).
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+    resetKeybindingsStore();
+    resetKeyboardModifiersForTest();
+    setCompactLayoutForTest(true);
+  });
+
+  afterEach(() => {
+    setCompactLayoutForTest(false);
+  });
+
+  it('opens the row menu from its menu button without opening the thread', async () => {
+    const thread = makeThread();
+    const pane = createThreadPane();
+    registerPaneForTest('main', pane);
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(getByTestId('thread-row').getAttribute('draggable')).toBe('false');
+    expect(document.querySelector('[data-popover-sheet]')).toBeNull();
+
+    await fireEvent.click(getByTestId('thread-row-menu'));
+    await tick();
+    const sheet = document.querySelector('[data-popover-sheet]');
+    expect(sheet).not.toBeNull();
+    expect(sheet?.querySelector('[role="menu"]')).not.toBeNull();
+    expect(pane.threadId).toBeNull();
+  });
+
+  it('keeps the row draggable on the desktop', async () => {
+    setCompactLayoutForTest(false);
+    const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane: createThreadPane() } });
+    expect(getByTestId('thread-row').getAttribute('draggable')).toBe('true');
   });
 });

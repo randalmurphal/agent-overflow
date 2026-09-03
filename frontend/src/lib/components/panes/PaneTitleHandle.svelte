@@ -19,6 +19,7 @@
   } from '../../stores/paneTitleRename';
   import { getFocusedPaneId } from '../../stores/panes.svelte';
   import { isImeComposingEvent } from '../../utils/imeComposition';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -141,7 +142,7 @@
         event.preventDefault();
         startRename();
       }}
-      draggable={onPaneDragStart != null}
+      draggable={onPaneDragStart != null && !isCompactLayout()}
       ondragstart={(event) => onPaneDragStart?.(event)}
       data-testid={titleTestId}
       data-focused={isFocusedPane}

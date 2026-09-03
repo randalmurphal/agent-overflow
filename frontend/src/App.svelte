@@ -29,6 +29,7 @@
   import { hydrateWorkflowAttention } from './lib/stores/workflowRuns.svelte';
   import { syncSidebarLayoutFromAppStorage } from './lib/stores/sidebarLayout.svelte';
   import { installLayoutMode } from './lib/stores/layoutMode.svelte';
+  import { installLongPressContextMenu } from './lib/utils/longPressContextMenu';
   import { syncUsagePeriodFromSettings } from './lib/stores/usagePeriod.svelte';
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
   import { applyThemeClass } from './lib/utils/theme';
@@ -441,6 +442,9 @@
     // graph. See lib/stores/harnessBridge.ts.
     const cleanupHarnessBridge = installHarnessBridge();
     const cleanupExternalLinks = installExternalLinkDelegate();
+    // The phone's right-click: a held touch under the compact layout raises
+    // `contextmenu` at the pressed element, so every menu opens on the phone.
+    const cleanupLongPress = installLongPressContextMenu();
     const cleanupZoomKeys = installZoomKeybindings();
 
     // Register the built-in commands. The hooks close over stable references
@@ -512,6 +516,7 @@
       cleanupServiceUpdates();
       cleanupDevServers();
       cleanupExternalLinks();
+      cleanupLongPress();
       cleanupZoomKeys();
       cleanupLoafTrace();
       cleanupHarnessBridge();

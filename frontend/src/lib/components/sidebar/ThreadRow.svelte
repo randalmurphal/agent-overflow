@@ -41,6 +41,8 @@
   import ThreadRowForkAffordance from './ThreadRowForkAffordance.svelte';
   import ThreadContextMenu from './ThreadContextMenu.svelte';
   import ThreadRowPinButton from './ThreadRowPinButton.svelte';
+  import SidebarRowMenuButton from './SidebarRowMenuButton.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import {
     archiveThreadAction,
     deleteThreadAction,
@@ -116,6 +118,9 @@
   let isActive = $derived(pane?.threadId === thread.id);
   let isOpen = $derived(findPaneShowingThread(thread.id) !== null);
   let isCursorTarget = $derived(getSidebarCursorThreadId() === thread.id);
+  // Compact: no drag (a phone's long press is the menu, and Android starts a
+  // drag on a held draggable), no text selection under a hold, taller rows.
+  let compact = $derived(isCompactLayout());
   // Terminals aren't archivable — the row offers Delete (X) instead of
   // Archive, and the leading glyph is the terminal icon.
   let isTerminal = $derived(thread.mode === 'terminal');
@@ -403,9 +408,9 @@
     onkeydown={(e) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); } if (!editing && e.key === 'F2') { e.preventDefault(); startRename(); } }}
     role="button"
     tabindex={0}
-    draggable={!editing}
+    draggable={!editing && !compact}
     aria-pressed={selected}
-    class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
+    class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 compact:h-9 compact:select-none rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
       {selected || isOpen ? 'text-fg' : 'text-fg-muted group-hover/thread-item:text-fg'}
       {machineUnreachable ? 'opacity-50' : ''}"
     style="padding-left: {rowPaddingLeftPx}px"
@@ -569,6 +574,7 @@
         </div>
       {/if}
     </div>
+    <SidebarRowMenuButton label="Thread actions" testId="thread-row-menu" onOpen={handleContextMenu} />
   {/if}
   </div>
 

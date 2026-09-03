@@ -3612,6 +3612,35 @@ nudge is wildcard rather than thread-filtered, so a client re-reads only
 sets it already holds; an in-process take-control caller (a saga, a
 test) has no `ConnState` and owes its own detach.
 
+**Polish pass, touch menus LANDED (2026-09-03, wave R4).** Under the
+phone ruling (full function, adapted to touch), the right-click has a
+touch equivalent and a visible one. One window-level detector
+(`utils/longPressContextMenu.ts`, installed once from `App.svelte`,
+compact layout and touch pointers only) turns a 500ms hold within 8px
+into a single `contextmenu` at the pressed element, so every existing
+`oncontextmenu` site works unchanged: engines that raise their own
+`contextmenu` on a hold win and the synthetic one is dropped, a
+native duplicate after a handled synthetic one is swallowed, and the
+compatibility mouse sequence that follows the release is swallowed for
+a 700ms grace so the release neither opens the row nor dismisses the
+menu it just raised. Editable targets are left to the engine (the
+selection handles), and a press nobody handled is forgotten. Because
+the hold is hidden, every sidebar row (thread, group, project header)
+carries a 36px `SidebarRowMenuButton` under compact that raises the
+same handler; `ContextMenu` renders as a bottom sheet there, matching
+`Popover`; rows are 36px and `select-none`; nothing is draggable
+under compact (rows, project headers, pane title); the project
+header keeps only `+`, its menu gaining New Thread and New Terminal
+(scope-gated); the chat header gains a palette button. Desktop pixels
+are unchanged. Verified by the detector's unit suite, component
+tests per row, and the compact Playwright project driving a real
+held touch through CDP. Residuals, recorded and left: header `xs`
+buttons stay 24px (the WCAG AA minimum, not the 44px Android target);
+the terminal tab strip is unchanged; the Android WebView's own
+long-press behaviour (whether it raises `contextmenu`, and when) is
+unverified until the on-device pass. The manifest declares
+VIBRATE so the 10ms tick on a handled hold is real on the device.
+
 ## 17. Testing
 
 - **Generator gate**: every bound method must declare a scope or the
