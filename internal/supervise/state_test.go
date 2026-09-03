@@ -250,3 +250,103 @@ func TestParsePreflightReadsTheLastLine(t *testing.T) {
 		}
 	}
 }
+
+// A settled record's outcome is carried ONCE.
+//
+// The record itself rests in the file until the next update collapses it,
+// which can be months of nightly reboots. Before the reported flag existed,
+// every one of those boots re-announced the same verdict, so an admin client
+// attaching for the first time in June was shown a rollback from March as if
+// it had just happened, with no way to dismiss it.
+func TestASettledOutcomeIsAnnouncedUntilItIsReported(t *testing.T) {
+	for _, settled := range []UpdateState{UpdateCommitted, UpdateRolledBack, UpdateFailed} {
+		t.Run(string(settled), func(t *testing.T) {
+			state := State{
+				Schema: StateSchema, ActiveVersion: "1.0.0",
+				Update: &UpdateRecord{
+					ID: "upd-1", State: settled, From: "1.0.0", To: "2.0.0",
+					Reason: "because",
+				},
+			}
+			first, err := state.Select()
+			if err != nil {
+				t.Fatalf("Select: %v", err)
+			}
+			if first.Outcome != settled || first.UpdateID != "upd-1" || first.Reason != "because" {
+				t.Fatalf("selection = %+v, want the outcome announced once", first)
+			}
+			// The target is what the update was AIMING at, which on a
+			// rollback is not the version selected to run.
+			if first.Target != "2.0.0" {
+				t.Errorf("target = %q, want the version the update was aiming at", first.Target)
+			}
+
+			marked, changed, err := state.MarkReported()
+			if err != nil || !changed {
+				t.Fatalf("MarkReported = (%t, %v), want (true, nil)", changed, err)
+			}
+			second, err := marked.Select()
+			if err != nil {
+				t.Fatalf("Select after reporting: %v", err)
+			}
+			if second.Version != first.Version {
+				t.Errorf("version moved after reporting: %q then %q", first.Version, second.Version)
+			}
+			if second.Outcome != "" || second.UpdateID != "" || second.Reason != "" || second.Target != "" {
+				t.Errorf("selection = %+v, want nothing left to announce", second)
+			}
+			// Idempotent: a child that says hello twice writes nothing twice.
+			if _, changed, err := marked.MarkReported(); err != nil || changed {
+				t.Errorf("MarkReported twice = (%t, %v), want (false, nil)", changed, err)
+			}
+		})
+	}
+}
+
+// A PENDING record is never "reported": it has no outcome yet, and the trial
+// it selects must keep being selected until it settles.
+func TestMarkReportedRefusesToSettleAPendingRecord(t *testing.T) {
+	state := State{
+		Schema: StateSchema, ActiveVersion: "1.0.0",
+		Update: &UpdateRecord{ID: "upd-1", State: UpdatePending, From: "1.0.0", To: "2.0.0"},
+	}
+	next, changed, err := state.MarkReported()
+	if err != nil || changed {
+		t.Fatalf("MarkReported on a pending record = (%t, %v), want (false, nil)", changed, err)
+	}
+	selection, err := next.Select()
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if !selection.Trial || selection.UpdateID != "upd-1" {
+		t.Fatalf("selection = %+v, want the trial still selected", selection)
+	}
+}
+
+// A state file written before the reported flag existed carries the same
+// schema number, so it must decode as unreported and validate unchanged.
+// Bumping the schema for an additive boolean would have made every existing
+// install fail closed at boot for a field whose absence has one reading.
+func TestAStateFileWithoutTheReportedFieldReadsAsUnreported(t *testing.T) {
+	layout, err := NewLayout(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLayout: %v", err)
+	}
+	writeFile(t, layout.StatePath(), `{"schema":1,"activeVersion":"1.0.0",`+
+		`"update":{"id":"upd-1","state":"rolled-back","from":"1.0.0","to":"2.0.0","reason":"crashed"}}`)
+
+	state, found, err := LoadState(layout)
+	if err != nil || !found {
+		t.Fatalf("LoadState = (found %t, %v)", found, err)
+	}
+	if state.Update.Reported {
+		t.Fatal("an absent reported field decoded as true, which would silence a real outcome")
+	}
+	selection, err := state.Select()
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if selection.Outcome != UpdateRolledBack || selection.Target != "2.0.0" {
+		t.Fatalf("selection = %+v, want the outcome still announced", selection)
+	}
+}

@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -86,11 +88,11 @@ type tailnetState struct {
 	// what makes a control-URL edit a restart rather than a no-op.
 	controlURL string
 
-	// plain and secure are the attached listeners. secure is nil whenever
-	// the tailnet has HTTPS turned off in its admin panel, which is a
-	// tailnet setting no code here can substitute for.
-	plain  *transport.AuxListener
-	secure *transport.AuxListener
+	// plain and secure are the attached listeners' slots. secure is nil
+	// whenever the tailnet has HTTPS turned off in its admin panel, which
+	// is a tailnet setting no code here can substitute for.
+	plain  *tailnetSlot
+	secure *tailnetSlot
 
 	// lastErr is this layer's own failure — a bring-up that did not
 	// happen, a listener that stopped accepting — verbatim and cleared by
@@ -100,6 +102,37 @@ type tailnetState struct {
 
 	// failures counts consecutive failed passes, for the backoff.
 	failures int
+}
+
+// tailnetSlot is ONE attach, from before it is served until after it is
+// detached. It exists so an accept loop that ends has something to name.
+//
+// The transport reports an auxiliary listener's failure on the listener's own
+// goroutine, which can run before ServeAuxiliary has even returned to the
+// caller that asked for it. Without a slot the report had nothing to point
+// at: it could only clear whichever handle the reconciler happened to have
+// stored, so a failure that arrived first cleared nothing and the reconciler
+// then stored a handle for a listener that was already dead. Every later pass
+// saw a listener attached, re-attached nothing, and the node stayed up with
+// nothing answering on it until the process restarted.
+//
+// The slot is created BEFORE the serve, so the failure always has somewhere
+// to record itself, and both fields are guarded by App.tailnet.mu, so
+// recording a failure and recording a handle are one order rather than two.
+type tailnetSlot struct {
+	// aux is the handle, nil until ServeAuxiliary has returned and nil again
+	// once this slot is done.
+	aux *transport.AuxListener
+	// failed is set by the accept loop's report, and by a detach, so an
+	// attach still in flight knows to close what it is about to record.
+	failed bool
+}
+
+// live reports whether this slot still names something that is serving.
+// Called with App.tailnet.mu held. A nil slot is not live, which is what
+// makes "is one attached" one question rather than two.
+func (s *tailnetSlot) live() bool {
+	return s != nil && s.aux != nil && !s.failed
 }
 
 // startTailnetLoop launches the reconciler. Called once from Start with
@@ -265,8 +298,8 @@ func (a *App) attachTailnetListeners(node *tailnet.Node) error {
 	}
 
 	a.tailnet.mu.Lock()
-	havePlain := a.tailnet.plain != nil
-	haveSecure := a.tailnet.secure != nil
+	havePlain := a.tailnet.plain.live()
+	haveSecure := a.tailnet.secure.live()
 	a.tailnet.mu.Unlock()
 
 	if !havePlain {
@@ -278,13 +311,12 @@ func (a *App) attachTailnetListeners(node *tailnet.Node) error {
 		if err != nil {
 			return err
 		}
-		aux, err := srv.ServeAuxiliary(ln, a.tailnetListenerFailed)
+		slot, err := a.attachAuxListener(srv, ln)
 		if err != nil {
-			_ = ln.Close()
 			return err
 		}
 		a.tailnet.mu.Lock()
-		a.tailnet.plain = aux
+		a.tailnet.plain = slot
 		a.tailnet.mu.Unlock()
 	}
 
@@ -306,28 +338,102 @@ func (a *App) attachTailnetListeners(node *tailnet.Node) error {
 		// degraded tailnet, not an unreachable one.
 		return fmt.Errorf("serve HTTPS on the tailnet: %w", err)
 	}
-	aux, err := srv.ServeAuxiliary(ln, a.tailnetListenerFailed)
+	slot, err := a.attachAuxListener(srv, ln)
 	if err != nil {
-		_ = ln.Close()
 		return err
 	}
 	a.tailnet.mu.Lock()
-	a.tailnet.secure = aux
+	a.tailnet.secure = slot
 	a.tailnet.mu.Unlock()
 	return nil
 }
 
-// tailnetListenerFailed is the auxiliary accept loop's terminal error.
+// attachAuxListener serves one listener and answers the slot that names it.
+//
+// The slot exists before the serve does, so the accept loop's report always
+// has somewhere to go. When that report arrives first, this closes the handle
+// it was about to record and returns the failure to the reconciler, which
+// backs off and tries again, rather than recording a listener that has
+// already stopped.
+func (a *App) attachAuxListener(srv *transport.Server, ln net.Listener) (*tailnetSlot, error) {
+	slot := &tailnetSlot{}
+	aux, err := srv.ServeAuxiliary(ln, func(cause error) { a.tailnetListenerFailed(slot, cause) })
+	if err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	if !a.adoptAuxListener(slot, aux) {
+		closeAuxListener(aux)
+		return nil, errors.New("the tailnet listener stopped accepting before it was attached")
+	}
+	return slot, nil
+}
+
+// adoptAuxListener records a served handle into its slot, or reports that the
+// slot already learned its accept loop ended. Both halves under one lock,
+// because "did it fail" and "here is the handle" are the two orders of the
+// same moment and only one of them may win.
+func (a *App) adoptAuxListener(slot *tailnetSlot, aux *transport.AuxListener) bool {
+	a.tailnet.mu.Lock()
+	defer a.tailnet.mu.Unlock()
+	if slot.failed {
+		return false
+	}
+	slot.aux = aux
+	return true
+}
+
+// releaseTailnetSlot empties one slot and unhooks it from whichever field
+// named it, answering the handle the caller must close (nil when the slot
+// never held one) and whether any listener is still attached.
+//
+// Split from tailnetListenerFailed so the bookkeeping is one lock-held state
+// transition with no I/O in it: closing a handle while holding tailnet.mu
+// would run the transport's shutdown under this feature's own lock.
+func (a *App) releaseTailnetSlot(slot *tailnetSlot) (_ *transport.AuxListener, remaining bool) {
+	a.tailnet.mu.Lock()
+	defer a.tailnet.mu.Unlock()
+	slot.failed = true
+	aux := slot.aux
+	slot.aux = nil
+	if a.tailnet.plain == slot {
+		a.tailnet.plain = nil
+	}
+	if a.tailnet.secure == slot {
+		a.tailnet.secure = nil
+	}
+	return aux, a.tailnet.plain.live() || a.tailnet.secure.live()
+}
+
+// tailnetListenerFailed is ONE auxiliary accept loop's terminal error.
 // Recorded as user-facing state and kicked, so the next pass re-attaches
 // rather than leaving a node that is up with nothing listening on it.
+//
+// It drops only the listener its own slot names. The two listeners are one
+// node's but they are not one listener: HTTPS going away while cleartext
+// keeps accepting is a degraded tailnet, and taking the working one down
+// with it would make every failure a total one. The admitted host names are
+// withdrawn only when nothing is left answering on them.
 //
 // It reaches only this feature: the transport reports an auxiliary
 // listener's failure to the caller that handed it over, never on the
 // shared serve-error channel, so a tailnet that stopped accepting can
 // never read as the app's own transport dying.
-func (a *App) tailnetListenerFailed(err error) {
-	a.dropTailnetListeners()
-	a.recordTailnetFailure(fmt.Sprintf("the tailnet listener stopped accepting: %v", err))
+func (a *App) tailnetListenerFailed(slot *tailnetSlot, cause error) {
+	aux, remaining := a.releaseTailnetSlot(slot)
+	if aux == nil {
+		// The attach has not recorded its handle yet. It reads slot.failed,
+		// closes the handle and reports the failure itself, so saying it
+		// twice here would count one fault against the backoff twice.
+		return
+	}
+	closeAuxListener(aux)
+	if !remaining {
+		if srv := a.transportServer.Load(); srv != nil {
+			srv.SetAuxiliaryHosts(nil)
+		}
+	}
+	a.recordTailnetFailure(fmt.Sprintf("the tailnet listener stopped accepting: %v", cause))
 	a.kickTailnet()
 }
 
@@ -355,20 +461,36 @@ func (a *App) stopTailnetNode() {
 // after the listener behind it is gone is an admission nobody can reach.
 func (a *App) dropTailnetListeners() {
 	a.tailnet.mu.Lock()
-	plain, secure := a.tailnet.plain, a.tailnet.secure
+	var handles []*transport.AuxListener
+	for _, slot := range []*tailnetSlot{a.tailnet.plain, a.tailnet.secure} {
+		if slot == nil {
+			continue
+		}
+		// Marked failed as well as emptied: an attach still in flight for
+		// this slot has to close the handle it is about to record rather
+		// than hand a detached node a live listener.
+		slot.failed = true
+		if slot.aux != nil {
+			handles = append(handles, slot.aux)
+			slot.aux = nil
+		}
+	}
 	a.tailnet.plain, a.tailnet.secure = nil, nil
 	a.tailnet.mu.Unlock()
 
-	for _, aux := range []*transport.AuxListener{plain, secure} {
-		if aux == nil {
-			continue
-		}
-		if err := aux.Close(); err != nil {
-			log.Printf("tailnet: detach listener: %v", err)
-		}
+	for _, aux := range handles {
+		closeAuxListener(aux)
 	}
 	if srv := a.transportServer.Load(); srv != nil {
 		srv.SetAuxiliaryHosts(nil)
+	}
+}
+
+// closeAuxListener detaches one handle, reporting a close that did not go
+// cleanly. Nothing acts on it: the listener is gone either way.
+func closeAuxListener(aux *transport.AuxListener) {
+	if err := aux.Close(); err != nil {
+		log.Printf("tailnet: detach listener: %v", err)
 	}
 }
 

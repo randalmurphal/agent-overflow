@@ -54,6 +54,23 @@ version it selected becomes the new `ActiveVersion`. That is why a committed
 update needs no separate promotion step, and why "previous" always means one
 thing.
 
+**A settled outcome is news exactly ONCE.** The record rests in the file until
+the next update collapses it, which can be months of nightly restarts, so
+`Select` announces `Outcome`/`Reason`/`Target` only while `UpdateRecord.Reported`
+is false, and the supervisor sets that flag (`State.MarkReported`) in the
+commit write itself (the committing child publishes it from the commit
+frame) or, for a rollback, when the backend it activated says hello.
+The flag is additive under the SAME schema number: an absent `reported` in a file written before it existed reads as
+false, which is the reading that still announces. Bumping the schema for a
+boolean whose absence has one meaning would fail every existing install closed
+at boot.
+
+**The activate frame names TWO versions.** `Selection.Version` is what runs and
+`Selection.Target` is what the settled update was aiming AT. On a rollback they
+are different, and only the record knows both — the version answering is not
+the version that failed, and a client told only one of them is told the wrong
+one.
+
 ## Ordering rules that are the mechanism, not tidiness
 
 - **Preflight before anything durable.** `acceptUpdate` stats the target's
@@ -74,13 +91,35 @@ thing.
   `TestTheSupervisorAsksThroughTheSameImplementation` pins the two together.
 - **Snapshot only while nothing holds the database.** Between the stop and the
   trial's start, and nowhere else. The copy is not safe at any other moment.
+- **The snapshot is taken where the trial is SPAWNED, not where the update was
+  accepted.** `Run`'s trial branch takes it on the first attempt
+  (`snapshotForTrial`, `Attempts == 0`), because that is the one place a trial
+  can begin. Accepting an update writes the pending record durably and then
+  waits out `ResponseGrace` so the asking child can flush its answer, and a
+  crash, a shutdown or a kill anywhere in that window used to leave a pending
+  record with no snapshot beside it — after which the next boot trialled the
+  new version against a database nothing could put back. The general rule:
+  when a durable record promises a resource, whatever CONSUMES the record
+  creates the resource, or a process that dies between the two leaves a
+  promise nobody can keep.
+- **A record already mid-trial with no snapshot FAILS CLOSED.** The trial has
+  written to the database, so a snapshot taken now would preserve exactly the
+  work a rollback exists to undo. The supervisor starts nothing and names
+  `agent-overflow service update` as the way to choose a version by hand.
 - **Commit durably, THEN tell the child.** The child opens its activation gate
   on the commit frame, so a frame sent before the write would be a backend
   acting unattended on an update no restart would select.
-- **Marker before restore.** `RestoreSnapshot` writes and fsyncs the marker,
-  then removes the live triple, then copies back exactly the manifest's set,
-  then removes the marker. `ResumeRestore` runs before the state file is even
-  READ, so no version can open a half-restored database.
+- **Marker before restore, and the manifest before the marker.**
+  `RestoreSnapshot` first confirms a readable snapshot manifest is there
+  (`SnapshotPresent`), then writes and fsyncs the marker, then removes the
+  live triple, then copies back exactly the manifest's set, then removes the
+  marker. `ResumeRestore` runs before the state file is even READ, so no
+  version can open a half-restored database. The check is FIRST because the
+  marker is the one thing in this package nothing else clears: a marker
+  fsynced for a snapshot that does not exist fails every subsequent boot at
+  `ResumeRestore`, and no state the supervisor can reach removes it. Never
+  write a durable "I am part-way through X" marker before confirming X can
+  finish.
 - **Count the attempt before the trial, durably.** A supervisor killed by the
   very trial it is starting must find the attempt recorded when it comes back,
   or the two of them loop forever. `Run` is the one place `Retry` is called.
@@ -159,3 +198,10 @@ interrupted mid-copy, an invalid state file, an unstaged target, a target
 speaking a newer protocol, and an update whose snapshot cannot be taken. The
 marked-restore test asserts the trial READ the restored bytes, which is the only
 way to prove the resume ran before the spawn.
+
+`supervisor_recovery_unix_test.go` holds the sequences that begin from a state
+file rather than from a running backend, over the same rig: a pending update
+with no snapshot and no attempt (the boot snapshots, then trials, then rolls
+back cleanly), the same with an attempt already spent (the boot starts nothing
+and names the remedy), and a settled outcome carried to exactly one backend
+across two boots.

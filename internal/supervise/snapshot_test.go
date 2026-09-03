@@ -3,6 +3,7 @@ package supervise
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -187,4 +188,66 @@ func quote(s string) string {
 		out = append(out, s[i])
 	}
 	return string(append(out, '"'))
+}
+
+// A restore with nothing to restore from must leave NO marker.
+//
+// The marker is the one durable instruction every later boot obeys before it
+// may select or spawn anything, so writing one for a snapshot that does not
+// exist is not a failed rollback: it is a supervisor that refuses to start
+// anything on this machine, on every boot, forever. The check therefore comes
+// before the write and not after it.
+func TestRestoreLeavesNoMarkerWhenThereIsNothingToRestore(t *testing.T) {
+	dataDir := t.TempDir()
+	layout, err := NewLayout(dataDir)
+	if err != nil {
+		t.Fatalf("NewLayout: %v", err)
+	}
+	writeDatabase(t, dataDir, "live")
+
+	err = RestoreSnapshot(layout, dataDir, "upd-1", "the trial crashed", time.Unix(0, 0))
+	if err == nil {
+		t.Fatal("RestoreSnapshot answered nil with no snapshot on disk")
+	}
+	if !strings.Contains(err.Error(), "no database snapshot") {
+		t.Errorf("error = %v, which does not say the snapshot is missing", err)
+	}
+	if !absent(t, layout.MarkerPath()) {
+		t.Fatalf("a restore with nothing to restore wrote %s, which no later boot could get past",
+			layout.MarkerPath())
+	}
+	// And the next boot finds nothing to resume, so it proceeds normally.
+	if _, resumed, err := ResumeRestore(layout); err != nil || resumed {
+		t.Fatalf("ResumeRestore = (%t, %v), want (false, nil)", resumed, err)
+	}
+	// The live database was not touched on the way to the refusal.
+	if got := readFile(t, filepath.Join(dataDir, DatabaseFiles()[0])); got != "live agent-overflow.db" {
+		t.Errorf("database = %q, want it untouched", got)
+	}
+}
+
+// SnapshotPresent is the question both the rollback and the second trial
+// spawn ask, so it has to tell an absent snapshot from an unreadable one.
+func TestSnapshotPresentAnswersTheThreeStates(t *testing.T) {
+	dataDir := t.TempDir()
+	layout, err := NewLayout(dataDir)
+	if err != nil {
+		t.Fatalf("NewLayout: %v", err)
+	}
+	if present, err := SnapshotPresent(layout); err != nil || present {
+		t.Fatalf("SnapshotPresent on a fresh layout = (%t, %v), want (false, nil)", present, err)
+	}
+	writeDatabase(t, dataDir, "before")
+	if _, err := TakeSnapshot(layout, dataDir, time.Unix(0, 0)); err != nil {
+		t.Fatalf("TakeSnapshot: %v", err)
+	}
+	if present, err := SnapshotPresent(layout); err != nil || !present {
+		t.Fatalf("SnapshotPresent after one = (%t, %v), want (true, nil)", present, err)
+	}
+	if err := DiscardSnapshot(layout); err != nil {
+		t.Fatalf("DiscardSnapshot: %v", err)
+	}
+	if present, err := SnapshotPresent(layout); err != nil || present {
+		t.Fatalf("SnapshotPresent after a discard = (%t, %v), want (false, nil)", present, err)
+	}
 }

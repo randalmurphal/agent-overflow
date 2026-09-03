@@ -276,3 +276,63 @@ func TestTheExternalPairWinsOverIssuance(t *testing.T) {
 		t.Fatal("an ACME account was registered for a domain that already had a certificate")
 	}
 }
+
+// A recorded failure is about a DOMAIN, so it ends when the domain does.
+//
+// Every failure path here records and returns without publishing: a hook that
+// could not answer, a pair that would not load, a name a certificate was never
+// obtained for. Nothing in the publish path could clear one, so a user who
+// reacted to the error by clearing the field kept reading it under a screen
+// that was no longer trying to serve anything.
+func TestClearingTheCertificateSourceEndsTheFailureItWasAbout(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		after settings.NetworkSettings
+	}{
+		{
+			name:  "the canonical domain is cleared",
+			after: settings.NetworkSettings{},
+		},
+		{
+			// A named backend with something in front terminating TLS for
+			// it. This install obtains nothing, so nothing here can still
+			// be failing either.
+			name:  "the domain stays and its certificate source goes",
+			after: settings.NetworkSettings{CanonicalDomain: "backend.example"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app, dir := domainCertApp(t)
+			certFile, keyFile := writeExternalPair(t, dir, "other.example", 90*24*time.Hour)
+			if _, err := app.settings.SetNetwork(settings.NetworkSettings{
+				CanonicalDomain:  "backend.example",
+				ExternalCertFile: certFile,
+				ExternalKeyFile:  keyFile,
+			}); err != nil {
+				t.Fatalf("SetNetwork: %v", err)
+			}
+			app.reconcileDomainCertificate(context.Background())
+			if app.domainCertStatus().LastError == "" {
+				t.Fatal("a pair that does not cover the domain recorded no failure")
+			}
+
+			if _, err := app.settings.SetNetwork(tc.after); err != nil {
+				t.Fatalf("SetNetwork: %v", err)
+			}
+			app.reconcileDomainCertificate(context.Background())
+
+			status := app.domainCertStatus()
+			if status.LastError != "" {
+				t.Errorf("last error = %q, want the failure cleared with its cause", status.LastError)
+			}
+			if status.Serving != network.TLSServingNone {
+				t.Errorf("serving = %q, want nothing served for a domain", status.Serving)
+			}
+			// The backoff counts consecutive failures, so a stale count is a
+			// six-hour wait before the next real attempt.
+			if delay := app.domainCertRetryDelay(); delay != domainCertRetryFloor {
+				t.Errorf("retry delay = %s, want the backoff reset to %s", delay, domainCertRetryFloor)
+			}
+		})
+	}
+}

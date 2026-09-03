@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"time"
 
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appupdate"
@@ -30,6 +31,14 @@ import (
 // as "there is no supervisor" rather than as a failure — which is what
 // keeps the mode this file extends exactly as usable as it was before.
 
+// supervisorAnswerTimeout bounds the wait for the supervisor's answer to a
+// request-update frame. It is generous because the supervisor may be running
+// the target's preflight in its own process when the frame arrives, and it
+// exists at all because the alternative is unbounded: the answer arrives on a
+// goroutine that ends when the channel does, so a supervisor whose loop is
+// wedged while its process lives would never end the wait on its own.
+const supervisorAnswerTimeout = 30 * time.Second
+
 // serveSupervisor is this process's end of the channel, plus the small
 // amount of state a request needs to be answered.
 type serveSupervisor struct {
@@ -44,6 +53,16 @@ type serveSupervisor struct {
 	// version that came back, which is this one.
 	outcome string
 	reason  string
+	// target is the version that update was aiming AT, which on a rollback is
+	// NOT the version running: this process is the one that came back. The
+	// client is told both, because "the update to X was rolled back, running
+	// Y" is the only phrasing that names the version that actually failed.
+	target string
+
+	// answerTimeout bounds the wait for an answer to a request-update frame.
+	// A field rather than the constant so a test can describe a supervisor
+	// that never answers without waiting out the real budget.
+	answerTimeout time.Duration
 
 	// pending is the caller waiting on a request-update answer. One at a
 	// time: the supervisor refuses a second while one is in flight, so a
@@ -81,7 +100,9 @@ func attachServeSupervisor() (*serveSupervisor, error) {
 	sup := &serveSupervisor{
 		conn: conn, trial: opening.Trial, updateID: opening.UpdateID,
 		outcome: opening.Outcome, reason: opening.Reason,
-		committed: make(chan struct{}),
+		target:        opening.TargetVersion,
+		answerTimeout: supervisorAnswerTimeout,
+		committed:     make(chan struct{}),
 	}
 	if err := conn.Send(supervise.Message{
 		Type:            supervise.MsgHello,
@@ -169,7 +190,18 @@ func (s *serveSupervisor) RequestUpdate(target string) (string, error) {
 		s.failPending(err)
 		return "", err
 	}
-	msg := <-answer
+	var msg supervise.Message
+	select {
+	case msg = <-answer:
+	case <-time.After(s.answerTimeout):
+		// The supervisor is a single loop, so an answer that has not arrived
+		// in this long means it is not running that loop. Waiting on it
+		// forever would leave the caller's one-flow fence claimed for the
+		// life of the process, and every later request refused as busy.
+		err := fmt.Errorf("the supervisor did not answer the update request within %s", s.answerTimeout)
+		s.failPending(err)
+		return "", err
+	}
 	if msg.Type != supervise.MsgUpdateAccepted {
 		reason := msg.Reason
 		if reason == "" {
@@ -196,11 +228,20 @@ func (s *serveSupervisor) reportPrepared() error {
 func (s *serveSupervisor) awaitCommit() { <-s.committed }
 
 // activationOutcome is what this boot publishes when its gate opens.
+//
+// Version is what actually booted and Target is what the update was aiming
+// at. They are the same on a commit and different on a rollback, which is
+// the one case where naming only one of them misleads.
 func (s *serveSupervisor) activationOutcome(outcome, reason string) appservice.ServiceUpdateOutcome {
+	target := s.target
+	if target == "" {
+		target = version
+	}
 	return appservice.ServiceUpdateOutcome{
 		UpdateID: s.updateID,
 		Outcome:  outcome,
 		Version:  version,
+		Target:   target,
 		Reason:   reason,
 	}
 }

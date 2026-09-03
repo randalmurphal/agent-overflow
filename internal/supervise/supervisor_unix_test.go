@@ -360,6 +360,14 @@ func TestAnUpdateCommitsAndKeepsTheTrialsWork(t *testing.T) {
 	if selection.Version != "2.0.0" || selection.Trial {
 		t.Fatalf("selection = %+v, want 2.0.0 with no trial", selection)
 	}
+	// The committing child published the outcome from its commit frame, so
+	// the record is already reported and the next boot announces nothing.
+	if !state.Update.Reported {
+		t.Error("a committed record was saved unreported; the next boot would announce it again")
+	}
+	if selection.Outcome != "" {
+		t.Errorf("selection after commit carries outcome %q, want none", selection.Outcome)
+	}
 
 	// The two frames the client correlation in the next wave rides on: the id
 	// the requester was told, and the id the trial was committed under.

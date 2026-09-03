@@ -73,6 +73,21 @@ type UpdateRecord struct {
 	StartedAtMs int64  `json:"startedAtMs,omitempty"`
 	SettledAtMs int64  `json:"settledAtMs,omitempty"`
 	Reason      string `json:"reason,omitempty"`
+	// Reported is whether a backend has already carried this settled
+	// record's outcome to its clients. A settled record rests in the file
+	// until the NEXT update collapses it, which can be months, so without
+	// this flag every boot in between would re-announce the same
+	// "committed" or "rolled back" to every admin client that attached
+	// and there would be no way to tell a fresh outcome from an old one.
+	//
+	// It is set at the moment the outcome reaches a process that publishes
+	// it: with the commit itself, because the commit frame carries the
+	// outcome to the child that trialled it, and otherwise when a NON-TRIAL
+	// child says hello, because that child was handed the outcome in its
+	// activate frame. Absent in the file means false, which is what every state
+	// written before this field existed decodes to and is the correct
+	// reading of one: nobody had reported it.
+	Reported bool `json:"reported,omitempty"`
 }
 
 // Settled reports whether the record has reached a terminal state.
@@ -96,6 +111,12 @@ type Selection struct {
 	Outcome UpdateState
 	// Reason is that outcome's recorded reason, for the same reader.
 	Reason string
+	// Target is the version the update was aiming AT, which is not always
+	// the version running: a rollback's whole point is that the version
+	// answering is the one that came back. A client told only "rolled
+	// back" plus the running version would read the old version's number
+	// as the one that failed.
+	Target string
 }
 
 // Select answers which version to run, and how.
@@ -108,6 +129,12 @@ type Selection struct {
 //	committed A → B    → B, ordinarily
 //	rolled-back A → B  → A, ordinarily
 //	failed A → B       → A, ordinarily
+//
+// Which version to run is the only half that survives being told. The
+// OUTCOME half is carried once: a settled record that has already been
+// reported selects the same version with nothing to announce, so a
+// machine that rebooted nightly since an update does not tell every
+// client about it again on every one of those boots.
 //
 // An invalid state has no answer and gets an error. The supervisor exits
 // non-zero on one rather than guessing, because every guess it could make is
@@ -122,20 +149,32 @@ func (s State) Select() (Selection, error) {
 	record := *s.Update
 	switch record.State {
 	case UpdatePending:
-		return Selection{Version: record.To, Trial: true, UpdateID: record.ID}, nil
+		return Selection{
+			Version: record.To, Trial: true,
+			UpdateID: record.ID, Target: record.To,
+		}, nil
 	case UpdateCommitted:
-		return Selection{
-			Version: record.To, UpdateID: record.ID,
-			Outcome: record.State, Reason: record.Reason,
-		}, nil
+		return record.announce(Selection{Version: record.To}), nil
 	case UpdateRolledBack, UpdateFailed:
-		return Selection{
-			Version: record.From, UpdateID: record.ID,
-			Outcome: record.State, Reason: record.Reason,
-		}, nil
+		return record.announce(Selection{Version: record.From}), nil
 	default:
 		return Selection{}, fmt.Errorf("supervise: update %q rests in unknown state %q", record.ID, record.State)
 	}
+}
+
+// announce fills the outcome half of a settled record's selection, or
+// leaves it empty when the record has already been reported. The version
+// to run is the caller's, because that is the one thing the two settled
+// branches disagree about.
+func (r UpdateRecord) announce(selection Selection) Selection {
+	if r.Reported {
+		return selection
+	}
+	selection.UpdateID = r.ID
+	selection.Outcome = r.State
+	selection.Reason = r.Reason
+	selection.Target = r.To
+	return selection
 }
 
 // Validate is the fail-closed check. Everything it refuses is a state whose
@@ -281,6 +320,24 @@ func (s State) Retry() (State, error) {
 		return State{}, err
 	}
 	return next, nil
+}
+
+// MarkReported records that this settled record's outcome has been
+// delivered. changed is false when there was nothing to mark, which is
+// both a state with no record and one already marked, so a caller can
+// skip a durable write it does not need.
+func (s State) MarkReported() (State, bool, error) {
+	if s.Update == nil || !s.Update.Settled() || s.Update.Reported {
+		return s, false, nil
+	}
+	record := *s.Update
+	record.Reported = true
+	next := s
+	next.Update = &record
+	if err := next.Validate(); err != nil {
+		return State{}, false, err
+	}
+	return next, true, nil
 }
 
 // Settle moves the pending record to a terminal state.

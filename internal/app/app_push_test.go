@@ -469,3 +469,57 @@ func (b *blockingPushSender) Send(ctx context.Context, message push.Message) err
 	<-b.gate
 	return b.inner.Send(ctx, message)
 }
+
+// A registration is an address a send is made to, so the shapes that could
+// never be one are refused before a row exists for them.
+//
+// The empty one is what an unregistered shell sends when it means "I have
+// nothing yet", and storing it puts the backend in the state where it believes
+// it can wake a device and every send to it fails. Before this, the register
+// call took whatever it was handed.
+func TestARegistrationThatCouldNeverWakeAPhoneIsRefused(t *testing.T) {
+	app, _ := pushApp(t)
+	phone := pairPhone(t, app, "thumb-phone", "token-phone")
+	ctx := callFrom(phone.ID, false)
+
+	for _, tc := range []struct{ name, token string }{
+		{"empty", ""},
+		{"whitespace only", " \t\n "},
+		{"past the ceiling", strings.Repeat("a", maxPushTokenBytes+1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := app.RegisterPushToken(ctx, "android", tc.token); err == nil {
+				t.Fatal("a token that cannot be sent to was registered")
+			}
+		})
+	}
+
+	// And the registration this device already had is untouched: a refused
+	// call is not a way to unregister.
+	live, err := app.store.LivePushTokens()
+	if err != nil {
+		t.Fatalf("LivePushTokens: %v", err)
+	}
+	if len(live) != 1 || live[0].Token != "token-phone" {
+		t.Fatalf("live = %+v, want the existing registration unchanged", live)
+	}
+}
+
+// A token with room around it is the same token. Trimming happens before the
+// ceiling and before the row, so two calls a shell makes with and without a
+// trailing newline are one registration.
+func TestASurroundedTokenIsStoredTrimmed(t *testing.T) {
+	app, _ := pushApp(t)
+	phone := pairPhone(t, app, "thumb-phone", "token-phone")
+
+	if err := app.RegisterPushToken(callFrom(phone.ID, false), "android", "  token-fresh\n"); err != nil {
+		t.Fatalf("RegisterPushToken: %v", err)
+	}
+	live, err := app.store.LivePushTokens()
+	if err != nil {
+		t.Fatalf("LivePushTokens: %v", err)
+	}
+	if len(live) != 1 || live[0].Token != "token-fresh" {
+		t.Fatalf("live = %+v, want one registration holding the trimmed token", live)
+	}
+}

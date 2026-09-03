@@ -76,6 +76,28 @@ func TakeSnapshot(layout Layout, dataDir string, now time.Time) (Snapshot, error
 	return snapshot, nil
 }
 
+// SnapshotPresent reports whether a complete snapshot is on disk.
+//
+// Asked before a rollback is begun and before a trial that has already been
+// spawned once is spawned again, because in both places the answer changes
+// what may happen next rather than being a detail of how.
+func SnapshotPresent(layout Layout) (bool, error) {
+	_, found, err := readSnapshotManifest(layout)
+	return found, err
+}
+
+// readSnapshotManifest reads the manifest, if there is one. found is false
+// with a nil error when there is no snapshot, which is the ordinary state
+// between updates.
+func readSnapshotManifest(layout Layout) (Snapshot, bool, error) {
+	var snapshot Snapshot
+	found, err := atomicfile.ReadJSON(filepath.Join(layout.SnapshotDir(), snapshotManifest), &snapshot)
+	if err != nil {
+		return Snapshot{}, false, fmt.Errorf("supervise: read snapshot manifest: %w", err)
+	}
+	return snapshot, found, nil
+}
+
 // DiscardSnapshot removes a snapshot. Called after a commit is durable, which
 // is the one moment the old database stops being worth keeping.
 func DiscardSnapshot(layout Layout) error {
@@ -118,6 +140,20 @@ func ReadRestoreMarker(layout Layout) (RestoreMarker, bool, error) {
 // idempotent against the snapshot, and unsafe to skip because the middle of it
 // is a database with no WAL.
 func RestoreSnapshot(layout Layout, dataDir, updateID, reason string, now time.Time) error {
+	// The manifest is read BEFORE the marker is written, and the order is the
+	// whole point of this check. A marker says "the database under this path
+	// is half a restore", and every later boot finishes what it names before
+	// anything may open the file. Writing one for a restore that has nothing
+	// to restore from would therefore be permanent: each boot would find the
+	// marker, fail the same way, and refuse to start anything, on a machine
+	// whose whole reason for existing is that nobody is standing at it.
+	present, err := SnapshotPresent(layout)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return fmt.Errorf("supervise: there is no database snapshot in %s to restore", layout.SnapshotDir())
+	}
 	marker := RestoreMarker{
 		UpdateID: updateID, DataDir: dataDir,
 		Reason: reason, WrittenAtMs: now.UnixMilli(),
@@ -163,13 +199,19 @@ func applyRestore(layout Layout, dataDir string) error {
 		return errors.New("supervise: the restore names no data directory")
 	}
 	dir := layout.SnapshotDir()
-	var snapshot Snapshot
-	found, err := atomicfile.ReadJSON(filepath.Join(dir, snapshotManifest), &snapshot)
+	snapshot, found, err := readSnapshotManifest(layout)
 	if err != nil {
-		return fmt.Errorf("supervise: read snapshot manifest: %w", err)
+		return err
 	}
 	if !found {
-		return fmt.Errorf("supervise: no snapshot to restore from %s", dir)
+		// Only reachable when something removed the snapshot after the marker
+		// was written, which is somebody deleting files under a live restore.
+		// Say what has to happen, because the database is mid-copy and no
+		// version may be started against it.
+		return fmt.Errorf(
+			"supervise: the database is part-way through a restore and the snapshot in %s is gone. "+
+				"Restore the data directory from a backup, then delete %s",
+			dir, layout.MarkerPath())
 	}
 	for _, name := range DatabaseFiles() {
 		if err := os.Remove(filepath.Join(dataDir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {

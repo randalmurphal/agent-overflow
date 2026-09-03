@@ -158,7 +158,18 @@ func (a *App) reconcileDomainCertificate(ctx context.Context) time.Duration {
 		// Nothing is configured, so nothing is served for a domain. The
 		// self-signed certificate underneath is untouched: it is a
 		// different question, answered at boot.
+		//
+		// The standing failure is cleared HERE, and not inside
+		// publishDomainCertificate, because what makes it stale is the
+		// CONFIGURATION and not the publish. A hook that could not answer,
+		// an external pair that would not load, a domain a certificate was
+		// never obtained for: every one of those records a failure and none
+		// of them publishes, so the failure outlived the domain it was about
+		// and Settings kept showing an error for a name nothing was trying
+		// to serve any more. Both arms below configure no certificate
+		// source, which is the honest end of any failure recorded by one.
 		a.publishDomainCertificate(source, "", "", tls.Certificate{}, time.Time{})
+		a.clearDomainCertFailure()
 		return domainCertCheckInterval
 	case cfg.HasExternalPair():
 		return a.reconcileExternalCertificate(cfg, source)
@@ -169,8 +180,11 @@ func (a *App) reconcileDomainCertificate(ctx context.Context) time.Duration {
 		// the deployment where something in front terminates TLS for the
 		// name; the listener answers to it (transport's Host guard) and
 		// presents its self-signed certificate to anything that speaks
-		// TLS directly.
+		// TLS directly. Same clear as the first arm, for the same reason:
+		// this deployment obtains nothing, so nothing here can still be
+		// failing.
 		a.publishDomainCertificate(source, "", "", tls.Certificate{}, time.Time{})
+		a.clearDomainCertFailure()
 		return domainCertCheckInterval
 	}
 }

@@ -136,12 +136,18 @@ func ActivateUnattendedWork(a *App, outcome ServiceUpdateOutcome) {
 // matches UpdateID against the id its own request returned, and reads Outcome
 // to know whether to celebrate or to show the reason. Version is what actually
 // booted, which is the half that makes "committed" mean the new version
-// ANSWERED rather than that the old one stopped.
+// ANSWERED rather than that the old one stopped; Target is what it was asked
+// to become, which is the half a rollback needs.
 type ServiceUpdateOutcome struct {
 	UpdateID string `json:"updateId"`
 	Outcome  string `json:"outcome"`
 	Version  string `json:"version"`
-	Reason   string `json:"reason,omitempty"`
+	// Target is the version the update was aiming at. It equals Version on a
+	// commit and names the version that FAILED on a rollback, where Version
+	// is the one that came back. Both travel because a client told only one
+	// of them cannot phrase a rollback without naming the wrong build.
+	Target string `json:"target,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // SetServiceUpdateRequester installs the call that asks this backend's

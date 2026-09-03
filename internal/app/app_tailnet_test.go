@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/tailnet"
+	"agent-overflow/internal/transport"
 )
 
 // The app-side half of the tailnet feature: the persisted preference, the
@@ -219,5 +221,68 @@ func seedTailnetState(t *testing.T, root string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "tailscaled.state"), []byte("node key"), 0o600); err != nil {
 		t.Fatalf("seed node state: %v", err)
+	}
+}
+
+// The two orders of one moment. An auxiliary listener's terminal error is
+// reported from the transport's own accept goroutine, which can run before
+// ServeAuxiliary has even returned the handle, so the report can arrive for a
+// slot the attach has not filled in yet.
+//
+// Before the slot existed, that report was matched against the FIELD, found it
+// empty, and was dropped: the failure went unrecorded and the reconciler was
+// never kicked, leaving a node that is up with nothing listening on it. Now
+// the slot exists before the serve does, the report marks it, and the attach
+// reads the mark and refuses to record a listener that has already stopped.
+func TestAnAuxiliaryFailureThatBeatsItsAttachIsNotAdopted(t *testing.T) {
+	app, _ := newTailnetTestApp(t)
+	slot := &tailnetSlot{}
+
+	// The report, first. There is no handle to close and nothing to record
+	// against the backoff: the attach owns both, and counting the fault here
+	// as well would count one fault twice.
+	app.tailnetListenerFailed(slot, errors.New("the netstack listener closed"))
+	if got := app.tailnetStatus().LastError; got != "" {
+		t.Errorf("last error = %q, want the attach to report this one", got)
+	}
+
+	if app.adoptAuxListener(slot, &transport.AuxListener{}) {
+		t.Fatal("a listener whose accept loop already ended was adopted")
+	}
+	if slot.live() {
+		t.Error("the slot reads live after its accept loop ended")
+	}
+}
+
+// The two tailnet listeners are one node's but they are not one listener.
+// HTTPS going away while cleartext keeps accepting is a degraded tailnet, so
+// only the failed one is dropped and the admitted host names stay while
+// anything still answers on them.
+func TestOneTailnetListenerFailingLeavesTheOtherAttached(t *testing.T) {
+	app, _ := newTailnetTestApp(t)
+	plain, secure := &tailnetSlot{aux: &transport.AuxListener{}}, &tailnetSlot{aux: &transport.AuxListener{}}
+	app.tailnet.plain, app.tailnet.secure = plain, secure
+
+	aux, remaining := app.releaseTailnetSlot(secure)
+	if aux == nil {
+		t.Fatal("the released slot answered no handle to close")
+	}
+	if !remaining {
+		t.Fatal("dropping the HTTPS listener reported nothing left, so the names would be withdrawn")
+	}
+	if app.tailnet.secure != nil {
+		t.Error("the failed slot is still the secure listener")
+	}
+	if !app.tailnet.plain.live() {
+		t.Error("the cleartext listener was dropped with the HTTPS one")
+	}
+
+	// And when the last one goes, nothing is left: that is the pass that
+	// withdraws the names.
+	if _, remaining := app.releaseTailnetSlot(plain); remaining {
+		t.Error("both listeners are gone and one is still reported attached")
+	}
+	if app.tailnet.plain != nil || app.tailnet.secure != nil {
+		t.Error("a released slot is still named by the state")
 	}
 }

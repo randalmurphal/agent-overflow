@@ -61,7 +61,11 @@ type Message struct {
 	// UpdateID rides activate (on a trial), update-accepted, prepared and
 	// commit — the id the client correlates its reconnect against.
 	UpdateID string `json:"updateId,omitempty"`
-	// TargetVersion rides request-update.
+	// TargetVersion rides request-update, where it is the version being
+	// asked for, and activate, where it is the version the update this boot
+	// follows was aiming AT. The second reading is what lets a rolled-back
+	// boot name the version that failed rather than the one that came back:
+	// they are different versions, and only the record knows both.
 	TargetVersion string `json:"targetVersion,omitempty"`
 	// Outcome rides activate on an ordinary boot that FOLLOWS an update:
 	// committed, rolled-back or failed. It is how a backend that did not run

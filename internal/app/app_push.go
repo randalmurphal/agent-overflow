@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -332,11 +333,41 @@ func (a *App) callerPushDevice(ctx context.Context) (store.Device, error) {
 //ao:scope session
 //ao:route home
 func (a *App) RegisterPushToken(ctx context.Context, platform, token string) error {
+	token = strings.TrimSpace(token)
+	if err := validPushToken(token); err != nil {
+		return err
+	}
 	device, err := a.callerPushDevice(ctx)
 	if err != nil {
 		return err
 	}
 	return a.store.UpsertPushToken(device.ID, platform, token, time.Now().UnixMilli())
+}
+
+// maxPushTokenBytes bounds a registration token. An FCM registration token is
+// a couple of hundred bytes and every platform's is of that order, so the
+// ceiling is far above any real one and far below a row worth storing by
+// accident. It is a ceiling rather than an exact shape on purpose: the token
+// is the PLATFORM's format and it has changed before, so this refuses what
+// cannot be a token rather than describing what one is.
+const maxPushTokenBytes = 4096
+
+// validPushToken refuses what could not wake a phone.
+//
+// It runs before the calling device is resolved, so a registration that could
+// never be delivered costs no store read. An empty or whitespace-only token
+// is the one an unregistered shell sends when it means "I have nothing yet",
+// and storing it would put this backend in the state where it believes it can
+// wake a device and every send fails.
+func validPushToken(token string) error {
+	if token == "" {
+		return fmt.Errorf("push: a registration is a platform token, and this one is empty")
+	}
+	if len(token) > maxPushTokenBytes {
+		return fmt.Errorf("push: a registration token of %d bytes is past the %d-byte ceiling, "+
+			"so it is not one this backend can send to", len(token), maxPushTokenBytes)
+	}
+	return nil
 }
 
 // UnregisterPushToken forgets the calling device's registration.

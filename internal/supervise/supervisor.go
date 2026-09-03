@@ -154,6 +154,14 @@ func (s *Supervisor) Run(ctx context.Context) error {
 				}
 				continue
 			}
+			settled, failure, err := s.snapshotForTrial(state)
+			if err != nil {
+				return err
+			}
+			if failure {
+				state = settled
+				continue
+			}
 			// Count the attempt BEFORE it happens, and durably. A supervisor
 			// killed by the very trial it is starting must find the attempt
 			// recorded when it comes back, or the two of them loop forever.
@@ -191,10 +199,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			s.stopChild(child)
 			return outcome.err
 		case outcomeUpdate:
-			state, err = s.beginTrial(state, child, outcome.target)
-			if err != nil {
-				return err
-			}
+			s.stopForTrial(child, outcome.target)
 		case outcomeTrialFailed:
 			s.stopChild(child)
 			state, err = s.rollBack(state, outcome.reason)
@@ -341,6 +346,18 @@ func (s *Supervisor) runChild(ctx context.Context, c *child, state *State) outco
 						"than this supervisor; over-the-wire updates are unavailable until the " +
 						"supervisor is replaced with `agent-overflow service update`")
 				}
+				if !trial {
+					// This child was handed the settled outcome in its activate
+					// frame, so answering is the moment it has been delivered.
+					// Recording that durably is what stops the same outcome
+					// being announced again on every later boot.
+					if next, err := s.markOutcomeReported(*state); err != nil {
+						s.config.Log("supervise: recording that update %s was reported: %v",
+							selectionUpdateID(*state), err)
+					} else {
+						*state = next
+					}
+				}
 
 			case MsgPrepared:
 				if !trial {
@@ -467,18 +484,62 @@ func (s *Supervisor) preflight(binary string) (Preflight, error) {
 // binary still thinking after five seconds is one that will not boot either.
 const preflightTimeout = 5 * time.Second
 
-// beginTrial performs the linear middle of an update: stop the child, snapshot
-// the database while nothing holds it, and leave the state selecting the
-// target as a trial. It runs between selects, on the loop's own goroutine.
-func (s *Supervisor) beginTrial(state State, c *child, target string) (State, error) {
-	s.config.Log("supervise: stopping the backend to snapshot the database")
+// stopForTrial performs the linear middle of an update: stop the child so
+// nothing holds the database. It runs between selects, on the loop's own
+// goroutine, and the loop's next pass takes the snapshot.
+func (s *Supervisor) stopForTrial(c *child, target string) {
+	s.config.Log("supervise: stopping the backend so version %s can be trialled", target)
 	s.stopChild(c)
+}
+
+// snapshotForTrial guarantees the rollback boundary exists before a trial is
+// started, at the ONE place a first trial spawn happens.
+//
+// It is here rather than beside the stop because a stop is not the only way a
+// trial begins. A supervisor that recorded the pending update and then went
+// away before it could snapshot (its child crashed inside the response grace,
+// the unit was restarted, the machine lost power) comes back to a pending
+// record on the next boot and selects the trial from it. Snapshotting only at
+// the stop left that boot running migrations against a database nothing had
+// copied, and the rollback that followed wrote a restore marker for a snapshot
+// that was never taken, which no later boot could get past. Attempts == 0 is
+// exactly "this trial has never been spawned", and at that moment nothing
+// holds the database whichever way the supervisor got here.
+//
+// failure is true when the update settled instead: the caller re-selects and
+// finds the previous version. TakeSnapshot clears the directory first, so a
+// leftover from an update whose DiscardSnapshot failed cannot be mistaken for
+// this one's.
+func (s *Supervisor) snapshotForTrial(state State) (_ State, failure bool, _ error) {
+	if state.Update.Attempts > 0 {
+		// A snapshot was taken before the first attempt. If it is gone now,
+		// something outside this supervisor removed it, and there is no
+		// rollback left to take: the database is the trial's and putting the
+		// previous version on top of it is worse than starting nothing.
+		present, err := SnapshotPresent(s.layout)
+		if err != nil {
+			return State{}, false, err
+		}
+		if !present {
+			return State{}, false, fmt.Errorf(
+				"supervise: update %s is mid-trial and its database snapshot is gone from %s, "+
+					"so version %s cannot be rolled back to. Stop the service and run "+
+					"`agent-overflow service update --binary <path to the version to run>` "+
+					"to choose a version explicitly",
+				state.Update.ID, s.layout.SnapshotDir(), state.Update.From)
+		}
+		return state, false, nil
+	}
+	s.config.Log("supervise: snapshotting the database before trialling version %s", state.Update.To)
 	if _, err := TakeSnapshot(s.layout, s.config.DataDir, s.config.Now()); err != nil {
 		s.config.Log("supervise: could not snapshot the database: %v", err)
-		return s.settleFailure(state, fmt.Sprintf("the database could not be snapshotted: %v", err))
+		settled, settleErr := s.settleFailure(state, fmt.Sprintf("the database could not be snapshotted: %v", err))
+		if settleErr != nil {
+			return State{}, false, settleErr
+		}
+		return settled, true, nil
 	}
-	s.config.Log("supervise: starting version %s as a trial", target)
-	return state, nil
+	return state, false, nil
 }
 
 // commit makes the trial durable, then tells it.
@@ -489,6 +550,13 @@ func (s *Supervisor) beginTrial(state State, c *child, target string) (State, er
 func (s *Supervisor) commit(state State, c *child) (State, error) {
 	next, err := state.Settle(UpdateCommitted, "", s.config.Now())
 	if err != nil {
+		return State{}, err
+	}
+	// Reported in the same write as settled: the commit frame below carries
+	// this outcome to the child that trialled it, and that child publishes
+	// "committed" the moment its gate opens. A flag left clear here would
+	// have the NEXT boot announce the same commit a second time.
+	if next, _, err = next.MarkReported(); err != nil {
 		return State{}, err
 	}
 	if err := SaveState(s.layout, next); err != nil {
@@ -573,6 +641,27 @@ func (s *Supervisor) pruneVersions(state State) {
 			s.config.Log("supervise: removing staged version %s: %v", entry.Name(), err)
 		}
 	}
+}
+
+// markOutcomeReported writes the reported flag through, once. A state with
+// nothing to mark is returned unchanged and nothing is written.
+func (s *Supervisor) markOutcomeReported(state State) (State, error) {
+	next, changed, err := state.MarkReported()
+	if err != nil || !changed {
+		return state, err
+	}
+	if err := SaveState(s.layout, next); err != nil {
+		return state, err
+	}
+	return next, nil
+}
+
+// selectionUpdateID names the record in a log line, tolerating no record.
+func selectionUpdateID(state State) string {
+	if state.Update == nil {
+		return ""
+	}
+	return state.Update.ID
 }
 
 func (s *Supervisor) refuse(c *child, reason string) {

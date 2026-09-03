@@ -604,6 +604,17 @@ func TestAFailedFlowLeavesTheSupervisorAndTheLayoutUntouched(t *testing.T) {
 			arrange: func(r *serviceUpdateRig) { r.preflightVersion = "../escape" },
 			names:   "cannot name a directory",
 		},
+		{
+			// The tag says 1.5.0, so the synchronous check on the tag's own
+			// version half passes. The BINARY says it is the version already
+			// running, and the binary's answer is what names the directory it
+			// would be staged into: versions/<running>, replaced with a
+			// different build under a name that asserts otherwise.
+			name:    "the download reports the version already running",
+			opts:    serviceUpdateOptions{tags: []string{"v1.5.0"}, configure: true, supervised: true},
+			arrange: func(r *serviceUpdateRig) { r.preflightVersion = serviceUpdateRunningVer },
+			names:   "already running",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newServiceUpdateRig(t, tc.opts)

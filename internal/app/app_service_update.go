@@ -137,6 +137,12 @@ var ErrServiceUpdateUnavailable = errors.New(
 // ErrServiceUpdateAlreadyRunning refuses a request for the version already
 // running. The supervisor would refuse it too, one trial and one database
 // snapshot later; refusing it here costs nothing and says why.
+//
+// Asked TWICE, against two different facts. Before the download, against the
+// tag, which is all a caller has. And after the preflight, against the
+// version the downloaded binary reports of itself, which is the name its
+// directory would take and the only one that can collide with a directory
+// that already holds something.
 var ErrServiceUpdateAlreadyRunning = errors.New("app: that version is the one already running")
 
 // ErrServiceUpdateTrial refuses a request made of a TRIAL boot. A trial is a
@@ -491,6 +497,20 @@ func (a *App) serviceUpdateFlow(ctx context.Context, deps ServiceUpdateDeps, tag
 	if err := supervise.ValidVersion(answer.Version); err != nil {
 		return fmt.Errorf("the downloaded %s reports version %q, which cannot name a directory: %w",
 			resolved.AssetName, answer.Version, err)
+	}
+	// The version a binary REPORTS is not the version its tag promised, and
+	// only the first one names a directory. A download whose own answer is
+	// the version already running would be staged straight over that
+	// version's directory, because a version directory is replaced on the
+	// premise that a version names one build. The supervisor would then
+	// refuse the update as already running, one download too late, leaving
+	// versions/<running> holding a different build than its name asserts and
+	// a later rollback returning to it. Refuse here, before anything is
+	// written, and name both halves so the mismatch is readable.
+	if answer.Version == a.version {
+		return fmt.Errorf(
+			"%w: %s is tagged %s but reports version %s, which is the version already running",
+			ErrServiceUpdateAlreadyRunning, resolved.AssetName, resolved.Tag, answer.Version)
 	}
 
 	a.publishServiceUpdate(func(status *ServiceUpdateStatus) {
