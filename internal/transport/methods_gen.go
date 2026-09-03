@@ -302,7 +302,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SendMessage", ID: 1496882310, Scope: "threads:operate", Route: "thread"},                                 // main.App.SendMessage
 	{Name: "SendMessageWithOptions", ID: 3632185196, Scope: "threads:operate", Route: "thread"},                      // main.App.SendMessageWithOptions
 	{Name: "SendPlanRevisionComments", ID: 1407159655, Scope: "threads:operate", Route: "thread"},                    // main.App.SendPlanRevisionComments
-	{Name: "SetAppearance", ID: 3167202905, Scope: "settings:write", Route: "home"},                                  // main.App.SetAppearance
+	{Name: "SetAppearance", ID: 3167202905, Scope: "host", Route: "home"},                                            // main.App.SetAppearance
 	{Name: "SetChatBarFavorite", ID: 2813580982, Scope: "settings:write", Route: "home"},                             // main.App.SetChatBarFavorite
 	{Name: "SetEditorSettings", ID: 3655340267, Scope: "settings:write", Route: "home"},                              // main.App.SetEditorSettings
 	{Name: "SetNetworkSettings", ID: 3915514446, Scope: "settings:write", Route: "home", StepUp: true},               // main.App.SetNetworkSettings

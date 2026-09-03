@@ -494,7 +494,9 @@ Go is pipe and never parses theme JSON beyond `appearance.json`):
 - `GetThemeFiles() → { dir, themes: [{id, raw}], appearance,
   warnings: [string] }` is one RPC, LAN-read-allowed (keybindings
   parity). Unreadable files/dir problems land in `warnings`.
-- `SetAppearance(appearance)` needs `settings:write`, atomic write,
+- `SetAppearance(appearance)` is `host` scope (decision 4: the file is
+  this desktop's own, and a paired device keeps its selection in its own
+  storage), atomic write,
   validated (mode enum, id shape, hex shape), sparse.
 - Watcher on `themes/` (template
   `app_workflow_definitions_watcher.go`: 250ms debounce, ignore own
@@ -673,7 +675,7 @@ read):
   Not an error to report: it is a session without a themes directory.
   Built-ins only, and the settings surface says so.
 - **`writesRefused`**: a refused `SetAppearance` or a refused read, and
-  a session never granted `settings:write` is write-blocked up front
+  a session not on the host (`hasScope('host')`) is write-blocked up front
   rather than after a failure. A write-blocked session still TAKES the wire's themes,
   directory and warnings; what it never adopts is the SELECTION. That is
   the client-residency decision (§6.1) enforced at the read: a remote

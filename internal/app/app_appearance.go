@@ -54,7 +54,12 @@ func (a *App) GetThemeFiles() (theme.Files, error) {
 // write because the event arrives asynchronously, after os.Rename has
 // already returned.
 //
-//ao:scope settings:write
+// Host-scoped because the file it writes is THIS machine's appearance
+// (theme-system.md decision 4: local-only writes, per client). A paired
+// device holds its own selection in its own storage; settings:write would
+// have let it repaint the desktop it is not looking at.
+//
+//ao:scope host
 //ao:route home
 func (a *App) SetAppearance(appearance theme.Appearance) error {
 	service, err := a.themeService()

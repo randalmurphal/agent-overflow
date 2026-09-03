@@ -20,7 +20,8 @@
 //
 //   readAvailable — did `GetThemeFiles` answer? (themes, dir, file warnings)
 //   writesRefused — is `SetAppearance` known refused, or was this session
-//                   never granted `settings:write` (`hasScope`)?
+//                   not on the host (`hasScope('host')`)? Both writes are
+//                   host-scoped: the file is the desktop's own.
 //
 // A session with reads but no writes takes the FILES off the wire and keeps
 // `localStorage` as the sole source of its selection. Nothing clears
@@ -199,7 +200,7 @@ export function getAppearanceRevision(): number {
 }
 
 function writesBlocked(): boolean {
-  return writesRefused || !hasScope('settings:write');
+  return writesRefused || !hasScope('host');
 }
 
 // ---------------------------------------------------------------------------
