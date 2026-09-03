@@ -355,6 +355,9 @@ func flushPayloadFromUserMeta(meta string) (json.RawMessage, error) {
 		// command expansion and whether an otherwise-unexpanded leading slash
 		// reaches Claude's native command router.
 		ExpandComposerCommands: m.ExpandComposerCommands,
+		// So does the send id: the redispatch's fresh row carries it, which
+		// is what keeps a re-sent frame deduping across a requeue.
+		SendID: m.SendID,
 	}
 	for _, att := range m.Attachments {
 		payload.AttachmentIDs = append(payload.AttachmentIDs, att.ID)
@@ -500,6 +503,10 @@ func queuePayloadFromUserItem(item store.Item, fallback json.RawMessage) json.Ra
 		RevisionSourceDiffReview:     meta.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: meta.RevisionSourceDiffCommentIDs,
 		ExpandComposerCommands:       meta.ExpandComposerCommands,
+		// The send id travels with the message, not with the row it happened
+		// to be in: a requeued message that is dispatched again persists a
+		// fresh row, and that row is the idempotency record from then on.
+		SendID: meta.SendID,
 	})
 	if err != nil {
 		return fallback
@@ -526,6 +533,80 @@ func (a *App) restoredDraftPartFromQueuedPayload(threadID string, item triage.Un
 	}
 	return composerdraft.Part{
 		Content:            item.Message,
+		AttachmentIDs:      payload.AttachmentIDs,
+		SourceProposedPlan: payload.SourceProposedPlan,
+	}
+}
+
+// restoreDurableFlushQueueAtBoot puts every queued message the previous
+// process did not deliver back into its thread's composer draft, and deletes
+// the rows.
+//
+// It NEVER re-dispatches. A queued message was written against a turn that no
+// longer exists, on a provider session that is gone, in a conversation the
+// user has not looked at since; sending it hours later on their behalf is the
+// one outcome nobody asked for. The composer is where a message that has not
+// been delivered belongs, and it is exactly where a session death already
+// puts one — same merge rule, ahead of whatever the composer itself holds,
+// same `draft:updated` event.
+//
+// Runs at boot, after the store is open and before any session can start, so
+// every remaining row is provably residue: nothing else could still be
+// holding one.
+func (a *App) restoreDurableFlushQueueAtBoot() {
+	threadIDs, err := a.store.ListThreadsWithFlushQueueItems()
+	if err != nil {
+		log.Printf("flush queue: list threads with queued messages at boot: %v", err)
+		return
+	}
+	for _, threadID := range threadIDs {
+		rows, err := a.store.ListFlushQueueItems(threadID)
+		if err != nil {
+			log.Printf("flush queue: list queued messages for thread %s at boot: %v", threadID, err)
+			continue
+		}
+		if len(rows) == 0 {
+			continue
+		}
+		parts := make([]composerdraft.Part, 0, len(rows))
+		for _, row := range rows {
+			part := draftPartFromQueueRow(row)
+			if strings.TrimSpace(part.Content) == "" && len(part.AttachmentIDs) == 0 && part.SourceProposedPlan == nil {
+				continue
+			}
+			parts = append(parts, part)
+		}
+		if len(parts) > 0 {
+			if _, err := a.mergeAndUpsertThreadDraft(threadID, parts); err != nil {
+				// Leave the rows alone: the next boot tries again, which is
+				// the whole point of the message being durable.
+				log.Printf("flush queue: restore queued messages into the draft for thread %s at boot: %v", threadID, err)
+				continue
+			}
+		}
+		for _, row := range rows {
+			if err := a.store.DeleteFlushQueueItem(row.ID); err != nil {
+				log.Printf("flush queue: delete restored row %s/%s at boot: %v", threadID, row.ID, err)
+			}
+		}
+		log.Printf("app: restored %d queued message(s) into the composer for thread %s", len(rows), threadID)
+	}
+}
+
+// draftPartFromQueueRow projects one durable queue row into a composer part.
+// A payload that no longer decodes costs the attachment and plan references
+// and NOT the message: the text is the part a person typed, and it is stored
+// in its own column precisely so nothing about the payload can take it away.
+func draftPartFromQueueRow(row store.FlushQueueItem) composerdraft.Part {
+	var payload flushQueuePayload
+	if len(row.Payload) > 0 {
+		if err := json.Unmarshal(row.Payload, &payload); err != nil {
+			log.Printf("flush queue: decode queued row payload %s/%s: %v", row.ThreadID, row.ID, err)
+			return composerdraft.Part{Content: row.Message}
+		}
+	}
+	return composerdraft.Part{
+		Content:            row.Message,
 		AttachmentIDs:      payload.AttachmentIDs,
 		SourceProposedPlan: payload.SourceProposedPlan,
 	}

@@ -739,6 +739,14 @@ export function GetThreadDefaults(opts: CreateThreadOptions): Promise<ThreadDefa
 
 export interface SendMessageOptions {
   attachmentIds?: string[];
+  /**
+   * Idempotency id for this send, minted by
+   * `utils/sendOptions.ts#buildSendOptions` and by nothing else. Optional
+   * on the wire because it is optional on the backend: an empty one simply
+   * does not dedupe. Every call site that a person can trigger twice
+   * should carry one.
+   */
+  sendId?: string;
   runtimeMode?: string;
   sourceProposedPlan?: SourceProposedPlan;
   revisionSourceProposedPlan?: SourceProposedPlan;

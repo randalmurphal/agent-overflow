@@ -165,7 +165,7 @@ or read `isCompactLayout()` at the one branch that differs.
 
 ## Rules with structural tests
 
-`src/lib/architecture.test.ts` enforces six. Each carries a shrink-only
+`src/lib/architecture.test.ts` enforces seven. Each carries a shrink-only
 allowlist: an exception that has been fixed must be deleted, and an entry
 that no longer offends fails too.
 
@@ -193,6 +193,12 @@ that no longer offends fails too.
    where the property is absent and the call throws — in `wsClient`'s
    `generateId` that was a blank page on the first RPC of the boot
    fan-out, not a degraded feature.
+7. A send is built by `utils/sendOptions.ts#buildSendOptions`, the one
+   place its idempotency id is minted. A module reaching
+   `SendMessageWithOptions` or `RegisterQueueItem` either builds the
+   options or takes built `OutgoingSendOptions`; an inline object literal
+   is the offence, and it made a retried frame look like a second message
+   instead of the same one arriving twice.
 
 `src/lib/themeTokens.test.ts` enforces the token layer over all of
 `src/`: no raw Tailwind palette or black/white utilities, no default

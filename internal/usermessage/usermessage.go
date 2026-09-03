@@ -44,6 +44,24 @@ type Meta struct {
 	// crash; without the bit that rebuild would treat the user's leading slash
 	// as app-injected prose and guard it away from Claude's command router.
 	ExpandComposerCommands bool `json:"expandComposerCommands,omitempty"`
+	// SendID is the client-minted idempotency id of the composer send this
+	// row came from, or "" for every app-internal injector and every client
+	// bundle too old to mint one.
+	//
+	// THE ROW IS THE RECORD. A client whose socket died after its send frame
+	// reached the backend cannot tell a lost answer from a lost request, so
+	// it re-sends the same frame with the same id; the backend recognises the
+	// second one by finding this field on a row it already wrote. Keeping the
+	// id on the message itself rather than in a side table of spent ids gives
+	// three properties for free: one source of truth (the row and its
+	// idempotency record cannot disagree), survival across a backend restart
+	// (a side table would be process memory or a second write), and nothing
+	// to expire (the record ages out exactly as the message does, and the
+	// lookup that reads it is bounded to the newest rows and matches the id
+	// in SQL — store.FindUserTextItemBySendID).
+	//
+	// Empty is legal and simply disables the check for that call.
+	SendID string `json:"sendId,omitempty"`
 }
 
 // Input is the per-entry-point projection Marshal encodes. A struct
@@ -59,6 +77,7 @@ type Input struct {
 	RevisionDiffCommentIDs []string
 	Command                string
 	ExpandComposerCommands bool
+	SendID                 string
 }
 
 // AttachmentMeta is the per-attachment slice element. The Go side
@@ -95,6 +114,7 @@ func Marshal(in Input) (string, error) {
 		in.RevisionSourceDiff == nil &&
 		len(in.RevisionDiffCommentIDs) == 0 &&
 		in.Command == "" &&
+		in.SendID == "" &&
 		!in.ExpandComposerCommands {
 		return "", nil
 	}
@@ -118,6 +138,7 @@ func Marshal(in Input) (string, error) {
 		RevisionSourceDiffCommentIDs: in.RevisionDiffCommentIDs,
 		Command:                      in.Command,
 		ExpandComposerCommands:       in.ExpandComposerCommands,
+		SendID:                       in.SendID,
 	}
 	data, err := json.Marshal(meta)
 	if err != nil {

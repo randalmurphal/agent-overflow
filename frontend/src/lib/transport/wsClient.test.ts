@@ -74,6 +74,9 @@ import {
   BOOTSTRAP_INVALIDATE_AFTER_FAILURES,
   createWSClient,
   DisconnectedError,
+  DORMANT_AFTER_MS,
+  DORMANT_PROBE_JITTER_MS,
+  DORMANT_PROBE_MS,
   MAX_PENDING_RPCS,
   MAX_REPLAY_CHANNELS,
   MAX_WATCH_THREADS,
@@ -596,13 +599,59 @@ describe('WSClient', () => {
     vi.useRealTimers();
   });
 
-  it('ships an EMPTY retry-on-transient-close allowlist', () => {
+  it('ships exactly the two idempotent sends in the retry-on-transient-close allowlist', () => {
     // A tripwire, not a formality. The allowlist is the one place an RPC
-    // can be re-sent without its caller knowing, and every entry trades
-    // a lost answer for a possibly-duplicated action. Growing it must be
-    // a reviewed decision that also updates this expectation and the
-    // entry's `why`, never a quiet append.
-    expect(RETRY_ON_TRANSIENT_CLOSE).toHaveLength(0);
+    // can be re-sent without its caller knowing, and every entry trades a
+    // lost answer for a possibly-duplicated action. THE RULE: a call is
+    // admissible only when the backend is idempotent for it. Both entries
+    // here are, because both carry a client-minted `sendId` the backend
+    // answers a repeat from. Growing this must be a reviewed decision that
+    // also updates this expectation and the entry's `why`, never a quiet
+    // append.
+    expect(RETRY_ON_TRANSIENT_CLOSE.map((entry) => entry.methodId)).toEqual([
+      3632185196, // SendMessageWithOptions
+      1034543696, // RegisterQueueItem
+    ]);
+    for (const entry of RETRY_ON_TRANSIENT_CLOSE) {
+      expect(entry.why).toContain('sendId');
+    }
+  });
+
+  it('re-sends the SAME sendId on the retry, from the retained frame', async () => {
+    // The whole mechanism rests on this: the retry replays the frame that
+    // was built once, so the backend sees one id twice and answers the
+    // second from the first one's record. A retry that rebuilt its
+    // arguments would mint a second id and start the turn twice — the
+    // exact bug the allowlist exists to fix.
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const p = client.callByID(3632185196, ['thread-1', 'hello', { sendId: 'send-abc' }]);
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    const firstSent = first.sent.filter((f) => f.type === 'rpc');
+    expect(firstSent).toHaveLength(1);
+    first.triggerClose(1006);
+
+    await vi.advanceTimersByTimeAsync(300);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    const retried = second.sent.filter((f) => f.type === 'rpc');
+    expect(retried).toHaveLength(1);
+    expect(retried[0]!.params).toEqual(firstSent[0]!.params);
+    expect((retried[0]!.params as unknown[])[2]).toEqual({ sendId: 'send-abc' });
+
+    // The backend, having already accepted the first frame, answers the
+    // retry from its record — an ordinary success, not a second send.
+    second.pushFrame({ type: 'rpc', id: retried[0]!.id as string, result: { id: 'thread-1' } });
+    await expect(p).resolves.toEqual({ id: 'thread-1' });
+
+    client.close();
+    vi.useRealTimers();
   });
 
   it('does not retry an ordinary call across a transient close', async () => {
@@ -3648,6 +3697,304 @@ describe('WSClient', () => {
 //   - a state set while disconnected is retained and stated on open
 //   - a non-active state is restated after every reconnect, and resuming
 //     stops the restatement (the backend starts every connection active)
+// The DORMANT end of the reconnect ladder.
+//
+// A ladder that has been failing for DORMANT_AFTER_MS is not measuring a
+// relay flap any more: the backend is off, the machine is asleep, the phone
+// left the network. Doubling forever answers that badly in both directions —
+// an hour-long backoff leaves a backend that came back at minute six
+// unnoticed until minute sixty, and thirty-second retries all night are a
+// radio wake per attempt for nothing.
+//
+// So dormancy is a FLAT cadence and nothing else. It changes what this client
+// DIALS; it changes nothing about what a connection carries, what any surface
+// renders, or what is asked for — every demand path still probes at once, and
+// the tests below are as much about that half as about the slow half.
+describe('dormant reconnect ladder', () => {
+  beforeEach(() => {
+    MockWebSocket.reset();
+    sessionStorage.clear();
+    __resetRunModeForTest();
+    vi.useFakeTimers();
+    // Longest jittered delay, so the climb below takes the fewest laps.
+    vi.spyOn(Math, 'random').mockReturnValue(0.999);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    __resetRunModeForTest();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // Climb the ladder on sockets that never open until the client is past
+  // DORMANT_AFTER_MS, then fail once more — that last schedule is the one
+  // that computes the dormant cadence.
+  async function dormantClient() {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+
+    const started = Date.now();
+    while (Date.now() - started <= DORMANT_AFTER_MS) {
+      MockWebSocket.instances.at(-1)!.triggerClose();
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+    }
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+    return client;
+  }
+
+  function nextAttemptIn(client: ReturnType<typeof createWSClient>): number | null {
+    const at = client.getStatus().nextAttemptAt;
+    return at === null ? null : at - Date.now();
+  }
+
+  it('climbs the ordinary ladder first, then flattens to one probe per DORMANT_PROBE_MS', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+
+    // A few minutes short of the threshold this is an ordinary ladder: not
+    // dormant, and capped by the local ceiling.
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().dormant).toBe(false);
+    expect(nextAttemptIn(client)!).toBeLessThanOrEqual(RECONNECT_MAX_LOCAL_MS);
+
+    const started = Date.now();
+    while (Date.now() - started <= DORMANT_AFTER_MS) {
+      MockWebSocket.instances.at(-1)!.triggerClose();
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+    }
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const snap = client.getStatus();
+    // Dormancy is an ordinary reconnecting status wearing a flag, never a
+    // state of its own: a surface that does not read the flag is unchanged.
+    expect(snap.status).toBe('reconnecting');
+    expect(snap.dormant).toBe(true);
+    // Never connected, so there is no last-seen moment to report.
+    expect(snap.lastConnectedAt).toBeNull();
+    expect(nextAttemptIn(client)!).toBeGreaterThanOrEqual(DORMANT_PROBE_MS);
+    expect(nextAttemptIn(client)!).toBeLessThanOrEqual(DORMANT_PROBE_MS + DORMANT_PROBE_JITTER_MS);
+
+    // FLAT, not exponential: the probe after this one is the same distance
+    // away, which is what keeps a recovered backend from waiting an hour.
+    const dialsBefore = MockWebSocket.instances.length;
+    await vi.advanceTimersByTimeAsync(DORMANT_PROBE_MS + DORMANT_PROBE_JITTER_MS);
+    expect(MockWebSocket.instances.length).toBe(dialsBefore + 1);
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().dormant).toBe(true);
+    expect(nextAttemptIn(client)!).toBeGreaterThanOrEqual(DORMANT_PROBE_MS);
+    expect(nextAttemptIn(client)!).toBeLessThanOrEqual(DORMANT_PROBE_MS + DORMANT_PROBE_JITTER_MS);
+
+    client.close();
+  });
+
+  it('ends the dormancy on a probe that connects and stays up', async () => {
+    const client = await dormantClient();
+
+    await vi.advanceTimersByTimeAsync(DORMANT_PROBE_MS + DORMANT_PROBE_JITTER_MS);
+    const revived = MockWebSocket.instances.at(-1)!;
+    revived.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().status).toBe('connected');
+    // The open is the last moment bytes crossed on a socket that then sat
+    // idle, which is what "last seen" reports.
+    const seenAt = Date.now();
+
+    // A connection that PROVED itself is what resets the ladder's age, on
+    // the same evidence rule the backoff reset uses: an accept-then-die
+    // socket must not talk the client out of its slow cadence.
+    await vi.advanceTimersByTimeAsync(BACKOFF_RESET_AFTER_MS);
+    revived.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const snap = client.getStatus();
+    expect(snap.status).toBe('reconnecting');
+    expect(snap.dormant).toBe(false);
+    expect(snap.lastConnectedAt).toBe(seenAt);
+    expect(nextAttemptIn(client)!).toBeLessThanOrEqual(RECONNECT_INITIAL_MS);
+
+    client.close();
+  });
+
+  it('keeps the dormancy through a probe that dies inside the stability window', async () => {
+    const client = await dormantClient();
+
+    await vi.advanceTimersByTimeAsync(DORMANT_PROBE_MS + DORMANT_PROBE_JITTER_MS);
+    const flapping = MockWebSocket.instances.at(-1)!;
+    flapping.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(BACKOFF_RESET_AFTER_MS - 1_000);
+    flapping.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // A backend that accepts and dies is the storm the ladder exists for;
+    // treating it as recovery would put this client back on a 50ms retry.
+    expect(client.getStatus().dormant).toBe(true);
+    expect(nextAttemptIn(client)!).toBeGreaterThanOrEqual(DORMANT_PROBE_MS);
+
+    client.close();
+  });
+
+  it('wakes the ladder on Retry, immediately and for good', async () => {
+    const client = await dormantClient();
+    const dialsBefore = MockWebSocket.instances.length;
+
+    client.triggerReconnect();
+    await flushMicrotasks();
+    // No time advanced: a person pressing Retry is the clearest demand there
+    // is, and it does not wait out the probe interval.
+    expect(MockWebSocket.instances.length).toBe(dialsBefore + 1);
+
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+    // And the ladder's accumulated pessimism goes with it: this is an
+    // ordinary first failure again, not a dormant client that dialled once.
+    expect(client.getStatus().dormant).toBe(false);
+    expect(nextAttemptIn(client)!).toBeLessThanOrEqual(RECONNECT_INITIAL_MS);
+
+    client.close();
+  });
+
+  it('schedules no probe at all while the whole client is backgrounded', async () => {
+    const client = await dormantClient();
+    const dialsBefore = MockWebSocket.instances.length;
+
+    client.setLease('background');
+    const snap = client.getStatus();
+    // Still dormant, still reconnecting — there is simply nothing scheduled,
+    // which is what a null nextAttemptAt says.
+    expect(snap.dormant).toBe(true);
+    expect(snap.nextAttemptAt).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(6 * DORMANT_PROBE_MS);
+    expect(MockWebSocket.instances.length).toBe(dialsBefore);
+
+    client.close();
+  });
+
+  it('probes the moment the client comes back to the foreground', async () => {
+    const client = await dormantClient();
+    client.setLease('background');
+    await vi.advanceTimersByTimeAsync(6 * DORMANT_PROBE_MS);
+    const dialsBefore = MockWebSocket.instances.length;
+
+    client.setLease('active');
+    await flushMicrotasks();
+    // The cost of scheduling nothing while backgrounded is paid back here:
+    // the app coming back is demand, so it dials now rather than at the end
+    // of an interval nobody was waiting on.
+    expect(MockWebSocket.instances.length).toBe(dialsBefore + 1);
+
+    client.close();
+  });
+
+  it('probes at once when a pane opens, and stays dormant if that probe fails', async () => {
+    const client = await dormantClient();
+    // Some time later, long past the demand rate floor and long before the
+    // scheduled probe.
+    await vi.advanceTimersByTimeAsync(60_000);
+    const dialsBefore = MockWebSocket.instances.length;
+
+    // What opening a pane reaches: a fresh subscribe on this client.
+    client.subscribe('git:status', () => {});
+    await flushMicrotasks();
+    expect(MockWebSocket.instances.length).toBe(dialsBefore + 1);
+
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+    // Demand COLLAPSES the wait; it does not reset the ladder. Otherwise a
+    // remounting pane or a background poll could talk a genuinely
+    // unreachable backend out of its slow cadence forever.
+    expect(client.getStatus().dormant).toBe(true);
+    expect(nextAttemptIn(client)!).toBeGreaterThanOrEqual(DORMANT_PROBE_MS);
+
+    client.close();
+  });
+
+  it('probes at once for an RPC, and stays dormant if that probe fails', async () => {
+    const client = await dormantClient();
+    await vi.advanceTimersByTimeAsync(60_000);
+    const dialsBefore = MockWebSocket.instances.length;
+
+    const pending = client.callByID(123, []).catch(() => {});
+    await flushMicrotasks();
+    expect(MockWebSocket.instances.length).toBe(dialsBefore + 1);
+
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().dormant).toBe(true);
+
+    client.close();
+    await pending;
+  });
+
+  it('carries the last-seen moment into the dormant snapshot', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    const seenAt = Date.now();
+    first.triggerClose();
+
+    const started = Date.now();
+    while (Date.now() - started <= DORMANT_AFTER_MS) {
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+      MockWebSocket.instances.at(-1)!.triggerClose();
+    }
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const snap = client.getStatus();
+    expect(snap.dormant).toBe(true);
+    // The banner's whole sentence: this is the moment it renders as
+    // "Last seen 12m ago", and it is the LAST time bytes crossed rather
+    // than the last dial.
+    expect(snap.lastConnectedAt).toBe(seenAt);
+
+    client.close();
+  });
+
+  // The regression this field's shape exists to prevent. `lastFrameAt` is
+  // ALSO bumped by handleLifecycleResume, on a socket that may have been
+  // half-open since the machine went to sleep. Deriving "last seen" from it
+  // at close would date an overnight outage to the moment the lid opened,
+  // and the banner would say the backend was there a minute ago.
+  it('dates last-seen from the last real frame, not from a lifecycle resume', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // One real frame, then a long silence in which nothing arrives.
+    first.pushFrame({ type: 'event', channel: 'thread:updated', seq: 1, data: {} });
+    await vi.advanceTimersByTimeAsync(0);
+    const lastRealFrame = Date.now();
+
+    await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
+    // The page thaws. The socket still reads as OPEN, so the resume refreshes
+    // the watchdog's clock — and must not touch last-seen.
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.getStatus().lastConnectedAt).toBe(lastRealFrame);
+
+    client.close();
+  });
+});
+
 describe('lease frame', () => {
   beforeEach(() => {
     MockWebSocket.reset();

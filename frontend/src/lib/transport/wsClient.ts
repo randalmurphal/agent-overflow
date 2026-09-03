@@ -120,6 +120,30 @@ export const BOOTSTRAP_INVALIDATE_AFTER_FAILURES = 2;
 // connection that lasted this long proves the far side was actually
 // serving, which is what the ladder is supposed to measure.
 export const BACKOFF_RESET_AFTER_MS = 30_000;
+// How long the ladder may climb before it goes DORMANT.
+//
+// The exponential ladder is sized for an outage measured in seconds: a
+// relay flap, a backend restart, a laptop lid. Five minutes of unbroken
+// failure is a different situation — the backend is off, the machine is
+// asleep, the phone left the network — and nothing about dialing it every
+// 30 seconds for the rest of the day helps. On a phone it is the opposite
+// of help: a radio wake per attempt, all night.
+//
+// Dormancy is about DIALING and nothing else. No client is sent less, no
+// surface renders differently, nothing is skipped because something is
+// off-view — the connection that does come up carries exactly what it
+// always did.
+export const DORMANT_AFTER_MS = 5 * 60_000;
+// The dormant cadence: one probe, this far apart, forever. Deliberately
+// flat rather than a continued doubling — an hour-long backoff would mean a
+// backend that came back at minute 6 stays unnoticed until minute 60, and
+// the whole point of still probing is that this state is recoverable
+// without the user doing anything.
+export const DORMANT_PROBE_MS = 5 * 60_000;
+// Spread the probes of several clients that went dormant together (a relay
+// dying takes every attached backend's ladder with it) so they do not all
+// dial on the same second.
+export const DORMANT_PROBE_JITTER_MS = 30_000;
 // How long redialAfterPairing waits for the transport to become usable
 // before handing back anyway. The app mounts on the other side of that
 // call, so the wait has to be long enough to cover a manifest fetch, a
@@ -281,14 +305,34 @@ export interface RetryOnTransientCloseEntry {
   why: string;
 }
 
-// The production allowlist. EMPTY, and that is the right answer today:
-// every store that must survive a reconnect already does so through the
-// suspend/re-source observable (stores/entityStore.svelte.ts), which
-// re-asks for CURRENT state rather than replaying a stale request, and
-// nothing has been found that needs the weaker guarantee. Declared and
-// enforced-empty rather than absent so admitting the first entry is a
-// one-line reviewed decision instead of a redesign.
-export const RETRY_ON_TRANSIENT_CLOSE: readonly RetryOnTransientCloseEntry[] = Object.freeze([]);
+// The production allowlist. Two entries, and the rule that admitted them
+// is the one stated above: a call is admissible only when it is IDEMPOTENT
+// ON THE BACKEND. These two are, and not by luck — each carries a
+// client-minted `sendId` and the backend answers a repeated id from the
+// record the first arrival left behind, without sending anything
+// (internal/app/app_send_idempotency.go). The retry re-sends the RETAINED
+// frame, so the id is the same one; a retry that rebuilt its options would
+// mint a second id and defeat the whole mechanism.
+//
+// They are also the calls where the weaker guarantee is worth having: a
+// send whose socket died is indistinguishable, on this side, from one that
+// never landed, so without a retry the composer has to ask a person to
+// decide — which is what `composerSend.ts` does when the retry ALSO fails.
+//
+// Everything else stays out. Every store that must survive a reconnect
+// does so through the suspend/re-source observable
+// (stores/entityStore.svelte.ts), which re-asks for CURRENT state rather
+// than replaying a stale request.
+export const RETRY_ON_TRANSIENT_CLOSE: readonly RetryOnTransientCloseEntry[] = Object.freeze([
+  {
+    methodId: 3632185196,
+    why: 'SendMessageWithOptions carries a client-minted sendId; a repeated arrival is answered from the message it already created',
+  },
+  {
+    methodId: 1034543696,
+    why: 'RegisterQueueItem carries the same sendId and is answered from the durable queue row the first arrival wrote',
+  },
+]);
 
 // matchesRetryAllowlist answers whether a dispatch spec is on `list`.
 // Consulted once per RPC at DISPATCH time, never on the close path, so
@@ -550,6 +594,18 @@ export interface TransportStatusSnapshot {
   /** Wall-clock millis when the next reconnect attempt fires. null when
    *  the attempt is already in flight or no attempt is scheduled. */
   nextAttemptAt: number | null;
+  /** True while the reconnect ladder is DORMANT: it has been failing for
+   *  DORMANT_AFTER_MS and has dropped to one probe every
+   *  DORMANT_PROBE_MS (or, on a backgrounded client, to none at all).
+   *  Still an ordinary `'reconnecting'` status — dormancy is a cadence,
+   *  not a state of its own, and every demand path still probes
+   *  immediately. Absent means false. */
+  dormant?: boolean;
+  /** Wall-clock millis when this client was last known connected, from
+   *  the LOCAL clock — it is compared against `Date.now()` to render
+   *  "last seen", never against a backend timestamp. null when this
+   *  client has never connected. */
+  lastConnectedAt?: number | null;
 }
 
 type StatusHandler = (snapshot: TransportStatusSnapshot) => void;
@@ -749,6 +805,28 @@ export class WSClient {
   // The backoff ladder resets from this at close (see
   // BACKOFF_RESET_AFTER_MS) rather than on open.
   private connectedAt = 0;
+  // Date.now() of the last moment bytes actually crossed, 0 when they never
+  // have. Written on open and again on EVERY inbound frame — one integer
+  // store beside the watchdog's own refresh, which is as cheap as it sounds.
+  //
+  // It is deliberately NOT derived at close from lastFrameAt: that field is
+  // also bumped by handleLifecycleResume, on a socket that may have been
+  // dead since the machine went to sleep, so a close after an overnight
+  // outage would date "last seen" to the moment the lid opened and the
+  // banner would say the backend was there a minute ago.
+  private lastConnectedAt = 0;
+  // Date.now() of the close that began the CURRENT reconnecting run, 0
+  // while connected or before the first failure. The ladder's age, which
+  // is what dormancy is decided on — distinct from reconnectAttempt,
+  // because a demand-collapsed attempt advances the counter without
+  // meaning any time has passed.
+  //
+  // Cleared exactly where reconnectAttempt is: a connection that proved
+  // STABLE, a page resume, a manual Retry, a lease going active. Not on
+  // `open` — an accept-then-close backend would otherwise leave dormancy
+  // every five minutes and re-earn a full ladder each time, which is the
+  // storm BACKOFF_RESET_AFTER_MS exists to refuse.
+  private ladderStartedAt = 0;
 
   // The sink (wired by frontendErrorCapture at install) persists one
   // summary line per outage into the always-on ui-trace error log.
@@ -911,9 +989,7 @@ export class WSClient {
       // whose socket survived suspension force-closes it spuriously.
       this.lastFrameAt = Date.now();
     }
-    if (this.queuedAttempt === null) return;
-    this.reconnectAttempt = 0;
-    this.queuedAttempt.fire();
+    this.wakeReconnectLadder();
   }
 
   // callByID sends an `rpc` frame with a numeric methodId and resolves
@@ -977,6 +1053,14 @@ export class WSClient {
       this.subscribers.set(channel, set);
     }
     set.add(handler);
+    // A new subscriber is live demand, exactly as an RPC is: a pane
+    // opening wants the stream NOW, and while a backoff (dormant or
+    // ordinary) is queued, ensureConnected would only hand back the
+    // pending promise. Same rate floor as the RPC path, so a burst of
+    // remounting panes cannot turn the ladder into a dial storm.
+    if (Date.now() - this.lastAttemptStartedAt >= RECONNECT_INITIAL_MS) {
+      this.queuedAttempt?.fire();
+    }
     // Connect lazily on first subscribe so an event-only listener
     // doesn't have to wait for an explicit RPC to bring the socket up.
     void this.ensureConnected().catch((err) => {
@@ -1057,6 +1141,32 @@ export class WSClient {
     if (this.lease === state) return;
     this.lease = state;
     this.sendFrame({ type: 'lease', state });
+    this.applyLeaseToDormantLadder();
+  }
+
+  // applyLeaseToDormantLadder is the lease's ONE effect on this client's
+  // own behaviour. The two directions are deliberately not symmetric.
+  //
+  // BACKGROUND touches only a DORMANT ladder: cancel the probe timer,
+  // because a phone in a pocket has nothing to keep current. An ordinary
+  // ladder is left climbing — an outage measured in seconds resolves itself
+  // before the distinction matters, and stopping it would make a
+  // five-second app switch cost a reconnect.
+  //
+  // ACTIVE wakes WHATEVER ladder is running, dormant or not. Coming back to
+  // the foreground is a person acting, and the first thing they do is look;
+  // waking a ladder that was already climbing costs one attempt per
+  // transition, because setLease ignores a state that did not change.
+  private applyLeaseToDormantLadder(): void {
+    if (this.closed || this.terminal !== null) return;
+    if (this.ws !== null && this.ws.readyState === WS_OPEN) return;
+    if (this.lease === 'background') {
+      if (!this.isDormant()) return;
+      this.disarmQueuedAttempt();
+      this.setReconnecting(null);
+      return;
+    }
+    this.wakeReconnectLadder();
   }
 
   /**
@@ -1175,17 +1285,19 @@ export class WSClient {
       this.checkStaleness();
       return;
     }
-    // Reset the backoff so a manual retry starts at the lowest delay.
-    this.reconnectAttempt = 0;
+    // Reset the backoff so a manual retry starts at the lowest delay, and
+    // the ladder's age with it — a person clicking Retry is the clearest
+    // demand there is, so a dormant ladder becomes an ordinary one again.
+    // Going through fire() (rather than cancelling the timer and starting
+    // a fresh connect) settles the scheduled connectPromise, so RPCs
+    // already queued behind the backoff ride the retried attempt instead
+    // of hanging on an abandoned promise until their 60s timeout.
     if (this.queuedAttempt !== null) {
-      // Run the scheduled attempt now. Going through fire() (rather
-      // than cancelling the timer and starting a fresh connect)
-      // settles the scheduled connectPromise, so RPCs already queued
-      // behind the backoff ride the retried attempt instead of hanging
-      // on an abandoned promise until their 60s timeout.
-      this.queuedAttempt.fire();
+      this.wakeReconnectLadder();
       return;
     }
+    this.reconnectAttempt = 0;
+    this.ladderStartedAt = 0;
     if (this.connectPromise !== null) {
       // An attempt is in flight. Racing a second connect against it
       // would mint a parallel socket and orphan one of the two — let
@@ -1805,6 +1917,7 @@ export class WSClient {
     // at its floor. handleSocketClose resets it once the connection
     // proved stable (BACKOFF_RESET_AFTER_MS).
     this.connectedAt = Date.now();
+    this.lastConnectedAt = this.connectedAt;
     // Restate the watched set BEFORE the replay request, and on the same
     // socket. The backend handles inbound frames in order on one read loop,
     // so a watch written first is applied before the replay it precedes —
@@ -1896,8 +2009,11 @@ export class WSClient {
     // connection's state (seq tracking, pending RPCs, watchdog).
     if (this.ws !== ws) return;
     // Any inbound frame is proof of life — refresh the staleness
-    // watchdog before any validation can reject the frame.
+    // watchdog before any validation can reject the frame. A frame is
+    // also the only thing that proves the far side was there, so it is
+    // what "last seen" is measured from.
     this.lastFrameAt = Date.now();
+    this.lastConnectedAt = this.lastFrameAt;
     const text = typeof ev.data === 'string' ? ev.data : '';
     if (!text) return;
     if (text.length > this.maxFrameBytes) {
@@ -1979,9 +2095,18 @@ export class WSClient {
     // that opened and died immediately keeps climbing — that is the
     // accept-then-close storm the ladder exists for.
     const connectedFor = this.connectedAt === 0 ? 0 : Date.now() - this.connectedAt;
+    // Nothing to record here: lastConnectedAt was stamped on open and by
+    // every frame since, so it already names the last moment bytes crossed.
+    // A half-open socket the watchdog reaps was dead for up to
+    // STALE_TRAFFIC_THRESHOLD_MS before this runs, and the close time would
+    // tell the user the backend was there half a minute after it was not.
     this.connectedAt = 0;
     if (connectedFor >= BACKOFF_RESET_AFTER_MS) {
       this.reconnectAttempt = 0;
+      // A connection that proved stable retires the ladder's age with its
+      // height: the next outage is a NEW one and earns its own five
+      // minutes before going dormant again.
+      this.ladderStartedAt = 0;
     }
     // Outage bookkeeping: the first close opens the outage record
     // (its code names the original cause — 1006 network death vs
@@ -2177,10 +2302,59 @@ export class WSClient {
   // nextAttemptAt — there is no next attempt to count down to.
   private setReconnecting(nextAttemptAt: number | null): void {
     if (this.terminal !== null) {
+      // A terminal latch carries neither field: there is no ladder to be
+      // dormant, and "last seen" is not the sentence a person needs when
+      // the answer is "sign in again".
       this.setStatus({ status: this.terminal.status, nextAttemptAt: null });
       return;
     }
-    this.setStatus({ status: 'reconnecting', nextAttemptAt });
+    // Dormancy is derived here rather than passed in, so the several
+    // callers that publish "attempt in flight" (`fire`, `clearTerminal`)
+    // cannot drop it — a banner that flipped out of the dormant sentence
+    // for the second a probe takes and back again would be the only
+    // flicker on an otherwise still screen.
+    this.setStatus({
+      status: 'reconnecting',
+      nextAttemptAt,
+      dormant: this.isDormant(),
+      lastConnectedAt: this.lastConnectedAt === 0 ? null : this.lastConnectedAt,
+    });
+  }
+
+  // isDormant answers whether the ladder has been failing long enough to
+  // drop to the slow cadence. A ladder that has not started is never
+  // dormant, which is what makes the connected and first-failure states
+  // ordinary.
+  private isDormant(): boolean {
+    if (this.ladderStartedAt === 0) return false;
+    return Date.now() - this.ladderStartedAt >= DORMANT_AFTER_MS;
+  }
+
+  // disarmQueuedAttempt cancels the pending backoff TIMER while leaving
+  // the attempt queued. The distinction is load-bearing: the queued entry
+  // owns `connectPromise`, so discarding it would strand every awaiter
+  // until its own timeout, and its `fire` is what every demand path
+  // (an RPC, Retry, the lease going active) calls. Disarmed, the client
+  // puts nothing on the network and still answers demand instantly.
+  private disarmQueuedAttempt(): void {
+    if (this.queuedAttempt === null) return;
+    clearTimeout(this.queuedAttempt.timer);
+  }
+
+  // wakeReconnectLadder is the shared body of every DEMAND path that
+  // deserves a fresh ladder: a page resume, the banner's Retry, the whole
+  // app coming back to the foreground. Each is a person acting, so the
+  // ladder's accumulated pessimism (its height AND its age) is discarded
+  // and the queued attempt runs now.
+  //
+  // Deliberately NOT what an RPC does: an RPC collapses the wait without
+  // resetting anything, so a background poll cannot talk a genuinely
+  // unreachable backend out of its dormancy.
+  private wakeReconnectLadder(): void {
+    this.reconnectAttempt = 0;
+    this.ladderStartedAt = 0;
+    if (this.queuedAttempt === null) return;
+    this.queuedAttempt.fire();
   }
 
   // scheduleReconnect waits an exponentially-backoff'd delay and then
@@ -2221,13 +2395,29 @@ export class WSClient {
     }
     const attempt = this.reconnectAttempt;
     this.reconnectAttempt = attempt + 1;
-    const cap = this.remoteBackend ? RECONNECT_MAX_REMOTE_MS : RECONNECT_MAX_LOCAL_MS;
-    const base = Math.min(RECONNECT_INITIAL_MS * 2 ** attempt, cap);
-    // Full jitter — picked uniformly in [0, base]. Floor protects
-    // against zero-delay reconnect on Math.random() => 0; without it
-    // a degenerate RNG could spin a tight reconnect loop.
-    const delay = Math.max(50, Math.floor(Math.random() * base));
-    const nextAttemptAt = Date.now() + delay;
+    if (this.ladderStartedAt === 0) this.ladderStartedAt = Date.now();
+    const dormant = this.isDormant();
+    let delay: number;
+    if (dormant) {
+      // Flat cadence plus spread. No exponential growth past here — see
+      // DORMANT_PROBE_MS.
+      delay = DORMANT_PROBE_MS + Math.floor(Math.random() * DORMANT_PROBE_JITTER_MS);
+    } else {
+      const cap = this.remoteBackend ? RECONNECT_MAX_REMOTE_MS : RECONNECT_MAX_LOCAL_MS;
+      const base = Math.min(RECONNECT_INITIAL_MS * 2 ** attempt, cap);
+      // Full jitter — picked uniformly in [0, base]. Floor protects
+      // against zero-delay reconnect on Math.random() => 0; without it
+      // a degenerate RNG could spin a tight reconnect loop.
+      delay = Math.max(50, Math.floor(Math.random() * base));
+    }
+    // A dormant client whose whole app is BACKGROUNDED probes nothing at
+    // all. The lease is the native pause/resume of the entire client
+    // (setLease), so there is no surface to keep current and no person to
+    // keep it current for; waking a phone's radio every five minutes to
+    // find out is the cost with none of the benefit. It costs nothing to
+    // recover from: coming back to the foreground probes immediately.
+    const armed = !(dormant && this.lease === 'background');
+    const nextAttemptAt = armed ? Date.now() + delay : null;
     this.setReconnecting(nextAttemptAt);
     const promise = new Promise<void>((resolve, reject) => {
       // The attempt body is shared between the backoff timer and
@@ -2251,6 +2441,9 @@ export class WSClient {
       };
       this.queuedAttempt = { timer: setTimeout(fire, delay), fire };
     });
+    // Queued either way, so demand still has something to fire and the
+    // promise below still has an owner; only the TIMER is cancelled.
+    if (!armed) this.disarmQueuedAttempt();
     this.connectPromise = promise;
     // Swallow rejections on this branch — see comment above.
     promise.catch(() => {});
@@ -2673,9 +2866,15 @@ export class WSClient {
   // the handler. Mutating handlers can race during fanout — we copy
   // before iterating to avoid the race.
   private setStatus(next: TransportStatusSnapshot): void {
+    const current = this.statusSnapshot;
     if (
-      next.status === this.statusSnapshot.status
-      && next.nextAttemptAt === this.statusSnapshot.nextAttemptAt
+      next.status === current.status
+      && next.nextAttemptAt === current.nextAttemptAt
+      // Both new fields are optional on the wire shape, so the dedupe
+      // normalizes rather than comparing an absent value against an
+      // explicit one and republishing an identical snapshot.
+      && (next.dormant ?? false) === (current.dormant ?? false)
+      && (next.lastConnectedAt ?? null) === (current.lastConnectedAt ?? null)
     ) return;
     this.statusSnapshot = next;
     if (this.statusHandlers.size === 0) return;

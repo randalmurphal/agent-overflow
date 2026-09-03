@@ -51,6 +51,15 @@ type Payload struct {
 	// app-injected prose. It is resolved at dispatch time, after a queued
 	// message has waited out the active turn.
 	ExpandComposerCommands bool `json:"expandComposerCommands,omitempty"`
+	// SendID is the client-minted idempotency id of the composer send that
+	// queued this message, or "" for an app-internal injector. It rides the
+	// payload so the dispatcher can stamp it onto the `user_text` row it
+	// persists: the durable queue row (`store.FlushQueueItem`) carries the
+	// id while the message waits, and the item carries it afterwards, so
+	// the two together cover the whole life of one send with no gap for a
+	// re-sent frame to fall into. See `usermessage.Meta.SendID` for why the
+	// message itself is the record.
+	SendID string `json:"sendId,omitempty"`
 }
 
 // ItemFromTriage decodes a triage QueuedFlushItem back into the
@@ -59,18 +68,32 @@ type Payload struct {
 // the frontend can render the message text — losing attachment refs on
 // a corrupt payload is preferable to dropping the item entirely.
 func ItemFromTriage(threadID string, item triage.QueuedFlushItem) QueuedItem {
+	return itemFrom(threadID, item.ID, item.Message, item.EnqueuedAt, item.Payload)
+}
+
+// ItemFromStore is the same projection from the DURABLE queue row. The two
+// exist because a queued message has two homes over its life — the process's
+// triage state while a session is running, and `flush_queue_items` from the
+// moment it is registered until it reaches a durable endpoint — and a reader
+// that found it in one must be able to answer in the same wire shape as a
+// reader that found it in the other.
+func ItemFromStore(item store.FlushQueueItem) QueuedItem {
+	return itemFrom(item.ThreadID, item.ID, item.Message, item.EnqueuedAt, item.Payload)
+}
+
+func itemFrom(threadID, id, message string, enqueuedAt int64, raw []byte) QueuedItem {
 	out := QueuedItem{
-		ID:         item.ID,
+		ID:         id,
 		ThreadID:   threadID,
-		Message:    item.Message,
-		EnqueuedAt: item.EnqueuedAt,
+		Message:    message,
+		EnqueuedAt: enqueuedAt,
 	}
-	if len(item.Payload) == 0 {
+	if len(raw) == 0 {
 		return out
 	}
 	var payload Payload
-	if err := json.Unmarshal(item.Payload, &payload); err != nil {
-		log.Printf("decode queued item payload thread=%s item=%s: %v", threadID, item.ID, err)
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		log.Printf("decode queued item payload thread=%s item=%s: %v", threadID, id, err)
 		return out
 	}
 	out.AttachmentIDs = payload.AttachmentIDs

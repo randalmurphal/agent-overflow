@@ -1168,6 +1168,52 @@ an empty `provider_turn_id`.
   so no rebuild; a future `work_items` rebuild must carry it, like every other
   column added since v39.
 
+## Recent schema changes (v85) — the durable flush queue
+
+- `flush_queue_items` (`migration_v85_flush_queue.go`, accessors in
+  `flush_queue_items.go`) persists the per-thread flush queue: a message the
+  user has already sent, waiting out an active turn before it reaches the
+  provider. It lived only in `triage`'s per-thread memory, so a crash between
+  the send and the provider write lost it with no trace anywhere — no
+  timeline row, no draft, nothing on screen afterwards to say a message had
+  ever existed.
+- **Not cache content**, and the one row in this database that is not.
+  Principle 3 says a dropped row is recomputed; nothing recomputes a message
+  nobody kept a copy of. So this table is deleted from rather than rebuilt:
+  a row dies when the message reaches a durable endpoint (the dispatcher's
+  persisted `user_text` row, or a session-death restore into the composer
+  draft), and every row still present at boot is restored into its thread's
+  draft and then deleted (`app_flush_queue_restore.go`).
+- `id` is the PRIMARY KEY alone rather than `(thread_id, id)`: queue ids are
+  minted `queue:<uuid>` by `internal/flushqueue`, so they are already unique
+  across threads, and the delete-by-id caller does not always know the
+  thread. `send_id` is the client-minted idempotency id and is deliberately
+  NOT unique — the empty string is legal for every app-internal injector and
+  for any bundle older than the field, so a UNIQUE index would refuse a
+  thread's second injected message. Order is `enqueued_at` with `rowid` as
+  the tiebreak, because two messages queued in one millisecond still have a
+  first one.
+- The FK cascades from `threads`, so deleting a thread takes its queue with
+  it and no sweep has to remember the table
+  (`TestFlushQueueItemsCascadeOnThreadDelete`).
+- `FindUserTextItemBySendID` (`items_read.go`) is the other half of the same
+  feature and adds no schema: it answers whether one client-minted send id is
+  already on the thread, looking only at the newest N reader-authored
+  `user_text` rows. Bounded, and MATCHED IN SQL — the window renders the
+  physical arms through `timelineArms`, and the id comparison
+  (`json_extract(meta, '$.sendId')`) is applied to the window's output, so the
+  common answer (no repeat, on every send) hydrates and decodes nothing. Not
+  indexed: the id is unique per row and empty on most of them, so an index
+  would cost every send a write to earn a lookup nobody else makes.
+- The lookup wraps its arms as `SELECT id FROM (...) WHERE json_valid(meta)
+  AND json_extract(...) = ?` — one column out, because that is all
+  `queryHydratedTimelineItems` will take, and the ORDER BY / LIMIT stay INSIDE
+  the subquery so the match never searches past the window. `json_valid` is a
+  backstop, not the load-bearing part: both arms already refuse malformed meta
+  at write time through their `json_extract(meta, '$.task_id')` expression
+  indexes, and `TestBothTimelineArmsRefuseMetaTheLookupCouldNotRead` pins that
+  so the guard cannot silently start mattering.
+
 ## Recent schema changes (v83) — derived project identity
 
 - `projects.remote_url` and `projects.root_commit` (both `TEXT NOT NULL

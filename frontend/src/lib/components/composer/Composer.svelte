@@ -70,6 +70,7 @@
   import { providerSupports } from '../../providers/catalog';
   import { hasScope } from '../../transport/scopes';
   import { getFlushedForThread, getQueueForThread, registerQueueItem } from '../../stores/sendQueue.svelte';
+  import { buildSendOptions } from '../../utils/sendOptions';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import { getThreadById, prependThread } from '../../stores/threads.svelte';
   import { getActiveTurn, isSendInFlight } from '../../stores/threadStatuses.svelte';
@@ -568,14 +569,17 @@
       surface?.recreateInput();
 
       try {
-        await registerQueueItem(midTurnThreadId, message, {
+        // Same builder as the direct-send path, so a queued message and a
+        // dispatched one carry an identical payload — including the send's
+        // idempotency id, which is minted there.
+        await registerQueueItem(midTurnThreadId, message, buildSendOptions({
           attachmentIds: queuedAttachmentIds,
           sourceProposedPlan: draftSourcePlan ?? null,
-          revisionSourceProposedPlan: revisionPlanForMidTurn ?? null,
+          revisionSourceProposedPlan: revisionPlanForMidTurn,
           revisionSourceCommentIds: revisionCommentIdsForMidTurn,
-          revisionSourceDiffReview: diffReviewSourceForSend ?? null,
+          revisionSourceDiffReview: diffReviewSourceForSend,
           revisionSourceDiffCommentIds: revisionDiffCommentIdsForMidTurn,
-        });
+        }));
       } catch (err) {
         pane.setGeneralError(`Failed to queue message: ${String(err)}`);
         // Putting the message back is a second, independent operation: if

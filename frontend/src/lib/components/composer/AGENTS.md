@@ -65,6 +65,34 @@ A send awaits `waitForUploads()` before it snapshots `draft.attachments`
 in the air is not in the draft yet. Guarded on `uploading()` so the
 common send stays synchronous.
 
+## One send has one id, and a dead socket is not a verdict
+
+`utils/sendOptions.ts#buildSendOptions` mints a `sendId` on every call,
+and it is the ONLY place one is minted. Every outgoing path builds its
+options there — the direct `SendMessageWithOptions`, the queueing
+`RegisterQueueItem`, and `utils/proposedPlanImplementation.ts`'s Implement
+button — so a message that queues carries the id on the same terms as one
+that dispatches, and no call site can ship without one by forgetting.
+Rule 7 in `lib/architecture.test.ts` is what keeps that true: a module
+reaching either RPC has to build its options or take them already built.
+One call is one send: a retry must re-send the options it already built
+rather than rebuild them, which is what the transport's retained frame
+does (`RETRY_ON_TRANSIENT_CLOSE` in `lib/transport/`).
+The backend answers a repeat from the first arrival's record, so a
+duplicated frame costs a duplicate answer and never a duplicate turn.
+
+That is what makes the ASK in `composerSend.ts` honest. A send whose
+socket died after the transport's own retry also failed is genuinely
+unknown — the frame may have reached the agent or may not — so
+`dispatchSend` asks (`stores/unsentMessageConfirmation.svelte.ts`)
+instead of silently putting text back that is already running. Answering
+"Leave it" discards the snapshot and reports nothing further: the user
+has just said they know, and an error banner underneath their own answer
+is noise. Every OTHER failure, including a terminal disconnect, is a
+definite "nothing happened" and restores exactly as it always did, with
+no question. Keep that split — a question in front of a known failure
+trains people to dismiss it.
+
 ## Rail visibility is one predicate
 
 `activityRailHost.svelte.ts` owns the background-tasks controller, the

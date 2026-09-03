@@ -263,6 +263,25 @@ export function isTransportClassError(err: unknown): boolean {
     || (err instanceof TransportError && err.code === 'timeout');
 }
 
+/**
+ * Whether an RPC rejection leaves the call's FATE UNKNOWN in the strong
+ * sense: the socket broke while the request was outstanding, the transport
+ * has already spent whatever retry the call was allowed
+ * (`RETRY_ON_TRANSIENT_CLOSE`), and nothing on this side can say whether the
+ * far end ran it.
+ *
+ * Narrower than `isTransportClassError` on purpose. That predicate answers
+ * "is this the wire rather than a refusal", which is what a re-fetching store
+ * needs. This one is for a caller whose action CANNOT be repeated safely
+ * without asking a person — today, the composer's send — so it excludes the
+ * TERMINAL disconnects (the client closing, a dead credential, pairing
+ * required): those end the session rather than interrupting one call, and the
+ * user is about to be shown a much larger problem than one message.
+ */
+export function isUndeliveredSendError(err: unknown): boolean {
+  return err instanceof DisconnectedError && !err.terminal;
+}
+
 /** Whether the backend completed the RPC with a safe-to-retry transient error. */
 export function isTemporarilyUnavailableError(err: unknown): boolean {
   return err instanceof TransportError && err.code === 'temporarily_unavailable';

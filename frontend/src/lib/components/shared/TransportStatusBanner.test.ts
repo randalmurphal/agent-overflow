@@ -121,6 +121,67 @@ describe('<TransportStatusBanner>', () => {
     expect(getByTestId('transport-status-retry')).not.toBeNull();
   });
 
+  // A ladder reconnecting for minutes goes dormant: one probe every five
+  // minutes, nothing else on the network. A countdown restarting from 300
+  // every time would read as "nearly back" forever, so the banner states the
+  // fact and says when the connection was last alive.
+  it('states the fact and the last-seen time while the ladder is dormant', async () => {
+    h.snapshot = {
+      status: 'reconnecting',
+      nextAttemptAt: Date.now() + 280_000,
+      dormant: true,
+      lastConnectedAt: Date.now() - 12 * 60_000,
+    };
+    const { getByTestId } = render(TransportStatusBanner);
+    await settleBootGrace();
+
+    const banner = getByTestId('transport-status-banner');
+    expect(banner.dataset.status).toBe('reconnecting');
+    expect(banner.textContent).toContain('Not reachable. Last seen 12m ago. Checking every 5 minutes.');
+    // No countdown may leak out beside it: the two sentences answer the same
+    // question and one of them would be wrong.
+    expect(banner.textContent).not.toContain('Reconnecting in');
+    // Retry stays: it wakes the ladder for one user-initiated attempt.
+    expect(getByTestId('transport-status-retry')).not.toBeNull();
+  });
+
+  // The ordinary ladder is untouched by dormancy existing.
+  it('keeps the countdown while the ladder is still climbing', async () => {
+    h.snapshot = {
+      status: 'reconnecting',
+      nextAttemptAt: Date.now() + 4_000,
+      dormant: false,
+      lastConnectedAt: Date.now() - 12 * 60_000,
+    };
+    const { getByTestId } = render(TransportStatusBanner);
+    await settleBootGrace();
+
+    const banner = getByTestId('transport-status-banner');
+    expect(banner.textContent).toContain('Reconnecting in');
+    expect(banner.textContent).not.toContain('Last seen');
+  });
+
+  // A page that has never reached its backend has no last-seen moment to
+  // report, and the banner invents none — it drops the clause and keeps the
+  // sentence. It must NOT fall back to the countdown: the ladder really is at
+  // one probe per five minutes, and a number ticking down from 300 would
+  // describe a cadence that is not happening.
+  it('drops only the last-seen clause when dormant with nothing ever connected', async () => {
+    h.snapshot = {
+      status: 'reconnecting',
+      nextAttemptAt: Date.now() + 4_000,
+      dormant: true,
+      lastConnectedAt: null,
+    };
+    const { getByTestId } = render(TransportStatusBanner);
+    await settleBootGrace();
+
+    const banner = getByTestId('transport-status-banner');
+    expect(banner.textContent).toContain('Not reachable. Checking every 5 minutes.');
+    expect(banner.textContent).not.toContain('Last seen');
+    expect(banner.textContent).not.toContain('Reconnecting in');
+  });
+
   it('forces a reconnect when Retry is clicked', async () => {
     h.snapshot = { status: 'disconnected', nextAttemptAt: null };
     const { getByTestId } = render(TransportStatusBanner);

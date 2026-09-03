@@ -1580,6 +1580,15 @@ ALTER TABLE projects ADD COLUMN root_commit TEXT NOT NULL DEFAULT '';`,
 		// and why the sender is one row.
 		SQL: pushV84SQL,
 	},
+	{
+		Version: 85,
+		Name:    "flush_queue",
+		// The per-thread flush queue, made durable: a message the user
+		// already sent, waiting out an active turn. See the const's doc
+		// comment for why the row is not cache content, why `id` alone is
+		// the key, and why `send_id` carries no unique index.
+		SQL: flushQueueV85SQL,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

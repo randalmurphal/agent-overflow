@@ -424,6 +424,31 @@ sent to, what the tray does with each message — is covered by
 `internal/push`, `internal/app`, the Playwright spec, and
 `TrayNotifierTest`.
 
+## Backup and device transfer are off
+
+Nothing this app stores leaves the device by either route Android
+offers. The manifest sets `android:allowBackup="false"` and
+`android:fullBackupContent="false"`, and `android:dataExtractionRules`
+points at `res/xml/data_extraction_rules.xml`, which excludes every
+domain from BOTH `<cloud-backup>` and `<device-transfer>`.
+
+**The reason is identity, not privacy.** The shell holds a device
+signing key (`frontend/src/lib/transport/deviceKey.ts`, IndexedDB in the
+app's own data directory) and the rotating session minted against it.
+The backend believes one `devices` row is one machine: a cloud restore
+or a phone-to-phone transfer would put that key on a SECOND handset, so
+two machines would present one identity, revoking either would revoke
+both, and reuse detection on the refresh secret would end the family the
+moment the other one dialed.
+
+Two things that look redundant and are not. `allowBackup="false"` alone
+is NOT enough on API 31+ — it disables cloud backup and leaves
+device-to-device transfer running, which is what the rules file turns
+off — and `fullBackupContent="false"` is what covers the devices below
+31 that never read the rules file. And every domain is named on both
+sides of the rules file because an unlisted domain is INCLUDED; there is
+no wildcard, so a domain added to the app later needs a line here.
+
 ## What is committed
 
 The generated `android/` tree is committed, minus build outputs,

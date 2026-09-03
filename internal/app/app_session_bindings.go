@@ -86,6 +86,7 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 		RevisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
 		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
+		SendID:                       opts.SendID,
 		// Wire entry: this text was typed into a composer (D31).
 		ExpandComposerCommands: true,
 	}); err != nil {

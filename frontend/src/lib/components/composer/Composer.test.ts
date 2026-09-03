@@ -49,6 +49,17 @@ import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 import { resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
 import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRevert';
 
+/**
+ * Send options as they reach the wire. Every send carries a freshly minted
+ * idempotency id (`utils/sendOptions.ts#buildSendOptions`), and its VALUE is
+ * the client's own, so an assertion names its presence. Still an exact
+ * object rather than `expect.objectContaining`, so a field that should not
+ * be on the wire keeps failing the test.
+ */
+function sentWith(options: Record<string, unknown>): Record<string, unknown> {
+  return { sendId: expect.any(String), ...options };
+}
+
 function installDraftMocks() {
   setBindingMock('GetDraft', async (threadId: string) => ({
     threadId,
@@ -270,9 +281,9 @@ describe('<Composer>', () => {
     await fireEvent.input(textarea, { target: { value: 'first send' } });
     await fireEvent.click(getByTestId('composer-send'));
 
-    await waitFor(() => expect(send).toHaveBeenCalledWith('materialized-send', 'first send', {
+    await waitFor(() => expect(send).toHaveBeenCalledWith('materialized-send', 'first send', sentWith({
       attachmentIds: [],
-    }));
+    })));
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       projectId: 'project-placeholder',
       provider: 'codex',
@@ -1012,9 +1023,9 @@ describe('<Composer>', () => {
     uploadGate.resolve(makeAttachment('late-pdf', 'report.pdf', 'application/pdf'));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'have a look', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'have a look', sentWith({
         attachmentIds: ['late-pdf'],
-      });
+      }));
     });
   });
 
@@ -1031,9 +1042,9 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-send'));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'hello world', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'hello world', sentWith({
         attachmentIds: [],
-      });
+      }));
     });
     expect(draft.content).toBe('');
   });
@@ -1067,7 +1078,7 @@ describe('<Composer>', () => {
     // Control: the same keystroke outside a composition sends.
     await fireEvent.keyDown(textarea, { key: 'Enter' });
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'にほん', { attachmentIds: [] });
+      expect(send).toHaveBeenCalledWith('thread-1', 'にほん', sentWith({ attachmentIds: [] }));
     });
   });
 
@@ -1327,13 +1338,13 @@ describe('<Composer>', () => {
     await findByText('Implement');
     await fireEvent.click(getByTestId('composer-send'));
 
-    expect(send).toHaveBeenCalledWith('thread-1', 'Implement the plan.', {
+    expect(send).toHaveBeenCalledWith('thread-1', 'Implement the plan.', sentWith({
       attachmentIds: [],
       sourceProposedPlan: expect.objectContaining({
         itemId: 'plan-1',
         payloadId: 'payload-1',
       }),
-    });
+    }));
   });
 
   it('prepares a pending worktree before implementing the current plan', async () => {
@@ -1375,13 +1386,13 @@ describe('<Composer>', () => {
 
     expect(prepare).toHaveBeenCalledWith('thread-1', 'release', 'feature/custom', false);
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'Implement the plan.', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'Implement the plan.', sentWith({
         attachmentIds: [],
         sourceProposedPlan: expect.objectContaining({
           itemId: 'plan-1',
           payloadId: 'payload-1',
         }),
-      });
+      }));
     });
     expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
     expect(pane.thread?.worktreePath).toBe('/tmp/wt-feature');
@@ -1868,9 +1879,9 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-send'));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'use persisted access', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'use persisted access', sentWith({
         attachmentIds: [],
-      });
+      }));
     });
   });
 
@@ -1885,9 +1896,9 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-send'));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'use persisted mode', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'use persisted mode', sentWith({
         attachmentIds: [],
-      });
+      }));
     });
   });
 
@@ -1927,9 +1938,9 @@ describe('<Composer>', () => {
       false,
     );
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'work there', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'work there', sentWith({
         attachmentIds: [],
-      });
+      }));
     });
     expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
     expect(pane.thread?.worktreePath).toBe('/tmp/wt-feature');
@@ -2005,9 +2016,9 @@ describe('<Composer>', () => {
     releaseClear();
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'race send', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'race send', sentWith({
         attachmentIds: [],
-      });
+      }));
     });
     expect(pane.thread?.id).toBe('thread-2');
   });
@@ -2023,9 +2034,9 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-send'));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', '[Image #1]', {
+      expect(send).toHaveBeenCalledWith('thread-1', '[Image #1]', sentWith({
         attachmentIds: ['att-1'],
-      });
+      }));
     });
   });
 
@@ -2061,9 +2072,9 @@ describe('<Composer>', () => {
 
     await fireEvent.click(getByTestId('composer-send'));
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'please inspect [Image #1] [Image #2]', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'please inspect [Image #1] [Image #2]', sentWith({
         attachmentIds: ['att-1', 'att-2'],
-      });
+      }));
     });
   });
 
@@ -2562,7 +2573,7 @@ describe('<Composer>', () => {
     await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'idle send' } });
     await fireEvent.click(getByTestId('composer-send'));
 
-    await waitFor(() => expect(send).toHaveBeenCalledWith('thread-1', 'idle send', { attachmentIds: [] }));
+    await waitFor(() => expect(send).toHaveBeenCalledWith('thread-1', 'idle send', sentWith({ attachmentIds: [] })));
     expect(getQueueForThread('thread-1')).toEqual([]);
   });
 
@@ -3131,7 +3142,7 @@ describe('<Composer>', () => {
       await waitFor(() => expect(send).toHaveBeenCalledWith(
         thread.id,
         '/workflow start the release',
-        { attachmentIds: [] },
+        sentWith({ attachmentIds: [] }),
       ));
     });
   });

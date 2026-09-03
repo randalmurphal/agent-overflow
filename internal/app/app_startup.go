@@ -644,6 +644,14 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	worktreeSetupSweepStarted := time.Now()
 	a.sweepCrashedWorktreeSetups()
 	logBootPhase("app.sweep_crashed_worktree_setups", worktreeSetupSweepStarted)
+	// Put back into the composer every message the previous process had
+	// queued and never delivered. Here, beside the other crash sweeps and
+	// before any session can start, so a row cannot belong to something still
+	// running — and it never re-dispatches. See
+	// restoreDurableFlushQueueAtBoot.
+	flushQueueSweepStarted := time.Now()
+	a.restoreDurableFlushQueueAtBoot()
+	logBootPhase("app.restore_durable_flush_queue", flushQueueSweepStarted)
 	browserSettings := a.currentSettings()
 	a.refreshBrowserAccelerators()
 	a.browser.manager = appbrowser.NewManager(

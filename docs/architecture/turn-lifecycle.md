@@ -790,10 +790,14 @@ clears it.
 The composer is always-typeable. When the user submits a message
 mid-round (`getActiveTurn(threadId) !== null`), it lands in the
 per-thread send queue (`frontend/src/lib/stores/sendQueue.svelte.ts`)
-instead of dispatching `SendMessageWithOptions` immediately. The
-queue is in-memory only (`SvelteMap<threadId, QueueItem[]>`),
-keyed identically to the global active-turn registry, and survives
-thread switches.
+instead of dispatching `SendMessageWithOptions` immediately, which
+registers it with the backend (`RegisterQueueItem`) and mirrors the
+answer. The frontend copy is a render cache (`SvelteMap<threadId,
+QueueItem[]>`), keyed identically to the global active-turn registry
+and surviving thread switches; the DURABLE copy is the backend's
+`flush_queue_items` row, which is what survives a crash and comes
+back into the composer on the next boot (`internal/app/AGENTS.md`
+§ The flush queue outlives the process).
 
 `QueueItem` captures everything needed to dispatch the message
 later: `message`, full `attachments` (not ids: click-to-edit

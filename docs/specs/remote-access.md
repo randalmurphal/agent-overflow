@@ -3710,6 +3710,48 @@ observer per pane is more machinery than the decision is worth); a
 spec that drives a real turn and wants the toast must turn both quiet
 rules off through `UpdateSettings` (e2e/AGENTS.md).
 
+**Polish pass, send safety and the slow ladder LANDED (2026-09-03, wave
+R6).** Four rulings from the polish sheet, together. (6) The Android
+shell backs up nothing: `allowBackup="false"`, `fullBackupContent=
+"false"`, and a `data_extraction_rules.xml` that excludes every domain
+from both cloud backup and device transfer, because the shell holds a
+device signing key and the backend believes one `devices` row is one
+machine (mobile/AGENTS.md). (7) A send is answered once however many
+times it arrives: `buildSendOptions` mints a `sendId` per composer send
+(the only minting site, pinned by architecture rule 7), both
+`SendMessageWithOptions` and `RegisterQueueItem` carry it, and the
+backend answers a repeat from the record the first arrival left, the
+`user_text` row's meta or the durable queue row, under the same lock and
+before any side effect. No id table: the message is the record, matched
+in SQL inside a bounded newest-64 window
+(`store.FindUserTextItemBySendID`). `RETRY_ON_TRANSIENT_CLOSE` holds
+exactly those two methods, and a send whose retry ALSO failed asks
+before restoring ("This message may have reached the agent. Put it back
+in the composer?"; "Leave it" discards and reports nothing further) while
+a definite failure restores silently as before. (8) A reconnect ladder
+failing for five minutes goes dormant: one probe every five minutes with
+jitter, none at all under a `background` lease, `dormant` and
+`lastConnectedAt` on the status snapshot, and the banner reads "Not
+reachable. Last seen 12m ago. Checking every 5 minutes." Every demand
+path still probes at once; Retry, a page resume and the foreground
+transition also reset the ladder's age, an RPC or a fresh subscribe
+deliberately does not. Dormancy changes what is DIALED and nothing
+about what a connection carries. (9) The per-thread flush queue is
+durable (`flush_queue_items`, migration v85): the row is written before
+the in-memory register, deleted through the existing `FlushSettlement`
+at either durable endpoint (the dispatcher's persisted row, a
+session-death restore into the draft), kept across a requeue, dropped
+with the queue on Stop and on the Codex rollback purge, and every row
+still present at boot is restored into the composer draft and never
+re-dispatched. Residuals, recorded and left: `make apk` is not runnable
+on the WSL box (no JDK), so the manifest and rules file are reviewed by
+eye until the Mac pass; an idle-reaper close of a thread whose queue
+held a requeued-after-failure message drops it, as it did before the
+row existed (the row now goes with it rather than resurrecting at boot);
+`triage.clearFlushQueueLocked` has no callers and is left for a triage
+cleanup; a send id that has scrolled past the 64-row window is not
+found, which is the accepted edge of a bounded check.
+
 ## 17. Testing
 
 - **Generator gate**: every bound method must declare a scope or the

@@ -14,6 +14,7 @@ import { projectSendResolved, projectSendStarted } from '../stores/threadStatuse
 import { addToast } from '../stores/toast.svelte';
 import type { SourceProposedPlan, Thread } from '../types/models';
 import { errString } from './errors';
+import { buildSendOptions } from './sendOptions';
 import {
   clearWorktreeIntent,
   worktreeIntentForThread,
@@ -54,10 +55,13 @@ export async function implementProposedPlan(
     // stuck in chat mode if the send half failed (e.g. session-start
     // error), and after restart the plan still showed "ready" because
     // proposed_plans.implemented_at never moved off zero.
-    const updated = (await SendMessageWithOptions(pane.threadId, IMPLEMENT_PROMPT, {
+    // Through the shared builder like every other send vector, so this one
+    // carries an idempotency id too: Implement is a button a person can hit
+    // twice while the socket is deciding whether it is alive.
+    const updated = (await SendMessageWithOptions(pane.threadId, IMPLEMENT_PROMPT, buildSendOptions({
       attachmentIds: [],
       sourceProposedPlan: source,
-    })) as Thread;
+    }))) as Thread;
     syncThread(updated);
     return true;
   } catch (err) {

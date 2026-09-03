@@ -336,6 +336,29 @@ const RANDOM_ID_OWNER = 'lib/utils/randomId.ts';
 const RANDOM_UUID_CALL = /\brandomUUID\s*\(/;
 const RANDOM_ID_ALLOWLIST: Record<string, string> = {};
 
+// 7. A send is built by the one builder that mints its idempotency id.
+//
+// A frame re-sent over a replacement socket is answered from the first
+// arrival's record, and the id is the whole basis of that match. A send vector
+// that assembles its own options object therefore looks like a NEW message on
+// every retry — which is one turn started twice. `implementProposedPlan` was
+// exactly that: an inline literal, no id, until this rule existed.
+//
+// The rule is on the IMPORT rather than the call, because the call's third
+// argument is a variable at most sites and matching its provenance textually
+// would be a guess. A module that reaches one of these RPCs either BUILDS its
+// options (imports `buildSendOptions`) or was HANDED them already built (names
+// `OutgoingSendOptions`, the only type that shape has) — a pass-through like
+// `sendQueue.registerQueueItem` is the second. Inlining an object literal is
+// neither, and that is the whole offence. The allowlist is empty.
+const SEND_RPCS = ['SendMessageWithOptions', 'RegisterQueueItem'] as const;
+const SEND_OPTIONS_BUILDER = 'buildSendOptions';
+// A TEXT probe rather than an import name: the type arrives through
+// `import type`, which `parseClause` deliberately drops as a non-runtime read.
+const SEND_OPTIONS_TYPE = /\bOutgoingSendOptions\b/;
+const SEND_OPTIONS_OWNER = 'lib/utils/sendOptions.ts';
+const SEND_OPTIONS_ALLOWLIST: Record<string, string> = {};
+
 // ---------------------------------------------------------------------------
 
 interface ParsedImport {
@@ -429,6 +452,7 @@ describe('architecture', () => {
       imports: parseImports(text),
       callsEventsOn: EVENTS_ON_CALL.test(text),
       callsRandomUUID: RANDOM_UUID_CALL.test(text),
+      namesSendOptionsType: SEND_OPTIONS_TYPE.test(text),
       inStores: file.startsWith(STORES_DIR + sep),
     };
   });
@@ -602,6 +626,43 @@ describe('architecture', () => {
       'New violations.',
       `Call randomId() from ${RANDOM_ID_OWNER}, which falls back to crypto.getRandomValues`
       + ' on the pages where crypto.randomUUID does not exist.',
+    );
+  });
+
+  it('keeps every send on the builder that mints its idempotency id', () => {
+    const offenders = new Map<string, string[]>();
+    let senders = 0;
+    for (const source of sources) {
+      if (source.path === BINDINGS_WRAPPER || source.path === SEND_OPTIONS_OWNER) continue;
+      const reached = new Set<string>();
+      let buildsOptions = false;
+      for (const parsed of source.imports) {
+        for (const name of parsed.names) {
+          if ((SEND_RPCS as readonly string[]).includes(name)) reached.add(name);
+          if (name === SEND_OPTIONS_BUILDER) buildsOptions = true;
+        }
+      }
+      if (reached.size === 0) continue;
+      senders += 1;
+      if (buildsOptions || source.namesSendOptionsType) continue;
+      offenders.set(source.path, [
+        `calls ${[...reached].sort().join(' / ')} while neither importing ${SEND_OPTIONS_BUILDER}`
+        + ' nor taking built OutgoingSendOptions, so its options carry no send id and a retried'
+        + ' frame starts a second turn',
+      ]);
+    }
+    // A rule scanning for RPCs nobody imports any more finds nothing and says
+    // so cheerfully; the renames these names could take are exactly the case.
+    expect(
+      senders,
+      `no module imports ${SEND_RPCS.join(' or ')}; this rule is scanning for nothing`,
+    ).toBeGreaterThan(0);
+    expectAllowlistExact(
+      offenders,
+      SEND_OPTIONS_ALLOWLIST,
+      'New violations.',
+      `Build the options with ${SEND_OPTIONS_BUILDER} from ${SEND_OPTIONS_OWNER}. It is the`
+      + ' one place a sendId is minted, and one call is one send.',
     );
   });
 

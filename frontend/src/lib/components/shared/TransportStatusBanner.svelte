@@ -47,6 +47,7 @@
   import { signInWithPasskey, unpairHome } from '../../transport/deviceSession';
   import { hasHomeEndpoint } from '../../transport/homeEndpoint';
   import { errString } from '../../utils/errors';
+  import { relativeTime } from '../../utils/format';
   import {
     getTransportStatus,
     redialAfterSignIn,
@@ -185,9 +186,43 @@
     return 'bg-error/15 border-error/30 text-error';
   });
 
+  // A ladder that has been reconnecting for minutes goes dormant: one probe
+  // every five minutes and nothing else on the network (transport/wsClient.ts).
+  // The countdown is the wrong sentence there — a number ticking down from 300
+  // reads as "nearly back" every five minutes forever — so the banner states
+  // the fact instead, and says when the connection was last alive, which is the
+  // one thing that tells a person whether this started just now or overnight.
+  //
+  // `lastConnectedAt` is this device's own clock reading, so `relativeTime` is
+  // called with no backend id: correcting it by a backend's skew would be
+  // measuring one clock against another's offset. The 1Hz tick is read so the
+  // sentence ages with the banner rather than freezing at whatever it said when
+  // dormancy began.
+  //
+  // Null when this client has NEVER connected — a page that opened against a
+  // backend that was already gone. The dormant sentence still applies (the
+  // cadence is the same fact), it simply drops the clause it has no answer
+  // for. It does NOT fall back to the countdown: the ladder really is at one
+  // probe per five minutes, and a number ticking down would misdescribe it.
+  let lastSeen = $derived.by(() => {
+    if (snapshot.status !== 'reconnecting') return null;
+    if (!snapshot.dormant) return null;
+    const at = snapshot.lastConnectedAt ?? null;
+    if (at === null) return null;
+    void tick;
+    return relativeTime(at);
+  });
+
+  let dormant = $derived(snapshot.status === 'reconnecting' && snapshot.dormant === true);
+
   let message = $derived.by(() => {
     if (snapshot.status === 'connected') return bundleNotice;
     if (snapshot.status === 'reconnecting') {
+      if (dormant) {
+        return lastSeen === null
+          ? 'Not reachable. Checking every 5 minutes.'
+          : `Not reachable. Last seen ${lastSeen}. Checking every 5 minutes.`;
+      }
       if (countdown !== null) {
         return `Reconnecting in ${countdown}s…`;
       }

@@ -106,6 +106,61 @@ remote browser alike. Protocol and authz rules:
   The sentence either state shows comes from `connectionRefusal.ts`
   below, never from a surface branching on the status itself.
 
+  **A ladder that never stops still slows down, and that is DIALING
+  only.** After `DORMANT_AFTER_MS` (5 min) of unbroken failure the client
+  goes DORMANT: one probe every `DORMANT_PROBE_MS` (5 min, flat plus a
+  small jitter, never a continued doubling) and nothing else on the
+  network. Five minutes of failure is a different situation from a relay
+  flap — the backend is off, the machine is asleep, the phone left the
+  network — and on a phone a retry every thirty seconds all night is a
+  radio wake per attempt for nothing. Flat rather than exponential
+  because a backend that comes back at minute six must not go unnoticed
+  until minute sixty.
+
+  This is NOT off-view work shedding, which stays banned. No client is
+  sent less, no surface renders differently, nothing is skipped because
+  something is off-view; the connection that does come up carries exactly
+  what it always did. Four rules make it hold:
+
+  - **Dormancy is an ordinary `reconnecting` status wearing a flag.**
+    The snapshot gains `dormant` and `lastConnectedAt`; a surface that
+    reads neither is unchanged, and `setReconnecting` DERIVES the flag
+    rather than taking it, so the several publishers of "attempt in
+    flight" cannot drop it and flicker the banner.
+  - **Every demand path still probes immediately.** An RPC, a fresh
+    `subscribe` (which is what opening a pane reaches), `triggerReconnect`
+    and the page-resume listener all collapse the wait through the
+    existing `queuedAttempt.fire()`, under the same rate floor. Demand
+    that is a PERSON acting — Retry, a resume, the app coming back to the
+    foreground — also resets the ladder's age; an RPC deliberately does
+    not, so a background poll cannot talk a genuinely unreachable backend
+    out of its slow cadence.
+  - **A `background` lease schedules no probe at all**, and going
+    `active` probes at once. The lease is the whole app being paused by
+    the OS (`lease.ts`), so there is no surface to keep current and
+    nobody to keep it current for. The queued attempt is DISARMED, never
+    discarded: it owns `connectPromise`, so dropping it would strand
+    every awaiter, and its `fire` is what the foreground transition
+    calls.
+  - **Only a connection that PROVED itself clears the dormancy**, on the
+    same `BACKOFF_RESET_AFTER_MS` evidence rule the backoff reset uses.
+    An accept-then-die socket must not put the client back on a 50ms
+    retry.
+
+  `lastConnectedAt` is the last moment BYTES crossed, on this device's
+  own clock, and it is what `TransportStatusBanner.svelte` renders as
+  "Last seen 12m ago" — through `utils/format.ts`'s `relativeTime` with
+  no backend id, since correcting a local reading by a backend's skew
+  would be measuring one clock against another's offset. It is stamped on
+  open and by every inbound frame, one integer store beside the watchdog's
+  own refresh, and DELIBERATELY not derived at close from `lastFrameAt`:
+  a lifecycle resume bumps that field on a socket that may have been dead
+  since the machine went to sleep, so an overnight outage would report
+  itself as a minute old. Null when this client has never connected, where
+  the banner drops the clause and keeps the sentence — it does not fall
+  back to the countdown, because the ladder really is at one probe per
+  five minutes.
+
   One channel is seeded into the replay map at zero rather than carried
   from a cursor: `notification:activated`, because a Windows toast click
   can COLD-LAUNCH the desktop window, so the click that started the page
@@ -159,12 +214,24 @@ remote browser alike. Protocol and authz rules:
   `RETRY_ON_TRANSIENT_CLOSE` is the only sanctioned way a call is re-sent
   after it may have REACHED the backend. (The step-up retry above re-sends
   too, but only a call the backend answered with a refusal, so it cannot
-  duplicate an action.) It is EMPTY, and a test pins that. An entry
-  needs the call to be idempotent on the backend AND its loss to fall in
-  a known transient window; anything else duplicates an action to recover
-  an answer. Ordinary reconnect recovery is the store-level suspension
+  duplicate an action.) It holds exactly TWO entries and a test pins both
+  by id, in order, with the rule restated beside them:
+  `SendMessageWithOptions` and `RegisterQueueItem`. An entry needs the
+  call to be idempotent ON THE BACKEND and its loss to fall in a known
+  transient window; anything else duplicates an action to recover an
+  answer. Ordinary reconnect recovery is the store-level suspension
   (`stores/entityStore.svelte.ts`), which re-asks for current state — do
   not build a second one.
+
+  What earns those two their place is not the client's care but the
+  backend's record: each carries a client-minted `sendId`
+  (`utils/sendOptions.ts`, minted in `buildSendOptions` and nowhere else),
+  and the backend answers a repeated arrival from the message the first one
+  already created — a persisted `user_text` row or a durable queue row
+  (`internal/app/AGENTS.md` § A send is answered once). So the retry must
+  re-send the SAME frame rather than a rebuilt one, which is exactly what
+  the retained frame does and what a test pins. A third entry is a
+  conversation about the backend's record, not about this list.
 
   **Wire input this build cannot address is expected, not exceptional.**
   A tab stays loaded across a backend update, so an older bundle reading

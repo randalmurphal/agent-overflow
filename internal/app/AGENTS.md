@@ -783,6 +783,93 @@ per attached backend, fed by both channels and re-read on every hello) and
 `components/settings/MachineUpdates.svelte`; its guide entry is
 `frontend/src/lib/stores/AGENTS.md`.
 
+## A send is answered once, however many times it arrives
+
+A socket that died AFTER the frame reached the backend looks exactly like one
+that died before it: the RPC never answers. The client's transport re-sends
+the frame for two methods and only two (`RETRY_ON_TRANSIENT_CLOSE` in
+`frontend/src/lib/transport/wsClient.ts`), so both have to be idempotent HERE
+— a retry that started a second turn would be worse than the lost answer it
+was recovering.
+
+`app_send_idempotency.go` is the whole mechanism, and it is deliberately not
+a table.
+
+- **The id is the client's, minted once per send** (`buildSendOptions`), and
+  it rides `SendMessageOptions.SendID` on both paths. An EMPTY id is legal
+  and disables the check: every app-internal injector sends one, as does any
+  bundle older than the field, and treating them as one message would collapse
+  a workflow's injected sends into the first.
+- **The record is the message itself**, in whichever of its two homes it
+  reached. A dispatched send is a `user_text` row whose `meta` carries
+  `sendId` (`internal/usermessage`); a queued one is a `flush_queue_items`
+  row whose `send_id` column carries it. `findRecordedSend` looks in both and
+  answers the caller from what it finds — the persisted item, or the queue
+  row projected back through `flushqueue.ItemFromStore`.
+- **Bounded window, matched in SQL.** `store.FindUserTextItemBySendID(threadID,
+  sendID, 64)` renders the newest window through the timeline arms and applies
+  the id comparison to that window, so at most one row is ever hydrated. This
+  runs on EVERY send and almost always finds nothing; reading 64 rows whole
+  and decoding every meta in Go to reach that answer was the shape it
+  replaced. NOT indexed: the id is unique per row and empty on most of them,
+  so an index would make every send pay a write to earn a lookup nobody else
+  makes, and the window a reconnect retries inside is a handful of messages
+  wide. A send whose id has scrolled out is not found, which is the accepted
+  edge and is pinned by a test rather than left to be discovered.
+  The `json_valid` guard in that predicate is a backstop, not decoration:
+  `json_extract` raises on malformed JSON, and one unreadable row inside the
+  window would fail every send on the thread. Neither arm can hold one today
+  (both refuse it at write time), which is itself pinned — see
+  `internal/store/AGENTS.md` § v85.
+- **The check runs under the lock that serializes the path, before any side
+  effect.** In `sendMessageLocked` that is first thing inside the thread
+  action lock — before the runtime-mode write, before the session start,
+  above all before the provider write. In `registerQueueItem` it is
+  immediately after `handoffMu`, which is the queue path's serialization
+  point, and BEFORE the length cap so a duplicate cannot be answered "queue
+  full".
+
+## The flush queue outlives the process
+
+The composer clears the moment `RegisterQueueItem` returns, so between the
+register and the provider write the queue is the message's only copy — and it
+was process memory, which a crash threw away with no trace anywhere. It now
+has a row (`flush_queue_items`, migration v85). `internal/triage` keeps the
+live queue and knows nothing about the row; this package owns its whole life.
+
+- **Durable first, then memory.** `registerQueueItem` inserts before
+  `triage.RegisterQueueItem`, so an insert failure is a visible refusal to
+  queue rather than a message that quietly is not there tomorrow.
+- **The row dies at a durable endpoint, and `triage.FlushSettlement` is
+  already exactly that.** `flushQueueSettlement` composes the delete with
+  whatever an injector passed as `onDurable`, so the two moments the message
+  is safely somewhere else — the dispatcher's persisted `user_text` row, and a
+  session-death restore into the composer draft — delete it exactly once
+  (`sync.Once`) with no call site having to remember the table.
+- **A requeue KEEPS its row.** A failed dispatch, a pre-init teardown that
+  could not write the draft: the message is still undelivered, so the row is
+  still its only durable copy. `requeueEagerPersistedFlushes` deliberately
+  does NOT re-create a settled row either — an already-dispatched message has
+  a persisted `user_text` row as its durable copy, and a second home would let
+  the boot sweep restore text that is also in the timeline.
+- **A DROP takes the rows with it.** `teardownAndCloseSession` (Stop, idle
+  close, archived-thread close) and `clearFlushDispatchForRollback` (the Codex
+  rollback purge) discard the in-memory queue with no restore, so both call
+  `dropDurableFlushQueue` — otherwise the next boot resurrects exactly the
+  messages the user's Stop or revert threw away. Thread deletion needs
+  nothing: the FK cascades.
+- **The boot sweep restores into the COMPOSER and never re-dispatches.**
+  `restoreDurableFlushQueueAtBoot` runs in `initSubsystems` beside the other
+  boot repairs, after the store opens and before any session can start, so
+  every remaining row is provably residue. A queued message was written
+  against a turn that no longer exists, on a session that is gone, in a
+  conversation nobody has looked at since; sending it hours later on somebody's
+  behalf is the one outcome nobody asked for. It merges through
+  `internal/composerdraft` with the same rule and the same `draft:updated`
+  event a session death uses — queued text ahead of whatever the composer
+  itself holds — and deletes the rows only once that write succeeded, so a
+  failure means the next boot tries again.
+
 ## A broadcast about ONE client's attempt names that client
 
 An event channel that is not entity-filtered reaches every client, which is

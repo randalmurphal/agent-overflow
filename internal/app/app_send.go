@@ -43,6 +43,10 @@ type sendMessageOptions struct {
 	RevisionSourceDiffReview     *SourceDiffReview
 	RevisionSourceDiffCommentIDs []string
 	OutputSchema                 json.RawMessage
+	// SendID is the client-minted idempotency id of one composer send. Empty
+	// for every app-internal caller, which is what keeps them out of each
+	// other's way. See app_send_idempotency.go.
+	SendID string
 	// PreserveDraft keeps the thread's durable composer draft. Set by the
 	// app-internal injectors (the workflow wake) whose text did not come from
 	// the composer: a user send consumes the draft, but a system-injected
@@ -88,6 +92,9 @@ type userMessageInputs struct {
 	// sends), whose text did not come from a composer and must reach the
 	// provider byte-for-byte as composed.
 	expandComposerCommands bool
+	// sendID rides through to the persisted row's meta, which is what makes
+	// the message its own idempotency record (app_send_idempotency.go).
+	sendID string
 }
 
 // resolvedUserMessage bundles everything resolveUserMessageEnvelope
@@ -210,6 +217,7 @@ func (a *App) resolveUserMessageEnvelope(
 		RevisionDiffCommentIDs: revisionDiffCommentIDs,
 		Command:                command,
 		ExpandComposerCommands: inputs.expandComposerCommands,
+		SendID:                 inputs.sendID,
 	})
 	if err != nil {
 		return resolvedUserMessage{}, fmt.Errorf("user meta: %w", err)
@@ -331,6 +339,23 @@ func (a *App) sendMessageLocked(
 		return store.Item{}, a.sendMessageFn(threadID, content, opts.AttachmentIDs)
 	}
 
+	// Idempotency, first thing inside the lock and before ANY side effect:
+	// no runtime-mode write, no takeover registration, no session start, and
+	// above all no provider write. A repeated frame is answered with what
+	// the first one produced. See app_send_idempotency.go.
+	if record, found, err := a.findRecordedSend(threadID, opts.SendID); err != nil {
+		return store.Item{}, fmt.Errorf("send message: %w", err)
+	} else if found {
+		if record.dispatched {
+			return record.item, nil
+		}
+		// The message is still on the queue, which is the outcome the first
+		// frame produced and the one this caller is asking for again. It is
+		// not a `user_text` row yet, so there is no item to return; the
+		// thread view the bound method reads back is unaffected either way.
+		return store.Item{}, nil
+	}
+
 	if prepared.hasRuntimeMode {
 		if err := a.applyRuntimeModeLocked(threadID, prepared.runtimeMode); err != nil {
 			return store.Item{}, fmt.Errorf("send message: runtime mode: %w", err)
@@ -378,6 +403,7 @@ func (a *App) sendMessageLocked(
 		revisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		revisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		expandComposerCommands:       opts.ExpandComposerCommands,
+		sendID:                       opts.SendID,
 	})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
