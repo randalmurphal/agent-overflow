@@ -64,13 +64,26 @@ const PageTicketParam = "t"
 // nothing else.
 const SessionTokenParam = "token"
 
+// ReservedCookiePrefix is the namespace every cookie this app sets lives
+// under. It exists so a hop that must not forward OUR cookies can drop
+// them by one rule instead of by a list of names it has to keep current.
+//
+// The preview proxy is that hop (previewproxy.go). Browsers scope cookies
+// by HOST and ignore the port, so a preview listener on the same host as
+// the app receives the page cookie, the session cookie and every other
+// preview port's cookie attached by the browser. Forwarding any of them
+// hands a live credential to a dev server whose bytes are agent-authored,
+// and a deny-list of one name is a rule that goes stale the day a fourth
+// cookie is added. TestEveryAppCookieUsesTheReservedPrefix is the pin.
+const ReservedCookiePrefix = "ao_"
+
 // pageCookiePrefix names the page cookie. The listen port is appended
 // (see pageCookieName) because cookies are scoped by host and path, not
 // by port: two backends on one host — the user's app and a harness
 // instance, or an app and a --connect stub — would otherwise write the
 // same cookie name over each other and each would read the other's
 // value as a bad credential.
-const pageCookiePrefix = "ao_page_"
+const pageCookiePrefix = ReservedCookiePrefix + "page_"
 
 // NewCredential mints a launch credential. An empty token asks for a
 // fresh one; callers that already hold a token (the --connect stub is

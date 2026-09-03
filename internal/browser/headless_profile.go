@@ -205,15 +205,78 @@ func (p *headlessProfile) ensureBrowser() (context.Context, error) {
 		return nil, fmt.Errorf("browser: pin downloads to %s: %w", p.downloadDir, err)
 	}
 
+	if err := p.adopt(browserCtx, browserCancel, allocCancel); err != nil {
+		abandon()
+		return nil, err
+	}
+	return browserCtx, nil
+}
+
+// adopt publishes a freshly launched browser as this profile's, cancelling
+// the one it replaces.
+//
+// The replaced pair is the whole reason this is not two assignments.
+// ensureBrowser relaunches when the previous browser context is CANCELLED,
+// which is what a Chromium that died looks like, and the previous cancels
+// are still owed even then: chromedp's allocator holds a goroutine and a
+// WaitGroup per browser it started, and the process it started is reaped
+// only when the allocator is cancelled. Overwriting the funcs dropped the
+// only reference to both, for the life of the backend. Cancelling an
+// already-cancelled context is a no-op, so the ordinary first launch pays
+// nothing for this.
+func (p *headlessProfile) adopt(browserCtx context.Context, browserCancel, allocCancel context.CancelFunc) error {
 	p.mu.Lock()
 	if p.disposed {
 		p.mu.Unlock()
-		abandon()
-		return nil, errors.New("browser: the workspace profile was disposed while its browser started")
+		return errors.New("browser: the workspace profile was disposed while its browser started")
 	}
+	staleBrowser, staleAlloc := p.browserCancel, p.allocCancel
 	p.browserCtx, p.browserCancel, p.allocCancel = browserCtx, browserCancel, allocCancel
 	p.mu.Unlock()
-	return browserCtx, nil
+
+	if staleBrowser != nil {
+		staleBrowser()
+	}
+	if staleAlloc != nil {
+		staleAlloc()
+	}
+	go p.watchBrowser(browserCtx)
+	return nil
+}
+
+// watchBrowser ends the profile when its Chromium does.
+//
+// chromedp cancels the BROWSER CONTEXT when the connection to the process
+// is lost (allocate.go's LostConnection goroutine calls that context's own
+// cancel), so a browser that crashed, was OOM-killed, or was killed by hand
+// is observable here and nowhere else. Without it the profile's pages
+// stayed in the Manager as rows nothing could drive: every operation on one
+// answered "the profile's browser is no longer running" and no event ever
+// said the page had gone.
+//
+// Its own goroutine, deliberately not the CDP listener: PageClosed is the
+// Manager's removeClosedPage, which on the last page disposes this profile,
+// which blocks until Chromium is reaped.
+func (p *headlessProfile) watchBrowser(browserCtx context.Context) {
+	<-browserCtx.Done()
+
+	p.mu.Lock()
+	// Two ways this fires with nothing to do, and both must be silent: an
+	// ordinary Dispose cancels this same context after it has already
+	// reported and forgotten everything, and a relaunch leaves the
+	// previous watcher on a context that is no longer the profile's.
+	stale := p.disposed || p.browserCtx != browserCtx
+	p.mu.Unlock()
+	if stale {
+		return
+	}
+
+	for _, handle := range p.engine.pagesOf(p) {
+		p.engine.events.PageClosed(handle)
+	}
+	if err := p.Dispose(context.Background()); err != nil {
+		p.engine.logf("browser: profile %s did not clean up after its browser died: %v", p.handle, err)
+	}
 }
 
 // armLaunch publishes (or clears) the cancel Interrupt reaches the launch

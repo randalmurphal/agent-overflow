@@ -88,7 +88,7 @@ const WSTicketParam = "ticket"
 // sessionCookiePrefix names the page's session cookie. Port-qualified for
 // the same reason the page cookie is (see pageCookieName): two backends on
 // one host would otherwise overwrite each other's value.
-const sessionCookiePrefix = "ao_session_"
+const sessionCookiePrefix = ReservedCookiePrefix + "session_"
 
 // maxAuthBody bounds one credential request. These bodies carry a token,
 // a thumbprint, and two labels — hundreds of bytes. The cap keeps a wedged

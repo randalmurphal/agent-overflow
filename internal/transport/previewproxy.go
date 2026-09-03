@@ -33,7 +33,7 @@ const previewEndedPage = "This preview session ended. Open the link again from A
 const previewUpstreamDialTimeout = 5 * time.Second
 
 // handler builds the http.Handler for one preview port.
-func (g *PreviewGateway) handler(target PreviewTarget) http.Handler {
+func (g *PreviewGateway) handler(target PreviewTarget, conns *previewConns) http.Handler {
 	port := target.Port
 	proxy := g.proxy(target)
 	cookieName := previewCookiePrefix + strconv.Itoa(port)
@@ -48,10 +48,18 @@ func (g *PreviewGateway) handler(target PreviewTarget) http.Handler {
 			// already-spent URL is the common way to arrive here, and the
 			// cookie that first hit bought is still good.
 		}
-		if !g.admits(r, port, cookieName) {
+		token, ok := g.admits(r, port, cookieName)
+		if !ok {
 			previewEnded(w)
 			return
 		}
+		// Held for as long as this request is served, which for an
+		// UPGRADE is the whole life of the socket: the reverse proxy does
+		// not return until the copy in both directions is done. That one
+		// registration is what lets a retired port and a revoked
+		// principal each reach a connection nothing else can.
+		release := conns.hold(r, token)
+		defer release()
 		proxy.ServeHTTP(w, r)
 	})
 }
@@ -109,20 +117,37 @@ func (g *PreviewGateway) exchange(
 }
 
 // admits reports whether this request carries a live grant for this
-// port. The principal is re-checked EVERY time: revoking a device has to
-// end its previews on the next request, and caching the answer is
-// exactly what would stop that.
-func (g *PreviewGateway) admits(r *http.Request, port int, cookieName string) bool {
+// port, and names the grant's token when it does. The grant is re-checked
+// EVERY time: revoking a device has to end its previews on the next
+// request, and caching the answer is exactly what would stop that.
+//
+// The token comes back because the connection outlives the check on an
+// upgrade, and the sweep that re-asks for it (stillAdmits) needs the
+// grant this request was admitted on rather than whatever cookie the
+// connection still carries.
+func (g *PreviewGateway) admits(r *http.Request, port int, cookieName string) (token string, ok bool) {
 	cookie, err := r.Cookie(cookieName)
 	if err != nil || cookie.Value == "" {
-		return false
+		return "", false
 	}
-	grant, ok := g.grant(cookie.Value)
-	if !ok || grant.port != port {
+	if !g.stillAdmits(cookie.Value, port) {
+		return "", false
+	}
+	return cookie.Value, true
+}
+
+// stillAdmits is the whole of a grant check: the grant exists, is for
+// this port, has not lapsed, and names a principal that is still live.
+// The same question on a request and on the sweep, so a grant that lapses
+// under an open HMR socket is refused exactly the way it would be on the
+// socket's next request, if it ever made one.
+func (g *PreviewGateway) stillAdmits(token string, port int) bool {
+	grant, found := g.grant(token)
+	if !found || grant.port != port {
 		return false
 	}
 	if !g.now().Before(time.Unix(0, grant.expiresAtNanos)) {
-		g.dropGrant(cookie.Value)
+		g.dropGrant(token)
 		return false
 	}
 	return g.principalLive(grant.sessionID)
@@ -225,7 +250,6 @@ func (g *PreviewGateway) proxy(target PreviewTarget) *httputil.ReverseProxy {
 	port := target.Port
 	upstreamHost := net.JoinHostPort("localhost", strconv.Itoa(port))
 	upstreamOrigin := target.Scheme + "://" + upstreamHost
-	cookieName := previewCookiePrefix + strconv.Itoa(port)
 
 	return &httputil.ReverseProxy{
 		Transport: &http.Transport{
@@ -253,10 +277,11 @@ func (g *PreviewGateway) proxy(target PreviewTarget) *httputil.ReverseProxy {
 			if r.In.Header.Get("Origin") != "" {
 				r.Out.Header.Set("Origin", upstreamOrigin)
 			}
-			// The dev server's bytes are agent-authored, and this cookie
-			// is the credential that reaches its preview. It has no
-			// business past this proxy.
-			stripCookie(r.Out, cookieName)
+			// The dev server's bytes are agent-authored, and every cookie
+			// this app sets is a credential. None has any business past
+			// this proxy, so the whole reserved namespace goes rather
+			// than this port's cookie alone.
+			stripAppCookies(r.Out)
 		},
 		ModifyResponse: previewRewriteLocation(upstreamHost),
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -326,14 +351,27 @@ func previewIsLoopbackHost(host, upstreamHost string) bool {
 	return addr != nil && addr.IsLoopback()
 }
 
-// stripCookie removes one cookie from an outbound request, leaving every
-// other cookie the browser sent in place — a dev server may have set its
-// own and would notice them going missing.
-func stripCookie(r *http.Request, name string) {
+// stripAppCookies removes every cookie in this app's reserved namespace
+// from an outbound request, leaving every other cookie the browser sent
+// in place: a dev server may have set its own and would notice them
+// going missing.
+//
+// A PREFIX rule rather than this port's cookie name, because a browser
+// scopes cookies by host and ignores the port. A preview listener shares
+// its host with the SPA and with every other preview, so the request
+// arriving here carries the page cookie, the session cookie and the
+// other ports' preview cookies as well as this one, and each of those is
+// a credential the routes on the main listener honour. Dropping one name
+// left the rest crossing to bytes this app does not author.
+//
+// Every app cookie name is derived from ReservedCookiePrefix, and
+// TestEveryAppCookieUsesTheReservedPrefix is what keeps that true, so
+// this rule cannot go stale behind a cookie somebody adds later.
+func stripAppCookies(r *http.Request) {
 	cookies := r.Cookies()
 	kept := cookies[:0]
 	for _, cookie := range cookies {
-		if cookie.Name != name {
+		if !strings.HasPrefix(cookie.Name, ReservedCookiePrefix) {
 			kept = append(kept, cookie)
 		}
 	}

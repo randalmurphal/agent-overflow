@@ -1,11 +1,8 @@
 package transport
 
 import (
-	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -58,7 +55,7 @@ const (
 	// with the SPA and with every other preview, and browsers scope
 	// cookies by host, so the name is the only thing that keeps one
 	// preview's grant out of another's requests.
-	previewCookiePrefix = "ao_preview_"
+	previewCookiePrefix = ReservedCookiePrefix + "preview_"
 
 	// previewTicketTTL is how long a minted URL stays spendable. It is
 	// produced by a click and opened immediately; a minute covers a slow
@@ -82,102 +79,33 @@ const (
 
 	// previewShutdownTimeout bounds the graceful stop of one retired
 	// preview listener. Same budget the auxiliary listeners get, and it
-	// covers in-flight HTTP handlers only: an upgraded HMR socket owns
-	// its own connection and the final Close is what severs it.
+	// covers the ordinary HTTP handlers that are still running.
+	//
+	// It does NOT cover the upgraded ones, in either direction: net/http
+	// STOPS TRACKING a connection the moment a handler takes it over from
+	// the server, which is what an UPGRADE does, so Shutdown
+	// neither waits for an HMR socket nor severs it, and the listener's
+	// own Close only stops it accepting new ones. A retired port left
+	// every socket it had handed out streaming. Those are cut before this
+	// budget starts (previewconns.go).
 	previewShutdownTimeout = 5 * time.Second
+
+	// previewLivenessInterval is how often the connections already open
+	// are re-checked against their grant. Every REQUEST re-checks it
+	// (previewproxy.go admits), which is the whole mechanism for a
+	// browser that keeps asking for things; an upgraded socket asks for
+	// nothing more after the upgrade, so it needs a clock instead.
+	//
+	// Coarse on purpose. The check exists so a revoked device stops
+	// receiving within a human's idea of "at once", not within a frame,
+	// and every tick costs one session-store read per open preview.
+	previewLivenessInterval = 10 * time.Second
 
 	// previewReadHeaderTimeout bounds a preview connection's headers.
 	// The same budget the main server uses by default, and it is what
 	// keeps an opened-but-silent connection from holding a slot.
 	previewReadHeaderTimeout = 15 * time.Second
 )
-
-// PreviewLANSource serves previews on this machine's LAN address under
-// the app's own certificate. It is the fallback the spec names for a
-// backend with no tailnet but LAN access on, and it is the reason the
-// gateway takes an ORDERED list of sources rather than one.
-//
-// The address is answered per bind rather than captured, because LAN
-// access is a setting somebody toggles and the address itself moves with
-// the network.
-type PreviewLANSource struct {
-	// LANIP answers this machine's LAN address, or "" when the backend
-	// is on loopback only — in which case the source serves nothing and
-	// the gateway falls through to the next one, or to a note.
-	//
-	// A FUNCTION, because the answer moves: LAN access is a setting
-	// somebody toggles, and the address itself changes with the network.
-	// A value captured at construction would leave the gateway binding
-	// an address this machine no longer has.
-	LANIP func() string
-
-	// TLS is the app's certificate configuration, the same object the
-	// main bind serves with. Nil means there is no certificate at all,
-	// and a preview cookie cannot be set over cleartext.
-	TLS *tls.Config
-}
-
-// PreviewLANSource returns the LAN source for this server's certificate
-// configuration. The address is the caller's to answer, because which of
-// this machine's addresses is "the LAN one" is a question this package
-// does not decide.
-func (s *Server) PreviewLANSource(lanIP func() string) *PreviewLANSource {
-	return &PreviewLANSource{LANIP: lanIP, TLS: s.tlsConfig}
-}
-
-// PreviewHost is the LAN address, or "" when there is nothing to serve
-// on or nothing to serve it with.
-func (p *PreviewLANSource) PreviewHost() string {
-	if p == nil || p.LANIP == nil || p.TLS == nil {
-		return ""
-	}
-	return p.LANIP()
-}
-
-// ListenPreview binds this machine's LAN address on port, under TLS.
-//
-// The bind is to the LAN ADDRESS specifically, not to 0.0.0.0: the dev
-// server already holds the same port on loopback, and a wildcard bind
-// would collide with it on every machine.
-func (p *PreviewLANSource) ListenPreview(port int) (net.Listener, error) {
-	host := p.PreviewHost()
-	if host == "" {
-		return nil, errors.New("no LAN address to serve previews on")
-	}
-	ln, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
-	if err != nil {
-		return nil, err
-	}
-	return tls.NewListener(ln, p.TLS), nil
-}
-
-// PreviewListenerSource opens the listener for one preview port. Two
-// implementations exist: the tailnet node (internal/app, beside the node
-// it needs) and PreviewLANSource above. They are tried in the order the
-// caller lists them, and the first that answers wins — which is what
-// makes the tailnet the preferred address without anything here knowing
-// why it is preferred.
-type PreviewListenerSource interface {
-	// PreviewHost is the authority a URL served by this source names,
-	// or "" when the source cannot serve anything right now. Asked
-	// before every bind, because a tailnet node comes and goes.
-	PreviewHost() string
-
-	// ListenPreview opens a TLS listener on port. The listener is TLS
-	// on every path: the preview cookie is `Secure`, and a browser will
-	// not store one from a cleartext origin that is not localhost.
-	ListenPreview(port int) (net.Listener, error)
-}
-
-// PreviewTarget is one port to serve a preview of, and what that port
-// speaks. The scheme travels with the port from discovery all the way to
-// the dial: a dev server on https that was proxied to over http answered
-// every request with a gateway error, while the list happily called it
-// previewable.
-type PreviewTarget struct {
-	Port   int
-	Scheme string
-}
 
 // PreviewGateway holds one listener per port in the preview set.
 //
@@ -188,6 +116,9 @@ type PreviewGateway struct {
 	sessionLive func(sessionID string) bool
 	now         func() time.Time
 	tickets     *ticketBook
+
+	// stop ends the liveness sweep. Closed exactly once, by Close.
+	stop chan struct{}
 
 	mu     sync.Mutex
 	closed bool
@@ -213,6 +144,10 @@ type previewListener struct {
 	// different upstream, so SetPorts rebuilds rather than keeping one
 	// that would 502.
 	scheme string
+	// conns is what this listener is currently carrying, so retiring it
+	// and revoking a principal both reach an upgraded socket that
+	// nothing else can (previewconns.go).
+	conns *previewConns
 }
 
 // previewGrant is what one preview cookie admits.
@@ -254,161 +189,57 @@ func NewPreviewGateway(cfg PreviewGatewayConfig) *PreviewGateway {
 	}
 	tickets := newTicketBook(previewTicketMax, previewTicketTTL)
 	tickets.now = now
-	return &PreviewGateway{
+	g := &PreviewGateway{
 		sources:     cfg.Sources,
 		sessionLive: cfg.SessionLive,
 		now:         now,
 		tickets:     tickets,
+		stop:        make(chan struct{}),
 		ports:       make(map[int]*previewListener),
 		notes:       make(map[int]string),
 		grants:      make(map[string]previewGrant),
 	}
+	go g.sweepLiveness()
+	return g
 }
 
-// SetPorts reconciles the served set against want: bind what is new,
-// retire what is gone, leave what is unchanged alone. Called on every
-// discovery tick, so doing nothing when nothing moved is the common
-// case and the only one that has to be cheap.
-//
-// A bind that fails is not an error the caller has to handle — the other
-// ports still serve — so the reason is recorded as this port's note and
-// the next tick tries again.
-func (g *PreviewGateway) SetPorts(want []PreviewTarget) {
-	wanted := make(map[int]string, len(want))
-	for _, target := range want {
-		if target.Port <= 0 || target.Port > 65535 {
-			continue
-		}
-		scheme := target.Scheme
-		if scheme != "https" {
-			// http for anything unset or unrecognised. The two schemes
-			// are the only ones a browser would render, and defaulting
-			// is what keeps a discovery row that never got probed
-			// serving rather than refused.
-			scheme = "http"
-		}
-		wanted[target.Port] = scheme
-	}
-
-	g.mu.Lock()
-	if g.closed {
-		g.mu.Unlock()
-		return
-	}
-	var retire []*previewListener
-	for port, listener := range g.ports {
-		if scheme, keep := wanted[port]; keep && scheme == listener.scheme {
-			continue
-		}
-		// Gone from the set, or still in it speaking something else.
-		// Either way this listener is not the one to keep.
-		retire = append(retire, listener)
-		delete(g.ports, port)
-	}
-	for port := range g.notes {
-		if _, keep := wanted[port]; !keep {
-			delete(g.notes, port)
-		}
-	}
-	var fresh []PreviewTarget
-	for port, scheme := range wanted {
-		if _, served := g.ports[port]; !served {
-			fresh = append(fresh, PreviewTarget{Port: port, Scheme: scheme})
-		}
-	}
-	g.mu.Unlock()
-
-	for _, listener := range retire {
-		closePreviewListener(listener)
-	}
-	// Sorted, so the log of a machine that could bind nothing reads in
-	// port order rather than in map order.
-	sort.Slice(fresh, func(i, j int) bool { return fresh[i].Port < fresh[j].Port })
-	for _, target := range fresh {
-		g.bind(target)
-	}
-}
-
-// bind opens one port through the first source that answers.
-func (g *PreviewGateway) bind(target PreviewTarget) {
-	port := target.Port
-	var reasons []string
-	for _, source := range g.sources {
-		host := source.PreviewHost()
-		if host == "" {
-			continue
-		}
-		ln, err := source.ListenPreview(port)
-		if err != nil {
-			reasons = append(reasons, previewBindReason(port, err))
-			continue
-		}
-		// A mux with one pattern rather than the handler directly: the
-		// whole port is one route, and registering it says so where
-		// internal/surfaces' gate can read it.
-		mux := http.NewServeMux()
-		mux.Handle("/", g.handler(target))
-		listener := &previewListener{
-			ln:     ln,
-			srv:    &http.Server{Handler: mux, ReadHeaderTimeout: previewReadHeaderTimeout},
-			host:   host,
-			scheme: target.Scheme,
-		}
-		g.mu.Lock()
-		if g.closed || g.ports[port] != nil {
-			// A concurrent SetPorts or Close got there first. Whatever it
-			// installed is the live one.
-			g.mu.Unlock()
-			closePreviewListener(listener)
+// sweepLiveness re-checks every open preview connection against its
+// principal on a coarse tick, and severs the ones whose principal stopped
+// being live. One goroutine for the whole gateway: the work is a map walk
+// per listener and is nothing at all while no preview is open.
+func (g *PreviewGateway) sweepLiveness() {
+	ticker := time.NewTicker(previewLivenessInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-g.stop:
 			return
+		case <-ticker.C:
+			g.cutRefusedConns()
 		}
-		g.ports[port] = listener
-		delete(g.notes, port)
-		g.mu.Unlock()
-
-		go func() {
-			err := listener.srv.Serve(ln)
-			if err == nil || errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
-				return
-			}
-			log.Printf("transport: preview listener on port %d stopped: %v", port, err)
-			g.drop(port, listener)
-		}()
-		return
 	}
-
-	note := "No tailnet or LAN address to share this port on."
-	if len(reasons) > 0 {
-		note = strings.Join(reasons, " ")
-	}
-	g.mu.Lock()
-	if !g.closed {
-		g.notes[port] = note
-	}
-	g.mu.Unlock()
 }
 
-// previewBindReason turns a failed bind into the sentence a person
-// reads. The address-in-use case is the one worth naming: it means the
-// dev server itself already bound beyond loopback on that port, so the
-// page is reachable already and a proxy in front of it would be a second
-// answer to a question nobody asked.
-func previewBindReason(port int, err error) string {
-	if addrInUse(err) {
-		return fmt.Sprintf("Port %d is already reachable on the LAN.", port)
+// cutRefusedConns is one pass of the sweep, called directly by the tests
+// so they move nothing but the clock and the session store. Each
+// listener's connections are re-asked the question its port admitted
+// them on (stillAdmits), so a lapsed grant and a revoked principal end a
+// held socket alike.
+func (g *PreviewGateway) cutRefusedConns() {
+	type held struct {
+		port  int
+		conns *previewConns
 	}
-	return fmt.Sprintf("Port %d could not be opened for previews: %v", port, err)
-}
-
-// drop retires a listener that stopped accepting, unless something has
-// already replaced it.
-func (g *PreviewGateway) drop(port int, listener *previewListener) {
 	g.mu.Lock()
-	if g.ports[port] == listener {
-		delete(g.ports, port)
+	listeners := make([]held, 0, len(g.ports))
+	for port, listener := range g.ports {
+		listeners = append(listeners, held{port: port, conns: listener.conns})
 	}
 	g.mu.Unlock()
-	closePreviewListener(listener)
+	for _, entry := range listeners {
+		port := entry.port
+		entry.conns.cutRefused(func(token string) bool { return g.stillAdmits(token, port) })
+	}
 }
 
 // Notes returns why each unserved port in the set is unserved, so the
@@ -445,11 +276,10 @@ func (g *PreviewGateway) MintURL(sessionID string, port int, path string) (strin
 		return "", errors.New(note)
 	}
 
-	ticket, err := g.tickets.mint(previewSubject(sessionID, port))
-	if err != nil {
-		return "", err
-	}
-
+	// The path is validated BEFORE anything is minted. A ticket book is
+	// bounded and evicts its oldest entry to make room, so a call that
+	// was always going to be refused would still have spent a slot and
+	// invalidated a ticket some other page was about to present.
 	target, err := url.Parse(path)
 	if err != nil || target.IsAbs() {
 		// A path that is not a path is the caller's bug, and guessing at
@@ -459,6 +289,12 @@ func (g *PreviewGateway) MintURL(sessionID string, port int, path string) (strin
 	if !strings.HasPrefix(target.Path, "/") {
 		target.Path = "/" + target.Path
 	}
+
+	ticket, err := g.tickets.mint(previewSubject(sessionID, port))
+	if err != nil {
+		return "", err
+	}
+
 	query := target.Query()
 	query.Set(previewTicketParam, ticket)
 	target.RawQuery = query.Encode()
@@ -509,6 +345,7 @@ func (g *PreviewGateway) Close() {
 		return
 	}
 	g.closed = true
+	close(g.stop)
 	listeners := make([]*previewListener, 0, len(g.ports))
 	for port, listener := range g.ports {
 		listeners = append(listeners, listener)
@@ -520,18 +357,5 @@ func (g *PreviewGateway) Close() {
 
 	for _, listener := range listeners {
 		closePreviewListener(listener)
-	}
-}
-
-func closePreviewListener(listener *previewListener) {
-	ctx, cancel := context.WithTimeout(context.Background(), previewShutdownTimeout)
-	defer cancel()
-	if err := listener.srv.Shutdown(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
-		log.Printf("transport: shut down preview listener: %v", err)
-	}
-	// Shutdown closes the listener it was serving; a Serve that never
-	// started leaves it open.
-	if err := listener.ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-		log.Printf("transport: close preview listener: %v", err)
 	}
 }

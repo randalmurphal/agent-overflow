@@ -234,6 +234,31 @@ Only LIFETIME differs.
   in-memory profile, so an ephemeral session is a real profile on a temp
   directory `Dispose` removes, and a failed removal is an ERROR — the user was
   promised nothing was kept.
+- **A browser that dies takes its profile with it.** chromedp cancels the
+  BROWSER context when the connection is lost (its `LostConnection`
+  goroutine calls the context's own cancel), so a per-profile watcher on
+  `browserCtx.Done()` is the whole detection — no polling, no process
+  reap of our own. It reports every page still bound to that profile
+  through `engineEvents.PageClosed` and disposes the profile, which is
+  what keeps a dead Chromium from leaving a registry full of pages every
+  later tool call would happily address. It exits silently when the
+  profile was disposed or has since adopted a newer browser, so an
+  ordinary Dispose reports nothing twice.
+- **`ensureBrowser` cancels what it replaces.** The alloc cancel is a
+  SEPARATE function from the browser cancel and it holds a goroutine, a
+  WaitGroup and the process reap, so overwriting either field without
+  calling the old one leaked both per relaunch. `adopt` is the one place
+  the pair is installed and it cancels the stale pair first.
+- **An ephemeral profile directory carries its owner's pid**
+  (`headless_ephemeral.go`). A process killed between `os.MkdirTemp` and
+  `Dispose` cannot clean up after itself, so the marker is what lets the
+  NEXT engine start reclaim the leak: `Start` sweeps
+  `ao-browser-ephemeral-*` under the same temp root and removes only the
+  ones whose owner pid is no longer alive. A directory with no marker is
+  never touched — it cannot be attributed, and deleting a root a live
+  instance is using would take a workspace's session with it. An empty
+  `tempRoot` sweeps nothing, which is what keeps a fixture from walking
+  the machine's real temp directory.
 - **Not implemented, deliberately** (omission is refusal on this seam):
   `paneHost` and `paneDevTools` (there is no window to present in),
   `engineUIThread` and `engineAccelerators` (no UI thread, no key events), and

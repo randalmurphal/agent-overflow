@@ -112,9 +112,10 @@ type BackgroundWorkInventory struct {
 // live-render tuning value, so the terminal rows it carries are dropped
 // and an inventory reports what is running.
 //
-// The WRITE half does not follow it: StopThreadBackgroundWork stays
-// local-only. Seeing what a host is running and killing it are separate
-// authorizations, and only the read is safe on a session alone.
+// The WRITE half is scoped separately, and higher:
+// StopThreadBackgroundWork carries threads:operate. Seeing what a host
+// is running and killing it are different authorizations, and a session
+// granted only reads gets the inventory and not the stop.
 //
 //ao:scope threads:read
 //ao:route all

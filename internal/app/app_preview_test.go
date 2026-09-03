@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
 	"testing"
 
@@ -294,5 +295,81 @@ func TestPreviewHostIsEmptyWhenNoSourceCanServe(t *testing.T) {
 	}
 	if len(app.previewSources(app.transportServer.Load())) != 2 {
 		t.Fatal("the source order is the whole address policy; both must be present")
+	}
+}
+
+// A port this process is itself listening on is never proxied. Several
+// of this backend's own loopback listeners answer a GET like a page, so
+// the scan offers them as candidates; the list must refuse them by name
+// rather than bind a preview listener that points at this app.
+func TestAPortThisBackendHoldsIsNeverShared(t *testing.T) {
+	self := os.Getpid()
+	scanner := &fakeScanner{servers: []devscan.DevServer{
+		{Port: 4173, PID: self, Allowed: true, Source: devscan.SourceAllowed, Listening: true},
+	}}
+	app := newPreviewTestApp(t, scanner)
+	app.SetTransportServer(startTestTransportServer(t))
+	t.Cleanup(func() { _ = app.closePreviewGateway() })
+
+	list, err := app.GetDevServers(context.Background())
+	if err != nil {
+		t.Fatalf("GetDevServers: %v", err)
+	}
+	if len(list.Servers) != 1 {
+		t.Fatalf("servers = %+v", list.Servers)
+	}
+	row := list.Servers[0]
+	if row.Allowed {
+		t.Fatal("this backend's own port was published as shareable")
+	}
+	if row.Note != previewSelfPortSentence(4173) {
+		t.Fatalf("note = %q, want the self-port sentence", row.Note)
+	}
+	// The mint agrees with the list, and says which port and why rather
+	// than the generic sentence for a port nobody shared.
+	_, err = app.MintPreviewURL(context.Background(), "thread-a", 4173, "/")
+	if err == nil {
+		t.Fatal("a URL was minted for a port this backend holds itself")
+	}
+	if err.Error() != previewSelfPortSentence(4173) {
+		t.Fatalf("mint error = %q, want the self-port sentence", err)
+	}
+}
+
+// Naming one by hand is refused before the set is written, so the
+// setting never holds a choice that can only come back refused.
+func TestNamingAPortThisBackendHoldsIsRefused(t *testing.T) {
+	self := os.Getpid()
+	scanner := &fakeScanner{servers: []devscan.DevServer{
+		{Port: 4173, PID: self, Source: devscan.SourceSeen, Listening: true, Scheme: "http"},
+	}}
+	app := newPreviewTestApp(t, scanner)
+
+	_, err := app.AllowPreviewPort(context.Background(), 4173)
+	if err == nil {
+		t.Fatal("this backend's own port was accepted into the preview set")
+	}
+	if err.Error() != previewSelfPortSentence(4173) {
+		t.Fatalf("error = %q, want the self-port sentence", err)
+	}
+	if stored := app.currentSettings().Network.PreviewPorts; len(stored) != 0 {
+		t.Fatalf("a refused write still persisted %v", stored)
+	}
+}
+
+// Only this process's own ports. Another process holding a port is the
+// ordinary case the whole feature exists for.
+func TestOnlyThisProcessesOwnPortsAreRefused(t *testing.T) {
+	self := os.Getpid()
+	rows := refusePreviewOnOwnPorts([]devscan.DevServer{
+		{Port: 5173, PID: self + 1, Allowed: true},
+		{Port: 4173, PID: self, Allowed: true},
+	}, self)
+
+	if !rows[0].Allowed || rows[0].Note != "" {
+		t.Fatalf("another process's port was refused: %+v", rows[0])
+	}
+	if rows[1].Allowed || rows[1].Note == "" {
+		t.Fatalf("this process's port survived: %+v", rows[1])
 	}
 }

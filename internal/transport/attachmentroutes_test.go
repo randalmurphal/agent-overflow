@@ -601,3 +601,99 @@ func TestAttachmentTransferWindowForScalesWithTheDeclaredLength(t *testing.T) {
 		t.Fatal("a 50 MiB body must get more than the floor")
 	}
 }
+
+// trickleReader delivers its bytes one at a time, pausing between them,
+// so a body takes longer to arrive than the server's write timeout. It
+// is the shape of a real upload from a phone on a slow link, which is
+// the case the transfer window exists for.
+type trickleReader struct {
+	remaining int
+	pause     time.Duration
+}
+
+func (r *trickleReader) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		return 0, io.EOF
+	}
+	time.Sleep(r.pause)
+	r.remaining--
+	p[0] = 0x89
+	return 1, nil
+}
+
+// TestAttachmentUploadAnswersABodySlowerThanTheWriteTimeout is the
+// regression guard for the half of the transfer window that used to be
+// missing. net/http arms the WRITE deadline when the request headers
+// finish reading, before the handler runs, so a route that extended only
+// its READ deadline still had the server's write timeout to answer in,
+// counted from before the first body byte arrived. A body slower than
+// that timeout therefore uploaded successfully and then failed on the
+// created-row JSON, which reads to the composer as the upload failing.
+func TestAttachmentUploadAnswersABodySlowerThanTheWriteTimeout(t *testing.T) {
+	const (
+		size        = 4
+		writeWindow = 150 * time.Millisecond
+		perByte     = 120 * time.Millisecond
+	)
+	stub := &stubTransfer{}
+	f := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.AttachmentTransfer = stub
+		// Both, because both are what the route replaces. A short read
+		// timeout alone would prove only the half that already worked.
+		cfg.HTTPReadTimeout = writeWindow
+		cfg.HTTPWriteTimeout = writeWindow
+	})
+
+	relative, err := f.srv.MintAttachmentUploadTicket("thr-1", "slow.png", "image/png", size)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	resp := put(t, f.srv.Addr(), relative, &trickleReader{remaining: size, pause: perByte}, size)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d (%s), want 200: a transfer inside the window must be answered", resp.StatusCode, body)
+	}
+	// Read the body too: the failure this guards against is the ANSWER
+	// being cut off, which a status line alone can outrun.
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read created row: %v; the answer was cut off by a deadline the transfer window should have replaced", err)
+	}
+	if !bytes.Contains(body, []byte(`"threadId":"thr-1"`)) {
+		t.Fatalf("created row = %s, want the seam's row", body)
+	}
+	if stored := stub.lastStored(t); int64(len(stored.body)) != size {
+		t.Fatalf("delivered %d bytes, declared %d", len(stored.body), size)
+	}
+}
+
+// deadlineRecorder is a ResponseWriter that only records the deadlines a
+// handler sets on it. http.NewResponseController finds both methods
+// here, so the helper's whole effect is observable without a socket.
+type deadlineRecorder struct {
+	http.ResponseWriter
+	read  time.Time
+	write time.Time
+}
+
+func (d *deadlineRecorder) SetReadDeadline(t time.Time) error  { d.read = t; return nil }
+func (d *deadlineRecorder) SetWriteDeadline(t time.Time) error { d.write = t; return nil }
+
+// TestExtendTransferDeadlineSetsBothHalves pins the property directly, so
+// a future caller cannot reintroduce a per-direction selector: every
+// route on this mux whose payload is bytes needs both, and which one a
+// given route "obviously" needs is exactly the reasoning that was wrong.
+func TestExtendTransferDeadlineSetsBothHalves(t *testing.T) {
+	recorder := &deadlineRecorder{}
+	before := time.Now()
+	extendTransferDeadline(recorder, AttachmentTransferWindow)
+
+	floor := before.Add(AttachmentTransferWindow)
+	if recorder.read.Before(floor) {
+		t.Fatalf("read deadline = %v, want at least %v", recorder.read, floor)
+	}
+	if recorder.write.Before(floor) {
+		t.Fatalf("write deadline = %v, want at least %v", recorder.write, floor)
+	}
+}

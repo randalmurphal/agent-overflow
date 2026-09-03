@@ -224,3 +224,146 @@ func TestPageCookieReadersRefuseAnotherPortOnThisHost(t *testing.T) {
 		})
 	}
 }
+
+// Every cookie this app sets lives under ReservedCookiePrefix.
+//
+// The preview proxy drops OUR cookies from the request it forwards to a
+// dev server by that prefix (stripAppCookies), so the prefix is not a
+// naming convention: it is the rule that decides whether a credential
+// crosses to bytes this app does not author. A cookie named outside it
+// would be forwarded, silently, and nothing else in the tree would
+// notice.
+//
+// Two halves, and both are needed. The constant half pins the three
+// prefixes that exist today. The structural half reads the source and
+// fails on a fourth cookie whose Name is written by hand rather than
+// derived, which is the only way the first half can be true and the rule
+// still be wrong.
+
+func TestEveryAppCookieUsesTheReservedPrefix(t *testing.T) {
+	for _, prefix := range []struct{ what, value string }{
+		{"pageCookiePrefix", pageCookiePrefix},
+		{"sessionCookiePrefix", sessionCookiePrefix},
+		{"previewCookiePrefix", previewCookiePrefix},
+	} {
+		if !strings.HasPrefix(prefix.value, ReservedCookiePrefix) {
+			t.Errorf("%s = %q, which is outside ReservedCookiePrefix %q; the preview proxy "+
+				"drops app cookies by that prefix, so a cookie named outside it is forwarded "+
+				"to the dev server",
+				prefix.what, prefix.value, ReservedCookiePrefix)
+		}
+	}
+	// A prefix that became the empty string would pass the loop above and
+	// make stripAppCookies drop every cookie the browser sent, the dev
+	// server's own included.
+	if ReservedCookiePrefix == "" {
+		t.Fatal("ReservedCookiePrefix is empty; stripAppCookies would drop the dev server's own cookies")
+	}
+}
+
+// appCookieNameExprs are the expressions a cookie's Name may be written
+// as. Each derives from ReservedCookiePrefix, which the test above pins.
+//
+//   - pageCookieName / sessionCookieName: the two named helpers.
+//   - cookieName: the preview handler's local, built once per listener
+//     from previewCookiePrefix and passed down.
+var appCookieNameExprs = map[string]bool{
+	"pageCookieName":    true,
+	"sessionCookieName": true,
+	"cookieName":        true,
+}
+
+func TestNoCookieIsNamedByHand(t *testing.T) {
+	fset := token.NewFileSet()
+	found := 0
+	var handwritten []string
+
+	for _, dir := range pageCookieReaderPackages {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read %s: %v", dir, err)
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			path := filepath.Join(dir, name)
+			file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+			if err != nil {
+				t.Fatalf("parse %s: %v", path, err)
+			}
+			ast.Inspect(file, func(node ast.Node) bool {
+				lit, ok := node.(*ast.CompositeLit)
+				if !ok || !isHTTPCookieType(lit.Type) {
+					return true
+				}
+				expr := cookieNameField(lit)
+				if expr == "" {
+					return true
+				}
+				found++
+				if !appCookieNameExprs[expr] {
+					handwritten = append(handwritten,
+						path+": http.Cookie{Name: "+expr+"}")
+				}
+				return true
+			})
+		}
+	}
+
+	if found == 0 {
+		t.Fatal("the cookie-literal matcher found no cookies at all; it has stopped matching and this gate is vacuous")
+	}
+	if len(handwritten) > 0 {
+		sort.Strings(handwritten)
+		t.Errorf("%d cookie(s) name themselves outside the reserved namespace's helpers:\n  %s\n\n"+
+			"Derive the name from ReservedCookiePrefix and add its helper to "+
+			"appCookieNameExprs. The preview proxy drops app cookies by that prefix, so a "+
+			"cookie named any other way is forwarded to the dev server with its value.",
+			len(handwritten), strings.Join(handwritten, "\n  "))
+	}
+}
+
+// isHTTPCookieType matches `http.Cookie` in a composite literal, which is
+// the only shape a cookie is built as in either package.
+func isHTTPCookieType(expr ast.Expr) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Cookie" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "http"
+}
+
+// cookieNameField returns the head identifier of the literal's Name
+// field: the function for a call, the identifier for a variable. Empty
+// when the literal sets no Name, which the zero-value reads that clear a
+// cookie do.
+func cookieNameField(lit *ast.CompositeLit) string {
+	for _, element := range lit.Elts {
+		kv, ok := element.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok || key.Name != "Name" {
+			continue
+		}
+		switch value := kv.Value.(type) {
+		case *ast.CallExpr:
+			if fun, ok := value.Fun.(*ast.Ident); ok {
+				return fun.Name
+			}
+			if fun, ok := value.Fun.(*ast.SelectorExpr); ok {
+				return fun.Sel.Name
+			}
+		case *ast.Ident:
+			return value.Name
+		}
+		// A literal, a concatenation, anything else: report it verbatim
+		// enough to be recognised, and let the gate refuse it.
+		return "<not a helper>"
+	}
+	return ""
+}

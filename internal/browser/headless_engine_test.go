@@ -123,7 +123,10 @@ func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
 func newTestHeadlessEngine(t *testing.T, binary string) *headlessEngine {
 	t.Helper()
 	engine := &headlessEngine{
-		configDir:   t.TempDir(),
+		configDir: t.TempDir(),
+		// The engine's own temp root, so an ephemeral profile lands here
+		// and Start's sweep never reads the machine's real one.
+		tempRoot:    t.TempDir(),
 		binary:      binary,
 		events:      engineEvents{},
 		logf:        func(format string, args ...any) { t.Logf(format, args...) },

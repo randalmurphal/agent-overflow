@@ -385,7 +385,7 @@ func (s *Server) handleAttachmentDownload(w http.ResponseWriter, r *http.Request
 	}
 	defer content.Content.Close()
 
-	extendTransferDeadline(w, false, AttachmentTransferWindow)
+	extendTransferDeadline(w, AttachmentTransferWindow)
 	h := w.Header()
 	WriteSecurityHeaders(h, s.csp)
 	// no-store, not no-cache: the URL that fetched these bytes carried a
@@ -432,7 +432,7 @@ func (s *Server) handleAttachmentUpload(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "size mismatch", http.StatusBadRequest)
 		return
 	}
-	extendTransferDeadline(w, true, AttachmentTransferWindowFor(upload.Size))
+	extendTransferDeadline(w, AttachmentTransferWindowFor(upload.Size))
 	upload.Body = http.MaxBytesReader(w, r.Body, upload.Size)
 
 	record, err := transfer.StoreAttachment(upload)
@@ -456,24 +456,30 @@ func (s *Server) handleAttachmentUpload(w http.ResponseWriter, r *http.Request) 
 	_, _ = w.Write(record)
 }
 
-// extendTransferDeadline replaces this request's read or write deadline
-// with the transfer window. Failing to set one is not fatal: the server's
-// own timeout still applies, which is the behavior without this call.
+// extendTransferDeadline replaces BOTH of this request's deadlines with
+// the transfer window. Failing to set one is not fatal: the server's own
+// timeout still applies, which is the behavior without this call.
+//
+// Both, and not the one the direction of travel suggests, because
+// net/http arms the WRITE deadline at Server.WriteTimeout the moment the
+// request headers finish reading, before the handler runs. So an upload
+// that only extended its read deadline still had 60s to produce the
+// created-row JSON, counted from before the first body byte arrived: the
+// slower the upload, the less of that budget was left, and a transfer
+// near the window failed on the answer rather than on the bytes. The
+// download side is the mirror of it, and the same call covers both
+// rather than leaving each route to reason about which half it needs.
 //
 // Shared with the bundle archive route (bundleroutes.go), which serves the
 // largest body on this listener and needs the same arithmetic: one window
 // for every route on this mux whose payload is bytes rather than a
 // message.
-func extendTransferDeadline(w http.ResponseWriter, read bool, window time.Duration) {
+func extendTransferDeadline(w http.ResponseWriter, window time.Duration) {
 	controller := http.NewResponseController(w)
 	deadline := time.Now().Add(window)
-	var err error
-	if read {
-		err = controller.SetReadDeadline(deadline)
-	} else {
-		err = controller.SetWriteDeadline(deadline)
-	}
-	if err != nil && !errors.Is(err, http.ErrNotSupported) {
-		log.Printf("transport: extend attachment transfer deadline: %v", err)
+	for _, set := range [...]func(time.Time) error{controller.SetReadDeadline, controller.SetWriteDeadline} {
+		if err := set(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			log.Printf("transport: extend attachment transfer deadline: %v", err)
+		}
 	}
 }

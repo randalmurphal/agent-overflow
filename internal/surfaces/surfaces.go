@@ -368,7 +368,7 @@ var Listeners = []Listener{
 		Binding:    BindLANCapable,
 		Credential: CredTransferTicket,
 		Posture:    PostureProxied,
-		Sites:      []string{"internal/transport/previewgateway.go"},
+		Sites:      []string{"internal/transport/previewlisten.go"},
 		Why: "One TLS listener per port in this machine's PREVIEW SET, " +
 			"each reverse-proxying to the dev server on the same port " +
 			"number of loopback (docs/specs/remote-access.md §7). It is " +

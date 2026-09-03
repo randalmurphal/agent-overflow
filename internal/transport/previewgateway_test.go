@@ -277,11 +277,11 @@ func TestALapsedGrantIsRefusedAndForgotten(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.AddCookie(&http.Cookie{Name: previewCookiePrefix + "5173", Value: "token"})
 
-	if !gw.admits(req, 5173, previewCookiePrefix+"5173") {
+	if _, ok := gw.admits(req, 5173, previewCookiePrefix+"5173"); !ok {
 		t.Fatal("a live grant was refused")
 	}
 	now = now.Add(2 * time.Minute)
-	if gw.admits(req, 5173, previewCookiePrefix+"5173") {
+	if _, ok := gw.admits(req, 5173, previewCookiePrefix+"5173"); ok {
 		t.Fatal("a lapsed grant was admitted")
 	}
 	if _, ok := gw.grant("token"); ok {
@@ -297,7 +297,7 @@ func TestAGrantForAnotherPortIsRefused(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.AddCookie(&http.Cookie{Name: previewCookiePrefix + "5173", Value: "token"})
-	if gw.admits(req, 5173, previewCookiePrefix+"5173") {
+	if _, ok := gw.admits(req, 5173, previewCookiePrefix+"5173"); ok {
 		t.Fatal("a grant minted on port 3000 admitted a request to port 5173")
 	}
 }
@@ -344,5 +344,31 @@ func TestPreviewLocationRewrite(t *testing.T) {
 				t.Fatalf("Location = %q, want %q", got, row.want)
 			}
 		})
+	}
+}
+
+// TestARefusedPathSpendsNoTicketSlot: the book is bounded and evicts its
+// oldest entry to make room, so minting before validating meant a run of
+// calls that could never produce a URL still invalidated the ticket a
+// person was in the middle of opening. Validation therefore runs first.
+func TestARefusedPathSpendsNoTicketSlot(t *testing.T) {
+	gw := newTestGateway(t)
+	gw.SetPorts(httpPorts(5173))
+
+	raw, err := gw.MintURL("session-1", 5173, "/")
+	if err != nil {
+		t.Fatalf("MintURL: %v", err)
+	}
+	ticket := ticketOf(t, raw)
+
+	// Enough refusals to evict the whole book, twice over.
+	for i := 0; i < previewTicketMax*2; i++ {
+		if _, err := gw.MintURL("session-1", 5173, "https://elsewhere.test/"); err == nil {
+			t.Fatal("an absolute URL is not a preview path and must be refused")
+		}
+	}
+
+	if subject, ok := gw.tickets.consume(ticket); !ok || subject != previewSubject("session-1", 5173) {
+		t.Fatalf("consume = %q/%v; a refused call must not evict a live ticket", subject, ok)
 	}
 }

@@ -472,6 +472,16 @@ this file is the seam.
   failed orders against a rate limit. The error is verbatim, names its
   stage, and is cleared by the next success — user-facing state, not a
   log line (root `AGENTS.md` principle 5).
+- **A recorded failure ends when its CAUSE does.** The two arms that
+  configure no certificate source (no domain, and a domain with neither
+  hook nor pair) call `clearDomainCertFailure` beside their clearing
+  publish. It lives at the arms and not inside `publishDomainCertificate`
+  because what makes the failure stale is the CONFIGURATION: every failure
+  path records and returns without publishing, so nothing on the publish
+  path could ever have cleared one, and a user who reacted to the error by
+  clearing the field kept reading it under a screen no longer trying to
+  serve anything. Any state whose only writer is a failure path needs an
+  owner for the moment the thing it was about stops existing.
 - **The external pair is re-read only when its bytes could have changed**,
   keyed on a `(size, modtime)` stamp. Deliberately not a filesystem watch:
   an outside tool renews monthly at most, and a watch costs a descriptor
@@ -507,6 +517,18 @@ while the feature is enabled and the node is not yet Running.
   deriving from the same authority they always did.
 - **`SetAuxiliaryHosts` is set after a listener exists and cleared when
   one goes away**, so the Host guard never admits a name nothing serves.
+  Cleared only when NOTHING is left answering: HTTPS failing while
+  cleartext keeps accepting is a degraded tailnet, not an unreachable one.
+- **An attach is identified by its own `tailnetSlot`, created before the
+  serve.** The transport reports an auxiliary listener's terminal error
+  from its own accept goroutine, which can run before `ServeAuxiliary`
+  returns the handle. Matching that report against the FIELD instead
+  found it empty, dropped the report, and left a node that is up with
+  nothing listening on it and no kick to re-attach. The slot exists first,
+  the report marks it, and `adoptAuxListener` refuses to record a listener
+  whose accept loop already ended. The general shape: when a callback can
+  fire before the call that installs it returns, the identity the callback
+  names has to be created BEFORE the call, not assigned from its result.
 - **HTTPS is attempted only when the node reports certificate domains**,
   which is the tailnet admin panel's answer and not ours to substitute
   for. No domains means cleartext over WireGuard, and the status says so
@@ -565,6 +587,23 @@ WHO the owners are, and WHEN a scan is worth doing.
   `allowed` on every row the gateway is not serving and copies the
   gateway's own note onto it. `MintPreviewURL` therefore agrees with the list by
   construction rather than by a second derivation.
+- **A port THIS process is listening on is never proxied**
+  (`refusePreviewOnOwnPorts`). Several of this backend's own loopback
+  listeners answer a GET like a page — the transport bind, the design
+  listener, pprof, the harness control plane, and one preview listener
+  per port already shared — so the scan offers them as candidates and the
+  owner can name one by hand. The scan already reports the PID holding
+  each socket, and this process knows its own, so the rule is ONE
+  comparison against `os.Getpid()` rather than a listener inventory eight
+  packages would have to keep in step. It is applied at the top of
+  `reconcilePreviewListeners`, which is what stops the port ever reaching
+  `SetPorts`, and again in `AllowPreviewPort` — before the write, because
+  a candidate that is not in the set yet has no row on the published list
+  and would otherwise be stored as a choice that can only come back
+  refused. `MintPreviewURL` reads the published list rather than scanning
+  again. The attributed half needs none of this: attribution is by
+  ancestry from a thread's own session, and this app is not a descendant
+  of one.
 - **`previewHost` asks the SOURCES, in order**, through the same
   `previewSources` list the gateway binds through
   (`app_preview_source.go`): the tailnet node's MagicDNS name first, this
@@ -651,6 +690,15 @@ resolving -> downloading -> verifying -> staging -> requested
   what the release feed calls a build; `__service-preflight` is what the binary
   calls itself, and the directory has to be named for the second or a rollback
   returns to a directory holding something else.
+  Which is why "is this the version already running" is asked TWICE, against
+  two different facts: once on the tag before anything is fetched, and once on
+  the binary's own answer before anything is staged
+  (`ErrServiceUpdateAlreadyRunning` both times). Only the second can catch a
+  release tagged something else that reports the running version, and without
+  it that download is staged straight over `versions/<running>` — a directory
+  whose name then asserts a build it does not hold, and the one a rollback
+  returns to. When a value is re-derived from a more authoritative source
+  mid-flow, every check made on the earlier one is due again.
 - **The download lands in `os.CreateTemp` under `layout.Root()`, 0700, removed
   on every exit path** including success. Under the root because
   `StageBinary` must be a local copy on one filesystem rather than a

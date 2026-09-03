@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -164,6 +165,8 @@ func (a *App) scanDevServers(ctx context.Context) ([]devscan.DevServer, error) {
 // stops claiming it is allowed. "Allowed" on a row is a promise that a
 // link will work, and a promise nothing can keep is worse than a refusal.
 func (a *App) reconcilePreviewListeners(servers []devscan.DevServer) []devscan.DevServer {
+	servers = refusePreviewOnOwnPorts(servers, os.Getpid())
+
 	gateway := a.previewGateway()
 	if gateway == nil {
 		return servers
@@ -186,6 +189,58 @@ func (a *App) reconcilePreviewListeners(servers []devscan.DevServer) []devscan.D
 		servers[i].Note = notes[servers[i].Port]
 	}
 	return servers
+}
+
+// refusePreviewOnOwnPorts takes this backend's own listeners back out of
+// the preview set, whichever way they got into it.
+//
+// This process holds several loopback ports besides the one the page
+// loaded from: the design listener, the browser and design MCP
+// endpoints, the CDP relay, the opt-in pprof server, the harness control
+// plane, and one preview listener per port already being shared. Several
+// of them answer a GET like a page, so the scan offers them as
+// candidates and the owner can name one by hand. Proxying to one would
+// point a preview listener at this app, on a port whose whole admission
+// is a preview cookie rather than a session.
+//
+// The scan already carries the answer: it reports the PID holding each
+// socket, and this process knows its own. So the rule is one comparison
+// and it covers every port above at once, with no listener inventory to
+// keep in step. The row stays on the list, refused and carrying its
+// sentence, for the reason every other unservable row does: a promise
+// nothing can keep is worse than a refusal.
+func refusePreviewOnOwnPorts(servers []devscan.DevServer, self int) []devscan.DevServer {
+	for i := range servers {
+		if servers[i].PID != self {
+			continue
+		}
+		servers[i].Allowed = false
+		servers[i].Note = previewSelfPortSentence(servers[i].Port)
+	}
+	return servers
+}
+
+// previewSelfPortSentence is the one wording for that refusal, shared by
+// the row, the hand-naming refusal and the mint, so a person who meets
+// it twice reads the same sentence.
+func previewSelfPortSentence(port int) string {
+	return fmt.Sprintf("Port %d is served by Agent Overflow itself, so it is not shared as a dev server.", port)
+}
+
+// selfHeldPreviewPort reports whether the newest published list saw this
+// port held by this process. Read from that list rather than scanned
+// for: the fold above stamps every such row, and a mint must not cost a
+// walk of the machine's socket tables.
+func (a *App) selfHeldPreviewPort(port int) bool {
+	self := os.Getpid()
+	a.preview.mu.Lock()
+	defer a.preview.mu.Unlock()
+	for _, row := range a.preview.last {
+		if row.Port == port {
+			return row.PID == self
+		}
+	}
+	return false
 }
 
 // previewTargets is the preview set as the gateway wants it: every
@@ -384,6 +439,13 @@ func (a *App) MintPreviewURL(ctx context.Context, threadID string, port int, pat
 	if gateway == nil {
 		return "", fmt.Errorf("this backend is not serving previews")
 	}
+	// A port this backend holds itself has no listener, so the gateway
+	// would refuse it anyway; what this adds is the sentence that says
+	// which port it is and why, rather than the generic one for a port
+	// nobody shared.
+	if a.selfHeldPreviewPort(port) {
+		return "", errors.New(previewSelfPortSentence(port))
+	}
 	// The caller's own session is the principal. A call with no session
 	// is the page on this machine, whose principal is the host presence
 	// itself — an empty id, which the gateway reads as exactly that.
@@ -428,6 +490,9 @@ func (a *App) GetDevServers(ctx context.Context) (devscan.DevServerList, error) 
 //ao:scope access:admin
 //ao:route selected
 func (a *App) AllowPreviewPort(ctx context.Context, port int) ([]int, error) {
+	if err := a.refuseSelfHeldPreviewPort(ctx, port); err != nil {
+		return nil, err
+	}
 	return a.setPreviewPorts(ctx, func(current []int) []int {
 		for _, existing := range current {
 			if existing == port {
@@ -436,6 +501,33 @@ func (a *App) AllowPreviewPort(ctx context.Context, port int) ([]int, error) {
 		}
 		return append(current, port)
 	})
+}
+
+// refuseSelfHeldPreviewPort answers BEFORE the set is written, because a
+// port this backend holds is one the gateway will never serve: storing
+// it would persist a standing choice that can only ever come back as a
+// row saying it cannot be kept.
+//
+// It scans, because the candidate being named is not in the set yet and
+// so has no row on the published list. The scan is the same one the
+// write does on its way out and the probe verdicts behind it are
+// memoized, so the second pass costs the socket-table read and no dials.
+// A scan that CANNOT run is not a refusal: the platform saying it cannot
+// look is the same answer that leaves the gateway with nothing to bind
+// either, and the fold in reconcilePreviewListeners still refuses the
+// row on any machine that can look.
+func (a *App) refuseSelfHeldPreviewPort(ctx context.Context, port int) error {
+	servers, err := a.scanDevServers(ctx)
+	if err != nil {
+		return nil
+	}
+	self := os.Getpid()
+	for _, row := range servers {
+		if row.Port == port && row.PID == self {
+			return errors.New(previewSelfPortSentence(port))
+		}
+	}
+	return nil
 }
 
 // DisallowPreviewPort removes a port from the hand-named preview set.

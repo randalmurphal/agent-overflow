@@ -53,6 +53,13 @@ more: an unrecognised one is a `file`. The caps differ (10 MiB image,
 Paste stays image-only (`extractClipboardImages`); drag and drop takes
 anything.
 
+An upload whose composer moved threads mid-flight DELETES its record.
+The bytes finished landing on a thread nobody is looking at any more, and
+nothing will ever reference the row — so it is discarded through the same
+fire-and-forget `discardAbandonedAttachmentRecords` an abandoned draft
+uses, rather than left as a database row and a file on disk that no
+message, no draft and no later pass knows about.
+
 A send awaits `waitForUploads()` before it snapshots `draft.attachments`
 — dropping a file and pressing Enter is one gesture, and an upload still
 in the air is not in the draft yet. Guarded on `uploading()` so the

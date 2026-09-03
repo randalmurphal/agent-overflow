@@ -146,6 +146,13 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
         opts.addAttachment(record, insertion);
         return true;
       }
+      // The composer moved on while the bytes were in flight. Nothing
+      // will ever reference this record, so it is dropped here rather
+      // than left as a row and a file on disk that no message, no draft
+      // and no later cleanup pass knows about. Same fire-and-forget
+      // policy as discardAbandonedAttachmentRecords, and for the same
+      // reason: the user has already left the surface.
+      discardAbandonedAttachmentRecords(threadId, [record.id]);
     } catch (err) {
       console.error('attachment upload failed:', err);
       addToast('error', userFacingError(err));

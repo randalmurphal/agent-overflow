@@ -536,3 +536,207 @@ func TestAPortThatChangesSchemeIsRebound(t *testing.T) {
 		t.Fatalf("binds = %v, want two: the first bind and the rebuild", source.binds)
 	}
 }
+
+// NOT ONE of this app's cookies reaches the dev server.
+//
+// A browser scopes cookies by HOST and ignores the port, so a preview
+// listener sharing its host with the SPA gets the page cookie, the
+// session cookie and every other preview port's cookie attached to every
+// request. Each is a credential the main listener honours, and the dev
+// server's bytes are agent-authored, so the whole reserved namespace has
+// to stop here rather than this port's own name.
+//
+// Asserted by VALUE as well as by name: a rule that dropped the name and
+// left the value somewhere else in the request would pass a name check.
+func TestNoAppCookieReachesTheDevServer(t *testing.T) {
+	rig := newPreviewRig(t, helloHandler)
+	ours := rig.open(t, "session-1", "/")
+
+	req, err := http.NewRequest(http.MethodGet, rig.url("/"), nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	// This port's own grant, plus the three a browser attaches because
+	// they belong to the same host on other ports.
+	req.AddCookie(ours)
+	req.AddCookie(&http.Cookie{Name: pageCookieName("backend.test:7777"), Value: "page-credential"})
+	req.AddCookie(&http.Cookie{Name: sessionCookieName("backend.test:7777"), Value: "session-credential"})
+	req.AddCookie(&http.Cookie{Name: previewCookiePrefix + "9999", Value: "another-ports-grant"})
+	req.AddCookie(&http.Cookie{Name: "the_dev_servers_own", Value: "keep-me"})
+
+	resp, err := noRedirectClient().Do(req)
+	if err != nil {
+		t.Fatalf("proxied get: %v", err)
+	}
+	if _, err := readAllAndClose(resp); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	seen := rig.seen.read().cookies
+	if strings.Contains(seen, ReservedCookiePrefix) {
+		t.Errorf("a cookie in the reserved namespace reached the dev server: %q", seen)
+	}
+	for _, value := range []string{
+		ours.Value, "page-credential", "session-credential", "another-ports-grant",
+	} {
+		if strings.Contains(seen, value) {
+			t.Errorf("a credential VALUE reached the dev server in %q", seen)
+		}
+	}
+	if !strings.Contains(seen, "keep-me") {
+		t.Errorf("cookies = %q; the dev server's own cookie was dropped with ours", seen)
+	}
+}
+
+// heldSocketRig starts a dev server that accepts an HMR upgrade and then
+// holds it open, plus a client dialled through the preview gateway. It is
+// the shape both of the tests below need: the connection a preview really
+// keeps, which makes no further requests and so is never re-checked by
+// anything that runs per request.
+type heldSocketRig struct {
+	*previewRig
+	client   *websocket.Conn
+	upgraded chan struct{}
+}
+
+func newHeldSocketRig(t *testing.T, sessionID string) *heldSocketRig {
+	t.Helper()
+	upgraded := make(chan struct{})
+	serverCtx, cancelServer := context.WithCancel(context.Background())
+
+	rig := newPreviewRig(t, func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			Subprotocols:       []string{"vite-hmr"},
+			InsecureSkipVerify: true,
+		})
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		close(upgraded)
+		// Hold it open and echo, so a test can ask whether the socket
+		// still round-trips. A real HMR socket is idle almost all the
+		// time, which is exactly why nothing per-request can end it.
+		for {
+			kind, payload, readErr := conn.Read(serverCtx)
+			if readErr != nil {
+				return
+			}
+			if writeErr := conn.Write(serverCtx, kind, payload); writeErr != nil {
+				return
+			}
+		}
+	})
+	// Registered AFTER the rig, so it runs BEFORE the upstream's own
+	// close: httptest waits for outstanding requests, and this one is
+	// outstanding for as long as the socket lives.
+	t.Cleanup(cancelServer)
+
+	cookie := rig.open(t, sessionID, "/")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	header := http.Header{}
+	header.Set("Cookie", cookie.Name+"="+cookie.Value)
+	client, _, err := websocket.Dial(ctx, "ws://"+rig.addr+"/", &websocket.DialOptions{
+		HTTPHeader:   header,
+		Subprotocols: []string{"vite-hmr"},
+	})
+	if err != nil {
+		t.Fatalf("upgrade through the proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = client.CloseNow() })
+
+	select {
+	case <-upgraded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the upstream never saw the upgrade")
+	}
+	return &heldSocketRig{previewRig: rig, client: client, upgraded: upgraded}
+}
+
+// alive reports whether the held socket still round-trips, by asking the
+// upstream to echo. A round trip rather than a ping, because
+// coder/websocket answers a pong only from inside a concurrent Reader and
+// there is none here.
+func (r *heldSocketRig) alive() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := r.client.Write(ctx, websocket.MessageText, []byte("still there?")); err != nil {
+		return false
+	}
+	_, _, err := r.client.Read(ctx)
+	return err == nil
+}
+
+// severed waits for the held socket to die. A read that merely ran out of
+// time is NOT severed: that is the socket being idle, which is what an
+// HMR socket does all day.
+func (r *heldSocketRig) severed(t *testing.T, within time.Duration) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), within)
+	defer cancel()
+	_, _, err := r.client.Read(ctx)
+	return err != nil && ctx.Err() == nil
+}
+
+// TestRetiringAPortCutsItsUpgradedSocket: an upgraded connection is the
+// one thing neither Server.Shutdown nor the listener's Close reaches.
+// net/http stops tracking a connection the moment a handler takes it
+// over from the server, so Shutdown neither waits for it nor ends it,
+// and the listener Close only stops new accepts. A port that stopped being shared therefore kept
+// streaming to whoever already had it open.
+func TestRetiringAPortCutsItsUpgradedSocket(t *testing.T) {
+	rig := newHeldSocketRig(t, "session-1")
+
+	rig.gw.SetPorts(nil)
+	if !rig.severed(t, 5*time.Second) {
+		t.Fatal("the socket survived the port it was served from being retired")
+	}
+}
+
+// TestARevokedPrincipalLosesAnOpenSocketOnTheSweep: the per-request check
+// is what ends a revoked device's previews, and an upgraded socket makes
+// no further requests. The sweep is the clock that stands in for them.
+func TestARevokedPrincipalLosesAnOpenSocketOnTheSweep(t *testing.T) {
+	rig := newHeldSocketRig(t, "session-1")
+
+	// Still live: a sweep must not cut a principal that is fine.
+	rig.gw.cutRefusedConns()
+	if !rig.alive() {
+		t.Fatal("the sweep cut a socket whose principal is still live")
+	}
+
+	rig.live = func(string) bool { return false }
+	rig.gw.cutRefusedConns()
+	if !rig.severed(t, 5*time.Second) {
+		t.Fatal("a revoked principal kept an open preview socket")
+	}
+}
+
+// TestTheHostPresenceKeepsItsSocketAcrossASweep: an empty session id is
+// the page on this machine, which has no row to re-check and lives as
+// long as the process. The sweep must not read that as refused.
+func TestTheHostPresenceKeepsItsSocketAcrossASweep(t *testing.T) {
+	rig := newHeldSocketRig(t, "")
+	rig.live = func(string) bool { return false }
+
+	rig.gw.cutRefusedConns()
+	if !rig.alive() {
+		t.Fatal("the sweep cut the host presence's own preview")
+	}
+}
+
+// TestALapsedGrantLosesAnOpenSocketOnTheSweep: the grant behind a preview
+// cookie has a TTL, and a request that arrives after it is refused. A held
+// socket makes no such request, so the sweep asks the same question of it
+// the next request would have, with the clock the gateway reads.
+func TestALapsedGrantLosesAnOpenSocketOnTheSweep(t *testing.T) {
+	rig := newHeldSocketRig(t, "session-1")
+
+	rig.gw.now = func() time.Time { return time.Now().Add(previewGrantTTL + time.Minute) }
+	rig.gw.cutRefusedConns()
+	if !rig.severed(t, 5*time.Second) {
+		t.Fatal("a lapsed grant kept an open preview socket")
+	}
+}

@@ -216,8 +216,8 @@ func TestATreeWithAPathAShellCannotWriteIsRefused(t *testing.T) {
 	// consumer. The producer refuses to publish it rather than leaving
 	// the plugin to reject every stage forever.
 	tree := fstest.MapFS{
-		"index.html":       &fstest.MapFile{Data: []byte("<html></html>")},
-		`assets\app.js`:    &fstest.MapFile{Data: []byte("1")},
+		"index.html":    &fstest.MapFile{Data: []byte("<html></html>")},
+		`assets\app.js`: &fstest.MapFile{Data: []byte("1")},
 	}
 	if _, err := New(tree, "dev").Manifest(); err == nil {
 		t.Fatal("Manifest published a path a shell may not write")

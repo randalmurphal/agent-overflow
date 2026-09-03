@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -76,6 +77,12 @@ type headlessEngine struct {
 	events engineEvents
 	logf   func(string, ...any)
 
+	// tempRoot is where an ephemeral profile's directory is created and
+	// the only directory Start sweeps. Empty in a unit test's engine,
+	// which is what keeps a `go test` run off the machine's real temp
+	// directory (headless_ephemeral.go).
+	tempRoot string
+
 	mu       sync.Mutex
 	started  bool
 	profiles map[*headlessProfile]struct{}
@@ -95,6 +102,7 @@ func newHeadlessChromiumEngine(configDir string, opts HeadlessChromiumOptions, e
 	}
 	return &headlessEngine{
 		configDir:   configDir,
+		tempRoot:    os.TempDir(),
 		binary:      binary,
 		events:      events,
 		logf:        log.Printf,
@@ -114,6 +122,11 @@ func (e *headlessEngine) Start(context.Context) error {
 	e.mu.Lock()
 	e.started = true
 	e.mu.Unlock()
+	// A backend that was killed or lost power ran no Dispose, so its
+	// ephemeral profile, a full Chromium cookie jar, is still on disk.
+	// Start is where it is reclaimed, and the owner marker is what keeps
+	// the sweep off a directory another live backend is using.
+	sweepEphemeralRoots(e.tempRoot, ownerAlive, e.logf)
 	return nil
 }
 
@@ -187,11 +200,17 @@ func (e *headlessEngine) NewProfile(_ context.Context, opts profileOptions) (eng
 		// ephemeral session, not a suppressed write). Chromium has no
 		// in-memory profile mode, so the directory IS the promise, and
 		// Dispose removing it is what keeps it.
-		root, err := os.MkdirTemp("", "ao-browser-ephemeral-")
+		root, err := os.MkdirTemp(e.tempRoot, ephemeralDirPrefix)
 		if err != nil {
 			return nil, fmt.Errorf("browser: create ephemeral site data directory: %w", err)
 		}
 		p.ephemeralRoot = root
+		// Stamped before anything is written into it, so a crash between
+		// here and the first page still leaves a root a later start can
+		// attribute and reclaim.
+		if err := writeEphemeralOwner(root); err != nil {
+			e.logf("browser: mark the ephemeral profile root %s: %v", root, err)
+		}
 		p.userDataDir = filepath.Join(root, "chromium")
 	}
 	if err := os.MkdirAll(p.userDataDir, 0o700); err != nil {
@@ -238,6 +257,25 @@ func (e *headlessEngine) profileForPage(handle string) (*headlessProfile, bool) 
 	defer e.mu.Unlock()
 	p, ok := e.pageProfile[handle]
 	return p, ok
+}
+
+// pagesOf TAKES every page bound to a profile, unbinding each as it goes.
+// Taking rather than reading, because the caller is about to report them
+// closed and a second caller must not report the same page a second time.
+func (e *headlessEngine) pagesOf(p *headlessProfile) []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var handles []string
+	for handle, owner := range e.pageProfile {
+		if owner == p {
+			handles = append(handles, handle)
+			delete(e.pageProfile, handle)
+		}
+	}
+	// Sorted, so a profile that lost several pages reports them in one
+	// order rather than in map order.
+	sort.Strings(handles)
+	return handles
 }
 
 func (e *headlessEngine) forgetProfile(p *headlessProfile) {

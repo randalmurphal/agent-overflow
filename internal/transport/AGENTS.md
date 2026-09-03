@@ -141,6 +141,48 @@ credential or scope gate applies to it, because none of those bytes are ours.
   it for an opaque cookie and 302s to the same address without it. Every later
   request re-checks the principal through `Config.SessionLive` — nothing here
   may cache that answer, exactly as on the WebSocket path.
+- **The outbound Cookie header is stripped by NAMESPACE, not by name.**
+  Every cookie this app sets is `ReservedCookiePrefix` + something
+  (`credential.go`), and the three prefixes — page, session, preview —
+  are derived from that one constant, so `stripAppCookies` drops any
+  cookie whose name starts with it and a fourth cookie added later is
+  covered before it exists. Name-by-name stripping is the version of
+  this that works until somebody adds a cookie, and what leaks is a
+  credential to an application this process did not write.
+  `devgateway_contract_test.go` drives all three, including another
+  port's preview cookie, which the browser attaches because a host is
+  shared and a port is not.
+- **A retired listener CUTS the sockets it handed out**
+  (`previewconns.go`). net/http STOPS TRACKING a connection the moment
+  a handler takes it over from the server, which is what an UPGRADE
+  does, so `Server.Shutdown` neither waits for an upgraded HMR
+  socket nor severs one, and `Listener.Close` only stops new accepts: a
+  port removed from the set left every socket it had given out
+  streaming, which is the one path where "stop sharing" did not stop
+  anything. `ConnContext` is the only place net/http offers the accepted
+  connection before the handler runs, so each listener holds its live
+  set there and the proxy handler holds one entry for the whole life of
+  the request — which for an upgrade is the whole life of the socket,
+  because `httputil.ReverseProxy` does not return until the copy in both
+  directions is done. A `*tls.Conn` is cut through `NetConn()`: closing
+  the TLS wrapper writes close_notify first and takes the write lock a
+  stream in flight is holding.
+- **A held socket is re-asked the question it was admitted on, on a
+  clock**, not on its next request, because an upgraded socket makes no
+  further requests (`previewLivenessInterval`, 10s). Each connection
+  carries the TOKEN of the grant that admitted it, not the principal,
+  and the sweep runs the same `stillAdmits` the proxy handler runs per
+  request: grant present, for this port, not lapsed, principal live. So
+  a grant that reaches its 12h TTL under an open HMR socket ends the
+  socket the same way it would have ended the next request. Coarse on
+  purpose: the check exists so a revoked device stops receiving within a
+  human's idea of "at once", and every tick costs one session-store read
+  per open preview. The HOST presence has no session row and is never
+  cut for one; its grants die with the process.
+- **The path is validated BEFORE the ticket is minted.** A ticket book
+  is bounded and evicts its oldest entry to make room, so minting first
+  meant a call that was always going to be refused still spent a slot
+  and invalidated a ticket another page was about to present.
 - **TLS on every path, no exception.** The cookie is `Secure` and a browser
   will not store one from a cleartext origin that is not localhost. A tailnet
   with HTTPS turned off therefore has no preview address, which the list says
@@ -996,7 +1038,14 @@ would be a caller describing bytes it is in the middle of sending.
 A mismatched `Content-Length` is only an early exit.
 
 **Both routes replace the server's 60s timeouts** with
-`AttachmentTransferWindow` (5 minutes) per request. The 60s default is right for
+`AttachmentTransferWindow` (5 minutes) per request, on BOTH halves.
+`extendTransferDeadline` sets the read and the write deadline together,
+whatever the direction: net/http arms the write deadline at
+`now + WriteTimeout` when the request HEADERS finish reading, before the
+handler runs, so a slow upload that only extended its read deadline was
+killed mid-body by a write deadline armed before its first byte arrived.
+The two are independent on `http.NewResponseController` and a direction
+that does not need one pays nothing for having it. The 60s default is right for
 an RPC and wrong for bytes — 10 MiB inside it demands a sustained ~170 KB/s —
 and the same bytes previously rode a socket net/http had already released, so
 leaving the defaults would have been a NEW way for a large attachment to fail.
@@ -1424,6 +1473,19 @@ marker's seq in both directions (`wsClient.handleEventEntry`). Both ends, the
 retention interactions, and the client-side forward-skip detection are in
 [docs/architecture/transport.md](../../docs/architecture/transport.md).
 
+**A channel with NO RING answers a non-zero cursor with a marker at seq 0,
+and silence is not an option there.** Rings are created lazily at the first
+`Emit`, so "no ring" after a backend restart means the cursor belongs to the
+previous process's sequence space — and every frame the new process is about
+to send would be dropped by the client's dedup check until the new sequence
+overtook a cursor that could be arbitrarily far ahead. `Replay` skipped such a
+channel entirely, which is silence that reads as "nothing was missed" and
+costs the channel for the rest of the session. Seq 0 is below every seq this
+bus can mint (`Emit` pre-increments), so the marker resets the cursor and the
+next live frame passes. A ZERO cursor still gets nothing: it asks for nothing.
+The general rule for anything answering a replay: a cursor this process cannot
+place is answered with a reset, never with silence.
+
 ## Code generation
 
 `methodgen/` emits TWO files from ONE scan: `methods_gen.go`, the
@@ -1601,7 +1663,15 @@ closes it, and `CloseSession` is that something.
   whether or not the upgrade then succeeds; that is what single use means. The
   ticket NAMES a session, it does not authorize one: the subject is re-checked
   through `Config.SessionLive` before it is believed, so a ticket for a session
-  revoked during the seconds it was in flight cannot resurrect it.
+  revoked during the seconds it was in flight cannot resurrect it — **and
+  through `Config.SessionAdmitsPeer`, which is the BINDING-CLASS half every
+  other presentation path gets for free inside `SessionForRequest`.** The
+  ticket arm is the one path that does not go through that hook, so it was the
+  one place a `loopback-only` session admitted a peer that is not on this
+  machine: a ticket is minted by a request that presented the credential and
+  spent by whoever holds the URL, and the mint says nothing about where. The
+  rule for any FUTURE arm that resolves a session by id rather than from the
+  request: it owes both questions, because neither is implied by the other.
 - **`Config.SessionLive` answers a CONJUNCTION**, and this package does not
   and cannot see the second half of it: a session is live only while its own
   row and its DEVICE's row are both unrevoked
@@ -1625,6 +1695,16 @@ closes it, and `CloseSession` is that something.
   indistinguishable from a server shutdown — and that is exactly when somebody
   is checking whether a revocation took effect. A new cause is a constant and a
   case, never a fourth atomic three call sites have to remember to read.
+- **The attach is followed by ONE more liveness re-check, and that ordering is
+  the mechanism.** The upgrade read this session's liveness before the socket
+  joined the registry, so a revocation landing in between iterated a registry
+  this connection was not in yet: `CloseSession` returned having closed every
+  socket except the one that was still arriving. `runConnHandler` therefore
+  asks `sessionLive` once more immediately AFTER `sessionConns.attach`
+  succeeds, and closes with `closeCauseSessionEnded` when the answer is no.
+  Re-checking before the attach narrows the window by an instruction and
+  closes nothing; without it the socket streamed under a dead credential until
+  `watchSession` next ticked, which for the local page is a minute.
 - Registration rides `ConnState.RegisterCleanup`, the same LIFO pass every
   other per-connection resource uses. Do NOT add a parallel teardown: a second
   path could disagree with the first about when a connection ended, and the
