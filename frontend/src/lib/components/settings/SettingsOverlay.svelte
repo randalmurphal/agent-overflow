@@ -10,7 +10,7 @@
 
   import OverlayShell from '../primitives/OverlayShell.svelte';
   import SettingsView from './SettingsView.svelte';
-  import type { SettingsSection } from './sections';
+  import { DEFAULT_SETTINGS_SECTION, type SettingsSection } from './sections';
 
   interface Props {
     open: boolean;
@@ -18,7 +18,7 @@
     onClose: () => void;
   }
 
-  let { open, initialSection = 'general', onClose }: Props = $props();
+  let { open, initialSection = DEFAULT_SETTINGS_SECTION, onClose }: Props = $props();
 </script>
 
 <OverlayShell

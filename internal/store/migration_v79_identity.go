@@ -1,6 +1,6 @@
 package store
 
-// identityCoreV75SQL creates the identity family: the accounts, client
+// identityCoreV79SQL creates the identity family: the accounts, client
 // instances, and credentials a backend that serves more than one screen
 // has to name (docs/specs/remote-access.md §3).
 //
@@ -44,7 +44,7 @@ package store
 //     kind would cost a table rebuild for a log column. The closed Go
 //     set (internal/identity) is the gate. `outcome` keeps its CHECK
 //     because allowed/refused is the whole space and always will be.
-const identityCoreV75SQL = `
+const identityCoreV79SQL = `
 CREATE TABLE users (
     id           TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,

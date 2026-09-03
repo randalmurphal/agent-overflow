@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"math"
 	"time"
 
 	"agent-overflow/internal/itemwire"
@@ -13,20 +12,17 @@ import (
 // Windowed history constants. `sliceAroundDefaultItems` and
 // `paginationItems` size the active-pane loads so SubagentGroup collapse
 // (a heavy subagent turn rolls up to one card) doesn't leave the rendered
-// timeline visually truncated. `initialTurnWindow` is kept for the legacy
-// ListRecentThreadItems RPC, while `maxWindowItems` is the shared DoS cap
-// for the item-window bindings (the composer history-recall read carries
-// its own row cap below).
+// timeline visually truncated. `maxWindowItems` is the shared DoS cap for
+// the item-window bindings (the composer history-recall read carries its
+// own row cap below).
 const (
-	initialTurnWindow = 50
-	maxWindowItems    = 2000
+	maxWindowItems = 2000
 
 	// paginationItems is the default item budget for an explicit
-	// "load older" page. The backend walks turns DESC accumulating
-	// item counts (excluding plan_update notifications) until
-	// cumulative ≥ this budget, then returns that turn's items plus
-	// every newer one strictly below the caller's floor. One click =
-	// ~this many items prepended, regardless of per-turn density.
+	// "load older" page: the cursor pagers select this many visible
+	// top-level rows strictly outside the caller's current window. One
+	// click = ~this many items prepended, regardless of per-turn
+	// density.
 	paginationItems = 200
 
 	// sliceAroundDefaultItems is the target size for the slice loaded
@@ -44,42 +40,6 @@ const (
 	// its own time-windowed state.
 	backgroundTaskRetentionMillis = 2000
 )
-
-// ListRecentThreadItems loads a broad recent tail window. Active chat panes
-// use ListThreadSliceAround for bounded switch/refresh loads; this method is
-// retained for legacy callers and any future full-tail refresh surfaces.
-//
-//ao:scope threads:read
-func (a *App) ListRecentThreadItems(threadID string, turnLimit int, inlinePreviews bool) (store.PagedItems, error) {
-	if turnLimit <= 0 {
-		turnLimit = initialTurnWindow
-	}
-	// 500: floor on accumulated item count so an unusually sparse tail
-	// (lots of empty turns, one-line plan_update bursts) still loads a
-	// useful viewport.
-	floor, _, err := a.store.PickInitialFloorTurn(threadID, turnLimit, 500, maxWindowItems)
-	if err != nil {
-		return store.PagedItems{}, fmt.Errorf("list recent thread items: %w", err)
-	}
-	if floor < 0 {
-		// Empty thread — no items, no turns.
-		return store.PagedItems{
-			Items:           []store.Item{},
-			OldestCursor:    store.TimelineCursor{TurnIndex: -1, ItemIndex: -1},
-			NewestCursor:    store.TimelineCursor{TurnIndex: -1, ItemIndex: -1},
-			OldestTurnIndex: -1,
-			NewestTurnIndex: -1,
-			HasMore:         false,
-			HasMoreOlder:    false,
-			HasMoreNewer:    false,
-		}, nil
-	}
-	paged, err := a.store.ListRecentItems(threadID, floor)
-	if err != nil {
-		return store.PagedItems{}, fmt.Errorf("list recent thread items: %w", err)
-	}
-	return projectPage(paged, inlinePreviews, keepNewest), nil
-}
 
 // ListThreadSliceAround loads the bounded active-pane window around an anchor.
 // Roughly `targetItemCount` items are returned (defaulting to
@@ -112,64 +72,6 @@ func clampSliceItemBudget(targetItemCount int) int {
 		return maxWindowItems
 	}
 	return targetItemCount
-}
-
-// ListItemsBeforeTurn is the legacy turn-floor pager. Active panes use
-// ListItemsBeforeCursor so long single turns remain item-bounded. Keep this
-// public compatibility surface item-bounded too: the synthetic cursor points
-// below every possible index in beforeTurnIndex — head-healed prompts sit at
-// NEGATIVE indexes, so index 0 is not the start of a turn — keeping the load
-// strictly below that turn with a hard primary-row budget (mirror of
-// ListItemsAfterTurn's MaxInt ceiling).
-//
-//ao:scope threads:read
-func (a *App) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget int, inlinePreviews bool) (store.PagedItems, error) {
-	if itemBudget <= 0 {
-		itemBudget = paginationItems
-	}
-	if itemBudget > maxWindowItems {
-		itemBudget = maxWindowItems
-	}
-	paged, err := a.store.ListItemsBeforeCursor(
-		threadID,
-		store.TimelineCursor{TurnIndex: beforeTurnIndex, ItemIndex: math.MinInt},
-		itemBudget,
-	)
-	if err != nil {
-		return store.PagedItems{}, fmt.Errorf("list items before turn: %w", err)
-	}
-	return projectPage(paged, inlinePreviews, keepNewest), nil
-}
-
-// ListItemsAfterTurn is the legacy turn-ceiling pager. Active panes use
-// ListItemsAfterCursor so long single turns remain item-bounded. The synthetic
-// cursor points at the end of afterTurnIndex, so rows strictly above that turn
-// are loaded with a hard primary-row budget.
-//
-//ao:scope threads:read
-func (a *App) ListItemsAfterTurn(threadID string, afterTurnIndex, itemBudget int, inlinePreviews bool) (store.PagedItems, error) {
-	if itemBudget <= 0 {
-		itemBudget = paginationItems
-	}
-	if itemBudget > maxWindowItems {
-		itemBudget = maxWindowItems
-	}
-	if afterTurnIndex < 0 {
-		paged, err := a.store.ListItemsAfterTurn(threadID, afterTurnIndex, itemBudget)
-		if err != nil {
-			return store.PagedItems{}, fmt.Errorf("list items after turn: %w", err)
-		}
-		return projectPage(paged, inlinePreviews, keepOldest), nil
-	}
-	paged, err := a.store.ListItemsAfterCursor(
-		threadID,
-		store.TimelineCursor{TurnIndex: afterTurnIndex, ItemIndex: math.MaxInt},
-		itemBudget,
-	)
-	if err != nil {
-		return store.PagedItems{}, fmt.Errorf("list items after turn: %w", err)
-	}
-	return projectPage(paged, inlinePreviews, keepOldest), nil
 }
 
 // ListItemsBeforeCursor loads older items on demand, strictly before the

@@ -40,6 +40,16 @@ export {
   UpdateThreadBranch,
   UpdateThreadWorkspace,
 
+  // Thread groups (sidebar grouping rows; docs/specs/sidebar-thread-groups.md)
+  ListThreadGroups,
+  CreateThreadGroup,
+  RenameThreadGroup,
+  DeleteThreadGroup,
+  PinThreadGroup,
+  UnpinThreadGroup,
+  SetThreadGroupPinGroup,
+  SetThreadGroup,
+
   // Session management
   StartSession,
   AutoResumeThread,
@@ -162,7 +172,7 @@ export {
   // the feature is off.
   ForgetTailnetNode,
 
-  // Device access (Settings → Network → Devices): the paired-device
+  // Device access (Settings → Remote access → Devices): the paired-device
   // list, the pairing lifecycle, and revocation. Every one needs
   // `access:admin`; MintDevicePairing also needs a host-presence proof,
   // so a link can only be created from the backend's own screen.
@@ -254,35 +264,26 @@ export {
   // Git operations
   GenerateCommitMessage,
   GetGitStatus,
-  GetGitStatusFastForProject,
   GitStatusSubscribe,
   GitStatusUnsubscribe,
   GitListBranches,
-  GitListBranchesForProject,
   GitListWorktrees,
-  GitListWorktreesForProject,
   GitCommit,
   GitPush,
   GitPull,
   GitCheckout,
-  GitCheckoutForProject,
-  GitCreateBranch,
   GitCreateBranchFrom,
   GitCreatePR,
   GitCreateWorktree,
   GitMaybeFetchRemotes,
-  GitMaybeFetchRemotesForProject,
   GitListBranchPruneCandidates,
   GitPruneBranches,
   GitSyncBranch,
-  GitSyncBranchForProject,
   GitRemoveWorktree,
   GitWorktreeStatus,
-  GitWorktreeStatusForProject,
   PrepareThreadWorktree,
   AttachThreadWorktree,
   RemoveOtherWorktree,
-  RemoveOtherWorktreeForProject,
 
   // Terminal operations
   CloseTerminal,
@@ -337,7 +338,7 @@ export {
   ClearDraft,
   DeleteEmptyDraftThread,
   SearchWorkspaceFiles,
-  WriteThreadWorkspaceFile,
+  WriteWorkspaceFile,
   ListChatBarFavorites,
   SetChatBarFavorite,
 
@@ -364,6 +365,7 @@ export {
   ListRecentCommits,
   GetCommitDiff,
   GetDiffContextLines,
+  GetEditDiffContextLines,
   VerifyEditDiffs,
   ListThreadEditDiffs,
   GetTurnEditsDiff,
@@ -374,6 +376,7 @@ export {
   HighlightCode,
   HighlightPatch,
   HighlightPatchWithContext,
+  HighlightEditPatchWithContext,
 
   // Thread runtime mode (three-tier approval axis)
   GetThreadRuntimeMode,
@@ -396,14 +399,11 @@ export {
   ListRecentTurns,
 
   // Windowed history + thread-wide aggregates. See /app_paging.go.
-  // Active panes use bounded slice/cursor pagers; broad recent and
-  // turn-based pagers remain available for legacy/full-tail surfaces.
-  ListRecentThreadItems,
+  // Active panes load a bounded slice and page by item-coordinate
+  // cursor; there is no turn-based pager.
   ListThreadSliceAround,
   ListItemsBeforeCursor,
-  ListItemsBeforeTurn,
   ListItemsAfterCursor,
-  ListItemsAfterTurn,
   ListSubagentDescendants,
   // Recovery route out of the wire projection: returns the complete
   // stored `meta` / `payloadMeta` / `payloadPreviewSpans` for one item,

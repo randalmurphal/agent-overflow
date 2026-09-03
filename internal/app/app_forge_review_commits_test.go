@@ -11,10 +11,9 @@ import (
 )
 
 // prCloneFixture builds an "origin" repo carrying refs/pull/5/head with
-// two commits beyond main, clones it, and registers a thread whose
-// workspace is the clone — the shape ListPRCommits/GetPRCommitDiff
-// resolve through localCloneWorkspace.
-func prCloneFixture(t *testing.T, app *App) (threadID string, prSHAs []string) {
+// two commits beyond main, clones it, and registers the clone as a project —
+// the shape ListPRCommits/GetPRCommitDiff resolve through localCloneWorkspace.
+func prCloneFixture(t *testing.T, app *App) (ref WorkspaceRef, clone string, prSHAs []string) {
 	t.Helper()
 
 	origin := testutil.InitGitRepo(t)
@@ -35,15 +34,10 @@ func prCloneFixture(t *testing.T, app *App) (threadID string, prSHAs []string) {
 	testutil.RunGit(t, origin, "update-ref", "refs/pull/5/head", prSHAs[0])
 	testutil.RunGit(t, origin, "checkout", "main")
 
-	clone := filepath.Join(t.TempDir(), "clone")
+	clone = filepath.Join(t.TempDir(), "clone")
 	testutil.RunGit(t, origin, "clone", origin, clone)
 
-	thread := testThread("thread-pr-commits")
-	thread.WorkspacePath = clone
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-	return thread.ID, prSHAs
+	return testWorkspaceRef(t, app, clone), clone, prSHAs
 }
 
 func prRef() gitops.PRReference {
@@ -52,9 +46,9 @@ func prRef() gitops.PRReference {
 
 func TestListPRCommitsFromLocalClone(t *testing.T) {
 	app := newTestAppWithStore(t)
-	threadID, prSHAs := prCloneFixture(t, app)
+	ref, _, prSHAs := prCloneFixture(t, app)
 
-	commits, err := app.ListPRCommits(threadID, prRef(), "main", "")
+	commits, err := app.ListPRCommits(ref, prRef(), "main", "")
 	if err != nil {
 		t.Fatalf("ListPRCommits() error = %v", err)
 	}
@@ -71,13 +65,9 @@ func TestListPRCommitsFromLocalClone(t *testing.T) {
 
 func TestListPRCommitsWithoutCloneReturnsEmpty(t *testing.T) {
 	app := newTestAppWithStore(t)
-	thread := testThread("thread-pr-no-clone")
-	thread.WorkspacePath = t.TempDir() // not a git repo
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
+	noClone := testWorkspaceRef(t, app, t.TempDir()) // not a git repo
 
-	commits, err := app.ListPRCommits(thread.ID, prRef(), "main", "")
+	commits, err := app.ListPRCommits(noClone, prRef(), "main", "")
 	if err != nil {
 		t.Fatalf("ListPRCommits() error = %v", err)
 	}
@@ -88,16 +78,12 @@ func TestListPRCommitsWithoutCloneReturnsEmpty(t *testing.T) {
 
 func TestListPRCommitsWithKnownHeadSkipsFetch(t *testing.T) {
 	app := newTestAppWithStore(t)
-	threadID, prSHAs := prCloneFixture(t, app)
-	thread, err := app.store.GetThread(threadID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
+	ref, clone, prSHAs := prCloneFixture(t, app)
 	// Break the remote: any fetch now fails, so a passing listing proves
 	// the known-head fast path skipped the network entirely.
-	testutil.RunGit(t, thread.WorkspacePath, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone"))
+	testutil.RunGit(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone"))
 
-	commits, err := app.ListPRCommits(threadID, prRef(), "main", prSHAs[0])
+	commits, err := app.ListPRCommits(ref, prRef(), "main", prSHAs[0])
 	if err != nil {
 		t.Fatalf("ListPRCommits() with known head error = %v", err)
 	}
@@ -107,7 +93,7 @@ func TestListPRCommitsWithKnownHeadSkipsFetch(t *testing.T) {
 
 	// GetPRCommitDiff takes the same no-fetch fast path when the commit
 	// is already local.
-	patch, err := app.GetPRCommitDiff(threadID, prRef(), prSHAs[0], false)
+	patch, err := app.GetPRCommitDiff(ref, prRef(), prSHAs[0], false)
 	if err != nil {
 		t.Fatalf("GetPRCommitDiff() with local commit error = %v", err)
 	}
@@ -118,18 +104,18 @@ func TestListPRCommitsWithKnownHeadSkipsFetch(t *testing.T) {
 
 func TestListPRCommitsRequiresBaseRef(t *testing.T) {
 	app := newTestAppWithStore(t)
-	threadID, _ := prCloneFixture(t, app)
+	ref, _, _ := prCloneFixture(t, app)
 
-	if _, err := app.ListPRCommits(threadID, prRef(), "  ", ""); err == nil {
+	if _, err := app.ListPRCommits(ref, prRef(), "  ", ""); err == nil {
 		t.Fatal("expected error for an empty base ref")
 	}
 }
 
 func TestGetPRCommitDiffFromLocalClone(t *testing.T) {
 	app := newTestAppWithStore(t)
-	threadID, prSHAs := prCloneFixture(t, app)
+	ref, _, prSHAs := prCloneFixture(t, app)
 
-	patch, err := app.GetPRCommitDiff(threadID, prRef(), prSHAs[0], false)
+	patch, err := app.GetPRCommitDiff(ref, prRef(), prSHAs[0], false)
 	if err != nil {
 		t.Fatalf("GetPRCommitDiff() error = %v", err)
 	}
@@ -143,13 +129,9 @@ func TestGetPRCommitDiffFromLocalClone(t *testing.T) {
 
 func TestGetPRCommitDiffWithoutCloneErrors(t *testing.T) {
 	app := newTestAppWithStore(t)
-	thread := testThread("thread-pr-diff-no-clone")
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
+	noClone := testWorkspaceRef(t, app, t.TempDir())
 
-	if _, err := app.GetPRCommitDiff(thread.ID, prRef(), strings.Repeat("a", 40), false); err == nil {
+	if _, err := app.GetPRCommitDiff(noClone, prRef(), strings.Repeat("a", 40), false); err == nil {
 		t.Fatal("expected error without a local clone")
 	}
 }

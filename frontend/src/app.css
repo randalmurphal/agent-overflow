@@ -247,7 +247,7 @@ html.light {
      has no network dependency. The system fallbacks keep rendering
      during the first paint before the woff2 is parsed.
      These two variables are the cascade default for the Geist option
-     in Settings → Appearance. Other choices (Hack Nerd Font, System)
+     in Settings → Typography. Other choices (Hack Nerd Font, System)
      are applied at runtime by lib/utils/fonts.ts via setProperty on
      <html>; selecting Geist removes that override and falls back to
      these declarations. Edit the chain in this one place. */
@@ -1008,6 +1008,8 @@ input[type="search"]::-webkit-search-cancel-button {
  * Reduced-motion users get the static border: the ticker withholds
  * writes and the var() fallback (t=0) is the rest state.
  */
+/* ::before is this ring's. A host that draws something else on the same
+   element uses ::after (the sidebar row's open-thread bar). */
 .status-glow-warning,
 .status-glow-info {
   position: relative;
@@ -1446,6 +1448,43 @@ html.light .working-sprite {
 [data-testid='message-timeline-scroll'] ::after {
   transition-duration: 0s !important;
   transition-delay: 0s !important;
+}
+
+/*
+ * Settings search reveal. One-shot ring that fades over 1.2s on the field a
+ * search hit scrolled to; the class is removed on animationend
+ * (settingsSearch.ts). Color and shadow only: no transform, so it never
+ * touches presentation state, and it runs once, so it is never a standing
+ * animation. Reduced motion collapses it through the reset below, leaving
+ * the scroll placement as the whole cue.
+ */
+@keyframes settings-field-flash {
+  0% { outline-color: var(--accent); background-color: color-mix(in oklab, var(--accent) 14%, transparent); }
+  60% { outline-color: var(--accent); background-color: color-mix(in oklab, var(--accent) 10%, transparent); }
+  100% { outline-color: transparent; background-color: transparent; }
+}
+.settings-field-flash {
+  outline: 2px solid transparent;
+  outline-offset: 8px;
+  animation: settings-field-flash 1.2s ease-out both;
+}
+
+/*
+ * A settings page's run of sections. Each section after the first opens
+ * with a hairline and a band of space, so a long page (the provider
+ * pages) reads as a sequence of blocks rather than one list of bold
+ * lines. The rule lives on the container, not on SettingsHeader, so a
+ * section that opens with no header still separates, and the page header
+ * in SettingsView closes with the matching rule.
+ */
+.settings-sections {
+  display: flex;
+  flex-direction: column;
+}
+.settings-sections > :not(:first-child) {
+  margin-top: 1.75rem;
+  padding-top: 1.75rem;
+  border-top: 1px solid var(--border-subtle);
 }
 
 /*

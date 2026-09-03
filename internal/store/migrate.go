@@ -658,10 +658,16 @@ CREATE INDEX idx_work_items_automation_source_ref
 		// history DB (2026-07-28), spent inside ServiceStartup while the SPA
 		// is still gated on readiness. The existing idx_items_live_background
 		// can't serve it: that index additionally requires parent_id = '',
-		// and subagent-scoped background launches carry a parent. The index
-		// stays small (settled launches keep their completion sibling but the
-		// launch row stays `running`, so entries accumulate slowly — a few
-		// thousand rows across months of history).
+		// and subagent-scoped background launches carry a parent.
+		//
+		// NOTE (v74): this migration shipped believing the index would stay
+		// small. It did not. A settled launch keeps its completion sibling
+		// but the launch row stays `running` with the flag untouched, so
+		// every launch a thread ever backgrounded stayed in here — measured
+		// 2,883 entries across 157 threads, 494 on one thread. Migration v74
+		// stamps `live_background_active=false` at settlement from SQLite
+		// itself, which is what finally makes this index the small,
+		// genuinely-live set the paragraph above assumed.
 		SQL: `CREATE INDEX idx_items_running_bg_tool_calls
     ON items(thread_id, id)
  WHERE kind = 'tool_call'
@@ -1370,6 +1376,108 @@ CREATE TABLE provider_thread_cost (
 	},
 	{
 		Version: 73,
+		Name:    "items_user_text_index",
+		// The nav rail's ticks read runs on EVERY thread switch and asks
+		// for one thread's reader-authored user_text rows in timeline
+		// order. Nothing indexed `kind`, so it walked the thread's whole
+		// ordering index probing each row's kind: 17,816 pages / 17 ms on
+		// a 67k-item thread, against 736 / 1-3 ms once this index exists.
+		// The composer's history recall, the thread-title context reads,
+		// and ListTurnUserSummaries ask the same shape.
+		//
+		// The index predicate is exactly the prefix
+		// readerAuthoredUserTextFilterFor emits, because SQLite only uses
+		// a partial index when the query's predicates TEXTUALLY imply the
+		// index's WHERE clause. Narrow by construction: reader prompts are
+		// ~1% of a thread's rows (6,816 of 620,987 on the measured store).
+		SQL: `CREATE INDEX idx_items_user_text
+    ON items(thread_id, turn_index, item_index)
+ WHERE kind = 'user_text' AND parent_id = '';`,
+	},
+	{
+		Version: backgroundSettleTriggerMigrationVersion,
+		Name:    "background_launch_settlement_triggers",
+		// Makes "settled" representable on the launch row instead of
+		// only in a correlated NOT EXISTS, which is what let the two
+		// partial "live" indexes accumulate every launch a thread had
+		// ever backgrounded. See background_settle_triggers.go for the
+		// full rationale, the recursion argument, and the reader
+		// contract that does not change.
+		//
+		// Order matters: the backfill runs BEFORE the triggers exist,
+		// so its ~3k UPDATEs pay no WHEN evaluation, and the triggers
+		// then take over a table whose invariant already holds.
+		//
+		// idx_items_completion_created serves the tray seed's
+		// "launches named by a recent completion sibling" half.
+		// Completion siblings only exist for background launches, so
+		// the partial index is tiny (6k rows on a 6GB history against
+		// millions of items).
+		SQL: backfillSettledBackgroundLaunchesSQL + `
+
+CREATE INDEX idx_items_completion_created
+    ON items(thread_id, created_at) WHERE completion_of <> '';
+
+` + backgroundSettleTriggersSQL,
+	},
+	{
+		Version: 75,
+		Name:    "attachment_kind",
+		// Every attachment ever written was an image, so the DEFAULT is
+		// the backfill: no data rewrite, and a pre-v75 row reads as the
+		// thing it actually is. `file` is the new kind — copied to the
+		// attachments root and referenced by path in the prompt rather
+		// than decoded, so it is also the kind whose bytes are never
+		// served back to a client.
+		//
+		// A plain ADD COLUMN with no CHECK, so the FK-parent
+		// `attachments` table is not rebuilt; the closed value set is
+		// enforced by InsertAttachment, which is the table's one writer.
+		SQL: `ALTER TABLE attachments ADD COLUMN kind TEXT NOT NULL DEFAULT 'image';`,
+	},
+	{
+		Version: 76,
+		Name:    "thread_groups",
+		// A named, collapsible sidebar row that gathers threads of ONE
+		// project. Spec: docs/specs/sidebar-thread-groups.md.
+		//
+		// `threads.group_id` carries the CHECK that makes "one pin per
+		// visible row" structural: a grouped thread cannot hold a pin, and
+		// no caller that skips PinThread's own guard can write one. The
+		// index is partial because group_id is NULL on nearly every row;
+		// the FK's SET NULL walks it on a group delete. The FK's ON DELETE
+		// SET NULL is what "delete group = ungroup" means, archived members
+		// included, and it fires because every writer connection carries
+		// foreign_keys=1 (dsn.go).
+		//
+		// `thread_groups.pin_group` repeats v71's thread-side CHECK verbatim:
+		// a group is pinnable to the same two burners, and latent group state
+		// on an unpinned row is refused the same way.
+		//
+		// A plain ADD COLUMN with a CHECK and a REFERENCES clause — SQLite
+		// permits both on an added column as long as its default is NULL,
+		// which it is — so the FK-parent `threads` table is not rebuilt.
+		SQL: `CREATE TABLE thread_groups (
+    id         TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    pinned_at  INTEGER,
+    pin_group  INTEGER
+        CHECK(pin_group IS NULL OR (pinned_at IS NOT NULL AND pin_group IN (0, 1))),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX idx_thread_groups_project ON thread_groups(project_id);
+
+ALTER TABLE threads ADD COLUMN group_id TEXT
+    REFERENCES thread_groups(id) ON DELETE SET NULL
+    CHECK(group_id IS NULL OR pinned_at IS NULL);
+
+CREATE INDEX idx_threads_group ON threads(group_id) WHERE group_id IS NOT NULL;`,
+	},
+	{
+		Version: 77,
 		Name:    "thread_created_by_device",
 		// Which screen started this thread. One backend now serves several
 		// clients, and a thread carries no record of where it came from.
@@ -1386,7 +1494,7 @@ CREATE TABLE provider_thread_cost (
 		SQL: `ALTER TABLE threads ADD COLUMN created_by_device TEXT NOT NULL DEFAULT '';`,
 	},
 	{
-		Version: 74,
+		Version: 78,
 		Name:    "thread_created_git_origin",
 		// The git coordinates of the workspace at the moment the thread was
 		// created: branch, remote URL, head commit.
@@ -1407,45 +1515,45 @@ ALTER TABLE threads ADD COLUMN created_remote_url TEXT NOT NULL DEFAULT '';
 ALTER TABLE threads ADD COLUMN created_head_commit TEXT NOT NULL DEFAULT '';`,
 	},
 	{
-		Version: 75,
+		Version: 79,
 		Name:    "identity_core",
 		// Users, devices, sessions, signing keys, recovery codes, and the
 		// credential audit log. The first authoritative (non-cache) rows in
 		// this database — see the const's doc comment for why they are one
 		// migration and what each table's non-obvious columns decide.
-		SQL: identityCoreV75SQL,
+		SQL: identityCoreV79SQL,
 	},
 	{
-		Version: 76,
+		Version: 80,
 		Name:    "pairing_and_refresh",
 		// Pairing links, rotating refresh secrets, the implicit-channel
 		// device key, and the confirmation gate on a session. See the
 		// const's doc comment for why the four are one migration and what
 		// each non-obvious column decides.
-		SQL: pairingAndRefreshV76SQL,
+		SQL: pairingAndRefreshV80SQL,
 	},
 	{
-		Version: 77,
+		Version: 81,
 		Name:    "device_proof_kind",
 		// How a device proves possession of the key its row names: an
 		// opaque enrollment identifier compared as a string, or an ECDSA
 		// P-256 key whose only accepted presentation is a signed proof.
 		// See the const's doc comment for why one column makes the
 		// stronger form enforceable.
-		SQL: deviceProofKindV77SQL,
+		SQL: deviceProofKindV81SQL,
 	},
 	{
-		Version: 78,
+		Version: 82,
 		Name:    "passkeys",
 		// The owner's passkey credentials and the WebAuthn user handle
 		// they register against. See the const's doc comment for why the
 		// handle is a column on `users`, why credentials hang off the
 		// account rather than off a device row, and what the counter and
 		// backup flags decide.
-		SQL: passkeysV78SQL,
+		SQL: passkeysV82SQL,
 	},
 	{
-		Version: 79,
+		Version: 83,
 		Name:    "project_identity",
 		// A project's DERIVED repository identity, computed by the backend
 		// that owns the checkout. `remote_url` is the `origin` remote
@@ -1464,13 +1572,13 @@ ALTER TABLE threads ADD COLUMN created_head_commit TEXT NOT NULL DEFAULT '';`,
 ALTER TABLE projects ADD COLUMN root_commit TEXT NOT NULL DEFAULT '';`,
 	},
 	{
-		Version: 80,
+		Version: 84,
 		Name:    "push",
 		// A device's phone-push registration token, and the singleton
 		// service-account credential this backend sends with. See the
 		// const's doc comment for why the token table is keyed by device
 		// and why the sender is one row.
-		SQL: pushV80SQL,
+		SQL: pushV84SQL,
 	},
 }
 

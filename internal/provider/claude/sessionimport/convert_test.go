@@ -526,3 +526,54 @@ func TestConvertStandaloneCompactSummary(t *testing.T) {
 		t.Errorf("summary = %v", meta["summary"])
 	}
 }
+
+// The `run_in_background` input flag is a hint, never a verdict. A
+// flagged launch the CLI refused settles as an ordinary result; a
+// sidechain ack, which carries no toolUseResult, classifies on its text
+// alone and names the task id; a structured ack names it too.
+func TestConvertFlaggedLaunchClassifiesOnTheCompletion(t *testing.T) {
+	launch := func() map[string]any {
+		return assistantRow("a1", "u1", "msg_1", []any{
+			toolUseBlock("toolu_1", "Bash", map[string]any{"command": "make apk", "run_in_background": true}),
+		}, "2026-01-01T00:00:01.000Z")
+	}
+	refused := func(content string, opts ...rowOpt) map[string]any {
+		return userBlocksRow("r1", "a1", []any{map[string]any{
+			"type": "tool_result", "tool_use_id": "toolu_1", "content": content, "is_error": true,
+		}}, "2026-01-01T00:00:02.000Z", opts...)
+	}
+	cases := []struct {
+		name       string
+		result     map[string]any
+		background bool
+		taskID     string
+	}{
+		{"refused (hook deny, no toolUseResult)",
+			refused("Permission to use Bash has been denied",
+				with("toolUseResult", "Permission to use Bash has been denied")),
+			false, ""},
+		{"refused (sidechain, no envelope at all)",
+			refused("PreToolUse hook blocked the command"),
+			false, ""},
+		{"sidechain ack text",
+			toolResultRow("r1", "a1", "toolu_1", "Command running in background with ID: bkulztq41. Output is being written to: /tmp/x", "2026-01-01T00:00:02.000Z"),
+			true, "bkulztq41"},
+		{"structured ack",
+			toolResultRow("r1", "a1", "toolu_1", "Command running in background with ID: bslbv9989.", "2026-01-01T00:00:02.000Z",
+				with("toolUseResult", map[string]any{"backgroundTaskId": "bslbv9989"})),
+			true, "bslbv9989"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			events, _ := convertFixture(t, ConvertOptions{},
+				userRow("u1", "", "run", "2026-01-01T00:00:00.000Z"), launch(), tc.result)
+			meta := decodeMeta(t, eventsOfKind(events, provider.EventToolComplete)[0].Meta)
+			if _, got := meta["is_background"]; got != tc.background {
+				t.Errorf("is_background present = %v, want %v (meta %v)", got, tc.background, meta)
+			}
+			if got, _ := meta["task_id"].(string); got != tc.taskID {
+				t.Errorf("task_id = %q, want %q", got, tc.taskID)
+			}
+		})
+	}
+}

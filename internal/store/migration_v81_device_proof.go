@@ -1,6 +1,6 @@
 package store
 
-// deviceProofKindV77SQL records HOW a device proves it holds the key its
+// deviceProofKindV81SQL records HOW a device proves it holds the key its
 // row names (docs/specs/remote-access.md §4, phase 5).
 //
 // Until this column existed, `key_thumbprint` carried two different things
@@ -29,6 +29,6 @@ package store
 // The CHECK constrains rows written from here on. SQLite does not
 // retro-validate on ADD COLUMN, which costs nothing — every pre-existing
 // row holds the default, which is one of the two permitted values.
-const deviceProofKindV77SQL = `
+const deviceProofKindV81SQL = `
 ALTER TABLE devices ADD COLUMN proof_kind TEXT NOT NULL DEFAULT 'bearer'
     CHECK(proof_kind IN ('bearer','key'));`

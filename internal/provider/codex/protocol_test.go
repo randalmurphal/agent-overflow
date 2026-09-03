@@ -2203,6 +2203,42 @@ func TestClassifyRateLimitsUsesTopLevelWhenByLimitIdAbsent(t *testing.T) {
 	}
 }
 
+// Only the per-bucket map is the account's whole answer. The single-bucket
+// `rateLimits` envelope updates one quota, so marking it complete would let
+// one bucket's notification delete every other bucket from the cache.
+func TestClassifyRateLimitsMarksOnlyTheByLimitIdMapAsTheWholeAnswer(t *testing.T) {
+	whole := json.RawMessage(`{
+		"rateLimitsByLimitId": {
+			"codex": {
+				"limitId": "codex",
+				"primary": {"usedPercent": 10, "windowDurationMins": 300, "resetsAt": 1775803864}
+			}
+		}
+	}`)
+	oneBucket := json.RawMessage(`{
+		"rateLimits": {
+			"limitId": "codex",
+			"primary": {"usedPercent": 10, "windowDurationMins": 300, "resetsAt": 1775803864}
+		}
+	}`)
+	for name, tc := range map[string]struct {
+		params json.RawMessage
+		want   bool
+	}{"rateLimitsByLimitId": {whole, true}, "rateLimits": {oneBucket, false}} {
+		events := ClassifyNotification(testThread, "account/rateLimits/updated", tc.params)
+		if len(events) != 1 {
+			t.Fatalf("%s: expected 1 event, got %d", name, len(events))
+		}
+		var snapshot provider.RateLimitsSnapshot
+		if err := json.Unmarshal(events[0].Meta, &snapshot); err != nil {
+			t.Fatalf("%s: unmarshal meta: %v", name, err)
+		}
+		if snapshot.Complete != tc.want {
+			t.Errorf("%s: Complete = %v, want %v", name, snapshot.Complete, tc.want)
+		}
+	}
+}
+
 // Codex's wire `limit_id` is Option<String> without
 // `skip_serializing_if`, so the default-bucket case arrives as
 // `"limitId": null`. The TUI defaults this to `"codex"`

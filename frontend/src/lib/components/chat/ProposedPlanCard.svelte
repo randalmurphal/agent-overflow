@@ -63,7 +63,7 @@
   // to both the inline card body and the review surface.
   const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS);
 
-  const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => pane.threadId);
+  const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => pane.workspace);
 
   async function ensurePlanMarkdown(): Promise<string> {
     if (expansion.displayData !== null && expansion.isComplete) {

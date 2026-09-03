@@ -209,6 +209,15 @@ function resolveRoute(methodId: number, args: unknown[]): BackendKey | null {
       const owner = typeof id === 'string' ? projectBackend(id) : undefined;
       return owner ?? HOME_BACKEND;
     }
+    case 'workspace': {
+      // A WorkspaceRef: the project id inside it names the machine. The
+      // zero ref (projectId '', the PR-review RPCs' "no local clone")
+      // resolves home, which is the forge-API path's only sensible home.
+      const ref = args[0];
+      const id = ref !== null && typeof ref === 'object' ? (ref as { projectId?: unknown }).projectId : undefined;
+      const owner = typeof id === 'string' ? projectBackend(id) : undefined;
+      return owner ?? HOME_BACKEND;
+    }
     case 'selected':
       return selectedBackend();
     case 'all':

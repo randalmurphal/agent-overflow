@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Settings → Network → Devices: which devices hold a credential on this
+  // Settings → Remote access → Devices: which devices hold a credential on this
   // backend, the pairing flow that adds one (PairDeviceModal), and the
   // revocations that take one away — plus restore and forget, the two
   // ways out of a revoked row, and the passkeys block below them. Wire:

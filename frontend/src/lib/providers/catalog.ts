@@ -85,13 +85,13 @@ export interface ProviderDefinition {
   // Another provider this one is spawned through — same binary, same auth,
   // same model catalog. A dependent provider is only available when its
   // parent is too (`providerIsEnabled`), and its enable toggle renders
-  // inside the parent's settings section rather than as a section of its
+  // inside the parent's settings page rather than on a page of its
   // own (`dependentProviders`). Absent for a provider that stands alone.
   dependsOnProvider?: ProviderID;
   // Row hint for that enable toggle. Only set where the generic
   // "allow new threads to use this provider" line would not explain what
-  // turning the provider on actually adds; ProviderSettings falls back to
-  // the generic wording.
+  // turning the provider on actually adds; ProviderSettingsPage falls back
+  // to the generic wording.
   enableHint?: string;
   settings: {
     // The provider's OWN enable flag — the key its Settings toggle writes.
@@ -305,9 +305,9 @@ for (const id of PROVIDER_IDS) {
   else DEPENDENT_PROVIDERS.set(parent, [PROVIDER_DEFINITIONS[id]]);
 }
 
-// The providers whose enable toggle belongs inside `parent`'s settings section
-// — those spawned through its binary. Data-driven so a second dependent
-// provider surfaces without ProviderSettings learning any provider id.
+// The providers whose enable toggle belongs on `parent`'s settings page —
+// those spawned through its binary. Data-driven so a second dependent
+// provider surfaces without ProviderSettingsPage learning any provider id.
 export function dependentProviders(parent: ProviderID): readonly ProviderDefinition[] {
   return DEPENDENT_PROVIDERS.get(parent) ?? NO_DEPENDENTS;
 }

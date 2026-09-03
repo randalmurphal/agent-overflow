@@ -60,7 +60,7 @@ func (a *App) networkSettingsForCallerWithLAN(
 // `access:admin` rather than `host`, and the two halves of that decision
 // are separate. WHO may read it: managing how a backend is exposed is what
 // a paired admin device is for, and a `host` annotation refused every one
-// of them — leaving Settings → Network unreachable from any device that
+// of them — leaving Settings → Remote access unreachable from any device that
 // was not the machine itself. WHAT they read: the credential half is
 // withheld from a caller that is not host-present, which
 // network.FromServerRedacted argues field by field. The bind toggle, the

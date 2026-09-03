@@ -119,7 +119,7 @@ func HasEnrolledDevice(a *App) (bool, error) { return a.hasEnrolledDevice() }
 //
 // It is GetNetworkSettings' own composition — the persisted preferences
 // through network.FromServer — so the address printed on a serve console
-// and the address shown in Settings → Network are produced by one
+// and the address shown in Settings → Remote access are produced by one
 // formatter and cannot drift.
 //
 // The FULL variant deliberately, and it needs no host-present pick: this
@@ -132,7 +132,7 @@ func ServeEndpoints(a *App, srv *transport.Server) network.Settings {
 
 // SetBoundPortRecorder installs the sink that persists the port this
 // listener is on, so the executable's transport-port cache keeps naming
-// the previous bind after Settings → Network moves it. Call before the
+// the previous bind after Settings → Remote access moves it. Call before the
 // transport serves.
 //
 // A callback rather than a path, because the cache's format, location and

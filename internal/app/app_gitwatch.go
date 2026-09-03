@@ -50,14 +50,14 @@ type GitStatusEvent struct {
 }
 
 // GitStatusSubscribe begins streaming git-status updates for the
-// thread's workspace. Returns the initial status synchronously so the
+// referenced workspace. Returns the initial status synchronously so the
 // caller can render immediately, plus the canonical cwd the stream is
 // keyed on and a handle used to call GitStatusUnsubscribe.
 //
-// LocalOnly: workspace paths are local FS paths and gitwatch can spawn
-// recursive fs watches plus continuous git invocations; exposing this
-// surface to LAN peers would leak repo locations and let a token-only
-// peer enumerate threads via probe attempts.
+// It rides `git:operate`: workspace paths are local FS paths and gitwatch
+// can spawn recursive fs watches plus continuous git invocations, so a
+// session without that grant is refused rather than told where repos live
+// or left free to enumerate threads by probing.
 //
 // The subscription is automatically released when the calling WS
 // connection drops (via transport.ConnState cleanup). The frontend
@@ -65,11 +65,11 @@ type GitStatusEvent struct {
 // connection-tied cleanup is the safety net for unclean disconnects.
 //
 //ao:scope git:operate
-func (a *App) GitStatusSubscribe(ctx context.Context, threadID string) (GitStatusSubscriptionResult, error) {
+func (a *App) GitStatusSubscribe(ctx context.Context, ws WorkspaceRef) (GitStatusSubscriptionResult, error) {
 	if a.shuttingDown.Load() {
 		return GitStatusSubscriptionResult{}, ErrShuttingDown
 	}
-	result, err := a.gitApplication().Subscribe(threadID)
+	result, err := a.gitApplication().Subscribe(ws)
 	if err != nil {
 		if errors.Is(err, gitapp.ErrTooManyStatusSubscriptions) {
 			return GitStatusSubscriptionResult{}, ErrTooManyGitStatusSubscriptions

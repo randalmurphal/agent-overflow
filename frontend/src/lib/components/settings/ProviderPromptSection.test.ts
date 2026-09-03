@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
-import PromptOverridesSettings from './PromptOverridesSettings.svelte';
+import ProviderPromptSection from './ProviderPromptSection.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import {
   ensureProviderModels,
@@ -8,7 +8,11 @@ import {
 } from '../../stores/providerModels.svelte';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
+import { getProviderDefinition } from '../../providers/catalog';
 import type { ModelInfo, PromptOverride, Settings } from '../../types/settings';
+
+const CLAUDE = getProviderDefinition('claude');
+const CODEX = getProviderDefinition('codex');
 
 const CLAUDE_CATALOG: ModelInfo[] = [
   { slug: 'claude-fable-5', name: 'Claude Fable 5', provider: 'claude' },
@@ -53,48 +57,16 @@ const ENTRY = (over: Partial<PromptOverride> = {}): PromptOverride => ({
   ...over,
 });
 
-describe('<PromptOverridesSettings>', () => {
+describe('<ProviderPromptSection>', () => {
   beforeEach(() => {
     resetProviderModelsForTest();
-  });
-
-  it('renders a block per enabled provider and skips a disabled one', async () => {
-    await seed({ codexEnabled: false });
-    const { getByTestId, queryByTestId } = render(PromptOverridesSettings);
-    expect(getByTestId('settings-prompts-claude')).toBeTruthy();
-    expect(queryByTestId('settings-prompts-codex')).toBeNull();
-  });
-
-  it('tells the user to enable a provider when none is on', async () => {
-    await seed({ claudeEnabled: false, codexEnabled: false });
-    const { getByText, queryByTestId } = render(PromptOverridesSettings);
-    expect(queryByTestId('settings-prompts-claude')).toBeNull();
-    expect(getByText(/Enable a provider under Settings/)).toBeTruthy();
-  });
-
-  // The header is the only place the section states what a save does, so it
-  // has to be true of all four combinations. It used to say every change was
-  // spawn-only, which stopped being true when a Claude prompt edit started
-  // converging live through `set_model.system_prompt`.
-  it('states per provider and axis when a change takes effect', async () => {
-    await seed();
-    const { getByText } = render(PromptOverridesSettings);
-    expect(
-      getByText(/A Claude prompt edit reaches running Claude sessions right away/),
-    ).toBeTruthy();
-    expect(getByText(/turning one off applies when the session restarts/)).toBeTruthy();
-    expect(
-      getByText(
-        /Codex prompts, Claude TUI sessions, and both tool lists apply to sessions started later\./,
-      ),
-    ).toBeTruthy();
   });
 
   it('renders the configured entries with their prompt, switch, and models', async () => {
     await seed({
       claudePromptOverrides: [ENTRY(), ENTRY({ enabled: false, models: [], prompt: 'draft' })],
     });
-    const { getByTestId, findByTestId } = render(PromptOverridesSettings);
+    const { getByTestId, findByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
 
     const first = getByTestId('settings-prompt-text-claude-0') as HTMLTextAreaElement;
     expect(first.value).toBe('You are a helpful agent.');
@@ -111,14 +83,14 @@ describe('<PromptOverridesSettings>', () => {
 
   it('renders no legend and an empty note until an entry exists', async () => {
     await seed();
-    const { getByTestId, queryByTestId } = render(PromptOverridesSettings);
+    const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     expect(getByTestId('settings-prompts-claude-empty')).toBeTruthy();
     expect(queryByTestId('settings-prompt-legend-claude')).toBeNull();
   });
 
   it('appends a disabled empty entry from the add control', async () => {
     await seed();
-    const { getByTestId } = render(PromptOverridesSettings);
+    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     await fireEvent.click(getByTestId('settings-prompt-add-claude'));
 
     await waitFor(() => {
@@ -130,7 +102,7 @@ describe('<PromptOverridesSettings>', () => {
     await seed({
       claudePromptOverrides: [ENTRY({ prompt: 'first' }), ENTRY({ prompt: 'second' })],
     });
-    const { getByTestId } = render(PromptOverridesSettings);
+    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     await fireEvent.click(getByTestId('settings-prompt-remove-claude-0'));
 
     await waitFor(() => {
@@ -140,7 +112,7 @@ describe('<PromptOverridesSettings>', () => {
 
   it('persists the enable switch per entry', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ enabled: false })] });
-    const { getByLabelText } = render(PromptOverridesSettings);
+    const { getByLabelText } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     await fireEvent.click(getByLabelText('Enable claude override 1'));
 
     await waitFor(() => expect(claudeEntries()[0].enabled).toBe(true));
@@ -148,7 +120,7 @@ describe('<PromptOverridesSettings>', () => {
 
   it('round-trips a model chip selection', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ models: [] })] });
-    const { findByTestId } = render(PromptOverridesSettings);
+    const { findByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
 
     const chip = await findByTestId('settings-prompt-model-claude-0-claude-opus-4-8');
     await fireEvent.click(chip);
@@ -160,7 +132,7 @@ describe('<PromptOverridesSettings>', () => {
 
   it('keeps a selected slug the catalog no longer offers so it can be removed', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ models: ['claude-retired-1'] })] });
-    const { findByTestId } = render(PromptOverridesSettings);
+    const { findByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
 
     const chip = await findByTestId('settings-prompt-model-claude-0-claude-retired-1');
     expect(chip.dataset.selected).toBe('true');
@@ -177,7 +149,7 @@ describe('<PromptOverridesSettings>', () => {
     // wrong reason.
     await ensureProviderModels('claude');
 
-    const { findByTestId } = render(PromptOverridesSettings);
+    const { findByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     const chip = await findByTestId('settings-prompt-model-claude-0-claude-retired-1');
     expect(chip.dataset.missing).toBe('false');
     expect(chip.className).not.toContain('border-dashed');
@@ -189,7 +161,7 @@ describe('<PromptOverridesSettings>', () => {
       throw new Error('claude CLI not found');
     });
 
-    const { findByTestId } = render(PromptOverridesSettings);
+    const { findByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     await findByTestId('settings-prompts-claude-catalog-error');
     const chip = await findByTestId('settings-prompt-model-claude-0-claude-retired-1');
     expect(chip.dataset.missing).toBe('false');
@@ -200,7 +172,7 @@ describe('<PromptOverridesSettings>', () => {
     setBindingMock('GetModelsForProvider', async () => {
       throw new Error('claude CLI not found');
     });
-    const { findByTestId } = render(PromptOverridesSettings);
+    const { findByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     expect(
       (await findByTestId('settings-prompts-claude-catalog-error')).textContent,
     ).toContain('Could not load the Claude model catalog.');
@@ -208,7 +180,7 @@ describe('<PromptOverridesSettings>', () => {
 
   it('commits the prompt on change, not on every keystroke', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ prompt: 'old' })] });
-    const { getByTestId } = render(PromptOverridesSettings);
+    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     const textarea = getByTestId('settings-prompt-text-claude-0') as HTMLTextAreaElement;
 
     await fireEvent.input(textarea, { target: { value: 'new prompt' } });
@@ -220,7 +192,7 @@ describe('<PromptOverridesSettings>', () => {
 
   it('does not write when a blur leaves the prompt unchanged', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ prompt: 'same' })] });
-    const { getByTestId } = render(PromptOverridesSettings);
+    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     await fireEvent.change(getByTestId('settings-prompt-text-claude-0'));
     expect(getBindingMock('UpdateSettings')?.mock.calls.length ?? 0).toBe(0);
   });
@@ -233,7 +205,7 @@ describe('<PromptOverridesSettings>', () => {
     await seed({
       claudePromptOverrides: [ENTRY({ prompt: 'first' }), ENTRY({ prompt: 'second' })],
     });
-    const { getByTestId } = render(PromptOverridesSettings);
+    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     const second = getByTestId('settings-prompt-text-claude-1') as HTMLTextAreaElement;
 
     await fireEvent.input(second, { target: { value: 'edited second' } });
@@ -249,14 +221,14 @@ describe('<PromptOverridesSettings>', () => {
 
   it('warns when an enabled entry applies to no model', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ models: [] })] });
-    const { getByTestId, queryByTestId } = render(PromptOverridesSettings);
+    const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     expect(getByTestId('settings-prompt-nomodels-claude-0')).toBeTruthy();
     expect(queryByTestId('settings-prompt-noprompt-claude-0')).toBeNull();
   });
 
   it('warns when an enabled entry has no prompt, which the backend skips too', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ prompt: '   ' })] });
-    const { getByTestId, queryByTestId } = render(PromptOverridesSettings);
+    const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     expect(getByTestId('settings-prompt-noprompt-claude-0').textContent).toContain(
       'write a prompt',
     );
@@ -265,7 +237,7 @@ describe('<PromptOverridesSettings>', () => {
 
   it('names both causes when an enabled entry has neither', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ models: [], prompt: '' })] });
-    const { getByTestId } = render(PromptOverridesSettings);
+    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     expect(getByTestId('settings-prompt-nomodels-claude-0')).toBeTruthy();
     expect(getByTestId('settings-prompt-noprompt-claude-0')).toBeTruthy();
   });
@@ -274,7 +246,7 @@ describe('<PromptOverridesSettings>', () => {
     await seed({
       claudePromptOverrides: [ENTRY({ enabled: false, models: [], prompt: '' })],
     });
-    const { queryByTestId } = render(PromptOverridesSettings);
+    const { queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     expect(queryByTestId('settings-prompt-nomodels-claude-0')).toBeNull();
     expect(queryByTestId('settings-prompt-noprompt-claude-0')).toBeNull();
   });
@@ -283,20 +255,20 @@ describe('<PromptOverridesSettings>', () => {
     await seed({
       claudePromptOverrides: [ENTRY(), ENTRY({ prompt: 'second' })],
     });
-    const { getByTestId, queryByTestId } = render(PromptOverridesSettings);
+    const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     expect(queryByTestId('settings-prompt-shadowed-claude-0')).toBeNull();
     expect(getByTestId('settings-prompt-shadowed-claude-1').textContent).toContain('Fable 5');
   });
 });
 
-describe('<PromptOverridesSettings> placeholder legend', () => {
+describe('<ProviderPromptSection> placeholder legend', () => {
   beforeEach(() => {
     resetProviderModelsForTest();
   });
 
   it('inserts the token at the caret of the focused prompt', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ prompt: 'cwd:  here' })] });
-    const { getByTestId } = render(PromptOverridesSettings);
+    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     const textarea = getByTestId('settings-prompt-text-claude-0') as HTMLTextAreaElement;
 
     textarea.focus();
@@ -314,7 +286,7 @@ describe('<PromptOverridesSettings> placeholder legend', () => {
 
   it('falls back to the first prompt when none was focused', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ prompt: 'AB' })] });
-    const { getByTestId } = render(PromptOverridesSettings);
+    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
 
     await fireEvent.click(getByTestId('settings-prompt-token-claude-MODEL_NAME'));
 
@@ -325,7 +297,7 @@ describe('<PromptOverridesSettings> placeholder legend', () => {
 
   it('leaves the prompt alone when the insert fails to save', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ prompt: 'AB' })] });
-    const { getByTestId } = render(PromptOverridesSettings);
+    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     const textarea = getByTestId('settings-prompt-text-claude-0') as HTMLTextAreaElement;
 
     textarea.focus();
@@ -348,7 +320,7 @@ describe('<PromptOverridesSettings> placeholder legend', () => {
 
   it('shows the insertion before the save lands, through the store', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ prompt: 'AB' })] });
-    const { getByTestId } = render(PromptOverridesSettings);
+    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     const textarea = getByTestId('settings-prompt-text-claude-0') as HTMLTextAreaElement;
 
     textarea.focus();
@@ -380,9 +352,11 @@ describe('<PromptOverridesSettings> placeholder legend', () => {
       claudePromptOverrides: [ENTRY()],
       codexPromptOverrides: [ENTRY({ models: ['gpt-5.6-sol'] })],
     });
-    const { getByTestId, queryByTestId } = render(PromptOverridesSettings);
-    expect(getByTestId('settings-prompt-token-claude-MEMORY_DIR')).toBeTruthy();
-    expect(getByTestId('settings-prompt-token-codex-WORKDIR')).toBeTruthy();
-    expect(queryByTestId('settings-prompt-token-codex-MEMORY_DIR')).toBeNull();
+    const claude = render(ProviderPromptSection, { props: { provider: CLAUDE } });
+    expect(claude.getByTestId('settings-prompt-token-claude-MEMORY_DIR')).toBeTruthy();
+
+    const codex = render(ProviderPromptSection, { props: { provider: CODEX } });
+    expect(codex.getByTestId('settings-prompt-token-codex-WORKDIR')).toBeTruthy();
+    expect(codex.queryByTestId('settings-prompt-token-codex-MEMORY_DIR')).toBeNull();
   });
 });

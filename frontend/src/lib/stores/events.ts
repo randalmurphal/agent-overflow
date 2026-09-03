@@ -41,6 +41,7 @@ import type {
   UsageEvent,
   UserInputEvent,
   WorktreeSetupEvent,
+  ThreadGroupUpdateEvent,
 } from '../types/events';
 import type {
   TerminalExitEventPayload,
@@ -48,9 +49,17 @@ import type {
 } from '../types/terminal';
 import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { setSystemStats } from './systemStats.svelte';
+import { applyThreadGroupUpdated } from './threadGroups.svelte';
 import { transportGapChannel } from '../transport/wsClient';
 import { backendKeyForOrigin } from '../transport/backends';
-import { forgetProject, forgetThread, noteProject, noteThread } from '../transport/entityIndex';
+import {
+  forgetProject,
+  forgetThread,
+  forgetThreadGroup,
+  noteProject,
+  noteThread,
+  noteThreadGroup,
+} from '../transport/entityIndex';
 // wailsEventOn lives in a leaf module so low-level stores can subscribe to
 // backend events without importing this handler module; imported here for
 // setupEventListeners() use and re-exported below for existing import sites.
@@ -451,6 +460,25 @@ export function setupEventListeners(): () => void {
     applyDraftUpdated,
   );
 
+  // thread-group:updated — one frame per thread-group write. Membership is
+  // NOT on this channel: a group write that moved threads also emits
+  // thread:updated `replace` for each row, so the thread registry stays
+  // the one owner of `groupId`.
+  // The group's backend is learned here for the reason thread:updated's
+  // is: a group created on another screen is in no list this client
+  // fetched, and its next RPC (rename, pin, delete) names the group.
+  const cancelThreadGroupUpdated = wailsEventOn<ThreadGroupUpdateEvent>(
+    'thread-group:updated',
+    (evt, origin) => {
+      const id = evt?.group?.id;
+      if (id) {
+        if (evt.action === 'delete') forgetThreadGroup(id);
+        else noteThreadGroup(id, backendKeyForOrigin(origin.backendId));
+      }
+      applyThreadGroupUpdated(evt);
+    },
+  );
+
   // thread:title_generation — the completion frame of one title-generation
   // run (auto first-turn, heal, or user-triggered regeneration). Clears the
   // pending flag the regenerate affordance renders from; the redacted error
@@ -598,6 +626,7 @@ export function setupEventListeners(): () => void {
     cancelBackendAttach();
     cancelProjectUpdated();
     cancelDraftUpdated();
+    cancelThreadGroupUpdated();
     cancelThreadTitleGeneration();
     cancelWorktreeSetup();
     cancelTransportGap();

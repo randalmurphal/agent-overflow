@@ -140,6 +140,7 @@
   </p>
 
   <SettingsField
+    id="claude.output-style"
     label="Output style"
     hint="Replaces Claude Code's response style for every session."
     htmlFor="claude-output-style"
@@ -164,6 +165,7 @@
   </p>
 
   <SettingsField
+    id="claude.subagent-limits"
     label="Subagent limits"
     hint="How deep subagents may spawn further subagents, and how many may run at once. 0 leaves each to Claude Code."
     align="start"
@@ -207,6 +209,7 @@
   </SettingsField>
 
   <SettingsField
+    id="claude.thinking"
     label="Thinking"
     hint="How much Claude thinks before answering. A fixed budget only binds on models that take an explicit budget — on models with adaptive thinking, Claude keeps deciding for itself."
     htmlFor="claude-thinking-mode"
@@ -268,6 +271,7 @@
   </p>
 
   <SettingsField
+    id="claude.show-thinking"
     label="Show thinking"
     hint="Whether Claude's thinking text reaches the thread. Claude thinks either way — this only decides whether you see it."
     htmlFor="claude-thinking-display"
@@ -297,6 +301,7 @@
   </p>
 
   <SettingsField
+    id="claude.tool-memory-limit"
     label="Tool memory limit"
     hint="Caps memory for the processes Claude's tools spawn — a size like 4G, or none to lift it. Applies only when the backend runs on Linux (WSL included); it is a memory cgroup, which macOS and native Windows have no equivalent for."
     htmlFor="claude-tool-memory-limit"

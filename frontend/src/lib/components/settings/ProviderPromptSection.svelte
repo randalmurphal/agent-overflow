@@ -1,7 +1,9 @@
 <script lang="ts">
-  // One provider's block in Settings → Prompts & Tools: the ordered list of
-  // system-prompt overrides, the placeholder legend that writes into them,
-  // and the provider's disabled-tool editor.
+  // The System prompt section of a provider's settings page: the ordered
+  // list of system-prompt overrides and the placeholder legend that writes
+  // into them. The page owns the heading (and the line about when a save
+  // takes effect, which differs per provider); the tool list and Claude's
+  // session axes are sections of their own beside this one.
   //
   // This component owns every write for the block. The entries are edited
   // in place against the settings store — there is no draft copy and no Save
@@ -27,17 +29,20 @@
     withEntryPatch,
     withEntryRemoved,
   } from '../../utils/promptOverrides';
-  import ClaudeDisabledToolsEditor from './ClaudeDisabledToolsEditor.svelte';
-  import ClaudeCrossSessionEditor from './ClaudeCrossSessionEditor.svelte';
-  import ClaudeSessionAxesEditor from './ClaudeSessionAxesEditor.svelte';
-  import CodexDisabledToolsEditor from './CodexDisabledToolsEditor.svelte';
   import PromptOverrideEntry from './PromptOverrideEntry.svelte';
   import PromptPlaceholderLegend from './PromptPlaceholderLegend.svelte';
   import SettingsField from './SettingsField.svelte';
-  import SettingsHeader from './SettingsHeader.svelte';
+  import type { ProviderFieldId } from './fields';
   import { SECONDARY_BUTTON_CLASS } from './styles';
 
   let { provider }: { provider: ProviderDefinition } = $props();
+
+  // ProviderDefinition.id spans every provider; the field index only covers
+  // the two that have a page, and this section only ever renders on one of
+  // them. The ternary narrows without a cast.
+  let fieldId = $derived<ProviderFieldId>(
+    provider.id === 'codex' ? 'codex.system-prompt' : 'claude.system-prompt',
+  );
 
   let settings = $derived(getSettings());
   let entries = $derived(promptOverridesFor(settings, provider.id));
@@ -144,14 +149,9 @@
   }
 </script>
 
-<section
-  bind:this={blockEl}
-  class="rounded-[var(--radius-card)] border border-border-subtle bg-surface-1/30 p-5"
-  data-testid="settings-prompts-{provider.id}"
->
-  <SettingsHeader title={provider.label} />
-
+<div bind:this={blockEl} data-testid="settings-prompts-{provider.id}">
   <SettingsField
+    id={fieldId}
     label="System prompt overrides"
     hint="Replaces the provider's default system prompt. The first enabled entry whose models include the session's model wins."
     align="start"
@@ -211,26 +211,4 @@
       </div>
     </div>
   </SettingsField>
-
-  <div class="mt-5">
-    {#if provider.id === 'codex'}
-      <CodexDisabledToolsEditor {provider} />
-    {:else}
-      <ClaudeDisabledToolsEditor {provider} />
-    {/if}
-  </div>
-
-  <!--
-    Headless Claude only. claude-tui launches through a PTY with no
-    `--settings` flag, so these axes cannot reach that binary and must not be
-    offered under its heading.
-  -->
-  {#if provider.id === 'claude'}
-    <div class="mt-5 border-t border-border-subtle/60 pt-4">
-      <ClaudeSessionAxesEditor />
-    </div>
-    <div class="mt-5 border-t border-border-subtle/60 pt-4">
-      <ClaudeCrossSessionEditor />
-    </div>
-  {/if}
-</section>
+</div>

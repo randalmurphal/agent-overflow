@@ -13,11 +13,12 @@
   let settings = $derived(getSettings());
 </script>
 
-<div class="flex flex-col gap-6">
+<div class="settings-sections">
   <section data-testid="settings-retention">
-    <SettingsHeader title="Automatic Cleanup" />
+    <SettingsHeader title="Automatic cleanup" />
     <div class="flex flex-col gap-1">
       <SettingsField
+        id="storage.retention-days"
         label="Retention (days)"
         hint={settings.retention.days === 0
           ? 'Automatic cleanup is disabled. Nothing will be removed automatically.'

@@ -5,7 +5,7 @@ import "agent-overflow/internal/store"
 // BackfillIdentity derives the repository identity of every project row that
 // has neither half yet, and hands each row it actually moved to persist.
 //
-// One pass, meant to be run once per boot. Rows written before migration v79,
+// One pass, meant to be run once per boot. Rows written before migration v83,
 // and rows created while no identity deriver was wired, are the whole
 // population; a project that already has an answer is skipped without a git
 // subprocess, so the second boot after an upgrade costs nothing. There is no

@@ -123,7 +123,7 @@
   <!-- Hidden in --connect mode and off-host entirely; nothing to render. -->
 {:else if loading}
   <section data-testid="wsl-section-loading">
-    <SettingsHeader title="WSL Distro" />
+    <SettingsHeader title="WSL distro" />
     <p class="text-[0.75rem] text-fg-hint" role="status" aria-live="polite">
       Detecting WSL…
     </p>
@@ -131,9 +131,13 @@
 {:else if !supported}
   <!-- Not running under WSL — nothing to render. -->
 {:else}
-  <section data-testid="wsl-section">
+  <section
+    data-testid="wsl-section"
+    data-settings-field="remote.wsl-distro"
+    data-settings-label="WSL distro"
+  >
     <SettingsHeader
-      title="WSL Distro"
+      title="WSL distro"
       description="Pick which WSL distribution the launcher boots into the next time you open Agent Overflow. The change takes effect on next launch — this session keeps running in its current distro until you close and reopen the app."
     />
 

@@ -179,7 +179,7 @@ is deliberately out of scope.
 
 ## 3. Identity model
 
-LANDED 2026-08-31 (wave 5a): migration v75 holds all five entity
+LANDED 2026-08-31 (wave 5a): migration v79 holds all five entity
 families below (the backend row predates it, store v55), accessors in
 `internal/store/identity.go`, vocabulary and cross-checks in
 `internal/identity`. See §16 phase 2 for the landed/open split.
@@ -238,7 +238,7 @@ remain a separate, narrower credential class, unchanged.
    no trust step.
 
 LANDED 2026-08-31 (wave 5b), steps 1-5: `identity` pairing over
-migration v76, `/auth/pair` as the one wire route, redemption minting
+migration v80, `/auth/pair` as the one wire route, redemption minting
 the real credential pair UNACTIVATED with the confirmation gate inside
 `Session.Live`, and the verification number as a backend-derived MAC
 over (link id, redeeming key). Wave 5c added the owner-facing surface:
@@ -267,7 +267,7 @@ built.
   passkeys are available.
 
 LANDED 2026-08-31 (wave 5b): rotating refresh in
-`internal/identity/refresh.go` over `refresh_secrets` (v76). The family
+`internal/identity/refresh.go` over `refresh_secrets` (v80). The family
 key IS the session id — a renewal extends the session row rather than
 minting a new one, so revoke-the-family is exactly revoke-the-session
 and every open socket keys on one durable id. Reuse spends the whole
@@ -284,7 +284,7 @@ backend answers under several authorities) + `jti` + `iatMs`
 `internal/identity/deviceproof.go`, replay guard two rotating
 generations capped 8192 with rotate-early-at-cap
 (`proofreplay.go`), freshness ±2min symmetric. The ROW decides the
-acceptable shape (`devices.proof_kind`, v77, DEFAULT `bearer`): a
+acceptable shape (`devices.proof_kind`, v81, DEFAULT `bearer`): a
 `key` row presenting a bare string is `proof_downgraded`, never a
 fallback, enrollment included; a `bearer` row (plain-HTTP LAN browser,
 constraint 6 — no secure context, no WebCrypto) keeps its exact prior
@@ -929,7 +929,7 @@ flags. Durable sessions remove re-pairing after restarts; origin
 stability keeps browser storage attached.
 
 LANDED 2026-09-01 (wave 8g, c06a77e3): `network.listenPort` in
-Settings → Network (0 = automatic, the pin-cache behavior). Precedence
+Settings → Remote access (0 = automatic, the pin-cache behavior). Precedence
 `--listen` > saved port > cache; the saved port deliberately takes NO
 ephemeral fallback — every share URL and stored endpoint names it, so
 an unbindable saved port is a loud boot failure naming the setting and
@@ -1035,7 +1035,7 @@ only when the LISTENER completes a handshake for that exact name
 signal moved from origin-list emptiness to the BIND ADDRESS (the old
 signal 404'd LAN clients on a persisted-preference boot), and
 `Config.CanonicalHost` adds exactly one accepted DNS name inside the
-guard. Settings → Network grew the "Domain and HTTPS" block.
+guard. Settings → Remote access grew the "Domain and HTTPS" block.
 
 Two supported paths; others are documented escape hatches, not built:
 
@@ -1296,7 +1296,7 @@ the list is published, so `MintPreviewURL` and the list agree by
 construction; a port whose scheme changed is rebuilt, an unchanged one
 keeps its listener (live HMR sockets survive the 3s reconcile).
 `network.previewPorts` is deliberately NOT in the `network.Settings`
-wire record: Settings → Network reads the `GetDevServers` rows, which
+wire record: Settings → Remote access reads the `GetDevServers` rows, which
 are the only truth about what is served. `AllowPreviewPort` /
 `DisallowPreviewPort` answer with the set and take no step-up. The
 exact-port `OriginPatterns` fix and `pagecookie_contract_test.go` (an
@@ -1318,7 +1318,7 @@ the THREAD's machine's engine, so the gesture is gated on
 `threadActsHere` (thread on the page's own machine AND `host` held);
 with `host` alone it would mint a page in an engine this window cannot
 paint. `previewRouted` is that predicate's negation, stated once in
-`attachedBackends.svelte.ts`. Settings → Network lists attributed ports
+`attachedBackends.svelte.ts`. Settings → Remote access lists attributed ports
 as a sentence ("Shared while vite runs it") with no control, because
 `DisallowPreviewPort` edits only the persisted set. **Headless engine**
 (`internal/browser`): as specified; `no-sandbox` is asserted PRESENT
@@ -1385,7 +1385,7 @@ ride the step-up SetNetworkSettings; read-only `TailnetStatus`
 carries state/auth URL/name/IPs/ticketed share URL (no Insecure flag
 beside an http tailnet URL — every byte crosses the WireGuard link);
 `ForgetTailnetNode` is `//ao:scope host`, no step-up, refused while
-enabled. Settings → Network grew the "Tailnet" block; tailnet peers
+enabled. Settings → Remote access grew the "Tailnet" block; tailnet peers
 are real non-loopback peers, so the session-naming admission rule
 applies unchanged. Tests run an in-process control server + loopback
 DERP/STUN (never the real control plane; the rig refuses ambient
@@ -1412,7 +1412,7 @@ flags refused as contradictions. `runServe` = the headless shape plus:
 persisted network settings honored (`--listen` still wins),
 `RequireReadyForBootstrap` so a remote browser never loads against a
 half-open store, endpoints printed through the same
-`network.FromServer` formatter Settings → Network reads, and a
+`network.FromServer` formatter Settings → Remote access reads, and a
 startup failure keeps serving the terminal bootstrap failure rather
 than restart-looping under a service manager. **Credential posture:**
 serve sets the same file-keychain pin the mocked boots use, for the
@@ -1714,7 +1714,7 @@ Prerequisite sweep, valuable standalone:
   saw error banners where the desktop saw nothing. "Answered on
   <device>" live flip is not built (needs the attribution UI).
 - **Device attribution**: LANDED 2026-08-31 (wave 4b) as CREATION
-  attribution — v73 `threads.created_by_device`, write-once by the
+  attribution — v77 `threads.created_by_device`, write-once by the
   `import_source` mechanism, empty = the backend created it. Mutation
   audit is a log table and its own decision; a single column
   re-stamped per mutation would destroy provenance without producing
@@ -1722,7 +1722,7 @@ Prerequisite sweep, valuable standalone:
 - Gap-recovery switch gains an entry per new channel: LANDED (wave 4b)
   for settings/project/draft/queue.
 - Thread **branch / remote / head** at creation: LANDED 2026-08-31
-  (wave 4b) — v74 `created_branch` / `created_remote_url` /
+  (wave 4b) — v78 `created_branch` / `created_remote_url` /
   `created_head_commit`, surfaced as `Thread.Origin`, observed at the
   one moment the answer is true; forks re-observe, workflow threads
   attribute to no device, session import records nothing. Nothing
@@ -2527,12 +2527,14 @@ Settings instead of the command line.
 
 **Routing an RPC.** The generated method table grows a Route column:
 `thread` (arg 0 is a thread id: the backend that owns it), `project`
-(arg 0 is a project id), `home` (the page's own backend: host
+(arg 0 is a project id), `workspace` (arg 0 is a `WorkspaceRef`: the
+backend that owns its project), `home` (the page's own backend: host
 actions, this machine's settings, this backend's access admin),
 `selected` (creation-shaped calls: the composer's chosen backend), and
 `all` (fan-out and merge: the list calls that feed the unified
 sidebar). `methodgen` infers `thread` / `project` from the Go
-parameter name and requires `//ao:route` on every other method; an
+parameter name, `workspace` from the parameter TYPE, and requires
+`//ao:route` on every other method; an
 unclassified method fails the build, the same fail-closed pattern as
 scope. The TS side keeps an entity → backend index (rows carry the
 `backendId` of the connection they arrived on, at load and on every
@@ -2662,7 +2664,7 @@ until the next boot's backfill does not touch it (both fields are set);
 recomputing on `InvalidateForgeCache` is the residual.
 
 **7d LANDED 2026-09-01 (a1ee9e90 client, 1afa6c30 backend).** As
-designed. Migration v79 adds `remote_url` / `root_commit`;
+designed. Migration v83 adds `remote_url` / `root_commit`;
 `git.RepoIdentity` derives them (origin verbatim through the shared
 repo-meta cache, smallest root of HEAD uncached); `projectapp` stamps a
 row at creation and on the workspace-ensure path's created rows, and
@@ -2693,6 +2695,42 @@ listening means no link offered (a clear "no SSH route" beats a
 hanging deep link), and offered hosts are ordered
 most-reachable-first (tailnet name, then mDNS `.local`). We do not
 build a file-open protocol.
+
+**Additions from the 2026-09-03 merge of main** (any-file attachments,
+workspace-keyed git RPCs, thread groups, the settings search index):
+
+- **Migration numbering.** The live database had already run main's
+  v73–v76 (user-text index, settle triggers, `attachment_kind`, thread
+  groups), so the branch's own migrations moved, not main's: identity
+  core is v79, pairing v80, device proof v81, passkeys v82, project
+  identity v83, push v84. The rule for the next merge is the same:
+  whichever side the user's store has not yet run is the side that
+  renumbers.
+- **The `workspace` route.** main re-keyed every checkout-scoped git RPC
+  on a `WorkspaceRef{projectId, workspacePath}` instead of a thread id,
+  which the `thread`/`project` inference could not see (the parameter is
+  named `ws`). `methodgen` now infers `workspace` from the parameter
+  type, and the client resolves it through the project index. Residual:
+  `NO_WORKSPACE_REF` (the zero ref the PR-review RPCs accept as "no
+  local clone") carries no project id and so routes `home`; on a
+  multi-backend client a forge-only PR read lands on the home backend.
+  Thread groups ride the id-family table (`threadGroup`, and
+  `threadList` for the batch move) and are learned from the group list
+  and create answers.
+- **`file` attachments over the ticketed PUT.** main's any-file
+  attachments arrived as a base64 RPC; here they take the same
+  `PUT /attachments/upload` ticket images do. The kind is decided at
+  MINT (`ClassifyUpload`), so the per-kind cap (50 MiB files, 10 MiB
+  images) is refused for the price of one RPC, and the transfer window
+  scales with the declared length (`AttachmentTransferWindowFor`, a
+  5-minute floor at 35 KiB/s) instead of cutting a large file at the
+  old fixed deadline. Download tickets refuse the `file` kind at mint:
+  files reach the provider by path only, never the browser.
+- **Settings pages.** main replaced the free-form settings view with a
+  paged rail and a search index that every control registers in. The
+  branch's controls are registered; `notifications` (desktop + phone
+  push) and `systems` (attached backends) are their own pages because
+  main deleted the General page they used to sit on.
 
 ## 11. Team sharing (federation)
 
@@ -3158,7 +3196,7 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    Two items were considered and **deliberately not taken**, so they
    do not come back on a later pass. The click delegate's
    no-`preventDefault` fall-through stays as it is: an agent that
-   could plant a hostile anchor already has a shell, so the anchor
+   could plant a foreign anchor already has a shell, so the anchor
    buys it nothing, and the markdown path can no longer emit one
    regardless. `PRStep.svelte`'s two unvalidated forge hrefs stay as
    they are: a forge API returns the same URL the real pull request
@@ -3282,7 +3320,7 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    attribution (hub deployments depend on it; §11). Schema
    (users/devices/sessions/audit), revocation with live teardown,
    recovery codes, rate limiting, and the typed refusal vocabulary:
-   LANDED 2026-08-31 (wave 5a, 7dccc702) — migration v75 (six tables;
+   LANDED 2026-08-31 (wave 5a, 7dccc702) — migration v79 (six tables;
    `EnsureOwnerUser` is the one role-resolved read and says so),
    `internal/identity` (HMAC session claims with signature checked
    structurally before the time window, both-halves verification, the
@@ -3296,7 +3334,7 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    `frontend/src/lib/transport/authReason.ts` as the one hint module,
    pinned against the Go set in both directions.
    Pairing, token exchange, rotating refresh, tickets, and local-client
-   sessions: LANDED 2026-08-31 (wave 5b) — migration v76
+   sessions: LANDED 2026-08-31 (wave 5b) — migration v80
    (pairing_links, refresh_secrets, devices.channel,
    sessions.activated_at with the confirmation gate INSIDE
    Session.Live), keypair-first redemption with the owner verification

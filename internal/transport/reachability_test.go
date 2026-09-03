@@ -42,7 +42,6 @@ func grantsFor(scopes ...Scope) []string {
 // on their own connection.
 var workspaceContentMethods = map[string]Scope{
 	"GetBranchBaseDiff":            ScopeFilesRead,
-	"GetWorkingTreeDiff":           ScopeFilesRead,
 	"GetWorkspaceCurrentDiff":      ScopeFilesRead,
 	"GetCommitDiff":                ScopeFilesRead,
 	"GetDiffContextLines":          ScopeFilesRead,

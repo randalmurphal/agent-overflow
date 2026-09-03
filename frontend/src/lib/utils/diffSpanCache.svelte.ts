@@ -22,10 +22,16 @@
 // evicted (LRU pressure, same-thread reload) re-requests instead of
 // staying plain.
 
-import { HighlightPatch, HighlightPatchWithContext } from '../stores/bindings';
+import {
+  HighlightEditPatchWithContext,
+  HighlightPatch,
+  HighlightPatchWithContext,
+} from '../stores/bindings';
 import { addToast } from '../stores/toast.svelte';
 import { expansionPredecessor } from './diffContextExpansion';
 import { contentKey } from './fnv1a';
+import { workspaceKeyForRef } from './workspaceKey';
+import type { WorkspaceRef } from '../types/git';
 import type { PatchFile, PatchLine } from './patchFiles';
 import {
   ensureHighlightSchemaVersion,
@@ -40,9 +46,18 @@ export interface PatchScopeContext {
   scope: string;
   commitSHA: string;
   headSHA: string;
-  /** Edits scope only: the edit selection whose persisted file snapshot
-   * the backend resolves priming content against (payload id for a
-   * single edit, turn index for a whole-turn view; -1 = no turn). */
+  /** The checkout the CHECKOUT scopes (workspace/branch/commit/pr)
+   * resolve priming content from — the subject of
+   * `HighlightPatchWithContext`. A zero ref (a pr-anchor review with no
+   * local clone) has no content to prime from, so those requests take
+   * the unprimed path. */
+  workspace: WorkspaceRef;
+  /** Edits scope only: the thread whose persisted snapshots the backend
+   * resolves priming content from — the subject of
+   * `HighlightEditPatchWithContext`, and the edit selection within it
+   * (payload id for a single edit, turn index for a whole-turn view;
+   * -1 = no turn). */
+  threadId?: string;
   editPayloadId?: string;
   editTurnIndex?: number;
 }
@@ -175,14 +190,32 @@ function ensureFileKey(file: PatchFile): string {
   return key;
 }
 
-function scopedKey(base: string, threadId: string, context: PatchScopeContext): string {
-  // threadId is part of the identity: the backend resolves priming
-  // content through the THREAD's workspace/refs, so the same
-  // (scope, path, patch) primes differently across threads.
+/**
+ * The subject the primed result belongs to, and therefore the only sound
+ * thing to key a primed entry by: it MUST be the same subject the RPC
+ * resolved content from, or two subjects sharing patch bytes serve each
+ * other's spans. Checkout scopes prime out of a WORKSPACE
+ * (`HighlightPatchWithContext`), so they key on that directory's entity
+ * key — the same derivation the git-status store and the workspace lock
+ * use, never a hand-built string. Edits primes out of a THREAD's
+ * persisted snapshots (`HighlightEditPatchWithContext`), so it keys on
+ * the thread.
+ *
+ * Empty means the context names no subject at all — a pr-anchor review
+ * with no local clone, an edits context with no row. There is nothing to
+ * prime from, so the caller takes the unprimed path rather than spending
+ * a request to be told so.
+ */
+function scopeSubjectKey(context: PatchScopeContext): string {
+  if (context.scope === 'edits') return context.threadId ?? '';
+  return workspaceKeyForRef(context.workspace) ?? '';
+}
+
+function scopedKey(base: string, subject: string, context: PatchScopeContext): string {
   // The edit selection is identity too: two selections can serve the
   // same (path, patch) from different snapshots, whose gap lines can
   // prime grammar state differently.
-  return `${base}\0${threadId}\0${context.scope}\0${context.commitSHA}\0${context.headSHA}\0${context.editPayloadId ?? ''}\0${context.editTurnIndex ?? -1}`;
+  return `${base}\0${subject}\0${context.scope}\0${context.commitSHA}\0${context.headSHA}\0${context.editPayloadId ?? ''}\0${context.editTurnIndex ?? -1}`;
 }
 
 function touch(key: string): void {
@@ -229,13 +262,23 @@ function insert(key: string, spans: EncodedLine[], incomplete: boolean, primed: 
   generation += 1;
 }
 
-function registerThread(key: string, threadId: string): void {
+function registerThread(key: string, owner: string): void {
+  // An empty owner would be a shared "nobody" bucket that
+  // `evictDiffSpansForThread` refuses to look at, so every entry filed
+  // under it would outlive its consumer. Callers hold a real identity: a
+  // thread row id, or a draft placeholder's synthetic row id — which is
+  // evicted on switch/close like any other, and handed to the real row on
+  // materialization by `adoptDiffSpanOwner`. Passing '' is a bug at the
+  // call site, not a case to absorb.
+  if (owner === '') {
+    throw new Error('diff span cache: an entry needs a real owner id, not an empty string');
+  }
   let owners = keyThreads.get(key);
   if (!owners) {
     owners = new Set();
     keyThreads.set(key, owners);
   }
-  owners.add(threadId);
+  owners.add(owner);
 }
 
 function extensionLabel(path: string): string {
@@ -262,11 +305,18 @@ function reportSpanFailure(path: string, err: unknown): void {
  * generation bump re-evaluates every row's `getSpansForLine` lookup.
  *
  * Review-pane callers pass `context` to get parse-priming file content
- * above each hunk (HighlightPatchWithContext, `files:read`); on rejection
- * — the expected path for `--connect` remote clients — the request
- * degrades to the wire-safe HighlightPatch, still recorded under the
+ * above each hunk, routed by scope: the checkout scopes prime out of
+ * the context's workspace (`HighlightPatchWithContext`), the edits scope
+ * out of its thread's persisted snapshots
+ * (`HighlightEditPatchWithContext`). Both RPCs carry `files:read`; on
+ * rejection — the expected path for `--connect` remote clients — the
+ * request degrades to the wire-safe HighlightPatch, still recorded under the
  * scoped key so the primed path is not retried within this client's
  * lifetime. Chat cards pass no context.
+ *
+ * `owner` is the cache-OWNERSHIP identity, not an RPC subject: the row
+ * id whose eviction frees these entries, which for a review pane on a
+ * draft placeholder is that placeholder's synthetic row id.
  *
  * Empty-success results (unknown language, over-cap input → all-plain
  * spans) ARE cached: the backend's answer is authoritative and a
@@ -276,15 +326,20 @@ function reportSpanFailure(path: string, err: unknown): void {
  */
 export async function requestFileSpans(
   file: PatchFile,
-  threadId: string,
+  owner: string,
   context?: PatchScopeContext | null,
 ): Promise<void> {
   if (file.lines.length === 0) return;
+  // A context naming no subject (a pr-anchor review with no local clone)
+  // has nothing to prime from: take the unprimed path directly rather
+  // than spending one refused RPC per file to learn the same thing.
+  const subject = context ? scopeSubjectKey(context) : '';
+  const primed = subject === '' ? null : context;
   const base = ensureFileKey(file);
-  const key = context ? scopedKey(base, threadId, context) : base;
-  registerThread(key, threadId);
+  const key = primed ? scopedKey(base, subject, primed) : base;
+  registerThread(key, owner);
 
-  if (context) {
+  if (primed) {
     // A complete PRIMED base entry (a persist-time seed) is the best
     // possible answer for this content — a scoped RPC could at most
     // match it, and for a drifted edits-scope file it would come back
@@ -292,7 +347,7 @@ export async function requestFileSpans(
     // the request; the read side falls through to the base entry.
     const baseEntry = entries.get(base);
     if (baseEntry && baseEntry.primed && baseEntry.incompleteAt === undefined) {
-      registerThread(base, threadId);
+      registerThread(base, owner);
       touch(base);
       return;
     }
@@ -316,17 +371,23 @@ export async function requestFileSpans(
     const patch = patchTextOf(file);
     let result: { lines: EncodedLine[] | null; incomplete: boolean; primed?: boolean } | null =
       null;
-    if (context) {
+    if (primed) {
+      const req = {
+        scope: primed.scope,
+        commitSHA: primed.commitSHA,
+        headSHA: primed.headSHA,
+        path: file.path,
+        patch,
+        editPayloadId: primed.editPayloadId ?? '',
+        editTurnIndex: primed.editTurnIndex ?? -1,
+      };
       try {
-        result = await HighlightPatchWithContext(threadId, {
-          scope: context.scope,
-          commitSHA: context.commitSHA,
-          headSHA: context.headSHA,
-          path: file.path,
-          patch,
-          editPayloadId: context.editPayloadId ?? '',
-          editTurnIndex: context.editTurnIndex ?? -1,
-        });
+        // Same split as the gap-expansion RPCs: the edits scope's subject
+        // is the thread's own history, every other scope's is the
+        // checkout. `subject` is exactly the id each one resolves through.
+        result = primed.scope === 'edits'
+          ? await HighlightEditPatchWithContext(subject, req)
+          : await HighlightPatchWithContext(primed.workspace, req);
       } catch {
         // Priming refused — a session without `files:read`, or a scope failure.
         // Fall through to the wire-safe unprimed request.
@@ -513,12 +574,12 @@ function seedPatchFileSpans(
  * answers; the extra hop is slack, not expected traversal. */
 const MAX_PREDECESSOR_DEPTH = 4;
 
-function entryForKey(
-  base: string,
-  threadId?: string,
-  context?: PatchScopeContext | null,
-): SpanEntry | undefined {
-  let entry = context && threadId ? entries.get(scopedKey(base, threadId, context)) : undefined;
+function entryForKey(base: string, context?: PatchScopeContext | null): SpanEntry | undefined {
+  // The scoped lookup derives its subject from the context exactly as the
+  // request did, so a read can never look under a key the writer would
+  // not have used.
+  const subject = context ? scopeSubjectKey(context) : '';
+  let entry = subject === '' ? undefined : entries.get(scopedKey(base, subject, context!));
   entry ??= entries.get(base);
   return entry;
 }
@@ -541,7 +602,6 @@ function entryForKey(
 export function getSpansForLine(
   file: PatchFile,
   line: PatchLine,
-  threadId?: string,
   context?: PatchScopeContext | null,
 ): EncodedLine | null {
   void generation;
@@ -551,7 +611,7 @@ export function getSpansForLine(
   // paint its spans on the FIRST render. The request effect runs after
   // render and its cache hit does not bump the generation, so there is
   // no later repaint to fix a miss here.
-  const direct = entryForKey(ensureFileKey(file), threadId, context);
+  const direct = entryForKey(ensureFileKey(file), context);
   if (direct) {
     const index = lineIndexes.get(file.lines)?.get(line);
     return index === undefined ? null : (direct.spans[index] ?? null);
@@ -559,7 +619,7 @@ export function getSpansForLine(
   let lines = expansionPredecessor(file.lines);
   for (let depth = 0; lines && depth < MAX_PREDECESSOR_DEPTH; depth += 1) {
     const base = fileKeys.get(lines);
-    const entry = base === undefined ? undefined : entryForKey(base, threadId, context);
+    const entry = base === undefined ? undefined : entryForKey(base, context);
     if (entry) {
       const index = lineIndexes.get(lines)?.get(line);
       // Absent index = a line newer than this array (freshly fetched
@@ -570,6 +630,46 @@ export function getSpansForLine(
     lines = expansionPredecessor(lines);
   }
   return null;
+}
+
+/**
+ * Materialization hook: hands every entry a draft placeholder requested
+ * to the real thread row it just became.
+ *
+ * A placeholder's synthetic row id is a real owner (see
+ * `registerThread`), and switch/close already evict it because the
+ * pane's snapshot reads `getThread()?.id`. Materialization is the one
+ * transition that does NOT go through either: the row is swapped in
+ * place, so without this the placeholder's ownership records would name
+ * an id nothing ever evicts again and its entries would outlive the
+ * thread, freed only under LRU pressure.
+ *
+ * It renames rather than evicts on purpose: primed entries are keyed by
+ * the SUBJECT they were resolved through (the workspace), which
+ * materialization does not change, so the remounted review companion
+ * looks up the very same keys. Renaming keeps every one of them a hit —
+ * zero refetch across the transition — while restoring the eviction
+ * path.
+ *
+ * No generation bump: nothing about what any consumer can read changed.
+ */
+export function adoptDiffSpanOwner(from: string, to: string): void {
+  // Both ids are real rows by construction (a placeholder id and the id
+  // it materialized into). An empty one would either strand the
+  // placeholder's entries or refile them under the "nobody" owner
+  // `registerThread` exists to refuse.
+  if (from === '' || to === '') {
+    throw new Error('diff span cache: cannot adopt entries to or from an empty owner id');
+  }
+  if (from === to) return;
+  for (const owners of keyThreads.values()) {
+    if (owners.delete(from)) owners.add(to);
+  }
+  // Ownership only. The ingest epoch maps are deliberately left alone:
+  // an in-flight seed's continuation decrements the id it captured and
+  // deletes both entries on the way out, so moving the counts here would
+  // strand a count under `to` that nothing ever decrements. Those maps
+  // live only for the duration of a class-table load.
 }
 
 /**

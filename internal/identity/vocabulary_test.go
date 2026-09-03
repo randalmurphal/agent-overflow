@@ -15,7 +15,7 @@ import (
 // internal/store/AGENTS.md points at.
 //
 // The value sets exist twice on purpose: as Go types here, and as CHECK
-// constraints in migration v75. internal/store stays identity-free the same
+// constraints in migration v79. internal/store stays identity-free the same
 // way it stays provider-free, so it cannot import these constants — and
 // this package can import it, which is why the test lives on this side.
 //

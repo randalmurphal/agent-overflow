@@ -274,38 +274,15 @@ func (a *App) cloneUserMessageAttachmentsForDraft(
 			clonedIDs = append(clonedIDs, sourceAttachmentID)
 			continue
 		}
-		clonedID, err := a.cloneDraftAttachment(targetThreadID, sourceThreadID, sourceAttachmentID, createdAt)
+		// Copied on disk, not round-tripped through base64 Upload: the
+		// store already accepted these bytes, so re-validating them would
+		// re-DERIVE a kind the original write settled — and a 50 MiB file
+		// would sit in memory twice on its way to the same place.
+		cloned, err := a.attachments.CopyToThread(sourceThreadID, targetThreadID, sourceAttachmentID, createdAt)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("clone draft attachment %s: %w", sourceAttachmentID, err)
 		}
-		clonedIDs = append(clonedIDs, clonedID)
+		clonedIDs = append(clonedIDs, cloned.ID)
 	}
 	return clonedIDs, nil
-}
-
-// cloneDraftAttachment copies one attachment's bytes onto another thread,
-// disk to disk. Its own function so the source handle is closed by a defer
-// rather than by a close call on every branch of a loop body.
-//
-// It streams: the source's open file IS the upload's reader, so cloning a
-// draft carrying eight 10 MiB screenshots costs one 32 KiB copy buffer
-// rather than 80 MiB of heap.
-func (a *App) cloneDraftAttachment(targetThreadID, sourceThreadID, sourceAttachmentID string, createdAt int64) (string, error) {
-	content, err := a.attachments.OpenThread(sourceThreadID, sourceAttachmentID)
-	if err != nil {
-		return "", fmt.Errorf("clone draft attachment %s: %w", sourceAttachmentID, err)
-	}
-	defer content.File.Close()
-	cloned, err := a.attachments.Upload(
-		targetThreadID,
-		content.Record.Filename,
-		content.Record.MimeType,
-		content.Record.Size,
-		content.File,
-		createdAt,
-	)
-	if err != nil {
-		return "", fmt.Errorf("clone draft attachment %s: %w", sourceAttachmentID, err)
-	}
-	return cloned.ID, nil
 }

@@ -131,8 +131,9 @@ func (s *Server) handleBundleArchive(w http.ResponseWriter, r *http.Request) {
 	}
 	// The same window the attachment bytes get, for the same arithmetic:
 	// the server's 60s write timeout is right for an RPC and wrong for
-	// megabytes, and this body is the largest one this listener serves.
-	extendTransferDeadline(w, false)
+	// megabytes. Sized from the archive's own length, the way an upload
+	// is sized from its ticket.
+	extendTransferDeadline(w, false, AttachmentTransferWindowFor(int64(len(archive))))
 	h := w.Header()
 	WriteSecurityHeaders(h, s.csp)
 	h.Set("Cache-Control", "no-store")

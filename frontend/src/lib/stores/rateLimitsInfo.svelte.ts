@@ -71,6 +71,26 @@ export function setProviderRateLimits(snapshot: RateLimitsSnapshot): void {
     merged.set(key, { ...candidate });
     changed = true;
   }
+  if (snapshot.complete) {
+    // The whole answer for this account, so a stored limit it omits is gone.
+    // A provider drops a bucket once it has no usage, which is what a
+    // mid-window reset produces, and merging alone kept the pre-reset
+    // percentage for the rest of the window (2026-09-01: a Fable weekly row
+    // stuck at 90% while session and all-models read 0%). A limit the loop
+    // above rejected still counts as named — the server listed it, so its
+    // stored value stays the better answer. MergeSnapshot in
+    // internal/providerlifecycleapp is this rule's twin; change both.
+    const present = new Set<string>();
+    for (const entry of snapshot.limits) {
+      if (!entry.limitId?.trim()) continue;
+      present.add(entryKey(entry));
+    }
+    for (const key of merged.keys()) {
+      if (present.has(key)) continue;
+      merged.delete(key);
+      changed = true;
+    }
+  }
   if (!changed) return;
 
   const nextAccounts = new Map(providerAccounts);

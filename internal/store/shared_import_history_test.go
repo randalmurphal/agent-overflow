@@ -148,9 +148,9 @@ func TestSharedImportHistoryPagingAndSubagentExpansionUseLogicalTimeline(t *test
 		t.Fatalf("apply import: %v", err)
 	}
 
-	page, err := s.ListRecentItems("shared-window", 0)
+	page, err := s.ListThreadSliceAround("shared-window", "", 200)
 	if err != nil {
-		t.Fatalf("list recent items: %v", err)
+		t.Fatalf("list slice: %v", err)
 	}
 	if len(page.Items) != 1 || page.Items[0].ID != "item-user" {
 		t.Fatalf("top-level page = %+v, want only item-user", page.Items)

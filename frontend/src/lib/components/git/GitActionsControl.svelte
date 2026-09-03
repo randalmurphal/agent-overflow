@@ -38,7 +38,9 @@
     runPushAction,
     runRemoveWorktreeAction,
     type GitActionCtx,
+    type RemoveWorktreeCtx,
   } from './gitActions';
+  import type { WorkspaceRef } from '../../types/git';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -54,6 +56,10 @@
   // height is load-bearing. Per-segment padding / rounded corners / middle
   // border are appended at each use site below.
 
+  // The checkout every action here acts on. Null means this pane names no
+  // checkout at all (a terminal-only thread): the control does not render,
+  // rather than rendering and swallowing the click.
+  let workspace = $derived(pane.workspace);
   // Live status for this pane's workspace. Reading through $derived keeps
   // this control reactive to the shared entry without owning it.
   let status = $derived(pane.gitStatus.status);
@@ -80,7 +86,7 @@
   function handleOpenShip(event: Event): void {
     const detail = (event as CustomEvent<{ paneId?: string }>).detail;
     if (detail?.paneId && detail.paneId !== pane.paneId) return;
-    if (pane.threadId) showShip = true;
+    if (workspace !== null) showShip = true;
   }
 
   onMount(() => {
@@ -93,7 +99,7 @@
     }
   });
 
-  let isWorktree = $derived(!!pane.thread?.worktreePath);
+  let worktreePath = $derived(pane.thread?.worktreePath ?? '');
   // Forge-aware labels for the menu item. Falls back to GitHub strings
   // when status.forge is empty (no origin or unsupported host) — the
   // canCreatePR gate keeps the action disabled in that case.
@@ -115,32 +121,35 @@
 
   let primaryAction = $derived(primaryActionFor(status));
 
-  function ctx(): GitActionCtx {
+  function ctx(ws: WorkspaceRef): GitActionCtx {
     return {
-      threadId: pane.threadId!,
+      workspace: ws,
       reportError: (msg) => pane.setGeneralError(msg),
       refreshStatus: () => pane.gitStatus.refreshNow(),
       forge: status?.forge,
     };
   }
 
-  async function executePrimary() {
-    if (!pane.threadId) return;
+  function removeCtx(ws: WorkspaceRef, worktreePath: string): RemoveWorktreeCtx {
+    return { ...ctx(ws), worktreePath };
+  }
+
+  async function executePrimary(ws: WorkspaceRef) {
     switch (primaryAction.action) {
       case 'commit':
         showCommit = true;
         break;
       case 'push':
-        await guard(() => runPushAction(ctx()));
+        await guard(() => runPushAction(ctx(ws)));
         break;
       case 'pull':
-        await guard(() => runPullAction(ctx()));
+        await guard(() => runPullAction(ctx(ws)));
         break;
     }
   }
 
   async function guard(run: () => Promise<void>): Promise<void> {
-    if (!pane.threadId || actionLoading) return;
+    if (actionLoading) return;
     actionLoading = true;
     try {
       await run();
@@ -170,10 +179,11 @@
   >
     {#snippet children()}Git: error{/snippet}
   </Button>
-{:else if status && status.isRepo}
+{:else if workspace !== null && status && status.isRepo}
+  {@const ws = workspace}
   <div class="flex">
     <button
-      onclick={executePrimary}
+      onclick={() => void executePrimary(ws)}
       disabled={primaryAction.disabled || actionLoading || gitUngranted}
       title={gitUngranted ? 'Not granted to this device' : primaryAction.tooltip}
       class="{SPLIT_BTN_BASE} px-2.5 rounded-l disabled:opacity-40 disabled:cursor-not-allowed"
@@ -215,7 +225,7 @@
           disabled={menuStatus.aheadCount === 0 || gitUngranted}
           onSelect={() => {
             showDropdown = false;
-            void guard(() => runPushAction(ctx()));
+            void guard(() => runPushAction(ctx(ws)));
           }}
         />
         <MenuItem
@@ -223,7 +233,7 @@
           disabled={menuStatus.behindCount === 0 || gitUngranted}
           onSelect={() => {
             showDropdown = false;
-            void guard(() => runPullAction(ctx()));
+            void guard(() => runPullAction(ctx(ws)));
           }}
         />
         <MenuItem
@@ -242,7 +252,7 @@
             if (openPRURL) {
               void handleExternalURL(openPRURL);
             } else {
-              void guard(() => runCreatePRAction(ctx()));
+              void guard(() => runCreatePRAction(ctx(ws)));
             }
           }}
         />
@@ -255,7 +265,7 @@
             showShip = true;
           }}
         />
-        {#if isWorktree}
+        {#if worktreePath}
           <MenuDivider />
           <MenuItem
             label="Remove Worktree"
@@ -299,7 +309,7 @@
     destructive={true}
     onConfirm={() => {
       showRemoveWorktreeConfirm = false;
-      void guard(() => runRemoveWorktreeAction(ctx()));
+      void guard(() => runRemoveWorktreeAction(removeCtx(ws, worktreePath)));
     }}
     onCancel={() => {
       showRemoveWorktreeConfirm = false;

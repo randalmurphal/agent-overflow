@@ -45,7 +45,7 @@ what somebody meant.
 ## What it does differently from a windowed boot
 
 **It honors your saved network settings.** The bind toggle, the canonical
-domain, the DNS hook and the tailnet switch from Settings → Network all
+domain, the DNS hook and the tailnet switch from Settings → Remote access all
 apply at boot, so a host reboots back onto the address it was reachable at.
 An explicit `--listen` still wins for this launch, because naming an
 address on the command line is an override on purpose.
@@ -60,13 +60,13 @@ Agent Overflow is serving on 0.0.0.0:7777
 ```
 
 The bound address is always printed. The rest appears only when it is a
-fact — the URL comes from the same formatter Settings → Network reads, so
+fact — the URL comes from the same formatter Settings → Remote access reads, so
 the two cannot disagree. A cleartext LAN URL prints a warning naming the
 remedy, because that URL carries the token in the open.
 
 The tailnet line is usually absent at this moment even when the node is
 enabled: bring-up is asynchronous and a first sign-in is interactive.
-Settings → Network is where you watch that finish.
+Settings → Remote access is where you watch that finish.
 
 The token is the launch credential. It is what a same-host
 `agent-overflow --connect` uses to attach. A device on another machine
@@ -214,7 +214,7 @@ default resolves THROUGH it and would pin the service to today's target.
 
 `--listen <host:port>` is rarely what you want, and the reason is worth stating
 plainly: a flag in the unit overrides the saved network settings on every
-start. Settings → Network can then no longer move the backend — the setting
+start. Settings → Remote access can then no longer move the backend — the setting
 changes, the flag wins, and nothing says why. Set the bind toggle and the port
 below instead, and keep `--listen` for a host whose address must be fixed
 outside the app.
@@ -427,7 +427,7 @@ Two things it needs, and both are stated rather than assumed:
 
 ## Bind and port
 
-Settings → Network holds both halves of the address, and a serve host
+Settings → Remote access holds both halves of the address, and a serve host
 reads them at boot.
 
 **Allow remote access** decides the host: off binds `127.0.0.1`, on binds
@@ -449,7 +449,7 @@ A saved port that cannot be bound is a boot FAILURE naming the setting,
 not a quiet move to somewhere else. That is deliberate: a backend nobody
 can find at the address they have is worse than one that did not start.
 Under systemd, `Restart=on-failure` plus `systemctl --user status
-agent-overflow` is how you see it. Fix it in Settings → Network from a
+agent-overflow` is how you see it. Fix it in Settings → Remote access from a
 device that is already paired, or start once with `--listen` to get in.
 
 ### What changing the port costs

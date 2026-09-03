@@ -30,14 +30,15 @@ import type { Attachment } from '../types/attachment';
  *
  * The metadata is fixed by the MINT, not by this request: the ticket
  * carries the thread, filename, content type and exact byte count, and
- * the PUT contributes only the body. That is why an oversize or
- * non-image file is refused here for the price of one round trip instead
- * of after its bytes have crossed.
+ * the PUT contributes only the body. That is why an oversize file is
+ * refused here for the price of one round trip instead of after its bytes
+ * have crossed: the mint decides the KIND (image or file) from the name
+ * and type, and the cap it checks is that kind's.
  *
  * Single-shot. A failed upload is retried by minting again rather than
  * resumed — a ticket is spent by the first request that presents it, and
- * resumable transfer is deferred (bodies are at most 10 MiB and the
- * composer compresses images first).
+ * resumable transfer is deferred (a body is bounded by its kind's cap,
+ * 50 MiB at most, and the composer compresses images first).
  */
 export async function uploadAttachmentBytes(threadId: string, file: File): Promise<Attachment> {
   const url = await MintAttachmentUploadTicket(threadId, file.name, file.type || '', file.size);
@@ -95,7 +96,7 @@ async function transferFailure(response: Response, prefix: string): Promise<stri
     // A body we could not read tells us nothing the status did not.
   }
   if (response.status === 413) {
-    return `${prefix}: the image is larger than this backend accepts.`;
+    return `${prefix}: the file is larger than this backend accepts.`;
   }
   if (response.status === 404) {
     return `${prefix}: this transfer is no longer available. Try again.`;

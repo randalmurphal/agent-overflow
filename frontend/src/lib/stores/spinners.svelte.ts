@@ -3,7 +3,7 @@
 // <configDir>/spinners/ `<id>.png` + `<id>.json` pairs as opaque bytes
 // (internal/spinner), this store parses the manifest, decodes the strip
 // to learn its frame geometry, and every consumer (the activity rail's
-// pool, Settings → Appearance's pool list) derives from the one entry.
+// pool, Settings → Working indicator's pool list) derives from the one entry.
 //
 // Doctrine (frontend/CLAUDE.md → State Boundaries): the entity is the
 // APP — the directory listing takes no key and a `spinner:changed` from

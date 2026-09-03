@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Identity rows (migration v75). Persistence only: this package validates
+// Identity rows (migration v79). Persistence only: this package validates
 // what SQLite can state — presence, uniqueness, the CHECK'd value sets —
 // and leaves the meaning of a scope, a binding class, or an audit event
 // to internal/identity, which is the layer that mints and verifies them.
@@ -62,7 +62,7 @@ type Device struct {
 	// present, so one key can never name two devices.
 	KeyThumbprint       string `json:"keyThumbprint,omitempty"`
 	PasskeyCredentialID string `json:"passkeyCredentialId,omitempty"`
-	// ProofKind is how KeyThumbprint may be presented (migration v77).
+	// ProofKind is how KeyThumbprint may be presented (migration v81).
 	// `bearer` compares the thumbprint as a string; `key` accepts only a
 	// signed proof over the request, and the thumbprint is then the RFC
 	// 7638 thumbprint of the public key that signed it. Empty reads as
@@ -73,7 +73,7 @@ type Device struct {
 	// internal/identity declares the names and cross-checks both.
 	ProofKind string `json:"proofKind,omitempty"`
 	// Channel names a device the backend mints for ITSELF rather than one
-	// a person paired: today only the local page channel (v76). Empty for
+	// a person paired: today only the local page channel (v80). Empty for
 	// every paired device, and uniquely indexed when present, so a channel
 	// resolves to the same row on every boot instead of accumulating one
 	// device per launch.
@@ -101,7 +101,7 @@ type Session struct {
 	RevokedAt    int64  `json:"revokedAt,omitempty"`
 	LastSeenAt   int64  `json:"lastSeenAt,omitempty"`
 	// ActivatedAt is 0 while a session is still waiting for the owner to
-	// confirm the pairing verification number (v76). Every directly minted
+	// confirm the pairing verification number (v80). Every directly minted
 	// session carries the moment it was created, because nothing gates it.
 	ActivatedAt int64 `json:"activatedAt,omitempty"`
 	// DeviceRevokedAt is the DEVICE row's revocation stamp, joined in by
@@ -352,7 +352,7 @@ func (s *Store) CreateDevice(userID, label, class, platform string) (Device, err
 }
 
 // EnsureChannelDevice resolves the one device row belonging to an implicit
-// backend channel (v76 `devices.channel`), creating it on first boot.
+// backend channel (v80 `devices.channel`), creating it on first boot.
 // Idempotent, and safe against a concurrent boot of the same store: the
 // insert names the channel, the partial unique index refuses the second
 // one, and the loser re-reads the winner's row.

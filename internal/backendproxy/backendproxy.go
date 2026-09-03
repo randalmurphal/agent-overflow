@@ -285,9 +285,11 @@ func (c *Carrier) CarryTransfer(w http.ResponseWriter, r *http.Request) {
 	// The same window the backend gives itself. Without this a caller's
 	// own read and write timeouts would cut a transfer the upstream was
 	// willing to finish, and the page would see the hop fail rather than
-	// the backend refuse.
+	// the backend refuse. Sized from the declared length the same way the
+	// backend sizes it from the ticket; a download declares none and gets
+	// the floor, which is what the backend gives an image too.
 	controller := http.NewResponseController(w)
-	deadline := time.Now().Add(transport.AttachmentTransferWindow)
+	deadline := time.Now().Add(transport.AttachmentTransferWindowFor(r.ContentLength))
 	if err := controller.SetReadDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		c.logf("extend attachment read deadline: %v", err)
 	}

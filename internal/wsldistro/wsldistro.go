@@ -31,6 +31,14 @@ type Config struct {
 	// in. Switching distros forces a reinstall in the new distro
 	// even when InstalledVer hasn't changed.
 	InstalledDistro string `json:"installed_distro,omitempty"`
+
+	// InstalledBinPath is the absolute Linux path the payload was
+	// installed at, recorded together with InstalledVer. A launch whose
+	// version and distro already match reuses it and skips the wsl.exe
+	// round trip that resolves $HOME (measured at ~440 ms per boot). A
+	// stale path (the distro's default user or HOME changed) fails the
+	// launch, and the launcher then re-resolves and reinstalls once.
+	InstalledBinPath string `json:"installed_bin_path,omitempty"`
 }
 
 // Load reads and decodes wsl.json from dir. Returns (nil, nil) when

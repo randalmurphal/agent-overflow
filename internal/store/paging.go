@@ -20,7 +20,7 @@ func visibleItemsFilterFor(alias string) string {
 
 var visibleItemsFilter = visibleItemsFilterFor("")
 
-// topLevelItemsFilter restricts a timeline read to top-level rows.
+// topLevelItemsFilterFor restricts a timeline read to top-level rows.
 // Subagent children (rows with a non-empty parent_id) are deliberately
 // not part of any history window, budget, or pagination probe: they
 // render inside their anchor's SubagentGroup card, load on demand via
@@ -29,7 +29,22 @@ var visibleItemsFilter = visibleItemsFilterFor("")
 // windows used to make one subagent-heavy turn eat the entire item
 // budget and flash "Load older messages" for rows that would never
 // render as timeline rows.
-const topLevelItemsFilter = "parent_id = ''"
+//
+// The aliased form exists for the same reason visibleItemsFilterFor's
+// does: a read written as physical timeline arms (timeline_arms.go) has
+// a second table in scope and must qualify every column.
+func topLevelItemsFilterFor(alias string) string {
+	return alias + "parent_id = ''"
+}
+
+var topLevelItemsFilter = topLevelItemsFilterFor("")
+
+// windowedTimelineFilter is the predicate pair every history window,
+// budget, and probe shares — visible rows, top-level only — qualified
+// for the physical timeline arms (timeline_arms.go), which always alias
+// the row source `items`.
+var windowedTimelineFilter = visibleItemsFilterFor("items.") + `
+		   AND ` + topLevelItemsFilterFor("items.")
 
 // TimelineCursor is a stable position in a thread timeline. The item id is
 // carried for diagnostics/snapshot readability; ordering is by
@@ -102,119 +117,21 @@ func (p PagedItems) TrimToRange(from, to int) PagedItems {
 	}
 }
 
-// openUpperBound is the sentinel upper-turn bound used by queries that
-// want "all turns at or above floor." 2^31 is larger than any practical
-// turn_index — the schema only enforces CHECK(turn_index >= 0), so this
-// isn't a hard cap, just a safe ceiling past anything realistic.
-const openUpperBound = int64(1 << 31)
-
-// ListRecentItems loads every top-level item for the thread whose
-// turn_index is at or above `floorTurnIndex`. Subagent children stay
-// behind their anchor's collapsed card (see topLevelItemsFilter).
-//
-// Pass `floorTurnIndex = 0` (or any value ≤ the thread's smallest
-// turn_index) to load the entire thread. Empty threads return a stable
-// empty PagedItems shape with both turn bounds set to -1.
-func (s *Store) ListRecentItems(threadID string, floorTurnIndex int) (PagedItems, error) {
-	q := s.reader()
-	items, err := s.queryPagedItems(q, threadID, int64(floorTurnIndex), openUpperBound)
-	if err != nil {
-		return PagedItems{}, err
-	}
-	return s.finalizePagedItems(q, threadID, items)
-}
-
-// ListItemsBeforeTurn loads older top-level items strictly below
-// `beforeTurnIndex` until cumulative item count reaches `itemBudget`.
-//
-// The third parameter is an **item budget**, not a turn count: the
-// backend walks turns DESC starting at `beforeTurnIndex - 1`, summing
-// each turn's top-level item count (excluding `plan_update`
-// notifications), and stops at the first turn that pushes cumulative ≥
-// itemBudget. This keeps a page predictably sized for the frontend
-// regardless of how many items any single turn happens to contain.
-//
-// `beforeTurnIndex` is exclusive — callers pass their current floor and
-// get back items for turns strictly below it. A non-positive
-// `itemBudget` is treated as "nothing to load" and returns an empty
-// page.
-//
-// Returns PagedItems{Items: []Item{}, OldestTurnIndex: -1, HasMore: false}
-// when no older turns exist or itemBudget is non-positive.
-func (s *Store) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget int) (PagedItems, error) {
-	empty := emptyPagedItems()
-	if itemBudget <= 0 {
-		return empty, nil
-	}
-
-	newFloor, ok, err := s.floorTurnByItemBudget(threadID, int64(beforeTurnIndex), itemBudget)
-	if err != nil {
-		return PagedItems{}, err
-	}
-	if !ok {
-		return empty, nil
-	}
-
-	q := s.reader()
-	items, err := s.queryPagedItems(q, threadID, int64(newFloor), int64(beforeTurnIndex))
-	if err != nil {
-		return PagedItems{}, err
-	}
-	// newFloor always has at least one selectable row (the budget walk
-	// only stops on turns that contribute counts), so items[0].TurnIndex
-	// == newFloor and finalizePagedItems reports the same turn bounds the
-	// explicit newFloor bookkeeping used to.
-	return s.finalizePagedItems(q, threadID, items)
-}
-
-// ListItemsAfterTurn loads newer top-level items strictly above
-// `afterTurnIndex` until cumulative item count reaches `itemBudget`.
-func (s *Store) ListItemsAfterTurn(threadID string, afterTurnIndex, itemBudget int) (PagedItems, error) {
-	empty := emptyPagedItems()
-	if itemBudget <= 0 {
-		return empty, nil
-	}
-
-	upper, ok, err := s.ceilingTurnByItemBudget(threadID, int64(afterTurnIndex), itemBudget)
-	if err != nil {
-		return PagedItems{}, err
-	}
-	if !ok {
-		return empty, nil
-	}
-
-	floor := afterTurnIndex + 1
-	q := s.reader()
-	items, err := s.queryPagedItems(q, threadID, int64(floor), int64(upper)+1)
-	if err != nil {
-		return PagedItems{}, err
-	}
-	return s.finalizePagedItems(q, threadID, items)
-}
-
 // ListItemsBeforeCursor loads older visible top-level items strictly
 // before `before` until `itemBudget` rows have been selected.
 func (s *Store) ListItemsBeforeCursor(threadID string, before TimelineCursor, itemBudget int) (PagedItems, error) {
 	if itemBudget <= 0 || !cursorIsValid(before) {
 		return emptyPagedItems(), nil
 	}
-	selectedSQL := `SELECT id FROM (
-		SELECT id
-		  FROM timeline_items
-		 WHERE thread_id = ?
-		   AND ` + visibleItemsFilter + `
-		   AND ` + topLevelItemsFilter + `
-		   AND (turn_index < ? OR (turn_index = ? AND item_index < ?))
-		 ORDER BY turn_index DESC, item_index DESC
-		 LIMIT ?
-	)`
+	selectedSQL, selectedArgs := timelineIDSelection(threadID, timelineSelection{
+		Where: windowedTimelineFilter + `
+		   AND (items.turn_index < ? OR (items.turn_index = ? AND items.item_index < ?))`,
+		WhereArgs: []any{before.TurnIndex, before.TurnIndex, before.ItemIndex},
+		OrderBy:   "turn_index DESC, item_index DESC",
+		Limit:     itemBudget,
+	})
 	q := s.reader()
-	items, err := s.querySelectedPagedItems(
-		q,
-		threadID,
-		selectedSQL,
-		threadID, before.TurnIndex, before.TurnIndex, before.ItemIndex, itemBudget,
-	)
+	items, err := s.querySelectedPagedItems(q, threadID, selectedSQL, selectedArgs...)
 	if err != nil {
 		return PagedItems{}, err
 	}
@@ -228,53 +145,19 @@ func (s *Store) ListItemsAfterCursor(threadID string, after TimelineCursor, item
 	if itemBudget <= 0 || !cursorIsValid(after) {
 		return emptyPagedItems(), nil
 	}
-	selectedSQL := `SELECT id FROM (
-		SELECT id
-		  FROM timeline_items
-		 WHERE thread_id = ?
-		   AND ` + visibleItemsFilter + `
-		   AND ` + topLevelItemsFilter + `
-		   AND (turn_index > ? OR (turn_index = ? AND item_index > ?))
-		 ORDER BY turn_index ASC, item_index ASC
-		 LIMIT ?
-	)`
+	selectedSQL, selectedArgs := timelineIDSelection(threadID, timelineSelection{
+		Where: windowedTimelineFilter + `
+		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))`,
+		WhereArgs: []any{after.TurnIndex, after.TurnIndex, after.ItemIndex},
+		OrderBy:   "turn_index ASC, item_index ASC",
+		Limit:     itemBudget,
+	})
 	q := s.reader()
-	items, err := s.querySelectedPagedItems(
-		q,
-		threadID,
-		selectedSQL,
-		threadID, after.TurnIndex, after.TurnIndex, after.ItemIndex, itemBudget,
-	)
+	items, err := s.querySelectedPagedItems(q, threadID, selectedSQL, selectedArgs...)
 	if err != nil {
 		return PagedItems{}, err
 	}
 	return s.finalizePagedItems(q, threadID, items)
-}
-
-// queryPagedItems runs the "top-level items in [floor, upper)" query
-// used by the turn-bounded loaders and decorates the rows for render.
-//
-// Placeholders in order:
-//
-//  1. thread_id
-//  2. floor   (turn_index >= floor)
-//  3. upper   (turn_index < upper)
-func (s *Store) queryPagedItems(q sqlQueryer, threadID string, floor, upper int64) ([]Item, error) {
-	items, err := queryHydratedTimelineItems(
-		q,
-		threadID,
-		`SELECT id
-		   FROM timeline_items
-		  WHERE thread_id = ?
-		    AND `+visibleItemsFilter+`
-		    AND `+topLevelItemsFilter+`
-		    AND turn_index >= ? AND turn_index < ?`,
-		threadID, floor, upper,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: query paged items for %s: %w", threadID, err)
-	}
-	return s.decoratePagedItems(q, threadID, items)
 }
 
 // querySelectedPagedItems runs the cursor-based paging shape used by
@@ -363,33 +246,6 @@ func (s *Store) finalizePagedItems(q sqlQueryer, threadID string, items []Item) 
 	}, nil
 }
 
-// hasOlderTurns answers "does the thread have any visible top-level item
-// with turn_index < floor?" in one probe, used by PickInitialFloorTurn's
-// hasMore report. Uses the idx_items_thread_turn_item_unique composite index
-// so the EXISTS probe is an index lookup.
-//
-// Filters match every other loader (`queryPagedItems`,
-// `floorTurnByItemBudget`, cursor pagers): plan_update notifications and
-// subagent children are excluded. Without them, a thread whose only
-// sub-floor rows are plan_update notifications or subagent children
-// would report `hasMore=true`, the frontend would render a "Load older
-// messages" button, and clicking it would load zero rows before the
-// frontend's self-heal cleared the button.
-func (s *Store) hasOlderTurns(threadID string, floorTurnIndex int) (bool, error) {
-	var exists int
-	err := s.reader().QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM timeline_items
-		   WHERE thread_id = ? AND turn_index < ?
-		     AND `+visibleItemsFilter+`
-		     AND `+topLevelItemsFilter+`)`,
-		threadID, floorTurnIndex,
-	).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("store: probe older turns for %s: %w", threadID, err)
-	}
-	return exists != 0, nil
-}
-
 func (s *Store) hasOlderItems(q sqlQueryer, threadID string, cursor TimelineCursor) (bool, error) {
 	var exists int
 	err := q.QueryRow(
@@ -420,104 +276,6 @@ func (s *Store) hasNewerItems(q sqlQueryer, threadID string, cursor TimelineCurs
 		return false, fmt.Errorf("store: probe newer items for %s: %w", threadID, err)
 	}
 	return exists != 0, nil
-}
-
-// floorTurnByItemBudget walks turns DESC strictly below `beforeTurnIndex`,
-// summing each turn's top-level item count (excluding plan_update
-// notifications), and returns the smallest turn_index reached once
-// cumulative ≥ itemBudget. Returns (0, false, nil) when no items exist
-// below `beforeTurnIndex`.
-//
-// One walker, two entry points: ListItemsBeforeTurn passes the caller's
-// current floor (page-back); legacy tail loads pass openUpperBound. The
-// filters and the cumulative-budget shape must stay aligned with
-// `queryPagedItems` — counting filtered rows against the budget would
-// systematically under-deliver visible content.
-func (s *Store) floorTurnByItemBudget(threadID string, beforeTurnIndex int64, itemBudget int) (int, bool, error) {
-	if itemBudget < 1 {
-		itemBudget = 1
-	}
-	limit := boundedSliceTurnLimit(itemBudget)
-	rows, err := s.reader().Query(
-		`SELECT turn_index, COUNT(*) AS item_count
-		   FROM timeline_items
-		  WHERE thread_id = ? AND turn_index < ?
-		    AND `+visibleItemsFilter+`
-		    AND `+topLevelItemsFilter+`
-		  GROUP BY turn_index
-		  ORDER BY turn_index DESC
-		  LIMIT ?`,
-		threadID, beforeTurnIndex, limit,
-	)
-	if err != nil {
-		return 0, false, fmt.Errorf("store: floor turn by item budget for %s: %w", threadID, err)
-	}
-	defer rows.Close()
-
-	cumulative := 0
-	floor := 0
-	saw := false
-	for rows.Next() {
-		var ti, cnt int
-		if err := rows.Scan(&ti, &cnt); err != nil {
-			return 0, false, fmt.Errorf("store: scan floor turn by item budget row: %w", err)
-		}
-		floor = ti
-		saw = true
-		cumulative += cnt
-		if cumulative >= itemBudget {
-			break
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return 0, false, fmt.Errorf("store: iterate floor turn by item budget for %s: %w", threadID, err)
-	}
-	return floor, saw, nil
-}
-
-// ceilingTurnByItemBudget is the newer-side companion to
-// floorTurnByItemBudget. It walks turns ASC strictly above afterTurnIndex
-// and returns the largest turn_index reached once cumulative ≥ itemBudget.
-func (s *Store) ceilingTurnByItemBudget(threadID string, afterTurnIndex int64, itemBudget int) (int, bool, error) {
-	if itemBudget < 1 {
-		itemBudget = 1
-	}
-	limit := boundedSliceTurnLimit(itemBudget)
-	rows, err := s.reader().Query(
-		`SELECT turn_index, COUNT(*) AS item_count
-		   FROM timeline_items
-		  WHERE thread_id = ? AND turn_index > ?
-		    AND `+visibleItemsFilter+`
-		    AND `+topLevelItemsFilter+`
-		  GROUP BY turn_index
-		  ORDER BY turn_index ASC
-		  LIMIT ?`,
-		threadID, afterTurnIndex, limit,
-	)
-	if err != nil {
-		return 0, false, fmt.Errorf("store: ceiling turn by item budget for %s: %w", threadID, err)
-	}
-	defer rows.Close()
-
-	cumulative := 0
-	ceiling := 0
-	saw := false
-	for rows.Next() {
-		var ti, cnt int
-		if err := rows.Scan(&ti, &cnt); err != nil {
-			return 0, false, fmt.Errorf("store: scan ceiling turn by item budget row: %w", err)
-		}
-		ceiling = ti
-		saw = true
-		cumulative += cnt
-		if cumulative >= itemBudget {
-			break
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return 0, false, fmt.Errorf("store: iterate ceiling turn by item budget for %s: %w", threadID, err)
-	}
-	return ceiling, saw, nil
 }
 
 // ListThreadSliceAround loads the bounded active-pane window around an
@@ -560,33 +318,25 @@ func (s *Store) listThreadSliceAround(q sqlQueryer, threadID, anchorItemID strin
 	if afterBudget < 1 {
 		afterBudget = 1
 	}
-	selectedSQL := `SELECT id FROM (
-		SELECT id
-		  FROM timeline_items
-		 WHERE thread_id = ?
-		   AND ` + visibleItemsFilter + `
-		   AND ` + topLevelItemsFilter + `
-		   AND (turn_index < ? OR (turn_index = ? AND item_index <= ?))
-		 ORDER BY turn_index DESC, item_index DESC
-		 LIMIT ?
-	)
-	UNION
-	SELECT id FROM (
-		SELECT id
-		  FROM timeline_items
-		 WHERE thread_id = ?
-		   AND ` + visibleItemsFilter + `
-		   AND ` + topLevelItemsFilter + `
-		   AND (turn_index > ? OR (turn_index = ? AND item_index > ?))
-		 ORDER BY turn_index ASC, item_index ASC
-		 LIMIT ?
-	)`
+	atOrBeforeSQL, atOrBeforeArgs := timelineIDSelection(threadID, timelineSelection{
+		Where: windowedTimelineFilter + `
+		   AND (items.turn_index < ? OR (items.turn_index = ? AND items.item_index <= ?))`,
+		WhereArgs: []any{anchor.TurnIndex, anchor.TurnIndex, anchor.ItemIndex},
+		OrderBy:   "turn_index DESC, item_index DESC",
+		Limit:     atOrBeforeBudget,
+	})
+	afterSQL, afterArgs := timelineIDSelection(threadID, timelineSelection{
+		Where: windowedTimelineFilter + `
+		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))`,
+		WhereArgs: []any{anchor.TurnIndex, anchor.TurnIndex, anchor.ItemIndex},
+		OrderBy:   "turn_index ASC, item_index ASC",
+		Limit:     afterBudget,
+	})
 	items, err := s.querySelectedPagedItems(
 		q,
 		threadID,
-		selectedSQL,
-		threadID, anchor.TurnIndex, anchor.TurnIndex, anchor.ItemIndex, atOrBeforeBudget,
-		threadID, anchor.TurnIndex, anchor.TurnIndex, anchor.ItemIndex, afterBudget,
+		atOrBeforeSQL+"\nUNION\n"+afterSQL,
+		append(atOrBeforeArgs, afterArgs...)...,
 	)
 	if err != nil {
 		return PagedItems{}, err
@@ -598,33 +348,14 @@ func (s *Store) listThreadSliceAround(q sqlQueryer, threadID, anchorItemID strin
 // Used when the snapshot is a bottom-restore or the anchor item has
 // been deleted.
 func (s *Store) listTailSlice(q sqlQueryer, threadID string, targetItemCount int) (PagedItems, error) {
-	selectedSQL := `SELECT id FROM (
-		SELECT id
-		  FROM timeline_items
-		 WHERE thread_id = ?
-		   AND ` + visibleItemsFilter + `
-		   AND ` + topLevelItemsFilter + `
-		 ORDER BY turn_index DESC, item_index DESC
-		 LIMIT ?
-	)`
-	items, err := s.querySelectedPagedItems(q, threadID, selectedSQL, threadID, targetItemCount)
+	selectedSQL, selectedArgs := timelineIDSelection(threadID, timelineSelection{
+		Where:   windowedTimelineFilter,
+		OrderBy: "turn_index DESC, item_index DESC",
+		Limit:   targetItemCount,
+	})
+	items, err := s.querySelectedPagedItems(q, threadID, selectedSQL, selectedArgs...)
 	if err != nil {
 		return PagedItems{}, err
 	}
 	return s.finalizePagedItems(q, threadID, items)
-}
-
-// boundedSliceTurnLimit caps the number of turn rows scanned by the legacy
-// turn-budget pagers. Worst case (one item per turn) needs `budget` turns; a
-// 4x overshoot keeps the planner honest on burst threads where a turn might be
-// a no-item placeholder, and the absolute cap prevents pathological scans on
-// multi-thousand-turn threads.
-func boundedSliceTurnLimit(budget int) int {
-	const overshoot = 4
-	const absoluteCap = 5000
-	limit := budget * overshoot
-	if limit > absoluteCap {
-		limit = absoluteCap
-	}
-	return limit
 }

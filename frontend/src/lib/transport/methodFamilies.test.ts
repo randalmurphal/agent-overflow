@@ -32,7 +32,7 @@ const WRITE_TERMINAL = 146795716;
 describe('the id-family route table', () => {
   it('names only methods the generated route table still knows', () => {
     const declared = Object.keys(ROUTE_BY_ID_FAMILY).map(Number);
-    expect(declared.length).toBe(43);
+    expect(declared.length).toBe(49);
     for (const id of declared) {
       expect(METHOD_ROUTES[id], `id ${id} is not a bound method any more`).toBeDefined();
     }
@@ -47,7 +47,7 @@ describe('the id-family route table', () => {
     }
   });
 
-  it('declares each of the four families at its documented size', () => {
+  it('declares each family at its documented size', () => {
     const counts: Record<string, number> = {};
     for (const family of Object.values(ROUTE_BY_ID_FAMILY)) {
       counts[family] = (counts[family] ?? 0) + 1;
@@ -57,6 +57,8 @@ describe('the id-family route table', () => {
       workflowAutomation: 8,
       terminal: 6,
       subscription: 3,
+      threadGroup: 5,
+      threadList: 1,
     });
   });
 });

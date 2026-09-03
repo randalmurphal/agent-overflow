@@ -146,6 +146,28 @@ export class HarnessApp {
     await page.goto(await this.pageURL(), options);
   }
 
+  /**
+   * Resolves once the ui bridge has no frontend page registered. A page
+   * leaves the registry when its WebSocket is torn down, which Playwright
+   * orders after the previous test's context closes but not before the
+   * next test's fixtures run; a ui query that names no page would see the
+   * closing page beside the new one and refuse the ambiguity. Fails
+   * naming the count when a page outlives the wait, since that is a
+   * leaked context rather than a slow close.
+   */
+  async awaitNoPages(timeoutMs = 5_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const info = await this.rpc<{ frontendPages?: unknown[] }>('HarnessInfo');
+      const count = info.frontendPages?.length ?? 0;
+      if (count === 0) return;
+      if (Date.now() >= deadline) {
+        throw new Error(` frontend page(s) still registered after ms`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
   async startWatchdog(memoryLimitBytes: number): Promise<void> {
     await this.watchdog.start(memoryLimitBytes);
     this.processIdentity = this.watchdog.processIdentity ?? this.processIdentity;

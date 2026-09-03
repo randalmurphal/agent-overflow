@@ -80,6 +80,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.TerminalExit,
 		eventchan.TerminalOutput,
 		eventchan.ThreadErrorNotice,
+		eventchan.ThreadGroupUpdated,
 		eventchan.ThreadModeChanged,
 		eventchan.ThreadRuntimeModeChanged,
 		eventchan.ThreadTitleGeneration,

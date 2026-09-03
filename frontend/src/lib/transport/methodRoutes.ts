@@ -5,11 +5,11 @@
 // Which attached backend each bound method's call belongs to
 // (docs/specs/remote-access.md §10, "Routing an RPC"). The Go half is
 // internal/transport/methods_gen.go's Route column, generated from the
-// same scan in the same run; the thread and project routes are inferred
-// from the method's first parameter, the rest are authored //ao:route
-// directives.
+// same scan in the same run; the thread, project and workspace routes are
+// inferred from the method's first parameter, the rest are authored
+// //ao:route directives.
 
-export type MethodRoute = 'thread' | 'project' | 'home' | 'selected' | 'all';
+export type MethodRoute = 'thread' | 'project' | 'workspace' | 'home' | 'selected' | 'all';
 
 export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2629313140: 'home', // AddBackend
@@ -52,7 +52,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4246792665: 'thread', // CreateProposedPlanComment
 	2579322833: 'selected', // CreateThread
 	1716017387: 'selected', // CreateThreadFromPR
-	2428457759: 'selected', // DeleteAttachment
+	1478438024: 'project', // CreateThreadGroup
+	2428457759: 'thread', // DeleteAttachment
 	1303317790: 'thread', // DeleteDiffReviewComment
 	302062730: 'selected', // DeleteDiscussion
 	3876094070: 'thread', // DeleteEmptyDraftThread
@@ -61,6 +62,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	554913120: 'thread', // DeleteProposedPlanComment
 	784096448: 'home', // DeleteProviderCustomEnvVar
 	1186337974: 'thread', // DeleteThread
+	4104302889: 'home', // DeleteThreadGroup
 	1186757769: 'home', // DeleteUIState
 	604263015: 'home', // DevicePairingStatus
 	1061100039: 'selected', // DisallowPreviewPort
@@ -71,37 +73,37 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	767560289: 'home', // ForgetTailnetNode
 	4063914461: 'thread', // ForkThread
 	3977213964: 'thread', // ForkThreadFromMessage
-	1669373286: 'thread', // GenerateCommitMessage
+	1669373286: 'workspace', // GenerateCommitMessage
 	1559710962: 'home', // GetAccessOverview
 	3414107538: 'thread', // GetAttachmentThumbnail
-	1342635161: 'thread', // GetBranchBaseDiff
+	1342635161: 'workspace', // GetBranchBaseDiff
 	3595031866: 'selected', // GetChannelMessages
 	3664812883: 'selected', // GetChannelState
 	1573335127: 'selected', // GetClaudeSkills
 	2854892544: 'selected', // GetClaudeSlashCommands
 	1110466608: 'home', // GetCodexAccountUsage
 	1018032480: 'selected', // GetCodexSkills
-	3399370629: 'thread', // GetCommitDiff
+	3399370629: 'workspace', // GetCommitDiff
 	3416004963: 'home', // GetContextSettings
 	139818238: 'selected', // GetDevServers
-	1590634674: 'thread', // GetDiffContextLines
+	1590634674: 'workspace', // GetDiffContextLines
 	1924583939: 'selected', // GetDiscussion
 	875977146: 'thread', // GetDraft
+	949275134: 'thread', // GetEditDiffContextLines
 	1655853383: 'home', // GetEditorSettings
-	4123560639: 'thread', // GetGitStatus
-	2193133889: 'project', // GetGitStatusFastForProject
+	4123560639: 'workspace', // GetGitStatus
 	3015840904: 'home', // GetKeybindings
 	3247514443: 'selected', // GetLocalImageData
 	4139359668: 'home', // GetMcpServerStatus
-	3176695009: 'thread', // GetMergeConflictFile
+	3176695009: 'workspace', // GetMergeConflictFile
 	1632984917: 'selected', // GetModelsForProvider
 	1026796858: 'home', // GetNetworkSettings
 	2411810578: 'selected', // GetPRCIJobLog
 	2370852281: 'selected', // GetPRCIJobs
-	1737292419: 'thread', // GetPRCommitDiff
+	1737292419: 'workspace', // GetPRCommitDiff
 	2443547196: 'selected', // GetPRDetail
-	1867413234: 'thread', // GetPRDiff
-	106351482: 'thread', // GetPRMergeConflicts
+	1867413234: 'workspace', // GetPRDiff
+	106351482: 'workspace', // GetPRMergeConflicts
 	73280836: 'thread', // GetPayloadChunk
 	3448919335: 'thread', // GetPayloadData
 	4070214921: 'thread', // GetPayloadPreview
@@ -132,38 +134,30 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3380106838: 'home', // GetUIState
 	3135466533: 'all', // GetUsageStats
 	294719565: 'home', // GetWSLDistroPreference
-	1858968113: 'thread', // GetWorkingTreeDiff
 	673985705: 'selected', // GetWorkspaceActivity
-	736820142: 'thread', // GetWorkspaceCurrentDiff
-	1598126927: 'thread', // GitCheckout
-	585511915: 'project', // GitCheckoutForProject
-	1971060042: 'thread', // GitCommit
-	2582897723: 'thread', // GitCreateBranch
-	429779991: 'thread', // GitCreateBranchFrom
-	4106667105: 'thread', // GitCreatePR
+	736820142: 'workspace', // GetWorkspaceCurrentDiff
+	1598126927: 'workspace', // GitCheckout
+	1971060042: 'workspace', // GitCommit
+	429779991: 'workspace', // GitCreateBranchFrom
+	4106667105: 'workspace', // GitCreatePR
 	3327650914: 'thread', // GitCreateWorktree
-	3795082615: 'thread', // GitListBranchPruneCandidates
-	2693102179: 'thread', // GitListBranches
-	2675387767: 'project', // GitListBranchesForProject
-	3232495403: 'thread', // GitListWorktrees
-	409101231: 'project', // GitListWorktreesForProject
-	2000020570: 'thread', // GitMaybeFetchRemotes
-	338919746: 'project', // GitMaybeFetchRemotesForProject
-	3331815821: 'thread', // GitPruneBranches
-	3933172764: 'thread', // GitPull
-	4036251239: 'thread', // GitPush
+	3795082615: 'workspace', // GitListBranchPruneCandidates
+	2693102179: 'workspace', // GitListBranches
+	3232495403: 'workspace', // GitListWorktrees
+	2000020570: 'workspace', // GitMaybeFetchRemotes
+	3331815821: 'workspace', // GitPruneBranches
+	3933172764: 'workspace', // GitPull
+	4036251239: 'workspace', // GitPush
 	4002429606: 'thread', // GitRemoveWorktree
-	548906954: 'thread', // GitStageAll
-	3282404643: 'thread', // GitStatusSubscribe
+	3282404643: 'workspace', // GitStatusSubscribe
 	3263989430: 'home', // GitStatusUnsubscribe
-	1057032236: 'thread', // GitSyncBranch
-	3862053920: 'project', // GitSyncBranchForProject
-	1333748060: 'thread', // GitWorktreeStatus
-	71861776: 'project', // GitWorktreeStatusForProject
+	1057032236: 'workspace', // GitSyncBranch
+	1333748060: 'workspace', // GitWorktreeStatus
 	2772816619: 'home', // HighlightClassNames
 	4080150350: 'home', // HighlightCode
+	3749810774: 'thread', // HighlightEditPatchWithContext
 	834878499: 'home', // HighlightPatch
-	3722752402: 'thread', // HighlightPatchWithContext
+	3722752402: 'workspace', // HighlightPatchWithContext
 	2896867980: 'home', // HighlightSchemaVersion
 	786331585: 'selected', // ImportSessions
 	535929682: 'thread', // ImportThreadUpdates
@@ -174,7 +168,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1730798413: 'thread', // ListAttachments
 	2556802234: 'home', // ListAvailableEditors
 	130055792: 'home', // ListBackends
-	352990129: 'thread', // ListBranchCommits
+	352990129: 'workspace', // ListBranchCommits
 	2114948965: 'home', // ListChatBarFavorites
 	3057473088: 'thread', // ListDiffReviewComments
 	942288562: 'selected', // ListDiscussions
@@ -182,20 +176,17 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	99668597: 'selected', // ListImportableSessions
 	2158085763: 'thread', // ListItems
 	2915892537: 'thread', // ListItemsAfterCursor
-	932754656: 'thread', // ListItemsAfterTurn
 	162135710: 'thread', // ListItemsBeforeCursor
-	2147361923: 'thread', // ListItemsBeforeTurn
 	320784263: 'thread', // ListLiveBackgroundTasks
 	2582096622: 'home', // ListMcpServerStatuses
-	4110818691: 'thread', // ListPRCommits
+	4110818691: 'workspace', // ListPRCommits
 	763649720: 'selected', // ListPRReviewThreads
 	3860831272: 'home', // ListPasskeys
 	4186874978: 'thread', // ListPendingInteractiveRequests
 	2721360259: 'all', // ListProjects
 	2030403250: 'thread', // ListProposedPlanComments
 	981125684: 'home', // ListProviderAccounts
-	1937809620: 'thread', // ListRecentCommits
-	2604956482: 'thread', // ListRecentThreadItems
+	1937809620: 'workspace', // ListRecentCommits
 	1083162294: 'thread', // ListRecentTurns
 	397986043: 'home', // ListReleases
 	3808352241: 'all', // ListRunningBackgroundWork
@@ -203,6 +194,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1299118478: 'thread', // ListSubagentDescendants
 	2445206506: 'thread', // ListTerminals
 	2243533007: 'thread', // ListThreadEditDiffs
+	2176447381: 'all', // ListThreadGroups
 	245278513: 'thread', // ListThreadMcpServers
 	2485050629: 'thread', // ListThreadProposedPlans
 	4176102096: 'thread', // ListThreadSliceAround
@@ -222,6 +214,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3994295523: 'home', // OpenInEditor
 	2247958725: 'thread', // OpenTerminal
 	1748405812: 'thread', // PinThread
+	842795367: 'home', // PinThreadGroup
 	1315440605: 'selected', // PostChannelMessage
 	2870364785: 'thread', // PrepareThreadWorktree
 	1313986574: 'home', // ProbeClaudeAccount
@@ -247,12 +240,12 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2641306153: 'home', // RegisterPushToken
 	1034543696: 'thread', // RegisterQueueItem
 	3005272623: 'home', // RemoveBackend
-	2899196344: 'thread', // RemoveOtherWorktree
-	574548500: 'project', // RemoveOtherWorktreeForProject
+	2899196344: 'workspace', // RemoveOtherWorktree
 	684418419: 'home', // RemoveProviderAccount
 	1528076361: 'home', // RenameBackend
 	3728890856: 'project', // RenameProject
 	727416435: 'thread', // RenameThread
+	723690026: 'home', // RenameThreadGroup
 	95139518: 'home', // RenewCanonicalDomainCert
 	446243420: 'selected', // ReplyToPRThread
 	2174329377: 'home', // ReportFrontendErrorBatch
@@ -275,7 +268,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3576148797: 'thread', // SavePayloadToFile
 	1414650511: 'thread', // SearchThreadItems
 	3644945077: 'all', // SearchThreadMessages
-	3852272821: 'thread', // SearchWorkspaceFiles
+	3852272821: 'workspace', // SearchWorkspaceFiles
 	2317109106: 'thread', // SendDiffReviewComments
 	1496882310: 'thread', // SendMessage
 	3632185196: 'thread', // SendMessageWithOptions
@@ -288,6 +281,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	322092470: 'project', // SetProjectWorktreeSetup
 	2118904465: 'home', // SetProviderCustomEnvVar
 	719170063: 'home', // SetPushSenderCredential
+	2514763466: 'home', // SetThreadGroup
+	4218979176: 'home', // SetThreadGroupPinGroup
 	1041195811: 'thread', // SetThreadMcpServerEnabled
 	3112222989: 'thread', // SetThreadPinGroup
 	1514250938: 'home', // SetUIState
@@ -317,6 +312,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2561521885: 'project', // UnarchiveProject
 	3655125512: 'thread', // UnarchiveThread
 	3175043037: 'thread', // UnpinThread
+	48743460: 'home', // UnpinThreadGroup
 	3065043012: 'home', // UnregisterPushToken
 	2888550814: 'home', // UnsubscribePRUpdates
 	1472386383: 'home', // UpdateContextSettingsProfile
@@ -394,5 +390,5 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2006703348: 'home', // WorkflowUnbindThread
 	536579134: 'home', // WorkflowUpdateAutomation
 	146795716: 'home', // WriteTerminal
-	3895036895: 'thread', // WriteThreadWorkspaceFile
+	1859440887: 'workspace', // WriteWorkspaceFile
 };

@@ -15,6 +15,15 @@ export interface ThreadTerminalState {
   drawerHeight: number;
 }
 
+/**
+ * The slice of a mounted xterm that app commands drive through the handle
+ * (terminal.clear). Kept to the actions used so the store never depends on
+ * `@xterm/xterm` and the fakes in tests stay small.
+ */
+export interface TerminalXtermActions {
+  clear(): void;
+}
+
 const DEFAULT_DRAWER_HEIGHT = 280;
 const MIN_DRAWER_HEIGHT = 160;
 const MAX_DRAWER_HEIGHT = 1200;
@@ -110,6 +119,9 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
   let drawerHeight: number = $state(DEFAULT_DRAWER_HEIGHT);
   const pendingSequencesByTerminal = new Map<string, number[]>();
   const replayWatermarkByTerminal = new Map<string, number>();
+  // The mounted xterm per tab, registered by TerminalBody while it lives.
+  // Plain Map, not $state: nothing renders from it, commands just call into it.
+  const xtermByTerminal = new Map<string, TerminalXtermActions>();
 
   return {
     get tabs() { return tabs; },
@@ -143,6 +155,7 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       tabs = nextTabs;
       pendingSequencesByTerminal.delete(terminalID);
       replayWatermarkByTerminal.delete(terminalID);
+      xtermByTerminal.delete(terminalID);
       if (activeTerminalID === terminalID) {
         activeTerminalID = nextTabs.length > 0 ? nextTabs[nextTabs.length - 1]!.terminalID : null;
       }
@@ -216,11 +229,28 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       drawerHeight = Math.max(MIN_DRAWER_HEIGHT, Math.min(MAX_DRAWER_HEIGHT, Math.round(height)));
     },
 
+    attachXterm(terminalID: string, xterm: TerminalXtermActions): () => void {
+      xtermByTerminal.set(terminalID, xterm);
+      return () => {
+        // Only drop our own registration: a remount for the same tab may have
+        // attached its new xterm before the old surface's teardown ran.
+        if (xtermByTerminal.get(terminalID) === xterm) xtermByTerminal.delete(terminalID);
+      };
+    },
+
+    clearActive(): boolean {
+      const xterm = activeTerminalID ? xtermByTerminal.get(activeTerminalID) : undefined;
+      if (!xterm) return false;
+      xterm.clear();
+      return true;
+    },
+
     clear(): void {
       tabs = [];
       activeTerminalID = null;
       pendingSequencesByTerminal.clear();
       replayWatermarkByTerminal.clear();
+      xtermByTerminal.clear();
     },
   };
 }
@@ -237,6 +267,17 @@ export interface ThreadTerminalStateHandle {
   markReplayed(terminalID: string, fromSequence: number, throughSequence: number): void;
   updateSummary(summary: TerminalSessionSummary): void;
   setDrawerHeight(height: number): void;
+  /**
+   * Register a tab's mounted xterm so app commands can reach it. Returns the
+   * detach; a later attach for the same tab (remount) supersedes the earlier one.
+   */
+  attachXterm(terminalID: string, xterm: TerminalXtermActions): () => void;
+  /**
+   * Wipe the active tab's xterm buffer and scrollback (the terminal.clear
+   * command). Frontend-only: nothing goes to the PTY. Returns false when no
+   * active tab has a mounted xterm.
+   */
+  clearActive(): boolean;
   clear(): void;
 }
 

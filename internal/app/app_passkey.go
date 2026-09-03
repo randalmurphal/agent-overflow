@@ -23,7 +23,7 @@ import (
 // the same core.
 
 // passkeyRelyingParty resolves the relying party every ceremony runs
-// under, from the canonical domain in Settings → Network and the live
+// under, from the canonical domain in Settings → Remote access and the live
 // listener's port.
 //
 // The canonical domain is the ONLY candidate for an RP ID. WebAuthn

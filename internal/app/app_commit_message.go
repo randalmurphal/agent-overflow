@@ -20,7 +20,7 @@ type GeneratedCommitMessage struct {
 	Body    string `json:"body"`
 }
 
-// GenerateCommitMessage inspects the thread's working tree, stages all
+// GenerateCommitMessage inspects the referenced workspace, stages all
 // changes, and asks the configured text-generation CLI (Codex by
 // default, Claude as an alternative) to draft a structured commit
 // subject + body. Routing mirrors t3-code's RoutingTextGeneration.
@@ -33,7 +33,7 @@ type GeneratedCommitMessage struct {
 // as long as Claude is installed.
 //
 // Errors short-circuit in four shapes the frontend can render cleanly:
-//   - unknown thread
+//   - unresolvable workspace
 //   - empty staged diff ("nothing to commit")
 //   - CLI missing on PATH
 //   - CLI exited non-zero (stderr bubbled into the error)
@@ -43,12 +43,8 @@ type GeneratedCommitMessage struct {
 // actually committing.
 //
 //ao:scope git:operate
-func (a *App) GenerateCommitMessage(threadID string) (GeneratedCommitMessage, error) {
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		return GeneratedCommitMessage{}, fmt.Errorf("generate commit message: %w", err)
-	}
-	_, workspace, err := a.resolveGitPaths(thread)
+func (a *App) GenerateCommitMessage(ws WorkspaceRef) (GeneratedCommitMessage, error) {
+	_, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
 		return GeneratedCommitMessage{}, fmt.Errorf("generate commit message: %w", err)
 	}

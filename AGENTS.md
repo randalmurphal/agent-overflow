@@ -208,7 +208,8 @@ See [docs/references/spike-policy.md](docs/references/spike-policy.md).
   that scope is what the per-call gate compares a session's grants
   against. It also carries a ROUTE, naming which attached backend the
   call belongs to: `thread` and `project` are inferred from a first
-  parameter named `threadID` / `projectID`, and everything else declares
+  parameter named `threadID` / `projectID`, `workspace` from a first
+  parameter of type `gitapp.WorkspaceRef`, and everything else declares
   `//ao:route home|selected|all` or the same generator fails the run.
   See `internal/transport/AGENTS.md` for both vocabularies, the
   step-up set, and the authz and replay rules.

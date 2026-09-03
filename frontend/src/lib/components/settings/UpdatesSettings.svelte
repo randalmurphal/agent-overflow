@@ -5,7 +5,6 @@
   // version picker (rollback included) lives in VersionPicker, and the
   // supervised machines this client is attached to render below it in
   // MachineUpdates, from their own store.
-  import SettingsHeader from './SettingsHeader.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import VersionPicker from './VersionPicker.svelte';
   import MachineUpdates from './MachineUpdates.svelte';
@@ -63,11 +62,6 @@
 </script>
 
 <div class="flex flex-col gap-6">
-  <SettingsHeader
-    title="Updates"
-    description="Check for and install new versions of Agent Overflow. Nothing is downloaded or installed without your confirmation."
-  />
-
   {#if !s.supported}
     <p class="text-[0.75rem] text-fg-muted">{unsupportedMessage}</p>
   {:else}

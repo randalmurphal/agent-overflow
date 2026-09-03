@@ -36,6 +36,18 @@ func ensureDefaultTestProject(t *testing.T, a *App) {
 	}
 }
 
+// testWorkspaceRef registers workspacePath as a project and returns the ref
+// that addresses its root — the fixture every workspace-keyed git binding
+// needs now that none of them read a thread row.
+func testWorkspaceRef(t *testing.T, a *App, workspacePath string) WorkspaceRef {
+	t.Helper()
+	project, err := a.ensureProjectForWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace(%s): %v", workspacePath, err)
+	}
+	return WorkspaceRef{ProjectID: project.ID}
+}
+
 // createTestThread is a test-only convenience that preserves the four
 // positional args tests used to pass to CreateThread (provider, workspace,
 // model, mode) by wrapping the v13 CreateThreadOptions struct. It auto-

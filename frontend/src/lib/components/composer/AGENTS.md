@@ -25,6 +25,39 @@ never a base64 string in a WebSocket frame. `compressImageToFit` still
 runs first and is unchanged — a re-encode that fits beats a rejection,
 whatever carries the result.
 
+## An attachment is one of two kinds
+
+The server decides it (`attachment.classifyUpload`), the record carries
+it, and `attachmentHelpers.classifyAttachment` is the frontend's copy of
+that rule — used for the pre-upload size guard and for whether an
+oversized payload is worth recompressing. Nothing is rejected on type any
+more: an unrecognised one is a `file`. The caps differ (10 MiB image,
+50 MiB file), so a rejection message names the kind.
+
+- **An image** is bound positionally to an `[Image #N]` marker in the
+  textarea, and **N counts IMAGES only**. Every numbering and matching
+  pass in `utils/imagePlaceholders.ts` runs over `imageAttachments()`
+  (`types/attachment.ts`), so a file sitting between two images does not
+  shift the second one's number. The tile's `#N` badge is the same index.
+- **A file gets no textarea text at all.** It reaches the agent as a path
+  line the BACKEND appends to the provider payload, so
+  `addUploadedAttachment` inserts nothing and `ensureImagePlaceholders`
+  appends nothing for it. Its only removal gesture is its own chip:
+  `reconcileImagePlaceholders` must never drop a file, because a file has
+  no marker whose absence could mean the user deleted it.
+- **A file's bytes are never served.** `GetAttachmentThumbnail` errors
+  for one and the download route refuses it, so `createAttachmentPreviews`
+  skips the kind entirely rather than logging a guaranteed failure per
+  file per mount.
+
+Paste stays image-only (`extractClipboardImages`); drag and drop takes
+anything.
+
+A send awaits `waitForUploads()` before it snapshots `draft.attachments`
+— dropping a file and pressing Enter is one gesture, and an upload still
+in the air is not in the draft yet. Guarded on `uploading()` so the
+common send stays synchronous.
+
 ## Rail visibility is one predicate
 
 `activityRailHost.svelte.ts` owns the background-tasks controller, the

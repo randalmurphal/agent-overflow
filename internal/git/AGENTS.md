@@ -114,7 +114,7 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   `""`. The root read is deliberately uncached — it is asked at project
   creation and once per boot, and a rewritten history must not be
   served from a stale window. Consumers: `store.Project.remote_url` /
-  `root_commit` (migration v79) via `internal/projectapp`.
+  `root_commit` (migration v83) via `internal/projectapp`.
 - `status_pr_cache.go`: open-PR lookup cache used by `Status` /
   `StatusFast`; `InvalidatePRCache` lives here too. A failed forge
   lookup keeps serving the branch's last successfully-read PR next to

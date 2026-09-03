@@ -19,6 +19,7 @@ import {
 } from '../../stores/paneLayout.svelte';
 import {
   decodeThreadDragPayload,
+  endThreadRowDrag,
   PANE_REORDER_DRAG_MIME,
   projectedPaneDropWidth,
   THREAD_ROW_DRAG_MIME,
@@ -236,6 +237,9 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     const threadId = payload?.threadId ?? draggedThreadId;
     const target = threadDropTarget ?? resolveThreadDropTarget(event);
     clearThreadDragState();
+    // The sidebar's in-flight record: no dragend is guaranteed when the
+    // source row unmounted mid-drag, so every drop target clears it.
+    endThreadRowDrag();
     if (!threadId) return;
     const existing = findPaneShowingThread(threadId);
     if (existing) {

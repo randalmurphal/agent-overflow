@@ -103,7 +103,7 @@ still renders as itself instead of collapsing into "unknown".
 `Settings` is read by two kinds of caller and only one of them is at the
 machine. `GetNetworkSettings` answers `access:admin` — managing how a
 backend is exposed is what a paired admin device is FOR, and gating the
-read on host presence made Settings → Network unreachable from every
+read on host presence made Settings → Remote access unreachable from every
 device the owner had paired. So there are two builders, and which one runs
 is `internal/app`'s pick from the per-call proof:
 

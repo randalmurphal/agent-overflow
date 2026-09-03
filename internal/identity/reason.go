@@ -121,7 +121,7 @@ const (
 	//
 	// Its own code because it is the one refusal in this set that says
 	// nothing about the request. Nothing the caller holds is wrong, and no
-	// retry helps — the remedy is on the owner's Settings → Network screen.
+	// retry helps — the remedy is on the owner's Settings → Remote access screen.
 	ReasonPasskeyUnavailable
 	// ReasonPasskeyChallengeUnknown means the ceremony id names no
 	// outstanding challenge: it was already finished, it expired, or it was

@@ -366,6 +366,57 @@ describe('rateLimitsInfo', () => {
     expect(getProviderRateLimit('codex', 300)?.resetsAt).toBe(1776300000);
   });
 
+  // A provider drops a bucket from its answer once the bucket has no usage,
+  // which is what a mid-window reset produces. Merging alone kept the
+  // pre-reset figure for the rest of the window (2026-09-01: a Fable weekly
+  // row stuck at 90% while session and all-models read 0%). MergeSnapshot in
+  // internal/providerlifecycleapp is this rule's twin.
+  it('drops a stored limit that a whole-answer reading omits', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 46, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'weekly_scoped:fable', limitName: 'Fable', usedPercent: 90, windowMins: 10080, resetsAt: 1776981600 },
+      ],
+      updatedAt: 1776284000,
+    });
+    setProviderRateLimits({
+      provider: 'claude',
+      complete: true,
+      limits: [
+        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 0, windowMins: 10080, resetsAt: 1776981600 },
+      ],
+      updatedAt: 1776285000,
+    });
+
+    expect(getProviderRateLimits('claude').map((entry) => entry.limitId)).toEqual(['weekly_all']);
+    expect(getProviderRateLimit('claude', 10080)?.usedPercent).toBe(0);
+  });
+
+  // The same omission from a partial reading proves nothing: a wire event
+  // carries one window and Claude's header fallback can never see a scoped
+  // bucket, so both leave the rest of the store alone.
+  it('keeps a stored limit that a partial reading omits', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 46, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'weekly_scoped:fable', limitName: 'Fable', usedPercent: 90, windowMins: 10080, resetsAt: 1776981600 },
+      ],
+      updatedAt: 1776284000,
+    });
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 0, windowMins: 10080, resetsAt: 1776981600 },
+      ],
+      updatedAt: 1776285000,
+    });
+
+    expect(getProviderRateLimits('claude').map((entry) => entry.limitId).sort())
+      .toEqual(['weekly_all', 'weekly_scoped:fable']);
+  });
+
   // The defense applies per-window: a stale 5h event must not
   // disturb a fresh 7d entry, and vice versa. Otherwise a snapshot
   // carrying both windows where one is stale would taint the other.

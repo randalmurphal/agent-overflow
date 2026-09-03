@@ -11,6 +11,9 @@ switcher (writes when the user changes the picker).
 - `wsldistro.go` holds the `Config` struct + `Load(dir)` / `Save(dir, c)`.
   Cross-platform: only the on-disk shape lives here, not platform
   path resolution.
+  `InstalledBinPath` rides with `InstalledVer`: it is what lets a warm
+  boot skip the wsl.exe `$HOME` resolution, and both writers must keep it
+  (the backend's Settings switch is load-mutate-save, so it does).
 - In `path.go` (`!windows`), `WSLConfigDir()` resolves the WSL-side
   path to the launcher's wsl.json directory by reading the
   `AGENT_OVERFLOW_WIN_APPDATA` env var (translated from `%APPDATA%`

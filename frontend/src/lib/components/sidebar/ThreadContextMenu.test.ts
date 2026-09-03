@@ -2,7 +2,7 @@
 // Rename, Fork (when fork-able), Mark Unread, pin controls, Copy Path,
 // Copy Thread ID, Delete (when not a child thread).
 
-import { afterEach, describe, expect, it, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadContextMenu from './ThreadContextMenu.svelte';
@@ -11,6 +11,17 @@ import { createThreadPane } from '../../stores/thread.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { clearThreadSelection, setThreadSelection } from '../../stores/threadFilter.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
+import { replaceAllThreads } from '../../stores/threads.svelte';
+import {
+  consumePendingGroupRename,
+  resetThreadGroupsForTest,
+  upsertThreadGroup,
+} from '../../stores/threadGroups.svelte';
+import {
+  collapseProject,
+  isProjectExpanded,
+  resetSidebarForTest,
+} from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
 
@@ -366,5 +377,276 @@ describe('<ThreadContextMenu> Check for Provider Updates', () => {
 
     release({ threadId: 'thread-1', status: 'up-to-date', newItems: 0, newTurns: 0 });
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
+  });
+});
+
+// ── Thread groups ────────────────────────────────────────────────────────
+//
+// "Move to Group" is a TOP-LEVEL row's item: a discussion tree joins a group
+// as a unit, so offering it on a child would promise a move the backend does
+// not make. In bulk it needs one shared project, because a group belongs to
+// one. And a grouped row shows no pin items at all — the group carries the
+// one pin the row is allowed.
+
+describe('<ThreadContextMenu> group items', () => {
+  // The submenu trigger renders a trailing ▸ inside the same menuitem, so
+  // labels here are normalized rather than read raw.
+  function groupMenuLabels(el: HTMLElement): string[] {
+    return visibleLabels(el).map((text) => text.replace(/[\u25B8\s]+$/u, ''));
+  }
+
+  function clickItem(el: HTMLElement, label: string): Promise<boolean> {
+    const item = Array.from(el.querySelectorAll('[role="menuitem"]'))
+      .find((node) => node.textContent?.trim() === label);
+    if (!item) throw new Error(`${label} not rendered`);
+    return fireEvent.click(item);
+  }
+
+  beforeEach(() => {
+    resetBindingMocks();
+    clearThreadSelection();
+    resetSidebarForTest();
+    resetThreadGroupsForTest();
+    upsertThreadGroup({
+      id: 'g-zebra',
+      projectId: 'project-1',
+      name: 'Zebra',
+      createdAt: 0,
+      updatedAt: 0,
+    });
+    upsertThreadGroup({
+      id: 'g-alpha',
+      projectId: 'project-1',
+      name: 'Alpha',
+      createdAt: 0,
+      updatedAt: 0,
+    });
+  });
+
+  async function openSubmenu(baseElement: HTMLElement) {
+    const trigger = Array.from(baseElement.querySelectorAll('[data-submenu-trigger]'))
+      .find((el) => el.textContent?.includes('Move to Group')) as HTMLElement;
+    await fireEvent.click(trigger);
+    await tick();
+    return trigger;
+  }
+
+  it('offers Move to Group on a top-level row, and no Remove from Group', () => {
+    const { baseElement } = renderMenu(makeThread({ projectId: 'project-1' }));
+    const labels = groupMenuLabels(baseElement);
+    expect(labels).toContain('Move to Group');
+    expect(labels).not.toContain('Remove from Group');
+    // Placed after Mark Unread and before the pin items.
+    expect(labels.indexOf('Move to Group')).toBe(labels.indexOf('Mark Unread') + 1);
+    expect(labels.indexOf('Move to Group')).toBeLessThan(labels.indexOf('Pin Thread'));
+  });
+
+  it('hides both group items on a discussion child row', () => {
+    const { baseElement } = renderMenu(makeThread({
+      projectId: 'project-1',
+      parentThreadId: 'parent',
+    }));
+    const labels = groupMenuLabels(baseElement);
+    expect(labels).not.toContain('Move to Group');
+    expect(labels).not.toContain('Remove from Group');
+  });
+
+  it('hides both group items on a thread with no project', () => {
+    const { baseElement } = renderMenu(makeThread());
+    expect(groupMenuLabels(baseElement)).not.toContain('Move to Group');
+  });
+
+  it('adds Remove from Group and drops the pin items for a grouped row', () => {
+    const { baseElement } = renderMenu(makeThread({
+      projectId: 'project-1',
+      groupId: 'g-alpha',
+    }));
+    const labels = groupMenuLabels(baseElement);
+    expect(labels).toContain('Remove from Group');
+    expect(labels).not.toContain('Pin Thread');
+    expect(labels).not.toContain('Unpin Thread');
+  });
+
+  it('lists the project groups by name, then New Group…', async () => {
+    const { baseElement } = renderMenu(makeThread({ projectId: 'project-1' }));
+    await openSubmenu(baseElement);
+
+    const submenu = baseElement.querySelector('[role="menu"][aria-label="Move to Group"]') as HTMLElement;
+    expect(visibleLabels(submenu).map((t) => t.replace(/\s+/gu, ' ')))
+      .toEqual(['Alpha', 'Zebra', 'New Group…']);
+  });
+
+  it('marks the row’s current group as the answer, not an action', async () => {
+    const { baseElement } = renderMenu(makeThread({
+      projectId: 'project-1',
+      groupId: 'g-alpha',
+    }));
+    await openSubmenu(baseElement);
+
+    const submenu = baseElement.querySelector('[role="menu"][aria-label="Move to Group"]') as HTMLElement;
+    const alpha = Array.from(submenu.querySelectorAll('[role="menuitem"]'))
+      .find((el) => el.textContent?.includes('Alpha')) as HTMLElement;
+    expect(alpha.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('moves the row into the picked group', async () => {
+    const setGroup = setBindingMock('SetThreadGroup', vi.fn(async () => []));
+    const { baseElement } = renderMenu(makeThread({ id: 'row', projectId: 'project-1' }));
+    await openSubmenu(baseElement);
+
+    const submenu = baseElement.querySelector('[role="menu"][aria-label="Move to Group"]') as HTMLElement;
+    const zebra = Array.from(submenu.querySelectorAll('[role="menuitem"]'))
+      .find((el) => el.textContent?.includes('Zebra')) as HTMLElement;
+    await fireEvent.click(zebra);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+    expect(setGroup).toHaveBeenCalledWith(['row'], 'g-zebra');
+  });
+
+  it('New Group… creates, moves, and asks the new row to open its rename', async () => {
+    setBindingMock('CreateThreadGroup', async (projectId: string, name: string) => ({
+      id: 'g-new',
+      projectId,
+      name,
+      createdAt: 0,
+      updatedAt: 0,
+    }));
+    let pendingDuringMove: boolean | null = null;
+    const setGroup = setBindingMock('SetThreadGroup', vi.fn(async () => {
+      pendingDuringMove = consumePendingGroupRename('g-new');
+      return [];
+    }));
+    const { baseElement } = renderMenu(makeThread({ id: 'row', projectId: 'project-1' }));
+    await openSubmenu(baseElement);
+
+    const submenu = baseElement.querySelector('[role="menu"][aria-label="Move to Group"]') as HTMLElement;
+    const create = Array.from(submenu.querySelectorAll('[role="menuitem"]'))
+      .find((el) => el.textContent?.includes('New Group…')) as HTMLElement;
+    await fireEvent.click(create);
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+    expect(setGroup).toHaveBeenCalledWith(['row'], 'g-new');
+    // Asked AFTER the move: the move re-sorts the group and a moved row
+    // blurs an editor that is already open in it.
+    expect(pendingDuringMove).toBe(false);
+    expect(consumePendingGroupRename('g-new')).toBe(true);
+  });
+
+  it('offers the group items in bulk when every selection shares one project', () => {
+    replaceAllThreads([
+      makeThread({ id: 'a', projectId: 'project-1', groupId: 'g-alpha' }),
+      makeThread({ id: 'b', projectId: 'project-1' }),
+    ]);
+    setThreadSelection(['a', 'b']);
+    const { baseElement } = renderMenu(makeThread({ id: 'a', projectId: 'project-1' }));
+    const labels = groupMenuLabels(baseElement);
+    expect(labels).toContain('Move to Group');
+    expect(labels).toContain('Remove from Group');
+  });
+
+  it('hides the group items in bulk when the selection spans projects', () => {
+    replaceAllThreads([
+      makeThread({ id: 'a', projectId: 'project-1' }),
+      makeThread({ id: 'b', projectId: 'project-2' }),
+    ]);
+    setThreadSelection(['a', 'b']);
+    const { baseElement } = renderMenu(makeThread({ id: 'a', projectId: 'project-1' }));
+    const labels = groupMenuLabels(baseElement);
+    expect(labels).not.toContain('Move to Group');
+    expect(labels).not.toContain('Remove from Group');
+  });
+
+  it('ungroups only the selected rows that are IN a group', async () => {
+    // canRemoveFromGroup is satisfied by ONE grouped row, so the write must
+    // name that row and not the whole selection — the rest would spend a
+    // backend round trip to change nothing.
+    replaceAllThreads([
+      makeThread({ id: 'a', projectId: 'project-1', groupId: 'g-alpha' }),
+      makeThread({ id: 'b', projectId: 'project-1' }),
+    ]);
+    setThreadSelection(['a', 'b']);
+    const setGroup = setBindingMock('SetThreadGroup', vi.fn(async () => []));
+    const { baseElement } = renderMenu(
+      makeThread({ id: 'a', projectId: 'project-1', groupId: 'g-alpha' }),
+    );
+
+    await clickItem(baseElement, 'Remove from Group');
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+    expect(setGroup).toHaveBeenCalledWith(['a'], '');
+  });
+
+  it('leaves discussion children out of a bulk move — they follow their root', async () => {
+    replaceAllThreads([
+      makeThread({ id: 'root', projectId: 'project-1' }),
+      makeThread({ id: 'kid', projectId: 'project-1', parentThreadId: 'root' }),
+    ]);
+    setThreadSelection(['root', 'kid']);
+    const setGroup = setBindingMock('SetThreadGroup', vi.fn(async () => []));
+    const { baseElement } = renderMenu(makeThread({ id: 'root', projectId: 'project-1' }));
+    await openSubmenu(baseElement);
+
+    const submenu = baseElement.querySelector('[role="menu"][aria-label="Move to Group"]') as HTMLElement;
+    const zebra = Array.from(submenu.querySelectorAll('[role="menuitem"]'))
+      .find((el) => el.textContent?.includes('Zebra')) as HTMLElement;
+    await fireEvent.click(zebra);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+    expect(setGroup).toHaveBeenCalledWith(['root'], 'g-zebra');
+  });
+
+  it('hides the group items when a bulk selection is nothing but children', () => {
+    replaceAllThreads([
+      makeThread({ id: 'k1', projectId: 'project-1', parentThreadId: 'root', groupId: 'g-alpha' }),
+      makeThread({ id: 'k2', projectId: 'project-1', parentThreadId: 'root', groupId: 'g-alpha' }),
+    ]);
+    setThreadSelection(['k1', 'k2']);
+    const { baseElement } = renderMenu(
+      makeThread({ id: 'k1', projectId: 'project-1', parentThreadId: 'root', groupId: 'g-alpha' }),
+    );
+    const labels = groupMenuLabels(baseElement);
+    expect(labels).not.toContain('Move to Group');
+    expect(labels).not.toContain('Remove from Group');
+  });
+
+  it('expands the project before New Group…, so the new row can open its rename', async () => {
+    setBindingMock('CreateThreadGroup', async (projectId: string, name: string) => ({
+      id: 'g-new',
+      projectId,
+      name,
+      createdAt: 0,
+      updatedAt: 0,
+    }));
+    setBindingMock('SetThreadGroup', vi.fn(async () => []));
+    collapseProject('project-1');
+    const { baseElement } = renderMenu(makeThread({ id: 'row', projectId: 'project-1' }));
+    await openSubmenu(baseElement);
+
+    const submenu = baseElement.querySelector('[role="menu"][aria-label="Move to Group"]') as HTMLElement;
+    const create = Array.from(submenu.querySelectorAll('[role="menuitem"]'))
+      .find((el) => el.textContent?.includes('New Group…')) as HTMLElement;
+    await fireEvent.click(create);
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+    expect(isProjectExpanded('project-1')).toBe(true);
+  });
+
+  it('moves the whole bulk selection in one call', async () => {
+    replaceAllThreads([
+      makeThread({ id: 'a', projectId: 'project-1' }),
+      makeThread({ id: 'b', projectId: 'project-1' }),
+    ]);
+    setThreadSelection(['a', 'b']);
+    const setGroup = setBindingMock('SetThreadGroup', vi.fn(async () => []));
+    const { baseElement } = renderMenu(makeThread({ id: 'a', projectId: 'project-1' }));
+    await openSubmenu(baseElement);
+
+    const submenu = baseElement.querySelector('[role="menu"][aria-label="Move to Group"]') as HTMLElement;
+    const zebra = Array.from(submenu.querySelectorAll('[role="menuitem"]'))
+      .find((el) => el.textContent?.includes('Zebra')) as HTMLElement;
+    await fireEvent.click(zebra);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+    expect(setGroup).toHaveBeenCalledWith(['a', 'b'], 'g-zebra');
   });
 });

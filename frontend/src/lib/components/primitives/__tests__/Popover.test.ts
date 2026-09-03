@@ -125,6 +125,14 @@ describe('<Popover>', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('dismissOnAnchorClick makes an anchor mousedown an outside click (row-anchored context menus)', async () => {
+    const onClose = vi.fn();
+    const { getByTestId } = render(Harness, { props: { open: true, onClose, dismissOnAnchorClick: true } });
+    await tick();
+    await fireEvent.mouseDown(getByTestId('popover-anchor'));
+    expect(onClose).toHaveBeenCalledWith('outside-click');
+  });
+
   it('mousedown inside the popover does NOT close', async () => {
     const onClose = vi.fn();
     const { getByTestId } = render(Harness, { props: { open: true, onClose } });

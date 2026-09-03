@@ -717,6 +717,7 @@ func TestBuildSettlesBackgroundTaskOnTerminal(t *testing.T) {
 		{ProviderEvent: provider.ProviderEvent{
 			Kind: provider.EventToolComplete, ThreadID: testThreadID,
 			ItemID: "toolu_task_1", Content: "launched", Timestamp: at(2),
+			Meta: json.RawMessage(`{"is_background":true}`),
 		}, SourceUUID: "uuid-2"},
 	}
 	batch, _, err := NewWriter(st, thread).Build(events)
@@ -809,6 +810,7 @@ func TestBuildKeepsTheCarveOutForARealBackgroundLaunch(t *testing.T) {
 		{ProviderEvent: provider.ProviderEvent{
 			Kind: provider.EventToolComplete, ThreadID: testThreadID,
 			ItemID: "toolu_bg", Content: "launched", Timestamp: at(2),
+			Meta: json.RawMessage(`{"is_background":true}`),
 		}, SourceUUID: "uuid-2"},
 	})
 	if err != nil {
@@ -932,5 +934,107 @@ func TestBuildForceClosesUnresolvedToolsAtTurnEnd(t *testing.T) {
 				t.Errorf("backgrounded launch status = %q, want it left running", bg.Status)
 			}
 		})
+	}
+}
+
+// A launch flagged `run_in_background` whose command the CLI refused (a
+// hook deny, a permission denial) completes with no background marker.
+// On Claude the completion decides, so the row settles in place instead
+// of standing in the tray forever as live background work.
+func TestBuildSettlesRefusedFlaggedClaudeLaunch(t *testing.T) {
+	st := newTestStore(t)
+	thread := seedThread(t, st, testThreadID, "claude", t.TempDir())
+
+	batch, _, err := NewWriter(st, thread).Build([]importir.Event{
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: testThreadID,
+			ItemID: "toolu_refused", ItemType: "Bash",
+			Meta:      json.RawMessage(`{"toolName":"Bash","is_background":true,"input":{"command":"make apk","run_in_background":true}}`),
+			Timestamp: at(1),
+		}, SourceUUID: "uuid-1"},
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventToolComplete, ThreadID: testThreadID,
+			ItemID: "toolu_refused", Content: "Permission to use Bash has been denied",
+			Meta:      json.RawMessage(`{"is_error":true}`),
+			Timestamp: at(2),
+		}, SourceUUID: "uuid-2"},
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(batch.Rows) != 1 {
+		t.Fatalf("want the launch alone, got %d rows", len(batch.Rows))
+	}
+	item := batch.Rows[0].Item
+	if item.Status != statusErrored || item.IsBackground {
+		t.Fatalf("refused launch = status %q background=%v, want errored and not background", item.Status, item.IsBackground)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
+		t.Fatalf("decode meta %q: %v", item.Meta, err)
+	}
+	if got, ok := meta["is_background"]; !ok || got != false {
+		t.Errorf("meta.is_background = %v (present=%v), want the launch hint overwritten with false: %s", got, ok, item.Meta)
+	}
+}
+
+// A sidechain Bash ack names its task only in text; the reader lifts the
+// id onto the completion and the writer stamps it on the launch so the
+// row keeps its terminal correlation, first binding winning.
+func TestBuildStampsAckTaskIDOnBackgroundLaunch(t *testing.T) {
+	st := newTestStore(t)
+	thread := seedThread(t, st, testThreadID, "claude", t.TempDir())
+
+	batch, _, err := NewWriter(st, thread).Build([]importir.Event{
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: testThreadID,
+			ItemID: "toolu_bg", ItemType: "Bash",
+			Meta:      json.RawMessage(`{"toolName":"Bash","is_background":true,"input":{"command":"make apk","run_in_background":true}}`),
+			Timestamp: at(1),
+		}, SourceUUID: "uuid-1"},
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventToolComplete, ThreadID: testThreadID,
+			ItemID: "toolu_bg", Content: "Command running in background with ID: bkulztq41. Output is being written to: /tmp/x",
+			Meta:      json.RawMessage(`{"is_background":true,"task_id":"bkulztq41"}`),
+			Timestamp: at(2),
+		}, SourceUUID: "uuid-2"},
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	item := batch.Rows[0].Item
+	if item.Status != statusRunning || !item.IsBackground {
+		t.Fatalf("acked launch = status %q background=%v, want running background", item.Status, item.IsBackground)
+	}
+	if got := metaKey(t, item.Meta, "task_id"); got != "bkulztq41" {
+		t.Errorf("meta.task_id = %q, want the ack's id", got)
+	}
+}
+
+// Codex keeps the launch flag authoritative: the rollout reader stamps
+// `is_background` from wire-typed signals, and a completion never carries
+// the verdict (invariant 25).
+func TestBuildKeepsCodexLaunchFlagOnBareCompletion(t *testing.T) {
+	st := newTestStore(t)
+	thread := seedThread(t, st, testThreadID, "codex", t.TempDir())
+
+	batch, _, err := NewWriter(st, thread).Build([]importir.Event{
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: testThreadID,
+			ItemID: "call_bg", ItemType: "shell",
+			Meta:      json.RawMessage(`{"toolName":"shell","is_background":true,"live_background_active":true,"input":{"command":"sleep 100"}}`),
+			Timestamp: at(1),
+		}, SourceUUID: "uuid-1"},
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventToolComplete, ThreadID: testThreadID,
+			ItemID: "call_bg", Content: "", Timestamp: at(2),
+		}, SourceUUID: "uuid-2"},
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	item := batch.Rows[0].Item
+	if item.Status != statusRunning || !item.IsBackground {
+		t.Fatalf("codex launch = status %q background=%v, want the flag kept and the row running", item.Status, item.IsBackground)
 	}
 }

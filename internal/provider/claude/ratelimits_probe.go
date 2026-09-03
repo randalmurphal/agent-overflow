@@ -305,9 +305,14 @@ func parseUsageResponse(data []byte, now time.Time) (provider.RateLimitsSnapshot
 
 	entries := make([]provider.RateLimitEntry, 0, len(payload.Limits))
 	seen := make(map[string]int, len(payload.Limits))
+	// A limit this parser had to skip is a limit the snapshot cannot speak
+	// for, so the reading stops being the server's whole answer and the
+	// merge must not prune against it.
+	skipped := false
 	for _, limit := range payload.Limits {
 		limitID := strings.TrimSpace(limit.Kind)
 		if limitID == "" {
+			skipped = true
 			continue
 		}
 		limitName := usageLimitName(limit)
@@ -324,6 +329,7 @@ func parseUsageResponse(data []byte, now time.Time) (provider.RateLimitsSnapshot
 		if limit.ResetsAt != nil && strings.TrimSpace(*limit.ResetsAt) != "" {
 			parsed, err := time.Parse(time.RFC3339Nano, *limit.ResetsAt)
 			if err != nil {
+				skipped = true
 				continue
 			}
 			resetsAt = parsed.Unix()
@@ -343,6 +349,7 @@ func parseUsageResponse(data []byte, now time.Time) (provider.RateLimitsSnapshot
 		Provider:  string(provider.Claude),
 		Limits:    entries,
 		UpdatedAt: now.UnixMilli(),
+		Complete:  !skipped,
 	}, nil
 }
 
@@ -412,6 +419,10 @@ func usageLimitScopeKey(limit usageLimit) string {
 // present — usually a sign the API contract changed upstream. Returns
 // an error so the caller can log loudly rather than silently emit an
 // empty snapshot that would not change anything in the store.
+//
+// The result is deliberately NOT Complete: these headers carry the two
+// unified windows and nothing else, so a model-scoped weekly bucket is
+// invisible here and must keep whatever the last full reading said.
 func parseRateLimitsFromHeaders(headers http.Header, now time.Time) (provider.RateLimitsSnapshot, error) {
 	entries := make([]provider.RateLimitEntry, 0, len(ratelimitWindows))
 	for _, w := range ratelimitWindows {

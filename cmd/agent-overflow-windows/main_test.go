@@ -969,3 +969,69 @@ func TestResetTransportPortArgMatchesTheBackendFlag(t *testing.T) {
 		t.Fatalf("resetTransportPortArg = %q, want %q (keep it in step with the backend flag)", resetTransportPortArg, expected)
 	}
 }
+
+// The first retries are cheap (an instant 503 while the backend finishes
+// ServiceStartup), so the gap starts short and grows toward the cap
+// instead of sleeping a full cap-sized tick after the first miss.
+func TestProbeBootstrapBacksOffFromTheInitialInterval(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, port, _ := net.SplitHostPort(r.Host)
+		fmt.Fprintf(w, `{"wsUrl":"ws://127.0.0.1:%s/ws","token":"test-token"}`, port)
+	}))
+	defer server.Close()
+
+	_, portStr, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split test server addr: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse test server port: %v", err)
+	}
+
+	started := time.Now()
+	err = probeBootstrapWithConfig(port, "test-token", bootstrapProbeConfig{
+		AttemptTimeout: 100 * time.Millisecond,
+		Deadline:       time.Second,
+		PollInterval:   250 * time.Millisecond,
+		// InitialPollInterval left zero: the production default applies.
+	})
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("probeBootstrapWithConfig: %v", err)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3", got)
+	}
+	// Two misses cost 25 ms + 50 ms of sleep; a flat 250 ms gap would cost
+	// 500 ms. Generous bound so a slow CI box cannot flake it.
+	if elapsed >= 250*time.Millisecond {
+		t.Fatalf("two retries took %s, want the backoff (25 ms + 50 ms), not the 250 ms cap", elapsed)
+	}
+}
+
+func TestCachedPayloadPathRequiresAnExactVersionAndDistroMatch(t *testing.T) {
+	recorded := &wsldistro.Config{
+		InstalledVer: "v1", InstalledDistro: "Ubuntu",
+		InstalledBinPath: "/home/alice/.local/bin/agent-overflow",
+	}
+	if got := cachedPayloadPath(recorded, "Ubuntu", "v1"); got != recorded.InstalledBinPath {
+		t.Fatalf("matching record: got %q, want the recorded path", got)
+	}
+	for name, cfg := range map[string]*wsldistro.Config{
+		"nil config":       nil,
+		"other version":    {InstalledVer: "v2", InstalledDistro: "Ubuntu", InstalledBinPath: "/x"},
+		"other distro":     {InstalledVer: "v1", InstalledDistro: "Debian", InstalledBinPath: "/x"},
+		"no path recorded": {InstalledVer: "v1", InstalledDistro: "Ubuntu"},
+		"whitespace path":  {InstalledVer: "v1", InstalledDistro: "Ubuntu", InstalledBinPath: "  "},
+	} {
+		if got := cachedPayloadPath(cfg, "Ubuntu", "v1"); got != "" {
+			t.Errorf("%s: got %q, want no cached path", name, got)
+		}
+	}
+}

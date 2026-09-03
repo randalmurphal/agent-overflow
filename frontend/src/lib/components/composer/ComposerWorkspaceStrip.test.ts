@@ -38,7 +38,7 @@ describe('<ComposerWorkspaceStrip>', () => {
     // on the thread; this fixture intentionally omits it.) A revert
     // or accidental re-order would otherwise sail past the
     // existence-only assertion above.
-    const pane = await buildPane(makeThread());
+    const pane = await buildPane(makeThread({ projectId: undefined }));
     const { getByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
     const strip = getByTestId('composer-workspace-strip');
     const triggers = Array.from(
@@ -57,7 +57,8 @@ describe('<ComposerWorkspaceStrip>', () => {
   });
 
   it('leads the strip with the machine picker once a second backend is attached', async () => {
-    // "Where am I" reads outer to inner: machine, then the checkout on it.
+    // "Where am I" reads outer to inner: machine, then the project on it,
+    // then the checkout.
     stageBackend();
     try {
       const pane = await buildPane(makeThread());
@@ -67,6 +68,7 @@ describe('<ComposerWorkspaceStrip>', () => {
       );
       expect(triggers.map((el) => el.getAttribute('data-testid'))).toEqual([
         'machine-picker-trigger',
+        'project-picker-trigger',
         'env-picker-trigger',
         'branch-picker-trigger',
       ]);

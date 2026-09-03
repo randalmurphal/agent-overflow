@@ -672,7 +672,7 @@ var channelPolicies = []ChannelPolicy{
 			"by provider.MarshalProcessExitMeta (single line, hard length " +
 			"cap) — and that is a decided disclosure, not an oversight: the " +
 			"same string persists to items.meta, which the wire-safe " +
-			"ListRecentThreadItems already serves to remote peers " +
+			"ListThreadSliceAround already serves to remote peers " +
 			"(2026-08-25 security review, finding 1). Pinned by " +
 			"TestEventVisibleToOrigin.",
 	},
@@ -963,6 +963,17 @@ var channelPolicies = []ChannelPolicy{
 			"EntityFiltered, deliberately, and low enough frequency that " +
 			"the bytes are not worth a filter. Keyed per thread: never " +
 			"latest-only.",
+	},
+	{
+		Channel:   eventchan.ThreadGroupUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "A sidebar grouping row: project id, user-chosen name, pin " +
+			"state. ListThreadGroups answers identical rows, so the push " +
+			"discloses nothing a poll could not, same reasoning as " +
+			"thread:updated. Delete frames carry only the removed row, so " +
+			"every frame matters: never latest-only.",
 	},
 	{
 		Channel:   eventchan.ThreadModeChanged,

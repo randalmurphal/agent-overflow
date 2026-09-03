@@ -20,7 +20,7 @@
   import { chordHintForCommand, chordHintSuffix } from '../../stores/keybindings.svelte';
   import { runTerminalToggle } from '../terminal/terminalToggle';
   import { openTerminalThread } from '../../stores/threadCreation.svelte';
-  import { openReviewCompanion } from '../../stores/reviewPane.svelte';
+  import { openReviewCompanion, reviewSubjectForPane } from '../../stores/reviewPane.svelte';
   import { attachGitStatus } from '../../stores/gitStatusStore.svelte';
   import { workspaceKeyForThread } from '../../utils/workspaceKey';
   import GitActionsControl from '../git/GitActionsControl.svelte';
@@ -58,9 +58,11 @@
   // same-workspace thread switch release and re-attach, which bounced the
   // backend refcount through zero — the whole fs watcher torn down and
   // rebuilt, and every badge in the pane blanked, for a switch that changed
-  // nothing about the checkout. `hasThread` is a boolean for the same
-  // reason: it flips only when the pane gains or loses a real thread row.
-  let hasThread = $derived(Boolean(pane.threadId));
+  // nothing about the checkout. `hasWorkspace` is a boolean for the same
+  // reason, and it is the WORKSPACE question rather than "is there a thread
+  // row": a draft placeholder names a checkout too, and refusing it a
+  // subscription is what left its git affordances rendering dead.
+  let hasWorkspace = $derived(pane.workspace !== null);
   let gitStatusKey = $derived(workspaceKeyForThread(pane.thread ?? null));
 
   // The pane's reference on its workspace's git-status entry. The store owns
@@ -69,14 +71,15 @@
   // effect owns only the reference's lifetime. Consumers read through
   // `pane.gitStatus` and never attach a second time.
   $effect(() => {
-    if (!hasThread || gitStatusKey === null) return;
+    if (!hasWorkspace || gitStatusKey === null) return;
     const attachment = attachGitStatus(gitStatusKey, {
       // Read at SOURCE time, not attach time. The reference outlives any one
       // thread the pane shows, so a re-source (reconnect, retry) has to run
-      // against a thread that still exists. The store's source prologue runs
-      // untracked, so this read cannot pull the id back into the effect.
-      get threadId() {
-        return pane.threadId ?? '';
+      // against the checkout the pane points at NOW. The store's source
+      // prologue runs untracked, so this read cannot pull the ref back into
+      // the effect.
+      get workspace() {
+        return pane.workspace;
       },
     });
     return () => attachment.release();
@@ -101,11 +104,12 @@
     };
   });
 
-  // Diff / Design panels need a real thread row — their backend bindings and
-  // preview URL key off it. Drawer terminals are allowed on placeholders; they
-  // use the synthetic placeholder id and are cleaned up or migrated by
-  // ThreadPane.
-  async function ensureThenToggle(toggle: () => void): Promise<void> {
+  // The design panel needs a real thread row — its preview URL keys off it.
+  // The REVIEW panel does not: its subject is the checkout, which a draft
+  // placeholder names as well as a persisted row does. Drawer terminals are
+  // allowed on placeholders too; they use the synthetic placeholder id and
+  // are cleaned up or migrated by ThreadPane.
+  async function ensureThreadThenToggle(toggle: () => void): Promise<void> {
     if (!pane.threadId) {
       addToast('info', 'Start the thread before opening this panel.');
       return;
@@ -157,33 +161,37 @@
   }
 
   function toggleWorkspaceReview(): void {
-    if (!pane.threadId) return;
     if (pane.showReviewPane) {
       pane.setShowReviewPane(false);
       return;
     }
-    void openReviewCompanion(pane.paneId, pane.threadId, { scope: 'workspace' });
+    const subject = reviewSubjectForPane(pane);
+    if (!subject) return;
+    void openReviewCompanion(pane.paneId, subject, { scope: 'workspace' });
   }
 </script>
 
 <!-- Right cluster: wraps, doesn't disappear, at narrow widths. Visible on
      placeholders too — the caller's `pane.thread` gate already filters out
      "no thread at all" panes, and the subcomponents self-gate on
-     `pane.threadId` for the pieces that genuinely need a persisted row. -->
+     `pane.workspace` (git and review) or `pane.threadId` (the pieces whose
+     subject genuinely is a persisted row). -->
 <div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
   <PrBadge status={pane.gitStatus.status} />
-  <WorkspaceDiffBadge
-    status={pane.gitStatus.status}
-    pressed={pane.showReviewPane}
-    chord={reviewToggleChord}
-    onActivate={() => void ensureThenToggle(toggleWorkspaceReview)}
-  />
+  {#if hasWorkspace}
+    <WorkspaceDiffBadge
+      status={pane.gitStatus.status}
+      pressed={pane.showReviewPane}
+      chord={reviewToggleChord}
+      onActivate={toggleWorkspaceReview}
+    />
+  {/if}
 
   <!-- Collapse/expand every activity run in this thread. Also the only
          VISIBLE affordance for the run collapse mechanic: a single run is
          toggled by its rail, which consumes no width and so shows nothing
-         until you find it. The setting under Settings → General → Activity
-         Runs is the durable default; this is the per-thread override. -->
+         until you find it. The setting under Settings → Chat → Activity
+         runs is the durable default; this is the per-thread override. -->
     <Button
       variant="secondary"
       size="xs"
@@ -220,7 +228,7 @@
       pressed={takeControlOpen}
       ariaLabel="Toggle take-control terminal"
       title="Take control — open the live Claude TUI terminal"
-      onclick={() => void ensureThenToggle(() => toggleCompanion(pane.paneId, 'take-control'))}
+      onclick={() => void ensureThreadThenToggle(() => toggleCompanion(pane.paneId, 'take-control'))}
       testId="take-control-toggle"
       class="shrink-0 w-6 px-0"
     >

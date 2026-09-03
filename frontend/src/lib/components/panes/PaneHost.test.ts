@@ -46,9 +46,11 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { makeSettings } from '../../../test/helpers/settings';
 import { getCompactScreen, setCompactLayoutForTest, showCompactList } from '../../stores/layoutMode.svelte';
 import {
+  beginThreadRowDrag,
   encodeThreadDragPayload,
   PANE_REORDER_DRAG_MIME,
   THREAD_ROW_DRAG_MIME,
+  threadDragPayloadForEvent,
 } from '../../utils/threadDragPayload';
 
 class FireableResizeObserver {
@@ -124,7 +126,7 @@ describe('PaneHost', () => {
       dropEffect: 'none',
       effectAllowed: 'copy',
       getData: (type: string) => type === THREAD_ROW_DRAG_MIME
-        ? encodeThreadDragPayload({ threadId, title })
+        ? encodeThreadDragPayload({ threadId, title, projectId: 'project-1' })
         : '',
       setData: () => {},
       setDragImage: () => {},
@@ -999,6 +1001,10 @@ describe('PaneHost', () => {
     stubRect(rightPane, 500, 500);
 
     const dataTransfer = threadDataTransfer(dragged.id);
+    // The sidebar's in-flight record, as the source row leaves it. A pane
+    // drop must clear it like every other drop target: the row may have
+    // unmounted mid-drag, in which case no dragend ever will.
+    beginThreadRowDrag({ threadId: dragged.id, title: dragged.title, projectId: dragged.projectId ?? '' });
     await fireEvent.dragOver(rightPane, { dataTransfer, clientX: 550 });
     await fireEvent.drop(rightPane, { dataTransfer, clientX: 550 });
 
@@ -1006,6 +1012,10 @@ describe('PaneHost', () => {
       const createdPaneId = paneIdForThread(dragged.id);
       expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', createdPaneId, 'right']);
     });
+    const silentDragOver = {
+      dataTransfer: { types: [THREAD_ROW_DRAG_MIME], getData: () => '' },
+    } as unknown as DragEvent;
+    expect(threadDragPayloadForEvent(silentDragOver)).toBeNull();
   });
 
   it('drop on a pane right half inserts after the target', async () => {

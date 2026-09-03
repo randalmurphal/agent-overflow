@@ -22,6 +22,8 @@
     startProviderLogin,
   } from '../../stores/providerAccounts.svelte';
   import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
+  import { providerSettingsSection } from '../settings/sections';
+  import { isProviderID } from '../../types/providers';
   import {
     getProviderDefinition,
     providerCliLabel,
@@ -158,10 +160,13 @@
   async function handleSignIn() {
     const status = providerStatus;
     if (!status || accountsUngranted || signingIn) return;
-    // The flow renders in Settings → Providers and in the account switcher,
-    // both of which own the surface it needs. Opening Settings is what puts
-    // the user in front of the link the sign-in is about to produce.
-    openSettingsOverlay('providers');
+    // The flow renders on the provider's own Settings page and in the
+    // account switcher, both of which own the surface it needs. Opening
+    // Settings is what puts the user in front of the link the sign-in is
+    // about to produce.
+    openSettingsOverlay(
+      isProviderID(status.provider) ? providerSettingsSection(status.provider) : undefined,
+    );
     await startProviderLogin(status.provider);
   }
 

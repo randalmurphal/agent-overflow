@@ -157,6 +157,7 @@ func newSubagentConverter(scope string) *converter {
 		usageByModel:         map[string]*provider.TokenUsage{},
 		unknownSystem:        map[string]int{},
 		emittedAgents:        map[string]bool{},
+		backgroundHints:      map[string]bool{},
 		openingPromptByScope: map[string]bool{},
 		subagentScope:        scope,
 		compactSummaries:     map[string]string{},

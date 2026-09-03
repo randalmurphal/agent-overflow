@@ -17,6 +17,10 @@ const mocks = vi.hoisted(() => {
     options: Record<string, unknown> = {};
     dataHandler: ((data: string) => void) | null = null;
     keyEventHandler: ((event: KeyboardEvent) => boolean) | null = null;
+    // Records every term.paste(...) so a test can prove the read-only lease
+    // gates a right-click paste the same way it gates typed input.
+    pastes: string[] = [];
+    unicode = { activeVersion: '6' };
     constructor(options: Record<string, unknown> = {}) {
       this.options = { ...options };
       lastTerminal = this;
@@ -29,7 +33,13 @@ const mocks = vi.hoisted(() => {
     getSelection(): string {
       return '';
     }
-    paste(): void {}
+    clearSelection(): void {}
+    paste(data: string): void {
+      this.pastes.push(data);
+      // Real xterm emits pasted text through onData, which is where the
+      // component's lease gate lives.
+      this.dataHandler?.(data);
+    }
     attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void {
       this.keyEventHandler = handler;
     }
@@ -77,6 +87,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@xterm/xterm', () => ({ Terminal: mocks.FakeTerminal }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} } }));
+vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }));
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }));
 vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class {
@@ -245,6 +256,45 @@ describe('<TakeControlTerminal>', () => {
     expect(mocks.ProviderTerminalInput).toHaveBeenCalledWith(
       'thread-1',
       encodeTerminalInput('y'),
+    );
+  });
+
+  it('gates a right-click paste on the same lease as typed input', async () => {
+    mocks.ProviderTerminalReplay.mockResolvedValue({
+      data: '',
+      fromSequence: 0,
+      throughSequence: 0,
+    });
+    const readText = vi.fn(async () => 'pasted');
+    Object.defineProperty(globalThis.navigator, 'clipboard', {
+      value: { readText },
+      configurable: true,
+      writable: true,
+    });
+
+    const { getByRole, container } = render(TakeControlTerminal, {
+      props: { paneId: 'tc-rc', threadId: 'thread-1' },
+    });
+    await waitFor(() => expect(mocks.getLastTerminal()?.dataHandler).toBeTruthy());
+    const term = mocks.getLastTerminal()!;
+    const mount = container.querySelector<HTMLElement>('[data-testid="take-control-mount"]');
+    expect(mount).toBeTruthy();
+
+    // Read-only: the paste lands in xterm (so the user sees the same thing a
+    // keystroke does — nothing) but never reaches the PTY.
+    mount!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await waitFor(() => expect(term.pastes).toEqual(['pasted']));
+    expect(mocks.ProviderTerminalInput).not.toHaveBeenCalled();
+
+    await fireEvent.click(getByRole('button', { name: 'Take control' }));
+    await waitFor(() => expect(getByRole('button', { name: 'Release control' })).toBeTruthy());
+
+    mount!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await waitFor(() =>
+      expect(mocks.ProviderTerminalInput).toHaveBeenCalledWith(
+        'thread-1',
+        encodeTerminalInput('pasted'),
+      ),
     );
   });
 

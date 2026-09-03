@@ -23,6 +23,7 @@ export {
     ProposedPlanCommentUpdate,
     ProposedPlanSourceRef,
     Thread,
+    ThreadGroup,
     ThreadMessageHit,
     ThreadOrigin,
     TimelineCursor,

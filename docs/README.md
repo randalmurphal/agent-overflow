@@ -33,7 +33,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`adrs/`](architecture/adrs/) | Architecture Decision Records. One file per load-bearing choice. |
 | [`refactoring-principles.md`](architecture/refactoring-principles.md) | The five rules a behavior-preserving refactor follows. |
 | [`data-flow.md`](architecture/data-flow.md) | How provider output becomes visible state. Pipeline diagram. |
-| [`schema.md`](architecture/schema.md) | SQLite schema summary. Tables, indexes, migration policy. |
+| [`schema.md`](architecture/schema.md) | SQLite schema summary. Tables, indexes, triggers, migration policy. |
 | [`triage-routing.md`](architecture/triage-routing.md) | Routing table: every `EventKind` → handler → destination. |
 | [`turn-lifecycle.md`](architecture/turn-lifecycle.md) | The three-lifecycle mental model (tool / task / turn). Read before touching provider, triage, or any turn-state UI. |
 | [`root-decomposition.md`](architecture/root-decomposition.md) | Field-ownership and seam map of the `*App` root receiver, plus the wire-compat facts that make a split byte-identical on the wire. |
@@ -96,6 +96,8 @@ ships and stops being cited gets deleted (git history keeps it).
 | [`workflows-system-decisions.md`](specs/workflows-system-decisions.md) | The binding decisions log companion to that spec, D1 onward. |
 | [`agent-visibility.md`](specs/agent-visibility.md) | How subagent work surfaces in the timeline. Partially implemented; unchecked criteria are the open work. |
 | [`code-review.md`](specs/code-review.md) | The review workflow design, signed off 2026-08-23. Not implemented yet. |
+| [`file-attachments.md`](specs/file-attachments.md) | Any-file composer attachments: copy to the attachments root, path line in the prompt, `--add-dir` for Claude. Signed off 2026-09-02; implementation in progress. |
+| [`sidebar-thread-groups.md`](specs/sidebar-thread-groups.md) | Named, collapsible, pinnable groups of threads inside a project's sidebar list. Signed off and implemented 2026-09-02. |
 | [`remote-access.md`](specs/remote-access.md) | Remote and multi-device access. Draft; only phase-0 groundwork is built. |
 | [`remote-access-boundaries.md`](specs/remote-access-boundaries.md) | The boundaries and guarantees companion to the remote-access spec. |
 | [`testing-harness.md`](specs/testing-harness.md) | The harness contract and design rationale. `architecture/agent-harness.md` describes the built surface. |

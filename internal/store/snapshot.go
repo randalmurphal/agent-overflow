@@ -125,6 +125,15 @@ func (s *Store) RestoreFrom(srcPath string) (identity Identity, retErr error) {
 	if _, err := tx.Exec(dropHistoryRevTriggersSQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: drop history triggers: %w", err)
 	}
+	// The background-launch settlement triggers come off for the same
+	// reason, plus one of their own: the copy replays `items` in table
+	// order, so the launch and its completion sibling arrive in whatever
+	// order rowids give — the triggers would re-derive, row by row, a
+	// flag the snapshot already carries settled. Dropping them makes the
+	// restored flag the snapshot's by construction.
+	if _, err := tx.Exec(dropBackgroundSettleTriggersSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: drop background settle triggers: %w", err)
+	}
 
 	for _, table := range tables {
 		if _, err := tx.Exec(`DELETE FROM main."` + table + `"`); err != nil {
@@ -157,6 +166,9 @@ func (s *Store) RestoreFrom(srcPath string) (identity Identity, retErr error) {
 	// v55 installs, so the two can never describe different contracts.
 	if _, err := tx.Exec(historyRevTriggersSQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: recreate history triggers: %w", err)
+	}
+	if _, err := tx.Exec(backgroundSettleTriggersSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: recreate background settle triggers: %w", err)
 	}
 
 	// A restore rewinds every thread's history_rev / history_epoch to the

@@ -4,7 +4,11 @@
 // testdata/, so the go tool never builds it.
 package routes
 
-import "context"
+import (
+	"context"
+
+	"agent-overflow/internal/gitapp"
+)
 
 // Eta is the fixture receiver.
 type Eta struct{}
@@ -39,3 +43,18 @@ func (e *Eta) Overridden(threadID string) {}
 //ao:scope threads:read
 //ao:route all
 func (e *Eta) Declared() {}
+
+// WorkspaceRef stands in for the alias internal/app declares over
+// gitapp.WorkspaceRef; the inference reads the type's NAME.
+type WorkspaceRef struct{}
+
+// Workspaced infers `workspace` from a first parameter typed with the
+// package-local alias.
+//
+//ao:scope files:read
+func (e *Eta) Workspaced(ws WorkspaceRef, branch string) {}
+
+// WorkspacedQualified infers the same from the qualified spelling.
+//
+//ao:scope files:read
+func (e *Eta) WorkspacedQualified(ctx context.Context, ws gitapp.WorkspaceRef) {}

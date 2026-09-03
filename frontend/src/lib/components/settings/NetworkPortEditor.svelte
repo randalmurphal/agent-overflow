@@ -59,6 +59,7 @@
 
 <div class="flex flex-col gap-1" data-testid="network-port-editor">
   <SettingsField
+    id="remote.port"
     label="Port"
     hint="The port this backend listens on. Leave it blank to let Agent Overflow pick one and keep reusing it."
     htmlFor="network-listen-port"

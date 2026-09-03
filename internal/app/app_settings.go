@@ -96,9 +96,8 @@ func redactedSettings(current settings.Settings) settings.Settings {
 //
 // The returned snapshot is redacted like GetSettings': the frontend store
 // re-seeds from it, and the two read paths must not disagree about whether the
-// store holds a plaintext secret. (Nothing consumes the secrets from here —
-// tokens are fetched through GetRemoteEndpointToken and sensitive environment
-// values have no read path at all.)
+// store holds a plaintext secret. (Nothing consumes the secrets from here:
+// sensitive environment values have no read path at all.)
 //
 // The scope below is the FLOOR, and it is the floor VALUE: one method carries
 // all three of §6's tiers, so the only honest thing its name can require is a

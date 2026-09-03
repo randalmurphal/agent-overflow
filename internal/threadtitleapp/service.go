@@ -260,7 +260,10 @@ func (s *Service) imagePaths(threadID string, attachments []store.Attachment) ([
 	}
 	paths := make([]string, 0, len(attachments))
 	for _, attachment := range attachments {
-		if !strings.HasPrefix(attachment.MimeType, "image/") {
+		// The KIND decides, not the MIME prefix: `image/heic` is a `file`
+		// (no provider ingests one), and a file has no pixels to caption.
+		// An empty kind is a pre-v75 row, which was always an image.
+		if attachment.Kind == store.AttachmentKindFile {
 			continue
 		}
 		record, path, ok, err := s.config.Attachments.Get(attachment.ID)

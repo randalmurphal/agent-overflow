@@ -274,6 +274,52 @@ func TestParseUsageResponseRetainsDynamicScopedLimits(t *testing.T) {
 	}
 }
 
+// The usage endpoint answers with every bucket the account has, so the
+// snapshot may prune. A limit the parser had to skip breaks that promise:
+// the reading no longer speaks for the whole account.
+func TestParseUsageResponseMarksTheWholeAnswerOnlyWhenNothingIsSkipped(t *testing.T) {
+	now := time.UnixMilli(1_700_000_000_000)
+	whole, err := parseUsageResponse([]byte(`{"limits":[
+		{"kind":"session","group":"session","percent":5,"resets_at":"2026-05-14T12:00:00Z"},
+		{"kind":"weekly_all","group":"weekly","percent":1,"resets_at":"2026-05-14T12:00:00Z"}
+	]}`), now)
+	if err != nil {
+		t.Fatalf("parseUsageResponse: %v", err)
+	}
+	if !whole.Complete {
+		t.Fatal("a fully parsed usage response is the account's whole answer")
+	}
+
+	partial, err := parseUsageResponse([]byte(`{"limits":[
+		{"kind":"session","group":"session","percent":5,"resets_at":"2026-05-14T12:00:00Z"},
+		{"kind":"weekly_scoped","group":"weekly","percent":9,"resets_at":"not a timestamp","scope":{"model":{"id":"claude-fable","display_name":"Fable"}}}
+	]}`), now)
+	if err != nil {
+		t.Fatalf("parseUsageResponse: %v", err)
+	}
+	if partial.Complete {
+		t.Fatal("a response with a skipped limit must not authorize pruning")
+	}
+	if len(partial.Limits) != 1 {
+		t.Fatalf("Limits = %+v, want the parseable limit kept", partial.Limits)
+	}
+}
+
+// The header fallback sees the two unified windows and nothing else, so it
+// can never speak for a model-scoped bucket.
+func TestParseRateLimitsFromHeadersIsNeverTheWholeAnswer(t *testing.T) {
+	headers := http.Header{}
+	headers.Set(claudeRateLimitHeaderPrefix+"5h-Utilization", "0.5")
+	headers.Set(claudeRateLimitHeaderPrefix+"5h-Reset", "1788316200")
+	snapshot, err := parseRateLimitsFromHeaders(headers, time.UnixMilli(1_700_000_000_000))
+	if err != nil {
+		t.Fatalf("parseRateLimitsFromHeaders: %v", err)
+	}
+	if snapshot.Complete {
+		t.Fatal("the header fallback must not authorize pruning scoped limits")
+	}
+}
+
 // TestProbeRateLimits_MissingCredentials returns the sentinel so
 // callers can log at debug level rather than treat as a hard failure.
 func TestProbeRateLimits_MissingCredentials(t *testing.T) {

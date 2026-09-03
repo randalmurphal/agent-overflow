@@ -11,7 +11,6 @@
   import { onMount } from 'svelte';
   import { getProjectLabelText, getProjects, isLoaded, refreshProjects } from '../../stores/projects.svelte';
   import { hasScope } from '../../transport/scopes';
-  import SettingsHeader from './SettingsHeader.svelte';
   import SettingsField from './SettingsField.svelte';
   import WorktreeSetupEditor from './WorktreeSetupEditor.svelte';
   import { SELECT_CLASS } from './styles';
@@ -39,12 +38,7 @@
   });
 </script>
 
-<div class="space-y-6">
-  <SettingsHeader
-    title="Projects"
-    description="Per-project configuration. Settings here apply to every thread and workflow run in the selected project."
-  />
-
+<div class="settings-sections">
   {#if ungranted}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-projects-local-only">
       Project configuration is local only. Open Agent Overflow on the host machine to edit it.
@@ -55,6 +49,7 @@
     </p>
   {:else}
     <SettingsField
+      id="projects.project"
       label="Project"
       hint="Choose which project these settings apply to."
       htmlFor="settings-projects-select"

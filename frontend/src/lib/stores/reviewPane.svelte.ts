@@ -1,6 +1,7 @@
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import {
   GetDiffContextLines,
+  GetEditDiffContextLines,
   GetPRCIJobLog,
   GetPRDetail,
   GetThread,
@@ -15,7 +16,7 @@ import {
 } from './bindings';
 import { openCompanion } from './companionPanes.svelte';
 import { peekGitStatus } from './gitStatusStore.svelte';
-import { workspaceKeyForThread } from '../utils/workspaceKey';
+import { NO_WORKSPACE_REF, workspaceKeyForThread } from '../utils/workspaceKey';
 import { getPane } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import {
@@ -47,6 +48,7 @@ import {
   defaultBaseBranch,
   defaultCollapsedPaths,
   draftAnchorExists,
+  EDITS_NEEDS_THREAD,
   editSelectionFromKey,
   editSelectionKey,
   loadPatch,
@@ -59,7 +61,7 @@ import { persistScope, readPersistedScope } from './reviewPaneScope';
 import { hasScope } from '../transport/scopes';
 import { getSettings } from './settings.svelte';
 import { getActiveTurn } from './threadStatuses.svelte';
-import type { BranchCommit } from '../types/git';
+import type { BranchCommit, WorkspaceRef } from '../types/git';
 import type {
   CIJob,
   CIJobLogResult,
@@ -104,8 +106,9 @@ import type { CommentListItem } from '../utils/reviewComments';
 export type ReviewScope = DiffReviewScope;
 
 export interface ReviewPaneState {
-  /** Thread this state was created for — the registry's staleness check. */
-  readonly threadId: string;
+  /** Subject this state was created for — the registry's staleness check.
+   *  A thread row id, or a draft placeholder's synthetic id. */
+  readonly identity: string;
   readonly scope: ReviewScope;
   readonly baseBranch: string | null;
   readonly prRef: PRRef | null;
@@ -263,35 +266,70 @@ const statesBySourcePane = new Map<string, ReviewPaneState>();
 // look like the review threads moved on every keystroke.
 const EMPTY_PR_THREADS: readonly ReviewThread[] = Object.freeze([]);
 
+// Same stability rule for the comment list a workspace-only pane reads.
+const EMPTY_COMMENTS: readonly DiffReviewComment[] = Object.freeze([]);
+
+/**
+ * What a review pane is looking at. The four values travel together because
+ * they answer different questions and only agree by accident:
+ * `identity` keys the registry (a draft placeholder has one without a row),
+ * `threadId` is the REAL row and is null until the draft materializes,
+ * `workspace` is the checkout every workspace-scoped RPC addresses (the zero
+ * ref means "no local clone", which is what a pr-anchor thread has), and
+ * `thread` carries the row metadata the initial scope choice reads.
+ */
+export interface ReviewSubject {
+  readonly identity: string;
+  readonly threadId: string | null;
+  readonly workspace: WorkspaceRef;
+  readonly thread: Thread | null;
+}
+
+/** The one place a review subject is built. Structural in the pane so both
+ *  `ThreadPane` and the narrower `PanelContext` projection satisfy it. */
+export function reviewSubjectForPane(pane: {
+  threadId: string | null;
+  thread: Thread | null;
+  workspace: WorkspaceRef | null;
+}): ReviewSubject | null {
+  const thread = pane.thread;
+  if (!thread) return null;
+  return {
+    identity: thread.id,
+    threadId: pane.threadId,
+    workspace: pane.workspace ?? NO_WORKSPACE_REF,
+    thread,
+  };
+}
+
 export function reviewStateForPane(
   sourcePaneId: string,
-  threadId: string,
-  thread?: Thread | null,
+  subject: ReviewSubject,
   opts: { deferInitialLoad?: boolean } = {},
 ): ReviewPaneState {
   const existing = statesBySourcePane.get(sourcePaneId);
-  // Thread mismatch replaces rather than reuses: the CompanionPane {#key}
+  // Subject mismatch replaces rather than reuses: the CompanionPane {#key}
   // remount usually disposes the old state first, but correctness must not
   // depend on Svelte's destroy-before-create ordering.
-  if (existing && existing.threadId === threadId) return existing;
+  if (existing && existing.identity === subject.identity) return existing;
   // The replaced state may own a live PR-update subscription; drop it or
   // the Go-side poll pump outlives the state that could unsubscribe it.
   existing?.dispose();
-  const state = createReviewPaneState(sourcePaneId, threadId, thread ?? null, opts.deferInitialLoad ?? false);
+  const state = createReviewPaneState(sourcePaneId, subject, opts.deferInitialLoad ?? false);
   statesBySourcePane.set(sourcePaneId, state);
   return state;
 }
 
-export function disposeReviewStateForPane(sourcePaneId: string, expectedThreadId?: string): void {
+export function disposeReviewStateForPane(sourcePaneId: string, expectedIdentity?: string): void {
   const current = statesBySourcePane.get(sourcePaneId);
-  if (expectedThreadId && current?.threadId !== expectedThreadId) return;
+  if (expectedIdentity && current?.identity !== expectedIdentity) return;
   current?.dispose?.();
   statesBySourcePane.delete(sourcePaneId);
 }
 
 export async function openReviewCompanion(
   sourcePaneId: string,
-  threadId: string,
+  subject: ReviewSubject,
   opts: {
     scope?: ReviewScope;
     filePath?: string;
@@ -302,7 +340,7 @@ export async function openReviewCompanion(
   const companion = openCompanion(sourcePaneId, 'review');
   if (!companion) return null;
   const hasExplicitSelection = opts.scope !== undefined || opts.editItemId !== undefined;
-  const state = reviewStateForPane(sourcePaneId, threadId, null, { deferInitialLoad: hasExplicitSelection });
+  const state = reviewStateForPane(sourcePaneId, subject, { deferInitialLoad: hasExplicitSelection });
   if (opts.filePath) {
     state.pendingJumpFilePath = opts.filePath;
   }
@@ -321,15 +359,18 @@ export async function openReviewCompanion(
 
 function createReviewPaneState(
   sourcePaneId: string,
-  threadId: string,
-  initialThread: Thread | null,
+  subject: ReviewSubject,
   deferInitialLoad: boolean,
 ): ReviewPaneState {
-  const persisted = readPersistedScope(threadId);
+  const { identity, threadId, workspace } = subject;
+  const initialThread = subject.thread;
+  // Scope persistence is keyed on a real row; a draft placeholder has no
+  // history to restore and nothing to write back.
+  const persisted = threadId === null ? null : readPersistedScope(threadId);
   const initialPRRef = prRefFromThread(initialThread ?? {});
   let prRef: PRRef | null = $state(initialPRRef);
   let scope: ReviewScope = $state(
-    initialPRRef && (initialThread?.workspacePath ?? '') === '' ? 'pr' : (persisted?.scope ?? 'workspace'),
+    initialPRRef && workspace.workspacePath === '' ? 'pr' : (persisted?.scope ?? 'workspace'),
   );
   let baseBranch: string | null = $state(persisted?.baseBranch ?? null);
   // The head THIS pane's diff was computed at, stamped with the PR it was
@@ -543,9 +584,14 @@ function createReviewPaneState(
   const canIgnoreWhitespace = $derived(
     !conflictView && ciLogView === null && supportsIgnoreWhitespace(scope, selectedCommitSHA),
   );
-  const comments = $derived(getDiffReviewComments(threadId, scope, sourceKey));
+  // Review comments and turn state belong to a THREAD's history; a draft
+  // placeholder has neither, so the comment affordances stay dark rather
+  // than pointing at a row that does not exist yet.
+  const comments = $derived(
+    threadId === null ? EMPTY_COMMENTS : getDiffReviewComments(threadId, scope, sourceKey),
+  );
   const drafts = $derived(comments.filter((comment) => comment.status === 'draft'));
-  const isTurnActive = $derived(getActiveTurn(threadId) !== null);
+  const isTurnActive = $derived(threadId !== null && getActiveTurn(threadId) !== null);
 
   // The thread row's own PR reference — set when the thread was created FROM
   // a pull request, and never rewritten afterwards, so resolving it once is
@@ -568,11 +614,15 @@ function createReviewPaneState(
 
   async function ensurePRRef(): Promise<PRRef | null> {
     if (threadPRRef === undefined) {
-      try {
-        threadPRRef = prRefFromThread((await GetThread(threadId)) as Thread);
-      } catch (err) {
-        error = userFacingError(err);
-        throw err;
+      // No row to ask: a draft placeholder's PR, if any, is the workspace's.
+      if (threadId === null) threadPRRef = null;
+      else {
+        try {
+          threadPRRef = prRefFromThread((await GetThread(threadId)) as Thread);
+        } catch (err) {
+          error = userFacingError(err);
+          throw err;
+        }
       }
     }
     prRef = threadPRRef ?? workspacePRRef();
@@ -673,7 +723,7 @@ function createReviewPaneState(
     }
     scope = nextScope;
     baseBranch = nextScope === 'branch'
-      ? (opts?.baseBranch?.trim() || baseBranch || await defaultBaseBranch(threadId))
+      ? (opts?.baseBranch?.trim() || baseBranch || await defaultBaseBranch(workspace))
       : null;
     // Back to "latest" on scope entry — the previous selection belongs
     // to another commit range. A base-branch change within branch scope
@@ -686,7 +736,7 @@ function createReviewPaneState(
     openEditors = [];
     draftBodies.clear();
     collapseOverrides.clear();
-    persistScope(threadId, scope, baseBranch);
+    if (threadId !== null) persistScope(threadId, scope, baseBranch);
     await reload();
   }
 
@@ -782,7 +832,7 @@ function createReviewPaneState(
         releasePR();
       }
       const loaded = await loadPatch(
-        threadId,
+        { workspace, threadId },
         scope,
         baseBranch,
         selectedCommitSHA,
@@ -833,6 +883,11 @@ function createReviewPaneState(
       // patchText and selectedCommitSHA are already updated above, so
       // the derived reflects this load — no need to re-derive by hand.
       const nextSourceKey = sourceKey;
+      if (threadId === null) {
+        // A draft placeholder owns no comment store to sync.
+        error = null;
+        return;
+      }
       if (!nextSourceKey) {
         openEditors = [];
         draftBodies.clear();
@@ -856,7 +911,7 @@ function createReviewPaneState(
       openEditors = [];
       draftBodies.clear();
       collapsedPaths = new SvelteSet<string>();
-      setActiveDiffReviewSource(threadId, null);
+      if (threadId !== null) setActiveDiffReviewSource(threadId, null);
       error = userFacingError(err);
     } finally {
       if (seq === loadSeq) loading = false;
@@ -873,17 +928,24 @@ function createReviewPaneState(
     contextExpansionVersion += 1;
   }
 
-  // The scope triple GetDiffContextLines / HighlightPatchWithContext
-  // use to resolve new-side file content (`app_review_diffs.go`). A
-  // selected commit in branch scope reads through 'commit' scope; pr
-  // scope reads the local PR clone, at the selected commit when one is
-  // set (falling back to the head).
+  // The scope fields the priming RPCs resolve new-side file content
+  // from (`app_review_diffs.go`), and the SUBJECT each one resolves it
+  // through: this subject's checkout for every scope but edits, whose
+  // subject is the thread's own persisted history. A selected commit in
+  // branch scope reads through 'commit' scope; pr scope reads the local
+  // PR clone, at the selected commit when one is set (falling back to
+  // the head).
   function patchScopeContext(): PatchScopeContext {
     if (scope === 'pr') {
-      return { scope: 'pr', commitSHA: selectedCommitSHA ?? '', headSHA: loadedPRHeadSHA };
+      return {
+        scope: 'pr',
+        commitSHA: selectedCommitSHA ?? '',
+        headSHA: loadedPRHeadSHA,
+        workspace,
+      };
     }
     if (selectedCommitSHA) {
-      return { scope: 'commit', commitSHA: selectedCommitSHA, headSHA: '' };
+      return { scope: 'commit', commitSHA: selectedCommitSHA, headSHA: '', workspace };
     }
     if (scope === 'edits') {
       // The edit selection routes the backend to that edit's persisted
@@ -895,11 +957,16 @@ function createReviewPaneState(
         scope,
         commitSHA: '',
         headSHA: '',
+        workspace,
+        // Non-null by construction: the edits scope is unreachable
+        // without a thread row (ReviewPane offers no such option, and
+        // `setScope` refuses it), so this never keys on ''.
+        threadId: editsThreadId(),
         editPayloadId: selectedEdit?.kind === 'item' ? selectedEdit.payloadId : '',
         editTurnIndex: selectedEdit?.kind === 'turn' ? selectedEdit.turnIndex : -1,
       };
     }
-    return { scope, commitSHA: '', headSHA: '' };
+    return { scope, commitSHA: '', headSHA: '', workspace };
   }
 
   // One file's patch text, serialized from its merged lines — the ONLY
@@ -928,8 +995,25 @@ function createReviewPaneState(
   // unverified. Any failure (a session without `files:read`
   // included) just leaves paths unverified: no arrows, no error
   // banner, exactly what clicking would have found out the hard way.
+  // Edits scope is unreachable without a real row: the option is not
+  // rendered on a draft placeholder, and both the diff load and this
+  // expansion path refuse it in the same words rather than no-oping.
+  // Diff-review comments, comment sends and the steer-the-agent action all
+  // address a thread ROW. None of their controls render on a draft
+  // placeholder, so reaching one without a row is a bug rather than a
+  // user-visible state — say so instead of no-oping.
+  function commentThreadId(): string {
+    if (threadId === null) throw new Error('Review comments need a started thread.');
+    return threadId;
+  }
+
+  function editsThreadId(): string {
+    if (threadId === null) throw new Error(EDITS_NEEDS_THREAD);
+    return threadId;
+  }
+
   async function verifyEditExpandability(seq: number): Promise<void> {
-    if (scope !== 'edits' || !patchText) return;
+    if (scope !== 'edits' || threadId === null || !patchText) return;
     const merged = mergePatchFilesByPathCached(parsePatchFilesCached(patchText));
     // Added files are fully present — no gaps to gate, so no reason to
     // resolve them.
@@ -963,7 +1047,7 @@ function createReviewPaneState(
     const seq = loadSeq;
     try {
       const context = patchScopeContext();
-      const result = await GetDiffContextLines(threadId, {
+      const req = {
         scope: context.scope,
         commitSHA: context.commitSHA,
         headSHA: context.headSHA,
@@ -973,7 +1057,13 @@ function createReviewPaneState(
         verifyPatch: editVerifyPatch(path),
         editPayloadId: context.editPayloadId ?? '',
         editTurnIndex: context.editTurnIndex ?? -1,
-      });
+      };
+      // The edits scope's new side is a HISTORICAL file state owned by the
+      // thread, so it has its own RPC; every live scope resolves out of the
+      // checkout. Same request shape, two different subjects.
+      const result = scope === 'edits'
+        ? await GetEditDiffContextLines(editsThreadId(), req)
+        : await GetDiffContextLines(workspace, req);
       // The diff reloaded underneath the fetch — its line numbering may
       // no longer be the one this slice was addressed against.
       if (seq !== loadSeq || disposed) return;
@@ -1020,7 +1110,7 @@ function createReviewPaneState(
     const trimmed = body.trim();
     if (!sourceKey || !trimmed) return;
     try {
-      await createDiffReviewComment(threadId, {
+      await createDiffReviewComment(commentThreadId(), {
         scope,
         sourceKey,
         commitSha: selectedCommitSHA ?? (scope === 'pr' ? loadedPRHeadSHA : undefined),
@@ -1032,7 +1122,7 @@ function createReviewPaneState(
         body: trimmed,
       });
       closeDraftEditor(anchor);
-      setActiveDiffReviewSource(threadId, scope, sourceKey);
+      setActiveDiffReviewSource(commentThreadId(), scope, sourceKey);
       error = null;
     } catch (err) {
       error = userFacingError(err);
@@ -1044,7 +1134,7 @@ function createReviewPaneState(
     const trimmed = body.trim();
     if (!sourceKey || !trimmed) return;
     try {
-      await updateDiffReviewComment(threadId, scope, sourceKey, commentId, { body: trimmed });
+      await updateDiffReviewComment(commentThreadId(), scope, sourceKey, commentId, { body: trimmed });
       error = null;
     } catch (err) {
       error = userFacingError(err);
@@ -1055,7 +1145,7 @@ function createReviewPaneState(
   async function deleteComment(commentId: string): Promise<void> {
     if (!sourceKey) return;
     try {
-      await deleteDiffReviewComment(threadId, scope, sourceKey, commentId);
+      await deleteDiffReviewComment(commentThreadId(), scope, sourceKey, commentId);
       error = null;
     } catch (err) {
       error = userFacingError(err);
@@ -1064,11 +1154,11 @@ function createReviewPaneState(
   }
 
   async function sendComments(): Promise<void> {
-    if (!sourceKey || drafts.length === 0 || sendingComments || getActiveTurn(threadId) !== null) return;
+    if (!sourceKey || drafts.length === 0 || sendingComments || isTurnActive) return;
     sendingComments = true;
     try {
       const detail = prSnapshot?.detail;
-      await SendDiffReviewComments(threadId, scope, sourceKey, drafts.map((comment) => comment.id), {
+      await SendDiffReviewComments(commentThreadId(), scope, sourceKey, drafts.map((comment) => comment.id), {
         pr: scope === 'pr' && detail
           ? {
               number: detail.number,
@@ -1080,7 +1170,7 @@ function createReviewPaneState(
             }
           : undefined,
       });
-      await refreshDiffReviewComments(threadId, scope, sourceKey);
+      await refreshDiffReviewComments(commentThreadId(), scope, sourceKey);
       error = null;
     } catch (err) {
       error = userFacingError(err);
@@ -1126,9 +1216,9 @@ function createReviewPaneState(
         submitError = `Review posted, but a follow-up step failed: ${result.partialFailure}`;
       }
       if (sent.length > 0) {
-        await MarkDiffReviewCommentsSent(threadId, scope, sourceKey, sent.map((comment) => comment.id), `pr:${loadedPRHeadSHA}`);
+        await MarkDiffReviewCommentsSent(commentThreadId(), scope, sourceKey, sent.map((comment) => comment.id), `pr:${loadedPRHeadSHA}`);
       }
-      await refreshDiffReviewComments(threadId, scope, sourceKey);
+      await refreshDiffReviewComments(commentThreadId(), scope, sourceKey);
       // Through the store: the posted review is now part of the PR, so
       // every pane looking at it shows the new threads.
       applyPRThreads(prKey(prRef), ((await ListPRReviewThreads(prReferenceWire(prRef))) ?? []) as ReviewThread[]);
@@ -1202,7 +1292,7 @@ function createReviewPaneState(
   }
 
   async function sendPRThreadToAgent(thread: ReviewThread): Promise<void> {
-    if (getActiveTurn(threadId) !== null) return;
+    if (isTurnActive) return;
     const line = thread.line ? `:${thread.line}` : '';
     const content = [
       `Please address this PR review thread at ${thread.path}${line}.`,
@@ -1210,7 +1300,7 @@ function createReviewPaneState(
       ...thread.comments.map((comment) => `${comment.authorLogin}: ${comment.body}`),
     ].join('\n');
     try {
-      await SendMessage(threadId, content, []);
+      await SendMessage(commentThreadId(), content, []);
       error = null;
     } catch (err) {
       error = userFacingError(err);
@@ -1234,7 +1324,7 @@ function createReviewPaneState(
     closeCILogView();
     setConflictView(true);
     conflictExpandedFolds.clear();
-    await openPRConflicts(key, threadId, prRef, detail);
+    await openPRConflicts(key, workspace, prRef, detail);
     if (disposed) return;
     // Everything the store could show opens expanded, like the regular
     // diff. A file whose content read failed and that carries no notes has
@@ -1415,7 +1505,7 @@ function createReviewPaneState(
   }
 
   return {
-    threadId,
+    identity,
     get scope() { return scope; },
     get baseBranch() { return baseBranch; },
     get prRef() { return prRef; },

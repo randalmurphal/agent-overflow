@@ -1107,3 +1107,115 @@ func TestParseUser_ScopedMalformedToolResultIsNotAPrompt(t *testing.T) {
 		t.Fatalf("expected no events, got %+v", events)
 	}
 }
+
+// TestAppendToolResultBlock_FlaggedLaunchRefusedIsNotBackground pins
+// the rule that the launch-time `run_in_background:true` flag is a hint,
+// never a verdict. A flagged Bash the CLI refused — a PreToolUse hook
+// deny, a permission denial in don't-ask mode — answers with an error
+// result and never starts a task, so classifying it as a backgrounded
+// placeholder left the row running forever with no task_id (2026-09-02,
+// ten rows across six threads). All three observed refusal shapes must
+// settle in place.
+func TestAppendToolResultBlock_FlaggedLaunchRefusedIsNotBackground(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+	}{
+		{
+			// Top level: the CLI attaches its string `tool_use_result`.
+			name: "top-level permission denial with string tool_use_result",
+			line: `{"type":"user","tool_use_result":"Error: Permission to use Bash has been denied because Claude Code is running in don't ask mode.","message":{"role":"user","content":[{"tool_use_id":"tool-bg","type":"tool_result","content":"Permission to use Bash has been denied because Claude Code is running in don't ask mode.","is_error":true}]}}`,
+		},
+		{
+			// Sidechain hook deny as captured 2026-09-02: `tool_use_result`
+			// present (the hook's string), `is_error:true`.
+			name: "sidechain hook refusal with tool_use_result",
+			line: `{"type":"user","parent_tool_use_id":"tool-agent","tool_use_result":"Error: This agent is isolated in the worktree …, Refusing to run it.","message":{"role":"user","content":[{"tool_use_id":"tool-bg","type":"tool_result","content":"This agent is isolated in the worktree …, Refusing to run it.","is_error":true}]}}`,
+		},
+		{
+			// Sidechain with the envelope omitted entirely: only the text
+			// is left, and it is not the ack.
+			name: "sidechain refusal without tool_use_result",
+			line: `{"type":"user","parent_tool_use_id":"tool-agent","message":{"role":"user","content":[{"tool_use_id":"tool-bg","type":"tool_result","content":"This agent is isolated in the worktree …, Refusing to run it.","is_error":true}]}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parser := NewParser()
+			if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"make apk","run_in_background":true}}]}}`)); err != nil {
+				t.Fatalf("assistant tool_use: %v", err)
+			}
+			events, err := parser.ParseLine(testThread, []byte(tc.line))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(events) != 1 || events[0].Kind != provider.EventToolComplete {
+				t.Fatalf("expected one EventToolComplete, got %+v", events)
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			if _, flagged := meta["is_background"]; flagged {
+				t.Fatalf("a refused launch must not be classified as backgrounded; meta=%v", meta)
+			}
+			if _, stamped := meta["task_id"]; stamped {
+				t.Fatalf("no task started, so no task_id may be stamped; meta=%v", meta)
+			}
+			if meta["is_error"] != true {
+				t.Fatalf("is_error must ride the completion; meta=%v", meta)
+			}
+			if parser.isBackground("tool-bg") {
+				t.Fatal("the launch-time flag must be released on the result, ack or not")
+			}
+		})
+	}
+}
+
+// TestAppendToolResultBlock_SidechainAckTextMarksBackgroundAndBindsTaskID
+// pins §E2b: a subagent's backgrounded Bash acks WITHOUT a
+// `tool_use_result` envelope (0 of 25 sidechain acks in three weeks of
+// wire logs carried one), so the ack TEXT is the only evidence. All three
+// CLI ack variants classify, and each yields the task id the later
+// terminal routes by — stamped on the completion meta for triage and
+// bound in the parser's task map.
+func TestAppendToolResultBlock_SidechainAckTextMarksBackgroundAndBindsTaskID(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"explicit", "Command running in background with ID: bkulztq41. Output is being written to: /tmp/tasks/bkulztq41.output. You will be notified when it completes.\nSession cwd remains /home/x"},
+		{"assistant budget", "Command exceeded the assistant-mode blocking budget (30s) and was moved to the background with ID: bkulztq41. It is still running — you will be notified when it completes."},
+		{"manual", "Command was manually backgrounded by user with ID: bkulztq41. Output is being written to: /tmp/tasks/bkulztq41.output"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parser := NewParser()
+			if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","parent_tool_use_id":"tool-agent","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"make apk","run_in_background":true}}]}}`)); err != nil {
+				t.Fatalf("assistant tool_use: %v", err)
+			}
+			blob, _ := json.Marshal(tc.content)
+			line := `{"type":"user","parent_tool_use_id":"tool-agent","message":{"role":"user","content":[{"tool_use_id":"tool-bg","type":"tool_result","content":` + string(blob) + `,"is_error":false}]}}`
+			events, err := parser.ParseLine(testThread, []byte(line))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(events) != 1 || events[0].Kind != provider.EventToolComplete {
+				t.Fatalf("expected one EventToolComplete, got %+v", events)
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			if meta["is_background"] != true {
+				t.Fatalf("ack text must classify as backgrounded; meta=%v", meta)
+			}
+			if meta["task_id"] != "bkulztq41" {
+				t.Fatalf("task_id: got %v, want bkulztq41", meta["task_id"])
+			}
+			if ref := parser.taskToolUseRef("bkulztq41"); ref.ToolUseID != "tool-bg" || ref.ParentToolUseID != "tool-agent" {
+				t.Fatalf("task map must bind the ack's id to the launch (with its parent); got %+v", ref)
+			}
+		})
+	}
+}

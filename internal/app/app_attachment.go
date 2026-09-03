@@ -39,12 +39,16 @@ import (
 // bytes and nothing else, so a client cannot describe its payload as one
 // thing while minting and another thing while sending.
 //
-// Both argument checks are deliberately duplicated with the attachment
-// store's own. Refusing an oversize or disallowed payload BEFORE it is
-// sent turns "10 MiB of upload, then a rejection" into one failed round
-// trip, which on a phone is the whole difference; the store still checks
-// again, and its signature check is the one a content type cannot talk its
-// way past.
+// Both checks are deliberately duplicated with the attachment store's own.
+// Refusing an oversize payload BEFORE it is sent turns "50 MiB of upload,
+// then a rejection" into one failed round trip, which on a phone is the
+// whole difference; the store still checks again, and for an image its
+// signature check is the one a content type cannot talk its way past.
+//
+// The cap is the KIND's (docs/specs/file-attachments.md): the kind is
+// decided here from the declared type and filename, exactly as the store
+// decides it, so a 30 MiB PNG is refused at the image cap rather than
+// sliding under the file one.
 //
 //ao:scope attachments:write
 func (a *App) MintAttachmentUploadTicket(threadID, filename, mimeType string, sizeBytes int64) (string, error) {
@@ -55,15 +59,15 @@ func (a *App) MintAttachmentUploadTicket(threadID, filename, mimeType string, si
 	if server == nil {
 		return "", fmt.Errorf("attachment: transport is not serving")
 	}
-	if sizeBytes > a.attachments.MaxSize() {
-		return "", fmt.Errorf("attachment: payload %d bytes exceeds limit %d", sizeBytes, a.attachments.MaxSize())
-	}
-	// Normalized rather than echoed: the store persists the canonical type
-	// it derives, so minting with the raw one would put a value in the
-	// ticket that disagrees with the row the transfer creates.
-	normalizedMIME, _, err := attachment.ValidateType(mimeType, filename)
+	// Classified rather than echoed: the store persists the kind and the
+	// canonical type it derives, so minting with the raw type would put a
+	// value in the ticket that disagrees with the row the transfer creates.
+	kind, normalizedMIME, err := attachment.ClassifyUpload(mimeType, filename)
 	if err != nil {
 		return "", err
+	}
+	if limit := a.attachments.MaxSizeFor(kind); sizeBytes > limit {
+		return "", fmt.Errorf("attachment: payload %d bytes exceeds limit %d", sizeBytes, limit)
 	}
 	return server.MintAttachmentUploadTicket(threadID, filename, normalizedMIME, sizeBytes)
 }
@@ -75,7 +79,9 @@ func (a *App) MintAttachmentUploadTicket(threadID, filename, mimeType string, si
 // exists — the same check ReadThreadBytes made and for the same reason: a
 // stale cross-thread id must not resolve to another thread's file. The
 // route cannot make this check itself (it has no idea what an attachment
-// row is), which is exactly why it has to happen at the mint.
+// row is), which is exactly why it has to happen at the mint. The kind
+// check is the same story: only an image is ever served, so a ticket for
+// a `file` would be a round trip spent on a refusal.
 //
 //ao:scope threads:read
 func (a *App) MintAttachmentDownloadTicket(threadID, attachmentID string) (string, error) {
@@ -89,10 +95,30 @@ func (a *App) MintAttachmentDownloadTicket(threadID, attachmentID string) (strin
 	// Metadata only. PathForThread resolves and verifies without reading a
 	// byte, so an id that names nothing — or names another thread's file —
 	// costs a row lookup rather than a ticket and a wasted transfer.
-	if _, _, err := a.attachments.PathForThread(threadID, attachmentID); err != nil {
+	record, _, err := a.attachments.PathForThread(threadID, attachmentID)
+	if err != nil {
 		return "", err
 	}
+	if record.Kind != store.AttachmentKindImage {
+		return "", fmt.Errorf("%w: %q is a %s attachment", attachment.ErrNotAnImage, attachmentID, record.Kind)
+	}
 	return server.MintAttachmentDownloadTicket(threadID, attachmentID)
+}
+
+// claudeAdditionalDirs is what every Claude spawn (headless and
+// claude-tui) passes as `--add-dir`: the attachments root, so a session
+// can Read a file the user attached without raising a permission prompt
+// for a path outside its workspace (docs/specs/file-attachments.md).
+//
+// The path comes from the store rather than being re-derived from the
+// config dir, so there is one answer to "where do attachments live". A
+// boot with no attachment store adds no directory rather than guessing
+// one — and then no file could have been attached either.
+func (a *App) claudeAdditionalDirs() []string {
+	if a.attachments == nil {
+		return nil
+	}
+	return []string{a.attachments.Root()}
 }
 
 // ListAttachments returns every attachment metadata row for a thread.
@@ -114,13 +140,18 @@ func (a *App) ListAttachments(threadID string) ([]store.Attachment, error) {
 
 // DeleteAttachment removes both the metadata row and the disk file.
 //
+// The thread id is not decoration: it is the ownership boundary, checked
+// against the row before anything is removed, so a stale id from a closed
+// composer or a foreign one from any client cannot delete another thread's
+// attachment. Every other thread-scoped accessor takes it for the same
+// reason.
+//
 //ao:scope attachments:write
-//ao:route selected
-func (a *App) DeleteAttachment(attachmentID string) error {
+func (a *App) DeleteAttachment(threadID, attachmentID string) error {
 	if a.attachments == nil {
 		return fmt.Errorf("attachment store not initialized")
 	}
-	return a.attachments.Delete(attachmentID)
+	return a.attachments.Delete(threadID, attachmentID)
 }
 
 // AttachmentThumbnail is the wire shape returned by GetAttachmentThumbnail.
@@ -181,7 +212,10 @@ func (t attachmentTransfer) OpenAttachment(threadID, attachmentID string) (trans
 	// The ownership check runs AGAIN here, not only at the mint. A ticket
 	// is evidence that it once passed, and the row could have moved or
 	// gone since; OpenThread is where the file is actually chosen, so it
-	// is where the check has to be true.
+	// is where the check has to be true. It is also where a `file` row is
+	// refused (attachment.ErrNotAnImage): this route serves images only,
+	// and a document attached for the agent is never handed back to a
+	// client, at any origin.
 	content, err := t.app.attachments.OpenThread(threadID, attachmentID)
 	if err != nil {
 		return transport.AttachmentContent{}, err

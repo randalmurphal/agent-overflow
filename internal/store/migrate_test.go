@@ -5256,3 +5256,192 @@ func TestMigrationV72ConvertsDesignThreadsAndRemovesMode(t *testing.T) {
 		}
 	}
 }
+
+// v73: the partial index behind the reader-authored user_text reads.
+// Membership AND the plan are both asserted: a partial index SQLite
+// declines to use is the same as no index, and what it declines on is
+// exactly the predicate readerAuthoredUserTextFilterFor emits.
+func TestMigrationV73AddsUserTextIndex(t *testing.T) {
+	db := migrateThrough(t, 72)
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v73', '/v73', 'v73', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (
+		id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived
+	) VALUES ('t-v73', 'p-v73', 'v73', 'claude', '/v73', '', 1, 1, 0)`)
+	insert := func(id string, turn, index int, kind, parent string) {
+		t.Helper()
+		mustExec(t, db, `INSERT INTO items
+			(id, thread_id, turn_index, item_index, kind, role, status, summary,
+			 parent_id, created_at, updated_at)
+			VALUES (?, 't-v73', ?, ?, ?, 'user', 'completed', 'x', ?, 1, 1)`,
+			id, turn, index, kind, parent)
+	}
+	insert("u-top", 0, 0, "user_text", "")
+	insert("a-top", 0, 1, "assistant_text", "")
+	insert("u-child", 0, 2, "user_text", "u-top")
+
+	if err := applyMigration(db, migrationByVersion(t, 73)); err != nil {
+		t.Fatalf("apply migration v73: %v", err)
+	}
+
+	indexSQL := readIndexSQL(t, db, "idx_items_user_text")
+	for _, term := range []string{"kind = 'user_text'", "parent_id = ''"} {
+		if !strings.Contains(indexSQL, term) {
+			t.Errorf("idx_items_user_text lost its %q predicate: %s", term, indexSQL)
+		}
+	}
+	// Membership: the assistant row and the subagent child prompt are out.
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM items INDEXED BY idx_items_user_text
+		 WHERE kind = 'user_text' AND parent_id = ''`).Scan(&count); err != nil {
+		t.Fatalf("count via index: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("index membership = %d, want 1", count)
+	}
+	// The reads that qualify for it, each spelled the way its production
+	// caller spells it — the local arm of the ticks / recall compound,
+	// the title context's earliest-ask read, and the turn summaries.
+	for _, tc := range []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{
+			name: "nav rail ticks and composer recall",
+			query: `EXPLAIN QUERY PLAN SELECT items.id, items.turn_index, items.item_index
+			  FROM items
+			 WHERE items.thread_id = ?
+			   AND ` + readerAuthoredUserTextFilterFor("items.") + `
+			 ORDER BY items.turn_index, items.item_index`,
+			args: []any{"t-v73"},
+		},
+		{
+			name: "thread title context earliest ask",
+			query: `EXPLAIN QUERY PLAN SELECT items.id FROM items
+			 WHERE items.thread_id = ?
+			   AND ` + topLevelItemsFilterFor("items.") + `
+			   AND items.kind = 'user_text'
+			 ORDER BY items.turn_index, items.item_index LIMIT 1`,
+			args: []any{"t-v73"},
+		},
+		{
+			name: "turn user summaries",
+			query: `EXPLAIN QUERY PLAN SELECT turn_index, summary, MIN(item_index)
+			  FROM items
+			 WHERE thread_id = ?
+			   AND ` + readerAuthoredUserTextFilter + `
+			 GROUP BY turn_index ORDER BY turn_index`,
+			args: []any{"t-v73"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertPlanUses(t, db, "idx_items_user_text", tc.query, tc.args...)
+		})
+	}
+}
+
+// v75's DEFAULT is its backfill: every attachment written before the
+// column existed was an image, so an existing row must read as one
+// without any data rewrite.
+func TestMigrationV75BackfillsAttachmentKind(t *testing.T) {
+	db := migrateThrough(t, 74)
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v75', '/v75', 'v75', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (
+		id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived
+	) VALUES ('t-v75', 'p-v75', 'v75', 'claude', '/v75', '', 1, 1, 0)`)
+	mustExec(t, db, `INSERT INTO attachments
+		(id, thread_id, filename, mime_type, size, relative_path, created_at)
+		VALUES ('a-v75', 't-v75', 'shot.png', 'image/png', 4, 't-v75/a-v75.png', 1)`)
+
+	if err := applyMigration(db, migrationByVersion(t, 75)); err != nil {
+		t.Fatalf("apply migration v75: %v", err)
+	}
+
+	var kind string
+	if err := db.QueryRow(`SELECT kind FROM attachments WHERE id = 'a-v75'`).Scan(&kind); err != nil {
+		t.Fatalf("read backfilled kind: %v", err)
+	}
+	if kind != AttachmentKindImage {
+		t.Fatalf("pre-v75 attachment kind = %q, want %q", kind, AttachmentKindImage)
+	}
+}
+
+// TestMigrationV76ThreadGroupSchema applies v76 over a POPULATED, pinned
+// threads table — the shape every upgraded store has, and the one a plain
+// ADD COLUMN with a CHECK and a REFERENCES clause has to survive — and pins
+// what the accessors rest on: the index pair (the threads side partial),
+// the two CHECKs, and the FK's SET NULL under the writer's foreign_keys=1.
+func TestMigrationV76ThreadGroupSchema(t *testing.T) {
+	db := migrateThrough(t, 75)
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v76', '/v76', 'v76', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (
+		id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived, pinned_at, pin_group
+	) VALUES ('t-v76', 'p-v76', 'v76', 'claude', '/v76', '', 1, 1, 0, 5, 1)`)
+
+	if err := applyMigration(db, migrationByVersion(t, 76)); err != nil {
+		t.Fatalf("apply migration v76 over a pinned row: %v", err)
+	}
+
+	for _, index := range []string{"idx_thread_groups_project", "idx_threads_group"} {
+		var count int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
+		).Scan(&count); err != nil {
+			t.Fatalf("probe index %s: %v", index, err)
+		}
+		if count != 1 {
+			t.Errorf("index %s missing", index)
+		}
+	}
+	if got := readIndexSQL(t, db, "idx_threads_group"); !strings.Contains(got, "WHERE group_id IS NOT NULL") {
+		t.Errorf("idx_threads_group is not partial: %s", got)
+	}
+
+	// The upgraded row kept its pin, and the group_id it gained is NULL.
+	var pinnedAt, groupID sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT pinned_at, group_id FROM threads WHERE id = 't-v76'`,
+	).Scan(&pinnedAt, &groupID); err != nil {
+		t.Fatalf("read upgraded row: %v", err)
+	}
+	if !pinnedAt.Valid || pinnedAt.Int64 != 5 || groupID.Valid {
+		t.Fatalf("upgraded row = (pinned_at %v, group_id %v), want (5, NULL)", pinnedAt, groupID)
+	}
+
+	mustExec(t, db, `INSERT INTO thread_groups (id, project_id, name, created_at, updated_at)
+		VALUES ('g-v76', 'p-v76', 'Group', 1, 1)`)
+
+	// The threads-side CHECK refuses a row that is grouped AND pinned, in
+	// either write order.
+	if _, err := db.Exec(`UPDATE threads SET group_id = 'g-v76' WHERE id = 't-v76'`); err == nil {
+		t.Error("grouping a pinned row succeeded; the threads CHECK is missing")
+	}
+	mustExec(t, db, `UPDATE threads SET pinned_at = NULL, pin_group = NULL, group_id = 'g-v76' WHERE id = 't-v76'`)
+	if _, err := db.Exec(`UPDATE threads SET pinned_at = 1 WHERE id = 't-v76'`); err == nil {
+		t.Error("pinning a grouped row succeeded; the threads CHECK is missing")
+	}
+
+	// The group-side CHECK is v71's, repeated: no burner without a pin.
+	if _, err := db.Exec(`UPDATE thread_groups SET pin_group = 0 WHERE id = 'g-v76'`); err == nil {
+		t.Error("a burner on an unpinned group succeeded; the pin_group CHECK is missing")
+	}
+	if _, err := db.Exec(`UPDATE thread_groups SET pinned_at = 1, pin_group = 5 WHERE id = 'g-v76'`); err == nil {
+		t.Error("an out-of-range burner succeeded; the pin_group CHECK is missing")
+	}
+
+	// Deleting the group ungroups through the FK and deletes no thread.
+	mustExec(t, db, `DELETE FROM thread_groups WHERE id = 'g-v76'`)
+	var after sql.NullString
+	if err := db.QueryRow(`SELECT group_id FROM threads WHERE id = 't-v76'`).Scan(&after); err != nil {
+		t.Fatalf("read row after group delete: %v", err)
+	}
+	if after.Valid {
+		t.Errorf("group_id = %q after the group was deleted, want NULL", after.String)
+	}
+}

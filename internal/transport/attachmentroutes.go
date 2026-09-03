@@ -139,9 +139,33 @@ const maxOutstandingAttachmentTickets = 64
 // WebSocket, whose upgrade takes the connection away from net/http so the
 // HTTP timeouts never applied to them at all — leaving the defaults in
 // place here would therefore have been a NEW way for a large attachment
-// to fail. Five minutes puts the floor at ~35 KB/s and still bounds a
-// connection that has stopped making progress.
+// to fail. Five minutes puts the floor at ~35 KB/s for a 10 MiB image and
+// still bounds a connection that has stopped making progress.
+//
+// This is the FLOOR. A `file` attachment may be five times the image cap,
+// and the same ~35 KB/s is owed to it, so a body whose length is known
+// up front gets AttachmentTransferWindowFor(size) instead: the ticket
+// carries the length on the upload side, and the download side only ever
+// serves images, which the floor already covers.
 const AttachmentTransferWindow = 5 * time.Minute
+
+// attachmentMinTransferRate is the slowest sustained transfer the window
+// is sized for, in bytes per second: the 10 MiB / 5 min figure above.
+const attachmentMinTransferRate = 35 << 10
+
+// AttachmentTransferWindowFor is how long a body of the given length may
+// take: the floor, or longer when the length needs it at the minimum rate.
+// A negative or zero length (an unknown one, as net/http reports it) gets
+// the floor.
+func AttachmentTransferWindowFor(size int64) time.Duration {
+	if size <= 0 {
+		return AttachmentTransferWindow
+	}
+	if window := time.Duration(size/attachmentMinTransferRate) * time.Second; window > AttachmentTransferWindow {
+		return window
+	}
+	return AttachmentTransferWindow
+}
 
 // AttachmentContent is one attachment opened for streaming, as the app
 // side hands it over.
@@ -152,9 +176,10 @@ const AttachmentTransferWindow = 5 * time.Minute
 // This package CLOSES it.
 type AttachmentContent struct {
 	// MimeType is written verbatim as the response Content-Type. The app
-	// side guarantees it is one of the image types the attachment store
-	// admits, which is what keeps this route from being a way to serve a
-	// document at the SPA origin.
+	// side opens only `image` rows (a `file` row is refused before the
+	// handle exists), so this is one of the image types the attachment
+	// store verified by signature, which is what keeps this route from
+	// being a way to serve a document at the SPA origin.
 	MimeType string
 	// ModTime backs Last-Modified and the conditional requests
 	// http.ServeContent answers from it.
@@ -360,7 +385,7 @@ func (s *Server) handleAttachmentDownload(w http.ResponseWriter, r *http.Request
 	}
 	defer content.Content.Close()
 
-	extendTransferDeadline(w, false)
+	extendTransferDeadline(w, false, AttachmentTransferWindow)
 	h := w.Header()
 	WriteSecurityHeaders(h, s.csp)
 	// no-store, not no-cache: the URL that fetched these bytes carried a
@@ -370,7 +395,7 @@ func (s *Server) handleAttachmentDownload(w http.ResponseWriter, r *http.Request
 	h.Set("Cache-Control", "no-store")
 	// Set before ServeContent, which sniffs only when Content-Type is
 	// absent. Sniffing is what nosniff exists to make irrelevant, and the
-	// app side has already constrained this to the image allow-list.
+	// app side already serves nothing but signature-verified images here.
 	h.Set("Content-Type", content.MimeType)
 	// The empty name is deliberate: ServeContent uses it only to guess a
 	// content type, which is already set.
@@ -407,7 +432,7 @@ func (s *Server) handleAttachmentUpload(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "size mismatch", http.StatusBadRequest)
 		return
 	}
-	extendTransferDeadline(w, true)
+	extendTransferDeadline(w, true, AttachmentTransferWindowFor(upload.Size))
 	upload.Body = http.MaxBytesReader(w, r.Body, upload.Size)
 
 	record, err := transfer.StoreAttachment(upload)
@@ -439,9 +464,9 @@ func (s *Server) handleAttachmentUpload(w http.ResponseWriter, r *http.Request) 
 // largest body on this listener and needs the same arithmetic: one window
 // for every route on this mux whose payload is bytes rather than a
 // message.
-func extendTransferDeadline(w http.ResponseWriter, read bool) {
+func extendTransferDeadline(w http.ResponseWriter, read bool, window time.Duration) {
 	controller := http.NewResponseController(w)
-	deadline := time.Now().Add(AttachmentTransferWindow)
+	deadline := time.Now().Add(window)
 	var err error
 	if read {
 		err = controller.SetReadDeadline(deadline)

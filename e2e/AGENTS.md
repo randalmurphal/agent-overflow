@@ -18,7 +18,12 @@ directory.
   is also the reference for driving a harness from anything else, such as
   a Playwright MCP session or an ad-hoc script.
 - `tests/fixtures.ts` owns the worker-scoped backend and the per-test
-  `harness.reset()`.
+  `harness.reset()`. Before the reset it waits for the ui bridge to hold
+  no page (`harness.awaitNoPages()`): the previous test's page leaves the
+  registry when its WebSocket is torn down, which Playwright does not
+  order before the next test's fixtures, and a ui query naming no page
+  refuses two. A page still there after five seconds fails the test as
+  a leaked context.
 - `harness.rpc('MethodName', ...)` calls bound methods by NAME STRING, so
   no compiler connects these call sites to the Go signature. Changing a
   bound method's parameters must sweep `e2e/tests` and `cmd/ao-harness`

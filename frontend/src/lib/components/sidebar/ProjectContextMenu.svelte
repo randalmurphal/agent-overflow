@@ -26,6 +26,7 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import { hasScope } from '../../transport/scopes';
+  import { newThreadGroupInProject } from './threadGroupActions';
 
   interface Props {
     project: ProjectWithCounts;
@@ -54,6 +55,10 @@
   // to say than the one-line confirm can carry.
   let deletionPreview = $state<ProjectDeletionPreview | null>(null);
   let deleting = $state(false);
+
+  async function doNewGroup(): Promise<void> {
+    await newThreadGroupInProject(project.project.id);
+  }
 
   async function doArchive(): Promise<void> {
     // Capture before removeProjectLocal drops the row from the label map.
@@ -129,6 +134,7 @@
   {anchor}
   {open}
   {onClose}
+  dismissOnAnchorClick
   placement="bottom-start"
   role="none"
 >
@@ -151,6 +157,13 @@
             }}
           />
         {/if}
+        <MenuItem
+          label="New Group…"
+          onSelect={() => {
+            onClose();
+            void doNewGroup();
+          }}
+        />
         <MenuItem
           label="Archive Project"
           onSelect={() => {

@@ -34,11 +34,12 @@ var fixtureScopes = map[string]bool{
 // hand-written for the reason fixtureScopes is;
 // TestLoadRouteVocabulary_ReadsTheDeclaredSet covers the real file.
 var fixtureRoutes = map[string]bool{
-	"thread":   true,
-	"project":  true,
-	"home":     true,
-	"selected": true,
-	"all":      true,
+	"thread":    true,
+	"project":   true,
+	"workspace": true,
+	"home":      true,
+	"selected":  true,
+	"all":       true,
 }
 
 // TestScanReceivers_MergesSpecsFromDifferentDirs is the multi-receiver
@@ -284,6 +285,9 @@ func TestScanReceivers_InfersRouteFromTheFirstParameter(t *testing.T) {
 		"Projected":   "project",
 		"Overridden":  "home",
 		"Declared":    "all",
+
+		"Workspaced":          "workspace",
+		"WorkspacedQualified": "workspace",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("collected %v, want %v", got, want)
@@ -343,7 +347,7 @@ func TestLoadRouteVocabulary_ReadsTheDeclaredSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadRouteVocabulary: %v", err)
 	}
-	for _, want := range []string{"thread", "project", "home", "selected", "all"} {
+	for _, want := range []string{"thread", "project", "workspace", "home", "selected", "all"} {
 		if !routes[want] {
 			t.Errorf("declared vocabulary is missing %q", want)
 		}
@@ -351,7 +355,7 @@ func TestLoadRouteVocabulary_ReadsTheDeclaredSet(t *testing.T) {
 	if routes["MethodRoute"] || routes[""] {
 		t.Errorf("vocabulary collected a non-value: %v", routes)
 	}
-	if len(routes) != 5 {
-		t.Errorf("collected %d routes (%v), want exactly the five §10 names", len(routes), routes)
+	if len(routes) != 6 {
+		t.Errorf("collected %d routes (%v), want exactly the six §10 names", len(routes), routes)
 	}
 }

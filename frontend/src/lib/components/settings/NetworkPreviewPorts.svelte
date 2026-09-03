@@ -121,7 +121,12 @@
   {/if}
 
   <div class="mt-3">
-    <SettingsField label="Share a port" htmlFor="preview-port-add" stacked>
+    <SettingsField
+      id="remote.preview-port-add"
+      label="Share a port"
+      htmlFor="preview-port-add"
+      stacked
+    >
       <div class="flex items-center gap-2">
         <input
           id="preview-port-add"

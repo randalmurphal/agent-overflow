@@ -64,7 +64,7 @@ const SessionCredentialHeader = "X-AO-Session"
 // phase 5 swap the VALUE without moving a single call site. Two shapes
 // ride it now, and this package does not distinguish them — which one a
 // given device may present is internal/identity's answer, from the device
-// row (`proof_kind`, migration v77):
+// row (`proof_kind`, migration v81):
 //
 //   - a compact JWS signed over this request, for a device that enrolled
 //     an ECDSA P-256 key. A signature, so a copy of the string admits

@@ -4,6 +4,16 @@ The app's ONE full-diff surface. It mounts as a `review` companion pane
 next to its source thread pane. Open it via `openReviewCompanion` /
 `pane.toggleReviewPane`, never by mounting it inside chat.
 
+Its subject is the CHECKOUT, not the thread: the workspace and branch
+scopes take `ctx.workspace` (a `WorkspaceRef`), so a pane showing only a
+draft placeholder reviews its checkout with no thread row in sight. The
+thread id gates exactly the thread-subject affordances — the edits scope
+and its `ListThreadEditDiffs` / `VerifyEditDiffs` /
+`GetEditDiffContextLines` calls, review comments, send-to-agent, and
+scope persistence. A `ReviewSubject` (`stores/reviewPane.svelte.ts`)
+carries both, and `reviewSubjectForPane` is the only thing that builds
+one.
+
 ## Ownership
 
 - `ReviewDiffBody.svelte` is the one virtualized surface: a single
@@ -90,9 +100,10 @@ read tail-first.
   runs hidden between hunks; conflict pseudo-files suppress them (their
   folds already cover this). Expand clicks flow
   `ReviewLineBlockRow.onExpandGap` → `store.expandDiffContext` →
-  `GetDiffContextLines` (new side only, since expanded context is identical
-  on both sides; per-scope source resolution lives in
-  `app_review_diffs.go`) → `utils/diffContextExpansion.ts` merges the
+  `GetDiffContextLines(workspace, …)` for the checkout scopes and
+  `GetEditDiffContextLines(threadId, …)` for edits (new side only, since
+  expanded context is identical on both sides; per-scope source
+  resolution lives in `app_review_diffs.go`) → `utils/diffContextExpansion.ts` merges the
   fetched lines into the parsed file as context rows and rewrites hunk
   headers. Expansion state is per pane and CLEARED on every reload (a
   fresh patch can renumber everything); the rebuild memo is keyed by
@@ -167,9 +178,10 @@ read tail-first.
   over: flipping `-w` in workspace/branch scope re-keys drafts, which
   HIDES them (reversibly, never deleted, never re-anchored) rather
   than landing them on a diff they were not written against.
-- **PR diff source**: `GetPRDiff(threadId, pr, baseRef)` prefers a
+- **PR diff source**: `GetPRDiff(workspace, pr, baseRef)` prefers a
   locally-computed three-dot diff (`git diff --merge-base origin/<base>
-  <fetched-head-oid>`) when the thread has a clone. gh/glab's PR-diff
+  <fetched-head-oid>`) when there is a clone. A ZERO `WorkspaceRef` (both
+  fields empty) is the wire spelling of "no local clone". gh/glab's PR-diff
   endpoints refuse diffs over 20k lines (HTTP 406), which large PRs blow
   past. The forge API is the fallback for pr-anchor threads with no local
   checkout. The PR load sequences the entity hold BEFORE the diff (not
@@ -262,6 +274,15 @@ read tail-first.
 Diff rendering reuses the chat pipeline: `utils/patchFiles.ts` parsing,
 `DiffLineContent.svelte`, `utils/diffSpanCache.svelte.ts` (backend
 tree-sitter span requests; the review pane passes `spanContext` so
-hunks are parse-primed with real file content per scope),
+hunks are parse-primed with real file content per scope — routed by the
+same subject split as the gap-expansion RPCs,
+`HighlightPatchWithContext(workspace, …)` for the checkout scopes and
+`HighlightEditPatchWithContext(threadId, …)` for edits, with a primed
+entry keyed on exactly the subject its RPC resolved through; the
+`subjectId` a diff body carries — `review.identity`, the row id, or a
+draft placeholder's synthetic one — is the OWNER for cache eviction and
+scroll memory, never an RPC subject, and materialization hands it to the
+real row through `adoptDiffSpanOwner` rather than evicting, since the
+subject-keyed entries stay valid across the swap),
 `lineTintClass`. Inline chat diff affordances route here through
 `components/chat/reviewTrigger.ts`.

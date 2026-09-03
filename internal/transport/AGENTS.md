@@ -212,8 +212,8 @@ The two non-grants:
   from the connection and never from a parameter, and `RegisterPushToken` /
   `UnregisterPushToken`, whose DEVICE comes from the connection's session for
   exactly the same reason — a device id taken as an argument would be a way to
-  have somebody else's phone woken). A view-only device setting its own font
-  size is the case it exists for. The step-up ceremony pair
+  have somebody else's phone woken). A device granted nothing but reads setting
+  its own font size is the case it exists for. The step-up ceremony pair
   (`BeginPasskeyStepUp` / `FinishPasskeyStepUp`) is there for a stronger reason:
   it is how a session SATISFIES the gate that just refused it, so requiring any
   grant would leave step-up reachable only to sessions already holding
@@ -691,7 +691,7 @@ Rules that hold across all five:
 - `DeviceKeyHeader` carries one of two shapes, and this package does not
   distinguish them — which one a given device may present is
   `internal/identity`'s answer, read off the device row (`proof_kind`, migration
-  v77). A device that enrolled an ECDSA P-256 key presents a compact JWS signed
+  v81). A device that enrolled an ECDSA P-256 key presents a compact JWS signed
   over THIS request (`internal/identity/deviceproof.go`); one that could not
   presents its bare enrollment thumbprint, which is the plain-HTTP LAN browser
   of spec §15 constraint 6 — no secure context, so no `crypto.subtle`, so
@@ -1481,19 +1481,25 @@ hand-kept list.
 |---|---|
 | `thread` | the backend that owns the thread named by the first non-context parameter |
 | `project` | the backend that owns the project named by the first non-context parameter |
+| `workspace` | the backend that owns the project named INSIDE the first non-context parameter, a `gitapp.WorkspaceRef` |
 | `home` | the backend that served the page |
 | `selected` | the backend the composer is pointed at |
 | `all` | every attached backend, answers merged by the client |
 
-**Two routes are inferred, and it is not a naming convention that makes them
+**Three routes are inferred, and it is not a naming convention that makes them
 so.** Thread ids and project ids are minted unique across BACKENDS
 (`internal/entityid`), so a client holding one names its owner with no other
 help; every other id in the tree is unique within one database. So `methodgen`
 reads `thread` off a first parameter named `threadID` and `project` off
 `projectID` (case-insensitively, because the same parameter is spelled
 `threadID` in one file and `threadId` in another, and a route that changed with
-the spelling would be a routing decision made by a typo), and **every other
-method declares `//ao:route home|selected|all`**. Unrouted fails the run listing
+the spelling would be a routing decision made by a typo). The third is read off
+a TYPE rather than a name: a method whose first non-context parameter is a
+`gitapp.WorkspaceRef` routes `workspace`, to the backend that owns the
+`projectId` inside that ref, and needs no route line: the ref already carries
+the only id that can answer the question, and a workspace path on its own means
+nothing off the machine that holds it. Everything else **declares
+`//ao:route home|selected|all`**. Unrouted fails the run listing
 every offender, the same fail-closed shape as unscoped: a method nobody routed
 is one a multi-backend client answers from whichever socket happened to be
 first, which is a wrong answer that looks like a right one.

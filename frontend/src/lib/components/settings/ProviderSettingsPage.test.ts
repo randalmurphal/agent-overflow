@@ -1,6 +1,9 @@
+// The shared provider page, driven through the two pages that mount it, so
+// what is asserted is what the settings router actually renders.
 import { describe, expect, it, beforeEach } from "vitest";
 import { render, fireEvent, waitFor } from "@testing-library/svelte";
-import ProviderSettings from "./ProviderSettings.svelte";
+import ClaudeSettings from "./ClaudeSettings.svelte";
+import CodexSettings from "./CodexSettings.svelte";
 import { loadSettings } from "../../stores/settings.svelte";
 import { getToasts } from "../../stores/toast.svelte";
 import type { ModelInfo } from "../../types/settings";
@@ -13,15 +16,17 @@ import { makeSettings } from "../../../test/helpers/settings";
 import { resetForTest as resetProviderAccounts } from "../../stores/providerAccounts.svelte";
 import { resetForTest as resetAccountInfo } from "../../stores/accountInfo.svelte";
 import { resetForTest as resetRateLimits } from "../../stores/rateLimitsInfo.svelte";
+import { resetProviderModelsForTest } from "../../stores/providerModels.svelte";
 
 const BASE_SETTINGS: Settings = makeSettings();
 
-// The account listing lives in a module-global store, not in the component, so
-// without this every test inherits the previous one's accounts.
+// The account listing and the model catalog live in module-global stores, not
+// in the component, so without this every test inherits the previous one's.
 beforeEach(() => {
   resetProviderAccounts();
   resetAccountInfo();
   resetRateLimits();
+  resetProviderModelsForTest();
 });
 
 async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
@@ -48,13 +53,13 @@ const CODEX_CATALOG: ModelInfo[] = [
   { slug: "gpt-5.5", name: "GPT-5.5", provider: "codex" },
 ];
 
-describe("<ProviderSettings> — model visibility toggles", () => {
+describe("provider page — model visibility toggles", () => {
 	it("renders friendly Codex model aliases", async () => {
 		await seed();
 		setBindingMock("GetModelsForProvider", async (provider: unknown) =>
 			provider === "codex" ? CODEX_CATALOG : [],
 		);
-		const { findByTestId } = render(ProviderSettings);
+		const { findByTestId } = render(CodexSettings);
 
 		const chip = await findByTestId("settings-model-toggle-codex-gpt-5.6-sol");
 		expect(chip.textContent?.trim()).toBe("GPT 5.6 Sol");
@@ -63,7 +68,7 @@ describe("<ProviderSettings> — model visibility toggles", () => {
   it("dispatches a hide patch when clicking a visible model chip", async () => {
     await seed();
     setBindingMock("GetModelsForProvider", async () => CLAUDE_CATALOG);
-    const { findByTestId } = render(ProviderSettings);
+    const { findByTestId } = render(ClaudeSettings);
 
     const chip = await findByTestId("settings-model-toggle-claude-claude-opus-4-8");
     expect(chip.getAttribute("data-hidden")).toBe("false");
@@ -79,7 +84,7 @@ describe("<ProviderSettings> — model visibility toggles", () => {
   it("marks hidden models and dispatches an unhide patch on click", async () => {
     await seed({ claudeHiddenModels: ["claude-opus-4-8"] });
     setBindingMock("GetModelsForProvider", async () => CLAUDE_CATALOG);
-    const { findByTestId } = render(ProviderSettings);
+    const { findByTestId } = render(ClaudeSettings);
 
     const chip = await findByTestId("settings-model-toggle-claude-claude-opus-4-8");
     expect(chip.getAttribute("data-hidden")).toBe("true");
@@ -92,7 +97,7 @@ describe("<ProviderSettings> — model visibility toggles", () => {
   it("refuses to hide the last visible model", async () => {
     await seed({ claudeHiddenModels: ["claude-opus-4-8"] });
     setBindingMock("GetModelsForProvider", async () => CLAUDE_CATALOG);
-    const { findByTestId } = render(ProviderSettings);
+    const { findByTestId } = render(ClaudeSettings);
 
     const chip = await findByTestId("settings-model-toggle-claude-claude-fable-5");
     await fireEvent.click(chip);
@@ -106,9 +111,9 @@ describe("<ProviderSettings> — model visibility toggles", () => {
   });
 });
 
-describe("<ProviderSettings> — Claude TUI visibility toggle", () => {
-  // claude-tui has no settings section of its own (it reuses claude's binary,
-  // auth and catalog), so its one flag rides inside the Claude section.
+describe("provider page — Claude TUI visibility toggle", () => {
+  // claude-tui has no page of its own (it reuses claude's binary, auth and
+  // catalog), so its one flag rides in the Claude page's Setup section.
   function tuiToggle(container: HTMLElement): HTMLButtonElement {
     return container.querySelector<HTMLButtonElement>(
       '[data-testid="settings-provider-claude"] button[aria-label="Toggle Claude TUI"]',
@@ -117,23 +122,25 @@ describe("<ProviderSettings> — Claude TUI visibility toggle", () => {
 
   it("renders under Claude, off by default, and never under Codex", async () => {
     await seed();
-    const { container } = render(ProviderSettings);
+    const { container } = render(ClaudeSettings);
 
     const toggle = tuiToggle(container);
     expect(toggle).not.toBeNull();
     expect(toggle.getAttribute("aria-checked")).toBe("false");
+
+    const codex = render(CodexSettings);
     expect(
-      container.querySelector(
-        '[data-testid="settings-provider-codex"] button[aria-label="Toggle Claude TUI"]',
-      ),
+      codex.container.querySelector('button[aria-label="Toggle Claude TUI"]'),
     ).toBeNull();
-    // And it must not have grown a section of its own.
-    expect(container.querySelector('[data-testid="settings-provider-claude-tui"]')).toBeNull();
+    // And it must not have grown a page of its own.
+    expect(
+      codex.container.querySelector('[data-testid="settings-provider-claude-tui"]'),
+    ).toBeNull();
   });
 
   it("writes claudeTuiEnabled — and only that key — when switched on", async () => {
     await seed();
-    const { container } = render(ProviderSettings);
+    const { container } = render(ClaudeSettings);
     await fireEvent.click(tuiToggle(container));
 
     const mock = getBindingMock("UpdateSettings");
@@ -142,7 +149,7 @@ describe("<ProviderSettings> — Claude TUI visibility toggle", () => {
 
   it("reflects an enabled flag and writes false to turn it back off", async () => {
     await seed({ claudeTuiEnabled: true });
-    const { container } = render(ProviderSettings);
+    const { container } = render(ClaudeSettings);
 
     const toggle = tuiToggle(container);
     expect(toggle.getAttribute("aria-checked")).toBe("true");
@@ -154,7 +161,7 @@ describe("<ProviderSettings> — Claude TUI visibility toggle", () => {
 
   it("goes inert while Claude is disabled, because the value cannot change any picker", async () => {
     await seed({ claudeEnabled: false, claudeTuiEnabled: true });
-    const { container } = render(ProviderSettings);
+    const { container } = render(ClaudeSettings);
 
     const toggle = tuiToggle(container);
     expect(toggle.disabled).toBe(true);
@@ -170,14 +177,66 @@ describe("<ProviderSettings> — Claude TUI visibility toggle", () => {
 
   it("explains what enabling it turns on", async () => {
     await seed();
-    const { getByText } = render(ProviderSettings);
+    const { getByText } = render(ClaudeSettings);
     expect(
       getByText(/Interactive terminal sessions driven through the real Claude TUI/i),
     ).toBeTruthy();
   });
 });
 
-describe("<ProviderSettings> — provider accounts", () => {
+describe("provider page — sections render regardless of the enable toggle", () => {
+  // A provider is commonly configured before it is switched on, and the old
+  // Prompts & Tools tab used to hide every override behind that toggle.
+  it("still renders prompt, tool and context sections for a disabled provider", async () => {
+    await seed({ claudeEnabled: false, codexEnabled: false });
+
+    const claude = render(ClaudeSettings);
+    expect(claude.getByTestId("settings-prompts-claude")).toBeTruthy();
+    expect(claude.getByTestId("settings-claude-tools-claude")).toBeTruthy();
+    expect(claude.getByTestId("settings-context-claude")).toBeTruthy();
+    expect(claude.getByTestId("settings-claude-session-axes")).toBeTruthy();
+    expect(claude.getByTestId("settings-claude-cross-session")).toBeTruthy();
+
+    const codex = render(CodexSettings);
+    expect(codex.getByTestId("settings-prompts-codex")).toBeTruthy();
+    expect(codex.getByTestId("settings-codex-tools-codex")).toBeTruthy();
+    expect(codex.getByTestId("settings-context-codex")).toBeTruthy();
+  });
+
+  it("keeps the Claude-only sections off the Codex page", async () => {
+    await seed();
+    const { queryByTestId } = render(CodexSettings);
+    expect(queryByTestId("settings-claude-session-axes")).toBeNull();
+    expect(queryByTestId("settings-claude-cross-session")).toBeNull();
+    expect(queryByTestId("settings-claude-tools-codex")).toBeNull();
+  });
+});
+
+describe("provider page — when a change takes effect", () => {
+  // The section headers are the only place the page states what a save does,
+  // and the answer differs per provider: a Claude prompt edit converges live
+  // through `set_model.system_prompt`, everything else is spawn-only.
+  it("states the live-and-deferred halves on the Claude page", async () => {
+    await seed();
+    const { getByText } = render(ClaudeSettings);
+    expect(
+      getByText(/reaches running headless sessions right away/),
+    ).toBeTruthy();
+    expect(
+      getByText(/turning one off applies when the session restarts/),
+    ).toBeTruthy();
+    expect(getByText(/Claude TUI sessions pick it up on their next start/)).toBeTruthy();
+  });
+
+  it("states the spawn-only rule on the Codex page", async () => {
+    await seed();
+    const { getAllByText } = render(CodexSettings);
+    // Both the system-prompt and the tools section carry it.
+    expect(getAllByText(/Applies to sessions started later\./).length).toBe(2);
+  });
+});
+
+describe("provider page — provider accounts", () => {
   it("renders dynamic account-scoped usage buckets", async () => {
     await seed();
     setBindingMock("ListProviderAccounts", async () => [{
@@ -204,7 +263,7 @@ describe("<ProviderSettings> — provider accounts", () => {
       },
     }]);
 
-    const { findByTestId, findByText } = render(ProviderSettings);
+    const { findByTestId, findByText } = render(CodexSettings);
     expect(await findByTestId("provider-account-codex-secondary")).toBeTruthy();
     expect(await findByText("second@example.com")).toBeTruthy();
     expect(await findByText("GPT-5.3-Codex-Spark · 5h")).toBeTruthy();
@@ -225,7 +284,7 @@ describe("<ProviderSettings> — provider accounts", () => {
       throw new Error("credential file is unavailable");
     });
 
-    const { findByRole } = render(ProviderSettings);
+    const { findByRole } = render(ClaudeSettings);
     await fireEvent.click(await findByRole("button", { name: "Switch to second@example.com" }));
 
     expect(
@@ -258,7 +317,7 @@ describe("<ProviderSettings> — provider accounts", () => {
       accounts = [{ ...accounts[1], active: true }];
     });
 
-    const { findByRole, findByText } = render(ProviderSettings);
+    const { findByRole, findByText } = render(ClaudeSettings);
     await fireEvent.click(await findByRole("button", { name: "Remove active@example.com" }));
     expect(await findByText(/next saved Claude account will become active/i)).toBeTruthy();
     await fireEvent.click(await findByRole("button", { name: "Remove" }));
@@ -287,7 +346,7 @@ describe("<ProviderSettings> — provider accounts", () => {
       accounts = [];
     });
 
-    const { findByRole, findByText } = render(ProviderSettings);
+    const { findByRole, findByText } = render(CodexSettings);
     await fireEvent.click(await findByRole("button", { name: "Remove only@example.com" }));
     expect(await findByText(/sign out of Codex/i)).toBeTruthy();
     await fireEvent.click(await findByRole("button", { name: "Remove" }));
@@ -297,131 +356,6 @@ describe("<ProviderSettings> — provider accounts", () => {
         "codex",
         "codex-only",
       ]);
-    });
-  });
-});
-
-describe("<ProviderSettings> — Text generation section", () => {
-  beforeEach(async () => {
-    await seed();
-  });
-
-  it("renders the text-generation section with all three controls", async () => {
-    const { getByTestId } = render(ProviderSettings);
-    expect(getByTestId("settings-text-generation")).toBeTruthy();
-    expect(getByTestId("settings-textgen-provider")).toBeTruthy();
-    expect(getByTestId("settings-textgen-model")).toBeTruthy();
-    expect(getByTestId("settings-textgen-effort")).toBeTruthy();
-  });
-
-  it("lists codex and claude as the provider options", async () => {
-    const { getByTestId } = render(ProviderSettings);
-    const select = getByTestId(
-      "settings-textgen-provider",
-    ) as HTMLSelectElement;
-    const values = Array.from(select.options).map((o) => o.value);
-    expect(values.sort()).toEqual(["claude", "codex"]);
-  });
-
-  it("shows the codex default model in the placeholder when provider is codex", async () => {
-    await seed({ textGenerationProvider: "codex" });
-    const { getByTestId } = render(ProviderSettings);
-    const input = getByTestId("settings-textgen-model") as HTMLInputElement;
-    expect(input.placeholder).toContain("gpt-5.6-luna");
-  });
-
-  it("shows the claude default model in the placeholder when provider is claude", async () => {
-    await seed({ textGenerationProvider: "claude" });
-    const { getByTestId } = render(ProviderSettings);
-    const input = getByTestId("settings-textgen-model") as HTMLInputElement;
-    expect(input.placeholder).toContain("claude-haiku-4-5");
-  });
-
-  it("dispatches textGenerationProvider patch on change", async () => {
-    const { getByTestId } = render(ProviderSettings);
-    const select = getByTestId(
-      "settings-textgen-provider",
-    ) as HTMLSelectElement;
-    select.value = "claude";
-    await fireEvent.change(select);
-
-    const mock = getBindingMock("UpdateSettings");
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({
-      textGenerationProvider: "claude",
-    });
-  });
-
-  it("dispatches textGenerationModel patch on change", async () => {
-    const { getByTestId } = render(ProviderSettings);
-    const input = getByTestId("settings-textgen-model") as HTMLInputElement;
-    input.value = "gpt-5.4";
-    await fireEvent.change(input);
-
-    const mock = getBindingMock("UpdateSettings");
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ textGenerationModel: "gpt-5.4" });
-  });
-
-  it("lists codex reasoning-effort tiers", async () => {
-    const { getByTestId } = render(ProviderSettings);
-    const select = getByTestId("settings-textgen-effort") as HTMLSelectElement;
-    const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toEqual([
-      "none",
-      "minimal",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-      "ultra",
-    ]);
-    const labels = Array.from(select.options).map((o) => o.textContent);
-    expect(labels).toContain("xHigh");
-  });
-
-  it("lists claude reasoning-effort tiers without codex-only values", async () => {
-    await seed({ textGenerationProvider: "claude" });
-    const { getByTestId } = render(ProviderSettings);
-    const select = getByTestId("settings-textgen-effort") as HTMLSelectElement;
-    const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toEqual(["low", "medium", "high", "xhigh", "max"]);
-    const labels = Array.from(select.options).map((o) => o.textContent);
-    expect(labels).toContain("xHigh");
-    expect(labels).not.toContain("Extra High");
-  });
-
-  it("resets incompatible text-generation effort when provider changes", async () => {
-    await seed({
-      textGenerationProvider: "codex",
-      textGenerationReasoningEffort: "ultra",
-    });
-    const { getByTestId } = render(ProviderSettings);
-    const select = getByTestId(
-      "settings-textgen-provider",
-    ) as HTMLSelectElement;
-    select.value = "claude";
-    await fireEvent.change(select);
-
-    const mock = getBindingMock("UpdateSettings");
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({
-      textGenerationProvider: "claude",
-      textGenerationReasoningEffort: "low",
-    });
-  });
-
-  it("dispatches textGenerationReasoningEffort patch on change", async () => {
-    const { getByTestId } = render(ProviderSettings);
-    const select = getByTestId("settings-textgen-effort") as HTMLSelectElement;
-    select.value = "medium";
-    await fireEvent.change(select);
-
-    const mock = getBindingMock("UpdateSettings");
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({
-      textGenerationReasoningEffort: "medium",
     });
   });
 });

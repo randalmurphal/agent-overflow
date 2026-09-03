@@ -122,6 +122,15 @@
      * (the composer's mention and slash popovers) opts out.
      */
     sheet?: boolean;
+    /**
+     * Treat a mousedown on the anchor as an outside click. The default
+     * exemption exists for a TRIGGER anchor, whose own click handler
+     * toggles the popover and would reopen what this closed. A menu
+     * opened by right-click is anchored to the row it describes, and
+     * that row's left-click does something else (expand, a header
+     * button): the menu must get out of the way of it.
+     */
+    dismissOnAnchorClick?: boolean;
     children: Snippet;
   }
 
@@ -137,6 +146,7 @@
     claimTab = false,
     restoreFocusTo,
     sheet = true,
+    dismissOnAnchorClick = false,
     children,
   }: Props = $props();
 
@@ -357,7 +367,7 @@
       const target = e.target as Node | null;
       if (!target) return;
       if (floatingEl?.contains(target)) return;
-      if (anchor?.contains(target)) return;
+      if (!dismissOnAnchorClick && anchor?.contains(target)) return;
       // The click landed outside both my floating element and my
       // anchor — but it might be inside a DESCENDANT popover whose
       // anchor (or whose anchor's anchor, etc.) lives inside my

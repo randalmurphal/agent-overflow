@@ -145,7 +145,7 @@ const PRESENTATIONS: Record<AuthReasonCode, AuthReasonPresentation> = {
   // hint that names only one reads as though the other will not work.
   revoked_device: {
     title: "This device's access was removed.",
-    hint: 'Under Settings → Network → Devices on the computer, either restore this device or remove it — then pair again with a new link.',
+    hint: 'Under Settings → Remote access → Devices on the computer, either restore this device or remove it — then pair again with a new link.',
     retryable: false,
   },
   // A proof this device already spent. Every proof is single-use, so the
@@ -182,7 +182,7 @@ const PRESENTATIONS: Record<AuthReasonCode, AuthReasonPresentation> = {
   // and `retryable` is false — retrying cannot configure a domain.
   passkey_unavailable: {
     title: 'Passkeys are not set up on this backend.',
-    hint: 'Set a domain name under Settings → Network on the computer, then try again.',
+    hint: 'Set a domain name under Settings → Remote access on the computer, then try again.',
     retryable: false,
   },
   // The challenge was already answered, or it ran out. Every challenge is

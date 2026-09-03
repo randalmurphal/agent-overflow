@@ -63,9 +63,6 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 
 function mockThreadSwitch(thread: Thread): void {
   setBindingMock('SwitchThread', async () => thread);
-  setBindingMock('ListRecentThreadItems', async () => ({
-    items: [], oldestTurnIndex: -1, hasMore: false,
-  }));
   setBindingMock('ListThreadSliceAround', async () => ({
     items: [], oldestTurnIndex: -1, hasMore: false,
   }));
@@ -706,9 +703,6 @@ describe('panes store', () => {
   describe('syncThread()', () => {
     async function buildPaneWithThread(thread: Thread) {
       setBindingMock('SwitchThread', async () => thread);
-      setBindingMock('ListRecentThreadItems', async () => ({
-        items: [], oldestTurnIndex: -1, hasMore: false,
-      }));
       setBindingMock('ListThreadSliceAround', async () => ({
         items: [], oldestTurnIndex: -1, hasMore: false,
       }));

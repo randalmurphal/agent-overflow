@@ -16,8 +16,19 @@ import (
 	"agent-overflow/internal/workspacepath"
 )
 
+// reviewWorkspace resolves a review RPC's caller-supplied workspace ref
+// through the one resolver, prefixed with the caller's action so the
+// frontend's userFacingError shows which read was refused.
+func (a *App) reviewWorkspace(action string, ws WorkspaceRef) (string, error) {
+	_, workspace, err := a.gitApplication().ResolveWorkspace(ws)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", action, err)
+	}
+	return workspace, nil
+}
+
 // GetWorkspaceCurrentDiff returns the unified patch of everything
-// currently uncommitted in the thread's workspace (tracked changes
+// currently uncommitted in the referenced workspace (tracked changes
 // against HEAD plus untracked-not-ignored files). Empty for non-git
 // workspaces.
 //
@@ -25,15 +36,11 @@ import (
 // toggle (`-w`); see gitdiff.Options.
 //
 //ao:scope files:read
-func (a *App) GetWorkspaceCurrentDiff(threadID string, ignoreWhitespace bool) (string, error) {
+func (a *App) GetWorkspaceCurrentDiff(ws WorkspaceRef, ignoreWhitespace bool) (string, error) {
 	const action = "get workspace current diff"
-	thread, err := a.store.GetThread(threadID)
+	workspace, err := a.reviewWorkspace(action, ws)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", action, err)
-	}
-	_, workspace, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", action, err)
+		return "", err
 	}
 	if !gitdiff.IsGitRepository(context.Background(), workspace) {
 		return "", nil
@@ -46,24 +53,20 @@ func (a *App) GetWorkspaceCurrentDiff(threadID string, ignoreWhitespace bool) (s
 	return string(patch), nil
 }
 
-// GetBranchBaseDiff returns the combined diff of the thread's workspace
+// GetBranchBaseDiff returns the combined diff of the referenced workspace
 // (committed work since merge-base plus uncommitted changes) against the
 // merge base of baseBranch and the workspace HEAD — i.e. what a PR onto
 // baseBranch would contain.
 //
 //ao:scope files:read
-func (a *App) GetBranchBaseDiff(threadID string, baseBranch string, ignoreWhitespace bool) (string, error) {
+func (a *App) GetBranchBaseDiff(ws WorkspaceRef, baseBranch string, ignoreWhitespace bool) (string, error) {
 	const action = "get branch base diff"
 	if strings.TrimSpace(baseBranch) == "" {
 		return "", fmt.Errorf("%s: base branch is required", action)
 	}
-	thread, err := a.store.GetThread(threadID)
+	workspace, err := a.reviewWorkspace(action, ws)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", action, err)
-	}
-	_, workspace, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", action, err)
+		return "", err
 	}
 	if !gitdiff.IsGitRepository(context.Background(), workspace) {
 		return "", nil
@@ -85,18 +88,14 @@ type BranchCommit = gitdiff.Commit
 // non-git workspaces.
 //
 //ao:scope git:operate
-func (a *App) ListBranchCommits(threadID string, baseBranch string) ([]BranchCommit, error) {
+func (a *App) ListBranchCommits(ws WorkspaceRef, baseBranch string) ([]BranchCommit, error) {
 	const action = "list branch commits"
 	if strings.TrimSpace(baseBranch) == "" {
 		return nil, fmt.Errorf("%s: base branch is required", action)
 	}
-	thread, err := a.store.GetThread(threadID)
+	workspace, err := a.reviewWorkspace(action, ws)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
-	}
-	_, workspace, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
+		return nil, err
 	}
 	if !gitdiff.IsGitRepository(context.Background(), workspace) {
 		return []BranchCommit{}, nil
@@ -114,19 +113,15 @@ const recentCommitLimit = 100
 
 // ListRecentCommits returns the workspace's most recent commits (plain
 // `git log` from HEAD, newest first) — the same source codex's own
-// review picker uses, so a thread on the default branch still gets a
+// review picker uses, so a workspace on the default branch still gets a
 // list. Empty for non-git workspaces.
 //
 //ao:scope git:operate
-func (a *App) ListRecentCommits(threadID string) ([]BranchCommit, error) {
+func (a *App) ListRecentCommits(ws WorkspaceRef) ([]BranchCommit, error) {
 	const action = "list recent commits"
-	thread, err := a.store.GetThread(threadID)
+	workspace, err := a.reviewWorkspace(action, ws)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
-	}
-	_, workspace, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
+		return nil, err
 	}
 	if !gitdiff.IsGitRepository(context.Background(), workspace) {
 		return []BranchCommit{}, nil
@@ -142,15 +137,11 @@ func (a *App) ListRecentCommits(threadID string) ([]BranchCommit, error) {
 // introduced (first-parent diff; empty-tree diff for a root commit).
 //
 //ao:scope files:read
-func (a *App) GetCommitDiff(threadID string, sha string, ignoreWhitespace bool) (string, error) {
+func (a *App) GetCommitDiff(ws WorkspaceRef, sha string, ignoreWhitespace bool) (string, error) {
 	const action = "get commit diff"
-	thread, err := a.store.GetThread(threadID)
+	workspace, err := a.reviewWorkspace(action, ws)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", action, err)
-	}
-	_, workspace, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", action, err)
+		return "", err
 	}
 	if !gitdiff.IsGitRepository(context.Background(), workspace) {
 		return "", fmt.Errorf("%s: workspace is not a git repository", action)
@@ -209,22 +200,89 @@ type DiffContextResult struct {
 const maxDiffContextLines = 1000
 
 // GetDiffContextLines returns new-side source lines for review-diff
-// hunk-gap expansion. Same wire-exposure class as the diff getters: it
-// answers a session granted `files:read`, and no other.
+// hunk-gap expansion in the LIVE scopes — workspace, branch, commit and pr —
+// whose new side is content the referenced checkout already holds. The edits
+// scope is a different subject (one thread's own history) and has its own
+// entry point. Same wire-exposure class as the diff getters: it answers a
+// session granted `files:read`, and no other.
 //
 //ao:scope files:read
-func (a *App) GetDiffContextLines(threadID string, req DiffContextRequest) (DiffContextResult, error) {
+func (a *App) GetDiffContextLines(ws WorkspaceRef, req DiffContextRequest) (DiffContextResult, error) {
 	const action = "get diff context lines"
 	if a.shuttingDown.Load() {
 		return DiffContextResult{}, ErrShuttingDown
 	}
+	workspace, err := a.liveDiffWorkspace(action, ws, req.Scope)
+	if err != nil {
+		return DiffContextResult{}, err
+	}
+	return a.diffContextLines(action, workspace, "", req)
+}
+
+// GetEditDiffContextLines serves the edits scope, whose new side is a
+// historical file state: the snapshot persisted with the edit, falling back to
+// the THREAD's own workspace for edits that predate snapshots. Both sources
+// are verified against the request's patch before a line is served.
+//
+//ao:scope files:read
+func (a *App) GetEditDiffContextLines(threadID string, req DiffContextRequest) (DiffContextResult, error) {
+	const action = "get edit diff context lines"
+	if a.shuttingDown.Load() {
+		return DiffContextResult{}, ErrShuttingDown
+	}
+	if req.Scope != "edits" {
+		return DiffContextResult{}, fmt.Errorf("%s: scope %q is not an edits scope", action, req.Scope)
+	}
+	workspace, err := a.threadDiffWorkspace(action, threadID)
+	if err != nil {
+		return DiffContextResult{}, err
+	}
+	return a.diffContextLines(action, workspace, threadID, req)
+}
+
+// liveDiffWorkspace resolves the checkout a live review scope reads from. pr
+// is the one scope with a second answer: a pr-anchor thread carries no local
+// clone, and its callers get "requires a local clone" rather than a project
+// resolution failure.
+func (a *App) liveDiffWorkspace(action string, ws WorkspaceRef, scope string) (string, error) {
+	switch scope {
+	case "workspace", "branch", "commit":
+		return a.reviewWorkspace(action, ws)
+	case "pr":
+		workspace, ok := a.localCloneWorkspace(ws)
+		if !ok {
+			return "", errors.New("expanding context requires a local clone")
+		}
+		return workspace, nil
+	default:
+		return "", fmt.Errorf("%s: %q is not a live review scope", action, scope)
+	}
+}
+
+// threadDiffWorkspace resolves the checkout a THREAD-keyed diff read uses: its
+// own workspace, off its own row. Thread-keyed on purpose — an edit happened
+// in whatever checkout the thread occupied, and only the row knows which — and
+// deliberately not a path-validation path: nothing here comes from a caller.
+func (a *App) threadDiffWorkspace(action, threadID string) (string, error) {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", action, err)
+	}
+	_, workspace, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", action, err)
+	}
+	return workspace, nil
+}
+
+func (a *App) diffContextLines(action, workspace, threadID string, req DiffContextRequest) (DiffContextResult, error) {
 	if req.StartLine < 1 || req.EndLine < req.StartLine {
 		return DiffContextResult{}, fmt.Errorf("%s: invalid line range %d-%d", action, req.StartLine, req.EndLine)
 	}
 	if req.EndLine-req.StartLine+1 > maxDiffContextLines {
 		return DiffContextResult{}, fmt.Errorf("%s: range exceeds %d lines", action, maxDiffContextLines)
 	}
-	content, tabExpanded, err := a.diffContextContent(action, threadID, req, 0)
+	content, tabExpanded, err := a.diffContextContent(action, workspace, threadID, req, 0)
 	if err != nil {
 		return DiffContextResult{}, err
 	}
@@ -300,9 +358,13 @@ func (a *App) VerifyEditDiffs(threadID string, req VerifyEditDiffsRequest) (Veri
 	if len(files) > maxVerifyEditDiffFiles {
 		files = files[:maxVerifyEditDiffFiles]
 	}
+	workspace, err := a.threadDiffWorkspace(action, threadID)
+	if err != nil {
+		return VerifyEditDiffsResult{}, err
+	}
 	expandable := []string{}
 	for _, file := range files {
-		_, _, err := a.diffContextContent(action, threadID, DiffContextRequest{
+		_, _, err := a.diffContextContent(action, workspace, threadID, DiffContextRequest{
 			Scope:         "edits",
 			Path:          file.Path,
 			VerifyPatch:   file.VerifyPatch,
@@ -316,26 +378,22 @@ func (a *App) VerifyEditDiffs(threadID string, req VerifyEditDiffsRequest) (Veri
 	return VerifyEditDiffsResult{ExpandablePaths: expandable}, nil
 }
 
-// diffContextContent resolves the new-side file content for a diff
-// scope. maxBytes > 0 rejects oversized files — workspace scopes do a
+// diffContextContent resolves the new-side file content for a diff scope in
+// an ALREADY-resolved workspace: the entry point owns "which checkout", this
+// owns "where in it". threadID is set only for the edits scope, whose
+// snapshots are keyed on the thread.
+//
+// maxBytes > 0 rejects oversized files — workspace scopes do a
 // descriptor-bounded read (readWorkspaceFile); ref scopes read the
 // blob and length-check it (git plumbing has no cheap pre-read size
 // probe worth an extra process). tabExpanded is edits-scope only: the
 // verification patch matched via ExpandLeadingTabs, so lines served
 // beside its hunks need the same transform.
-func (a *App) diffContextContent(action, threadID string, req DiffContextRequest, maxBytes int64) (content string, tabExpanded bool, err error) {
+func (a *App) diffContextContent(action, workspace, threadID string, req DiffContextRequest, maxBytes int64) (content string, tabExpanded bool, err error) {
 	switch req.Scope {
 	case "workspace", "branch":
 		// These scopes diff against the working tree — the new side is
 		// the file on disk, uncommitted edits included.
-		thread, err := a.store.GetThread(threadID)
-		if err != nil {
-			return "", false, fmt.Errorf("%s: %w", action, err)
-		}
-		_, workspace, err := a.resolveGitPaths(thread)
-		if err != nil {
-			return "", false, fmt.Errorf("%s: %w", action, err)
-		}
 		rel, err := workspacepath.NormalizeRelative(req.Path)
 		if err != nil {
 			return "", false, fmt.Errorf("%s: %w", action, err)
@@ -348,14 +406,6 @@ func (a *App) diffContextContent(action, threadID string, req DiffContextRequest
 	case "commit":
 		// Commit diffs are parent → commit; the new side is the
 		// selected commit's tree, which can lag the worktree.
-		thread, err := a.store.GetThread(threadID)
-		if err != nil {
-			return "", false, fmt.Errorf("%s: %w", action, err)
-		}
-		_, workspace, err := a.resolveGitPaths(thread)
-		if err != nil {
-			return "", false, fmt.Errorf("%s: %w", action, err)
-		}
 		sha := strings.TrimSpace(req.CommitSHA)
 		if sha == "" {
 			return "", false, fmt.Errorf("%s: commit SHA is required", action)
@@ -367,13 +417,8 @@ func (a *App) diffContextContent(action, threadID string, req DiffContextRequest
 		return capContent(action, req.Path, content, maxBytes)
 	case "pr":
 		// The fetched head commit is present locally after GetPRDiff's
-		// FetchRefOID (and with it every commit the PR carries);
-		// API-only PR threads have no clone to read from. A selected
+		// FetchRefOID (and with it every commit the PR carries). A selected
 		// per-commit diff reads that commit's tree instead of the head.
-		workspace, ok := a.localCloneWorkspace(threadID)
-		if !ok {
-			return "", false, errors.New("expanding context requires a local clone")
-		}
 		sha := strings.TrimSpace(req.CommitSHA)
 		if sha == "" {
 			sha = strings.TrimSpace(req.HeadSHA)
@@ -406,14 +451,6 @@ func (a *App) diffContextContent(action, threadID string, req DiffContextRequest
 			if matched, expanded := highlight.PatchContentMatch(req.VerifyPatch, content); matched {
 				return content, expanded, nil
 			}
-		}
-		thread, err := a.store.GetThread(threadID)
-		if err != nil {
-			return "", false, fmt.Errorf("%s: %w", action, err)
-		}
-		_, workspace, err := a.resolveGitPaths(thread)
-		if err != nil {
-			return "", false, fmt.Errorf("%s: %w", action, err)
 		}
 		rel, err := workspacepath.NormalizeRelative(req.Path)
 		if err != nil {

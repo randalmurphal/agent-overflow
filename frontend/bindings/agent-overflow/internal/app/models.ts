@@ -16,6 +16,9 @@ import * as flushqueue$0 from "../flushqueue/models.js";
 import * as git$0 from "../git/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as gitapp$0 from "../gitapp/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as gitdiff$0 from "../gitdiff/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -1589,6 +1592,11 @@ export class GitStatusSubscriptionResult {
     }
 }
 
+/**
+ * GitWorkspaceState is the caller's checkout after a mutation that may have
+ * moved its branch. WorktreePath is empty when the workspace is the project
+ * root.
+ */
 export class GitWorkspaceState {
     "workspacePath": string;
     "worktreePath"?: string;
@@ -7810,7 +7818,7 @@ export class WorkflowRunSpend {
 
 /**
  * WorkspaceActivity reports the work that makes a workspace's checkout unsafe
- * to move or delete right now, aggregated over EVERY thread that references
+ * to delete right now, or a thread unsafe to move out of it, aggregated over EVERY thread that references
  * the directory rather than only the one asking.
  * 
  * The entity is the DIRECTORY, not the conversation. Two threads sharing a
@@ -7840,7 +7848,7 @@ export class WorkspaceActivity {
     /**
      * BusyThreads breaks the counters down per thread. The frontend gates two
      * different actions off one fetch: the DIRECTORY question (is anything
-     * running here? — remove worktree, branch switch in place) reads the
+     * running here? — remove worktree) reads the
      * counters; the THREAD question (is this thread running? — moving the
      * thread to another checkout) looks itself up here. Moving an idle
      * thread out of a directory a sibling is working in touches only the
@@ -7912,6 +7920,20 @@ export class WorkspaceFileSearchResult {
         return new WorkspaceFileSearchResult($$parsedSource as Partial<WorkspaceFileSearchResult>);
     }
 }
+
+/**
+ * WorkspaceRef is the subject of every workspace-scoped git RPC: a checkout,
+ * named by project id + directory. A thread id on a git RPC now means the
+ * subject IS the thread — its own history, or its workspace assignment.
+ */
+export const WorkspaceRef = gitapp$0.WorkspaceRef;
+
+/**
+ * WorkspaceRef is the subject of every workspace-scoped git RPC: a checkout,
+ * named by project id + directory. A thread id on a git RPC now means the
+ * subject IS the thread — its own history, or its workspace assignment.
+ */
+export type WorkspaceRef = gitapp$0.WorkspaceRef;
 
 /**
  * WorktreeListItem is the picker-facing worktree shape. DeleteBlocked is true

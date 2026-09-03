@@ -277,11 +277,11 @@
 </script>
 
 <div
-  class="flex flex-col gap-6"
+  class="settings-sections"
   data-testid={noAdmin ? 'network-section-local-only' : undefined}
 >
   <section>
-    <SettingsHeader title="Network Binding">
+    <SettingsHeader title="Network binding">
       {#snippet details()}
         {#if noAdmin}
           Network binding belongs to the machine running Agent Overflow. This device
@@ -305,6 +305,7 @@
     {#if !noAdmin}
       <div class="flex flex-col gap-1">
         <SettingsField
+          id="remote.allow-remote-access"
           label="Allow remote access"
           hint="Listen on all interfaces (0.0.0.0) so devices on your network can connect. Toggling off stops new LAN connections; a device already connected stays until it closes — revoke it under Devices to cut it now."
           align="start"
@@ -345,7 +346,7 @@
     -->
     <NetworkPreviewPorts />
 
-    <section>
+    <section data-settings-field="remote.share-url" data-settings-label="Share URL">
       {#if shareURLWithheld}
         <!-- No input and no Copy button: there is nothing to copy, and a
              dead control is worse than a sentence saying where the thing

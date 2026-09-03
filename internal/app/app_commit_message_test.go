@@ -10,9 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
 )
 
@@ -29,11 +27,11 @@ func newCommitMsgTestApp(t *testing.T) *App {
 	return app
 }
 
-func TestGenerateCommitMessage_UnknownThreadErrors(t *testing.T) {
+func TestGenerateCommitMessage_UnresolvableWorkspaceErrors(t *testing.T) {
 	app := newCommitMsgTestApp(t)
-	_, err := app.GenerateCommitMessage("nope")
+	_, err := app.GenerateCommitMessage(WorkspaceRef{ProjectID: "nope"})
 	if err == nil {
-		t.Fatal("expected error for unknown thread id")
+		t.Fatal("expected error for unknown project id")
 	}
 	if !strings.Contains(err.Error(), "generate commit message") {
 		t.Errorf("error should be prefixed with the operation name: %v", err)
@@ -43,15 +41,9 @@ func TestGenerateCommitMessage_UnknownThreadErrors(t *testing.T) {
 func TestGenerateCommitMessage_EmptyStagedReturnsNothingToDescribe(t *testing.T) {
 	app := newCommitMsgTestApp(t)
 	workspace := initCommitMsgRepo(t)
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID: "t-empty", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Claude),
-		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 	// Repo is clean — StageAll is a no-op, nothing to describe.
-	_, err := app.GenerateCommitMessage("t-empty")
+	_, err := app.GenerateCommitMessage(ref)
 	if err == nil {
 		t.Fatal("expected error when working tree is clean")
 	}
@@ -86,15 +78,9 @@ func TestGenerateCommitMessage_CodexPathHappy(t *testing.T) {
 		return textgen.CLIResult{ExitCode: 0}, nil
 	}
 
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID: "t-codex", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Codex),
-		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
-	got, err := app.GenerateCommitMessage("t-codex")
+	got, err := app.GenerateCommitMessage(ref)
 	if err != nil {
 		t.Fatalf("happy path: %v", err)
 	}
@@ -145,15 +131,9 @@ func TestGenerateCommitMessage_ClaudePathHappy(t *testing.T) {
 		}, nil
 	}
 
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID: "t-claude", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Claude),
-		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
-	got, err := app.GenerateCommitMessage("t-claude")
+	got, err := app.GenerateCommitMessage(ref)
 	if err != nil {
 		t.Fatalf("happy path: %v", err)
 	}
@@ -184,13 +164,7 @@ func TestGenerateCommitMessage_RoutingRespectsSettings(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
 		t.Fatalf("dirty: %v", err)
 	}
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID: "t-route", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Claude),
-		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
 	// Test both routes with a per-provider recognisable arg.
 	tests := []struct {
@@ -223,7 +197,7 @@ func TestGenerateCommitMessage_RoutingRespectsSettings(t *testing.T) {
 				}, nil
 			}
 
-			if _, err := app.GenerateCommitMessage("t-route"); err != nil {
+			if _, err := app.GenerateCommitMessage(ref); err != nil {
 				t.Fatalf("generate: %v", err)
 			}
 			if !argsContain(gotSpec.Args, tc.sentinel) {
@@ -247,13 +221,7 @@ func TestGenerateCommitMessage_RoutingCustomEffortAndModel(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID: "t-custom", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Claude),
-		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
 	var gotSpec textgen.CLISpec
 	app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
@@ -263,7 +231,7 @@ func TestGenerateCommitMessage_RoutingCustomEffortAndModel(t *testing.T) {
 		return textgen.CLIResult{ExitCode: 0}, nil
 	}
 
-	if _, err := app.GenerateCommitMessage("t-custom"); err != nil {
+	if _, err := app.GenerateCommitMessage(ref); err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 	if got := nextArgAfter(gotSpec.Args, "--model"); got != "gpt-5.4" {
@@ -280,19 +248,13 @@ func TestGenerateCommitMessage_CLIMissingReturnsFriendlyError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
 		t.Fatalf("dirty: %v", err)
 	}
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID: "t-missing", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Claude),
-		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
 	app.textGenerationExecutor = func(_ context.Context, _ textgen.CLISpec) (textgen.CLIResult, error) {
 		// Emulate exec.LookPath failure shape — a PathError wrapping ENOENT.
 		return textgen.CLIResult{}, exec.ErrNotFound
 	}
-	_, err := app.GenerateCommitMessage("t-missing")
+	_, err := app.GenerateCommitMessage(ref)
 	if err == nil {
 		t.Fatal("expected error when CLI isn't available")
 	}
@@ -307,13 +269,7 @@ func TestGenerateCommitMessage_CLIFailureSurfacesStderr(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
 		t.Fatalf("dirty: %v", err)
 	}
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID: "t-fail", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Claude),
-		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
 	app.textGenerationExecutor = func(_ context.Context, _ textgen.CLISpec) (textgen.CLIResult, error) {
 		return textgen.CLIResult{
@@ -321,7 +277,7 @@ func TestGenerateCommitMessage_CLIFailureSurfacesStderr(t *testing.T) {
 			ExitCode: 1,
 		}, nil
 	}
-	_, err := app.GenerateCommitMessage("t-fail")
+	_, err := app.GenerateCommitMessage(ref)
 	if err == nil {
 		t.Fatal("expected error when CLI exits non-zero")
 	}
@@ -360,13 +316,7 @@ func TestGenerateCommitMessage_InvalidProviderCoercesToDefault(t *testing.T) {
 		t.Fatalf("expected bogus provider to be coerced to codex; got %q", got)
 	}
 
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID: "t-coerce", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Claude),
-		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
 	app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
 		// Confirm we landed on the codex path — if the default coercion
@@ -378,7 +328,7 @@ func TestGenerateCommitMessage_InvalidProviderCoercesToDefault(t *testing.T) {
 		_ = os.WriteFile(outputPath, []byte(`{"subject":"ok","body":""}`), 0o600)
 		return textgen.CLIResult{ExitCode: 0}, nil
 	}
-	if _, err := app.GenerateCommitMessage("t-coerce"); err != nil {
+	if _, err := app.GenerateCommitMessage(ref); err != nil {
 		t.Fatalf("handler should succeed after provider coercion; got: %v", err)
 	}
 }
@@ -397,13 +347,7 @@ func TestGenerateCommitMessage_Layer2PrimaryFailsAlternateSucceeds(t *testing.T)
 	}
 	app.lookPathFn = fakeLookPath("claude", "codex") // both installed.
 
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID: "t-l2-fallback", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Codex),
-		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
 	var specs []textgen.CLISpec
 	app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
@@ -417,7 +361,7 @@ func TestGenerateCommitMessage_Layer2PrimaryFailsAlternateSucceeds(t *testing.T)
 		}, nil
 	}
 
-	got, err := app.GenerateCommitMessage("t-l2-fallback")
+	got, err := app.GenerateCommitMessage(ref)
 	if err != nil {
 		t.Fatalf("commit message: %v", err)
 	}
@@ -440,13 +384,7 @@ func TestGenerateCommitMessage_Layer2BothFailReturnsPrimaryError(t *testing.T) {
 	}
 	app.lookPathFn = fakeLookPath("claude", "codex")
 
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID: "t-l2-both-fail", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Codex),
-		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
 	app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
 		msg := "codex auth expired"
@@ -456,7 +394,7 @@ func TestGenerateCommitMessage_Layer2BothFailReturnsPrimaryError(t *testing.T) {
 		return textgen.CLIResult{Stderr: msg, ExitCode: 1}, nil
 	}
 
-	_, err := app.GenerateCommitMessage("t-l2-both-fail")
+	_, err := app.GenerateCommitMessage(ref)
 	if err == nil {
 		t.Fatal("expected error when both providers fail")
 	}
@@ -477,13 +415,7 @@ func TestGenerateCommitMessage_Layer2AlternateMissingNoRetry(t *testing.T) {
 	// Codex configured, only Codex on PATH. Codex fails — no Claude to fall back to.
 	app.lookPathFn = fakeLookPath("codex")
 
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID: "t-l2-no-alt", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Codex),
-		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
 	calls := 0
 	app.textGenerationExecutor = func(_ context.Context, _ textgen.CLISpec) (textgen.CLIResult, error) {
@@ -491,7 +423,7 @@ func TestGenerateCommitMessage_Layer2AlternateMissingNoRetry(t *testing.T) {
 		return textgen.CLIResult{Stderr: "codex boom", ExitCode: 1}, nil
 	}
 
-	if _, err := app.GenerateCommitMessage("t-l2-no-alt"); err == nil {
+	if _, err := app.GenerateCommitMessage(ref); err == nil {
 		t.Fatal("expected error")
 	}
 	if calls != 1 {
@@ -507,13 +439,7 @@ func TestGenerateCommitMessage_Layer2ContextCanceledNoRetry(t *testing.T) {
 	}
 	app.lookPathFn = fakeLookPath("claude", "codex")
 
-	now := time.Now().UnixMilli()
-	if err := app.store.CreateThread(store.Thread{
-		ID: "t-l2-canceled", ProjectID: defaultTestProjectID, Title: "x", Provider: string(provider.Codex),
-		WorkspacePath: workspace, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
+	ref := testWorkspaceRef(t, app, workspace)
 
 	calls := 0
 	app.textGenerationExecutor = func(_ context.Context, _ textgen.CLISpec) (textgen.CLIResult, error) {
@@ -521,7 +447,7 @@ func TestGenerateCommitMessage_Layer2ContextCanceledNoRetry(t *testing.T) {
 		return textgen.CLIResult{}, context.Canceled
 	}
 
-	_, err := app.GenerateCommitMessage("t-l2-canceled")
+	_, err := app.GenerateCommitMessage(ref)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}

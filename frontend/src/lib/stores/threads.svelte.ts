@@ -192,6 +192,41 @@ export function updateThreadPinState(
 }
 
 /**
+ * Reconcile the rows SetThreadGroup returned — every thread the call
+ * touched, discussion children included. Only the three fields that RPC
+ * owns are patched: a full row swap would drag lastReadAt /
+ * latestTurnCompletedAt backwards past a local read-mark the debounced
+ * persist has not landed yet (the reason mergeThreadRowWithLocal exists).
+ * The backend also emits thread:updated `replace` for each row, which is
+ * what reaches the panes; this is the instant-feedback half.
+ */
+export function updateThreadGroupState(rows: readonly Thread[]): void {
+  if (rows.length === 0) return;
+  const byId = new Map(rows.map((row) => [row.id, row] as const));
+  threads = threads.map((t) => {
+    const row = byId.get(t.id);
+    if (row === undefined) return t;
+    return { ...t, groupId: row.groupId, pinnedAt: row.pinnedAt, pinGroup: row.pinGroup };
+  });
+}
+
+/**
+ * Drop a deleted group's membership from every cached row. DeleteThreadGroup
+ * nulls `group_id` in SQLite (ON DELETE SET NULL) without emitting a thread
+ * row per member, so this is the local half of that write.
+ */
+export function clearThreadGroupMembership(groupId: string): void {
+  if (!groupId) return;
+  let changed = false;
+  const next = threads.map((t) => {
+    if (t.groupId !== groupId) return t;
+    changed = true;
+    return { ...t, groupId: undefined };
+  });
+  if (changed) threads = next;
+}
+
+/**
  * Returns the thread with the given id, or undefined if the sidebar doesn't
  * currently track it (e.g. archived parent not in the filtered view).
  */

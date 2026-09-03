@@ -15,8 +15,8 @@
 import type { Thread } from '../types/models';
 import { GetThread, WorkflowTakeOverUnit } from './bindings';
 import { getThreadById } from './threads.svelte';
-import { findPaneShowingThread, openThreadInPane } from './panes.svelte';
-import { openReviewCompanion } from './reviewPane.svelte';
+import { findPaneShowingThread, getPane, openThreadInPane } from './panes.svelte';
+import { openReviewCompanion, reviewSubjectForPane } from './reviewPane.svelte';
 import { closeWorkflowsOverlay } from './workflowsOverlay.svelte';
 import { addToast } from './toast.svelte';
 import { userFacingError } from '../utils/userFacingError';
@@ -84,5 +84,10 @@ export async function takeOverWorkflowUnit(
 export async function openWorkflowFullReview(threadId: string): Promise<void> {
   const paneId = await openWorkflowThreadById(threadId);
   if (!paneId) return;
-  await openReviewCompanion(paneId, threadId, { scope: 'branch' });
+  // The pane the thread just mounted in is what names the checkout — a
+  // workflow phase runs in the run's worktree, not the project root.
+  const pane = getPane(paneId);
+  const subject = pane ? reviewSubjectForPane(pane) : null;
+  if (!subject) return;
+  await openReviewCompanion(paneId, subject, { scope: 'branch' });
 }

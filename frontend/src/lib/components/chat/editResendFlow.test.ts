@@ -157,6 +157,29 @@ function userItem(id: string, turnIndex: number, summary: string, threadId = 'th
   });
 }
 
+/** A sent message that carried a file attachment, as its meta records it. */
+function userItemWithFileAttachment(id: string, turnIndex: number, summary: string): Item {
+  return makeItem({
+    id,
+    threadId: 'thread-1',
+    turnIndex,
+    itemIndex: 0,
+    kind: 'user_text',
+    role: 'user',
+    summary,
+    meta: JSON.stringify({
+      attachments: [{
+        id: 'att-sent-pdf',
+        threadId: 'thread-1',
+        filename: 'report.pdf',
+        mimeType: 'application/pdf',
+        size: 2048,
+        kind: 'file',
+      }],
+    }),
+  });
+}
+
 async function buildPane(
   thread: Thread = seedThread(),
   items: Item[] = [],
@@ -192,6 +215,7 @@ async function buildPane(
     size: 64,
     relativePath: `${thread.id}/shot.png`,
     createdAt: 1,
+    kind: 'image',
   }));
 
   const pane = createThreadPane({ paneId });
@@ -301,8 +325,11 @@ describe('edit-and-resend flow — invalidation matrix', () => {
     await pane.switchThread(other);
 
     await waitFor(() => expect(view.queryByTestId('user-message-editor')).toBeNull());
-    // Nothing was sent, so the pasted record backs nothing.
-    await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith('att-pasted'));
+    // Nothing was sent, so the pasted record backs nothing. The reclaim
+    // names the EDITED message's thread, not the one the pane switched
+    // to — deletion is ownership-checked, so the pane's current thread
+    // would be refused.
+    await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith(thread.id, 'att-pasted'));
     count.resolve(0);
     await tick();
     expect(resend).not.toHaveBeenCalled();
@@ -328,7 +355,7 @@ describe('edit-and-resend flow — invalidation matrix', () => {
 
     await waitFor(() => expect(view.queryByText('Revert to this message?')).toBeNull());
     expect(view.queryByTestId('user-message-editor')).toBeNull();
-    await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith('att-pasted'));
+    await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith(thread.id, 'att-pasted'));
     expect(resend).not.toHaveBeenCalled();
   });
 
@@ -461,7 +488,26 @@ describe('edit-and-resend flow — attachment-record policy on exit', () => {
     await view.findByText('Discard changes?');
     await fireEvent.click(view.getByText('Discard'));
 
-    await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith('att-pasted'));
+    await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith(thread.id, 'att-pasted'));
+  });
+
+  it('a SEEDED file chip removed in the editor keeps its record — the sent message still owns it', async () => {
+    const thread = seedThread();
+    const item = userItemWithFileAttachment('user:1', 1, 'Update one of the lines');
+    const pane = await buildPane(thread, [item]);
+    const deleteAttachment = setBindingMock('DeleteAttachment', async () => {});
+
+    const view = render(ChatView, { props: { pane } });
+    const editor = await openMessageEditor(view);
+
+    // The edit copy seeds the file the same way it seeds an image.
+    await waitFor(() => expect(within(editor).getByTestId('attachment-file-chip')).toBeInTheDocument());
+    await fireEvent.click(within(editor).getByLabelText('Remove report.pdf'));
+
+    await waitFor(() => expect(within(editor).queryByTestId('attachment-file-chip')).toBeNull());
+    // Dropping it from THIS draft must not destroy the record the original
+    // message references — only ids this session uploaded are reclaimable.
+    expect(deleteAttachment).not.toHaveBeenCalled();
   });
 
   it('reclaims nothing when the resend succeeds — the sent message owns the ids', async () => {
@@ -498,7 +544,7 @@ describe('edit-and-resend flow — attachment-record policy on exit', () => {
     await pasteImageIntoEditor(editor);
 
     view.unmount();
-    await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith('att-pasted'));
+    await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith(thread.id, 'att-pasted'));
   });
 
   it('leaves a session upload alone when the pane is destroyed mid-execute', async () => {
@@ -835,7 +881,7 @@ describe('edit-and-resend flow — committed-failure recovery', () => {
 
     resend.reject(new Error('revert and resend: cannot revert while a turn is in progress'));
     await waitFor(() => {
-      expect(deleteAttachment.mock.calls.some((call) => call[0] === 'att-pasted')).toBe(true);
+      expect(deleteAttachment.mock.calls.some((call) => call[1] === 'att-pasted')).toBe(true);
     });
     expect(getToasts().some((t) => t.message.startsWith('Edit failed:'))).toBe(true);
     // No recovery write anywhere: the old thread still holds its message,
@@ -1140,7 +1186,7 @@ describe('edit-and-resend flow — transport-class failure', () => {
 
     // The new session's upload is reclaimed normally: the previous flow's
     // doubt did not leak onto it.
-    await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith('att-pasted'));
+    await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith(thread.id, 'att-pasted'));
   });
 });
 

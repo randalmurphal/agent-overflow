@@ -4,7 +4,7 @@ The session core: mints session credentials, verifies a presentation,
 answers the per-RPC liveness question, and revokes. Spec:
 [docs/specs/remote-access.md](../../docs/specs/remote-access.md) §3 and §4.
 
-Rows live in `internal/store` (migrations v75 and v76). Enforcement of what
+Rows live in `internal/store` (migrations v79 and v80). Enforcement of what
 a scope PERMITS is not here: `internal/transport` gates every RPC and every
 event channel, and `internal/app` rechecks the authorities that depend on a
 call's ARGUMENTS. All three read the grant set through one hook,
@@ -330,7 +330,7 @@ the one revocation a host-local surface can perform unenforceable.
 ## Passkeys: pairing bootstraps, a passkey hardens
 
 `passkey.go`, over `github.com/go-webauthn/webauthn`. Rows in migration
-v78. Nothing pairing does stopped working, and a device that never
+v82. Nothing pairing does stopped working, and a device that never
 registers one never touches this file. What a registered credential buys
 is three things pairing cannot do alone: a browser this backend has never
 seen signs in with no code to type, a browser whose session family ended
@@ -371,7 +371,7 @@ finish carries — through the same `enrollmentFor` pairing redemption
 uses, with the same adoption rules (`resolvePasskeyDevice`). That proof
 is REQUIRED: the passkey proves the person, and the device row is what a
 revocation reaches, so a session with no device row is one nothing can
-withdraw. `devices.passkey_credential_id` has existed since v75 and stays
+withdraw. `devices.passkey_credential_id` has existed since v79 and stays
 unused.
 
 **A valid assertion mints a LIVE session, with no confirmation step.**

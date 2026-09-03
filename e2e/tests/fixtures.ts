@@ -22,6 +22,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     { scope: 'worker' },
   ],
   harness: async ({ harnessWorker }, use) => {
+    await harnessWorker.awaitNoPages();
     await harnessWorker.reset();
     await use(harnessWorker);
   },

@@ -23,8 +23,8 @@ package transport
 //
 // Route names WHICH attached backend the call belongs to
 // (docs/specs/remote-access.md §10). It is inferred from a first
-// parameter named threadID or projectID and declared with //ao:route
-// otherwise; unrouted fails the run the same way unscoped does. Nothing
+// parameter named threadID or projectID, or typed gitapp.WorkspaceRef,
+// and declared with //ao:route otherwise; unrouted fails the run the same way unscoped does. Nothing
 // on this side reads it — one connection is one backend — so it travels
 // to the client through the generated mirror at
 // frontend/src/lib/transport/methodRoutes.ts.
@@ -81,7 +81,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "CreateProposedPlanComment", ID: 4246792665, Scope: "threads:operate", Route: "thread"},                   // main.App.CreateProposedPlanComment
 	{Name: "CreateThread", ID: 2579322833, Scope: "threads:operate", Route: "selected"},                              // main.App.CreateThread
 	{Name: "CreateThreadFromPR", ID: 1716017387, Scope: "threads:operate", Route: "selected"},                        // main.App.CreateThreadFromPR
-	{Name: "DeleteAttachment", ID: 2428457759, Scope: "attachments:write", Route: "selected"},                        // main.App.DeleteAttachment
+	{Name: "CreateThreadGroup", ID: 1478438024, Scope: "threads:operate", Route: "project"},                          // main.App.CreateThreadGroup
+	{Name: "DeleteAttachment", ID: 2428457759, Scope: "attachments:write", Route: "thread"},                          // main.App.DeleteAttachment
 	{Name: "DeleteDiffReviewComment", ID: 1303317790, Scope: "threads:operate", Route: "thread"},                     // main.App.DeleteDiffReviewComment
 	{Name: "DeleteDiscussion", ID: 302062730, Scope: "threads:operate", Route: "selected"},                           // main.App.DeleteDiscussion
 	{Name: "DeleteEmptyDraftThread", ID: 3876094070, Scope: "threads:operate", Route: "thread"},                      // main.App.DeleteEmptyDraftThread
@@ -90,6 +91,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteProposedPlanComment", ID: 554913120, Scope: "threads:operate", Route: "thread"},                    // main.App.DeleteProposedPlanComment
 	{Name: "DeleteProviderCustomEnvVar", ID: 784096448, Scope: "settings:write", Route: "home", StepUp: true},        // main.App.DeleteProviderCustomEnvVar
 	{Name: "DeleteThread", ID: 1186337974, Scope: "threads:operate", Route: "thread"},                                // main.App.DeleteThread
+	{Name: "DeleteThreadGroup", ID: 4104302889, Scope: "threads:operate", Route: "home"},                             // main.App.DeleteThreadGroup
 	{Name: "DeleteUIState", ID: 1186757769, Scope: "session", Route: "home"},                                         // main.App.DeleteUIState
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin", Route: "home"},                               // main.App.DevicePairingStatus
 	{Name: "DisallowPreviewPort", ID: 1061100039, Scope: "access:admin", Route: "selected"},                          // main.App.DisallowPreviewPort
@@ -100,37 +102,37 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ForgetTailnetNode", ID: 767560289, Scope: "host", Route: "home"},                                         // main.App.ForgetTailnetNode
 	{Name: "ForkThread", ID: 4063914461, Scope: "threads:operate", Route: "thread"},                                  // main.App.ForkThread
 	{Name: "ForkThreadFromMessage", ID: 3977213964, Scope: "threads:operate", Route: "thread"},                       // main.App.ForkThreadFromMessage
-	{Name: "GenerateCommitMessage", ID: 1669373286, Scope: "git:operate", Route: "thread"},                           // main.App.GenerateCommitMessage
+	{Name: "GenerateCommitMessage", ID: 1669373286, Scope: "git:operate", Route: "workspace"},                        // main.App.GenerateCommitMessage
 	{Name: "GetAccessOverview", ID: 1559710962, Scope: "access:admin", Route: "home"},                                // main.App.GetAccessOverview
 	{Name: "GetAttachmentThumbnail", ID: 3414107538, Scope: "threads:read", Route: "thread"},                         // main.App.GetAttachmentThumbnail
-	{Name: "GetBranchBaseDiff", ID: 1342635161, Scope: "files:read", Route: "thread"},                                // main.App.GetBranchBaseDiff
+	{Name: "GetBranchBaseDiff", ID: 1342635161, Scope: "files:read", Route: "workspace"},                             // main.App.GetBranchBaseDiff
 	{Name: "GetChannelMessages", ID: 3595031866, Scope: "threads:read", Route: "selected"},                           // main.App.GetChannelMessages
 	{Name: "GetChannelState", ID: 3664812883, Scope: "threads:read", Route: "selected"},                              // main.App.GetChannelState
 	{Name: "GetClaudeSkills", ID: 1573335127, Scope: "threads:operate", Route: "selected"},                           // main.App.GetClaudeSkills
 	{Name: "GetClaudeSlashCommands", ID: 2854892544, Scope: "threads:read", Route: "selected"},                       // main.App.GetClaudeSlashCommands
 	{Name: "GetCodexAccountUsage", ID: 1110466608, Scope: "access:admin", Route: "home"},                             // main.App.GetCodexAccountUsage
 	{Name: "GetCodexSkills", ID: 1018032480, Scope: "threads:operate", Route: "selected"},                            // main.App.GetCodexSkills
-	{Name: "GetCommitDiff", ID: 3399370629, Scope: "files:read", Route: "thread"},                                    // main.App.GetCommitDiff
+	{Name: "GetCommitDiff", ID: 3399370629, Scope: "files:read", Route: "workspace"},                                 // main.App.GetCommitDiff
 	{Name: "GetContextSettings", ID: 3416004963, Scope: "settings:read", Route: "home"},                              // main.App.GetContextSettings
 	{Name: "GetDevServers", ID: 139818238, Scope: "preview:open", Route: "selected"},                                 // main.App.GetDevServers
-	{Name: "GetDiffContextLines", ID: 1590634674, Scope: "files:read", Route: "thread"},                              // main.App.GetDiffContextLines
+	{Name: "GetDiffContextLines", ID: 1590634674, Scope: "files:read", Route: "workspace"},                           // main.App.GetDiffContextLines
 	{Name: "GetDiscussion", ID: 1924583939, Scope: "threads:read", Route: "selected"},                                // main.App.GetDiscussion
 	{Name: "GetDraft", ID: 875977146, Scope: "threads:operate", Route: "thread"},                                     // main.App.GetDraft
+	{Name: "GetEditDiffContextLines", ID: 949275134, Scope: "files:read", Route: "thread"},                           // main.App.GetEditDiffContextLines
 	{Name: "GetEditorSettings", ID: 1655853383, Scope: "settings:read", Route: "home"},                               // main.App.GetEditorSettings
-	{Name: "GetGitStatus", ID: 4123560639, Scope: "git:operate", Route: "thread"},                                    // main.App.GetGitStatus
-	{Name: "GetGitStatusFastForProject", ID: 2193133889, Scope: "git:operate", Route: "project"},                     // main.App.GetGitStatusFastForProject
+	{Name: "GetGitStatus", ID: 4123560639, Scope: "git:operate", Route: "workspace"},                                 // main.App.GetGitStatus
 	{Name: "GetKeybindings", ID: 3015840904, Scope: "settings:read", Route: "home"},                                  // main.App.GetKeybindings
 	{Name: "GetLocalImageData", ID: 3247514443, Scope: "files:read", Route: "selected"},                              // main.App.GetLocalImageData
 	{Name: "GetMcpServerStatus", ID: 4139359668, Scope: "settings:write", Route: "home"},                             // main.App.GetMcpServerStatus
-	{Name: "GetMergeConflictFile", ID: 3176695009, Scope: "git:operate", Route: "thread"},                            // main.App.GetMergeConflictFile
+	{Name: "GetMergeConflictFile", ID: 3176695009, Scope: "git:operate", Route: "workspace"},                         // main.App.GetMergeConflictFile
 	{Name: "GetModelsForProvider", ID: 1632984917, Scope: "threads:operate", Route: "selected"},                      // main.App.GetModelsForProvider
 	{Name: "GetNetworkSettings", ID: 1026796858, Scope: "access:admin", Route: "home"},                               // main.App.GetNetworkSettings
 	{Name: "GetPRCIJobLog", ID: 2411810578, Scope: "git:operate", Route: "selected"},                                 // main.App.GetPRCIJobLog
 	{Name: "GetPRCIJobs", ID: 2370852281, Scope: "git:operate", Route: "selected"},                                   // main.App.GetPRCIJobs
-	{Name: "GetPRCommitDiff", ID: 1737292419, Scope: "git:operate", Route: "thread"},                                 // main.App.GetPRCommitDiff
+	{Name: "GetPRCommitDiff", ID: 1737292419, Scope: "git:operate", Route: "workspace"},                              // main.App.GetPRCommitDiff
 	{Name: "GetPRDetail", ID: 2443547196, Scope: "git:operate", Route: "selected"},                                   // main.App.GetPRDetail
-	{Name: "GetPRDiff", ID: 1867413234, Scope: "git:operate", Route: "thread"},                                       // main.App.GetPRDiff
-	{Name: "GetPRMergeConflicts", ID: 106351482, Scope: "git:operate", Route: "thread"},                              // main.App.GetPRMergeConflicts
+	{Name: "GetPRDiff", ID: 1867413234, Scope: "git:operate", Route: "workspace"},                                    // main.App.GetPRDiff
+	{Name: "GetPRMergeConflicts", ID: 106351482, Scope: "git:operate", Route: "workspace"},                           // main.App.GetPRMergeConflicts
 	{Name: "GetPayloadChunk", ID: 73280836, Scope: "threads:read", Route: "thread"},                                  // main.App.GetPayloadChunk
 	{Name: "GetPayloadData", ID: 3448919335, Scope: "threads:read", Route: "thread"},                                 // main.App.GetPayloadData
 	{Name: "GetPayloadPreview", ID: 4070214921, Scope: "threads:read", Route: "thread"},                              // main.App.GetPayloadPreview
@@ -161,38 +163,30 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetUIState", ID: 3380106838, Scope: "session", Route: "home"},                                            // main.App.GetUIState
 	{Name: "GetUsageStats", ID: 3135466533, Scope: "threads:read", Route: "all"},                                     // main.App.GetUsageStats
 	{Name: "GetWSLDistroPreference", ID: 294719565, Scope: "host", Route: "home"},                                    // main.App.GetWSLDistroPreference
-	{Name: "GetWorkingTreeDiff", ID: 1858968113, Scope: "files:read", Route: "thread"},                               // main.App.GetWorkingTreeDiff
 	{Name: "GetWorkspaceActivity", ID: 673985705, Scope: "git:operate", Route: "selected"},                           // main.App.GetWorkspaceActivity
-	{Name: "GetWorkspaceCurrentDiff", ID: 736820142, Scope: "files:read", Route: "thread"},                           // main.App.GetWorkspaceCurrentDiff
-	{Name: "GitCheckout", ID: 1598126927, Scope: "git:operate", Route: "thread"},                                     // main.App.GitCheckout
-	{Name: "GitCheckoutForProject", ID: 585511915, Scope: "git:operate", Route: "project"},                           // main.App.GitCheckoutForProject
-	{Name: "GitCommit", ID: 1971060042, Scope: "git:operate", Route: "thread"},                                       // main.App.GitCommit
-	{Name: "GitCreateBranch", ID: 2582897723, Scope: "git:operate", Route: "thread"},                                 // main.App.GitCreateBranch
-	{Name: "GitCreateBranchFrom", ID: 429779991, Scope: "git:operate", Route: "thread"},                              // main.App.GitCreateBranchFrom
-	{Name: "GitCreatePR", ID: 4106667105, Scope: "git:operate", Route: "thread"},                                     // main.App.GitCreatePR
+	{Name: "GetWorkspaceCurrentDiff", ID: 736820142, Scope: "files:read", Route: "workspace"},                        // main.App.GetWorkspaceCurrentDiff
+	{Name: "GitCheckout", ID: 1598126927, Scope: "git:operate", Route: "workspace"},                                  // main.App.GitCheckout
+	{Name: "GitCommit", ID: 1971060042, Scope: "git:operate", Route: "workspace"},                                    // main.App.GitCommit
+	{Name: "GitCreateBranchFrom", ID: 429779991, Scope: "git:operate", Route: "workspace"},                           // main.App.GitCreateBranchFrom
+	{Name: "GitCreatePR", ID: 4106667105, Scope: "git:operate", Route: "workspace"},                                  // main.App.GitCreatePR
 	{Name: "GitCreateWorktree", ID: 3327650914, Scope: "git:operate", Route: "thread"},                               // main.App.GitCreateWorktree
-	{Name: "GitListBranchPruneCandidates", ID: 3795082615, Scope: "git:operate", Route: "thread"},                    // main.App.GitListBranchPruneCandidates
-	{Name: "GitListBranches", ID: 2693102179, Scope: "git:operate", Route: "thread"},                                 // main.App.GitListBranches
-	{Name: "GitListBranchesForProject", ID: 2675387767, Scope: "git:operate", Route: "project"},                      // main.App.GitListBranchesForProject
-	{Name: "GitListWorktrees", ID: 3232495403, Scope: "git:operate", Route: "thread"},                                // main.App.GitListWorktrees
-	{Name: "GitListWorktreesForProject", ID: 409101231, Scope: "git:operate", Route: "project"},                      // main.App.GitListWorktreesForProject
-	{Name: "GitMaybeFetchRemotes", ID: 2000020570, Scope: "git:operate", Route: "thread"},                            // main.App.GitMaybeFetchRemotes
-	{Name: "GitMaybeFetchRemotesForProject", ID: 338919746, Scope: "git:operate", Route: "project"},                  // main.App.GitMaybeFetchRemotesForProject
-	{Name: "GitPruneBranches", ID: 3331815821, Scope: "git:operate", Route: "thread"},                                // main.App.GitPruneBranches
-	{Name: "GitPull", ID: 3933172764, Scope: "git:operate", Route: "thread"},                                         // main.App.GitPull
-	{Name: "GitPush", ID: 4036251239, Scope: "git:operate", Route: "thread"},                                         // main.App.GitPush
+	{Name: "GitListBranchPruneCandidates", ID: 3795082615, Scope: "git:operate", Route: "workspace"},                 // main.App.GitListBranchPruneCandidates
+	{Name: "GitListBranches", ID: 2693102179, Scope: "git:operate", Route: "workspace"},                              // main.App.GitListBranches
+	{Name: "GitListWorktrees", ID: 3232495403, Scope: "git:operate", Route: "workspace"},                             // main.App.GitListWorktrees
+	{Name: "GitMaybeFetchRemotes", ID: 2000020570, Scope: "git:operate", Route: "workspace"},                         // main.App.GitMaybeFetchRemotes
+	{Name: "GitPruneBranches", ID: 3331815821, Scope: "git:operate", Route: "workspace"},                             // main.App.GitPruneBranches
+	{Name: "GitPull", ID: 3933172764, Scope: "git:operate", Route: "workspace"},                                      // main.App.GitPull
+	{Name: "GitPush", ID: 4036251239, Scope: "git:operate", Route: "workspace"},                                      // main.App.GitPush
 	{Name: "GitRemoveWorktree", ID: 4002429606, Scope: "git:operate", Route: "thread"},                               // main.App.GitRemoveWorktree
-	{Name: "GitStageAll", ID: 548906954, Scope: "git:operate", Route: "thread"},                                      // main.App.GitStageAll
-	{Name: "GitStatusSubscribe", ID: 3282404643, Scope: "git:operate", Route: "thread"},                              // main.App.GitStatusSubscribe
+	{Name: "GitStatusSubscribe", ID: 3282404643, Scope: "git:operate", Route: "workspace"},                           // main.App.GitStatusSubscribe
 	{Name: "GitStatusUnsubscribe", ID: 3263989430, Scope: "git:operate", Route: "home"},                              // main.App.GitStatusUnsubscribe
-	{Name: "GitSyncBranch", ID: 1057032236, Scope: "git:operate", Route: "thread"},                                   // main.App.GitSyncBranch
-	{Name: "GitSyncBranchForProject", ID: 3862053920, Scope: "git:operate", Route: "project"},                        // main.App.GitSyncBranchForProject
-	{Name: "GitWorktreeStatus", ID: 1333748060, Scope: "git:operate", Route: "thread"},                               // main.App.GitWorktreeStatus
-	{Name: "GitWorktreeStatusForProject", ID: 71861776, Scope: "git:operate", Route: "project"},                      // main.App.GitWorktreeStatusForProject
+	{Name: "GitSyncBranch", ID: 1057032236, Scope: "git:operate", Route: "workspace"},                                // main.App.GitSyncBranch
+	{Name: "GitWorktreeStatus", ID: 1333748060, Scope: "git:operate", Route: "workspace"},                            // main.App.GitWorktreeStatus
 	{Name: "HighlightClassNames", ID: 2772816619, Scope: "files:read", Route: "home"},                                // main.App.HighlightClassNames
 	{Name: "HighlightCode", ID: 4080150350, Scope: "files:read", Route: "home"},                                      // main.App.HighlightCode
+	{Name: "HighlightEditPatchWithContext", ID: 3749810774, Scope: "files:read", Route: "thread"},                    // main.App.HighlightEditPatchWithContext
 	{Name: "HighlightPatch", ID: 834878499, Scope: "files:read", Route: "home"},                                      // main.App.HighlightPatch
-	{Name: "HighlightPatchWithContext", ID: 3722752402, Scope: "files:read", Route: "thread"},                        // main.App.HighlightPatchWithContext
+	{Name: "HighlightPatchWithContext", ID: 3722752402, Scope: "files:read", Route: "workspace"},                     // main.App.HighlightPatchWithContext
 	{Name: "HighlightSchemaVersion", ID: 2896867980, Scope: "files:read", Route: "home"},                             // main.App.HighlightSchemaVersion
 	{Name: "ImportSessions", ID: 786331585, Scope: "threads:operate", Route: "selected"},                             // main.App.ImportSessions
 	{Name: "ImportThreadUpdates", ID: 535929682, Scope: "threads:operate", Route: "thread"},                          // main.App.ImportThreadUpdates
@@ -203,7 +197,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListAttachments", ID: 1730798413, Scope: "threads:read", Route: "thread"},                                // main.App.ListAttachments
 	{Name: "ListAvailableEditors", ID: 2556802234, Scope: "host", Route: "home"},                                     // main.App.ListAvailableEditors
 	{Name: "ListBackends", ID: 130055792, Scope: "host", Route: "home"},                                              // main.App.ListBackends
-	{Name: "ListBranchCommits", ID: 352990129, Scope: "git:operate", Route: "thread"},                                // main.App.ListBranchCommits
+	{Name: "ListBranchCommits", ID: 352990129, Scope: "git:operate", Route: "workspace"},                             // main.App.ListBranchCommits
 	{Name: "ListChatBarFavorites", ID: 2114948965, Scope: "settings:read", Route: "home"},                            // main.App.ListChatBarFavorites
 	{Name: "ListDiffReviewComments", ID: 3057473088, Scope: "threads:read", Route: "thread"},                         // main.App.ListDiffReviewComments
 	{Name: "ListDiscussions", ID: 942288562, Scope: "threads:read", Route: "selected"},                               // main.App.ListDiscussions
@@ -211,20 +205,17 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListImportableSessions", ID: 99668597, Scope: "threads:operate", Route: "selected"},                      // main.App.ListImportableSessions
 	{Name: "ListItems", ID: 2158085763, Scope: "threads:read", Route: "thread"},                                      // main.App.ListItems
 	{Name: "ListItemsAfterCursor", ID: 2915892537, Scope: "threads:read", Route: "thread"},                           // main.App.ListItemsAfterCursor
-	{Name: "ListItemsAfterTurn", ID: 932754656, Scope: "threads:read", Route: "thread"},                              // main.App.ListItemsAfterTurn
 	{Name: "ListItemsBeforeCursor", ID: 162135710, Scope: "threads:read", Route: "thread"},                           // main.App.ListItemsBeforeCursor
-	{Name: "ListItemsBeforeTurn", ID: 2147361923, Scope: "threads:read", Route: "thread"},                            // main.App.ListItemsBeforeTurn
 	{Name: "ListLiveBackgroundTasks", ID: 320784263, Scope: "threads:read", Route: "thread"},                         // main.App.ListLiveBackgroundTasks
 	{Name: "ListMcpServerStatuses", ID: 2582096622, Scope: "settings:write", Route: "home"},                          // main.App.ListMcpServerStatuses
-	{Name: "ListPRCommits", ID: 4110818691, Scope: "git:operate", Route: "thread"},                                   // main.App.ListPRCommits
+	{Name: "ListPRCommits", ID: 4110818691, Scope: "git:operate", Route: "workspace"},                                // main.App.ListPRCommits
 	{Name: "ListPRReviewThreads", ID: 763649720, Scope: "git:operate", Route: "selected"},                            // main.App.ListPRReviewThreads
 	{Name: "ListPasskeys", ID: 3860831272, Scope: "access:admin", Route: "home"},                                     // main.App.ListPasskeys
 	{Name: "ListPendingInteractiveRequests", ID: 4186874978, Scope: "approvals:respond", Route: "thread"},            // main.App.ListPendingInteractiveRequests
 	{Name: "ListProjects", ID: 2721360259, Scope: "threads:read", Route: "all"},                                      // main.App.ListProjects
 	{Name: "ListProposedPlanComments", ID: 2030403250, Scope: "threads:read", Route: "thread"},                       // main.App.ListProposedPlanComments
 	{Name: "ListProviderAccounts", ID: 981125684, Scope: "access:admin", Route: "home"},                              // main.App.ListProviderAccounts
-	{Name: "ListRecentCommits", ID: 1937809620, Scope: "git:operate", Route: "thread"},                               // main.App.ListRecentCommits
-	{Name: "ListRecentThreadItems", ID: 2604956482, Scope: "threads:read", Route: "thread"},                          // main.App.ListRecentThreadItems
+	{Name: "ListRecentCommits", ID: 1937809620, Scope: "git:operate", Route: "workspace"},                            // main.App.ListRecentCommits
 	{Name: "ListRecentTurns", ID: 1083162294, Scope: "threads:read", Route: "thread"},                                // main.App.ListRecentTurns
 	{Name: "ListReleases", ID: 397986043, Scope: "host", Route: "home"},                                              // main.App.ListReleases
 	{Name: "ListRunningBackgroundWork", ID: 3808352241, Scope: "threads:read", Route: "all"},                         // main.App.ListRunningBackgroundWork
@@ -232,6 +223,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListSubagentDescendants", ID: 1299118478, Scope: "threads:read", Route: "thread"},                        // main.App.ListSubagentDescendants
 	{Name: "ListTerminals", ID: 2445206506, Scope: "terminal:operate", Route: "thread"},                              // main.App.ListTerminals
 	{Name: "ListThreadEditDiffs", ID: 2243533007, Scope: "threads:read", Route: "thread"},                            // main.App.ListThreadEditDiffs
+	{Name: "ListThreadGroups", ID: 2176447381, Scope: "threads:read", Route: "all"},                                  // main.App.ListThreadGroups
 	{Name: "ListThreadMcpServers", ID: 245278513, Scope: "settings:write", Route: "thread"},                          // main.App.ListThreadMcpServers
 	{Name: "ListThreadProposedPlans", ID: 2485050629, Scope: "threads:read", Route: "thread"},                        // main.App.ListThreadProposedPlans
 	{Name: "ListThreadSliceAround", ID: 4176102096, Scope: "threads:read", Route: "thread"},                          // main.App.ListThreadSliceAround
@@ -251,6 +243,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "OpenInEditor", ID: 3994295523, Scope: "host", Route: "home"},                                             // main.App.OpenInEditor
 	{Name: "OpenTerminal", ID: 2247958725, Scope: "terminal:operate", Route: "thread"},                               // main.App.OpenTerminal
 	{Name: "PinThread", ID: 1748405812, Scope: "threads:operate", Route: "thread"},                                   // main.App.PinThread
+	{Name: "PinThreadGroup", ID: 842795367, Scope: "threads:operate", Route: "home"},                                 // main.App.PinThreadGroup
 	{Name: "PostChannelMessage", ID: 1315440605, Scope: "threads:operate", Route: "selected"},                        // main.App.PostChannelMessage
 	{Name: "PrepareThreadWorktree", ID: 2870364785, Scope: "git:operate", Route: "thread"},                           // main.App.PrepareThreadWorktree
 	{Name: "ProbeClaudeAccount", ID: 1313986574, Scope: "access:admin", Route: "home"},                               // main.App.ProbeClaudeAccount
@@ -276,12 +269,12 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RegisterPushToken", ID: 2641306153, Scope: "session", Route: "home"},                                     // main.App.RegisterPushToken
 	{Name: "RegisterQueueItem", ID: 1034543696, Scope: "threads:operate", Route: "thread"},                           // main.App.RegisterQueueItem
 	{Name: "RemoveBackend", ID: 3005272623, Scope: "host", Route: "home"},                                            // main.App.RemoveBackend
-	{Name: "RemoveOtherWorktree", ID: 2899196344, Scope: "git:operate", Route: "thread"},                             // main.App.RemoveOtherWorktree
-	{Name: "RemoveOtherWorktreeForProject", ID: 574548500, Scope: "git:operate", Route: "project"},                   // main.App.RemoveOtherWorktreeForProject
+	{Name: "RemoveOtherWorktree", ID: 2899196344, Scope: "git:operate", Route: "workspace"},                          // main.App.RemoveOtherWorktree
 	{Name: "RemoveProviderAccount", ID: 684418419, Scope: "access:admin", Route: "home"},                             // main.App.RemoveProviderAccount
 	{Name: "RenameBackend", ID: 1528076361, Scope: "host", Route: "home"},                                            // main.App.RenameBackend
 	{Name: "RenameProject", ID: 3728890856, Scope: "threads:operate", Route: "project"},                              // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435, Scope: "threads:operate", Route: "thread"},                                 // main.App.RenameThread
+	{Name: "RenameThreadGroup", ID: 723690026, Scope: "threads:operate", Route: "home"},                              // main.App.RenameThreadGroup
 	{Name: "RenewCanonicalDomainCert", ID: 95139518, Scope: "host", Route: "home"},                                   // main.App.RenewCanonicalDomainCert
 	{Name: "ReplyToPRThread", ID: 446243420, Scope: "git:operate", Route: "selected"},                                // main.App.ReplyToPRThread
 	{Name: "ReportFrontendErrorBatch", ID: 2174329377, Scope: "host", Route: "home"},                                 // main.App.ReportFrontendErrorBatch
@@ -304,7 +297,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SavePayloadToFile", ID: 3576148797, Scope: "host", Route: "thread"},                                      // main.App.SavePayloadToFile
 	{Name: "SearchThreadItems", ID: 1414650511, Scope: "threads:read", Route: "thread"},                              // main.App.SearchThreadItems
 	{Name: "SearchThreadMessages", ID: 3644945077, Scope: "threads:read", Route: "all"},                              // main.App.SearchThreadMessages
-	{Name: "SearchWorkspaceFiles", ID: 3852272821, Scope: "files:read", Route: "thread"},                             // main.App.SearchWorkspaceFiles
+	{Name: "SearchWorkspaceFiles", ID: 3852272821, Scope: "files:read", Route: "workspace"},                          // main.App.SearchWorkspaceFiles
 	{Name: "SendDiffReviewComments", ID: 2317109106, Scope: "threads:operate", Route: "thread"},                      // main.App.SendDiffReviewComments
 	{Name: "SendMessage", ID: 1496882310, Scope: "threads:operate", Route: "thread"},                                 // main.App.SendMessage
 	{Name: "SendMessageWithOptions", ID: 3632185196, Scope: "threads:operate", Route: "thread"},                      // main.App.SendMessageWithOptions
@@ -317,6 +310,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetProjectWorktreeSetup", ID: 322092470, Scope: "terminal:operate", Route: "project", StepUp: true},      // main.App.SetProjectWorktreeSetup
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465, Scope: "settings:write", Route: "home", StepUp: true},          // main.App.SetProviderCustomEnvVar
 	{Name: "SetPushSenderCredential", ID: 719170063, Scope: "access:admin", Route: "home", StepUp: true},             // main.App.SetPushSenderCredential
+	{Name: "SetThreadGroup", ID: 2514763466, Scope: "threads:operate", Route: "home"},                                // main.App.SetThreadGroup
+	{Name: "SetThreadGroupPinGroup", ID: 4218979176, Scope: "threads:operate", Route: "home"},                        // main.App.SetThreadGroupPinGroup
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811, Scope: "settings:write", Route: "thread", StepUp: true},      // main.App.SetThreadMcpServerEnabled
 	{Name: "SetThreadPinGroup", ID: 3112222989, Scope: "threads:operate", Route: "thread"},                           // main.App.SetThreadPinGroup
 	{Name: "SetUIState", ID: 1514250938, Scope: "session", Route: "home"},                                            // main.App.SetUIState
@@ -346,6 +341,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UnarchiveProject", ID: 2561521885, Scope: "threads:operate", Route: "project"},                           // main.App.UnarchiveProject
 	{Name: "UnarchiveThread", ID: 3655125512, Scope: "threads:operate", Route: "thread"},                             // main.App.UnarchiveThread
 	{Name: "UnpinThread", ID: 3175043037, Scope: "threads:operate", Route: "thread"},                                 // main.App.UnpinThread
+	{Name: "UnpinThreadGroup", ID: 48743460, Scope: "threads:operate", Route: "home"},                                // main.App.UnpinThreadGroup
 	{Name: "UnregisterPushToken", ID: 3065043012, Scope: "session", Route: "home"},                                   // main.App.UnregisterPushToken
 	{Name: "UnsubscribePRUpdates", ID: 2888550814, Scope: "git:operate", Route: "home"},                              // main.App.UnsubscribePRUpdates
 	{Name: "UpdateContextSettingsProfile", ID: 1472386383, Scope: "settings:write", Route: "home"},                   // main.App.UpdateContextSettingsProfile
@@ -423,7 +419,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "WorkflowUnbindThread", ID: 2006703348, Scope: "threads:autonomy", Route: "home"},                         // main.App.WorkflowUnbindThread
 	{Name: "WorkflowUpdateAutomation", ID: 536579134, Scope: "threads:autonomy", Route: "home"},                      // main.App.WorkflowUpdateAutomation
 	{Name: "WriteTerminal", ID: 146795716, Scope: "terminal:operate", Route: "home"},                                 // main.App.WriteTerminal
-	{Name: "WriteThreadWorkspaceFile", ID: 3895036895, Scope: "git:operate", Route: "thread"},                        // main.App.WriteThreadWorkspaceFile
+	{Name: "WriteWorkspaceFile", ID: 1859440887, Scope: "git:operate", Route: "workspace"},                           // main.App.WriteWorkspaceFile
 }
 
 // NewMethodAllowList returns a name set suitable for

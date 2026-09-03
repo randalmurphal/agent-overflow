@@ -66,7 +66,7 @@ describe('App integration — settings launcher', () => {
     await flush(10);
 
     await openSettingsFromSidebar(rendered);
-    expect(rendered.getByRole('tab', { name: 'General' })).toBeInTheDocument();
+    expect(rendered.getByRole('tab', { name: 'Theme' })).toBeInTheDocument();
     // The whole point of the layered mount: the pane strip is never unmounted.
     expect(rendered.getByTestId('pane-host')).toBeInTheDocument();
 
@@ -97,11 +97,11 @@ describe('App integration — settings launcher', () => {
     const rendered = render(App);
     await flush(10);
 
-    openSettingsOverlay('providers');
+    openSettingsOverlay('claude');
 
     await waitFor(() => {
       expect(rendered.getByTestId(SETTINGS_TESTID)).toBeInTheDocument();
-      expect(rendered.getByRole('tab', { name: 'Providers' })).toHaveAttribute('aria-selected', 'true');
+      expect(rendered.getByRole('tab', { name: 'Claude Code' })).toHaveAttribute('aria-selected', 'true');
     }, { timeout: 5000 });
 
     openSettingsOverlay('observability');
@@ -126,9 +126,9 @@ describe('App integration — settings launcher', () => {
 
     await openSettingsFromSidebar(rendered);
 
-    // Any settings text input will do; the General tab's are enough to prove
-    // the editable-target path.
-    await fireEvent.click(rendered.getByRole('tab', { name: 'Providers' }));
+    // Any settings text input will do; the Claude Code page's binary path is
+    // enough to prove the editable-target path.
+    await fireEvent.click(rendered.getByRole('tab', { name: 'Claude Code' }));
     const input = await waitFor(() => {
       const found = rendered.container.querySelector<HTMLInputElement>(
         '[data-testid="settings-overlay"] input[type="text"]',
@@ -165,7 +165,7 @@ describe('App integration — settings launcher', () => {
       expect(rendered.queryByTestId(SETTINGS_TESTID)).not.toBeInTheDocument();
     });
 
-    openSettingsOverlay('general');
+    openSettingsOverlay('theme');
     await waitFor(() => {
       expect(rendered.getByTestId(SETTINGS_TESTID)).toBeInTheDocument();
     }, { timeout: 5000 });
@@ -222,7 +222,7 @@ describe('App integration — overlay modal flags', () => {
       anyModalOpen: false,
     });
 
-    openSettingsOverlay('general');
+    openSettingsOverlay('theme');
     await flush();
 
     expect(await captureAppFlags()).toMatchObject({

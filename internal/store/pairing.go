@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Pairing links and refresh secrets (migration v76). Persistence only, on
+// Pairing links and refresh secrets (migration v80). Persistence only, on
 // the same terms as identity.go: this package owns the rows, the atomic
 // single-use statements, and nothing about what a pairing means.
 //

@@ -142,7 +142,7 @@ export function installFrontendErrorCapture(): void {
  * Current callers: the transport's outage/staleness summaries
  * (`transport/wsClient.ts`, injected as its diagnostics sink) and the
  * unbounded-loop guards — `utils/subagentGrouping.ts`,
- * `utils/sidebarTree.ts`, `utils/reentrantTrampoline.ts`,
+ * `utils/sidebarTreeView.ts`, `utils/reentrantTrampoline.ts`,
  * `components/chat/timelineQuietWork.ts`, and
  * `stores/threadActivityRuns.svelte.ts`.
  */

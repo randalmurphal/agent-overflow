@@ -95,6 +95,9 @@ function seedThread(): Thread {
     id: 'thread-1',
     title: 'Test thread',
     provider: 'claude',
+    // Both halves of the checkout: the header's git affordances address a
+    // WorkspaceRef, which needs the project as well as the directory.
+    projectId: 'project-1',
     workspacePath: '/tmp',
     projectPath: '/tmp',
     mode: 'chat',

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The tailnet half of Settings → Network: whether this backend joins the
+  // The tailnet half of Settings → Remote access: whether this backend joins the
   // owner's tailnet as its own node, and what that node currently is. Its
   // own component for the same reason NetworkDomainEditor is — the section
   // owns the load / save round trip, this owns a draft and a status.
@@ -157,6 +157,7 @@
 
   <div class="flex flex-col gap-1">
     <SettingsField
+      id="remote.tailnet"
       label="Join my tailnet"
       hint="The first time you turn this on, you approve this machine in your browser."
       align="start"
@@ -170,6 +171,7 @@
     </SettingsField>
 
     <SettingsField
+      id="remote.tailnet-control-url"
       label="Coordination server"
       hint="Leave blank for Tailscale. Set it only if you run your own coordination server."
       htmlFor="network-tailnet-control-url"

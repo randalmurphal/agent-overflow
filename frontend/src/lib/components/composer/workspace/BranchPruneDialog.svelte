@@ -15,15 +15,20 @@
   import { hasScope } from '../../../transport/scopes';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
-  import type { BranchPruneCandidate, BranchPruneCandidates, BranchPruneResult } from '../../../types/git';
+  import type {
+    BranchPruneCandidate,
+    BranchPruneCandidates,
+    BranchPruneResult,
+    WorkspaceRef,
+  } from '../../../types/git';
 
   interface Props {
-    threadId: string;
+    workspace: WorkspaceRef;
     open: boolean;
     onClose: () => void;
   }
 
-  let { threadId, open, onClose }: Props = $props();
+  let { workspace, open, onClose }: Props = $props();
 
   // Listing and deleting branches are both git mutations of the workspace.
   let ungranted = $derived(!hasScope('git:operate'));
@@ -59,7 +64,7 @@
     candidates = [];
     checked = {};
     try {
-      const res = (await GitListBranchPruneCandidates(threadId)) as BranchPruneCandidates;
+      const res = (await GitListBranchPruneCandidates(workspace)) as BranchPruneCandidates;
       candidates = res?.candidates ?? [];
       forgeWarning = res?.forgeWarning ?? '';
       const next: Record<string, boolean> = {};
@@ -83,7 +88,7 @@
     deleting = true;
     failures = {};
     try {
-      const res = (await GitPruneBranches(threadId, selections)) as BranchPruneResult;
+      const res = (await GitPruneBranches(workspace, selections)) as BranchPruneResult;
       const deleted = res?.deleted ?? [];
       const failed = res?.failed ?? {};
       const failedNames = Object.keys(failed);

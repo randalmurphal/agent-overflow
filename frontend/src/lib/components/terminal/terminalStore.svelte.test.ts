@@ -125,6 +125,62 @@ describe('ThreadTerminalState', () => {
     expect(s.activeTerminalID).toBeNull();
   });
 
+  describe('attachXterm / clearActive', () => {
+    const xterm = () => {
+      const calls = { clear: 0 };
+      return { calls, actions: { clear: () => { calls.clear += 1; } } };
+    };
+
+    it('clears the ACTIVE tab’s xterm only, and reports false with none mounted', () => {
+      const s = createThreadTerminalState();
+      s.addTab(makeSummary({ terminalID: 'a' }));
+      s.addTab(makeSummary({ terminalID: 'b' })); // b is active
+      expect(s.clearActive()).toBe(false);
+      const a = xterm();
+      const b = xterm();
+      s.attachXterm('a', a.actions);
+      s.attachXterm('b', b.actions);
+      expect(s.clearActive()).toBe(true);
+      expect(b.calls.clear).toBe(1);
+      expect(a.calls.clear).toBe(0);
+      s.setActive('a');
+      expect(s.clearActive()).toBe(true);
+      expect(a.calls.clear).toBe(1);
+    });
+
+    it('detach drops only its own registration (a remount may already have re-attached)', () => {
+      const s = createThreadTerminalState();
+      s.addTab(makeSummary({ terminalID: 'a' }));
+      const first = xterm();
+      const second = xterm();
+      const detachFirst = s.attachXterm('a', first.actions);
+      // Remount attaches its new xterm BEFORE the old surface's teardown runs.
+      const detachSecond = s.attachXterm('a', second.actions);
+      detachFirst();
+      expect(s.clearActive()).toBe(true);
+      expect(second.calls.clear).toBe(1);
+      expect(first.calls.clear).toBe(0);
+      detachSecond();
+      expect(s.clearActive()).toBe(false);
+    });
+
+    it('removeTab and clear forget the mounted xterm', () => {
+      const s = createThreadTerminalState();
+      s.addTab(makeSummary({ terminalID: 'a' }));
+      s.addTab(makeSummary({ terminalID: 'b' }));
+      const a = xterm();
+      const b = xterm();
+      s.attachXterm('a', a.actions);
+      s.attachXterm('b', b.actions);
+      s.removeTab('b'); // promotes a
+      expect(s.clearActive()).toBe(true);
+      expect(a.calls.clear).toBe(1);
+      s.clear();
+      s.addTab(makeSummary({ terminalID: 'a' }));
+      expect(s.clearActive()).toBe(false);
+    });
+  });
+
   it('only drops pending output proven to be covered by replay', () => {
     const s = createThreadTerminalState();
     s.addTab(makeSummary({ terminalID: 'a' }));

@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/highlight"
@@ -21,21 +22,18 @@ func (a *App) highlightService() *highlightapp.Service {
 			Store:          a.store,
 			IsShuttingDown: a.shuttingDown.Load,
 			ShutdownError:  ErrShuttingDown,
-			ResolveContext: func(threadID string, req highlightapp.ContextRequest, maxBytes int64) (string, error) {
-				content, _, err := a.diffContextContent("highlight patch with context", threadID, DiffContextRequest{
-					Scope: req.Scope, CommitSHA: req.CommitSHA, HeadSHA: req.HeadSHA,
-					Path: req.Path, VerifyPatch: req.Patch, EditPayloadID: req.EditPayloadID,
-					EditTurnIndex: req.EditTurnIndex,
-				}, maxBytes)
+			// The workspace arrives resolved: the two highlight RPCs each
+			// answer "which checkout" for their own subject before calling
+			// in, exactly as GetDiffContextLines and GetEditDiffContextLines
+			// do. This closure is only the content read they share.
+			ResolveContext: func(workspace, threadID string, req highlightapp.ContextRequest, maxBytes int64) (string, error) {
+				content, _, err := a.diffContextContent(
+					highlightContextAction, workspace, threadID, DiffContextRequest{
+						Scope: req.Scope, CommitSHA: req.CommitSHA, HeadSHA: req.HeadSHA,
+						Path: req.Path, VerifyPatch: req.Patch, EditPayloadID: req.EditPayloadID,
+						EditTurnIndex: req.EditTurnIndex,
+					}, maxBytes)
 				return content, err
-			},
-			WorkspaceForThread: func(threadID string) (string, error) {
-				thread, err := a.store.GetThread(threadID)
-				if err != nil {
-					return "", err
-				}
-				_, workspace, err := a.resolveGitPaths(thread)
-				return workspace, err
 			},
 			ReadWorkspaceFile: readWorkspaceFile,
 			HasRemoteClient:   a.hasRemoteClient,
@@ -104,7 +102,8 @@ type HighlightResult struct {
 
 // HighlightClassNames returns the classId → semantic-name table
 // (index = class id, 0 = "none"). The frontend fetches it once at boot
-// and renders class id N as CSS class `syntax-<name>`. Wire-safe.
+// and renders class id N as CSS class `syntax-<name>`. A static table,
+// so it answers any session granted `files:read`.
 //
 //ao:scope files:read
 //ao:route home
@@ -116,7 +115,8 @@ func (a *App) HighlightClassNames() []string {
 // span blobs (items.meta codeSpans, payload preview/full spans). The
 // frontend fetches it once at boot and ignores stored spans stamped
 // with anything else — those fall back to the RPC path, which
-// recomputes under the current schema. Wire-safe.
+// recomputes under the current schema. A constant, so it answers any
+// session granted `files:read`.
 //
 //ao:scope files:read
 //ao:route home
@@ -124,8 +124,9 @@ func (a *App) HighlightSchemaVersion() string {
 	return highlight.SchemaVersion()
 }
 
-// HighlightCode returns spans for raw source text. Wire-safe: pure
-// text-in/metadata-out, no local state touched.
+// HighlightCode returns spans for raw source text. Pure
+// text-in/metadata-out, no local state touched, so `files:read` is the
+// whole gate.
 //
 //ao:scope files:read
 //ao:route home
@@ -137,7 +138,8 @@ func (a *App) HighlightCode(req HighlightCodeRequest) (HighlightResult, error) {
 // HighlightPatch returns patch-aligned spans for one file's unified
 // diff: result line i corresponds to patch line i, add/del spans cover
 // the prefix-stripped body, context spans include a 1-byte plain pad
-// for the kept leading space. Wire-safe.
+// for the kept leading space. Text in, metadata out, same `files:read`
+// reading as HighlightCode.
 //
 //ao:scope files:read
 //ao:route home
@@ -146,18 +148,55 @@ func (a *App) HighlightPatch(req HighlightPatchRequest) (HighlightResult, error)
 	return wireHighlightResult(res), err
 }
 
+const highlightContextAction = "highlight patch with context"
+
 // HighlightPatchWithContext is HighlightPatch primed with the file
-// content above each hunk, resolved through the same scope switch as
-// GetDiffContextLines — a hunk that starts mid-docstring highlights
-// correctly because the parser has seen the opening. Content
-// resolution is best-effort: if the scope lookup fails (file gone at
-// ref, no local clone), the unprimed result is returned instead of an
-// error. It reads workspace/ref file content by path, so it rides
-// `files:read`; a session without that grant uses HighlightPatch.
+// content above each hunk, for the LIVE scopes (workspace, branch, commit,
+// pr) — a hunk that starts mid-docstring highlights correctly because the
+// parser has seen the opening. Subject is the CHECKOUT, so it takes a
+// WorkspaceRef and shares GetDiffContextLines' scope switch; the edits scope
+// is a different subject with its own entry point below.
+//
+// Content resolution is best-effort: if the scope lookup fails (file gone at
+// ref, unreadable path), the unprimed result is returned instead of an error.
+// Resolving the WORKSPACE is not: an unresolvable ref is a caller error and
+// is returned as one. It reads workspace/ref file content by path, so it
+// rides `files:read`; a session without that grant uses HighlightPatch.
 //
 //ao:scope files:read
-func (a *App) HighlightPatchWithContext(threadID string, req HighlightPatchContextRequest) (HighlightResult, error) {
-	res, err := a.highlightService().PatchWithContext(threadID, highlightapp.ContextRequest{
+func (a *App) HighlightPatchWithContext(ws WorkspaceRef, req HighlightPatchContextRequest) (HighlightResult, error) {
+	if a.shuttingDown.Load() {
+		return HighlightResult{}, ErrShuttingDown
+	}
+	workspace, err := a.liveDiffWorkspace(highlightContextAction, ws, req.Scope)
+	if err != nil {
+		return HighlightResult{}, err
+	}
+	return a.highlightPatchWithContext(workspace, "", req)
+}
+
+// HighlightEditPatchWithContext serves the edits scope, whose new side is a
+// historical file state belonging to ONE thread: the snapshot persisted with
+// the edit, falling back to that thread's own checkout. Thread-keyed for the
+// same reason GetEditDiffContextLines is, and it accepts no other scope.
+//
+//ao:scope files:read
+func (a *App) HighlightEditPatchWithContext(threadID string, req HighlightPatchContextRequest) (HighlightResult, error) {
+	if a.shuttingDown.Load() {
+		return HighlightResult{}, ErrShuttingDown
+	}
+	if req.Scope != "edits" {
+		return HighlightResult{}, fmt.Errorf("%s: scope %q is not an edits scope", highlightContextAction, req.Scope)
+	}
+	workspace, err := a.threadDiffWorkspace(highlightContextAction, threadID)
+	if err != nil {
+		return HighlightResult{}, err
+	}
+	return a.highlightPatchWithContext(workspace, threadID, req)
+}
+
+func (a *App) highlightPatchWithContext(workspace, threadID string, req HighlightPatchContextRequest) (HighlightResult, error) {
+	res, err := a.highlightService().PatchWithContext(workspace, threadID, highlightapp.ContextRequest{
 		Scope: req.Scope, CommitSHA: req.CommitSHA, HeadSHA: req.HeadSHA,
 		Path: req.Path, Patch: req.Patch, EditPayloadID: req.EditPayloadID,
 		EditTurnIndex: req.EditTurnIndex,
@@ -232,8 +271,17 @@ func wirePatchSpanSeeds(seeds []highlightapp.PatchSpanSeed) []PatchSpanSeed {
 func (a *App) observeAssistantTextStream(threadID, itemID, text string, final bool) {
 	a.highlightService().ObserveAssistantText(threadID, itemID, text, final)
 }
+
+// observeDiffPayloadPersisted seeds spans for a thread's own persisted diff.
+// The checkout is resolved here, not inside highlightapp: that package holds
+// no thread-to-directory lookup. A thread whose workspace cannot be resolved
+// simply seeds unprimed.
 func (a *App) observeDiffPayloadPersisted(threadID, payloadID string, previews []string, patch string) {
-	a.highlightService().ObserveDiffPayload(threadID, payloadID, previews, patch)
+	workspace, err := a.threadDiffWorkspace("seed diff spans", threadID)
+	if err != nil {
+		workspace = ""
+	}
+	a.highlightService().ObserveDiffPayload(threadID, workspace, payloadID, previews, patch)
 }
 func (a *App) buildPersistedCodeSpans(text string) json.RawMessage {
 	return a.highlightService().BuildPersistedCodeSpans(text)

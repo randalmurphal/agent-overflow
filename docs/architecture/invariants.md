@@ -244,11 +244,18 @@ provider history at the wrong turn.
 `internal/provider/codex/session.go`) stamps the subagent card's
 `turn_index` onto the re-emitted event before triage sees it. The
 Claude Task path preserves `parent_tool_use_id` which triage then
-resolves to the card's turn.
+resolves to the card's turn. Rows triage synthesizes for a scoped
+launch obey the same rule: `backgroundCompletionTurnIndex` routes a
+sibling that carries a `parent_id` through `turnIndexForScope`, and
+only a top-level sibling takes the write-head placement of invariant
+24. A scoped sibling on a later turn sorted after every row the agent
+wrote afterwards (2026-09-01).
 
 **Test.** `TestParentToolUseIDFlowsThroughInlineEmit` and
 `TestParentToolUseIDPersistsOnTurnText` in
-`internal/triage/subagent_test.go`.
+`internal/triage/subagent_test.go`;
+`TestHandleEventBackgroundTaskTerminal_ScopedSiblingStaysOnLaunchTurn`
+in `internal/triage/tool_lifecycle_test.go`.
 
 ---
 
@@ -714,6 +721,26 @@ cross-thread reader MUST go through that composition rather than query
 unified-exec leg is held in the triage router and persisted nowhere, so
 a SQL-only answer under-reports without failing.
 
+Because the launch never leaves `running`, "live" is not expressible as
+a status: it is `running AND live_background_active != 0 AND no
+completion sibling`. The third term is CORRELATED, so no partial index
+can carry it, and every live index therefore matched every launch a
+thread had ever backgrounded (2,883 rows across 157 threads on a real
+history; the tray read cost 120-200ms and 309MB of page reads on the
+worst thread to return between zero and eight rows). Migration v74 moves
+that term onto the row: four `items` triggers
+(`internal/store/background_settle_triggers.go`) stamp
+`meta.live_background_active=false` the moment a completion sibling
+exists and restore it if that sibling is deleted, so the flag alone
+means "no teardown and no sibling" and the partial indexes hold only
+genuinely live launches. It is schema-owned for the same reason the
+history stamps are: launch rows are written by triage, the importer, the
+fork clone, and the migration chain, so a Go-side stamp would be one
+forgotten call site away from a launch that ticks forever. Readers keep
+their explicit no-sibling term — it is the documented contract and one
+covering-index seek, and it keeps a row written around the triggers from
+reading as live.
+
 **Rationale.** Claude's `task_updated` terminal / TaskOutput
 enrichment and Codex's background terminal / subagent completion
 signals can arrive AFTER the turn that launched the work. Agents
@@ -723,10 +750,11 @@ move on. Captured Claude evidence:
 landing before the backgrounded task's `task_updated`.
 
 **Enforcement.** Triage's force-close (invariant 23) exempts
-`is_background=true` rows. Background completions append at the
-current thread write head when one is open, otherwise the latest
-persisted turn. Tray derivation clocks retention off the completion
-row's `createdAt`, not turn boundaries.
+`is_background=true` rows. A top-level background completion appends
+at the current thread write head when one is open, otherwise the
+latest persisted turn; a completion under a subagent launch stays on
+the launch's turn (invariant 10). Tray derivation clocks retention off
+the completion row's `createdAt`, not turn boundaries.
 
 **Test.** Replay `ndjson_outlives.log` through the full pipeline;
 assert the turn closes cleanly and the background task's

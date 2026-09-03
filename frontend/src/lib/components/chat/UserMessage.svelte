@@ -1,4 +1,5 @@
 <script lang="ts">
+  import File from '@lucide/svelte/icons/file';
   import Pencil from '@lucide/svelte/icons/pencil';
   import GitFork from '@lucide/svelte/icons/git-fork';
   import Inbox from '@lucide/svelte/icons/inbox';
@@ -26,6 +27,7 @@
     peerSessionOriginLabel,
     userMessageOrigin,
   } from '../../utils/userMessageMeta';
+  import { imageAttachments, formatAttachmentSize } from '../../types/attachment';
   import { commandSegments } from '../../utils/commandWords';
   import { formatTimeOfDay } from '../../utils/format';
   import type { UserMessageActions } from './userMessageActions';
@@ -110,6 +112,11 @@
   const attachments = $derived<AttachmentPreviewSource[]>(
     parseUserMessageAttachments(item.meta, item.threadId),
   );
+  // Split by kind: an image is a tile in the grid, numbered over IMAGES so
+  // `#2` names the same thing the message text's `[Image #2]` does; a file is
+  // an inert chip, because its bytes are never served back to a client.
+  const images = $derived(imageAttachments(attachments));
+  const files = $derived(attachments.filter((attachment) => attachment.kind === 'file'));
   // Pane-owned blob cache: blob URLs survive the window's overscan eviction,
   // so back-scrolling to a previously-mounted UserMessage doesn't refetch
   // attachments from Go or re-allocate object URLs. The IntersectionObserver
@@ -185,12 +192,12 @@
       <span>{originBadge.label}</span>
     </div>
   {/if}
-  {#if attachments.length > 0}
+  {#if images.length > 0}
     <div
       class="mb-2 grid max-w-[420px] grid-cols-2 gap-2"
       data-testid="user-message-attachments"
     >
-      {#each attachments as attachment, index (attachment.id)}
+      {#each images as attachment, index (attachment.id)}
         {@const preview = attachmentPreviews.previewFor(attachment.id)}
         <button
           type="button"
@@ -216,6 +223,20 @@
             #{index + 1}
           </span>
         </button>
+      {/each}
+    </div>
+  {/if}
+  {#if files.length > 0}
+    <div class="mb-2 flex flex-wrap gap-2" data-testid="user-message-file-attachments">
+      {#each files as attachment (attachment.id)}
+        <div
+          class="inline-flex max-w-[320px] items-center gap-2 rounded-lg border border-border bg-surface-1 px-2.5 py-1.5"
+          title={`${attachment.filename} (${formatAttachmentSize(attachment.size)})`}
+        >
+          <Icon icon={File} size={16} class="shrink-0 text-text-secondary" />
+          <span class="truncate text-xs text-text-primary">{attachment.filename}</span>
+          <span class="shrink-0 text-[0.625rem] text-text-secondary">{formatAttachmentSize(attachment.size)}</span>
+        </div>
       {/each}
     </div>
   {/if}

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Settings → Network → Devices → Passkeys: the credentials that let a
+  // Settings → Remote access → Devices → Passkeys: the credentials that let a
   // browser sign in with no link, and that let a REMOTE owner satisfy
   // step-up (docs/specs/remote-access.md §4 "Passkeys").
   //

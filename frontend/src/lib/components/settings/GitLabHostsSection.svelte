@@ -56,9 +56,13 @@
   }
 </script>
 
-<section data-testid="settings-gitlab-hosts">
+<section
+  data-testid="settings-gitlab-hosts"
+  data-settings-field="git.gitlab-hosts"
+  data-settings-label="Self-hosted GitLab hosts"
+>
   <SettingsHeader
-    title="Self-hosted GitLab Hosts"
+    title="Self-hosted GitLab hosts"
     description="Treated as GitLab when classifying a repo's origin remote, enabling Create MR, MR labels, and the `glab` CLI. gitlab.com and github.com are automatic."
   />
 

@@ -188,15 +188,25 @@ func (s *Store) GetThreadItemByPayloadID(threadID, payloadID string) (Item, bool
 	return item, found, nil
 }
 
-// readerAuthoredUserTextFilter matches the user_text rows the reader
+// readerAuthoredUserTextFilterFor matches the user_text rows the reader
 // actually typed: top-level (subagent child prompts excluded) and not
 // wire-only (context injections the send path marks in meta). It is the
 // SQL counterpart of the frontend's `isReaderAuthoredUserText`; the
 // json_valid guard keeps one corrupt meta blob from failing the whole
 // read (the lifecycle queries guard the same way).
-const readerAuthoredUserTextFilter = topLevelItemsFilter +
-	` AND kind = 'user_text'
-	  AND COALESCE(CASE WHEN json_valid(meta) THEN json_extract(meta, '$.wire_only') END, 0) != 1`
+//
+// The `parent_id = ” AND kind = 'user_text'` prefix is also what makes
+// the partial index idx_items_user_text (migration v73) apply: SQLite
+// uses a partial index only when the query's predicates TEXTUALLY imply
+// the index's WHERE clause, so neither term may be dropped or reordered
+// into a form that no longer states both.
+func readerAuthoredUserTextFilterFor(alias string) string {
+	return topLevelItemsFilterFor(alias) +
+		` AND ` + alias + `kind = 'user_text'
+	  AND COALESCE(CASE WHEN json_valid(` + alias + `meta) THEN json_extract(` + alias + `meta, '$.wire_only') END, 0) != 1`
+}
+
+var readerAuthoredUserTextFilter = readerAuthoredUserTextFilterFor("")
 
 // UserMessageTick is one nav-rail tick: a reader-authored user message's
 // id plus its position, small enough that a whole thread's list ships in
@@ -211,18 +221,21 @@ type UserMessageTick struct {
 // ListThreadUserMessageTicks returns every reader-authored user message
 // in the thread, oldest first. Backs the message-nav rail, whose ticks
 // cover the WHOLE thread rather than the loaded window — three tiny
-// columns per row, so even a very long thread's list is a few KB. One
-// sorted pass over the thread's user_text rows (timeline_items is a
-// UNION ALL view, so the ORDER BY sorts rather than walking an index) —
-// a per-thread-switch read, not a hot path.
+// columns per row, so even a very long thread's list is a few KB.
+//
+// It runs on every thread switch, so it walks the partial index
+// idx_items_user_text (v73) through the physical timeline arms rather
+// than sorting the thread's whole row set behind the view: 17,816 pages
+// / 17 ms became 736 / 1-3 ms on a 67k-item thread.
 func (s *Store) ListThreadUserMessageTicks(threadID string) ([]UserMessageTick, error) {
-	rows, err := s.reader().Query(
-		`SELECT id, turn_index, item_index FROM timeline_items
-		  WHERE thread_id = ?
-		    AND `+readerAuthoredUserTextFilter+`
-		  ORDER BY turn_index ASC, item_index ASC`,
-		threadID,
-	)
+	sql, args := timelineArms(threadID, timelineSelection{
+		Columns: func(string) string {
+			return `items.id AS id, items.turn_index AS turn_index, items.item_index AS item_index`
+		},
+		Where:   readerAuthoredUserTextFilterFor("items."),
+		OrderBy: "turn_index ASC, item_index ASC",
+	})
+	rows, err := s.reader().Query(sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list user message ticks on thread %s: %w", threadID, err)
 	}
@@ -257,18 +270,25 @@ type UserMessageHistoryEntry struct {
 // ArrowUp history recall, which needs the FULL text — a recalled message
 // is re-sent verbatim, so unlike the turn-preview read nothing here is
 // rune-capped. Wire-only injections and subagent child prompts are
-// excluded by the shared predicate. Like the ticks read, the ORDER BY
-// sorts rather than walking an index (timeline_items is a UNION ALL
-// view) — one read per recall session, not a hot path.
+// excluded by the shared predicate. Like the ticks read it walks
+// idx_items_user_text through the physical timeline arms, so the LIMIT
+// stops the read instead of trimming a fully sorted thread.
+//
+// A non-positive limit returns no rows.
 func (s *Store) ListThreadUserMessageHistory(threadID string, limit int) ([]UserMessageHistoryEntry, error) {
-	rows, err := s.reader().Query(
-		`SELECT id, turn_index, item_index, summary FROM timeline_items
-		  WHERE thread_id = ?
-		    AND `+readerAuthoredUserTextFilter+`
-		  ORDER BY turn_index DESC, item_index DESC
-		  LIMIT ?`,
-		threadID, limit,
-	)
+	if limit <= 0 {
+		return []UserMessageHistoryEntry{}, nil
+	}
+	sql, args := timelineArms(threadID, timelineSelection{
+		Columns: func(string) string {
+			return `items.id AS id, items.turn_index AS turn_index,
+			        items.item_index AS item_index, items.summary AS summary`
+		},
+		Where:   readerAuthoredUserTextFilterFor("items."),
+		OrderBy: "turn_index DESC, item_index DESC",
+		Limit:   limit,
+	})
+	rows, err := s.reader().Query(sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list user message history on thread %s: %w", threadID, err)
 	}
@@ -326,18 +346,23 @@ func (s *Store) ThreadTurnPreview(threadID, itemID string) (TurnPreview, bool, e
 	if err != nil {
 		return TurnPreview{}, false, fmt.Errorf("store: turn preview anchor %s on thread %s: %w", itemID, threadID, err)
 	}
-	rows, err := s.reader().Query(
-		`SELECT kind, summary,
-		        COALESCE(CASE WHEN json_valid(meta) THEN json_extract(meta, '$.wire_only') END, 0)
-		   FROM timeline_items
-		  WHERE thread_id = ?
-		    AND `+topLevelItemsFilter+`
-		    AND kind IN ('user_text', 'assistant_text')
-		    AND (turn_index > ? OR (turn_index = ? AND item_index > ?))
-		  ORDER BY turn_index ASC, item_index ASC
-		  LIMIT ?`,
-		threadID, turnIndex, turnIndex, itemIndex, turnPreviewScanLimit,
-	)
+	// The ordering keys ride the projection because the compound needs
+	// them (timeline_arms.go); the scan drops them.
+	walkSQL, walkArgs := timelineArms(threadID, timelineSelection{
+		Columns: func(string) string {
+			return `items.kind AS kind, items.summary AS summary,
+			        COALESCE(CASE WHEN json_valid(items.meta)
+			                      THEN json_extract(items.meta, '$.wire_only') END, 0) AS wire_only,
+			        items.turn_index AS turn_index, items.item_index AS item_index`
+		},
+		Where: topLevelItemsFilterFor("items.") + `
+		   AND items.kind IN ('user_text', 'assistant_text')
+		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))`,
+		WhereArgs: []any{turnIndex, turnIndex, itemIndex},
+		OrderBy:   "turn_index ASC, item_index ASC",
+		Limit:     turnPreviewScanLimit,
+	})
+	rows, err := s.reader().Query(walkSQL, walkArgs...)
 	if err != nil {
 		return TurnPreview{}, false, fmt.Errorf("store: turn preview walk after %s on thread %s: %w", itemID, threadID, err)
 	}
@@ -345,8 +370,8 @@ func (s *Store) ThreadTurnPreview(threadID, itemID string) (TurnPreview, bool, e
 	assistantText := ""
 	for rows.Next() {
 		var kind, summary string
-		var wireOnly int
-		if err := rows.Scan(&kind, &summary, &wireOnly); err != nil {
+		var wireOnly, rowTurnIndex, rowItemIndex int
+		if err := rows.Scan(&kind, &summary, &wireOnly, &rowTurnIndex, &rowItemIndex); err != nil {
 			return TurnPreview{}, false, fmt.Errorf("store: scan turn preview row on thread %s: %w", threadID, err)
 		}
 		if kind == "user_text" {
@@ -529,25 +554,27 @@ func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, boo
 	// The select lists below follow itemColumnsSansPayload's column ORDER
 	// because scanItemRowSansPayload scans positionally — a column added
 	// there must be added here too, in the same place.
-	windowRows, err := tx.Query(
-		`SELECT items.id, items.thread_id, items.turn_index, items.item_index,
-		        items.kind, items.role, items.status,
-		        substr(items.summary, -`+strconv.Itoa(threadTitleContextSummaryTail)+`),
-		        COALESCE(items.payload_id, ''),
-		        items.parent_id, items.is_background, items.completion_of,
-		        items.tool_name, items.decision,
-		        CASE WHEN items.kind = 'user_text' THEN items.meta ELSE '' END,
-		        items.created_at, items.updated_at
-		   FROM timeline_items AS items
-		  WHERE items.thread_id = ?
-		    AND items.parent_id = ''
-		    AND items.kind IN ('user_text', 'assistant_text')
-		  ORDER BY items.turn_index DESC, items.item_index DESC
-		  LIMIT ?`,
-		// One row past the window: its arrival is what proves rows were
-		// dropped, and it is discarded immediately after.
-		threadID, limit+1,
-	)
+	//
+	// One row past the window: its arrival is what proves rows were
+	// dropped, and it is discarded immediately after.
+	windowSQL, windowArgs := timelineArms(threadID, timelineSelection{
+		Columns: func(threadIDExpr string) string {
+			return `items.id, ` + threadIDExpr + ` AS thread_id,
+			        items.turn_index AS turn_index, items.item_index AS item_index,
+			        items.kind, items.role, items.status,
+			        substr(items.summary, -` + strconv.Itoa(threadTitleContextSummaryTail) + `),
+			        COALESCE(items.payload_id, ''),
+			        items.parent_id, items.is_background, items.completion_of,
+			        items.tool_name, items.decision,
+			        CASE WHEN items.kind = 'user_text' THEN items.meta ELSE '' END,
+			        items.created_at, items.updated_at`
+		},
+		Where: topLevelItemsFilterFor("items.") + `
+		   AND items.kind IN ('user_text', 'assistant_text')`,
+		OrderBy: "turn_index DESC, item_index DESC",
+		Limit:   limit + 1,
+	})
+	windowRows, err := tx.Query(windowSQL, windowArgs...)
 	if err != nil {
 		return nil, false, fmt.Errorf("store: thread title context items for %s: %w", threadID, err)
 	}
@@ -568,22 +595,25 @@ func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, boo
 	// itself once it overruns, so the pin is the only place the
 	// difference could show, and it only shows for a thread whose opening
 	// message is both enormous and still in the newest-N rows.
-	earliestRows, err := tx.Query(
-		`SELECT items.id, items.thread_id, items.turn_index, items.item_index,
-		        items.kind, items.role, items.status,
-		        substr(items.summary, 1, `+strconv.Itoa(threadTitleContextSummaryHead)+`),
-		        COALESCE(items.payload_id, ''),
-		        items.parent_id, items.is_background, items.completion_of,
-		        items.tool_name, items.decision, items.meta,
-		        items.created_at, items.updated_at
-		   FROM timeline_items AS items
-		  WHERE items.thread_id = ?
-		    AND items.parent_id = ''
-		    AND items.kind = 'user_text'
-		  ORDER BY items.turn_index ASC, items.item_index ASC
-		  LIMIT 1`,
-		threadID,
-	)
+	earliestSQL, earliestArgs := timelineArms(threadID, timelineSelection{
+		Columns: func(threadIDExpr string) string {
+			return `items.id, ` + threadIDExpr + ` AS thread_id,
+			        items.turn_index AS turn_index, items.item_index AS item_index,
+			        items.kind, items.role, items.status,
+			        substr(items.summary, 1, ` + strconv.Itoa(threadTitleContextSummaryHead) + `),
+			        COALESCE(items.payload_id, ''),
+			        items.parent_id, items.is_background, items.completion_of,
+			        items.tool_name, items.decision, items.meta,
+			        items.created_at, items.updated_at`
+		},
+		// `parent_id = '' AND kind = 'user_text'` is also what lets this
+		// one use the partial idx_items_user_text.
+		Where: topLevelItemsFilterFor("items.") + `
+		   AND items.kind = 'user_text'`,
+		OrderBy: "turn_index ASC, item_index ASC",
+		Limit:   1,
+	})
+	earliestRows, err := tx.Query(earliestSQL, earliestArgs...)
 	if err != nil {
 		return nil, false, fmt.Errorf("store: earliest thread title context item for %s: %w", threadID, err)
 	}

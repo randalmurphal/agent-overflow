@@ -44,6 +44,7 @@ Core Principle 7.
 |---|---|
 | **project** | The git repo (the main root, via `--git-common-dir` semantics). A linked worktree resolves to the repository it was cut from, not to itself. |
 | **workspace** | Where the provider operates: the project root or a separate worktree. Threads track both. Git status, MCP listing, and the workspace-change lock are workspace-keyed, never thread-keyed. |
+| **`WorkspaceRef`** | The wire spelling of a workspace: `{projectId, workspacePath}` (`internal/gitapp`). Every workspace-scoped git RPC takes one, so a draft placeholder with no thread row addresses a checkout the same way a real thread does. `gitapp.Service.ResolveWorkspace` is the only place the path is accepted: it must be empty, the project root, or one of that project's registered worktrees. It is a ROUTING fact too: `methodgen` reads the `workspace` route off this parameter type, so a method taking one names its backend without a `//ao:route` line (`internal/transport/AGENTS.md` § The Route column). |
 | **sub-worktree** | The per-unit checkout cut from a work item's branch for a writing fan-out unit; the branch name encodes item/phase/attempt/unit/try so a retry never inherits a failed try's tree (`workflows-system.md` §9). |
 | **worktree setup** | The per-project recipe (copy globs + argv commands) run at worktree creation. Project app settings, not the workflow profile, so chat and workflow worktrees share it (`internal/worktreesetup/AGENTS.md`). |
 
@@ -127,6 +128,8 @@ Source: `frontend/AGENTS.md`.
 | **overlay** | A sibling of `<PaneHost>` (workflows, settings): never a pane kind, never replaces the pane strip. |
 | **front burner** | The first manual sidebar pin block. `pin_group` NULL/0 maps here; it keeps the accent pin and sorts by the normal status/activity/id comparator within the block. |
 | **back burner** | The second manual sidebar pin block. `pin_group = 1`; it uses the muted pin token and the same normal comparator, separated from front burner only when both blocks exist. |
+| **group** (thread group) | A named, collapsible sidebar row gathering threads of ONE project (`thread_groups`, migration v76; `docs/specs/sidebar-thread-groups.md`). Its top row is NOT a thread: everything it shows — status, activity, sort position — bubbles from its members, the way a discussion parent's does. It is a row in the normal sort, not a third pin tier, and it is itself pinnable to either burner. Unqualified "group" in sidebar code means this. |
+| **`pin_group`** | The COLUMN naming which burner a pin sits on (front = NULL/0, back = 1), on `threads` since v71 and on `thread_groups` since v76. Despite the name it has nothing to do with a thread group: the two concepts collide only in spelling, and the column keeps its name because renaming a shipped column costs a table rebuild. |
 
 ## Providers, accounts, triage
 

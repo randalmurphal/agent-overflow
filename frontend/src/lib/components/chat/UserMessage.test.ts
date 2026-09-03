@@ -489,6 +489,61 @@ describe('<UserMessage>', () => {
     expect(onImageExpand.mock.calls[0]?.[0].images[0]?.url).toMatch(/^(blob:|data:image\/png;base64,)/);
   });
 
+  it('renders a file attachment as an inert chip and numbers the images around it', async () => {
+    const thumbnail = setBindingMock('GetAttachmentThumbnail', async () => ({
+      data: 'iVBORw0KGgo=',
+      mimeType: 'image/png',
+    }));
+    const { getByTestId, getByText, getAllByLabelText, queryByLabelText } = render(UserMessage, {
+      props: {
+        item: makeItem({
+          kind: 'user_text',
+          role: 'user',
+          summary: 'look here [Image #1] and [Image #2]',
+          meta: JSON.stringify({
+            attachments: [
+              {
+                id: 'att-1',
+                threadId: 'thread-1',
+                filename: 'one.png',
+                mimeType: 'image/png',
+                size: 128,
+              },
+              {
+                id: 'att-2',
+                threadId: 'thread-1',
+                filename: 'report.pdf',
+                mimeType: 'application/pdf',
+                size: 2048,
+                kind: 'file',
+              },
+              {
+                id: 'att-3',
+                threadId: 'thread-1',
+                filename: 'two.png',
+                mimeType: 'image/png',
+                size: 128,
+                kind: 'image',
+              },
+            ],
+          }),
+        }),
+      },
+    });
+
+    // `#2` is the SECOND IMAGE, matching `[Image #2]` in the text — not the
+    // second attachment, which is the file.
+    expect(getAllByLabelText(/^Image \d+$/).map((node) => node.textContent?.trim()))
+      .toEqual(['#1', '#2']);
+    expect(getByTestId('user-message-file-attachments')).toBeInTheDocument();
+    expect(getByText('report.pdf')).toBeInTheDocument();
+    expect(getByText('2.0 KB')).toBeInTheDocument();
+    // Not a button, and its bytes are never requested.
+    expect(queryByLabelText('Preview report.pdf')).toBeNull();
+    await waitFor(() => expect(thumbnail).toHaveBeenCalledTimes(2));
+    expect(thumbnail.mock.calls.map((call) => call[1])).toEqual(['att-1', 'att-3']);
+  });
+
   it('loads history attachment thumbnails on mount (windowing bufferSize bounds the mount window)', async () => {
     // Pre-rebuild this was gated by an IntersectionObserver inside the
     // row. After the rebuild, the virtualizer's buffer already restricts

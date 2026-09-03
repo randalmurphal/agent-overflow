@@ -28,8 +28,8 @@
     refreshEditors,
     setEditorPreference,
   } from '../../stores/editors.svelte';
-  import SettingsHeader from './SettingsHeader.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
+  import { SECTION_PROSE_CLASS } from './styles';
   import Button from '../primitives/Button.svelte';
 
   const clientMode = isClientMode();
@@ -75,23 +75,21 @@
 
 {#if localOnly}
   <section data-testid="editor-section-clientmode">
-    <SettingsHeader
-      title="Editor"
-      description="Editor preferences are local to your install. This window is attached to a remote backend, so changes here would update the remote machine's catalog, not yours. Edit your editor preference from your local install."
-    />
+    <SettingsCallout>
+      Editor preferences are local to your install. This window is attached to a
+      remote backend, so changes here would update the remote machine's catalog,
+      not yours. Edit your editor preference from your local install.
+    </SettingsCallout>
   </section>
 {:else}
   <section>
-    <SettingsHeader title="Editor">
-      {#snippet details()}
-        Choose which editor opens when you click a file path in the chat.
-        "Auto" follows the catalog priority order (VS Code, Cursor, Zed, …)
-        with <code class="font-mono text-[0.6875rem]">$EDITOR</code> /
-        <code class="font-mono text-[0.6875rem]">$VISUAL</code> as the final
-        fallback. Editors that aren't installed are listed for reference but
-        can't be selected.
-      {/snippet}
-    </SettingsHeader>
+    <p class="{SECTION_PROSE_CLASS} mb-3">
+      "Auto" follows the catalog priority order (VS Code, Cursor, Zed, …) with
+      <code class="font-mono text-[0.6875rem]">$EDITOR</code> /
+      <code class="font-mono text-[0.6875rem]">$VISUAL</code> as the final
+      fallback. Editors that aren't installed are listed for reference but can't
+      be selected.
+    </p>
 
     {#if loadStatus === 'loading' && !hasSnapshot}
       <p
@@ -135,6 +133,8 @@
         role="radiogroup"
         aria-label="Preferred editor"
         data-testid="editor-section-radiogroup"
+        data-settings-field="editor.preferred"
+        data-settings-label="Preferred editor"
       >
         <label
           class="flex items-center gap-2.5 rounded-[var(--radius-field)] px-2 py-1.5 cursor-pointer hover:bg-surface-2/30 transition-colors"

@@ -53,7 +53,10 @@ func (a *App) workflowApplication() *workflowapp.Service {
 				return workflowEngine.Cancel(itemID)
 			},
 			RemoveOtherWorktree: func(projectID, path string) error {
-				_, err := a.RemoveOtherWorktreeForProject(projectID, "", path, false)
+				// An empty WorkspacePath resolves to the project root: the
+				// disposition cleanup has no caller checkout of its own, it
+				// is removing the item's worktree from outside.
+				_, err := a.RemoveOtherWorktree(WorkspaceRef{ProjectID: projectID}, path, false)
 				return err
 			},
 			InvalidateWorkspace: func(path string) {

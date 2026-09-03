@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Passkey rows (migration v78). Persistence only, on the same terms as the
+// Passkey rows (migration v82). Persistence only, on the same terms as the
 // rest of the identity family: this package round-trips what a ceremony
 // produced and enforces what SQLite can state about it — presence,
 // uniqueness, the CHECK'd 0/1 columns. What a credential PROVES, which RP

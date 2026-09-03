@@ -74,7 +74,7 @@ palette change automatically. A theme only has to set base tokens.
 
 ### 1.4 The runtime-override precedent: `utils/fonts.ts`
 
-Settings → Appearance fonts already do runtime token override, and the
+Settings → Typography fonts already do runtime token override, and the
 pattern is the one to copy: `setProperty('--font-sans', …)` on `<html>`
 only when the user picked a non-default; `removeProperty` at the default
 so the cascade (`@theme` in app.css) stays the single source of truth.
@@ -696,7 +696,7 @@ therefore testable as pure code plus one browser suite.
 
 ### 9.8 No open-folder affordance
 
-Settings → Appearance names the themes directory as selectable text and
+Settings → Theme names the themes directory as selectable text and
 stops there. `OpenInEditor` is the only open-a-path binding, and
 `editor.ResolvePath` refuses DIRECTORIES anywhere by design (the
 markdown-link work made that a security boundary, not an oversight), so

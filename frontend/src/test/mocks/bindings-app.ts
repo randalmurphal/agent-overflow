@@ -78,6 +78,14 @@ export const MarkThreadUnread = dispatch('MarkThreadUnread');
 export const PinThread = dispatch('PinThread');
 export const SetThreadPinGroup = dispatch('SetThreadPinGroup');
 export const UnpinThread = dispatch('UnpinThread');
+export const ListThreadGroups = dispatch('ListThreadGroups');
+export const CreateThreadGroup = dispatch('CreateThreadGroup');
+export const RenameThreadGroup = dispatch('RenameThreadGroup');
+export const DeleteThreadGroup = dispatch('DeleteThreadGroup');
+export const PinThreadGroup = dispatch('PinThreadGroup');
+export const UnpinThreadGroup = dispatch('UnpinThreadGroup');
+export const SetThreadGroupPinGroup = dispatch('SetThreadGroupPinGroup');
+export const SetThreadGroup = dispatch('SetThreadGroup');
 export const RenameThread = dispatch('RenameThread');
 export const RegenerateThreadTitle = dispatch('RegenerateThreadTitle');
 export const SwitchThread = dispatch('SwitchThread');
@@ -149,7 +157,7 @@ export const UpdateThreadRuntimeMode = dispatch('UpdateThreadRuntimeMode');
 export const UpdateThreadBranch = dispatch('UpdateThreadBranch');
 export const UpdateThreadWorkspace = dispatch('UpdateThreadWorkspace');
 export const UpdateNewThreadDefaults = dispatch('UpdateNewThreadDefaults');
-export const WriteThreadWorkspaceFile = dispatch('WriteThreadWorkspaceFile');
+export const WriteWorkspaceFile = dispatch('WriteWorkspaceFile');
 export const SearchThreadMessages = dispatch('SearchThreadMessages');
 export const SearchThreadItems = dispatch('SearchThreadItems');
 export const GenerateCommitMessage = dispatch('GenerateCommitMessage');
@@ -247,7 +255,7 @@ export const SetNetworkSettings = dispatch('SetNetworkSettings');
 export const ForgetTailnetNode = dispatch('ForgetTailnetNode');
 export const RenewCanonicalDomainCert = dispatch('RenewCanonicalDomainCert');
 
-// Device access (Settings → Network → Devices).
+// Device access (Settings → Remote access → Devices).
 export const GetAccessOverview = dispatch('GetAccessOverview');
 export const MintDevicePairing = dispatch('MintDevicePairing');
 export const DevicePairingStatus = dispatch('DevicePairingStatus');
@@ -269,7 +277,7 @@ export const DeletePasskey = dispatch('DeletePasskey');
 export const BeginPasskeyStepUp = dispatch('BeginPasskeyStepUp');
 export const FinishPasskeyStepUp = dispatch('FinishPasskeyStepUp');
 
-// WSL distro switcher (Settings → Network → WSL Distro section).
+// WSL distro switcher (Settings → Remote access → WSL distro).
 // IsWSL gates whether the section renders at all; the other three
 // drive the dropdown + persist on change.
 export const IsWSL = dispatch('IsWSL');
@@ -375,7 +383,6 @@ export const RecheckClaudeAccount = dispatch('RecheckClaudeAccount');
 export const RecheckCodexAccount = dispatch('RecheckCodexAccount');
 
 export const GetGitStatus = dispatch('GetGitStatus');
-export const GetGitStatusFastForProject = dispatch('GetGitStatusFastForProject');
 export const GitStatusSubscribe = dispatch('GitStatusSubscribe');
 export const GitStatusUnsubscribe = dispatch('GitStatusUnsubscribe');
 // Class re-export mirroring the generated GitStatusSubscriptionResult.
@@ -392,31 +399,23 @@ export class GitStatusSubscriptionResult {
   }
 }
 export const GitListBranches = dispatch('GitListBranches');
-export const GitListBranchesForProject = dispatch('GitListBranchesForProject');
 export const GitListWorktrees = dispatch('GitListWorktrees');
-export const GitListWorktreesForProject = dispatch('GitListWorktreesForProject');
 export const GitCommit = dispatch('GitCommit');
 export const GitPush = dispatch('GitPush');
 export const GitPull = dispatch('GitPull');
 export const GitCheckout = dispatch('GitCheckout');
-export const GitCheckoutForProject = dispatch('GitCheckoutForProject');
-export const GitCreateBranch = dispatch('GitCreateBranch');
 export const GitCreateBranchFrom = dispatch('GitCreateBranchFrom');
 export const GitCreatePR = dispatch('GitCreatePR');
 export const GitCreateWorktree = dispatch('GitCreateWorktree');
 export const GitMaybeFetchRemotes = dispatch('GitMaybeFetchRemotes');
-export const GitMaybeFetchRemotesForProject = dispatch('GitMaybeFetchRemotesForProject');
 export const GitListBranchPruneCandidates = dispatch('GitListBranchPruneCandidates');
 export const GitPruneBranches = dispatch('GitPruneBranches');
 export const GitSyncBranch = dispatch('GitSyncBranch');
-export const GitSyncBranchForProject = dispatch('GitSyncBranchForProject');
 export const GitWorktreeStatus = dispatch('GitWorktreeStatus');
-export const GitWorktreeStatusForProject = dispatch('GitWorktreeStatusForProject');
 export const PrepareThreadWorktree = dispatch('PrepareThreadWorktree');
 export const AttachThreadWorktree = dispatch('AttachThreadWorktree');
 export const GitRemoveWorktree = dispatch('GitRemoveWorktree');
 export const RemoveOtherWorktree = dispatch('RemoveOtherWorktree');
-export const RemoveOtherWorktreeForProject = dispatch('RemoveOtherWorktreeForProject');
 // WorktreeStatus mirrors the generated class; tests stub the binding
 // to return plain object literals, so the class shape is only here so
 // `import type { WorktreeStatus }` resolves through the mock module.
@@ -482,12 +481,14 @@ export const GetCommitDiff = dispatch('GetCommitDiff');
 export const ListThreadEditDiffs = dispatch('ListThreadEditDiffs');
 export const GetTurnEditsDiff = dispatch('GetTurnEditsDiff');
 export const GetDiffContextLines = dispatch('GetDiffContextLines');
+export const GetEditDiffContextLines = dispatch('GetEditDiffContextLines');
 export const VerifyEditDiffs = dispatch('VerifyEditDiffs');
 export const HighlightClassNames = dispatch('HighlightClassNames');
 export const HighlightSchemaVersion = dispatch('HighlightSchemaVersion');
 export const HighlightCode = dispatch('HighlightCode');
 export const HighlightPatch = dispatch('HighlightPatch');
 export const HighlightPatchWithContext = dispatch('HighlightPatchWithContext');
+export const HighlightEditPatchWithContext = dispatch('HighlightEditPatchWithContext');
 export const ForkThreadFromMessage = dispatch('ForkThreadFromMessage');
 export const RevertConversationAndResendMessage = dispatch('RevertConversationAndResendMessage');
 
@@ -524,9 +525,7 @@ export const BrowseDirectory = dispatch('BrowseDirectory');
 export const ListRecentTurns = dispatch('ListRecentTurns');
 
 // Windowed history + thread-wide aggregates. Active panes load bounded
-// slices via ListThreadSliceAround and page by item-coordinate cursors;
-// ListRecentThreadItems / turn pagers remain legacy surfaces.
-export const ListRecentThreadItems = dispatch('ListRecentThreadItems');
+// slices via ListThreadSliceAround and page by item-coordinate cursors.
 export const ListThreadSliceAround = dispatch('ListThreadSliceAround');
 
 /**
@@ -558,9 +557,7 @@ export const SyncThreadWindow = async (
   return { status: 'stale', epoch: 1, rev: 1, generation: 'test-generation', page };
 };
 export const ListItemsBeforeCursor = dispatch('ListItemsBeforeCursor');
-export const ListItemsBeforeTurn = dispatch('ListItemsBeforeTurn');
 export const ListItemsAfterCursor = dispatch('ListItemsAfterCursor');
-export const ListItemsAfterTurn = dispatch('ListItemsAfterTurn');
 export const ListSubagentDescendants = dispatch('ListSubagentDescendants');
 export const GetThreadItemProjectionSource = dispatch('GetThreadItemProjectionSource');
 export const ListThreadProposedPlans = dispatch('ListThreadProposedPlans');
@@ -649,8 +646,6 @@ export const ListReleases = dispatch('ListReleases');
 export const ReconfigureObservability = dispatch('ReconfigureObservability');
 export const ProbeCodexAccount = dispatch('ProbeCodexAccount');
 export const SavePayloadToFile = dispatch('SavePayloadToFile');
-export const GetWorkingTreeDiff = dispatch('GetWorkingTreeDiff');
-export const GitStageAll = dispatch('GitStageAll');
 export const ListArchivedThreads = dispatch('ListArchivedThreads');
 export const UpdateProjectSortPositions = dispatch('UpdateProjectSortPositions');
 export const ProviderTerminalAttach = dispatch('ProviderTerminalAttach');

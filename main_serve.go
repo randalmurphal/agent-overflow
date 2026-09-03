@@ -68,12 +68,12 @@ func checkBackendVerbFlags(verb string, flags cliFlags) error {
 // a parameter on that function:
 //
 //  1. The persisted network preferences apply. A serve host's bind is
-//     configuration somebody saved in Settings → Network, not a launcher's
+//     configuration somebody saved in Settings → Remote access, not a launcher's
 //     per-spawn argument. An explicit --listen still wins, because naming
 //     an address on the command line is an override on purpose.
 //  2. There is no bootstrap fd channel. Nobody parses this process's
 //     stdout — a person reads it — so the endpoints are printed as text
-//     through the same formatter Settings → Network reads
+//     through the same formatter Settings → Remote access reads
 //     (app.ServeEndpoints), and stdout stays open for the rest of the run.
 //  3. Provider credentials live in files, not a keychain. app.UseFileKeychain
 //     carries the argument.
@@ -186,7 +186,7 @@ func runServe(flags cliFlags) {
 //
 // The tailnet URL is usually absent at this moment even when the node is
 // enabled: bring-up is asynchronous and a first sign-in is interactive, so
-// the line appears only when the node is already up. Settings → Network is
+// the line appears only when the node is already up. Settings → Remote access is
 // where a person watches that finish.
 func printServeEndpoints(w io.Writer, endpoints network.Settings, addr string) {
 	fmt.Fprintf(w, "Agent Overflow is serving on %s\n", addr)

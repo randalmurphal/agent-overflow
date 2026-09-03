@@ -197,7 +197,7 @@ describe('a key-bound session whose key is gone', () => {
   });
 });
 
-// A session stored before phase 5 records no proofKind, and the v77
+// A session stored before phase 5 records no proofKind, and the v81
 // migration defaulted its device row to `bearer`. The two agree without
 // either being told, which is the whole of the migration: such a device
 // keeps presenting the identifier it always did, on a browser that is

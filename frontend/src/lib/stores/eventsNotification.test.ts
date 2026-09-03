@@ -24,7 +24,6 @@ describe('notification activation wiring', () => {
     resetPanesForTest();
     resetPaneLayoutForTest();
     resetNotificationActivationForTest();
-    setBindingMock('ListRecentThreadItems', async () => ({ items: [], oldestTurnIndex: -1, hasMore: false }));
     setBindingMock('ListRecentTurns', async () => []);
   });
 

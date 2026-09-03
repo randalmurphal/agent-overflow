@@ -26,6 +26,11 @@ import { resetPaneLayoutForTest } from '../../../stores/paneLayout.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import type { Project, ProjectWithCounts } from '../../../types/models';
 import { setThreadFilterQuery } from '../../../stores/threadFilter.svelte';
+import {
+  consumePendingGroupRename,
+  resetThreadGroupsForTest,
+} from '../../../stores/threadGroups.svelte';
+import { createThreadGroupAction } from '../threadGroupActions';
 
 function mkProject(id: string, overrides: Partial<Project> = {}): Project {
   return {
@@ -51,6 +56,7 @@ describe('<ProjectsSection>', () => {
     resetProjectsForTest();
     resetPanesForTest();
     resetPaneLayoutForTest();
+    resetThreadGroupsForTest();
     setThreadFilterQuery('');
     setBindingMock('ListProjects', async () => []);
     setBindingMock('ListThreads', async () => []);
@@ -217,6 +223,31 @@ describe('<ProjectsSection>', () => {
       container.querySelectorAll('[data-testid="project-item"]'),
     ).map((el) => el.getAttribute('data-project-id'));
     expect(ids).toEqual(['p-b', 'p-c', 'p-a']);
+  });
+
+  it('opens the inline rename on the row a group create just mounted', async () => {
+    // Why the request lives INSIDE createThreadGroupAction: the store write
+    // schedules the flush that mounts the row, and that flush runs before the
+    // action's caller resumes — so the row has already asked and been answered
+    // by the time the two assertions below run. A caller that requested the
+    // rename after awaiting always asked too late.
+    await seedProjects([
+      { project: mkProject('p1', { name: 'Project One' }), threadCount: 0, lastActive: 0 },
+    ]);
+    setBindingMock('CreateThreadGroup', async (projectId: string, name: string) => ({
+      id: 'g-new',
+      projectId,
+      name,
+      createdAt: 0,
+      updatedAt: 0,
+    }));
+    const { getByLabelText } = render(ProjectsSection, { props: { pane: null } });
+    await tick();
+
+    await createThreadGroupAction('p1');
+
+    expect(getByLabelText('Rename Group')).toBeInTheDocument();
+    expect(consumePendingGroupRename('g-new')).toBe(false);
   });
 
   it('ctrl-clicking a project new-thread button opens the draft in a new pane', async () => {

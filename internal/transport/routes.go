@@ -29,14 +29,21 @@ const (
 	// named by the method's first non-context parameter. Inferred by
 	// `methodgen` from a parameter named projectID.
 	RouteProject MethodRoute = "project"
+	// RouteWorkspace sends the call to the backend that owns the project
+	// named by the `projectId` field of the method's first non-context
+	// parameter, a gitapp.WorkspaceRef. Inferred by `methodgen` from that
+	// parameter's TYPE: a checkout is addressed by project and path, and
+	// the project id is the half that names a machine (a path alone names
+	// a different directory on every one).
+	RouteWorkspace MethodRoute = "workspace"
 	// RouteHome sends the call to the backend that served the page: host
 	// actions, this machine's settings, this backend's own access admin,
 	// its provider accounts, its update supervisor, its ui_state bucket.
 	RouteHome MethodRoute = "home"
 	// RouteSelected sends the call to the backend the composer is
-	// pointed at — the creation-shaped calls, and the reads that take a
-	// workspace path rather than an entity id, which only mean anything
-	// against the machine that holds that path.
+	// pointed at — the creation-shaped calls, and the few reads that take
+	// a bare workspace path (no project id to infer from), which only mean
+	// anything against the machine that holds that path.
 	RouteSelected MethodRoute = "selected"
 	// RouteAll fans the call out to every attached backend and lets the
 	// client merge the answers. The list calls behind the unified
@@ -48,7 +55,7 @@ const (
 // MethodRoutes is every declared route, entity-addressed first, then the
 // three that name a backend by role.
 var MethodRoutes = []MethodRoute{
-	RouteThread, RouteProject, RouteHome, RouteSelected, RouteAll,
+	RouteThread, RouteProject, RouteWorkspace, RouteHome, RouteSelected, RouteAll,
 }
 
 // Valid reports whether r is a declared route. `methodgen` refuses an

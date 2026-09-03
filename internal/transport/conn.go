@@ -15,8 +15,8 @@ import (
 )
 
 // DefaultReadLimit caps a single inbound message size. A long thread's
-// ListRecentThreadItems response is the worst-case shape — items.meta
-// + payload metadata across hundreds of turns can run into tens of
+// ListThreadSliceAround response is the worst-case shape — items.meta
+// + payload metadata across a whole window can run into tens of
 // MiB. 75 MiB is the headroom budget: large enough that real threads
 // load without surprise, small enough to keep a hostile/buggy peer
 // from exhausting host memory with a single frame. The frontend

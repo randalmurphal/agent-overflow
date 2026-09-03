@@ -121,13 +121,14 @@
 
 {#if !ungranted}
   <div data-testid="settings-phone-push">
-    <SettingsField label={COPY.label} hint={COPY.hint} stacked>
+    <SettingsField id="notifications.phone-push" label={COPY.label} hint={COPY.hint} stacked>
       <p class="text-[0.71875rem] leading-snug text-fg-muted" data-testid="phone-push-status">
         {summary}
       </p>
     </SettingsField>
 
     <SettingsField
+      id="notifications.phone-push-credential"
       label={COPY.credentialLabel}
       hint={COPY.credentialHint}
       htmlFor="phone-push-credential"

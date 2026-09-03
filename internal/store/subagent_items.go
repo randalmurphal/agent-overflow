@@ -50,42 +50,108 @@ type subagentAnchorAggregate struct {
 }
 
 // descendantsCTEFromRoots walks parent_id edges downward from an
-// explicit list of root item ids, carrying the originating root through the recursion so per-root
-// aggregates fall out of a GROUP BY. UNION (not UNION ALL) dedups
-// (root, id) pairs during recursion, so a pathological parent_id cycle
-// terminates instead of looping forever.
+// explicit list of root item ids over the LOGICAL timeline — local rows
+// plus the thread's imported history — carrying the originating root
+// through the recursion so per-root aggregates fall out of a GROUP BY.
+// UNION (not UNION ALL) dedups (root, id) pairs during recursion, so a
+// pathological parent_id cycle terminates instead of looping forever.
 //
-// Plan notes (verified with EXPLAIN QUERY PLAN, SQLite 3.45):
-//   - Both hops probe the partial idx_items_parent (thread_id,
-//     parent_id) WHERE parent_id <> ”. The explicit `parent_id <> ”`
-//     terms below are load-bearing for that: SQLite cannot prove the
-//     index predicate from a bound parameter or the `rel.id` join term
-//     alone, and without the proof both hops degrade to a whole-thread
-//     PK-prefix scan per recursion level.
-//   - CROSS JOIN in the recursive hop is a planner directive, not
-//     style: with a plain JOIN the planner puts `items` on the outer
-//     side and rescans the whole thread once per queued row. CROSS
-//     JOIN pins rel(outer) → items(inner), one index probe per row.
+// It is FOUR arms, not two, and that is the whole point: a recursive
+// step that names the `timeline_items` view makes SQLite MATERIALIZE the
+// view — the entire thread — once per query, twice counting the final
+// resolution join (129 ms and 33,160 pages on a 40-anchor window over a
+// 35k-item thread, against 13 ms against `items` alone). Writing each
+// hop as its own physical arm keeps every hop an index probe: 106 ms /
+// 17,354 pages, which is the `items`-only floor for that same window.
+// A compound recursive SELECT needs SQLite >= 3.34; modernc.org/sqlite
+// is far past it.
+//
+// Plan notes (verified with EXPLAIN QUERY PLAN, SQLite 3.46):
+//   - The local hops probe the partial idx_items_parent (thread_id,
+//     parent_id) WHERE parent_id <> ”, the imported hops
+//     idx_import_history_items_parent (chunk_id, parent_id) WHERE
+//     parent_id <> ”. The explicit `parent_id <> ”` terms below are
+//     load-bearing for that: SQLite cannot prove the index predicate
+//     from a bound parameter or the `rel.id` join term alone, and
+//     without the proof the hops degrade to a whole-thread PK-prefix
+//     scan per recursion level.
+//   - CROSS JOIN in the recursive hops is a planner directive, not
+//     style: with a plain JOIN the planner puts the row source on the
+//     outer side and rescans the whole thread once per queued row.
+//     CROSS JOIN pins rel(outer) → source(inner), one index probe per
+//     row.
 //
 // The visible-items filter matches the window loaders: plan_update
 // notifications never render, so they must not count against the
 // collapsed card's "N entries" badge either.
+//
+// Placeholder order: local base hop (thread id, roots...), imported base
+// hop (thread id, roots...), local recursive hop (thread id), imported
+// recursive hop (thread id).
 func descendantsCTEFromRoots(rootCount int) string {
-	return `WITH RECURSIVE ` + descendantsCTE("timeline_items", placeholders(rootCount))
+	roots := placeholders(rootCount)
+	visible := visibleItemsFilterFor("items.")
+	return `WITH RECURSIVE rel(root, id) AS (
+		SELECT items.parent_id, items.id
+		  FROM items
+		 WHERE items.thread_id = ?
+		   AND items.parent_id IN (` + roots + `)
+		   AND items.parent_id <> ''
+		   AND ` + visible + `
+		UNION
+		SELECT items.parent_id, items.id
+		  FROM thread_import_chunks refs
+		  JOIN import_history_items items ON items.chunk_id = refs.chunk_id
+		 WHERE refs.thread_id = ?
+		   AND items.parent_id IN (` + roots + `)
+		   AND items.parent_id <> ''
+		   AND ` + visible + `
+		   AND ` + importedNotOverridden + `
+		UNION
+		SELECT rel.root, items.id
+		  FROM rel
+		  CROSS JOIN items ON items.parent_id = rel.id
+		 WHERE items.thread_id = ?
+		   AND items.parent_id <> ''
+		   AND ` + visible + `
+		UNION
+		SELECT rel.root, items.id
+		  FROM rel
+		  CROSS JOIN thread_import_chunks refs
+		  JOIN import_history_items items
+		    ON items.chunk_id = refs.chunk_id AND items.parent_id = rel.id
+		 WHERE refs.thread_id = ?
+		   AND items.parent_id <> ''
+		   AND ` + visible + `
+		   AND ` + importedNotOverridden + `
+	)`
 }
 
-// descendantsCTE is the `rel(root, id) AS (...)` clause itself, without
-// the leading `WITH RECURSIVE`, so a caller that needs other CTEs
-// alongside it (ListLiveBackgroundTasks stacks a background-root CTE
-// under the same WITH) can compose one statement instead of forking the
-// walk. `table` is the row source — `timeline_items` for reads that must
-// see imported history, plain `items` for the live-only tray — and
-// `rootSet` is whatever yields the root ids: a `?` placeholder list or a
-// subquery naming an earlier CTE.
+// descendantsCTEArgs renders descendantsCTEFromRoots' bind values in the
+// order its four arms consume them. One function, so the arm order and
+// the arg order cannot drift apart.
+func descendantsCTEArgs(threadID string, rootIDs []string) []any {
+	args := make([]any, 0, 2*len(rootIDs)+4)
+	for range 2 {
+		args = append(args, threadID)
+		for _, id := range rootIDs {
+			args = append(args, id)
+		}
+	}
+	return append(args, threadID, threadID)
+}
+
+// descendantsCTE is the LOCAL-ONLY `rel(root, id) AS (...)` clause,
+// without the leading `WITH RECURSIVE`, so a caller that needs other
+// CTEs alongside it (ListLiveBackgroundTasks stacks a background-root
+// CTE under the same WITH) can compose one statement instead of forking
+// the walk. `table` is the row source and `rootSet` is whatever yields
+// the root ids: a `?` placeholder list or a subquery naming an earlier
+// CTE. The one caller passes plain `items` and a subquery — the tray
+// lists LIVE work, which is never imported history.
 //
-// Placeholder order is unchanged for both forms: thread id for the base
-// hop, then the rootSet's own parameters (if any), then thread id again
-// for the recursive hop.
+// Placeholder order: thread id for the base hop, then the rootSet's own
+// parameters (if any), then thread id again for the recursive hop.
 func descendantsCTE(table, rootSet string) string {
 	visible := visibleItemsFilterFor("i.")
 	return `rel(root, id) AS (
@@ -307,31 +373,36 @@ func mergeReadTimeMeta(itemMeta string, decoration map[string]any) (string, erro
 // i.id key only breaks coordinate ties (corrupt data) so the pick stays
 // deterministic.
 func (s *Store) subagentAggregatesByRoot(q sqlQueryer, threadID string, rootIDs []string) (map[string]subagentAnchorAggregate, error) {
-	// Placeholder order: CTE base hop (threadID, rootIDs...), CTE
-	// recursive hop (threadID), aggregate join (threadID).
-	args := make([]any, 0, len(rootIDs)+3)
-	args = append(args, threadID)
-	for _, id := range rootIDs {
-		args = append(args, id)
-	}
-	args = append(args, threadID, threadID)
+	// The walk yields ids; the rows behind them are resolved through the
+	// two physical arms rather than the timeline_items view, which SQLite
+	// would materialize whole (timeline_arms.go). The resolution carries
+	// only the columns the ranking reads.
+	resolvedSQL, resolvedArgs := timelineArms(threadID, timelineSelection{
+		Columns: func(string) string {
+			return `rel.root AS root, items.id AS id, items.kind AS kind,
+			        items.status AS status, items.summary AS summary,
+			        items.turn_index AS turn_index, items.item_index AS item_index`
+		},
+		Source: "rel",
+		Where:  "items.id = rel.id",
+	})
+	args := append(descendantsCTEArgs(threadID, rootIDs), resolvedArgs...)
 
 	rows, err := q.Query(descendantsCTEFromRoots(len(rootIDs))+`
 		SELECT root, total, summary FROM (
-			SELECT rel.root,
-			       COUNT(*) OVER (PARTITION BY rel.root) AS total,
+			SELECT i.root,
+			       COUNT(*) OVER (PARTITION BY i.root) AS total,
 			       CASE WHEN i.kind IN ('tool_call','tool_completion','terminal_interaction','error','api_error')
 			            THEN i.summary ELSE '' END AS summary,
 			       ROW_NUMBER() OVER (
-			           PARTITION BY rel.root
+			           PARTITION BY i.root
 			           ORDER BY (i.kind IN ('tool_call','tool_completion','terminal_interaction','error','api_error')
 			                     AND TRIM(i.summary) <> '') DESC,
 			                    (i.status IN ('running','streaming')) DESC,
 			                    i.turn_index DESC, i.item_index DESC,
 			                    i.id
 			       ) AS rn
-			  FROM rel
-			  CROSS JOIN timeline_items i ON i.thread_id = ? AND i.id = rel.id
+			  FROM (`+resolvedSQL+`) i
 		) WHERE rn = 1`,
 		args...,
 	)
@@ -400,21 +471,20 @@ func (s *Store) ListSubagentDescendants(threadID, rootItemID string) ([]Item, er
 	if rootItemID == "" {
 		return []Item{}, nil
 	}
-	// Placeholder order: recursive base hop (threadID, rootItemID),
-	// recursive hop (threadID), then the ranked logical-item lookup
-	// (threadID, cap). queryHydratedTimelineItems appends the two physical
-	// source probes and keeps all of them on the same read pool.
+	// The walk's ids are ordered and capped through the two physical
+	// arms, never through the timeline_items view (timeline_arms.go);
+	// queryHydratedTimelineItems then resolves the surviving ids the same
+	// way and keeps every statement on one read pool.
+	selectedSQL, selectedArgs := timelineIDSelection(threadID, timelineSelection{
+		Source:  "rel",
+		Where:   "items.id = rel.id",
+		OrderBy: "turn_index DESC, item_index DESC",
+		Limit:   maxSubagentDescendants,
+	})
 	items, err := queryHydratedTimelineItems(
 		s.reader(), threadID,
-		descendantsCTEFromRoots(1)+`
-		SELECT id FROM (
-			SELECT items.id AS id
-			  FROM rel
-			  CROSS JOIN timeline_items AS items ON items.thread_id = ? AND items.id = rel.id
-			 ORDER BY items.turn_index DESC, items.item_index DESC
-			 LIMIT ?
-		)`,
-		threadID, rootItemID, threadID, threadID, maxSubagentDescendants,
+		descendantsCTEFromRoots(1)+"\n"+selectedSQL,
+		append(descendantsCTEArgs(threadID, []string{rootItemID}), selectedArgs...)...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list subagent descendants for %s/%s: %w", threadID, rootItemID, err)

@@ -35,7 +35,7 @@
 // nothing to push => skip push phase, etc). This is tested explicitly in the
 // "auto advance" test block.
 
-import type { GitStatus } from '../types/git';
+import type { GitStatus, WorkspaceRef } from '../types/git';
 
 export type ShipChangesPhase =
   | 'idle'
@@ -55,7 +55,14 @@ export type ShipChangesPhase =
 export interface ShipChangesState {
   readonly phase: ShipChangesPhase;
   readonly status: GitStatus | null;
-  readonly threadId: string | null;
+  /**
+   * The pane's thread identity the wizard was opened for — a persisted row's
+   * id, or a draft placeholder's synthetic one. Used ONLY to detect that the
+   * pane moved under an open drawer; nothing is sent to the backend with it.
+   */
+  readonly identity: string | null;
+  /** The checkout every step acts on. */
+  readonly workspace: WorkspaceRef | null;
   readonly commitSubject: string;
   readonly commitBody: string;
   readonly commitSha: string | null;
@@ -84,8 +91,9 @@ export interface ShipChangesState {
    */
   readonly generation: number;
 
-  /** Open the drawer for a given thread. Resets everything. */
-  open(threadId: string): void;
+  /** Open the drawer for a pane's thread identity and checkout. Resets
+   *  everything. */
+  open(identity: string, workspace: WorkspaceRef): void;
   /** Close the drawer and reset to idle. */
   close(): void;
   /** Update the cached GitStatus and auto-advance past skippable stages. */
@@ -144,7 +152,8 @@ function initialPhaseForStatus(status: GitStatus): ShipChangesPhase {
 export function createShipChangesState(): ShipChangesState {
   let phase: ShipChangesPhase = $state('idle');
   let status: GitStatus | null = $state(null);
-  let threadId: string | null = $state(null);
+  let identity: string | null = $state(null);
+  let workspace: WorkspaceRef | null = $state(null);
   let commitSubject = $state('');
   let commitBody = $state('');
   let commitSha: string | null = $state(null);
@@ -162,7 +171,8 @@ export function createShipChangesState(): ShipChangesState {
   function reset(): void {
     phase = 'idle';
     status = null;
-    threadId = null;
+    identity = null;
+    workspace = null;
     commitSubject = '';
     commitBody = '';
     commitSha = null;
@@ -176,7 +186,8 @@ export function createShipChangesState(): ShipChangesState {
   return {
     get phase() { return phase; },
     get status() { return status; },
-    get threadId() { return threadId; },
+    get identity() { return identity; },
+    get workspace() { return workspace; },
     get commitSubject() { return commitSubject; },
     get commitBody() { return commitBody; },
     get commitSha() { return commitSha; },
@@ -205,9 +216,10 @@ export function createShipChangesState(): ShipChangesState {
     },
     get finished() { return phase === 'pr.done'; },
 
-    open(id) {
+    open(id, ws) {
       reset();
-      threadId = id;
+      identity = id;
+      workspace = ws;
       // Bump the generation so any in-flight operation from a previous
       // open()/close() cycle is classified as stale when it resolves.
       generation += 1;

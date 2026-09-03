@@ -21,6 +21,13 @@ export class Attachment {
     "relativePath": string;
     "createdAt": number;
 
+    /**
+     * Kind is AttachmentKindImage or AttachmentKindFile (migration v75).
+     * Rows written before the column existed default to `image`, which is
+     * what every attachment was.
+     */
+    "kind": string;
+
     /** Creates a new Attachment instance. */
     constructor($$source: Partial<Attachment> = {}) {
         if (!("id" in $$source)) {
@@ -43,6 +50,9 @@ export class Attachment {
         }
         if (!("createdAt" in $$source)) {
             this["createdAt"] = 0;
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
         }
 
         Object.assign(this, $$source);
@@ -682,7 +692,7 @@ export class Project {
      * 
      * Empty is a first-class value, never an error: a non-git directory, a
      * repository with no origin, an unborn HEAD, and every row written
-     * before migration v79 all read as "not known".
+     * before migration v83 all read as "not known".
      */
     "remoteURL"?: string;
     "rootCommit"?: string;
@@ -1011,6 +1021,17 @@ export class Thread {
     "pinGroup"?: number | null;
 
     /**
+     * GroupID names the sidebar thread group this row belongs to
+     * (migration v76), or "" for a top-level thread. SetThreadGroup is its
+     * ONE writer; a schema CHECK refuses a group and a pin on the same row
+     * ("one pin per visible row"), and the FK's ON DELETE SET NULL is what
+     * makes deleting a group ungroup its members instead of deleting them.
+     * Discussion children follow their root, so the frontend reads it on
+     * top-level nodes only.
+     */
+    "groupId"?: string;
+
+    /**
      * WorktreeSetupState is the durable half of the per-project worktree
      * setup run this thread's worktree was cut with (migration v47):
      * "running", "failed", or "" for nothing to say — never ran, succeeded,
@@ -1159,12 +1180,63 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField34_0 = $$createType11;
+        const $$createField35_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("origin" in $$parsedSource) {
-            $$parsedSource["origin"] = $$createField34_0($$parsedSource["origin"]);
+            $$parsedSource["origin"] = $$createField35_0($$parsedSource["origin"]);
         }
         return new Thread($$parsedSource as Partial<Thread>);
+    }
+}
+
+/**
+ * ThreadGroup is a named, collapsible sidebar row gathering threads of ONE
+ * project (migration v76; spec: docs/specs/sidebar-thread-groups.md).
+ * 
+ * It is not a thread: it has a name, a pin, and nothing else of its own.
+ * Its status, activity, and sort position are its members' — the same
+ * bubbling a discussion parent does — so nothing here is derived or cached.
+ * 
+ * PinnedAt / PinGroup are the thread pin fields verbatim, including their
+ * NULL semantics: NULL PinGroup on a pinned row is the front burner, and
+ * an unpinned row never retains a latent group (the schema's CHECK).
+ */
+export class ThreadGroup {
+    "id": string;
+    "projectId": string;
+    "name": string;
+    "pinnedAt"?: number | null;
+    "pinGroup"?: number | null;
+    "createdAt": number;
+    "updatedAt": number;
+
+    /** Creates a new ThreadGroup instance. */
+    constructor($$source: Partial<ThreadGroup> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("projectId" in $$source)) {
+            this["projectId"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = 0;
+        }
+        if (!("updatedAt" in $$source)) {
+            this["updatedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadGroup instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadGroup {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ThreadGroup($$parsedSource as Partial<ThreadGroup>);
     }
 }
 
@@ -1246,7 +1318,7 @@ export class ThreadMessageHit {
  * 
  * Every field is optional and empty means "not known", never "none" and never
  * an error. A workspace outside a repository, a detached HEAD, a repository
- * with no remote, and any thread created before migration v74 all produce
+ * with no remote, and any thread created before migration v78 all produce
  * empty values, and a consumer that cannot proceed without them has to say so
  * itself rather than assume they are there.
  * 

@@ -19,6 +19,7 @@ import {
   resetBrowserCompanionForTest,
 } from './browserCompanion.svelte';
 import { attachGitStatus, refreshGitStatus } from './gitStatusStore.svelte';
+import type { WorkspaceRef } from '../types/git';
 import { attachMcpServers } from './mcpServers.svelte';
 import { ensureProviderModels, resetProviderModelsForTest } from './providerModels.svelte';
 import { hydrateWorktreeSetup } from './worktreeSetup.svelte';
@@ -26,6 +27,7 @@ import { getUpdateState, resetForTest as resetUpdatesForTest, runUpdateCheck } f
 
 const WORKSPACE = '/workspace';
 const THREAD = 'thread-1';
+const WORKSPACE_REF: WorkspaceRef = { projectId: 'project-1', workspacePath: WORKSPACE };
 
 function stubBindings() {
   return {
@@ -73,8 +75,8 @@ describe('view-only sessions issue no passive operate RPCs', () => {
 
   it('does not subscribe git status without git:operate', async () => {
     await pairViewOnly();
-    const handle = attachGitStatus(WORKSPACE, { threadId: THREAD });
-    await refreshGitStatus(WORKSPACE, THREAD, () => WORKSPACE);
+    const handle = attachGitStatus(WORKSPACE, { workspace: WORKSPACE_REF });
+    await refreshGitStatus(WORKSPACE, WORKSPACE_REF, () => WORKSPACE);
     await settle();
     expect(bindings.gitStatus).not.toHaveBeenCalled();
     expect(bindings.gitRefresh).not.toHaveBeenCalled();
@@ -86,7 +88,7 @@ describe('view-only sessions issue no passive operate RPCs', () => {
   });
 
   it('subscribes git status on the local page', async () => {
-    const handle = attachGitStatus(WORKSPACE, { threadId: THREAD });
+    const handle = attachGitStatus(WORKSPACE, { workspace: WORKSPACE_REF });
     await settle();
     expect(bindings.gitStatus).toHaveBeenCalled();
     handle.release();

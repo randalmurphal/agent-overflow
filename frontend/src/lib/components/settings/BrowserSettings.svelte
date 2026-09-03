@@ -30,20 +30,20 @@
   }
 </script>
 
-<div class="flex flex-col gap-6" data-testid="settings-browser">
+<div class="settings-sections" data-testid="settings-browser">
   <section>
-    <SettingsHeader title="Browser" />
     <div class="flex flex-col gap-1">
-      <SettingsField label="Built-in browser tools" hint="Give Claude and Codex a browser in a companion pane.">
+      <SettingsField id="browser.enabled" label="Built-in browser tools" hint="Give Claude and Codex a browser in a companion pane.">
         <ToggleSwitch checked={settings.browserEnabled} ariaLabel="Toggle Built-in Browser Tools" onToggle={(value) => updateSetting('browserEnabled', value)} />
       </SettingsField>
-      <SettingsField label="Remember site data" hint="Keep encrypted cookies and local storage separately for each workspace.">
+      <SettingsField id="browser.persist-site-data" label="Remember site data" hint="Keep encrypted cookies and local storage separately for each workspace.">
         <ToggleSwitch checked={settings.browserPersistSiteData} disabled={!settings.browserEnabled} ariaLabel="Toggle Browser Site Data" onToggle={(value) => updateSetting('browserPersistSiteData', value)} />
       </SettingsField>
-      <SettingsField label="Files outside workspace" hint="Allow browser tools to open any regular file your OS account can read.">
+      <SettingsField id="browser.outside-workspace" label="Files outside workspace" hint="Allow browser tools to open any regular file your OS account can read.">
         <ToggleSwitch checked={settings.browserAllowOutsideWorkspace} disabled={!settings.browserEnabled} ariaLabel="Toggle Outside Workspace Browser Files" onToggle={(value) => updateSetting('browserAllowOutsideWorkspace', value)} />
       </SettingsField>
       <SettingsField
+        id="browser.chromium-path"
         label="Chromium path"
         hint="Only used by a serve host, which launches its own browser. Must be an absolute path."
         htmlFor="browser-chromium-path"
@@ -62,8 +62,12 @@
   </section>
 
   <section>
-    <SettingsHeader title="Site Data" />
-    <div class="flex items-center justify-between gap-4 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0/40 px-4 py-3">
+    <SettingsHeader title="Site data" />
+    <div
+      class="flex items-center justify-between gap-4 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0/40 px-4 py-3"
+      data-settings-field="browser.clear-site-data"
+      data-settings-label="Clear site data"
+    >
       <p class="text-[0.75rem] text-fg-muted">Closes open browser pages and removes saved cookies and local storage.</p>
       <button class={clearArmed ? DANGER_BUTTON_CLASS : SECONDARY_BUTTON_CLASS} disabled={clearing} onclick={() => void clearSiteData()} onblur={() => (clearArmed = false)}>
         {clearing ? 'Clearing…' : clearArmed ? 'Clear now' : 'Clear site data'}

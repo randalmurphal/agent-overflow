@@ -46,11 +46,6 @@ function readyPane(threadId = 'thread-1'): ReturnType<typeof createThreadPane> {
   setBindingMock('SwitchThread', async (id: unknown) => ({
     id: typeof id === 'string' ? id : threadId,
   }));
-  setBindingMock('ListRecentThreadItems', async () => ({
-    items: [],
-    oldestTurnIndex: -1,
-    hasMore: false,
-  }));
   setBindingMock('ListPendingInteractiveRequests', async () => ({
     approvals: [],
     userInputs: [],

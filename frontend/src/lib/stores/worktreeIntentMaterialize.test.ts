@@ -162,14 +162,50 @@ describe('worktree intent materialization', () => {
     enterCreateBranchMode(source, { workspaceDirty: false, currentBranch: 'main' });
     setNewBranchName(source, 'feature/local');
     setNewBranchBase(source, 'develop');
-    const create = setBindingMock('GitCreateBranchFrom', async () =>
+    const create = setBindingMock('GitCreateBranchFrom', async () => ({
+      workspacePath: '/repo',
+      worktreePath: '',
+      branch: 'feature/local',
+    }));
+    // The branch write lands on the row through the backend's thread:updated
+    // broadcast; this path re-reads it so the pane paints the new branch
+    // without waiting for the event.
+    const getThread = setBindingMock('GetThread', async () =>
       moved(source, { workspacePath: '/repo', worktreePath: '', branch: 'feature/local' }),
     );
 
     await applyWorktreeIntentNow(paneFor(source));
 
-    expect(create).toHaveBeenCalledWith('thread-1', 'feature/local', 'develop', false);
+    expect(create).toHaveBeenCalledWith(
+      { projectId: 'project-1', workspacePath: '/repo' },
+      'feature/local',
+      'develop',
+      false,
+    );
+    expect(getThread).toHaveBeenCalledWith('thread-1');
     expect(worktreeIntentForThread(source).creatingBranch).toBe(false);
+  });
+
+  // A branch intent staged against a thread that names no project is a bug
+  // upstream, not a user situation: the picker cannot stage one. It must
+  // surface as an error the caller reports, never as a click that silently
+  // does nothing.
+  it('throws instead of no-oping when the target thread names no workspace', async () => {
+    const source = thread({ projectId: undefined });
+    enterCreateBranchMode(source, { workspaceDirty: false, currentBranch: 'main' });
+    setNewBranchName(source, 'feature/local');
+    const create = setBindingMock('GitCreateBranchFrom', async () => ({
+      workspacePath: '/repo',
+      worktreePath: '',
+      branch: 'feature/local',
+    }));
+
+    await expect(applyWorktreeIntentNow(paneFor(source))).rejects.toThrow(
+      /thread-1: it names no project workspace/,
+    );
+    expect(create).not.toHaveBeenCalled();
+    // The applying flag must not stay stuck on after the throw.
+    expect(isWorktreeIntentApplying(source.id)).toBe(false);
   });
 
   it('coalesces confirm and send onto one backend mutation', async () => {

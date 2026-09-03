@@ -51,7 +51,7 @@ func TestCapPatchSpanSeedBytesSkipsLargeWithoutStarvingLater(t *testing.T) {
 func TestObserveDiffPayloadDropsPastWorkerCap(t *testing.T) {
 	service := New(Config{})
 	service.diffWorkers.Store(diffSeedMaxWorkers)
-	service.ObserveDiffPayload("thread", "payload", nil, testPatch)
+	service.ObserveDiffPayload("thread", "", "payload", nil, testPatch)
 	if got := service.diffWorkers.Load(); got != diffSeedMaxWorkers {
 		t.Fatalf("workers = %d", got)
 	}

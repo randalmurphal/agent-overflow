@@ -534,7 +534,7 @@ export async function syncWindowBackground(hex: string): Promise<void> {
 
 /**
  * Every parse warning the loaded files produced, whether or not the file is
- * selected. Settings → Appearance renders these grouped per file, which is
+ * selected. Settings → Theme renders these grouped per file, which is
  * what answers the "my theme does nothing" case for a file that is not the
  * one applied — the applier only ever sees the two selected.
  */

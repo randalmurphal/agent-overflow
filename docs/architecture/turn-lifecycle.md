@@ -40,8 +40,11 @@ invocation the agent makes produces exactly one `tool_call` row.
   the exit/stdout result.
 - Backgrounded Claude tools (Bash with `run_in_background:true`,
   Task subagent): completion is the **placeholder** tool_result
-  (`backgroundTaskId: ...`); actual task result lands via the task
-  lifecycle (below).
+  (`backgroundTaskId: ...`, or on a sidechain the text-only ack of
+  claude-wire.md §E2b); actual task result lands via the task
+  lifecycle (below). The launch flag is a hint: a flagged command the
+  CLI refuses completes as an ordinary error, and the completion is
+  what decides.
 - TaskOutput: a regular inline tool the agent may call to retrieve a
   still-retained background task. Its own `tool_use_id`'s completion
   is the retrieval result. Any background-task details it surfaces are
@@ -55,6 +58,7 @@ invocation the agent makes produces exactly one `tool_call` row.
 |---|---|---|
 | No (inline) | N/A | `completed` / `errored` |
 | Yes (Claude Bash or Task) | Placeholder `tool_result` carries `backgroundTaskId` | Stays `running` per spec invariant. Sibling `tool_completion` row arrives later via task lifecycle. |
+| Flagged at launch, refused (Claude) | Ordinary `tool_result` (`is_error:true`, no marker) | `errored` / `completed`, launch flag cleared. On Claude the COMPLETION decides; on Codex the launch flag is wire-stamped (invariant 25) and stays authoritative. |
 
 This per-spec exception exists so the timeline can render both
 "agent dispatched this tool" and "the actual work that got done" as
@@ -62,6 +66,18 @@ two historically accurate rows. The launch row's `status='running'`
 + `is_background=true` is the render signal for the `"…"` badge
 (see [chat-rewrite.md §Background tray](chat-rewrite.md)); it is not
 a claim that the tool is currently executing.
+
+Because the row never leaves `running`, its LIVENESS is carried by
+`meta.live_background_active`, and since migration v74 the schema keeps
+that flag rather than the write paths: `items` triggers stamp it false
+the moment a completion sibling exists — including when the launch row
+arrives after its sibling, and when a later write replaces the launch's
+meta wholesale — and restore it if the sibling is deleted. The teardown
+and Codex-projection writers still set it for their own reasons; what
+changed is that "a completion exists" no longer has to be re-derived by
+every reader. That is what lets the tray's read be two index seeks
+instead of a walk of every launch the thread has ever backgrounded. DDL
+and rationale: `internal/store/background_settle_triggers.go`.
 
 ### Codex background projection
 
@@ -232,10 +248,12 @@ to the original launch: the resuming tool_use becomes the resumed
 round's **background carrier**.
 
 - The parser lets `rememberTaskToolUse` rebind normally (no
-  first-binding-wins) and marks the resuming tool_use backgrounded via
-  the same mechanism `run_in_background` launches use, so its own
-  `tool_result` ack, which carries no async marker of its own,
-  still emits `EventToolComplete{is_background:true}`.
+  first-binding-wins) and marks the resuming tool_use backgrounded with
+  a wire-backed origin (`backgroundFromTaskStarted`; the
+  `run_in_background` input hint is a weaker origin that never
+  classifies on its own), so its own `tool_result` ack, which carries no
+  async marker of its own, still emits
+  `EventToolComplete{is_background:true}`.
 - Triage's keep-running flip (§1 above, the `!launch.IsBackground` →
   `IsBackground` transition) additionally resolves the ORIGINAL launch
   row (`resumeCarrierIdentity`, tool_lifecycle.go) — by
@@ -422,10 +440,14 @@ Triage writes a `tool_completion` row:
 ### Task-lifecycle events can outlive the owning turn
 
 A `task_updated` for a backgrounded task can arrive AFTER the
-turn that launched it has completed. Triage writes the
-`tool_completion` row at the current thread write head when one is
-open, otherwise at the latest persisted turn. The tray renders it on
-its own retention clock. See
+turn that launched it has completed. For a top-level launch, triage
+writes the `tool_completion` row at the current thread write head when
+one is open, otherwise at the latest persisted turn. For a launch
+inside a subagent, the row stays on the launch's turn with the rest of
+the scope (invariant 10): the main thread's write head is a later turn
+than the one the agent's rows keep landing on, so a sibling placed
+there would sort after everything the agent writes afterwards. The
+tray renders it on its own retention clock. See
 `docs/references/fixtures/claude/ndjson_outlives.log` for a captured example.
 
 ### Desired chat-history contract

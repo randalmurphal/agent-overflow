@@ -23,7 +23,7 @@ Project-row lifecycle helpers that bridge git repository roots and the
   It takes no `*gitops.Core`: the resolution is pure filesystem reads,
   so it spawns nothing and is safe to run per row in a listing. That is
   also why the row's DERIVED repository identity (`remote_url` /
-  `root_commit`, migration v79) is stamped by
+  `root_commit`, migration v83) is stamped by
   `projectapp.Service.EnsureForWorkspace` after this returns, on the
   CREATED row only, rather than here: it needs a git subprocess, and
   this function must stay free of one.

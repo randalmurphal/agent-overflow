@@ -164,8 +164,8 @@ export const MAX_PENDING_RPCS = 10_000;
 // (internal/transport/conn.go) so a frame that fits the server cap
 // also fits the client cap — keep both values in lockstep. 75 MiB is
 // sized for the worst legitimate load: a long thread's
-// ListRecentThreadItems response (items.meta + payload metadata across
-// hundreds of turns), where spending the memory once per thread switch
+// ListThreadSliceAround response (items.meta + payload metadata across
+// a whole window), where spending the memory once per thread switch
 // is the right tradeoff vs. forcing pagination on every load.
 export const MAX_FRAME_BYTES = 75 * 1024 * 1024;
 

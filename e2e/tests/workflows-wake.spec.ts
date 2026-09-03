@@ -368,8 +368,8 @@ test('discard previews the loss and then removes every checkout and branch', asy
   expect(existsSync(alpha.worktreePath)).toBe(false);
   expect(existsSync(runWorktree)).toBe(false);
   const branches = await harness.rpc<Array<{ name: string }>>(
-    'GitListBranchesForProject',
-    project.projectId,
+    'GitListBranches',
+    { projectId: project.projectId, workspacePath: '' },
   );
   const names = branches.map((branch) => branch.name);
   expect(names).not.toContain(alpha.branch);

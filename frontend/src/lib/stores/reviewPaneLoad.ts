@@ -22,7 +22,7 @@ import {
   ListThreadEditDiffs,
 } from './bindings';
 import type { PRSnapshot } from './prReviewStore.svelte';
-import type { BranchCommit, GitBranch } from '../types/git';
+import type { BranchCommit, GitBranch, WorkspaceRef } from '../types/git';
 import type { DiffReviewComment, DiffReviewScope, ReviewLineComment } from '../types/models';
 import { seedPayloadPatchSpans } from '../utils/diffSpanCache.svelte';
 import { filePatchDisplayRows, type PatchFile } from '../utils/patchFiles';
@@ -170,8 +170,28 @@ export function resolveSelectedCommit(
   return null;
 }
 
+/**
+ * Who the diff is FOR. Every live scope (workspace, branch, commit, pr) is a
+ * fact about the checkout and needs only `workspace`; `edits` replays this
+ * THREAD's persisted tool-call patches and is the one scope that needs a
+ * real thread row. Null `threadId` is a draft placeholder — it has no
+ * history to replay, so requesting edits with one is a caller bug and throws
+ * rather than silently loading nothing.
+ */
+/** Raised wherever the edits scope is reached without a thread row. The
+ *  scope's subject IS the thread's own edit history, so there is nothing to
+ *  fall back to — the option is not offered on a draft placeholder, and both
+ *  the load path and the context-expansion path say so in the same words. */
+export const EDITS_NEEDS_THREAD =
+  'The Edits view needs a started thread — its subject is the thread\'s own history.';
+
+export interface DiffSubject {
+  workspace: WorkspaceRef;
+  threadId: string | null;
+}
+
 export async function loadPatch(
-  threadId: string,
+  subject: DiffSubject,
   scope: DiffReviewScope,
   baseBranch: string | null,
   selectedCommitSHA: string | null,
@@ -187,6 +207,7 @@ export async function loadPatch(
   ignoreWhitespace: boolean,
   existing?: ExistingLoad,
 ): Promise<LoadedPatch> {
+  const { workspace, threadId } = subject;
   switch (scope) {
     case 'pr': {
       const detail = prSnapshot?.detail;
@@ -203,19 +224,22 @@ export async function loadPatch(
       const commits = existing
         ? existing.commits
         : baseRef
-          ? (((await ListPRCommits(threadId, pr, baseRef, headSHA)) ?? []) as BranchCommit[])
+          ? (((await ListPRCommits(workspace, pr, baseRef, headSHA)) ?? []) as BranchCommit[])
           : [];
       const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
       // GetPRDiff takes no ignoreWhitespace: the PR whole-diff can come from
       // the forge API, which cannot ignore whitespace at all.
       const patchText = commitSHA
-        ? String((await GetPRCommitDiff(threadId, pr, commitSHA, ignoreWhitespace)) ?? '')
-        : String((await GetPRDiff(threadId, pr, baseRef)) ?? '');
+        ? String((await GetPRCommitDiff(workspace, pr, commitSHA, ignoreWhitespace)) ?? '')
+        : String((await GetPRDiff(workspace, pr, baseRef)) ?? '');
       return { patchText, commits, selectedCommitSHA: commitSHA, prHeadSHA: headSHA };
     }
     case 'workspace':
-      return { patchText: ((await GetWorkspaceCurrentDiff(threadId, ignoreWhitespace)) ?? '') as string };
+      return {
+        patchText: ((await GetWorkspaceCurrentDiff(workspace, ignoreWhitespace)) ?? '') as string,
+      };
     case 'edits': {
+      if (threadId === null) throw new Error(EDITS_NEEDS_THREAD);
       let entries = existing?.edits;
       let turnLabels = existing?.editTurnLabels;
       if (!entries || !turnLabels) {
@@ -249,35 +273,35 @@ export async function loadPatch(
       return { patchText, edits: entries, editTurnLabels: turnLabels, selectedEdit: selection };
     }
     case 'branch': {
-      const branch = baseBranch?.trim() || await defaultBaseBranch(threadId);
+      const branch = baseBranch?.trim() || await defaultBaseBranch(workspace);
       if (existing) {
         const commitSHA = resolveSelectedCommit(selectedCommitSHA, existing.commits);
         const patchText = commitSHA
-          ? ((await GetCommitDiff(threadId, commitSHA, ignoreWhitespace)) ?? '') as string
-          : ((await GetBranchBaseDiff(threadId, branch, ignoreWhitespace)) ?? '') as string;
+          ? ((await GetCommitDiff(workspace, commitSHA, ignoreWhitespace)) ?? '') as string
+          : ((await GetBranchBaseDiff(workspace, branch, ignoreWhitespace)) ?? '') as string;
         return { patchText, commits: existing.commits, selectedCommitSHA: commitSHA };
       }
       if (selectedCommitSHA) {
         // Sequenced: the selection must be validated against the fresh
         // list before deciding which diff to fetch.
-        const commits = ((await ListBranchCommits(threadId, branch)) ?? []) as BranchCommit[];
+        const commits = ((await ListBranchCommits(workspace, branch)) ?? []) as BranchCommit[];
         const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
         const patchText = commitSHA
-          ? ((await GetCommitDiff(threadId, commitSHA, ignoreWhitespace)) ?? '') as string
-          : ((await GetBranchBaseDiff(threadId, branch, ignoreWhitespace)) ?? '') as string;
+          ? ((await GetCommitDiff(workspace, commitSHA, ignoreWhitespace)) ?? '') as string
+          : ((await GetBranchBaseDiff(workspace, branch, ignoreWhitespace)) ?? '') as string;
         return { patchText, commits, selectedCommitSHA: commitSHA };
       }
       const [commits, patchText] = await Promise.all([
-        ListBranchCommits(threadId, branch).then((rows) => (rows ?? []) as BranchCommit[]),
-        GetBranchBaseDiff(threadId, branch, ignoreWhitespace).then((patch) => (patch ?? '') as string),
+        ListBranchCommits(workspace, branch).then((rows) => (rows ?? []) as BranchCommit[]),
+        GetBranchBaseDiff(workspace, branch, ignoreWhitespace).then((patch) => (patch ?? '') as string),
       ]);
       return { patchText, commits, selectedCommitSHA: null };
     }
   }
 }
 
-export async function defaultBaseBranch(threadId: string): Promise<string> {
-  const branches = ((await GitListBranches(threadId)) ?? []) as GitBranch[];
+export async function defaultBaseBranch(workspace: WorkspaceRef): Promise<string> {
+  const branches = ((await GitListBranches(workspace)) ?? []) as GitBranch[];
   const defaultBranch = branches.find((branch) => branch.isDefault);
   if (!defaultBranch?.name) {
     throw new Error('default branch not found');

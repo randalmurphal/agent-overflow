@@ -3,15 +3,19 @@ import {
   collapseProject,
   expandProject,
   collapseThreadList,
+  getCollapsedGroups,
   getProjectSortMode,
   getThreadListVisibleLimit,
   isDiscussionExpanded,
+  isGroupExpanded,
   isProjectExpanded,
   isThreadListExpanded,
   resetSidebarForTest,
   revealMoreThreadList,
+  setCollapsedGroups,
   setThreadListVisibleLimit,
   setProjectSortMode,
+  toggleGroup,
   syncSidebarFromAppStorage,
   syncSidebarFromSettings,
   toggleProject,
@@ -23,6 +27,7 @@ import { makeSettings } from '../../test/helpers/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
 
 const COLLAPSED_KEY = 'sidebar:collapsedProjects';
+const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
 
 describe('sidebar store', () => {
   beforeEach(() => {
@@ -67,6 +72,42 @@ describe('sidebar store', () => {
       // a write/read round-trip serializes over the garbage cleanly.
       toggleProject('p1');
       expect(isProjectExpanded('p1')).toBe(false);
+    });
+  });
+
+  describe('group collapse', () => {
+    it('groups default to expanded and toggleGroup persists explicit collapses', () => {
+      // Inverted like collapsedProjects, and for the same reason: a group
+      // the user just made must show what is in it.
+      expect(isGroupExpanded('g1')).toBe(true);
+      toggleGroup('g1');
+      expect(isGroupExpanded('g1')).toBe(false);
+      expect(JSON.parse(appStorageGet(COLLAPSED_GROUPS_KEY) as string)).toEqual(['g1']);
+
+      toggleGroup('g1');
+      expect(isGroupExpanded('g1')).toBe(true);
+      expect(JSON.parse(appStorageGet(COLLAPSED_GROUPS_KEY) as string)).toEqual([]);
+    });
+
+    it('setCollapsedGroups swaps the whole set and no-ops on an equal one', () => {
+      setCollapsedGroups(new Set(['g1', 'g2']));
+      expect([...getCollapsedGroups()].sort()).toEqual(['g1', 'g2']);
+      const before = getCollapsedGroups();
+
+      setCollapsedGroups(new Set(['g2', 'g1']));
+      // Equal content, so the state reference is untouched — the sidebar's
+      // auto-expand effect writes this on every pass and must settle.
+      expect(getCollapsedGroups()).toBe(before);
+
+      setCollapsedGroups(new Set(['g1']));
+      expect([...getCollapsedGroups()]).toEqual(['g1']);
+    });
+
+    it('resetSidebarForTest clears the collapsed groups', () => {
+      toggleGroup('g1');
+      resetSidebarForTest();
+      expect(isGroupExpanded('g1')).toBe(true);
+      expect([...getCollapsedGroups()]).toEqual([]);
     });
   });
 
@@ -195,11 +236,14 @@ describe('sidebar store', () => {
         'sidebar:collapsedProjects': JSON.stringify(['proj-1', 'proj-2']),
         'sidebar:expandedDiscussions': JSON.stringify(['disc-1']),
         'sidebar:threadListVisibleLimits': JSON.stringify({ 'proj-1': 40 }),
+        'sidebar:collapsedGroups': JSON.stringify(['group-1']),
       }));
       await hydrateAppStorage();
 
       syncSidebarFromAppStorage();
 
+      expect(isGroupExpanded('group-1')).toBe(false);
+      expect(isGroupExpanded('group-2')).toBe(true);
       expect(isProjectExpanded('proj-1')).toBe(false);
       expect(isProjectExpanded('proj-2')).toBe(false);
       expect(isProjectExpanded('proj-3')).toBe(true);

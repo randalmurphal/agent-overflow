@@ -87,6 +87,7 @@ func Convert(chain []Row, opts ConvertOptions) ConvertResult {
 		usageByModel:         map[string]*provider.TokenUsage{},
 		unknownSystem:        map[string]int{},
 		emittedAgents:        map[string]bool{},
+		backgroundHints:      map[string]bool{},
 		openingPromptByScope: map[string]bool{},
 	}
 	c.indexCompactSummaries(chain)
@@ -132,6 +133,11 @@ type converter struct {
 	// a message from the user) and stamps ParentToolUseID on every event.
 	subagentScope string
 	emittedAgents map[string]bool
+	// backgroundHints holds the tool_use ids whose input asked for
+	// `run_in_background`. A hint is never a verdict (a flagged command
+	// can be refused); it only opens the text-only ack reading in
+	// convertToolResult for a sidechain result with no `toolUseResult`.
+	backgroundHints map[string]bool
 	// openingPromptByScope gives the first user-role row in each subagent a
 	// launch-scoped identity. Live Claude can render that prompt from the
 	// launch input before async stdout would ever echo it; the transcript uuid
@@ -324,6 +330,19 @@ func (c *converter) convertToolResult(row Row, block map[string]any) {
 	}
 	if backgroundToolResult(toolUseResult) {
 		fields["is_background"] = true
+		if id := strings.TrimSpace(rawString(rawMapValue(toolUseResult), "backgroundTaskId")); id != "" {
+			fields["task_id"] = id
+		}
+	} else if toolUseResult == nil && c.backgroundHints[toolUseID] {
+		// A sidechain ack carries no `toolUseResult`, so the text is the
+		// only evidence. Same gate as the live parser (claude-wire.md
+		// §E2b): flagged launch, no structured sibling, ack text naming
+		// a task. Anything else (a hook deny, a permission refusal)
+		// settles in place with the result it actually got.
+		if id, ok := BackgroundAckTaskID(content); ok {
+			fields["is_background"] = true
+			fields["task_id"] = id
+		}
 	}
 	if agentID, commandName, ok := skillForkResult(toolUseResult); ok {
 		fields["skillFork"] = map[string]string{

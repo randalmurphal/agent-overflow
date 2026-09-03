@@ -35,6 +35,7 @@ function makeAttachment(threadId = 'thread-1'): Attachment {
     size: 3,
     relativePath: `${threadId}/pasted.png`,
     createdAt: 1,
+    kind: 'image',
   };
 }
 

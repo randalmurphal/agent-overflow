@@ -12,8 +12,9 @@ import {
   runCreatePRAction,
   runRemoveWorktreeAction,
   type GitActionCtx,
+  type RemoveWorktreeCtx,
 } from './gitActions';
-import type { GitStatus } from '../../types/git';
+import type { GitStatus, WorkspaceRef } from '../../types/git';
 import {
   resetBindingMocks,
   setBindingMock,
@@ -36,13 +37,21 @@ function status(overrides: Partial<GitStatus> = {}): GitStatus {
   };
 }
 
+const WS: WorkspaceRef = { projectId: 'project-1', workspacePath: '/workspace' };
+
 function ctx(overrides: Partial<GitActionCtx> = {}): GitActionCtx {
   return {
-    threadId: 'thread-1',
+    workspace: WS,
     reportError: vi.fn(),
     refreshStatus: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
+}
+
+/** The worktree-removal action names the worktree it is removing on top of
+ *  the checkout it is removing it FROM. */
+function removeCtx(overrides: Partial<RemoveWorktreeCtx> = {}): RemoveWorktreeCtx {
+  return { ...ctx(), worktreePath: '/workspace/.worktrees/feature', ...overrides };
 }
 
 describe('primaryActionFor', () => {
@@ -179,33 +188,26 @@ describe('runCreatePRAction', () => {
 describe('runRemoveWorktreeAction', () => {
   beforeEach(() => resetBindingMocks());
 
-  it('swaps in the refreshed thread on success', async () => {
-    setBindingMock('GitRemoveWorktree', async () => undefined);
-    setBindingMock('GetThread', async () => ({
-      id: 'thread-1',
-      title: 'T',
-      provider: 'claude',
-      workspacePath: '/',
-      projectPath: '/',
-      mode: 'chat',
-      model: '',
-      createdAt: 0,
-      updatedAt: 0,
-      archived: false,
+  it('removes the named worktree from the pane\'s checkout and refreshes', async () => {
+    const remove = setBindingMock('RemoveOtherWorktree', async () => ({
+      workspacePath: '/workspace',
+      worktreePath: '',
+      branch: 'main',
     }));
-    const c = ctx();
+    const c = removeCtx();
     await runRemoveWorktreeAction(c);
-    // syncThread propagation is verified separately in syncThread tests;
-    // here we assert the action drove refreshStatus and didn't error.
+    // Thread rows reattach through ThreadUpdated; what this action owns is
+    // the RPC's subject — the checkout, plus the worktree being removed.
+    expect(remove).toHaveBeenCalledWith(WS, '/workspace/.worktrees/feature', false);
     expect(c.refreshStatus).toHaveBeenCalledTimes(1);
     expect(c.reportError).not.toHaveBeenCalled();
   });
 
   it('surfaces a thrown error via errString and does not refresh', async () => {
-    setBindingMock('GitRemoveWorktree', async () => {
+    setBindingMock('RemoveOtherWorktree', async () => {
       throw new Error('worktree is dirty');
     });
-    const c = ctx();
+    const c = removeCtx();
     await runRemoveWorktreeAction(c);
     expect(c.reportError).toHaveBeenCalledWith('Remove worktree failed: worktree is dirty');
     expect(c.refreshStatus).not.toHaveBeenCalled();

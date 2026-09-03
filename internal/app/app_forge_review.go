@@ -175,7 +175,7 @@ func (a *App) GetPRDetail(pr gitops.PRReference) (gitops.PRDetail, error) {
 }
 
 //ao:scope git:operate
-func (a *App) GetPRDiff(threadID string, pr gitops.PRReference, baseRef string) (string, error) {
+func (a *App) GetPRDiff(ws WorkspaceRef, pr gitops.PRReference, baseRef string) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
 	}
@@ -184,10 +184,11 @@ func (a *App) GetPRDiff(threadID string, pr gitops.PRReference, baseRef string) 
 	}
 	// Prefer a locally-computed diff: gh/glab's PR-diff endpoints refuse
 	// diffs over 20k lines (HTTP 406), which large PRs blow past. When the
-	// thread has a clone and we know the base ref, we can fetch the PR head
+	// caller has a clone and we know the base ref, we can fetch the PR head
 	// + base and diff them from local objects with no such cap. The forge
-	// API stays the fallback for pr-anchor threads with no local checkout.
-	if diff, attempted, err := a.localPRDiff(threadID, pr, baseRef); attempted {
+	// API stays the fallback for a zero ref — a pr-anchor thread with no
+	// local checkout.
+	if diff, attempted, err := a.localPRDiff(ws, pr, baseRef); attempted {
 		return diff, err
 	}
 	return a.gitCore().GetPRDiff("", pr)
@@ -197,12 +198,12 @@ func (a *App) GetPRDiff(threadID string, pr gitops.PRReference, baseRef string) 
 // means the local path was not viable (no clone or no base ref) and the
 // caller should fall back to the forge API; attempted=true returns the
 // local result (or its error) authoritatively.
-func (a *App) localPRDiff(threadID string, pr gitops.PRReference, baseRef string) (diff string, attempted bool, err error) {
+func (a *App) localPRDiff(ws WorkspaceRef, pr gitops.PRReference, baseRef string) (diff string, attempted bool, err error) {
 	baseRef = strings.TrimSpace(baseRef)
-	if threadID == "" || baseRef == "" {
+	if baseRef == "" {
 		return "", false, nil
 	}
-	workspace, ok := a.localCloneWorkspace(threadID)
+	workspace, ok := a.localCloneWorkspace(ws)
 	if !ok {
 		return "", false, nil
 	}
@@ -221,10 +222,9 @@ func (a *App) localPRDiff(threadID string, pr gitops.PRReference, baseRef string
 }
 
 // ListPRCommits returns the commits a PR carries (`origin/base..head`,
-// newest first), computed from the thread's local clone. Empty — not
-// an error — when the thread has no local clone (a pr-anchor thread
-// with no checkout): the frontend hides the commit selector instead of
-// failing the PR load.
+// newest first), computed from the referenced local clone. Empty — not
+// an error — for a zero ref (a pr-anchor thread with no checkout): the
+// frontend hides the commit selector instead of failing the PR load.
 //
 // headSHA is an optimization contract, not a filter: when the caller
 // already knows the PR head OID (GetPRDiff fetched it moments earlier)
@@ -233,7 +233,7 @@ func (a *App) localPRDiff(threadID string, pr gitops.PRReference, baseRef string
 // fall back to a full fetch.
 //
 //ao:scope git:operate
-func (a *App) ListPRCommits(threadID string, pr gitops.PRReference, baseRef, headSHA string) ([]BranchCommit, error) {
+func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, baseRef, headSHA string) ([]BranchCommit, error) {
 	if a.shuttingDown.Load() {
 		return nil, ErrShuttingDown
 	}
@@ -244,7 +244,7 @@ func (a *App) ListPRCommits(threadID string, pr gitops.PRReference, baseRef, hea
 	if baseRef == "" {
 		return nil, errors.New("base branch is required")
 	}
-	workspace, ok := a.localCloneWorkspace(threadID)
+	workspace, ok := a.localCloneWorkspace(ws)
 	if !ok {
 		return []BranchCommit{}, nil
 	}
@@ -267,19 +267,19 @@ func (a *App) ListPRCommits(threadID string, pr gitops.PRReference, baseRef, hea
 }
 
 // GetPRCommitDiff returns the unified patch a single PR commit
-// introduced (first-parent diff), read from the thread's local clone.
+// introduced (first-parent diff), read from the referenced local clone.
 // Requires a clone — the selector that feeds it only renders when
 // ListPRCommits found one.
 //
 //ao:scope git:operate
-func (a *App) GetPRCommitDiff(threadID string, pr gitops.PRReference, sha string, ignoreWhitespace bool) (string, error) {
+func (a *App) GetPRCommitDiff(ws WorkspaceRef, pr gitops.PRReference, sha string, ignoreWhitespace bool) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
 	}
 	if err := validatePRReference(pr); err != nil {
 		return "", err
 	}
-	workspace, ok := a.localCloneWorkspace(threadID)
+	workspace, ok := a.localCloneWorkspace(ws)
 	if !ok {
 		return "", errors.New("viewing a PR commit requires a local clone")
 	}

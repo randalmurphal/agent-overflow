@@ -57,6 +57,23 @@ describe('<GitSettings> — Repository sync', () => {
   });
 });
 
+describe('<GitSettings> — Worktrees', () => {
+  beforeEach(async () => {
+    await seed();
+  });
+
+  it('dispatches worktreeBranchPrefix patch on blur', async () => {
+    const { getByTestId } = render(GitSettings);
+    const input = getByTestId('settings-worktree-branch-prefix') as HTMLInputElement;
+    input.value = 'task-';
+    await fireEvent.blur(input);
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ worktreeBranchPrefix: 'task-' });
+  });
+});
+
 describe('<GitSettings> — Self-hosted GitLab hosts', () => {
   beforeEach(async () => {
     await seed();

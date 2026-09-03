@@ -188,11 +188,19 @@ const bootstrapProbeAttemptTimeout = 1 * time.Second
 // and the backend's readiness-gated ServiceStartup window.
 const bootstrapProbeDeadline = 30 * time.Second
 
-// bootstrapProbePollInterval is the gap between failed-probe retries.
-// 250 ms is fast enough that the WSL2 forwarder install almost never
-// costs us more than one extra hop, slow enough that we don't melt the
-// CPU when the backend genuinely never comes up.
+// bootstrapProbePollInterval caps the gap between failed-probe retries.
+// 250 ms is slow enough that we don't melt the CPU when the backend
+// genuinely never comes up; the gap starts at
+// bootstrapProbeInitialPollInterval and doubles up to this cap.
 const bootstrapProbePollInterval = 250 * time.Millisecond
+
+// bootstrapProbeInitialPollInterval is the first retry gap. The backend
+// publishes its port before ServiceStartup releases readiness and is
+// usually ready ~100-150 ms later, and a failed attempt costs nothing
+// (an instant 503 or RST), so retrying early is free. With a flat 250 ms
+// gap both measured boots on 2026-09-01 hit "ok after 2 attempts", which
+// was ~250 ms of pure sleep after the backend was already ready.
+const bootstrapProbeInitialPollInterval = 25 * time.Millisecond
 
 func main() {
 	// FIRST, before flags, config, logging, or anything else. When this
@@ -640,7 +648,7 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	defer logBootPhase("launcher.launch_and_show.total", started)
 
 	phaseStarted := time.Now()
-	binPath, err := a.ensurePayloadInstalled(ctx, distro)
+	binPath, cachedPath, err := a.ensurePayloadInstalled(ctx, distro)
 	logBootPhase("launcher.ensure_payload", phaseStarted)
 	if err != nil {
 		w.SetURL("/picker")
@@ -648,6 +656,25 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	}
 
 	l, bs, err := a.launchAndProbe(ctx, distro, binPath)
+	if err != nil && cachedPath && errors.Is(err, errLaunchFailed) {
+		// The recorded path is the one thing this boot trusted without
+		// asking WSL. If the distro's default user or HOME moved since
+		// the install, the spawn dies before its bootstrap line; resolve
+		// the path the slow way once, reinstall there, and retry. A
+		// path that resolves the same is a real launch failure and falls
+		// through to the error page below.
+		if fresh, resolveErr := wslHomePath(ctx, distro); resolveErr != nil {
+			log.Printf("launcher: recorded payload path %q failed to launch and could not be re-resolved: %v", binPath, resolveErr)
+		} else if fresh != binPath {
+			log.Printf("launcher: recorded payload path %q is stale; reinstalling at %q", binPath, fresh)
+			if installErr := installPayload(ctx, distro, fresh); installErr != nil {
+				w.SetURL("/picker")
+				return fmt.Errorf("reinstall payload at %q: %w", fresh, installErr)
+			}
+			binPath = fresh
+			l, bs, err = a.launchAndProbe(ctx, distro, binPath)
+		}
+	}
 	if err != nil {
 		var httpErr bootstrapHTTPError
 		switch {
@@ -696,7 +723,7 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	// freshly-installed binary in that distro — we just don't change
 	// which distro the launcher boots into by default.
 	if !transient {
-		if err := a.persistSuccessfulLaunch(distro); err != nil {
+		if err := a.persistSuccessfulLaunch(distro, binPath); err != nil {
 			log.Printf("save config after launch: %v", err)
 		}
 	}
@@ -1167,7 +1194,10 @@ func probeBootstrap(port int, token string) error {
 type bootstrapProbeConfig struct {
 	AttemptTimeout time.Duration
 	Deadline       time.Duration
-	PollInterval   time.Duration
+	// PollInterval caps the retry gap; InitialPollInterval is the first
+	// gap, doubling after every failed attempt up to the cap.
+	PollInterval        time.Duration
+	InitialPollInterval time.Duration
 }
 
 type bootstrapHTTPError struct {
@@ -1212,6 +1242,12 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = bootstrapProbePollInterval
 	}
+	if cfg.InitialPollInterval <= 0 {
+		cfg.InitialPollInterval = bootstrapProbeInitialPollInterval
+	}
+	if cfg.InitialPollInterval > cfg.PollInterval {
+		cfg.InitialPollInterval = cfg.PollInterval
+	}
 
 	// 127.0.0.1, not "localhost": Windows resolves "localhost" to both
 	// ::1 and 127.0.0.1, and Go's dialer races them. WSL2's
@@ -1232,9 +1268,10 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 	// and the launcher's first probe usually lands inside that race —
 	// Windows returns RST and we'd surface a misleading
 	// connectivity-error page even though the backend is healthy and
-	// the forwarder is about to catch up. We use a 250 ms / 30 s probe
-	// loop because the backend may now publish its bootstrap port before
-	// ServiceStartup has released readiness.
+	// the forwarder is about to catch up. The loop runs up to 30 s with a
+	// gap that starts at 25 ms and doubles to 250 ms, because the backend
+	// publishes its bootstrap port before ServiceStartup has released
+	// readiness and is usually ready within a couple of hundred ms.
 	//
 	// Transport errors (refused / timeout / DNS failure) are
 	// transient and trigger a retry. An HTTP-level response (any
@@ -1251,6 +1288,7 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 	// backend answered and we didn't like the answer". See
 	// errBackendUnreachable.
 	sawHTTPResponse := false
+	wait := cfg.InitialPollInterval
 	for {
 		attempt++
 		resp, err := getWithToken(client, url, token)
@@ -1278,7 +1316,8 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 				if time.Now().After(deadline) {
 					break
 				}
-				time.Sleep(cfg.PollInterval)
+				time.Sleep(wait)
+				wait = min(wait*2, cfg.PollInterval)
 				continue
 			}
 			// Server is reachable but rejected. Surface the response
@@ -1291,7 +1330,8 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 		if time.Now().After(deadline) {
 			break
 		}
-		time.Sleep(cfg.PollInterval)
+		time.Sleep(wait)
+		wait = min(wait*2, cfg.PollInterval)
 	}
 	if !sawHTTPResponse {
 		return fmt.Errorf("GET %s: %w after %d attempts: %w", redacted, errBackendUnreachable, attempt, lastErr)
@@ -1355,7 +1395,7 @@ func validateBootstrapResponse(body []byte, port int) error {
 // switched via the Settings UI) doesn't get clobbered. The launcher
 // owns InstalledVer + InstalledDistro; the backend owns Distro from
 // the moment the user picks a different one.
-func (a *launcherApp) persistSuccessfulLaunch(distro string) error {
+func (a *launcherApp) persistSuccessfulLaunch(distro, binPath string) error {
 	if activeProfile != "" {
 		// wsl.json is shared with the real instance (and co-written by
 		// the WSL backend's Settings distro switch). A profiled launch
@@ -1373,6 +1413,7 @@ func (a *launcherApp) persistSuccessfulLaunch(distro string) error {
 	cfg.Distro = distro
 	cfg.InstalledVer = payloadVersion
 	cfg.InstalledDistro = distro
+	cfg.InstalledBinPath = binPath
 	return saveConfig(cfg)
 }
 

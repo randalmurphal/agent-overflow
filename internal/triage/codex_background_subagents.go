@@ -541,7 +541,7 @@ func (r *Router) synthesizeCodexBackgroundCompletion(evt provider.ProviderEvent,
 		return nil
 	}
 
-	tailTurn, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launch.TurnIndex)
+	tailTurn, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launch.TurnIndex, launch.ParentID)
 	if err != nil {
 		// Fall back to the launch turn rather than drop the row. A
 		// store read failure here is rare, but the launching turn is

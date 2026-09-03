@@ -113,9 +113,9 @@ func TestListSubagentDescendants_MultiLevelOrderedAndExcludedFromWindows(t *test
 
 	// Windows carry only top-level rows; the anchor's collapsed card
 	// aggregates stand in for the unloaded subtree.
-	paged, err := s.ListRecentItems("t", 0)
+	paged, err := s.ListThreadSliceAround("t", "", 200)
 	if err != nil {
-		t.Fatalf("list recent: %v", err)
+		t.Fatalf("list slice: %v", err)
 	}
 	if !equalStringSlice(collectIDs(paged.Items), []string{"grand", "noise", "noise2"}) {
 		t.Errorf("window: got %v, want [grand noise noise2]", collectIDs(paged.Items))
@@ -249,9 +249,9 @@ func TestListSubagentDescendants_FiltersPlanUpdateChildren(t *testing.T) {
 		t.Errorf("descendants: got %v, want [c-real]", collectIDs(descendants))
 	}
 
-	paged, err := s.ListRecentItems("t", 0)
+	paged, err := s.ListThreadSliceAround("t", "", 200)
 	if err != nil {
-		t.Fatalf("list recent: %v", err)
+		t.Fatalf("list slice: %v", err)
 	}
 	anchor, ok := itemByID(paged.Items, "anchor")
 	if !ok {
@@ -318,9 +318,9 @@ func TestDecorateSubagentAnchors_PreviewPrefersActiveThenLatest(t *testing.T) {
 	seedToolChildItem(t, s, "t", "b-done", 1, 1, "anchor-b", "did the thing", "completed")
 	seedToolChildItem(t, s, "t", "b-run-empty", 1, 2, "anchor-b", "", "running")
 
-	paged, err := s.ListRecentItems("t", 0)
+	paged, err := s.ListThreadSliceAround("t", "", 200)
 	if err != nil {
-		t.Fatalf("list recent: %v", err)
+		t.Fatalf("list slice: %v", err)
 	}
 
 	anchorA, ok := itemByID(paged.Items, "anchor-a")
@@ -360,9 +360,9 @@ func TestDecorateSubagentAnchors_EmptySummariesOmitSummaryKey(t *testing.T) {
 	seedAnchorItem(t, s, "t", "anchor", 0, 0)
 	seedChildItem(t, s, "t", "c-blank", 0, 1, "anchor", "", "running")
 
-	paged, err := s.ListRecentItems("t", 0)
+	paged, err := s.ListThreadSliceAround("t", "", 200)
 	if err != nil {
-		t.Fatalf("list recent: %v", err)
+		t.Fatalf("list slice: %v", err)
 	}
 	anchor, ok := itemByID(paged.Items, "anchor")
 	if !ok {
@@ -414,9 +414,9 @@ func TestListSubagentDescendants_CapsAtMaxNewestWin(t *testing.T) {
 
 	// The collapsed-card badge still reports the full total — the cap
 	// bounds one hydrate call, not the aggregate.
-	paged, err := s.ListRecentItems("t", 0)
+	paged, err := s.ListThreadSliceAround("t", "", 200)
 	if err != nil {
-		t.Fatalf("list recent: %v", err)
+		t.Fatalf("list slice: %v", err)
 	}
 	anchor, ok := itemByID(paged.Items, "anchor")
 	if !ok {
@@ -463,9 +463,9 @@ func TestDecorateSubagentAnchors_StaleStoredSummaryKeyDropped(t *testing.T) {
 	}
 	seedChildItem(t, s, "t", "c-blank", 0, 1, "anchor", "", "running")
 
-	paged, err := s.ListRecentItems("t", 0)
+	paged, err := s.ListThreadSliceAround("t", "", 200)
 	if err != nil {
-		t.Fatalf("list recent: %v", err)
+		t.Fatalf("list slice: %v", err)
 	}
 	anchor, ok := itemByID(paged.Items, "anchor")
 	if !ok {
@@ -507,9 +507,9 @@ func TestDecorateSubagentAnchors_LeavesChildlessRowsUntouched(t *testing.T) {
 	seedItem(t, s, "t", "text-row", 1, 0, "")
 	seedItem(t, s, "t", "text-child", 1, 1, "text-row")
 
-	paged, err := s.ListRecentItems("t", 0)
+	paged, err := s.ListThreadSliceAround("t", "", 200)
 	if err != nil {
-		t.Fatalf("list recent: %v", err)
+		t.Fatalf("list slice: %v", err)
 	}
 	plain, ok := itemByID(paged.Items, "plain-tool")
 	if !ok {

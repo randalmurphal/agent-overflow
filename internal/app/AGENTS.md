@@ -177,7 +177,7 @@ that happened may CARRY BACK, from the same per-call proof.
 - **Why there is a second axis at all.** `GetNetworkSettings` is
   `access:admin`, because managing how a backend is exposed is what a paired
   admin device is for — a `host` annotation refused every one of them and left
-  Settings → Network reachable from nowhere but the machine. But two fields of
+  Settings → Remote access reachable from nowhere but the machine. But two fields of
   its answer are host-only whatever the grant: this launch's token, and the
   ticket-bearing share URLs. Widening the CALL and narrowing the ANSWER is one
   change, not a compromise between two.

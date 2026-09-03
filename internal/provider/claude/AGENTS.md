@@ -47,6 +47,25 @@ to "clean up" by mistake.
   or on what counts as one safe CLI argument. `mergeDisallowedTools`
   stays unexported: the read-only mode strip it unions in is
   headless-only, because `EnforcesRuntimeMode` is false on claude-tui.
+- `Config.AdditionalDirs` emits one `--add-dir <dir>` per entry. The app
+  stamps the attachments root there on every spawn so a Read of a file
+  the user attached is not a permission prompt for a path outside the
+  workspace (`docs/specs/file-attachments.md`). The root is a process
+  constant, which is why it rides `Config` like `ProjectsDir` rather
+  than `SessionOptions` — a never-changing field in the restart diff
+  would be noise.
+
+  **Verified, not assumed:** the CLI declares the option VARIADIC
+  (`--add-dir <directories...>`, `src/main.tsx`), and commander
+  concatenates a repeated variadic option's values rather than replacing
+  them (`Option._concatValue` in commander 11.1.0), so one flag per
+  directory builds the same array a single space-separated occurrence
+  would. The repeated form is also the safe one: a variadic option
+  consumes following argv tokens until the next `-`-prefixed one, so the
+  flag is emitted before `PermissionFlags` and never at the tail.
+  `claudetui`'s PTY launch passes the same flag for the same reason —
+  one binary, one attachments root, and a take-control session must not
+  be the surface that prompts.
 - Put a spawn-time-only axis on `Config` and NOT on
   `provider.SessionOptions`. `PlanLiveUpdate` diffs
   `ConfigFromOptions(prev)` against `ConfigFromOptions(next)`, so a field
@@ -229,6 +248,16 @@ dispatches. Parser state is single-goroutine, driven by the read loop.
   them yet. When something is: light up a newer path on PRESENCE, and
   never refuse an older path on absence, because the stream-json engine
   under-reports what it implements.
+- `run_in_background: true` on a tool_use input is a HINT
+  (`backgroundHintInput`), never a verdict. The completion classifies
+  from `tool_use_result.backgroundTaskId` or, on a sidechain where
+  Claude omits the envelope, from the ack text
+  (`sessionimport.BackgroundAckTaskID`, claude-wire.md §E2b). Only a
+  `task_started` rebind (`backgroundFromTaskStarted`, §E6) is a verdict
+  on its own. A flagged launch the CLI refused (hook deny, don't-ask
+  permission denial) settles as an ordinary error; treating the flag as
+  sufficient is what left refused shells "running" in the tray for 13
+  hours with no task id to stop them by (2026-09-02).
 - Absence is never a denial anywhere on this wire. `fast_mode_state`,
   `fast_mode_disabled_reason` and an absent `commands` / `tasks` key all
   mean "no signal", never "off" or "empty". An EMPTY array, by contrast,

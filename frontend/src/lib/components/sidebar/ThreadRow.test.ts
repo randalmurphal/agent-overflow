@@ -3,7 +3,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadRow from './ThreadRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
+import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { refreshThreads } from '../../stores/threads.svelte';
@@ -98,6 +98,49 @@ describe('<ThreadRow> archive action', () => {
     const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread, pane } });
     expect(getByTestId('thread-row-archive')).toBeInTheDocument();
     expect(queryByTestId('thread-row-delete')).toBeNull();
+  });
+});
+
+describe('<ThreadRow> open / focused marker', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+    resetKeybindingsStore();
+    resetKeyboardModifiersForTest();
+  });
+
+  it('marks open when mounted in a non-focused pane, open + focused in the focused one', async () => {
+    const thread = makeThread();
+    const focused = createThreadPane();
+    const other = createThreadPane();
+    registerPaneForTest('main', focused);
+    registerPaneForTest('right', other);
+    other.replaceThread(thread);
+
+    // Row rendered against the FOCUSED pane (what the sidebar passes), while
+    // the thread lives in the other one.
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane: focused } });
+    const shell = getByTestId('thread-row-shell');
+    expect(shell.dataset.open).toBe('true');
+    expect(shell.dataset.focused).toBeUndefined();
+    expect(getByTestId('thread-row').classList.contains('text-fg')).toBe(true);
+
+    // Transition: the thread moves into the focused pane.
+    other.replaceThread(makeThread({ id: 'elsewhere' }));
+    focused.replaceThread(thread);
+    await tick();
+    expect(shell.dataset.open).toBe('true');
+    expect(shell.dataset.focused).toBe('true');
+
+    // Transition: closed everywhere.
+    focused.replaceThread(makeThread({ id: 'another' }));
+    await tick();
+    expect(shell.dataset.open).toBeUndefined();
+    expect(shell.dataset.focused).toBeUndefined();
+    expect(getByTestId('thread-row').classList.contains('text-fg-muted')).toBe(true);
   });
 });
 
@@ -210,7 +253,12 @@ describe('<ThreadRow> drag source', () => {
   });
 
   it('publishes a sidebar-thread drag payload', async () => {
-    const thread = makeThread({ id: 'drag-source', title: 'Drag Source' });
+    const thread = makeThread({
+      id: 'drag-source',
+      title: 'Drag Source',
+      projectId: 'project-1',
+      groupId: 'group-1',
+    });
     const pane = createThreadPane();
     const rendered = render(ThreadRow, { props: { thread, pane } });
     const row = rendered.getByTestId('thread-row');
@@ -219,9 +267,14 @@ describe('<ThreadRow> drag source', () => {
     await fireEvent.dragStart(row, { dataTransfer });
 
     expect(dataTransfer.types).toContain(THREAD_ROW_DRAG_MIME);
+    // Project and current group ride along: a group drop target refuses a
+    // cross-project thread, and the ungroup drop needs to know what the
+    // thread left.
     expect(JSON.parse(dataTransfer.getData(THREAD_ROW_DRAG_MIME))).toEqual({
       threadId: 'drag-source',
       title: 'Drag Source',
+      projectId: 'project-1',
+      groupId: 'group-1',
     });
   });
 });
@@ -601,6 +654,15 @@ describe('<ThreadRow> pin affordance placement', () => {
     expect(pin.className).toContain('group-hover/thread-item:opacity-100');
   });
 
+  it('hides the pin affordance on a grouped row — the GROUP carries the pin', () => {
+    const pane = createThreadPane();
+    const { queryByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ groupId: 'g1' }), pane },
+    });
+
+    expect(queryByTestId('thread-row-pin')).toBeNull();
+  });
+
   it('keeps the pin action out of nested discussion participant rows', () => {
     const pane = createThreadPane();
     const { queryByTestId } = render(ThreadRow, {
@@ -867,6 +929,21 @@ describe('<ThreadRow> live status dot', () => {
     expect(shell.classList.contains('status-glow-warning')).toBe(false);
   });
 
+  it('an open row that is pending approval keeps both the accent bar and the glow', () => {
+    // The glow ring is the shell's ::before; the open-thread bar must live on
+    // ::after or the two collapse into one hybrid pseudo-element.
+    setThreadStatus('t-open-glow', 'pending-approval');
+    const thread = makeThread({ id: 't-open-glow' });
+    const pane = createThreadPane();
+    registerPaneForTest('main', pane);
+    pane.replaceThread(thread);
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    const shell = getByTestId('thread-row-shell');
+    expect(shell.classList.contains('status-glow-warning')).toBe(true);
+    expect(shell.classList.contains('after:bg-accent')).toBe(true);
+    expect(Array.from(shell.classList).some((c) => c.startsWith('before:'))).toBe(false);
+  });
+
   it('does not apply a glow class when the row is merely running', () => {
     markThreadRunning('t-glow-run');
     const pane = createThreadPane();
@@ -908,7 +985,8 @@ describe('<ThreadRow> live status dot', () => {
     const dot = getByTestId('thread-row-status-dot');
     expect(dot.getAttribute('data-status')).toBe('interrupted');
     expect(dot.getAttribute('aria-label')).toBe('Interrupted');
-    expect(dot.classList.contains('bg-warning')).toBe(true);
+    expect(dot.classList.contains('border-warning')).toBe(true);
+    expect(dot.classList.contains('bg-transparent')).toBe(true);
     expect(dot.classList.contains('animate-pulse')).toBe(false);
   });
 
@@ -1073,6 +1151,81 @@ describe('<ThreadRow> nested row chrome', () => {
     // Compact layout: every row reserves a 24px leading pin gutter, then
     // depth 2+ steps 8px per nesting level. indent=2 -> 24 + 8 = 32px.
     expect(outer.style.paddingLeft).toBe('32px');
+  });
+
+  it('reserves no pin gutter inside a group: the rail carries the nesting', () => {
+    const pane = createThreadPane();
+    const { container } = render(ThreadRow, {
+      props: { thread: makeThread({ groupId: 'g1' }), pane, indent: 2, inGroup: true },
+    });
+    const outer = container.querySelector('[role="button"]') as HTMLElement;
+    expect(outer.style.paddingLeft).toBe('8px');
+  });
+});
+
+describe('<ThreadRow> context menu dismissal', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+  });
+
+  it('a left click on the row itself closes its open context menu', async () => {
+    const pane = createThreadPane();
+    const { getByTestId, queryByRole } = render(ThreadRow, {
+      props: { thread: makeThread(), pane },
+    });
+
+    await fireEvent.contextMenu(getByTestId('thread-row'));
+    await tick();
+    expect(queryByRole('menu', { name: 'Thread Actions' })).not.toBeNull();
+
+    // The row is the menu's anchor, not a toggle: the click must reach the
+    // row (open the thread) with the menu out of the way.
+    await fireEvent.mouseDown(getByTestId('thread-row'));
+    await tick();
+    expect(queryByRole('menu', { name: 'Thread Actions' })).toBeNull();
+  });
+});
+
+describe('<ThreadRow> status is visual only', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+  });
+
+  it('renders no status text: the label is the dot’s accessible name only', () => {
+    const { getByTestId, queryByText } = render(ThreadRow, {
+      props: { thread: makeThread({ lastReadAt: 1_000, latestTurnCompletedAt: 2_000 }), pane: createThreadPane() },
+    });
+    expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Completed');
+    expect(queryByText('Completed')).toBeNull();
+  });
+
+  it('Completed rings the row shell; a read row has no ring', () => {
+    const unread = render(ThreadRow, {
+      props: { thread: makeThread({ id: 'a', lastReadAt: 1_000, latestTurnCompletedAt: 2_000 }), pane: createThreadPane() },
+    });
+    const read = render(ThreadRow, {
+      props: { thread: makeThread({ id: 'b', lastReadAt: 3_000, latestTurnCompletedAt: 2_000 }), pane: createThreadPane() },
+    });
+    const shellOf = (view: typeof unread) =>
+      view.container.querySelector('[data-testid="thread-row-shell"]') as HTMLElement;
+    expect(shellOf(unread).className).toContain('ring-success/40');
+    expect(shellOf(read).className).not.toContain('ring-');
+  });
+
+  it('Interrupted is a hollow amber dot', () => {
+    const { getByTestId } = render(ThreadRow, {
+      props: { thread: makeThread({ hasIncompleteTurn: true }), pane: createThreadPane() },
+    });
+    const dot = getByTestId('thread-row-status-dot');
+    expect(dot.getAttribute('data-status')).toBe('interrupted');
+    expect(dot.className).toContain('border-warning');
+    expect(dot.className).toContain('bg-transparent');
   });
 });
 

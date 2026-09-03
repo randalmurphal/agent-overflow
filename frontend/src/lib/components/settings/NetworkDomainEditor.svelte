@@ -122,6 +122,7 @@
 
   <div class="flex flex-col gap-1">
     <SettingsField
+      id="remote.domain"
       label="Domain"
       hint="A bare hostname such as ao.example.com. No scheme, no port, no path. Leave it blank to reach this backend by address only."
       htmlFor="network-canonical-domain"
@@ -142,6 +143,7 @@
     </SettingsField>
 
     <SettingsField
+      id="remote.dns-hook"
       label="DNS update command"
       hint="Publishes the record Let's Encrypt checks. Agent Overflow runs it with set or clear, the record name, and the value appended. There is no shell, so write sh -c '…' if you need one. Leave it blank if you are not using Let's Encrypt."
       htmlFor="network-dns-hook"
@@ -168,6 +170,7 @@
     </SettingsField>
 
     <SettingsField
+      id="remote.certificate-file"
       label="Certificate file"
       hint="Absolute path to a PEM certificate you already have. Fill this and the key to serve them instead of obtaining a certificate."
       htmlFor="network-external-cert"
@@ -188,6 +191,7 @@
     </SettingsField>
 
     <SettingsField
+      id="remote.private-key-file"
       label="Private key file"
       hint="Absolute path to the matching PEM private key."
       htmlFor="network-external-key"

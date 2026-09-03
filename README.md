@@ -154,7 +154,7 @@ directly rather than putting it somewhere copyable.
 A handful of opt-in modes extend that:
 
 - **`--listen <addr>`** binds the transport to a different interface
-  (e.g. `0.0.0.0:54321` for LAN). Settings → Network renders a share URL
+  (e.g. `0.0.0.0:54321` for LAN). Settings → Remote access renders a share URL
   for the bound interface; each render carries its own one-time ticket,
   so a second device needs the panel read again.
   Equivalent to flipping the "Allow remote access" toggle in Settings →
@@ -167,7 +167,7 @@ A handful of opt-in modes extend that:
   - `ws://host:port/ws?token=<value>` — a backend on this machine, or
     one reached through an SSH tunnel. The upstream's launch token
     authenticates the hop.
-  - a pairing link copied from the other machine's Settings → Network —
+  - a pairing link copied from the other machine's Settings → Remote access —
     for a backend across a network, where a launch token is not enough.
     The terminal shows a six-digit verification number to compare and
     confirm on that machine; once confirmed, this installation holds a
@@ -175,7 +175,7 @@ A handful of opt-in modes extend that:
     certificate with.
   - the paired backend's name or endpoint — reuses that stored
     credential, so pairing happens once per machine.
-- **Tailnet access** (Settings → Network) joins this backend to your own
+- **Tailnet access** (Settings → Remote access) joins this backend to your own
   Tailscale network as its own machine, so it is reachable from anywhere
   you are signed in — with no port forwarded, no public listener, and no
   tunnel process to run. Turning it on gives you a link to approve the

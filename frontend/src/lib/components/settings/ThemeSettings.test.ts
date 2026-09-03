@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
-import AppearanceSection from './AppearanceSection.svelte';
+import ThemeSettings from './ThemeSettings.svelte';
 import {
   getAppearanceThemes,
   loadAppearance,
@@ -43,10 +43,10 @@ afterEach(() => {
   resetThemeApplyForTest();
 });
 
-describe('<AppearanceSection> — controls', () => {
+describe('<ThemeSettings> — controls', () => {
   it('renders one mode picker and one picker per axis', async () => {
     await loadAppearance();
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
 
     const mode = getByTestId('settings-theme-mode') as HTMLSelectElement;
     expect(optionIds(mode)).toEqual(['system', 'light', 'dark']);
@@ -60,7 +60,7 @@ describe('<AppearanceSection> — controls', () => {
 
   it('persists a mode change through the appearance RPC', async () => {
     await loadAppearance();
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
     const select = getByTestId('settings-theme-mode') as HTMLSelectElement;
     select.value = 'dark';
     await fireEvent.change(select);
@@ -74,7 +74,7 @@ describe('<AppearanceSection> — controls', () => {
       { id: 'mono', raw: JSON.stringify({ name: 'Mono', dark: { ansi: { 'ansi-fg-31': '#f00' } } }) },
     ]);
     await loadAppearance();
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
 
     const ui = getByTestId('settings-ui-theme') as HTMLSelectElement;
     ui.value = 'nord';
@@ -99,7 +99,7 @@ describe('<AppearanceSection> — controls', () => {
       { id: 'syntax', raw: JSON.stringify({ dark: { syntax: { 'syntax-keyword': '#f0f' } } }) },
     ]);
     await loadAppearance();
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
 
     expect(optionIds(getByTestId('settings-ui-theme'))).toContain('chrome');
     expect(optionIds(getByTestId('settings-ui-theme'))).not.toContain('syntax');
@@ -116,7 +116,7 @@ describe('<AppearanceSection> — controls', () => {
       },
     ]);
     await loadAppearance();
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
     const ui = getByTestId('settings-ui-theme') as HTMLSelectElement;
     const option = (id: string) => ui.querySelector(`option[value="${id}"]`) as HTMLOptionElement;
 
@@ -135,7 +135,7 @@ describe('<AppearanceSection> — controls', () => {
       { id: 'neon', raw: JSON.stringify({ name: 'Neon', dark: { colors: { accent: '#b45cff' } } }) },
     ]);
     await loadAppearance();
-    const { getByTestId, queryByTestId } = render(AppearanceSection);
+    const { getByTestId, queryByTestId } = render(ThemeSettings);
 
     await setAppearance({ uiTheme: 'neon', mode: 'dark' });
     expect(queryByTestId('settings-ui-theme-benched')).toBeNull();
@@ -151,7 +151,7 @@ describe('<AppearanceSection> — controls', () => {
 
   it('labels every entry with its plain name, the axis default first', async () => {
     await loadAppearance();
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
     const ui = getByTestId('settings-ui-theme') as HTMLSelectElement;
     const options = [...ui.querySelectorAll('option')];
     // No "(built-in)" suffix noise; the default leads the list.
@@ -160,14 +160,14 @@ describe('<AppearanceSection> — controls', () => {
   });
 });
 
-describe('<AppearanceSection> — broken files', () => {
+describe('<ThemeSettings> — broken files', () => {
   it('lists an unselectable file disabled, with its reason, rather than hiding it', async () => {
     // A theme that simply vanishes from the picker is indistinguishable from
     // one that was never written — which is the failure the warnings-as-data
     // path exists to prevent.
     seed([{ id: 'oops', raw: '{ not json' }]);
     await loadAppearance();
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
 
     const ui = getByTestId('settings-ui-theme') as HTMLSelectElement;
     const broken = ui.querySelector('option[value="oops"]') as HTMLOptionElement;
@@ -185,7 +185,7 @@ describe('<AppearanceSection> — broken files', () => {
   it('renders backend file warnings verbatim', async () => {
     seed([], ['huge.json is larger than 64 KB and was skipped.']);
     await loadAppearance();
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
     expect(getByTestId('settings-theme-warnings').textContent).toContain(
       'huge.json is larger than 64 KB and was skipped.',
     );
@@ -206,7 +206,7 @@ describe('<AppearanceSection> — broken files', () => {
       },
     ]);
     await loadAppearance();
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
     const block = getByTestId('settings-theme-warnings');
     const items = [...block.querySelectorAll('li li')];
     const nonsuch = items.filter((item) => item.textContent?.includes('"nonsuch"'));
@@ -223,7 +223,7 @@ describe('<AppearanceSection> — broken files', () => {
       { id: 'unselected', raw: JSON.stringify({ dark: { colors: { srface1: '#111111' } } }) },
     ]);
     await loadAppearance();
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
     const text = getByTestId('settings-theme-warnings').textContent ?? '';
     expect(text).toContain('unselected');
     expect(text).toContain('srface1');
@@ -244,7 +244,7 @@ describe('<AppearanceSection> — broken files', () => {
       themes: getAppearanceThemes(),
       revision: 1,
     });
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
     const items = [...getByTestId('settings-theme-warnings').querySelectorAll('li li')];
     // The applier's list and the per-file list overlap on the selected theme.
     expect(items.filter((item) => item.textContent?.includes('srface1'))).toHaveLength(1);
@@ -260,7 +260,7 @@ describe('<AppearanceSection> — broken files', () => {
       themes: [],
       revision: 1,
     });
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
     expect(getByTestId('settings-theme-warnings').textContent).toContain('ghost');
   });
 
@@ -272,15 +272,15 @@ describe('<AppearanceSection> — broken files', () => {
       themes: [],
       revision: 1,
     });
-    const { container } = render(AppearanceSection);
+    const { container } = render(ThemeSettings);
     expect(container.textContent).toContain('interface theme fell back');
   });
 });
 
-describe('<AppearanceSection> — degraded session', () => {
+describe('<ThemeSettings> — degraded session', () => {
   it('names the themes directory when there is one', async () => {
     await loadAppearance();
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
     expect(getByTestId('settings-theme-dir').textContent).toBe(
       '/home/u/.config/agent-overflow/themes',
     );
@@ -291,7 +291,7 @@ describe('<AppearanceSection> — degraded session', () => {
       throw Object.assign(new Error('nope'), { code: 'method_not_found' });
     });
     await loadAppearance();
-    const { container, getByTestId, queryByTestId } = render(AppearanceSection);
+    const { container, getByTestId, queryByTestId } = render(ThemeSettings);
 
     expect(container.textContent).toContain('only the built-in themes');
     expect(queryByTestId('settings-theme-dir')).toBeNull();
@@ -306,7 +306,7 @@ describe('<AppearanceSection> — degraded session', () => {
     });
     await setAppearance({ mode: 'dark' });
 
-    const { getByTestId, queryByTestId } = render(AppearanceSection);
+    const { getByTestId, queryByTestId } = render(ThemeSettings);
     // The themes directory IS readable here, so the built-ins-only callout
     // would be a lie.
     expect(getByTestId('settings-theme-local-only')).toBeTruthy();
@@ -318,7 +318,7 @@ describe('<AppearanceSection> — degraded session', () => {
       throw Object.assign(new Error('nope'), { code: 'method_not_found' });
     });
     await loadAppearance();
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
     const mode = getByTestId('settings-theme-mode') as HTMLSelectElement;
     mode.value = 'light';
     await fireEvent.change(mode);
@@ -328,10 +328,10 @@ describe('<AppearanceSection> — degraded session', () => {
   });
 });
 
-describe('<AppearanceSection> — reactivity', () => {
+describe('<ThemeSettings> — reactivity', () => {
   it('follows a selection changed from anywhere else', async () => {
     await loadAppearance();
-    const { getByTestId } = render(AppearanceSection);
+    const { getByTestId } = render(ThemeSettings);
     await setAppearance({ mode: 'dark' });
     expect((getByTestId('settings-theme-mode') as HTMLSelectElement).value).toBe('dark');
   });

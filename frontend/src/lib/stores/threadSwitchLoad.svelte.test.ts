@@ -447,18 +447,14 @@ describe('threadSwitchLoad', () => {
       ]);
     });
 
-    it('does not call ListRecentThreadItems on switchThread (single-load contract)', async () => {
-      // Pin the no-Phase-2 invariant: if the wider-window probe ever
+    it('loads the switch window exactly once (single-load contract)', async () => {
+      // Pin the no-Phase-2 invariant: if a wider-window probe ever
       // creeps back into the switch path, the residual flicker
       // (wide prepend → applyJump fight with the controller's
       // sync-pin) returns.
       const calls: string[] = [];
       setBindingMock('ListThreadSliceAround', async () => {
         calls.push('ListThreadSliceAround');
-        return { items: [], oldestTurnIndex: -1, hasMore: false };
-      });
-      setBindingMock('ListRecentThreadItems', async () => {
-        calls.push('ListRecentThreadItems');
         return { items: [], oldestTurnIndex: -1, hasMore: false };
       });
       const pane = createThreadPane();

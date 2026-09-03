@@ -71,7 +71,7 @@ import (
 // # A passkey is not a device
 //
 // One synced credential appears on every phone a person owns. The
-// credential rows therefore hang off the ACCOUNT (store migration v78),
+// credential rows therefore hang off the ACCOUNT (store migration v82),
 // and the DEVICE a sign-in produces is resolved separately, from the
 // device-key proof the finish carries — the same enrollment rules pairing
 // redemption runs, reached through the same enrollmentFor.
@@ -118,7 +118,7 @@ const (
 // person, and the origins a response may declare.
 //
 // Resolved by the boot (internal/app, from the canonical domain in
-// Settings → Network and the listener's own authority) because only it
+// Settings → Remote access and the listener's own authority) because only it
 // knows what this backend answers to. This package pins whatever it is
 // given into the ceremony record and compares against that pinned copy at
 // finish, so a domain change mid-ceremony refuses the ceremony rather than
@@ -208,7 +208,7 @@ type PasskeySignIn struct {
 	// which one was used.
 	PasskeyID string
 	// CloneWarning is true when the authenticator's counter failed to
-	// advance. Reported, never acted on (store migration v78): it is
+	// advance. Reported, never acted on (store migration v82): it is
 	// surfaced as an anomaly beside the credential.
 	CloneWarning bool
 }

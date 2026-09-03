@@ -2,15 +2,30 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { isPromoteModifier, openReviewForItem } from './reviewTrigger';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { openReviewCompanion } from '../../stores/reviewPane.svelte';
+import type { Thread } from '../../types/models';
 
-vi.mock('../../stores/reviewPane.svelte', () => ({
+// `reviewSubjectForPane` is the real thing: it IS the derivation under test
+// here — what the trigger hands the companion — so mocking it would assert
+// nothing. Only the companion open is stubbed.
+vi.mock('../../stores/reviewPane.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/reviewPane.svelte')>()),
   openReviewCompanion: vi.fn(async () => null),
 }));
+
+const THREAD = { id: 'thread-1', workspacePath: '/repo', projectId: 'project-1' } as Thread;
+const SUBJECT = {
+  identity: 'thread-1',
+  threadId: 'thread-1',
+  workspace: { projectId: 'project-1', workspacePath: '/repo' },
+  thread: THREAD,
+};
 
 function makeFakePane(): ThreadPane {
   return {
     paneId: 'pane-1',
     threadId: 'thread-1',
+    thread: THREAD,
+    workspace: { projectId: 'project-1', workspacePath: '/repo' },
   } as unknown as ThreadPane;
 }
 
@@ -22,7 +37,7 @@ describe('reviewTrigger', () => {
   it('opens workspace scope with a file target', () => {
     openReviewForItem(makeFakePane(), { filePath: 'src/foo.ts' });
 
-    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
+    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', SUBJECT, {
       scope: 'workspace',
       filePath: 'src/foo.ts',
     });
@@ -31,7 +46,7 @@ describe('reviewTrigger', () => {
   it('opens workspace scope without a file target', () => {
     openReviewForItem(makeFakePane());
 
-    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
+    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', SUBJECT, {
       scope: 'workspace',
       filePath: undefined,
     });
@@ -49,5 +64,20 @@ describe('reviewTrigger', () => {
     const shift = new MouseEvent('click', { shiftKey: true });
     expect(isPromoteModifier(plain)).toBe(false);
     expect(isPromoteModifier(shift)).toBe(false);
+  });
+});
+
+describe('reviewTrigger — no checkout', () => {
+  it('does nothing for a pane whose thread names no workspace', () => {
+    const terminalPane = {
+      paneId: 'pane-1',
+      threadId: 'thread-1',
+      thread: { id: 'thread-1' } as Thread,
+      workspace: null,
+    } as unknown as ThreadPane;
+    // A terminal-only thread has no checkout: the review companion has no
+    // subject, and nothing throws.
+    expect(() => openReviewForItem(terminalPane, { filePath: 'src/foo.ts' })).not.toThrow();
+    expect(openReviewCompanion).not.toHaveBeenCalled();
   });
 });

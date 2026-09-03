@@ -218,7 +218,7 @@ func newTestSession(id string, owner User, device Device, key SigningKey, expire
 		BindingClass: "device-bound", Scopes: []string{"threads:read"},
 		SigningKeyID: key.ID, CreatedAt: 1000, ExpiresAt: expires,
 		// Directly minted, so activated the moment it was written. Only a
-		// pairing redemption leaves this zero (v76).
+		// pairing redemption leaves this zero (v80).
 		ActivatedAt: 1000,
 	}
 }

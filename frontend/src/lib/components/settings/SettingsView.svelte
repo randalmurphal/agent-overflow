@@ -1,31 +1,28 @@
 <script lang="ts">
+  // The Settings surface: header, nav rail (SettingsRail), and the page
+  // panel. Pages come from `pages.ts`; the panel renders the active page's
+  // title and description from `sections.ts` above the page component so
+  // no page repeats its own name.
+  //
+  // A search hit opens its page and, once the page has rendered, scrolls
+  // to and flashes the field. The reveal runs after `tick()` (the page is
+  // in the DOM) and then a frame later (layout has settled), scoped to the
+  // panel so it can only ever match the page that is actually mounted.
+
+  import { tick } from 'svelte';
   import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
-  import GeneralSettings from './GeneralSettings.svelte';
-  import DevicesSection from './DevicesSection.svelte';
-  import NetworkSection from './NetworkSection.svelte';
-  import SystemsSection from './SystemsSection.svelte';
-  import WSLSection from './WSLSection.svelte';
-  import ProviderSettings from './ProviderSettings.svelte';
-  import PromptOverridesSettings from './PromptOverridesSettings.svelte';
-  import BrowserSettings from './BrowserSettings.svelte';
-  import GitSettings from './GitSettings.svelte';
-  import StorageSettings from './StorageSettings.svelte';
-  import DiscussionsSettings from './DiscussionsSettings.svelte';
-  import EditorSection from './EditorSection.svelte';
-  import ProjectsSettings from './ProjectsSettings.svelte';
-  import KeybindingsSettings from './KeybindingsSettings.svelte';
-  import ObservabilitySettings from './ObservabilitySettings.svelte';
-  import UpdatesSettings from './UpdatesSettings.svelte';
-  import UpdateBadge from '../shared/UpdateBadge.svelte';
+  import SettingsRail from './SettingsRail.svelte';
+  import { SETTINGS_PAGES } from './pages';
   import {
-    SETTINGS_SECTION_GROUPS,
-    SETTINGS_SECTION_IDS,
+    DEFAULT_SETTINGS_SECTION,
+    settingsSectionDef,
     type SettingsSection,
   } from './sections';
+  import { revealSettingsField, type SettingsSearchHit } from './settingsSearch';
+  import { SECTION_PROSE_CLASS } from './styles';
   import { Version } from '../../stores/bindings';
-  import { hasPendingUpdate } from '../../stores/updates.svelte';
 
   let appVersion = $state('');
   $effect(() => {
@@ -40,44 +37,33 @@
 
   let {
     onClose,
-    initialSection = 'general',
+    initialSection = DEFAULT_SETTINGS_SECTION,
   }: {
     onClose: () => void;
     initialSection?: SettingsSection;
   } = $props();
 
-  let activeSection: SettingsSection = $state('general');
+  let activeSection: SettingsSection = $state(DEFAULT_SETTINGS_SECTION);
 
   $effect(() => {
     activeSection = initialSection;
   });
 
-  function handleTabKeydown(e: KeyboardEvent) {
-    const ids = SETTINGS_SECTION_IDS;
-    const idx = ids.indexOf(activeSection);
-    if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-      e.preventDefault();
-      activeSection = ids[(idx + 1) % ids.length];
-      focusActiveTab();
-    } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-      e.preventDefault();
-      activeSection = ids[(idx - 1 + ids.length) % ids.length];
-      focusActiveTab();
-    } else if (e.key === 'Home') {
-      e.preventDefault();
-      activeSection = ids[0];
-      focusActiveTab();
-    } else if (e.key === 'End') {
-      e.preventDefault();
-      activeSection = ids[ids.length - 1];
-      focusActiveTab();
-    }
-  }
+  let page = $derived(settingsSectionDef(activeSection));
+  let Page = $derived(SETTINGS_PAGES[activeSection]);
+  let panelEl = $state<HTMLElement | null>(null);
 
-  function focusActiveTab() {
+  async function selectHit(hit: SettingsSearchHit): Promise<void> {
+    activeSection = hit.page.id;
+    if (hit.kind !== 'field') {
+      await tick();
+      panelEl?.scrollTo({ top: 0 });
+      return;
+    }
+    const fieldId = hit.field.id;
+    await tick();
     requestAnimationFrame(() => {
-      const el = document.getElementById(`settings-tab-${activeSection}`);
-      el?.focus();
+      if (panelEl) revealSettingsField(panelEl, fieldId);
     });
   }
 </script>
@@ -98,93 +84,28 @@
   </header>
 
   <div class="flex flex-1 min-h-0">
-    <!--
-      A `tablist` only admits `tab` children, so each cluster wraps in a
-      `presentation` div (which drops out of the a11y tree, leaving the tabs as
-      direct children) and the group micro-label is decorative: folding it into
-      a tab's accessible name would rename every tab.
-    -->
-    <div
-      class="w-56 shrink-0 border-r border-border-subtle px-3 pt-4 pb-4 flex flex-col gap-3 overflow-y-auto"
-      role="tablist"
-      aria-label="Settings Sections"
-      aria-orientation="vertical"
-    >
-      {#each SETTINGS_SECTION_GROUPS as group (group.label)}
-        <div role="presentation" class="flex flex-col gap-0.5">
-          <MicroLabel as="p" class="px-3 pb-1" decorative>{group.label}</MicroLabel>
-          {#each group.sections as section (section.id)}
-            <button
-              id="settings-tab-{section.id}"
-              onclick={() => (activeSection = section.id)}
-              onkeydown={handleTabKeydown}
-              role="tab"
-              aria-selected={activeSection === section.id}
-              aria-controls="settings-panel-{section.id}"
-              tabindex={activeSection === section.id ? 0 : -1}
-              class="w-full rounded-[var(--radius-field)] text-left px-3 py-1 text-[0.8125rem] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40
-                {activeSection === section.id
-                  ? 'bg-accent/10 text-fg font-medium'
-                  : 'text-fg-muted hover:text-fg hover:bg-surface-2/30'}"
-            >
-              {section.label}
-              {#if section.id === 'updates' && hasPendingUpdate()}
-                <UpdateBadge />
-              {/if}
-            </button>
-          {/each}
-        </div>
-      {/each}
-    </div>
+    <SettingsRail
+      {activeSection}
+      onSelectSection={(section) => (activeSection = section)}
+      onSelectHit={(hit) => void selectHit(hit)}
+    />
 
     <div
+      bind:this={panelEl}
       class="flex-1 overflow-y-auto px-8 py-6"
       role="tabpanel"
       id="settings-panel-{activeSection}"
       aria-labelledby="settings-tab-{activeSection}"
     >
       <div class="mx-auto max-w-3xl">
-        {#if activeSection === 'general'}
-          <GeneralSettings />
-        {:else if activeSection === 'keybindings'}
-          <KeybindingsSettings />
-        {:else if activeSection === 'updates'}
-          <UpdatesSettings />
-        {:else if activeSection === 'providers'}
-          <ProviderSettings />
-        {:else if activeSection === 'prompts'}
-          <PromptOverridesSettings />
-        {:else if activeSection === 'browser'}
-          <BrowserSettings />
-        {:else if activeSection === 'discussions'}
-          <DiscussionsSettings />
-        {:else if activeSection === 'projects'}
-          <ProjectsSettings />
-        {:else if activeSection === 'git'}
-          <GitSettings />
-        {:else if activeSection === 'editor'}
-          <EditorSection />
-        {:else if activeSection === 'network'}
-          <!--
-            WSLSection self-hides on non-WSL hosts and in --connect
-            mode, so the "extra" composition under Network is a no-op
-            on macOS and native Linux. Mounting it on the Network tab
-            (rather than its own tab) keeps the sidebar list stable
-            across platforms — adding a tab that's empty on most hosts
-            would clutter the UX without buying anything.
-          -->
-          <div class="flex flex-col gap-6">
-            <NetworkSection />
-            <DevicesSection />
-            <WSLSection />
-          </div>
-        {:else if activeSection === 'systems'}
-          <SystemsSection />
-        {:else if activeSection === 'observability'}
-          <ObservabilitySettings />
-        {:else if activeSection === 'storage'}
-          <StorageSettings />
-        {/if}
+        <header
+          class="mb-7 flex flex-col gap-1 border-b border-border-subtle pb-5"
+          data-testid="settings-page-header"
+        >
+          <h3 class="text-[1.125rem] font-semibold tracking-tight text-fg">{page.label}</h3>
+          <p class={SECTION_PROSE_CLASS}>{page.description}</p>
+        </header>
+        <Page />
       </div>
     </div>
   </div>

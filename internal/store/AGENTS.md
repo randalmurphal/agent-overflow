@@ -10,11 +10,11 @@ never migrated.
 
 **One family is exempt and it is the only one**: the identity tables
 (`users`, `devices`, `sessions`, `signing_keys`, `recovery_codes`,
-`auth_audit`, migration v75; `pairing_links` and `refresh_secrets`,
-migration v76; `passkeys`, migration v78) are authoritative. They cannot
+`auth_audit`, migration v79; `pairing_links` and `refresh_secrets`,
+migration v80; `passkeys`, migration v82) are authoritative. They cannot
 be rebuilt from a provider session file, and dropping a stale row means
-someone is locked out. See "Recent schema changes (v75)", "(v76)" and
-"(v78)" below before touching any sweep, prune, or restore path that
+someone is locked out. See "Recent schema changes (v79)", "(v80)" and
+"(v82)" below before touching any sweep, prune, or restore path that
 walks tables generically.
 
 - `docs/architecture/schema.md`: table-by-table reference and the index
@@ -69,6 +69,17 @@ transactions.
   readable end to end. Declarations only — nothing here applies anything.
   `migrate_freeze_test.go`'s completeness scan globs the whole package
   directory, so the freeze is unaffected by which file a derivation sits in.
+- `background_settle_triggers.go` — the schema-owned half of background
+  launch liveness (v74): the four `items` triggers that maintain
+  `items.meta.live_background_active`, their DROP counterpart, the
+  history backfill, and the trigger-name roster the schema tests assert
+  against. It is one const because it has two installers, exactly like
+  `historyRevTriggersSQL`: the migration, and `RestoreFrom`, which drops
+  the triggers for its whole-database row copy and recreates them after.
+  A future `items` REBUILD must re-install them the way v72 does for the
+  history-rev set —
+  `TestItemsRebuildMigrationsReinstallBackgroundSettleTriggers` fails the
+  build if one does not.
 - `items.go` / `items_read.go` / `items_write.go` /
   `items_lifecycle.go` / `payloads.go` — timeline item + heavy-payload
   tables. `items.go` carries the shared core (constants, scanners,
@@ -121,10 +132,29 @@ transactions.
     wrote, read back by id inside the same transaction. Returning none
     is the ordinary answer: the caller writes on every UI attach and the
     observed branch usually already matches.
+- `thread_groups.go` — the sidebar thread group (migration v76; spec:
+  `docs/specs/sidebar-thread-groups.md`): the `ThreadGroup` row, its CRUD, its
+  three pin primitives, and `SetThreadGroup` — the ONE writer of
+  `threads.group_id`. The pin trio mirrors the thread pin primitives exactly,
+  including "a pin never touches `updated_at`" (a pin is a
+  sidebar-presentation tweak, and `updated_at` is what an EMPTY group sorts
+  by). `SetThreadGroup` runs one transaction, one `UPDATE ... RETURNING id`
+  per named root, and reads the touched rows back INSIDE that transaction:
+  the caller named roots and has no other way to learn the discussion-child
+  ids that travelled with them, and a second read would be a second snapshot.
+  Three properties are structural, not prevalidated — the project subquery
+  refuses a cross-project move (an unknown group resolves to no project and
+  fails the same way, `ErrThreadGroupGone`), the ROOT id must have been
+  updated or the whole call rolls back (a discussion child named as a root
+  is `ErrThreadNotRoot`; a deleted one is `ErrThreadGone`), and GROUPING
+  strips the pin in the same statement ("one pin per visible row").
+  Ungrouping touches only `group_id`: a bulk selection can name ungrouped
+  rows too, and their pins are theirs to keep. See "Recent schema changes
+  (v76)" below.
 - `projects.go` — projects table (threads carry a `project_id` FK). Also
   `ListAllProjects` (archived rows included, which `ListProjects` hides) and
   `UpdateProjectIdentity`, the one project write that deliberately does NOT
-  bump `updated_at`. See "Recent schema changes (v79)".
+  bump `updated_at`. See "Recent schema changes (v83)".
 - `project_worktree_setup.go` — the `projects.worktree_setup` JSON column
   (migration v46): the project's worktree setup recipe, read and written
   whole. `ProjectWorktreeSetup` decodes STRICTLY and reports a corrupt blob as
@@ -141,7 +171,11 @@ transactions.
   away. The single-row getters still return the decode error: that caller
   asked for exactly the unreadable row.
 - `attachments.go` — attachment metadata (bytes on disk are the
-  `internal/attachment` package's problem).
+  `internal/attachment` package's problem). `kind` (v75) is a CLOSED
+  vocabulary — `AttachmentKindImage` / `AttachmentKindFile` — and
+  `InsertAttachment` refuses anything else, so no reader needs a third
+  branch and no CHECK had to rebuild the FK-parent table. See "Recent
+  schema changes (v75)" below.
 - `message_anchors.go` — per-real-user-message provider correlation
   rows (`turn_index` + Claude wire uuids) backing fork-from-message
   and revert-on-interrupt. Pure SQLite; no git side.
@@ -187,7 +221,27 @@ transactions.
   are excluded so one subagent-heavy turn can't eat the window budget
   or flash a "Load older" button that loads nothing. The background
   tray is the one read that does NOT share that filter — see
-  `thread_aggregates.go` below.
+  `thread_aggregates.go` below. Three reads remain: the cursor pagers
+  (`ListItemsBeforeCursor` / `ListItemsAfterCursor`) and
+  `ListThreadSliceAround`, which is also the cold-open entry point. The
+  turn-BUDGET generation (`ListRecentItems`, `ListItemsBeforeTurn`,
+  `ListItemsAfterTurn`, `PickInitialFloorTurn` and their floor/ceiling
+  helpers) is gone: nothing called it after the frontend moved to
+  item-coordinate cursors, and one dense turn could punch through an
+  item window it expressed in turns.
+- `timeline_arms.go` — `timelineArms` / `timelineIDSelection`, the ONE
+  renderer of the `timeline_items` view's two physical arms. **Never
+  ORDER BY or LIMIT through `timeline_items`.** A compound view whose
+  ordering keys are not in the selected result cannot have an outer
+  `ORDER BY … LIMIT` pushed into it: SQLite runs both arms whole, pours
+  them into a temp b-tree, and only then takes the first N — 18,079
+  pages (74 MB) and 52 ms warm for a 200-row tail window on a 67k-item
+  thread, against 151 pages and 1-2 ms for the same rows as a top-level
+  compound that merges two index walks. The view stays right for
+  unordered set reads, `EXISTS` probes, single-turn reads and
+  single-row lookups. `TestOrderedTimelineReadsGoThroughTheArms` is the
+  source rule, with a shrink-only allowlist; the plan tripwire and the
+  view-parity oracle are in the same file.
 - `thread_aggregates.go` — thread-wide reads backing dedicated frontend
   bindings (plan sidebar, background tray). `ListLiveBackgroundTasks` is
   the tray's item set and lists by BACKGROUNDED ANCESTRY, not by
@@ -204,7 +258,15 @@ transactions.
   the reaper and queue gates in `items_lifecycle.go` and `paging.go`'s
   `topLevelItemsFilter` keep `parent_id = ''` (invariant 24), because
   whether the tray SHOWS a nested background Bash and whether that Bash
-  blocks the flush queue are different questions.
+  blocks the flush queue are different questions. Its SEED is two index
+  reads, never a walk of the thread's background history: live launches
+  off `idx_items_running_bg_tool_calls` (which post-v74 contains only
+  genuinely live rows) UNION the launches named by a completion sibling
+  inside the retention window off `idx_items_completion_created`, which
+  is how a just-settled launch and its completion still age out
+  together. The descendant walk runs from that seed only and the outer
+  SELECT is driven FROM the resulting id set, so nothing here scans the
+  thread.
 - `subagent_items.go` — the two read surfaces that replace in-window
   subagent children: `decorateSubagentAnchors` stamps each windowed
   launch anchor with its descendant count + latest-child summary
@@ -212,12 +274,19 @@ transactions.
   full child subtree on demand when a group card expands. It also owns
   the two shared SQL fragments both this file and `thread_aggregates.go`
   build their recursive reads from:
-  - `descendantsCTE(table, rootSet)` — the `rel(root, id)` recursive walk
-    down `parent_id` from a root set, `CROSS JOIN`ed as a planner
-    directive and repeating `parent_id <> ''` so the partial index
-    applies. `descendantsCTEFromRoots(n)` is the `timeline_items`
-    bind-list form the descendants read uses; the tray passes plain
-    `items` and a subquery.
+  - `descendantsCTE(table, rootSet)` — the LOCAL-ONLY `rel(root, id)`
+    recursive walk down `parent_id` from a root set, `CROSS JOIN`ed as a
+    planner directive and repeating `parent_id <> ''` so the partial
+    index applies. Its one caller is the tray, which lists LIVE work and
+    passes plain `items` with a subquery.
+    `descendantsCTEFromRoots(n)` is the LOGICAL-timeline form, and it is
+    FOUR arms (local base, imported base, local hop, imported hop) with
+    `descendantsCTEArgs` rendering their binds. Naming `timeline_items`
+    in a recursive step made SQLite MATERIALIZE the whole thread —
+    twice, counting the final resolution join: 129 ms / 33,160 pages for
+    a 40-anchor window over a 35k-item thread, against 106 ms / 17,354
+    once every hop is an index probe, which is that window's `items`-only
+    floor. `TestSubagentWalksDoNotMaterializeTheView` is the tripwire.
   - `subagentLaunchFilterFor(alias)` — what makes a `tool_call` row a
     subagent LAUNCH. It is **structural** (a `tool_call` that has at
     least one visible child attributed to it), never a tool-name list,
@@ -605,7 +674,10 @@ baseline:
   (`ListRecoverableClaudeBackgroundLaunchesForThread`, the session-end
   settle) shares the same body and index. `idx_items_live_background` can't serve it because that index
   additionally requires `parent_id = ''` and subagent-scoped launches carry a
-  parent.
+  parent. It also serves the tray's live-launch seed and v74's backfill. Both
+  indexes were, before v74, "every launch this thread ever backgrounded" —
+  their `live_background_active` term is what v74's triggers made TRUE of live
+  rows only.
 - `idx_items_running_fg_tool_calls` (v42) serves
   `HasRunningTopLevelForegroundToolCall`, probed at every flush-queue boundary.
 - **Partial-index qualification rule** (applies to every probe in
@@ -617,6 +689,23 @@ baseline:
   lets `idx_items_completion_of` serve the probe instead of scanning the
   thread's whole items slice (seconds per call on large threads). Keep the
   term when writing new probes.
+
+## Recent schema changes (v73) — the reader-authored user_text index
+
+- `idx_items_user_text ON items(thread_id, turn_index, item_index) WHERE
+  kind = 'user_text' AND parent_id = ''`. Nothing indexed `kind`, so the
+  nav rail's ticks read — which runs on EVERY thread switch — walked the
+  thread's whole ordering index probing each row: 17,816 pages / 17 ms on
+  a 67k-item thread, against 736 / 1-3 ms with the index. The composer's
+  ArrowUp history recall, the thread-title context reads, and
+  `ListTurnUserSummaries` ask the same shape and pick it up too.
+- The index predicate is exactly the prefix
+  `readerAuthoredUserTextFilterFor` emits, by the partial-index
+  qualification rule above: neither term may be dropped or reordered
+  into a form that no longer states both. Narrow by construction —
+  reader prompts were 6,816 of 620,987 rows on the measured store.
+- `TestMigrationV73AddsUserTextIndex` pins the predicate, the membership,
+  and the plan of all three call shapes.
 
 ## Recent schema changes (v43) — unit call linkage
 
@@ -799,9 +888,11 @@ Provider forks and copied sessions can repeat large stretches of history.
 Imported rows therefore live in content-addressed, complete-turn
 chunks (`import_history_chunks` plus item/payload children) and threads attach
 them through `thread_import_chunks`. The mutable `items` / `payloads` tables
-remain the thread-owned overlay. All logical history reads use
-`timeline_items` / `timeline_payloads`; an explicit item override or local
-payload shadows only that thread's immutable base.
+remain the thread-owned overlay. Every logical history read covers both
+sources — through `timeline_items` / `timeline_payloads`, or through the
+same two arms rendered directly when the read is ordered or limited
+(`timeline_arms.go`) — and an explicit item override or local payload
+shadows only that thread's immutable base.
 
 Mutation is copy-on-write. Targeted item and payload changes localize only the
 row graph they touch; structural cuts materialize the active shared base in the
@@ -950,6 +1041,85 @@ an empty `provider_turn_id`.
   (they describe one resume state) and leaving `updated_at` alone.
   Pinned by `TestUpdateThreadPreservesPendingForkPin`.
 
+## Recent schema changes (v76) — sidebar thread groups
+
+- `thread_groups` is a named, collapsible sidebar row gathering threads of ONE
+  project. It is not a thread: it has a name, a pin, and nothing else of its
+  own — status, activity, and sort position all come from its members, so
+  nothing here is derived or cached. `pin_group` repeats v71's thread-side
+  CHECK verbatim.
+- `threads.group_id` carries the CHECK that makes "one pin per visible row"
+  STRUCTURAL: `group_id IS NULL OR pinned_at IS NULL`, so a grouped+pinned
+  row cannot be written by any caller. `PinThread` states the same rule in
+  its WHERE (`group_id IS NULL`) and reports the miss as `ErrThreadGrouped`,
+  so the user reads a rule rather than a raw constraint failure; grouping in
+  `SetThreadGroup` strips the pin in the same statement. A plain `ADD COLUMN`
+  with a CHECK and a `REFERENCES` clause —
+  SQLite permits both on an added column whose default is NULL — so the
+  FK-parent `threads` table is not rebuilt.
+- **The two FKs are the mechanism, not a convenience.** `threads.group_id`'s
+  `ON DELETE SET NULL` is what "delete group = ungroup" means, archived
+  members included, and `thread_groups.project_id`'s `ON DELETE CASCADE` is
+  why a group cannot outlive its project. Neither has a Go-side sweep behind
+  it, and neither needs one: every writer connection carries
+  `foreign_keys=1` in its DSN (`dsn.go`), verified once at boot.
+- **Deliberately absent from `updateThreadSetSQL`**, like `pinned_at` and
+  `live_todo`: `SetThreadGroup` is the column's one writer, and a whole-row
+  `UpdateThread` from a stale `Thread` struct could move a thread back into a
+  group the user just left or resurrect one that was deleted. It IS in
+  `threadColumns` and in `insertThread` — the sidebar reads it on every row,
+  and a fork of a grouped thread lands in the same group
+  (`BuildForkedThread`).
+- The frontend reads `groupId` on top-level nodes only, so a discussion child
+  that follows its root (the `parent_thread_id` disjunct) and is later
+  orphan-promoted still renders sensibly: it lands in that group.
+
+## Recent schema changes (v75) — attachment kind
+
+- `attachments.kind` (`TEXT NOT NULL DEFAULT 'image'`) is what an attachment
+  IS to every reader: an `image` reaches the provider as inline bytes or a
+  `localImage` path, is bound positionally to a `[Image #N]` marker, and is
+  the only kind whose bytes are ever served back to a client; a `file`
+  reaches the provider as one path line appended to the prompt and is never
+  decoded, thumbnailed, or served. Spec: `docs/specs/file-attachments.md`.
+- **The DEFAULT is the backfill.** Every attachment written before this
+  column was an image, so an existing row reads as the thing it actually is
+  with no data rewrite. Pinned by `TestMigrationV75BackfillsAttachmentKind`.
+- A plain `ADD COLUMN` with no CHECK, so the FK-parent `attachments` table
+  is not rebuilt. The closed value set is enforced by `InsertAttachment`
+  instead — it is the table's ONE writer (`internal/attachment`'s `Upload`
+  and `CopyToThread`), so the enforcement is exhaustive without the rebuild.
+  Pinned by `TestAttachmentInsertRefusesUnknownKind`.
+- The images-only MIME allowlist used to be what made the attachments
+  directory safe to serve. That guarantee now lives on the KIND: the
+  directory holds arbitrary bytes, and the attachment download route /
+  `GetAttachmentThumbnail` refuse anything that is not an `image` row.
+
+## Recent schema changes (v74) — background-launch settlement
+
+- Four AFTER triggers on `items` (`background_settle_triggers.go`) maintain
+  `items.meta.live_background_active` on background `tool_call` launches, plus
+  a one-time backfill of history in the same migration. Rules, DDL rationale,
+  and the reason the AFTER UPDATE leg is load-bearing: § Triggers below.
+- `idx_items_completion_created` on `items(thread_id, created_at) WHERE
+  completion_of <> ''` backs the tray's second seed — the launches named by a
+  completion sibling inside the retention window — and the same read's
+  candidate set. Like every other completion probe, both queries repeat
+  `completion_of <> ''` so the planner can prove the partial predicate.
+- Nothing changed about what the tray SHOWS. `ListLiveBackgroundTasks`
+  redistributed one predicate on the launch branch, from
+  `flag != 0 AND (no sibling OR recent sibling)` to
+  `(flag != 0 AND no sibling) OR recent sibling`, because the trigger now
+  clears the flag AT settlement and the old form would return a completion
+  row whose launch had just dropped out. The two forms differ on exactly one
+  state — a launch a teardown marked inactive that LATER acquired a
+  completion inside the window — which
+  `markConfirmedBackgroundTasksInactiveAfterProviderCleanup`, its only
+  writer, makes unreachable by truncating the thread immediately afterwards.
+- **The migration number is the one thing a merge can renumber.** It is named
+  once, as `backgroundSettleTriggerMigrationVersion`, so the migration entry,
+  the rebuild tripwire, and the backfill test cannot disagree about it.
+
 ## Recent schema changes (v54) — the explicitly scheduled resume moment
 
 - `work_items.auto_resume_at` (`INTEGER NOT NULL DEFAULT 0`, Unix milliseconds)
@@ -998,7 +1168,7 @@ an empty `provider_turn_id`.
   so no rebuild; a future `work_items` rebuild must carry it, like every other
   column added since v39.
 
-## Recent schema changes (v79) — derived project identity
+## Recent schema changes (v83) — derived project identity
 
 - `projects.remote_url` and `projects.root_commit` (both `TEXT NOT NULL
   DEFAULT ''`) name the REPOSITORY a project is a checkout of, so a client
@@ -1015,7 +1185,7 @@ an empty `provider_turn_id`.
   the SSH alias form) belongs to the client doing the matching; a backend that
   pre-chewed it would only add a second, disagreeing dialect.
 - Empty is a first-class value, never an error: a non-git directory, a repo
-  with no origin, an unborn HEAD, and every pre-v79 row all read as "not
+  with no origin, an unborn HEAD, and every pre-v83 row all read as "not
   known". Two plain `ADD COLUMN`s, no CHECK, so the FK-parent `projects` table
   is not rebuilt.
 - **`UpdateProjectIdentity` does not touch `updated_at`,** and that is the
@@ -1025,12 +1195,12 @@ an empty `provider_turn_id`.
   in the list for no reason the user could see
   (`TestUpdateProjectIdentityLeavesUpdatedAtAlone`).
 
-## Recent schema changes (v78) — passkeys
+## Recent schema changes (v82) — passkeys
 
 One table plus one column (`migration_v78_passkeys.go`, accessors in
 `passkeys.go`): `passkeys`, `users.webauthn_user_handle`. Spec:
 `docs/specs/remote-access.md` §4, "Passkeys". Same
-authoritative-not-cache rule as v75 — every bullet there applies here
+authoritative-not-cache rule as v79 — every bullet there applies here
 unchanged, because a dropped credential is a sign-in method somebody no
 longer has.
 
@@ -1038,7 +1208,7 @@ longer has.
   authenticator appears on every phone a person owns and a hardware key
   moves between machines in a pocket, so binding a credential to a device
   row would either name the wrong device or accumulate one row per
-  surface. `devices.passkey_credential_id` has existed since v75 and
+  surface. `devices.passkey_credential_id` has existed since v79 and
   stays unused; the device row a passkey sign-in mints is a separate
   fact, resolved the way pairing resolves it.
 - **`users.webauthn_user_handle` is minted lazily, never backfilled.**
@@ -1086,13 +1256,13 @@ longer has.
   cascade), so a deleted account must not leave credentials naming a user
   id nothing resolves.
 
-## Recent schema changes (v76) — pairing links and rotating refresh
+## Recent schema changes (v80) — pairing links and rotating refresh
 
 Two tables plus two columns (`migration_v76_pairing.go`, accessors in
 `pairing.go` and `identity.go`): `pairing_links`, `refresh_secrets`,
 `devices.channel`, `sessions.activated_at`. Spec:
 `docs/specs/remote-access.md` §4. Same authoritative-not-cache rule as
-v75 — every bullet there applies here unchanged.
+v79 — every bullet there applies here unchanged.
 
 - **Single-use is one statement, twice more.** `RedeemPairingLink` and
   `ConsumeRefreshSecret` are each a single `UPDATE … WHERE <unspent
@@ -1121,7 +1291,7 @@ v75 — every bullet there applies here unchanged.
   knowing pairing exists. `ActivateSession` also requires
   `expires_at > ?`: the pending window IS the deadline on the
   confirmation, so accepting one after it lapsed would make the deadline
-  decorative. The v76 migration backfills existing rows to `created_at`,
+  decorative. The v80 migration backfills existing rows to `created_at`,
   because a session that predates the column was already live.
 - **`devices.channel` is a partial unique index, not a kv row.**
   `idx_devices_channel` covers `channel <> ''`, so paired devices (empty
@@ -1134,7 +1304,7 @@ v75 — every bullet there applies here unchanged.
   accumulating one per pairing; `internal/identity` refuses the match
   when that row is revoked, belongs to another user, or would change the
   row's `proof_kind`.
-- **`devices.proof_kind` (v77) is what makes `key_thumbprint` mean one
+- **`devices.proof_kind` (v81) is what makes `key_thumbprint` mean one
   thing.** The column held two different values under one name until this
   migration: the RFC 7638 thumbprint of a real key, and an opaque
   identifier minted by a page that has no WebCrypto. `key` accepts only a
@@ -1146,7 +1316,7 @@ v75 — every bullet there applies here unchanged.
   `auth_audit` is, and it deliberately does not cascade. Deleting a
   session must not leave secrets that name a session id nothing resolves.
 
-## Recent schema changes (v75) — the identity core
+## Recent schema changes (v79) — the identity core
 
 Six tables in one migration (`migration_v75_identity.go`, accessors in
 `identity.go`): `users`, `devices`, `sessions`, `signing_keys`,
@@ -1233,9 +1403,9 @@ Six tables in one migration (`migration_v75_identity.go`, accessors in
   into a permissions answer the caller cannot distinguish from a real
   one. `[]` is the only spelling of "granted nothing".
 
-## Recent schema changes (v73, v74) — where a thread came from
+## Recent schema changes (v77, v78) — where a thread came from
 
-- `threads.created_by_device` (v73, `TEXT NOT NULL DEFAULT ''`) names the
+- `threads.created_by_device` (v77, `TEXT NOT NULL DEFAULT ''`) names the
   screen that started a thread: the durable per-browser-profile device id the
   connection carries (`transport.ClientIdentity`, parsed off the WebSocket
   upgrade query). Empty means the backend created the thread itself — a
@@ -1249,7 +1419,7 @@ Six tables in one migration (`migration_v75_identity.go`, accessors in
   matching choice — a connection id dies with the page load, which would make
   the attribution expire on reload.
 - `threads.created_branch`, `threads.created_remote_url`,
-  `threads.created_head_commit` (v74, all `TEXT NOT NULL DEFAULT ''`) are the
+  `threads.created_head_commit` (v78, all `TEXT NOT NULL DEFAULT ''`) are the
   workspace's git coordinates at the moment the thread was created, surfaced
   on `store.Thread` as the `Origin` sub-struct. They exist so a thread can be
   reproduced elsewhere later: by the time anyone asks, the branch has moved,
@@ -1258,7 +1428,7 @@ Six tables in one migration (`migration_v75_identity.go`, accessors in
   moves with the working tree.
 - Empty is always "not known", never "none" and never an error. A workspace
   outside a repository, a detached HEAD, a repo with no remote, and every row
-  created before v74 all read the same, and a consumer that needs the values
+  created before v78 all read the same, and a consumer that needs the values
   has to say so itself.
 - All four are write-once by the same mechanism as `import_source`: absent
   from `updateThreadSetSQL`, classified in
@@ -1575,8 +1745,29 @@ before changing a write path.
   `thread_import_item_overrides` row exists. Chunk-order gaps and
   overlapping imported identities or timeline positions are rejected the
   same way. Dropping a thread's last chunk reference collects the chunk.
-  Logical reads go through `timeline_items` / `timeline_payloads`, never
-  raw `items` / `payloads`, or they miss the immutable base.
+  Logical reads see BOTH sources or they miss the immutable base: either
+  through `timeline_items` / `timeline_payloads`, or — for an ordered or
+  limited read — through the view's two arms rendered by `timelineArms`
+  (`timeline_arms.go`), never raw `items` / `payloads` alone.
+- **Background-launch settlement** (v74,
+  `background_settle_triggers.go`). A backgrounded `tool_call` stays
+  `status='running'` forever (invariant 24) and its terminal state is a
+  SIBLING row naming it through `completion_of`, so "live" is
+  `running AND live_background_active != 0 AND no completion sibling` — and
+  that third term is correlated, so no partial index can carry it. Four
+  AFTER triggers move it onto the launch row instead: an inserted completion
+  stamps its launch `false`; a launch inserted when its completion already
+  exists stamps itself (`materializeSharedHistoryTx`, import batches); an
+  UPDATE re-stamps a launch whose meta was replaced wholesale; and deleting
+  the last completion sibling `json_remove`s the flag again (the
+  `DeleteConversationFromTurn` rollback). The UPDATE leg is not defensive:
+  `writeBackgroundCompletionSibling` inserts the sibling and THEN calls
+  `persistFinalSubagentProgress`, which writes the launch's meta from a copy
+  read before that insert, so without it every settled launch is immediately
+  un-settled. None of them touch `updated_at`. Structural for the same
+  reason the stamps are — launches are written by triage, the importer, the
+  fork clone, and the chain — and `recursive_triggers` is off, though every
+  WHEN clause terminates the chain regardless.
 - **`threads.history_bulk_load` is the only sanctioned way to silence the
   stamp triggers**, and only inside one transaction that writes the exact
   aggregate advance itself before commit. `ApplyImportBatch` uses it to
@@ -1627,6 +1818,23 @@ because those two always have to agree.
 
 ## Reads that are easy to get wrong
 
+- **Never ORDER BY or LIMIT through `timeline_items`.** It is a compound
+  (`UNION ALL`) view, and an outer `ORDER BY … LIMIT` cannot be pushed
+  into one whose ordering keys are not among the selected result
+  columns: SQLite runs both arms whole, sorts them in a temp b-tree, and
+  only then takes the first N. Measured on a 67k-item thread, a 200-row
+  tail window read 18,079 pages (74 MB) and 52 ms warm that way against
+  151 pages and 1-2 ms as a top-level compound of the two physical arms.
+  Render the arms with `timelineArms` / `timelineIDSelection`
+  (`timeline_arms.go`) and let the projection name every ORDER BY key;
+  the view remains the right source for unordered set reads, `EXISTS`
+  probes, single-turn reads and single-row lookups. The same rule holds
+  for a RECURSIVE step: naming the view inside one makes SQLite
+  materialize the entire thread (129 ms vs 106 ms for one 40-anchor
+  subagent window, and 33,160 pages vs 17,354). Three tests hold the
+  line, all in `timeline_arms_test.go`: a per-read parity check against
+  the old view SQL, a plan tripwire with a negative control, and a
+  source rule over the package.
 - **Partial indexes need textual qualification.** SQLite uses one only when
   the query's predicates textually imply the index's WHERE clause. A
   correlated `c.completion_of = items.id` does NOT imply
@@ -1649,7 +1857,13 @@ because those two always have to agree.
   callers are the tray and `App.ListRunningBackgroundWork`, the
   cross-thread inventory; both go through `App.ListLiveBackgroundTasks`,
   which unions this query with two sources that are not in any table, so a
-  new cross-thread reader must not call this one directly.
+  new cross-thread reader must not call this one directly. Its seed reads
+  two partial indexes and nothing else;
+  `TestListLiveBackgroundTasksSeedUsesPartialIndexes` fails if a plan stops
+  using either or starts scanning the thread through
+  `idx_items_thread_turn_item_unique`, and
+  `TestListLiveBackgroundTasksMatchesThePreSettlementQuery` pins the rows
+  and their order against the pre-v74 query.
 - **`subagentLaunchFilterFor(alias)` is structural, never a tool-name
   list**: a `tool_call` with at least one visible child attributed to it,
   which is what keeps it provider-neutral. The alias argument is MANDATORY,

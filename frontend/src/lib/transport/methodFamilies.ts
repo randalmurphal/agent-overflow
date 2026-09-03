@@ -27,10 +27,24 @@ import {
   automationBackend,
   subscriptionBackend,
   terminalBackend,
+  threadBackend,
+  threadGroupBackend,
   workflowItemBackend,
 } from './entityIndex';
 
-export type IdFamily = 'workflowItem' | 'workflowAutomation' | 'terminal' | 'subscription';
+export type IdFamily =
+  | 'workflowItem'
+  | 'workflowAutomation'
+  | 'terminal'
+  | 'subscription'
+  // A sidebar thread group — argument 0 is `groupID`. Belongs to one
+  // project and so to one machine; learned from ListThreadGroups and the
+  // `thread-group:updated` frames.
+  | 'threadGroup'
+  // A LIST of thread ids — argument 0 is `threadIDs`. Every id in it lives
+  // on one machine (a group gathers threads of one project), so the first
+  // one names the backend for all of them.
+  | 'threadList';
 
 export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily>> = {
   // Workflow ITEM ids — argument 0 is `itemID`. An item belongs to the
@@ -83,6 +97,19 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily>> = {
   1078249699: 'subscription', // SetPRUpdatesActive
   2888550814: 'subscription', // UnsubscribePRUpdates
   3263989430: 'subscription', // GitStatusUnsubscribe
+
+  // A thread group is a sidebar row of ONE project on one backend; its id
+  // is minted there and the group list is fanned out to every backend, so
+  // the index learns the owner from the list answer.
+  48743460: 'threadGroup', // UnpinThreadGroup
+  723690026: 'threadGroup', // RenameThreadGroup
+  842795367: 'threadGroup', // PinThreadGroup
+  4104302889: 'threadGroup', // DeleteThreadGroup
+  4218979176: 'threadGroup', // SetThreadGroupPinGroup
+
+  // A batch of thread ids; every row of one write lives on one backend, so
+  // the first id names it.
+  2514763466: 'threadList', // SetThreadGroup
 };
 
 const RESOLVERS: Readonly<Record<IdFamily, (id: string) => BackendKey | undefined>> = {
@@ -90,6 +117,8 @@ const RESOLVERS: Readonly<Record<IdFamily, (id: string) => BackendKey | undefine
   workflowAutomation: automationBackend,
   terminal: terminalBackend,
   subscription: subscriptionBackend,
+  threadGroup: threadGroupBackend,
+  threadList: threadBackend,
 };
 
 /**
@@ -100,7 +129,8 @@ const RESOLVERS: Readonly<Record<IdFamily, (id: string) => BackendKey | undefine
 export function familyBackend(methodId: number, args: readonly unknown[]): BackendKey | undefined {
   const family = ROUTE_BY_ID_FAMILY[methodId];
   if (family === undefined) return undefined;
-  const id = args[0];
+  // A thread list is resolved through its first id; the rest are one id.
+  const id = family === 'threadList' && Array.isArray(args[0]) ? args[0][0] : args[0];
   if (typeof id !== 'string' || id === '') return undefined;
   return RESOLVERS[family](id);
 }

@@ -527,3 +527,105 @@ describe('thread streaming reveal cleanup', () => {
     )).not.toThrow();
   });
 });
+
+describe('reasoning-tail rows through the wholesale-commit chokepoint', () => {
+  // A thinking row publishes a TAIL-trimmed view of its reveal cursor once
+  // it passes THINKING_TAIL_RUNES, so its summary is never a prefix of the
+  // smoother's `received`. Every wholesale commit (fold eviction, prune,
+  // reconcile) passes the kept row back through prepareItemReplacements;
+  // reading the trimmed tail as a divergent stream disposed the smoother
+  // mid-drain and dropped the unrevealed backlog — the next wire delta
+  // re-seeded from the trimmed summary and the live tail carried a hole
+  // (user report 2026-09-01: "Now I'm working" + "ining the user's.").
+  function longThinking(): string {
+    return Array.from(
+      { length: 300 },
+      (_, index) => `word${String(index).padStart(3, '0')} `,
+    ).join('');
+  }
+
+  function drainPast400Runes(clock: FakeSmoothingClock) {
+    const item = makeItem({ id: 'think', kind: 'thinking', status: 'streaming', summary: '' });
+    const { reveal, getItems } = makeReveal([item]);
+    const received = longThinking();
+    reveal.appendStreamingDelta(item.id, '', received, 2);
+    for (let frame = 0; frame < 120; frame++) clock.tick(16);
+    const row = getItems()[0];
+    expect(row.summary.length).toBe(400);
+    expect(received.startsWith(row.summary)).toBe(false);
+    const revealed = reveal.liveThinkingTailFor(item.id);
+    expect(revealed).not.toBeNull();
+    expect(revealed!.length).toBeGreaterThan(400);
+    expect(revealed!.length).toBeLessThan(received.length);
+    return { item, reveal, getItems, received, row, revealed: revealed! };
+  }
+
+  function drainToCaughtUp(
+    clock: FakeSmoothingClock,
+    reveal: ReturnType<typeof makeReveal>['reveal'],
+    itemId: string,
+    expected: string,
+  ): void {
+    let frames = 0;
+    while (reveal.liveThinkingTailFor(itemId) !== expected && frames++ < 5_000) {
+      clock.tick(16);
+    }
+    expect(reveal.liveThinkingTailFor(itemId)).toBe(expected);
+  }
+
+  it('keeps draining when the kept row re-enters with its own trimmed tail', () => {
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    const { item, reveal, getItems, received, row, revealed } = drainPast400Runes(clock);
+
+    const [prepared] = reveal.prepareItemReplacements([row]);
+    expect(prepared.summary).toBe(row.summary);
+    expect(reveal.smootherCount()).toBe(1);
+    expect(reveal.liveThinkingTailFor(item.id)).toBe(revealed);
+
+    reveal.appendStreamingDelta(item.id, getItems()[0].summary, 'tail-end ', 3);
+    drainToCaughtUp(clock, reveal, item.id, `${received}tail-end `);
+  });
+
+  it('keeps draining when a lagging snapshot carries a trimmed tail of a prefix', () => {
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    const { item, reveal, getItems, received, row, revealed } = drainPast400Runes(clock);
+
+    // SQLite persisted the wire up to 100 chars short of what the frontend
+    // received; its summary is the last 400 runes of that prefix.
+    const persisted = received.slice(0, received.length - 100);
+    const [prepared] = reveal.prepareItemReplacements([{
+      ...row,
+      summary: persisted.slice(persisted.length - 400),
+      updatedAt: 3,
+    }]);
+    expect(prepared.summary).toBe(row.summary);
+    expect(reveal.smootherCount()).toBe(1);
+    expect(reveal.liveThinkingTailFor(item.id)).toBe(revealed);
+
+    reveal.appendStreamingDelta(item.id, getItems()[0].summary, 'tail-end ', 4);
+    drainToCaughtUp(clock, reveal, item.id, `${received}tail-end `);
+  });
+
+  it('keeps the terminal drain alive when the settle echo carries the trimmed received tail', () => {
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    const { item, reveal, getItems, received, row } = drainPast400Runes(clock);
+
+    const [prepared] = reveal.prepareItemReplacements([{
+      ...row,
+      status: 'completed',
+      summary: received.slice(received.length - 400),
+      updatedAt: 3,
+    }]);
+    expect(prepared.status).toBe('completed');
+    expect(prepared.summary).toBe(row.summary);
+    expect(reveal.smootherCount()).toBe(1);
+    getItems()[0] = prepared;
+
+    drainToCaughtUp(clock, reveal, item.id, received);
+    expect(reveal.smootherCount()).toBe(0);
+    expect(getItems()[0].summary).toBe(received.slice(received.length - 400));
+  });
+});

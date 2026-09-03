@@ -1,6 +1,6 @@
 package store
 
-// pushV80SQL adds the two rows phone push needs: which devices have a
+// pushV84SQL adds the two rows phone push needs: which devices have a
 // registration token, and the credential this backend sends with
 // (docs/specs/remote-access.md §9, "Push").
 //
@@ -29,7 +29,7 @@ package store
 //     instead.
 //
 // Timestamps are Unix milliseconds, matching every other table.
-const pushV80SQL = `
+const pushV84SQL = `
 CREATE TABLE push_tokens (
     device_id  TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
     platform   TEXT NOT NULL,

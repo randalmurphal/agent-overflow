@@ -35,6 +35,7 @@
   />
   <div class="flex flex-col gap-1">
     <SettingsField
+      id="notifications.enabled"
       label="Desktop notifications"
       hint="Off silences every kind on this screen, including workflow and update notices."
     >
@@ -47,6 +48,7 @@
 
     {#if settings.notificationsEnabled}
       <SettingsField
+        id="notifications.turn-complete"
         label="Turn complete"
         hint="When the agent finishes a turn and the thread is waiting on you."
       >
@@ -58,6 +60,7 @@
       </SettingsField>
 
       <SettingsField
+        id="notifications.approval-needed"
         label="Approval needed"
         hint="When the agent is blocked asking permission to use a tool."
       >
@@ -69,6 +72,7 @@
       </SettingsField>
 
       <SettingsField
+        id="notifications.errors"
         label="Errors"
         hint="When a turn fails, or a provider stops while a thread is using it."
       >
@@ -80,6 +84,7 @@
       </SettingsField>
 
       <SettingsField
+        id="notifications.provider-signed-out"
         label="Provider signed out"
         hint="When a provider's login is gone and nothing will run until you sign in again."
       >

@@ -59,6 +59,7 @@
 
 <div class="flex flex-col gap-1" data-testid="settings-claude-cross-session">
   <SettingsField
+    id="claude.cross-session"
     label="Let Claude sessions message each other"
     hint="Claude Code can list the other Claude sessions running on this machine and send them messages. Turning this on lists these threads too, so any program running as you on this machine can start a turn in an idle thread."
     align="start"
@@ -72,6 +73,7 @@
 
   {#if enabled}
     <SettingsField
+      id="claude.cross-session-inbound"
       label="Incoming messages"
       hint="What happens when another session sends one of these threads a message."
       htmlFor="claude-cross-session-inbound"

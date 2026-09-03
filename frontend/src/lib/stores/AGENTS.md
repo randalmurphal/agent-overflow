@@ -144,8 +144,9 @@ stops waking readers.
   `thread:updated` `deleted` frames, so the project handler never touches panes.
 - `draft:updated` carries no row at all — the thread, the write's timestamp,
   and the identity of the screen that wrote it. The draft TEXT never rides the
-  channel: `GetDraft` is loopback-only because a composer holds in-progress
-  user work, and a push carrying that text would be the one path around it.
+  channel: `GetDraft` is gated on `threads:operate` because a composer holds
+  in-progress user work, and a push carrying that text would be the one path
+  around that gate.
   The handler (`eventsDraftRows.ts`) re-reads instead, and drops the frame in
   three cases, each of which is a real bug if you remove it. (1) The frame's
   `connectionId` is this page load's — its own echo, and re-reading on it
@@ -459,6 +460,14 @@ the row:
 - Post-drain, letting the trailing summary settle the row truncates it
   outright — the same rewind, reached when the drain happened to finish
   first.
+
+Reasoning-tail rows (`thinking`, `compaction_reasoning`) publish only
+the last `THINKING_TAIL_RUNES` of the cursor, so past that length the
+same trailing producers hand back a summary that is an INTERIOR slice of
+`received`, never a prefix. The chokepoint tests containment for those
+kinds; a prefix-only test disposed the smoother on every wholesale commit
+mid-drain and left a permanent hole in the live tail until reload
+(2026-09-01).
 
 Disposing is correct only when the incoming summary genuinely DIVERGES;
 then it must win the row, so the visible text snaps rather than

@@ -44,7 +44,7 @@ func (a *App) repoIdentity(path string) (remoteURL, rootCommit string) {
 // loaded its sidebar converges without a refresh.
 //
 // One pass per boot, one derivation per unidentified row, no polling: after
-// the first boot following the v79 upgrade there is nothing left to do and the
+// the first boot following the v83 upgrade there is nothing left to do and the
 // pass reads the project list and stops.
 func (a *App) backfillProjectIdentity() {
 	if err := a.projectApplication().BackfillIdentity(func(row store.Project) {

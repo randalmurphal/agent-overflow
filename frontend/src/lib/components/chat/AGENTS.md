@@ -122,6 +122,20 @@ Payload bytes go through `utils/payloadDataCache.ts`, keyed by
 track expansion intent, the data cache tracks loaded bytes. Heavy work
 (Mermaid, syntax spans, KaTeX, images) stays lazy and row-local.
 
+`UserMessage.svelte` renders the row's attachments from item meta, split
+by KIND (`types/attachment.ts`; policy in
+[`composer/AGENTS.md`](../composer/AGENTS.md)). An image is a tile in the
+grid, numbered over IMAGES so `#2` names the same thing the message
+text's `[Image #2]` does — never the array index, which a file between
+them would shift. A file is an inert chip: not a button, no expand, and
+its bytes are never requested, because `GetAttachmentThumbnail` errors
+for one and `fetchAttachmentBytes` would be refused at the download
+route. An absent `kind` in meta means
+image, which is what every row written before the column carried. The
+edit copy seeds files alongside images, and removing a SEEDED chip must
+not delete its record — the sent message still references it (the
+`shouldDeleteAttachmentRecord` rule above).
+
 ## Activity runs
 
 The projection's last pass wraps consecutive activity rows into ONE

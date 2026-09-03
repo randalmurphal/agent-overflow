@@ -166,7 +166,8 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	}
 
 	now := eventTimestampMillis(evt)
-	turnIndex, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launch.TurnIndex)
+	parentID := stringsxFirst(launch.ParentID, eventParentID(evt), meta.ParentToolUseID)
+	turnIndex, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launch.TurnIndex, parentID)
 	if err != nil {
 		log.Printf("triage: task notification turn index %s: %v", meta.TaskID, err)
 	}
@@ -206,7 +207,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		Role:      "system",
 		Status:    statusCompleted,
 		Summary:   stringsxFirst(evt.Content, backgroundTaskNotificationPlaceholderSummary),
-		ParentID:  stringsxFirst(launch.ParentID, eventParentID(evt), meta.ParentToolUseID),
+		ParentID:  parentID,
 		ToolName:  launch.ToolName,
 		CreatedAt: now,
 		UpdatedAt: now,

@@ -72,7 +72,7 @@ const CAPABILITY_NOUNS: Record<Exclude<Scope, 'host' | 'session'>, string> = {
 };
 
 /** Where a grant comes from. One sentence, reused so it stays one sentence. */
-const GRANT_HINT = "Widen this device's access under Settings → Network → Devices on that computer.";
+const GRANT_HINT = "Widen this device's access under Settings → Remote access → Devices on that computer.";
 
 /**
  * The refusal shown when the backend named a capability this build has no
@@ -95,7 +95,7 @@ export const UNKNOWN_SCOPE_REFUSAL: ScopeRefusalPresentation = {
  */
 export const SESSION_REFUSAL: ScopeRefusalPresentation = {
   title: 'This device is no longer paired with this backend.',
-  hint: 'Pair it again under Settings → Network → Devices on that computer.',
+  hint: 'Pair it again under Settings → Remote access → Devices on that computer.',
 };
 
 /**

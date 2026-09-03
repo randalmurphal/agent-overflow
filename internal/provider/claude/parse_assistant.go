@@ -486,7 +486,7 @@ func (p *Parser) appendToolUseEvent(
 
 	isBackground := hasRunInBackground(block.Input)
 	if isBackground {
-		p.markBackground(block.ID)
+		p.markBackground(block.ID, backgroundHintInput)
 	}
 	if isAgentLaunchToolName(block.Name) {
 		p.markAgentLaunchTool(block.ID)

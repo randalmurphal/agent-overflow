@@ -221,18 +221,18 @@ test.describe.serial('remote device lifecycle', () => {
   });
 
   // -------------------------------------------------------------------
-  // 1b. Settings → Network from the phone. Second in EXECUTION order
+  // 1b. Settings → Remote access from the phone. Second in EXECUTION order
   //     because it needs the device the case above paired, still full
   //     access and still attached — the case below revokes it.
   // -------------------------------------------------------------------
   test('a full-access device manages the backend’s exposure, without being handed its credentials', async () => {
     await phone.getByTestId('sidebar-settings-button').click();
     await expect(phone.getByRole('tablist', { name: 'Settings Sections' })).toBeVisible();
-    await phone.getByRole('tab', { name: 'Network' }).click();
+    await phone.getByRole('tab', { name: 'Remote access' }).click();
 
     // It LOADS, which is the whole widening: read as `host`, this section
     // drew its unavailable arm for every paired device — the owner's own
-    // phone included — and Settings → Network was reachable from nowhere
+    // phone included — and Settings → Remote access was reachable from nowhere
     // but the machine. `access:admin` is what it answers now.
     await expect(phone.getByRole('switch', { name: 'Toggle remote access' })).toBeVisible();
     await expect(phone.getByTestId('network-section-local-only')).toHaveCount(0);
@@ -351,8 +351,8 @@ test.describe.serial('remote device lifecycle', () => {
     await expect(phone.getByLabel('Message Input')).toBeVisible();
     await phone.getByTestId('sidebar-settings-button').click();
     await expect(phone.getByRole('tablist', { name: 'Settings Sections' })).toBeVisible();
-    await phone.getByRole('tab', { name: 'Network' }).click();
-    await expect(phone.getByRole('tab', { name: 'Network' })).toHaveAttribute(
+    await phone.getByRole('tab', { name: 'Remote access' }).click();
+    await expect(phone.getByRole('tab', { name: 'Remote access' })).toHaveAttribute(
       'aria-selected',
       'true',
     );
@@ -466,7 +466,7 @@ test.describe.serial('remote device lifecycle', () => {
     try {
       await harness.open(host);
       await host.getByTestId('sidebar-settings-button').click();
-      await host.getByRole('tab', { name: 'Network' }).click();
+      await host.getByRole('tab', { name: 'Remote access' }).click();
 
       const deviceRows = host.getByTestId('access-device');
       const localRow = deviceRows.filter({ hasText: 'This computer' });

@@ -4,46 +4,46 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/triage"
 )
 
-func (a *App) gitProjectPath(projectID string) (string, error) {
-	return a.gitApplication().ProjectPath(projectID)
+// WorkspaceRef is the subject of every workspace-scoped git RPC: a checkout,
+// named by project id + directory. A thread id on a git RPC now means the
+// subject IS the thread — its own history, or its workspace assignment.
+type WorkspaceRef = gitapp.WorkspaceRef
+
+// workspaceRefForThread is the ref a real thread's pane addresses its
+// workspace-scoped git RPCs with. The frontend builds the identical pair from
+// the same two columns; a draft placeholder carries them without a row.
+func workspaceRefForThread(thread store.Thread) WorkspaceRef {
+	return WorkspaceRef{ProjectID: thread.ProjectID, WorkspacePath: thread.WorkspacePath}
 }
 
-func (a *App) resolveProjectGitPaths(projectID, workspacePath string) (project string, workspace string, worktreePath string, err error) {
-	project, err = a.gitProjectPath(projectID)
-	if err != nil {
-		return "", "", "", err
-	}
-	workspace = strings.TrimSpace(workspacePath)
-	if workspace == "" {
-		return project, project, "", nil
-	}
-	if gitops.SameFilesystemPath(workspace, project) {
-		return project, project, "", nil
-	}
-	worktree, ok, err := a.findWorktree(project, workspace)
-	if err != nil {
-		return "", "", "", fmt.Errorf("git project workspace: validate worktree: %w", err)
-	}
-	if !ok {
-		return "", "", "", fmt.Errorf("git project workspace: %q is not a worktree of project %s", workspace, project)
-	}
-	return project, worktree.Path, worktree.Path, nil
-}
-
+// GitWorkspaceState is the caller's checkout after a mutation that may have
+// moved its branch. WorktreePath is empty when the workspace is the project
+// root.
 type GitWorkspaceState struct {
 	WorkspacePath string `json:"workspacePath"`
 	WorktreePath  string `json:"worktreePath,omitempty"`
 	Branch        string `json:"branch"`
 }
 
-// GetGitStatus returns git status for the thread's active workspace.
+// workspaceState projects a resolved (project, workspace) pair plus the
+// checkout's live branch into the wire shape.
+func (a *App) workspaceState(project, workspace string) GitWorkspaceState {
+	state := GitWorkspaceState{WorkspacePath: workspace, Branch: a.gitCore().CurrentBranch(workspace)}
+	if !gitops.SameFilesystemPath(workspace, project) {
+		state.WorktreePath = workspace
+	}
+	return state
+}
+
+// GetGitStatus returns git status for the referenced workspace.
 //
 // The answer is not the caller's alone: every other client watching this
 // workspace is looking at the same checkout, so the fresh status is also
@@ -54,42 +54,15 @@ type GitWorkspaceState struct {
 // never reported is how a silently dead watchpoint gets reinstalled.
 //
 //ao:scope git:operate
-func (a *App) GetGitStatus(threadID string) (gitops.GitStatus, error) {
-	return a.gitApplication().Status(threadID)
+func (a *App) GetGitStatus(ws WorkspaceRef) (gitops.GitStatus, error) {
+	return a.gitApplication().Status(ws)
 }
 
-// GetGitStatusFastForProject returns git status for a project root using only
-// cached open-PR info — no gh/glab network call — and without requiring a
-// thread row. The one caller is the composer's draft placeholder: it has no
-// thread, so it can hold no git-status subscription, and it wants the local
-// dirty bit rather than a forge round-trip. Every thread-backed surface reads
-// the shared workspace-keyed git-status store instead.
+// GitListBranches lists repository branches from the workspace's project root.
 //
 //ao:scope git:operate
-func (a *App) GetGitStatusFastForProject(projectID string) (gitops.GitStatus, error) {
-	return a.gitApplication().StatusFastForProject(projectID)
-}
-
-// GetWorkingTreeDiff returns the current combined staged and unstaged diff.
-//
-//ao:scope files:read
-func (a *App) GetWorkingTreeDiff(threadID string) (string, error) {
-	return a.gitApplication().WorkingTreeDiff(threadID)
-}
-
-// GitListBranches lists repository branches from the thread's project root.
-//
-//ao:scope git:operate
-func (a *App) GitListBranches(threadID string) ([]gitops.GitBranch, error) {
-	return a.gitApplication().ListBranches(threadID)
-}
-
-// GitListBranchesForProject lists repository branches from a project root
-// without requiring a thread row.
-//
-//ao:scope git:operate
-func (a *App) GitListBranchesForProject(projectID string) ([]gitops.GitBranch, error) {
-	return a.gitApplication().ListBranchesForProject(projectID)
+func (a *App) GitListBranches(ws WorkspaceRef) ([]gitops.GitBranch, error) {
+	return a.gitApplication().ListBranches(ws)
 }
 
 // GitMaybeFetchRemotes runs `git fetch --all` in the background if the
@@ -98,34 +71,23 @@ func (a *App) GitListBranchesForProject(projectID string) ([]gitops.GitBranch, e
 // fresh. Callers re-list branches after a true return to surface any
 // new ahead/behind counts.
 //
-// No threadLocks().Lock or ensureWorkspaceChangeAllowed — `git fetch`
-// only touches `refs/remotes/*` and never HEAD/index/working tree, so
-// running it concurrently with an active turn is safe.
+// No workspace locks or ensureWorkspaceChangeAllowed — `git fetch` only
+// touches `refs/remotes/*` and never HEAD/index/working tree, so running it
+// concurrently with an active turn is safe.
 //
 //ao:scope git:operate
-func (a *App) GitMaybeFetchRemotes(threadID string) (bool, error) {
-	return a.gitApplication().MaybeFetchRemotes(threadID)
+func (a *App) GitMaybeFetchRemotes(ws WorkspaceRef) (bool, error) {
+	return a.gitApplication().MaybeFetchRemotes(ws)
 }
 
-// GitMaybeFetchRemotesForProject is the project-root counterpart to
-// GitMaybeFetchRemotes for draft placeholders.
+// GitSyncBranch fast-forwards branch from its configured upstream. Every
+// thread in the workspace is locked across the current-branch read so a
+// concurrent checkout can't flip the path between the check and the
+// operation.
 //
 //ao:scope git:operate
-func (a *App) GitMaybeFetchRemotesForProject(projectID string) (bool, error) {
-	return a.gitApplication().MaybeFetchRemotesForProject(projectID)
-}
-
-// GitSyncBranch fast-forwards branch from its configured upstream.
-// The thread lock is held across the current-branch read so a concurrent
-// checkout can't flip the path between the check and the operation.
-//
-//ao:scope git:operate
-func (a *App) GitSyncBranch(threadID string, branch string) ([]gitops.GitBranch, error) {
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		return nil, err
-	}
-	project, workspace, err := a.resolveGitPaths(thread)
+func (a *App) GitSyncBranch(ws WorkspaceRef, branch string) ([]gitops.GitBranch, error) {
+	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
 		return nil, err
 	}
@@ -134,33 +96,13 @@ func (a *App) GitSyncBranch(threadID string, branch string) ([]gitops.GitBranch,
 		return nil, fmt.Errorf("git sync branch is required")
 	}
 
-	core := a.gitCore()
-
-	unlock := a.threadLocks().Lock(threadID)
-	defer unlock()
-
-	return a.syncBranchInWorkspace(core, project, workspace, branch)
-}
-
-// GitSyncBranchForProject fast-forwards a branch for a draft placeholder
-// without requiring a thread row.
-//
-//ao:scope git:operate
-func (a *App) GitSyncBranchForProject(projectID, workspacePath, branch string) ([]gitops.GitBranch, error) {
-	project, workspace, _, err := a.resolveProjectGitPaths(projectID, workspacePath)
+	_, release, err := a.lockWorkspaceThreads(workspace)
 	if err != nil {
 		return nil, err
 	}
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		return nil, fmt.Errorf("git sync branch is required")
-	}
+	defer release()
 
 	core := a.gitCore()
-	return a.syncBranchInWorkspace(core, project, workspace, branch)
-}
-
-func (a *App) syncBranchInWorkspace(core *gitops.Core, project, workspace, branch string) ([]gitops.GitBranch, error) {
 	if err := core.SyncBranch(workspace, branch); err != nil {
 		return nil, err
 	}
@@ -172,82 +114,38 @@ func (a *App) syncBranchInWorkspace(core *gitops.Core, project, workspace, branc
 
 // GitCommit stages all changes and commits workspace changes.
 // WARNING: This stages everything (git add -A) before committing, including
-// untracked files. Use GitStageAll + a direct Commit call for more control.
+// untracked files.
 //
 //ao:scope git:operate
-func (a *App) GitCommit(threadID, subject, body string) (gitops.GitActionResult, error) {
-	return a.gitApplication().Commit(threadID, subject, body)
-}
-
-// GitStageAll runs `git add -A` in the thread's workspace, staging all changes
-// including untracked files. Use before GitCommit when explicit staging is desired.
-//
-//ao:scope git:operate
-func (a *App) GitStageAll(threadID string) error {
-	return a.gitApplication().StageAll(threadID)
+func (a *App) GitCommit(ws WorkspaceRef, subject, body string) (gitops.GitActionResult, error) {
+	return a.gitApplication().Commit(ws, subject, body)
 }
 
 // GitPush pushes the workspace's current branch.
 //
 //ao:scope git:operate
-func (a *App) GitPush(threadID string) (gitops.GitActionResult, error) {
-	return a.gitApplication().Push(threadID)
+func (a *App) GitPush(ws WorkspaceRef) (gitops.GitActionResult, error) {
+	return a.gitApplication().Push(ws)
 }
 
 // GitPull fast-forwards the workspace's current branch.
 //
 //ao:scope git:operate
-func (a *App) GitPull(threadID string) (gitops.GitActionResult, error) {
-	return a.gitApplication().Pull(threadID)
+func (a *App) GitPull(ws WorkspaceRef) (gitops.GitActionResult, error) {
+	return a.gitApplication().Pull(ws)
 }
 
-// GitCheckout switches the workspace to an existing branch.
+// GitCheckout switches the workspace to an existing branch and returns the
+// checkout's resulting state.
+//
+// Every thread row in the directory is re-branched through the same
+// workspace-keyed write UpdateThreadBranch uses (and broadcast the same way),
+// so a sibling thread sharing the worktree syncs without the frontend
+// guessing which rows moved.
 //
 //ao:scope git:operate
-func (a *App) GitCheckout(threadID, branch string) error {
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		return err
-	}
-
-	_, workspace, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return err
-	}
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		return fmt.Errorf("git checkout branch is required")
-	}
-
-	unlock := a.threadLocks().Lock(threadID)
-	defer unlock()
-
-	core := a.gitCore()
-	if err := core.Checkout(workspace, branch); err != nil {
-		return err
-	}
-
-	// Checkout swaps the working tree to a different branch — bust the
-	// @-mention picker cache so it reflects the new tree.
-	if a.workspaceFiles != nil {
-		a.workspaceFiles.Invalidate(workspace)
-	}
-
-	previousBranch := thread.Branch
-	thread.Branch = core.CurrentBranch(workspace)
-	if err := a.store.UpdateThread(thread); err != nil {
-		return err
-	}
-	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, thread, thread.Branch != previousBranch)
-	return nil
-}
-
-// GitCheckoutForProject switches a project/worktree placeholder workspace to an
-// existing branch without requiring a thread row.
-//
-//ao:scope git:operate
-func (a *App) GitCheckoutForProject(projectID, workspacePath, branch string) (GitWorkspaceState, error) {
-	_, workspace, worktreePath, err := a.resolveProjectGitPaths(projectID, workspacePath)
+func (a *App) GitCheckout(ws WorkspaceRef, branch string) (GitWorkspaceState, error) {
+	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
 		return GitWorkspaceState{}, err
 	}
@@ -256,30 +154,32 @@ func (a *App) GitCheckoutForProject(projectID, workspacePath, branch string) (Gi
 		return GitWorkspaceState{}, fmt.Errorf("git checkout branch is required")
 	}
 
-	core := a.gitCore()
-	if err := core.Checkout(workspace, branch); err != nil {
+	_, release, err := a.lockWorkspaceThreads(workspace)
+	if err != nil {
 		return GitWorkspaceState{}, err
 	}
+	defer release()
+
+	if err := a.gitCore().Checkout(workspace, branch); err != nil {
+		return GitWorkspaceState{}, err
+	}
+
+	// Checkout swaps the working tree to a different branch — bust the
+	// @-mention picker cache so it reflects the new tree.
 	if a.workspaceFiles != nil {
 		a.workspaceFiles.Invalidate(workspace)
 	}
-	return GitWorkspaceState{
-		WorkspacePath: workspace,
-		WorktreePath:  worktreePath,
-		Branch:        core.CurrentBranch(workspace),
-	}, nil
+
+	state := a.workspaceState(project, workspace)
+	if _, err := a.UpdateThreadBranch(workspace, state.Branch); err != nil {
+		return GitWorkspaceState{}, fmt.Errorf("git checkout: record branch on threads: %w", err)
+	}
+	return state, nil
 }
 
-// GitCreateBranch creates a branch in the thread's repository.
-//
-//ao:scope git:operate
-func (a *App) GitCreateBranch(threadID, name string) error {
-	return a.gitApplication().CreateBranch(threadID, name)
-}
-
-// GitCreateBranchFrom creates a new branch in the thread's current
-// workspace (project root or the worktree the thread occupies), pointed
-// at baseBranch, then checks it out.
+// GitCreateBranchFrom creates a new branch in the referenced workspace
+// (project root or one of its worktrees), pointed at baseBranch, then checks
+// it out.
 //
 // carryLocalChanges has three meaningful combinations with baseBranch:
 //   - base = current branch, carry = true: the "Local with changes" path —
@@ -293,67 +193,54 @@ func (a *App) GitCreateBranch(threadID, name string) error {
 //   - base != current branch, carry = true: rejected. "Local with changes"
 //     only makes sense when both ends agree on the base.
 //
-// Returns the refreshed thread (Branch updated). Does not call
-// restartSessionIfAffected because the cwd is unchanged — the provider
-// session keeps running.
+// Thread rows in the workspace are re-branched as for GitCheckout. Does not
+// restart provider sessions because the cwd is unchanged.
 //
 //ao:scope git:operate
-func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalChanges bool) (store.Thread, error) {
-	// Lock before the read — see PrepareThreadWorktree for why a pre-lock read
-	// races the empty-draft cleanup's delete.
-	unlock := a.threadLocks().Lock(threadID)
-	defer unlock()
+func (a *App) GitCreateBranchFrom(ws WorkspaceRef, name, baseBranch string, carryLocalChanges bool) (GitWorkspaceState, error) {
+	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
+	if err != nil {
+		return GitWorkspaceState{}, err
+	}
 
-	thread, err := a.store.GetThread(threadID)
+	_, release, err := a.lockWorkspaceThreads(workspace)
 	if err != nil {
-		return store.Thread{}, err
+		return GitWorkspaceState{}, err
 	}
-	_, workspace, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return store.Thread{}, err
-	}
+	defer release()
 
 	core := a.gitCore()
-	currentBranch := strings.TrimSpace(thread.Branch)
-	if currentBranch == "" {
-		currentBranch = core.CurrentBranch(workspace)
-	}
 	sanitized, resolvedBase, baseIsCurrent, err := resolveBranchCreatePlan(
-		currentBranch, name, baseBranch, carryLocalChanges)
+		core.CurrentBranch(workspace), name, baseBranch, carryLocalChanges)
 	if err != nil {
-		return store.Thread{}, err
+		return GitWorkspaceState{}, err
 	}
 
 	if !baseIsCurrent {
-		if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
-			return store.Thread{}, err
-		}
 		if err := core.EnsureLocalBranchDoesNotExist(workspace, sanitized); err != nil {
-			return store.Thread{}, fmt.Errorf("create branch: %w", err)
+			return GitWorkspaceState{}, fmt.Errorf("create branch: %w", err)
 		}
 	}
 
 	if err := a.createBranchInWorkspace(workspace, sanitized, resolvedBase, baseIsCurrent); err != nil {
-		return store.Thread{}, err
+		return GitWorkspaceState{}, err
 	}
 
 	if a.workspaceFiles != nil {
 		a.workspaceFiles.Invalidate(workspace)
 	}
-	previousBranch := thread.Branch
-	thread.Branch = core.CurrentBranch(workspace)
-	if err := a.store.UpdateThread(thread); err != nil {
-		return store.Thread{}, err
+	state := a.workspaceState(project, workspace)
+	if _, err := a.UpdateThreadBranch(workspace, state.Branch); err != nil {
+		return GitWorkspaceState{}, fmt.Errorf("create branch: record branch on threads: %w", err)
 	}
-	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, thread, thread.Branch != previousBranch)
-	return thread, nil
+	return state, nil
 }
 
 // errCarryRequiresCurrentBase is the ONE refusal every "Local with changes"
 // check issues. Carrying uncommitted work forward is a move; carrying it onto
 // an unrelated base is a rebase, which is a different request the UI does not
-// offer. Four call sites used to spell this sentence out verbatim — the two
-// branch-create paths through resolveBranchCreatePlan below, and the two
+// offer. Three call sites used to spell this sentence out verbatim — the
+// branch-create path through resolveBranchCreatePlan below, and the two
 // worktree-cut paths that wrap it with their own "create worktree: " prefix.
 //
 // Callers wrap it with %w behind their operation name. The final `: `-segment
@@ -366,8 +253,8 @@ var errCarryRequiresCurrentBase = errors.New("'Local with changes' only applies 
 // createBranchInWorkspace, and the carry refusal.
 //
 // currentBranch is the branch of the checkout the caller is about to mutate —
-// the one thing only the caller can resolve, and the one thing that must not
-// be guessed at from the project root when the caller is in a worktree.
+// the one thing that must not be guessed at from the project root when the
+// caller is in a worktree.
 func resolveBranchCreatePlan(currentBranch, name, base string, carryLocalChanges bool) (string, string, bool, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -444,8 +331,8 @@ func (a *App) createBranchInWorkspace(workspace, name, resolvedBase string, base
 // draft is true the PR is opened as a GitHub draft (gh pr create --draft).
 //
 //ao:scope git:operate
-func (a *App) GitCreatePR(threadID, title, body string, draft bool) (gitops.GitActionResult, error) {
-	return a.gitApplication().CreatePR(threadID, title, body, draft)
+func (a *App) GitCreatePR(ws WorkspaceRef, title, body string, draft bool) (gitops.GitActionResult, error) {
+	return a.gitApplication().CreatePR(ws, title, body, draft)
 }
 
 // restoreStashOnError best-effort applies a previously-pushed stash back
@@ -472,6 +359,11 @@ func (a *App) restoreStashOnError(sourceWorkspace, stashMessage string) {
 // path is the thread's own column (which may diverge when a worktree is
 // active). A missing project row falls back to WorkspacePath so tests
 // that pre-insert threads without a store fixture still work.
+//
+// This is the THREAD-scoped resolver, for RPCs whose subject is the thread
+// itself. A caller-supplied workspace path must go through
+// gitapp.Service.ResolveWorkspace instead — that, and only that, is where an
+// outside path is validated against a project.
 func (a *App) resolveGitPaths(thread store.Thread) (project string, workspace string, err error) {
 	return a.gitApplication().ResolveThreadPaths(thread)
 }
@@ -485,10 +377,80 @@ func (a *App) gitCore() *gitops.Core {
 	return gitops.NewCore()
 }
 
-// ensureWorkspaceChangeAllowed refuses to mutate a thread's workspace while a
-// turn or background tool call is still in flight — the provider session is
-// bound to the cwd and changing it mid-turn would orphan output.
-func (a *App) ensureWorkspaceChangeAllowed(threadID string) error {
+// lockWorkspaceThreads takes the per-thread action lock of EVERY thread
+// referencing a checkout, in sorted id order so two mutators of the same
+// directory can never deadlock against each other. It returns that sorted,
+// deduped id set (which callers that also mutate the rows need) and one
+// release func.
+//
+// Every workspace mutator goes through here. Taking a single thread's lock
+// by guess is what let thread B mutate a worktree thread A was working in:
+// two threads sharing a checkout is first-class, so the lock set is the
+// directory's occupants, never one caller.
+func (a *App) lockWorkspaceThreads(workspace string) ([]string, func(), error) {
+	occupants, err := a.threadsReferencingWorkspace(workspace)
+	if err != nil {
+		return nil, nil, err
+	}
+	slices.Sort(occupants)
+	occupants = slices.Compact(occupants)
+
+	unlocks := make([]func(), 0, len(occupants))
+	for _, id := range occupants {
+		unlocks = append(unlocks, a.threadLocks().Lock(id))
+	}
+	return occupants, func() {
+		// Release in reverse order to match LIFO mutex hygiene.
+		for i := len(unlocks) - 1; i >= 0; i-- {
+			unlocks[i]()
+		}
+	}, nil
+}
+
+// ensureWorkspaceChangeAllowed refuses to DELETE a checkout while any thread
+// in it is working. The entity is the DIRECTORY, not the conversation: two
+// threads sharing a worktree is first-class, so a removal requested from
+// thread B would otherwise pull the directory out from under thread A's
+// running agent.
+//
+// It gates removal ONLY. Branch changes (GitCheckout, GitCreateBranchFrom,
+// GitPull, GitSyncBranch) are deliberately never gated on agent activity:
+// the user owns the branch and switches it whenever they like, agent or no
+// agent (ruling 2026-09-02). Do not add this check to them.
+//
+// It reads the same WorkspaceActivity projection the frontend's affordances
+// gate on, so a live button and a backend refusal cannot disagree — including
+// the words: these are the frontend workspace-change lock's two states
+// (TURN_REASON / TASKS_REASON), so the toast and the disabled-button tooltip
+// say the same thing. action names what the user asked for ("remove this
+// worktree") because the final `: `-segment must
+// stand alone — the frontend's userFacingError keeps only that segment — so
+// these messages carry no colon and cannot borrow context from a prefix.
+//
+// The busy thread is deliberately NOT named: a thread id is a uuid, and a uuid
+// in a toast is noise the user cannot act on.
+func (a *App) ensureWorkspaceChangeAllowed(action, workspace string) error {
+	activity, err := a.worktreeApplication().Activity(workspace)
+	if err != nil {
+		return err
+	}
+	if len(activity.BusyThreads) == 0 {
+		return nil
+	}
+	busy := activity.BusyThreads[0]
+	if busy.ActiveTurn {
+		return fmt.Errorf("cannot %s while an agent is responding in it", action)
+	}
+	return fmt.Errorf("cannot %s while %d background task(s) are running in it",
+		action, busy.RunningBackgroundTasks)
+}
+
+// ensureThreadChangeAllowed refuses to move ONE thread out of its workspace
+// while that thread's own turn or background tools are in flight — the
+// provider session is bound to the cwd and changing it mid-turn would orphan
+// output. Deliberately NOT the directory question: moving an idle thread out
+// of a checkout a sibling is working in touches only the idle thread's row.
+func (a *App) ensureThreadChangeAllowed(threadID string) error {
 	reason, err := a.threadActivityBlockReason(threadID)
 	if err != nil {
 		return err

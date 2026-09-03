@@ -52,6 +52,7 @@
 
 <div data-testid="settings-codex-tools-{provider.id}">
   <SettingsField
+    id="codex.builtin-tools"
     label="Built-in tools"
     hint="Turn one off to keep its schema out of the model's context. Shell and file editing are not offered — a session cannot work without them."
     align="start"

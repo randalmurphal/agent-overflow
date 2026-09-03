@@ -13,7 +13,17 @@ import {
   projectTurnStarted,
   resetForTest as resetThreadStatuses,
 } from '../../../stores/threadStatuses.svelte';
-import type { Item, Project, ProjectWithCounts, Thread } from '../../../types/models';
+import {
+  consumePendingGroupRename,
+  getThreadGroupById,
+  resetThreadGroupsForTest,
+} from '../../../stores/threadGroups.svelte';
+import {
+  getThreadFilterQuery,
+  setThreadFilterQuery,
+} from '../../../stores/threadFilter.svelte';
+import type { PopoverFloatingEl } from '../../../utils/popoverOwnership';
+import type { Project, ProjectWithCounts, Thread } from '../../../types/models';
 import {
   resetBindingMocks,
   setBindingMock,
@@ -61,14 +71,96 @@ describe('<ProjectItem>', () => {
   beforeEach(() => {
     resetSidebarForTest();
     resetThreadStatuses();
+    resetThreadGroupsForTest();
+    setThreadFilterQuery('');
     resetBindingMocks();
     setBindingMock('SwitchThread', async (threadId: string) => thread(threadId));
-    setBindingMock('ListRecentThreadItems', async () => ({
-      items: [] as Item[],
-      oldestTurnIndex: -1,
-      hasMore: false,
-    }));
     setBindingMock('ListRecentTurns', async () => []);
+  });
+
+  it('anchors the context menu to the header line, not the whole project container', async () => {
+    const { getByTestId, getByRole } = render(ProjectItem, {
+      props: {
+        project: wrap('p1'),
+        threads: [thread('t1'), thread('t2')],
+        pane: createThreadPane(),
+      },
+    });
+    const container = getByTestId('project-item');
+    const header = container.querySelector('[role="button"][aria-expanded]') as HTMLElement;
+
+    await fireEvent.contextMenu(header);
+    await tick();
+
+    const floating = getByRole('menu').closest('[data-popover]') as PopoverFloatingEl | null;
+    expect(floating?.__popoverAnchor).toBe(header);
+  });
+
+  it('a left click on the header (chevron, header buttons) closes the open context menu', async () => {
+    const { getByTestId, queryByRole } = render(ProjectItem, {
+      props: { project: wrap('p1'), threads: [], pane: createThreadPane() },
+    });
+    const header = getByTestId('project-item').querySelector('[role="button"][aria-expanded]') as HTMLElement;
+
+    await fireEvent.contextMenu(header);
+    await tick();
+    expect(queryByRole('menu')).not.toBeNull();
+
+    // The header is the menu's anchor; a trigger-style popover would keep
+    // itself open here, and the user's click on the chevron went nowhere.
+    await fireEvent.mouseDown(getByTestId('project-item-chevron'));
+    await tick();
+    expect(queryByRole('menu')).toBeNull();
+  });
+
+  it('new-group button is hidden by default and creates a group that asks for the rename', async () => {
+    const create = setBindingMock('CreateThreadGroup', vi.fn(
+      async (projectId: string, name: string) => ({
+        id: 'g-new',
+        projectId,
+        name,
+        createdAt: 0,
+        updatedAt: 0,
+      }),
+    ));
+    collapseProject('p1');
+    setThreadFilterQuery('spike');
+    const { getByTestId } = render(ProjectItem, {
+      props: { project: wrap('p1'), threads: [], pane: createThreadPane() },
+    });
+
+    const button = getByTestId('project-item-new-group') as HTMLButtonElement;
+    expect(button.className).toContain('opacity-0');
+    expect(button.className).toContain('group-hover:opacity-100');
+
+    await fireEvent.click(button);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+    expect(create).toHaveBeenCalledWith('p1', 'New Group');
+    expect(getThreadGroupById('g-new')).toBeTruthy();
+    // Same path as the menu item: the row must be able to mount and open
+    // its rename, so the search is cleared and the project expanded.
+    expect(getThreadFilterQuery()).toBe('');
+    expect(isProjectExpanded('p1')).toBe(true);
+    expect(consumePendingGroupRename('g-new')).toBe(true);
+  });
+
+  it('clicking the new-group button does not bubble to the row toggle', async () => {
+    setBindingMock('CreateThreadGroup', vi.fn(async (projectId: string, name: string) => ({
+      id: 'g-new',
+      projectId,
+      name,
+      createdAt: 0,
+      updatedAt: 0,
+    })));
+    const { getByTestId } = render(ProjectItem, {
+      props: { project: wrap('p1'), threads: [], pane: createThreadPane() },
+    });
+
+    await fireEvent.click(getByTestId('project-item-new-group'));
+    await tick();
+
+    expect(isProjectExpanded('p1')).toBe(true);
   });
 
   it('renders expanded by default and exposes an aria-expanded chevron', () => {

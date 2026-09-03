@@ -60,6 +60,15 @@ func (s *Service) RememberEvent(name eventchan.Channel, data any) {
 // windows: an entry whose reset boundary is older than the cached one is
 // discarded, and same-window jitter in the boundary keeps the cached value.
 //
+// Merging is per-entry because most readings are PARTIAL — a wire event
+// carries one window, Claude's header fallback carries two and can never see
+// a model-scoped bucket. A reading that marks itself Complete is the whole
+// answer for the account, so it also DROPS cached limits it omits: a provider
+// removes a bucket from its answer once the bucket has no usage, which is
+// exactly what a mid-window reset produces, and an additive-only merge kept
+// the pre-reset percentage for the rest of the window (2026-09-01: a Fable
+// weekly row frozen at 90% while session and all-models correctly read 0%).
+//
 // Within the same window the NEWEST reading wins, even when its used-percent
 // is lower. Every feed (wire rate-limit headers, the HTTP/app-server probes)
 // reports the server's current answer, and the server legitimately lowers
@@ -115,9 +124,34 @@ func MergeSnapshot(current, incoming provider.RateLimitsSnapshot) (provider.Rate
 		merged.Limits = append(merged.Limits, entry)
 		changed = true
 	}
+	if incoming.Complete {
+		// Every limit the reading names stays, INCLUDING one rejected above
+		// for an older boundary: the server still lists it, so its cached
+		// value is the better answer, not a dead row.
+		present := make(map[string]struct{}, len(incoming.Limits))
+		for _, entry := range incoming.Limits {
+			if strings.TrimSpace(entry.LimitID) == "" {
+				continue
+			}
+			present[entryKey(entry)] = struct{}{}
+		}
+		kept := merged.Limits[:0]
+		for _, entry := range merged.Limits {
+			if _, ok := present[entryKey(entry)]; !ok {
+				changed = true
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		merged.Limits = kept
+	}
 	if !changed {
 		return original, false
 	}
+	// The cache is a union of readings, never a reading itself. Leaving
+	// Complete set here would let the persisted snapshot prune a live one on
+	// the next boot, which is the opposite of what this flag is for.
+	merged.Complete = false
 	if incoming.UpdatedAt > merged.UpdatedAt {
 		merged.UpdatedAt = incoming.UpdatedAt
 	}

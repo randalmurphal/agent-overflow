@@ -605,7 +605,7 @@ func TestUpdateProjectIdentityLeavesUpdatedAtAlone(t *testing.T) {
 	}
 }
 
-// A row written before v79 gets the ADD COLUMN default. Insert one the way the
+// A row written before v83 gets the ADD COLUMN default. Insert one the way the
 // pre-migration INSERT did — naming no identity columns — and it must read
 // back as "not known" rather than failing the scan.
 func TestLegacyProjectRowReadsIdentityAsEmpty(t *testing.T) {

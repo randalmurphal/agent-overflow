@@ -16,7 +16,7 @@ import {
   getProviderCommandsFrame,
 } from '../../stores/providerCommands.svelte';
 import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
-import type { BranchCommit, GitBranch } from '../../types/git';
+import type { BranchCommit, GitBranch, WorkspaceRef } from '../../types/git';
 import { errString } from '../../utils/errors';
 import { runInterceptedCommand } from './composerCommandActions';
 import {
@@ -59,7 +59,8 @@ interface OpenTrigger {
 }
 
 interface ReviewGitData {
-  threadId: string;
+  /** The checkout the rows were read from — the staleness key. */
+  workspacePath: string;
   branches: GitBranch[];
   commits: BranchCommit[];
   loading: boolean;
@@ -113,6 +114,9 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
   let reviewGit = $state.raw<ReviewGitData | null>(null);
 
   const workspacePath = $derived(paneWorkspacePath(pane));
+  // `/review` reads branches and commits out of a CHECKOUT, so a draft
+  // placeholder answers the same rows a persisted thread does.
+  const workspace = $derived<WorkspaceRef | null>(pane.workspace);
   const provider = $derived(pane.thread?.provider ?? '');
 
   const interceptedNames = $derived(interceptedCommandNames(provider));
@@ -120,7 +124,7 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
   const slashSections = $derived.by(() => {
     if (!trigger) return [];
     if (trigger.level === 'review') {
-      const git = reviewGit?.threadId === pane.threadId ? reviewGit : null;
+      const git = reviewGit?.workspacePath === (workspace?.workspacePath ?? '') ? reviewGit : null;
       return filterCommandSections(
         buildReviewSections({
           branches: git?.branches ?? [],
@@ -167,25 +171,26 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
   }
 
   async function loadReviewGit(): Promise<void> {
-    const threadId = pane.threadId;
-    if (!threadId) return;
-    if (reviewGit?.threadId === threadId) return;
-    reviewGit = { threadId, branches: [], commits: [], loading: true, error: '' };
+    const ws = workspace;
+    if (!ws) return;
+    const key = ws.workspacePath;
+    if (reviewGit?.workspacePath === key) return;
+    reviewGit = { workspacePath: key, branches: [], commits: [], loading: true, error: '' };
     try {
       // Commits are the workspace's recent commits (plain `git log` from
       // HEAD) — the same source codex's own review picker uses — NOT the
       // review pane's `base..HEAD` list, which is empty for a thread
       // sitting on the default branch.
       const [branches, commits] = await Promise.all([
-        GitListBranches(threadId).then((b) => (b ?? []) as GitBranch[]),
-        ListRecentCommits(threadId).then((c) => (c ?? []) as BranchCommit[]),
+        GitListBranches(ws).then((b) => (b ?? []) as GitBranch[]),
+        ListRecentCommits(ws).then((c) => (c ?? []) as BranchCommit[]),
       ]);
-      if (pane.threadId !== threadId) return;
-      reviewGit = { threadId, branches, commits, loading: false, error: '' };
+      if (pane.workspace?.workspacePath !== key) return;
+      reviewGit = { workspacePath: key, branches, commits, loading: false, error: '' };
     } catch (err) {
-      if (pane.threadId !== threadId) return;
+      if (pane.workspace?.workspacePath !== key) return;
       reviewGit = {
-        threadId,
+        workspacePath: key,
         branches: [],
         commits: [],
         loading: false,

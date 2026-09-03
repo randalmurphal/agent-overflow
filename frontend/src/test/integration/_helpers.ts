@@ -103,6 +103,8 @@ export function installAppDefaults(): void {
   setBindingMock('UpdateSettings', async (patch: unknown) => makeSettings(patch as Parameters<typeof makeSettings>[0]));
   setBindingMock('Version', async () => '0.0.1');
   setBindingMock('ListThreads', async () => []);
+  // Sidebar boot loads thread groups beside the threads they contain.
+  setBindingMock('ListThreadGroups', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('GetProviderStatuses', async () => []);
   setBindingMock('GetModelsForProvider', async () => []);
@@ -125,8 +127,8 @@ export function installAppDefaults(): void {
   // seed synchronously.
   setBindingMock('HighlightSchemaVersion', async () => 'hv-integration');
   setBindingMock('HighlightClassNames', async () => ['none']);
-  // Settings → General → Notifications hosts the phone-push block, whose
-  // status read is a passive load: any suite that renders GeneralSettings
+  // Settings → Notifications hosts the phone-push block, whose status read
+  // is a passive load: any suite that renders NotificationsSection
   // (directly, through SettingsView, or through App) reaches this binding.
   setBindingMock('GetPushSenderStatus', async () => ({
     configured: false,
@@ -165,9 +167,9 @@ export function seedSidebarProject(threads: Thread[]): Project {
 
 // Bindings that start firing the moment a thread becomes active: ChatView
 // mounts GitActionsControl (header) and the in-card ComposerWorkspaceStrip
-// hosts BranchPicker, which call GetGitStatus /
-// GetGitStatusFastForProject / GitListBranches in $effect. Tests that switch into a thread need these
-// mocked even if they don't assert on git UI.
+// hosts BranchPicker, which call GetGitStatus / GitListBranches in
+// $effect. Tests that switch into a thread need these mocked even if they
+// don't assert on git UI.
 export function installThreadViewDefaults(): void {
   setBindingMock('SwitchThread', async (threadId: unknown) => {
     const id = typeof threadId === 'string' ? threadId : 'thread-1';
@@ -181,11 +183,6 @@ export function installThreadViewDefaults(): void {
   setBindingMock('MarkThreadRead', async () => {});
   setBindingMock('MarkThreadUnread', async () => {});
   setBindingMock('AutoResumeThread', async () => {});
-  setBindingMock('ListRecentThreadItems', async () => ({
-    items: [],
-    oldestTurnIndex: -1,
-    hasMore: false,
-  }));
   setBindingMock('ListThreadSliceAround', async () => ({
     items: [],
     oldestTurnIndex: -1,
@@ -215,9 +212,6 @@ export function installThreadViewDefaults(): void {
   // need to set the mock themselves.
   setBindingMock('ListRecentTurns', async () => []);
   setBindingMock('GetGitStatus', async () => makeGitStatus());
-  // BranchPicker's awaited draft-placeholder dirty-bit fetch skips the
-  // forge round-trip.
-  setBindingMock('GetGitStatusFastForProject', async () => makeGitStatus());
   // The header subscribes to backend gitwatch instead of polling. Default to
   // a successful subscribe returning the same status as GetGitStatus so the
   // header renders the split-button. `cwd` is the canonical directory the

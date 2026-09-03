@@ -41,6 +41,8 @@ import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
 import { getThreadById } from './threads.svelte';
 import { leaseDuringSettle } from '../utils/scrollLeaseDuringTransition';
 import { createGitStatusView, type GitStatusView } from './gitStatusStore.svelte';
+import { workspaceRefForThread } from '../utils/workspaceKey';
+import type { WorkspaceRef } from '../types/git';
 import {
   agentPaneRetainedRootScope,
   agentPaneScopeTrailHolds,
@@ -68,6 +70,7 @@ import { createThreadDraftPlaceholder } from './threadDraftPlaceholder.svelte';
 import { createThreadPaneErrors } from './threadPaneErrors.svelte';
 import { createThreadPaneScroll } from './threadPaneScroll.svelte';
 import { createThreadPaneCompanions } from './threadPaneCompanions';
+import { reviewSubjectForPane } from './reviewPane.svelte';
 import { createThreadPaneTurns } from './threadPaneTurns.svelte';
 import {
   normalizeContextWindowForThread,
@@ -247,6 +250,22 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // primitive-valued getter over `thread` goes through a $derived, so no
   // consumer can be woken by a replacement that changed nothing it reads.
   const stableTerminalThreadId = $derived.by(() => thread?.id ?? null);
+  // The CHECKOUT this pane's git affordances address, as the wire spells it.
+  // Derived off the two primitive strings so the object's identity moves only
+  // when one of them actually changes: consumers pass this straight into an
+  // RPC argument and into the git-status attach effect, and a fresh object per
+  // `thread` replacement (many per streamed turn) would re-subscribe the
+  // workspace on every token. A draft placeholder carries both fields exactly
+  // as a persisted row does, which is the whole point — no git RPC has to
+  // resolve a directory out of a conversation.
+  const workspaceProjectId = $derived.by(() => thread?.projectId ?? '');
+  const workspaceDirPath = $derived.by(() => thread?.workspacePath ?? '');
+  const workspaceRef = $derived.by<WorkspaceRef | null>(() =>
+    workspaceRefForThread({
+      projectId: workspaceProjectId,
+      workspacePath: workspaceDirPath,
+    }),
+  );
 
   const rowUiState = createThreadRowUiState({
     getItemById,
@@ -340,12 +359,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // from the pane's current thread on every read, so a thread switch or a
   // worktree move re-points it with no reset of its own: the incoming
   // thread's workspace answers immediately, and the outgoing one's entry is
-  // released by whoever attached it. The subscription itself is attached by
-  // ChatHeaderActions (see gitStatusStore.svelte.ts).
-  const gitStatus: GitStatusView = createGitStatusView(
-    () => thread,
-    () => (draftState.placeholder ? null : (thread?.id ?? null)),
-  );
+  // released by whoever attached it. A draft placeholder resolves the same
+  // way — its synthetic row carries the project and the directory. The
+  // subscription itself is attached by ChatHeaderActions (see
+  // gitStatusStore.svelte.ts).
+  const gitStatus: GitStatusView = createGitStatusView(() => thread);
 
   const channelState = createThreadChannelState();
   // Plan sidebar / review pane / agent companion — which
@@ -354,6 +372,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   const companions = createThreadPaneCompanions({
     paneId,
     getThread: () => thread,
+    getReviewSubject: () => reviewSubjectForPane({
+      threadId: stableThreadId,
+      thread,
+      workspace: workspaceRef,
+    }),
   });
 
   // Turn lifecycle (`latestSettledTurn`, the timeline turn facet, and the
@@ -693,6 +716,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     get threadId() {
       return stableThreadId;
+    },
+    /**
+     * The checkout this pane operates in, or null when the row names none
+     * (a terminal-only thread has no project). Every workspace-scoped git
+     * RPC takes this value; a surface whose action cannot run without it
+     * does not render rather than rendering and ignoring the click.
+     */
+    get workspace() {
+      return workspaceRef;
     },
     /**
      * Key the timeline's scroll state (snapshots, restore identity) is

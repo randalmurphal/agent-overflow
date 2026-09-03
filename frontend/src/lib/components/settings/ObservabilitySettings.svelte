@@ -22,7 +22,7 @@
   }
 </script>
 
-<div class="flex flex-col gap-6">
+<div class="settings-sections">
   <section>
     <SettingsHeader
       title="OpenTelemetry OTLP"
@@ -42,6 +42,7 @@
 
     <div class="flex flex-col gap-1">
       <SettingsField
+        id="observability.tracing"
         label="Enable tracing"
         hint="Turn on OTLP trace + metric export."
       >
@@ -53,6 +54,7 @@
       </SettingsField>
 
       <SettingsField
+        id="observability.otlp-endpoint"
         label="OTLP endpoint"
         hint="gRPC host:port. Leave blank to use the OTel default (localhost:4317). Only used when tracing is enabled."
         htmlFor="otlp-endpoint"
@@ -79,6 +81,7 @@
 
     <div class="flex flex-col gap-1">
       <SettingsField
+        id="observability.event-log"
         label="Enable event replay log"
         hint="Takes effect immediately — no restart needed."
       >

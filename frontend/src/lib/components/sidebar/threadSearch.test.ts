@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { threadMatchesQuery } from './threadSearch';
-import type { Thread } from '../../types/models';
+import { threadGroupMatchesQuery, threadMatchesQuery } from './threadSearch';
+import type { Thread, ThreadGroup } from '../../types/models';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -47,5 +47,35 @@ describe('threadMatchesQuery', () => {
   it.each(['workflow', 'workflow-studio', 'workflow-triage'] as const)('never matches %s threads', (mode) => {
     expect(threadMatchesQuery(makeThread({ mode, title: 'Exact match' }), '')).toBe(false);
     expect(threadMatchesQuery(makeThread({ mode, title: 'Exact match' }), 'exact')).toBe(false);
+  });
+});
+
+describe('threadGroupMatchesQuery', () => {
+  function makeGroup(overrides: Partial<ThreadGroup> = {}): ThreadGroup {
+    return {
+      id: 'g1',
+      projectId: 'p1',
+      name: 'Release Prep',
+      createdAt: 0,
+      updatedAt: 0,
+      ...overrides,
+    };
+  }
+
+  it('matches everything when the query is empty (no filter)', () => {
+    expect(threadGroupMatchesQuery(makeGroup(), '')).toBe(true);
+  });
+
+  it('matches on a name substring', () => {
+    expect(threadGroupMatchesQuery(makeGroup(), 'release')).toBe(true);
+    expect(threadGroupMatchesQuery(makeGroup(), 'prep')).toBe(true);
+  });
+
+  it('returns false when the name does not contain the query', () => {
+    expect(threadGroupMatchesQuery(makeGroup(), 'zzz')).toBe(false);
+  });
+
+  it('expects a pre-lowercased query, like threadMatchesQuery', () => {
+    expect(threadGroupMatchesQuery(makeGroup(), 'RELEASE')).toBe(false);
   });
 });

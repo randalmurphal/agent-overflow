@@ -8,13 +8,18 @@
 // instead — this is only for the ones that don't.
 
 import type { PanelContext } from '../../lib/stores/panelContext.svelte';
+import type { Thread } from '../../lib/types/models';
 
 export function makeStubPanelContext(overrides: Partial<PanelContext> = {}): PanelContext {
   return {
     paneId: 'source-pane',
     threadId: 'thread-1',
-    thread: null,
+    // Consistent with `threadId`: a context that names a thread has the row.
+    // The review pane keys its state on `thread.id` rather than `threadId`,
+    // because a draft placeholder has the former and not the latter.
+    thread: { id: 'thread-1', projectId: 'project-1', workspacePath: '/repo' } as Thread,
     workspacePath: '/repo',
+    workspace: { projectId: 'project-1', workspacePath: '/repo' },
     items: [],
     timelineRevision: 0,
     getItemById: () => undefined,

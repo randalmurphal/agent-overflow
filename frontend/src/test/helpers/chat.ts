@@ -34,6 +34,10 @@ export function makeThread(overrides: Partial<Thread> = {}): Thread {
     id: 'thread-1',
     title: 'Test thread',
     provider: 'claude',
+    // Both halves of the checkout: git and review affordances address a
+    // WorkspaceRef, so a fixture without a projectId is a thread whose git
+    // controls correctly refuse to render.
+    projectId: 'project-1',
     workspacePath: '/tmp/workspace',
     projectPath: '/tmp/workspace',
     mode: 'chat',
@@ -91,15 +95,7 @@ export function installPaneMocks(items: Item[] = []): void {
   setBindingMock('AutoResumeThread', async () => {});
   // The pane loads the initial slice of history via ListThreadSliceAround
   // on switch (works for both bottom-snapshot and saved-anchor cases).
-  // ListRecentThreadItems is the canonical wider-window binding used by
-  // the transport-gap recovery path (`refreshFromBackend`); component
-  // tests that don't exercise that path leave the default empty.
   setBindingMock('ListThreadSliceAround', async () => ({
-    items,
-    oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
-    hasMore: false,
-  }));
-  setBindingMock('ListRecentThreadItems', async () => ({
     items,
     oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
     hasMore: false,

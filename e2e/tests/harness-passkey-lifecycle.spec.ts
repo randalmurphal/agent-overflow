@@ -292,11 +292,11 @@ function appConsoleErrors(surfaced: Surfaced): string[] {
   return surfaced.consoleErrors.filter((entry) => !entry.includes(RIG_BRIDGE_NOISE));
 }
 
-/** Settings → Network, from a mounted app. */
-async function openNetworkSettings(page: Page): Promise<void> {
+/** Settings → Remote access, from a mounted app. */
+async function openRemoteAccessSettings(page: Page): Promise<void> {
   await page.getByTestId('sidebar-settings-button').click();
-  await page.getByRole('tab', { name: 'Network' }).click();
-  await expect(page.getByRole('tab', { name: 'Network' })).toHaveAttribute(
+  await page.getByRole('tab', { name: 'Remote access' }).click();
+  await expect(page.getByRole('tab', { name: 'Remote access' })).toHaveAttribute(
     'aria-selected',
     'true',
   );
@@ -364,7 +364,7 @@ test.describe.serial('passkey lifecycle', () => {
     await expect(setup.getByTestId('sidebar-settings-button')).toBeVisible({
       timeout: APP_MOUNT_MS,
     });
-    await openNetworkSettings(setup);
+    await openRemoteAccessSettings(setup);
     await setup.getByTestId('network-canonical-domain').fill(DOMAIN);
     await setup.getByTestId('network-domain-save').click();
     await expect
@@ -414,7 +414,7 @@ test.describe.serial('passkey lifecycle', () => {
       timeout: APP_MOUNT_MS,
     });
     const ownerAuthenticator = await attachAuthenticator(ownerContext, ownerPage);
-    await openNetworkSettings(ownerPage);
+    await openRemoteAccessSettings(ownerPage);
 
     // The precondition: this backend has a domain, so the block offers
     // the control rather than explaining why it cannot. Asserting the
@@ -556,7 +556,7 @@ test.describe.serial('passkey lifecycle', () => {
     // call site asks for the ceremony — the transport runs it for
     // whatever the backend refuses — which is what case 4 then proves on
     // a surface that has never heard of a passkey.
-    await openNetworkSettings(remotePage);
+    await openRemoteAccessSettings(remotePage);
     await expect(remotePage.getByTestId('passkeys-block')).toBeVisible();
     await expect(remotePage.getByTestId('passkey-row')).toHaveCount(1);
 

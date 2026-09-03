@@ -1,4 +1,4 @@
-// Settings → Network → Devices → Passkeys.
+// Settings → Remote access → Devices → Passkeys.
 //
 // The cases worth pinning are the ones where the block has to say
 // something true that a simpler list would get wrong: a credential that

@@ -152,15 +152,31 @@ test.describe('off-host authorization', () => {
       // workspace-content surface this wave unlocked:
       // HighlightPatchWithContext was refused off-host by NAME until the
       // origin partition was deleted, and `files:read` is what decides it
-      // now. Its content priming is best-effort, so a caller with no thread
-      // gets the unprimed spans rather than an error — which is exactly the
-      // answer the grant entitles it to.
+      // now. The workspace-keyed reads take a WorkspaceRef through
+      // ResolveWorkspace, so a seeded project is what makes them
+      // answerable; no thread is needed. Content priming stays
+      // best-effort: a path the checkout lacks yields the unprimed spans
+      // rather than an error — which is exactly the answer the grant
+      // entitles it to.
+      const seeded = await harness.rpc<{ projects: Array<{ projectId: string }> }>(
+        'HarnessSeed',
+        {
+          projects: [
+            {
+              name: 'offhost-authz',
+              repo: { commits: [{ message: 'init', files: { 'README.md': '# seed\n' } }] },
+            },
+          ],
+        },
+      );
+      const workspace = { projectId: seeded.projects[0].projectId, workspacePath: '' };
       for (const [method, ...params] of [
         ['Version'],
         ['ListProjects'],
+        ['GetGitStatus', workspace],
         [
           'HighlightPatchWithContext',
-          '',
+          workspace,
           { scope: 'workspace', path: 'main.go', patch: '@@ -1 +1 @@\n+package main\n' },
         ],
       ] as Array<[string, ...unknown[]]>) {
@@ -169,7 +185,7 @@ test.describe('off-host authorization', () => {
       }
 
       // (d) Answered, and REDACTED. Managing how a backend is exposed is
-      // what an `access:admin` device is for, so Settings → Network reads
+      // what an `access:admin` device is for, so Settings → Remote access reads
       // for this peer — but the credential half of that record does not
       // travel: this launch's token would let the holder attach as the
       // backend's own local channel, and both share URLs carry one-time

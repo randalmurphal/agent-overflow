@@ -75,9 +75,10 @@ our own code.
   AND the reminder mode ≠ "off", so removing the tools also removes
   the nudges. `CLAUDE_CODE_TODO_REMINDER_MODE=off` (env override over
   the `tengu_soft_slate_nudge` statsig gate, default "baseline") kills
-  the nudges while KEEPING the tools. AO's Settings → todo nudges
-  toggle exports it on both spawn paths, same user-overridable-default
-  posture as the opt-in above. Verified on 2.1.233 binary analysis.
+  the nudges while KEEPING the tools. AO's todo-nudges toggle, in the
+  Tools section of the Claude Code settings page, exports it on both
+  spawn paths, same user-overridable-default posture as the opt-in
+  above. Verified on 2.1.233 binary analysis.
 - **Completed task lists self-delete (≥2.1.233)**: once every task in
   a list is `completed`, the CLI arms a 5s timer and then deletes the
   list's `~/.claude/tasks/<list-id>/*.json` files, bumping the

@@ -156,7 +156,7 @@ func TestBackfillIdentityWritesAndAnnouncesOnlyTheRowsItMoved(t *testing.T) {
 	}
 
 	// A row created before the deriver existed: clear its identity so the
-	// pass has something to fill, which is exactly the pre-v79 shape.
+	// pass has something to fill, which is exactly the pre-v83 shape.
 	remotelessRow, err := database.GetProjectByPath(remoteless)
 	if err != nil {
 		t.Fatalf("GetProjectByPath: %v", err)

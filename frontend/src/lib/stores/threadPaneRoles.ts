@@ -44,6 +44,7 @@
 // the error names the role.
 
 import type { Item, Thread } from '../types/models';
+import type { WorkspaceRef } from '../types/git';
 import type {
   StreamingAssistantRenderContext,
   StreamingAssistantRevealSink,
@@ -104,6 +105,14 @@ export interface PaneSession {
   readonly threadId: string | null;
   /** The mounted thread row — read for its provider/mode/workspace, never mutated here. */
   readonly thread: Thread | null;
+  /**
+   * The CHECKOUT this pane addresses, or null when the row names none.
+   * Here rather than only on the wide pane because every git/review
+   * affordance a row can open needs it (`chat/reviewTrigger.ts`), and
+   * because it is what replaced the "does this pane have a thread row?"
+   * question those surfaces used to ask.
+   */
+  readonly workspace: WorkspaceRef | null;
   /** Bumped by every switch, including a same-thread in-place reload. */
   readonly switchGeneration: number;
   /** A switch/window load is in flight. */

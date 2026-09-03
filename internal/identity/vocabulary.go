@@ -26,7 +26,7 @@ import (
 
 // DeviceClass is what kind of client instance a device row describes. The
 // set is closed and mirrored by the `devices.class` CHECK
-// (internal/store migration v75); TestDeclaredValueSetsMatchTheSchemaChecks
+// (internal/store migration v79); TestDeclaredValueSetsMatchTheSchemaChecks
 // drives every value through a real store and fails in both directions.
 type DeviceClass string
 
@@ -94,7 +94,7 @@ func (b BindingClass) Valid() bool { return slices.Contains(BindingClasses, b) }
 // ProofKind is how a device presents possession of the key its row names
 // (docs/specs/remote-access.md §4, phase 5). The set is closed and
 // mirrored by the `devices.proof_kind` CHECK (internal/store migration
-// v77); TestDeclaredValueSetsMatchTheSchemaChecks drives every value
+// v81); TestDeclaredValueSetsMatchTheSchemaChecks drives every value
 // through a real store and fails in both directions.
 //
 // The distinction is the whole point of phase 5: until it existed, one
@@ -117,7 +117,7 @@ const (
 	// and this value is how the backend records it rather than pretending
 	// otherwise.
 	//
-	// It is also what every device paired before migration v77 holds, so
+	// It is also what every device paired before migration v81 holds, so
 	// this is the value the column defaults to.
 	ProofBearer ProofKind = "bearer"
 	// ProofSignedKey means the device holds an ECDSA P-256 private key,

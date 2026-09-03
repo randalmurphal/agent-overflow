@@ -240,8 +240,8 @@ export interface PreviewSurface {
   readonly name: string;
   /** Show the thread whose transcript the cases read. */
   openThread(page: Page, title: string): Promise<void>;
-  /** Open Settings on the Network section. */
-  openSettingsNetwork(page: Page): Promise<void>;
+  /** Open Settings on the Remote access page. */
+  openSettingsRemote(page: Page): Promise<void>;
   /** Close Settings and come back to the thread. */
   returnToThread(page: Page, title: string): Promise<void>;
 }
@@ -263,11 +263,11 @@ async function openCommandRow(page: Page): Promise<void> {
   await expect(page.getByTestId('command-output-row')).toHaveCount(1);
 }
 
-async function openNetworkSection(page: Page): Promise<void> {
+async function openRemoteAccessPage(page: Page): Promise<void> {
   await page.getByTestId('sidebar-settings-button').click();
   await expect(page.getByRole('tablist', { name: 'Settings Sections' })).toBeVisible();
-  await page.getByRole('tab', { name: 'Network' }).click();
-  await expect(page.getByRole('tab', { name: 'Network' })).toHaveAttribute(
+  await page.getByRole('tab', { name: 'Remote access' }).click();
+  await expect(page.getByRole('tab', { name: 'Remote access' })).toHaveAttribute(
     'aria-selected',
     'true',
   );
@@ -284,7 +284,7 @@ export const DESKTOP_SURFACE: PreviewSurface = {
     await page.getByTestId('thread-row').filter({ hasText: title }).click();
     await expect(page.getByTestId('chat-header-title')).toHaveText(title);
   },
-  openSettingsNetwork: openNetworkSection,
+  openSettingsRemote: openRemoteAccessPage,
   async returnToThread(page, title) {
     await closeSettings(page);
     await expect(page.getByTestId('chat-header-title')).toHaveText(title);
@@ -303,14 +303,14 @@ export const COMPACT_SURFACE: PreviewSurface = {
     await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
     await expect(page.getByTestId('chat-header-title')).toHaveText(title);
   },
-  async openSettingsNetwork(page) {
+  async openSettingsRemote(page) {
     // The settings button lives in the sidebar, which is inert while the
     // thread screen is showing.
     if ((await page.locator('html').getAttribute('data-compact-screen')) === 'thread') {
       await page.getByTestId('compact-back').click();
       await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
     }
-    await openNetworkSection(page);
+    await openRemoteAccessPage(page);
   },
   async returnToThread(page, title) {
     await closeSettings(page);
@@ -567,7 +567,7 @@ export function definePreviewGatewaySuite(surface: PreviewSurface): void {
 
       // And the same port is now a row in Settings, with the one control
       // that can take it back out of the persisted set.
-      await surface.openSettingsNetwork(phone);
+      await surface.openSettingsRemote(phone);
       await expect(phone.getByTestId('preview-ports-no-address')).toHaveCount(0);
       const row = phone.getByTestId('preview-port-row').filter({ hasText: String(devServer.port) });
       await expect(row).toHaveCount(1);
@@ -727,7 +727,7 @@ export function definePreviewGatewaySuite(surface: PreviewSurface): void {
         'the precondition: the preview listener is up before it is taken down',
       ).toBe('connected');
 
-      await surface.openSettingsNetwork(phone);
+      await surface.openSettingsRemote(phone);
       await phone
         .getByTestId('preview-port-row')
         .filter({ hasText: String(devServer.port) })

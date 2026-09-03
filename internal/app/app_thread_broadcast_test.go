@@ -494,7 +494,7 @@ func TestGitBranchChangeBroadcastsTheThreadRow(t *testing.T) {
 	thread := mustCreateBroadcastThreadIn(t, app, repo)
 	broadcasts := captureThreadBroadcasts(t, app)
 
-	if err := app.GitCheckout(thread.ID, "feature/broadcast"); err != nil {
+	if _, err := app.GitCheckout(workspaceRefForThread(thread), "feature/broadcast"); err != nil {
 		t.Fatalf("GitCheckout: %v", err)
 	}
 	row := broadcasts.expectRow(triage.ThreadActionFull, thread.ID)
@@ -503,7 +503,7 @@ func TestGitBranchChangeBroadcastsTheThreadRow(t *testing.T) {
 	}
 
 	broadcasts.reset()
-	if err := app.GitCheckout(thread.ID, "feature/broadcast"); err != nil {
+	if _, err := app.GitCheckout(workspaceRefForThread(thread), "feature/broadcast"); err != nil {
 		t.Fatalf("GitCheckout(same branch): %v", err)
 	}
 	broadcasts.expectSilence("checking out the branch the thread is already on")

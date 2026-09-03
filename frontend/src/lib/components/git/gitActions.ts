@@ -7,18 +7,24 @@
 // so it can be unit-tested without mounting the component.
 
 import {
-  GetThread,
   GitCreatePR,
   GitPull,
   GitPush,
-  GitRemoveWorktree,
+  RemoveOtherWorktree,
 } from '../../stores/bindings';
-import { syncThread } from '../../stores/panes.svelte';
+import {
+  applyToDraftPlaceholdersInWorkspace,
+  placeholderWorkspaceOf,
+} from '../../stores/draftWorkspaceSync';
 import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import { forgeLabels } from '../../utils/forgeLabels';
-import type { GitActionResult, GitStatus } from '../../types/git';
-import type { Thread } from '../../types/models';
+import type {
+  GitActionResult,
+  GitStatus,
+  GitWorkspaceState,
+  WorkspaceRef,
+} from '../../types/git';
 
 export type PrimaryActionKind = 'commit' | 'push' | 'pull';
 
@@ -60,8 +66,20 @@ export function primaryActionFor(status: GitStatus | null): PrimaryAction {
   return { label: 'Commit', action: 'commit', disabled: true, tooltip: 'No changes to commit' };
 }
 
+/**
+ * Removing the pane's own worktree is still a workspace action — the
+ * directory is the subject — so it takes the same ref, plus the path being
+ * removed. `GitRemoveWorktree(threadID)` remains for the thread-centric
+ * callers (sidebar row, archived thread, proposed-plan implementation),
+ * where the subject really is "the worktree THIS thread is attached to".
+ */
+export interface RemoveWorktreeCtx extends GitActionCtx {
+  worktreePath: string;
+}
+
 export interface GitActionCtx {
-  threadId: string;
+  /** The checkout every action below acts on. */
+  workspace: WorkspaceRef;
   reportError: (message: string) => void;
   refreshStatus: () => Promise<void>;
   /**
@@ -73,7 +91,7 @@ export interface GitActionCtx {
 
 export async function runPushAction(ctx: GitActionCtx): Promise<void> {
   try {
-    const result = (await GitPush(ctx.threadId)) as GitActionResult;
+    const result = (await GitPush(ctx.workspace)) as GitActionResult;
     if (result.error) {
       console.error('Push failed:', result.error);
       ctx.reportError(`Push failed: ${result.error}`);
@@ -89,7 +107,7 @@ export async function runPushAction(ctx: GitActionCtx): Promise<void> {
 
 export async function runPullAction(ctx: GitActionCtx): Promise<void> {
   try {
-    const result = (await GitPull(ctx.threadId)) as GitActionResult;
+    const result = (await GitPull(ctx.workspace)) as GitActionResult;
     if (result.error) {
       console.error('Pull failed:', result.error);
       ctx.reportError(`Pull failed: ${result.error}`);
@@ -106,7 +124,7 @@ export async function runPullAction(ctx: GitActionCtx): Promise<void> {
 export async function runCreatePRAction(ctx: GitActionCtx): Promise<void> {
   const labels = forgeLabels(ctx.forge);
   try {
-    const result = (await GitCreatePR(ctx.threadId, '', '', false)) as GitActionResult;
+    const result = (await GitCreatePR(ctx.workspace, '', '', false)) as GitActionResult;
     if (result.error) {
       console.error(`${labels.createAction} failed:`, result.error);
       ctx.reportError(`${labels.createAction} failed: ${result.error}`);
@@ -123,11 +141,17 @@ export async function runCreatePRAction(ctx: GitActionCtx): Promise<void> {
   }
 }
 
-export async function runRemoveWorktreeAction(ctx: GitActionCtx): Promise<void> {
+export async function runRemoveWorktreeAction(ctx: RemoveWorktreeCtx): Promise<void> {
   try {
-    await GitRemoveWorktree(ctx.threadId);
-    const refreshedThread = (await GetThread(ctx.threadId)) as Thread;
-    syncThread(refreshedThread);
+    const next = (await RemoveOtherWorktree(
+      ctx.workspace,
+      ctx.worktreePath,
+      false,
+    )) as GitWorkspaceState;
+    // Thread rows attached to the removed worktree are reattached and
+    // broadcast by the backend; draft placeholders have no row to broadcast,
+    // so the returned state is applied to them here.
+    applyToDraftPlaceholdersInWorkspace(ctx.workspace, placeholderWorkspaceOf(next));
     addToast('success', 'Worktree removed');
     await ctx.refreshStatus();
   } catch (err) {

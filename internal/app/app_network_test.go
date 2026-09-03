@@ -439,7 +439,7 @@ func TestSetNetworkSettings_RebindFailureRollsBack(t *testing.T) {
 // The credential half does not leave the machine.
 //
 // GetNetworkSettings answers `access:admin`, which is what makes
-// Settings → Network reachable from a paired admin device at all — the
+// Settings → Remote access reachable from a paired admin device at all — the
 // `host` annotation it carried before refused every one of them. What that
 // device must NOT be handed is this launch's token (a holder attaches as
 // the backend's own local channel: unattributed, and withdrawable only by

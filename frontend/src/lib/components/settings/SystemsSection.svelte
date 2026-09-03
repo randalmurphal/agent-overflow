@@ -2,7 +2,7 @@
   // Settings → Systems: the other machines this installation is attached
   // to. Adding one is the same profile pairing `agent-overflow --connect`
   // performs, driven from here instead of a terminal; the pairing link
-  // comes from the OTHER machine's Settings → Network → Devices.
+  // comes from the OTHER machine's Settings → Remote access → Devices.
   //
   // Host-only on the DESKTOP by nature: those profiles live in this
   // machine's own directory, so a `--connect` window sees why rather than

@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import SettingsView from './SettingsView.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetKeybindingsStore } from '../../stores/keybindings.svelte';
@@ -20,6 +20,7 @@ async function seed(): Promise<void> {
   setBindingMock('Version', async () => '0.0.1');
   setBindingMock('GetProviderStatuses', async () => []);
   setBindingMock('GetModelsForProvider', async () => []);
+  setBindingMock('ListProviderAccounts', async () => []);
   setBindingMock('ListDiscussions', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('ListThreads', async () => []);
@@ -32,22 +33,29 @@ async function seed(): Promise<void> {
     lastError: '',
     registeredDevices: 0,
   }));
+  setBindingMock('GetThemeFiles', async () => ({
+    dir: '/tmp/themes',
+    themes: [],
+    appearance: { mode: 'system', uiTheme: 'default', codeTheme: 'github' },
+  }));
   resetKeybindingsStore();
   await loadSettings();
 }
 
 describe('settings section map', () => {
-  it('groups every section under exactly one nav cluster, in render order', () => {
+  it('groups every page under exactly one nav cluster, in render order', () => {
     expect(SETTINGS_SECTION_GROUPS.map((g) => g.label)).toEqual([
+      'Appearance',
       'App',
       'Agents',
       'Workspace',
       'Data',
     ]);
     expect(SETTINGS_SECTION_GROUPS.map((g) => g.sections.map((s) => s.id))).toEqual([
-      ['general', 'keybindings', 'updates'],
-      ['providers', 'prompts', 'browser', 'discussions'],
-      ['projects', 'git', 'editor', 'network', 'systems'],
+      ['theme', 'typography', 'chat', 'spinner'],
+      ['threads', 'performance', 'keybindings', 'notifications', 'updates'],
+      ['claude', 'codex', 'commit-messages', 'browser', 'discussions'],
+      ['projects', 'git', 'editor', 'remote', 'systems'],
       ['observability', 'storage'],
     ]);
   });
@@ -56,6 +64,12 @@ describe('settings section map', () => {
     expect(SETTINGS_SECTION_IDS).toHaveLength(SETTINGS_SECTIONS.length);
     expect(new Set(SETTINGS_SECTION_IDS)).toEqual(new Set(SETTINGS_SECTIONS.map((s) => s.id)));
   });
+
+  it('gives every page a one-line description for the page header', () => {
+    for (const section of SETTINGS_SECTIONS) {
+      expect(section.description.length, section.id).toBeGreaterThan(0);
+    }
+  });
 });
 
 describe('<SettingsView> tabs', () => {
@@ -63,7 +77,7 @@ describe('<SettingsView> tabs', () => {
     await seed();
   });
 
-  it('renders every section as a tab plus a decorative group label', async () => {
+  it('renders every page as a tab plus a decorative group label', async () => {
     const { getAllByRole, getByText } = render(SettingsView, { onClose: vi.fn() });
     expect(getAllByRole('tab')).toHaveLength(SETTINGS_SECTIONS.length);
     for (const group of SETTINGS_SECTION_GROUPS) {
@@ -74,23 +88,25 @@ describe('<SettingsView> tabs', () => {
     }
   });
 
-  it('includes an Observability tab in the nav', async () => {
-    const { getByRole } = render(SettingsView, { onClose: vi.fn() });
-    const tab = getByRole('tab', { name: 'Observability' });
-    expect(tab).toBeInTheDocument();
+  it('renders the active page title and description above the page', async () => {
+    const { getByTestId, getByRole } = render(SettingsView, { onClose: vi.fn() });
+    const header = getByTestId('settings-page-header');
+    expect(header).toHaveTextContent('Theme');
+    expect(header).toHaveTextContent('Light or dark mode');
+
+    await fireEvent.click(getByRole('tab', { name: 'Git' }));
+    expect(getByTestId('settings-page-header')).toHaveTextContent('Git');
   });
 
-  it('switches to the Observability panel when clicked', async () => {
+  it('switches to the Observability page when clicked', async () => {
     const { getByRole, findByLabelText } = render(SettingsView, { onClose: vi.fn() });
-    const tab = getByRole('tab', { name: 'Observability' });
-    await fireEvent.click(tab);
+    await fireEvent.click(getByRole('tab', { name: 'Observability' }));
 
-    // The OTLP endpoint input is unique to the observability panel.
-    const endpoint = await findByLabelText('OTLP endpoint');
-    expect(endpoint).toBeInTheDocument();
+    // The OTLP endpoint input is unique to the observability page.
+    expect(await findByLabelText('OTLP endpoint')).toBeInTheDocument();
   });
 
-  it('renders the Git panel with the sync toggle and the GitLab host editor', async () => {
+  it('renders the Git page with the sync toggle and the GitLab host editor', async () => {
     const { getByRole, findByTestId } = render(SettingsView, { onClose: vi.fn() });
     await fireEvent.click(getByRole('tab', { name: 'Git' }));
 
@@ -98,7 +114,7 @@ describe('<SettingsView> tabs', () => {
     expect(await findByTestId('settings-gitlab-hosts')).toBeInTheDocument();
   });
 
-  it('renders the Storage panel with retention above the archive list', async () => {
+  it('renders the Storage page with retention above the archive list', async () => {
     const { getByRole, findByTestId } = render(SettingsView, { onClose: vi.fn() });
     await fireEvent.click(getByRole('tab', { name: 'Storage' }));
 
@@ -126,7 +142,7 @@ describe('<SettingsView> tabs', () => {
     expect(getBindingMock('ClearBrowserSiteData')).toHaveBeenCalledOnce();
   });
 
-  it('renders the Keybindings panel when multiple chords target the same command context', async () => {
+  it('renders the Keybindings page when multiple chords target the same command context', async () => {
     setBindingMock('GetKeybindings', async () => ({
       bindings: [
         {
@@ -146,45 +162,122 @@ describe('<SettingsView> tabs', () => {
       ],
     }));
 
-    const { getByRole, findAllByText, findByRole } = render(SettingsView, { onClose: vi.fn() });
-    const tab = getByRole('tab', { name: 'Keybindings' });
-    await fireEvent.click(tab);
+    const { getByRole, findAllByText } = render(SettingsView, { onClose: vi.fn() });
+    await fireEvent.click(getByRole('tab', { name: 'Keybindings' }));
 
-    expect(await findByRole('heading', { name: 'Keybindings' })).toBeInTheDocument();
+    expect(getByRole('heading', { name: 'Keybindings' })).toBeInTheDocument();
     expect(await findAllByText('thread.new')).toHaveLength(2);
     expect(getByRole('button', { name: 'Ctrl+N' })).toBeInTheDocument();
     expect(getByRole('button', { name: 'Ctrl+Shift+O' })).toBeInTheDocument();
     expect(getByRole('tab', { name: 'Keybindings' }).getAttribute('aria-selected')).toBe('true');
   });
 
-  it('keeps General as the default active tab', () => {
+  it('keeps Theme as the default active tab', () => {
     const { getByRole } = render(SettingsView, { onClose: vi.fn() });
-    const general = getByRole('tab', { name: 'General' });
-    expect(general.getAttribute('aria-selected')).toBe('true');
+    expect(getByRole('tab', { name: 'Theme' }).getAttribute('aria-selected')).toBe('true');
   });
 
   it('rovers arrow/Home/End across group boundaries', async () => {
     const { getByRole } = render(SettingsView, { onClose: vi.fn() });
-    const general = getByRole('tab', { name: 'General' });
 
-    // General → Keybindings → Updates → Providers: the third press crosses
-    // from the App cluster into Agents without stopping on a group label.
-    await fireEvent.keyDown(general, { key: 'ArrowDown' });
-    await fireEvent.keyDown(getByRole('tab', { name: 'Keybindings' }), { key: 'ArrowDown' });
-    await fireEvent.keyDown(getByRole('tab', { name: 'Updates' }), { key: 'ArrowDown' });
-    expect(getByRole('tab', { name: 'Providers' }).getAttribute('aria-selected')).toBe('true');
-
-    await fireEvent.keyDown(getByRole('tab', { name: 'Providers' }), { key: 'End' });
-    expect(getByRole('tab', { name: 'Storage' }).getAttribute('aria-selected')).toBe('true');
-
-    // ArrowDown wraps forward off the last tab back to the first.
-    await fireEvent.keyDown(getByRole('tab', { name: 'Storage' }), { key: 'ArrowDown' });
-    expect(getByRole('tab', { name: 'General' }).getAttribute('aria-selected')).toBe('true');
-
-    await fireEvent.keyDown(getByRole('tab', { name: 'General' }), { key: 'ArrowUp' });
+    // Updates → Claude Code crosses from the App cluster into Agents without
+    // stopping on a group label.
+    await fireEvent.keyDown(getByRole('tab', { name: 'Theme' }), { key: 'End' });
     expect(getByRole('tab', { name: 'Storage' }).getAttribute('aria-selected')).toBe('true');
 
     await fireEvent.keyDown(getByRole('tab', { name: 'Storage' }), { key: 'Home' });
-    expect(getByRole('tab', { name: 'General' }).getAttribute('aria-selected')).toBe('true');
+    expect(getByRole('tab', { name: 'Theme' }).getAttribute('aria-selected')).toBe('true');
+
+    await fireEvent.click(getByRole('tab', { name: 'Updates' }));
+    await fireEvent.keyDown(getByRole('tab', { name: 'Updates' }), { key: 'ArrowDown' });
+    expect(getByRole('tab', { name: 'Claude Code' }).getAttribute('aria-selected')).toBe('true');
+
+    // ArrowDown wraps forward off the last tab back to the first, ArrowUp back.
+    await fireEvent.click(getByRole('tab', { name: 'Storage' }));
+    await fireEvent.keyDown(getByRole('tab', { name: 'Storage' }), { key: 'ArrowDown' });
+    expect(getByRole('tab', { name: 'Theme' }).getAttribute('aria-selected')).toBe('true');
+    await fireEvent.keyDown(getByRole('tab', { name: 'Theme' }), { key: 'ArrowUp' });
+    expect(getByRole('tab', { name: 'Storage' }).getAttribute('aria-selected')).toBe('true');
+  });
+});
+
+describe('<SettingsView> search', () => {
+  beforeEach(async () => {
+    await seed();
+  });
+
+  it('replaces the tabs with results while a query is typed, and restores them on clear', async () => {
+    const { getByTestId, queryAllByRole, getAllByTestId, queryByTestId } = render(SettingsView, {
+      onClose: vi.fn(),
+    });
+    const input = getByTestId('settings-search') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'font' } });
+
+    expect(queryAllByRole('tab')).toHaveLength(0);
+    const hits = getAllByTestId('settings-search-hit');
+    expect(hits[0]).toHaveTextContent('UI font');
+    expect(hits[0]).toHaveTextContent('Typography');
+
+    await fireEvent.click(getByTestId('settings-search-clear'));
+    expect(queryByTestId('settings-search-results')).toBeNull();
+    expect(queryAllByRole('tab')).toHaveLength(SETTINGS_SECTIONS.length);
+  });
+
+  it('opens the hit page and flashes the field', async () => {
+    const { getByTestId, getAllByTestId, container } = render(SettingsView, { onClose: vi.fn() });
+    const input = getByTestId('settings-search') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'low power' } });
+    await fireEvent.click(getAllByTestId('settings-search-hit')[0]);
+
+    expect(getByTestId('settings-page-header')).toHaveTextContent('Performance');
+    await waitFor(() => {
+      const field = container.querySelector('[data-settings-field="performance.low-power-mode"]');
+      expect(field).not.toBeNull();
+      expect(field!.classList.contains('settings-field-flash')).toBe(true);
+    });
+  });
+
+  it('walks results with the arrow keys and opens the highlighted one on Enter', async () => {
+    const { getByTestId, getAllByTestId } = render(SettingsView, { onClose: vi.fn() });
+    const input = getByTestId('settings-search') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'font' } });
+    await fireEvent.keyDown(input, { key: 'ArrowDown' });
+    const hits = getAllByTestId('settings-search-hit');
+    expect(hits[1].getAttribute('aria-selected')).toBe('true');
+    expect(hits[1]).toHaveTextContent('Code font');
+
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    expect(getByTestId('settings-page-header')).toHaveTextContent('Typography');
+  });
+
+  it('opens a page hit at the page itself', async () => {
+    const { getByTestId, getAllByTestId } = render(SettingsView, { onClose: vi.fn() });
+    const input = getByTestId('settings-search') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'keybind' } });
+    await fireEvent.click(getAllByTestId('settings-search-hit')[0]);
+    expect(getByTestId('settings-page-header')).toHaveTextContent('Keybindings');
+  });
+
+  it('clears the query on Escape and keeps the press from reaching the overlay', async () => {
+    const { getByTestId, queryAllByRole } = render(SettingsView, { onClose: vi.fn() });
+    const input = getByTestId('settings-search') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'font' } });
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    input.dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(true);
+    await waitFor(() => expect(queryAllByRole('tab')).toHaveLength(SETTINGS_SECTIONS.length));
+
+    // With no query the press is left alone so `settings.close` can act on it.
+    const escapeAgain = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    input.dispatchEvent(escapeAgain);
+    expect(escapeAgain.defaultPrevented).toBe(false);
+  });
+
+  it('says so when nothing matches', async () => {
+    const { getByTestId } = render(SettingsView, { onClose: vi.fn() });
+    const input = getByTestId('settings-search') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'qwertyuiop' } });
+    expect(getByTestId('settings-search-results')).toHaveTextContent('No settings match.');
   });
 });

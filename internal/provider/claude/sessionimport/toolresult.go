@@ -145,3 +145,68 @@ func externalisedOutputPath(content string) string {
 	}
 	return strings.TrimSpace(rest)
 }
+
+// backgroundAckPrefix and backgroundAckTaskIDMarker pin the Bash
+// backgrounding ack's text. The CLI (BashTool.tsx, 2.1.88 source; the
+// "running in background" literal is still present in the 2.1.257
+// binary) has three variants, one per trigger, and all three open with
+// "Command " and name the task as ` with ID: <id>` on their first line:
+//
+//	Command running in background with ID: b20hid1oz. Output is being written to: …
+//	Command exceeded the assistant-mode blocking budget (…) and was moved to the background with ID: …
+//	Command was manually backgrounded by user with ID: …
+//
+// The prefix is matched on the flattened body (a prefix, never a
+// contains — quoted output does not classify), and the id is what the
+// later `system/task_updated` / `task_notification` terminal carries as
+// `task_id`.
+const backgroundAckPrefix = "Command "
+const backgroundAckTaskIDMarker = " with ID: "
+
+// BackgroundAckTaskID recognises the Bash backgrounding ack from the
+// tool_result TEXT alone and recovers the task id it names
+// (claude-wire.md §E2b). It exists for a SIDECHAIN Bash launch, where
+// Claude omits the `toolUseResult` envelope and therefore the
+// `backgroundTaskId` marker, and it is the one rule the live parser and
+// this reader share: both consult it only when no structured sibling is
+// present AND the launch asked for backgrounding.
+//
+// Returning ("", false) means "not a backgrounding ack": the launch
+// settles in place with the result it actually got. That is the correct
+// reading of a refused command (hook deny, permission denial) and the
+// tolerable reading of a reworded ack — an instantly-done row is
+// recoverable, a permanently-running one blocks the reaper and the
+// flush queue.
+func BackgroundAckTaskID(text string) (taskID string, ok bool) {
+	if !strings.HasPrefix(text, backgroundAckPrefix) {
+		return "", false
+	}
+	first := text
+	if idx := strings.IndexByte(first, '\n'); idx >= 0 {
+		first = first[:idx]
+	}
+	_, rest, found := strings.Cut(first, backgroundAckTaskIDMarker)
+	if !found {
+		return "", false
+	}
+	if id := leadingTaskID(rest); id != "" {
+		return id, true
+	}
+	return "", false
+}
+
+// leadingTaskID returns the longest prefix of s made of the characters
+// a Claude task id is spelled with (lowercase alphanumerics, `-`, `_`).
+// Observed ids are nine lowercase alphanumerics (`b20hid1oz`), but the
+// wire promises no length, and the terminator is whatever punctuation
+// the ack puts after the id (`.` today).
+func leadingTaskID(s string) string {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || c == '-' || c == '_' {
+			continue
+		}
+		return s[:i]
+	}
+	return s
+}

@@ -208,6 +208,8 @@ func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now ti
 		ResetsAt:    info.ResetsAt,
 	}
 
+	// One window per event, so the snapshot is never Complete: it updates the
+	// window it names and leaves every other cached limit alone.
 	snapshot := provider.RateLimitsSnapshot{
 		Provider:  string(provider.Claude),
 		Limits:    []provider.RateLimitEntry{entry},

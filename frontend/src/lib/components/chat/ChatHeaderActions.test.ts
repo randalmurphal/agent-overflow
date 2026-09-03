@@ -39,6 +39,8 @@ if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
 }
 
 const WORKSPACE = '/workspace';
+// The wire spelling of that checkout — what the git-status source takes.
+const WS = { projectId: 'project-1', workspacePath: WORKSPACE };
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return makeBaseThread({
@@ -264,25 +266,29 @@ describe('<ChatHeaderActions> subscription effect', () => {
     expect(getByTestId('workspace-diff-counts').textContent).toContain('+3');
   });
 
-  it('subscribes against the thread the pane holds NOW, not the one it attached with', async () => {
-    // The reference outlives any one thread, so a re-source has to name a
-    // thread that still exists — the id it attached with may since have been
-    // deleted along with its pane's previous conversation.
+  it('subscribes on the CHECKOUT, and a thread swap inside it does not resubscribe', async () => {
+    // The subject is the directory, not the row: swapping which conversation
+    // the pane shows inside one worktree is not a different watcher. The ref
+    // is derived off the two primitive strings, so its identity does not move
+    // either — an identity churn here would re-source on every streamed token.
     const pane = await buildPane(makeThread({ id: 'thread-a', workspacePath: WORKSPACE }));
     const { subscribeFn } = installSubscribeMock(status());
     render(ChatHeaderActions, { props: { pane } });
     await flush();
-    expect(subscribeFn).toHaveBeenCalledWith('thread-a');
+    expect(subscribeFn).toHaveBeenCalledWith(WS);
 
     pane.replaceThread(makeThread({ id: 'thread-b', workspacePath: WORKSPACE }));
     await flush();
+    expect(subscribeFn).toHaveBeenCalledTimes(1);
 
-    // A reconnect re-acquires every key; the store asks the ctx again.
+    // A reconnect re-acquires every key; the store asks the ctx again, and
+    // gets the ref the pane holds NOW.
     __setTransportStatusForTest({ status: 'reconnecting', nextAttemptAt: null });
     __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
     await flush();
 
-    expect(subscribeFn).toHaveBeenLastCalledWith('thread-b');
+    expect(subscribeFn).toHaveBeenCalledTimes(2);
+    expect(subscribeFn).toHaveBeenLastCalledWith(WS);
   });
 
   it('resubscribes when the workspace path changes', async () => {
@@ -302,7 +308,10 @@ describe('<ChatHeaderActions> subscription effect', () => {
     expect(getBindingMock('GitStatusUnsubscribe')).toHaveBeenCalledTimes(1);
   });
 
-  it('loads the worktree PR badge when a placeholder gains its durable row', async () => {
+  it('a draft placeholder subscribes on its own checkout and renders the git controls', async () => {
+    // A placeholder names a project and a directory, which is everything a
+    // git RPC needs: it subscribes, badges and the split-button render, and
+    // nothing materializes a thread row to get there.
     const pane = createThreadPane();
     pane.startDraftPlaceholder(makeProject(), 'chat', {
       provider: 'claude',
@@ -310,14 +319,9 @@ describe('<ChatHeaderActions> subscription effect', () => {
       workspacePath: '/wt/branch-a',
       branch: 'branch-a',
     });
-    const created = makeThread({
-      id: 'draft-row',
-      isDraft: true,
-      workspacePath: '/wt/branch-a',
-      worktreePath: '/wt/branch-a',
-      branch: 'branch-a',
+    setBindingMock('CreateThread', async () => {
+      throw new Error('CreateThread must not run to show a placeholder git status');
     });
-    setBindingMock('CreateThread', async () => created);
     const { subscribeFn } = installSubscribeMock(
       status({
         branch: 'branch-a',
@@ -329,16 +333,19 @@ describe('<ChatHeaderActions> subscription effect', () => {
       '/wt/branch-a',
     );
 
-    const { getByTestId, queryByTestId } = render(ChatHeaderActions, { props: { pane } });
-    await flush();
-    expect(queryByTestId('chat-header-pr-badge')).toBeNull();
-    expect(subscribeFn).not.toHaveBeenCalled();
-
-    await pane.ensureMaterializedThread();
+    const { getByTestId, getByLabelText } = render(ChatHeaderActions, { props: { pane } });
     await flush();
 
-    expect(subscribeFn).toHaveBeenCalledWith('draft-row');
+    expect(subscribeFn).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      workspacePath: '/wt/branch-a',
+    });
+    expect(pane.threadId).toBeNull();
     expect(getByTestId('chat-header-pr-badge').textContent?.replace(/\s+/g, '')).toBe('MR!9');
+    expect(getByTestId('review-toggle')).toBeTruthy();
+    // The git split-button, identified by its menu half.
+    expect(getByLabelText('More git actions')).toBeTruthy();
+    expect(getBindingMock('CreateThread')).not.toHaveBeenCalled();
   });
 
   it('updates the workspace +/- when a live git:status push arrives', async () => {

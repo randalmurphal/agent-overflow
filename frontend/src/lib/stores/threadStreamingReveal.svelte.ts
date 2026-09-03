@@ -336,7 +336,8 @@ export function createThreadStreamingReveal(
     if (
       !belongsToCurrentStream &&
       incomingSummary.length < received.length &&
-      received.startsWith(incomingSummary)
+      (received.startsWith(incomingSummary) ||
+        (isReasoningTailKind(incoming.kind) && received.includes(incomingSummary)))
     ) {
       // A summary that is a strict prefix of `received` belongs to the
       // current stream WHATEVER the row's status. Two producers make it:
@@ -350,6 +351,17 @@ export function createThreadStreamingReveal(
       // already skipped in favor of the smoother (incident 2026-08-29:
       // final assistant text froze at ~130 of 1021 chars whenever a
       // subagent child settled inside the drain window).
+      //
+      // Reasoning-tail rows publish the last THINKING_TAIL_RUNES of the
+      // cursor, so past that length the same two producers hand back a
+      // summary that is an INTERIOR slice of `received`, never a prefix.
+      // Read as divergent, it disposed the smoother mid-drain and dropped
+      // the unrevealed backlog: the next wire delta re-seeded from the
+      // trimmed summary and the live tail carried a permanent hole until
+      // a reload (2026-09-01: "Now I'm working" + "ining the user's.").
+      // Containment is exact here for the same reason textOverlap.ts
+      // relies on it — a false match needs the reasoning to repeat a
+      // 400-rune passage verbatim.
       belongsToCurrentStream = true;
       trailsTheCursor = true;
     }

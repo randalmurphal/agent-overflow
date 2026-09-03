@@ -331,7 +331,7 @@ func TestDispatcher_Invoke_MethodReturnsError(t *testing.T) {
 	// Method-returned errors are redacted on the wire and correlated
 	// to a server-side log entry via a short ID. The original prose
 	// stays out of the wire payload so a method that wraps a path /
-	// secret error doesn't leak it to a LAN-attached attacker.
+	// secret error doesn't leak it to a LAN-attached caller.
 	if strings.Contains(fe.Message, "save refused") {
 		t.Fatalf("method-returned error text leaked to wire: %q", fe.Message)
 	}

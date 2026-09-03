@@ -147,11 +147,11 @@ test.describe.serial('provider sign-in from a paired device', () => {
       .toBe(shown);
     await harness.rpc('ConfirmDevicePairing', redeemed!.linkId);
 
-    // Settings → Providers is where both cases run, and reaching it proves
-    // the app mounted on the far side of the redial.
+    // Settings is where both cases run, and reaching it proves the app
+    // mounted on the far side of the redial. Each provider has its own
+    // page, so the case picks the one it signs into.
     await phone.getByTestId('sidebar-settings-button').click({ timeout: PAIRED_APP_MOUNT_MS });
     await expect(phone.getByRole('tablist', { name: 'Settings Sections' })).toBeVisible();
-    await phone.getByRole('tab', { name: 'Providers' }).click();
   });
 
   test.afterAll(async () => {
@@ -164,6 +164,7 @@ test.describe.serial('provider sign-in from a paired device', () => {
   // 1. Codex: a device code, read off this screen and typed on another.
   // -------------------------------------------------------------------
   test('a Codex sign-in shows a device code here and completes when the other screen does', async () => {
+    await openProviderPage(phone, 'Codex');
     const section = phone.getByTestId('provider-accounts-codex');
     await expect(section).toBeVisible();
     await section.getByRole('button', { name: 'Log in to another account' }).click();
@@ -209,6 +210,7 @@ test.describe.serial('provider sign-in from a paired device', () => {
   //    the burned-link path, which is the one every user hits by typo.
   // -------------------------------------------------------------------
   test('a Claude sign-in replaces the link a bad code burned, then completes on a good one', async () => {
+    await openProviderPage(phone, 'Claude Code');
     const section = phone.getByTestId('provider-accounts-claude');
     await expect(section).toBeVisible();
     await section.getByRole('button', { name: 'Log in to another account' }).click();
@@ -281,6 +283,19 @@ test.describe.serial('provider sign-in from a paired device', () => {
     expect(surfaced.consoleErrors, 'a completed sign-in must log no console error').toEqual([]);
   });
 });
+
+/**
+ * Show one provider's Settings page by its nav-rail label. Each provider
+ * has a page of its own, so the two cases below sign in from two
+ * different ones.
+ */
+async function openProviderPage(page: Page, label: 'Claude Code' | 'Codex'): Promise<void> {
+  await page.getByRole('tab', { name: label, exact: true }).click();
+  await expect(page.getByRole('tab', { name: label, exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+}
 
 /**
  * The mock serving the live sign-in: the one Codex process that has not

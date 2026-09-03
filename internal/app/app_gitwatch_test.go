@@ -144,7 +144,7 @@ func TestGitStatusSubscribeReturnsInitialAndStreamsUpdates(t *testing.T) {
 
 	events, mu := captureGitStatusEmissions(app)
 
-	res, err := app.GitStatusSubscribe(context.Background(), thread.ID)
+	res, err := app.GitStatusSubscribe(context.Background(), workspaceRefForThread(thread))
 	if err != nil {
 		t.Fatalf("GitStatusSubscribe: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestGitStatusUnsubscribeIsIdempotent(t *testing.T) {
 	installGitWatchForTest(t, app, stub)
 	thread := makeWorkspaceThread(t, app, "thread-sub-idem")
 
-	res, err := app.GitStatusSubscribe(context.Background(), thread.ID)
+	res, err := app.GitStatusSubscribe(context.Background(), workspaceRefForThread(thread))
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestGitStatusSubscribeReleasesOnConnectionClose(t *testing.T) {
 	// callback releases the subscription. This is the safety net for
 	// unclean disconnects (network drop, kill -9 client).
 	ctx, state := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
-	res, err := app.GitStatusSubscribe(ctx, thread.ID)
+	res, err := app.GitStatusSubscribe(ctx, workspaceRefForThread(thread))
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -230,13 +230,15 @@ func TestGitStatusSubscribeReleasesOnConnectionClose(t *testing.T) {
 	}
 }
 
-func TestGitStatusSubscribeFailsOnUnknownThread(t *testing.T) {
+func TestGitStatusSubscribeFailsOnUnknownProject(t *testing.T) {
 	app := newTestAppWithStore(t)
 	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
 	installGitWatchForTest(t, app, stub)
 
-	if _, err := app.GitStatusSubscribe(context.Background(), "no-such-thread"); err == nil {
-		t.Fatalf("expected error for unknown thread")
+	if _, err := app.GitStatusSubscribe(
+		context.Background(), WorkspaceRef{ProjectID: "no-such-project"},
+	); err == nil {
+		t.Fatalf("expected error for unknown project")
 	}
 }
 
@@ -257,11 +259,11 @@ func TestGitStatusSubscribeSharesOnePumpPerCwd(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	resA, err := app.GitStatusSubscribe(context.Background(), threadA.ID)
+	resA, err := app.GitStatusSubscribe(context.Background(), workspaceRefForThread(threadA))
 	if err != nil {
 		t.Fatalf("subscribe A: %v", err)
 	}
-	resB, err := app.GitStatusSubscribe(context.Background(), threadB.ID)
+	resB, err := app.GitStatusSubscribe(context.Background(), workspaceRefForThread(threadB))
 	if err != nil {
 		t.Fatalf("subscribe B: %v", err)
 	}
@@ -339,7 +341,7 @@ func TestGetGitStatusPushesTheRefreshToSubscribers(t *testing.T) {
 	installGitWatchForTest(t, app, stub)
 	thread := makeWorkspaceThread(t, app, "thread-refresh-fanout")
 
-	res, err := app.GitStatusSubscribe(context.Background(), thread.ID)
+	res, err := app.GitStatusSubscribe(context.Background(), workspaceRefForThread(thread))
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -350,7 +352,7 @@ func TestGetGitStatusPushesTheRefreshToSubscribers(t *testing.T) {
 	// announced — exactly the shape of "another client just committed".
 	stub.setStatus(gitops.GitStatus{IsRepo: true, Branch: "main", AheadCount: 1})
 
-	if _, err := app.GetGitStatus(thread.ID); err != nil {
+	if _, err := app.GetGitStatus(workspaceRefForThread(thread)); err != nil {
 		t.Fatalf("GetGitStatus: %v", err)
 	}
 
@@ -387,7 +389,7 @@ func TestGitStatusSubscribeCapsOutstandingHandles(t *testing.T) {
 	ids := make([]string, 0, maxGitWatchHandles)
 	cwd := ""
 	for i := 0; i < maxGitWatchHandles; i++ {
-		res, err := app.GitStatusSubscribe(context.Background(), thread.ID)
+		res, err := app.GitStatusSubscribe(context.Background(), workspaceRefForThread(thread))
 		if err != nil {
 			t.Fatalf("subscribe %d: %v", i, err)
 		}
@@ -395,7 +397,7 @@ func TestGitStatusSubscribeCapsOutstandingHandles(t *testing.T) {
 		cwd = res.Cwd
 	}
 
-	if _, err := app.GitStatusSubscribe(context.Background(), thread.ID); !errors.Is(err, ErrTooManyGitStatusSubscriptions) {
+	if _, err := app.GitStatusSubscribe(context.Background(), workspaceRefForThread(thread)); !errors.Is(err, ErrTooManyGitStatusSubscriptions) {
 		t.Fatalf("subscribe past the cap: err = %v, want ErrTooManyGitStatusSubscriptions", err)
 	}
 	// The refusal must not have leaked a reference into the pump.
@@ -408,7 +410,7 @@ func TestGitStatusSubscribeCapsOutstandingHandles(t *testing.T) {
 	// and stand up a recursive fs watch — a full status pass — for a
 	// subscription it was about to refuse.
 	other := makeWorkspaceThread(t, app, "thread-handle-cap-other")
-	if _, err := app.GitStatusSubscribe(context.Background(), other.ID); !errors.Is(err, ErrTooManyGitStatusSubscriptions) {
+	if _, err := app.GitStatusSubscribe(context.Background(), workspaceRefForThread(other)); !errors.Is(err, ErrTooManyGitStatusSubscriptions) {
 		t.Fatalf("subscribe past the cap (unwatched cwd): err = %v, want ErrTooManyGitStatusSubscriptions", err)
 	}
 	if passes := stub.passesFor(other.WorkspacePath); passes != 0 {
@@ -422,7 +424,7 @@ func TestGitStatusSubscribeCapsOutstandingHandles(t *testing.T) {
 	if err := app.GitStatusUnsubscribe(ids[0]); err != nil {
 		t.Fatalf("unsubscribe: %v", err)
 	}
-	res, err := app.GitStatusSubscribe(context.Background(), thread.ID)
+	res, err := app.GitStatusSubscribe(context.Background(), workspaceRefForThread(thread))
 	if err != nil {
 		t.Fatalf("subscribe after releasing one handle: %v", err)
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 // Phone-push persistence: which devices can be woken, and what this backend
-// sends with (docs/specs/remote-access.md §9, "Push"; migration v80).
+// sends with (docs/specs/remote-access.md §9, "Push"; migration v84).
 
 // PushToken is one device's registration, joined to the two facts the
 // fan-out needs about the device itself.

@@ -1,12 +1,12 @@
 package store
 
-// pairingAndRefreshV76SQL adds what turns the v75 identity core into a
+// pairingAndRefreshV80SQL adds what turns the v79 identity core into a
 // credential lifecycle: how a new device is admitted (pairing links), how
 // an admitted device stays admitted without a long-lived credential
 // (rotating refresh secrets), and the two columns those two flows need on
-// the tables v75 already created (docs/specs/remote-access.md §4).
+// the tables v79 already created (docs/specs/remote-access.md §4).
 //
-// Authoritative, not cache — the same rule v75 states. A dropped pairing
+// Authoritative, not cache — the same rule v79 states. A dropped pairing
 // link is a device that cannot finish joining; a dropped refresh row is a
 // device signed out mid-week. Neither may be pruned by a cache sweep, and
 // the two prunes this package does offer (ExpiredPairingLinks,
@@ -31,7 +31,7 @@ package store
 //     yet"; `Session.Live` reads it, so a session awaiting confirmation is
 //     refused by the same predicate that refuses a revoked one, rather
 //     than by a second check some later call site could forget. Existing
-//     rows are backfilled from `created_at`: every session v75 minted was
+//     rows are backfilled from `created_at`: every session v79 minted was
 //     live the moment it was written.
 //   - `pairing_links` is the single-use admission ticket. The token is
 //     stored as a hash for the same reason a recovery code is — the
@@ -53,7 +53,7 @@ package store
 // it admitted has been revoked and removed. `refresh_secrets.session_id`
 // DOES cascade, because a refresh secret with no session is not history,
 // it is a credential naming nothing.
-const pairingAndRefreshV76SQL = `
+const pairingAndRefreshV80SQL = `
 ALTER TABLE devices ADD COLUMN channel TEXT NOT NULL DEFAULT '';
 CREATE UNIQUE INDEX idx_devices_channel ON devices(channel) WHERE channel <> '';
 

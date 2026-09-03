@@ -85,11 +85,6 @@ function readyPane(overrides: Partial<Thread> = {}): ReturnType<typeof createThr
   setBindingMock('SwitchThread', async (threadId: unknown) => ({
     id: typeof threadId === 'string' ? threadId : 'thread-1',
   }));
-  setBindingMock('ListRecentThreadItems', async () => ({
-    items: [],
-    oldestTurnIndex: -1,
-    hasMore: false,
-  }));
   setBindingMock('ListPendingInteractiveRequests', async () => ({
     approvals: [],
     userInputs: [],
@@ -408,9 +403,8 @@ describe('thread.interrupt command', () => {
     await command.run(makeCommandContext(pane, {}));
 
     expect(interruptCalled).toBe(true);
-    // Clear any unrelated banner the readyPane setup may have left
-    // (the test fixture's lazy ListRecentThreadItems mock is absent
-    // here — that's a separate concern from the cancel path).
+    // Clear any unrelated banner the readyPane setup may have left —
+    // a separate concern from the cancel path.
     pane.clearGeneralError();
     // Re-run to confirm the cancel path itself doesn't re-introduce
     // an error after clearing.
@@ -472,7 +466,6 @@ describe('thread.interrupt command', () => {
   });
 
   it('treats "no active turn" from InterruptTurn as a benign no-op', async () => {
-    setBindingMock('ListRecentThreadItems', async () => []);
     const pane = readyPane();
     // Wait one microtask so switchThread's lazy item-load settles before
     // we assert on generalError — readyPane spawns it without awaiting.
@@ -713,26 +706,41 @@ describe('terminal tab management commands', () => {
     resetThreadTerminalStatesForTest();
   });
 
-  it('newTab/closeTab/nextTab/prevTab are registered, editableReachable, and enabled under terminalFocus', () => {
+  it('newTab/closeTab/nextTab/prevTab/clear are registered, editableReachable, and enabled under terminalFocus', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);
     const ctx = makeCommandContext(pane, { terminalFocus: true }) as CommandContext;
-    for (const id of ['terminal.newTab', 'terminal.closeTab', 'terminal.nextTab', 'terminal.prevTab']) {
+    for (const id of ['terminal.newTab', 'terminal.closeTab', 'terminal.nextTab', 'terminal.prevTab', 'terminal.clear']) {
       expect(getCommand(id)?.editableReachable).toBe(true);
       expect(isCommandEnabled(id, ctx)).toBe(true);
     }
   });
 
-  it('all four are members of TERMINAL_ESCAPE_COMMAND_IDS (so they escape a focused xterm)', () => {
+  it('all of them are members of TERMINAL_ESCAPE_COMMAND_IDS (so they escape a focused xterm)', () => {
     for (const id of [
       'terminal.newTab',
       'terminal.closeTab',
       'terminal.nextTab',
       'terminal.prevTab',
+      'terminal.clear',
       'terminal.newPane',
     ]) {
       expect(TERMINAL_ESCAPE_COMMAND_IDS.has(id)).toBe(true);
     }
+  });
+
+  it('terminal.clear wipes the focused pane’s active xterm and nothing else', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const handle = handleForPane(pane);
+    handle.addTab(termSummary('term-a'));
+    handle.addTab(termSummary('term-b')); // active
+    const clears = { a: 0, b: 0 };
+    handle.attachXterm('term-a', { clear: () => { clears.a += 1; } });
+    handle.attachXterm('term-b', { clear: () => { clears.b += 1; } });
+
+    expect(runCommand('terminal.clear', makeCommandContext(pane, { terminalFocus: true }))).toBe(true);
+    expect(clears).toEqual({ a: 0, b: 1 });
   });
 
   it('terminal.newPane is editableReachable so Ctrl+Shift+~ fires from inside a focused xterm', () => {
@@ -1844,7 +1852,7 @@ describe('settings commands', () => {
   it('opens the settings overlay on its General tab', () => {
     expect(runCommand('settings.open', makeCommandContext(null, {}) as CommandContext)).toBe(true);
     expect(isSettingsOpen()).toBe(true);
-    expect(getSettingsSection()).toBe('general');
+    expect(getSettingsSection()).toBe('theme');
   });
 
   // `settingsOpen` is DERIVED in makeCommandContext, not supplied by the
@@ -1856,7 +1864,7 @@ describe('settings commands', () => {
     expect(isCommandEnabled('settings.close', closedCtx)).toBe(false);
     expect(runCommand('settings.close', closedCtx)).toBe(false);
 
-    openSettingsOverlay('general');
+    openSettingsOverlay('theme');
     const openCtx = makeCommandContext(null, {}) as CommandContext;
     expect(openCtx.flags.settingsOpen).toBe(true);
     expect(isCommandEnabled('settings.close', openCtx)).toBe(true);
@@ -1877,7 +1885,7 @@ describe('settings commands', () => {
   // the stores now: `openSettingsOverlay` calls `closeWorkflowsOverlay`, and
   // the settings store arms the reverse hook at module init.
   it('is mutually exclusive with the workflows overlay, both directions', () => {
-    openSettingsOverlay('general');
+    openSettingsOverlay('theme');
     runCommand('workflows.toggle', makeCommandContext(null, {}) as CommandContext);
     expect(isWorkflowsOverlayOpen()).toBe(true);
     expect(isSettingsOpen()).toBe(false);

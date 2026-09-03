@@ -95,8 +95,8 @@ test('agent browser page stays headless until explicitly presented as an interac
   await harness.open(page);
   await page.getByText('Browser companion').click();
   const htmlPath = await harness.rpc<string>(
-    'WriteThreadWorkspaceFile',
-    threadId,
+    'WriteWorkspaceFile',
+    { projectId: seed.projects[0].projectId, workspacePath: '' },
     'browser-companion.html',
     '<!doctype html><title>Companion fixture</title><h1>Inside Agent Overflow</h1>',
   );

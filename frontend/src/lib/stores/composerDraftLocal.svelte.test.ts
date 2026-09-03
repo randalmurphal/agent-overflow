@@ -24,6 +24,7 @@ function sampleAttachment(id: string): Attachment {
     size: 100,
     relativePath: `thread-1/${id}.png`,
     createdAt: 1,
+    kind: 'image',
   };
 }
 

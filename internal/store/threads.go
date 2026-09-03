@@ -36,6 +36,7 @@ const threadColumns = `id, COALESCE(project_id, ''),
     (SELECT MAX(completed_at) FROM turns
       WHERE turns.thread_id = threads.id AND completed_at IS NOT NULL),
     archived, last_read_at, pinned_at, pin_group,
+    COALESCE(group_id, ''),
     worktree_setup_state, import_source,
     created_by_device, created_branch, created_remote_url, created_head_commit,
 	EXISTS (
@@ -188,6 +189,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
 		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt, &pinGroup,
+		&t.GroupID,
 		&t.WorktreeSetupState, &t.ImportSource,
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.RemoteURL, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &isDraft,
@@ -274,8 +276,9 @@ func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
 		    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
 		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
 		    created_at, updated_at, archived, last_read_at, import_source,
-		    created_by_device, created_branch, created_remote_url, created_head_commit)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    created_by_device, created_branch, created_remote_url, created_head_commit,
+		    group_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		t.PRRef,
@@ -290,6 +293,7 @@ func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
 		// whole-row UpdateThread carrying a stale copy must not be able to
 		// blank a thread's provenance or its git origin.
 		t.CreatedByDevice, t.Origin.Branch, t.Origin.RemoteURL, t.Origin.HeadCommit,
+		nilIfEmpty(t.GroupID),
 	)
 	return err
 }
@@ -1199,8 +1203,29 @@ func (s *Store) setThreadPinnedAt(id string, ts *int64) (Thread, bool, error) {
 	} else {
 		write.Set = "pinned_at = ?, pin_group = ?"
 		write.SetArgs = []any{*ts, PinGroupFront}
+		// A grouped row holds no pin of its own (the v76 CHECK). Making
+		// that the write's eligibility predicate keeps the refusal from
+		// surfacing as a raw constraint failure; a grouped row misses the
+		// same predicate in the miss probe, and threadIsGrouped names it.
+		write.Match = "group_id IS NULL"
 	}
-	return s.applyThreadRowWrite(write)
+	row, changed, err := s.applyThreadRowWrite(write)
+	if ts != nil && errors.Is(err, sql.ErrNoRows) && s.threadIsGrouped(id) {
+		return Thread{}, false, fmt.Errorf("store: pin %s: %w", id, ErrThreadGrouped)
+	}
+	return row, changed, err
+}
+
+// threadIsGrouped is the failure-path probe behind ErrThreadGrouped. A
+// missing row reads as ungrouped so the caller's sql.ErrNoRows stands.
+func (s *Store) threadIsGrouped(id string) bool {
+	var grouped bool
+	if err := s.db.QueryRow(
+		`SELECT group_id IS NOT NULL FROM threads WHERE id = ?`, id,
+	).Scan(&grouped); err != nil {
+		return false
+	}
+	return grouped
 }
 
 // UpdateSessionRef records the provider resume cursor without touching

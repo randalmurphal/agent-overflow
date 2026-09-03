@@ -3,7 +3,7 @@
 // `stores/viewOnlyPassiveLoads.test.ts` sweeps the loaders that live in
 // stores. These don't: each section calls its RPCs from its own mount
 // effect, which is why the store sweep was green while every one of them
-// spent a refusal the moment a paired device opened Settings → Network
+// spent a refusal the moment a paired device opened Settings → Remote access
 // (found by the harness, 2026-08-31 — `harness-remote-device-lifecycle`
 // reads the same absence off the wire, end to end).
 //

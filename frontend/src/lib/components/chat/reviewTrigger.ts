@@ -5,7 +5,7 @@
 // affordance.
 
 import type { PaneSession } from '../../stores/threadPaneRoles';
-import { openReviewCompanion } from '../../stores/reviewPane.svelte';
+import { openReviewCompanion, reviewSubjectForPane } from '../../stores/reviewPane.svelte';
 
 export interface OpenReviewForItemOpts {
   filePath?: string;
@@ -17,17 +17,24 @@ export interface OpenReviewForItemOpts {
 }
 
 export function openReviewForItem(pane: PaneSession, opts: OpenReviewForItemOpts = {}): void {
-  const threadId = pane.threadId;
-  if (!threadId) return;
-  if (opts.editItemId) {
-    void openReviewCompanion(pane.paneId, threadId, {
+  const subject = reviewSubjectForPane(pane);
+  if (!subject) return;
+  // The edits scope's subject is the thread's own history — an inline edit
+  // row only exists on a started thread, so `editItemId` implies one.
+  if (opts.editItemId && subject.threadId) {
+    void openReviewCompanion(pane.paneId, subject, {
       scope: 'edits',
       editItemId: opts.editItemId,
       filePath: opts.filePath,
     });
     return;
   }
-  void openReviewCompanion(pane.paneId, threadId, {
+  // Workspace scope needs a real checkout. A pane with none — terminal-only,
+  // or a pr-anchor thread with no local clone — has no workspace diff rows to
+  // click in the first place, so this is a structural floor, not a refusal
+  // the user can reach.
+  if (subject.workspace.workspacePath === '') return;
+  void openReviewCompanion(pane.paneId, subject, {
     scope: 'workspace',
     filePath: opts.filePath,
   });

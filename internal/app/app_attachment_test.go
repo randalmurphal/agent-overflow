@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -210,7 +212,7 @@ func TestMintAttachmentDownloadTicketRejectsCrossThreadID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MintAttachmentDownloadTicket: %v", err)
 	}
-	if err := app.attachments.Delete(record.ID); err != nil {
+	if err := app.attachments.Delete("thr-a", record.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	resp, err := http.Get(base + downloadURL)
@@ -235,7 +237,7 @@ func TestMintAttachmentDownloadTicketMissingReturnsError(t *testing.T) {
 // RPC instead of one full transfer.
 func TestMintAttachmentUploadTicketRefusesOversize(t *testing.T) {
 	app, _ := attachmentTransportApp(t)
-	oversize := app.attachments.MaxSize() + 1
+	oversize := app.attachments.MaxSizeFor(store.AttachmentKindImage) + 1
 	_, err := app.MintAttachmentUploadTicket("thr-a", "huge.png", "image/png", oversize)
 	if err == nil {
 		t.Fatal("expected an oversize upload to be refused before minting")
@@ -245,10 +247,14 @@ func TestMintAttachmentUploadTicketRefusesOversize(t *testing.T) {
 	}
 }
 
-func TestMintAttachmentUploadTicketRefusesDisallowedType(t *testing.T) {
+// TestMintAttachmentUploadTicketRefusesAnOverlongDeclaredType is the one
+// type refusal left now that any file is an attachment: a declared content
+// type past the store's byte cap is refused at mint, before a byte moves.
+func TestMintAttachmentUploadTicketRefusesAnOverlongDeclaredType(t *testing.T) {
 	app, _ := attachmentTransportApp(t)
-	if _, err := app.MintAttachmentUploadTicket("thr-a", "notes.pdf", "application/pdf", 128); err == nil {
-		t.Fatal("expected a non-image type to be refused before minting")
+	overlong := strings.Repeat("x", attachment.MaxDeclaredMIMEBytes+1)
+	if _, err := app.MintAttachmentUploadTicket("thr-a", "blob.bin", overlong, 128); err == nil {
+		t.Fatal("expected an overlong declared type to be refused before minting")
 	}
 }
 
@@ -399,7 +405,7 @@ func TestDeleteAttachmentBinding(t *testing.T) {
 	app := newAttachmentTestApp(t)
 	record := uploadTestAttachment(t, app, "thr-a", "hero.png", "image/png", pngSignature())
 
-	if err := app.DeleteAttachment(record.ID); err != nil {
+	if err := app.DeleteAttachment("thr-a", record.ID); err != nil {
 		t.Fatalf("DeleteAttachment: %v", err)
 	}
 
@@ -412,6 +418,31 @@ func TestDeleteAttachmentBinding(t *testing.T) {
 	}
 }
 
+// The bound method is the wire surface, so the ownership check has to
+// hold THERE, not just one layer down: any client holding a token can
+// call it with any id it can guess or has gone stale in a closed
+// composer.
+func TestDeleteAttachmentRefusesAnotherThreadsAttachment(t *testing.T) {
+	app := newAttachmentTestApp(t)
+	record := uploadTestAttachment(t, app, "thr-a", "hero.png", "image/png", realPNGBytes(t))
+
+	if err := app.DeleteAttachment("thr-b", record.ID); err == nil {
+		t.Fatal("expected a foreign-thread delete to be refused")
+	}
+
+	// Row and bytes both survive the refusal.
+	list, err := app.ListAttachments("thr-a")
+	if err != nil {
+		t.Fatalf("ListAttachments: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("row destroyed by a refused delete: %+v", list)
+	}
+	if _, _, err := app.attachments.ReadThreadBytes("thr-a", record.ID); err != nil {
+		t.Fatalf("bytes destroyed by a refused delete: %v", err)
+	}
+}
+
 func TestListAttachmentsEmptyIsNonNil(t *testing.T) {
 	app := newAttachmentTestApp(t)
 	list, err := app.ListAttachments("thr-a")
@@ -420,5 +451,180 @@ func TestListAttachmentsEmptyIsNonNil(t *testing.T) {
 	}
 	if list == nil {
 		t.Fatal("expected non-nil empty slice")
+	}
+}
+
+// The upload ticket is minted against the KIND's cap, decided from the
+// declared type and filename exactly as the store decides it. A file may
+// be five times an image; an image declared as one stays at the image cap
+// however big it claims to be.
+func TestMintAttachmentUploadTicketCapsPerKind(t *testing.T) {
+	app, _ := attachmentTransportApp(t)
+	imageCap := app.attachments.MaxSizeFor(store.AttachmentKindImage)
+	fileCap := app.attachments.MaxSizeFor(store.AttachmentKindFile)
+	if fileCap <= imageCap {
+		t.Fatalf("file cap %d is not above the image cap %d; the test proves nothing", fileCap, imageCap)
+	}
+
+	if _, err := app.MintAttachmentUploadTicket("thr-a", "report.pdf", "application/pdf", fileCap); err != nil {
+		t.Fatalf("file at the file cap: %v", err)
+	}
+	if _, err := app.MintAttachmentUploadTicket("thr-a", "report.pdf", "application/pdf", fileCap+1); err == nil ||
+		!strings.Contains(err.Error(), "exceeds limit") {
+		t.Fatalf("file over the file cap: got %v", err)
+	}
+	if _, err := app.MintAttachmentUploadTicket("thr-a", "hero.png", "image/png", imageCap+1); err == nil ||
+		!strings.Contains(err.Error(), "exceeds limit") {
+		t.Fatalf("image over the image cap must not slide under the file cap: got %v", err)
+	}
+	// A file declared as an image by its NAME is an image, at the image cap.
+	if _, err := app.MintAttachmentUploadTicket("thr-a", "shot.png", "", imageCap+1); err == nil ||
+		!strings.Contains(err.Error(), "exceeds limit") {
+		t.Fatalf("image-by-extension over the image cap: got %v", err)
+	}
+}
+
+// A `file` rides the same ticketed PUT an image does and lands as a
+// file: its own `<id>` directory, the real filename, the declared type
+// kept verbatim. What it never does is come back: the download mint and
+// the route's own open both refuse it, so a document attached for the
+// agent is not servable at any origin. Deleting it takes the directory.
+func TestAttachmentFileKindUploadsOverHTTPButIsNeverServed(t *testing.T) {
+	app, base := attachmentTransportApp(t)
+	payload := []byte("%PDF-1.7\n")
+
+	uploadURL, err := app.MintAttachmentUploadTicket("thr-a", "report.pdf", "application/pdf", int64(len(payload)))
+	if err != nil {
+		t.Fatalf("MintAttachmentUploadTicket: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPut, base+uploadURL, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("build upload request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var record store.Attachment
+	if err := json.NewDecoder(resp.Body).Decode(&record); err != nil {
+		t.Fatalf("decode record: %v", err)
+	}
+	if record.Kind != store.AttachmentKindFile {
+		t.Fatalf("Kind: got %q want %q", record.Kind, store.AttachmentKindFile)
+	}
+	if record.MimeType != "application/pdf" {
+		t.Fatalf("MimeType: got %q", record.MimeType)
+	}
+	if want := "thr-a/" + record.ID + "/report.pdf"; record.RelativePath != want {
+		t.Fatalf("RelativePath: got %q want %q", record.RelativePath, want)
+	}
+
+	if _, err := app.MintAttachmentDownloadTicket("thr-a", record.ID); !errors.Is(err, attachment.ErrNotAnImage) {
+		t.Errorf("MintAttachmentDownloadTicket: got %v want ErrNotAnImage", err)
+	}
+	if _, err := AttachmentTransfer(app).OpenAttachment("thr-a", record.ID); !errors.Is(err, attachment.ErrNotAnImage) {
+		t.Errorf("OpenAttachment: got %v want ErrNotAnImage", err)
+	}
+	if _, err := app.GetAttachmentThumbnail("thr-a", record.ID); !errors.Is(err, attachment.ErrNotAnImage) {
+		t.Errorf("GetAttachmentThumbnail: got %v want ErrNotAnImage", err)
+	}
+
+	// Deleting a file takes its `<id>` directory with it.
+	_, path, err := app.attachments.PathForThread("thr-a", record.ID)
+	if err != nil {
+		t.Fatalf("PathForThread: %v", err)
+	}
+	if err := app.DeleteAttachment("thr-a", record.ID); err != nil {
+		t.Fatalf("DeleteAttachment: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
+		t.Fatalf("file directory survived the delete: %v", err)
+	}
+}
+
+// A mixed turn is the shape the whole feature turns on: the `[Image #N]`
+// markers are numbered over the IMAGE subset, so a file sitting between
+// two images must not consume a number, must not enter the provider
+// slice, and must arrive as a prompt line on providerContent — never on
+// the persisted content.
+func TestResolveUserMessageEnvelopeMixedAttachmentTurn(t *testing.T) {
+	app := newAttachmentTestApp(t)
+
+	first := uploadTestAttachment(t, app, "thr-a", "one.png", "image/png", pngSignature())
+	file := uploadTestAttachment(t, app, "thr-a", "report.pdf", "application/pdf", []byte("%PDF-1.7\n"))
+	second := uploadTestAttachment(t, app, "thr-a", "two.png", "image/png", pngSignature())
+
+	content := "look at [Image #1] and [Image #2]"
+	resolved, err := app.resolveUserMessageEnvelope("thr-a", content, userMessageInputs{
+		attachmentIDs: []string{first.ID, file.ID, second.ID},
+	})
+	if err != nil {
+		t.Fatalf("resolveUserMessageEnvelope: %v", err)
+	}
+
+	// The provider slice is the image subset, in order, with the file gone.
+	if len(resolved.providerAttachments) != 2 {
+		t.Fatalf("providerAttachments = %d, want 2 (images only)", len(resolved.providerAttachments))
+	}
+	if resolved.providerAttachments[0].ID != first.ID || resolved.providerAttachments[1].ID != second.ID {
+		t.Fatalf("provider slice lost its [Image #N] binding: %+v", resolved.providerAttachments)
+	}
+
+	// Every attachment is still on the row.
+	if len(resolved.persistedAttachments) != 3 {
+		t.Fatalf("persistedAttachments = %d, want 3", len(resolved.persistedAttachments))
+	}
+	var meta userMessageMeta
+	if err := json.Unmarshal([]byte(resolved.userMessageMeta), &meta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	wantKinds := []string{store.AttachmentKindImage, store.AttachmentKindFile, store.AttachmentKindImage}
+	if len(meta.Attachments) != 3 {
+		t.Fatalf("meta attachments = %d, want 3", len(meta.Attachments))
+	}
+	for i, want := range wantKinds {
+		if meta.Attachments[i].Kind != want {
+			t.Errorf("meta attachment %d kind = %q, want %q", i, meta.Attachments[i].Kind, want)
+		}
+	}
+
+	// The line rides providerContent only.
+	if resolved.content != content {
+		t.Fatalf("persisted content changed: %q", resolved.content)
+	}
+	_, path, err := app.attachments.PathForThread("thr-a", file.ID)
+	if err != nil {
+		t.Fatalf("PathForThread: %v", err)
+	}
+	wantLine := attachment.PromptLine(file, path)
+	if resolved.providerContent != content+"\n\n"+wantLine {
+		t.Fatalf("providerContent =\n%q\nwant\n%q", resolved.providerContent, content+"\n\n"+wantLine)
+	}
+	if strings.Contains(wantLine, "[Image #") {
+		t.Fatal("the file line must carry no image marker")
+	}
+}
+
+// The cap is on the union of both kinds: an attachment costs a slot
+// whichever way it is delivered.
+func TestResolveSendMessageAttachmentsCapsBothKindsTogether(t *testing.T) {
+	app := newAttachmentTestApp(t)
+
+	ids := make([]string, 0, attachment.DefaultMaxCount+1)
+	for i := range attachment.DefaultMaxCount + 1 {
+		mime, data := "image/png", pngSignature()
+		if i%2 == 1 {
+			mime, data = "application/pdf", []byte("%PDF-1.7\n")
+		}
+		record := uploadTestAttachment(t, app, "thr-a", "a", mime, data)
+		ids = append(ids, record.ID)
+	}
+	if _, err := app.resolveSendMessageAttachments("thr-a", ids); err == nil ||
+		!strings.Contains(err.Error(), "too many attachments") {
+		t.Fatalf("expected the union cap to fire, got %v", err)
 	}
 }

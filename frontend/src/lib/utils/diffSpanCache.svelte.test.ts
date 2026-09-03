@@ -5,6 +5,7 @@ import {
   DIFF_SPAN_CACHE_MAX_BYTES,
   INCOMPLETE_RETRY_MS,
   diffSpanCacheGeneration,
+  adoptDiffSpanOwner,
   evictDiffSpansForThread,
   getSpansForLine,
   requestFileSpans,
@@ -43,7 +44,11 @@ function keywordResult(file: PatchFile) {
   };
 }
 
-const workspaceContext = { scope: 'workspace', commitSHA: '', headSHA: '' };
+// The checkout the primed workspace-scope request resolves content from —
+// and therefore what its cache entry keys on.
+const WS = { projectId: 'project-1', workspacePath: '/repo' };
+const OTHER_WS = { projectId: 'project-1', workspacePath: '/wt/feature' };
+const workspaceContext = { scope: 'workspace', commitSHA: '', headSHA: '', workspace: WS };
 
 beforeEach(() => {
   resetDiffSpanCacheForTest();
@@ -141,7 +146,9 @@ describe('requestFileSpans', () => {
 
     expect(primed).toHaveBeenCalledTimes(1);
     expect(primed.mock.calls[0]).toEqual([
-      'thread-1',
+      // The CHECKOUT, not the thread: workspace scope primes out of the
+      // directory, so a placeholder review primes exactly like a real one.
+      WS,
       {
         scope: 'workspace',
         commitSHA: '',
@@ -156,6 +163,89 @@ describe('requestFileSpans', () => {
     expect(unprimed).not.toHaveBeenCalled();
   });
 
+  // The subject split: the edits scope's priming content comes out of the
+  // THREAD's persisted snapshots, every other scope's out of the checkout.
+  // Sending an edits request to the workspace RPC would resolve the wrong
+  // content (the file as it is NOW, not as the edit left it).
+  it('routes the edits scope to HighlightEditPatchWithContext with the thread id', async () => {
+    const file = makeFile('src/edited.ts', ['const e = 1;']);
+    const edits = setBindingMock('HighlightEditPatchWithContext', async () => keywordResult(file));
+    const checkout = setBindingMock('HighlightPatchWithContext', async () => plainResult(file));
+    const editsContext = {
+      scope: 'edits',
+      commitSHA: '',
+      headSHA: '',
+      workspace: WS,
+      threadId: 'thread-1',
+      editPayloadId: 'payload-7',
+      editTurnIndex: -1,
+    };
+
+    await requestFileSpans(file, 'thread-1', editsContext);
+
+    expect(checkout).not.toHaveBeenCalled();
+    expect(edits.mock.calls[0]?.[0]).toBe('thread-1');
+    expect(getSpansForLine(file, file.lines[2], editsContext)?.r).toEqual([
+      'const e = 1;'.length,
+      1,
+    ]);
+
+    // Keyed on the THREAD: the same checkout under another thread's edit
+    // history is a different priming input and must re-request.
+    await requestFileSpans(file, 'thread-2', { ...editsContext, threadId: 'thread-2' });
+    expect(edits).toHaveBeenCalledTimes(2);
+  });
+
+  // The placeholder case this whole workspace-ref rework exists for: a
+  // review pane on a draft placeholder has no thread row, and it must still
+  // get PRIMED spans — the checkout it names is all the RPC ever needed.
+  it('primes a draft placeholder review through the workspace RPC', async () => {
+    const file = makeFile('src/placeholder.ts', ['const p = 1;']);
+    const primed = setBindingMock('HighlightPatchWithContext', async () => keywordResult(file));
+    const unprimed = setBindingMock('HighlightPatch', async () => plainResult(file));
+    // The synthetic row id a placeholder carries — a real owner for
+    // eviction, never ''.
+    const placeholderId = 'draft:pane-1:project-1:chat:1700000000000';
+
+    await requestFileSpans(file, placeholderId, workspaceContext);
+
+    expect(primed).toHaveBeenCalledTimes(1);
+    expect(primed.mock.calls[0]?.[0]).toEqual(WS);
+    expect(unprimed).not.toHaveBeenCalled();
+    expect(getSpansForLine(file, file.lines[2], workspaceContext)?.r).toEqual([
+      'const p = 1;'.length,
+      1,
+    ]);
+  });
+
+  // A pr-anchor review names no clone, so there is nothing to prime FROM.
+  // Taking the unprimed path directly is the point: the alternative is one
+  // refused priming round trip per file to learn the same thing.
+  it('takes the unprimed path when the context names no subject', async () => {
+    const file = makeFile('src/anchor.ts', ['const a = 1;']);
+    const primed = setBindingMock('HighlightPatchWithContext', async () => keywordResult(file));
+    const unprimed = setBindingMock('HighlightPatch', async () => keywordResult(file));
+
+    await requestFileSpans(file, 'thread-1', {
+      scope: 'pr',
+      commitSHA: '',
+      headSHA: 'head-sha',
+      workspace: { projectId: '', workspacePath: '' },
+    });
+
+    expect(primed).not.toHaveBeenCalled();
+    expect(unprimed).toHaveBeenCalledTimes(1);
+  });
+
+  // '' would be a shared "nobody" owner that evictDiffSpansForThread
+  // refuses to look at, so every entry filed under it would outlive its
+  // consumer. Callers always hold a real id; passing '' is a call-site bug.
+  it('refuses an empty owner id', async () => {
+    const file = makeFile('src/owner.ts', ['const o = 1;']);
+    setBindingMock('HighlightPatch', async () => keywordResult(file));
+    await expect(requestFileSpans(file, '')).rejects.toThrow(/real owner id/);
+  });
+
   it('falls back to HighlightPatch when the primed RPC rejects and does not retry the primed path', async () => {
     const file = makeFile('src/remote.ts', ['const x = 1;']);
     const primed = setBindingMock('HighlightPatchWithContext', async () => {
@@ -165,7 +255,7 @@ describe('requestFileSpans', () => {
 
     await requestFileSpans(file, 'thread-1', workspaceContext);
     expect(unprimed).toHaveBeenCalledTimes(1);
-    expect(getSpansForLine(file, file.lines[2], 'thread-1', workspaceContext)).not.toBeNull();
+    expect(getSpansForLine(file, file.lines[2], workspaceContext)).not.toBeNull();
 
     // The primed attempt is recorded under the scoped key:
     // re-requesting with context is a cache hit, not another doomed
@@ -175,29 +265,40 @@ describe('requestFileSpans', () => {
     expect(unprimed).toHaveBeenCalledTimes(1);
   });
 
-  it('keys primed results per (thread, scope) — identical patch bytes do not alias across contexts', async () => {
-    // Two threads can hold the same path + patch text over DIFFERENT
-    // underlying file content (the priming input), so a primed result
-    // must never be served across contexts.
+  it('keys primed results per (subject, scope) — identical patch bytes do not alias across contexts', async () => {
+    // Two CHECKOUTS can hold the same path + patch text over DIFFERENT
+    // underlying file content (the priming input), so a primed result must
+    // never be served across contexts. The key is the subject the RPC
+    // resolved through, which for every scope but edits is the workspace —
+    // two threads sharing one worktree legitimately share the entry.
     const file = makeFile('src/ctx.ts', ['const x = 1;']);
-    const primed = setBindingMock('HighlightPatchWithContext', async (threadId: string) =>
-      threadId === 'thread-a' ? keywordResult(file) : plainResult(file),
+    const otherContext = { ...workspaceContext, workspace: OTHER_WS };
+    const primed = setBindingMock('HighlightPatchWithContext', async (ws: { workspacePath: string }) =>
+      ws.workspacePath === '/repo' ? keywordResult(file) : plainResult(file),
     );
 
     await requestFileSpans(file, 'thread-a', workspaceContext);
-    await requestFileSpans(file, 'thread-b', workspaceContext);
+    await requestFileSpans(file, 'thread-b', otherContext);
     expect(primed).toHaveBeenCalledTimes(2);
 
-    expect(getSpansForLine(file, file.lines[2], 'thread-a', workspaceContext)?.r).toEqual([
+    expect(getSpansForLine(file, file.lines[2], workspaceContext)?.r).toEqual([
       'const x = 1;'.length,
       1,
     ]);
-    expect(
-      getSpansForLine(file, file.lines[2], 'thread-b', workspaceContext)?.r,
-    ).toBeUndefined();
+    expect(getSpansForLine(file, file.lines[2], otherContext)?.r).toBeUndefined();
 
-    // Distinct scopes within one thread key apart too.
-    await requestFileSpans(file, 'thread-a', { scope: 'commit', commitSHA: 'a1b2c3d', headSHA: '' });
+    // A second thread on the SAME checkout shares the entry: same subject,
+    // same priming input, so a second round trip would buy nothing.
+    await requestFileSpans(file, 'thread-c', workspaceContext);
+    expect(primed).toHaveBeenCalledTimes(2);
+
+    // Distinct scopes within one checkout key apart.
+    await requestFileSpans(file, 'thread-a', {
+      scope: 'commit',
+      commitSHA: 'a1b2c3d',
+      headSHA: '',
+      workspace: WS,
+    });
     expect(primed).toHaveBeenCalledTimes(3);
   });
 
@@ -216,7 +317,7 @@ describe('requestFileSpans', () => {
 
     // Primed in flight: the scoped read serves the shared unprimed
     // entry rather than nothing.
-    expect(getSpansForLine(file, file.lines[2], 'thread-1', workspaceContext)?.r).toEqual([
+    expect(getSpansForLine(file, file.lines[2], workspaceContext)?.r).toEqual([
       'const x = 1;'.length,
       1,
     ]);
@@ -225,7 +326,7 @@ describe('requestFileSpans', () => {
     await pending;
     // Primed result landed: the scoped read now prefers it.
     expect(
-      getSpansForLine(file, file.lines[2], 'thread-1', workspaceContext)?.r,
+      getSpansForLine(file, file.lines[2], workspaceContext)?.r,
     ).toBeUndefined();
     // The unprimed entry is untouched for unscoped consumers.
     expect(getSpansForLine(file, file.lines[2])?.r).toEqual(['const x = 1;'.length, 1]);
@@ -640,6 +741,44 @@ describe('byte-budget eviction', () => {
   });
 });
 
+describe('adoptDiffSpanOwner', () => {
+  // Materialization swaps the row in place: switch and close evict the id
+  // the pane holds, and after this transition that is the REAL row. Without
+  // the rename the placeholder's entries would name an id nothing ever
+  // evicts again.
+  it('hands a placeholder\'s entries to the row it materialized into', async () => {
+    const file = makeFile('src/adopt.ts', ['const a = 1;']);
+    const primed = setBindingMock('HighlightPatchWithContext', async () => keywordResult(file));
+    const placeholderId = 'draft:pane-1:project-1:chat:1700000000000';
+
+    await requestFileSpans(file, placeholderId, workspaceContext);
+    expect(primed).toHaveBeenCalledTimes(1);
+
+    adoptDiffSpanOwner(placeholderId, 'thread-real');
+
+    // The entry is untouched — the key is the workspace subject, which
+    // materializing a row does not change, so the remounted review
+    // companion reads it back without a refetch.
+    expect(getSpansForLine(file, file.lines[2], workspaceContext)).not.toBeNull();
+    await requestFileSpans(file, 'thread-real', workspaceContext);
+    expect(primed).toHaveBeenCalledTimes(1);
+
+    // The placeholder id owns nothing now: evicting it is a no-op.
+    evictDiffSpansForThread(placeholderId);
+    expect(getSpansForLine(file, file.lines[2], workspaceContext)).not.toBeNull();
+
+    // And the real row's eviction frees what the placeholder requested.
+    evictDiffSpansForThread('thread-real');
+    expect(getSpansForLine(file, file.lines[2], workspaceContext)).toBeNull();
+    expect(__diffSpanCacheStatsForTest().ownerKeys).toBe(0);
+  });
+
+  it('refuses an empty id on either side', () => {
+    expect(() => adoptDiffSpanOwner('', 'thread-real')).toThrow(/empty owner id/);
+    expect(() => adoptDiffSpanOwner('draft:x', '')).toThrow(/empty owner id/);
+  });
+});
+
 describe('evictDiffSpansForThread', () => {
   it('drops entries owned solely by the thread and keeps shared ones until the last owner leaves', async () => {
     const solo = makeFile('src/solo.ts', ['const s = 1;']);
@@ -918,7 +1057,7 @@ describe('primed span upgrades (monotonic)', () => {
     const unprimed = setBindingMock('HighlightPatch', async () => keywordResult(file));
     await seedPayloadPatchSpans('thread-1', [seedFor(file, { primed: true })]);
 
-    const context = { scope: 'edits', commitSHA: '', headSHA: '' };
+    const context = { scope: 'edits', commitSHA: '', headSHA: '', workspace: WS, threadId: 'thread-1' };
     await requestFileSpans(file, 'thread-1', context);
     // The seed is the best possible answer for this content: a scoped
     // request could at most match it, and for a drifted file would come
@@ -926,6 +1065,6 @@ describe('primed span upgrades (monotonic)', () => {
     expect(scoped).not.toHaveBeenCalled();
     expect(unprimed).not.toHaveBeenCalled();
     // The read side falls through the missing scoped entry to the base.
-    expect(getSpansForLine(file, file.lines[2], 'thread-1', context)?.r?.[0]).toBe(1);
+    expect(getSpansForLine(file, file.lines[2], context)?.r?.[0]).toBe(1);
   });
 });

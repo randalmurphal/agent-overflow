@@ -24,11 +24,13 @@
 // name listed — the completeness gate is the generator, not a test.
 //
 // Every collected method also carries a ROUTE, naming which attached
-// backend the call belongs to (docs/specs/remote-access.md §10). Two of
-// the five values are INFERRED from the method's first non-context
-// parameter — threadID means `thread`, projectID means `project` —
-// because those two ids are minted to be unique across backends
-// (internal/entityid) and a client resolves them with no other help.
+// backend the call belongs to (docs/specs/remote-access.md §10). Three of
+// the six values are INFERRED from the method's first non-context
+// parameter: a parameter NAMED threadID means `thread`, projectID means
+// `project`, and one TYPED gitapp.WorkspaceRef means `workspace` (the
+// project id inside the ref). Thread and project ids are minted to be
+// unique across backends (internal/entityid), so a client resolves them
+// with no other help, and a workspace ref carries one of them.
 // Everything else declares `//ao:route home|selected|all`, and an
 // explicit directive overrides the inference where a case needs it.
 // Unrouted fails the run exactly as unscoped does: an unclassified
@@ -277,9 +279,10 @@ func constStringSet(target, typeName string) (map[string]bool, error) {
 	return out, nil
 }
 
-// The two routes methodgen infers, and the parameter name each is
-// inferred from. Declared here rather than inline so the inference rule
-// and its error messages read off one table.
+// The routes methodgen infers from a parameter NAME, and the name each
+// is inferred from. Declared here rather than inline so the inference
+// rule and its error messages read off one table. The third inferred
+// route, `workspace`, is keyed by parameter TYPE (workspaceRefType).
 var inferredRoutes = []struct {
 	param string
 	route string
@@ -287,6 +290,12 @@ var inferredRoutes = []struct {
 	{param: "threadid", route: "thread"},
 	{param: "projectid", route: "project"},
 }
+
+// workspaceRefType is the type whose first-parameter position infers the
+// `workspace` route: `gitapp.WorkspaceRef`, or the `WorkspaceRef` alias
+// internal/app declares for it. A checkout is addressed by project and
+// path, and the project id inside the ref is what names the machine.
+const workspaceRefType = "WorkspaceRef"
 
 // MethodEntry is one row in the generated map.
 type MethodEntry struct {
@@ -560,7 +569,8 @@ func scanReceivers(root string, specs []receiverSpec, skip, scopes, routes map[s
 		return nil, fmt.Errorf("%d bound method(s) carry no route: %s\n"+
 			"A client attached to several backends picks one before it writes a frame, so every bound method "+
 			"says which (docs/specs/remote-access.md §10). `thread` and `project` are inferred from a first "+
-			"parameter named threadID or projectID; everything else adds `//ao:route home|selected|all` to the "+
+			"parameter named threadID or projectID and `workspace` from a first parameter typed gitapp.WorkspaceRef; "+
+			"everything else adds `//ao:route home|selected|all` to the "+
 			"doc comment, naming a route internal/transport/routes.go declares",
 			len(unrouted), strings.Join(unrouted, ", "))
 	}
@@ -614,9 +624,28 @@ func inferRoute(params *ast.FieldList) string {
 				return candidate.route
 			}
 		}
+		if isWorkspaceRefType(field.Type) {
+			return "workspace"
+		}
 		return ""
 	}
 	return ""
+}
+
+// isWorkspaceRefType reports whether expr is gitapp.WorkspaceRef or the
+// package-local WorkspaceRef alias. Matched by the type's NAME rather
+// than resolved through the type checker, the same way the rest of this
+// scan reads source: a first parameter called WorkspaceRef that is not
+// gitapp's would be a naming collision worth a review, not a route.
+func isWorkspaceRefType(expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name == workspaceRefType
+	case *ast.SelectorExpr:
+		pkg, ok := t.X.(*ast.Ident)
+		return ok && pkg.Name == "gitapp" && t.Sel.Name == workspaceRefType
+	}
+	return false
 }
 
 // isContextType reports whether expr is context.Context. A bound method
@@ -757,8 +786,8 @@ package transport
 //
 // Route names WHICH attached backend the call belongs to
 // (docs/specs/remote-access.md §10). It is inferred from a first
-// parameter named threadID or projectID and declared with //ao:route
-// otherwise; unrouted fails the run the same way unscoped does. Nothing
+// parameter named threadID or projectID, or typed gitapp.WorkspaceRef,
+// and declared with //ao:route otherwise; unrouted fails the run the same way unscoped does. Nothing
 // on this side reads it — one connection is one backend — so it travels
 // to the client through the generated mirror at
 // frontend/src/lib/transport/methodRoutes.ts.
@@ -817,11 +846,11 @@ func renderTS(entries []MethodEntry) []byte {
 // Which attached backend each bound method's call belongs to
 // (docs/specs/remote-access.md §10, "Routing an RPC"). The Go half is
 // internal/transport/methods_gen.go's Route column, generated from the
-// same scan in the same run; the thread and project routes are inferred
-// from the method's first parameter, the rest are authored //ao:route
-// directives.
+// same scan in the same run; the thread, project and workspace routes are
+// inferred from the method's first parameter, the rest are authored
+// //ao:route directives.
 
-export type MethodRoute = 'thread' | 'project' | 'home' | 'selected' | 'all';
+export type MethodRoute = 'thread' | 'project' | 'workspace' | 'home' | 'selected' | 'all';
 
 export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 `)

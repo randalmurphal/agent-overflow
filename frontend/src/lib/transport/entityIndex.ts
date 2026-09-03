@@ -44,6 +44,11 @@ const workflowItems = new Map<string, BackendKey>();
 const automations = new Map<string, BackendKey>();
 const terminals = new Map<string, BackendKey>();
 const subscriptions = new Map<string, BackendKey>();
+// A thread group belongs to one project and so to one machine, but the
+// group RPCs name the GROUP: resolved here rather than through the
+// project because a group id arrives in the sidebar list before any
+// caller has reason to look its project up.
+const threadGroups = new Map<string, BackendKey>();
 
 /** The backend that owns `threadId`, or undefined when unknown. */
 export function threadBackend(threadId: string): BackendKey | undefined {
@@ -124,6 +129,20 @@ export function noteSubscription(subscriptionId: string, backendId: BackendKey):
   subscriptions.set(subscriptionId, backendId);
 }
 
+/** The backend that owns thread group `groupId`, or undefined when unknown. */
+export function threadGroupBackend(groupId: string): BackendKey | undefined {
+  return threadGroups.get(groupId);
+}
+
+export function noteThreadGroup(groupId: string, backendId: BackendKey): void {
+  if (groupId === '') return;
+  threadGroups.set(groupId, backendId);
+}
+
+export function forgetThreadGroup(groupId: string): void {
+  threadGroups.delete(groupId);
+}
+
 /** Release a subscription id once it has been closed. Unlike the entity
  *  maps these are unbounded in TIME rather than in row count, so the one
  *  path that ends a subscription is the one that must forget it. */
@@ -147,7 +166,7 @@ export function forgetBackendEntities(backendId: BackendKey): void {
   for (const [id, owner] of projects) {
     if (owner === backendId) projects.delete(id);
   }
-  for (const map of [workflowItems, automations, terminals, subscriptions]) {
+  for (const map of [workflowItems, automations, terminals, subscriptions, threadGroups]) {
     for (const [id, owner] of map) {
       if (owner === backendId) map.delete(id);
     }
@@ -249,6 +268,8 @@ const RESULT_FAMILIES: Readonly<Record<number, ResultFamily>> = {
   3272491649: { family: 'subscription', key: 'id', single: true }, // SubscribePRUpdates
   3282404643: { family: 'subscription', key: 'id', single: true }, // GitStatusSubscribe
   3613211765: { family: 'workflowItem', key: 'id' }, // WorkflowListUnresolvedItems
+  1478438024: { family: 'threadGroup', key: 'id', single: true }, // CreateThreadGroup
+  2176447381: { family: 'threadGroup', key: 'id' }, // ListThreadGroups
 };
 
 const FAMILY_NOTERS: Readonly<Record<IdFamily, (id: string, backendId: BackendKey) => void>> = {
@@ -256,6 +277,10 @@ const FAMILY_NOTERS: Readonly<Record<IdFamily, (id: string, backendId: BackendKe
   workflowAutomation: noteAutomation,
   terminal: noteTerminal,
   subscription: noteSubscription,
+  threadGroup: noteThreadGroup,
+  // A thread list names threads, which the thread registry already
+  // notes; no call answers with one.
+  threadList: () => {},
 };
 
 /**

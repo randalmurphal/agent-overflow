@@ -14,6 +14,16 @@ import { getToasts, removeToast } from '../../stores/toast.svelte';
 import type { ProjectWithCounts } from '../../types/models';
 import type { ProjectDeletionPreview, ProjectDeletionResult } from '../../types/workflow';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
+import { isProjectExpanded, resetSidebarForTest } from '../../stores/sidebar.svelte';
+import {
+  consumePendingGroupRename,
+  getThreadGroupById,
+  resetThreadGroupsForTest,
+} from '../../stores/threadGroups.svelte';
+import {
+  getThreadFilterQuery,
+  setThreadFilterQuery,
+} from '../../stores/threadFilter.svelte';
 
 function makeProject(): ProjectWithCounts {
   return {
@@ -218,5 +228,69 @@ describe('<ProjectContextMenu> delete flow', () => {
     expect(baseElement.textContent).not.toContain('Permanently delete "Repo"');
     expect(getBindingMock('DeleteProject')).not.toHaveBeenCalled();
     consoleError.mockRestore();
+  });
+});
+
+describe('<ProjectContextMenu> New Group…', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    setPageGrantsFromBootstrap(false);
+    resetSidebarForTest();
+    resetThreadGroupsForTest();
+    setThreadFilterQuery('');
+    for (const toast of [...getToasts()]) removeToast(toast.id);
+  });
+
+  function newGroupItem(baseElement: HTMLElement): Element {
+    const item = Array.from(baseElement.querySelectorAll('[role="menuitem"]')).find(
+      (el) => el.textContent?.trim() === 'New Group…',
+    );
+    if (!item) throw new Error('New Group… not rendered');
+    return item;
+  }
+
+  it('creates the group in this project, expands it, and asks for the rename', async () => {
+    const create = setBindingMock('CreateThreadGroup', vi.fn(
+      async (projectId: string, name: string) => ({
+        id: 'g-new',
+        projectId,
+        name,
+        createdAt: 0,
+        updatedAt: 0,
+      }),
+    ));
+    const { baseElement } = renderMenu();
+
+    const item = Array.from(baseElement.querySelectorAll('[role="menuitem"]')).find(
+      (el) => el.textContent?.trim() === 'New Group…',
+    );
+    await fireEvent.click(item as Element);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+    expect(create).toHaveBeenCalledWith('project-1', 'New Group');
+    expect(getThreadGroupById('g-new')).toBeTruthy();
+    expect(isProjectExpanded('project-1')).toBe(true);
+    // The row that has not mounted yet owes the inline rename.
+    expect(consumePendingGroupRename('g-new')).toBe(true);
+  });
+
+  it('clears the sidebar search first — the filter would hide the new row', async () => {
+    // A brand-new group is empty and named "New Group", so an active query
+    // drops it from the project's bucket: it would be created, never render,
+    // and never open the rename the user is about to type into.
+    setBindingMock('CreateThreadGroup', vi.fn(async (projectId: string, name: string) => ({
+      id: 'g-new',
+      projectId,
+      name,
+      createdAt: 0,
+      updatedAt: 0,
+    })));
+    setThreadFilterQuery('spike');
+    const { baseElement } = renderMenu();
+
+    await fireEvent.click(newGroupItem(baseElement));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+    expect(getThreadFilterQuery()).toBe('');
   });
 });

@@ -1,4 +1,4 @@
-import type { Attachment } from '../../types/attachment';
+import { imageAttachments, type Attachment } from '../../types/attachment';
 import {
   imagePlaceholderLabel,
   insertImagePlaceholder,
@@ -71,7 +71,14 @@ export function createComposerImagePlaceholders(opts: ComposerImagePlaceholderOp
     uploadInsertion: UploadInsertionPoint | null,
   ): void {
     const attachments = opts.getAttachments();
-    const label = imagePlaceholderLabel(attachments.length + 1);
+    // A file has no marker and no slot in the text — it reaches the agent as
+    // a path line the backend appends at send time, so nothing goes into the
+    // textarea and the chip is its only handle.
+    if (attachment.kind === 'file') {
+      opts.addAttachment(attachment);
+      return;
+    }
+    const label = imagePlaceholderLabel(imageAttachments(attachments).length + 1);
     const textarea = opts.getTextarea();
     const start = uploadInsertion?.start ?? textarea?.selectionStart ?? opts.getContent().length;
     const end = uploadInsertion?.end ?? textarea?.selectionEnd ?? start;

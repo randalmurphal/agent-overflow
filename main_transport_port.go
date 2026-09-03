@@ -59,7 +59,7 @@ type transportPortPin struct {
 // launcher, from the Windows side) can say so, so the reset is an
 // explicit signal rather than anything this process could infer.
 //
-// settingsPort is `network.listenPort` from Settings → Network, or 0 for
+// settingsPort is `network.listenPort` from Settings → Remote access, or 0 for
 // automatic. It sits BETWEEN the two existing inputs in precedence and
 // behaves like neither of them:
 //

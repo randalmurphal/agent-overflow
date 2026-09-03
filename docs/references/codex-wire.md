@@ -233,9 +233,16 @@ Re-verified against the installed `codex-cli 0.144.0`: the canonical quota
 shape is unchanged. `rateLimits.primary` is the 300-minute window and
 `rateLimits.secondary` is the 10,080-minute window; each carries
 `usedPercent`, `windowDurationMins`, and Unix-seconds `resetsAt`.
-`account/rateLimits/read` additionally returns `rateLimitsByLimitId`; Agent
-Overflow selects only its canonical `codex` bucket and ignores model-specific
-buckets that share the same window durations.
+`account/rateLimits/read` additionally returns `rateLimitsByLimitId`. Agent
+Overflow keeps EVERY bucket in that map, keyed by `(limitId, windowMins)`, so
+a provider-added quota renders without a client release.
+
+That map is also the only Codex reading that speaks for the whole account, so
+it is the only one marked `complete` on the snapshot. An
+`account/rateLimits/updated` notification carrying the single top-level
+`rateLimits` envelope is ONE quota's update and stays partial: marking it
+complete would let one bucket's notification delete every other bucket from
+the cache.
 
 The backend retains the last normalized snapshot per provider, merging by
 `windowDurationMins` because Claude reports its 5h and 7d windows separately.
@@ -243,7 +250,9 @@ The cache rejects older reset boundaries and stabilizes same-window boundary
 jitter, like the frontend store; within a window the NEWEST reading wins even
 when it is lower, because a server-side limit increase or usage reset is the
 current answer (2026-09-01), and a delayed older-window event still cannot
-regress hydration.
+regress hydration. A reading marked `complete` also DROPS cached buckets it
+omits — see [claude-wire.md](claude-wire.md#apioauthusage) for the reset case
+that rule exists for.
 Frontends call `GetRateLimitsSnapshots` after installing the live
 `provider:usage` listener and again when that channel reports a transport gap.
 This is necessary because a startup account probe can complete before the

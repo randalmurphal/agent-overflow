@@ -576,3 +576,28 @@ func TestAttachmentSubjectsRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// The transfer window is a floor that grows with a body the floor could
+// not carry at the minimum rate: a 10 MiB image sits at the floor, a
+// 50 MiB file needs five times as long, and an unknown length (what
+// net/http reports as -1) is the floor because only images, which the
+// floor covers, are ever served without a declared length.
+func TestAttachmentTransferWindowForScalesWithTheDeclaredLength(t *testing.T) {
+	cases := []struct {
+		size int64
+		want time.Duration
+	}{
+		{-1, AttachmentTransferWindow},
+		{0, AttachmentTransferWindow},
+		{10 << 20, AttachmentTransferWindow},
+		{50 << 20, time.Duration((50<<20)/attachmentMinTransferRate) * time.Second},
+	}
+	for _, tc := range cases {
+		if got := AttachmentTransferWindowFor(tc.size); got != tc.want {
+			t.Errorf("AttachmentTransferWindowFor(%d) = %v, want %v", tc.size, got, tc.want)
+		}
+	}
+	if AttachmentTransferWindowFor(50<<20) <= AttachmentTransferWindow {
+		t.Fatal("a 50 MiB body must get more than the floor")
+	}
+}

@@ -7,7 +7,6 @@
   import DiscussionListPanel from '../discussion/DiscussionListPanel.svelte';
   import DiscussionEditor from '../discussion/DiscussionEditor.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
-  import SettingsHeader from './SettingsHeader.svelte';
 
   type Mode =
     | { kind: 'new' }
@@ -84,11 +83,6 @@
 </script>
 
 <div class="flex flex-col gap-6">
-  <SettingsHeader
-    title="Manage Discussion Definitions"
-    description="Configure multi-participant deliberations. Global definitions are available everywhere; project-scoped definitions take precedence for threads inside their project path."
-  />
-
   {#if loadError}
     <SettingsCallout tone="error">{loadError}</SettingsCallout>
   {/if}

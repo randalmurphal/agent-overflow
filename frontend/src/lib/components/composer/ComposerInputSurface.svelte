@@ -70,7 +70,7 @@
 
   const mentions = createComposerMentions({
     getTextarea: () => textarea,
-    getThreadId: () => pane.threadId,
+    getWorkspace: () => pane.workspace,
   });
 
   const slash = createComposerSlash({ getTextarea: () => textarea, getPane: () => pane });
@@ -297,6 +297,10 @@
 
   export function uploading(): boolean {
     return uploads.uploading;
+  }
+
+  export function waitForUploads(): Promise<void> {
+    return uploads.waitForUploads();
   }
 
   export function handleDragEnter(event: DragEvent): void {

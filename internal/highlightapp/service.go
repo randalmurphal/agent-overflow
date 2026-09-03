@@ -22,16 +22,15 @@ type ContextRequest struct {
 
 // Config contains the App-owned boundaries used by highlighting coordination.
 type Config struct {
-	Store              *store.Store
-	IsShuttingDown     func() bool
-	ShutdownError      error
-	ResolveContext     func(threadID string, req ContextRequest, maxBytes int64) (string, error)
-	WorkspaceForThread func(threadID string) (string, error)
-	ReadWorkspaceFile  func(path string, maxBytes int64) (string, error)
-	HasRemoteClient    func() bool
-	EmitSeed           func(SeedEvent)
-	EmitDiffSeed       func(DiffSeedEvent)
-	Now                func() time.Time
+	Store             *store.Store
+	IsShuttingDown    func() bool
+	ShutdownError     error
+	ResolveContext    func(workspace, threadID string, req ContextRequest, maxBytes int64) (string, error)
+	ReadWorkspaceFile func(path string, maxBytes int64) (string, error)
+	HasRemoteClient   func() bool
+	EmitSeed          func(SeedEvent)
+	EmitDiffSeed      func(DiffSeedEvent)
+	Now               func() time.Time
 }
 
 // Service owns every mutable highlight-app concern.
@@ -96,7 +95,13 @@ func (s *Service) Patch(path, patch string) (Result, error) {
 	return Result{Lang: lang.String(), Lines: res.Lines, Truncated: res.Truncated, Incomplete: res.Incomplete}, nil
 }
 
-func (s *Service) PatchWithContext(threadID string, req ContextRequest) (Result, error) {
+// PatchWithContext primes a patch parse from file content the caller has
+// already located. workspace is a RESOLVED checkout directory — this package
+// never turns a thread id into one, because which directory a request means is
+// a per-scope question the App answers before calling in. threadID is empty
+// for the checkout scopes and carries the thread only for the edits scope,
+// whose new side is that thread's own persisted snapshot.
+func (s *Service) PatchWithContext(workspace, threadID string, req ContextRequest) (Result, error) {
 	if s.config.IsShuttingDown() {
 		return Result{}, s.config.ShutdownError
 	}
@@ -107,7 +112,7 @@ func (s *Service) PatchWithContext(threadID string, req ContextRequest) (Result,
 	var content string
 	var err error
 	if s.config.ResolveContext != nil {
-		content, err = s.config.ResolveContext(threadID, req, highlight.MaxPrimeBytes)
+		content, err = s.config.ResolveContext(workspace, threadID, req, highlight.MaxPrimeBytes)
 	}
 	var res highlight.Result
 	primed := err == nil && content != ""

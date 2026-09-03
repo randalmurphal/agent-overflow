@@ -60,6 +60,7 @@ function makeAttachment(id: string): Attachment {
     size: 64,
     relativePath: `thread-1/${id}.png`,
     createdAt: 1,
+    kind: 'image',
   };
 }
 

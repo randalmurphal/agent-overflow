@@ -1,4 +1,4 @@
-import type { Attachment } from '../types/attachment';
+import { imageAttachments, type Attachment } from '../types/attachment';
 
 export const IMAGE_PLACEHOLDER_PREFIX = '[Image #';
 export const IMAGE_PLACEHOLDER_SUFFIX = ']';
@@ -54,11 +54,17 @@ export function insertImagePlaceholder(
   };
 }
 
+/**
+ * Placeholders index IMAGES, not attachments: `[Image #2]` is the second
+ * image in the draft no matter how many files sit between them. Every
+ * numbering and matching pass in this module runs over `imageAttachments`
+ * for that reason, and `attachmentIndex` is an index into THAT list.
+ */
 export function findImagePlaceholderRanges(content: string, attachments: Attachment[]): PlaceholderRange[] {
   const ranges: PlaceholderRange[] = [];
   const usedStarts = new Set<number>();
 
-  attachments.forEach((attachment, index) => {
+  imageAttachments(attachments).forEach((attachment, index) => {
     const label = imagePlaceholderLabel(index + 1);
     const start = findUnusedLabelStart(content, label, usedStarts);
     if (start === -1) return;
@@ -141,17 +147,24 @@ export function removeImagePlaceholderForKey(
   };
 }
 
+/**
+ * Drop the images whose marker the user deleted by typing. A FILE is never
+ * dropped here — it has no marker to lose, and its only removal gesture is
+ * its own chip.
+ */
 export function reconcileImagePlaceholders(
   content: string,
   attachments: Attachment[],
 ): PlaceholderReconciliation {
-  if (attachments.length === 0) {
+  if (imageAttachments(attachments).length === 0) {
     return { content, attachments, removedAttachmentIds: [] };
   }
 
   const ranges = findImagePlaceholderRanges(content, attachments);
   const presentIds = new Set(ranges.map((range) => range.attachmentId));
-  const nextAttachments = attachments.filter((attachment) => presentIds.has(attachment.id));
+  const survives = (attachment: Attachment) =>
+    attachment.kind === 'file' || presentIds.has(attachment.id);
+  const nextAttachments = attachments.filter(survives);
   if (nextAttachments.length === attachments.length) {
     return { content, attachments, removedAttachmentIds: [] };
   }
@@ -160,7 +173,7 @@ export function reconcileImagePlaceholders(
     attachments: nextAttachments,
     content: renumberKnownImagePlaceholders(content, ranges, nextAttachments),
     removedAttachmentIds: attachments
-      .filter((attachment) => !presentIds.has(attachment.id))
+      .filter((attachment) => !survives(attachment))
       .map((attachment) => attachment.id),
   };
 }
@@ -169,7 +182,7 @@ export function ensureImagePlaceholders(content: string, attachments: Attachment
   let next = content;
   const presentIds = new Set(findImagePlaceholderRanges(content, attachments)
     .map((range) => range.attachmentId));
-  attachments.forEach((attachment, index) => {
+  imageAttachments(attachments).forEach((attachment, index) => {
     if (presentIds.has(attachment.id)) return;
     const label = imagePlaceholderLabel(index + 1);
     const insertion = insertImagePlaceholder(next, label, next.length, next.length);
@@ -217,9 +230,10 @@ function renumberKnownImagePlaceholders(
   nextAttachments: Attachment[],
 ): string {
   let next = content;
+  const nextImages = imageAttachments(nextAttachments);
   const replacements = ranges
     .map((range) => {
-      const nextIndex = nextAttachments.findIndex((attachment) => attachment.id === range.attachmentId);
+      const nextIndex = nextImages.findIndex((attachment) => attachment.id === range.attachmentId);
       if (nextIndex === -1) return null;
       const nextLabel = imagePlaceholderLabel(nextIndex + 1);
       if (range.label === nextLabel) return null;

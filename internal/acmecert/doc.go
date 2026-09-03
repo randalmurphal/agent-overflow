@@ -60,5 +60,5 @@
 // needs a domain, DNS the CA resolves, and a rate-limited production
 // endpoint. There is no staging fixture here and no fake CA that would
 // tell you your hook works. That check is the "Issue now" button in
-// Settings → Network, and its failure text names the stage that failed.
+// Settings → Remote access, and its failure text names the stage that failed.
 package acmecert

@@ -12,6 +12,7 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import type { Attachment } from '../../types/attachment';
+import { classifyAttachment } from './attachmentHelpers';
 import {
   resetProposedPlanCacheForTests,
   upsertProposedPlanForTests,
@@ -87,15 +88,20 @@ async function buildDraft(threadId: string | null = 'thread-1') {
   return draft;
 }
 
-function makeAttachment(id: string, filename = `${id}.png`): Attachment {
+// The kind is the SERVER's answer, so the fixture derives it the way the
+// server does rather than hardcoding `image` — otherwise a dropped `.txt`
+// would come back claiming to be one.
+function makeAttachment(id: string, filename = `${id}.png`, mimeType = 'image/png'): Attachment {
+  const kind = classifyAttachment(mimeType, filename);
   return {
     id,
     threadId: 'thread-1',
     filename,
-    mimeType: 'image/png',
+    mimeType,
     size: 128,
-    relativePath: `thread-1/${id}.png`,
+    relativePath: kind === 'file' ? `thread-1/${id}/${filename}` : `thread-1/${id}.png`,
     createdAt: 1,
+    kind,
   };
 }
 
@@ -183,8 +189,8 @@ describe('<Composer>', () => {
     mockAttachmentUpload(async (
       _threadId: string,
       filename: string,
-      _mimeType: string,
-    ) => makeAttachment(`att-${filename}`, filename));
+      mimeType: string,
+    ) => makeAttachment(`att-${filename}`, filename, mimeType));
     // Default RegisterQueueItem mock simulates the backend round-trip:
     // returns a wire item AND seeds the local queue store, mirroring
     // the production flow where the backend stores the item and emits
@@ -335,9 +341,11 @@ describe('<Composer>', () => {
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
 
-    await fireEvent(textarea, makeClipboardPaste([
-      new File(['bmp'], 'scan.bmp', { type: 'image/bmp' }),
-    ]));
+    // Rejection is a SIZE question now — a type we do not recognise is a
+    // `file`, not a refusal — so the over-limit image is what still bounces.
+    const oversize = new File(['png'], 'huge.png', { type: 'image/png' });
+    Object.defineProperty(oversize, 'size', { value: 12 * 1024 * 1024 });
+    await fireEvent(textarea, makeClipboardPaste([oversize]));
 
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     expect(upload).not.toHaveBeenCalled();
@@ -928,6 +936,85 @@ describe('<Composer>', () => {
     expect(draft.content).toBe('typed again');
     await waitFor(() => {
       expect(save).toHaveBeenCalledWith(replacement.id, 'typed again', [], [], null);
+    });
+  });
+
+  it('uploads a dropped pdf as a file chip, with no textarea placeholder', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    const upload = mockAttachmentUpload((_threadId, filename, mimeType) =>
+      makeAttachment('dropped-pdf', filename, mimeType));
+
+    const { getByTestId, findByTestId, getByLabelText } = render(Composer, { props: { pane, draft } });
+
+    await fireEvent(getByTestId('composer-root'), makeFileDrop([
+      new File(['%PDF'], 'report.pdf', { type: 'application/pdf' }),
+    ]));
+
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(
+      'thread-1',
+      'report.pdf',
+      'application/pdf',
+      expect.any(Number),
+    ));
+    // The file reaches the agent as a path line the BACKEND appends, so the
+    // draft text stays exactly what the user typed.
+    await waitFor(() => {
+      expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['dropped-pdf']);
+    });
+    expect(draft.content).toBe('');
+    expect(await findByTestId('attachment-file-chip')).toBeInTheDocument();
+    expect(getByLabelText('Remove report.pdf')).toBeInTheDocument();
+  });
+
+  it('numbers images only when a drop mixes them with a file', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    mockAttachmentUpload((_threadId, filename, mimeType) =>
+      makeAttachment(`att-${filename}`, filename, mimeType));
+
+    const { getByTestId } = render(Composer, { props: { pane, draft } });
+
+    await fireEvent(getByTestId('composer-root'), makeFileDrop([
+      new File(['png'], 'one.png', { type: 'image/png' }),
+      new File(['%PDF'], 'report.pdf', { type: 'application/pdf' }),
+      new File(['png'], 'two.png', { type: 'image/png' }),
+    ]));
+
+    await waitFor(() => {
+      expect(draft.attachments.map((attachment) => attachment.id))
+        .toEqual(['att-one.png', 'att-report.pdf', 'att-two.png']);
+    });
+    expect(draft.content).toBe('[Image #1] [Image #2]');
+  });
+
+  it('a send waits for an upload still in flight, so its id travels with the message', async () => {
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    const uploadGate = deferred<Attachment>();
+    mockAttachmentUpload(() => uploadGate.promise);
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
+
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: 'have a look' } });
+
+    await fireEvent(getByTestId('composer-root'), makeFileDrop([
+      new File(['%PDF'], 'report.pdf', { type: 'application/pdf' }),
+    ]));
+    // Enter lands while the upload is still pending: without the wait
+    // the draft snapshot is taken here, and the message goes without the file.
+    await fireEvent.keyDown(textarea, { key: 'Enter' });
+    await tick();
+    expect(send).not.toHaveBeenCalled();
+
+    uploadGate.resolve(makeAttachment('late-pdf', 'report.pdf', 'application/pdf'));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith('thread-1', 'have a look', {
+        attachmentIds: ['late-pdf'],
+      });
     });
   });
 
@@ -1995,7 +2082,7 @@ describe('<Composer>', () => {
 
     expect(draft.content).toBe('before after');
     expect(draft.attachments).toHaveLength(0);
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('att-1'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('thread-1', 'att-1'));
   });
 
   it('delete before or inside an image placeholder removes the whole placeholder and attachment', async () => {
@@ -2013,7 +2100,7 @@ describe('<Composer>', () => {
 
     expect(draft.content).toBe('before after');
     expect(draft.attachments).toHaveLength(0);
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('att-1'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('thread-1', 'att-1'));
   });
 
   it('removing an attachment with the thumbnail X removes its placeholder and renumbers later images', async () => {
@@ -2034,7 +2121,7 @@ describe('<Composer>', () => {
 
     expect(draft.content).toBe('[Image #1] [Image #2]');
     expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-1', 'att-3']);
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('att-2'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('thread-1', 'att-2'));
   });
 
   it('shows the interrupt affordance while a turn is active and interrupts on click', async () => {
@@ -2327,7 +2414,7 @@ describe('<Composer>', () => {
     // moved off the outer wrapper.
     await fireEvent.dragEnter(card, { dataTransfer: fileDataTransfer });
     await tick();
-    expect(queryByText('Drop an image to attach')).not.toBeNull();
+    expect(queryByText('Drop files to attach')).not.toBeNull();
   });
 
   it('enqueues mid-turn instead of dispatching SendMessage (Enter key)', async () => {

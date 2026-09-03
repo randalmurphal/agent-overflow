@@ -1,6 +1,6 @@
 package store
 
-// passkeysV78SQL adds the owner's passkey credentials and the WebAuthn
+// passkeysV82SQL adds the owner's passkey credentials and the WebAuthn
 // user handle they are registered against (docs/specs/remote-access.md §4,
 // "Passkeys").
 //
@@ -28,7 +28,7 @@ package store
 //
 // # Why credentials hang off the user, not off a device
 //
-// `devices.passkey_credential_id` has existed since v75 and stays unused
+// `devices.passkey_credential_id` has existed since v79 and stays unused
 // by this wave. A passkey is not a device: one authenticator syncs across
 // a person's phones, and a hardware key moves between machines in a
 // pocket. Binding a credential to a device row would mean a synced passkey
@@ -74,7 +74,7 @@ package store
 // `last_used_at` is 0 for a credential that has never asserted, on the
 // same rule as every other stamp in this family: Go reads NULL and 0 the
 // same, so there is one spelling of "has not happened".
-const passkeysV78SQL = `
+const passkeysV82SQL = `
 ALTER TABLE users ADD COLUMN webauthn_user_handle BLOB NULL;
 
 CREATE TABLE passkeys (

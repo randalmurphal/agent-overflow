@@ -36,7 +36,7 @@
 //     the spec states there is deliberately no LAN-HTTP proof path.
 //
 // Migration. A session stored before phase 5 records no `proofKind`, which
-// reads as `bearer` — matching its device row, which the v77 migration
+// reads as `bearer` — matching its device row, which the v81 migration
 // defaulted the same way — so an already-paired browser keeps working
 // untouched and is never asked to re-pair. It upgrades only by pairing
 // again, which is the one moment a device may choose its kind. The
@@ -138,7 +138,7 @@ interface StoredSession {
   /**
    * How this session's device proves possession, as its enrolment
    * decided. Absent means `bearer`: a session stored before phase 5,
-   * whose device row the v77 migration defaulted the same way. That
+   * whose device row the v81 migration defaulted the same way. That
    * agreement is the whole migration — neither side has to be told.
    *
    * It is read to decide what this page must SEND, never to decide what

@@ -1,0 +1,159 @@
+// The search index is checked against the pages it describes: every page is
+// mounted with the shipped-default settings, and the anchors it renders are
+// compared with the entries `fields.ts` registers for it. Both directions
+// fail — an unregistered control is unsearchable, a registered control that
+// no page renders is a dead search hit — and a label or hint that differs
+// from the index would make the search result read differently from the
+// row it lands on.
+
+import { describe, expect, it, beforeEach } from 'vitest';
+import { render } from '@testing-library/svelte';
+import { loadSettings } from '../../stores/settings.svelte';
+import { resetKeybindingsStore } from '../../stores/keybindings.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { makeSettings } from '../../../test/helpers/settings';
+import { PROVIDER_SETTINGS_ORDER } from '../../providers/catalog';
+import { SETTINGS_FIELDS, SETTINGS_PROVIDERS } from './fields';
+import { SETTINGS_PAGES } from './pages';
+import { SETTINGS_SECTIONS } from './sections';
+
+async function seed(): Promise<void> {
+  const settings = makeSettings();
+  setBindingMock('GetSettings', async () => settings);
+  setBindingMock('UpdateSettings', async () => settings);
+  setBindingMock('Version', async () => '0.0.1');
+  setBindingMock('GetProviderStatuses', async () => []);
+  setBindingMock('GetModelsForProvider', async () => []);
+  setBindingMock('ListProviderAccounts', async () => []);
+  setBindingMock('ListDiscussions', async () => []);
+  setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
+  setBindingMock('ListThreads', async () => []);
+  setBindingMock('ListArchivedThreads', async () => []);
+  setBindingMock('GetThemeFiles', async () => ({
+    dir: '/tmp/themes',
+    themes: [],
+    appearance: { mode: 'system', uiTheme: 'default', codeTheme: 'github' },
+  }));
+  setBindingMock('ListAvailableEditors', async () => []);
+  setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
+  setBindingMock('GetSpinnerFiles', async () => ({ dir: '/tmp/spinners', sprites: [], warnings: [] }));
+  // The notifications page reads the phone-push status on mount.
+  setBindingMock('GetPushSenderStatus', async () => ({
+    configured: false,
+    projectId: '',
+    clientEmail: '',
+    lastError: '',
+    registeredDevices: 0,
+  }));
+  // Remote access: the whole persisted record plus the two derived
+  // status blocks, because the page reads `tls.renewing` and
+  // `tailnet.running` to decide whether to poll (network.Settings).
+  setBindingMock('GetNetworkSettings', async () => ({
+    bindAll: false,
+    listenPort: 0,
+    canonicalDomain: '',
+    acmeDnsHook: [],
+    externalCertFile: '',
+    externalKeyFile: '',
+    tailnetEnabled: false,
+    tailnetControlUrl: '',
+    tls: {
+      serving: 'self-signed',
+      notAfter: 0,
+      renewing: false,
+      lastError: '',
+      selfSignedFingerprint: '',
+    },
+    tailnet: {
+      running: false,
+      state: '',
+      authUrl: '',
+      dnsName: '',
+      ips: [],
+      url: '',
+      https: false,
+      hasState: false,
+      lastError: '',
+    },
+    url: 'http://127.0.0.1:1/?t=t',
+    token: 't',
+    insecure: false,
+  }));
+  setBindingMock('GetAccessOverview', async () => ({
+    devices: [],
+    pendingPairings: [],
+    audit: [],
+  }));
+  setBindingMock('ListPasskeys', async () => []);
+  setBindingMock('GetDevServers', async () => ({ previewHost: '', servers: [] }));
+  setBindingMock('IsWSL', async () => false);
+  setBindingMock('ListWSLDistros', async () => []);
+  setBindingMock('GetWSLDistroPreference', async () => '');
+  setBindingMock('ListBackends', async () => []);
+  resetKeybindingsStore();
+  await loadSettings();
+}
+
+// Pages load through async RPCs; a few macrotask turns lets every mount-time
+// fetch in the seed resolve before the DOM is read.
+async function settle(): Promise<void> {
+  for (let i = 0; i < 5; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+describe('settings field index', () => {
+  it('has unique ids, each on a page that exists', () => {
+    const ids = SETTINGS_FIELDS.map((f) => f.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    const pages = new Set<string>(SETTINGS_SECTIONS.map((s) => s.id));
+    for (const field of SETTINGS_FIELDS) {
+      expect(pages.has(field.section), `${field.id} names page ${field.section}`).toBe(true);
+    }
+  });
+
+  it('gives every provider in settings order its own page', () => {
+    expect([...SETTINGS_PROVIDERS]).toEqual(PROVIDER_SETTINGS_ORDER);
+  });
+});
+
+describe('every page renders exactly its registered fields', () => {
+  beforeEach(async () => {
+    await seed();
+  });
+
+  for (const section of SETTINGS_SECTIONS) {
+    it(`${section.id}`, async () => {
+      const { container } = render(SETTINGS_PAGES[section.id]);
+      await settle();
+
+      const rendered = new Map<string, { label: string | undefined; hint: string | undefined }>();
+      for (const el of container.querySelectorAll<HTMLElement>('[data-settings-field]')) {
+        const id = el.dataset.settingsField ?? '';
+        expect(rendered.has(id), `${section.id} renders ${id} twice`).toBe(false);
+        rendered.set(id, { label: el.dataset.settingsLabel, hint: el.dataset.settingsHint });
+      }
+
+      const expected = SETTINGS_FIELDS.filter((f) => f.section === section.id);
+      const expectedIds = new Set(expected.map((f) => f.id));
+
+      for (const id of rendered.keys()) {
+        expect(expectedIds.has(id), `${section.id} renders unregistered field ${id}`).toBe(true);
+      }
+
+      for (const field of expected) {
+        const got = rendered.get(field.id);
+        if (!got) {
+          expect(field.conditional ?? false, `${field.id} is registered but not rendered`).toBe(
+            true,
+          );
+          continue;
+        }
+        expect(got.label, `${field.id} label`).toBe(field.label);
+        if (field.hint !== undefined && got.hint !== undefined) {
+          expect(got.hint, `${field.id} hint`).toBe(field.hint);
+        }
+      }
+    });
+  }
+});

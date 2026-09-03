@@ -10,6 +10,7 @@ import { tick } from 'svelte';
 import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
 import type { TerminalHandle } from '../types/terminal';
+import type { WorkspaceRef } from '../types/git';
 import { registerCommand, type CommandContext, type CommandFlags } from './commandRegistry.svelte';
 import { providerSupports } from '../providers/catalog';
 import { closeCheatSheet, isCheatSheetOpen, openCheatSheet } from './cheatSheet.svelte';
@@ -66,7 +67,7 @@ import { cycleMode } from '../utils/modeCycle';
 import { runInterruptOrRevert } from './revertOnInterrupt.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { getSettings, updateSetting } from './settings.svelte';
-import { openReviewCompanion } from './reviewPane.svelte';
+import { openReviewCompanion, reviewSubjectForPane } from './reviewPane.svelte';
 import { requestThreadActionConfirmation } from './threadActionConfirmations.svelte';
 import {
   clearSidebarCursor,
@@ -123,24 +124,34 @@ function withActiveThread(
 }
 
 /**
- * Run a command that requires a real (materialized) thread row. Placeholders
- * are intentionally not materialized by non-content commands.
+ * Run a command whose subject is a CHECKOUT. A draft placeholder names one
+ * as well as a persisted row does, so this asks for the workspace rather
+ * than for a thread id — the refusal is "this pane has no repository", not
+ * "start the thread first".
  */
-function withMaterializedThread(
+function withWorkspace(
   ctx: CommandContext,
-  run: (threadId: string, pane: ThreadPane) => void | Promise<void>,
+  run: (workspace: WorkspaceRef, pane: ThreadPane) => void | Promise<void>,
 ): void {
   const pane = ctx.pane;
   if (!pane || !ctx.hasActiveThread || !pane.thread) {
     addToast('warning', 'Open a thread before running this command.');
     return;
   }
-  const threadId = pane.threadId;
-  if (!threadId) {
-    addToast('warning', 'Start the thread before running this command.');
+  const workspace = pane.workspace;
+  if (!workspace) {
+    addToast('warning', 'This thread has no workspace.');
     return;
   }
-  void run(threadId, pane);
+  void run(workspace, pane);
+}
+
+/** Open the review companion on the pane's checkout. `withWorkspace` has
+ *  already proven there is one, so the subject resolves. */
+function openWorkspaceReview(pane: ThreadPane): void {
+  const subject = reviewSubjectForPane(pane);
+  if (!subject) return;
+  void openReviewCompanion(pane.paneId, subject, { scope: 'workspace' });
 }
 
 /**
@@ -756,7 +767,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 
   // Provider accounts: switching one and reading its remaining quota is the
   // one settings trip that recurs, so it gets a chord of its own. The picker
-  // and Settings → Providers share stores/providerAccounts.svelte.ts, so this
+  // and the provider settings pages share stores/providerAccounts.svelte.ts, so this
   // is a second surface over the same state, not a second implementation.
   //
   // Every provider-account RPC rides `access:admin` (billing identity), so a
@@ -781,7 +792,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'settings.open',
     label: 'Settings: Open',
     icon: '⚙',
-    run: () => openSettingsOverlay('general'),
+    run: () => openSettingsOverlay('theme'),
   });
 
   registerCommand({
@@ -828,12 +839,12 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '±',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withMaterializedThread(ctx, (threadId, pane) => {
+      withWorkspace(ctx, (_workspace, pane) => {
         if (pane.showReviewPane) {
           pane.setShowReviewPane(false);
           return;
         }
-        void openReviewCompanion(pane.paneId, threadId, { scope: 'workspace' });
+        openWorkspaceReview(pane);
       }),
   });
 
@@ -843,9 +854,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '±',
     when: 'hasActiveThread',
     run: (ctx) =>
-      withMaterializedThread(ctx, (threadId, pane) => {
-        void openReviewCompanion(pane.paneId, threadId, { scope: 'workspace' });
-      }),
+      withWorkspace(ctx, (_workspace, pane) => { openWorkspaceReview(pane); }),
   });
 
   registerCommand({
@@ -1029,6 +1038,25 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     run: (ctx) => switchTerminalTab(ctx, -1),
   });
 
+  // Wipes the active tab's xterm buffer AND scrollback (VS Code's "Terminal:
+  // Clear"). Ctrl+L at the shell only clears the visible screen. Frontend-
+  // only: nothing is written to the PTY, so it is safe mid-command.
+  registerCommand({
+    id: 'terminal.clear',
+    label: 'Terminal: Clear',
+    description: 'Clear the active terminal, scrollback included.',
+    icon: '⌧',
+    when: 'terminalFocus || terminalOpen',
+    editableReachable: true,
+    run: (ctx) => {
+      const pane = ctx.pane;
+      if (!pane) return;
+      getExistingThreadTerminalState(
+        terminalStateKeyForPane(pane.threadId, pane.paneId),
+      )?.clearActive();
+    },
+  });
+
   registerCommand({
     id: 'git.commit',
     label: 'Git: Commit All',
@@ -1046,9 +1074,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '↑',
     when: 'hasActiveThread && gitOperate',
     run: (ctx) =>
-      withMaterializedThread(ctx, async (threadId) => {
+      withWorkspace(ctx, async (workspace) => {
         try {
-          await GitPush(threadId);
+          await GitPush(workspace);
           addToast('success', 'Pushed.');
         } catch (err) {
           addToast('error', userFacingError(err));
@@ -1062,9 +1090,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '↓',
     when: 'hasActiveThread && gitOperate',
     run: (ctx) =>
-      withMaterializedThread(ctx, async (threadId) => {
+      withWorkspace(ctx, async (workspace) => {
         try {
-          await GitPull(threadId);
+          await GitPull(workspace);
           addToast('success', 'Pulled.');
         } catch (err) {
           addToast('error', userFacingError(err));

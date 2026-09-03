@@ -62,3 +62,13 @@ export interface GitActionResult {
   message?: string;
   error?: string;
 }
+
+// Wire shape of a CHECKOUT — the subject of every workspace-scoped git RPC
+// (`internal/gitapp.WorkspaceRef`). Re-exported so feature code names it
+// through this module rather than the generated tree, and so there is one
+// import path for the type every `workspaceRefFor*` helper returns.
+export type { WorkspaceRef } from '../../../bindings/agent-overflow/internal/app/models';
+
+// The caller's checkout after a mutation that may have moved its branch
+// (GitCheckout / GitCreateBranchFrom / RemoveOtherWorktree).
+export type { GitWorkspaceState } from '../../../bindings/agent-overflow/internal/app/models';

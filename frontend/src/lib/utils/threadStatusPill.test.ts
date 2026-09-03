@@ -118,7 +118,6 @@ describe('resolveThreadStatusPill', () => {
       if (mode === 'discussion') {
         expect(pill?.dotClass).toContain('border-info');
         expect(pill?.dotClass).toContain('bg-transparent');
-        expect(pill?.labelClass).toContain('text-info');
         expect(pill?.pulse).toBe(false);
         return;
       }
@@ -144,7 +143,6 @@ describe('resolveThreadStatusPill', () => {
     expect(pill?.label).toBe('Awaiting Input');
     expect(pill?.pulse).toBe(true);
     expect(pill?.dotClass).toContain('bg-info');
-    expect(pill?.labelClass).toContain('text-info');
     expect(pill?.glowClass).toBe('status-glow-info');
   });
 
@@ -172,7 +170,8 @@ describe('resolveThreadStatusPill', () => {
     const pill = resolveThreadStatusPill(t(), 'interrupted');
     expect(pill?.label).toBe('Interrupted');
     expect(pill?.pulse).toBe(false);
-    expect(pill?.dotClass).toContain('bg-warning');
+    expect(pill?.dotClass).toContain('border-warning');
+    expect(pill?.dotClass).toContain('bg-transparent');
   });
 
   it('error wins over everything', () => {
@@ -237,7 +236,6 @@ describe('setup-failed', () => {
     expect(pill).toEqual({
       label: 'Setup Failed',
       dotClass: 'bg-warning',
-      labelClass: 'text-warning',
       pulse: false,
     });
     // No glow: nothing is blocked waiting on the user, unlike an approval.
@@ -248,4 +246,30 @@ describe('setup-failed', () => {
     expect(resolveThreadStatusPill(t(), 'error')?.label).toBe('Failed');
     expect(resolveThreadStatusPill(t(), 'setup-failed')?.label).toBe('Setup Failed');
   });
+
+  it('is told apart from Interrupted by fill, the only channel left without text', () => {
+    const setup = resolveThreadStatusPill(t(), 'setup-failed');
+    const interrupted = resolveThreadStatusPill(t(), 'interrupted');
+    expect(setup?.dotClass).toBe('bg-warning');
+    expect(interrupted?.dotClass).toContain('border-warning');
+    expect(interrupted?.dotClass).toContain('bg-transparent');
+    expect(interrupted?.pulse).toBe(false);
+  });
+});
+
+describe('row ring (the attention states)', () => {
+  it('Completed and Plan Ready carry an inset row ring', () => {
+    const completed = resolveThreadStatusPill(t({ lastReadAt: 1_000, latestTurnCompletedAt: 2_000 }), 'idle');
+    expect(completed?.label).toBe('Completed');
+    expect(completed?.ringClass).toBe('ring-1 ring-inset ring-success/40');
+    const plan = resolveThreadStatusPill(t(), 'plan-ready');
+    expect(plan?.ringClass).toBe('ring-1 ring-inset ring-accent/40');
+  });
+
+  it.each(['error', 'running', 'pending-approval', 'awaiting-input', 'setup-failed', 'interrupted'] as const)(
+    '%s has no row ring',
+    (status) => {
+      expect(resolveThreadStatusPill(t(), status)?.ringClass).toBeUndefined();
+    },
+  );
 });

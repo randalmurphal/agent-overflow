@@ -37,7 +37,7 @@ and leaves the run ephemeral, and never blocks boot.
 
 ### The saved port, and why it is the middle input
 
-`network.listenPort` (Settings → Network, `internal/settings/network.go`) sits
+`network.listenPort` (Settings → Remote access, `internal/settings/network.go`) sits
 between the two above, and behaves like neither. It LOSES to `--listen`, because
 a flag is one launch and a setting is the install. It BEATS the cache outright
 and takes no ephemeral fallback: the whole reason to set it is that every share

@@ -9,7 +9,7 @@ import (
 	"agent-overflow/internal/settings"
 )
 
-// The listen-port half of Settings → Network: a port the operator names,
+// The listen-port half of Settings → Remote access: a port the operator names,
 // applied through the same Rebind the bind toggle uses, with the
 // transport-port cache kept naming where the listener actually is.
 

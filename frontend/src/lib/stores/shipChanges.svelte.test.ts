@@ -1,6 +1,11 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { createShipChangesState, _testing } from './shipChanges.svelte';
-import type { GitStatus } from '../types/git';
+import type { GitStatus, WorkspaceRef } from '../types/git';
+
+// The wizard's two identities: `identity` keys the pane's thread row (or a
+// draft placeholder's synthetic id), `workspace` is the checkout every git
+// RPC it runs addresses.
+const WS: WorkspaceRef = { projectId: 'project-1', workspacePath: '/workspace' };
 
 function status(overrides: Partial<GitStatus> = {}): GitStatus {
   return {
@@ -32,7 +37,7 @@ describe('createShipChangesState', () => {
     it('starts idle with empty fields', () => {
       expect(store.phase).toBe('idle');
       expect(store.status).toBeNull();
-      expect(store.threadId).toBeNull();
+      expect(store.identity).toBeNull();
       expect(store.commitSubject).toBe('');
       expect(store.commitBody).toBe('');
       expect(store.commitSha).toBeNull();
@@ -52,19 +57,19 @@ describe('createShipChangesState', () => {
 
   describe('open() and close()', () => {
     it('open() stores the thread id and stays on idle until setStatus() arrives', () => {
-      store.open('t-1');
-      expect(store.threadId).toBe('t-1');
+      store.open('t-1', WS);
+      expect(store.identity).toBe('t-1');
       expect(store.phase).toBe('idle');
     });
 
     it('open() wipes every previous field', () => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: true }));
       store.setCommitSubject('wip');
       store.setCommitBody('draft');
 
-      store.open('t-2');
-      expect(store.threadId).toBe('t-2');
+      store.open('t-2', WS);
+      expect(store.identity).toBe('t-2');
       expect(store.phase).toBe('idle');
       expect(store.status).toBeNull();
       expect(store.commitSubject).toBe('');
@@ -72,35 +77,35 @@ describe('createShipChangesState', () => {
     });
 
     it('close() returns the machine to idle', () => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: true }));
       store.close();
       expect(store.phase).toBe('idle');
-      expect(store.threadId).toBeNull();
+      expect(store.identity).toBeNull();
     });
   });
 
   describe('auto-advance via setStatus', () => {
     it('starts at commit.review when there are uncommitted changes', () => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: true, aheadCount: 0 }));
       expect(store.phase).toBe('commit.review');
     });
 
     it('starts at push.review when the branch is ahead with no changes', () => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: false, aheadCount: 2 }));
       expect(store.phase).toBe('push.review');
     });
 
     it('starts at pr.review when there is an upstream but no open PR and no work', () => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: false, aheadCount: 0, hasUpstream: true }));
       expect(store.phase).toBe('pr.review');
     });
 
     it('starts at pr.done when an open PR already exists', () => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(
         status({ hasChanges: false, aheadCount: 0, hasUpstream: true, openPrUrl: 'https://x/1' }),
       );
@@ -108,13 +113,13 @@ describe('createShipChangesState', () => {
     });
 
     it('starts at pr.done when there is no upstream and no work (nothing to ship)', () => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: false, aheadCount: 0, hasUpstream: false }));
       expect(store.phase).toBe('pr.done');
     });
 
     it('does NOT auto-advance once we are inside a flow', () => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: true }));
       expect(store.phase).toBe('commit.review');
       // A follow-up status update after, say, the user edited outside the
@@ -135,7 +140,7 @@ describe('createShipChangesState', () => {
 
   describe('commit flow', () => {
     beforeEach(() => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: true }));
     });
 
@@ -207,7 +212,7 @@ describe('createShipChangesState', () => {
 
   describe('push flow', () => {
     beforeEach(() => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: false, aheadCount: 2 }));
     });
 
@@ -255,7 +260,7 @@ describe('createShipChangesState', () => {
 
   describe('pr flow', () => {
     beforeEach(() => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: false, aheadCount: 0, hasUpstream: true }));
     });
 
@@ -318,7 +323,7 @@ describe('createShipChangesState', () => {
 
   describe('retry guards', () => {
     it('throws when called outside an error state', () => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: true }));
       expect(() => store.retry()).toThrow(/retry/i);
     });
@@ -326,7 +331,7 @@ describe('createShipChangesState', () => {
 
   describe('full happy path', () => {
     it('walks commit -> push -> PR end to end', () => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: true, aheadCount: 0 }));
 
       // Commit
@@ -353,28 +358,28 @@ describe('createShipChangesState', () => {
 
   describe('pending operation gating (Bug C3)', () => {
     it('canCommit is false while a merge is in progress', () => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: true, pendingOperation: 'merge' }));
       store.setCommitSubject('try to commit');
       expect(store.canCommit).toBe(false);
     });
 
     it('canCommit is false while a rebase is in progress', () => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: true, pendingOperation: 'rebase' }));
       store.setCommitSubject('try to commit');
       expect(store.canCommit).toBe(false);
     });
 
     it('canCommit is false while a bisect is in progress', () => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: true, pendingOperation: 'bisect' }));
       store.setCommitSubject('try to commit');
       expect(store.canCommit).toBe(false);
     });
 
     it('canCommit is true when pendingOperation clears', () => {
-      store.open('t-1');
+      store.open('t-1', WS);
       store.setStatus(status({ hasChanges: true, pendingOperation: 'merge' }));
       store.setCommitSubject('try to commit');
       expect(store.canCommit).toBe(false);

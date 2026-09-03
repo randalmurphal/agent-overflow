@@ -5,7 +5,8 @@ import GitActionsControl from './GitActionsControl.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import type { GitStatus } from '../../types/git';
-import type { Thread } from '../../types/models';
+import type { Project, Thread } from '../../types/models';
+import { createThreadPane } from '../../stores/thread.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   __seedGitStatusErrorForTest,
@@ -188,6 +189,60 @@ describe('<GitActionsControl> consumer rendering', () => {
     expect(queryByText(/This will remove the git worktree/)).toBeNull();
     // The lock asked about the DIRECTORY, never about the thread id.
     expect(asked).toEqual([WORKTREE]);
+  });
+
+  // A draft placeholder names a project and a directory and nothing else. Its
+  // git actions are the SAME actions — they act on the checkout, so there is
+  // no thread id anywhere in the call.
+  it('runs the primary action on a draft placeholder against its workspace ref', async () => {
+    const project: Project = {
+      id: 'project-1',
+      path: WORKSPACE,
+      name: 'Example',
+      sortPosition: 0,
+    } as Project;
+    const pane = createThreadPane();
+    pane.startDraftPlaceholder(project, 'chat', {
+      provider: 'claude',
+      model: 'm',
+      workspacePath: WORKSPACE,
+      branch: 'main',
+    });
+    const pullArgs: unknown[][] = [];
+    setBindingMock('GitPull', async (...args: unknown[]) => {
+      pullArgs.push(args);
+      return { success: true };
+    });
+    // Behind upstream with nothing to commit → the primary action is Pull.
+    __seedGitStatusForTest(WORKSPACE, status({ hasChanges: false, behindCount: 3 }));
+    const { container } = render(GitActionsControl, { props: { pane } });
+    await flush();
+
+    const primary = container.querySelector<HTMLButtonElement>('div.flex > button:first-of-type');
+    expect(primary?.textContent?.trim()).toBe('Pull');
+    await fireEvent.click(primary!);
+    await flush();
+
+    expect(pane.threadId).toBeNull();
+    expect(pullArgs).toEqual([[{ projectId: 'project-1', workspacePath: WORKSPACE }]]);
+  });
+
+  // A terminal-only thread carries no project, so `pane.workspace` is null and
+  // there is no checkout to act on. The control must not render at all: a
+  // rendered button that swallows its own click is the failure mode this
+  // replaces.
+  it('renders no control at all for a thread with no project', async () => {
+    const pane = await buildPane(makeThread({ projectId: undefined, worktreePath: undefined }));
+    // Even with a healthy status observed for the directory, there is no ref
+    // to build, so nothing renders and nothing throws.
+    __seedGitStatusForTest(WORKSPACE, status({ isRepo: true, hasChanges: true }));
+    const { container, queryByTestId } = render(GitActionsControl, { props: { pane } });
+    await flush();
+
+    expect(pane.workspace).toBeNull();
+    expect(queryByTestId('git-actions-error')).toBeNull();
+    expect(container.querySelector('button[aria-label="More git actions"]')).toBeNull();
+    expect(container.querySelector('button')).toBeNull();
   });
 
   it('reflects the primary action label for the observed status', async () => {

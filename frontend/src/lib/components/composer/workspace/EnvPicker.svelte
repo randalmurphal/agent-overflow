@@ -19,17 +19,19 @@
   import { composerTriggerClasses } from '../triggerClasses';
   import {
     GitListWorktrees,
-    GitListWorktreesForProject,
     GitWorktreeStatus,
-    GitWorktreeStatusForProject,
-    RemoveOtherWorktreeForProject,
     RemoveOtherWorktree,
     UpdateThreadWorkspace,
-    type GitWorkspaceState,
     WorktreeStatus,
     type WorktreeListItem,
   } from '../../../stores/bindings';
-  import { forEachDraftPlaceholderPane, syncThread } from '../../../stores/panes.svelte';
+  import type { GitWorkspaceState } from '../../../types/git';
+  import { syncThread } from '../../../stores/panes.svelte';
+  import {
+    moveDraftPlaceholdersOffWorktree,
+    placeholderWorkspaceOf,
+    type PlaceholderWorkspace,
+  } from '../../../stores/draftWorkspaceSync';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
   import { sameNormalizedPath } from '../../../utils/path';
@@ -59,14 +61,6 @@
     workspaceLock: WorkspaceChangeLockState;
   }
 
-  /** The shape `applyDraftPlaceholderWorkspace` takes, named so the
-   *  worktree-removal fan-out can pass one value to several panes. */
-  interface PlaceholderWorkspace {
-    workspacePath: string;
-    worktreePath: string;
-    branch: string;
-  }
-
   interface ConfirmState {
     path: string;
     label: string;
@@ -86,6 +80,8 @@
   let applying = $state(false);
   let confirm: ConfirmState | null = $state(null);
 
+  // The checkout this picker lists worktrees of and removes them from.
+  let workspace = $derived(pane.workspace);
   let projectPath = $derived(pane.thread?.projectPath ?? '');
   let currentWorkspace = $derived(pane.thread?.workspacePath ?? '');
   let isAtProjectRoot = $derived(sameNormalizedPath(currentWorkspace, projectPath));
@@ -137,16 +133,10 @@
   let refresh: RefreshScheduler | null = null;
 
   async function refreshWorktreeList(token: RefreshToken): Promise<void> {
-    if (!pane.thread) return;
-    const projectId = pane.thread.projectId;
-    if (!pane.threadId && !projectId) return;
+    const ws = workspace;
+    if (!ws) return;
     try {
-      let res: WorktreeListItem[] | null;
-      if (pane.threadId) {
-        res = (await GitListWorktrees(pane.threadId)) as WorktreeListItem[] | null;
-      } else {
-        res = (await GitListWorktreesForProject(projectId!)) as WorktreeListItem[] | null;
-      }
+      const res = (await GitListWorktrees(ws)) as WorktreeListItem[] | null;
       if (!token.isCurrent()) return;
       worktrees = Array.isArray(res) ? res : [];
     } catch (err) {
@@ -275,9 +265,8 @@
   }
 
   async function requestRemove(wt: WorktreeListItem): Promise<void> {
-    if (!pane.thread) return;
-    const projectId = pane.thread.projectId;
-    if (!pane.threadId && !projectId) return;
+    const ws = workspace;
+    if (!ws) return;
     confirm = {
       path: wt.path,
       label: pathBasename(wt.path) || wt.path,
@@ -288,9 +277,7 @@
       error: null,
     };
     try {
-      const status = pane.threadId
-        ? (await GitWorktreeStatus(pane.threadId, wt.path)) as WorktreeStatus
-        : (await GitWorktreeStatusForProject(projectId!, wt.path)) as WorktreeStatus;
+      const status = (await GitWorktreeStatus(ws, wt.path)) as WorktreeStatus;
       // Guard against the user clicking Cancel and then opening a
       // different row's confirmation between the request and the
       // response — only apply the result if the active confirm is
@@ -338,64 +325,28 @@
     return parts.join(' · ');
   }
 
-  // A removed worktree's directory is gone, so every open draft composer
-  // parked in it has to move — and a draft has no thread row for the
-  // backend's attached-thread reattachment to reach. They go to the project
-  // root, which is where the backend puts attached threads too.
-  function moveDraftPlaceholdersOffWorktree(
-    projectId: string,
-    removedPath: string,
-    rootState: PlaceholderWorkspace | null,
-  ): void {
-    forEachDraftPlaceholderPane(projectId, (target) => {
-      if (!sameNormalizedPath(target.thread?.workspacePath ?? '', removedPath)) return;
-      const root = target.thread?.projectPath ?? '';
-      if (!root) return;
-      target.applyDraftPlaceholderWorkspace(
-        rootState && sameNormalizedPath(rootState.workspacePath, root)
-          ? rootState
-          // Nothing told us the root's branch, and the removed worktree's is
-          // certainly wrong; '' renders as "No branch" until the next read.
-          : { workspacePath: root, worktreePath: '', branch: '' },
-      );
-    });
-  }
-
   async function performRemove(force: boolean): Promise<void> {
-    if (!pane.thread || !confirm) return;
-    const projectId = pane.thread.projectId ?? '';
-    if (!pane.threadId && !projectId) return;
+    const ws = workspace;
+    if (!ws || !confirm) return;
     const path = confirm.path;
     const label = confirm.label;
     const placeholderId = pane.draftPlaceholder?.id ?? '';
-    const requestedWorkspace = pane.thread.workspacePath ?? '';
     confirm = { ...confirm, pending: true, error: null };
     try {
-      let rootState: PlaceholderWorkspace | null = null;
-      if (pane.threadId) {
-        await RemoveOtherWorktree(pane.threadId, path, force);
-      } else {
-        const next = (await RemoveOtherWorktreeForProject(
-          projectId,
-          requestedWorkspace,
-          path,
-          force,
-        )) as GitWorkspaceState;
-        rootState = {
-          workspacePath: next.workspacePath,
-          worktreePath: next.worktreePath ?? '',
-          branch: next.branch,
-        };
-        // Guarded, not aborted: the removal happened whatever this pane did
-        // under the await, and the other panes still have to be told.
-        if (
-          pane.draftPlaceholder?.id === placeholderId &&
-          sameNormalizedPath(pane.thread?.workspacePath ?? '', requestedWorkspace)
-        ) {
-          pane.applyDraftPlaceholderWorkspace(rootState);
-        }
+      const next = (await RemoveOtherWorktree(ws, path, force)) as GitWorkspaceState;
+      const rootState: PlaceholderWorkspace = placeholderWorkspaceOf(next);
+      // Guarded, not aborted: the removal happened whatever this pane did
+      // under the await, and the other panes still have to be told. A
+      // persisted row is reattached and broadcast by the backend; only a
+      // placeholder needs telling here.
+      if (
+        pane.hasDraftPlaceholder &&
+        pane.draftPlaceholder?.id === placeholderId &&
+        sameNormalizedPath(pane.thread?.workspacePath ?? '', ws.workspacePath)
+      ) {
+        pane.applyDraftPlaceholderWorkspace(rootState);
       }
-      moveDraftPlaceholdersOffWorktree(projectId, path, rootState);
+      moveDraftPlaceholdersOffWorktree(ws.projectId, path, rootState);
       addToast('info', `Removed worktree ${label}`);
       // If we just removed the current workspace, the backend has flipped
       // us to the project root and broadcast a thread upsert; the pane
@@ -530,7 +481,7 @@
               onSelect={() => selectPath(wt.path)}
               actionLabel={`Remove worktree ${pathBasename(wt.path) || wt.path}`}
               actionPosition="end"
-              actionDisabled={(!pane.threadId && !pane.thread?.projectId) || wt.deleteBlocked}
+              actionDisabled={workspace === null || wt.deleteBlocked}
               actionTitle={wt.deleteBlocked
                 ? 'This worktree cannot be removed while an attached thread is running.'
                 : `Remove worktree ${pathBasename(wt.path) || wt.path}`}

@@ -887,8 +887,11 @@ func (p *Parser) parseTaskStartedEvent(
 	if isResume {
 		// Route this tool_use through the SAME is_background
 		// mechanism run_in_background launches use (parser.go
-		// markBackground/isBackground). Fix B's async-ack path then
-		// naturally emits this tool_use's EventToolComplete with
+		// markBackground/isBackground) — with the wire-backed origin:
+		// unlike an input flag, which the result must confirm, this
+		// rebind IS the wire saying the task runs under this id, so
+		// the ack classifies on it alone. The async-ack path then
+		// emits this tool_use's EventToolComplete with
 		// is_background:true, and triage's keep-running flip
 		// (tool_lifecycle.go) makes it the resumed round's
 		// background carrier — the row that keeps
@@ -897,7 +900,7 @@ func (p *Parser) parseTaskStartedEvent(
 		// order guarantees this works: assistant tool_use ->
 		// task_started (here) -> tool_result ack. See
 		// claude-wire.md §E6.
-		p.markBackground(toolUseID)
+		p.markBackground(toolUseID, backgroundFromTaskStarted)
 	}
 
 	// Re-emit an EventToolStart carrying task_id so triage can

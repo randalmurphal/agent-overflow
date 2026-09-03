@@ -7,7 +7,7 @@
 // twice is two logins, not one — so unifying this list is a remote-access
 // §10 plan item with its own design, not a keying change.
 //
-// Two surfaces consume it — Settings → Providers → Accounts (per-provider
+// Two surfaces consume it — the provider settings pages → Accounts (per-provider
 // slice, with removal) and the account-switcher picker (all providers, switch
 // + refresh only). They share this module rather than each owning a copy so a
 // switch made in one is immediately visible in the other, and so there is

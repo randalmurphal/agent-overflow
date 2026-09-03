@@ -72,6 +72,85 @@ func TestMergeSnapshotAcceptsSameWindowUsageDrop(t *testing.T) {
 	}
 }
 
+// A provider drops a bucket from its answer once the bucket has no usage,
+// which is what a mid-window reset produces. Merging alone kept the pre-reset
+// figure for the rest of the window (2026-09-01: a Fable weekly row frozen at
+// 90% while session and all-models correctly read 0%).
+func TestMergeSnapshotDropsLimitsAWholeAnswerOmits(t *testing.T) {
+	current := provider.RateLimitsSnapshot{
+		Provider: string(provider.Claude),
+		Limits: []provider.RateLimitEntry{
+			{LimitID: "weekly_all", WindowMins: 10080, UsedPercent: 46, ResetsAt: 1_788_000_000},
+			{LimitID: "weekly_scoped:fable", LimitName: "Fable", WindowMins: 10080, UsedPercent: 90, ResetsAt: 1_788_000_000},
+		},
+	}
+	whole := provider.RateLimitsSnapshot{
+		Provider: string(provider.Claude), Complete: true,
+		Limits: []provider.RateLimitEntry{
+			{LimitID: "weekly_all", WindowMins: 10080, UsedPercent: 0, ResetsAt: 1_788_000_000},
+		},
+	}
+	merged, changed := MergeSnapshot(current, whole)
+	if !changed {
+		t.Fatal("dropping a limit is a change")
+	}
+	if len(merged.Limits) != 1 || merged.Limits[0].LimitID != "weekly_all" {
+		t.Fatalf("merged = %+v, want the scoped row gone", merged.Limits)
+	}
+	if merged.Complete {
+		t.Fatal("the cached union must never claim to be a reading")
+	}
+}
+
+// The same omission from a PARTIAL reading proves nothing: a wire event
+// carries one window and Claude's header fallback can never see a scoped
+// bucket, so both must leave the rest of the cache alone.
+func TestMergeSnapshotKeepsLimitsAPartialReadingOmits(t *testing.T) {
+	current := provider.RateLimitsSnapshot{
+		Provider: string(provider.Claude),
+		Limits: []provider.RateLimitEntry{
+			{LimitID: "weekly_all", WindowMins: 10080, UsedPercent: 46, ResetsAt: 1_788_000_000},
+			{LimitID: "weekly_scoped:fable", LimitName: "Fable", WindowMins: 10080, UsedPercent: 90, ResetsAt: 1_788_000_000},
+		},
+	}
+	partial := provider.RateLimitsSnapshot{
+		Provider: string(provider.Claude),
+		Limits: []provider.RateLimitEntry{
+			{LimitID: "weekly_all", WindowMins: 10080, UsedPercent: 0, ResetsAt: 1_788_000_000},
+		},
+	}
+	merged, changed := MergeSnapshot(current, partial)
+	if !changed || len(merged.Limits) != 2 {
+		t.Fatalf("merged = %+v (changed=%v), want both rows kept", merged.Limits, changed)
+	}
+}
+
+// A whole answer whose entry loses the boundary check is still an entry the
+// server LISTED. Pruning it would delete a live quota over a stale reading.
+func TestMergeSnapshotKeepsAWholeAnswerEntryRejectedForAnOlderBoundary(t *testing.T) {
+	current := provider.RateLimitsSnapshot{
+		Provider: string(provider.Claude),
+		Limits: []provider.RateLimitEntry{
+			// Already canonical, so normalization alone reports no change and
+			// the assertion below is about the merge and nothing else.
+			{LimitID: "session", LimitName: "Current session", WindowMins: 300, UsedPercent: 30, ResetsAt: 1_788_316_200},
+		},
+	}
+	stale := provider.RateLimitsSnapshot{
+		Provider: string(provider.Claude), Complete: true,
+		Limits: []provider.RateLimitEntry{
+			{LimitID: "session", LimitName: "Current session", WindowMins: 300, UsedPercent: 90, ResetsAt: 1_788_298_200},
+		},
+	}
+	merged, changed := MergeSnapshot(current, stale)
+	if changed {
+		t.Fatalf("older-boundary reading changed the cache: %+v", merged.Limits)
+	}
+	if len(merged.Limits) != 1 || merged.Limits[0].UsedPercent != 30 {
+		t.Fatalf("merged = %+v, want the cached window untouched", merged.Limits)
+	}
+}
+
 func TestRememberEventMergesBeforePersisting(t *testing.T) {
 	var persisted []provider.RateLimitsSnapshot
 	service := New(Deps{Accounts: AccountDeps{
