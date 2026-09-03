@@ -1,10 +1,13 @@
 package attachment
 
 import (
+	"bytes"
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -48,22 +51,38 @@ func seedThread(t *testing.T, meta *store.Store, id string) {
 	}
 }
 
-func pngData(t *testing.T) string {
-	t.Helper()
-	// 1x1 PNG (real header).
-	payload := []byte{
+// pngBytes is a 1x1 PNG (real header).
+func pngBytes() []byte {
+	return []byte{
 		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
 		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
 		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
 		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
 		0x89,
 	}
-	return base64.StdEncoding.EncodeToString(payload)
+}
+
+func pngData(t *testing.T) string {
+	t.Helper()
+	return base64.StdEncoding.EncodeToString(pngBytes())
 }
 
 func jpegData(t *testing.T) string {
 	t.Helper()
 	return base64.StdEncoding.EncodeToString([]byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10})
+}
+
+func gifData(t *testing.T) string {
+	t.Helper()
+	return base64.StdEncoding.EncodeToString([]byte("GIF89a\x01\x00\x01\x00"))
+}
+
+// textData is a `file`-kind payload: bytes that are not any image the
+// signature detector knows, so an upload accepting them proves the file
+// path skipped the signature check entirely.
+func textData(t *testing.T, s string) string {
+	t.Helper()
+	return base64.StdEncoding.EncodeToString([]byte(s))
 }
 
 func TestNewStoreRejectsMissingRoot(t *testing.T) {
@@ -200,13 +219,258 @@ func TestUploadRejectsMismatchedImagePayload(t *testing.T) {
 	}
 }
 
-func TestUploadRejectsDisallowedMime(t *testing.T) {
+// A non-image MIME is no longer a rejection: it is the `file` kind, kept
+// at face value with no signature check. The bytes here ARE a PNG and the
+// row still says application/x-msdownload — declaring an image is what
+// makes an image, and this upload declared none.
+func TestUploadNonImageMimeBecomesFile(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "t1")
 
-	_, err := attStore.Upload("t1", "evil.exe", "application/x-msdownload", pngData(t), 0)
-	if err == nil {
-		t.Fatal("expected mime rejection")
+	record, err := attStore.Upload("t1", "evil.exe", "application/x-msdownload", pngData(t), 0)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if record.Kind != store.AttachmentKindFile {
+		t.Fatalf("Kind: got %q want %q", record.Kind, store.AttachmentKindFile)
+	}
+	if record.MimeType != "application/x-msdownload" {
+		t.Fatalf("MimeType: got %q, declared type should survive verbatim", record.MimeType)
+	}
+	if want := "t1/" + record.ID + "/evil.exe"; record.RelativePath != want {
+		t.Fatalf("RelativePath: got %q want %q", record.RelativePath, want)
+	}
+}
+
+// The kind rule in one table. The asymmetry is the point: declaring (or
+// naming) an image is a PROMISE the bytes must keep, and everything else
+// is a file with no promise to keep.
+func TestUploadKindRule(t *testing.T) {
+	attStore, meta := newTestStores(t)
+	seedThread(t, meta, "t1")
+
+	cases := []struct {
+		name     string
+		filename string
+		mime     string
+		data     string
+		wantKind string
+		wantMIME string
+		wantErr  string
+	}{
+		{"declared-image-mime", "a.png", "image/png", pngData(t), store.AttachmentKindImage, "image/png", ""},
+		{"image-extension-no-mime", "a.jpg", "", jpegData(t), store.AttachmentKindImage, "image/jpeg", ""},
+		{"image-extension-wrong-mime", "a.gif", "text/plain", gifData(t), store.AttachmentKindImage, "image/gif", ""},
+		{"declared-image-mime-lying", "a.png", "image/png", jpegData(t), "", "", "does not match image/png"},
+		{"image-extension-lying", "a.png", "", jpegData(t), "", "", "does not match image/png"},
+		// An image format no provider ingests is a FILE, and is never
+		// asked to prove itself — these bytes are a PNG, not a heic.
+		{"unignested-image-format", "shot.heic", "image/heic", pngData(t), store.AttachmentKindFile, "image/heic", ""},
+		{"svg", "logo.svg", "image/svg+xml", pngData(t), store.AttachmentKindFile, "image/svg+xml", ""},
+		{"pdf", "report.pdf", "application/pdf", textData(t, "%PDF-1.7"), store.AttachmentKindFile, "application/pdf", ""},
+		{"no-mime-no-extension", "LICENSE", "", textData(t, "MIT"), store.AttachmentKindFile, fallbackFileMIME, ""},
+		{"mime-is-normalised", "a.PNG", "  IMAGE/PNG  ", pngData(t), store.AttachmentKindImage, "image/png", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			record, err := attStore.Upload("t1", tc.filename, tc.mime, tc.data, 0)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err: got %v want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Upload: %v", err)
+			}
+			if record.Kind != tc.wantKind {
+				t.Errorf("Kind: got %q want %q", record.Kind, tc.wantKind)
+			}
+			if record.MimeType != tc.wantMIME {
+				t.Errorf("MimeType: got %q want %q", record.MimeType, tc.wantMIME)
+			}
+		})
+	}
+}
+
+// A declared MIME is the only unbounded caller-controlled string a `file`
+// row stores, so it is the only one that needs a bound.
+func TestUploadRejectsOversizedDeclaredMIME(t *testing.T) {
+	attStore, meta := newTestStores(t)
+	seedThread(t, meta, "t1")
+
+	_, err := attStore.Upload("t1", "blob.bin", strings.Repeat("x", maxDeclaredMIMEBytes+1), textData(t, "hi"), 0)
+	if err == nil || !strings.Contains(err.Error(), "declared mime type") {
+		t.Fatalf("expected declared-mime bound error, got %v", err)
+	}
+}
+
+// The kind decides the cap, and the kind is decided first — so a PNG over
+// the image cap is refused at 10 MiB instead of sliding under the 50 MiB
+// file one.
+func TestUploadEnforcesCapPerKind(t *testing.T) {
+	meta, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { meta.Close() })
+	attStore, err := NewStore(Config{RootDir: t.TempDir(), MaxSize: 64, MaxFileSize: 4096}, meta)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	seedThread(t, meta, "t1")
+
+	oversizeImage := append(pngBytes(), make([]byte, 128)...)
+	if _, err := attStore.Upload("t1", "big.png", "image/png", base64.StdEncoding.EncodeToString(oversizeImage), 0); err == nil ||
+		!strings.Contains(err.Error(), "exceeds limit 64") {
+		t.Fatalf("image over the image cap: got %v, want limit 64", err)
+	}
+	// The same byte count as a file: under the file cap, accepted.
+	if _, err := attStore.Upload("t1", "big.bin", "application/octet-stream", base64.StdEncoding.EncodeToString(oversizeImage), 0); err != nil {
+		t.Fatalf("file under the file cap: %v", err)
+	}
+	big := base64.StdEncoding.EncodeToString(make([]byte, 8192))
+	if _, err := attStore.Upload("t1", "huge.bin", "application/octet-stream", big, 0); err == nil ||
+		!strings.Contains(err.Error(), "exceeds limit 4096") {
+		t.Fatalf("file over the file cap: got %v, want limit 4096", err)
+	}
+}
+
+// The kind, not the MIME, is what makes bytes servable. A `file` never
+// leaves this package as bytes or as a thumbnail.
+func TestFileKindRefusesByteAccessors(t *testing.T) {
+	attStore, meta := newTestStores(t)
+	seedThread(t, meta, "t1")
+
+	record, err := attStore.Upload("t1", "report.pdf", "application/pdf", textData(t, "%PDF-1.7"), 0)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if _, _, err := attStore.ReadThreadBytes("t1", record.ID); !errors.Is(err, ErrNotAnImage) {
+		t.Errorf("ReadThreadBytes: got %v want ErrNotAnImage", err)
+	}
+	if _, _, err := attStore.Thumbnail("t1", record.ID); !errors.Is(err, ErrNotAnImage) {
+		t.Errorf("Thumbnail: got %v want ErrNotAnImage", err)
+	}
+	// The path accessor is the file's delivery route and stays open.
+	if _, path, err := attStore.PathForThread("t1", record.ID); err != nil || filepath.Base(path) != "report.pdf" {
+		t.Errorf("PathForThread: path=%q err=%v", path, err)
+	}
+}
+
+// A file owns its `<id>` directory, so that is what Delete takes — an
+// empty directory per deleted attachment would otherwise accumulate under
+// every thread forever.
+func TestDeleteRemovesFileDirectory(t *testing.T) {
+	attStore, meta := newTestStores(t)
+	seedThread(t, meta, "t1")
+
+	record, err := attStore.Upload("t1", "report.pdf", "application/pdf", textData(t, "%PDF-1.7"), 0)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	dir := filepath.Join(attStore.root, "t1", record.ID)
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("expected file dir: %v", err)
+	}
+	if err := attStore.Delete(record.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("file dir survived Delete: %v", err)
+	}
+}
+
+// CopyToThread is the clone primitive the cross-thread draft path uses. It
+// copies bytes on disk under the same tmp-then-rename invariant, preserves
+// the kind (rather than re-deriving one), and keeps the ownership boundary
+// so a stale cross-thread id cannot pull another thread's file.
+func TestCopyToThreadClonesBothKinds(t *testing.T) {
+	attStore, meta := newTestStores(t)
+	seedThread(t, meta, "t1")
+	seedThread(t, meta, "t2")
+
+	image, err := attStore.Upload("t1", "pic.png", "image/png", pngData(t), 0)
+	if err != nil {
+		t.Fatalf("Upload image: %v", err)
+	}
+	file, err := attStore.Upload("t1", "report.pdf", "application/pdf", textData(t, "%PDF-1.7"), 0)
+	if err != nil {
+		t.Fatalf("Upload file: %v", err)
+	}
+
+	for _, source := range []store.Attachment{image, file} {
+		clone, err := attStore.CopyToThread("t1", "t2", source.ID, 7)
+		if err != nil {
+			t.Fatalf("CopyToThread(%s): %v", source.Kind, err)
+		}
+		if clone.ID == source.ID {
+			t.Fatalf("clone reused the source id")
+		}
+		if clone.ThreadID != "t2" || clone.Kind != source.Kind ||
+			clone.Filename != source.Filename || clone.MimeType != source.MimeType || clone.Size != source.Size {
+			t.Fatalf("clone did not preserve the row: %+v vs %+v", clone, source)
+		}
+		if clone.CreatedAt != 7 {
+			t.Fatalf("CreatedAt: got %d want 7", clone.CreatedAt)
+		}
+		_, clonePath, ok, err := attStore.Get(clone.ID)
+		if err != nil || !ok {
+			t.Fatalf("Get clone: ok=%v err=%v", ok, err)
+		}
+		_, sourcePath, _, _ := attStore.Get(source.ID)
+		got, err := os.ReadFile(clonePath)
+		if err != nil {
+			t.Fatalf("read clone: %v", err)
+		}
+		want, err := os.ReadFile(sourcePath)
+		if err != nil {
+			t.Fatalf("read source: %v", err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("clone bytes differ from source")
+		}
+		if filepath.Base(clonePath) != filepath.Base(sourcePath) && source.Kind == store.AttachmentKindFile {
+			t.Fatalf("file clone lost its name: %q", clonePath)
+		}
+	}
+
+	// Ownership: the source thread is a parameter precisely so this fails.
+	if _, err := attStore.CopyToThread("t2", "t2", image.ID, 0); err == nil {
+		t.Fatal("expected cross-thread clone of a t1 attachment to be refused")
+	}
+}
+
+func TestPromptLineFormat(t *testing.T) {
+	line := PromptLine(store.Attachment{
+		Filename: "report.pdf",
+		MimeType: "application/pdf",
+		Size:     1258291,
+	}, "/home/u/.config/agent-overflow/attachments/th/id/report.pdf")
+	want := `[Attached file "report.pdf" (application/pdf, 1.2 MB) is saved at: /home/u/.config/agent-overflow/attachments/th/id/report.pdf]`
+	if line != want {
+		t.Fatalf("PromptLine:\n got %s\nwant %s", line, want)
+	}
+}
+
+// Mirrors formatAttachmentSize in frontend/src/lib/types/attachment.ts.
+func TestFormatSize(t *testing.T) {
+	cases := []struct {
+		bytes int64
+		want  string
+	}{
+		{0, "0 B"},
+		{1023, "1023 B"},
+		{1024, "1.0 KB"},
+		{1536, "1.5 KB"},
+		{1024*1024 - 1, "1024.0 KB"},
+		{1024 * 1024, "1.0 MB"},
+		{52428800, "50.0 MB"},
+	}
+	for _, tc := range cases {
+		if got := FormatSize(tc.bytes); got != tc.want {
+			t.Errorf("FormatSize(%d): got %q want %q", tc.bytes, got, tc.want)
+		}
 	}
 }
 
@@ -313,41 +577,81 @@ func TestUploadNoTmpLeakOnMetaFailure(t *testing.T) {
 // adversarial inputs: path traversal, embedded null bytes, newlines, and
 // mixed-case extensions. Every case must either be rejected or produce
 // a record whose final on-disk path stays under the root.
+// TestUploadFilenameFuzz walks hostile filenames through BOTH kinds. The
+// file kind is the one that matters most: an image's filename is discarded
+// in favour of `<id><ext>`, while a file's is sanitized and written to disk
+// verbatim, so it is the only path where a caller's string becomes a path
+// segment.
 func TestUploadFilenameFuzz(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "t1")
 
-	cases := []struct {
-		name     string
-		filename string
-		mime     string
-	}{
-		{"traversal-in-filename", "../etc/passwd.png", "image/png"},
-		{"null-byte", "pic\x00.png", "image/png"},
-		{"newline", "pic\n.png", "image/png"},
-		{"mixed-case-ext", "PIC.PNG", "image/png"},
-		{"double-dot", "..png", ""},
-		{"empty-ext", "pic", "image/png"},
-		{"only-dot", ".", "image/png"},
+	filenames := []string{
+		"../etc/passwd.png",
+		"../../../../../../etc/passwd",
+		"..",
+		"...",
+		"pic\x00.png",
+		"pic\n.png",
+		"PIC.PNG",
+		"..png",
+		"pic",
+		".",
+		".ssh/authorized_keys",
+		`C:\Windows\System32\drivers\etc\hosts`,
+		"stream.txt:$DATA",
+		"trailing. ",
+		"  spaced  .pdf",
+		strings.Repeat("é", 400) + ".pdf",
+		"\xff\xfe broken utf8.bin",
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			record, err := attStore.Upload("t1", tc.filename, tc.mime, pngData(t), 0)
-			if err != nil {
-				// Rejected — acceptable. No orphan files should exist.
-				return
-			}
-			// Accepted — the final on-disk path MUST stay under root.
-			absRoot, _ := filepath.Abs(attStore.root)
-			absFile, _ := filepath.Abs(filepath.Join(attStore.root, record.RelativePath))
-			if !strings.HasPrefix(absFile, absRoot+string(os.PathSeparator)) {
-				t.Errorf("accepted filename %q produced path escaping root: %q", tc.filename, absFile)
-			}
-			// The file must actually exist (not a phantom row).
-			if _, err := os.Stat(absFile); err != nil {
-				t.Errorf("accepted record missing on disk: %v", err)
-			}
-		})
+	kinds := []struct {
+		name string
+		mime string
+		data string
+	}{
+		{"image", "image/png", pngData(t)},
+		{"file", "application/octet-stream", textData(t, "payload")},
+	}
+	absRoot, err := filepath.Abs(attStore.root)
+	if err != nil {
+		t.Fatalf("abs root: %v", err)
+	}
+	for _, kind := range kinds {
+		for _, filename := range filenames {
+			t.Run(kind.name+"/"+strconv.Quote(filename), func(t *testing.T) {
+				record, err := attStore.Upload("t1", filename, kind.mime, kind.data, 0)
+				if err != nil {
+					// Rejected — acceptable. No orphan files should exist.
+					return
+				}
+				// Accepted — the final on-disk path MUST stay under root.
+				absFile, _ := filepath.Abs(filepath.Join(attStore.root, record.RelativePath))
+				if !strings.HasPrefix(absFile, absRoot+string(os.PathSeparator)) {
+					t.Fatalf("accepted filename %q produced path escaping root: %q", filename, absFile)
+				}
+				// The stored path must be exactly the layout for its kind:
+				// containment alone would still pass for a name that walked
+				// into a SIBLING thread's directory.
+				want := "t1/" + record.ID + filepath.Ext(record.RelativePath)
+				if record.Kind == store.AttachmentKindFile {
+					want = "t1/" + record.ID + "/" + filepath.Base(record.RelativePath)
+				}
+				if record.RelativePath != want {
+					t.Fatalf("RelativePath %q is not the %s layout (%q)", record.RelativePath, record.Kind, want)
+				}
+				if strings.Contains(record.RelativePath, "..") {
+					t.Fatalf("RelativePath kept a '..' segment: %q", record.RelativePath)
+				}
+				if base := filepath.Base(record.RelativePath); len(base) > maxFilenameBytes {
+					t.Fatalf("on-disk name is %d bytes, over the %d cap: %q", len(base), maxFilenameBytes, base)
+				}
+				// The file must actually exist (not a phantom row).
+				if _, err := os.Stat(absFile); err != nil {
+					t.Fatalf("accepted record missing on disk: %v", err)
+				}
+			})
+		}
 	}
 }
 

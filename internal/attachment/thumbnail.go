@@ -10,6 +10,8 @@ import (
 	"image/png"
 	"os"
 
+	"agent-overflow/internal/store"
+
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp" // register webp decoder for image.Decode
 	"golang.org/x/sync/singleflight"
@@ -70,6 +72,12 @@ func (s *Store) Thumbnail(threadID, attachmentID string) ([]byte, string, error)
 	}
 	if record.ThreadID != threadID {
 		return nil, "", fmt.Errorf("attachment %q belongs to thread %s, not %s", attachmentID, record.ThreadID, threadID)
+	}
+	// Refused on the ROW, before any decode is attempted. A `file` carries
+	// arbitrary bytes that no decoder should be pointed at, and a file has
+	// no visual representation to cache even if one succeeded.
+	if record.Kind != store.AttachmentKindImage {
+		return nil, "", fmt.Errorf("%w: %q is a %s attachment", ErrNotAnImage, attachmentID, record.Kind)
 	}
 	if record.ThumbnailData != nil {
 		return record.ThumbnailData, record.ThumbnailMime, nil

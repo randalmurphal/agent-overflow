@@ -116,25 +116,43 @@ func TestIntegration_UploadValidImage(t *testing.T) {
 
 // TestIntegration_UploadInvalidMime verifies that a non-image MIME is
 // rejected with a clear error and no file is written.
-func TestIntegration_UploadInvalidMime(t *testing.T) {
+// TestIntegration_UploadNonImageLandsAsFile is the end-to-end file path: a
+// non-image MIME is accepted as a `file`, lands under its own `<id>`
+// directory keeping the user's filename, and the bytes on disk are
+// byte-identical. The agent reaches it by that path and never by bytes.
+func TestIntegration_UploadNonImageLandsAsFile(t *testing.T) {
 	attStore, meta, rootDir := integrationStores(t)
 	integrationSeedThread(t, meta, "thread-mime")
 
-	payload := realPNGBytes()
-	_, err := attStore.Upload(
+	payload := []byte("#!/bin/sh\necho hello\n")
+	record, err := attStore.Upload(
 		"thread-mime", "install.sh", "application/x-shellscript",
 		base64.StdEncoding.EncodeToString(payload), 0,
 	)
-	if err == nil {
-		t.Fatal("expected rejection for disallowed mime")
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
 	}
-	if !strings.Contains(err.Error(), "mime") && !strings.Contains(err.Error(), "image") {
-		t.Fatalf("error message does not mention mime/image: %v", err)
+	if record.Kind != store.AttachmentKindFile {
+		t.Fatalf("Kind: got %q want %q", record.Kind, store.AttachmentKindFile)
 	}
-	// No disk file should exist in the per-thread dir.
-	entries, _ := os.ReadDir(filepath.Join(rootDir, "thread-mime"))
-	if len(entries) != 0 {
-		t.Fatalf("expected no files for rejected upload, got %d", len(entries))
+	onDisk := filepath.Join(rootDir, "thread-mime", record.ID, "install.sh")
+	got, err := os.ReadFile(onDisk)
+	if err != nil {
+		t.Fatalf("read %s: %v", onDisk, err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatal("bytes on disk differ from the uploaded payload")
+	}
+	// The path accessor is the delivery route; the byte accessor is not.
+	_, path, err := attStore.PathForThread("thread-mime", record.ID)
+	if err != nil {
+		t.Fatalf("PathForThread: %v", err)
+	}
+	if path != onDisk {
+		t.Fatalf("PathForThread: got %q want %q", path, onDisk)
+	}
+	if _, _, err := attStore.ReadThreadBytes("thread-mime", record.ID); !errors.Is(err, ErrNotAnImage) {
+		t.Fatalf("ReadThreadBytes: got %v want ErrNotAnImage", err)
 	}
 }
 
