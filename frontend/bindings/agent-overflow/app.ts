@@ -1410,10 +1410,9 @@ export function GetWSLDistroPreference(): $CancellablePromise<string> {
 /**
  * GetWorkspaceActivity answers "is anything running in this directory, and
  * which threads are they?" for the frontend's workspace-change lock. The
- * counters gate the directory-destructive affordances (remove worktree,
- * branch switch in place); BusyThreads lets the same fetch gate the
- * thread-scoped ones (moving a thread to another checkout) on that thread
- * alone, matching the backend's own ensureWorkspaceChangeAllowed(threadID).
+ * counters gate the directory-destructive affordance (remove worktree);
+ * BusyThreads lets the same fetch gate the thread-scoped ones (moving a
+ * thread to another checkout) on that thread alone, matching the backend's own ensureThreadChangeAllowed(threadID).
  * 
  * It is deliberately the same computation the removal gate performs while
  * holding the thread locks (removeProjectWorktree →
