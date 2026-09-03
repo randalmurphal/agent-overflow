@@ -2203,8 +2203,10 @@ credential prompt, run on cold start and on a resume past a
 configurable background window (default 5 minutes; per-device
 setting). The cover goes up when the OS PAUSES the app, not on resume,
 so the app's own pixels never reach the task switcher's thumbnail or
-the frame before a resume handler runs; `FLAG_SECURE` on the Activity
-blanks the thumbnail itself. What resume decides is only whether to
+the frame before a resume handler runs. No `FLAG_SECURE`, by the
+2026-09-03 ruling: the lock is bank-app behaviour, a timed re-lock and
+nothing more, and screenshots and recordings of one's own threads stay
+allowed. What resume decides is only whether to
 prompt, and a prompt that was outstanding when the app paused is still
 owed when it comes back. As shipped the prompt is an INDEPENDENT gate
 in front of the WebView, not the device key's own unlock: the key is a

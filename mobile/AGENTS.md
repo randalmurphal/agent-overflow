@@ -467,9 +467,11 @@ and the resume handler running. What resume decides is only whether to
 PROMPT, and a prompt that was owed when the app paused (a cold start
 still waiting, a dismissed prompt) is still owed when it comes back,
 however short the trip: the cover and the debt are two facts, and
-`lock.ts` keeps them apart. Android's `FLAG_SECURE` (set in `MainActivity.onCreate`, before
-anything else) is the other half: it keeps the thumbnail itself blank
-and refuses screenshots and screen recording of this app.
+`lock.ts` keeps them apart. There is deliberately NO `FLAG_SECURE`:
+the 2026-09-03 ruling is bank-app behaviour, a timed re-lock and
+nothing more, and a person may screenshot or record their own
+threads. The task switcher shows the cover, which is the lock screen,
+because the cover is painted before the OS takes the thumbnail.
 
 Read `frontend/src/lib/native/lifecycle.ts`'s header before touching the
 lifecycle: the pause signal is the ONLY visibility signal this client
