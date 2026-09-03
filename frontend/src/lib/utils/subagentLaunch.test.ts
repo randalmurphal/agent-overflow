@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   NO_LOADED_SUBAGENT_CHILDREN,
+  agentScopeRootId,
   claudeResumeCarrierIdentity,
+  claudeResumeTranscriptRootId,
   isPotentialSubagentLaunch,
   subagentLaunchContextFrom,
   subagentLaunchInfo,
@@ -312,6 +314,72 @@ describe('subagentLaunchInfo — SendMessage resume carrier (claude-wire.md §E6
         NO_CHILDREN,
       ),
     ).toBeNull();
+  });
+});
+
+describe('agentScopeRootId', () => {
+  // claude-wire.md §E6: only the task LIFECYCLE rebinds onto the carrier.
+  // Every round's rows — tool calls, prose, nested launches, background
+  // Bash — stay parented to the ORIGINAL launch, so the scope a pane or a
+  // hydration call opens must be that launch, never the carrier.
+  const carrier = (overrides: Record<string, unknown> = {}): Item =>
+    mkItem({
+      id: 'toolu_resume_2',
+      toolName: 'SendMessage',
+      isBackground: true,
+      meta: meta({
+        task_id: 'a464e54e96a45cd0c',
+        resumes_tool_use_id: 'toolu_original',
+        transcript_root_id: 'toolu_original',
+        subagent_type: 'general-purpose',
+        subagent_model: 'claude-opus-4-7',
+        ...overrides,
+      }),
+    });
+
+  it('resolves a resume carrier to the original launch', () => {
+    expect(agentScopeRootId(carrier())).toBe('toolu_original');
+    expect(claudeResumeTranscriptRootId(carrier())).toBe('toolu_original');
+  });
+
+  it('names the ORIGINAL launch for round three, never the previous carrier', () => {
+    // The stamp is one hop deep by construction: the backend always
+    // writes the original's id, so no surface ever walks a chain.
+    const roundThree = carrier({ resumes_tool_use_id: 'toolu_resume_2' });
+    expect(agentScopeRootId(roundThree)).toBe('toolu_original');
+  });
+
+  it('is the row itself for every other launch, and for an unstamped carrier', () => {
+    const launch = mkItem({
+      id: 'agent-1',
+      toolName: 'Agent',
+      meta: meta({ toolName: 'Agent', input: { subagent_type: 'Explore' } }),
+    });
+    expect(agentScopeRootId(launch)).toBe('agent-1');
+    expect(claudeResumeTranscriptRootId(launch)).toBe('');
+
+    // A carrier whose ack has not landed yet carries no stamp: it scopes
+    // to itself rather than to nothing.
+    const unstamped = mkItem({
+      id: 'toolu_resume_2',
+      toolName: 'SendMessage',
+      isBackground: true,
+      meta: meta({ task_id: 'a1' }),
+    });
+    expect(agentScopeRootId(unstamped)).toBe('toolu_resume_2');
+
+    // A self-referential stamp is refused rather than trusted.
+    expect(agentScopeRootId(carrier({ transcript_root_id: 'toolu_resume_2' }))).toBe(
+      'toolu_resume_2',
+    );
+
+    // An ordinary SendMessage is not a carrier at all, whatever it carries.
+    const ordinary = mkItem({
+      id: 'send-1',
+      toolName: 'SendMessage',
+      meta: meta({ transcript_root_id: 'toolu_original' }),
+    });
+    expect(agentScopeRootId(ordinary)).toBe('send-1');
   });
 });
 

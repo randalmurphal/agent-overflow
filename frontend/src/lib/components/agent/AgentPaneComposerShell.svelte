@@ -5,9 +5,10 @@
   // pieces absent — never a hand-drawn imitation:
   //
   // - activity rail: the working chip (the agent's own spinner sprite /
-  //   LED chase, verb, and elapsed timer, keyed on the launch so they
-  //   hold for the run) while the agent runs — the same chip the main
-  //   composer's rail shows for the thread's turn (user ruling
+  //   LED chase, verb, and elapsed timer — the sprite keyed on the agent
+  //   so it holds for the run, the timer counting from the lifecycle row,
+  //   which for a resumed agent is the resume) while the agent runs —
+  //   the same chip the main composer's rail shows (user ruling
   //   2026-08-23, reversing the earlier "no run timer, no spinner" call).
   //   Idle, the row stays as a height twin so the transcript's bottom
   //   edge never moves when the agent settles (same reservation
@@ -53,7 +54,9 @@
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
   import {
+    claudeResumeCarrierIdentity,
     codexSubagentLaunchInfo,
+    isClaudeResumeCarrierItem,
     subagentLaunchInfo,
     type SubagentLaunchContext,
   } from '../../utils/subagentLaunch';
@@ -62,53 +65,85 @@
     threadId,
     pane,
     launch,
-    completion,
+    lifecycle,
+    lifecycleCompletion,
     hasChildren,
   }: {
     threadId: string;
     /** Source thread pane — the workspace strip renders ITS facts. */
     pane: ThreadPane | undefined;
+    /**
+     * The scope root: what the agent IS. Name, model, effort and the
+     * provider chip read this row. Undefined when the pane restored onto
+     * a scope whose launch has not paged in yet.
+     */
     launch: Item | undefined;
-    completion: Item | undefined;
+    /**
+     * What the agent is DOING: the launch, or the latest §E6 resume
+     * carrier bound to it (stores/agentScopeView.svelte.ts). Run state,
+     * elapsed, progress ticks and Stop all read this row, because a
+     * resumed agent's root settled when its FIRST round did.
+     */
+    lifecycle: Item | undefined;
+    lifecycleCompletion: Item | undefined;
     hasChildren: boolean;
   } = $props();
 
-  let statusItem = $derived(completion ?? launch);
+  let statusItem = $derived(lifecycleCompletion ?? lifecycle);
   let isRunning = $derived(
     statusItem !== undefined &&
       (statusItem.status === 'running' || statusItem.status === 'streaming'),
   );
 
-  let payloadMeta = $derived(launch ? parseJsonObject(launch.payloadMeta) : null);
-  let parentMeta = $derived(launch ? parseJsonObject(launch.meta) : null);
+  // Identity falls back to the lifecycle row when the root is not loaded:
+  // a resume carrier carries the original agent's `subagent_type`,
+  // `subagent_model` and description, so the chips stay right even on a
+  // pane restored above its launch.
+  let identity = $derived(launch ?? lifecycle);
+  let payloadMeta = $derived(identity ? parseJsonObject(identity.payloadMeta) : null);
+  let parentMeta = $derived(identity ? parseJsonObject(identity.meta) : null);
   let inputObject = $derived(readClaudeSubagentInput(payloadMeta, parentMeta));
   const launchCtx: SubagentLaunchContext = { hasChildren: () => hasChildren };
-  let launchInfo = $derived(launch ? subagentLaunchInfo(launch, launchCtx) : null);
+  let launchInfo = $derived(identity ? subagentLaunchInfo(identity, launchCtx) : null);
   let provider = $derived(launchInfo?.provider ?? 'claude');
   let codexInfo = $derived(
-    launch && launchInfo?.provider === 'codex' ? codexSubagentLaunchInfo(launch) : null,
+    identity && launchInfo?.provider === 'codex' ? codexSubagentLaunchInfo(identity) : null,
   );
-  // The launch's own model when it named one. Otherwise the child inherits
-  // the live session model from the source pane; the provider label is only
-  // the final fallback for restored rows whose thread is unavailable.
+  // The model EITHER row names, never the thread's when one of them does:
+  // a resume carrier is a `SendMessage`, whose input says nothing about
+  // the agent, so the Claude reader returns '' for it and the stamped
+  // `subagent_model` is the answer. Only when neither names one does the
+  // child inherit the live session model; the provider label is the last
+  // resort for restored rows whose thread is unavailable.
+  let namedModelLabel = $derived.by(() => {
+    if (codexInfo) return codexInfo.model ? displayModelLabel('codex', codexInfo.model) : '';
+    const fromLaunch = deriveClaudeSubagentModelLabel(
+      inputObject,
+      parentMeta,
+      identity?.toolName ?? '',
+    );
+    if (fromLaunch) return fromLaunch;
+    const carrierModel =
+      lifecycle && isClaudeResumeCarrierItem(lifecycle)
+        ? claudeResumeCarrierIdentity(lifecycle).model
+        : '';
+    return carrierModel ? displayModelLabel('claude', carrierModel) : '';
+  });
   let modelLabel = $derived.by(() => {
-    const named = codexInfo
-      ? codexInfo.model
-        ? displayModelLabel('codex', codexInfo.model)
-        : ''
-      : deriveClaudeSubagentModelLabel(inputObject, parentMeta, launch?.toolName ?? '');
+    if (namedModelLabel) return namedModelLabel;
     const inherited = pane?.effectiveModel || pane?.thread?.model || '';
-    return named || (inherited ? displayModelLabel(provider, inherited) : providerLabel(provider));
+    return inherited ? displayModelLabel(provider, inherited) : providerLabel(provider);
   });
   let effortLabel = $derived(codexInfo?.reasoningEffort ?? '');
 
-  // The chip's elapsed timer runs from the LAUNCH, on the shared 1Hz
+  // The chip's elapsed timer runs from the LIFECYCLE row — the launch, or
+  // the resume that started the round now running — on the shared 1Hz
   // clock (one interval for every running timer in the app). The scope's
   // turn facet (agentScopeView) settles the pane's turn on the same
   // start/end pair, so the chip and the response pill never disagree.
   const clock = createSharedNowClock(() => isRunning);
   let elapsedLabel = $derived.by(() => {
-    const start = launch?.createdAt ?? 0;
+    const start = lifecycle?.createdAt ?? 0;
     if (!Number.isFinite(start) || start <= 0) return '0s';
     return formatElapsedSeconds(Math.max(0, Math.floor((clock.now - start) / 1_000)));
   });
@@ -116,25 +151,28 @@
   // The subagent's own spend for the strip's usage slot: the live
   // progress tick while running, the persisted final numbers once
   // settled (provider:subagent_progress → meta.subagentProgress).
+  // Ticks are addressed to the row the provider bound the task to, which
+  // for a resumed round is the carrier — the same row the terminal
+  // numbers persist onto.
   let liveTick = $derived(
-    launch ? liveSubagentProgress(launch.threadId, launch.id) : undefined,
+    lifecycle ? liveSubagentProgress(lifecycle.threadId, lifecycle.id) : undefined,
   );
   let tokensLabel = $derived.by(() => {
-    if (!launch) return '';
-    const progress = resolveSubagentProgress(launch, liveTick, isRunning);
+    if (!lifecycle) return '';
+    const progress = resolveSubagentProgress(lifecycle, liveTick, isRunning);
     return progress.totalTokens !== null ? formatTokens(progress.totalTokens) : '';
   });
 
   let stopTaskId = $derived.by(() => {
-    if (!launch || !isRunning) return null;
+    if (!lifecycle || !isRunning) return null;
     // Agent/Task launches, backgrounded Bash, and a SendMessage resume
     // carrier (triage rebinds the fresh task_id onto it) all name a live
     // Claude task. Anything else has no stop primitive.
-    const tool = launch.toolName ?? '';
+    const tool = lifecycle.toolName ?? '';
     if (tool !== 'Agent' && tool !== 'Task' && tool !== 'Bash' && tool !== 'SendMessage') {
       return null;
     }
-    return extractClaudeTaskID(launch);
+    return extractClaudeTaskID(lifecycle);
   });
 
   let stopping = $state(false);
@@ -177,7 +215,7 @@
       aria-label="Agent Activity"
       data-testid="agent-pane-activity-rail"
     >
-      {#if isRunning && launch}
+      {#if isRunning && identity}
         <span
           class="working-hairline pointer-events-none absolute inset-x-0 top-0 z-10 block h-px"
           aria-hidden="true"
@@ -185,10 +223,10 @@
         ></span>
       {/if}
       <div class={activityRailRowClasses}>
-        {#if isRunning && launch}
+        {#if isRunning && identity}
           <WorkingChip
             {threadId}
-            pickKey={launch.id}
+            pickKey={identity.id}
             {elapsedLabel}
             testIdPrefix="agent-pane-working"
           />

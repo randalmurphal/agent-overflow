@@ -1869,16 +1869,25 @@ both handlers already use. The parser additionally:
    even though the ack itself has no async marker.
 2. Enriches the meta-only `EventToolStart` the rebind `task_started`
    emits with `resumes_tool_use_id` (the previously-bound tool_use, which is
-   the original launch) and the wire's `description` +
-   `subagent_type` — both wire-sourced, so both survive the
-   reconnect edge below where `resumes_tool_use_id` is unknown.
+   the PREVIOUS binding — on a third round that is round two's carrier,
+   not the launch) and the wire's `description` + `subagent_type` — all
+   wire-sourced, so all survive the reconnect edge below where
+   `resumes_tool_use_id` is unknown.
+3. Stamps `transcript_root_id`: the FIRST tool_use the task ever bound
+   to, held write-once per `task_id` in `taskTranscriptRoots` so a
+   rebind can never overwrite it. That is the row the agent's whole
+   conversation tree is parented to — see "The carrier is a lifecycle
+   row" below.
+4. Emits ONE `EventUserText` for the rebind's `prompt` (see
+   "The resume message" below).
 
 Triage's keep-running flip then marks the carrier row backgrounded +
-running and resolves the ORIGINAL launch row — through
-`resumes_tool_use_id`, or through the persisted `items.meta.task_id`
-stamp when that is absent (`FindOriginalAgentLaunchByTaskID`: oldest
-row with the task_id, the carrier's own row excluded since the rebind
-stamped the same id there). It rewrites the carrier's Summary to the
+running and resolves the transcript ROOT (the resolution order is under
+"The carrier is a lifecycle row" below; `FindOriginalAgentLaunchByTaskID`
+is its last arm — oldest row with the task_id, the carrier's own row
+excluded since the rebind stamped the same id there — and the flip
+stamps `transcript_root_id` onto the carrier when the parser could not).
+It rewrites the carrier's Summary to the
 original launch's own Summary (or `"Agent: " + description` as a
 fallback), so the carrier reads "Agent: Frontend transitive
 suppression fix" instead of "SendMessage: …", and copies the
@@ -1897,6 +1906,59 @@ transitive suppression fix -> done", indistinguishable from any other
 backgrounded agent completion. See
 [`turn-lifecycle.md §Task lifecycle`](../architecture/turn-lifecycle.md#2-task-lifecycle-claude-only)
 and `internal/triage/tool_lifecycle.go`'s `resumeCarrierIdentity`.
+
+#### The carrier is a lifecycle row, never a transcript root
+
+Only the task LIFECYCLE rebinds. The CLI persists the ORIGINAL launch's
+`toolUseId` in the agent's own metadata and keeps stamping it as
+`parent_tool_use_id` on every sidechain row of every later round, so the
+agent's conversation tree never moves. DB-verified on one live thread
+(`7b07fd56`, 2026-09-03): 670 rows under the original launch, zero under
+the carrier.
+
+AO reads that as an ontology rather than a special case. The ORIGINAL
+launch is the **transcript root**; a carrier is a lifecycle row, and
+nothing is ever parented to one. Three mechanisms hold it
+(`internal/triage/transcript_root.go`):
+
+- the carrier row carries `transcript_root_id`, so the fact is durable
+  and answerable from one row, by this process, a restarted one, and the
+  frontend;
+- `Router.Handle` rewrites a live event whose `parent_tool_use_id` names
+  a known carrier onto the root before dispatch, which makes "a row
+  parented to a carrier" unrepresentable regardless of which parser path
+  emitted it;
+- every scope-resolving path (the terminal transcript replay, the
+  identity flip, the resume prompt row, the mirror compaction tap)
+  resolves through `transcriptRoot`, whose evidence order is the
+  `transcript_root_id` stamp, then the `resumes_tool_use_id` chain walked
+  to its END, then `FindOriginalAgentLaunchByTaskID`.
+
+Reading the carrier as a scope is what the 2026-09-03 incident was: the
+terminal `task_notification` lands on the CARRIER, so replaying the
+agent's sidechain against it indexed nothing as already delivered — 474
+already-streamed round-1 `tool_call` rows were REPARENTED onto the
+carrier and 220 assistant_text / thinking rows duplicated under it
+(thread `612d4eeb`, carrier `toolu_01FyWrjQqtzGga45twD7FQ4t`).
+
+#### The resume message
+
+The rebind `task_started` is the ONLY envelope carrying the message that
+opened the resumed round: `prompt` is the resuming tool's `message` text
+verbatim, and no later envelope repeats it. Without a row for it the
+resumed round opens with the agent's answer and no question.
+
+The parser emits one `EventUserText` for it. Its IDENTITY is the
+CARRIER's scope (`user:subagent-prompt:<carrierID>`), so it cannot
+collide with the agent's round-1 opening prompt, which is the ROOT's
+scope; its PLACEMENT is the root's, carried on the event meta as
+`transcript_root_id` so triage needs no lookup and does not depend on
+the carrier's own row having been written yet. It is provisional like
+the launch-input opening prompt: the terminal transcript later delivers
+the same text WITH its provider uuid, and
+`persistWireOnlySubagentPrompt` binds that uuid onto the standing row
+(`FindProvisionalSubagentPrompt`) rather than minting a second
+`user:wire:<uuid>` copy below the answer it asked for.
 
 Why this matters operationally: AO's idle-session reaper closes a
 quiet session unless `ListRunningBackgroundToolCalls` is non-empty.

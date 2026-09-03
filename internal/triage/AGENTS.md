@@ -80,6 +80,20 @@ subagent-aware path as guilty until it proves scope containment.
   and the honest record. That one resolution feeds the frontend event,
   the reconnect snapshot, the declined row and Codex's synthetic
   `request_user_input` row, so all four agree.
+- **A §E6 resume CARRIER is a lifecycle row, never a transcript
+  scope.** Resuming an idle async agent rebinds the CLI's task
+  lifecycle onto the resuming tool's own call, but the agent's rows —
+  round one's and every resumed round's — keep naming the ORIGINAL
+  launch as their `parent_tool_use_id`. That launch is the TRANSCRIPT
+  ROOT, and nothing is ever parented to a carrier. `Router.Handle`
+  rewrites a live event whose parent names a known carrier before
+  dispatch (one map probe, short-circuited on an empty parent), and
+  every scope-resolving path resolves through `transcriptRoot`
+  (`transcript_root.go`): the terminal transcript replay, the
+  keep-running identity flip, and the resume prompt row. A new
+  scope-resolving path joins them. Treating the carrier as a scope
+  reparented 474 already-delivered round-1 rows onto it and duplicated
+  220 more on one live thread (2026-09-03).
 - Tray membership and lifecycle gates must not share a filter.
   `Store.ListLiveBackgroundTasks` lists by backgrounded ancestry at any
   depth, while the reaper and queue gates beside it in
@@ -293,8 +307,9 @@ through `claude/sessionimport.ConvertSubagentTranscriptData`.
 - **Dedupe keys on the identity both writers spell identically:** the
   `tool_use_id` for tool rows (a completion also requires the row to have
   left `running`), `items.meta.provider_item_id` for text, thinking and
-  the agent's own prompt row, and the provider boundary UUID for a
-  compaction. A compaction is reconciled by that UUID independently of
+  the scope-derived prompt rows (the agent's opening prompt AND each §E6
+  resume prompt — both count as delivered once BOUND to a uuid), and the
+  provider boundary UUID for a compaction. A compaction is reconciled by that UUID independently of
   the cut: the live mirror compaction tap (claude
   `parse_transcript_mirror.go`) normally lands it mid-run at its real
   position, and stdout omits it either way, so its absence proves

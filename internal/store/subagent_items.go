@@ -1,8 +1,10 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -13,7 +15,8 @@ import (
 //   - decorateSubagentAnchors stamps every windowed anchor with the
 //     aggregates its collapsed SubagentGroup card renders (descendant
 //     count + latest-child summary), so the card looks identical
-//     whether or not children are loaded.
+//     whether or not children are loaded. A card is one §E6 ROUND, so
+//     the aggregates are per round, not per transcript.
 //   - ListSubagentDescendants loads the full child transcript on
 //     demand when the user expands the card.
 
@@ -24,6 +27,13 @@ import (
 const (
 	metaKeySubagentDescendantCount    = "subagentDescendantCount"
 	metaKeySubagentLatestChildSummary = "subagentLatestChildSummary"
+	// metaKeySubagentTranscriptDescendantCount is the count over the
+	// WHOLE root subtree — every §E6 round — and is stamped on a ROOT
+	// anchor ONLY when that transcript has rounds. The root card's own
+	// count covers round one alone, so the agent pane reads this as its
+	// hydration expectation; its absence means "one round, the count you
+	// already have".
+	metaKeySubagentTranscriptDescendantCount = "subagentTranscriptDescendantCount"
 	// metaKeySubagentLatestToolSummary is a read-time decoration for the
 	// background tray. It is deliberately not persisted on the launch: the
 	// timeline spawn row's presentation is a fixed launch event, while the tray
@@ -31,6 +41,18 @@ const (
 	metaKeySubagentLatestToolSummary = "subagentLatestToolSummary"
 	metaKeySubagentLatestToolTurn    = "subagentLatestToolTurnIndex"
 	metaKeySubagentLatestToolItem    = "subagentLatestToolItemIndex"
+	// metaKeyTranscriptRootID is triage's stamp on a Claude §E6 resume
+	// carrier (internal/provider MetaTranscriptRootIDKey), spelled here
+	// because this package stays provider-free.
+	metaKeyTranscriptRootID = "transcript_root_id"
+	// metaKeySubagentResumePrompt / metaKeyResumeCarrierID are triage's
+	// stamps on the user_text row that OPENS a resumed round
+	// (MetaSubagentResumePromptKey / MetaResumeCarrierIDKey), spelled
+	// here for the same reason. That row is parented to the transcript
+	// ROOT like everything else the agent produced, and its position is
+	// what cuts one round from the next.
+	metaKeySubagentResumePrompt = "subagent_resume_prompt"
+	metaKeyResumeCarrierID      = "resume_carrier_id"
 )
 
 // maxSubagentDescendants caps one expansion load, mirroring the
@@ -47,6 +69,39 @@ const maxSubagentDescendants = 2000
 type subagentAnchorAggregate struct {
 	descendantCount    int
 	latestChildSummary string
+	// transcriptDescendantCount is the whole root subtree's count, every
+	// §E6 round included. Set only on a ROOT anchor whose transcript has
+	// rounds; hasTranscriptCount=false omits the key entirely.
+	transcriptDescendantCount int
+	hasTranscriptCount        bool
+}
+
+// subagentRound is one §E6 resumed round, named by the resume-prompt row
+// that opens it: the transcript ROOT it is parented to, the CARRIER whose
+// card renders it, and the position that cuts it from the round before.
+type subagentRound struct {
+	rootID    string
+	anchorID  string
+	promptID  string
+	turnIndex int
+	itemIndex int
+}
+
+// subagentRoundBounds is one anchor's slice of its root's transcript as a
+// half-open range over (turn_index, item_index). A nil lo or hi is
+// unbounded on that side: the root's round starts before everything, the
+// last round ends after everything, and a carrier whose prompt row is
+// missing gets both — the whole-transcript fallback it had before rounds
+// existed. `round` is false for exactly that fallback, which is what
+// keeps it out of the transcript-total sum it would double-count.
+type subagentRoundBounds struct {
+	anchorID string
+	rootID   string
+	loTurn   any
+	loItem   any
+	hiTurn   any
+	hiItem   any
+	round    bool
 }
 
 // descendantsCTEFromRoots walks parent_id edges downward from an
@@ -229,9 +284,23 @@ func (s *Store) IsSubagentLaunch(threadID, itemID string) (bool, error) {
 
 // decorateSubagentAnchors merges descendant aggregates into the meta of
 // every item in `items` that anchors subagent children. Items without
-// children are returned untouched. Runs one batched recursive query per
-// window load; cost is proportional to the total descendant count of
-// in-window anchors.
+// children are returned untouched.
+//
+// The aggregates are per ROUND, not per transcript. A Claude §E6 resume
+// carrier opens a new round of one agent whose rows all stay under the
+// ORIGINAL launch, and the frontend renders one card per round (the root
+// card is round one, each carrier card its own). So each anchor is stamped
+// with the count and latest activity of ITS round only, and a root that has
+// rounds additionally carries the whole-transcript count the agent pane
+// hydrates against.
+//
+// Cost: the descendant walk plus ONE narrow probe for the resume-prompt
+// rows under the window's walk roots — direct children only, off the same
+// partial parent index the walk's base hops use. It runs whenever the
+// window holds any tool_call anchor, because a ROOT alone in the window can
+// have rounds whose carriers are outside it, and nothing on the root row
+// says so. When it finds nothing, the aggregate query and its cost are
+// exactly what they were before rounds existed.
 func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []Item) ([]Item, error) {
 	if len(items) == 0 {
 		return items, nil
@@ -239,17 +308,51 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 	// Only tool_call rows can anchor subagent transcripts (Claude
 	// Task/Agent launches, Codex collab_agent spawns). Filtering here
 	// keeps the IN list short on plain text-heavy windows.
+	//
+	// A Claude §E6 resume CARRIER is the exception that has to be walked
+	// from somewhere else: the round it opened has rows, but they are
+	// parented to the agent's transcript ROOT like every other round's
+	// (claude-wire.md §E6), so the carrier's own subtree is empty and it
+	// would render as an ordinary tool call. It borrows the root's walk.
 	rootIDs := make([]string, 0, len(items))
+	seenRoot := make(map[string]struct{}, len(items))
+	var walkRootByAnchor map[string]string
 	for _, item := range items {
-		if item.Kind == "tool_call" && strings.TrimSpace(item.ID) != "" {
-			rootIDs = append(rootIDs, item.ID)
+		if item.Kind != "tool_call" || strings.TrimSpace(item.ID) == "" {
+			continue
 		}
+		walkRoot := item.ID
+		if root := transcriptRootFromMeta(item.Meta); root != "" && root != item.ID {
+			walkRoot = root
+			if walkRootByAnchor == nil {
+				walkRootByAnchor = make(map[string]string, 1)
+			}
+			walkRootByAnchor[item.ID] = root
+		}
+		if _, dup := seenRoot[walkRoot]; dup {
+			continue
+		}
+		seenRoot[walkRoot] = struct{}{}
+		rootIDs = append(rootIDs, walkRoot)
 	}
 	if len(rootIDs) == 0 {
 		return items, nil
 	}
 
-	aggregates, err := s.subagentAggregatesByRoot(q, threadID, rootIDs)
+	rounds, err := s.subagentResumeRounds(q, threadID, rootIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	var aggregates map[string]subagentAnchorAggregate
+	if len(rounds) == 0 {
+		// No round ever opened under any of these roots: one aggregate
+		// per root, keyed by root, exactly as before.
+		aggregates, err = s.subagentAggregatesByRoot(q, threadID, rootIDs)
+	} else {
+		aggregates, err = s.subagentAggregatesByRound(
+			q, threadID, rootIDs, subagentRoundBoundsFor(rootIDs, rounds, walkRootByAnchor))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -259,11 +362,181 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 	for i := range items {
 		agg, ok := aggregates[items[i].ID]
 		if !ok {
+			// A carrier with no bounds row of its own (the no-rounds
+			// path, where the map is keyed by root) borrows the root's.
+			root, isCarrier := walkRootByAnchor[items[i].ID]
+			if !isCarrier {
+				continue
+			}
+			if agg, ok = aggregates[root]; !ok {
+				continue
+			}
+		}
+		// A root with no visible descendants is not an anchor at all, and
+		// the bounded query answers for it with a zero rather than by
+		// omission. Leaving it undecorated is what keeps a plain tool call
+		// a plain tool call.
+		if agg.descendantCount == 0 && !agg.hasTranscriptCount {
 			continue
 		}
 		items[i].Meta = mergeSubagentAnchorMeta(items[i].Meta, agg)
 	}
 	return items, nil
+}
+
+// subagentResumeRounds finds every §E6 resume-prompt row parented to one
+// of `rootIDs`, in position order. It asks for ALL of them, not just the
+// ones whose carrier is in the window: a round-1 card in the window is
+// bounded by a round-2 carrier that may be anywhere.
+//
+// The predicate is a direct-child probe (`parent_id IN (...)`, which the
+// partial idx_items_parent serves, plus the `parent_id <> ''` term it
+// needs to be proven) narrowed by a substring pre-check on meta, so the
+// JSON decode below runs on the handful of rows that are really prompts.
+//
+// The ordering is done in Go, and that is a PLAN decision, not a style
+// one: an `ORDER BY turn_index, item_index` makes SQLite prefer
+// idx_items_thread_turn_item_unique and scan the thread's whole ordering
+// index instead of probing the parent index (measured on the arms parity
+// fixture). One agent has a handful of rounds, so the sort is free.
+// TestSubagentResumeRoundProbeProbesTheParentIndexes is the tripwire.
+func (s *Store) subagentResumeRounds(q sqlQueryer, threadID string, rootIDs []string) ([]subagentRound, error) {
+	rootArgs := make([]any, 0, len(rootIDs))
+	for _, id := range rootIDs {
+		rootArgs = append(rootArgs, id)
+	}
+	query, args := timelineArms(threadID, timelineSelection{
+		Columns: func(string) string {
+			return `items.parent_id AS root, items.id AS id, items.meta AS meta,
+			        items.turn_index AS turn_index, items.item_index AS item_index`
+		},
+		Where: `items.kind = 'user_text'
+			   AND items.parent_id IN (` + placeholders(len(rootIDs)) + `)
+			   AND items.parent_id <> ''
+			   AND items.meta LIKE '%` + metaKeySubagentResumePrompt + `%'`,
+		WhereArgs: rootArgs,
+	})
+
+	rows, err := q.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: query subagent resume rounds for %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	var out []subagentRound
+	for rows.Next() {
+		var root, id, meta string
+		var turnIndex, itemIndex int
+		if err := rows.Scan(&root, &id, &meta, &turnIndex, &itemIndex); err != nil {
+			return nil, fmt.Errorf("store: scan subagent resume round: %w", err)
+		}
+		var decoded struct {
+			ResumePrompt bool   `json:"subagent_resume_prompt"`
+			CarrierID    string `json:"resume_carrier_id"`
+		}
+		if json.Unmarshal([]byte(meta), &decoded) != nil || !decoded.ResumePrompt {
+			continue // the LIKE matched some other string
+		}
+		// A prompt row that names no carrier still CUTS the transcript
+		// where it sits; it just has no card to be stamped onto. Keying
+		// the bound on the row's own id gives it a slot nothing matches.
+		anchorID := strings.TrimSpace(decoded.CarrierID)
+		if anchorID == "" {
+			anchorID = id
+		}
+		out = append(out, subagentRound{
+			rootID: root, anchorID: anchorID, promptID: id,
+			turnIndex: turnIndex, itemIndex: itemIndex,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate subagent resume rounds for %s: %w", threadID, err)
+	}
+	slices.SortFunc(out, func(a, b subagentRound) int {
+		if a.turnIndex != b.turnIndex {
+			return a.turnIndex - b.turnIndex
+		}
+		if a.itemIndex != b.itemIndex {
+			return a.itemIndex - b.itemIndex
+		}
+		return strings.Compare(a.promptID, b.promptID)
+	})
+	return out, nil
+}
+
+// subagentRoundBoundsFor turns the ordered prompt rows into the disjoint,
+// exhaustive set of ranges the aggregate query partitions by: the root
+// owns everything BEFORE its first prompt row, and round k owns
+// [prompt_k, prompt_k+1) with the prompt row itself inside it.
+//
+// `carrierRoots` is the window's carrier→root map. A carrier in it that no
+// prompt row named gets one unbounded range — the whole-transcript
+// fallback — because there is nothing to cut its round at.
+func subagentRoundBoundsFor(
+	rootIDs []string, rounds []subagentRound, carrierRoots map[string]string,
+) []subagentRoundBounds {
+	// rounds arrive in position order, so each root's slice is too.
+	byRoot := make(map[string][]subagentRound, len(rootIDs))
+	for _, r := range rounds {
+		byRoot[r.rootID] = append(byRoot[r.rootID], r)
+	}
+
+	out := make([]subagentRoundBounds, 0, len(rootIDs)+len(rounds))
+	// The aggregate query partitions by anchor, so a repeated anchor
+	// would count its rows twice. First bound wins.
+	seen := make(map[string]struct{}, len(rootIDs)+len(rounds))
+	add := func(b subagentRoundBounds) {
+		if _, dup := seen[b.anchorID]; dup {
+			return
+		}
+		seen[b.anchorID] = struct{}{}
+		out = append(out, b)
+	}
+
+	for _, root := range rootIDs {
+		rs := byRoot[root]
+		rootBound := subagentRoundBounds{anchorID: root, rootID: root, round: true}
+		if len(rs) > 0 {
+			rootBound.hiTurn, rootBound.hiItem = rs[0].turnIndex, rs[0].itemIndex
+		}
+		add(rootBound)
+		for i, r := range rs {
+			b := subagentRoundBounds{
+				anchorID: r.anchorID, rootID: root, round: true,
+				loTurn: r.turnIndex, loItem: r.itemIndex,
+			}
+			if i+1 < len(rs) {
+				b.hiTurn, b.hiItem = rs[i+1].turnIndex, rs[i+1].itemIndex
+			}
+			add(b)
+		}
+	}
+	for carrier, root := range carrierRoots {
+		if _, walked := byRoot[root]; !walked {
+			// The root has no rounds; its own bound already covers the
+			// whole transcript, and the carrier borrows it by lookup.
+			continue
+		}
+		add(subagentRoundBounds{anchorID: carrier, rootID: root})
+	}
+	return out
+}
+
+// transcriptRootFromMeta reads a resume carrier's `transcript_root_id`
+// stamp — the only rows that carry it — out of an already-materialized
+// meta blob. The substring pre-check is what keeps the common window
+// (no carriers at all) off a JSON parse per anchor.
+func transcriptRootFromMeta(meta string) string {
+	if !strings.Contains(meta, metaKeyTranscriptRootID) {
+		return ""
+	}
+	var decoded struct {
+		TranscriptRootID string `json:"transcript_root_id"`
+	}
+	if json.Unmarshal([]byte(meta), &decoded) != nil {
+		return ""
+	}
+	return strings.TrimSpace(decoded.TranscriptRootID)
 }
 
 // decorateLatestDirectSubagentTools merges the newest direct, non-launch tool
@@ -366,12 +639,10 @@ func mergeReadTimeMeta(itemMeta string, decoration map[string]any) (string, erro
 
 // subagentAggregatesByRoot returns, for each root id that has visible
 // descendants, the total transitive descendant count and the summary of
-// the preview descendant. Preview selection mirrors the frontend's
-// pickLatestChildSummary: among descendants with a non-empty summary,
-// an active (running/streaming) row beats a terminal one, and within
-// each class the highest (turn_index, item_index) wins. The trailing
-// i.id key only breaks coordinate ties (corrupt data) so the pick stays
-// deterministic.
+// the preview descendant (subagentRankedPreviewSQL is the pick rule).
+// This is the whole-transcript form, and it is what runs on every window
+// that opened no §E6 round — which is every window on every thread that
+// never resumed an idle agent.
 func (s *Store) subagentAggregatesByRoot(q sqlQueryer, threadID string, rootIDs []string) (map[string]subagentAnchorAggregate, error) {
 	// The walk yields ids; the rows behind them are resolved through the
 	// two physical arms rather than the timeline_items view, which SQLite
@@ -390,18 +661,9 @@ func (s *Store) subagentAggregatesByRoot(q sqlQueryer, threadID string, rootIDs 
 
 	rows, err := q.Query(descendantsCTEFromRoots(len(rootIDs))+`
 		SELECT root, total, summary FROM (
-			SELECT i.root,
+			SELECT i.root AS root,
 			       COUNT(*) OVER (PARTITION BY i.root) AS total,
-			       CASE WHEN i.kind IN ('tool_call','tool_completion','terminal_interaction','error','api_error')
-			            THEN i.summary ELSE '' END AS summary,
-			       ROW_NUMBER() OVER (
-			           PARTITION BY i.root
-			           ORDER BY (i.kind IN ('tool_call','tool_completion','terminal_interaction','error','api_error')
-			                     AND TRIM(i.summary) <> '') DESC,
-			                    (i.status IN ('running','streaming')) DESC,
-			                    i.turn_index DESC, i.item_index DESC,
-			                    i.id
-			       ) AS rn
+			       `+fmt.Sprintf(subagentRankedPreviewSQL, "i.root")+`
 			  FROM (`+resolvedSQL+`) i
 		) WHERE rn = 1`,
 		args...,
@@ -432,6 +694,134 @@ func (s *Store) subagentAggregatesByRoot(q sqlQueryer, threadID string, rootIDs 
 	return out, nil
 }
 
+// subagentRankedPreviewSQL is the pick rule both aggregate queries share:
+// among a partition's rows, one with a tool-ish kind and a non-empty
+// summary beats one without, an active row beats a terminal one, and the
+// highest (turn_index, item_index) wins. The trailing id only breaks
+// coordinate ties (corrupt data) so the pick stays deterministic. It
+// mirrors the frontend's pickLatestChildSummary.
+const subagentRankedPreviewSQL = `CASE WHEN i.kind IN ('tool_call','tool_completion','terminal_interaction','error','api_error')
+			            THEN i.summary ELSE '' END AS summary,
+			       ROW_NUMBER() OVER (
+			           PARTITION BY %[1]s
+			           ORDER BY (i.kind IN ('tool_call','tool_completion','terminal_interaction','error','api_error')
+			                     AND TRIM(i.summary) <> '') DESC,
+			                    (i.status IN ('running','streaming')) DESC,
+			                    i.turn_index DESC, i.item_index DESC,
+			                    i.id
+			       ) AS rn`
+
+// subagentAggregatesByRound is subagentAggregatesByRoot sliced per §E6
+// round: the same descendant walk and the same pick rule, but partitioned
+// by ANCHOR and with each anchor's rows narrowed to its own half-open
+// range. One statement for the whole window.
+//
+// The bounds arrive as a VALUES CTE joined to the walk's resolved rows.
+// The join is a LEFT one so an anchor with an empty range still reports
+// (as zero, which the caller reads as "not an anchor" unless the round
+// count says otherwise) instead of vanishing.
+//
+// The whole-transcript total is summed HERE rather than taken from a
+// second window function: the fallback range a prompt-less carrier gets
+// overlaps its siblings, so a PARTITION BY root would count those rows
+// twice. The real rounds are disjoint and exhaustive, so their sum is
+// exact.
+func (s *Store) subagentAggregatesByRound(
+	q sqlQueryer, threadID string, rootIDs []string, bounds []subagentRoundBounds,
+) (map[string]subagentAnchorAggregate, error) {
+	if len(bounds) == 0 {
+		return nil, nil
+	}
+	resolvedSQL, resolvedArgs := timelineArms(threadID, timelineSelection{
+		Columns: func(string) string {
+			return `rel.root AS root, items.id AS id, items.kind AS kind,
+			        items.status AS status, items.summary AS summary,
+			        items.turn_index AS turn_index, items.item_index AS item_index`
+		},
+		Source: "rel",
+		Where:  "items.id = rel.id",
+	})
+
+	tuples := make([]string, 0, len(bounds))
+	args := descendantsCTEArgs(threadID, rootIDs)
+	for _, b := range bounds {
+		tuples = append(tuples, "(?,?,?,?,?,?)")
+		args = append(args, b.anchorID, b.rootID, b.loTurn, b.loItem, b.hiTurn, b.hiItem)
+	}
+	args = append(args, resolvedArgs...)
+
+	rows, err := q.Query(descendantsCTEFromRoots(len(rootIDs))+`,
+		bound(anchor, root, lo_turn, lo_item, hi_turn, hi_item) AS (
+			VALUES `+strings.Join(tuples, ",")+`
+		)
+		SELECT anchor, total, summary FROM (
+			SELECT b.anchor AS anchor,
+			       COUNT(i.id) OVER (PARTITION BY b.anchor) AS total,
+			       `+fmt.Sprintf(subagentRankedPreviewSQL, "b.anchor")+`
+			  FROM bound b
+			  LEFT JOIN (`+resolvedSQL+`) i
+			    ON i.root = b.root
+			   AND (b.lo_turn IS NULL
+			        OR i.turn_index > b.lo_turn
+			        OR (i.turn_index = b.lo_turn AND i.item_index >= b.lo_item))
+			   AND (b.hi_turn IS NULL
+			        OR i.turn_index < b.hi_turn
+			        OR (i.turn_index = b.hi_turn AND i.item_index < b.hi_item))
+		) WHERE rn = 1`,
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query subagent round aggregates for %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]subagentAnchorAggregate, len(bounds))
+	for rows.Next() {
+		var anchor string
+		var summary sql.NullString
+		var total int
+		if err := rows.Scan(&anchor, &total, &summary); err != nil {
+			return nil, fmt.Errorf("store: scan subagent round aggregate row: %w", err)
+		}
+		latest := summary.String
+		if strings.TrimSpace(latest) == "" {
+			latest = "" // same blank rule as subagentAggregatesByRoot
+		}
+		out[anchor] = subagentAnchorAggregate{
+			descendantCount:    total,
+			latestChildSummary: latest,
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate subagent round aggregates for %s: %w", threadID, err)
+	}
+
+	// Roll the rounds up onto their root. Only a root that actually has
+	// rounds gets the key: without one, "the whole transcript" and "this
+	// card's count" are the same number and the frontend needs no second.
+	transcript := make(map[string]int, len(rootIDs))
+	hasRounds := make(map[string]bool, len(rootIDs))
+	for _, b := range bounds {
+		if !b.round {
+			continue
+		}
+		transcript[b.rootID] += out[b.anchorID].descendantCount
+		if b.anchorID != b.rootID {
+			hasRounds[b.rootID] = true
+		}
+	}
+	for root, total := range transcript {
+		if !hasRounds[root] {
+			continue
+		}
+		agg := out[root]
+		agg.transcriptDescendantCount = total
+		agg.hasTranscriptCount = true
+		out[root] = agg
+	}
+	return out, nil
+}
+
 func mergeSubagentAnchorMeta(itemMeta string, agg subagentAnchorAggregate) string {
 	merged := map[string]any{}
 	if strings.TrimSpace(itemMeta) != "" {
@@ -446,6 +836,13 @@ func mergeSubagentAnchorMeta(itemMeta string, agg subagentAnchorAggregate) strin
 		}
 	}
 	merged[metaKeySubagentDescendantCount] = agg.descendantCount
+	if agg.hasTranscriptCount {
+		merged[metaKeySubagentTranscriptDescendantCount] = agg.transcriptDescendantCount
+	} else {
+		// The decoration owns this key too: a root that no longer has
+		// rounds must not keep a stale whole-transcript number.
+		delete(merged, metaKeySubagentTranscriptDescendantCount)
+	}
 	if agg.latestChildSummary != "" {
 		merged[metaKeySubagentLatestChildSummary] = agg.latestChildSummary
 	} else {
@@ -470,6 +867,19 @@ func (s *Store) ListSubagentDescendants(threadID, rootItemID string) ([]Item, er
 	rootItemID = strings.TrimSpace(rootItemID)
 	if rootItemID == "" {
 		return []Item{}, nil
+	}
+	// A §E6 resume CARRIER has no subtree of its own: the agent's rows,
+	// round one's and every resumed round's, stay under the ORIGINAL
+	// launch (claude-wire.md §E6). Expanding one must walk from there, or
+	// the card that decorateSubagentAnchors just stamped with a count
+	// opens empty. ONE hop, because the stamp is always the fully
+	// resolved root — triage writes the walk's END, never the chain.
+	if anchor, found, err := s.GetThreadItem(threadID, rootItemID); err != nil {
+		return nil, fmt.Errorf("store: resolve subagent walk root for %s/%s: %w", threadID, rootItemID, err)
+	} else if found {
+		if root := transcriptRootFromMeta(anchor.Meta); root != "" {
+			rootItemID = root
+		}
 	}
 	// The walk's ids are ordered and capped through the two physical
 	// arms, never through the timeline_items view (timeline_arms.go);

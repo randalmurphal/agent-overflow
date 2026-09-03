@@ -93,6 +93,22 @@ type Parser struct {
 	// overflow, matching the other session-lifetime correlation maps
 	// (taskToolUses, toolUseParents).
 	agentLaunchToolUses map[string]bool
+	// taskTranscriptRoots records, per local_agent task_id, the tool_use
+	// id that is that agent's TRANSCRIPT ROOT: the FIRST tool_use the
+	// task bound to, which is the original `Agent` launch. A §E6 resume
+	// rebinds the task onto the resuming tool's own call (the carrier)
+	// and taskToolUses follows that rebind — but the CLI persists the
+	// launch toolUseId in the agent's metadata and keeps stamping it as
+	// `parent_tool_use_id` on every sidechain row of every later round,
+	// so the agent's conversation tree never moves. This map is the
+	// parser's memory of where it lives, and it is deliberately
+	// write-once per task_id: a rebind must never overwrite it.
+	//
+	// Bounded by parserTaskMapCap with wholesale reset, like
+	// taskToolUses and agentLaunchToolUses; an entry lost that way
+	// degrades to triage's persisted-meta fallbacks
+	// (resumes_tool_use_id, then items.meta.task_id).
+	taskTranscriptRoots map[string]string
 	// liveAgentTaskToolUses holds every tool_use id whose local_agent
 	// task is LIVE: `system/task_started` with task_type "local_agent"
 	// arrived and no terminal `task_updated` has resolved it yet. This
@@ -360,6 +376,7 @@ func (p *Parser) Close() {
 	p.toolUseParents = nil
 	p.taskToolUses = nil
 	p.agentLaunchToolUses = nil
+	p.taskTranscriptRoots = nil
 	p.liveAgentTaskToolUses = nil
 	p.subagentModelStamped = nil
 	p.streamBlockTypes = nil
@@ -791,6 +808,36 @@ func (p *Parser) isAgentLaunchTool(toolUseID string) bool {
 		return false
 	}
 	return p.agentLaunchToolUses[toolUseID]
+}
+
+// rememberTaskTranscriptRoot records taskID's transcript root the FIRST
+// time the task binds to a tool_use. Later bindings (§E6 resume
+// rebinds) are ignored: the root is where the agent's sidechain rows
+// stay parented for the agent's whole life. See the
+// taskTranscriptRoots field doc.
+func (p *Parser) rememberTaskTranscriptRoot(taskID, toolUseID string) {
+	if p == nil || taskID == "" || toolUseID == "" {
+		return
+	}
+	if p.taskTranscriptRoots == nil {
+		p.taskTranscriptRoots = make(map[string]string)
+	}
+	if _, seen := p.taskTranscriptRoots[taskID]; seen {
+		return
+	}
+	if len(p.taskTranscriptRoots) >= parserTaskMapCap {
+		p.taskTranscriptRoots = make(map[string]string)
+	}
+	p.taskTranscriptRoots[taskID] = toolUseID
+}
+
+// taskTranscriptRoot returns taskID's transcript root, or "" when this
+// parser never observed the original binding (the reconnect edge).
+func (p *Parser) taskTranscriptRoot(taskID string) string {
+	if p == nil || taskID == "" || p.taskTranscriptRoots == nil {
+		return ""
+	}
+	return p.taskTranscriptRoots[taskID]
 }
 
 // setLastAssistantMessageID remembers the id of the most recent

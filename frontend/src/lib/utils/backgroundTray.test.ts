@@ -583,6 +583,66 @@ describe('deriveTrayTasks tree order (agent-visibility)', () => {
     ]);
   });
 
+  it('indents a resumed agent’s nested launch under the CARRIER tray row', () => {
+    // claude-wire.md §E6: the resumed round's rows — including a
+    // background Bash the agent starts — are parented to the ORIGINAL
+    // launch, while the round runs under the `SendMessage` carrier. The
+    // root stands in for the carrier here, or the Bash renders at depth 0
+    // beside the agent that launched it.
+    const items = [
+      makeItem({
+        id: 'root',
+        kind: 'tool_call',
+        toolName: 'Agent',
+        status: 'running',
+        isBackground: true,
+        itemIndex: 0,
+        createdAt: 100,
+      }),
+      makeItem({
+        id: 'carrier',
+        kind: 'tool_call',
+        toolName: 'SendMessage',
+        status: 'running',
+        isBackground: true,
+        itemIndex: 1,
+        createdAt: 200,
+        meta: JSON.stringify({ task_id: 'a1', transcript_root_id: 'root' }),
+      }),
+      makeItem({
+        id: 'round2-bash',
+        kind: 'tool_call',
+        toolName: 'Bash',
+        status: 'running',
+        isBackground: true,
+        parentId: 'root',
+        itemIndex: 2,
+        createdAt: 210,
+      }),
+    ];
+    const tasks = deriveTrayTasks(items, 1_000, Number.POSITIVE_INFINITY);
+    expect(tasks.map((t) => [t.rowId, t.depth])).toEqual([
+      ['root', 0],
+      ['carrier', 0],
+      ['round2-bash', 1],
+    ]);
+    // The nested row sits under the carrier, not under the root.
+    expect(tasks[2].anchor.parentId).toBe('root');
+  });
+
+  it('indents under the LATEST carrier when an agent has been resumed twice', () => {
+    const items = [
+      makeItem({ id: 'root', kind: 'tool_call', toolName: 'Agent', status: 'running', isBackground: true, itemIndex: 0, createdAt: 100 }),
+      makeItem({ id: 'carrier-1', kind: 'tool_call', toolName: 'SendMessage', status: 'running', isBackground: true, itemIndex: 1, createdAt: 200, meta: JSON.stringify({ task_id: 'a1', transcript_root_id: 'root' }) }),
+      makeItem({ id: 'carrier-2', kind: 'tool_call', toolName: 'SendMessage', status: 'running', isBackground: true, itemIndex: 2, createdAt: 300, meta: JSON.stringify({ task_id: 'a2', transcript_root_id: 'root' }) }),
+      makeItem({ id: 'round3-bash', kind: 'tool_call', toolName: 'Bash', status: 'running', isBackground: true, parentId: 'root', itemIndex: 3, createdAt: 310 }),
+    ];
+    const tasks = deriveTrayTasks(items, 1_000, Number.POSITIVE_INFINITY);
+    const bash = tasks.find((t) => t.rowId === 'round3-bash')!;
+    expect(bash.depth).toBe(1);
+    expect(tasks.map((t) => t.rowId)).toEqual(['root', 'carrier-1', 'carrier-2', 'round3-bash']);
+  });
+
   it('renders a background launch whose parent is NOT in the tray set at depth 0', () => {
     // Accepted deviation: the foreground parent agent is the timeline's
     // to show; the tray lists backgrounded ancestry only.

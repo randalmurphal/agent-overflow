@@ -47,6 +47,13 @@
 //     launch id, which is `each_key_duplicate` in the row `{#each}` — a
 //     thrown key error aborts the Svelte update batch and the pane freezes
 //     (production incident 2026-08-29).
+//   - A §E6 resume carrier is a launch of its own, but its ROWS are not:
+//     Claude parents every resumed round to the ORIGINAL launch, in every
+//     round. The root's bucket is therefore SLICED per round at each
+//     carrier's resume prompt row (`user:subagent-prompt:<carrierId>`),
+//     so the round-1 card shows round 1 and each carrier's card shows its
+//     own round. Only the root's direct bucket is sliced — a nested launch
+//     inside a round is an anchor of its own and keeps its bucket.
 //   - Wait carriers use a stable structural wrapper from first render; Codex
 //     subagent target completions render beneath them when linked by
 //     `wait_carrier_id` or shared wait payload correlation.
@@ -79,6 +86,7 @@ import type { Item } from '../types/models';
 import type { SubagentFoldAggregate } from './subagentFold';
 import { parseJsonObject } from './parseJsonObject';
 import {
+  claudeResumeTranscriptRootId,
   isPotentialSubagentLaunch,
   launchRunsDetached,
   subagentDescendantCountFromMeta,
@@ -529,13 +537,32 @@ export function subagentActivityPreview(item: Item): string {
  * events carry no decoration — their active children are in memory and
  * their settled children are tracked by the pane's live-eviction fold
  * (utils/subagentFold.ts), surfaced through `SubagentLiveAggregates`.
+ *
+ * `count` is the anchor's ROUND: for a resumed agent the store bounds
+ * the transcript root's aggregate to the rows before the first resume
+ * prompt and each carrier's to its own round, because each renders as
+ * its own card. `transcriptCount` is the whole transcript across every
+ * round, stamped on the root only when it has rounds, and is what the
+ * agent pane (which scopes to the root and shows every round) expects
+ * to have loaded; it falls back to `count` when absent.
  */
-export function decoratedSubagentAggregates(item: Item): { count: number; summary: string } {
+export function decoratedSubagentAggregates(item: Item): {
+  count: number;
+  transcriptCount: number;
+  summary: string;
+} {
   const meta = parseJsonObject(item.meta);
   const count = subagentDescendantCountFromMeta(meta);
+  const rawTranscript = meta?.subagentTranscriptDescendantCount;
+  const transcriptCount = Math.max(
+    count,
+    typeof rawTranscript === 'number' && Number.isFinite(rawTranscript) && rawTranscript > 0
+      ? Math.floor(rawTranscript)
+      : 0,
+  );
   const rawSummary = meta?.subagentLatestChildSummary;
   const summary = typeof rawSummary === 'string' ? normalizePreviewText(rawSummary) : '';
-  return { count, summary };
+  return { count, transcriptCount, summary };
 }
 
 /**
@@ -1332,6 +1359,11 @@ export function groupItemsBySubagent(
     return carrier !== undefined && isCodexWaitAgentCarrier(carrier);
   }
 
+  // §E6 resume carriers, grouped by the launch they resumed. Null until
+  // one is seen: a thread with no resumed agent pays one string compare
+  // per row for the whole feature.
+  let resumeCarriersByRoot: Map<string, Item[]> | null = null;
+
   for (const item of sortedWithCarriers) {
     itemByID.set(item.id, item);
     const launchInfo = subagentLaunchInfo(item, launchContext);
@@ -1339,6 +1371,13 @@ export function groupItemsBySubagent(
       subagentLaunchIDs.add(item.id);
       if (launchRunsDetached(launchInfo, parseJsonObject(item.meta))) {
         detachedLaunchIDs.add(item.id);
+      }
+      const transcriptRootID = claudeResumeTranscriptRootId(item);
+      if (transcriptRootID) {
+        resumeCarriersByRoot ??= new Map();
+        const carriers = resumeCarriersByRoot.get(transcriptRootID);
+        if (carriers) carriers.push(item);
+        else resumeCarriersByRoot.set(transcriptRootID, [item]);
       }
     }
   }
@@ -1477,6 +1516,69 @@ export function groupItemsBySubagent(
   // Stable chronological order within each bucket.
   for (const bucket of childrenByParent.values()) {
     bucket.sort(compareItems);
+  }
+
+  // ---- §E6 resume rounds: slice the root's bucket per round -----------
+  // Claude parents EVERY round of a resumed async agent to the ORIGINAL
+  // launch, so one bucket holds them all and the round-2 card would render
+  // round 1's rows (or nothing). Each carrier's card owns the rows from
+  // its resume onward: split the root's bucket at the resume prompt row
+  // (`user:subagent-prompt:<carrierId>`, which triage writes at the root)
+  // and hand each slice to its carrier. Nested launches inside a round keep
+  // their own buckets — they are launch anchors of their own, and only the
+  // root's direct bucket is sliced.
+  if (resumeCarriersByRoot !== null) {
+    for (const [rootID, carriers] of resumeCarriersByRoot) {
+      const bucket = childrenByParent.get(rootID);
+      if (bucket === undefined || bucket.length === 0) continue;
+      if (carriers.length > 1) carriers.sort(compareItems);
+      const indexByID = new Map<string, number>();
+      for (let i = 0; i < bucket.length; i += 1) indexByID.set(bucket[i].id, i);
+      // One forward scan across every carrier (the fallback cursor never
+      // rewinds), so the whole slice costs O(rows in the root's bucket).
+      let cursor = 0;
+      const splits: { carrier: Item; start: number }[] = [];
+      for (const carrier of carriers) {
+        // The prompt row is the round's first row. Without it — a window
+        // that has not loaded it, or a resume that carried no message —
+        // the round starts at the first row written at or after the
+        // carrier itself.
+        const promptIndex = indexByID.get(`user:subagent-prompt:${carrier.id}`);
+        if (promptIndex !== undefined) {
+          cursor = Math.max(cursor, promptIndex);
+        } else {
+          while (cursor < bucket.length && bucket[cursor].createdAt < carrier.createdAt) {
+            cursor += 1;
+          }
+        }
+        splits.push({ carrier, start: cursor });
+      }
+      // Back to front: each carrier takes [start, end), `end` being the
+      // next carrier's start, and the root keeps everything before the
+      // first split.
+      let end = bucket.length;
+      for (let s = splits.length - 1; s >= 0; s -= 1) {
+        const { carrier, start } = splits[s];
+        if (start >= end) {
+          end = start;
+          continue;
+        }
+        const round = bucket.slice(start, end);
+        for (const row of round) anchorByID.set(row.id, carrier.id);
+        const existing = childrenByParent.get(carrier.id);
+        if (existing === undefined) {
+          childrenByParent.set(carrier.id, round);
+        } else {
+          // Nothing is ever PARENTED to a carrier, so this is defensive
+          // only — and iterative, because a spread-apply push throws
+          // RangeError on a wide enough round.
+          for (const row of round) existing.push(row);
+          existing.sort(compareItems);
+        }
+        end = start;
+      }
+      bucket.length = end;
+    }
   }
 
   function buildNode(item: Item, depth: number): TimelineNode {

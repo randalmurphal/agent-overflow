@@ -56,6 +56,17 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	meta := decodeUserTextMeta(evt.Meta)
 	providerItemID := meta.text("provider_item_id")
 
+	// The §E6 resume prompt: the parser's own row for the message that
+	// opened a resumed agent round. It carries no provider uuid (the
+	// rebind `system/task_started` has none to give) and is not an AO
+	// send, so every branch below would refuse it — the pending-send FIFO
+	// on provenance, and the wire-only branches on the missing id. Its
+	// identity is the carrier scope and its placement is the transcript
+	// root; see persistResumePromptRow.
+	if meta.flag(provider.MetaSubagentResumePromptKey) {
+		return r.persistResumePromptRow(evt, meta)
+	}
+
 	// The FIFO is only consulted for an echo that could BE one of this app's
 	// sends. Two provenance flags say positively that it is not — the Codex
 	// session's `external-queue` origin stamp (another producer's row
@@ -920,6 +931,7 @@ func (r *Router) persistWireOnlySubagentPrompt(evt provider.ProviderEvent, provi
 	if err != nil {
 		return fmt.Errorf("triage: inspect opening subagent prompt %s/%s: %w", evt.ThreadID, canonicalID, err)
 	}
+	claimed := false
 	if canonicalFound {
 		wasOpening, provisional, boundProviderItemID, stateErr := subagentOpeningPromptState(canonical.Meta)
 		if stateErr != nil {
@@ -929,6 +941,7 @@ func (r *Router) persistWireOnlySubagentPrompt(evt provider.ProviderEvent, provi
 			itemID = canonicalID
 			openingPrompt = true
 			turnIndex = canonical.TurnIndex
+			claimed = true
 		}
 	} else if openingPrompt {
 		legacyID := fmt.Sprintf("user:wire:%s", providerItemID)
@@ -942,6 +955,29 @@ func (r *Router) persistWireOnlySubagentPrompt(evt provider.ProviderEvent, provi
 		} else {
 			itemID = canonicalID
 		}
+		claimed = true
+	}
+
+	// Nothing claimed the content by the launch-scope identity, so this
+	// may still be the prompt that opened a RESUMED round (§E6): a row
+	// already standing under this same parent, minted from the rebind
+	// envelope and waiting for the uuid the transcript is delivering
+	// now. Binding it in place is what keeps the resumed round's opening
+	// line from re-appearing as a second `user:wire:<uuid>` row below
+	// the answer it asked for.
+	resumeCarrierID := ""
+	if !claimed {
+		provisional, found, err := r.store.FindProvisionalSubagentPrompt(evt.ThreadID, parentID, evt.Content)
+		if err != nil {
+			return fmt.Errorf("triage: find provisional subagent prompt %s/%s: %w", evt.ThreadID, parentID, err)
+		}
+		if found {
+			itemID = provisional.ID
+			turnIndex = provisional.TurnIndex
+			resumeMeta := decodeUserTextMeta(json.RawMessage(provisional.Meta))
+			openingPrompt = openingPrompt || resumeMeta.flag(provider.MetaSubagentOpeningPromptKey)
+			resumeCarrierID = resumeMeta.text(provider.MetaResumeCarrierIDKey)
+		}
 	}
 
 	metaFields := map[string]any{
@@ -950,6 +986,13 @@ func (r *Router) persistWireOnlySubagentPrompt(evt provider.ProviderEvent, provi
 	}
 	if openingPrompt {
 		metaFields[provider.MetaSubagentOpeningPromptKey] = true
+	}
+	if resumeCarrierID != "" {
+		// The row stays a resume prompt after binding — the round it
+		// opened is what the carrier id names — but it is no longer
+		// provisional: the uuid is now the provider's own.
+		metaFields[provider.MetaSubagentResumePromptKey] = true
+		metaFields[provider.MetaResumeCarrierIDKey] = resumeCarrierID
 	}
 	metaBytes, err := json.Marshal(metaFields)
 	if err != nil {

@@ -204,7 +204,15 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	if found {
 		item = existing
 		item.Summary = summary
-		item.ParentID = stringsx.FirstNonEmptyTrimmed(eventParentID(evt), existing.ParentID)
+		// A persisted row's PARENT never moves. A re-delivered
+		// EventToolStart carrying a different scope is either a §E6
+		// carrier the parser bound the lifecycle to (the row's rows
+		// stay under the transcript root — transcript_root.go) or a
+		// correlation the wire got to late; either way, reparenting an
+		// existing row silently relocates it out from under the card
+		// it already renders in. The event's scope still fills an
+		// EMPTY parent, which is the reconnect/late-launch case.
+		item.ParentID = stringsx.FirstNonEmptyTrimmed(existing.ParentID, eventParentID(evt))
 		item.ToolName = toolName
 		item.IsBackground = existing.IsBackground || meta.IsBackground
 		item.Meta = MergeStoredToolCallMeta(existing.Meta, evt.ItemType, toolName, evt.Meta)
@@ -1449,40 +1457,35 @@ func backgroundTerminalStatus(meta backgroundTaskTerminalMeta) string {
 // through the same keep-running flip (§E5 async acks,
 // run_in_background, Monitor) return unchanged without a lookup.
 //
-// The original launch resolves through resumes_tool_use_id when the
-// parser held the binding, and otherwise — the reconnect edge, where
-// a fresh parser never saw the launch — through the persisted
-// items.meta.task_id stamp (FindOriginalAgentLaunchByTaskID, which
-// excludes the carrier's own row: the rebind stamped the same task_id
-// there). Prefers the original launch row's own Summary (it already
-// reads "Agent: <description>" from its own launch) so any later
-// normalization of that format stays in one place; falls back to
-// "Agent: " + description when both lookups miss (e.g. retention
-// already pruned the launch).
+// The original launch is the TRANSCRIPT ROOT (transcript_root.go), and
+// identity is read off the root rather than off whatever row the
+// carrier's `resumes_tool_use_id` names: a round-3 carrier's
+// `resumes_tool_use_id` points at the round-2 CARRIER, whose identity is
+// only right because it was itself patched here. The root resolves from
+// the parser's `transcript_root_id` stamp, else the resumes chain walked
+// to its end, else the persisted items.meta.task_id
+// (FindOriginalAgentLaunchByTaskID). Prefers the root row's own Summary
+// (it already reads "Agent: <description>" from its own launch) so any
+// later normalization of that format stays in one place; falls back to
+// "Agent: " + description when resolution misses (e.g. retention already
+// pruned the launch).
+//
+// The patch also carries `transcript_root_id` when the parser could not
+// supply it, so the carrier's own row is a durable, self-describing
+// answer to "which launch owns this agent's transcript".
 func (r *Router) resumeCarrierIdentity(threadID string, launch store.Item) (string, json.RawMessage) {
 	carrierMeta := DecodeToolStartMeta(json.RawMessage(launch.Meta))
-	if carrierMeta.ResumesToolUseID == "" && carrierMeta.Description == "" && carrierMeta.SubagentType == "" {
+	if !isResumeCarrierMeta(carrierMeta) {
 		return launch.Summary, nil
 	}
 
-	var original store.Item
-	var found bool
-	if carrierMeta.ResumesToolUseID != "" {
-		var err error
-		original, found, err = r.store.GetThreadItem(threadID, carrierMeta.ResumesToolUseID)
-		if err != nil {
-			log.Printf("triage: resume carrier original-launch lookup %s: %v", carrierMeta.ResumesToolUseID, err)
-		}
-	}
-	if !found && carrierMeta.TaskID != "" {
-		var err error
-		original, found, err = r.store.FindOriginalAgentLaunchByTaskID(threadID, carrierMeta.TaskID, launch.ID)
-		if err != nil {
-			log.Printf("triage: resume carrier task-id launch lookup %s: %v", carrierMeta.TaskID, err)
-		}
-	}
-	if found && original.Kind != itemKindToolCall {
-		found = false
+	original, found, err := r.transcriptRoot(threadID, launch)
+	if err != nil {
+		// Loud, and non-fatal to the flip: a carrier that keeps its
+		// "SendMessage: …" summary is a cosmetic loss, while refusing
+		// the flip would leave the resumed round unprotected from the
+		// idle reaper.
+		log.Printf("triage: resolve transcript root for carrier %s/%s: %v", threadID, launch.ID, err)
 	}
 
 	summary := launch.Summary
@@ -1530,6 +1533,7 @@ func (r *Router) resumeCarrierIdentity(threadID string, launch store.Item) (stri
 		if carrierMeta.Description == "" && origInput.Description != "" {
 			patch["description"] = truncatePreview(origInput.Description, 80)
 		}
+		stampTranscriptRootOnCarrier(patch, carrierMeta, original.ID)
 	}
 	if len(patch) == 0 {
 		return summary, nil

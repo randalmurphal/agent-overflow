@@ -73,6 +73,12 @@ type ToolStartMeta struct {
 	ResumesToolUseID string `json:"resumes_tool_use_id"`
 	Description      string `json:"description"`
 	SubagentType     string `json:"subagent_type"`
+	// TranscriptRootID names the launch row that owns the resumed
+	// agent's transcript. Present only on a resume CARRIER, which makes
+	// it the structural test for one: a carrier is a lifecycle row, and
+	// no row may be parented to it. See transcript_root.go and
+	// internal/triage/AGENTS.md §Subagent scope stays subagent scope.
+	TranscriptRootID string `json:"transcript_root_id"`
 }
 
 // ToolCompleteMeta is the decoded slice of an EventToolComplete's Meta
@@ -129,6 +135,7 @@ func DecodeToolStartMetaObject(obj map[string]json.RawMessage) ToolStartMeta {
 	decodeRawField(obj, "resumes_tool_use_id", &m.ResumesToolUseID)
 	decodeRawField(obj, "description", &m.Description)
 	decodeRawField(obj, "subagent_type", &m.SubagentType)
+	decodeRawField(obj, provider.MetaTranscriptRootIDKey, &m.TranscriptRootID)
 	return m
 }
 

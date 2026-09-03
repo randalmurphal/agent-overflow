@@ -152,6 +152,16 @@
     return completion ? (ctx.getItemById(completion.id) ?? completion) : undefined;
   });
 
+  // Identity and LIFECYCLE are two rows for a resumed agent (§E6): the
+  // scope root is what the agent IS (name, description, model, the
+  // hydration gate), the view's lifecycle row is what it is DOING right
+  // now — the latest resume carrier while a later round runs. The view
+  // owns that resolution so the timeline's turn and the shell's run
+  // state cannot disagree; the fallbacks here cover only the degenerate
+  // case of a context with no registered source pane.
+  let lifecycleItem = $derived(view ? view.lifecycle : launch);
+  let lifecycleCompletionItem = $derived(view ? view.lifecycleCompletion : completionItem);
+
   // Scoping to a node whose settled children were evicted from pane memory
   // is exactly what hydrateChildren exists for. Gate on the COUNT, the
   // same rule SubagentGroup uses on expand: eviction is partial — a
@@ -161,12 +171,14 @@
   // only the nested card). The expected count is the larger of the
   // backend decoration and what the live-eviction fold says was paged
   // out. hydrateChildren dedupes in-flight and exhausted anchors itself,
-  // so re-running is a no-op.
+  // so re-running is a no-op. The pane scopes to the transcript root and
+  // shows every resumed round, so it expects the whole-transcript count,
+  // not the root card's round-one slice.
   $effect(() => {
     if (!scopeItemId || !launch) return;
     const evicted = sourcePane?.subagentLiveAggregate(scopeItemId)?.evictedCount ?? 0;
     const expected = Math.max(
-      decoratedSubagentAggregates(launch).count,
+      decoratedSubagentAggregates(launch).transcriptCount,
       scopedItems.length + evicted,
     );
     if (scopedItems.length > 0 && scopedItems.length >= expected) return;
@@ -256,7 +268,8 @@
         threadId={ctx.threadId}
         pane={sourcePane}
         {launch}
-        completion={completionItem}
+        lifecycle={lifecycleItem}
+        lifecycleCompletion={lifecycleCompletionItem}
         hasChildren={scopedItems.length > 0}
       />
     {/if}

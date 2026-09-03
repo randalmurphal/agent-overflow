@@ -55,6 +55,7 @@
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
   import {
+    agentScopeRootId,
     claudeResumeCarrierIdentity,
     isClaudeResumeCarrierItem,
   } from '../../utils/subagentLaunch';
@@ -160,9 +161,17 @@
   // tray) keeps them; the default is the open affordance, so the launch
   // row is the way into a running background agent's transcript.
   let opensAgentPane = $derived(pane !== undefined && hostActions === undefined && launchId !== '');
+  // The scope is the TRANSCRIPT ROOT, which is this launch except on a
+  // §E6 resume carrier: Claude parents every resumed round's rows to the
+  // ORIGINAL launch, so scoping to the carrier would open an empty pane.
+  // The label stays this row's, which is the agent the reader clicked.
+  let paneScopeId = $derived.by(() => {
+    const launchRow = item.kind === 'tool_completion' ? launchItem : item;
+    return launchRow ? agentScopeRootId(launchRow) : launchId;
+  });
   function openInPane(event: MouseEvent): void {
     event.stopPropagation();
-    pane?.openAgentPane(launchId, agentLabel);
+    pane?.openAgentPane(paneScopeId, agentLabel);
   }
 </script>
 

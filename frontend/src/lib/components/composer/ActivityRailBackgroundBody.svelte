@@ -28,6 +28,7 @@
     trayTaskLabel,
     type TrayTask,
   } from '../../utils/backgroundTray';
+  import { agentScopeRootId } from '../../utils/subagentLaunch';
   import { openAgentCompanion } from '../../stores/agentPane.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { errString } from '../../utils/errors';
@@ -52,9 +53,14 @@
   function onOpenPane(task: TrayTask): void {
     if (!pane || !threadId) return;
     const info = trayTaskAgentInfo(task);
-    if (info) {
-      openAgentCompanion(pane.paneId, threadId, task.rowId, info.name || trayTaskLabel(task));
-    }
+    if (!info) return;
+    // The pane scopes to the TRANSCRIPT ROOT, which is the tray row's own
+    // launch except on a §E6 resume carrier — Claude parents every
+    // resumed round to the ORIGINAL launch, so the carrier's own id
+    // scopes to nothing. The row keeps its label.
+    const launch = task.launch ?? task.completion;
+    const scopeId = launch ? agentScopeRootId(launch) : task.rowId;
+    openAgentCompanion(pane.paneId, threadId, scopeId, info.name || trayTaskLabel(task));
   }
 
   function onOpenRow(task: TrayTask): void {

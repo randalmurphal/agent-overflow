@@ -255,13 +255,15 @@ round's **background carrier**.
   async marker of its own, still emits
   `EventToolComplete{is_background:true}`.
 - Triage's keep-running flip (§1 above, the `!launch.IsBackground` →
-  `IsBackground` transition) additionally resolves the ORIGINAL launch
-  row (`resumeCarrierIdentity`, tool_lifecycle.go) — by
-  `resumes_tool_use_id` when the parser held the binding, else by the
-  persisted `items.meta.task_id` stamp
-  (`store.FindOriginalAgentLaunchByTaskID`, oldest row excluding the
-  carrier itself, which carries the same task_id by then), so the
-  reconnect edge resolves too. It rewrites the carrier's `Summary` to
+  `IsBackground` transition) additionally resolves the TRANSCRIPT ROOT
+  (`resumeCarrierIdentity`, tool_lifecycle.go; resolution order in
+  `transcript_root.go` — the `transcript_root_id` stamp, else the
+  `resumes_tool_use_id` chain walked to its END, else the persisted
+  `items.meta.task_id` stamp through
+  `store.FindOriginalAgentLaunchByTaskID`, oldest row excluding the
+  carrier itself, which carries the same task_id by then — so the
+  reconnect edge resolves too) and stamps `transcript_root_id` onto the
+  carrier when the parser could not. It rewrites the carrier's `Summary` to
   the resumed agent's identity (`"Agent: <description>"`, preferring
   the original launch row's own Summary when it's still around) and
   copies the original's `subagent_model` (Subn stamp first, launch
@@ -272,6 +274,26 @@ round's **background carrier**.
   Without all this the carrier would read "SendMessage -> done" with
   the raw recipient id instead of identifying the agent it's resuming,
   and its card would inherit the parent thread's model.
+- **The carrier is a lifecycle row, never a transcript root.** Only the
+  task lifecycle rebinds: the CLI persists the ORIGINAL launch's
+  `toolUseId` in the agent's metadata and keeps stamping it as
+  `parent_tool_use_id` on every sidechain row of every later round, so
+  the agent's whole conversation tree stays under the original launch.
+  Nothing is ever parented to a carrier. `Router.Handle` rewrites a live
+  event naming a known carrier as its parent onto the root before
+  dispatch, and every scope-resolving path — the terminal transcript
+  replay (`backfillSubagentTranscript`), the identity flip, the resume
+  prompt row, the mirror compaction tap — resolves through
+  `transcriptRoot`. Reading the carrier as a scope reparented 474
+  already-delivered round-1 rows onto it and duplicated 220 more
+  (2026-09-03); see claude-wire.md §E6.
+- The rebind `task_started` is the ONLY envelope carrying the message
+  that opened the resumed round (`prompt`), so the parser emits one
+  `EventUserText` for it: identity in the CARRIER's scope (distinct from
+  the agent's round-1 opening prompt, which is the ROOT's), placement
+  under the root, provisional until the terminal transcript delivers the
+  same text with its provider uuid and
+  `persistWireOnlySubagentPrompt` binds it in place.
 - Round 2's `task_updated`/`task_notification` then write a NEW
   `tool_completion` sibling under the carrier
   (`"complete:"+carrierID`, distinct from round 1's

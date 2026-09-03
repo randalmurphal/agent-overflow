@@ -8,6 +8,7 @@ import type { Item } from '../types/models';
 import { extractClaudeTaskID } from './claudeTaskMeta';
 import { extractCodexProcessID } from './codexProcessMeta';
 import {
+  claudeResumeTranscriptRootId,
   isCodexSubagentLaunchItem,
   NO_LOADED_SUBAGENT_CHILDREN,
   subagentLaunchInfo,
@@ -265,6 +266,23 @@ export function deriveTrayTasks(
     if (item.parentId) parentById.set(item.id, item.parentId);
   }
   const taskByRowId = new Map(out.map((t) => [t.rowId, t] as const));
+  // A §E6 resume carrier is the tray row a resumed agent's ROUND runs
+  // under, but the round's rows are parented to the ORIGINAL launch
+  // (claude-wire.md §E6). So a background Bash the resumed agent starts
+  // reaches the root on its parent chain and would sit at depth 0 beside
+  // the agent that launched it. The root stands in for the carrier here:
+  // latest carrier wins, because that is the round now running.
+  let carrierTaskByRoot: Map<string, TrayTask> | null = null;
+  for (const task of out) {
+    if (task.status !== 'running' || !task.launch) continue;
+    const rootID = claudeResumeTranscriptRootId(task.launch);
+    if (!rootID) continue;
+    carrierTaskByRoot ??= new Map();
+    const current = carrierTaskByRoot.get(rootID);
+    if (!current || current.anchor.createdAt < task.anchor.createdAt) {
+      carrierTaskByRoot.set(rootID, task);
+    }
+  }
   const childrenByRow = new Map<string, TrayTask[]>();
   const roots: TrayTask[] = [];
   for (const task of out) {
@@ -275,6 +293,11 @@ export function deriveTrayTasks(
       pid !== undefined && hops < 64;
       pid = parentById.get(pid), hops++
     ) {
+      const carrier = carrierTaskByRoot?.get(pid);
+      if (carrier !== undefined && carrier !== task) {
+        nearestTrayAncestor = carrier.rowId;
+        break;
+      }
       if (taskByRowId.has(pid)) {
         nearestTrayAncestor = pid;
         break;

@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -595,5 +596,334 @@ func TestIsSubagentLaunch_CrossThreadIsolation(t *testing.T) {
 	}
 	if got, err := s.IsSubagentLaunch("t2", "toolu_launch"); err != nil || !got {
 		t.Fatalf("t2 launch = %v (err %v), want true", got, err)
+	}
+}
+
+// A §E6 resume CARRIER has no subtree of its own — the agent's rows stay
+// under the ORIGINAL launch (claude-wire.md §E6) — so both subagent
+// reads resolve it through its `transcript_root_id` stamp. Without that,
+// the carrier renders as a childless leaf and its card expands empty.
+func TestSubagentReadsResolveAResumeCarrierToItsTranscriptRoot(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	seedAnchorItem(t, s, "t", "agent-1", 0, 0)
+	seedChildItem(t, s, "t", "child-1", 0, 1, "agent-1", "round one", "completed")
+	seedToolChildItem(t, s, "t", "child-2", 0, 2, "agent-1", "round two", "completed")
+	// The carrier is a top-level tool_call with no children of its own.
+	if err := s.InsertItem(Item{
+		ID: "carrier-1", ThreadID: "t", TurnIndex: 0, ItemIndex: 3,
+		Kind: "tool_call", Role: "assistant", ToolName: "SendMessage",
+		Summary: "Agent: review", Status: "running", CreatedAt: 3,
+		Meta: `{"transcript_root_id":"agent-1"}`,
+	}); err != nil {
+		t.Fatalf("seed carrier: %v", err)
+	}
+
+	paged, err := s.ListThreadSliceAround("t", "", 200)
+	if err != nil {
+		t.Fatalf("list slice: %v", err)
+	}
+	carrier, ok := itemByID(paged.Items, "carrier-1")
+	if !ok {
+		t.Fatal("carrier missing from window")
+	}
+	count, summary, hasCount, hasSummary := decodedSubagentMeta(t, carrier)
+	if !hasCount || count != 2 {
+		t.Errorf("carrier descendant count: got %v (present=%v), want 2 (the ROOT's)", count, hasCount)
+	}
+	if !hasSummary || summary != "round two" {
+		t.Errorf("carrier latest summary: got %q (present=%v), want \"round two\"", summary, hasSummary)
+	}
+	// The root keeps its own aggregate: the carrier borrows, never steals.
+	root, ok := itemByID(paged.Items, "agent-1")
+	if !ok {
+		t.Fatal("root missing from window")
+	}
+	if rootCount, _, hasRootCount, _ := decodedSubagentMeta(t, root); !hasRootCount || rootCount != 2 {
+		t.Errorf("root descendant count: got %v (present=%v), want 2", rootCount, hasRootCount)
+	}
+
+	// Expanding the carrier's card hydrates the ROOT's subtree.
+	descendants, err := s.ListSubagentDescendants("t", "carrier-1")
+	if err != nil {
+		t.Fatalf("list carrier descendants: %v", err)
+	}
+	if !equalStringSlice(collectIDs(descendants), []string{"child-1", "child-2"}) {
+		t.Errorf("carrier descendants: got %v, want [child-1 child-2]", collectIDs(descendants))
+	}
+}
+
+// seedResumePromptItem writes the row that OPENS a §E6 resumed round:
+// parented to the transcript ROOT like every other row the agent
+// produced, identified by the CARRIER's scope, and flagged so the round
+// probe can find it (claude-wire.md §E6 "The resume message").
+func seedResumePromptItem(
+	t *testing.T, s *Store, threadID, carrierID string, turnIndex, itemIndex int, rootID, prompt string,
+) {
+	t.Helper()
+	meta := fmt.Sprintf(
+		`{"wire_only":true,%q:true,%q:%q}`,
+		metaKeySubagentResumePrompt, metaKeyResumeCarrierID, carrierID,
+	)
+	if err := s.InsertItem(Item{
+		ID: "user:subagent-prompt:" + carrierID, ThreadID: threadID,
+		TurnIndex: turnIndex, ItemIndex: itemIndex,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: prompt, ParentID: rootID, Meta: meta,
+		CreatedAt: int64(turnIndex*10 + itemIndex),
+	}); err != nil {
+		t.Fatalf("seed resume prompt for %s: %v", carrierID, err)
+	}
+}
+
+func seedResumeCarrierItem(
+	t *testing.T, s *Store, threadID, carrierID string, turnIndex, itemIndex int, rootID string,
+) {
+	t.Helper()
+	if err := s.InsertItem(Item{
+		ID: carrierID, ThreadID: threadID, TurnIndex: turnIndex, ItemIndex: itemIndex,
+		Kind: "tool_call", Role: "assistant", ToolName: "SendMessage",
+		Summary: "Agent: continue", Status: "running",
+		Meta:      fmt.Sprintf(`{%q:%q}`, metaKeyTranscriptRootID, rootID),
+		CreatedAt: int64(turnIndex*10 + itemIndex),
+	}); err != nil {
+		t.Fatalf("seed carrier %s: %v", carrierID, err)
+	}
+}
+
+// transcriptCountFromMeta reads the whole-root-subtree decoration,
+// reporting presence separately: its ABSENCE is what tells the agent pane
+// "this transcript has one round".
+func transcriptCountFromMeta(t *testing.T, item Item) (float64, bool) {
+	t.Helper()
+	meta := map[string]any{}
+	if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
+		t.Fatalf("unmarshal meta %q: %v", item.Meta, err)
+	}
+	raw, ok := meta[metaKeySubagentTranscriptDescendantCount]
+	if !ok {
+		return 0, false
+	}
+	count, _ := raw.(float64)
+	return count, true
+}
+
+// seedThreeRoundResumedAgent writes one agent resumed twice: round one
+// under the launch, then a carrier + its resume prompt opening each later
+// round. Every row of every round is parented to the ROOT (§E6), which is
+// exactly why the decoration has to slice them.
+func seedThreeRoundResumedAgent(t *testing.T, s *Store) {
+	t.Helper()
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedAnchorItem(t, s, "t", "agent-1", 0, 0)
+	seedChildItem(t, s, "t", "user:subagent-prompt:agent-1", 0, 1, "agent-1", "go", "completed")
+	seedToolChildItem(t, s, "t", "r1-tool", 0, 2, "agent-1", "round one work", "completed")
+
+	seedResumeCarrierItem(t, s, "t", "carrier-1", 0, 3, "agent-1")
+	seedResumePromptItem(t, s, "t", "carrier-1", 0, 4, "agent-1", "again")
+	seedToolChildItem(t, s, "t", "r2-tool", 0, 5, "agent-1", "round two work", "completed")
+
+	seedResumeCarrierItem(t, s, "t", "carrier-2", 0, 6, "agent-1")
+	seedResumePromptItem(t, s, "t", "carrier-2", 0, 7, "agent-1", "once more")
+	seedToolChildItem(t, s, "t", "r3-tool", 0, 8, "agent-1", "round three work", "completed")
+}
+
+// One card per ROUND, so one aggregate per round: three disjoint counts
+// that sum to the transcript, three different "latest" summaries, and the
+// whole-transcript total only on the root.
+func TestSubagentAnchorsAreDecoratedPerResumeRound(t *testing.T) {
+	s := newTestStore(t)
+	seedThreeRoundResumedAgent(t, s)
+	// A carrier whose resume prompt row never landed has nothing to cut
+	// its round at, so it keeps the whole-transcript fallback.
+	seedResumeCarrierItem(t, s, "t", "carrier-promptless", 0, 9, "agent-1")
+	// A childless tool call shares the bounded query's bind list (every
+	// windowed tool_call is a walk root) and must still come back
+	// undecorated: the query answers for it with a zero, not by omission.
+	if err := s.InsertItem(Item{
+		ID: "plain-bash", ThreadID: "t", TurnIndex: 1, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", ToolName: "Bash",
+		Summary: "ls", Status: "completed", CreatedAt: 10,
+	}); err != nil {
+		t.Fatalf("seed plain tool call: %v", err)
+	}
+
+	paged, err := s.ListThreadSliceAround("t", "", 200)
+	if err != nil {
+		t.Fatalf("list slice: %v", err)
+	}
+
+	// (anchor, count, latest summary) per round. Round one is the opening
+	// prompt plus its tool row; each later round is its resume prompt plus
+	// the tool row that followed.
+	want := []struct {
+		id      string
+		count   float64
+		summary string
+	}{
+		{"agent-1", 2, "round one work"},
+		{"carrier-1", 2, "round two work"},
+		{"carrier-2", 2, "round three work"},
+		{"carrier-promptless", 6, "round three work"},
+	}
+	total := 0.0
+	for _, w := range want {
+		item, ok := itemByID(paged.Items, w.id)
+		if !ok {
+			t.Fatalf("%s missing from window", w.id)
+		}
+		count, summary, hasCount, hasSummary := decodedSubagentMeta(t, item)
+		if !hasCount || count != w.count {
+			t.Errorf("%s descendant count: got %v (present=%v), want %v", w.id, count, hasCount, w.count)
+		}
+		if !hasSummary || summary != w.summary {
+			t.Errorf("%s latest summary: got %q (present=%v), want %q", w.id, summary, hasSummary, w.summary)
+		}
+		if w.id != "carrier-promptless" {
+			total += count
+		}
+	}
+	if total != 6 {
+		t.Errorf("round counts sum to %v, want the transcript's 6", total)
+	}
+
+	plain, ok := itemByID(paged.Items, "plain-bash")
+	if !ok {
+		t.Fatal("plain tool call missing from window")
+	}
+	if _, _, hasCount, _ := decodedSubagentMeta(t, plain); hasCount {
+		t.Errorf("a childless tool call must stay undecorated, got meta %q", plain.Meta)
+	}
+
+	root, _ := itemByID(paged.Items, "agent-1")
+	transcript, hasTranscript := transcriptCountFromMeta(t, root)
+	if !hasTranscript || transcript != 6 {
+		t.Errorf("root transcript count: got %v (present=%v), want 6", transcript, hasTranscript)
+	}
+	for _, id := range []string{"carrier-1", "carrier-2", "carrier-promptless"} {
+		carrier, _ := itemByID(paged.Items, id)
+		if _, present := transcriptCountFromMeta(t, carrier); present {
+			t.Errorf("%s carries %s; only a ROOT anchor may", id, metaKeySubagentTranscriptDescendantCount)
+		}
+	}
+}
+
+// A round-1 card alone in the window is still bounded by the round-2
+// carrier outside it: the prompt probe asks for every round under the
+// walk root, not just the ones the window happens to hold.
+func TestSubagentRootRoundIsBoundedByACarrierOutsideTheWindow(t *testing.T) {
+	s := newTestStore(t)
+	seedThreeRoundResumedAgent(t, s)
+
+	root, found, err := s.GetThreadItem("t", "agent-1")
+	if err != nil || !found {
+		t.Fatalf("get root: found=%v err=%v", found, err)
+	}
+	decorated, err := s.decorateSubagentAnchors(s.reader(), "t", []Item{root})
+	if err != nil {
+		t.Fatalf("decorate: %v", err)
+	}
+	count, summary, hasCount, _ := decodedSubagentMeta(t, decorated[0])
+	if !hasCount || count != 2 {
+		t.Errorf("root-only window count: got %v (present=%v), want round one's 2", count, hasCount)
+	}
+	if summary != "round one work" {
+		t.Errorf("root-only window summary: got %q, want %q", summary, "round one work")
+	}
+	if transcript, ok := transcriptCountFromMeta(t, decorated[0]); !ok || transcript != 6 {
+		t.Errorf("root-only window transcript count: got %v (present=%v), want 6", transcript, ok)
+	}
+}
+
+// A launch that was never resumed has one round, so the whole-transcript
+// key is absent and the count is the one it always was.
+func TestSubagentLaunchWithoutRoundsIsUnchanged(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedAnchorItem(t, s, "t", "agent-1", 0, 0)
+	seedChildItem(t, s, "t", "child-1", 0, 1, "agent-1", "thinking", "completed")
+	seedToolChildItem(t, s, "t", "child-2", 0, 2, "agent-1", "ran a thing", "completed")
+	// A childless tool call is not an anchor and must stay undecorated.
+	if err := s.InsertItem(Item{
+		ID: "plain", ThreadID: "t", TurnIndex: 1, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", ToolName: "Bash",
+		Summary: "ls", Status: "completed", CreatedAt: 10,
+	}); err != nil {
+		t.Fatalf("seed plain tool call: %v", err)
+	}
+
+	paged, err := s.ListThreadSliceAround("t", "", 200)
+	if err != nil {
+		t.Fatalf("list slice: %v", err)
+	}
+	root, ok := itemByID(paged.Items, "agent-1")
+	if !ok {
+		t.Fatal("root missing from window")
+	}
+	count, summary, hasCount, hasSummary := decodedSubagentMeta(t, root)
+	if !hasCount || count != 2 {
+		t.Errorf("launch count: got %v (present=%v), want 2", count, hasCount)
+	}
+	if !hasSummary || summary != "ran a thing" {
+		t.Errorf("launch summary: got %q (present=%v), want %q", summary, hasSummary, "ran a thing")
+	}
+	if _, present := transcriptCountFromMeta(t, root); present {
+		t.Errorf("a launch with no rounds must omit %s entirely", metaKeySubagentTranscriptDescendantCount)
+	}
+	plain, ok := itemByID(paged.Items, "plain")
+	if !ok {
+		t.Fatal("plain row missing from window")
+	}
+	if _, _, hasCount, _ := decodedSubagentMeta(t, plain); hasCount {
+		t.Errorf("a childless tool call must stay undecorated, got meta %q", plain.Meta)
+	}
+}
+
+// The resume-round probe runs on EVERY window that holds a tool_call, so
+// it must stay a direct-child probe on both arms. An `ORDER BY
+// turn_index, item_index` on the statement is enough to flip the local
+// arm onto idx_items_thread_turn_item_unique and scan the thread's whole
+// ordering index; the rounds are sorted in Go for exactly that reason.
+func TestSubagentResumeRoundProbeProbesTheParentIndexes(t *testing.T) {
+	s := newTestStore(t)
+	seedTimelineParityThread(t, s)
+
+	rootArgs := []any{"loc-launch-2"}
+	sql, args := timelineArms(timelineParityThreadID, timelineSelection{
+		Columns: func(string) string {
+			return `items.parent_id AS root, items.id AS id, items.meta AS meta,
+			        items.turn_index AS turn_index, items.item_index AS item_index`
+		},
+		Where: `items.kind = 'user_text'
+			   AND items.parent_id IN (` + placeholders(1) + `)
+			   AND items.parent_id <> ''
+			   AND items.meta LIKE '%` + metaKeySubagentResumePrompt + `%'`,
+		WhereArgs: rootArgs,
+	})
+
+	var local, imported bool
+	for _, r := range explainPlan(t, s, sql, args...) {
+		if strings.Contains(r.detail, "timeline_items") {
+			t.Errorf("resume-round probe touches the view: %q", r.detail)
+		}
+		if strings.Contains(r.detail, "idx_items_parent") {
+			local = true
+		}
+		if strings.Contains(r.detail, "idx_import_history_items_parent") {
+			imported = true
+		}
+		if strings.Contains(r.detail, "idx_items_thread_turn_item_unique") {
+			t.Errorf("resume-round probe scans the thread's ordering index: %q", r.detail)
+		}
+	}
+	if !local || !imported {
+		t.Errorf("parent index used: local=%v imported=%v, want both", local, imported)
 	}
 }

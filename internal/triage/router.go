@@ -299,6 +299,14 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		log.Printf("triage: dropping %s event for stopped thread %s", evt.Kind, evt.ThreadID)
 		return nil
 	}
+	// A §E6 resume carrier is a LIFECYCLE row, not a transcript root:
+	// the agent's own rows stay parented to the original launch across
+	// every resumed round (claude-wire.md §E6). This is the chokepoint
+	// that makes "a row parented to a carrier" unrepresentable, whatever
+	// parser path emitted the event. See transcript_root.go.
+	if root := r.carrierRootRewrite(evt.ThreadID, evt.ParentToolUseID); root != "" {
+		evt.ParentToolUseID = root
+	}
 	return r.dispatch(evt)
 }
 

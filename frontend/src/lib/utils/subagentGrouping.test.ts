@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  decoratedSubagentAggregates,
   enforceUniqueTimelineNodeKeys,
   finalAssistantTextIdsByTurn,
   findTimelineNodeIndex,
@@ -1633,6 +1634,9 @@ describe('groupItemsBySubagent — launch kinds', () => {
   it('renders a SendMessage resume carrier as a group and folds its round-2 completion', () => {
     // claude-wire.md §E6: round 2 of a resumed async agent is carried by the
     // resuming tool_use, and writes its own `complete:<carrierID>` sibling.
+    // Rows parented to the carrier are the page-boundary shape only — in
+    // production every round is parented to the ORIGINAL launch and the
+    // per-round slicing below is what fills this card.
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'toolu_resume',
@@ -1674,6 +1678,222 @@ describe('groupItemsBySubagent — launch kinds', () => {
     expect(group.parent.id).toBe('toolu_resume');
     expect(group.children.map((child) => expectLeaf(child).item.id)).toEqual(['round2-tool']);
     expect(group.completion?.id).toBe('complete:toolu_resume');
+  });
+
+  // ---- §E6 per-round slicing ----------------------------------------
+  // Every resumed round is parented to the ORIGINAL launch, in every
+  // round; only the lifecycle rebinds onto the carrier. Each carrier's
+  // card must therefore be handed ITS slice of the root's bucket.
+  function resumeRoundsFixture(): Item[] {
+    return [
+      // Round 1: the original async launch, its tool row, its completion.
+      mkItem({
+        id: 'toolu_root',
+        itemIndex: 0,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        isBackground: true,
+        status: 'running',
+        createdAt: 100,
+        summary: 'Agent: audit the parser',
+        meta: toolMeta({ toolName: 'Agent', input: { subagent_type: 'general-purpose' } }),
+      }),
+      mkItem({
+        id: 'round1-tool',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'Bash',
+        parentId: 'toolu_root',
+        createdAt: 110,
+        summary: 'Bash: round one',
+      }),
+      mkItem({
+        id: 'complete:toolu_root',
+        itemIndex: 2,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        isBackground: true,
+        completionOf: 'toolu_root',
+        createdAt: 120,
+        summary: 'Agent: audit the parser -> done',
+      }),
+      // Round 2: the carrier (top level, nothing parented to it), the
+      // resume prompt row, and the round's own rows — all parented to the
+      // ROOT.
+      mkItem({
+        id: 'toolu_resume',
+        itemIndex: 3,
+        kind: 'tool_call',
+        toolName: 'SendMessage',
+        isBackground: true,
+        status: 'running',
+        createdAt: 200,
+        summary: 'Agent: audit the parser',
+        meta: toolMeta({
+          task_id: 'a1',
+          transcript_root_id: 'toolu_root',
+          subagent_type: 'general-purpose',
+        }),
+      }),
+      mkItem({
+        id: 'user:subagent-prompt:toolu_resume',
+        itemIndex: 4,
+        kind: 'user_text',
+        role: 'user',
+        parentId: 'toolu_root',
+        createdAt: 200,
+        summary: 'now check the lexer too',
+        meta: toolMeta({ subagent_resume_prompt: true, resume_carrier_id: 'toolu_resume' }),
+      }),
+      mkItem({
+        id: 'round2-tool',
+        itemIndex: 5,
+        kind: 'tool_call',
+        toolName: 'Bash',
+        parentId: 'toolu_root',
+        createdAt: 210,
+        summary: 'Bash: round two',
+      }),
+      mkItem({
+        id: 'round2-nested-launch',
+        itemIndex: 6,
+        kind: 'tool_call',
+        toolName: 'Agent',
+        status: 'completed',
+        parentId: 'toolu_root',
+        createdAt: 215,
+        summary: 'Agent: nested',
+        meta: toolMeta({ toolName: 'Agent', input: { subagent_type: 'Explore' } }),
+      }),
+      mkItem({
+        id: 'round2-nested-child',
+        itemIndex: 7,
+        kind: 'tool_call',
+        toolName: 'Read',
+        parentId: 'round2-nested-launch',
+        createdAt: 216,
+        summary: 'Read: lexer.ts',
+      }),
+      mkItem({
+        id: 'round2-text',
+        itemIndex: 8,
+        kind: 'assistant_text',
+        parentId: 'toolu_root',
+        createdAt: 220,
+        summary: 'the lexer is fine',
+      }),
+      mkItem({
+        id: 'complete:toolu_resume',
+        itemIndex: 9,
+        kind: 'tool_completion',
+        toolName: 'SendMessage',
+        isBackground: true,
+        completionOf: 'toolu_resume',
+        createdAt: 230,
+        summary: 'Agent: audit the parser -> done',
+      }),
+    ];
+  }
+
+  it('slices the root bucket per resume round, nested launch and all', () => {
+    const nodes = groupItemsBySubagent(resumeRoundsFixture());
+
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
+      'toolu_root',
+      'complete:toolu_root',
+      'toolu_resume',
+      'complete:toolu_resume',
+    ]);
+
+    // Round 1's card keeps only round 1.
+    const round1 = expectGroup(nodes[1]);
+    expect(round1.parent.id).toBe('toolu_root');
+    expect(round1.children.map((child) => timelineNodeItemId(child))).toEqual(['round1-tool']);
+
+    // Round 2's card is the carrier's, at the carrier's completion, and
+    // carries the resume prompt, the round's rows, and its nested launch
+    // as a card of its own (the nested launch keeps its own bucket).
+    const round2 = expectGroup(nodes[3]);
+    expect(round2.parent.id).toBe('toolu_resume');
+    expect(round2.children.map((child) => timelineNodeItemId(child))).toEqual([
+      'user:subagent-prompt:toolu_resume',
+      'round2-tool',
+      'round2-nested-launch',
+      'round2-text',
+    ]);
+    const nested = expectGroup(round2.children[2]);
+    expect(nested.children.map((child) => expectLeaf(child).item.id)).toEqual([
+      'round2-nested-child',
+    ]);
+  });
+
+  it('falls back to the carrier timestamp when the resume prompt row is not loaded', () => {
+    const items = resumeRoundsFixture().filter(
+      (item) => item.id !== 'user:subagent-prompt:toolu_resume',
+    );
+    const nodes = groupItemsBySubagent(items);
+
+    expect(expectGroup(nodes[1]).children.map((child) => timelineNodeItemId(child))).toEqual([
+      'round1-tool',
+    ]);
+    expect(expectGroup(nodes[3]).children.map((child) => timelineNodeItemId(child))).toEqual([
+      'round2-tool',
+      'round2-nested-launch',
+      'round2-text',
+    ]);
+  });
+
+  it('gives each of three rounds its own slice', () => {
+    const items = [
+      ...resumeRoundsFixture(),
+      mkItem({
+        id: 'toolu_resume_3',
+        itemIndex: 10,
+        kind: 'tool_call',
+        toolName: 'SendMessage',
+        isBackground: true,
+        status: 'running',
+        createdAt: 300,
+        summary: 'Agent: audit the parser',
+        // Round 3 still names the ORIGINAL launch, never round 2's carrier.
+        meta: toolMeta({ task_id: 'a2', transcript_root_id: 'toolu_root' }),
+      }),
+      mkItem({
+        id: 'user:subagent-prompt:toolu_resume_3',
+        itemIndex: 11,
+        kind: 'user_text',
+        role: 'user',
+        parentId: 'toolu_root',
+        createdAt: 300,
+        summary: 'and the printer',
+      }),
+      mkItem({
+        id: 'round3-tool',
+        itemIndex: 12,
+        kind: 'tool_call',
+        toolName: 'Bash',
+        parentId: 'toolu_root',
+        createdAt: 310,
+        summary: 'Bash: round three',
+      }),
+    ];
+    const nodes = groupItemsBySubagent(items);
+
+    expect(expectGroup(nodes[1]).children.map((child) => timelineNodeItemId(child))).toEqual([
+      'round1-tool',
+    ]);
+    expect(expectGroup(nodes[3]).children.map((child) => timelineNodeItemId(child))).toEqual([
+      'user:subagent-prompt:toolu_resume',
+      'round2-tool',
+      'round2-nested-launch',
+      'round2-text',
+    ]);
+    // Round 3 has not completed, so its card has not rendered yet: its
+    // rows belong to the carrier and must not fall back to the root.
+    const roundThreeLeaves = nodes.filter(
+      (node) => timelineNodeItemId(node) === 'round3-tool',
+    );
+    expect(roundThreeLeaves).toHaveLength(0);
   });
 
   it('keeps an ordinary SendMessage a leaf and does not adopt rows under it', () => {
@@ -3214,5 +3434,48 @@ describe('enforceUniqueTimelineNodeKeys', () => {
     const records = await diagnostics.all();
     expect(records).toHaveLength(1);
     expect(records[0].detail).toContain('1 shared-node');
+  });
+});
+
+describe('decoratedSubagentAggregates', () => {
+  // The store bounds a resumed agent's decoration per ROUND (each round is
+  // its own card) and stamps the whole-transcript count on the root only,
+  // which the agent pane — scoped to the root, showing every round — uses
+  // as its hydration expectation.
+  function anchor(decoration: Record<string, unknown>): Item {
+    return mkItem({
+      id: 'agent-1',
+      itemIndex: 0,
+      kind: 'tool_call',
+      toolName: 'Agent',
+      summary: 'Agent: investigate',
+      meta: toolMeta({ toolName: 'Agent', input: { description: 'investigate' }, ...decoration }),
+    });
+  }
+
+  it('reads the round count and the whole-transcript count separately', () => {
+    const agg = decoratedSubagentAggregates(anchor({
+      subagentDescendantCount: 3,
+      subagentTranscriptDescendantCount: 11,
+      subagentLatestChildSummary: ' go test ./... ',
+    }));
+    expect(agg.count).toBe(3);
+    expect(agg.transcriptCount).toBe(11);
+    expect(agg.summary).toBe('go test ./...');
+  });
+
+  it('falls back to the round count when the anchor has no rounds', () => {
+    expect(decoratedSubagentAggregates(anchor({ subagentDescendantCount: 4 })).transcriptCount).toBe(4);
+  });
+
+  it('never lets the transcript count drop below the round count', () => {
+    expect(decoratedSubagentAggregates(anchor({
+      subagentDescendantCount: 4,
+      subagentTranscriptDescendantCount: 2,
+    })).transcriptCount).toBe(4);
+    expect(decoratedSubagentAggregates(anchor({
+      subagentDescendantCount: 4,
+      subagentTranscriptDescendantCount: 'many',
+    })).transcriptCount).toBe(4);
   });
 });

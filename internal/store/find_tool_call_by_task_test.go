@@ -176,3 +176,61 @@ func TestFindOriginalAgentLaunchByTaskID(t *testing.T) {
 		t.Fatalf("unknown task id: ok=%v err=%v, want no match", ok, err)
 	}
 }
+
+// TestFindProvisionalSubagentPrompt pins the §E6 resume-prompt
+// reconciliation lookup: the row minted from the rebind
+// `system/task_started` (which has no provider uuid to give) is found by
+// (parent, exact summary) so the terminal transcript can bind its uuid
+// onto it in place. A row that is already bound, one under another
+// parent, and one with different text are all misses — each would bind
+// the transcript's copy onto the wrong row.
+func TestFindProvisionalSubagentPrompt(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.CreateThread(Thread{
+		ID: "t-p", ProjectID: defaultTestProjectID, Title: "T",
+		Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	seed := func(id, parentID, summary, meta string, itemIndex int) {
+		t.Helper()
+		if err := s.InsertItem(Item{
+			ID: id, ThreadID: "t-p", TurnIndex: 0, ItemIndex: itemIndex,
+			Kind: "user_text", Role: "user", Status: "completed",
+			Summary: summary, ParentID: parentID, Meta: meta,
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+	seed("root", "", "top level prompt", `{"subagent_prompt_provisional":true}`, 0)
+	// Already bound: its uuid arrived, so it is nobody's reconciliation target.
+	seed("bound", "agent-1", "keep going",
+		`{"subagent_prompt_provisional":true,"provider_item_id":"uuid-1"}`, 1)
+	seed("other-parent", "agent-2", "keep going", `{"subagent_prompt_provisional":true}`, 2)
+	seed("wanted", "agent-1", "keep going", `{"subagent_prompt_provisional":true}`, 3)
+
+	item, ok, err := s.FindProvisionalSubagentPrompt("t-p", "agent-1", "keep going")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if !ok || item.ID != "wanted" {
+		t.Fatalf("resolved %q (ok=%v), want wanted", item.ID, ok)
+	}
+
+	if _, ok, err := s.FindProvisionalSubagentPrompt("t-p", "agent-1", "different text"); err != nil || ok {
+		t.Fatalf("different text matched: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := s.FindProvisionalSubagentPrompt("t-p", "agent-3", "keep going"); err != nil || ok {
+		t.Fatalf("unknown parent matched: ok=%v err=%v", ok, err)
+	}
+	// A top-level row is never a scoped prompt: the empty parent
+	// short-circuits before the query, which is also what keeps the
+	// partial idx_items_parent predicate honest.
+	if _, ok, err := s.FindProvisionalSubagentPrompt("t-p", "", "top level prompt"); err != nil || ok {
+		t.Fatalf("empty parent matched: ok=%v err=%v", ok, err)
+	}
+}

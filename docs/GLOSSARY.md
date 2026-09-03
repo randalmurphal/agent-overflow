@@ -144,6 +144,8 @@ Source: `frontend/AGENTS.md`.
 | **peer session-turn** | A turn on a provider session AO is connected to that some OTHER client's action produced. The external-queue turn is the one AO currently sees; the term names the class, so a second producer is distinguishable rather than folded into "not ours". |
 | **history cut** | Truncating a provider thread's own history at a turn boundary, the provider-side half of edit-and-resend. Codex has three, all turn-granular; AO uses two: the in-place `thread/revert { beforeTurnId }` (keeps the thread id) and `thread/fork { lastTurnId }` (mints a new one). The two anchors describe the same boundary from opposite sides, which is why they are resolved separately (`internal/provider/codex/AGENTS.md` §"History truncation"). |
 | **item_index** | Server-assigned, immutable after first upsert, in intended-appearance order, not wire-arrival order. The timeline ordering contract rests on this (`invariants.md` §1). |
+| **resume carrier** | The `SendMessage` tool_call that resumed an idle Claude async agent (§E6). The CLI rebinds the task lifecycle (task_started/progress/notification, Stop) onto it, so it owns run state, elapsed and Stop for that round, and nothing is ever parented to it (`docs/references/claude-wire.md` §E6, `internal/triage/AGENTS.md`). |
+| **transcript root** | The ORIGINAL Agent/Task launch of a resumed agent: every round's rows, round one and each resumed round, keep it as `parent_tool_use_id`. A carrier names it in `meta.transcript_root_id`; every scope-resolving path (triage `transcriptRoot`, store `ListSubagentDescendants`, frontend `agentScopeRootId`) resolves a carrier to it first. |
 
 ## Test rigs and process
 
