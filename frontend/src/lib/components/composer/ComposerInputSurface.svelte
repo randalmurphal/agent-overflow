@@ -297,6 +297,10 @@
     return uploads.uploading;
   }
 
+  export function waitForUploads(): Promise<void> {
+    return uploads.waitForUploads();
+  }
+
   export function handleDragEnter(event: DragEvent): void {
     if (refuseAttachment(event, false)) return;
     uploads.handleDragEnter(event);
