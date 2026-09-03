@@ -2524,9 +2524,10 @@ export function ListReleases(): $CancellablePromise<app$0.ReleaseSummary[]> {
  * live-render tuning value, so the terminal rows it carries are dropped
  * and an inventory reports what is running.
  * 
- * The WRITE half does not follow it: StopThreadBackgroundWork stays
- * local-only. Seeing what a host is running and killing it are separate
- * authorizations, and only the read is safe on a session alone.
+ * The WRITE half is scoped separately, and higher:
+ * StopThreadBackgroundWork carries threads:operate. Seeing what a host
+ * is running and killing it are different authorizations, and a session
+ * granted only reads gets the inventory and not the stop.
  */
 export function ListRunningBackgroundWork(): $CancellablePromise<app$0.BackgroundWorkInventory> {
     return $Call.ByID(3808352241).then(($result: any) => {
@@ -3029,6 +3030,11 @@ export function ProjectDeletionPreview(projectID: string): $CancellablePromise<a
  * for every chunk; the terminal ring keeps buffering for replay regardless, so
  * nothing is lost between attach and the frontend's first replay fetch (the
  * frontend dedupes overlap by the replay watermark).
+ * 
+ * The claim is released when this connection drops, so a client that dies
+ * mid-take-control does not leave the input lease held. The frontend SHOULD
+ * still call ProviderTerminalDetach on unmount; the connection-tied cleanup is
+ * the safety net for unclean disconnects.
  */
 export function ProviderTerminalAttach(threadID: string): $CancellablePromise<app$0.ProviderTerminalHandle> {
     return $Call.ByID(1393518281, threadID).then(($result: any) => {
@@ -3037,8 +3043,11 @@ export function ProviderTerminalAttach(threadID: string): $CancellablePromise<ap
 }
 
 /**
- * ProviderTerminalDetach stops output fan-out and releases the take-control
- * lease for the session's terminal. Called when a take-control pane closes.
+ * ProviderTerminalDetach stops output fan-out for this caller and releases the
+ * take-control lease if it held it. Called when a take-control pane closes.
+ * Idempotent, and never an error: the connection-cleanup safety net may have
+ * released the same claim first, and a caller that already has nothing to give
+ * back has nothing to be told.
  */
 export function ProviderTerminalDetach(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(2584141779, threadID);
@@ -3046,8 +3055,9 @@ export function ProviderTerminalDetach(threadID: string): $CancellablePromise<vo
 
 /**
  * ProviderTerminalInput delivers base64-encoded human keystrokes to the PTY.
- * The session refuses input unless the take-control lease is held, so a
- * read-only attach cannot inject keystrokes even if a caller tries.
+ * The session refuses input unless THIS caller's attachment holds the
+ * take-control lease, so neither a read-only attach nor a second pane watching
+ * over the holder's shoulder can inject keystrokes.
  */
 export function ProviderTerminalInput(threadID: string, dataB64: string): $CancellablePromise<void> {
     return $Call.ByID(1783659784, threadID, dataB64);
@@ -3082,8 +3092,14 @@ export function ProviderTerminalResize(threadID: string, rows: number, cols: num
 
 /**
  * ProviderTerminalSetControl acquires (control=true) or releases the human
- * take-control input lease. While a human holds it, AO's programmatic Send is
- * refused so the two input drivers never interleave.
+ * take-control input lease for THIS caller's attachment. While a human holds
+ * it, AO's programmatic Send is refused so the two input drivers never
+ * interleave, and another client's acquire is refused rather than taking the
+ * keyboard away.
+ * 
+ * Releasing without an attachment is a no-op: a pane unmounting after its
+ * session died has nothing left to give back, and reporting that as a failure
+ * would leave the UI showing a lease nobody holds.
  */
 export function ProviderTerminalSetControl(threadID: string, control: boolean): $CancellablePromise<void> {
     return $Call.ByID(1382066673, threadID, control);

@@ -476,6 +476,15 @@ arbitrated by an **input lease**:
 Handing control back re-asserts the provider lease; because the taps never
 paused, AO reconciles and resumes cleanly.
 
+**A lease belongs to one client, and dies with its connection.** Attaching is
+refcounted: each client gets its own `*claudetui.TerminalAttachment`, and the
+app mints one per WebSocket connection and registers its release with the
+socket's teardown. So two panes may watch one session, only one of them holds
+the input lease at a time, an acquire while another holds it is refused rather
+than granted, and a client that disappears mid-take-control gives the lease
+back on its own instead of leaving every `Send` on the thread refused until the
+session restarts.
+
 - **Repaint on attach.** An Ink TUI in a freshly-attached xterm shows stale
   content until forced to redraw. Call `terminal.Session.Refresh` (the
   serialized shrink→pause→restore winsize nudge) on attach. Never call

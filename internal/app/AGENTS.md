@@ -743,6 +743,45 @@ per attached backend, fed by both channels and re-read on every hello) and
 `components/settings/MachineUpdates.svelte`; its guide entry is
 `frontend/src/lib/stores/AGENTS.md`.
 
+## An armed resource belongs to its connection
+
+A bound method that arms something on behalf of ONE client owes that
+client's connection a way to give it back. The client's own un-arm call is
+the happy path; the connection dying without one is the path that leaks.
+`transport.ConnState` is the seam: take a leading `ctx context.Context`,
+read `transport.ConnStateFromContext(ctx)`, and register the release with
+`state.RegisterCleanup` — and release inline when it returns false, because
+a connection already tearing down will run no more callbacks. A `nil`
+ConnState is not an error: it is every in-process caller (a saga, a test),
+which gets no safety net and owes the explicit release it always did.
+
+- **The take-control lease is the worked example.** A claude-tui PTY
+  attachment belongs to the connection that made it
+  (`app_claudetui_terminal.go`), so a socket that dies mid-take-control
+  gives the input lease back and a second client attaching takes nothing
+  from the first. It was one session-wide boolean and one session-wide
+  sink: a dead client left the lease held and refused every `Send` on that
+  thread until the session restarted, and either client's detach stripped
+  the other's. The cleanup is registered once per CONNECTION (`arm`), not
+  once per attach, and releases every claim that socket still holds: a
+  pane remounting a hundred times over one socket leaves one closure, not
+  a hundred.
+- **`TestArmingMethodsAreTiedToTheirConnection` is the gate.** It
+  AST-scans this package for exported `*App` methods whose name carries an
+  arm/un-arm word at a CamelCase boundary (`Attach`, `Detach`,
+  `Subscribe`, `Unsubscribe`, `SetControl`, `TakeControl`,
+  `ReleaseControl`, `Hold`, `Release`, `Acquire`) and fails unless the body
+  — or a helper it calls in the same file — reads
+  `ConnStateFromContext`. The alternative is one line in
+  `connStateExemptMethods` saying why the resource is not per connection;
+  four entries qualify today, all of them releases BY ID whose arming half
+  owns the tie. An exemption naming a method that no longer matches fails
+  too, so the prose cannot outlive what it excused.
+- **Satisfying the gate changes no wire signature.** The generator strips
+  the leading `ctx` from the TS bindings and hashes the method NAME, so
+  the id is stable — but regenerate both halves anyway (`make methodgen`
+  and `wails3 generate bindings -ts`), because the doc comment travels.
+
 ## Tests
 
 Application tests stay beside the shell. `main_test.go` changes their working

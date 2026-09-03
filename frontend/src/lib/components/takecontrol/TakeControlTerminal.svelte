@@ -5,6 +5,12 @@
   // the take-control lease so a read-only attach can't inject keystrokes. The
   // xterm construction (renderer, glyph + key handling) is shared with the
   // app terminal via terminalXterm.buildTerminal — only the I/O backend differs.
+  //
+  // The attach belongs to THIS connection. A second pane elsewhere attaches
+  // alongside rather than displacing this one, its take-control request is
+  // refused while this one holds the lease, and a socket that dies without
+  // unmounting gives the lease back on its own — so the detach below is the
+  // tidy path, not the only one.
   import { onMount, onDestroy } from 'svelte';
   import type { Terminal } from '@xterm/xterm';
   import type { FitAddon } from '@xterm/addon-fit';
@@ -295,8 +301,9 @@
       focusCounted = false;
       notifyTerminalFocus(paneId, false);
     }
-    // Detach releases the take-control lease and stops output fan-out in one
-    // call (the backend clears both on detach).
+    // Detach releases this connection's take-control lease and drops it from
+    // the output fan-out in one call. Another pane attached to the same
+    // session keeps both.
     ProviderTerminalDetach(threadId).catch((err) => {
       console.error('take-control: ProviderTerminalDetach failed', err);
     });

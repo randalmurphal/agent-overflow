@@ -151,11 +151,16 @@ type App struct {
 	// profile directory to keep pairings in — a test fixture, and the
 	// harness — and every attached-backend method is a plain refusal
 	// then, never a panic.
-	backends       *attachedbackends.Manager
-	terminals      *terminal.Manager
-	attachments    *attachment.Store
-	workspaceFiles *workspacefiles.Searcher
-	logger         *logging.Logger
+	backends  *attachedbackends.Manager
+	terminals *terminal.Manager
+	// providerTerminals is the per-connection take-control bookkeeping for
+	// claude-tui PTYs: which caller armed which attachment, so a dead socket
+	// releases exactly its own claim and its input lease. Zero value ready.
+	// See app_claudetui_terminal.go.
+	providerTerminals providerTerminalAttachments
+	attachments       *attachment.Store
+	workspaceFiles    *workspacefiles.Searcher
+	logger            *logging.Logger
 	// engineLogger is the workflow run-lifecycle log. Separate from `logger`
 	// because it is always on: the provider-event log is a debugging opt-in,
 	// while a park's diagnosis has to be readable without having enabled
