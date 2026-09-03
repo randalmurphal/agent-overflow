@@ -1,431 +1,336 @@
 # Perf investigation reference
 
-Measured on the 2026-08-22/23 investigation (Windows 11, WebView2, window 2560x1369, dev build). Numbers are floors to subtract, not targets. Append to the ledgers at the bottom when an investigation moves them.
-
-## Floors
-
-Renderer ("Agent Overflow (dev)") at first start, two panes visible: 112-128MB private. cc/tile_memory 69MB, v8 29MB, blink_gc 23MB, malloc 36MB, partition_alloc 11MB, gpu/transfer_buffer 16MB.
-
-- Raster tiles are visible content only. Until 2026-08-23 `7b29f9d6` every visible timeline plane was its own composited layer: ~7MB (3 tiles of 896x704) per plane, 2.4MB per visible activity run, 13.8MB for the root layer (4 tiles of 2560x352), 0.2-0.9MB per Overlap-promoted fade or divider, 54-64MB active in total. That commit deleted the `will-change` promotion, so timeline content paints into the root layer: the promoted-element census fell from ~40MB of estimated texture over five planes to 0.6MB, renderer `cc/tile_memory` from 60-86MB to 27.5MB, and the GPU process from 297-336MB to 198-217MB (the last pair is flattered by six panes on a fresh start against 13-17 panes on an hour-old one). Panes scrolled out of the strip hold no tiles (cc's policy is ALLOW_PREPAINT_ONLY with a 512MB soft limit, and it only keeps NOW and SOON bins). memory-infra's `cc/tile_memory` also counts the pool of recently freed tiles that streaming re-raster double-buffers; the GPU process mirrors the same bytes as `gpu/shared_images`.
-- blink_gc (Oilpan) committed is page fragmentation, not live data and not a leak. Measured 2026-08-24 on the post-`7b29f9d6` build: `probe memdump` reported 117.8MB committed against 24.4MB of objects, and the detailed dump's per-page rows put 920 pages at 21% fill, with 303 of them (39.4MB) completely empty and only 41 over three-quarters full. Sweeping empties objects out of pages, the pages stay committed, and fresh allocation takes new pages instead of refilling sparse ones. Two class censuses 28 minutes apart settle it: committed went 90.5 to 109.9MB while objects went 19.9 to 15.4MB over the same 1208 classes, every top class flat or shrinking (`PlaneRootTransform` 6397 to 461 instances). Objects down, committed up, so nothing is retained. The garbage pile is a sawtooth — Chromium purges on page-hidden and memory pressure, only a memory-reducing GC returns pages, and the peak is set by the churn rate — but the SURVIVOR-pinned floor under it RATCHETS (next bullet).
-- The committed floor that survives memory-reducing GCs is pinned pages, and the pinning population is attributable per page. `probe blinkpages` right after a trim (2026-08-25): `committed=178.9MB allocated=20.5MB fragmentation=88 pooled=4.5MB` — pool retention is nothing, 98% of NormalPageSpace0's 37.25MB held 0.45MB of objects (Space1 27.1/1.5, Space2 32.4/4.7, Space3 39.4/7.1, CustomSpace3 19.25/0.26). A memory-reducing GC returns only fully-empty 128KB pages; a page with one long-lived survivor stays forever, cppgc compacts only backing-store spaces, so the floor ratchets with session age: post-trim committed went 153→178→240MB over 80min of fleet load THROUGH five trims, live flat at ~20. The census's per-page type rows name the pinners: ~57 isolated SVG document hosts' per-window singletons (each spread over ~28 pages — killed by `5ccf3a2e`, see Fixed causes) and the CSS value caches in CustomSpace3 (`CSSNumericLiteralValue` 4132 objs/112 pages, `CSSUnparsedDeclarationValue` — custom-property values — 2187/133).
-- Ordinary major GCs run about every 10 seconds in this app (`probe frames`: 2 MajorGC in 20s, 5.5ms total, 2.8ms worst, plus 189 incremental marking steps at 0.7ms max). They sweep; they do not return pages. Any proposal that works by making major GCs more frequent is answering the wrong question.
-- Detached DOM nodes hover around 3.2k in a dev build and stay flat. A step up that persists after a pane closes is the leak signal.
-
-GPU process: about 185-230MB at first start and it does not fall below that. Roughly 100-120MB is fixed (D3D11/ANGLE driver heap, DirectComposition swap chain at 2560x1369 ≈ 14MB per buffer, skia GPU cache ≈ 16MB, shared images ≈ 13MB, transfer buffers), 40-50MB is heap slack, and cc/resource_memory (tiles, 40MB at start) scales with composited planes. It is not attributable to app code below that line.
-
-Steady state with a restored 12-pane strip (2026-08-25, dump at 290.5MB private): tracked allocators total ~146MB — malloc 98.9 (win_heap 38.7 + partitions 50.3 + metadata/fragmentation caches 10.5), cc/resource_memory 16.8, gpu 15.7 (shared_images 13.4, shader_cache 2.2), skia 13.5, shared_memory 1.2 (plus one 16MB renderer↔GPU transfer segment). The other ~145MB is invisible to memory-infra: D3D11 usermode driver + DirectComposition. The band is a floor, not growth — a fresh restart re-entered 246-280MB within minutes, identical to the 5-hour-old process, and the app-drivable slice (tiles + shared images + skia ≈ 45MB) is already post-`7b29f9d6` minimal. Peaks to 340-440MB are the documented transient driver staging (line below). No app-side lever cuts the steady band without rastering less.
-
-Empty profile (fresh `make soak` wipe, zero threads, 2026-08-25): renderer 35MB, GPU 77MB, group 153MB. The app existing costs ~150MB group-wide; everything above that under load is attributable.
-
-Browser process ("Manager"): 40-55MB, mostly IndexedDB/leveldb and malloc. Network, Storage, Crashpad: under 10MB each.
-
-Go backend: 13MB live heap on 6363. Lean; one confirmation profile per investigation is enough.
-
-## Interpretation
-
-- Task Manager's column is private working set; memory-infra `private_kb` matches it within a few MB.
-- JS is under 2% of wall time in steady state. Per-frame cost is native: the reveal smoother, the 8Hz ambient ticker, the ~20fps sprite, the spring, and the composited layer set (25-27 layers, 14-15 promoted by Overlap).
-- `PlaneRootTransform` was the top Oilpan churn class until 2026-08-23 `7b29f9d6` (21.6 of 28 MB/min, 1,300 allocations/s). Chromium `main` (`geometry_mapper_transform_cache.cc` `Update`) calls `MakeGarbageCollected<PlaneRootTransform>` on every cache regeneration, both for a flat non-2D-translation node and for every 2D-translation node under one, with no reuse. Any transform or clip node change anywhere bumps the global generation, and the next paint, hit test or IntersectionObserver query re-allocates for every node it walks. The app fed that loop through `.scroll-composited-content { will-change: transform, translate, rotate }`, which made every timeline plane a flat non-2D-translation node over a subtree of 2D-translation descendants, with the spring writing a transform every glide frame. Removing the rule removed the feed — at idle. An earlier claim that the class was "absent from churn now" was an idle-only measurement: WHILE SCROLLING it was still 72% of Oilpan churn on 2026-08-24 (26.44MB/min, `scrolldrift` probe), because every `<svg>` root whose rendered size differs from its viewBox qualifies as such a node (`NeedsReplacedContentTransform` gives it a scale) and the app mounted ~400 scaled lucide roots; scroll-driven paint-property updates bump the generation. Fixed 2026-08-24 by converting lucide to CSS-mask spans and matching MeterRing's viewBox to its rendered box (see Fixed causes).
-- DevTools `HeapProfiler.collectGarbage` (what the between-turns trim fires) is `v8::debug::ForceGarbageCollection(isolate, kNoHeapPointers)` → `isolate->LowMemoryNotification()` — the memory-reducing path, Oilpan included, verified in v8 `src/inspector/v8-heap-profiler-agent-impl.cc` + `src/debug/debug-interface.cc` (2026-08-25). Committed pages surviving it are pinned (previous bullet), never "wrong GC type".
-- A `memdump` trigger unit that auto-restarts fires a DETAILED dump every restart while the process sits above its threshold — each one walks every heap in every process and is user-visible as lag + CPU (2026-08-25: 65s cadence during a 380MB plateau was the user's "laggy feeling"). A threshold trigger is a one-shot forensic; after it fires, stop the unit or raise the threshold, and leave only light polling (`probe sample`) standing.
-- `Runtime.queryObjects`, the only way to census detached nodes from outside, runs `CollectAllAvailableGarbage` before it answers (v8 `src/profiler/heap-profiler.cc`: "we should return accurate information about live objects, so we need to collect all garbage first"). That is the memory-reducing collection, Oilpan included, so a poll loop calling it holds the renderer at a floor it never reaches on its own and hides every peak between ticks. Measured 2026-08-23: a 2-minute `sample --detached` loop pinned the renderer at 256-281MB across 100 minutes of real use, while the same build sat 600-700MB group-wide unmeasured. Footprint curve and retention census are separate runs.
-- In a heap snapshot, detachedness is a node field (`detachedness === 2`). The `Detached ` name prefix is absent in current snapshots; a census keyed on it reports everything attached.
-- A retaining path `system / Context → <moduleVar$1> → reactions → derived` means a module-scope svelte signal still holds a reaction from a dead component. Read the derived's `parent` chain: an effect with `fn === null` was destroyed, so the derived outlived its owner and is held only through the signal.
-
-## Red/green recipe for a svelte patch hunk
-
-Prove the bug on the previous patch, the fix on the new one, without touching node_modules by hand:
-
-1. Keep copies of the new patch and lock outside the tree (`cp frontend/patches/svelte@*.patch frontend/pnpm-lock.yaml /tmp/...`).
-2. `git show HEAD:frontend/patches/svelte@<v>.patch > frontend/patches/svelte@<v>.patch`, same for `pnpm-lock.yaml`, then `cd frontend && pnpm install --offline`. Run the suite: it must fail.
-3. Copy the saved files back, `pnpm install --offline`, run again: green.
-
-Edit a hunk with `pnpm patch svelte@<v> --edit-dir <dir>` (applies the existing patch first) and `pnpm patch-commit <dir>`; only the patch hash changes in the lock. `svelte/internal/client` exports `get/set/state` in its types but `derived/effect/effect_root` only at runtime (import the namespace and cast).
-
-## The present-policy mechanism, measured (2026-08-24)
-
-`scripts/perfprobe/present-policy-arms.mjs` + `present-policy-page.html`. Synthetic
-timeline, repeated compensated head splices, three-plus arms. Headless +
-SoftwareRenderer + one raster thread, so only the arm-to-arm comparison counts.
-
-The Print Doctrine's conclusion is right and its named mechanism was wrong. There
-is no smoothness-priority flip: `tree_priority` stays `SAME_PRIORITY_FOR_BOTH_TREES`
-in every arm (that mode is pinch / active compositor scroll). What an active
-animation changes is the DRAW DRIVE — `SetNeedsOneBeginImplFrameOnImplThread`
-0 -> 781, `LayerTreeHostImpl::PrepareToDraw` 34 -> ~650 — so the compositor draws on
-the frame deadline instead of waiting for raster.
-
-Draws landing while raster is still outstanding, 3 repeats:
-
-| animating elements | 0 | 1 | 3 | 14 | 30 |
-|---|---|---|---|---|---|
-| draws | 34 | 638 | 637 | 652 | 670 |
-| during outstanding raster | 3 | 20 | 15 | 17 | 17 |
-
-**Binary, not proportional.** One animation costs what thirty do; the only
-meaningful state is zero. **Document-wide, not scroller-scoped:** an animation
-outside the scroller scores the same as one inside (18 vs 23).
-
-**Resolved 2026-08-24, user's call: accept the mode.** Zero is unreachable —
-`working-sprite-run`, `ambient-led` and `ambient-spin` run through every working
-turn, and `TailClampedText`'s line-slide runs continuously through streaming, and
-all four are wanted. Reverting `animate-pulse` alone therefore closed nothing and
-charged ~28 whole-document repaints/sec for it, so pulse went back to CSS. Do not
-re-propose a middle position — the measurement says there isn't one.
-
-## The ambient indicators drive ~two thirds of the renderer main thread
-
-**Built 2026-08-23, reversed, then re-landed 2026-08-24.** The pulse, LED chase,
-stepped spin and sprite are all CSS keyframes (`app.css`), phase-locked to
-wall clock by `utils/ambientPhase.ts`. The sprite was the single largest
-writer (25/s) and is the bulk of the win; the pulse was ~28 whole-document
-repaints/sec on top.
-
-**The rule is opacity-only and stepped, not "no animation objects".** `1633dcea`
-disarmed `animate-pulse` on the object-counting theory and was reverted once the
-section above measured it. What survives, guarded by
-`frontend/src/lib/components/chat/timelineKeyframeAnimations.test.ts`: an
-animation reachable from a chat row may animate `opacity` and nothing else (a
-transform or size is a third motion owner fighting the scroll controller's
-compensation), and anything `infinite` must be stepped, checked over `app.css`
-exhaustively because the 2026-07-04 present-rate hazard is document-wide. The
-guard reads `@keyframes` bodies and the armed-class set out of `app.css`, so a
-new animation fails the build rather than needing review memory.
-
-The status glow is the last indicator still on the JS ticker, and for a property
-reason, not a placement one: `box-shadow` is not compositable and opacity alone
-cannot reproduce spread GROWTH. The ticker suspends outright when no consumer is
-on screen, waking from a MutationObserver, and a glow only appears on a thread
-pending user action — so an ordinary session has zero ambient wakeups.
-
-**Promotion cost of arming the dots, measured 2026-08-24** (same headless rig,
-`LayerTree.enable` over the `present-policy-page.html` arms, 60-row scroller): a
-composited animation promotes its own element and nothing else. Layers went
-8 / 9 / 11 / 22 / 38 at 0 / 1 / 3 / 14 / 30 dots — exactly +1 per dot, no overlap
-cascade — and every added layer is the dot's own 8x8 box, so estimated texture
-went 34.30MB to 34.31MB across the whole sweep. Arming a small opacity animation
-is not a tile-memory question; do not re-litigate it as one.
-
-Two findings only the build surfaced: a composited translate resamples the sprite
-texture unless the frame width is snapped to whole DEVICE pixels (25px frame at 125%
-scaling: 80.8% of pixels resampled), and a filtered ancestor (light mode's
-drop-shadow) does NOT de-composite the strip. The section below is the measurement
-that motivated the work; keep it for the mechanism, not as a description of current
-code.
-
-Measured 2026-08-23 on the live app (`probe frames 20`, trace kept at
-`trace-postsvg.json`) plus four isolated Chrome 151 spikes under
-`/tmp/svg-chunk-spike/` (throwaway profile, never the app's).
-
-App, 20s while a turn streamed: 967 main-thread animation frames (48/s) but
-only 248 rAF callbacks. 1055 of 1084 style invalidations are inline-style
-writes from two timers, and they name themselves in the trace:
-
-- `SPAN.working-sprite` 501x (25/s) — `WorkingSprite.svelte` writing
-  `background-position-x` at the sprite's own `frameMs`.
-- `.animate-pulse` dots 554x (~8 ticks/s x 3.5 dots) — `ambientTicker.ts`.
-
-Each write costs a whole-document lifecycle: 562 Paints of the full
-2560x1369 root (mean 364us) and 966 Layerize passes. Layerize is bimodal —
-313 under 10us, 577 over 500us, 183 over 1ms — so a real frame is Paint
-364us + Layerize ~900us + PrePaint/Commit/Style ~260us, call it 1.5ms.
-Paint+Layerize+PrePaint+Commit+UpdateLayoutTree is 1035ms of the 1531ms
-RunTask total: **62% of all renderer main-thread work, at 33 ticker ticks
-of the 48 frames per second.**
-
-### Why the inline write is expensive and a CSS animation is not
-
-Blink promotes an element for a *known* animation and ticks
-opacity/transform on the compositor thread. A one-off inline style write is
-just a style change, so it repaints in the document's own layer — which is
-why the Paint clip is the whole viewport. `ambientTicker.ts` wrote styles
-specifically to avoid CSS animations, and in doing so forfeited the
-promotion that made the repaints cheap.
-
-Spike, 600 svg-icon rows inside a `contain:paint` scroller, indicators in
-`overflow:hidden` flex rows, 5s wall, main-thread total (Layerize + Paint +
-PrePaint + Commit + UpdateLayoutTree):
-
-| indicator drive | style recalcs | main thread |
-| --- | --- | --- |
-| static floor | 0 | 0.2ms |
-| JS ticker, 4 dots (today) | 40 | 58.9ms |
-| JS ticker, 40 dots (today) | 40 | 63.4ms |
-| CSS `@keyframes` opacity, 4 | **0** | **0.0ms** |
-| CSS `@keyframes` opacity, 40 | **0** | **0.0ms** |
-| CSS `@keyframes` rotate, 4 | **0** | **0.0ms** |
-| CSS `@keyframes` box-shadow, 4 | 324 | 56.6ms |
-| CSS `@keyframes` background-position, 4 | 325 | 141.0ms |
-
-The ticker's cost is per tick, not per element: 4 dots and 40 dots cost the
-same, because one tick forces one whole-document lifecycle either way.
-
-The 324 recalcs / 5s = 65/s for box-shadow and background-position
-reproduces the 2026-07-20 measurement in `ambientTicker.ts`'s header
-(65.7/s running vs 7.0/s paused) exactly. **That measurement was right for
-the properties it was taken on, and does not hold for opacity or
-transform**, which are compositable and cost nothing.
-
-### Both non-compositable visuals re-express at zero
-
-| approach | style recalcs | main thread |
-| --- | --- | --- |
-| sprite: JS `background-position-x` @25Hz (today) | 125 | 270.1ms |
-| sprite: CSS `background-position` keyframes | 325 | 136.8ms |
-| sprite: CSS `translateX` strip in an `overflow:hidden` slot | **0** | **0.0ms** |
-| glow: JS `box-shadow` @8Hz (today) | 40 | 127.0ms |
-| glow: CSS `box-shadow` keyframes | 324 | 85.1ms |
-| glow: static `box-shadow` on `::before`, opacity keyframed | **0** | **0.0ms** |
-
-Note the ticker is *worse than the CSS animations it replaced* on total
-main-thread time (sprite 270ms vs 137ms), because it traded cheap recalcs
-for full-document paints. It won on the metric it measured and lost on the
-one it did not.
-
-Every consumer the ticker has is compositable except one: pulse and LED
-chase already write `opacity`, `stepped-spin` writes `transform: rotate()`.
-
-The glow is the exception and **should not be re-expressed**. Its
-`--ambient-glow-t` drives three things at once in `app.css:876-878` — shadow
-spread `0 -> 2px`, shadow alpha `0 -> 0.22`, and `::before` opacity
-`0.7 -> 1.0` (which lifts the 1px border with it). Opacity alone cannot
-reproduce spread growth: the ring would sit at full 2px and fade in instead
-of expanding. Both landed: the glow stayed on the ticker, and the ticker now
-suspends itself when no `.status-glow-*` element is in the DOM, waking from a
-MutationObserver.
-
-### The 2026-07-04 present-rate incident does not recur, if steps() stays
-
-`app.css`'s `--animate-pulse` note records that the original *smooth*
-pulse forced a GPU present every vsync — one 6px dot as a standing 165
-presents/sec client on a 165Hz panel, stuttering other apps. Compositing
-these animations puts them back on the compositor thread, so that incident
-had to be re-measured, not assumed away. Present rate (compositor Swap/s),
-same spike rig:
-
-| case | style recalc/s | presents/s |
-| --- | --- | --- |
-| static floor | 0.5 | 0.2 |
-| pulse: JS ticker @8Hz (today) | 8.0 | 8.2 |
-| pulse: CSS opacity `steps(8)` | 0.0 | 7.3 |
-| pulse: CSS opacity **smooth** | 0.0 | **63.2** |
-| spin: CSS rotate `steps(8)` | 0.0 | 8.5 |
-| sprite: JS background-position @25Hz (today) | 25.0 | 25.0 |
-| sprite: CSS `translateX` `steps(8)` | 0.0 | 8.5 |
-
-The smooth row reproduces the incident exactly (every vsync). **`steps()`
-pins the present rate to the art's own frame rate whether JS or CSS drives
-the animation**, so the compositable re-expressions present no more often
-than today — the sprite still presents at its `frameMs`, the pulse still at
-8/s. The win is main-thread work, not present rate. Keep `steps()`.
-
-### It costs no memory
-
-Detailed memory-infra dump per case, same instrument as the app probe:
-`cc/tile_memory` 40.98-41.55MB, `blink_gc/main` 12.34-13.06MB,
-`gpu/shared_images` 44.00-46.24MB — flat across static, JS ticker, CSS
-opacity at 4 dots, CSS opacity at **40** dots, and the translateX strip.
-Compositing these indicators promotes nothing measurable.
-
-### Icon representation is a distant second
-
-600 `<svg>` roots add 18.6ms per 40 ticks over a no-icon baseline (0.47ms
-per repaint). Two things that were expected to matter, and do not:
-
-- **A scaled viewBox costs the same CPU as an identity one.** `0 0 24 24`
-  rendered at 12px measured 44.45ms / 46.26ms across two runs; `0 0 12 12`
-  at 12px measured 46.28ms. For repaint TIME the transform node is not the
-  cost; the SVG root existing at all is. The scaled node's cost is MEMORY
-  CHURN instead: its `PlaneRootTransform` cache is re-allocated per
-  paint-property generation bump (see the entry above — 72% of scroll
-  churn), which an identity-scale root does not pay. viewBox rewriting is
-  worth it for a frequently repainted svg, not for repaint speed.
-- `mask-image` spans instead of svg roots save ~37% of the icon overhead
-  (38.0ms vs 44.5ms against a 25.8ms floor), not all of it — and drop the
-  root out of the SMIL time-container walk and the transform-cache walk
-  entirely.
-
-At the app's 396 icons the CPU side is ~15ms/s **only because frames run at
-48/s**; the churn side is what got the conversion built (2026-08-24, see
-Fixed causes).
-
-### auto-animate cold-polls the sidebar
-
-`@formkit/auto-animate` 0.9.0 (`use:autoAnimate` on `ProjectList.svelte:41`
-and `ProjectThreadList.svelte:174`) ran a per-element 2s `poll()`: each
-cycle calls `getCoords` (forced layout) then disconnects and rebuilds an
-IntersectionObserver. The first trace under-read it at ~2.5ms/s; the
-2026-08-24 re-measure put it at 22.5 forced layouts/s, 45 IntersectionObserver
-constructions/s and ~11ms/s of style recalc on an idle app, for lists that
-change a few times a minute. The library exposes no option to disable the
-poll — it is framework-blind by design (MutationObserver sees changes only
-after old positions are gone, so it must track continuously). Removed
-2026-08-24: the sidebar's two keyed eaches use svelte `animate:flip` +
-enter/exit transitions (`utils/sidebarAnimate.ts`), which measure during
-reconcile and cost zero at idle.
-
-### Blink retains one edit command per typed character
-
-Every keystroke in a textarea allocates an `InsertIntoTextNodeCommand`
-(undo machinery) that Blink retains for the ELEMENT's lifetime — no API
-clears it, `value = ''` does not release it (and already discards the undo
-stack, measured), and each command can pin a whole 128KB Oilpan page,
-because normal spaces are never compacted. Measured 2026-08-24
-(`editcmdpages` probe): 383 pages held ONLY by edit commands, 47.9MB at
-2.9% fill, ~8KB of committed heap per character ever typed in the app's
-lifetime. Growth is strictly typing-driven — a 180s idle watch
-(`editcmdgrowth`) added +0 commands / +0 pages. The one release is
-replacing the element: the composer swaps its `<textarea>` after every
-send (`ComposerInputSurface.recreateInput`, same-flush `{#key}` bump +
-refocus, invisible by frame capture), which is the natural boundary since
-send already emptied the undo stack. `editcmdpages` is the verification
-probe.
-
-## Fixed causes (do not re-derive)
-
-- 2026-08-23 `761452b6`: MessageNavRail ticks rested at `translateY(-50%) scaleX(0.38)`, 540 non-2D transform nodes regenerating per scroll frame (~85KB/frame, ~300MB/min while scrolling). Rest state has no transform now.
-- 2026-08-23 `6cbfb341`: `pane.items` is `$state.raw` with per-row boxes; the deep proxy re-minted per-index sources every batch.
-- 2026-08-23 `cf33baf2`: dev-only detached-DOM leak from probe Maps, now WeakMaps.
-- 2026-08-23 `b0f34fe7`: composer textarea autosizes with `field-sizing: content`; the JS measurement forced two layouts per keystroke.
-- 2026-08-23 `3e5984ce`: upstream svelte bug, a reconnecting dirty derived was registered twice on deps new to that run and kept a closed pane's DOM alive through the global `accounts` signal (patch hunk 5, reconnect-dedupe).
-- 2026-08-23 `0e6eefc4`: `CommandOutput.svelte` re-splits the command only when its text changes (7MB/min of JS garbage while streaming before).
-- 2026-08-23 `7b29f9d6`: `.scroll-composited-content { will-change: transform, translate, rotate }` gave every timeline plane its own composited layer and fed Chromium's `PlaneRootTransform` re-allocation loop. Motion goes through `scrollTop` now; steady-state Oilpan churn fell from 28 to 1.07 MB/min, and `frontend/src/lib/architecture.test.ts` fails any new will-change or content transform on a controller surface.
-- 2026-08-24 `acc09802`: lucide icons render as CSS-mask spans (pnpm patch on `@lucide/svelte`), removing ~400 scaled svg roots — the transform-cache churn feed while scrolling and the SMIL walk membership. Verify post-restart with `scrolldrift`.
-- 2026-08-24 `54d04e72`: sidebar rows animate with svelte `animate:flip` (`utils/sidebarAnimate.ts`); `@formkit/auto-animate` removed. Idle forced-layout/IO-rebuild/style-recalc cost gone; verify with `frames` on an idle app.
-- 2026-08-24 `04c0af7e`: composer swaps its `<textarea>` element after every send (`recreateInput`), releasing Blink's per-character edit-command pages (~48MB after weeks of use). Verify with `editcmdpages` after typing + sending.
-- 2026-08-25 `3e249b5a`: **composited pane scrollers** — THE per-frame glide cost and the streaming-load memory refill. The pane timeline scroller had no composited scrolling layer, so every scroll offset change (spring glide write and real wheel alike — the JS write was never the mechanism, wheel-gesture A/B cost the same) ran a full main-frame lifecycle: Layerize ~1.1-1.6ms × 155/s during two-pane glide, 17-25% of main thread, plus the whole GeometryMapper churn family (PlaneRootTransform, ClipCacheEntry, PendingLayer, ScopedForcedUpdate). Fix: `.pane-scroll-surface` in app.css — `will-change: scroll-position` (Blink takes the direct scroll-offset-transform path, `DirectlyUpdateScrollOffsetTransform`) + `scrollbar-width: none`, with `OverlayScrollbar` mounted as the surfaces' scrollbar (intent stated via `setEscapedFromLock`/`forceStick`; the native `scrollbar-gutter` reservation retired). Applies to MessageTimeline and ChannelView. Verified in-code on the rebuilt soak, two-pane glide: Layerize 1922→**84ms/12s**, main busy 340→**139ms/s**, Paint 57ms/12s, raster 220 tasks/10ms; tiles 9.3MB per pane scroller (36.1MB total active incl. 13.8MB root), matching the 9-14MB/pane prediction. Checkerboard hunt came up EMPTY: 12,000px/s input flings over 6000px legs (`probe scrollgesture <s> <i> <sel> fling`) and a 13,700px instant teleport to bottom (`probe jumpbottom`) all screenshot fully painted at t+60ms. Width structurally stable: `offsetWidth − clientWidth` = 0 on overflowed panes, so the first-overflow transition moves nothing. `architecture.test.ts` carve-out documents exactly this one will-change value (scroll-position promotes the scrollTop chokepoint's own mechanism; the ban targets TRANSFORM promotion — a second paint position). User-approved 2026-08-25.
-- 2026-08-25 `5cc379f0`: **composited activity-run + subagent clips** — same mechanism one level down. While a long run streams, the clip glides with the follow spring and each scrollTop write ran a full Layerize. A/B/A on the soak with a prose-stripped long-run scenario (edit `~/.agent-overflow-soak/soak-scenario.json` to drop the text-message groups from the repeat step; original kept as `soak-scenario.orig.json`): Layerize 121/127 → 46 → 152ms per 12s. Both clip surfaces now carry `.pane-scroll-surface` (the duplicate `.activity-run-clip` scrollbar block deleted). Tile cost ~5MB per VISIBLE overflowing clip only — 2 of 14 mounted clips held tiles (NOW/SOON bins). No visible change (clips already drew the overlay bar at zero width). **Exonerated of the same-day follow-death report:** the user hit dead bottom-follow + paging ping-pong on this build; a live `will-change: auto !important` csshold reproduced the bug identically, so composited scrolling was ruled out. Actual cause: overlapping auto-load trigger zones under a degenerate outer range (giant single run), pre-existing, fixed `b08be13b` (`autoLoadZonesDisjoint`). Sibling in the same incident family, fixed `a4c9bed3`: the paged (click-driven) prunes evicted the on-screen conversation tail at MAX_ITEMS because a giant run makes item count a broken proxy for screens-of-content; they now tolerate the 1600 hard ceiling while the streaming prune keeps 800→500, so steady-state memory is unchanged and back-paging holds at most ~1-3MB of extra summary rows until settle.
-- 2026-08-24 `7c70256d`: MeterRing viewBox matches its rendered 28px box, so the header rings are identity-scale svgs and their dashoffset ticks stop regenerating a scaled node's transform cache (default zoom only).
-- 2026-08-25 `facc92a4`: the debug provider-events log (`AGENT_OVERFLOW_DEBUG` provider topic) embeds provider frames as `json.RawMessage` instead of re-escaping every byte into a quoted string — was 242MB/16min, ~24% of backend allocation, all in `json.appendString`. Verify with a heap `alloc_space` profile: `LogProviderEvent` should no longer show `appendString`.
-- 2026-08-25 `04e5c74c`: `HighlightPatchTextPrimed` memoizes spliced-document parses per call (sha256 of splice bytes). When a patch matches the file — every persist-tap prime does — all H new-side splices are the identical full file content and were each parsed separately: 591MB/10min of agent edits, 37% of backend allocation, 100% of it under `Cache.PatchWithContext` (attribute with `pprof -peek`). Verify with an alloc profile after a restart: `PatchWithContext`'s share should roughly halve.
-- 2026-08-25 `f3552fb8` + `da78203a`, both REVERTED the same day by `3e9bf20b`: two attempts to de-promote the ambient pulse dots' composited layers, and both were the trade this file's first ruling forbids. The trigger was a COUNT — 18 of the app's 26 layers were 6px dots under fleet load — with no cost behind it, and the cost was already measured two sections up: +1 layer per dot, no overlap cascade, 34.30 → 34.31MB of texture across a 0→30 dot sweep. What the flips bought instead: root custom properties invalidated style for the WHOLE document (381 passes × ~3,500 el × 22-30ms per 10s, ~195ms/s) and dropped the live app to 2fps springs; per-element inline opacity then cost ~31ms/s on the live app — 358 recalc passes, 181 Layerize (301ms), 244 Paint, 181 PrePaint/Commit per 20s, ~three quarters of the idle renderer main thread, driven entirely by an otherwise-idle 8Hz timer. The pulse is a `steps(8, jump-none)` CSS animation again. TWO rules, both already provable from this file before either flip: (1) never write an animated custom property on the document root — root writes are for one-shot, rare values only (the theme rewrite goes through a `<style>` element for the same reason); (2) an inline style write costs one WHOLE DOCUMENT lifecycle per tick regardless of element size or count (4 dots and 40 dots both 58.9ms/5s vs 0.0ms composited), so a compositable property belongs in a CSS animation and a layer census is not a reason to take it out of one. Cost layers, do not count them.
-- 2026-08-25 `b69f858d`: the Codex resume rollout tail is armed-on-relevance instead of unconditional (store query for incomplete subagent launches, or a live `registerChildOwnership`), and its partial-line buffer reuses backing capacity with a 64KiB shed on line completion — the fresh copy per 150ms tick was ~28MB/h. Upstream PR adding `experimentalRawEvents` to `thread/resume` remains the clean kill.
-- 2026-08-25 `5ccf3a2e`: all four mask-icon producers (the @lucide/svelte patch, ToolKindIcon, both brand marks) reference `<mask>` elements in a hidden same-document sprite `<svg>` (`utils/maskSprite.ts`; the patch carries its own copy of the registry) instead of per-icon data-URI mask-images. Each distinct data URI cost an isolated SVG document — internal page + LocalDOMWindow + singleton roster — and those ~57 documents' tiny long-lived singletons were the top identified pinning population of the Oilpan committed floor (each singleton type spread over ~28 near-empty pages). Element masks are mask-type:alpha, objectBoundingBox units, content scaled to the unit square; paint verified pixel-identical in the exact production shorthand (`spritecheck3`/`spritecheck4`). Verify post-restart: `Memory.getDOMCounters` documents ≈ 2-6 (was ~58), then `probe blinkpages` post-trim for the committed floor delta.
-- 2026-08-25 `c776ab8c` + `271bc36d`: between-turns memory-reducing GC. 10s input-quiet in the frontend → `RequestWebviewMemoryTrim` (LocalOnly; skipped during active provider turns, 4min floor) → ephemeral loopback-only `webview:trim` directive → the Windows launcher fires `HeapProfiler.collectGarbage` via the fork's `CallDevToolsProtocol` (branch `ao-beta-memory-trim`, 2d9e0221958f). Send is input and open turns skip, so the earliest fire is ~10s after the last turn completes — active sessions return to floor after every turn. Windows/WSL reach only — native desktop and `--connect` emit into silence.
-
-- 2026-08-25 soak streaming floor (post pulse-revert, `make soak`, 3 subagents streaming, zero input): main-thread busy 6.8ms/s, Oilpan churn 2.06MB/min, style recalc ~7.5 passes/s covering exactly the 14 ambient indicator elements (11 pulse dots + 3 LEDs). A `steps()` animation composites but still recalcs its own element's style at each step boundary on main (Interpolation vectors + ComputedStyle in the churn profile) — that is the steps() trade working as designed, ~1ms/s total. The streaming pipeline itself is lean; remaining active-use cost is interaction-driven.
-- 2026-08-25 `a56ca00a`: the virtualizer's reading anchor stopped hit-testing. `refreshReadingAnchor` resolved its head anchor via `elementFromPoint` on every scroll/flush (2,090 HitTest events/15s during two-pane streaming); it now derives the anchor row from engine offsets (`headAnchorAt`: `findItemIndex` + `getItemOffset`, verified through `rowElementByIndex`) and samples sub-row rects only at consumption points. HitTest fell 2,090× → 30×/15s (−105ms). The A/B also taught the F1-class lesson properly: the 1,091-el whole-document recalc the anchor read used to flush just MOVED to the next reader (`targetScrollTop`), totals flat — a forced-recalc reader pays for whatever dirt is pending, so the lever is the DIRT'S SCOPE, not who reads first.
-- 2026-08-25 `9eaa5465`: three global-sheet selectors with featureless compounds sat in Blink's UNIVERSAL invalidation sets (`allDescendantsMightBeInvalid`), so every sibling-list mutation anywhere scheduled a whole-subtree recalc — the mechanism behind the per-beat 1,091-element document-wide passes during streaming. `.markdown-body > :last-child > :last-child` (131 subtree invalidations/15s), `.run-map-spine > * + *::before` (44/15s with the overlay CLOSED), `> :first-child > :first-child` (12/15s). Fix: a feature in every compound — streamdown's theme stamps `md-blk` on every block-level element (`MD_BLOCK_MARKER`), the run-map connector keys on `li`/`.run-map-node`. Verified same rig, same two-pane burn: biggest recalc pass 1,092 → 44 el, total recalc 55.9k → 27.0k el/15s (−52%), recalc time 413 → 274ms/15s, main-thread busy 353 → 304ms/s, "invalidates subtree" trace events 187 → 0. Enforcement: `styleInvalidation.test.ts` sweeps the global sheets (structural pseudos in featureless compounds, universal siblings); `streamdownTheme.test.ts` pins the md-blk roster both directions. Svelte scoped styles are structurally immune (generated class per compound); only the global sheets are risk surface.
-- 2026-08-25 `a3c4d7c1`: OverlayScrollbar sampled and wrote `style:top` on its opacity-0 thumb on every scroll event of its owner (× every mounted bar, every glide frame). A hidden bar is inert now — `onScroll` and the ResizeObserver sample only while revealed or dragging, and the reveal transition re-samples the geometry that went stale while hidden. Tripwire: `OverlayScrollbar.test.ts` "leaves the hidden thumb untouched while the owner drives".
-- 2026-08-25 `00965f76`: perfprobe `done()` no longer `process.exit(0)`s inside finally blocks — a throwing probe died silently with rc=0 (bit twice: driveburn with invented flags). It sets `exitCode` and drains the loop; errors print and exit nonzero. Probes take POSITIONAL args (`driveburn "<thread title>" "<prompt>"`), not flags.
-- 2026-08-26 `a3eee4d6`: **activity-run forced-layout reads off the streaming frames** — two of the three owners of the 165Hz attribution's 2-3 forced style passes per mutated frame. `onClipScroll` read clip geometry on every scroll event including the run's own follow writes (1310 forced recalcs/242ms per 120s live streaming); reads are event-sourced now (a reader gesture licenses them, authored writes state fade/position via `positionWritten`'s written-top path over a metrics cache the free post-layout RO callbacks refresh). `observeActivityRunExpansion`'s retarget read `offsetHeight` per disclosure body against the effect-dirtied tree — the timeline's only FULL forced layouts (27/120s, ~1ms each, one per window advance); retarget is attribute-only and the geometry lives in the RO delivery it schedules. Verified on harness traced benches: `readScrollMetrics` forced reads no longer scale with stream duration (2 mount seeds across a whole 3-agent fanout), retarget frames gone, all other counts at baseline. Instrument recipe for re-verification: unminified build (`pnpm exec vite build --minify false`), playwright chromium with `browser.startTracing` (categories incl. `disabled-by-default-devtools.timeline.stack`) around `bin/ao-harness bench <workload>`, count forced UpdateLayoutTree/Layout by top JS frame — headless frame histograms are 60Hz-vsync-quantized and see nothing.
-- 2026-08-26 `fe19980f`: **virtualizer row-identity reuse** — the signal-fanout audit's one concentrated finding. The projection derived minted a fresh RenderRow per mounted row on every reveal tick/geometry bump; the keyed each writes each row into a per-key signal, so every mounted row's wrapper effects re-fired and its prop chain re-validated per streamed chunk, O(window) with values identical (same identity-churn class as `#20-23`'s node caches). A `rowReuse` map keeps the previous object when all five fields match. Steady-state streaming A/B (two runs per leg): genuine flush execution 89.8→60-70ms giant-turn, 78.4→61-64ms burst (−22-30%); total JS busy 172→~145ms, 159→~147ms. Tripwire: `TimelineVirtualizer.test.ts` "row identity reuse" via the harness's `onRowRender` snippet expression. **Steady-profile recipe** (bench reloads the page and kills a Profiler session; mount noise pollutes reload windows): playwright page on the harness URL → settle 2s → `ao-harness ui open --thread #1` → settle 2.5s → CDP `Profiler.start` (100µs) → `ao-harness scenario set bench-giant-turn` (or `bench-burst-stream`, no --provider flag) then `send --thread #1 --wait` → `Profiler.stop`. Classify flush as samples with an ancestor in {flush_queued_root_effects, flush_queued_effects, process_effects, update_effect, update_derived, execute_derived, update_reaction}; `internal_set`/`mark_reactions` are write-side marking from ANY state write (~2% of busy), not flush. Unminified names need `pnpm exec vite build --minify false` PLUS `go build -o bin/agent-overflow .` + harness reboot (the binary embeds dist).
-- 2026-08-26 `e9454eb4`: **idle-trim metronome gated on activity** — the 717-GCs-overnight fix (each 30-51ms, 5-8 dropped frames, reclaiming ~1MB at floor). Frontend sends input-since-last-accepted-trim; backend ORs with a turn-lifecycle stamp (`recordActivity` start/complete/disconnect, never per-delta) and answers `skipped-no-activity` when neither. Post-turn return-to-floor unchanged. Verify post-restart: launcher.log overnight should show trims only after turns or input, not every ~5min.
-- 2026-08-26 `7fea82c6`: **idle-trim waits for the reveal drain** — the mid-glide blind spot occurred live, so it is built now. 1h capture during active use (framedrops 3600, 165Hz): six of the twelve worst gaps (30-48ms, plus a script-less 58.2ms LoAF whose renderStart sits at its very end) landed within 90ms after a wall-clock 5s-grid point — the trim's `IDLE_TRIM_CHECK_MS` grid phased from page load, ~270ms of RPC→launcher→CDP latency after the tick — spaced 5-6min (reattempt+backend floors), several 3-15s after a turn completed, i.e. mid-drain, and the pattern went dormant exactly while turns ran continuously. `check()` now reads `revealDrainStats()` (the harness drain probe's pane fold) and skips while any pane drains, without stamping the floor. Wire-complete ≠ reader-complete, same lesson as the harness's drain-aware bench windows. Attribution recipe that closed it: recover the page's timeOrigin by joining LoAF `t` to worst-gap `at` (two pairs agree within 10ms), then read turn spans from a `clone`d store to classify each gap idle/drain/mid-turn.
-- 2026-08-26 `2a318863`: **read-free delta deliveries (cached bottom-target arithmetic)** — the resize-storm class's main lever. Full anatomy and A/B under "residual-stutter sweep" below. The scroll controller's content-delivery path stopped reading scrollHeight/scrollTop/clientHeight per delta: the cached target advances by the delivery's own delta, `viewportHeight` rides the sample (scroller RO data) as the fallback trigger, every real read site resyncs, floored short-content disables it. distanceFromBottom forced passes 22 → 0 on the 3-pane clone replay; win lands on mid-glide and escaped panes (instant-pin writes force the same clamp layout either way). Tests: index.svelte.test.ts "cached bottom geometry" (lying-getter path proofs + escaped zero-read counter + floored fallback). REGRESSION FIXED `f712f65a` (same day): the delta arithmetic double-counted whenever a real-read resync landed between deliveries (a clamp scroll event rebases the cached target to DOM that already contains the next delivery's change, then the delta applies again) — bottom-followed surfaces rested 8px short, frozen there by the 4px idle-repin deadband. The cache is height-keyed now: read-path deliveries learn `offset = scrollHeight − clientHeight − deliveredHeight`, the hot path computes `target = height + offset`, resyncs maintain only scrollTop. Zero-read property preserved (same read-counter tests); tripwire "a real-read resync between deliveries cannot double-count the next delivery" (red on the delta version at exactly the double-counted value).
-- 2026-08-26 `baa816dd` + `44ef8304` + `d1b09795`: **three mount-time forced-layout readers moved to RO initial-delivery timing** (coldload campaign, P6). An RO always delivers once per observed element, post-layout pre-paint in the same frame, so a mount sample taken there is free while a synchronous mount read forces a whole-document layout against the mid-mount dirty tree (~7-10ms each on a cold heavy-thread switch). OverlayScrollbar's mount `sample()` (176ms of scrollTop across 10 cold switches), ActivityRun's mount position write (159ms of scrollHeight; the settle/restore observers own the position now, the mount states flags only), UserMessageBody's `bind:clientWidth` (svelte's dimension binding takes one sync read at bind time; 108ms — also refired per windowing remount mid-scroll). Pattern is reusable: any component needing mount geometry should read it in its RO's first delivery, never in the mount effect.
-
-- 2026-08-27 `93582cd5`: **per-beat wholesale projection rebuild — THE renderer streaming-churn root cause** (the 250MB+ steady state and the spike-then-drop sawtooth under multi-pane streaming; user target ≤450-500MB group total under load). The renderer allocated ~64MB/min of short-lived JS while panes streamed, and V8 lets garbage pile to a multiple of live heap (~70MB live) before collecting — so steady-state private working set is churn rate × GC wait, not live size. Three causes, one class (a structural beat re-derived everything instead of only what changed):
-  1. `groupItemsBySubagent`'s no-subagent fast path disqualified on `completionOf` — every ORDINARY tool completion carries it, so every plain thread ran the full slow path (itemByID Map, launch scan, five link maps/sets) per `timelineRevision` beat. Sound to drop: completionOf only matters when its loaded counterpart (launch/wait carrier) is present, and those have their own signals; with the counterpart unloaded the slow path produced plain leaves anyway.
-  2. group/wait_group card nodes minted fresh per pass poisoned the run-build cache (validity = child reference-equality) for every run containing a card. Cards are reference-stable now (WeakMaps keyed on the parent/carrier Item) with recursive validation (`childNodeStillValid` — Item identity IS a content version since writeItemAt replaces the object per write; fold aggregates memoized in `subagentFold.ts` so the fold input ref-compares).
-  3. `buildRun` walked a generator twice per member + dedupe Set + three arrays per rebuild, per beat, O(run length). Lean path now reuses cached per-node row-id arrays, aliases summaryItemIds to memberItemIds when no member can have an out-of-band completion, and the completion index builds lazily (only when a run actually probes it).
-  A/B on the soak (14 streaming panes, same wire cadence verified via events count): JS alloc 176.1 → 4.9MB/60s (−97%); v8 regrow post-GC 64 → 2.4MB/min; renderer private pre-GC 345.1 → 185.5MB and FLAT post-GC (+30s: 175.4→175.3 vs baseline 272.4→317.3 — sawtooth gone); Oilpan churn 7.9 → 1.05MB/min. The secondary Blink churn classes — DisplayLockUtilities::ScopedForcedUpdate (8223×), ScrollableArea vectors (9948×), PlaneRootTransform, NamingScope hashes — ALL vanished with no separate work: they were downstream of the per-beat virtualizer data-array replacement. Remaining 1.05MB/min is ComputedStyle/layout from streaming text growth. Tripwires: subagentGrouping.test.ts fast-path + card-reuse describe (8 tests), activityRunGrouping.test.ts lean-build alias + card-run reuse. Verify live post-restart: `probe alloc 60` during multi-pane streaming should sit single-digit MB; group total should hold ≤450-500MB.
-- 2026-08-27 GPU-process decomposition (steady 240-280MB, peak ~340): tiles are screen-area-bound ~50MB (pane count changes which layers hold them, not the sum), full-window surface 13.4MB, skia ~13, transfer buffer 16, service malloc 80-113, untracked D3D/DComp driver 40-128 (the peak-over-floor mass, transient with raster volume). Off-strip prepaint pane shed would return only ~6MB — decision-sheet at most. In-process-gpu merge rejected (crash isolation). SUPERSEDED same day by the full attribution below (Ruled out § GPU-process floor).
-- 2026-08-26 `3cfb6131` + `e2a72036` + `b88fb54b` + `0d23c1b3`: **storm tall-tick shrink batch** (the raised-bar pass; venue: e2e/rigs/storm.mjs on the cold clone rig, runs F=HEAD → H=fixed, same scenario, cross-loaded box). Trace-event ground truth, not sampled self-times (cpuprofile native-binding self-times are idle-attribution inflated: 5482 TimerInstalls cannot cost 339ms — trust TimerInstall/TimerRemove/RAF event counts). Four mechanisms:
-  1. `3cfb6131` scrollend fallback: clearTimeout+setTimeout per scroll event (per frame per gliding pane) → one standing deadline timer. Timer installs 135/s → 66/s, removes 107/s → 26/s.
-  2. `e2a72036` quiet-work scheduler: same deadline pattern (schedule() fires per streamed row; consecutive calls inside the rate bound target the same absolute deadline, so the standing timer is kept and only an EARLIER deadline re-arms). Removes 26/s → 24/s and the last big churner gone (H: installs 2604, removes 966 per ~41s).
-  3. `b88fb54b` smoother wall-clock grid: the 15ms reveal throttle gates on `floor(now/interval)` shared across ALL smoothers, so concurrent panes process (parse+DOM patch+pipeline) in the SAME frame instead of spreading one render pipeline over every frame. Cadence unchanged (dt-based budgets).
-  4. `0d23c1b3` tail-clamp line-slide: RO entry geometry (border-box cache per element) replaces 2×gBCR per delivery; `getComputedStyle(transform)` only while a slide is mid-flight. Was 68ms gBCR + 26ms animate per storm run at one site (`41:7890` — earlier MISLABELED as terminal-fit RO; the animate co-occurrence is the tell), concentrated in the worst frames. Gone from the H tall windows.
-  - F→H on identical runs: busy 11.5s→10.3s, tall RunTasks ≥8ms 102/1190ms→85/940ms, ≥16ms 13/277ms→9/173ms, **≥20ms 7/174ms→2/46ms**, meter max 27→23.2ms. Remaining ≥16ms anatomy (H): ~10ms JS (svelte flush mounting revealed rows — the product) + ~5ms native pipeline; no concentrated app site left in the tall windows.
-- 2026-08-27 `070545bc`: **trim gate never saw Claude turns — the periodic mid-stream stutter.** `hasActiveProviderTurn` read only `sessionLiveness.activeTurns`, and only Codex emits `EventTurnStart` — for Claude the counter is permanently zero, so the 4-5min idle-trim metronome's memory-reducing GC was free to land mid-turn: 60-133ms main-thread stall while streaming (GC cost scales with heap; 58ms was the small-heap measurement, the 4-pane replay rig's 149-175MB Oilpan paid 130-133ms). Proof: six trims over 30min of continuous replay, each with 13-26 items created within ±5s (item `created_at` join against launcher.log trim stamps). Gate is three arms now: `triage.AnyInFlightTurnOrRound()` (wire-driven open round/turn, provider-agnostic), `activeTurns` (Codex), lastActivity within 5s (`webviewTrimRecentWireWindow` — covers post-soft-close sidechain streaming, and decouples the gate from provider turn-event symmetry). Verify post-restart: join launcher.log trim timestamps against `items.created_at` — zero trims with items inside ±5s.
-- 2026-08-27 4-pane heavy-replay state attributed (harness rig, real-thread replay at real cadence, renderer 393-423MB / GPU 220-297MB — the user's "unacceptable" state reproduced): renderer = Oilpan 149-175 committed over **17.4 live** (the documented fragmentation floor + sawtooth, nothing new) + cc tiles 84.5 (4 streaming panes at 2560×1369; two-pane boot floor is 69 — near floor) + v8 53-80 (sawtooth) + malloc ~70 + DOM 39. The mass is churn-rate economics, not a leak: Blink churn 58.3MB/min (HarfBuzz glyphs + ShapeResult* + LayoutResult + PhysicalBoxFragment + ComputedStyle* — whole-paragraph reshape per streamed append, DOM writes are only ~27 characterData/s across 4 panes so there is no app-side DOM amplifier) and JS churn 72.7MB/min sampled (49MB under the svelte microtask flush: dependency-tracking Set/Map/array allocs per reaction re-run; app leaves `pruneRowUiState` 1.5, `releaseEligibleRuns` 1.4, `retainActiveGroupKeys` 1.1, `groupConsecutiveReads` 1.0MB/min). Frame delivery clean throughout (median 6.1ms at 165Hz, zero LoAF; worst 18.2ms ≈ every 13s — minor-GC one-hitch events, proportional to churn). GPU side matches the fully-attributed floor above.
-
-## Ruled out or declined
-
-- 2026-08-27 **GPU-process floor FULLY ATTRIBUTED — the excess over instantaneous need is Chromium/driver pool retention, not app junk.** Venue: user's app (passive dumps) + soak A/B/A + memlog growth window + a three-point floor ladder (bare harness 0 panes/1264×761: private 90.3, malloc 44.8; soak 14 panes/784×561: 171.4/75.7; soak 14 panes/2560×1369 fresh boot: 252.1/90.7; user app after hours of real use: 256.2/109.4). Adapter facts first (`probe gpuinfo`, NEW): Intel iGPU, ANGLE→D3D11 passthrough, GPU raster — on an integrated GPU every texture byte is system RAM in the GPU process's private set. Anatomy of the ~210-250MB idle GPU process at 2560×1369 with 6 panes:
-  1. **Texture memory ~55-70MB, tracks GPU private 1:1** — proven by csshold `[data-pane-id]{display:none}` A/B/A on the soak: tiles 47.2→13.8→47.2MB, GPU private 217.8→180.5→220.5. Composition: 13.8 root full-window tiles + 13.4 window-surface shared image + ~7.2MB per visible overflowing pane scroller (3×~879×683 BGRA tiles = viewport+prepaint strip; an off-view pane holds an all-SOON set of the same size). The composited-scroller purchase, working as designed.
-  2. **Service CPU heap ~80-110MB, texture-independent = ~45 true floor + ~15 window-size + ~30-50 raster-history pooling.** The ladder splits it: bare harness pays 44.8 (PA 21.7 + win_heap 18.6 + metadata 4.5) — the platform floor; maximized-vs-small boot differ by ~15 (PA direct-map staging sized to the paint burst); the rest (user app 109.4 = PA 56.7 + win_heap 41.2 after hours) is slow pool retention under real mixed use — PA direct-map staging + D3D/Intel-driver HeapAlloc pools that plateau, biased for reuse. NOT per-layer and NOT per-pane bookkeeping: user app holds 109.4 with 46 layers while the 92-layer small soak holds 75.7. NOT a fast ratchet: 45min continuous 14-pane streaming grew private +2.9MB; `probe gpuheap` (NEW — memlog heaps_v2 by leaf module) attributes live growth to 3.8MB of msedge.dll internals. memlog gotcha: the shim attaches after GPU boot, so it attributes GROWTH only, never the boot floor. Returning the pools means purging what the next paint burst re-allocates — perf-for-mem, no app path.
-  3. **Untracked ~64MB, window-size-bound**: DComp swapchain (2-3 × 14MB full-window buffers) + ANGLE/D3D context + driver pools. Moves ~nothing when tiles drop.
-  4. skia 8-13MB, shader cache 1.3, transfer ring 16MB (shared with renderer). BRP quarantine churns ~7.4MB/min at idle (~87 allocs/frame from ambient-animation frame production) — CPU noise, not resident growth.
-  Off-view pane prepaint shed (~7.2MB tiles per off-view pane) REJECTED BY RULING 2026-08-27: performance traded for memory — the pane repaints when strip-scrolled back into view, which happens often. Never re-propose. Launch-flag door for future GPU experiments: `AGENT_OVERFLOW_WEBVIEW_EXTRA_ARGS` (launcher, WSLENV-forwarded).
-  Layer census (`probe layersfull`, NEW — every layer with size/reasons/owner): 92 layers on the 14-pane soak, 67 of them Overlap — every piece of pane chrome floating above a composited scroller (custom scrollbar rail, resize rails, header fade, composer overlay, run fades) MUST take its own layer to preserve paint order against compositor-thread scrolling. Sounds like inflation, ISN'T: tiles cover painted regions only, so the chrome layers cost ~4MB of the user's 45.2MB active tiles — the rest is root (13.8) + visible pane contents+prepaint (18.6) + activity-run clip prepaint (8.1), all product. The rail squash layer's pane-wide bounds (1143×1369 for a 6px element) cost one 0.3MB tile — bounds are not bytes. The composer overlay layer (1134×189) is the floating composer itself, not a wrapper bug.
-- 2026-08-27 **`--enable-features=BlinkHeapYoungGeneration` (generational Oilpan) — REFUTED, makes it much worse.** The flag is LIVE in this binary (x64 caged heap compiles young-gen support in) and inverted: 45-min soak curve blink_gc committed 21.8 → 101.3MB@30min vs ~33.4 flagless control (3×), renderer private 167.6 → 372-377 plateau (+~200MB). Generational barriers/remembered sets plus delayed major GCs cost far more than nursery reclamation saves on this workload. Chrome ships it off for a reason — never re-arm.
-- 2026-08-27 **`--enable-features=NetworkServiceInProcess2` — WORKS, ~13MB net, decision-sheet item.** The feature name is `NetworkServiceInProcess2` (the unsuffixed name is dead; a switch under the old name silently no-ops — verify via `probe procinfo`: the `network.mojom.NetworkService` row disappears). On the soak the merge cost the browser process NOTHING (51.4-54.3MB flat over 15min, vs the dev app's 53.7 browser + 13.4 separate NetworkService); page loads, autopilot streams normally. Android runs network in-process by default, so the path is exercised. Tradeoffs to surface before adopting: the network stack runs unsandboxed in the browser process (matters if the webview fetches remote content — remote images in markdown), and a network-stack crash takes the app down instead of a silent service restart. Storage has no equivalent: `StorageServiceOutOfProcess` was an experiment whose flag was REMOVED (switch survives on the command line, service stays out-of-process, 9.6MB — no knob).
-- 2026-08-27 **`--disable-features=PartitionAllocBackupRefPtr` — REFUTED by A/B/A, ~2-7MB total.** First read looked like −50MB GPU, but the control's 237.7 was an unsettled boot burst: settled same-window legs read GPU 193.1-196.2 (control, PA 40.4) vs 186.6-192.1 (BRP off, PA 39.2), renderer/browser unchanged. Nowhere near worth weakening a use-after-free mitigation. Method note: a fresh soak boot's GPU private takes ~10min to settle DOWN from the paint burst (230→193) — never A/B against a single early enumeration.
-- 2026-08-27 **`--force-gpu-mem-discardable-limit-mb=64` — REFUTED, zero effect.** GPU settled 198.5 vs 193-196 control; discardable use is only ~26MB (cc/resource_memory 14.3 + skia 12.2) so the cap never binds, and the excess is allocator pools (PA 42.6 + driver win_heap 36.1) that no cache cap reaches. Closes the cache-cap family: the GPU service heap's retention is pool inventory, not cache policy.
-- 2026-08-27 **In-process GPU (`--in-process-gpu`) — REFUTED as a memory lever.** The flag boots and merges the GPU service into the browser process at 89.3MB private (vs ~90 browser + ~170 GPU separate — the two-process split costs ~150MB of duplicated pools), BUT WebView2 151 forces `gpu_compositing: disabled_software` in-process, and `--ignore-gpu-blocklist --enable-gpu-rasterization` does NOT restore hardware compositing. Software compositing is a perf trade — dead until Chromium ships a hardware in-process path. `probe procinfo` (NEW) lists the utility roster: NetworkService 13.2MB, StorageService ~10-19MB, TracingService is spawned by our own probing (probes inflate the observed app). Queued arms from the roster: `NetworkServiceInProcess`/storage in-process merge (~15-25MB), `--disable-features=PartitionAllocBackupRefPtr` (10-30MB across processes, SECURITY tradeoff — BRP is a use-after-free mitigation; surface before adopting).
-- 2026-08-27 **Deep-audit fronts killed by passive measurement (renderer):** mounted DOM is tight — panes hold 3-13 rows / 250-780 elements each, 3.2k elements total, the virtualizer is doing its job; detached retention is noise — 366 detached nodes of template litter, and the 18k "node counter" is 6.8k svelte comment anchors + 6.4k text nodes, not leaks; v8 44.6MB self = 9.5 code + ~10 script-source ExternalStringData + ~11 app objects — no bloat class. Same-box datapoint: Teams' WebView2 runs a 1.05GB-ws renderer and 480MB-commit GPU process — the anti-goal range. `probe gpupressure` (browser-target `Memory.simulatePressureNotification`; the page-target activetrim run never reached the GPU process) DOES purge the GPU process — user app ws ~260→~150 — but under continuing use the service heap regrew PAST its pre-purge level (malloc 109.4 → purge → 122.0 within 20min; realloc under load lands worse). User ruling 2026-08-27: forced GCs are not the solution, the target is ACTIVE memory. Idle-window release stays permissible in principle but is pointless given the overshoot. GPU service malloc wobbles ±10-15MB with activity intensity (109→122→114 same hour) — treat single dumps accordingly.
-- 2026-08-27 **GPU service residue (~10-20MB/day under real varied use) is NOT soak-reproducible.** Fling storms across panes (4×3 rounds): malloc 76.1→75.4 flat, memlog live growth 1.0MB (msedge.dll internals). Thread-click cycles: flat. Uniform streaming: +2.9MB/45min. Whatever grows the user's service heap needs their real workload — closing it means memlog on the user's own launch (`AGENT_OVERFLOW_WEBVIEW_EXTRA_ARGS="--memlog=gpu --memlog-sampling-rate=65536 --memlog-stack-mode=native"`, then `probe gpuheap` after hours of use). Offered, not yet armed.
-- 2026-08-27 **Renderer committed ratchet quantified on the user's app (the "keeps climbing" report):** live Oilpan FLAT ~14MB all afternoon while committed ratcheted 95.5 → 112.9 post-GC in ~40min of heavy streaming (≈8:1 pinned ratio, ~880 128KB pages each pinned by ≥1 survivor), plus ~15MB collectible garbage between trims. Trims fire every ~5min and cannot decommit survivor-pinned pages; Oilpan compaction can't move them (vector-backing spaces only). Churn is the scatter driver. User-app split (1.28MB/min): streaming layout 60% (LogicalLineItems, LayoutResult, PhysicalBoxFragment — product), ComputedStyle family ~30%, PlaneRootTransform 12%. Soak A/B/A twice-confirmed: ambient indicators are HALF of residual churn (2.2→1.1→2.2MB/min; LED/sprite stepped anims ~0.6-0.7, pulse dots ~0.3 — each step boundary mints ComputedStyle+StyleMiscData+StyleSVGData+interpolation vectors on main). The 2026-08-25 "animations don't move churn MB" ruling was measured against a 17-30MB/min baseline where 1.1 was invisible — superseded for the post-93582cd5 world. Levers: indicator mint-rate reduction (step counts / element counts — VISIBLE cadence, decision sheet), off-view pane `animation-play-state` pause (invisible by construction, needs pane-strip visibility tracking; small win at the user's all-visible layout), streaming-layout churn is the product. `--enable-features=RawDraw` on the soak: feature reports `enabled_on`, the app renders a BLANK WHITE SCREEN (DOM alive, hover hit-testing works, nothing presents) on WebView2-embedded + ANGLE-D3D11, AND GPU private goes UP (263.8 vs 235.4MB; untracked D3D balloons to ~178MB). Broken and more expensive. `direct_rendering_display_compositor` stays `disabled_off_ok` — same family, untested, assume the same field risk.
-- 2026-08-27 **renderer idle floor above the boot number is Oilpan committed high-water, not a regression** (user report: 152MB idle vs 86 at startup, post-churn-fix build). Post-trim dump seconds after a 12:09:25 trim: private 163.6 = cc tiles 60.4 + blink_gc committed 60.2 over **12.65MB live** (fragmentation=78, pool 2.4) + malloc 43.6 + v8 33.6. The committed growth (20→60MB over ~50min of use) is Blink-side streaming churn (~1MB/min: FragmentItems, shaped text, ComputedStyle) scattering survivors across 128KB pages; memory-reducing GCs decommit only fully-empty pages, and compaction is inapplicable (only vector-backing CustomSpaces compact — 4MB of the 60). The holes are freelist inventory later churn reuses, so the floor plateaus (2.5-day curve: live flat 11-17MB). Lever remains churn rate; the JS side is already cut 97% (`93582cd5`).
-
-- 2026-08-26 **composited-layer count as the Layerize/HitTest lever — REFUTED.** LayerTree census on the 3-pane storm state: 22 layers total (timeline scrollers + activity-run clips via OverflowScrolling, 12 small Overlap layers from the run fade strips). Layerize (~0.4ms/frame) and HitTest cost scale with DOM/paint complexity per frame here, not layer count — nothing to delist.
-- 2026-08-26 **storm HitTest (1.7-1.9s per ~41s run, ~0.8ms per painted frame) is NOT app code.** Zero HitTests nest under FunctionCall; args say `move:true, x:0, y:0` — Blink's post-layout/scroll hover recompute at the last cursor position, re-run because streaming dirties layout every frame. Native per-painted-frame class; the app-side lever is fewer dirtied frames (the smoother grid) — do not hunt an elementFromPoint caller again (`readingAnchor.ts`'s is gated OFF during bottom-follow and innocent).
-
-- **Thread-switch coldload forced-layout elimination beyond the three RO fixes: STOP-LOSS 2026-08-26.** The cold rig (12 heavy threads, 6k-65k items, 10 sequential switches in one pane) holds ~2200ms of tall-task time and ~156ms of script-forced layout across all four profile generations — REMOVING READERS DOES NOT MOVE WALL TIME, because the mount frame's pending flush is simply paid by the next reader standing (whack-a-mole: scrollbar fix handed it to ActivityRun, ActivityRun's to bind:clientWidth, bind:clientWidth's to the scroll delivery path). The remaining roster is all scroll-package: the delivery read path's `refreshIsNearBottom` (~10ms each, n≈16/10 switches), first-fire `targetScrollTop` (n≈4), OverlayScrollbar `sample()` from scroll events during mount writes (~3ms, n≈28), intent-machine attach reads, `applyEngineCompensation` scrollTop. Eliminating them means re-timing the content-geometry delivery itself (post-flush effect → RO timing), a doctrine-heavy change with a measured ceiling of ~15ms per switch on a ~200ms one-shot gesture that is script-dominated (mount + engine measure + xterm). The three RO fixes stand for their OTHER frames (windowing remounts mid-scroll, expand-all, streaming), where the fixed reader was the lone forced flush. Do not resume without a user flag on switch latency specifically.
-- Fragment-addressed SVG sprite for the mask icons: MEASURED DEAD 2026-08-25 (`probe spritecheck`/`spritecheck2`, soak rig) — `url(sprite#a)` vs `url(sprite#b)` spawns per-reference isolated SVG documents for data URIs and blob URLs alike; there is no sharing to exploit. The 56-Documents finding (Blink builds an internal page+frame+document per DISTINCT SVG-as-image resource; 47 icon URIs → ~57 documents) was instead fixed by same-document `mask: url(#id)` element references, which need zero documents (`5ccf3a2e`, see Fixed causes).
-- Renderer 482MB transient (2026-08-25 18:47): +103MB live Oilpan, +29MB v8, +20MB JS heap in one 2-min sample window, fully settled by the next tick (309MB, live back to 33.7). Burst allocation from a heavy one-off (large render/import), reclaimed by the normal GC cycle. samplealert caught it; nothing to fix.
-- Active-use JS allocation (23.3MB/60s sampled during real use, `probe alloc`): top owners are the row-UI retention prune (22% inclusive — its scalar signature legitimately moves every pass mid-stream, so the walk re-runs) and activity-run grouping (~17% — rebuilt per `timelineRevision` bump, i.e. per structural append, by design). Incrementalizing either is a correctness-critical refactor to save ~5MB/min of promptly-collected JS garbage; the Task Manager number is driven by Oilpan committed paging, not these. Declined 2026-08-25.
-- Oilpan churn class attributions for active use: `HeapVectorBacking<Member<AgentGroupSchedulerImpl>>` allocates per main-thread task — task rate during interaction is 165Hz frame production, not app-schedulable work; `DisplayLockUtilities::ScopedForcedUpdate` allocates per JS geometry-read call (the spring's reads, already minimal, 0 forced layouts from JS at idle); `ScrollableArea` vector nodes follow recalc volume. No app lever behind any of them. OVERTURNED 2026-08-25 (same day, later): composited scrolling is the lever — the whole family vanishes from the churn census under `will-change: scroll-position`; FIXED `3e249b5a` — see Fixed causes, composited pane scrollers.
-- Ambient animation ticks as a MEMORY lever: ruled out 2026-08-25. 25.8k of 27.1k StyleRecalcInvalidationTracking events were main-thread "Animation" ticks on the working-LED spans (~14k/15s) and pulse dots (~11.8k/15s) despite compositeFailed:0, but the A/B/A with `animation: none !important` sat ON the burn-progression trend line (17.3 → 25.1 → 29.6 MB/min) — animations dominate invalidation COUNT, not churn MB. CPU-only decision-sheet item at most; the will-change doctrine forbids the compositor-promotion fix anyway.
-- Mask-sprite `<g transform="scale(1/24)">` groups as the `PlaneRootTransform` churn owner: ruled out 2026-08-25 (A/B/A on the soak, `transform: none !important` on the sprite groups — B's rate sat above both A arms). The hidden sprite's transform nodes are never geometry-mapped, so they never regenerate. The 16MB/min PlaneRootTransform churn during two-pane streaming burn is GeometryMapper cache regeneration across the property tree under continuous bottom-follow scrolling (~1,000 allocs/s ≈ property nodes × scroll updates/s, invalidated by the global cache-generation bump each scroll write) — Blink scroll bookkeeping proportional to visible streaming, the app's transform-node feed already minimal (70 transform elements: 39 hidden sprite groups, 18 chevrons, 13 misc). Remaining lever would be fewer paint property nodes inside pane subtrees; ceiling too low to chase. OVERTURNED 2026-08-25 (same day, later): the lever is not fewer nodes, it is stopping the per-scroll generation bump — a composited scrolling layer takes the direct scroll-offset path and the PlaneRootTransform churn goes to zero; FIXED `3e249b5a` — see Fixed causes, composited pane scrollers.
-
-- GPU-process swings (observed 206→305MB and back within 15-second windows, 2026-08-25): attributed by dumping AT a caught peak (poll `PrivateMemorySize64` of the AO gpu-process — filter `msedgewebview2` command lines for BOTH `--type=gpu-process` AND `agent-overflow`, five WebView2 apps run on this box — and fire `memdump --gpu` on a threshold). Of an 83MB peak-over-floor, only 17MB is visible to memory-infra (malloc +16, tiles +1, shared images and skia flat); the rest is untracked D3D11 usermode-driver staging during raster/upload bursts. Transient, returns to floor in seconds, scales with repaint volume. Not a leak; only lever is rastering less (ruled out). Floor remains 185-230MB.
-
-- Visible-pane-streaming trim gate (fire while only background threads stream, closing the continuous-fleet gap where zero-turn windows are rare): declined by ruling 2026-08-25 — most active panes are on screen anyway, and the any-turn gate stays. Do not re-propose.
-- The spring's per-tick `targetScrollTop` forced flush (the third owner in the 165Hz attribution, 1384 recalcs/274ms per 120s): ruled out 2026-08-26, LOAD-BEARING, do not "optimize". The read is one forced pass per mutated frame and it is what makes (a) the write clamp against the CURRENT max-scroll, (b) the clamp-evidence witness see a clamp the same frame's layout applied (spring.ts ~998), (c) same-frame follow stay fresh, and (d) the post-write readback classify MOVED/REFUSED/INCONCLUSIVE for the write-refusal wedge guard. Clean-frame reads are free (no trace event), so a sentinel-skip saves nothing; the lever on this class is the DIRT'S SCOPE (see `a56ca00a`'s lesson), which `9eaa5465` already cut.
-- The activity-run head-advance gBCR pair (`activityRunRowViewportTop` pre-read + `activityRunScrollTopHoldingRow` post-read, 26 forced/6ms per 120s): ruled out 2026-08-26 — the pre-read must price the OLD DOM and the post-read the NEW one, so the pair cannot share a pass or a cache (row heights vary). One forced pass per window advance, ~0.05ms/s, inherent to the compensation design.
-- Incremental caching for `indexCompletions` / `filterRedundantNotifications` (the remaining uncached O(window) projection passes): ruled out 2026-08-26 by CPU profile over the harness benches. A 225-item giant-turn compressed into a 2s drive (worst-case delta density) shows indexCompletions 0.8ms inclusive, filterRedundantNotifications 0.6ms, ALL of groupActivityRuns 2.8ms — the `#20-23` node-reuse cache wave already reduced these to noise, and `parseJsonObject`'s string memo makes the per-item extraction a Map hit. Invalidation complexity for an unmeasurable win.
-- DEBUG-build diagnostics on the user's daily build: `VITE_AGENT_OVERFLOW_UI_TRACE` + `UI_ORACLES` are on under `make dev-wsl DEBUG=1`; `snapshotChatDomForTrace` ran inside the live capture (~19ms/60s, 45 forced recalcs/120s). Not a code fix — launching with `UI_ORACLES=0` sheds the heavy tier; decision is the user's (surfaced 2026-08-26).
-- Renderer memory-pressure simulation (`Memory.simulatePressureNotification`): A/B'd on the soak rig under streaming load (2026-08-25, `activetrim` probe) — `moderate` returned nothing (+5.3MB, churn noise), `critical` returned nothing (-0.5MB, blink_gc unchanged). WebView2's renderer does not run a memory-reducing GC on either level. `Memory.forciblyPurgeJavaScriptMemory` is the near-OOM intervention simulator (can kill page scripts) — disqualified on semantics, `HeapProfiler.collectGarbage` returns the same pages safely (-25.5MB private on a 127MB renderer, one 58ms stall, zero LoAF).
-- WebView2 `MemoryUsageTargetLevel=Low`: declined. Its spec describes working-set trimming through disk swapping, not reclamation ("if script runs after we swapped related memory out, we will swap the memory in to ensure script can still run"), so it shrinks the Task Manager number and adds swap-in stalls. Blur-gating it also leaves active-state memory untouched.
-- Mount fewer panes / scope the ticker: rejected by ruling.
-- Overlap-layer restructuring (14 layers promoted by Overlap): ceiling ~5-10MB GPU and ~2% main thread; the fixes change scroll or paint behavior. Not worth an A/B unless the ceiling changes.
-- Glide residue `rotate: 0.0001deg` in `chokepoint.ts`: gone with `7b29f9d6`, along with the rest of the content-transform path. Do not reintroduce it; the architecture test rejects it.
-- `--js-flags=--heap-growing-percent=N`: **OVERTURNED by measurement 2026-08-27** — the two earlier withdrawals reasoned against committed-page growth; the streaming-churn sawtooth is a different mechanism and the flag halves it. Rig A/B, 4-worker real-day replay, ~30min per leg, flag verified on the browser-process command line: control plateau 558-626MB renderer private vs 265-277 with `=20`; end-state forced-GC regrowth 124MB/30s vs 14.4; frame health identical (median 6.1 / p99 12.2 / zero LoAFs); price 296ms GC CPU per 30s (~1% of a core, busy 21.9→24.0%). Ships via `AGENT_OVERFLOW_WEBVIEW_EXTRA_ARGS` today; making it a launcher default (and tuning 20 vs 30-35 to buy back GC CPU) is decision-sheet item 1, awaiting the user.
-- Go backend RESIDENT memory: not a contributor — live heap holds flat ~15MB, goroutines flat ~57, RSS ~93MB. Backend ALLOCATION churn was a contributor (see the two 2026-08-25 fixed causes); GB-scale transient bursts balloon `heapSys` (observed pinned at ~248MB — committed pages the scavenger returns slowly), which is churn through the GC, not a leak. The remaining churn deliberately left: provider-stream `RawMessage` decode copies + `readBoundedLine` (structural to the streaming path, GC handles it).
-- go-tree-sitter v0.25.0 (latest) binding overhead: `readUTF8` copies the input twice per parse — one Go-heap `string(payload.text)` (visible to pprof) plus one `C.CString` (C heap, invisible). Fixed 2× multiplier on all parse traffic; a local patch was declined, possible upstream contribution.
-- Backend overnight idle allocators (4h diff, 2026-08-25, all attributed and left alone): `io.copyBuffer` ~334MB = os/exec pipe copies from the gitwatch 60s liveness probe (deliberate silent-death net, fs-watch is primary and 3s polling only engages on install failure) plus the background `git fetch` cadence (1-min tick, real fetch rate-limited per-repo/5-min); `io.ReadAll` ~218MB = dev-only WS render-trace batches (~170MB, absent in production) + `triage.readClaudeTaskOutputFile` (~43MB) + git untracked-count reads; pprof self-observation ~370MB cum from the samplers themselves. Idle backend CPU 0.38% of one core; heapSys steady 23-34MB.
-- `triage.readClaudeTaskOutputFile`: event-driven, not a poll — one bounded (8MB) read per `system/task_notification` carrying an `output_file`, upserting one payload row. Repeated reads come from watch tasks / background monitors firing real notification events on growing files; ~10MB/h churn. An incremental-offset scheme would add stateful complexity to save noise. Accepted.
-- Backend CPU during active turns: 1.43% of one core (30s profile mid-activity, 2026-08-25), ~70% inside SQLite VDBE on the persist path. Not a lever.
-- Renderer active-turn churn post-fix-waves: 2.19 MB/min total above the 50KB class threshold (45s churn window during live agent turns, 2026-08-25); top class ~2MB/min, everything else 0.1-0.35. Active-turn private bounces 253-338MB with clean GC returns (was 550-600MB at the original symptom). No remaining churn target worth a fix.
+What a reading means, what has been ruled on, and which mechanisms in
+this app and in Chromium have already been walked to their owner. It is
+not a ledger and carries no baseline numbers: every figure measured on
+this app is a snapshot of one build under one load on one day, and the
+next investigation compares against a reading it takes itself, on the
+same build and the same load, in the same session. A number from this
+file is never the thing a user's observation is checked against.
+
+## Reading a number
+
+- Task Manager's memory column is private working set; memory-infra
+  `private_kb` matches it within a few MB. Rows: "Agent Overflow (dev)"
+  is the renderer, "GPU Process", "Manager" is the browser process,
+  "WebView2 Manager (N)" is the group sum. Five other WebView2 apps run
+  on the same box; identify the app's processes by `--user-data-dir`
+  on the command line, never by image name.
+- The machine is an Intel iGPU with ANGLE on D3D11 and GPU raster, so
+  every texture byte is system RAM in the GPU process's private set.
+  That process is raster tiles + shared images + skia (the part the app
+  drives, screen-area-bound) over service malloc pools and untracked
+  D3D/DirectComposition memory (window-size-bound). It takes ~10 min to
+  settle down from a boot's paint burst and moves ±10-15MB with
+  activity within an hour. Never A/B against one early sample, and never
+  read one Task Manager tick of it as growth.
+- Renderer private working set under streaming is churn rate × GC wait,
+  not live size: V8 lets garbage pile to a multiple of the live heap
+  before collecting. `blink_gc` committed over `blink_live` is Oilpan's
+  fragmentation, not retention; sweeping empties pages but keeps them
+  committed, and a memory-reducing GC returns only fully-empty 128KB
+  pages, so the committed floor RATCHETS with session age as survivors
+  scatter across pages (cppgc compacts only vector-backing spaces). Live
+  flat while committed climbs is that mechanism; live climbing across a
+  forced GC is a leak. `probe churn` splits the two in one shot.
+- Ordinary major GCs run every ~10s here and sweep without returning
+  pages. Only the memory-reducing path (page hidden, memory pressure,
+  `HeapProfiler.collectGarbage`, which is `LowMemoryNotification`,
+  Oilpan included) decommits. `Memory.simulatePressureNotification`
+  does NOT trigger it in WebView2's renderer at either level.
+- A memory-reducing GC re-pays itself: forced purges of the GPU service
+  heap and the renderer both regrew past their pre-purge level under
+  continuing use. User ruling: forced GCs are not the answer, the target
+  is active memory; the lever is churn rate.
+- The observer changes the number. A tracing session spawns a
+  TracingService utility process and can retain hundreds of MB; a
+  `Runtime.queryObjects` poll (the detached census) runs a full
+  memory-reducing GC before it answers and pins the renderer at a floor
+  it never reaches on its own, hiding every peak; a threshold-triggered
+  detailed dump walks every heap in every process and reads as lag.
+  Footprint curve and retention census are separate runs, and neither
+  is a leg of a footprint measurement.
+- Task Manager's `DEBUG=1` dev app carries `VITE_AGENT_OVERFLOW_UI_TRACE`
+  + `UI_ORACLES`; the oracles snapshot chat DOM into the trace. Launch
+  with `UI_ORACLES=0` to shed that tier before attributing renderer CPU.
+- In a heap snapshot, detachedness is the node field
+  (`detachedness === 2`); there is no `Detached ` name prefix. A path
+  `system / Context → <moduleVar> → reactions → derived` is a
+  module-scope svelte signal holding a reaction from a dead component;
+  an effect with `fn === null` in the derived's parent chain was
+  destroyed, so the derived outlived its owner.
+- Trace-event counts are ground truth; cpuprofile self-times on native
+  bindings are idle-attribution inflated (thousands of `TimerInstall`
+  cannot cost hundreds of ms). Timeline trace locations are 1-based.
+- Headless frame histograms are 60Hz-vsync-quantized and see nothing of
+  a 165Hz stutter; forced-layout attribution needs an unminified build
+  (`pnpm exec vite build --minify false`, then `go build -o
+  bin/agent-overflow .` because the binary embeds dist) and Playwright
+  `browser.startTracing` around the workload, counting forced
+  UpdateLayoutTree/Layout by top JS frame.
+
+## Rulings (never re-propose)
+
+- Never trade performance for memory. Off-view prepaint or tile
+  shedding, `animation-play-state` pausing off-view, mounting fewer
+  panes, scoping or slowing a ticker, conditional unmounting: all
+  rejected, repeatedly. Pane-bounce is the common case. Make the unit
+  cheaper.
+- Layer promotion doctrine: the only authored `will-change` is
+  `scroll-position` on `.pane-scroll-surface`, where the scroll offset IS
+  the chokepoint's value. Transform promotion of timeline content gave a
+  second paint position and left WebView2 presenting stale pixels;
+  `architecture.test.ts` rejects it. Cost layers, never count them: a
+  composited opacity animation promotes only its own element and adds no
+  measurable texture, so a layer census is not a reason to demote one.
+- Ambient indicators are CSS keyframes, opacity-only, `steps()`. An
+  inline style write per tick costs one WHOLE-DOCUMENT lifecycle
+  regardless of element count (4 dots and 40 dots cost the same); a
+  compositable property belongs in a CSS animation. `steps()` pins the
+  present rate to the art's frame rate, which is what keeps the
+  2026-07-04 vsync-present incident closed; a smooth infinite animation
+  reopens it. Never animate a custom property on the document root: a
+  root write invalidates style for the whole document. The glow stays on
+  the JS ticker because box-shadow spread growth has no opacity
+  re-expression, and the ticker sleeps when no glow is mounted.
+- Any animation, anywhere in the document, flips the compositor into
+  drawing on the frame deadline instead of waiting for raster. It is
+  binary (one animation costs what thirty do) and document-wide. The
+  user accepted the mode because the sprite, LED and spin are wanted;
+  there is no middle position.
+- The item-event flush applies every mounted pane's beat in one rAF.
+  Round-robining panes across frames was built and refuted by a
+  controlled A/B/A/B: tall frames are one pane's own beat, un-merging
+  multiplies the per-flush fixed costs. Tripwire in `events.test.ts`.
+- The spring's per-tick `targetScrollTop` forced read is load-bearing
+  (same-frame clamp, clamp witness, write-refusal classification). The
+  lever on forced-read cost is the DIRT'S SCOPE, never who reads first:
+  a forced reader pays for whatever invalidation is pending, and
+  removing one reader hands the bill to the next one standing.
+- Thread-switch coldload forced-layout elimination past the three
+  ResizeObserver-timing fixes: stop-loss. Removing readers moved no wall
+  time; the rest is scroll-package reads with a low ceiling on a
+  one-shot, script-dominated gesture. Resume only on a user flag about
+  switch latency specifically.
+- Chromium flags tried and closed: `BlinkHeapYoungGeneration` makes it
+  far worse (barrier cost, delayed majors); `--in-process-gpu` forces
+  software compositing in WebView2; `RawDraw` renders a blank window
+  and costs more; `PartitionAllocBackupRefPtr` off is a few MB for a
+  use-after-free mitigation; `--force-gpu-mem-discardable-limit-mb`
+  never binds (retention is pool inventory, not cache policy);
+  `NetworkServiceInProcess2` works but was rejected by the user (sandbox
+  trade); WebView2 `MemoryUsageTargetLevel=Low` swaps rather than
+  reclaims. Launch-flag door for future arms:
+  `AGENT_OVERFLOW_WEBVIEW_EXTRA_ARGS` (launcher, WSLENV-forwarded).
+- `--js-flags=--heap-growing-percent=N` is the one flag that measured
+  as a real lever on the streaming sawtooth (halved the renderer
+  plateau, frame health identical, ~1% of a core in GC CPU). Making it
+  a launcher default is an OPEN decision-sheet item, the user's call.
+- Sidebar: a live-activity bump must not rewrite the `threads` or
+  `projects` arrays; those bumps are boundary events and live in
+  per-thread boxes, so the animated each-blocks reconcile and FLIP only
+  on a real reorder. Tripwires in `ProjectThreadList` and the store
+  identity tests.
+- The idle memory trim (between-turns memory-reducing GC through the
+  launcher's DevTools bridge) fires only after input or a turn, never
+  while any provider turn or round is open (provider-agnostic gate,
+  Claude never emits turn-start), and never while a pane is still
+  draining its reveal queue. Wire-complete is not reader-complete. Its
+  reach is Windows/WSL only; native desktop and `--connect` have no
+  consumer (open).
+  It installs only once the bootstrap manifest has answered host
+  presence (`pageGrantsResolved()`): the remote-access merge read
+  `hasScope('host')` at mount, before that answer existed, and the trim
+  was a no-op for the life of every page (fixed 2026-09-03). The first
+  thing to check when idle renderer memory stops returning to floor is
+  the launcher log: no `webview trim: renderer GC done` line for an
+  hour of use means the detector never installed.
+- Direct `content-visibility: auto` on completed markdown blocks loses
+  scroll position (no remembered intrinsic size off-screen); a safe
+  version is a product project, not an optimization.
+- Backend residency is not a contributor; backend ALLOCATION churn was
+  (fixed causes below). Remaining churn left deliberately: provider
+  stream `RawMessage` copies, `readBoundedLine`, the gitwatch liveness
+  probe's exec pipes, `readClaudeTaskOutputFile` (event-driven, bounded).
+
+## Mechanisms and their owners (fixed; do not re-derive)
+
+Each line is the class, where it lived, and what enforces it now. Commit
+hashes are for `git show`, not for the numbers in them.
+
+- Timeline planes as composited layers fed Chromium's
+  `PlaneRootTransform` re-allocation on every property-tree generation
+  bump (`GeometryMapperTransformCache::Update`, no reuse). Removed the
+  `will-change` promotion (`7b29f9d6`); motion goes through `scrollTop`.
+- Pane and activity-run scrollers without a composited scrolling layer
+  ran a full main-frame lifecycle per scroll offset write (JS or wheel
+  alike). `.pane-scroll-surface` with `will-change: scroll-position`
+  takes Blink's direct scroll-offset-transform path (`3e249b5a`,
+  `5cc379f0`); that also zeroed the transform-cache churn family.
+- Every scaled `<svg>` root is a non-2D-translation transform node whose
+  cache regenerates per bump; ~400 lucide roots did that while
+  scrolling. Icons are CSS-mask spans (pnpm patch, `acc09802`), and each
+  distinct data-URI mask cost an isolated SVG document whose singletons
+  pinned Oilpan pages, so masks reference a same-document sprite
+  (`5ccf3a2e`). Fragment-addressed sprites do not share documents.
+- Blink retains one edit command per typed character for the element's
+  lifetime, pinning Oilpan pages; the composer swaps its `<textarea>`
+  after every send (`04c0af7e`; `editcmdpages` verifies).
+- Featureless compounds in the GLOBAL sheets (`> :last-child`,
+  `* + *::before`) land in Blink's universal invalidation sets, so any
+  mutation anywhere recalcs whole subtrees. Every compound keys on a
+  feature; `styleInvalidation.test.ts` sweeps (`9eaa5465`).
+- The per-beat wholesale projection rebuild was the renderer streaming
+  churn root cause: `groupItemsBySubagent`'s fast path disqualified on
+  ordinary completions, card nodes minted fresh poisoned the run cache,
+  `buildRun` re-walked per beat. Reference-stable nodes and lean builds
+  (`93582cd5`); the virtualizer reuses row identity when fields match
+  (`fe19980f`). The secondary Blink churn classes vanished downstream.
+- Mount-time geometry reads force a whole-document layout against the
+  mid-mount dirty tree; a ResizeObserver's first delivery is post-layout
+  and free. Read mount geometry there (`baa816dd`, `44ef8304`,
+  `d1b09795`), and never query `offsetParent` for visibility the RO
+  entry already answers with 0×0 (2026-08-28 fix).
+- Scroll delivery reads: content deliveries decide from cached
+  bottom-target arithmetic keyed on height (`2a318863` + `f712f65a`,
+  which fixed the delta double-count that rested surfaces 8px short);
+  the activity-run clip reads geometry only on reader gestures
+  (`a3eee4d6`); the reading anchor derives from engine offsets instead
+  of `elementFromPoint` (`a56ca00a`); the hidden overlay scrollbar
+  thumb is inert (`a3c4d7c1`); the tail-clamp slide uses RO geometry
+  (`0d23c1b3`); the toolbar density measurer is RO-driven (`abda8210`).
+- Timers: the scrollend fallback and the quiet-work scheduler keep one
+  standing deadline instead of clear+set per event (`3cfb6131`,
+  `e2a72036`); reveal smoothers share a wall-clock grid so concurrent
+  panes render in the same frame (`b88fb54b`); springs, smoothers and
+  rail sync share one rAF owner with a before-DOM-update phase for
+  scroll writes (`animationFrameBatcher.ts`).
+- Svelte patch hunks (frontend/AGENTS.md § Vendor patches): reconnect
+  dedupe (a dirty derived registered twice kept a closed pane's DOM
+  alive), flip-phases (animated-each apply interleaved read/write per
+  row, N forced passes per reorder), destroy-pass errors, flush-loop
+  caps, ownerless roots. `sidebarFlip` replaces stock `flip()`'s
+  per-row computed-style reads with rect math.
+- Send lag: the composer's textarea swap defers to idle (`7a0919ee`);
+  the rest of the Enter task is the tier-move FLIP plus row mount.
+- `@formkit/auto-animate` cold-polled the sidebar (forced layout +
+  IntersectionObserver rebuild per element per 2s); replaced by
+  `animate:flip` (`54d04e72`).
+- Terminal/code islands: a completed row that extends the smoother's
+  source enters the readable cursor instead of replacing the row; code
+  islands retire per record. Inherited-color syntax spans collapse to
+  plain text (`syntax.css` cross-check).
+- Backend allocation: the debug provider log embedded frames as
+  `json.RawMessage` (`facc92a4`); `HighlightPatchTextPrimed` memoizes
+  spliced-document parses (`04e5c74c`); the Codex resume rollout tail
+  arms on relevance and reuses its buffer (`b69f858d`). go-tree-sitter's
+  `readUTF8` copies input twice per parse (upstream, declined locally).
+- Nav rail `data-current` scrubbed every tick on every pass; the claim
+  is element-keyed like the module's other applied caches. Rule for any
+  imperative DOM writer: a per-member sweep beside a diff-only writer
+  strands the DOM.
+- Streaming markdown: one serialized dispatch queue per wire channel,
+  one ordered reveal queue across direct appends and parser migrations,
+  completed blocks retained, only the volatile tail reparses.
+
+## Classes named and left (attributed, no app lever)
+
+- Whole-paragraph reshape per streamed append (HarfBuzz glyphs,
+  ShapeResult, LayoutResult, fragments, ComputedStyle) is the product's
+  own layout churn. DOM writes are tens of characterData/s; there is no
+  app-side amplifier.
+- Post-layout hover `HitTest` at the last cursor position re-runs per
+  dirtied frame; no `elementFromPoint` caller is behind it.
+- Svelte flush dependency-tracking allocation per reaction re-run is
+  framework-fixed; the remaining JS churn split (markdown re-lex of the
+  tail, grouping per text delta, retention sweeps) is the open
+  decision-sheet map below.
+- The activity-run head-advance gBCR pair must price old and new DOM
+  separately; one forced pass per window advance is inherent.
+- Overlap-promoted pane chrome (rails, fades, the floating composer)
+  must take its own layer to keep paint order over a composited
+  scroller, and its tiles cover painted regions only.
+- Uptime-scaling GC pauses (script-less LoAFs growing with session
+  age) are bounded by the churn sawtooth peak, not by live growth; 8h
+  and multi-day curves show live flat. Lever is churn, never leak
+  hunting. `frame.loaf` records carry `heapBeforeMb`/`heapNowMb`: a heap
+  drop across a script-less stall is the GC verdict.
+
+## Instruments and gotchas
+
+- Online probes need an ownership manifest (`AO_PERFPROBE_MANIFEST`,
+  README § Prepare a probe manifest) naming a harness instance and a
+  page whose URL carries `?page=<marker>`. The `make dev-wsl` window's
+  URL carries no marker and the dev app is not a harness instance, so
+  since 2026-08-29 NO online probe can attach to the user's dev app;
+  only harness and soak instances are probeable. Read-only OS-level
+  reads (a PowerShell `Get-CimInstance Win32_Process` filtered by the
+  app's `--user-data-dir`) are the dev app's only instrument until that
+  gap is closed.
+- One tracing session per browser: `sample --every`, `memdump`,
+  `churn`, `tiles`, `frames`, `ab` collide. Stop the sampler first.
+  `probe frames` traces must stay ≤~120s (the reader string-concats).
+  `checkerboard` rejects durations over 15s.
+- A/B on a rig, two runs per leg, before-binary built from clean HEAD in
+  a temp worktree; single runs on a busy desktop carry contention noise.
+  A/B/A when the effect is small.
+- `probe sample --detached` forces a GC per tick and flattens the curve
+  it measures; run the census separately. Detach long samplers with
+  `systemd-run --user` (SKILL.md step 2).
+- memlog (`--memlog=gpu`) attaches after GPU boot: it attributes growth
+  only, never the boot floor. `probe gpuheap` reads it.
+- Probes take POSITIONAL args (`driveburn "<thread title>" "<prompt>"`),
+  and a throwing probe exits nonzero (`00965f76`).
+- Mock scenarios reach only sessions created after they are set; a
+  thread whose session already played one replays it. Provider must
+  match the thread (codex thread + claude scenario = canned reply).
+  Reveal backlog decouples wire timing from paint timing; stage
+  "mid-glide" via reveal time, not wire time.
+- Stopping the WSL `make` unit leaves the Windows launcher and webview
+  alive; tear down with `bin/ao-harness down`. WSL cannot reach Windows
+  loopback (a refused curl is not a dead app). PowerShell inline
+  `-Command` quoting from zsh fails silently; stage a `.ps1` under
+  `/mnt/c/.../Temp` and run `-File`.
+- The soak renderer can carry a frozen multi-GB `directMap` allocation
+  left by a probe serialization; while it stands, soak absolutes are
+  meaningless and only deltas count. Restart the soak to clear it.
+- Programmatic `scrollTop` writes are not reader intent in either
+  direction; `probe scrollgesture ... down` is the re-engage tool.
+- Analysis recipes: windowed cpuprofile attribution over tall-RunTask
+  ranges; classify svelte flush as samples with an ancestor in
+  {flush_queued_root_effects, flush_queued_effects, process_effects,
+  update_effect, update_derived, execute_derived, update_reaction};
+  steady-state profile = settle, `ao-harness ui open`, `Profiler.start`,
+  `scenario set` + `send --wait`, `Profiler.stop` (bench reloads the
+  page and kills a Profiler session); join LoAF page time to capture
+  time by the one event in both lists; date GC stalls from launcher.log
+  `GC done` lines; join launcher trim stamps against `items.created_at`
+  to prove a trim landed mid-turn.
 
 ## Open
 
-- 2026-08-27 **streaming-churn attribution (4-pane rig replay) — the reduction campaign's working map.** JS alloc 70-107MB/min (sampled `alloc 60`, `AO_ALLOC_INTERVAL=131072`): ~21 markdown re-lex in Streamdown's doc derived (append lexer verified cheap — 70-560B re-lexed per append, /tmp/mdbench; cost is 165Hz flush frequency × per-call token minting, table descent dominates), ~49 svelte flush bookkeeping (per-reaction dep tracking × flush rate, framework-fixed), ~12 grouping pipeline (`groupItemsBySubagent`/`groupActivityRuns` re-running per TEXT DELTA — suspected defect, membership-change-only is the design; unverified), ~9 retention-sweep fresh Sets, ~7.5 row mounts (believed legit). Blink ~58MB/min (whole-paragraph reshape per append). CPU: native layout/paint ~63% of busy, spring `targetScrollTop` forced reads ~15%, svelte flush ~7.5%, markdown ~0.4%. Levers offered as a decision sheet (flush cadence cap ~30Hz = the shared amplifier; dumb volatile tail; engine-geometry spring reads; churn cuts; flag default) — all awaiting user picks. Full brief: `PERF-HANDOFF.md` (repo root, untracked).
+- Streaming-churn decision sheet (JS: markdown tail re-lex at flush
+  rate, svelte flush bookkeeping, grouping pipeline re-running per text
+  delta (suspected defect, unverified), retention-sweep Sets; levers:
+  flush cadence cap, dumb volatile tail, engine-geometry spring reads,
+  `heap-growing-percent` default). All awaiting user picks.
+- Idle-trim reach gap on native desktop and `--connect`.
+- The dev-app probe gap above.
+- Upstream: svelte reconnect double registration (issue/PR), Chromium
+  `PlaneRootTransform` reuse (not filed, no longer reached).
+- Side observation, unfiled: synthetic wheel events on the first
+  composited plane scrolled the whole app view; the app root may be
+  scrollable.
 
-- 2026-08-26 **165Hz frame-drop campaign — VERIFIED LIVE (post-restart 1h framedrops capture, build 91879d7f, 17:17-18:17).** 593,708 frames, median 6.1 / p99 6.2 identical to baseline. Verification recipe that closed it: `t − at ≈ 77.6s` (LoAF page-time vs capture-time offset, anchored by the one event present in both lists) joins gaps↔LoAFs, and launcher.log `GC done` lines date every trim. The three attributed sources and their outcomes:
-  1. **Idle-trim GC metronome**: VERIFIED FIXED. launcher.log flips from a trim every ~5min around the clock (old build, 14:56-15:59) to one boot trim then a 40-min idle stretch with ZERO trims (activity gate `e9454eb4` holding), then one per ~5min only around active use. The 5 in-window trims each match a worst gap (36-56ms) — that stall is the trim's designed price, now landing only in gate-approved quiet windows (10s input-idle, no turn, no drain per `7fea82c6`); compositor-driven animation rides through it, so a static-read window makes it invisible. If stutters are STILL felt near trim times, the remaining lever is trim cadence/positioning (decision sheet).
-  2. **Reveal-tick rAF frames at 12-15ms** (svelte flush 6-8.5ms + Paint 2-3ms, ~13/min during streaming): the fanout audit ran (user-approved) and its one concentrated find is FIXED `fe19980f` (virtualizer row-identity reuse, flush-exec −22-30% — see Fixed causes). What remains in a steady-state streaming profile is ~27ms/turn svelte-internal plumbing plus a legitimate long tail (the streaming row's markdown, geometry freshness via deliverSample→refreshIsNearBottom which is load-bearing engine design, run registry, keyedSignalRegistry) — no further concentrated fanout to cut. Post-restart: streaming reveal frames should sit measurably under the 12-15ms captures.
-  3. **Scroll-metric read-after-write thrash** (~22 forced passes/s streaming): the activity-run half FIXED `a3eee4d6`; the spring's `targetScrollTop` half ruled out as load-bearing (see Ruled out). Post-restart re-probe: 120s trace during streaming should show forced recalcs ≈ targetScrollTop only (~11/s), readScrollMetrics near zero.
-  - Clean baseline stands: outside trims and streaming, 150s rAF = 24,749 frames, median 6.1ms, p99 6.2, worst 11.6ms, zero LoAF ≥50ms. Probes: `framedrops`, `mainstalls`. MS Teams owns the machine's other big WebView2 processes.
-  - Post-fix capture residuals: the 75ms streaming `handleResizeEntries` LoAF DID NOT RECUR (the only RO-heavy LoAF was a real pane drag-drop, 53.7ms total = ondrop 27.9 + RO 20.5 — modestly under the pre-fix 55-97ms, consistent with the RO half shrinking; drop handlers still the open item). The 114.8ms script-less LoAF at 18:04:37 is ATTRIBUTED to the uptime-scaling GC-pause class below.
+## Red/green recipe for a svelte patch hunk
 
-- 2026-08-26 **residual-stutter sweep, remaining open items** (1h live capture + clone correlation):
-  - **Turn-completion burst REFUTED as the felt stutter**: every worst gap in the 1h capture sits 2.3s-7min from the nearest turn completion (27 completions read from the cloned store). The 18-21ms completion tick measured on the harness is real but did not produce the user's worst gaps; the sidebar-resort split stays unbuilt. Do not re-derive.
-  - **Virtualizer resize storm — ATTRIBUTED, main lever FIXED `2a318863`.** Unminified 3-pane clone replay (storm2/storm3 artifacts) split the class fully: `handleResizeEntries` and `engine.applyMeasurements` are INNOCENT (0.1ms even under forced width storms — the 25-29ms viewport-resize tasks are pure native rewrap, UpdateLayoutTree 19.6 + Layout 7.7, zero JS). The real anatomy of a bad frame: all panes' WS item commits flush in ONE rAF (`flushItemEventQueue` is rAF-scheduled) and the single svelte flush renders every pane's beat (~5ms/pane of genuine thousand-cuts render work, no concentrated app site left post-`fe19980f`), PLUS the scroll controller's per-delivery forced-layout reads — `distanceFromBottom`/`targetScrollTop` on the content-delivery path, 4 forced passes in the worst 27.8ms frame because other panes' writes re-dirty layout between deliveries, and the first reader pays the whole pending recalc. The live 75.8ms LoAF is this same flush model entered through the RO door (RO callbacks run pre-paint in the rendering task; the applyUpdate state writes flush inside it). Fix `2a318863`: delta deliveries decide from cached bottom-target arithmetic (distanceFromBottom ≡ target − scrollTop; the sample carries `viewportHeight` from the scroller RO so a viewport move falls back to real reads; every real read site resyncs the cache; floored short-content disables it). A/B on the same replay: distanceFromBottom forced passes 22 → 0, busy p95 4.25 → 3.25ms. Instant-pin deliveries stay flat by design (their scrollTop write forces the same clamp layout); the win is mid-glide (spring-chasing, no per-delivery write) and escaped panes. `spring.sentinelTarget()` also stopped reading clientHeight per resolver snapshot when no sentinel is armed (same commit).
-  - **Pane drag-drop frame 55-79ms: CLOSED into the mount stop-loss (2026-08-26).** The handlers are thin (one gBCR on the reorder target; code read at fix depth): a pane REORDER moves the same layout-item objects through a keyed each (`(item.id)`, identity preserved — DOM moves, no remount), so the observed 26-32ms ondrop is `openThreadIdInNewPane`'s thread-pane mount — the same one-shot mount-script class the coldload stop-loss covers. The RO-storm half of those frames shrank with `2a318863`. No separate lever exists.
-  - **3-pane beat collision round-robin: BUILT AND REFUTED (2026-08-26), do not re-propose.** Rotating the item-event flush across mounted threads (one pane's commit per rAF, FIFO by oldest event, timeout backstop full-draining) was implemented and gated on a controlled clone-replay A/B/A/B — identical `from-thread` rule both legs, before-binary built from clean HEAD in a temp worktree, two runs per leg. Merged (HEAD): busy p95 3.0/3.0ms, max 26.2/27.3, 6ms-fit 97.4/98.0%. Rotated: p95 5.0/5.5ms, max 24.4/30.3, 6ms-fit 95.5/96.8%. Every aggregate worse. Mechanism: the tall frames are flood-shaped — one pane's own beat (streaming-row markdown + regroup) is 15-25ms by itself, so deferring the other panes cannot shrink the tall frame, and un-merging multiplies the per-flush fixed costs (svelte flush entry, regroup, notify pass) the single batch amortizes. The earlier "~5ms/pane thousand-cuts" shape is the steady state; the worst frames were never a sum of small beats. Tripwire: events.test.ts "applies every mounted pane's beat in the same frame" + the NOTE in eventsItemStream.ts#flushItemEventQueue. Consequence: the multi-hitch-during-output residual's levers are the per-beat cost itself (streaming-row markdown, regroup) and minor-GC churn — not commit scheduling.
-  - **ComposerToolbar density measurer: FIXED `abda8210`.** Was: a subtree MutationObserver (childList+characterData, i.e. the token/limit text) scheduling a rAF measure per streaming beat, each forcing a full pass against the flush-dirty tree (19-21/storm run, plus the `data-compact` probe toggle's write→read→write). Now: RO entries on the toolbar + its direct children (width deliveries only, post-layout where the reads are free and the probe toggle relayouts a clean subtree); childList-only observer for control mount/unmount. Tripwire: ComposerToolbar.test.ts "remeasures on a child width delivery". Verified on a fixed-build 3-pane storm trace: zero measurer passes; the remaining forced-pass roster is fully attributed (spring-family targetScrollTop reads — ruled out as load-bearing, dense under storm replay at ~15ms/s of sub-ms passes; virtualizer RO first-read bill; terminal-fit RO gBCR, 0.1ms each).
-  - **`handleResizeEntries` first-read bill, corrected and FIXED 2026-08-28:** the claim that the row ResizeObserver's `offsetParent` checks merely inherited an unavoidable dirt bill was wrong. The observer already delivered the target's measured box. A hidden `display:none` subtree reports 0×0, so the synchronous visibility query carried no missing information. Removing it cut active four-pane forced layouts from 420 / 30.4ms to 28 / 2.0ms per 15s and eliminated `offsetParent` from the forced-layout roster. Chromium coverage replaces a row wrapper's `offsetParent` getter, resizes it, and requires both a measurement update and zero getter reads; the two existing hidden-pane tests pin the 0×0 guard.
-  - Two mid-turn 36ms gaps sat on the trim's 5s grid but with a turn open (backend refuses trims there) — folded into the uptime-scaling GC-pause class below; the git-fetch/liveness contention theory found NO fetch bursts in a 6.7min spawn watch (2 status spawns only, 1 gitwatch watcher live).
-- 2026-08-27 **tool-completion-mid-glide stutter (user report) — NOT REPRODUCIBLE at HEAD; mechanism attributed.** Rig: e2e/rigs/glide.mjs (per-frame scrollTop/scrollHeight sampler over replay rounds) + handcrafted claude scenarios (/tmp shapes: streamed intro, parallel Bash tool_use pair, results split 250ms vs 3000ms). Findings: (1) completions queue behind the readable drain BY DESIGN and paint when the reader's crawl reaches them — wire spacing (250ms vs 3s) does not change the paint moment; both results paint one reveal beat (33ms) apart. Reveal-queue doctrine intact. (2) At HEAD the completion-reveal frame costs 5.3-7.9ms and the turn-complete beat ~150ms later costs 7.5-8.5ms (batched FLIP tier-move 1.8ms + spinner/run teardown 0.6ms + persist RPC serialize 0.8ms + native) — no task ≥9ms in either band, zero gaps >32ms and zero scrollTop jumps across 8+8 sampler rounds, worst per-round gap (19-32ms at 60Hz headless) clusters at the completion/turn-complete beat but is 1.2-1.9 frame periods. (3) The user's build predates ALL six of this session's fixes — per-row FLIP apply thrash (34.6ms class) and tail-clamp per-delivery gBCR landed in exactly these frames — so their sighting is most plausibly the pre-fix beats. Residual at HEAD: one ~8.5ms boundary frame = 1 dropped frame at 165Hz; decomposing it (defer the sidebar bump a frame) was judged not-clear (event-ordering risk vs one frame). VERIFY after the user's restart: if still felt, capture on the 165Hz WebView2 build with the LoAF instrument. Rig gotchas learned: a mock scenario only reaches NEW sessions — a thread whose session already played a scenario replays it regardless of scenario set (use a fresh thread per leg); provider must match the thread (codex thread + claude scenario = canned fallback reply); reveal backlog decouples wire timing from paint timing, so "mid-glide" must be staged via reveal-time, not wire-time.
-- 2026-08-27 **turn-start send lag (user report: intermittent lag on send) — attributed + two fixes.** Rig: e2e/ao-sendlag.tmp.mjs pattern — UI-driven composer sends (textarea + Enter) on a HEAD harness over clone content, performance.mark per send, trace+cpuprofile, /tmp/ao-sendwin.mjs + ao-sendcallers.mjs analyzers. Finding: EVERY send's Enter keydown ran one 8-19ms synchronous task (165Hz = 1-3 dropped frames): optimistic row mount + sidebar tier-move FLIP (idle→running is a REAL reorder even for the top thread) + dispatch RPC + recreateInput's synchronous textarea swap (remove ~1.3ms + refocus ~0.9ms + forced recalc). "Sometimes" = compounding with first-send cold paths/GC. Fixes: flip-phases svelte hunk (see 2026-08-26 entry) and `7a0919ee` (recreateInput defers the swap to requestIdleCallback; old element stays mounted+focused till the slot, swap task unchanged and atomic, skip-if-typing/IME guards). A/B same rig: swap slices gone from Enter tasks, durations 19.3/11.1/7.1/8.4/10.5/10.1 → 16.2/8.7/6.3/7.6/10.3/9.7ms. Residual is the tier move's style+layout bill (billed early to FLIP's measure_to read) + row mount + RPC serialize — product work, one ~7-10ms frame per send. First-send-of-session stays ~16ms (cold paths, once).
-- 2026-08-26 **real-reorder FLIP read/write interleave — FIXED (svelte flip-phases patch hunk + pure-math `sidebarFlip`).** PREMISE CORRECTION first: the earlier "running-tier rank jockeying / interleaved beats" framing was WRONG — `syncThreadActivity` bumps fire at boundaries only (reader-authored user_text, approval request, user-input request, turn complete with `countsAsActivity !== false`; the per-beat path was descaled in a84ac3de), so real reorders are boundary events, exactly the user's mental model. The remaining cost was HOW svelte applies a real reorder, and it was fixable with zero visible change — no decision-sheet item, ordering behavior untouched. Two mechanisms: (1) svelte's animated-each apply microtask ran abort(write)→gBCR(read)→create animation(write) PER ROW, so N rows forced up to N style-recalc passes (storm G: 34.6ms gBCR self-time under `apply` vs ~5ms under the batched `measure`); the **flip-phases** patch hunk (frontend/AGENTS.md Vendor Patches #6) splits it into abort-all→read-all→create-all, one forced pass per reorder, geometry identical. (2) stock `flip()` read getComputedStyle + clientWidth/Height ×2 per moved row inside the create phase — all dead weight for same-size rows — replaced by `sidebarFlip` in `utils/sidebarAnimate.ts` (pure rect math, same 180ms cubicOut translate; only divergence: a mid-intro row reordered within its first 270ms settles its ≤2% enter-scale instead of carrying it through the slide). Tripwire: `svelte-patch-flip-phases.test.ts` (red on unpatched: creates interleave reads; green: phased). Verify post-restart: storm-rig capture, gBCR/animate attribution under `apply` in reorder frames should collapse.
-- 2026-08-26 **sidebar FLIP forced layout in boundary frames — FIXED (a84ac3de); "per-beat machine-gun" cadence attribution CORRECTED.** Windowed CPU samples (tall RunTask ranges of the clone-rig storm captures) put ALL of the frames' `getBoundingClientRect` self-time (9-27ms per capture) under svelte's `animate:flip` measure()/apply() — the sidebar's two animated each-blocks, forced-layout reads over every visible row with layout already dirty. Trigger chain: activity bumps (`syncThreadActivity`) rewrote the threads AND projects arrays per bump → every project's tree re-derived → fresh each arrays → reconcile + FLIP even when nothing reordered (~75% of reconciles were no-ops). CADENCE CORRECTION: these bumps fire at BOUNDARIES only (reader-authored user_text, approval/user-input request, turn complete) — the item-stream per-beat path was already descaled (userTextCountsAsActivity gate; the earlier liveUsageSnapshot side-cache did the same for provider:usage). The "machine-gun during agents' final output" symptom is repeated boundary bursts (approvals + completions in quick succession), not per-token beats; rig steady-state beats fit the 6ms budget at 97-98% even at HEAD. Fix (zero visible change): per-entity live-activity keyed boxes (arrays silent for bumps), identity cutoffs at both each arrays (`sameSidebarVisibleNodes`/`sameThreadStatusPill` — FLIP measures only on real reorders), fine-grained time labels + shared minuteClock, and `syncThreadActivity` no longer replaces pane.thread. A/B/A/B (HEAD vs fix, same from-thread rule): FLIP-called gBCR samples 465→115 and 117→65; busy aggregates flat in the rig because its replay crosses only three boundaries. Residual in burst frames (sb-B legs): ~15ms inclusive of REAL-reorder FLIP (three threads jumping to the running tier — legitimate animation) + ~20ms diffuse svelte re-render of genuinely-changed rows + coldload/reveal work. Tripwires: ProjectThreadList "a live-activity beat does not reconcile the FLIP each-block", threads/projects store array-identity tests.
-- 2026-08-26 **felt-stutter window ATTRIBUTED (user's return-from-away, 18:01-18:09) + uptime-scaling GC pauses named**. ui-render.jsonl mining decomposed all six unattributed gaps: 17:33:20 and 18:06:51 (30.4ms each) are thread-switch coldloads (`timeline.coldload` + `scroll.attach` + `contentRO.firstFire` at the epoch; the 18:06:51 one: 157 items, fetch 51ms, settle 130ms); 18:02:50 (48.4+36.3 pair) is opening a codex TERMINAL-mode pane — xterm mount plus all six panes re-pinning bottom (`virtualizer.scrollTarget` writes against six distinct scrollHeights in one 10ms burst); 18:04:37 (115.2), 18:06:19 (36.4, renderer totally silent ±3s), and the mid-glide 18:08:32 (30.4, chase maxGap 30.4 with ZERO longtasks) are the **uptime-scaling GC-pause class**. Evidence for that class: launcher.log trim GC durations reset to ~30ms on EVERY restart and climb with renderer uptime — session of 13:48: 32ms fresh → 100/82/74ms at ~3h (16:43-16:58); session of 17:15: 33 → 45/57/56 within the hour; session of 18:25: back to 32/30. Script-less LoAFs (zero scripts, zero blocking, renderStart delayed the whole stall) appear only past ~45min uptime and grow the same way (115 at 49min, 105 at 61min, 60/77 at 2.6/3.2h in the rotated file). Mechanism: V8/Oilpan pause time scales with heap size, heap grows with uptime (the mem-bloat campaign's open active-use leg). User independently reported "a lot less bad" right after restart. Instrument added: `frame.loaf` records now carry `heapBeforeMb`/`heapNowMb` (2s interval sampler ring in loafTrace.ts, `performance.memory`) — a heap DROP across a script-less stall is the GC verdict, flat heap exonerates the renderer. The FIX is the mem-bloat campaign's active-use heap decrease, not a scheduling change. Thread-switch coldload and xterm-mount costs are one-shot gesture prices; profile at fix depth only if the user flags them specifically.
-  - `probe frames` cannot span long windows: the CDP trace reader string-concats and a 400s active-renderer trace overflows Node's max string length (`readStream` in `lib/cdp.mjs`). Keep frame traces ≤~120s or fix the reader to stream to disk + incremental parse.
-- 2026-08-27 **8h endurance curves — no uptime-scaling frontend heap growth (multi-day-uptime leg CLOSED).** Four curves, read together:
-  - Harness churn rig (2462 UI-driven replay rounds over 8h on clone content): JS heap 21.5MB → plateau ~30MB by h3 (h3-h8 all 30±1MB), DOM plateau ~4930 nodes, final forced GC 31.2→29.3MB in 85ms (garbage margin ~2MB). LoAF cadence flat ~290/h with the per-hour MAX declining all run (206→61ms) — the early spikes were warmup plus box cross-load (this session's own pnpm/make runs), not aging.
-  - Soak rig (autopilot background-subagent streams, 8h): 10-12MB dead flat, 596 DOM nodes constant, ZERO LoAFs in 8h; forced GC 11.9→10.6MB, 18ms.
-  - User's real app, 2.5-day `probe sample` curve: `blink_live` 11-17MB throughout (one 63MB excursion during heavy use); the 124-407MB privMB swing is the documented Oilpan sawtooth (`blink_gc` committed 27→260MB while live stays flat); cc tracks scrollSurfaces (30-85MB); GPU inside the known 237-410MB band.
-  - Go backend, 2.5-day gosample curve: goroutines 38-57, heapAlloc 6-16MB, RSS 67-152MB oscillating (Go returns memory), launcher flat ~57MB.
-  - Consequence: the uptime-scaling GC-pause class (2026-08-26 entry) is bounded by the sawtooth peak, not by live growth — its lever stays churn reduction (peak = churn rate × GC wait), never leak hunting. Endurance drivers live at `e2e/rigs/churn.mjs` + `heapsoak.mjs`; curves were at /tmp/ao-churncurve.jsonl + ao-heapcurve.jsonl + ao-perfsample.log + ao-gopprof/samples.jsonl.
-- Scroll-intent asymmetry, probe-relevant: programmatic `scrollTop` writes are not reader intent in EITHER direction — a console write away from the bottom gets glided straight back (follow never disengaged), and a write to the bottom does not re-engage. Only real input (wheel) moves the engage state; `probe scrollgesture <secs> <idx> <sel> down` is the re-engage tool.
-- Soak-rig artifact (2026-08-25): a single frozen 1876.8MB `partition_alloc/partitions/buffer/buckets/directMap_1` allocation in the soak renderer — stable across dumps, absent from the user's app (its partition_alloc: 14.7MB) — a DevTools/probe serialization leftover. While it stands, soak private-footprint ABSOLUTES are meaningless; only deltas count. Restart the soak to clear it.
-- Upstream issue/PR for the reconnect double registration (svelte `main` matched 5.56.8 on 2026-08-23).
-- Chromium perf bug for the `PlaneRootTransform` re-allocation (one-line reuse in `GeometryMapperTransformCache::Update`): not filed, and no longer reached by this app after `7b29f9d6`.
-- Side observation, unfiled: synthetic wheel events on the first composited plane scrolled the whole app view, so the app root may be scrollable.
-- `HeapVectorBacking<blink::PaintChunk>` is 0.55 of the residual 1.07 MB/min churn. It is rebuilt once per paint, so it falls with the frame rate rather than needing its own fix.
-- Idle-trim reach gap: native desktop (macOS/Linux) and `--connect` sessions emit `webview:trim` into silence — no launcher-equivalent consumer exists there yet.
-- Post-restart full sweep 2026-08-25 (pulse fix + trim live): renderer 213MB idle / 289 streaming with clean GC returns; trim verified end-to-end in launcher.log ("renderer GC done in 35-169ms"); CPU 17.9% active; churn 19.7MB/min streaming, top class 1.4MB/min; backend live heap 8MB. `probe frames 20` at idle then found the pulse regression above: main-thread busy 41.4ms/s, of which ~31 was the 8Hz ticker's write → recalc → paint → layerize → commit chain, and ZERO layouts forced from JS. Reverting the pulse to CSS should take idle main-thread busy to roughly 10ms/s — re-run `probe frames 20` after the restart to confirm. Remaining non-targets: scroll pipeline geometry reads ~13ms/s during glides (volume, not forced layout — structural to the spring, low ceiling); ChildListMutationAccumulator 0.5MB/min (streamdown mutations intersecting scoped observers — math/mermaid/toolbar; no global observer exists); PlaneRootTransform residual 1.4MB/min (Chromium reuse gap, app feeds fixed).
-- Nav-rail `data-current`: `probe mutations` shows the write rate but not whether a write CHANGES anything, and the difference is the whole verdict. `probe attrflap data-current 15` split it: 142 writes across 111 tick elements, 2 value changes, 1 reversal. The marker was not oscillating (my first read of the counts, wrong); the rail was scrubbing every tick on every structural pass — O(thread length) redundant attribute writes for one moved marker. Fixed: the claim is element-keyed like the module's five other applied caches, so the scrub (and `reset()`) is gone. Rule for any imperative DOM writer: a per-member sweep beside a diff-only writer is worse than redundant, it strands the DOM (the writer's cache says "already applied" and skips the relight) — the tripwire pair is in `messageNavRailSync.test.ts`.
-- Detached-DOM census: stable across an idle night (752→789 nodes, the drift is svelte cloneable fragment/TEMPLATE by design; the 252-node detached SECTION held exactly 252). Not a leak.
-- 2026-08-28 **streaming Markdown ordering and incremental render campaign, FIXED:** provider item events sharing one wire channel now enter one serialized EventBus dispatch queue, so an older concurrent delta cannot overtake a newer one. The frontend reveal path has one ordered entity-owned queue spanning direct DOM literal appends and parser/Svelte migrations. Completed Markdown blocks retain and compact independently; only the volatile tail reparses, and a syntax-aware guard limits direct text-node appends to suffixes that cannot change Markdown structure. Selection is preserved across both direct writes and ownership migration. Differential suites compare every prefix with a full Marked parse across arbitrary chunk splits, fences, nested quotes/lists, tables, Unicode, links, inline code, and incomplete syntax. Final 98.4s DOM watch: 109,096 canonical code units, 14,599 advances, 8,764 parser advances, 5,835 direct-only advances, zero source regressions/rewrites, zero large DOM drops, and zero fence-state mismatches or spill frames. A 15s checkerboard capture saw 2,149 render passes and zero missing-tile signals.
-- 2026-08-28 **global animation-frame coordination, FIXED:** `utils/animationFrameBatcher.ts` gives independent springs, text reveal smoothers, and nav-rail sync one native rAF owner with per-callback cancellation and next-frame semantics. Two phases are deliberate: `before-dom-update` runs spring scroll writes against the virtualizer's prior clean geometry sample, then `dom-update` applies direct/Svelte reveal and rail work before paint. Four-pane spring batching reduced native callback entry from about 954/s to 506/s; global coordination measured about 332/s. Moving the spring phase before reveal cut a same-shape 15s trace's `FunctionCall` 1422.9→1198.7ms, `FireAnimationFrame` 948.9→698.0ms, and microtasks 832.0→485.6ms. Forced layouts fell 919 / 178.4ms after the first scheduling pass to 420 / 30.4ms after phase ordering, then 28 / 2.0ms after the ResizeObserver fix. Unit tests pin phase order, cancellation, requests made during dispatch, and multi-pane coalescing; a Chromium test proves the Svelte update still lands in the same paint frame.
-- 2026-08-28 **clean active-use WebView2 footprint:** six open panes, four active long Markdown streams, normal spring follow, 90s, memory meter only, no trace, heap snapshot, or forced GC. Exact-profile census stayed at six processes. Group private working set peaked at 601.7MB; per-role maxima were GPU 322.6MB and renderer 256.3MB. Group private bytes peaked at 672.7MB and total working set at 901.4MB, counters with different sharing/commit semantics from Task Manager's group memory column. The revised ~600MB target is reached within 1.7MB measurement noise; the original <450MB target is not supported by the measured GPU and renderer floors without a visual-work, compositing, or GC-frequency trade. Source CSV: `%LOCALAPPDATA%/Temp/ao-perfprobe/webview-memory-2026-08-29T035006-031Z.csv`; bench report: `/tmp/ao-final-clean-memory/active-multi-pane-20260828-235143.json`.
-- 2026-08-28 **measurement tooling corrections:** `webviewmem` re-censuses the exact `--user-data-dir` process group every sample, follows late/replacement children, separates private bytes, working set, and private working set by process role, and labels incomplete counter reads. A tracing session can add a seventh utility process and retain hundreds of MB, so it is never a footprint leg; one 120s run with repeated tracing reached ~1.5GB from monitoring overhead. `checkerboard` now rejects durations above 15s, and all trace probes await `Tracing.tracingComplete` through a CDP helper that fails loudly on timeout or browser close. Timeline trace locations are 1-based; `frames.mjs` now subtracts one before source-map lookup, fixing scroll frames previously attributed to unrelated modules.
-- 2026-08-29 **terminal reveal and code-island retirement, FIXED:** a completed full-row assistant/reasoning echo that matches or extends the current smoother source now enters the existing readable cursor instead of replacing the visible row wholesale. Killed/errored/declined rows still snap immediately. Completed code islands retry static rendering per record, so one pending current highlight no longer holds every older component until the Streamdown-wide async count reaches zero; retirement remains one island per owner per coordinated frame. Unit coverage includes full-row completion with a suffix, tail-trimmed reasoning, killed-row snap, and one ready code island beside an unresolved sibling. The final 50s DOM watch covered 58,496 code units / 7,759 advances with zero regressions, rewrites, large drops, fence mismatches, or transport warnings; the concurrent 15s checkerboard trace covered 1,531 render passes with zero positive signals.
-- 2026-08-29 **inherited-color syntax spans removed, FIXED:** `variable`, `parameter`, `operator`, `punctuation`, and `embedded` have no visual CSS rule in any supported/custom theme. The render decoder now maps them to plain text and coalesces adjacent runs; a test cross-checks the collapsed family set against `syntax.css`. On the same five-minute four-stream workload, DOM max fell 41,484→32,416 (-21.9%), JS heap max 65.3→64.5MB, busy p95 9.0→8.8ms, 6ms fit 84.2→86.1%, and 8ms fit 91.6→92.8%. Every 30s scroll-height sample remained equal. Final report: `~/.agent-overflow-perf/agent-overflow/bench/active-multi-pane-20260829-120448.json`.
-- 2026-08-29 **clean five-minute WebView2 footprint and closed display-lock lead:** after clearing the isolated harness database before WebView2 startup, blank group private working set was 160.1MB. During five minutes of six open/four active panes, group private working set was p50 576.6 / p95 630.3 / max 643.4MB; active maxima were GPU 296.6 and renderer 337.4MB. The benchmark's simultaneous interrupt of all four infinite mock turns happened after the active window and transiently reached 675.3MB. CSV: `%LOCALAPPDATA%/Temp/ao-perfprobe/webview-memory-clean-syntax-collapse-300s.csv`. A prior leg started at 720.1MB because startup briefly restored the preceding giant fixture before `HarnessReset`, ratcheting Oilpan pages; exclude it. Direct `content-visibility:auto` on completed blocks was also rejected by measurement: four 82,271px timelines collapsed to ~35,000px and lost ~47,000px of scroll position because already-offscreen blocks had no remembered intrinsic size. A safe version requires measured chunk virtualization plus find/selection/resize/scroll compensation, which is a product-behavior project rather than a no-UX-change optimization.
+Prove the bug on the previous patch and the fix on the new one without
+touching node_modules by hand: keep copies of the new patch and lock
+outside the tree; `git show HEAD:frontend/patches/svelte@<v>.patch >
+frontend/patches/svelte@<v>.patch`, same for `pnpm-lock.yaml`, `pnpm
+install --offline`, run the suite (must fail); copy the saved files back,
+`pnpm install --offline`, run again (green). Edit a hunk with `pnpm patch
+svelte@<v> --edit-dir <dir>` then `pnpm patch-commit <dir>`; only the
+patch hash changes in the lock. `svelte/internal/client` exports
+`get/set/state` in its types but `derived/effect/effect_root` only at
+runtime (import the namespace and cast).

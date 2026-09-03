@@ -322,7 +322,7 @@ export function flushItemEventQueue(): void {
   // A/B/A/B: busy p95 3.0/3.0ms merged vs 5.0/5.5ms rotated, worst
   // frame no better. The tall frames are flood-shaped. One pane's own
   // beat dominates them, and un-merging multiplies the per-flush fixed
-  // costs this single batch amortizes. Numbers in
+  // costs this single batch amortizes. Ruling in
   // .claude/skills/perf-investigation/REFERENCE.md.
   const pendingUpserts: Item[] = [];
   const pendingUpsertItemKeys = new Set<string>();
