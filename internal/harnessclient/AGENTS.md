@@ -36,7 +36,12 @@ reason `cmd/ao-harness` cannot fabricate app state.
 - `launch.go`, `spawn_unix.go`, `spawn_windows.go` handle detached boot: own
   session/process group, stderr to a file that IS the child's console,
   stdout to a sibling file polled for the bootstrap line. A pipe would
-  hand the child SIGPIPE the moment the parent returned.
+  hand the child SIGPIPE the moment the parent returned. An ATTACHED
+  launch reads pipes, and both ends of each are the launcher's own
+  (`ownedPipe`), never `cmd.StdoutPipe`: `cmd.Wait` closes exec's read
+  ends while the scanner may still be draining the bootstrap line, and a
+  backend that printed it and exited at once lost the line, and its
+  reported cause, to the reap.
 - `process.go`: liveness and signalling for a pid. `TerminateProcess`
   CONFIRMS its kill (see below).
 - `tail.go`: `TailFile` (last N lines) and `FollowFile` (`-f`).
