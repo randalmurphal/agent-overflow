@@ -436,6 +436,12 @@ interface ChaseTelemetry {
    * A subset of writeTicks: every refused write was still an attempt.
    */
   refusedWrites: number;
+  /**
+   * Frames the chase re-armed without moving because a selection drag
+   * crossed the element. Not part of `ticks` (nothing was integrated),
+   * so a chase that is all pause still shows WHY it never wrote.
+   */
+  selectionPausedTicks: number;
 }
 
 // Payload for deps.reportWriteRefusal — the write-refusal guard's
@@ -639,6 +645,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   const retarget = createRetargetAccelerationBridge();
   let accumulated = 0;
   let lastTickAt: number | null = null;
+  // One `scroll.spring.selectionPause` record per pause session: set on
+  // the first paused tick, cleared by the next tick that integrates or
+  // by cancel().
+  let selectionPauseTraced = false;
   // True once the current quantum's glide has exceeded the quantized
   // motion floor. Reset at every catch-up and on
   // cancel, so each growth's entry ramp stays natural.
@@ -754,6 +764,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       longTasks: 0,
       longTaskMs: 0,
       refusedWrites: 0,
+      selectionPausedTicks: 0,
     };
     if (
       typeof PerformanceObserver !== 'undefined'
@@ -806,7 +817,8 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     }
     // Skip trivial chases (a start that bailed immediately) — they carry
     // no cadence information and would crowd the trace during churn.
-    if (!stats || stats.ticks < 3 || !isUiRenderTraceEnabled()) return;
+    if (!stats || !isUiRenderTraceEnabled()) return;
+    if (stats.ticks < 3 && stats.selectionPausedTicks === 0) return;
     trace('scroll.spring.chase', () => ({
       durationMs: Math.round(nowMs() - stats.startedAt),
       ticks: stats.ticks,
@@ -833,6 +845,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       longTasks: stats.longTasks,
       longTaskMs: Math.round(stats.longTaskMs),
       refusedWrites: stats.refusedWrites,
+      selectionPausedTicks: stats.selectionPausedTicks,
     }));
   }
 
@@ -849,6 +862,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     wholePixelQuantizationWitnesses = 0;
     wholePixelQuantizationConfirmed = false;
     lastTickAt = null;
+    selectionPauseTraced = false;
     deps.arrival.clear();
     springStartedFromStructuralAppend = false;
     // Reset the target-change timestamp so a stale value can't trick a
@@ -959,10 +973,22 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       if (deps.selectionActive()) {
         // Selection drag should never fight the user. Re-rAF without
         // advancing scrollTop; `accumulated` stays intact so the resumed
-        // chase remains continuous.
+        // chase remains continuous. Counted and traced on entry: this is
+        // the one branch that keeps `springActive` true while writing
+        // nothing, and a pause that outlives the gesture (the 2026-09-03
+        // stuck-latch incident) is otherwise invisible in the trace.
+        if (chaseTelemetry) chaseTelemetry.selectionPausedTicks += 1;
+        if (!selectionPauseTraced) {
+          selectionPauseTraced = true;
+          if (isUiRenderTraceEnabled()) trace('scroll.spring.selectionPause', () => ({
+            scrollTop: Math.round(el.scrollTop),
+            target: Math.round(deps.targetScrollTop()),
+          }));
+        }
         springFrameHandle = requestFrame(tick);
         return;
       }
+      selectionPauseTraced = false;
 
       // Frame-rate independent spring integration. One full step matches
       // the tuned 60Hz recurrence; higher-refresh frames integrate a

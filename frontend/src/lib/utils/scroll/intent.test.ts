@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createScrollIntent,
+  isSelectingInside,
   resetScrollIntentModuleStateForTest,
   type ScrollIntent,
   type ScrollIntentDeps,
@@ -765,5 +766,123 @@ describe('detach', () => {
 
     expect(h.intent.debugState().recentDownIntentActive).toBe(false);
     expect(h.intent.debugState().scrollbarDragSessionActive).toBe(false);
+  });
+});
+
+describe('selection tracking: primary button state', () => {
+  // `isSelectingInside` needs a held primary button AND a selection whose
+  // range shares ancestry with the scroller. The selection half is stubbed;
+  // these pin the button half, which is READ from `event.buttons` on pointer
+  // events rather than latched from mousedown/mouseup. The latch stuck on a
+  // native drag-and-drop (mousedown, then no mouseup or click) and paused
+  // every spring until the next click (bug-report-20260903T221457Z).
+  const pointer = (type: string, init: PointerEventInit) =>
+    document.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: 'mouse', ...init }));
+
+  function stubSelectionInside(scrollEl: HTMLElement): void {
+    const range = { commonAncestorContainer: scrollEl } as unknown as Range;
+    vi.spyOn(window, 'getSelection').mockReturnValue({
+      rangeCount: 1,
+      getRangeAt: () => range,
+    } as unknown as Selection);
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('a held primary button with a selection crossing the scroller is selecting', () => {
+    const h = build();
+    stubSelectionInside(h.scrollEl);
+
+    pointer('pointerdown', { buttons: 1 });
+
+    expect(isSelectingInside(h.scrollEl)).toBe(true);
+  });
+
+  it('no button held is never selecting, whatever the selection says', () => {
+    const h = build();
+    stubSelectionInside(h.scrollEl);
+
+    expect(isSelectingInside(h.scrollEl)).toBe(false);
+  });
+
+  it('a release clears it', () => {
+    const h = build();
+    stubSelectionInside(h.scrollEl);
+    pointer('pointerdown', { buttons: 1 });
+
+    pointer('pointerup', { buttons: 0 });
+
+    expect(isSelectingInside(h.scrollEl)).toBe(false);
+  });
+
+  it('a native drag starting clears it, because no release will follow', () => {
+    const h = build();
+    stubSelectionInside(h.scrollEl);
+    pointer('pointerdown', { buttons: 1 });
+
+    document.dispatchEvent(new Event('dragstart', { bubbles: true }));
+
+    expect(isSelectingInside(h.scrollEl)).toBe(false);
+  });
+
+  it('a pointer move reporting the button up clears it (a release that never arrived)', () => {
+    const h = build();
+    stubSelectionInside(h.scrollEl);
+    pointer('pointerdown', { buttons: 1 });
+
+    pointer('pointermove', { buttons: 0 });
+
+    expect(isSelectingInside(h.scrollEl)).toBe(false);
+  });
+
+  it('a pointer move reporting the button still down keeps it', () => {
+    const h = build();
+    stubSelectionInside(h.scrollEl);
+    pointer('pointerdown', { buttons: 1 });
+
+    pointer('pointermove', { buttons: 1 });
+
+    expect(isSelectingInside(h.scrollEl)).toBe(true);
+  });
+
+  it('a pointer cancel clears it', () => {
+    const h = build();
+    stubSelectionInside(h.scrollEl);
+    pointer('pointerdown', { buttons: 1 });
+
+    pointer('pointercancel', { buttons: 0 });
+
+    expect(isSelectingInside(h.scrollEl)).toBe(false);
+  });
+
+  it('the window losing focus clears it', () => {
+    const h = build();
+    stubSelectionInside(h.scrollEl);
+    pointer('pointerdown', { buttons: 1 });
+
+    window.dispatchEvent(new Event('blur'));
+
+    expect(isSelectingInside(h.scrollEl)).toBe(false);
+  });
+
+  it('a secondary or middle button is not a selection drag', () => {
+    const h = build();
+    stubSelectionInside(h.scrollEl);
+
+    pointer('pointerdown', { buttons: 2 });
+    expect(isSelectingInside(h.scrollEl)).toBe(false);
+    pointer('pointerdown', { buttons: 4 });
+    expect(isSelectingInside(h.scrollEl)).toBe(false);
+  });
+
+  it('a finger on the timeline is not a selection drag', () => {
+    const h = build();
+    stubSelectionInside(h.scrollEl);
+
+    pointer('pointerdown', { buttons: 1, pointerType: 'touch' });
+
+    expect(isSelectingInside(h.scrollEl)).toBe(false);
   });
 });

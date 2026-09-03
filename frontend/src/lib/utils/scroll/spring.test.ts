@@ -51,6 +51,7 @@ interface Harness {
   setTarget(value: number): void;
   getTarget(): number;
   setLiveContentActive(active: boolean): void;
+  setSelectionActive(active: boolean): void;
   setRefuseWrites(refuse: boolean): void;
 }
 
@@ -77,6 +78,7 @@ function makeHarness(
   let scrollTop = 0;
   let target = 0;
   let liveContentActive = true;
+  let selectionActive = false;
   // Write-refusal mode: models the wedged non-scroll-container element
   // from bug-report-20260818T003129Z — writes are received but move
   // nothing, and (mirroring the real chokepoint) each one still stamps
@@ -123,7 +125,7 @@ function makeHarness(
     isPaused: () => false,
     isAtBottom: () => true,
     isEscaped: () => false,
-    selectionActive: () => false,
+    selectionActive: () => selectionActive,
     targetScrollTop: () => target,
     currentScrollTop: () => scrollTop,
     scrollTopIsAtTarget: (t) => Math.abs(scrollTop - t) <= ARRIVAL_DISTANCE_PX,
@@ -155,6 +157,9 @@ function makeHarness(
     getTarget: () => target,
     setLiveContentActive: (active: boolean) => {
       liveContentActive = active;
+    },
+    setSelectionActive: (active: boolean) => {
+      selectionActive = active;
     },
     setRefuseWrites: (refuse: boolean) => {
       refuseWrites = refuse;
@@ -1039,6 +1044,52 @@ describe('quantized motion floor', () => {
 });
 
 describe('chase telemetry', () => {
+  it('a selection pause is counted and marked, and a chase that only paused still reports', () => {
+    setUiRenderTraceEnabled(true);
+    clearUiRenderTrace();
+    const h = makeHarness();
+    h.setTarget(200);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    h.setSelectionActive(true);
+
+    for (let i = 0; i < 4; i++) frame();
+    expect(h.writes, 'a paused spring writes nothing').toHaveLength(0);
+    expect(h.spring.isActive(), 'and stays active').toBe(true);
+    h.spring.cancel();
+
+    const records = getUiRenderTraceRecords();
+    const pauses = records.filter((r) => r.label === 'scroll.spring.selectionPause');
+    expect(pauses, 'one entry mark per pause session').toHaveLength(1);
+    const chases = records.filter((r) => r.label === 'scroll.spring.chase');
+    expect(chases, 'zero integrated ticks, but the pause explains the silence').toHaveLength(1);
+    const data = chases[0].data as { ticks: number; selectionPausedTicks: number };
+    expect(data.ticks).toBe(0);
+    expect(data.selectionPausedTicks).toBe(4);
+  });
+
+  it('a pause marks once, resumes silently, and marks again on the next session', () => {
+    setUiRenderTraceEnabled(true);
+    clearUiRenderTrace();
+    const h = makeHarness();
+    h.setTarget(200);
+    h.spring.markTargetChanged();
+    h.spring.start();
+
+    h.setSelectionActive(true);
+    frame();
+    frame();
+    h.setSelectionActive(false);
+    frame();
+    expect(h.writes.length, 'the release resumes the chase').toBeGreaterThan(0);
+    h.setSelectionActive(true);
+    frame();
+    h.spring.cancel();
+
+    const pauses = getUiRenderTraceRecords().filter((r) => r.label === 'scroll.spring.selectionPause');
+    expect(pauses).toHaveLength(2);
+  });
+
   it('emits one scroll.spring.chase summary with frame-gap histogram and clamp counts', () => {
     setUiRenderTraceEnabled(true);
     clearUiRenderTrace();

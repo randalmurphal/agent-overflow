@@ -37,31 +37,53 @@ export const RESIZE_CLEAR_PADDING_MS = 1;
 const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
 const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End']);
 
-let mouseDown = false;
+// Whether the primary button is held, for selection tracking. READ from the
+// browser's own button bitmask on every pointer event, never LATCHED from a
+// mousedown/mouseup pair. The pair is not guaranteed: a native drag-and-drop
+// (a pane title handle, a sidebar row, a browser tab) fires mousedown and
+// then no mouseup or click at all, a release outside the window or one
+// swallowed by a capture listener does the same, and a latched "held" then
+// outlived the gesture until the next click. For that whole stretch
+// `isSelectingInside` was true for any caret near a timeline, so every
+// spring re-armed without moving and no pane followed, with `isAtBottom`
+// still true and therefore no jump button (bug-report-20260903T221457Z).
+// `dragstart` clears synchronously because a native drag takes the pointer
+// away (no pointer events arrive until the drop); `pointermove` resyncs on
+// the next movement for anything else that lost its release. Touch is
+// excluded: a finger on the timeline is a scroll or a tap, and touch
+// text selection is the platform's long-press, outside this stream.
+let primaryButtonHeld = false;
 let listenersInstalled = false;
+
+function syncPrimaryButton(event: PointerEvent): void {
+  if (event.pointerType === 'touch') return;
+  primaryButtonHeld = (event.buttons & 1) !== 0;
+}
+
+function releasePrimaryButton(): void {
+  primaryButtonHeld = false;
+}
 
 function installModuleSelectionListeners(): void {
   if (listenersInstalled) return;
   if (typeof document === 'undefined') return;
   listenersInstalled = true;
-  document.addEventListener('mousedown', () => {
-    mouseDown = true;
-  }, { capture: true });
-  document.addEventListener('mouseup', () => {
-    mouseDown = false;
-  }, { capture: true });
-  document.addEventListener('click', () => {
-    mouseDown = false;
-  }, { capture: true });
+  const capture = { capture: true } as const;
+  document.addEventListener('pointerdown', syncPrimaryButton, capture);
+  document.addEventListener('pointermove', syncPrimaryButton, capture);
+  document.addEventListener('pointerup', syncPrimaryButton, capture);
+  document.addEventListener('pointercancel', syncPrimaryButton, capture);
+  document.addEventListener('dragstart', releasePrimaryButton, capture);
+  window.addEventListener('blur', releasePrimaryButton);
 }
 
-/** Test-only escape hatch to reset the module-global mouseDown flag. */
+/** Test-only escape hatch to reset the module-global primary-button state. */
 export function resetScrollIntentModuleStateForTest(): void {
-  mouseDown = false;
+  primaryButtonHeld = false;
 }
 
 export function isSelectingInside(scrollEl: HTMLElement): boolean {
-  if (!mouseDown) return false;
+  if (!primaryButtonHeld) return false;
   if (typeof window === 'undefined') return false;
   const sel = window.getSelection?.();
   if (!sel || sel.rangeCount === 0) return false;
@@ -527,7 +549,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     lastObservedScrollTopForRestick = scrollTopAtEvent;
     const shouldRunDeferredScrollIntentCheck =
       deps.escaped()
-      || mouseDown
+      || primaryButtonHeld
       || scrollbarDragSessionActive;
     if (!shouldRunDeferredScrollIntentCheck) return;
     // Defer 1ms so a concurrent RO callback can update resizeDifference

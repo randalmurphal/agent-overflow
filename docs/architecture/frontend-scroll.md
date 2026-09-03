@@ -646,6 +646,21 @@ escape. Re-stick uses the distance from bottom captured at scroll-event
 time so streaming growth between the event and the deferred check cannot
 invalidate what the user actually saw.
 
+A selection drag pauses the spring in place and escapes on the scroll
+events it causes (`isSelectingInside`: the primary button is held AND the
+selection's range shares ancestry with the scroller; a collapsed caret
+counts, matching the upstream port). The button half is READ from
+`event.buttons` on the pointer stream, never latched from a
+mousedown/mouseup pair: a native drag-and-drop (pane title handle,
+sidebar row, browser tab) fires mousedown and then no mouseup or click,
+and the latched version stayed "held" until the next click, so every
+spring in the app re-armed without writing while `isAtBottom` stayed true
+and no jump button appeared (bug-report-20260903T221457Z). `dragstart`
+and window `blur` clear it synchronously; `pointermove` resyncs. Touch is
+excluded (a finger is a scroll or a tap). The real-browser proof that a
+drag swallows the release lives in
+`scroll/selectionTracking.browser.test.ts`.
+
 Programmatic scrolls go through the controller:
 
 - `forceStick({ reason: 'user' })` for explicit bottom-follow.
@@ -1493,8 +1508,10 @@ streaming.
 Useful trace records:
 
 - `scroll.spring.chase` is one summary per spring chase (emitted at
-  cancel; chases under 3 ticks are skipped): tick counts (write /
-  sentinel), a frame-gap histogram (`gapBuckets`, bounds
+  cancel; chases under 3 ticks are skipped unless they paused for a
+  selection): tick counts (write / sentinel / `selectionPausedTicks`,
+  the frames that re-armed without moving because a selection drag
+  crossed the element), a frame-gap histogram (`gapBuckets`, bounds
   `[<9, 9–13, 13–18, 18–26, 26–42, >42]` ms, per
   `CHASE_GAP_BUCKET_BOUNDS_MS`), `maxGapMs`, catch-up clamp count
   (`catchupClamps`), chase-distance snaps (`distanceJumps`, whose field
@@ -1547,6 +1564,11 @@ Useful trace records:
 - `scroll.contentRO.widthReflow`: width-only content reflow that armed
   the short layout-correction window.
 - `scroll.escape.set`: escape state changes.
+- `scroll.spring.selectionPause`: one record per pause session, on the
+  first spring tick that re-armed without writing because a selection
+  drag crossed the element. The chase summary carries the count; this
+  marks WHEN. `springActive:true` with no `spring.tick` writes and no
+  such record is a different stall, not a selection.
 - `scroll.refreshIsNearBottom`: geometric near-bottom changes.
 - `chat.state` / `chat.dom`: MessageTimeline snapshots.
 - `timeline.margin.diverge`: settle-flicker regression oracle. Fires when a

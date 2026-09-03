@@ -137,11 +137,11 @@ describe('<ChannelView>', () => {
     vi.useFakeTimers();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
-    // Reset the intent machine module-global mouseDown flag. Without
-    // this, a prior test (or a prior file in the same Vitest worker)
-    // that fired mousedown without a matching mouseup/click would leak
-    // mouseDown=true into this file, where the controller's
-    // isSelectingInside() would silently suppress sync-pin writes.
+    // Reset the intent machine's module-global primary-button state. Without
+    // this, a prior test (or a prior file in the same Vitest worker) that
+    // fired a pointerdown without a matching pointerup would leak "held"
+    // into this file, where the controller's isSelectingInside() would
+    // silently suppress sync-pin writes.
     resetScrollIntentModuleStateForTest();
     // Default channel-state/message mocks so tests that don't care about
     // the FSM snapshot don't have to stub GetChannelState explicitly —

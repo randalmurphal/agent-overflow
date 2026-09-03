@@ -932,9 +932,9 @@ describe('createUseStickToBottomController', () => {
       ro.fire(contentEl, 800); // initial setup
 
       // Simulate a selection inside scrollEl. happy-dom's selection API
-      // is limited; we simulate the necessary state by stubbing both
-      // mouseDown (via the module reset) and getSelection.
-      document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      // is limited; we simulate the necessary state by holding the primary
+      // button (a pointerdown with the button bit set) and stubbing getSelection.
+      document.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, buttons: 1, pointerType: 'mouse' }));
       // Fake a selection range whose commonAncestorContainer === scrollEl.
       const fakeRange = { commonAncestorContainer: scrollEl } as unknown as Range;
       const realGetSelection = window.getSelection;
@@ -952,7 +952,7 @@ describe('createUseStickToBottomController', () => {
 
       // Cleanup
       vi.spyOn(window, 'getSelection').mockImplementation(realGetSelection);
-      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, buttons: 0, pointerType: 'mouse' }));
     });
 
     it('reaching the auto-follow bottom epsilon while escaped clears escapedFromLock', async () => {
@@ -6435,7 +6435,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(beforeSelect).toBeLessThan(800);
 
       // Begin a selection drag inside scrollEl.
-      document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      document.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, buttons: 1, pointerType: 'mouse' }));
       const fakeRange = { commonAncestorContainer: scrollEl } as unknown as Range;
       vi.spyOn(window, 'getSelection').mockReturnValue({
         rangeCount: 1,
@@ -6447,7 +6447,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(beforeSelect);
 
       // Release the selection: spring resumes and lands at target.
-      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, buttons: 0, pointerType: 'mouse' }));
       vi.spyOn(window, 'getSelection').mockReturnValue(null);
       await advanceUntil(() => geom.scrollTop === 800);
     });
