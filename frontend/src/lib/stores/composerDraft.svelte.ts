@@ -137,7 +137,9 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
    * Read the persisted draft row and its attachment records as a snapshot.
    * The image-placeholder normalization is part of the read: a row whose
    * content lost a `[Image #n]` marker must come back with it, or the
-   * attachment renders as an invisible extra on the next send.
+   * attachment renders as an invisible extra on the next send. A file
+   * attachment is untouched by it — the records carry their own kind, and a
+   * file never had a marker to restore.
    *
    * Rejects with the underlying error — the callers decide what a failed
    * read means for them.
@@ -685,9 +687,12 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     },
 
     /**
-     * Build the outgoing text payload for Send. Terminal chip contents
-     * are inlined as fenced blocks; image attachments travel separately as
-     * structured attachment ids so providers receive real image inputs.
+     * Build the outgoing text payload for Send. Terminal chip contents are
+     * inlined as fenced blocks. ATTACHMENTS of both kinds travel separately,
+     * as structured attachment ids: an image is bound to its `[Image #N]`
+     * marker here so the provider receives a real image input, and a file
+     * contributes no text at all — the backend appends its path line to the
+     * provider payload, never to what is persisted or rendered.
      */
     composeOutgoingMessage(): string {
       const messageContent = ensureImagePlaceholders(content, attachments);
