@@ -306,6 +306,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetChatBarFavorite", ID: 2813580982, Scope: "settings:write", Route: "home"},                             // main.App.SetChatBarFavorite
 	{Name: "SetEditorSettings", ID: 3655340267, Scope: "settings:write", Route: "home"},                              // main.App.SetEditorSettings
 	{Name: "SetNetworkSettings", ID: 3915514446, Scope: "settings:write", Route: "home", StepUp: true},               // main.App.SetNetworkSettings
+	{Name: "SetPRThreadResolved", ID: 2594833485, Scope: "git:operate", Route: "selected"},                           // main.App.SetPRThreadResolved
 	{Name: "SetPRUpdatesActive", ID: 1078249699, Scope: "git:operate", Route: "home"},                                // main.App.SetPRUpdatesActive
 	{Name: "SetProjectWorktreeSetup", ID: 322092470, Scope: "terminal:operate", Route: "project", StepUp: true},      // main.App.SetProjectWorktreeSetup
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465, Scope: "settings:write", Route: "home", StepUp: true},          // main.App.SetProviderCustomEnvVar

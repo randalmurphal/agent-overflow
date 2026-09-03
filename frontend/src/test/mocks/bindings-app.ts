@@ -583,6 +583,7 @@ export const SavePRCIJobLog = dispatch('SavePRCIJobLog');
 export const ListPRReviewThreads = dispatch('ListPRReviewThreads');
 export const SubmitPRReview = dispatch('SubmitPRReview');
 export const ReplyToPRThread = dispatch('ReplyToPRThread');
+export const SetPRThreadResolved = dispatch('SetPRThreadResolved');
 export const SubscribePRUpdates = dispatch('SubscribePRUpdates');
 export const UnsubscribePRUpdates = dispatch('UnsubscribePRUpdates');
 export const SetPRUpdatesActive = dispatch('SetPRUpdatesActive');

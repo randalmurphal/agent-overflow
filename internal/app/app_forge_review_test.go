@@ -66,6 +66,38 @@ func TestMapSubmitPRReviewResult(t *testing.T) {
 	}
 }
 
+// SetPRThreadResolved refuses a bad argument before it can reach a forge
+// CLI. PATH holds no gh/glab here, so a call that shelled out would fail
+// with a different error than the one asserted.
+func TestSetPRThreadResolvedValidatesItsArguments(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	app := &App{}
+	cases := []struct {
+		name     string
+		pr       gitops.PRReference
+		threadID string
+	}{
+		{name: "zero number", pr: gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo"}, threadID: "PRRT_1"},
+		{name: "unsplittable project", pr: gitops.PRReference{Forge: "github", Repo: "repo", Number: 9}, threadID: "PRRT_1"},
+		{name: "blank thread id", pr: testPR, threadID: "   "},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := app.SetPRThreadResolved(tt.pr, tt.threadID, true); err == nil {
+				t.Fatal("SetPRThreadResolved returned nil")
+			}
+		})
+	}
+}
+
+func TestSetPRThreadResolvedRefusedDuringShutdown(t *testing.T) {
+	app := &App{}
+	app.shuttingDown.Store(true)
+	if err := app.SetPRThreadResolved(testPR, "PRRT_1", true); !errors.Is(err, ErrShuttingDown) {
+		t.Fatalf("error = %v, want ErrShuttingDown", err)
+	}
+}
+
 // testPR is the reference every pump test polls; prUpdateKey(testPR) is the
 // wire key its events carry.
 var testPR = gitops.PRReference{Forge: "github", Namespace: "owner", Repo: "repo", Number: 9}

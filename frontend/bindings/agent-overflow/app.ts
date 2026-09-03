@@ -3862,6 +3862,19 @@ export function SetNetworkSettings(s: network$0.Settings): $CancellablePromise<n
 }
 
 /**
+ * SetPRThreadResolved resolves (or reopens) one review thread on the
+ * forge. threadID is the id ListPRReviewThreads reported for it — a
+ * GitHub review thread node id, a GitLab discussion id.
+ * 
+ * The answer is the forge's, not a local flag: the next poll of
+ * SubscribePRUpdates re-reads the thread and the pane follows it, so a
+ * failure here leaves the badge showing what the forge actually holds.
+ */
+export function SetPRThreadResolved(pr: git$0.PRReference, threadID: string, resolved: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2594833485, pr, threadID, resolved);
+}
+
+/**
  * SetPRUpdatesActive reports whether ONE subscriber currently wants its PR
  * polled. The frontend drives it from document visibility so a hidden
  * window stops spawning gh/glab every tick.

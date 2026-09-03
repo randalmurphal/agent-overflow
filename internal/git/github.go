@@ -948,6 +948,63 @@ func (f *githubForge) ReplyToThread(cwd, project string, number int, _ string, d
 	return nil
 }
 
+// SetThreadResolved flips one review thread's resolved state through the
+// GraphQL resolveReviewThread / unresolveReviewThread mutations. The
+// thread NODE id is the whole address — it is globally unique — so
+// project and number are unused here, the mirror of ReplyToThread, which
+// needs the REST coordinates and ignores the node id.
+//
+// The mutation's answer is read back rather than trusted: `gh` exits
+// non-zero on a GraphQL error, but a 200 that resolved nothing would
+// otherwise reach the user as a success and leave the pane showing a
+// state the forge does not have.
+func (f *githubForge) SetThreadResolved(cwd, _ string, _ int, threadID string, resolved bool) error {
+	if strings.TrimSpace(threadID) == "" {
+		return errors.New("GitHub thread resolution requires a review thread id")
+	}
+	mutation := githubResolveMutation(resolved)
+	result, err := f.core.runBinary("gh", cwd, "api", "graphql", "-f", "query="+githubSetThreadResolvedQuery(mutation, threadID))
+	if err != nil {
+		return normalizeGitHubCLIError(err)
+	}
+	if result.exitCode != 0 {
+		return githubCommandFailure("gh api graphql "+mutation+" failed", result)
+	}
+	var raw struct {
+		Data struct {
+			Thread struct {
+				Thread struct {
+					IsResolved bool `json:"isResolved"`
+				} `json:"thread"`
+			} `json:"thread"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &raw); err != nil {
+		return fmt.Errorf("gh api graphql %s returned malformed JSON: %w", mutation, err)
+	}
+	if raw.Data.Thread.Thread.IsResolved != resolved {
+		return fmt.Errorf("GitHub reported review thread %s as isResolved=%t after requesting %t", threadID, raw.Data.Thread.Thread.IsResolved, resolved)
+	}
+	return nil
+}
+
+func githubResolveMutation(resolved bool) string {
+	if resolved {
+		return "resolveReviewThread"
+	}
+	return "unresolveReviewThread"
+}
+
+// githubSetThreadResolvedQuery aliases either mutation to `thread` so one
+// decode shape reads both answers.
+func githubSetThreadResolvedQuery(mutation, threadID string) string {
+	return fmt.Sprintf(`mutation {
+  thread: %s(input: {threadId: %q}) {
+    thread { isResolved }
+  }
+}`, mutation, threadID)
+}
+
 func splitGitHubProject(project string) (string, string, error) {
 	namespace, repo, err := SplitProjectForForge("github", project)
 	if err != nil {

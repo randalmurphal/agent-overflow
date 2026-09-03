@@ -485,6 +485,185 @@ esac
 	}
 }
 
+// writeMockForgeCLI installs a shell-script stand-in for gh/glab on PATH
+// and points it at a per-test argv log. Nothing here may reach a real
+// forge CLI or the network.
+func writeMockForgeCLI(t *testing.T, binary, script string) (binDir, argsLog string) {
+	t.Helper()
+	binDir = t.TempDir()
+	argsLog = filepath.Join(binDir, "args.log")
+	if err := os.WriteFile(filepath.Join(binDir, binary), []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock %s: %v", binary, err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("AO_ARGS_LOG", argsLog)
+	return binDir, argsLog
+}
+
+func TestGitHubSetThreadResolvedUsesGraphQLMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock gh is unix-only")
+	}
+	// The mock answers with the state the requested mutation produces, the
+	// way the real API does.
+	script := `#!/bin/sh
+echo "$@" > "$AO_ARGS_LOG"
+case "$*" in
+  *"thread: unresolveReviewThread"*) echo '{"data":{"thread":{"thread":{"isResolved":false}}}}' ;;
+  *) echo '{"data":{"thread":{"thread":{"isResolved":true}}}}' ;;
+esac
+`
+	cases := []struct {
+		name     string
+		resolved bool
+		field    string
+	}{
+		{name: "resolve", resolved: true, field: "resolveReviewThread"},
+		{name: "unresolve", resolved: false, field: "unresolveReviewThread"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			_, argsLog := writeMockForgeCLI(t, "gh", script)
+			core := NewCore()
+			err := core.ForgeByID("github").SetThreadResolved("", "owner/repo", 9, "PRRT_thread1", tt.resolved)
+			if err != nil {
+				t.Fatalf("SetThreadResolved: %v", err)
+			}
+			args := readFile(t, argsLog)
+			if !strings.HasPrefix(strings.TrimSpace(args), "api graphql -f query=mutation {") {
+				t.Fatalf("argv = %q, want a gh api graphql mutation", args)
+			}
+			want := `thread: ` + tt.field + `(input: {threadId: "PRRT_thread1"})`
+			if !strings.Contains(args, want) {
+				t.Fatalf("argv = %q, want %q", args, want)
+			}
+			if tt.resolved && strings.Contains(args, "unresolveReviewThread") {
+				t.Fatalf("argv = %q, resolve must not call the unresolve mutation", args)
+			}
+		})
+	}
+}
+
+func TestGitHubSetThreadResolvedRejectsContradictingAnswer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock gh is unix-only")
+	}
+	// A mutation that reports the thread still unresolved is not a success:
+	// the pane must not show a state the forge does not hold.
+	script := `#!/bin/sh
+echo "$@" > "$AO_ARGS_LOG"
+echo '{"data":{"thread":{"thread":{"isResolved":false}}}}'
+`
+	writeMockForgeCLI(t, "gh", script)
+	core := NewCore()
+	err := core.ForgeByID("github").SetThreadResolved("", "owner/repo", 9, "PRRT_thread1", true)
+	if err == nil {
+		t.Fatal("SetThreadResolved returned nil for a forge that reported the opposite state")
+	}
+	if !strings.Contains(err.Error(), "PRRT_thread1") {
+		t.Fatalf("error = %v, want it to name the thread", err)
+	}
+}
+
+func TestGitHubSetThreadResolvedSurfacesCLIFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock gh is unix-only")
+	}
+	script := `#!/bin/sh
+echo "$@" > "$AO_ARGS_LOG"
+echo 'Could not resolve to a node' 1>&2
+exit 1
+`
+	writeMockForgeCLI(t, "gh", script)
+	core := NewCore()
+	err := core.ForgeByID("github").SetThreadResolved("", "owner/repo", 9, "PRRT_thread1", true)
+	if err == nil {
+		t.Fatal("SetThreadResolved returned nil for a failing gh")
+	}
+	if !strings.Contains(err.Error(), "Could not resolve to a node") {
+		t.Fatalf("error = %v, want the CLI failure text", err)
+	}
+}
+
+func TestGitLabSetThreadResolvedUsesDiscussionEndpoint(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock glab is unix-only")
+	}
+	script := `#!/bin/sh
+echo "$@" > "$AO_ARGS_LOG"
+echo '{"id":"abc123","notes":[]}'
+`
+	cases := []struct {
+		name     string
+		resolved bool
+		want     string
+	}{
+		{
+			name:     "resolve",
+			resolved: true,
+			want:     "api projects/group%2Fsub%2Frepo/merge_requests/7/discussions/abc123?resolved=true -X PUT",
+		},
+		{
+			name:     "unresolve",
+			resolved: false,
+			want:     "api projects/group%2Fsub%2Frepo/merge_requests/7/discussions/abc123?resolved=false -X PUT",
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			_, argsLog := writeMockForgeCLI(t, "glab", script)
+			core := NewCore()
+			err := core.ForgeByID("gitlab").SetThreadResolved("", "group/sub/repo", 7, "abc123", tt.resolved)
+			if err != nil {
+				t.Fatalf("SetThreadResolved: %v", err)
+			}
+			if got := strings.TrimSpace(readFile(t, argsLog)); got != tt.want {
+				t.Fatalf("argv = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGitLabSetThreadResolvedSurfacesCLIFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock glab is unix-only")
+	}
+	script := `#!/bin/sh
+echo "$@" > "$AO_ARGS_LOG"
+echo '404 Not Found' 1>&2
+exit 1
+`
+	writeMockForgeCLI(t, "glab", script)
+	core := NewCore()
+	err := core.ForgeByID("gitlab").SetThreadResolved("", "group/repo", 7, "abc123", true)
+	if err == nil {
+		t.Fatal("SetThreadResolved returned nil for a failing glab")
+	}
+	if !strings.Contains(err.Error(), "404 Not Found") {
+		t.Fatalf("error = %v, want the CLI failure text", err)
+	}
+}
+
+// A missing thread id is refused before any subprocess: PATH holds no
+// forge CLI here, so a call that shelled out would fail differently.
+func TestSetThreadResolvedRequiresAThreadID(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	core := NewCore()
+	for _, forge := range []string{"github", "gitlab"} {
+		if err := core.ForgeByID(forge).SetThreadResolved("", "owner/repo", 9, "  ", true); err == nil {
+			t.Fatalf("%s: SetThreadResolved returned nil for an empty thread id", forge)
+		}
+	}
+}
+
+func TestUnsupportedForgeRefusesThreadResolution(t *testing.T) {
+	core := NewCore()
+	err := core.SetThreadResolved("", PRReference{Forge: "bitbucket", Namespace: "owner", Repo: "repo", Number: 9}, "abc", true)
+	if !errors.Is(err, ErrUnsupportedForge) {
+		t.Fatalf("error = %v, want ErrUnsupportedForge", err)
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)

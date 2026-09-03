@@ -190,8 +190,12 @@ func gitLabApproveEndpoint(project string, number int) string {
 	return gitLabMREndpoint(project, number) + "/approve"
 }
 
+func gitLabDiscussionEndpoint(project string, number int, discussionID string) string {
+	return gitLabMREndpoint(project, number) + "/discussions/" + url.PathEscape(discussionID)
+}
+
 func gitLabDiscussionNotesEndpoint(project string, number int, discussionID string) string {
-	return gitLabMREndpoint(project, number) + "/discussions/" + url.PathEscape(discussionID) + "/notes"
+	return gitLabDiscussionEndpoint(project, number, discussionID) + "/notes"
 }
 
 // ViewPR fetches MR metadata via raw REST. glab 1.36.0 has no JSON
@@ -764,6 +768,31 @@ func (f *gitlabForge) ReplyToThread(cwd, project string, number int, threadID st
 	}
 	if result.exitCode != 0 {
 		return gitlabCommandFailure("glab api reply failed", result)
+	}
+	return nil
+}
+
+// SetThreadResolved resolves (or reopens) one MR discussion. GitLab takes
+// the new state as a query parameter on the discussion itself; a
+// discussion with no resolvable notes answers 400, which surfaces as the
+// CLI failure it is rather than a silent no-op.
+func (f *gitlabForge) SetThreadResolved(cwd, project string, number int, threadID string, resolved bool) error {
+	if strings.TrimSpace(project) == "" {
+		return errors.New("project (namespace/repo) is required")
+	}
+	if number <= 0 {
+		return fmt.Errorf("MR number must be positive, got %d", number)
+	}
+	if strings.TrimSpace(threadID) == "" {
+		return errors.New("GitLab thread resolution requires a discussion id")
+	}
+	endpoint := gitLabDiscussionEndpoint(project, number, threadID) + "?resolved=" + strconv.FormatBool(resolved)
+	result, err := f.core.runBinary("glab", cwd, "api", endpoint, "-X", "PUT")
+	if err != nil {
+		return normalizeGitLabCLIError(err)
+	}
+	if result.exitCode != 0 {
+		return gitlabCommandFailure("glab api resolve discussion failed", result)
 	}
 	return nil
 }

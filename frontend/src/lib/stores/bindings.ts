@@ -434,6 +434,7 @@ export {
   ListPRReviewThreads,
   SubmitPRReview,
   ReplyToPRThread,
+  SetPRThreadResolved,
   SubscribePRUpdates,
   UnsubscribePRUpdates,
   SetPRUpdatesActive,

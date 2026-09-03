@@ -42,6 +42,10 @@ type Forge interface {
 	SubmitReview(cwd, project string, number int, review SubmitReviewRequest) (SubmitReviewResult, error)
 	// ReplyToThread posts an immediate reply to an existing review thread.
 	ReplyToThread(cwd, project string, number int, threadID string, databaseID int64, body string) error
+	// SetThreadResolved marks one review thread resolved (or reopens it).
+	// threadID is the same id ListReviewThreads reported: a GitHub review
+	// thread node id, a GitLab discussion id.
+	SetThreadResolved(cwd, project string, number int, threadID string, resolved bool) error
 	// ListPRCIJobs fetches the PR/MR head pipeline grouped into stages
 	// (GitLab stages, GitHub workflows) with per-job status.
 	ListPRCIJobs(cwd, project string, number int) (CIPipeline, error)
@@ -315,6 +319,10 @@ func (nullForge) ReplyToThread(string, string, int, string, int64, string) error
 	return ErrUnsupportedForge
 }
 
+func (nullForge) SetThreadResolved(string, string, int, string, bool) error {
+	return ErrUnsupportedForge
+}
+
 func (nullForge) ListPRCIJobs(string, string, int) (CIPipeline, error) {
 	return CIPipeline{}, ErrUnsupportedForge
 }
@@ -445,6 +453,10 @@ func (c *Core) SubmitReview(cwd string, ref PRReference, review SubmitReviewRequ
 
 func (c *Core) ReplyToThread(cwd string, ref PRReference, threadID string, databaseID int64, body string) error {
 	return c.ForgeByID(ref.Forge).ReplyToThread(cwd, ref.Project(), ref.Number, threadID, databaseID, body)
+}
+
+func (c *Core) SetThreadResolved(cwd string, ref PRReference, threadID string, resolved bool) error {
+	return c.ForgeByID(ref.Forge).SetThreadResolved(cwd, ref.Project(), ref.Number, threadID, resolved)
 }
 
 func (c *Core) ListPRCIJobs(cwd string, ref PRReference) (CIPipeline, error) {

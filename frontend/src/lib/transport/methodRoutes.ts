@@ -277,6 +277,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2813580982: 'home', // SetChatBarFavorite
 	3655340267: 'home', // SetEditorSettings
 	3915514446: 'home', // SetNetworkSettings
+	2594833485: 'selected', // SetPRThreadResolved
 	1078249699: 'home', // SetPRUpdatesActive
 	322092470: 'project', // SetProjectWorktreeSetup
 	2118904465: 'home', // SetProviderCustomEnvVar

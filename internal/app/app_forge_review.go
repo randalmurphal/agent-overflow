@@ -385,6 +385,29 @@ func (a *App) ReplyToPRThread(pr gitops.PRReference, threadID string, databaseID
 	return a.gitCore().ReplyToThread("", pr, threadID, databaseID, body)
 }
 
+// SetPRThreadResolved resolves (or reopens) one review thread on the
+// forge. threadID is the id ListPRReviewThreads reported for it — a
+// GitHub review thread node id, a GitLab discussion id.
+//
+// The answer is the forge's, not a local flag: the next poll of
+// SubscribePRUpdates re-reads the thread and the pane follows it, so a
+// failure here leaves the badge showing what the forge actually holds.
+//
+//ao:scope git:operate
+//ao:route selected
+func (a *App) SetPRThreadResolved(pr gitops.PRReference, threadID string, resolved bool) error {
+	if a.shuttingDown.Load() {
+		return ErrShuttingDown
+	}
+	if err := validatePRReference(pr); err != nil {
+		return err
+	}
+	if strings.TrimSpace(threadID) == "" {
+		return errors.New("review thread id is required")
+	}
+	return a.gitCore().SetThreadResolved("", pr, threadID, resolved)
+}
+
 // SubscribePRUpdates begins polling a pull request for detail/review-thread
 // changes and returns the current snapshot plus the handle that releases it.
 //
