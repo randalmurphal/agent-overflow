@@ -1,4 +1,5 @@
 <script lang="ts">
+  import File from '@lucide/svelte/icons/file';
   import X from '@lucide/svelte/icons/x';
   import { untrack } from 'svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -26,6 +27,17 @@
   }
 
   let { attachments, onRemove, onExpand, dragActive = false, cache }: Props = $props();
+  // `#N` numbers IMAGES, matching the `[Image #N]` marker in the textarea —
+  // a file carries no badge and no number, so the array index would label the
+  // second image `#3` as soon as a file sat before it. Projected once rather
+  // than counted per row so the template stays total.
+  const entries = $derived.by(() => {
+    let imageNumber = 0;
+    return attachments.map((attachment) => ({
+      attachment,
+      imageNumber: attachment.kind === 'file' ? 0 : ++imageNumber,
+    }));
+  });
   // Captured once, deliberately: the factory holds the cache for the
   // component's lifetime, and a host's cache identity is fixed per mounted
   // row (it is keyed by pane + item, both stable while this row exists).
@@ -50,49 +62,71 @@
     class:bg-accent={dragActive}
     data-testid="composer-attachment-row"
   >
-    {#each attachments as attachment, index (attachment.id)}
-      {@const preview = attachmentPreviews.previewFor(attachment.id)}
-      <div
-        class="group relative h-16 w-16 overflow-hidden rounded-lg border border-border bg-surface-1 shadow-sheet"
-        data-testid="attachment-thumb"
-        title={`${attachment.filename} (${formatAttachmentSize(attachment.size)})`}
-      >
-        <button
-          type="button"
-          aria-label={`Preview ${attachment.filename}`}
-          class="flex h-full w-full items-center justify-center text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60"
-          onclick={() => expandAttachment(attachment.id)}
+    {#each entries as { attachment, imageNumber } (attachment.id)}
+      {#if attachment.kind === 'file'}
+        <div
+          class="group relative flex h-16 max-w-[240px] items-center gap-2 rounded-lg border border-border bg-surface-1 px-2.5 shadow-sheet"
+          data-testid="attachment-file-chip"
+          title={`${attachment.filename} (${formatAttachmentSize(attachment.size)})`}
         >
-          {#if preview}
-            <img
-              src={preview.url}
-              alt={attachment.filename}
-              class="h-full w-full object-cover"
-            />
-          {:else}
-            <span class="line-clamp-3 px-1.5 text-center text-[0.625rem] leading-tight text-text-secondary">
-              {attachment.filename}
-            </span>
-          {/if}
-        </button>
-        <button
-          type="button"
-          aria-label={`Remove ${attachment.filename}`}
-          class="absolute right-1 top-1 rounded-full bg-scrim/65 p-0.5 text-scrim-fg opacity-90 transition hover:bg-scrim/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"
-          onclick={() => onRemove(attachment.id)}
+          <Icon icon={File} size={18} class="shrink-0 text-text-secondary" />
+          <div class="min-w-0 flex-1 leading-tight">
+            <div class="truncate text-xs text-text-primary">{attachment.filename}</div>
+            <div class="text-[0.625rem] text-text-secondary">{formatAttachmentSize(attachment.size)}</div>
+          </div>
+          <button
+            type="button"
+            aria-label={`Remove ${attachment.filename}`}
+            class="shrink-0 rounded-full p-0.5 text-text-secondary transition hover:bg-surface-2 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            onclick={() => onRemove(attachment.id)}
+          >
+            <Icon icon={X} size={12} strokeWidth={2.5} />
+          </button>
+        </div>
+      {:else}
+        {@const preview = attachmentPreviews.previewFor(attachment.id)}
+        <div
+          class="group relative h-16 w-16 overflow-hidden rounded-lg border border-border bg-surface-1 shadow-sheet"
+          data-testid="attachment-thumb"
+          title={`${attachment.filename} (${formatAttachmentSize(attachment.size)})`}
         >
-          <Icon icon={X} size={12} strokeWidth={2.5} class="opacity-100" />
-        </button>
-        <span
-          class="absolute bottom-1 left-1 rounded bg-scrim/70 px-1 py-0.5 text-[0.625rem] font-medium leading-none text-scrim-fg"
-          aria-label={`Image ${index + 1}`}
-        >
-          #{index + 1}
-        </span>
-      </div>
+          <button
+            type="button"
+            aria-label={`Preview ${attachment.filename}`}
+            class="flex h-full w-full items-center justify-center text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60"
+            onclick={() => expandAttachment(attachment.id)}
+          >
+            {#if preview}
+              <img
+                src={preview.url}
+                alt={attachment.filename}
+                class="h-full w-full object-cover"
+              />
+            {:else}
+              <span class="line-clamp-3 px-1.5 text-center text-[0.625rem] leading-tight text-text-secondary">
+                {attachment.filename}
+              </span>
+            {/if}
+          </button>
+          <button
+            type="button"
+            aria-label={`Remove ${attachment.filename}`}
+            class="absolute right-1 top-1 rounded-full bg-scrim/65 p-0.5 text-scrim-fg opacity-90 transition hover:bg-scrim/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"
+            onclick={() => onRemove(attachment.id)}
+          >
+            <Icon icon={X} size={12} strokeWidth={2.5} class="opacity-100" />
+          </button>
+          <span
+            class="absolute bottom-1 left-1 rounded bg-scrim/70 px-1 py-0.5 text-[0.625rem] font-medium leading-none text-scrim-fg"
+            aria-label={`Image ${imageNumber}`}
+          >
+            #{imageNumber}
+          </span>
+        </div>
+      {/if}
     {/each}
     {#if dragActive && attachments.length === 0}
-      <span class="self-center text-xs text-text-secondary">Drop an image to attach</span>
+      <span class="self-center text-xs text-text-secondary">Drop files to attach</span>
     {/if}
   </div>
 {/if}
