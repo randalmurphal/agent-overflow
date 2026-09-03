@@ -1062,29 +1062,22 @@ export class Settings {
     "notifyAppUpdate": boolean;
 
     /**
-     * The ATTENDED-SCREEN preferences: not "which moments are worth an
-     * interruption" but "is this screen already being looked at". Both are
-     * read by the host-side sender only (app_notifications.go notifyOS),
-     * against the backend machine's own screen, and neither changes what any
-     * client is SENT or renders — a notification that is not raised is one
-     * less toast, never one less frame.
+     * The ATTENDED-SCREEN preference: not "which moments are worth an
+     * interruption" but "is this screen already being looked at". Read by
+     * the host-side sender only (app_notifications.go notifyOS), against the
+     * backend machine's own screen, and it never changes what any client is
+     * SENT or renders — a notification that is not raised is one less toast,
+     * never one less frame.
      * 
-     * NotifyMuteWhenFocused defaults TRUE: a toast on the window you are
-     * typing in tells you something you can already see. It is the half of
-     * this pair almost everyone wants, which is why it is the one that is on.
+     * ONE PICKER, not two toggles, because the combination people actually
+     * want is the AND: "nothing about a thread I have open while I am in the
+     * app, everything else always". Two independent toggles can only express
+     * the OR, so the four readings are spelled out as values
+     * (NotifyQuietNever … NotifyQuietWhenFocusedAndThreadVisible). Defaults
+     * to NotifyQuietWhenFocused: a toast on the window you are typing in
+     * tells you something you can already see.
      */
-    "notifyMuteWhenFocused": boolean;
-
-    /**
-     * NotifyMuteWhenThreadVisible defaults FALSE, so it stays out of
-     * DefaultSettings (the ClaudeTUIEnabled rule: a field whose intended
-     * default is the Go zero value must not be listed there, or writeSparse
-     * drops a user's `true` on write). Off by default because a thread being
-     * on screen in some pane of an unfocused window is much weaker evidence
-     * that a person saw the moment than the window having focus is, and a
-     * missed turn-complete is worse than a redundant one.
-     */
-    "notifyMuteWhenThreadVisible": boolean;
+    "notifyQuietWhen": string;
 
     /**
      * Window stores the desktop window placement (position, size, and
@@ -1267,11 +1260,8 @@ export class Settings {
         if (!("notifyAppUpdate" in $$source)) {
             this["notifyAppUpdate"] = false;
         }
-        if (!("notifyMuteWhenFocused" in $$source)) {
-            this["notifyMuteWhenFocused"] = false;
-        }
-        if (!("notifyMuteWhenThreadVisible" in $$source)) {
-            this["notifyMuteWhenThreadVisible"] = false;
+        if (!("notifyQuietWhen" in $$source)) {
+            this["notifyQuietWhen"] = "";
         }
         if (!("window" in $$source)) {
             this["window"] = (new windowgeom$0.Geometry());
@@ -1302,7 +1292,7 @@ export class Settings {
         const $$createField57_0 = $$createType0;
         const $$createField62_0 = $$createType0;
         const $$createField64_0 = $$createType0;
-        const $$createField78_0 = $$createType12;
+        const $$createField77_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -1359,7 +1349,7 @@ export class Settings {
             $$parsedSource["spinnerDisabledAnimations"] = $$createField64_0($$parsedSource["spinnerDisabledAnimations"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField78_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField77_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

@@ -366,9 +366,6 @@ func TestNotificationPreferencesDefaultOn(t *testing.T) {
 		// they were unconditional before the keys existed.
 		"notifyWorkflowAttention": DefaultSettings.NotifyWorkflowAttention,
 		"notifyAppUpdate":         DefaultSettings.NotifyAppUpdate,
-		// "Quiet when this window is focused" is the one attended-screen
-		// rule that is on by default; see the field.
-		"notifyMuteWhenFocused": DefaultSettings.NotifyMuteWhenFocused,
 	} {
 		if !on {
 			t.Errorf("%s defaults off", key)
@@ -379,16 +376,14 @@ func TestNotificationPreferencesDefaultOn(t *testing.T) {
 				key, tier, ok, TierDevice)
 		}
 	}
-	// The weaker attended-screen rule is the one notification preference
-	// that defaults OFF, so it must NOT appear in DefaultSettings —
-	// writeSparse persists what differs from the defaults, and listing it
-	// would drop a user's `true` on the next write.
-	if DefaultSettings.NotifyMuteWhenThreadVisible {
-		t.Error("notifyMuteWhenThreadVisible defaults on; a thread on screen in an unfocused " +
-			"window is weak evidence a person saw the moment")
+	// The attended-screen picker defaults to "quiet while this window is
+	// focused": a toast on the window being typed in says nothing new. Same
+	// tier, same reason — it describes a screen.
+	if DefaultSettings.NotifyQuietWhen != NotifyQuietWhenFocused {
+		t.Errorf("notifyQuietWhen defaults to %q, want %q", DefaultSettings.NotifyQuietWhen, NotifyQuietWhenFocused)
 	}
-	if tier, ok := TierForKey("notifyMuteWhenThreadVisible"); !ok || tier != TierDevice {
-		t.Errorf("notifyMuteWhenThreadVisible is tier %q (known=%t), want %q", tier, ok, TierDevice)
+	if tier, ok := TierForKey("notifyQuietWhen"); !ok || tier != TierDevice {
+		t.Errorf("notifyQuietWhen is tier %q (known=%t), want %q", tier, ok, TierDevice)
 	}
 }
 

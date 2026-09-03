@@ -523,25 +523,21 @@ type Settings struct {
 	// notice. Same reasoning as NotifyWorkflowAttention.
 	NotifyAppUpdate bool `json:"notifyAppUpdate"`
 
-	// The ATTENDED-SCREEN preferences: not "which moments are worth an
-	// interruption" but "is this screen already being looked at". Both are
-	// read by the host-side sender only (app_notifications.go notifyOS),
-	// against the backend machine's own screen, and neither changes what any
-	// client is SENT or renders — a notification that is not raised is one
-	// less toast, never one less frame.
+	// The ATTENDED-SCREEN preference: not "which moments are worth an
+	// interruption" but "is this screen already being looked at". Read by
+	// the host-side sender only (app_notifications.go notifyOS), against the
+	// backend machine's own screen, and it never changes what any client is
+	// SENT or renders — a notification that is not raised is one less toast,
+	// never one less frame.
 	//
-	// NotifyMuteWhenFocused defaults TRUE: a toast on the window you are
-	// typing in tells you something you can already see. It is the half of
-	// this pair almost everyone wants, which is why it is the one that is on.
-	NotifyMuteWhenFocused bool `json:"notifyMuteWhenFocused"`
-	// NotifyMuteWhenThreadVisible defaults FALSE, so it stays out of
-	// DefaultSettings (the ClaudeTUIEnabled rule: a field whose intended
-	// default is the Go zero value must not be listed there, or writeSparse
-	// drops a user's `true` on write). Off by default because a thread being
-	// on screen in some pane of an unfocused window is much weaker evidence
-	// that a person saw the moment than the window having focus is, and a
-	// missed turn-complete is worse than a redundant one.
-	NotifyMuteWhenThreadVisible bool `json:"notifyMuteWhenThreadVisible"`
+	// ONE PICKER, not two toggles, because the combination people actually
+	// want is the AND: "nothing about a thread I have open while I am in the
+	// app, everything else always". Two independent toggles can only express
+	// the OR, so the four readings are spelled out as values
+	// (NotifyQuietNever … NotifyQuietWhenFocusedAndThreadVisible). Defaults
+	// to NotifyQuietWhenFocused: a toast on the window you are typing in
+	// tells you something you can already see.
+	NotifyQuietWhen string `json:"notifyQuietWhen"`
 
 	// Per-client UI view state (pane layout, collapsed projects,
 	// sidebar width, …) deliberately does NOT live here: it moved to
@@ -647,11 +643,30 @@ var DefaultSettings = Settings{
 	NotifyAppUpdate:         true,
 	// Muting a screen you are already looking at is what a person means by
 	// "notify me": the interruption is worth nothing when the answer is
-	// already in front of them. Its weaker sibling
-	// (NotifyMuteWhenThreadVisible) is the Go zero value and deliberately
-	// not here — see the field.
-	NotifyMuteWhenFocused: true,
+	// already in front of them.
+	NotifyQuietWhen: NotifyQuietWhenFocused,
 }
+
+// The four readings of "quiet when", the values of Settings.NotifyQuietWhen.
+// Each names the condition under which a notification about this screen is
+// held back; the facts it is judged against are the transport's presence
+// frame (focus, and the threads open in panes) for the backend machine's own
+// connections.
+const (
+	// NotifyQuietNever raises everything, even while the app is in front.
+	NotifyQuietNever = "never"
+	// NotifyQuietWhenFocused holds everything back while the app window is
+	// focused on this screen.
+	NotifyQuietWhenFocused = "focused"
+	// NotifyQuietWhenThreadVisible holds back a notification about a thread
+	// that is open in a visible pane, whether or not the app is focused.
+	// Sends that name no thread are always raised.
+	NotifyQuietWhenThreadVisible = "threadVisible"
+	// NotifyQuietWhenFocusedAndThreadVisible holds back a notification only
+	// when the app is focused AND the thread it is about is open in a pane.
+	// A thread you are not looking at still interrupts you inside the app.
+	NotifyQuietWhenFocusedAndThreadVisible = "focusedAndThreadVisible"
+)
 
 // HiddenModelsForProvider returns the hidden-model slug list for the
 // given provider name. claude-tui shares the claude list (same binary,
@@ -1076,6 +1091,12 @@ func retiredSettingsFieldNames() map[string]struct{} {
 		// should keep writing, and it is why the boot read has to happen
 		// before any Update can reach the file.
 		"theme": {},
+		// Folded into the one `notifyQuietWhen` picker before either ever
+		// shipped in a release, so nothing reads them and there is nothing
+		// to migrate; listed so a file written by a pre-release build stops
+		// republishing them.
+		"notifyMuteWhenFocused":       {},
+		"notifyMuteWhenThreadVisible": {},
 	}
 }
 

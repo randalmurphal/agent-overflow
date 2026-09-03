@@ -179,12 +179,11 @@ var tierByKey = map[string]Tier{
 	"notifyProviderSignedOut": TierDevice,
 	"notifyWorkflowAttention": TierDevice,
 	"notifyAppUpdate":         TierDevice,
-	// The two "quiet when" keys are the same tier for the same reason, one
-	// step further in: they do not ask which moments matter, they ask
-	// whether THIS screen is already being looked at. That question has no
-	// answer at all without a screen to ask it of.
-	"notifyMuteWhenFocused":       TierDevice,
-	"notifyMuteWhenThreadVisible": TierDevice,
+	// The "quiet when" key is the same tier for the same reason, one step
+	// further in: it does not ask which moments matter, it asks whether
+	// THIS screen is already being looked at. That question has no answer
+	// at all without a screen to ask it of.
+	"notifyQuietWhen": TierDevice,
 	// Spinner appearance is display, like fonts and motion.
 	"spinnerVerbsEnabled":         TierDevice,
 	"spinnerAnimationsEnabled":    TierDevice,

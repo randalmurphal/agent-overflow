@@ -85,6 +85,5 @@ export const SETTINGS_DEFAULTS = {
   notifyProviderSignedOut: true,
   notifyWorkflowAttention: true,
   notifyAppUpdate: true,
-  notifyMuteWhenFocused: true,
-  notifyMuteWhenThreadVisible: false,
+  notifyQuietWhen: "focused",
 } satisfies Settings;

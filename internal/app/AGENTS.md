@@ -261,12 +261,15 @@ WHERE each one is observed and how the sentence is finished.
 - **TWO QUESTIONS, ONE GATE.** The per-kind toggles answer "is this moment worth
   an interruption" (`notificationKindEnabledIn`, TOTAL over `notify.Kind` with no
   permissive default — a kind this build has no preference for is refused, not
-  raised). The ATTENDED-SCREEN rules answer "is this screen already looking"
-  (`screenIsAlreadyLooking`), from `notifyMuteWhenFocused` /
-  `notifyMuteWhenThreadVisible` on the backend machine's own screen and the
-  transport's per-connection presence over its LOOPBACK connections. Both live
-  here for one reason: a sender that could reach a presenter without passing them
-  is a sender that can forget one.
+  raised). The ATTENDED-SCREEN rule answers "is this screen already looking"
+  (`screenIsAlreadyLooking`), from the one `notifyQuietWhen` picker on the
+  backend machine's own screen and the transport's per-connection presence over
+  its LOOPBACK connections. The picker has four readings (`settings.NotifyQuiet*`)
+  rather than two toggles because the one most people want, quiet about a thread
+  they have open while they are in the app and nothing else, is the AND of the
+  two facts, and independent toggles can only say OR. Both halves live here for
+  one reason: a sender that could reach a presenter without passing them is a
+  sender that can forget one.
 - **Reading focus here changes NOTHING about delivery.** The only outcome the
   attended-screen half can produce is a toast that is not raised: no client is
   sent fewer frames, no surface renders differently, and no work is skipped
@@ -285,7 +288,7 @@ WHERE each one is observed and how the sentence is finished.
 - **There is exactly ONE bypass, and it is named.** `notifyOSUngated` skips both
   halves for the harness RPC alone (`app_harness.go`), because every gate reads a
   preference or a screen an e2e run cannot see or control — a Playwright page HAS
-  focus, so the default `notifyMuteWhenFocused` would silence every harness
+  focus, so the default `notifyQuietWhen: "focused"` would silence every harness
   notification the moment a spec opened the app.
   `TestOnlyTheHarnessBypassesTheNotificationGate` keeps the caller list at one.
 - **A retraction is never gated**, by either half. The gate answers "may I

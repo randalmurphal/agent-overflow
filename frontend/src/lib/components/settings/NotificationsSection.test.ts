@@ -34,12 +34,15 @@ const perKind: Array<[string, keyof Settings]> = [
   ['Toggle app update notifications', 'notifyAppUpdate'],
 ];
 
-// The second stack answers a different question, so it is a separate table:
-// these are not per-kind toggles and only one of them defaults on.
-const quietWhen: Array<[string, keyof Settings, boolean]> = [
-  ['Toggle quiet when this window is focused', 'notifyMuteWhenFocused', true],
-  ['Toggle quiet when the thread is on screen', 'notifyMuteWhenThreadVisible', false],
-];
+// The second stack answers a different question and is one picker, not a
+// table of toggles: its four readings are exclusive.
+function quietWhenRadio(container: HTMLElement, value: string): HTMLInputElement {
+  const input = container.querySelector<HTMLInputElement>(
+    `[data-testid="quiet-when-option-${value}"] input[type="radio"]`,
+  );
+  if (!input) throw new Error(`no quiet-when option ${value}`);
+  return input;
+}
 
 describe('<NotificationsSection>', () => {
   beforeEach(async () => {
@@ -63,20 +66,20 @@ describe('<NotificationsSection>', () => {
     expect(mock!.mock.calls[0][0]).toEqual({ [key]: false });
   });
 
-  it('renders the quiet-when stack at its own defaults', async () => {
-    const { getByRole } = render(NotificationsSection);
-    for (const [name, , on] of quietWhen) {
-      expect(getByRole('switch', { name }).getAttribute('aria-checked')).toBe(String(on));
+  it('renders the quiet-when picker at its default, quiet while this window is focused', async () => {
+    const { container } = render(NotificationsSection);
+    for (const value of ['never', 'focused', 'threadVisible', 'focusedAndThreadVisible']) {
+      expect(quietWhenRadio(container, value).checked).toBe(value === 'focused');
     }
   });
 
-  it.each(quietWhen)('dispatches %s as its own key', async (name, key, on) => {
-    const { getByRole } = render(NotificationsSection);
-    await fireEvent.click(getByRole('switch', { name }));
+  it('dispatches a quiet-when choice as the one picker key', async () => {
+    const { container } = render(NotificationsSection);
+    await fireEvent.click(quietWhenRadio(container, 'focusedAndThreadVisible'));
 
     const mock = getBindingMock('UpdateSettings');
     expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ [key]: !on });
+    expect(mock!.mock.calls[0][0]).toEqual({ notifyQuietWhen: 'focusedAndThreadVisible' });
   });
 
   it('hides every row beneath the master switch when it is off', async () => {
@@ -84,9 +87,10 @@ describe('<NotificationsSection>', () => {
     const { getByRole, queryByRole } = render(NotificationsSection);
     expect(getByRole('switch', { name: 'Toggle desktop notifications' }).getAttribute('aria-checked'))
       .toBe('false');
-    for (const [name] of [...perKind, ...quietWhen]) {
+    for (const [name] of perKind) {
       expect(queryByRole('switch', { name })).toBeNull();
     }
+    expect(queryByRole('radiogroup', { name: 'Quiet when' })).toBeNull();
   });
 
   it('reflects a single kind turned off without touching the others', async () => {

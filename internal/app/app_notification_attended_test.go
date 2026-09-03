@@ -39,15 +39,14 @@ func attendedApp(t *testing.T) (*App, *recordingNotificationSender, *transport.S
 	return app, recorder, subscriber
 }
 
-// quietWhen writes the two attended-screen preferences onto the backend
-// machine's own screen, which is the screen the gate reads.
-func quietWhen(t *testing.T, app *App, focused, threadVisible bool) {
+// quietWhen writes the attended-screen preference onto the backend machine's
+// own screen, which is the screen the gate reads.
+func quietWhen(t *testing.T, app *App, reading string) {
 	t.Helper()
 	if _, err := app.settings.BackendScreen().Update(map[string]any{
-		"notifyMuteWhenFocused":       focused,
-		"notifyMuteWhenThreadVisible": threadVisible,
+		"notifyQuietWhen": reading,
 	}); err != nil {
-		t.Fatalf("update quiet-when settings: %v", err)
+		t.Fatalf("update quiet-when setting: %v", err)
 	}
 }
 
@@ -66,8 +65,15 @@ func wantScreenAttended(t *testing.T, err error, context string) {
 	}
 }
 
-// The headline rule, and the one that defaults ON: a person looking at the
-// app on this machine is not interrupted by it.
+func wantRaised(t *testing.T, err error, context string) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("%s: notifyOS = %v, want the notification raised", context, err)
+	}
+}
+
+// The default reading: a person looking at the app on this machine is not
+// interrupted by it.
 func TestAFocusedLocalScreenMutesTheNotification(t *testing.T) {
 	app, _, subscriber := attendedApp(t)
 	subscriber.SetPresence(true, nil)
@@ -75,18 +81,41 @@ func TestAFocusedLocalScreenMutesTheNotification(t *testing.T) {
 	wantScreenAttended(t, app.notifyOS(threadSend()), "a focused screen")
 
 	// And it is the PREFERENCE that decides, not the presence.
-	quietWhen(t, app, false, false)
-	if err := app.notifyOS(threadSend()); err != nil {
-		t.Fatalf("with both quiet preferences off, notifyOS = %v, want the notification raised", err)
-	}
+	quietWhen(t, app, settings.NotifyQuietNever)
+	wantRaised(t, app.notifyOS(threadSend()), "quiet never, focused screen")
 }
 
-// The second rule is independent of the first, and applies only to a send
-// whose target NAMES a thread: a workflow item or an update notice has no
-// thread for a pane to be showing.
+// The reading the picker exists for: a thread you have open while you are in
+// the app is the one you are watching, and every other thread still gets to
+// interrupt you there. Neither fact alone is enough.
+func TestFocusedAndThreadVisibleNeedsBothFacts(t *testing.T) {
+	app, _, subscriber := attendedApp(t)
+	quietWhen(t, app, settings.NotifyQuietWhenFocusedAndThreadVisible)
+
+	subscriber.SetPresence(true, []string{mappingThreadID})
+	wantScreenAttended(t, app.notifyOS(threadSend()), "focused with the thread's pane open")
+
+	other := threadSend()
+	other.ID = "thread:other"
+	other.Target.ThreadID = "thread-not-on-screen"
+	wantRaised(t, app.notifyOS(other), "focused, but about a thread in no pane")
+
+	targetless := notify.Send{
+		ID: "workflow:item", Kind: notify.KindWorkflowAttention, Title: "t",
+		Target: notify.Target{Kind: "none"},
+	}
+	wantRaised(t, app.notifyOS(targetless), "focused, but the send names no thread")
+
+	subscriber.SetPresence(false, []string{mappingThreadID})
+	wantRaised(t, app.notifyOS(threadSend()), "the thread's pane open behind another app")
+}
+
+// The thread-visible reading applies only to a send whose target NAMES a
+// thread: a workflow item or an update notice has no thread for a pane to be
+// showing.
 func TestTheThreadVisibleRuleAppliesOnlyToAThreadTarget(t *testing.T) {
 	app, _, subscriber := attendedApp(t)
-	quietWhen(t, app, false, true)
+	quietWhen(t, app, settings.NotifyQuietWhenThreadVisible)
 	// Unfocused — another app is in front — with the thread's pane on screen.
 	subscriber.SetPresence(false, []string{mappingThreadID})
 
@@ -96,16 +125,12 @@ func TestTheThreadVisibleRuleAppliesOnlyToAThreadTarget(t *testing.T) {
 		ID: "workflow:item", Kind: notify.KindWorkflowAttention, Title: "t",
 		Target: notify.Target{Kind: "none"},
 	}
-	if err := app.notifyOS(targetless); err != nil {
-		t.Fatalf("a send naming no thread was muted by the thread rule: %v", err)
-	}
+	wantRaised(t, app.notifyOS(targetless), "a send naming no thread")
 
 	other := threadSend()
 	other.ID = "thread:other"
 	other.Target.ThreadID = "thread-not-on-screen"
-	if err := app.notifyOS(other); err != nil {
-		t.Fatalf("a send about a thread nobody is showing was muted: %v", err)
-	}
+	wantRaised(t, app.notifyOS(other), "a send about a thread nobody is showing")
 }
 
 // A REMOTE screen is somebody else's. A phone the owner is staring at must
@@ -114,11 +139,9 @@ func TestARemoteScreenNeverMutesTheDesktop(t *testing.T) {
 	app, _, subscriber := attendedApp(t)
 	subscriber.SetOriginLoopback(false)
 	subscriber.SetPresence(true, []string{mappingThreadID})
-	quietWhen(t, app, true, true)
+	quietWhen(t, app, settings.NotifyQuietWhenThreadVisible)
 
-	if err := app.notifyOS(threadSend()); err != nil {
-		t.Fatalf("a remote client's focus muted this machine: %v", err)
-	}
+	wantRaised(t, app.notifyOS(threadSend()), "a remote client's focus")
 }
 
 // A RETRACTION IS NEVER GATED, by this half either. Somebody walking back to
@@ -127,7 +150,7 @@ func TestARemoteScreenNeverMutesTheDesktop(t *testing.T) {
 func TestAnAttendedScreenNeverGatesARetraction(t *testing.T) {
 	app, recorder, subscriber := attendedApp(t)
 	subscriber.SetPresence(true, []string{mappingThreadID})
-	quietWhen(t, app, true, true)
+	quietWhen(t, app, settings.NotifyQuietWhenFocusedAndThreadVisible)
 
 	retraction := notify.Send{ID: "thread:" + mappingThreadID, Kind: notify.KindTurnComplete, Retract: true}
 	if err := app.notifyOS(retraction); err != nil {
@@ -144,22 +167,18 @@ func TestAnAttendedScreenNeverGatesARetraction(t *testing.T) {
 // has to raise the notification, which is the behavior before the gate.
 func TestWithNoTransportNoScreenIsAttended(t *testing.T) {
 	app, _ := newNotificationMappingApp(t)
-	quietWhen(t, app, true, true)
+	quietWhen(t, app, settings.NotifyQuietWhenThreadVisible)
 
-	if err := app.notifyOS(threadSend()); err != nil {
-		t.Fatalf("notifyOS with no event bus = %v, want the notification raised", err)
-	}
+	wantRaised(t, app.notifyOS(threadSend()), "no event bus")
 }
 
 // A connection that never stated a presence is not a screen either, so the
 // frame stays additive: every client predating it behaves as it always did.
 func TestAConnectionThatStatedNothingIsNotAScreen(t *testing.T) {
 	app, _, _ := attendedApp(t)
-	quietWhen(t, app, true, true)
+	quietWhen(t, app, settings.NotifyQuietWhenThreadVisible)
 
-	if err := app.notifyOS(threadSend()); err != nil {
-		t.Fatalf("notifyOS with a silent connection = %v, want the notification raised", err)
-	}
+	wantRaised(t, app.notifyOS(threadSend()), "a silent connection")
 }
 
 // Neither gate outcome is a fault. Logging one would put a line in the log
@@ -177,7 +196,7 @@ func TestNeitherGateOutcomeIsLoggedAsAFailure(t *testing.T) {
 	}
 }
 
-// THE PUSH FAN-OUT IS NOT SUBJECT TO THESE TWO GATES. A phone in a pocket is
+// THE PUSH FAN-OUT IS NOT SUBJECT TO THIS GATE. A phone in a pocket is
 // a different screen from the one the presence describes, and the desktop
 // being looked at says nothing about whether that phone should buzz. The
 // per-kind toggles still apply there, per phone, which the push tests cover.
@@ -189,12 +208,7 @@ func TestTheAttendedScreenGatesDoNotReachThePhones(t *testing.T) {
 	subscriber := bus.Subscribe()
 	subscriber.SetOriginLoopback(true)
 	subscriber.SetPresence(true, []string{mappingThreadID})
-	if _, err := app.settings.BackendScreen().Update(map[string]any{
-		"notifyMuteWhenFocused":       true,
-		"notifyMuteWhenThreadVisible": true,
-	}); err != nil {
-		t.Fatalf("update quiet-when settings: %v", err)
-	}
+	quietWhen(t, app, settings.NotifyQuietWhenThreadVisible)
 	pairPhone(t, app, "thumb-phone", "token-phone")
 
 	if messages := firedPush(t, app, turnCompleteSend()); len(messages) != 1 {

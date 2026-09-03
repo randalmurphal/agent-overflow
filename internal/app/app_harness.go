@@ -112,8 +112,9 @@ func (h *harnessHost) Emit(channel eventchan.Channel, data any) {
 // attended-screen gates (app_notifications.go), because every one of those
 // reads something the test cannot see or control. The kind toggle would need
 // a preference the test never set, and the attended-screen rules read window
-// focus — a Playwright page HAS focus, so the default `notifyMuteWhenFocused`
-// would silence every harness notification the moment a spec opened the app.
+// focus — a Playwright page HAS focus, so the default `notifyQuietWhen`
+// ("focused") would silence every harness notification the moment a spec
+// opened the app.
 // Riding KindWorkflowAttention because it had no toggle was the old version
 // of this argument; it has one now, so the bypass is explicit instead.
 //

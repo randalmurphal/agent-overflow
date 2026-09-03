@@ -161,7 +161,7 @@ func (a *App) notifyOSUngated(send notify.Send) error {
 // presentation: is the backend machine's own screen showing what this send
 // was about to say?
 //
-// The preferences come from that screen (Service.BackendScreen) for the same
+// The preference comes from that screen (Service.BackendScreen) for the same
 // reason the per-kind ones do — it is the screen this process interrupts — and
 // the facts come from the transport's per-connection presence
 // (internal/transport/presence.go), ORed over the connections on a loopback
@@ -174,20 +174,21 @@ func (a *App) notifyOSUngated(send notify.Send) error {
 // (internal/transport/lease.go, event_entity.go) and this is not it — the
 // alternative to a toast is no toast, not a stale pane.
 //
-// Two rules the shape encodes:
-//
-//   - The two preferences are INDEPENDENT, so a person who wants only the
-//     stronger one gets only the stronger one.
-//   - The thread-visible rule applies only to a send whose Target NAMES a
-//     thread. A workflow-attention target names a work item and the
-//     signed-out / update kinds name nothing, so there is no thread for a
-//     pane to be showing; those remain subject to the focus rule alone.
+// The preference is ONE picker with four readings (settings.NotifyQuiet*),
+// not two toggles, because the reading most people want — quiet about a
+// thread I have open while I am in the app, everything else always — is the
+// AND of the two facts, and independent toggles can only say OR. The
+// thread-visible fact is only ever true for a send whose Target NAMES a
+// thread: a workflow-attention target names a work item and the signed-out /
+// update kinds name nothing, so there is no thread for a pane to be showing.
+// Under the two thread readings those sends are therefore always raised, and
+// under the focused reading they are judged by focus alone.
 func (a *App) screenIsAlreadyLooking(send notify.Send) bool {
 	current := settings.DefaultSettings
 	if a.settings != nil {
 		current = a.settings.BackendScreen().Get()
 	}
-	if !current.NotifyMuteWhenFocused && !current.NotifyMuteWhenThreadVisible {
+	if current.NotifyQuietWhen == settings.NotifyQuietNever {
 		return false
 	}
 	bus := a.eventBus.Load()
@@ -202,10 +203,20 @@ func (a *App) screenIsAlreadyLooking(send notify.Send) bool {
 		threadID = send.Target.ThreadID
 	}
 	focused, threadVisible := bus.LocalScreenPresence(threadID)
-	if current.NotifyMuteWhenFocused && focused {
-		return true
+	switch current.NotifyQuietWhen {
+	case settings.NotifyQuietWhenFocused:
+		return focused
+	case settings.NotifyQuietWhenThreadVisible:
+		return threadVisible
+	case settings.NotifyQuietWhenFocusedAndThreadVisible:
+		return focused && threadVisible
+	default:
+		// sanitizeLoadedSettings and validateSettings keep the value inside
+		// the four readings; an unknown one here is a settings bug, and the
+		// answer that raises the notification is the one that loses nothing.
+		log.Printf("notifications: unknown notifyQuietWhen %q, raising", current.NotifyQuietWhen)
+		return false
 	}
-	return current.NotifyMuteWhenThreadVisible && threadVisible
 }
 
 // notificationKindEnabled answers the user's preference for one kind.

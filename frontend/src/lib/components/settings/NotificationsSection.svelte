@@ -14,10 +14,12 @@
   //
   // TWO STACKS, TWO QUESTIONS. The per-kind toggles answer "is this moment
   // worth an interruption"; "Quiet when" answers "is this screen already
-  // looking". They are independent, so somebody who wants only the stronger
-  // rule gets only the stronger rule. Both are read by the backend for one
-  // decision — whether an OS notification is RAISED — and neither changes
-  // what any client is sent or renders.
+  // looking". The second is ONE picker rather than two toggles because the
+  // reading most people want, quiet about a thread I have open while I am
+  // in the app and nothing else, is the AND of the two facts, and
+  // independent toggles can only say OR. Both stacks are read by the
+  // backend for one decision — whether an OS notification is RAISED — and
+  // neither changes what any client is sent or renders.
   //
   // The phone-push block sits at the FOOT of this section rather than in
   // its own, because it answers the same question one screen down: these
@@ -27,10 +29,38 @@
   // sees the toggles and nothing else (./PhonePushBlock.svelte).
 
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
+  import type { NotifyQuietWhen } from '../../types/settings';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import PhonePushBlock from './PhonePushBlock.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
+
+  const QUIET_WHEN_OPTIONS: Array<{
+    value: NotifyQuietWhen;
+    label: string;
+    description: string;
+  }> = [
+    {
+      value: 'never',
+      label: 'Never',
+      description: 'Every notification comes through, even while you are in the app.',
+    },
+    {
+      value: 'focused',
+      label: 'This window is focused',
+      description: 'Nothing while the app is in front on this screen.',
+    },
+    {
+      value: 'threadVisible',
+      label: 'The thread is on screen',
+      description: 'Nothing about a thread open in a visible pane, even when another app is in front.',
+    },
+    {
+      value: 'focusedAndThreadVisible',
+      label: 'Focused and the thread is on screen',
+      description: 'Nothing about a thread open in a pane while the app is in front. Other threads still come through.',
+    },
+  ];
 
   let settings = $derived(getSettings());
 </script>
@@ -129,35 +159,49 @@
       <!-- The second stack, headed rather than sectioned: it belongs to the
            same question the toggles above answer, one step further in, and
            the phone-push block stays at the foot of the whole thing. -->
-      <div class="pt-3">
+      <div
+        class="pt-3"
+        data-settings-field="notifications.quiet-when"
+        data-settings-label="Quiet when"
+        data-settings-hint="Held back on this screen only. A paired phone is still woken."
+      >
         <SettingsHeader
           title="Quiet when"
           description="Held back on this screen only. A paired phone is still woken."
         />
-        <div class="flex flex-col gap-1">
-          <SettingsField
-            id="notifications.quiet-when-focused"
-            label="This window is focused"
-            hint="No notification while you are already looking at the app on this screen."
-          >
-            <ToggleSwitch
-              checked={settings.notifyMuteWhenFocused}
-              ariaLabel="Toggle quiet when this window is focused"
-              onToggle={(value) => updateSetting('notifyMuteWhenFocused', value)}
-            />
-          </SettingsField>
-
-          <SettingsField
-            id="notifications.quiet-when-thread-visible"
-            label="The thread is on screen"
-            hint="No notification about a thread that is open in a visible pane, even when another app is focused."
-          >
-            <ToggleSwitch
-              checked={settings.notifyMuteWhenThreadVisible}
-              ariaLabel="Toggle quiet when the thread is on screen"
-              onToggle={(value) => updateSetting('notifyMuteWhenThreadVisible', value)}
-            />
-          </SettingsField>
+        <div
+          class="grid gap-2"
+          role="radiogroup"
+          aria-label="Quiet when"
+          data-testid="quiet-when-radiogroup"
+        >
+          {#each QUIET_WHEN_OPTIONS as option (option.value)}
+            {@const checked = settings.notifyQuietWhen === option.value}
+            <label
+              class={[
+                'flex cursor-pointer items-start gap-3 rounded-[var(--radius-field)] border px-3 py-2 transition-colors',
+                checked
+                  ? 'border-accent/50 bg-accent/10 text-fg'
+                  : 'border-border-subtle bg-surface-1/30 text-fg-muted hover:border-border hover:text-fg',
+              ].join(' ')}
+              data-testid={`quiet-when-option-${option.value}`}
+            >
+              <input
+                type="radio"
+                name="quiet-when"
+                value={option.value}
+                {checked}
+                onchange={() => void updateSetting('notifyQuietWhen', option.value)}
+                class="mt-1 h-3.5 w-3.5 accent-accent"
+              />
+              <span class="min-w-0">
+                <span class="text-[0.8125rem] font-medium">{option.label}</span>
+                <span class="mt-0.5 block text-[0.75rem] leading-5 text-fg-muted">
+                  {option.description}
+                </span>
+              </span>
+            </label>
+          {/each}
         </div>
       </div>
     {/if}

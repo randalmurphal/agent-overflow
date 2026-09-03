@@ -243,7 +243,7 @@ are not:
   `notifyOS`'s two gates. Both of them read something an e2e run cannot
   see or set — a per-kind preference the spec never wrote, and the
   attended-screen rules, which read window focus. A Playwright page HAS
-  focus, so the default `notifyMuteWhenFocused` would silence every
+  focus, so the default `notifyQuietWhen` ("focused") would silence every
   harness notification the moment a spec opened the app. Riding
   `KindWorkflowAttention` because it had no toggle was the previous
   version of this argument; it has one now, so the bypass is stated

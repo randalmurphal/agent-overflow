@@ -26,14 +26,13 @@ directory.
   a leaked context.
 - **A spec that asserts a MAPPED notification must not have a page open.**
   Since wave R5 the SPA states a screen presence on its socket, and the
-  backend's default `notifyMuteWhenFocused` holds back a notification about
-  a screen that is being looked at (`internal/app/app_notifications.go`) —
+  backend's default `notifyQuietWhen: "focused"` holds back a notification
+  about a screen that is being looked at (`internal/app/app_notifications.go`) —
   a Playwright page HAS focus, so a mapped turn-complete would simply not be
   raised. `notifications.spec.ts` and `push.spec.ts` are page-free today and
   that is what makes them deterministic, not luck. A spec that genuinely
-  needs both writes `UpdateSettings({ notifyMuteWhenFocused: false,
-  notifyMuteWhenThreadVisible: false })` first, on the same connection the
-  sender reads (a harness connection names no device, so the write lands on
+  needs both writes `UpdateSettings({ notifyQuietWhen: "never" })` first,
+  on the same connection the sender reads (a harness connection names no device, so the write lands on
   the backend machine's own screen).
 
   The attended gate is deliberately LIVE under the harness rather than

@@ -3752,6 +3752,17 @@ row existed (the row now goes with it rather than resurrecting at boot);
 cleanup; a send id that has scrolled past the 64-row window is not
 found, which is the accepted edge of a bounded check.
 
+**Quiet-when picker LANDED (2026-09-03).** The R5 pair
+`notifyMuteWhenFocused` / `notifyMuteWhenThreadVisible` ORed, and the
+reading actually wanted (quiet about a thread I have open while I am in
+the app; everything else always) is the AND, which two independent
+toggles cannot say. Replaced, before either shipped in a release, by one
+device-tier picker `notifyQuietWhen` with four exclusive readings
+(`never`, `focused` (default), `threadVisible`,
+`focusedAndThreadVisible`); the old names are retired settings fields
+and nothing migrates them. `screenIsAlreadyLooking` switches on the
+reading; the presence frame and the loopback rule are unchanged.
+
 ## 17. Testing
 
 - **Generator gate**: every bound method must declare a scope or the

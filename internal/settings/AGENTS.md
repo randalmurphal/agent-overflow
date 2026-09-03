@@ -340,16 +340,16 @@ file, which is what the pre-database boot readers in `main.go` and
   **The notification keys are the worked example, and there are two shapes
   of them.** Six PER-KIND toggles — one per `notify.Kind`, so
   `notificationKindEnabledIn` is total and no moment is silenceable only by
-  the master switch — plus two ATTENDED-SCREEN keys,
-  `notifyMuteWhenFocused` and `notifyMuteWhenThreadVisible`. All eight are
-  device tier for the same reason: they describe a SCREEN. The attended pair
-  is the sharper case, since it is read ONLY by `Service.BackendScreen()`
-  and never by a client at all; it still belongs to a screen, because the
-  question it answers is about the one this process interrupts.
-  `notifyMuteWhenThreadVisible` is the one that defaults FALSE, so it stays
-  out of `DefaultSettings` altogether (the `ClaudeTUIEnabled` rule: a Go
-  zero value IS the default, and restating it would be a second place for it
-  to drift).
+  the master switch — plus one ATTENDED-SCREEN key, `notifyQuietWhen`, a
+  picker with four readings (`NotifyQuiet*`). All seven are device tier for
+  the same reason: they describe a SCREEN. The picker is the sharper case,
+  since it is read ONLY by `Service.BackendScreen()` and never by a client
+  at all; it still belongs to a screen, because the question it answers is
+  about the one this process interrupts. It is one picker rather than two
+  toggles because the reading most people want is the AND of "focused" and
+  "the thread is on screen", which independent toggles cannot say. Its two
+  pre-release predecessors, `notifyMuteWhenFocused` and
+  `notifyMuteWhenThreadVisible`, are retired names.
   A DEVICE-tier field may also want a different default on some kinds of
   screen. That is `classDefaults` in `classdefaults.go`, and it is a
   separate decision from `DefaultSettings`: the global default is what a

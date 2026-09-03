@@ -43,9 +43,9 @@ scrolls to and flashes the anchor.
 is the design rather than layout. The per-kind toggles under the master
 switch answer "is this moment worth an interruption" — one per
 `notify.Kind`, so nothing is silenceable only by turning everything off.
-The **Quiet when** group answers a different question, "is this screen
-already looking", and its two keys are read on the BACKEND MACHINE's own
-screen alone (`internal/app/app_notifications.go`); a paired phone is woken
+The **Quiet when** picker answers a different question, "is this screen
+already looking", and its one key (`notifyQuietWhen`, four exclusive
+readings) is read on the BACKEND MACHINE's own screen alone (`internal/app/app_notifications.go`); a paired phone is woken
 either way, which is what its description says. The phone-push block stays
 at the FOOT, because it answers the same question one screen down.
 
@@ -53,10 +53,12 @@ Two rules for editing it:
 
 - **The master switch HIDES rather than disables everything beneath it**,
   the SpinnerSection pattern. A stack of greyed-out toggles reads as broken.
-- **Every per-kind toggle defaults ON and `notifyMuteWhenThreadVisible`
-  defaults OFF**, so a test that asserts "every switch starts on" is wrong
-  for the second stack. `NotificationsSection.test.ts` keeps two tables for
-  exactly that reason.
+- **Every per-kind toggle defaults ON, and "Quiet when" is a radio picker,
+  not toggles** (default: this window is focused). It is one picker because
+  the reading most people want, quiet about an open thread only while the
+  app is focused, is the AND of two facts that independent toggles cannot
+  express. `NotificationsSection.test.ts` treats it separately for exactly
+  that reason.
 
 ## Deep links
 

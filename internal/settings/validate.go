@@ -65,6 +65,13 @@ var (
 		"expanded":  {},
 		"collapsed": {},
 	}
+	// The four readings of "quiet when"; see the NotifyQuiet* constants.
+	allowedNotifyQuietWhen = map[string]struct{}{
+		NotifyQuietNever:                       {},
+		NotifyQuietWhenFocused:                 {},
+		NotifyQuietWhenThreadVisible:           {},
+		NotifyQuietWhenFocusedAndThreadVisible: {},
+	}
 	allowedProjectSortModes = map[string]struct{}{
 		"lastActivity": {},
 		"createdAt":    {},
@@ -148,6 +155,10 @@ func validateSettings(current Settings) (Settings, error) {
 		current.ActivityRunDefault,
 		allowedActivityRunDefaults,
 	); err != nil {
+		return Settings{}, err
+	}
+	current.NotifyQuietWhen = strings.TrimSpace(current.NotifyQuietWhen)
+	if err := validateOption("notifyQuietWhen", current.NotifyQuietWhen, allowedNotifyQuietWhen); err != nil {
 		return Settings{}, err
 	}
 	if err := validateActivityRunWindowRows(current.ActivityRunWindowRows); err != nil {
@@ -375,6 +386,12 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		current.ActivityRunDefault,
 		DefaultSettings.ActivityRunDefault,
 		allowedActivityRunDefaults,
+	)
+	current.NotifyQuietWhen = sanitizeOption(
+		"notifyQuietWhen",
+		current.NotifyQuietWhen,
+		DefaultSettings.NotifyQuietWhen,
+		allowedNotifyQuietWhen,
 	)
 	current.ActivityRunWindowRows = sanitizeActivityRunWindowRows(current.ActivityRunWindowRows)
 
