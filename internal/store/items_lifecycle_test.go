@@ -2546,7 +2546,7 @@ func TestListIncompleteCodexSubagentOwnershipsIsCompactOrderedAndUnresolved(t *t
 
 // TestCompletionSiblingProbesUseIndex is the guard behind the named SQL
 // fragments in items_lifecycle.go. The completion-sibling probe carries a
-// semantically redundant `c.completion_of <> ”` term for one reason: SQLite
+// semantically redundant non-empty `c.completion_of` term for one reason: SQLite
 // uses a partial index only when the query's predicates textually imply the
 // index's WHERE clause, and the correlated `c.completion_of = items.id` does
 // not. Without the term every probe here degrades to scanning the thread's

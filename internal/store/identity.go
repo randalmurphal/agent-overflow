@@ -1224,7 +1224,7 @@ func (s *Store) ListRecentAuthAudit(limit int) ([]AuthAuditEntry, error) {
 
 // ListAuthAuditForDevice returns one device's credential events, newest
 // first. The partial index on (device_id, at) serves it, which is why the
-// `device_id <> ”` term is repeated here: SQLite uses a partial index
+// non-empty `device_id` term is repeated here: SQLite uses a partial index
 // only when the query's predicates textually imply its WHERE clause.
 func (s *Store) ListAuthAuditForDevice(deviceID string, limit int) ([]AuthAuditEntry, error) {
 	if limit <= 0 || deviceID == "" {

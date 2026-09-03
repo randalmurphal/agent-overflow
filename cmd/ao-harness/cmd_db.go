@@ -271,7 +271,7 @@ func splitSingleStatement(statement string) (string, error) {
 }
 
 // closingQuote finds the end of a quoted run, honouring SQLite's doubled
-// quote escape ('it”s').
+// quote escape (two single quotes inside a quoted run stand for one).
 func closingQuote(statement string, start int, quote byte) int {
 	for i := start + 1; i < len(statement); i++ {
 		if statement[i] != quote {

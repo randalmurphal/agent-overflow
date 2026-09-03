@@ -234,7 +234,7 @@ func (s *Store) FindUserTextItemBySendID(threadID, sendID string, window int) (I
 // same text WITH a uuid. Without this lookup the transcript row lands as
 // a second `user:wire:<uuid>` duplicate below the answer it asked for.
 //
-// `parent_id <> ”` is load-bearing: it is the predicate of the partial
+// The non-empty `parent_id` term is load-bearing: it is the predicate of the partial
 // idx_items_parent (thread_id, parent_id) index, and SQLite cannot prove
 // it from a bound parameter. The meta LIKE is a cheap post-index filter
 // over the handful of rows one launch scope holds; the exact comparison
@@ -298,7 +298,7 @@ func (s *Store) GetThreadItemByPayloadID(threadID, payloadID string) (Item, bool
 // json_valid guard keeps one corrupt meta blob from failing the whole
 // read (the lifecycle queries guard the same way).
 //
-// The `parent_id = ” AND kind = 'user_text'` prefix is also what makes
+// The empty-`parent_id` plus `kind = 'user_text'` prefix is also what makes
 // the partial index idx_items_user_text (migration v73) apply: SQLite
 // uses a partial index only when the query's predicates TEXTUALLY imply
 // the index's WHERE clause, so neither term may be dropped or reordered

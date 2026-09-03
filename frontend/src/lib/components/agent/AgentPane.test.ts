@@ -417,6 +417,8 @@ describe('<AgentPane>', () => {
     // `subagentTranscriptDescendantCount`. Round one is fully loaded here,
     // so gating on the round count would skip the fetch and the pane
     // would open without round two.
+    // The third argument is the inline-previews flag (false on a loopback
+    // client; `wantsInlinePreviews` in stores/threadSubagentMemory.ts).
     const listDescendants = vi.fn(async () => []);
     setBindingMock('ListSubagentDescendants', listDescendants);
     const { ctx } = await setup([
@@ -436,7 +438,7 @@ describe('<AgentPane>', () => {
 
     render(AgentPane, { props: { ctx } });
 
-    await waitFor(() => expect(listDescendants).toHaveBeenCalledWith(THREAD_ID, 'launch-1'));
+    await waitFor(() => expect(listDescendants).toHaveBeenCalledWith(THREAD_ID, 'launch-1', false));
   });
 
   it('does not re-fetch a round-one-only agent whose rows are all loaded', async () => {
