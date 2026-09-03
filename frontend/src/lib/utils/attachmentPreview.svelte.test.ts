@@ -23,6 +23,7 @@ const ATTACHMENT: AttachmentPreviewSource = {
   filename: 'image.png',
   mimeType: 'image/png',
   size: 10,
+  kind: 'image',
 };
 
 function mapCache(): AttachmentPreviewCache & { store: Map<string, ImagePreviewItem> } {
