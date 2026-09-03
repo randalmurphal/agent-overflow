@@ -955,3 +955,7 @@ prefer `t.TempDir()` and explicit paths rather than adding more cwd dependence.
 Use package-local tests for private transaction invariants. Put behavior tests
 in the narrower owning package whenever the behavior does not require App-level
 composition.
+
+`newTestApp` (the rollback fixture) builds NO triage router. A test that
+exercises a triage-guarded app path must call `app.ensureTriageRouter()`
+first, or the guard answers "no router" and the path silently short-circuits.

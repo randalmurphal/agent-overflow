@@ -49,3 +49,8 @@ on live thread/session ordering.
   `worktreeapp.Find` still asks `git worktree list`, because it needs the
   worktree's branch RECORD, which the on-disk layout does not carry.
   `TestResolveWorkspaceSpawnsNoGit` empties PATH to hold this.
+- Workspace git status arrives in TWO emissions: plain git first, then
+  forge/MR enrichment tens of milliseconds later. Anything that resolves
+  forge state once at mount latches the un-enriched answer; the review
+  pane's `prRef` is `$derived` for exactly this reason. Check the same
+  pattern before adding any once-probed forge read.

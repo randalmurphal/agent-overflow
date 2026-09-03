@@ -1169,6 +1169,16 @@ detected rather than silently skipping or over-reading. `--watch` appends
 timestamped lines with no clear-screen, so an hours-long watch is
 greppable evidence.
 
+## Recipes
+
+**Review pane against a merge request, zero network.** A local dumb-HTTP
+git origin (`git update-server-info` plus `python -m http.server` in the
+bare repo) with a `refs/merge-requests/<n>/head` ref, a stub `glab` on
+PATH answering the MR JSON, and `gitlabSelfHostedHosts: ["127.0.0.1"]` in
+settings renders the PR scope end to end. `git daemon` is not installed on
+AlmaLinux, and an `insteadOf` rewrite cannot hide a local path from forge
+detection (`remote get-url` applies rewrites).
+
 ## e2e/ (Playwright)
 
 `e2e/src/harness.ts` is the TS client: `launchHarness()` spawns the

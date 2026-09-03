@@ -277,6 +277,16 @@ threads that the rig did not seed (you drove it by hand), it refuses to
 arm rather than sending a prompt into your work. Delete
 `~/.agent-overflow-soak` to reseed.
 
+## Known open
+
+- The first boot of a brand-new soak profile once rendered an EMPTY UI: no
+  projects, no threads, and no transport WS ever opened (zero `ws` lines in
+  `launcher-soak.log`). Ctrl+R healed it. Suspect territory is the first
+  boot of a fresh WebView2 profile with a fresh IndexedDB replica and
+  stable-port pin, which is what a real first install looks like. To
+  reproduce: wipe `~/.agent-overflow-soak` and the webview2-soak profile,
+  relaunch, watch whether the WS opens.
+
 ## Related
 
 - [agent-harness.md](agent-harness.md): the mocking machinery the soak

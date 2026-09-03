@@ -86,3 +86,11 @@ our own code.
   emitted on the wire for it. AO mirrors the 5s constant in its
   read-side auto-hide (`app_live_state.go`) and refuses to cold-seed
   an all-completed stored list (`triage.seedTasksFromStoredTodo`).
+- **Task lists across resumes (spiked 2.1.219 / 2.1.233)**: plain
+  `--resume` keeps the session id, so the session-id-keyed task list
+  survives ordinary resumes; only `--fork-session` mints a new id and
+  orphans the list. `--resume-session-at` (the crash-repair path) is
+  untested. A resume re-emits NO task events, so AO learns task state
+  only from live `TaskCreate` / `TaskUpdate` or its own
+  `threads.live_todo`. `CLAUDE_CODE_TASK_LIST_ID` is honored end to end
+  but pinning is not needed for plain-resume continuity.

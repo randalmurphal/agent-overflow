@@ -335,6 +335,13 @@ direction the file layout itself doesn't.
 
 ---
 
+## WSL Dev Box Gotchas
+
+- Every `.exe` suddenly exits 126 (`node.exe`, `powershell.exe`, the
+  launcher): WSL lost its binfmt interop registration. `sudo systemctl
+  restart systemd-binfmt` restores it. If it recurs, hunt what flushes
+  binfmt after boot.
+
 ## See Also
 
 - [`invariants.md`](invariants.md): the load-bearing rules each recipe

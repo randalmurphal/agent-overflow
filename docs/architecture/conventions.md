@@ -212,7 +212,9 @@ useful exactly as long as they are true. Four rules keep them true.
 - **Route a new fact to where a future reader looks first, once.** A
   rule agents must obey in one area → that area's `AGENTS.md`. A
   cross-cutting mechanism → `docs/architecture/`. Rationale for a
-  choice → the commit message, or an ADR when it is load-bearing. A
+  choice → the commit message, or an ADR when it is load-bearing. An
+  owner ruling, a rejected proposal, or a thing built and torn out →
+  `docs/decisions.md`, one line each, so no session re-proposes it. A
   coined term → `docs/GLOSSARY.md`. A code-local subtlety → a
   WHY-comment. If the environment already answers it (a Makefile
   target, `--help`, a config file), leave it there: a doc restating a

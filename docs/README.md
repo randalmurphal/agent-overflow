@@ -18,6 +18,9 @@ for cross-cutting design.
   recipes.
 - **Wondering why we chose X?** See
   [`architecture/adrs/`](architecture/adrs/).
+- **About to propose or "fix" a behavior?** Check
+  [`decisions.md`](decisions.md): owner rulings, rejected proposals, and
+  things built and torn out, per area.
 
 ## Architecture
 
@@ -121,6 +124,7 @@ External repos and tools we track, and how to use them. Under
 | [`codex-browser-parity.md`](references/codex-browser-parity.md) | Exact map from the bundled Codex browser skill API to AO's built-in browser MCP tools and validation. |
 | [`claude-api-error-upstream-report.md`](references/claude-api-error-upstream-report.md) | Draft upstream bug report for a Claude Code API-error shape, still unfiled. |
 | [`spike-policy.md`](references/spike-policy.md) | When to write an isolated spike test outside the project. |
+| [`voice-dictation.md`](references/voice-dictation.md) | Researched voice-to-text options (Claude voice_stream, Codex realtime) and why none is built. |
 | [`ao-harness.md`](references/ao-harness.md) | Generated command and output reference for the `ao-harness` shell driver. |
 | [`ao-cli.md`](references/ao-cli.md) | The `ao` scoped-token CLI: command tree and `--json` result shapes. |
 | [`fixtures/`](references/fixtures/) | Recorded provider wire captures backing `claude-wire.md` and the parser replay tests. |

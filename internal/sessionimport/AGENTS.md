@@ -242,6 +242,31 @@ layer verbatim: `not-imported`, `diverged-local`, `source-missing`,
   carries a wire-reported cost, so "none" is what makes `GetUsageStats` price
   them from `internal/usagecost` at query time.
 
+## Provider storage facts the design rests on
+
+Spike- and corpus-verified; neither provider documents them.
+
+- Codex `thread/read` and `thread/turns/list` are LOSSY (2-3 items for a
+  90-tool-call thread), so rollouts are parsed directly. The rollout enum is
+  not closed (`world_state` and others appear), so skip-unknown is mandatory.
+  Reasoning is encrypted and unrecoverable. There are no exec begin/end
+  events, but `exec_command_end` carries `call_id`, so correlation is exact.
+  About 37% of rollouts are subagent threads. The `state_5` `has_user_event`
+  column is dead.
+- Claude keeps no index anywhere. Forks copy full history and REUSE uuids,
+  so the key is `sessionId` + `uuid`. Compaction severs `parentUuid` and is
+  stitched through `logicalParentUuid`. GC'd `tool-results/*.txt` are the
+  one unrecoverable loss.
+
+Locked product decisions: one AO thread per Claude leaf (an in-thread branch
+switcher is a separate future feature); dedup is mandatory (session_ref,
+fork-lineage ancestors, subagent files), which is what makes Import All safe;
+non-active Claude branches materialize LAZILY at first send (an eager cut
+was rejected: gigabytes of copies and it pollutes `claude --resume`); no
+"imported" badge, original timestamps, Codex-archived sessions skipped, no
+auto-sync (right-click "Check for new items"); `rememberChatModelProfile` is
+deliberately not called.
+
 ## Testing
 
 - `parity_test.go` is the gate: one synthetic wire sequence PER PROVIDER, since

@@ -98,6 +98,15 @@ Not everything in `tests/` runs in the gate, on purpose. A
 set: they dump per-frame samples for offline analysis rather than
 asserting, so they are evidence, not a gate.
 
+Freeze reproductions are manual on purpose. `scripts/generate-freeze-repro.mjs`
+reads the live DB read-only and writes a fixture for a thread and turn range
+(it refuses a non-gitignored `--out`: fixtures carry real conversation content
+and are never committed); `freeze-repro.manual.spec.ts` replays it with the
+probe armed. Run with `pnpm test:freeze-repro`. Saturation shows as a longest
+gap far above the probe floor with per-task profiles; a single-loop wedge
+shows as a pause stack. The probe arms `Debugger` up front because
+`Profiler.stop` never answers on a wedged thread.
+
 ## The emulator smoke
 
 `make e2e-android` is a THIRD suite, not a third project: its own config

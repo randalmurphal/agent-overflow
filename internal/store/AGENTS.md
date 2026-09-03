@@ -2004,3 +2004,18 @@ whether the provider session already has the answer.
   the app warns and proceeds (rollback journaling keeps the store correct).
   Keep the verification and its log line alive
   ([invariant 19](../../docs/architecture/invariants.md#19-wal-mode-is-verified-at-startup)).
+
+## Dangling child rows left on purpose
+
+Old fork threads carry tens of thousands of `items` rows whose `parent_id`
+names a row that no longer exists (one thread alone holds ~5900), a leftover
+of the Codex orphan-subagent leak fixed 2026-08-13. They are inert: invisible
+to window reads and to the descendants CTE. A destructive cleanup migration
+needs a payload-GC story first and is deliberately not written. Revisit only
+if a feature walks parent links globally. Detection:
+
+```sql
+SELECT thread_id, COUNT(*) FROM items i WHERE parent_id<>'' AND
+NOT EXISTS (SELECT 1 FROM items p WHERE p.thread_id=i.thread_id AND
+p.id=i.parent_id) GROUP BY thread_id;
+```

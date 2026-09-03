@@ -398,6 +398,14 @@ and WEDGES the worker on a real finding rather than failing. Its corpus
 is a gitignored real-session capture that must never be committed.
 Generate one with `scripts/generate-freeze-replay-fixture.mjs`.
 
+`src/test/mocks/bindings-app.ts` lists its exports explicitly. A new binding
+must be added there or the unit project resolves it as `undefined` and the
+first call throws inside whatever effect made it. Binding mocks are plain
+objects, so they cannot reproduce a wire shape whose keys are OWN
+`undefined` properties (the generated Settings model class does that for
+omitted keys); only the harness e2e sees that class. happy-dom drops clicks
+on disabled buttons.
+
 ## Vendor patches
 
 Third-party divergence has two shapes, and the choice is about the

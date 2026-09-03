@@ -351,6 +351,18 @@ document streams. As prose, a 20KB single-line envelope restyled 5KB of
 already-read text per reveal tick (2026-08-22). Detection is a shape
 sniff, because Codex emits prose progress notes in the same session.
 
+## Message nav rail
+
+`MessageNavRail*` + `messageNavRailSync`. The UX rules are owner rulings
+(`docs/decisions.md`): exactly one position claim at all times, ticks never
+compress, overflow is a clipped sliding window with arrows only while an
+end tick is clipped out, the bottom arrow jumps to the latest message.
+Stable ids through `.by` (an inline `` mis-narrows there):
+reading `pane.threadId` as a plain getter over the wholesale-replaced
+`thread` state invalidated every effect keyed on it per `thread:updated`.
+Cutoffs are for EDGE DETECTORS only; a per-pass reconciler (the activity
+run's window-anchor effect) needs raw reads.
+
 ## Test notes
 
 happy-dom reports zero geometry, so `MessageTimeline.svelte` enables the

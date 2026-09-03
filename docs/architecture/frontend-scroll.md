@@ -1651,3 +1651,19 @@ output bodies. Focus can jump to `<body>` when the windowing unmounts the
 focused row. Syntax highlighting is backend span metadata
 (`internal/highlight`); the frontend renders spans over text it already
 holds.
+
+## Open Defects
+
+- **Run-to-prose transition jumps about half the spring instead of
+  gliding**, on some turns, when something is still animating inside the
+  activity run. Leading suspect: `ActivityRun.svelte`'s controller teardown
+  handover, which writes `clip.scrollTop = clip.scrollHeight` (an instant
+  snap) when tail-ness ends with the inner glide mid-flight; the comment in
+  the file names the case. Mid-glide APPEND bursts are proven clean
+  (`activityRunBurstMotion.browser.test.ts`), so the suspect space is the
+  teardown only. Probe: `scripts/perfprobe/jumpwatch.mjs` samples pane
+  scrollers and run clips per frame and flags scrollTop steps beside clip
+  teardown frames; a first capture saw 44 teardowns all with zero bottom
+  gap, so the mid-flight case needs a longer watch synced to turn ends.
+  Next: red browser test for the mid-flight handover, then a fix that lets
+  the glide finish or transfers the remaining distance (never a snap).
