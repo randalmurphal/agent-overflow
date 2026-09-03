@@ -229,7 +229,17 @@ install:
 	cd frontend && pnpm install --frozen-lockfile
 	cd frontend && pnpm exec playwright install chromium
 
-dev:
+# The frontend build follows the lockfile. pnpm records the lockfile it
+# installed at node_modules/.pnpm/lock.yaml; when the checked-in lockfile is
+# newer (a merge, a branch switch), every target that runs the frontend
+# reinstalls first, and a current install costs one stat. `make install`
+# stays the first-time setup because it also fetches the Go tools and the
+# Playwright Chromium.
+FRONTEND_DEPS := frontend/node_modules/.pnpm/lock.yaml
+$(FRONTEND_DEPS): frontend/pnpm-lock.yaml
+	cd frontend && pnpm install --frozen-lockfile
+
+dev: $(FRONTEND_DEPS)
 	go build -o bin/agent-overflow-dev ./cmd/agent-overflow-dev
 	AGENT_OVERFLOW_DEBUG=$(AGENT_OVERFLOW_DEBUG) AGENT_OVERFLOW_PPROF=$(AGENT_OVERFLOW_PPROF) VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) bin/agent-overflow-dev
 
@@ -419,17 +429,17 @@ soak-contract:
 # without running. Use this when you want to hand the .exe off (e.g.
 # copy to the Windows desktop, double-click later) instead of launching
 # in place.
-build-wsl:
+build-wsl: $(FRONTEND_DEPS)
 	@case "$(WSL_BUILD_MODE)" in build|build:dev) ;; *) echo "ERROR: WSL_BUILD_MODE must be 'build' or 'build:dev', got '$(WSL_BUILD_MODE)'" >&2; exit 1;; esac
 	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) pnpm run $(WSL_BUILD_MODE)
 	@if [ -n "$(WSL_FORCE_RELINK)" ]; then rm -f bin/agent-overflow.exe bin/agent-overflow-linux; fi
 	WSL_LAUNCHER_MODE="$$(case "$(WSL_BUILD_MODE)" in build:dev) echo dev ;; *) echo prod ;; esac)" VERSION="$(WSL_VERSION)" wails3 task windows:build:wsl
 
 ifeq ($(shell uname -s),Darwin)
-build:
+build: $(FRONTEND_DEPS)
 	VERSION="$(VERSION)" wails3 task darwin:package
 else
-build:
+build: $(FRONTEND_DEPS)
 	VERSION="$(VERSION)" wails3 build
 endif
 
@@ -464,7 +474,7 @@ mockprovider:
 # instance (docs/specs/testing-harness.md §3, cmd/ao-harness/AGENTS.md),
 # and it resolves the backend binary as its own sibling, so building the
 # two together is what makes `bin/ao-harness up` need no configuration.
-harness-build: mockprovider
+harness-build: mockprovider $(FRONTEND_DEPS)
 	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) pnpm run build
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/agent-overflow .
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/ao-harness ./cmd/ao-harness
@@ -538,12 +548,12 @@ e2e-android: harness-build
 # default so an ad-hoc `pnpm test` beside the soak rig or a perf profile
 # reports the numbers instead of failing on borrowed CPU; the gate is
 # where they must always run.
-test:
+test: $(FRONTEND_DEPS)
 	$(MAKE) go-test
 	cd frontend && AO_PERF_CONTRACT=1 pnpm test
 	cd frontend && AO_PERF_CONTRACT=1 pnpm run test:browser
 
-check:
+check: $(FRONTEND_DEPS)
 	$(MAKE) go-build
 	cd frontend && pnpm run check
 
