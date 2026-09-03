@@ -200,7 +200,7 @@ func TestDeleteAttachmentBinding(t *testing.T) {
 		t.Fatalf("UploadAttachment: %v", err)
 	}
 
-	if err := app.DeleteAttachment(record.ID); err != nil {
+	if err := app.DeleteAttachment("thr-a", record.ID); err != nil {
 		t.Fatalf("DeleteAttachment: %v", err)
 	}
 
@@ -210,6 +210,35 @@ func TestDeleteAttachmentBinding(t *testing.T) {
 	}
 	if len(list) != 0 {
 		t.Fatalf("expected empty list, got %+v", list)
+	}
+}
+
+// The bound method is the wire surface, so the ownership check has to
+// hold THERE, not just one layer down: any client holding a token can
+// call it with any id it can guess or has gone stale in a closed
+// composer.
+func TestDeleteAttachmentRefusesAnotherThreadsAttachment(t *testing.T) {
+	app := newAttachmentTestApp(t)
+
+	record, err := app.UploadAttachment("thr-a", "hero.png", "image/png", pngBase64(t))
+	if err != nil {
+		t.Fatalf("UploadAttachment: %v", err)
+	}
+
+	if err := app.DeleteAttachment("thr-b", record.ID); err == nil {
+		t.Fatal("expected a foreign-thread delete to be refused")
+	}
+
+	// Row and bytes both survive the refusal.
+	list, err := app.ListAttachments("thr-a")
+	if err != nil {
+		t.Fatalf("ListAttachments: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("row destroyed by a refused delete: %+v", list)
+	}
+	if _, err := app.GetAttachmentData("thr-a", record.ID); err != nil {
+		t.Fatalf("bytes destroyed by a refused delete: %v", err)
 	}
 }
 
@@ -260,7 +289,7 @@ func TestUploadAttachmentAcceptsFileKindButNeverServesIt(t *testing.T) {
 	}
 
 	// Deleting a file takes its `<id>` directory with it.
-	if err := app.DeleteAttachment(record.ID); err != nil {
+	if err := app.DeleteAttachment("thr-a", record.ID); err != nil {
 		t.Fatalf("DeleteAttachment: %v", err)
 	}
 	if _, err := app.GetAttachmentData("thr-a", record.ID); err == nil {

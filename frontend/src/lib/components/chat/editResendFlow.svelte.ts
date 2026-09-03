@@ -238,7 +238,9 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
   // that thread cleanup removes later.
   function reclaimUploads(current: EditFlow): void {
     if (current.sagaOutcomeUnknown) return;
-    discardAbandonedAttachmentRecords(current.sessionUploadedIds);
+    // The flow's own item names the owning thread — the pane may already
+    // have moved on by the time an abandoned edit is reclaimed.
+    discardAbandonedAttachmentRecords(current.item.threadId, current.sessionUploadedIds);
   }
 
   function open(item: Item): void {

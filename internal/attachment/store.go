@@ -492,19 +492,17 @@ func (s *Store) DeleteThreadDir(threadID string) error {
 // `<id>` directory, which is what that attachment owns on disk. Missing
 // files are treated as success because the thing we were asked to delete is
 // already gone.
-func (s *Store) Delete(attachmentID string) error {
-	record, ok, err := s.meta.GetAttachment(attachmentID)
+//
+// Ownership is resolved the same way the read accessors resolve it, so a
+// stale or foreign id destroys nothing: deleting is at least as privileged
+// as reading, and this package has exactly one answer to "does this
+// attachment belong to this thread".
+func (s *Store) Delete(threadID, attachmentID string) error {
+	record, absolutePath, err := s.resolveThreadAttachment(threadID, attachmentID)
 	if err != nil {
 		return err
-	}
-	if !ok {
-		return fmt.Errorf("attachment: id %q not found", attachmentID)
 	}
 	if err := s.meta.DeleteAttachment(attachmentID); err != nil {
-		return err
-	}
-	absolutePath, err := s.resolveAbsolute(record.RelativePath)
-	if err != nil {
 		return err
 	}
 	// A file's parent directory is `<thread>/<id>` by construction. The

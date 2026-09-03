@@ -503,9 +503,15 @@ export function CreateThreadFromPR(project: string, $number: number, providerNam
 
 /**
  * DeleteAttachment removes both the metadata row and the disk file.
+ * 
+ * The thread id is not decoration: it is the ownership boundary, checked
+ * against the row before anything is removed, so a stale id from a closed
+ * composer or a foreign one from any client cannot delete another thread's
+ * attachment. Every other thread-scoped accessor takes it for the same
+ * reason.
  */
-export function DeleteAttachment(attachmentID: string): $CancellablePromise<void> {
-    return $Call.ByID(2428457759, attachmentID);
+export function DeleteAttachment(threadID: string, attachmentID: string): $CancellablePromise<void> {
+    return $Call.ByID(2428457759, threadID, attachmentID);
 }
 
 export function DeleteDiffReviewComment(threadID: string, commentID: string): $CancellablePromise<void> {

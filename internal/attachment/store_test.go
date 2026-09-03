@@ -373,11 +373,61 @@ func TestDeleteRemovesFileDirectory(t *testing.T) {
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("expected file dir: %v", err)
 	}
-	if err := attStore.Delete(record.ID); err != nil {
+	if err := attStore.Delete("t1", record.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("file dir survived Delete: %v", err)
+	}
+}
+
+// Deleting is at least as privileged as reading: a foreign thread id is
+// refused before anything is removed, so a stale id from a closed composer
+// or a hostile one from any client leaves both the row and the bytes
+// intact. Covers both kinds because a file's delete takes a whole
+// directory, which is the more destructive of the two.
+func TestDeleteRefusesForeignThread(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		filename string
+		mime     string
+		data     string
+	}{
+		{"image", "pic.png", "image/png", pngData(t)},
+		{"file", "report.pdf", "application/pdf", textData(t, "%PDF-1.7")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attStore, meta := newTestStores(t)
+			seedThread(t, meta, "owner")
+			seedThread(t, meta, "intruder")
+
+			record, err := attStore.Upload("owner", tc.filename, tc.mime, tc.data, 0)
+			if err != nil {
+				t.Fatalf("Upload: %v", err)
+			}
+			diskPath := filepath.Join(attStore.root, record.RelativePath)
+
+			err = attStore.Delete("intruder", record.ID)
+			if err == nil {
+				t.Fatal("expected a foreign-thread delete to be refused")
+			}
+			if !strings.Contains(err.Error(), "belongs to thread") {
+				t.Fatalf("expected an ownership error, got %v", err)
+			}
+
+			if _, _, ok, err := attStore.Get(record.ID); err != nil || !ok {
+				t.Fatalf("row destroyed by a refused delete: ok=%v err=%v", ok, err)
+			}
+			if _, err := os.Stat(diskPath); err != nil {
+				t.Fatalf("bytes destroyed by a refused delete: %v", err)
+			}
+
+			// The owner can still delete it, so the refusal is the check
+			// and not a wedge.
+			if err := attStore.Delete("owner", record.ID); err != nil {
+				t.Fatalf("owner Delete: %v", err)
+			}
+		})
 	}
 }
 
@@ -762,7 +812,7 @@ func TestDeleteRemovesDiskAndRow(t *testing.T) {
 		t.Fatalf("Upload: %v", err)
 	}
 
-	if err := attStore.Delete(record.ID); err != nil {
+	if err := attStore.Delete("t1", record.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
@@ -782,7 +832,7 @@ func TestDeleteRemovesDiskAndRow(t *testing.T) {
 func TestDeleteMissingSurfacesError(t *testing.T) {
 	attStore, _ := newTestStores(t)
 
-	err := attStore.Delete("never-was-there")
+	err := attStore.Delete("t1", "never-was-there")
 	if err == nil {
 		t.Fatal("expected error deleting missing attachment")
 	}

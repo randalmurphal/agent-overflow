@@ -49,11 +49,17 @@ func (a *App) ListAttachments(threadID string) ([]store.Attachment, error) {
 }
 
 // DeleteAttachment removes both the metadata row and the disk file.
-func (a *App) DeleteAttachment(attachmentID string) error {
+//
+// The thread id is not decoration: it is the ownership boundary, checked
+// against the row before anything is removed, so a stale id from a closed
+// composer or a foreign one from any client cannot delete another thread's
+// attachment. Every other thread-scoped accessor takes it for the same
+// reason.
+func (a *App) DeleteAttachment(threadID, attachmentID string) error {
 	if a.attachments == nil {
 		return fmt.Errorf("attachment store not initialized")
 	}
-	return a.attachments.Delete(attachmentID)
+	return a.attachments.Delete(threadID, attachmentID)
 }
 
 // GetAttachmentData returns the base64-encoded raw bytes for rendering a

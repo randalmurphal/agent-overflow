@@ -60,7 +60,9 @@ sliding under the 50 MiB file one.
 A file gets its own `<id>` directory so the agent-facing path carries
 the user's real filename and a `cp` out of it keeps that name. That is
 also what `Delete` removes for a file — the whole `<id>` directory, the
-thing that attachment owns. `sanitizeFilename` is a FILTER, not an
+thing that attachment owns, and the reason `Delete` is thread-scoped
+like the read accessors: it is the most destructive id-driven operation
+in the package. `sanitizeFilename` is a FILTER, not an
 allowlist (separators, `:`, control bytes, leading/trailing dots and
 spaces), byte-capped on a rune boundary, falling back to `file`; the
 post-join containment check in `resolveWritePath` is the tripwire behind
@@ -108,6 +110,13 @@ attachment without a permission prompt; nothing may re-derive that path.
   KIND, and every byte-serving path goes through `ReadThreadBytes` /
   `Thumbnail`, which refuse anything that is not an `image` row with
   `ErrNotAnImage`. Add a new byte accessor only through those.
+- Do NOT add an attachment entry point that takes an id without the
+  thread that owns it. `resolveThreadAttachment` is the single ownership
+  check behind `ReadThreadBytes`, `PathForThread`, `CopyToThread`, and
+  `Delete`; an id-only accessor re-opens the hole where a stale composer
+  id or a foreign one from any client reaches another thread's bytes.
+  `Get` is the deliberate exception and is internal plumbing — it is
+  what `resolveThreadAttachment` itself calls.
 - Do NOT point a decoder at a `file`. Refuse on the row first.
 - Do NOT sweep `.tmp` files from unrelated paths; scope any cleanup to
   the attachment root dir.

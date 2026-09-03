@@ -364,7 +364,7 @@ func TestIntegration_DeleteRemovesFileAndRow(t *testing.T) {
 		t.Fatalf("pre-delete stat: %v", err)
 	}
 
-	if err := attStore.Delete(record.ID); err != nil {
+	if err := attStore.Delete("thread-del", record.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if _, err := os.Stat(diskPath); !errors.Is(err, os.ErrNotExist) {
@@ -384,7 +384,7 @@ func TestIntegration_DeleteRemovesFileAndRow(t *testing.T) {
 // silently succeeding. This matches the existing store_test behaviour.
 func TestIntegration_DeleteMissingIsIdempotent(t *testing.T) {
 	attStore, _, _ := integrationStores(t)
-	err := attStore.Delete("ghost-id")
+	err := attStore.Delete("thread-x", "ghost-id")
 	if err == nil {
 		t.Fatal("contract expects clear error for missing delete; got nil")
 	}

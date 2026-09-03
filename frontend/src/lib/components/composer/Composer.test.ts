@@ -1987,7 +1987,7 @@ describe('<Composer>', () => {
 
     expect(draft.content).toBe('before after');
     expect(draft.attachments).toHaveLength(0);
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('att-1'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('thread-1', 'att-1'));
   });
 
   it('delete before or inside an image placeholder removes the whole placeholder and attachment', async () => {
@@ -2005,7 +2005,7 @@ describe('<Composer>', () => {
 
     expect(draft.content).toBe('before after');
     expect(draft.attachments).toHaveLength(0);
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('att-1'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('thread-1', 'att-1'));
   });
 
   it('removing an attachment with the thumbnail X removes its placeholder and renumbers later images', async () => {
@@ -2026,7 +2026,7 @@ describe('<Composer>', () => {
 
     expect(draft.content).toBe('[Image #1] [Image #2]');
     expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-1', 'att-3']);
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('att-2'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('thread-1', 'att-2'));
   });
 
   it('shows the interrupt affordance while a turn is active and interrupts on click', async () => {
