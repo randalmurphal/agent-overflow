@@ -16,6 +16,8 @@
 // first-run screen and not an error: the answer to "where is my backend"
 // is the QR code on the owner's own desktop.
 
+import { applyNotificationActivated } from '../stores/eventsNotification';
+import { parseNotificationTarget } from '../stores/notificationActivationQueue';
 import { setBackendSource, syncAttachedBackends } from '../transport/backends';
 import { onBeforeBackendDetach } from '../transport/detachSteps';
 import type { PairingPayload } from '../transport/deviceSession';
@@ -138,10 +140,6 @@ export async function installNativeShell(
  * and inert, not absent).
  */
 async function routeNotificationTap(value: unknown): Promise<void> {
-  const [{ applyNotificationActivated }, { parseNotificationTarget }] = await Promise.all([
-    import('../stores/eventsNotification'),
-    import('../stores/notificationActivationQueue'),
-  ]);
   const target = parseNotificationTarget(value);
   if (target === null) {
     console.warn('push: a tap named a route this build could not read', value);
