@@ -17,6 +17,7 @@ import {
   resetForTest as resetThreadStatuses,
 } from './threadStatuses.svelte';
 import { makeCommandContext, registerBuiltinCommands } from './builtinCommands.svelte';
+import { pairViewOnly, resetToLocalPage } from '../../test/helpers/scopes';
 import {
   clearCommandRegistry,
   getCommand,
@@ -41,7 +42,7 @@ import {
   openThreadPicker,
 } from './threadPicker.svelte';
 import { closeAccountSwitcher, isAccountSwitcherOpen } from './accountSwitcher.svelte';
-import { setViewOnlySessionFromBootstrap } from '../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../transport/scopes';
 import {
   notifyTerminalFocus,
   resetTerminalFocusForTest,
@@ -1007,19 +1008,19 @@ describe('thread.search command', () => {
 // mod+shift+u toggles the account-switcher picker. Unlike thread.search there
 // is no `.close` twin — Modal's own Escape closes it — so the single command
 // has to toggle. Its `when` is the view-only gate: every provider-account RPC
-// is LocalOnly on the transport, so the command must be DISABLED in a
+// needs `access:admin`, so the command must be DISABLED in a
 // view-only session rather than opening a picker that can't act.
 
 describe('provider.switchAccount command', () => {
   beforeEach(() => {
     clearCommandRegistry();
     closeAccountSwitcher();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   afterEach(() => {
     closeAccountSwitcher();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   it('toggles the picker open and closed on repeated runs', () => {
@@ -1039,13 +1040,15 @@ describe('provider.switchAccount command', () => {
     expect(getCommand('provider.switchAccount')?.editableReachable).toBe(true);
   });
 
-  it('is disabled — and refuses to run — in a view-only session', () => {
+  it('is disabled — and refuses to run — without the access:admin grant', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);
-    setViewOnlySessionFromBootstrap(true);
+    // A page served over the network holds no grant of its own, so the
+    // provider-account surface is out of reach.
+    setPageGrantsFromBootstrap(true);
     const ctx = makeCommandContext(pane, {}) as CommandContext;
 
-    expect(ctx.flags.viewOnlySession).toBe(true);
+    expect(ctx.flags.accessAdmin).toBe(false);
     expect(isCommandEnabled('provider.switchAccount', ctx)).toBe(false);
     expect(runCommand('provider.switchAccount', ctx)).toBe(false);
     expect(isAccountSwitcherOpen()).toBe(false);
@@ -1890,5 +1893,53 @@ describe('settings commands', () => {
     runCommand('settings.open', makeCommandContext(null, {}) as CommandContext);
     expect(isSettingsOpen()).toBe(true);
     expect(isWorkflowsOverlayOpen()).toBe(false);
+  });
+});
+
+// Capability gating: a command whose RPCs ride an execute-tier scope is
+// DISABLED without the grant — absent from the palette, chord falling
+// through — rather than running and reporting a refusal.
+describe('capability-gated commands', () => {
+  afterEach(() => {
+    resetToLocalPage();
+  });
+
+  it('enables the create/git/terminal commands on the local page', () => {
+    const pane = readyPane();
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(isCommandEnabled('thread.new', ctx)).toBe(true);
+    expect(isCommandEnabled('thread.delete', ctx)).toBe(true);
+    expect(isCommandEnabled('git.push', ctx)).toBe(true);
+    expect(isCommandEnabled('terminal.new', ctx)).toBe(true);
+  });
+
+  it('disables them for a view-only session', async () => {
+    await pairViewOnly();
+    const pane = readyPane();
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(ctx.flags.threadsOperate).toBe(false);
+    expect(ctx.flags.gitOperate).toBe(false);
+    expect(ctx.flags.terminalOperate).toBe(false);
+    expect(isCommandEnabled('thread.new', ctx)).toBe(false);
+    expect(isCommandEnabled('thread.newPane', ctx)).toBe(false);
+    expect(isCommandEnabled('thread.new.fromPR', ctx)).toBe(false);
+    expect(isCommandEnabled('thread.delete', ctx)).toBe(false);
+    expect(isCommandEnabled('thread.fork', ctx)).toBe(false);
+    expect(isCommandEnabled('git.commit', ctx)).toBe(false);
+    expect(isCommandEnabled('git.push', ctx)).toBe(false);
+    expect(isCommandEnabled('git.ship', ctx)).toBe(false);
+    expect(isCommandEnabled('terminal.new', ctx)).toBe(false);
+    expect(isCommandEnabled('terminal.toggle', ctx)).toBe(false);
+  });
+
+  // The xterm escape predicate evaluates `when` against a synthetic context
+  // carrying only terminalFocus, so a capability term on a tab command would
+  // trap the chord in the PTY for everybody. terminal.newPane keeps its
+  // escape arm un-gated for the same reason.
+  it('keeps the terminal-escape commands enabled under the focused-only context', () => {
+    const focusedOnly = { flags: { terminalFocus: true } } as unknown as CommandContext;
+    for (const id of TERMINAL_ESCAPE_COMMAND_IDS) {
+      expect(isCommandEnabled(id, focusedOnly)).toBe(true);
+    }
   });
 });

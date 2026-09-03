@@ -41,7 +41,7 @@ func TestSaveAndGetDraftRoundTrip(t *testing.T) {
 		CreatedAt: 1,
 	}}
 
-	if err := app.SaveDraft("thr-draft", "hello @file", []string{"att-1", "att-2"}, chips, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-draft", "hello @file", []string{"att-1", "att-2"}, chips, nil); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
 
@@ -69,7 +69,7 @@ func TestSaveAndGetDraftRoundTripsSourceProposedPlan(t *testing.T) {
 		PayloadID: "payload-99",
 		Title:     "Implement feature",
 	}
-	if err := app.SaveDraft("thr-draft", "PLEASE IMPLEMENT THIS PLAN:\n# Plan", nil, nil, src); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-draft", "PLEASE IMPLEMENT THIS PLAN:\n# Plan", nil, nil, src); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
 
@@ -86,7 +86,7 @@ func TestSaveAndGetDraftRoundTripsSourceProposedPlan(t *testing.T) {
 
 	// Resaving with nil clears the column — the partial index in v31
 	// stays selective only if empty refs round-trip as SQL NULL.
-	if err := app.SaveDraft("thr-draft", "still here", nil, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-draft", "still here", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft (clear): %v", err)
 	}
 	got2, err := app.GetDraft("thr-draft")
@@ -119,10 +119,10 @@ func TestGetDraftMissingReturnsEmpty(t *testing.T) {
 func TestSaveDraftOverwrites(t *testing.T) {
 	app := newDraftTestApp(t)
 
-	if err := app.SaveDraft("thr-draft", "v1", nil, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-draft", "v1", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft v1: %v", err)
 	}
-	if err := app.SaveDraft("thr-draft", "v2", []string{"att-9"}, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-draft", "v2", []string{"att-9"}, nil, nil); err != nil {
 		t.Fatalf("SaveDraft v2: %v", err)
 	}
 
@@ -141,13 +141,13 @@ func TestSaveDraftOverwrites(t *testing.T) {
 func TestClearDraftRemovesRow(t *testing.T) {
 	app := newDraftTestApp(t)
 
-	if err := app.SaveDraft("thr-draft", "to clear", nil, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-draft", "to clear", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
-	if err := app.ClearDraft("thr-draft"); err != nil {
+	if err := app.ClearDraft(t.Context(), "thr-draft"); err != nil {
 		t.Fatalf("ClearDraft: %v", err)
 	}
-	if err := app.ClearDraft("thr-draft"); err != nil {
+	if err := app.ClearDraft(t.Context(), "thr-draft"); err != nil {
 		t.Fatalf("ClearDraft idempotent: %v", err)
 	}
 
@@ -162,7 +162,7 @@ func TestClearDraftRemovesRow(t *testing.T) {
 
 func TestSaveDraftRequiresInitialisedStore(t *testing.T) {
 	app := &App{}
-	err := app.SaveDraft("thr", "", nil, nil, nil)
+	err := app.SaveDraft(t.Context(), "thr", "", nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "not initialized") {
 		t.Fatalf("expected init error, got %v", err)
 	}
@@ -173,7 +173,7 @@ func TestGetDraftHandlesBadStoredJSON(t *testing.T) {
 
 	// Directly poison the row with invalid JSON; the binding should surface
 	// a clear error rather than panicking.
-	err := app.store.UpsertThreadDraft(store.ThreadDraft{
+	_, err := app.store.UpsertThreadDraft(store.ThreadDraft{
 		ThreadID:      "thr-draft",
 		Content:       "bad",
 		Attachments:   "not-json",

@@ -48,7 +48,7 @@ test('built-in browser MCP reaches both provider launch boundaries and composer 
   );
   expect(rows).toContainEqual(expect.objectContaining({ name: browserServer, disabled: false }));
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Claude browser').click();
   const trigger = page.getByTestId('composer-mcp-trigger');
   await trigger.click();
@@ -92,7 +92,7 @@ test('agent browser page stays headless until explicitly presented as an interac
   });
   const threadId = seed.projects[0].threadIds[0];
   await harness.rpc('StartSession', threadId);
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Browser companion').click();
   const htmlPath = await harness.rpc<string>(
     'WriteWorkspaceFile',
@@ -150,7 +150,7 @@ test('browser settings toggle and clear through the real SPA and backend', async
   harness,
   page,
 }) => {
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByTestId('sidebar-settings-button').click();
   await page.getByRole('tab', { name: 'Browser' }).click();
 

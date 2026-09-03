@@ -380,7 +380,7 @@ export interface Item {
 }
 
 export function listItems(harness: HarnessApp, threadId: string): Promise<Item[]> {
-  return harness.rpc<Item[]>('ListItems', threadId);
+  return harness.rpc<Item[]>('ListItems', threadId, true);
 }
 
 export function itemMeta(item: Item | undefined): Record<string, unknown> {

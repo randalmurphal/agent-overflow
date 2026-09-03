@@ -40,6 +40,13 @@ const (
 	// on `rate_limit` / `authentication_failed` / ... and render the
 	// matching actionable copy.
 	itemKindAPIError = "api_error"
+	// ItemKindError is the generic provider / dispatch failure row. It is
+	// the one kind the sidebar's Failed pill matches, which is why an
+	// emitted row of this kind also fires thread:error_notice
+	// (Router.emitErrorNotice) — api_error deliberately does not. Exported
+	// because internal/app persists three failure rows of this kind (send,
+	// steer, flush dispatch) and the notice keys on the exact string.
+	ItemKindError = "error"
 
 	payloadKindToolCallResult = "tool_call_result"
 	payloadKindCommandOutput  = "command_output"
@@ -1000,6 +1007,10 @@ func (r *Router) stashBackgroundTaskTerminal(evt provider.ProviderEvent, meta ba
 		State:     "exited",
 		UpdatedAt: now,
 	})
+	// The state event above is gated on `threads:read` and carries the
+	// local command, so a client whose grants stop short of it learns this
+	// transition only here. Same nudge, same refetch, no command data.
+	r.emitBackgroundTasksChangedNudge(evt.ThreadID)
 	return nil
 }
 
@@ -1360,6 +1371,12 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 			UpdatedAt: now,
 		})
 	}
+	// Unconditional, unlike the drained event above: the completion sibling
+	// is what drops this launch out of CountLiveRunningBackgroundToolCalls,
+	// so the workspace-change lock's answer just changed whether or not a
+	// stash was drained on the way. That lock gates irreversible actions and
+	// reads only wildcard channels, so this is the frame it waits on.
+	r.emitBackgroundTasksChangedNudge(evt.ThreadID)
 	return nil
 }
 
@@ -1763,10 +1780,6 @@ func (r *Router) turnIndexForScope(threadID, scope string) (int, error) {
 
 func (r *Router) emitItemUpsert(item store.Item) {
 	r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(item))
-}
-
-func (r *Router) emitItemUpsertWithActivity(item store.Item, countsAsActivity bool) {
-	r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsertWithActivity(item, &countsAsActivity))
 }
 
 func isToolStartMetaUpdateOnly(raw json.RawMessage) bool {

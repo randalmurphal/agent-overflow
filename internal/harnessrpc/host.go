@@ -66,4 +66,9 @@ type Host interface {
 	SyncWorkflowEngine() error
 	PublishStoreIdentity(store.Identity)
 	SendMessage(threadID, message string) error
+	// PushSent answers what the harness push recorder has been handed, and
+	// ForgetPushSent drops it. Both answer harmlessly on a boot with no
+	// recorder, which is every shipping one.
+	PushSent() []PushMessage
+	ForgetPushSent()
 }

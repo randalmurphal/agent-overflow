@@ -25,7 +25,7 @@ func ensureDefaultTestProject(t *testing.T, a *App) {
 		return
 	}
 	now := time.Now().UnixMilli()
-	if err := a.store.CreateProject(store.Project{
+	if _, err := a.store.CreateProject(store.Project{
 		ID:        defaultTestProjectID,
 		Path:      "/tmp/workspace",
 		Name:      "Default Test Project",
@@ -64,7 +64,7 @@ func createTestThread(t *testing.T, a *App, providerName, workspacePath, model, 
 	if err != nil {
 		return store.Thread{}, err
 	}
-	return a.CreateThread(CreateThreadOptions{
+	return a.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: project.ID,
 		Provider:  providerName,
 		Model:     model,

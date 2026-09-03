@@ -1914,7 +1914,7 @@ describe('reviewPane store — edits scope', () => {
 
     // Nothing verified → no arrows, ever: an unservable expansion
     // affordance must never render (drifted pre-snapshot history,
-    // remote clients whose LocalOnly RPC rejects).
+    // remote clients whose ungranted RPC rejects).
     expect(state.files[0].suppressGaps).toBe(true);
     expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(false);
     // The batch carried the edit selection and per-file verify patch.

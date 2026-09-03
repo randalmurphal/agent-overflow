@@ -81,7 +81,7 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 		if !allTerminal {
 			continue
 		}
-		r.emitCodexBackgroundTasksChanged(threadID)
+		r.emitBackgroundTasksChangedNudge(threadID)
 		evt := provider.ProviderEvent{
 			ThreadID:  threadID,
 			ItemID:    launch.item.ID,

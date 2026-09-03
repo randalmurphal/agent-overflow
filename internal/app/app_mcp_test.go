@@ -1444,9 +1444,10 @@ func TestPollClaudeMCPAfterOAuth_ShutdownGuardSuppressesTerminal(t *testing.T) {
 // carrying embedded newlines, is bounded + flattened before it
 // reaches the wire payload. A regression that removed
 // sanitizeMCPError would expose unfiltered child-process output
-// (potentially leaking env / credentials in a CLI panic) to
-// LAN-attached subscribers since mcp:oauth-completed is not in the
-// loopback-only channel list.
+// (potentially leaking env / credentials in a CLI panic) to every
+// attached client, because mcp:oauth-completed is AudienceAny and
+// gated only on settings:write — the grant an MCP panel already
+// holds (internal/transport/event_channels.go).
 func TestPollClaudeMCPAfterOAuth_ErrorIsSanitized(t *testing.T) {
 	app := newTestAppWithStore(t)
 	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")

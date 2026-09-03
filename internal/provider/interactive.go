@@ -66,6 +66,22 @@ type ApprovalEvent struct {
 	// using the same clock the backend wrote to threads.updated_at via
 	// MarkThreadActivity, instead of drifting on Date.now().
 	RequestedAt int64 `json:"requestedAt,omitempty"`
+	// ConnectionID names the page load whose RespondToApproval produced
+	// this event, and is set only for action="fail". A failure is the one
+	// thing on this channel that is not a fact about the thread: it is
+	// what happened to ONE client's attempt to answer, and every other
+	// client shows the prompt as still open. So the banner is theirs
+	// alone, and this is what lets a receiver tell. Empty means no screen was behind
+	// it (a saga, a test) or a backend too old to stamp it. A receiver
+	// SHOWS an unstamped failure (frontend/src/lib/stores/eventsProvider.ts,
+	// failureIsOurs), because swallowing it would leave the failure with no
+	// surface at all; stamping is the only way to keep one client's
+	// failure off the other screens.
+	//
+	// The CONNECTION and never the device: two tabs of one browser answer
+	// independently, and suppressing on the device id would put the losing
+	// tab's error on the other one.
+	ConnectionID string `json:"connectionId,omitempty"`
 }
 
 // UserInputRequest is sent when a provider needs structured user input.
@@ -103,6 +119,10 @@ type UserInputEvent struct {
 	// timestamp for action="request" so the frontend's cached activity
 	// matches the persisted threads.updated_at written by triage.
 	RequestedAt int64 `json:"requestedAt,omitempty"`
+	// ConnectionID mirrors ApprovalEvent.ConnectionID, for the same
+	// reason and with the same rules: set only for action="fail", naming
+	// the page load whose submit failed.
+	ConnectionID string `json:"connectionId,omitempty"`
 }
 
 // PendingInteractiveRequests is the app-runtime snapshot of still-open

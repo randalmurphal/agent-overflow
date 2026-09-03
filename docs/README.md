@@ -39,6 +39,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`root-decomposition.md`](architecture/root-decomposition.md) | Field-ownership and seam map of the `*App` root receiver, plus the wire-compat facts that make a split byte-identical on the wire. |
 | [`observability.md`](architecture/observability.md) | OpenTelemetry + per-thread NDJSON event log. |
 | [`transport.md`](architecture/transport.md) | Wire mechanism deep-dives: port pinning, the gap marker, scoped-token routes, coalescing, keepalive. |
+| [`serve-mode.md`](architecture/serve-mode.md) | Operating `agent-overflow serve`: the windowless boot, first-device enrollment from the console, credential storage, bind and port configuration, and installing it as a service. |
 
 ### Providers and sessions
 

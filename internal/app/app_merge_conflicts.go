@@ -23,6 +23,7 @@ type PRMergeConflictsResult struct {
 	Messages []string `json:"messages"`
 }
 
+//ao:scope git:operate
 func (a *App) GetPRMergeConflicts(ws WorkspaceRef, pr gitops.PRReference, baseRef, headRefName string) (PRMergeConflictsResult, error) {
 	if a.shuttingDown.Load() {
 		return PRMergeConflictsResult{}, ErrShuttingDown
@@ -74,6 +75,7 @@ func (a *App) GetPRMergeConflicts(ws WorkspaceRef, pr gitops.PRReference, baseRe
 	}, nil
 }
 
+//ao:scope git:operate
 func (a *App) GetMergeConflictFile(ws WorkspaceRef, treeOID, path string) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown

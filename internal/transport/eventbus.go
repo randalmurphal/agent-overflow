@@ -222,12 +222,21 @@ func (r *ring) replayAfter(lastSeq uint64) (events []Event, hadGap bool) {
 // holds ONE payload copy, not two, across up-to-1024-deep subscriber
 // buffers; Data stays populated because non-wire subscribers (the
 // harness workflow waiter) decode payloads from it.
+//
+// EntityKey is the id of the entity this frame is addressed to — a thread
+// id today — derived ONCE by the emitter (internal/app's emit funnel, which
+// shares the derivation with the replay log) rather than per subscriber. It
+// is the input to per-thread subscription narrowing on EntityFiltered
+// channels (event_entity.go) and is empty on every other frame, including
+// one whose payload the extractor could not attribute. Empty means
+// "deliver": see event_entity.go for why that direction is the safe one.
 type Event struct {
 	Channel   string
 	Seq       uint64
 	Data      json.RawMessage
 	Gap       bool
 	WireBytes []byte
+	EntityKey string
 }
 
 // NewEventBus returns a new bus with the given per-channel capacity.
@@ -267,6 +276,20 @@ func NewEventBus(capacity int) *EventBus {
 // channel. Live fanout runs before unlock so subscribers observe that same
 // order even when several goroutines emit onto one channel concurrently.
 func (b *EventBus) Emit(typedChannel eventchan.Channel, payload any) (Event, error) {
+	return b.EmitEntity(typedChannel, "", payload)
+}
+
+// EmitEntity is Emit for a caller that has already derived the frame's
+// entity key (event_entity.go). Emit is the same call with an empty key,
+// which delivers to every subscriber exactly as it always has.
+//
+// The key is a PARAMETER rather than something this package extracts,
+// because the one caller that needs it also needs it for the NDJSON replay
+// log, and the extraction is a reflect walk with a JSON round-trip fallback
+// — paying it twice per emit to keep the signature shorter would be the
+// wrong trade on the transcript-stream hot path. internal/app's emit funnel
+// is where the single derivation lives.
+func (b *EventBus) EmitEntity(typedChannel eventchan.Channel, entityKey string, payload any) (Event, error) {
 	if b.closed.Load() {
 		return Event{}, nil
 	}
@@ -329,11 +352,14 @@ func (b *EventBus) Emit(typedChannel eventchan.Channel, payload any) (Event, err
 		Seq:       r.seq,
 		Data:      json.RawMessage(wire[dataEnd-len(data) : dataEnd : dataEnd]),
 		WireBytes: wire,
+		EntityKey: entityKey,
 	}
 	// The ring retains WireBytes only: replay splices it verbatim into
 	// its batch frames (or writes it through writeEventFrame's fast
 	// path when a chunk holds one event). Data is dropped to keep ring
-	// entries to the one WireBytes reference.
+	// entries to the one WireBytes reference. EntityKey stays, because
+	// replay applies the same watch filter live delivery does and has
+	// nothing else to read the frame's address from.
 	ringEvt := evt
 	ringEvt.Data = nil
 	r.append(ringEvt)
@@ -420,6 +446,93 @@ func (b *EventBus) ChannelSubscriberCount(channel string) int {
 	return count
 }
 
+// RemoteReceiverCount returns the number of live subscribers that are
+// BOTH off this machine and granted the scope this channel takes. It is
+// the "is anybody out there who could use this" question, and it exists
+// for work a backend should not do at all when the answer is nobody: the
+// dev-server scan (app_preview.go) polls every 3 seconds, and a
+// desktop-only install must never pay for it.
+//
+// Channel SUBSCRIPTION is deliberately not consulted, unlike
+// ChannelSubscriberCount. An SPA subscriber takes every channel by
+// default, so subscription answers "is a client attached", not "does a
+// client want this". The grant does answer it: a session that never
+// asked for the capability cannot receive the frame either way.
+//
+// A subscriber with no origin recorded (the harness waiter and every
+// other non-connection subscriber) is not remote and does not count. Nor
+// is one whose scope filter is absent or inactive: both mean no session
+// named its grants, and this asks about a session that did.
+func (b *EventBus) RemoteReceiverCount(channel string) int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	count := 0
+	for _, subscriber := range b.subList {
+		if subscriber.closed.Load() {
+			continue
+		}
+		loopback := subscriber.loopback.Load()
+		if loopback == nil || *loopback {
+			continue
+		}
+		scopes := subscriber.scopes.Load()
+		if scopes == nil || !scopes.active || !scopes.allows(channel) {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+// LocalScreenPresence answers what the BACKEND MACHINE's own screen is
+// already showing, for the OS-notification gate and for nothing else
+// (presence.go states the doctrine; internal/app notifyOS is the caller).
+//
+// focused is true when any client on this machine has window focus.
+// threadVisible is true when any of them has threadID on screen. An empty
+// threadID asks only the first question, which is what a notification with
+// no thread behind it (a signed-out provider, an update notice, a workflow
+// item) has to ask.
+//
+// ORed over subscribers rather than answered by one, because "this machine's
+// screen" is not one connection: the embedded webview and a `--connect`
+// browser tab beside it are two, and either one being looked at is a person
+// looking. Loopback is what makes a subscriber local — the same flag
+// eventVisibleToOrigin reads, so the two cannot disagree about which
+// connections are this machine's own. A subscriber with no origin recorded
+// (the harness waiter and every other non-connection subscriber) is not a
+// screen and does not count, and neither does a remote one: a phone in
+// another room being focused must not silence the desk.
+func (b *EventBus) LocalScreenPresence(threadID string) (focused, threadVisible bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, subscriber := range b.subList {
+		if subscriber.closed.Load() {
+			continue
+		}
+		loopback := subscriber.loopback.Load()
+		if loopback == nil || !*loopback {
+			continue
+		}
+		presence := subscriber.presence.Load()
+		if presence == nil {
+			continue
+		}
+		if presence.focused {
+			focused = true
+		}
+		if threadID != "" {
+			if _, ok := presence.threads[threadID]; ok {
+				threadVisible = true
+			}
+		}
+		if focused && (threadVisible || threadID == "") {
+			break
+		}
+	}
+	return focused, threadVisible
+}
+
 // Replay returns the events the client missed since lastSeqByChannel.
 // For each channel:
 //   - If lastSeq is older than the oldest event in the ring, a single
@@ -432,10 +545,17 @@ func (b *EventBus) ChannelSubscriberCount(channel string) int {
 //   - If lastSeq equals or exceeds the current head, returns nothing
 //     for that channel.
 //
-// Channels not present in lastSeqByChannel are skipped. Channels in the
-// map that the bus has never seen are silently ignored. Caller must
-// cap the input map size before invoking — see MaxReplayChannels in
-// frame.go for the wire-level cap.
+// Channels not present in lastSeqByChannel are skipped. A channel the
+// bus has NO RING for is answered with a gap marker at seq 0 whenever
+// the cursor is non-zero: rings are created lazily at the first Emit,
+// so "no ring" after a restart means this cursor belongs to the
+// previous process's sequence space and every frame the new one is
+// about to send would be dropped as a duplicate. Seq 0 is below every
+// seq this bus can mint, so the client resets to it and the next live
+// frame passes. A zero cursor asks for nothing and gets nothing.
+//
+// Caller must cap the input map size before invoking — see
+// MaxReplayChannels in frame.go for the wire-level cap.
 func (b *EventBus) Replay(lastSeqByChannel map[string]uint64) []Event {
 	if len(lastSeqByChannel) == 0 {
 		return nil
@@ -447,6 +567,19 @@ func (b *EventBus) Replay(lastSeqByChannel map[string]uint64) []Event {
 	for channel, lastSeq := range lastSeqByChannel {
 		r, ok := b.rings[channel]
 		if !ok {
+			// No ring: nothing has been emitted on this channel in THIS
+			// process. A non-zero cursor therefore names a sequence space
+			// that is not ours, which is exactly the condition
+			// replayAfter's above-head branch exists for and cannot reach
+			// here because there is no ring to ask. Answer the marker
+			// itself, at seq 0, so the client's cursor drops below every
+			// seq this bus can mint (Emit pre-increments, so the first
+			// frame is 1). Without it the client silently discards every
+			// live frame on this channel until the new sequence overtakes
+			// the stale cursor.
+			if lastSeq > 0 {
+				out = append(out, replayGapMarker(channel, 0))
+			}
 			continue
 		}
 		evts, hadGap := r.replayAfter(lastSeq)
@@ -462,24 +595,32 @@ func (b *EventBus) Replay(lastSeqByChannel map[string]uint64) []Event {
 			evts, hadGap = r.replayAfter(r.seq - 1)
 		}
 		if hadGap {
-			gap := Event{
-				Channel: channel,
-				Seq:     r.seq,
-				Gap:     true,
-				Data:    json.RawMessage(`null`),
-			}
-			// Pre-encode the gap marker so the conn pump can write
-			// it without falling back to marshal — the live-pump path
-			// is the hot path but we keep replay symmetric.
-			if wire, err := encodeEventFrame(gap); err == nil {
-				gap.WireBytes = wire
-			}
-			out = append(out, gap)
+			out = append(out, replayGapMarker(channel, r.seq))
 			continue
 		}
 		out = append(out, evts...)
 	}
 	return out
+}
+
+// replayGapMarker builds the {gap:true} frame Replay answers a
+// re-fetch-needed cursor with. One constructor for both callers, so the
+// ring-absent marker and the out-of-ring one cannot differ in shape.
+//
+// Pre-encoded here so the conn pump can write it without falling back to
+// marshal: the live-pump path is the hot path, but replay stays
+// symmetric with it.
+func replayGapMarker(channel string, seq uint64) Event {
+	gap := Event{
+		Channel: channel,
+		Seq:     seq,
+		Gap:     true,
+		Data:    json.RawMessage(`null`),
+	}
+	if wire, err := encodeEventFrame(gap); err == nil {
+		gap.WireBytes = wire
+	}
+	return gap
 }
 
 // Close stops accepting new emissions and signals every subscriber.
@@ -519,6 +660,28 @@ type Subscriber struct {
 	// visible events and gap-driven re-fetches. nil means unfiltered
 	// (non-conn subscribers like the harness workflow waiter).
 	loopback atomic.Pointer[bool]
+	// scopes, when set, applies the per-GRANT channel filter at the same
+	// point and for the same reason (event_visibility.go): a
+	// session-carrying connection must not spend buffer slots on channels
+	// its grants never open. nil means unfiltered, which is what every
+	// non-conn subscriber and every connection naming no session gets.
+	scopes atomic.Pointer[eventScopeFilter]
+	// watched, when set, narrows EntityFiltered channels to the entities
+	// this connection named in a `watch` frame (event_entity.go). nil
+	// means wildcard, which is what every subscriber gets until the first
+	// such frame arrives and what every non-SPA client keeps forever.
+	watched atomic.Pointer[subscriberWatchFilter]
+	// background is this connection's lease (lease.go): true while the
+	// client says its whole app is paused. A plain bool rather than the
+	// pointer shape beside it, because "never leased" and "leased active"
+	// want the same behavior — the frame states a lifecycle, not a filter
+	// that latches out of wildcard.
+	background atomic.Bool
+	// presence is what this connection's screen is already showing
+	// (presence.go): nil until the first `presence` frame, which reads as
+	// "not attended". Never consulted by deliver — it changes what the OS
+	// notification gate RAISES, never what this subscriber is sent.
+	presence atomic.Pointer[subscriberPresence]
 	// gapped records the channels this subscriber has dropped events on
 	// since it last learned about the loss. Written only inside deliver,
 	// which runs under the bus mutex (Emit's fanout is its sole call
@@ -549,6 +712,50 @@ func (s *Subscriber) SetChannels(channels []string) {
 	s.channels.Store(&filter)
 }
 
+// SetWatchedThreads narrows this subscriber's EntityFiltered channels to
+// the given entity ids. The set is ABSOLUTE — it replaces whatever was
+// there — and an EMPTY slice is a legal, meaningful value meaning "watching
+// nothing", which is what a client with no panes open has.
+//
+// Like SetChannels this is a ONE-WAY LATCH out of wildcard: once a
+// subscriber has a set, every later call replaces it, and there is no call
+// that restores the nil. A client that wants wildcard again reconnects.
+// Deliberate — "" as a wildcard sentinel inside the set, or a nil slice
+// meaning "unset" while an empty one means "none", are both shapes where a
+// client bug reads as a silent full-stream subscription.
+func (s *Subscriber) SetWatchedThreads(entityIDs []string) {
+	filter := make(subscriberWatchFilter, len(entityIDs))
+	for _, id := range entityIDs {
+		filter[id] = struct{}{}
+	}
+	s.watched.Store(&filter)
+}
+
+// SetBackground records this subscriber's lease state (lease.go). Unlike
+// SetChannels and SetWatchedThreads this is NOT a latch: a client that
+// backgrounds and resumes says so both times, and `active` restores exactly
+// the delivery it had. Read on the fanout path, so it is stored as an
+// atomic and never read under a lock.
+func (s *Subscriber) SetBackground(background bool) {
+	s.background.Store(background)
+}
+
+// SetPresence records what this connection's screen is showing (presence.go).
+// Like SetBackground and unlike SetChannels / SetWatchedThreads this is NOT a
+// latch: each call replaces both halves at once, because they describe one
+// instant and a focus bit paired with a stale thread set is a fact that was
+// never true.
+func (s *Subscriber) SetPresence(focused bool, threadIDs []string) {
+	next := &subscriberPresence{focused: focused}
+	if len(threadIDs) > 0 {
+		next.threads = make(map[string]struct{}, len(threadIDs))
+		for _, id := range threadIDs {
+			next.threads[id] = struct{}{}
+		}
+	}
+	s.presence.Store(next)
+}
+
 // SetOriginLoopback arms enqueue-time origin-visibility filtering for a
 // connection-owned subscriber. Call it before any event matters (the
 // conn handler sets it between Subscribe and starting the pump); the
@@ -558,12 +765,42 @@ func (s *Subscriber) SetOriginLoopback(isLoopback bool) {
 	s.loopback.Store(&isLoopback)
 }
 
+// SetScopeFilter arms the grant half of the same enqueue-time filtering.
+// Same timing contract as SetOriginLoopback: set it before any event
+// matters, and the pump's own check stays the correctness gate.
+func (s *Subscriber) SetScopeFilter(filter eventScopeFilter) {
+	s.scopes.Store(&filter)
+}
+
 func (s *Subscriber) accepts(channel string) bool {
 	filter := s.channels.Load()
 	if filter == nil {
 		return true
 	}
 	_, ok := (*filter)[channel]
+	return ok
+}
+
+// watches reports whether this subscriber's watch set admits a frame on
+// channel addressed to entityKey. True for every subscriber that never sent
+// a watch frame, every channel the registry does not mark EntityFiltered,
+// and every frame with no entity key (event_entity.go argues that last one).
+//
+// The check order is the hot path's: the empty-key test is free and answers
+// almost every frame in the process today, the atomic load is next, and the
+// registry probe runs only once a filter is actually armed.
+func (s *Subscriber) watches(channel, entityKey string) bool {
+	if entityKey == "" {
+		return true
+	}
+	filter := s.watched.Load()
+	if filter == nil {
+		return true
+	}
+	if !channelEntityFiltered(channel) {
+		return true
+	}
+	_, ok := (*filter)[entityKey]
 	return ok
 }
 
@@ -589,6 +826,27 @@ func (s *Subscriber) deliver(e Event) {
 		return
 	}
 	if lb := s.loopback.Load(); lb != nil && !eventVisibleToOrigin(e.Channel, *lb) {
+		return
+	}
+	if scopes := s.scopes.Load(); scopes != nil && !scopes.allows(e.Channel) {
+		return
+	}
+	// Ahead of every gap concern, exactly like the three filters above it:
+	// a frame this connection was never addressed by is not a frame it
+	// lost, so it must not mark the channel gapped and must not trigger the
+	// announce protocol. The client's own forward-skip detection is
+	// exempted for these channels for the same reason
+	// (frontend/src/lib/transport/entityFilteredChannels.ts).
+	if !s.watches(e.Channel, e.EntityKey) {
+		return
+	}
+	// The last of the withholding filters, and ahead of gap accounting for
+	// the same reason all of them are: a cache warmer this paused client
+	// was not sent is not a frame it lost, so it must not flag the channel
+	// (lease.go). The atomic is read FIRST because it is false on every
+	// connection that never leased background, which short-circuits the
+	// map probe away on the fanout hot path.
+	if s.background.Load() && backgroundWithheldChannel(e.Channel) {
 		return
 	}
 	if len(s.gapped) > 0 {

@@ -14,6 +14,17 @@
    * path: fetch a small payload prefix, parse it, and match by path.
    * Files without a matching parsed entry render a header-only
    * placeholder so the row still appears with its metadata.
+   *
+   * A third case sits between them: a file whose preview the WIRE
+   * PROJECTION removed (`previewElided`, internal/itemwire). Its stored
+   * patch is intact and its chrome arrived whole, so it renders exactly
+   * like any other collapsed file; expanding it recovers the patch
+   * through GetThreadItemProjectionSource. That fetch is per ITEM, not
+   * per file, so one expand recovers every elided file in the row — and
+   * its spans, which keeps the highlight path identical to the
+   * non-elided one. It is deliberately NOT the legacy path: the legacy
+   * path fetches a payload prefix on MOUNT, which would spend on arrival
+   * exactly what the projection saved.
   */
   import { untrack } from 'svelte';
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
@@ -31,7 +42,13 @@
     inlineDiffPreviewFiles,
   } from '../../utils/inlineThreshold';
   import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
+  import {
+    readItemProjectionSource,
+    requestItemProjectionSource,
+    retryItemProjectionSource,
+  } from '../../utils/itemProjectionSource.svelte';
   import { ingestPersistedPatchSpans } from '../../utils/persistedSpans';
+  import { parseJsonObject } from '../../utils/parseJsonObject';
   import { uniqueEachKeys } from '../../utils/uniqueEachKeys';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -61,6 +78,49 @@
   $effect(() => {
     ingestPersistedPatchSpans(item.threadId, item.payloadPreviewSpans);
   });
+
+  // What the recovery route has returned for this row, if a reader
+  // expanded an elided file. Read-only composition: the row keeps its
+  // marker for its whole life and this supplies the value behind it —
+  // nothing merges the two, so no cached or replicated row can ever
+  // claim to be complete when it is not (utils/itemProjectionSource).
+  let recovered = $derived(readItemProjectionSource(item.threadId, item.id, item.updatedAt));
+
+  // Recovered spans warm the same cache the persisted blob does, so a
+  // recovered file highlights through the identical path instead of
+  // falling back to a per-file highlight RPC.
+  $effect(() => {
+    const spans = recovered.source?.payloadPreviewSpans;
+    if (spans) ingestPersistedPatchSpans(item.threadId, spans);
+  });
+
+  // Stored preview patches, positionally aligned with `meta.inlineDiff.
+  // files`: the projection deletes the `previewPatch` field in place and
+  // never reorders or removes an entry, and inlineDiffPreviewFiles is a
+  // prefix slice, so index i here is index i there. Positional rather
+  // than path-keyed because paths are not unique across the row (see
+  // renderableFileKeys below); the path is still compared before use, so
+  // a shape that ever stopped lining up renders no patch instead of
+  // another file's.
+  let recoveredPatches = $derived.by(() => {
+    const meta = recovered.source?.payloadMeta;
+    if (!meta) return [] as ToolInlineDiffFile[];
+    const parsed = parseJsonObject(meta) as ToolResultMeta | null;
+    return parsed?.inlineDiff?.files ?? [];
+  });
+
+  // One handle per row, stable across renders so the blocks' expand
+  // effects do not re-fire on every repaint. Getters keep it live.
+  const elidedPreview = {
+    get loading() {
+      return recovered.loading;
+    },
+    get error() {
+      return recovered.error;
+    },
+    request: () => requestItemProjectionSource(item.threadId, item.id, item.updatedAt),
+    retry: () => retryItemProjectionSource(item.threadId, item.id, item.updatedAt),
+  };
 
   // Always created: useLeasedPayloadExpansion returns this fallback both
   // for pane-less mounts AND for paned rows whose files all carry preview
@@ -112,14 +172,21 @@
   let renderableFiles = $derived.by(() => {
     const files = previewFiles();
     const lastParsedFilePath = parsedFiles.at(-1)?.path ?? null;
-    return files.map((metaFile) => {
-      const parsedFile = previewFileFromMeta(metaFile) ?? parsedByPath.get(metaFile.path);
+    return files.map((metaFile, index) => {
+      const patch = metaFile.previewPatch ?? recoveredPatch(metaFile, index);
+      const parsedFile = patch
+        ? parsePatchFilesCached(patch)[0]
+        : parsedByPath.get(metaFile.path);
       return {
         path: metaFile.path,
         file: applyMetaToPatchFile(parsedFile, metaFile),
         hasMoreDiffContent:
           metaFile.previewTruncated === true ||
           (payloadPreviewIncomplete && (parsedFile === undefined || metaFile.path === lastParsedFilePath)),
+        // Present only while the file's patch is still behind the
+        // marker: once recovered it renders like any other file, and
+        // the affordance goes with it.
+        elidedPreview: metaFile.previewElided === true && !patch ? elidedPreview : undefined,
       };
     });
   });
@@ -136,7 +203,12 @@
   let legacyFilesNeedMorePayload = $derived.by(() => {
     if (!expansion.hasMore) return false;
     const files = previewFiles();
-    return files.some((metaFile) => !metaFile.previewPatch && !parsedByPath.get(metaFile.path));
+    return files.some(
+      (metaFile) =>
+        !metaFile.previewPatch &&
+        !metaFile.previewElided &&
+        !parsedByPath.get(metaFile.path),
+    );
   });
 
   let totalFiles = $derived(meta.inlineDiff?.totalFiles ?? meta.inlineDiff?.files.length ?? 0);
@@ -158,14 +230,20 @@
     });
   });
 
-  function previewFileFromMeta(metaFile: ToolInlineDiffFile): PatchFile | undefined {
-    if (!metaFile.previewPatch) return undefined;
-    return parsePatchFilesCached(metaFile.previewPatch)[0];
+  function recoveredPatch(metaFile: ToolInlineDiffFile, index: number): string | undefined {
+    const stored = recoveredPatches[index];
+    if (!stored || stored.path !== metaFile.path) return undefined;
+    return stored.previewPatch;
   }
 
+  // Elided files are NOT legacy. The legacy path fetches a payload
+  // prefix on mount for a row that never carried per-file previews; an
+  // elided file's row does carry them, and its recovery is a per-item
+  // fetch on expand. Treating one as the other would reintroduce the
+  // arrival-time fetch this projection exists to avoid.
   function legacyPayloadId(): string | undefined {
     const files = previewFiles();
-    if (files.every((file) => file.previewPatch)) return undefined;
+    if (files.every((file) => file.previewPatch || file.previewElided)) return undefined;
     return payloadId;
   }
 
@@ -202,11 +280,12 @@
   }
 </script>
 
-{#each renderableFiles as { file, hasMoreDiffContent }, fileIndex (renderableFileKeys[fileIndex] ?? fileIndex)}
+{#each renderableFiles as { file, hasMoreDiffContent, elidedPreview: elided }, fileIndex (renderableFileKeys[fileIndex] ?? fileIndex)}
   <DiffFileBlock
     {pane}
     {file}
     {payloadId}
+    elidedPreview={elided}
     threadId={item.threadId}
     itemId={item.id}
     workspacePath={paneWorkspacePath(pane)}

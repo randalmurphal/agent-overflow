@@ -121,26 +121,36 @@ func TestSessionAOEnvIsLiveOnly(t *testing.T) {
 	}
 }
 
-func TestAOEndpointFromAppURLStripsTheWebviewToken(t *testing.T) {
-	endpoint, err := aoEndpointFromAppURL("http://127.0.0.1:54321/?t=super-secret")
+// The CLI's endpoint is built from the server's ORIGIN, not from a page
+// URL. A page URL carries a one-time ticket minted for a browser, and
+// taking one here would both spend a ticket nobody opens and put a page
+// credential into a child process's environment.
+func TestAOEndpointFromOriginIsBareAuthority(t *testing.T) {
+	endpoint, err := aoEndpointFromOrigin("http://127.0.0.1:54321")
 	if err != nil {
-		t.Fatalf("aoEndpointFromAppURL() error = %v", err)
+		t.Fatalf("aoEndpointFromOrigin() error = %v", err)
 	}
 	if endpoint != "http://127.0.0.1:54321" {
-		t.Fatalf("aoEndpointFromAppURL() = %q", endpoint)
+		t.Fatalf("aoEndpointFromOrigin() = %q", endpoint)
 	}
-	if strings.Contains(endpoint, "super-secret") {
-		t.Fatal("the webview token survived into the CLI endpoint")
+	// Defensive: anything a caller appends is stripped, so what reaches
+	// the environment is an authority and never a credentialled URL.
+	stripped, err := aoEndpointFromOrigin("http://127.0.0.1:54321/?t=page-ticket")
+	if err != nil {
+		t.Fatalf("aoEndpointFromOrigin() error = %v", err)
 	}
-	if _, err := aoEndpointFromAppURL(""); err == nil {
-		t.Fatal("an empty app URL produced an endpoint")
+	if strings.Contains(stripped, "page-ticket") {
+		t.Fatalf("a query survived into the CLI endpoint: %q", stripped)
+	}
+	if _, err := aoEndpointFromOrigin(""); err == nil {
+		t.Fatal("an empty origin produced an endpoint")
 	}
 }
 
 func TestDeriveCallerScopeByThreadKind(t *testing.T) {
 	app := newTestAppWithStore(t)
 	project := store.Project{ID: "scope-project", Path: t.TempDir(), Name: "Scope", CreatedAt: 1, UpdatedAt: 1}
-	if err := app.store.CreateProject(project); err != nil {
+	if _, err := app.store.CreateProject(project); err != nil {
 		t.Fatal(err)
 	}
 
@@ -347,7 +357,7 @@ func TestMintAOCredentialCarriesTheProjectSlug(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.SetTransportServer(startTestTransportServer(t))
 	projectRow := store.Project{ID: "slug-project", Path: t.TempDir(), Name: "Repo A", CreatedAt: 1, UpdatedAt: 1}
-	if err := app.store.CreateProject(projectRow); err != nil {
+	if _, err := app.store.CreateProject(projectRow); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := app.store.GetProject(projectRow.ID)

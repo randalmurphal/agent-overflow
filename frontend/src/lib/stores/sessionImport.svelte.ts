@@ -18,7 +18,7 @@ import {
   ImportSessions,
   ListImportableSessions,
 } from './bindings';
-import { isViewOnlySession } from '../transport/runMode';
+import { hasScope } from '../transport/scopes';
 import type {
   ImportProviderFilter,
   ImportProviderStatus,
@@ -112,7 +112,7 @@ export interface ImportRunState {
   connectionLost: boolean;
 }
 
-const VIEW_ONLY_MESSAGE = 'Importing provider sessions is only available on the local app.';
+const IMPORT_UNGRANTED_MESSAGE = 'Importing provider sessions is only available on the local app.';
 
 let open = $state(false);
 let status = $state<SessionImportStatus>('idle');
@@ -265,11 +265,11 @@ export function closeSessionImport(): void {
  * modal's load-on-open effect cheap.
  */
 export function loadImportCatalog(force = false): Promise<void> {
-  if (isViewOnlySession()) {
+  if (!hasScope('threads:operate')) {
     providers = [];
     rows = [];
     pruneSelectionAndFilters();
-    catalogError = VIEW_ONLY_MESSAGE;
+    catalogError = IMPORT_UNGRANTED_MESSAGE;
     status = 'error';
     return Promise.resolve();
   }
@@ -428,8 +428,8 @@ export function setSelection(ids: Iterable<string>): void {
  */
 export async function startImport(ids: readonly string[]): Promise<void> {
   if (starting || run?.active) return;
-  if (isViewOnlySession()) {
-    catalogError = VIEW_ONLY_MESSAGE;
+  if (!hasScope('threads:operate')) {
+    catalogError = IMPORT_UNGRANTED_MESSAGE;
     return;
   }
   const unique = [...new Set(ids)].filter((id) => id.length > 0);
@@ -531,10 +531,6 @@ export function applyImportProgress(evt: SessionImportProgressEvent): void {
     current.terminal = true;
     current.active = false;
     current.stopRequested = false;
-    // Imported threads and auto-created projects arrive without per-row
-    // thread:updated events (replaceThread only maps rows the sidebar already
-    // has), so the sidebar learns about them from a merge-aware resync.
-    refreshSidebarProjections();
     settleFinishedRun(current);
   }
 }
@@ -622,6 +618,11 @@ export function markImportConnectionLost(): void {
   // The gap hides what the run got through, so the catalog cannot be
   // trusted to still be an accurate offer.
   catalogStale = true;
+  // A gap also means the imported rows' own `project:updated` /
+  // `thread:updated` frames were among the ones dropped, and those are the
+  // only thing that puts an imported thread in the sidebar. This is the one
+  // place a whole-list resync is still owed: on the ordinary path the
+  // per-row frames arrive and this call would repeat them.
   refreshSidebarProjections();
 }
 

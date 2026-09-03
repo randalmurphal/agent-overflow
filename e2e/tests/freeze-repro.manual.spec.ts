@@ -104,7 +104,7 @@ test.describe('freeze repro', () => {
       await harness.rpc('HarnessSetScenario', { scenario: scenarioDoc });
       note(`seeded thread ${threadId}`);
 
-      await page.goto(harness.url);
+      await harness.open(page);
       await page.getByText(manifest.threadTitle, { exact: false }).first().click();
       const scroller = page.getByTestId('message-timeline-scroll');
       await expect(scroller).toBeVisible();

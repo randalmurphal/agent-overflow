@@ -123,9 +123,9 @@ type subagentRoundBounds struct {
 //
 // Plan notes (verified with EXPLAIN QUERY PLAN, SQLite 3.46):
 //   - The local hops probe the partial idx_items_parent (thread_id,
-//     parent_id) WHERE parent_id <> ”, the imported hops
+//     parent_id) WHERE parent_id is non-empty, the imported hops
 //     idx_import_history_items_parent (chunk_id, parent_id) WHERE
-//     parent_id <> ”. The explicit `parent_id <> ”` terms below are
+//     parent_id is non-empty. The explicit non-empty `parent_id` terms below are
 //     load-bearing for that: SQLite cannot prove the index predicate
 //     from a bound parameter or the `rel.id` join term alone, and
 //     without the proof the hops degrade to a whole-thread PK-prefix
@@ -390,7 +390,7 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 // bounded by a round-2 carrier that may be anywhere.
 //
 // The predicate is a direct-child probe (`parent_id IN (...)`, which the
-// partial idx_items_parent serves, plus the `parent_id <> ''` term it
+// partial idx_items_parent serves, plus the non-empty `parent_id` term it
 // needs to be proven) narrowed by a substring pre-check on meta, so the
 // JSON decode below runs on the handful of rows that are really prompts.
 //

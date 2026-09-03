@@ -411,7 +411,9 @@ func TestProbeBootstrapRejectsInvalidSuccessBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"wsUrl":"ws://127.0.0.1:1/ws","token":"wrong"}`))
+		// wsUrl names a port this responder does not listen on, so the
+		// manifest cannot be the backend this launcher booted.
+		_, _ = w.Write([]byte(`{"wsUrl":"ws://127.0.0.1:1/ws"}`))
 	}))
 	defer server.Close()
 
@@ -444,7 +446,9 @@ func writeProbeBootstrap(t *testing.T, w http.ResponseWriter, r *http.Request, t
 	if err != nil {
 		t.Fatalf("split request host: %v", err)
 	}
-	_, _ = fmt.Fprintf(w, `{"wsUrl":"ws://127.0.0.1:%s/ws","token":%q}`, port, token)
+	// Shaped like the real manifest, which carries no credential: the
+	// page's is an HttpOnly cookie and this probe presents a header.
+	_, _ = fmt.Fprintf(w, `{"wsUrl":"ws://127.0.0.1:%s/ws"}`, port)
 }
 
 func TestResolveChosenDistro(t *testing.T) {

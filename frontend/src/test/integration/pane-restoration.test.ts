@@ -43,13 +43,13 @@ function installUIStateWithPaneLayout(initialPaneLayout: unknown) {
   const entries: Record<string, string> = {
     paneLayout: JSON.stringify(initialPaneLayout),
   };
-  const setUIState = vi.fn(async (_clientId: string, patch: Record<string, string>) => {
+  const setUIState = vi.fn(async (patch: Record<string, string>) => {
     Object.assign(entries, patch);
     return null;
   });
   setBindingMock('GetUIState', async () => ({ ...entries }));
   setBindingMock('SetUIState', setUIState);
-  setBindingMock('DeleteUIState', async (_clientId: string, keys: string[]) => {
+  setBindingMock('DeleteUIState', async (keys: string[]) => {
     for (const key of keys) delete entries[key];
     return null;
   });

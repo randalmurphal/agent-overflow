@@ -477,6 +477,200 @@ func TestUserInputRequestBumpsThreadActivity(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------
+// The wire half of the same three boundaries. threads.updated_at moving
+// in SQLite is only half the fact: since provider:item_event was narrowed
+// to the threads a client watches, a client that is not watching learns
+// about a user_text bump ONLY from the thread:updated patch below. The
+// tests above pin the column; these pin the frame.
+
+// threadActivityPatches returns the thread:updated PATCH emissions that
+// carry an activity bump. The patch is deliberately field-free otherwise
+// — it is applied without a cached row, so a receiver that has never
+// listed the thread can still reorder its sidebar and clear its badge.
+func threadActivityPatches(t *testing.T, emissions []emitted) []ThreadUpdateEvent {
+	t.Helper()
+	out := make([]ThreadUpdateEvent, 0)
+	for _, e := range filterEmissions(emissions, "thread:updated") {
+		evt, ok := e.data.(ThreadUpdateEvent)
+		if !ok {
+			t.Fatalf("thread:updated payload type = %T, want ThreadUpdateEvent", e.data)
+		}
+		if evt.Action != ThreadActionPatch || evt.UpdatedAt == nil {
+			continue
+		}
+		out = append(out, evt)
+	}
+	return out
+}
+
+func TestUserTextPersistEmitsActivityPatch(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	now := readThreadUpdatedAt(t, st, "t1") + 5_000
+	emissions.reset()
+
+	if err := router.PersistItem(store.Item{
+		ID:        "user:0",
+		ThreadID:  "t1",
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "hi",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("persist user_text: %v", err)
+	}
+
+	patches := threadActivityPatches(t, emissions.snapshot())
+	if len(patches) != 1 {
+		t.Fatalf("activity patches = %d, want 1 (%+v)", len(patches), emissions.snapshot())
+	}
+	if patches[0].ID != "t1" {
+		t.Fatalf("patch id = %q, want t1", patches[0].ID)
+	}
+	if *patches[0].UpdatedAt != now {
+		t.Fatalf("patch updatedAt = %d, want %d", *patches[0].UpdatedAt, now)
+	}
+	// Field-free: a receiver merging these into the row would replace the
+	// row object on every message the reader sends.
+	if patches[0].Thread != nil || patches[0].Title != nil || patches[0].Model != nil || patches[0].SessionRef != nil {
+		t.Fatalf("activity patch carried more than the bump: %+v", patches[0])
+	}
+}
+
+// The eager persist on interrupt (app_flush_queue) writes the reader's
+// message QUIETLY — the deferred echo owns the timeline row — but it
+// still bumps activity, so the sidebar fact still has to reach the wire.
+// Tying the patch to the bump rather than to the item emission is what
+// makes that automatic.
+func TestQuietUserTextPersistStillEmitsActivityPatch(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	now := readThreadUpdatedAt(t, st, "t1") + 5_000
+	emissions.reset()
+
+	if err := router.PersistItemQuiet(store.Item{
+		ID:        "user:0",
+		ThreadID:  "t1",
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "hi",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("quiet persist user_text: %v", err)
+	}
+
+	if upserts := filterItemEventUpserts(emissions.snapshot()); len(upserts) != 0 {
+		t.Fatalf("quiet persist emitted %d item upserts, want 0", len(upserts))
+	}
+	if patches := threadActivityPatches(t, emissions.snapshot()); len(patches) != 1 {
+		t.Fatalf("activity patches = %d, want 1 (%+v)", len(patches), emissions.snapshot())
+	}
+}
+
+func TestNonActivityUserTextEmitsNoActivityPatch(t *testing.T) {
+	cases := []struct {
+		name string
+		item store.Item
+	}{
+		{
+			name: "wire only",
+			item: store.Item{
+				ID:   "user:wire:child_prompt_1",
+				Kind: "user_text", Role: "user", Status: "completed",
+				Summary: "subagent prompt",
+				Meta:    `{"provider_item_id":"child_prompt_1","wire_only":true}`,
+			},
+		},
+		{
+			name: "parented",
+			item: store.Item{
+				ID:   "user:wire:child_prompt_2",
+				Kind: "user_text", Role: "user", Status: "completed",
+				Summary: "subagent prompt", ParentID: "spawn-1",
+			},
+		},
+		{
+			name: "assistant text",
+			item: store.Item{
+				ID:   "asst:0:0",
+				Kind: "assistant_text", Role: "assistant", Status: "completed",
+				Summary: "ok",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, emissions := newTestRouter(t)
+			createTestThread(t, st, "t1")
+			now := readThreadUpdatedAt(t, st, "t1") + 5_000
+			if err := router.PersistItem(store.Item{
+				ID: "spawn-1", ThreadID: "t1", Kind: "tool_call", Role: "assistant",
+				Status: "running", Summary: "Spawn subagent",
+				CreatedAt: now - 1, UpdatedAt: now - 1,
+			}, nil); err != nil {
+				t.Fatalf("persist parent tool_call: %v", err)
+			}
+			emissions.reset()
+
+			item := tc.item
+			item.ThreadID = "t1"
+			item.CreatedAt = now
+			item.UpdatedAt = now
+			if err := router.PersistItem(item, nil); err != nil {
+				t.Fatalf("persist %s: %v", tc.name, err)
+			}
+
+			if patches := threadActivityPatches(t, emissions.snapshot()); len(patches) != 0 {
+				t.Fatalf("%s emitted %d activity patches, want 0", tc.name, len(patches))
+			}
+		})
+	}
+}
+
+// Turn completion moves threads.updated_at too, but it reaches every
+// client on provider:turn_completed — which is wildcard and which the
+// sidebar already reads. A second carrier for the same fact would
+// double-apply it.
+func TestTurnCompleteEmitsNoActivityPatch(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	before := readThreadUpdatedAt(t, st, "t1")
+	if err := st.InsertTurn(store.Turn{
+		TurnID: "turn-1", ThreadID: "t1", TurnIndex: 0, StartedAt: before,
+	}); err != nil {
+		t.Fatalf("insert turn: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnID: "turn-1",
+		Timestamp: time.Unix(0, before*int64(time.Millisecond)),
+	}); err != nil {
+		t.Fatalf("handle turn start: %v", err)
+	}
+	emissions.reset()
+
+	completeAt := before + 10_000
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1", TurnID: "turn-1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Unix(0, completeAt*int64(time.Millisecond)),
+	}); err != nil {
+		t.Fatalf("handle turn complete: %v", err)
+	}
+
+	if readThreadUpdatedAt(t, st, "t1") != completeAt {
+		t.Fatal("precondition: turn completion did not bump activity")
+	}
+	if patches := threadActivityPatches(t, emissions.snapshot()); len(patches) != 0 {
+		t.Fatalf("turn completion emitted %d activity patches, want 0", len(patches))
+	}
+}
+
 func readThreadUpdatedAt(t *testing.T, st *store.Store, threadID string) int64 {
 	t.Helper()
 	thr, err := st.GetThread(threadID)

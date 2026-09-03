@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/notify"
+	"agent-overflow/internal/relaysession"
 	"agent-overflow/internal/selfupdate"
 	"agent-overflow/internal/webview2host"
 
@@ -90,8 +92,13 @@ type NotificationClientConfig struct {
 // for it, the ephemeral updater:install directive channel, and uses the same
 // connection for the RPCs both of those produce.
 type NotificationClient struct {
-	wsURL             string
-	token             string
+	wsURL string
+	token string
+	// session forwards the backend's local page-channel credential on
+	// every dial, so this connection names a session instead of being
+	// trusted for arriving over the WSL localhost relay. Best-effort:
+	// see internal/relaysession.
+	session           *relaysession.Source
 	present           func(notify.Send) error
 	handleInstall     func(selfupdate.InstallDirective)
 	handleWebviewTrim func(reason string)
@@ -190,6 +197,7 @@ func NewNotificationClient(config NotificationClientConfig) (*NotificationClient
 	return &NotificationClient{
 		wsURL:             parsed.String(),
 		token:             config.Token,
+		session:           newSessionCredentialSource(parsed.String(), config.Token),
 		present:           config.Present,
 		handleInstall:     config.HandleUpdateInstall,
 		handleWebviewTrim: config.HandleWebviewTrim,
@@ -204,6 +212,23 @@ func NewNotificationClient(config NotificationClientConfig) (*NotificationClient
 		pending:           make(map[string]pendingRPC),
 		connReady:         make(chan struct{}),
 	}, nil
+}
+
+// newSessionCredentialSource points a relaysession.Source at the backend
+// this client dials.
+//
+// A WebSocket URL that will not map onto a bootstrap URL yields an inert
+// source rather than an error: forwarding the credential is an
+// improvement in attribution, and refusing to construct the notification
+// client over it would trade a working launcher for a better-labelled
+// one. The dial that follows carries the launch token alone, which is
+// what it carried before forwarding existed.
+func newSessionCredentialSource(wsURL, token string) *relaysession.Source {
+	bootstrap, err := relaysession.BootstrapURL(wsURL)
+	if err != nil {
+		log.Printf("wsllauncher: no session credential to forward: %v", err)
+	}
+	return relaysession.New(bootstrap, token, nil)
 }
 
 // Run reconnects until ctx is cancelled. Connection and presentation errors
@@ -249,8 +274,23 @@ func (c *NotificationClient) runConnection(ctx context.Context) (bool, error) {
 	query.Set("token", c.token)
 	parsed.RawQuery = query.Encode()
 
-	conn, _, err := websocket.Dial(ctx, parsed.String(), nil)
+	// The session credential rides a HEADER, never the URL: a Go dial can
+	// set one, and a credential in a URL lands in every log that records
+	// them. Absent when the backend has none to give, which leaves this
+	// connection exactly as it was before forwarding existed.
+	var opts *websocket.DialOptions
+	if credential := c.session.Credential(ctx); credential != "" {
+		opts = &websocket.DialOptions{HTTPHeader: http.Header{
+			relaysession.Header: []string{credential},
+		}}
+	}
+	conn, _, err := websocket.Dial(ctx, parsed.String(), opts)
 	if err != nil {
+		// A refused dial is the one signal that a forwarded credential has
+		// gone stale — the backend restarted, or the session was revoked.
+		// Mark it so the next attempt in the ladder fetches a live one
+		// rather than replaying the dead one until the launcher restarts.
+		c.session.Stale()
 		return false, fmt.Errorf("connect to notification bridge: %s", redactNotificationBridgeError(err, c.token))
 	}
 	conn.SetReadLimit(notificationBridgeReadLimit)
@@ -413,16 +453,14 @@ func (c *NotificationClient) handleEvent(event notificationEvent) error {
 		c.logf("notifications: ignore malformed notification payload: %v", err)
 		return nil
 	}
-	if notification.ID == "" || notification.Title == "" {
-		c.logf("notifications: ignore notification with missing id or title")
-		return nil
-	}
-	if len(notification.Title) > notify.MaxTitleBytes || len(notification.Body) > notify.MaxBodyBytes {
-		c.logf("notifications: ignore oversized notification %s", notification.ID)
-		return nil
-	}
-	if err := notify.ValidateTarget(notification.Target); err != nil {
-		c.logf("notifications: ignore invalid notification target: %v", err)
+	// One admission check, shared with the backend that published this
+	// (notify.ValidateSend), rather than three restatements of it here. The
+	// re-check is not redundant: this crossed a process boundary, and the
+	// launcher is the side that would present whatever it decoded. It is
+	// also what admits a retraction, whose contract is deliberately the
+	// opposite of a presentation's — an id and a kind, and no content.
+	if err := notify.ValidateSend(notification); err != nil {
+		c.logf("notifications: ignore invalid notification: %v", err)
 		return nil
 	}
 	if err := c.present(notification); err != nil {

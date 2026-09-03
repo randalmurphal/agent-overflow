@@ -24,7 +24,14 @@ asked to have rewritten. Match the file you are editing.
 Area guides: [`stores/`](src/lib/stores/AGENTS.md),
 [`transport/`](src/lib/transport/AGENTS.md), and under
 `src/lib/components/`: `chat/`, `composer/`, `panes/`, `review/`,
-`settings/`, `sidebar/`, `virtual/`, `workflows/`.
+`settings/`, `sidebar/`, `terminal/`, `virtual/`, `workflows/`.
+
+`src/lib/native/` is the phone shell's side of this app: one seam per
+platform capability, each inert in a browser build behind an
+`isNativeShell()` check. It is documented with the container it serves,
+[`mobile/AGENTS.md`](../mobile/AGENTS.md). Nothing outside that directory
+should branch on being on a phone — the layout is chosen from the
+viewport (§ Compact), never from the client.
 
 ## Reuse before reimplementing
 
@@ -99,9 +106,66 @@ that rehydrates on expansion. See "Live Window Bounds" in
 Two panes on one WORKSPACE are first-class, two panes on one THREAD are a
 bug ([`stores/AGENTS.md`](src/lib/stores/AGENTS.md)).
 
+## Compact is a layout mode, not a second app
+
+`stores/layoutMode.svelte.ts` picks `compact` from the viewport alone
+(narrow AND coarse pointer), stamps `layout-compact` on `<html>`, and
+that class is what the `compact:` Tailwind variant in `app.css` keys on.
+The phone shell, a phone-sized browser tab and Playwright's compact
+project all reach the same layout by that one door; nothing reads the
+run mode or the device class to decide it. Every component renders in
+both modes, so a surface is done only when it holds in both.
+
+What compact changes, and where:
+
+- **Two screens, both mounted.** The sidebar is the root screen and the
+  pane strip is the thread screen (`compact-screen-list` /
+  `compact-screen-thread`); the inactive one is `visibility: hidden` and
+  `inert`, never unmounted, so a trip back to the list keeps the
+  timeline's observers and scroll position. `revealPane` flips to the
+  thread screen because every "show me this pane" path already passes
+  through it; the chat header's back button flips to the list, and so
+  does the last pane leaving (`destroyPane`), since compact has no close
+  control and an empty thread screen has no back button.
+- **One pane per screen.** `PaneHost` sizes every pane to the strip and
+  drops the dividers; companions still open and the existing reveal
+  glide is the switch between a thread and its companion. No pane close
+  control, no resizer, no rail.
+- **Popovers are bottom sheets** (`Popover`'s `sheet` prop, on by
+  default); the composer's mention and slash lists opt out because they
+  belong on the caret. Overlays fill the screen.
+- **Return inserts a newline** (`enterSends` in `composerKeyboard.ts`) and
+  the Send button is the way to send.
+- **A long press is the right-click.** `utils/longPressContextMenu.ts` is
+  one window-level detector, live only under compact, that turns a held
+  touch into a synthetic `contextmenu` at the pressed element, so every
+  existing `oncontextmenu` site (rows, the project header, terminal tabs,
+  the pane title's rename, the delegated link and diagram hosts) opens on
+  the phone with no per-site wiring, and the e2e compact project drives the
+  same path a device does. Exactly one `contextmenu` reaches handlers per
+  press, a handled press swallows the compatibility mouse sequence the
+  engine sends on release, and an unhandled one (chat prose, the composer)
+  is left to the engine. Do not add a per-component long-press handler.
+- **Menus are sheets from both primitives.** `ContextMenu` renders as a
+  bottom sheet under compact (`data-placement="sheet"`), the shape
+  `Popover` already takes; `MenuItem` rows grow to 40px there.
+- **A hidden gesture is not an affordance.** Every sidebar row carries
+  `SidebarRowMenuButton` (`hidden compact:flex`), the visible door into the
+  same handler right-click runs; the project header shows its New Thread
+  control and moves New Terminal into its menu, compact only. Rows are
+  36px (`compact:h-9`) and `compact:select-none`, and nothing drags:
+  `ThreadRow`, the project header and the pane title all set `draggable`
+  false there, because Android starts a drag on a held draggable and that
+  fights the long press. The chat header carries a command-palette button
+  (`palette-open`), the phone's stand-in for the `palette.open` chord.
+
+Host-only surfaces already hide by scope, so compact adds no second set
+of gates. Do not fork a component for the phone; add a `compact:` class
+or read `isCompactLayout()` at the one branch that differs.
+
 ## Rules with structural tests
 
-`src/lib/architecture.test.ts` enforces five. Each carries a shrink-only
+`src/lib/architecture.test.ts` enforces seven. Each carries a shrink-only
 allowlist: an exception that has been fixed must be deleted, and an entry
 that no longer offends fails too.
 
@@ -124,6 +188,17 @@ that no longer offends fails too.
 5. An event-driven refresh uses `utils/refreshScheduler.ts`. A trailing
    debounce is postponed forever while events arrive closer together than
    its delay, and two of the three offenders gated workspace mutation.
+6. Random identifiers come from `utils/randomId.ts`. `crypto.randomUUID`
+   is SECURE-CONTEXT ONLY and a plain-HTTP LAN page is a shipped context,
+   where the property is absent and the call throws — in `wsClient`'s
+   `generateId` that was a blank page on the first RPC of the boot
+   fan-out, not a degraded feature.
+7. A send is built by `utils/sendOptions.ts#buildSendOptions`, the one
+   place its idempotency id is minted. A module reaching
+   `SendMessageWithOptions` or `RegisterQueueItem` either builds the
+   options or takes built `OutgoingSendOptions`; an inline object literal
+   is the offence, and it made a retried frame look like a second message
+   instead of the same one arriving twice.
 
 `src/lib/themeTokens.test.ts` enforces the token layer over all of
 `src/`: no raw Tailwind palette or black/white utilities, no default
@@ -305,6 +380,17 @@ with no error. Assert one layer deeper against the real pipeline instead
 (`setBindingMock('ReportFrontendErrorBatch', …)` rather than mocking
 `utils/frontendErrorCapture`).
 
+A new binding called by a PASSIVE LOAD needs its mock in every suite
+that renders the component, not just the one that asserts on it. The
+mock dispatcher throws SYNCHRONOUSLY for an unmocked name, so the
+`try/catch` around the load runs its `addToast` inside the `$effect`
+flush, and Svelte reports `effect_update_depth_exceeded` instead of the
+name that was missing. Adding the phone-push status read to
+`NotificationsSection` failed four unrelated settings suites that way
+(2026-09-02); the fix is one `setBindingMock` per suite, and
+`test/integration/_helpers.ts#installAppDefaults` is where the whole-App
+ones belong.
+
 Operator-run drivers are named `*.manual.ts` and run only under
 `pnpm test:manual`, never in a gate. `markdown/freezeReplay.manual.ts`
 replays a recorded streaming corpus through the production markdown path
@@ -335,15 +421,16 @@ pnpm patch. Fix parser bugs there, never duplicating the fix in
 map, the host seams, the path-relative URL security boundary and the test
 map.
 
-`patches/svelte@5.56.8.patch` has six hunks, each dropping when its suite
-passes against an unpatched release. `svelte-patch-zombie-leak.test.ts`
-is a seventh suite with no hunk left, guarding a leak class upstream
-fixed in 5.56.5.
+`patches/svelte@5.57.0.patch` has five hunks, each dropping when its
+suite passes against an unpatched release.
+`svelte-patch-zombie-leak.test.ts` and
+`svelte-patch-event-slot.test.ts` are two more suites with no hunk
+left, guarding leak classes upstream fixed in 5.56.5 and 5.57.0; both
+must keep passing UNPATCHED.
 
 | Hunk | What it fixes | Suite |
 |---|---|---|
 | ownerless-roots | `$effect.root` inherited the creating component's context and parent, so store-level roots pinned dead row instances. Deliberate divergence, no upstream issue: carry forward, re-evaluate every bump. | `svelte-patch-ownerless-roots.test.ts` |
-| event-slot-release | The delegated-event dispatcher never cleared `last_propagated_event`, so `event.target` anchored a closed pane's detached subtree until the next event. Upstream PR [#18569](https://github.com/sveltejs/svelte/pull/18569). | `svelte-patch-event-slot.test.ts`, `chatview-dom-retention.test.ts` |
 | destroy-pass-errors | A throwing user `$effect` teardown aborted the sibling-destroy loop, leaving queued effects subscribed and detached DOM retained for the parent's lifetime. Upstream PR [#18566](https://github.com/sveltejs/svelte/pull/18566). | `svelte-patch-destroy-pass.test.ts` |
 | flush-loop-caps | Both synchronous flush loops were unbounded, so a cycle was an unreportable renderer freeze (2026-08-07: WebView2 wedged 8+ minutes, no paint, no error, nothing in any log). The caps abort and throw a svelte-shaped error that `utils/frontendErrorCapture.ts` persists, message kept in production. PR candidate. | `svelte-patch-flush-caps.test.ts` |
 | reconnect-dedupe | `get()` on a disconnected, dirty, previously-run derived registered it twice in one dep, so losing its last reader left that dep and everything upstream connected for the app's life (2026-08-23 heap snapshot: a closed pane's 3.4k detached nodes). PR candidate. | `svelte-patch-reconnect-dedupe.test.ts`, `chatview-dom-retention.test.ts` |

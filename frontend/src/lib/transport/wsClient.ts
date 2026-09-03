@@ -38,17 +38,45 @@ import {
   type Bootstrap,
   BootstrapRejectedError,
   defaultBootstrap,
-  appendToken,
   pageServedOverLoopback,
 } from './bootstrap';
 import {
   type ClientFrame,
   type ClientRPCFrame,
+  type LeaseState,
   type ServerEventFrame,
+  type ServerHelloFrame,
   type ServerFrame,
   clampString,
   extractRpcIdFromOversizedFrame,
 } from './frames';
+import { isEntityFilteredChannel } from './entityFilteredChannels';
+import { getConnectionId, getDeviceId } from './clientIdentity';
+import { hasPairedSession, mintDialTicket } from './deviceSession';
+import { HOME_BACKEND, type BackendKey } from './backendKey';
+import { homeWsUrl } from './homeEndpoint';
+import { refreshGrantedScopes } from './scopes';
+import { randomId } from '../utils/randomId';
+
+/**
+ * Append this screen's identity to the upgrade URL. Kept as a function rather
+ * than a captured constant so a reconnect after a device-id change (the launcher
+ * pinning a bucket via ?cid=) uses the current value.
+ *
+ * Failing to parse the URL is not fatal: the identity is an attribution
+ * nicety, and refusing to connect over it would trade a working session for a
+ * missing label.
+ */
+function withClientIdentity(wsUrl: string): string {
+  try {
+    const url = new URL(wsUrl);
+    url.searchParams.set('did', getDeviceId());
+    url.searchParams.set('conn', getConnectionId());
+    return url.toString();
+  } catch {
+    return wsUrl;
+  }
+}
 
 // Test-visible exports for the bound constants. We keep the const
 // names for the production code paths (clearer at the call site than
@@ -92,10 +120,57 @@ export const BOOTSTRAP_INVALIDATE_AFTER_FAILURES = 2;
 // connection that lasted this long proves the far side was actually
 // serving, which is what the ladder is supposed to measure.
 export const BACKOFF_RESET_AFTER_MS = 30_000;
+// How long the ladder may climb before it goes DORMANT.
+//
+// The exponential ladder is sized for an outage measured in seconds: a
+// relay flap, a backend restart, a laptop lid. Five minutes of unbroken
+// failure is a different situation — the backend is off, the machine is
+// asleep, the phone left the network — and nothing about dialing it every
+// 30 seconds for the rest of the day helps. On a phone it is the opposite
+// of help: a radio wake per attempt, all night.
+//
+// Dormancy is about DIALING and nothing else. No client is sent less, no
+// surface renders differently, nothing is skipped because something is
+// off-view — the connection that does come up carries exactly what it
+// always did.
+export const DORMANT_AFTER_MS = 5 * 60_000;
+// The dormant cadence: one probe, this far apart, forever. Deliberately
+// flat rather than a continued doubling — an hour-long backoff would mean a
+// backend that came back at minute 6 stays unnoticed until minute 60, and
+// the whole point of still probing is that this state is recoverable
+// without the user doing anything.
+export const DORMANT_PROBE_MS = 5 * 60_000;
+// Spread the probes of several clients that went dormant together (a relay
+// dying takes every attached backend's ladder with it) so they do not all
+// dial on the same second.
+export const DORMANT_PROBE_JITTER_MS = 30_000;
+// How long redialAfterPairing waits for the transport to become usable
+// before handing back anyway. The app mounts on the other side of that
+// call, so the wait has to be long enough to cover a manifest fetch, a
+// ticket mint and an upgrade over a phone's link, and short enough that
+// an unreachable backend does not strand the person on the pairing
+// screen. Past it the app mounts into its ordinary reconnecting state,
+// which is the designed surface for a backend that is not answering.
+export const REDIAL_SETTLE_BUDGET_MS = 5_000;
 const TRANSPORT_GAP_CHANNEL = 'transport:gap';
 // Cap matches server-side MaxReplayChannels (frame.go) so the replay
 // frame can't exceed the wire limit.
 export const MAX_REPLAY_CHANNELS = 1024;
+
+// Mirrors internal/transport/frame.go MaxWatchThreads. A set past this is
+// refused by the backend, so the client checks it rather than sending one.
+export const MAX_WATCH_THREADS = 256;
+
+// sameStringList compares two already-sorted lists elementwise. The watch
+// set is small (panes on a screen), so a loop beats building a Set per
+// composition change on what is a per-pane-open path.
+function sameStringList(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
 // Native notification activation can arrive before the SPA makes its first
 // WS connection (notably a cold launch from a Windows toast). Seed this
 // channel at sequence zero so the first replay request drains the transport
@@ -118,15 +193,161 @@ export const MAX_PENDING_RPCS = 10_000;
 // is the right tradeoff vs. forcing pagination on every load.
 export const MAX_FRAME_BYTES = 75 * 1024 * 1024;
 
+// DisconnectedErrorInit carries the preserved cause of a transport
+// failure onto the error the caller sees. Every field is optional: the
+// paths that genuinely know nothing (a superseded socket) supply none.
+export interface DisconnectedErrorInit {
+  /** WebSocket close code, when a close event produced this failure. */
+  closeCode?: number;
+  /** Close reason verbatim from the peer. Remote text — clamped before
+   *  it reaches the message. */
+  closeReason?: string;
+  /** The error underneath: a socket `error` event, a thrown WebSocket
+   *  constructor, or the bootstrap rejection that stopped the attempt. */
+  cause?: unknown;
+  /** True when the automatic reconnect ladder is STOPPED, so nothing
+   *  will retry the work behind this call without user action. False
+   *  during an ordinary reconnect, where the entity stores' suspension
+   *  re-sources every key on the next connect. */
+  terminal?: boolean;
+}
+
+// Close reasons are peer-supplied text that lands in logs, toasts, and
+// the diagnostics sink. The WS spec caps a reason at 123 UTF-8 bytes, so
+// this only ever truncates a peer that does not conform.
+const CLOSE_REASON_MAX = 123;
+
+// Distinct kinds of unrecognized wire input tracked for the debug tally.
+// Bounded because the kind label can be a frame type the peer chose: a
+// backend naming a new type on every frame must not be able to grow the
+// map. Past the cap the total still counts.
+const MAX_TRACKED_UNKNOWN_KINDS = 8;
+// Kind labels come off the wire, so they are clamped before they reach a
+// console line or the stats object.
+const UNKNOWN_KIND_LABEL_MAX = 64;
+
 // DisconnectedError is what we reject pending RPCs with when the socket
 // closes underneath them. Subclassing Error keeps `instanceof` checks
 // working at call sites; the `name` field is what most frontend code
 // branches on.
+//
+// The failure's CAUSE travels on the instance and, deliberately, inside
+// `message` too. Around 150 call sites render a failure as `err.message`,
+// so putting the close code and reason there is what makes the cause
+// legible everywhere at once; the alternative — each site reaching for a
+// new field — is a sweep that decays the moment someone adds site 151.
+// `cause` and the discrete fields remain for callers that branch rather
+// than render.
 export class DisconnectedError extends Error {
-  constructor(message = 'transport disconnected') {
-    super(message);
+  /** WS close code when a close event produced this, else undefined. */
+  readonly closeCode: number | undefined;
+  /** Clamped close reason when the peer supplied one. */
+  readonly closeReason: string | undefined;
+  /** See DisconnectedErrorInit.terminal. */
+  readonly terminal: boolean;
+
+  constructor(message = 'transport disconnected', init: DisconnectedErrorInit = {}) {
+    super(describeDisconnect(message, init), { cause: init.cause });
     this.name = 'DisconnectedError';
+    this.closeCode = init.closeCode;
+    this.closeReason = init.closeReason === undefined
+      ? undefined
+      : clampString(init.closeReason, CLOSE_REASON_MAX);
+    this.terminal = init.terminal === true;
   }
+}
+
+// describeDisconnect renders the preserved cause into the message. Kept
+// out of the constructor body so the no-detail case (the common one)
+// returns the caller's own string without building anything.
+function describeDisconnect(message: string, init: DisconnectedErrorInit): string {
+  const reason = init.closeReason === undefined || init.closeReason === ''
+    ? ''
+    : clampString(init.closeReason, CLOSE_REASON_MAX);
+  // Comma, not colon, between code and reason. `userFacingError` strips
+  // everything before the last ": " to unwrap Go-style error chains, so a
+  // colon here would render this as "Backend restarting)" — the cause
+  // shorn of what it is the cause OF, plus a stray bracket. The formatter
+  // is right for wrapped errors; this string just must not look like one.
+  if (init.closeCode !== undefined) {
+    return reason === ''
+      ? `${message} (code ${init.closeCode})`
+      : `${message} (code ${init.closeCode}, ${reason})`;
+  }
+  if (reason !== '') return `${message} (${reason})`;
+  // No close detail: fall back to the underlying error's own prose so a
+  // thrown constructor or a failed manifest fetch still names itself.
+  if (init.cause instanceof Error && init.cause.message !== '') {
+    return `${message}: ${clampString(init.cause.message)}`;
+  }
+  return message;
+}
+
+// RetryOnTransientCloseEntry names ONE RPC the client may re-send once
+// after a transient socket close instead of rejecting it.
+//
+// This is a seam, not a policy. A blanket "retry on disconnect" is
+// forbidden by construction: an RPC that reached the backend may have
+// executed, so retrying a lost ANSWER would duplicate the ACTION —
+// exactly the crash-equivalence that `isTransportClassError` exists to
+// warn callers about. An entry is admissible only when the call is
+// idempotent on the backend AND its loss falls inside a KNOWN transient
+// window — the bundle-swap reconnect of docs/specs/remote-access.md §9,
+// where a just-updated backend drops every socket seconds after serving
+// it.
+//
+// Match by `methodId` for generated bindings (which never carry a name)
+// or by `method` for the by-name call sites. `why` is the decision and is
+// mandatory: an entry nobody can justify in one sentence does not belong.
+export interface RetryOnTransientCloseEntry {
+  methodId?: number;
+  method?: string;
+  why: string;
+}
+
+// The production allowlist. Two entries, and the rule that admitted them
+// is the one stated above: a call is admissible only when it is IDEMPOTENT
+// ON THE BACKEND. These two are, and not by luck — each carries a
+// client-minted `sendId` and the backend answers a repeated id from the
+// record the first arrival left behind, without sending anything
+// (internal/app/app_send_idempotency.go). The retry re-sends the RETAINED
+// frame, so the id is the same one; a retry that rebuilt its options would
+// mint a second id and defeat the whole mechanism.
+//
+// They are also the calls where the weaker guarantee is worth having: a
+// send whose socket died is indistinguishable, on this side, from one that
+// never landed, so without a retry the composer has to ask a person to
+// decide — which is what `composerSend.ts` does when the retry ALSO fails.
+//
+// Everything else stays out. Every store that must survive a reconnect
+// does so through the suspend/re-source observable
+// (stores/entityStore.svelte.ts), which re-asks for CURRENT state rather
+// than replaying a stale request.
+export const RETRY_ON_TRANSIENT_CLOSE: readonly RetryOnTransientCloseEntry[] = Object.freeze([
+  {
+    methodId: 3632185196,
+    why: 'SendMessageWithOptions carries a client-minted sendId; a repeated arrival is answered from the message it already created',
+  },
+  {
+    methodId: 1034543696,
+    why: 'RegisterQueueItem carries the same sendId and is answered from the durable queue row the first arrival wrote',
+  },
+]);
+
+// matchesRetryAllowlist answers whether a dispatch spec is on `list`.
+// Consulted once per RPC at DISPATCH time, never on the close path, so
+// the empty production list costs one length check — and, decisively, so
+// a non-retryable call never retains its frame (see Pending.retry).
+function matchesRetryAllowlist(
+  list: readonly RetryOnTransientCloseEntry[],
+  spec: { methodId?: number; method?: string },
+): boolean {
+  if (list.length === 0) return false;
+  for (const entry of list) {
+    if (entry.methodId !== undefined && entry.methodId === spec.methodId) return true;
+    if (entry.method !== undefined && entry.method === spec.method) return true;
+  }
+  return false;
 }
 
 // TransportError wraps a server-side FrameError. The `code` is exposed
@@ -135,11 +356,87 @@ export class DisconnectedError extends Error {
 // temporarily_unavailable, etc).
 export class TransportError extends Error {
   code: string;
-  constructor(code: string, message: string) {
+  // reason is set only on code 'auth_failed' and names which credential
+  // check refused the call (internal/identity's closed set). Kept off the
+  // message because the message is generic prose for non-loopback callers,
+  // so it is the only thing a hint can be derived from — see
+  // ./authReason.ts, which is the one place it is translated.
+  reason?: string;
+  // scope is set only on code 'scope_required' and names the capability
+  // this session was not granted (./scopes.ts's set). Same shape and same
+  // rule as reason: prose is redacted for a non-loopback caller, so the
+  // field is the whole answer, and ./scopeRefusal.ts is the one place it
+  // becomes a sentence.
+  scope?: string;
+  constructor(code: string, message: string, reason?: string, scope?: string) {
     super(message);
     this.name = 'TransportError';
     this.code = code;
+    this.reason = reason;
+    this.scope = scope;
   }
+}
+
+// StepUpProver is the seam that turns a step-up refusal into a proof, and
+// the client-side mirror of the backend's `transport.Config.StepUpProof`:
+// the connection owns the slot, and the module that knows how to satisfy
+// the gate fills it once at boot (./stepUp.ts, from src/main.ts).
+//
+// INSTALLED rather than imported, because satisfying the gate is itself
+// two RPCs through the generated bindings, which route back through this
+// client. Importing the ceremony from here would be that cycle, and it
+// would drag the refusal vocabulary (./scopeRefusal.ts) in with it.
+//
+// Two members, because the two questions are asked at different moments
+// and only one of them may cost anything. `wants` is asked about every
+// rejected RPC, so it is a synchronous predicate over the error; `prove`
+// runs only for the refusals it claims, and may put a biometric prompt on
+// somebody's screen.
+export interface StepUpProver {
+  /** Whether a fresh proof could satisfy this refusal on this page. */
+  wants(err: unknown): boolean;
+  /**
+   * Run the ceremony and answer the single-use token it minted.
+   *
+   * A rejection means "there was nothing to try" — an abandoned prompt, a
+   * backend that refused the ceremony — and the caller is then settled
+   * with the ORIGINAL refusal rather than with whatever happened in here.
+   */
+  prove(target: StepUpTarget): Promise<string>;
+}
+
+// StepUpTarget is the connection that REFUSED, handed to the ceremony so
+// it runs where the token will be spent.
+//
+// A step-up token is minted for the session that began the ceremony and
+// judged against the session of the connection presenting it
+// (transport.Config.StepUpProof). One client is one backend and one
+// session, so a ceremony that issued its two RPCs through the generated
+// bindings would run them on whichever backend those methods ROUTE to,
+// `home` for both, and a refusal on any attached machine would be
+// answered with a proof minted somewhere else, which that machine refuses
+// on a wire nobody can read the reason off. Passing the refusing handle
+// is what makes the mint and the spend one session by construction rather
+// than by the route table happening to agree.
+//
+// Minimal on purpose: the ceremony needs to issue two calls and nothing
+// else, and a wider surface would invite a second thing to be done with
+// the connection that just refused somebody.
+//
+// `callByID`, never `callByName`: a ceremony reaching for a name would be
+// one more place a method rename fails silently, and the ids are pinned to
+// the generated bindings (./stepUp.ts).
+export interface StepUpTarget {
+  callByID(methodId: number, args: unknown[]): Promise<unknown>;
+}
+
+// DispatchSpec names one outgoing call: the method, by id or by name, and
+// its arguments. Held for the length of the call by the step-up
+// interception, which may have to dispatch it a second time.
+interface DispatchSpec {
+  methodId?: number;
+  method?: string;
+  params: unknown[];
 }
 
 // Pending tracks an outstanding RPC. The timer is cleared on settle so
@@ -148,6 +445,22 @@ interface Pending {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
+  // The frame to re-send if a TRANSIENT close kills this call, or null —
+  // which is every call under the empty production allowlist. Holding it
+  // costs a reference to the params the caller already owns, so it is
+  // populated only for allowlisted calls: an ordinary RPC's arguments
+  // (a full prompt, an attachment manifest) stay collectable the moment
+  // the send completes. Nulled when the one retry is spent, so a call
+  // cannot be re-sent twice.
+  retry: ClientRPCFrame | null;
+  // When this call's frame was last written to a socket, which is what
+  // the staleness watchdog reads to tell "a response may still be
+  // arriving" from "nothing has come back for a long time". Refreshed on
+  // a transient-close re-send, because that is a fresh issue on a fresh
+  // socket. It is deliberately NOT the caller's await time: an RPC parked
+  // behind a backoff has been issued nowhere and says nothing about the
+  // silence of a socket.
+  sentAt: number;
 }
 
 type EventHandler = (data: unknown) => void;
@@ -167,35 +480,136 @@ let fanoutScratchInUse = false;
 // in-flight after a previous close. nextAttemptAt is the wall-clock
 // millis when the next attempt is scheduled — null if the attempt is
 // already in flight.
-// 'unauthorized' is the one TERMINAL state: the backend answered and
-// positively refused our bootstrap credential (BootstrapRejectedError —
-// internal/transport/server.go handleBootstrap answers a stale `?t=`
-// with 404), AND this session has no way to obtain a fresh one because
-// it was served over the network. Tokens are minted per backend launch,
-// so a LAN/remote client whose backend restarted holds a token that will
-// be refused identically forever; the automatic ladder stops rather than
-// burn the device's radio and battery on attempts that cannot succeed.
-// Recovery is re-opening the share link — a fresh page load, hence a
-// fresh client. The banner's Retry still works as a manual escape hatch
-// (see triggerReconnect), which is what un-latches it if the refusal
-// turns out to have been a lie from something in the path.
-// A loopback session never enters this state: the embedded webview and
-// the --connect stub are handed a live token by the shell that owns the
-// backend, so their refusals stay ordinary 'reconnecting' retries.
+// Two states are TERMINAL: the backend answered, the answer will not
+// change while this page sits there, and the automatic ladder stops
+// rather than burn a device's radio and battery on attempts that cannot
+// succeed. They differ in what the person has to do, which is why they
+// are two.
+//
+// 'unauthorized' means the backend positively refused our bootstrap
+// credential (BootstrapRejectedError — internal/transport/server.go
+// handleBootstrap answers an unrecognised credential with 404) AND this
+// session has no way to obtain a fresh one because it was served over
+// the network. The page cookie is minted per backend launch, so a
+// LAN/remote client whose backend restarted holds one that will be
+// refused identically forever. Recovery is re-opening the share link —
+// a fresh page load with a fresh ticket.
+//
+// 'pairing-required' means the opposite half: the manifest SERVES, so
+// the credential is fine, but this page's socket would arrive at the
+// backend as an off-host peer and this browser holds no paired session
+// to name on the upgrade — which that backend refuses (spec §4 "Local
+// clients", internal/transport/AGENTS.md). Dialing would produce one
+// unfingerprintable 404 per attempt, so the ladder does not start.
+// Recovery is pairing this device.
+//
+// The banner's Retry works out of both (see triggerReconnect), which is
+// what recovers a refusal that was a lie from something in the path, and
+// what picks up a pairing completed in another tab of this browser.
+// A loopback session never enters either state: the embedded webview and
+// the --connect stub load a page URL minted by the shell that owns the
+// backend, and their sockets reach a backend on this machine.
 // 'disconnected' is the zero-value before any connect has been
 // attempted; we never re-enter it once a connect cycle starts (we stay
 // in 'reconnecting' across attempts) because a still-running loop must
 // not present itself as settled.
-export type TransportStatus = 'connected' | 'reconnecting' | 'unauthorized' | 'disconnected';
+export type TransportStatus =
+  | 'connected'
+  | 'reconnecting'
+  | 'unauthorized'
+  | 'pairing-required'
+  | 'disconnected';
+
+/**
+ * The subset of TransportStatus the automatic ladder stops on. Exported
+ * because ./connectionRefusal.ts is the one module that phrases them and
+ * has to be exhaustive over exactly this set.
+ */
+export type TerminalTransportStatus = Extract<
+  TransportStatus,
+  'unauthorized' | 'pairing-required'
+>;
+
+// TerminalLatch is what the client holds while the ladder is stopped:
+// which terminal state, and the sentence every rejection issued from
+// under it carries. The message is stored rather than rebuilt per
+// rejection because ~150 call sites report a failure as `err.message`
+// and they must all say the same thing about the same latch.
+interface TerminalLatch {
+  status: TerminalTransportStatus;
+  /** What a caller awaiting the transport is told. */
+  message: string;
+  /** The refusal that produced the latch, when there was one. */
+  cause?: unknown;
+}
+
+// TransportHello is what the connection's opening frame told us about
+// the backend on the other end, plus the one thing only the client can
+// compute: the clock skew between the two machines.
+//
+// Null until a hello arrives, which is also the steady state against a
+// backend too old to send one. Consumers must read that as "advertises
+// nothing" and degrade, never as "assume the feature is there" — which
+// is why `hasCapability` is the only accessor and there is deliberately
+// no version comparison anywhere in the client.
+export interface TransportHello {
+  /** The backend's wire dialect. Recorded for logs and bug reports;
+   *  nothing branches on it (docs/specs/remote-access.md §9). */
+  protocolVersion: number;
+  /** Behaviors this backend advertises. Possibly empty. */
+  capabilities: readonly string[];
+  /** Backend identity, or '' when the store had not opened yet. Empty
+   *  means unknown and must never be treated as a wildcard. */
+  backendId: string;
+  /** The backend's display name — its hostname
+   *  (docs/specs/remote-access.md §10, "Machine name"). Display only:
+   *  nothing is keyed on it, two backends may answer the same one, and
+   *  `backendId` stays the identity. '' when the backend published
+   *  none. */
+  backendName: string;
+  /** The backend's wall clock when it accepted this connection, in Unix
+   *  millis. */
+  serverTimeMs: number;
+  /** serverTimeMs minus the client's clock at receipt. Positive means
+   *  the backend is ahead. Captured here because it is only measurable
+   *  at the instant the frame lands, and a signed-credential failure
+   *  from clock skew is undebuggable without it. Includes one-way
+   *  network latency, so it is an indication, not a measurement. */
+  clockSkewMs: number;
+  /** The content id of the SPA this backend serves, or '' when it
+   *  serves none. The phone shell compares it against what it is
+   *  running (lib/native/bundleSync.ts); every other client ignores it.
+   *  '' is "no bundle here", never a wildcard. */
+  bundleId: string;
+  /** That bundle's app version, or ''. Compared only to pick the newest
+   *  among several attached backends — nothing gates on it. */
+  bundleVersion: string;
+  /** The lowest Android `versionCode` the bundle's native seams can run
+   *  on, or 0 for "no floor stated". */
+  minShellBuild: number;
+}
 
 export interface TransportStatusSnapshot {
   status: TransportStatus;
   /** Wall-clock millis when the next reconnect attempt fires. null when
    *  the attempt is already in flight or no attempt is scheduled. */
   nextAttemptAt: number | null;
+  /** True while the reconnect ladder is DORMANT: it has been failing for
+   *  DORMANT_AFTER_MS and has dropped to one probe every
+   *  DORMANT_PROBE_MS (or, on a backgrounded client, to none at all).
+   *  Still an ordinary `'reconnecting'` status — dormancy is a cadence,
+   *  not a state of its own, and every demand path still probes
+   *  immediately. Absent means false. */
+  dormant?: boolean;
+  /** Wall-clock millis when this client was last known connected, from
+   *  the LOCAL clock — it is compared against `Date.now()` to render
+   *  "last seen", never against a backend timestamp. null when this
+   *  client has never connected. */
+  lastConnectedAt?: number | null;
 }
 
 type StatusHandler = (snapshot: TransportStatusSnapshot) => void;
+type HelloHandler = (hello: TransportHello | null) => void;
 
 // WSConstructor matches the global WebSocket signature plus enough state
 // to drive a fake in tests. We keep this typed (not `any`) so the test
@@ -219,13 +633,12 @@ interface WSLike {
 const WS_OPEN = 1;
 
 // BootstrapFetcher is the indirection that lets tests inject a fake
-// bootstrap without poking at window.location. `revalidate` is set on
-// the refetch that follows a bootstrap-cache invalidation: an injected
-// (`--connect`) manifest must not short-circuit that fetch, because the
-// whole point of the refetch is to observe whether the credential is
-// still honoured (defaultBootstrap routes it through the stub's
-// /bootstrap.json probe). Fetchers that don't distinguish may ignore it.
-type BootstrapFetcher = (opts?: { revalidate?: boolean }) => Promise<Bootstrap>;
+// bootstrap without poking at window.location. Every fetch is a real
+// round-trip to /bootstrap.json on the page's own origin — there is no
+// short-circuit for any mode — which is what makes the refetch after a
+// run of failures able to observe that the credential is no longer
+// honoured.
+type BootstrapFetcher = () => Promise<Bootstrap>;
 
 interface WSClientOptions {
   // For tests: a constructor that yields a fake WSLike.
@@ -239,12 +652,25 @@ interface WSClientOptions {
   // that gates the terminal 'unauthorized' state. Production reads
   // window.location through bootstrap.ts's pageServedOverLoopback.
   loopbackOrigin?: () => boolean;
+  // Which backend's credential slot this client presents. Home for the
+  // page's own connection, which is every client on a desktop; a phone's
+  // attached machines each name their own, because a session credential
+  // names a session on ONE backend (./deviceSession.ts, sessionStoreKey).
+  // Production passes it from ./backends.ts; everything else defaults to
+  // home, which is what every existing call site meant.
+  backend?: BackendKey;
   // For tests: override MAX_FRAME_BYTES. Production code MUST NOT pass
   // this — the cap matters as a defence and the symmetry with the
   // server's DefaultReadLimit is the contract. Tests pass a small
   // value (~4 KiB) so the oversized-frame regression case can be
   // exercised without allocating tens of MiB per run.
   maxFrameBytes?: number;
+  // For tests: override the retry-on-transient-close allowlist. The
+  // production list is empty by design (RETRY_ON_TRANSIENT_CLOSE), so
+  // the retry path would otherwise be unreachable and untestable — and
+  // an untested seam will not work the day someone needs it. Production
+  // code MUST NOT pass this.
+  retryOnTransientClose?: readonly RetryOnTransientCloseEntry[];
 }
 
 // ChannelCursor is one channel's seq bookkeeping: the last seq we
@@ -298,8 +724,13 @@ export class WSClient {
   private readonly WebSocketCtor: WSConstructor;
   private readonly maxFrameBytes: number;
   private readonly probeLoopbackOrigin: () => boolean;
+  private readonly retryAllowlist: readonly RetryOnTransientCloseEntry[];
+  private readonly backend: BackendKey;
 
-  // Cached bootstrap and the resolved WS URL with token query param.
+  // Cached bootstrap. The socket URL is the manifest's wsUrl, carried
+  // onto the home endpoint only when this page is not its backend's
+  // (./homeEndpoint.ts); for every same-origin client it is verbatim,
+  // and the session cookie authenticates the upgrade with nothing added.
   private bootstrap: Bootstrap | null = null;
   private bootstrapPromise: Promise<Bootstrap> | null = null;
 
@@ -307,6 +738,12 @@ export class WSClient {
   // resolves once the socket reaches OPEN. `ws` is the live socket.
   private ws: WSLike | null = null;
   private connectPromise: Promise<void> | null = null;
+  // Whether `ws` named the PAIRED session on its upgrade (it dialed with
+  // a ticket) rather than riding whatever cookie the browser had. Only
+  // redialAfterPairing reads it, to tell a socket it must retire from one
+  // that is already correct — the two are indistinguishable afterwards,
+  // because the ticket is spent and the URL is gone with the attempt.
+  private socketNamedPairedSession = false;
   private closed = false;
   private reconnectAttempt = 0;
   // Non-null exactly while a backoff timer is queued (no attempt in
@@ -353,22 +790,43 @@ export class WSClient {
   // the bootstrap cache mid-outage doesn't flip a remote client onto
   // the aggressive local retry cadence.
   private remoteBackend = false;
-  // Set when the bootstrap cache was invalidated on suspicion of a dead
-  // credential; tells the next fetch to actually revalidate instead of
-  // short-circuiting on an injected manifest. Cleared once a fetch
-  // resolves — the answer it produced is current again.
-  private bootstrapRevalidate = false;
-  // Terminal latch: the backend refused this session's credential and
-  // this session cannot mint another one (see enterCredentialDead).
-  // While set, the automatic reconnect ladder is stopped and the status
-  // reads 'unauthorized'. Cleared only by an explicit triggerReconnect
-  // (the banner's Retry) or a manifest that fetches clean — never by
-  // the passive loop, which is the whole point.
-  private credentialDead = false;
+  // The terminal latch, null when the ladder is running (see
+  // enterTerminal). While set, the automatic reconnect ladder is stopped
+  // and the status reads whichever terminal state latched it. Cleared
+  // only by an explicit triggerReconnect (the banner's Retry) or by
+  // evidence that the condition has lifted — never by the passive loop,
+  // which is the whole point.
+  //
+  // One field rather than one flag per state: every reader asks "is the
+  // ladder stopped, and what do I tell the caller", and a second boolean
+  // would be a second thing each of the five call sites could forget.
+  private terminal: TerminalLatch | null = null;
   // Date.now() of the current socket's open, 0 when no socket is open.
   // The backoff ladder resets from this at close (see
   // BACKOFF_RESET_AFTER_MS) rather than on open.
   private connectedAt = 0;
+  // Date.now() of the last moment bytes actually crossed, 0 when they never
+  // have. Written on open and again on EVERY inbound frame — one integer
+  // store beside the watchdog's own refresh, which is as cheap as it sounds.
+  //
+  // It is deliberately NOT derived at close from lastFrameAt: that field is
+  // also bumped by handleLifecycleResume, on a socket that may have been
+  // dead since the machine went to sleep, so a close after an overnight
+  // outage would date "last seen" to the moment the lid opened and the
+  // banner would say the backend was there a minute ago.
+  private lastConnectedAt = 0;
+  // Date.now() of the close that began the CURRENT reconnecting run, 0
+  // while connected or before the first failure. The ladder's age, which
+  // is what dormancy is decided on — distinct from reconnectAttempt,
+  // because a demand-collapsed attempt advances the counter without
+  // meaning any time has passed.
+  //
+  // Cleared exactly where reconnectAttempt is: a connection that proved
+  // STABLE, a page resume, a manual Retry, a lease going active. Not on
+  // `open` — an accept-then-close backend would otherwise leave dormancy
+  // every five minutes and re-earn a full ladder each time, which is the
+  // storm BACKOFF_RESET_AFTER_MS exists to refuse.
+  private ladderStartedAt = 0;
 
   // The sink (wired by frontendErrorCapture at install) persists one
   // summary line per outage into the always-on ui-trace error log.
@@ -377,10 +835,49 @@ export class WSClient {
   private diagnosticsSink: ((message: string, detail?: string) => void) | null = null;
   private outage: OutageRecord | null = null;
 
+  // The most recent socket `error` event, captured per attempt so the
+  // close that follows it can name what killed the connection. The
+  // browser event carries no detail by spec, but a `--connect` shell and
+  // the test fake both deliver a real Error here, and preserving it is
+  // the difference between "socket closed (code 1006)" and a cause.
+  private lastSocketError: unknown = null;
+
   // RPC state.
   private readonly pending = new Map<string, Pending>();
+  // Frames held across a transient close for their one allowed re-send
+  // (see RetryOnTransientCloseEntry). Always empty under the empty
+  // production allowlist. Their Pending entries stay in `pending` — the
+  // calls are still outstanding and their RPC timeout still bounds the
+  // wait — so the queue holds only what to re-send, never a second
+  // settlement path.
+  private readonly retryQueue: ClientRPCFrame[] = [];
+  // The step-up token the NEXT dispatched RPC carries, and no other. Held
+  // only for the synchronous span of withStepUpToken below, because the
+  // token is spent by the presentation and a slot that outlived one call
+  // would spend it on whatever came next.
+  private stepUpToken: string | null = null;
+  // The installed proof seam (see StepUpProver) and the ceremony's own
+  // bookkeeping. `ceremonyInFlight` is the recursion guard, read at
+  // DISPATCH time; `ceremonyQueue` is what keeps two prompts off one
+  // screen. Both are read in dispatchRPC below.
+  private stepUpProver: StepUpProver | null = null;
+  private ceremonyInFlight = false;
+  private ceremonyQueue: Promise<void> = Promise.resolve();
   private readonly subscribers = new Map<string, Set<EventHandler>>();
   private readonly statusHandlers = new Set<StatusHandler>();
+  private readonly helloHandlers = new Set<HelloHandler>();
+  // The most recent hello. Survives a disconnect on purpose: the same
+  // backend is what the ladder is trying to reach, so clearing it would
+  // make every capability read flap to "unsupported" for the length of
+  // an outage and back. A reconnect to a DIFFERENT backend overwrites it
+  // with that backend's frame, which is the only case where the old
+  // answer was wrong.
+  private helloSnapshot: TransportHello | null = null;
+
+  // Forward-tolerance accounting: how much wire input this build could
+  // not address, and of what kinds. See noteUnknownInput.
+  private unknownInputTotal = 0;
+  private readonly unknownInputKinds = new Map<string, number>();
   private statusSnapshot: TransportStatusSnapshot = {
     status: 'disconnected',
     nextAttemptAt: null,
@@ -405,15 +902,51 @@ export class WSClient {
   private notificationReplayPending = false;
   private notificationReplayBuffer: ServerEventFrame[] = [];
   private notificationCheckpointScope: string | null = null;
+  // The watched-thread set this client is DESIRING, sorted. `null` means
+  // no set has ever been composed, which is the wildcard state the backend
+  // starts every connection in, so a client that never composes one
+  // behaves exactly as it did before the frame existed.
+  //
+  // The desired set, not the set last written to a socket: it is recorded
+  // before the frame is sent, and a send that fails (a closed or
+  // still-connecting socket) leaves it holding the new value anyway. That
+  // is safe because it is RESTATED on every open, ahead of the replay
+  // request and on the same socket, so a dropped frame costs nothing past
+  // the current connection and a reconnect always re-establishes what this
+  // client is actually looking at. Tracking the sent set instead would
+  // make a failed send re-send on the NEXT composition change, which is
+  // the same restatement one arbitrary delay later.
+  //
+  // It is also the dedup key, so an unchanged composition writes nothing.
+  private watchedThreads: string[] | null = null;
+  // This connection's lease state (./frames.ts). `'active'` is BOTH the
+  // never-set value and the resting one, deliberately: the backend starts
+  // every connection active, so the two are the same fact on the wire and a
+  // client that never calls `setLease` sends nothing and restates nothing.
+  private lease: LeaseState = 'active';
+  // What this screen last said it was doing (./frames.ts ClientPresenceFrame).
+  // `null` means nothing has been stated, which the backend treats as
+  // UNATTENDED — the same answer every client predating the frame gives, and
+  // the reason a client that never composes one is unaffected by it.
+  //
+  // The desired state, not the state last written to a socket, on exactly the
+  // terms `watchedThreads` is: it is restated after every hello, so a send
+  // that lost a closing socket costs nothing past that connection.
+  //
+  // It is also the dedup key. A window focus event fires on every alt-tab and
+  // a pane recompute on every open, so an unchanged screen writes no bytes.
+  private presence: { focused: boolean; threads: string[] } | null = null;
 
   constructor(opts: WSClientOptions = {}) {
     this.fetchBootstrap = opts.bootstrap ?? defaultBootstrap;
+    this.backend = opts.backend ?? HOME_BACKEND;
     // Defer the global WebSocket lookup until first use so tests that
     // never connect don't trip on a missing global.
     this.WebSocketCtor = opts.WebSocketCtor ??
       ((globalThis as { WebSocket?: WSConstructor }).WebSocket as WSConstructor);
     this.maxFrameBytes = opts.maxFrameBytes ?? MAX_FRAME_BYTES;
     this.probeLoopbackOrigin = opts.loopbackOrigin ?? pageServedOverLoopback;
+    this.retryAllowlist = opts.retryOnTransientClose ?? RETRY_ON_TRANSIENT_CLOSE;
     this.detachLifecycleListeners = this.attachLifecycleListeners();
   }
 
@@ -456,9 +989,7 @@ export class WSClient {
       // whose socket survived suspension force-closes it spuriously.
       this.lastFrameAt = Date.now();
     }
-    if (this.queuedAttempt === null) return;
-    this.reconnectAttempt = 0;
-    this.queuedAttempt.fire();
+    this.wakeReconnectLadder();
   }
 
   // callByID sends an `rpc` frame with a numeric methodId and resolves
@@ -476,6 +1007,43 @@ export class WSClient {
     return this.dispatchRPC({ method, params: args });
   }
 
+  // withStepUpToken attaches `token` to the first RPC `run` issues, and to
+  // no other call from anywhere.
+  //
+  // Scoped to a callback rather than exposed as an arm/disarm pair for one
+  // reason: presenting a step-up token SPENDS it, so a slot left armed
+  // across an await would put somebody's freshly proved touch on whatever
+  // background load happened to dispatch next. `run` is invoked
+  // synchronously, dispatchRPC builds its frame synchronously, and the
+  // `finally` clears anything a run that issued no call left behind.
+  //
+  // A second call inside one `run` therefore gets nothing, which is the
+  // right answer: one proof, one call (internal/transport/frame.go).
+  withStepUpToken<T>(token: string, run: () => T): T {
+    this.stepUpToken = token;
+    try {
+      return run();
+    } finally {
+      this.stepUpToken = null;
+    }
+  }
+
+  /**
+   * Install the seam that satisfies a step-up refusal on this connection,
+   * or clear it. One installation, at boot, and nothing at a call site
+   * opts in.
+   *
+   * That is the whole point of it being here. Wrapping each gated call
+   * instead is a wrapper the next `//ao:stepup` method's UI forgets, and
+   * the forgetting is invisible where it is written: on the owner's own
+   * machine host presence satisfies the gate, so no ceremony ever runs
+   * and the missing wrapper costs nothing until somebody is holding a
+   * phone.
+   */
+  installStepUpProver(prover: StepUpProver | null): void {
+    this.stepUpProver = prover;
+  }
+
   // subscribe registers a handler for `channel`. Returns the
   // unsubscribe function; matches Wails' Events.On contract.
   subscribe(channel: string, handler: EventHandler): () => void {
@@ -485,6 +1053,14 @@ export class WSClient {
       this.subscribers.set(channel, set);
     }
     set.add(handler);
+    // A new subscriber is live demand, exactly as an RPC is: a pane
+    // opening wants the stream NOW, and while a backoff (dormant or
+    // ordinary) is queued, ensureConnected would only hand back the
+    // pending promise. Same rate floor as the RPC path, so a burst of
+    // remounting panes cannot turn the ladder into a dial storm.
+    if (Date.now() - this.lastAttemptStartedAt >= RECONNECT_INITIAL_MS) {
+      this.queuedAttempt?.fire();
+    }
     // Connect lazily on first subscribe so an event-only listener
     // doesn't have to wait for an explicit RPC to bring the socket up.
     void this.ensureConnected().catch((err) => {
@@ -498,6 +1074,140 @@ export class WSClient {
         this.subscribers.delete(channel);
       }
     };
+  }
+
+  /**
+   * Name the threads this connection is looking at, narrowing the
+   * entity-filtered channels (./entityFilteredChannels.ts) server-side.
+   *
+   * The set is ABSOLUTE and idempotent: an identical set sends nothing, and
+   * an EMPTY one is a legal value meaning "no panes open". Composed from
+   * pane EXISTENCE and never from visibility — an off-screen pane, a hidden
+   * document and a background tab all keep watching, because a pane that
+   * stopped receiving would render wrongly the moment it is looked at.
+   *
+   * Nothing here is authorization. It reduces what this client asks to be
+   * sent; what it is ALLOWED to be sent is the per-connection origin and
+   * grant filters, which the backend applies regardless.
+   *
+   * Returns silently when disconnected: the set is retained and restated on
+   * the next open, ahead of the replay frame.
+   */
+  setWatchedThreads(threadIds: readonly string[]): void {
+    // Sorted + deduped so the dedup compare is a plain sequence equality
+    // and the wire bytes are stable for an unchanged composition — pane
+    // registries iterate in insertion order, which reshuffles on a reorder
+    // that changes nothing about what is being watched.
+    const next = [...new Set(threadIds)].sort();
+    if (next.length > MAX_WATCH_THREADS) {
+      // Unreachable by construction: the set is bounded by the number of
+      // open panes and the size of the discussion rosters they mount, both
+      // orders of magnitude below this. If it ever happens, the backend
+      // would refuse the frame anyway, so report it and leave the previous
+      // set standing rather than sending a truncated one — a truncated set
+      // silently stops watching a thread that IS open, which is the one
+      // outcome this whole mechanism must not produce.
+      console.warn(`wsClient: watch set of ${next.length} exceeds ${MAX_WATCH_THREADS}; not narrowing`);
+      this.diagnosticsSink?.(
+        'transport: watched-thread set exceeded the wire bound',
+        `${next.length} threads`,
+      );
+      return;
+    }
+    if (this.watchedThreads !== null && sameStringList(this.watchedThreads, next)) return;
+    this.watchedThreads = next;
+    this.sendFrame({ type: 'watch', threads: next });
+  }
+
+  /**
+   * State whether this CLIENT is in the foreground, for this connection.
+   *
+   * The whole-app native lifecycle — the phone shell's pause/resume — and
+   * nothing finer. Never a pane, never document visibility, never focus:
+   * off-view work shedding is a rejected design here, and a surface that
+   * stopped receiving would render wrongly the moment it is looked at. A
+   * backgrounded whole client is the one case where nothing on it is being
+   * looked at at all.
+   *
+   * Idempotent, and `'active'` is the resting state: a client that never
+   * calls this never puts a byte on the wire, which is every desktop and
+   * browser client. The one door meant for callers is
+   * ./lease.ts `setClientLease`, which states it to every attached backend.
+   *
+   * Returns silently when disconnected: the state is retained and restated
+   * on the next open, beside the watch set.
+   */
+  setLease(state: LeaseState): void {
+    if (this.lease === state) return;
+    this.lease = state;
+    this.sendFrame({ type: 'lease', state });
+    this.applyLeaseToDormantLadder();
+  }
+
+  // applyLeaseToDormantLadder is the lease's ONE effect on this client's
+  // own behaviour. The two directions are deliberately not symmetric.
+  //
+  // BACKGROUND touches only a DORMANT ladder: cancel the probe timer,
+  // because a phone in a pocket has nothing to keep current. An ordinary
+  // ladder is left climbing — an outage measured in seconds resolves itself
+  // before the distinction matters, and stopping it would make a
+  // five-second app switch cost a reconnect.
+  //
+  // ACTIVE wakes WHATEVER ladder is running, dormant or not. Coming back to
+  // the foreground is a person acting, and the first thing they do is look;
+  // waking a ladder that was already climbing costs one attempt per
+  // transition, because setLease ignores a state that did not change.
+  private applyLeaseToDormantLadder(): void {
+    if (this.closed || this.terminal !== null) return;
+    if (this.ws !== null && this.ws.readyState === WS_OPEN) return;
+    if (this.lease === 'background') {
+      if (!this.isDormant()) return;
+      this.disarmQueuedAttempt();
+      this.setReconnecting(null);
+      return;
+    }
+    this.wakeReconnectLadder();
+  }
+
+  /**
+   * State whether this screen is being looked at, and which threads it shows.
+   *
+   * THIS IS NOT THE WATCH SET AND NOT THE LEASE. The watch set is pane
+   * EXISTENCE and narrows what this connection is sent; the lease is the
+   * whole-client native lifecycle. This is neither: it changes nothing about
+   * delivery or rendering, and is read for one decision on the backend —
+   * whether to raise an OS notification about something already on screen
+   * (`internal/app/app_notifications.go`). Nothing here sheds work.
+   *
+   * Both halves replace the last frame together, so a screen that blurs and
+   * closes its pane stops being attended in one frame rather than keeping
+   * whichever half it stopped restating.
+   *
+   * Idempotent, and silent when disconnected: the state is retained and
+   * restated on the next open, beside the watch set and the lease. The door
+   * meant for callers is `stores/screenPresence.ts`, which states it to every
+   * attached backend.
+   */
+  setPresence(focused: boolean, threadIds: readonly string[]): void {
+    // Sorted + deduped for the same reason the watch set is: pane registries
+    // iterate in insertion order, and a reorder that changes nothing about
+    // what is on screen must not write a frame.
+    const threads = [...new Set(threadIds)].sort();
+    if (threads.length > MAX_WATCH_THREADS) {
+      // Unreachable by construction — this set is a subset of the open panes,
+      // which the watch set already bounds. The backend would refuse the
+      // frame, so leave the previous presence standing rather than send a
+      // truncated one: a truncated set claims a thread is off screen when it
+      // is not, and the notification it costs is the one about that thread.
+      console.warn(`wsClient: presence set of ${threads.length} exceeds ${MAX_WATCH_THREADS}; not stating it`);
+      return;
+    }
+    const previous = this.presence;
+    if (previous !== null && previous.focused === focused && sameStringList(previous.threads, threads)) {
+      return;
+    }
+    this.presence = { focused, threads };
+    this.sendFrame({ type: 'presence', focused, threads });
   }
 
   /** Current transport status snapshot. Cheap; safe to call repeatedly. */
@@ -518,22 +1228,56 @@ export class WSClient {
     };
   }
 
+  /** What the backend said about itself in its hello frame, or null if
+   *  none has arrived (including against a backend too old to send one). */
+  getHello(): TransportHello | null {
+    return this.helloSnapshot;
+  }
+
+  /**
+   * Whether the attached backend advertises `capability`.
+   *
+   * This is the ONLY sanctioned compatibility question. No hello, or an
+   * unrecognised name, answers false, so a feature degrades instead of
+   * being attempted against a backend that cannot serve it. There is
+   * deliberately no protocol-version comparison to reach for: version
+   * gating guesses, flags ask (docs/specs/remote-access.md §9).
+   *
+   * Never an authorization check. The backend re-checks every RPC; a
+   * flag says the behavior EXISTS, not that this caller may use it.
+   */
+  hasCapability(capability: string): boolean {
+    return this.helloSnapshot?.capabilities.includes(capability) ?? false;
+  }
+
+  /**
+   * Subscribe to hello changes. Fires synchronously with the current
+   * value, then whenever a connection reports a different one.
+   */
+  onHelloChange(handler: HelloHandler): () => void {
+    this.helloHandlers.add(handler);
+    handler(this.helloSnapshot);
+    return () => {
+      this.helloHandlers.delete(handler);
+    };
+  }
+
   /**
    * Force a reconnect attempt immediately. Cancels any queued backoff
    * timer and kicks off a fresh connect. Safe to call from a UI button
    * — when an attempt is already in flight, this is a no-op.
    *
-   * This is also the manual escape hatch out of the terminal
-   * 'unauthorized' latch. Un-latching on an explicit user action keeps
-   * the stop-the-ladder decision about the AUTOMATIC loop: one attempt
-   * per click can't storm anything, and if the refusal was a lie told by
-   * something in the path (a proxy 404-ing while the backend was down)
-   * this is what recovers. A second refusal re-latches within one round
-   * trip.
+   * This is also the manual escape hatch out of both terminal latches.
+   * Un-latching on an explicit user action keeps the stop-the-ladder
+   * decision about the AUTOMATIC loop: one attempt per click can't storm
+   * anything, and if the refusal was a lie told by something in the path
+   * (a proxy 404-ing while the backend was down, a pairing completed in
+   * another tab of this browser) this is what recovers. A condition that
+   * still holds re-latches within one round trip.
    */
   triggerReconnect(): void {
     if (this.closed) return;
-    this.clearCredentialDead();
+    this.clearTerminal();
     if (this.ws && this.ws.readyState === WS_OPEN) {
       // A half-open socket also reads as OPEN. An explicit retry
       // deserves the watchdog's staleness verdict now rather than at
@@ -541,17 +1285,19 @@ export class WSClient {
       this.checkStaleness();
       return;
     }
-    // Reset the backoff so a manual retry starts at the lowest delay.
-    this.reconnectAttempt = 0;
+    // Reset the backoff so a manual retry starts at the lowest delay, and
+    // the ladder's age with it — a person clicking Retry is the clearest
+    // demand there is, so a dormant ladder becomes an ordinary one again.
+    // Going through fire() (rather than cancelling the timer and starting
+    // a fresh connect) settles the scheduled connectPromise, so RPCs
+    // already queued behind the backoff ride the retried attempt instead
+    // of hanging on an abandoned promise until their 60s timeout.
     if (this.queuedAttempt !== null) {
-      // Run the scheduled attempt now. Going through fire() (rather
-      // than cancelling the timer and starting a fresh connect)
-      // settles the scheduled connectPromise, so RPCs already queued
-      // behind the backoff ride the retried attempt instead of hanging
-      // on an abandoned promise until their 60s timeout.
-      this.queuedAttempt.fire();
+      this.wakeReconnectLadder();
       return;
     }
+    this.reconnectAttempt = 0;
+    this.ladderStartedAt = 0;
     if (this.connectPromise !== null) {
       // An attempt is in flight. Racing a second connect against it
       // would mint a parallel socket and orphan one of the two — let
@@ -561,6 +1307,109 @@ export class WSClient {
     void this.ensureConnected().catch((err) => {
       console.warn('wsClient: triggerReconnect failed', err);
     });
+  }
+
+  /**
+   * Re-dial so the upgrade names the session this browser just paired,
+   * and resolve once the transport has settled under it.
+   *
+   * Called once, when the pairing flow completes: any socket opened
+   * before the credential existed dialed without a ticket, so its
+   * upgrade named whatever the page cookie did — on a browser that also
+   * holds the local page cookie, that is the LOCAL channel, and
+   * revoking the new device would never reach it.
+   *
+   * **It returns a promise because the app mounts on the other side of
+   * it** (`src/main.ts`). Mounting while this is still in flight issues
+   * every boot RPC against a transport mid-transition, and there are two
+   * ways that ends in a burst of failures shown for a pairing that in
+   * fact worked (2026-08-31, the owner's first paired browser):
+   *
+   *  - the retiring socket's close reaches `handleSocketClose`'s LIVE
+   *    branch, whose `failPending` rejects every entry in `pending` —
+   *    including the boot calls registered a tick earlier that never
+   *    rode that socket — and then schedules a reconnect racing the dial
+   *    those same calls are awaiting;
+   *  - the first post-pairing attempt fails once, and its single
+   *    rejection settles all ~20 awaiting boot RPCs at once. The ladder
+   *    recovers a moment later, which is why the app came up "mostly"
+   *    and a manual refresh fixed it.
+   *
+   * Neither is a transport fault to report; the app booted a beat early.
+   * The wait is BOUNDED (`REDIAL_SETTLE_BUDGET_MS`) — a backend that is
+   * down must still mount the app, whose reconnecting banner is the
+   * designed surface for it.
+   */
+  async redialAfterPairing(): Promise<void> {
+    // The credential that just landed published the grants it carries, and
+    // this page's screens key off them. Re-read before the dial rather
+    // than after: the pairing screen unmounts into the ordinary app on the
+    // same tick, and a surface that mounted against the pre-pairing answer
+    // would sit disabled until something else happened to invalidate it.
+    refreshGrantedScopes();
+    if (this.closed) return;
+    this.clearTerminal();
+    this.reconnectAttempt = 0;
+
+    // Settle whatever the pre-pairing page left running first, so the
+    // dial below is the only attempt in flight. A queued backoff is
+    // FIRED rather than waited out: its delay was priced for a failure,
+    // not for a credential that just arrived, and firing settles the
+    // same promise the timer would have.
+    this.queuedAttempt?.fire();
+    const inFlight = this.connectPromise;
+    if (inFlight !== null) await inFlight.catch(() => {});
+    if (this.closed) return;
+
+    // Retire a socket that did not name the paired session on its
+    // upgrade. An attempt fired above may have produced a correct one
+    // already, and closing that would cost a needless round trip.
+    if (this.ws !== null && !this.socketNamedPairedSession) this.detachSocket();
+
+    // Hand back only once the transport is usable, or once the budget
+    // is spent. Both outcomes resolve: this call reports that the
+    // transport has had its chance, never whether it took it.
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, REDIAL_SETTLE_BUDGET_MS);
+      const settle = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      void this.ensureConnected().then(settle, settle);
+    });
+  }
+
+  // detachSocket retires the live socket WITHOUT routing its death
+  // through the reconnect path. Only redialAfterPairing needs that:
+  // every other close is a real one the ladder must answer.
+  //
+  // The order is the mechanism. Dropping `this.ws` FIRST makes the close
+  // event that follows take handleSocketClose's superseded branch, which
+  // settles that socket's own attempt and touches nothing else. The live
+  // branch would instead reject every outstanding RPC and schedule a
+  // second attempt racing the dial this retirement exists to make room
+  // for.
+  //
+  // It owes `connectPromise` its own null, which the superseded branch
+  // cannot supply: on that branch's ordinary path a replacement attempt
+  // has already installed one, and nulling it there would strand the
+  // replacement's awaiters. A detach has no replacement yet, so leaving
+  // it set would hand every later ensureConnected a promise for a socket
+  // that is gone.
+  private detachSocket(): void {
+    const ws = this.ws;
+    if (ws === null) return;
+    this.ws = null;
+    this.connectPromise = null;
+    this.socketNamedPairedSession = false;
+    this.stopStaleWatchdog();
+    this.serverSendsHeartbeats = false;
+    this.connectedAt = 0;
+    try {
+      ws.close(1000, 'redial');
+    } catch {
+      // ignore — already closing; the superseded branch runs either way.
+    }
   }
 
   /**
@@ -596,6 +1445,22 @@ export class WSClient {
     }
   }
 
+  // Whether any in-flight RPC was issued inside the silence threshold,
+  // and so could still be the response this socket is mid-way through
+  // receiving. Scanned rather than tracked as a max: the map holds the
+  // handful of calls a screen has outstanding, the scan runs once per
+  // watchdog tick (10s) and stops at the first recent entry, and a
+  // maintained maximum would have to be recomputed on every settle
+  // anyway.
+  private hasRecentlyIssuedRPC(): boolean {
+    if (this.pending.size === 0) return false;
+    const cutoff = Date.now() - STALE_TRAFFIC_THRESHOLD_MS;
+    for (const pending of this.pending.values()) {
+      if (pending.sentAt > cutoff) return true;
+    }
+    return false;
+  }
+
   private checkStaleness(): void {
     if (this.closed || !this.serverSendsHeartbeats) return;
     // A hidden renderer may throttle both this interval and WebSocket message
@@ -605,10 +1470,20 @@ export class WSClient {
     if (!this.ws || this.ws.readyState !== WS_OPEN) return;
     // A single huge response frame on a slow remote link yields no
     // message event until fully received — and it blocks the
-    // heartbeats queued behind it on the wire. While RPCs are in
-    // flight against a remote backend, let their own 60s timeout
-    // arbitrate instead of killing a socket mid-transfer.
-    if (this.remoteBackend && this.pending.size > 0) return;
+    // heartbeats queued behind it on the wire. So a RECENTLY issued RPC
+    // against a remote backend suspends the verdict, and its own 60s
+    // timeout arbitrates instead of this killing a socket mid-transfer.
+    //
+    // Recently, not merely outstanding. Any pending call used to suspend
+    // it, which made the watchdog unreachable on exactly the connections
+    // it exists for: a half-open remote socket keeps its in-flight calls
+    // pending forever (no response is coming and no close event is
+    // either), so the one thing that would have force-closed it was
+    // switched off by the same failure. A call issued longer ago than the
+    // silence threshold cannot be the transfer holding the heartbeats
+    // back: a transfer that had not delivered a byte in that window is
+    // the stall itself.
+    if (this.remoteBackend && this.hasRecentlyIssuedRPC()) return;
     const idleMs = Date.now() - this.lastFrameAt;
     if (idleMs <= STALE_TRAFFIC_THRESHOLD_MS) return;
     const idleSeconds = Math.round(idleMs / 1000);
@@ -644,19 +1519,120 @@ export class WSClient {
       }
       this.ws = null;
     }
+    // Terminal by construction: a closed client runs no ladder, so a
+    // call parked for a transient re-send is settled here alongside the
+    // rest rather than stranded in the retry queue.
+    this.retryQueue.length = 0;
+    const closedErr = new DisconnectedError('client closed', { terminal: true });
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
-      pending.reject(new DisconnectedError('client closed'));
+      pending.reject(closedErr);
     }
     this.pending.clear();
     this.subscribers.clear();
   }
 
-  // dispatchRPC is the single path through which both callByID and
-  // callByName route. It generates an id, registers the pending entry,
-  // and either sends immediately (socket open) or after the in-flight
-  // connect resolves (socket connecting).
-  private dispatchRPC(spec: { methodId?: number; method?: string; params: unknown[] }): Promise<unknown> {
+  // dispatchRPC is the single path both callByID and callByName route
+  // through, and therefore the ONE place a step-up refusal becomes a
+  // proof. A call refused for want of one runs the ceremony and is sent
+  // once more with the token; its caller only ever sees the outcome.
+  //
+  // **Whether this call may be retried under a proof is decided HERE,
+  // synchronously, before anything is sent — and that is the recursion
+  // guard.** The ceremony's own RPCs are issued while `ceremonyInFlight`
+  // is set, so they take the un-intercepted path by construction rather
+  // than by anybody matching their names; a ceremony call refused for
+  // want of a proof would otherwise wait on the ceremony waiting on it.
+  //
+  // The interception closure retains this call's `spec` — its params
+  // included — for as long as the call is outstanding, and no longer.
+  // That is the price of closing the class at one point rather than at
+  // every gated call site, and it is the same window the awaiting caller
+  // already holds its own arguments for.
+  private dispatchRPC(spec: DispatchSpec): Promise<unknown> {
+    const prover = this.ceremonyInFlight ? null : this.stepUpProver;
+    const settled = this.sendRPC(spec);
+    if (prover === null) return settled;
+    return settled.catch((err: unknown) => {
+      if (!prover.wants(err)) throw err;
+      return this.retryUnderProof(prover, spec, err);
+    });
+  }
+
+  // retryUnderProof runs the ceremony and dispatches the refused call
+  // once more with the token armed.
+  //
+  // EXACTLY once, and structurally: the retry goes through sendRPC rather
+  // than dispatchRPC, so a second refusal is the answer rather than a
+  // second prompt. A call refused after a proof was accepted was refused
+  // for a different reason than the first time, and asking for another
+  // touch would train somebody to approve prompts that do not work.
+  //
+  // Anything that goes wrong in the ceremony settles the caller with the
+  // ORIGINAL refusal. What happened from where they sit is that the
+  // change did not go through, and ./scopeRefusal.ts owns that sentence;
+  // a WebAuthn error would name a fault they did not commit.
+  private async retryUnderProof(
+    prover: StepUpProver,
+    spec: DispatchSpec,
+    refusal: unknown,
+  ): Promise<unknown> {
+    let token: string;
+    try {
+      token = await this.proveInTurn(prover);
+    } catch {
+      throw refusal;
+    }
+    if (this.closed) throw refusal;
+    // Armed and dispatched in one synchronous step: sendRPC builds its
+    // frame inside this callback, so the token lands on this call and on
+    // no other (withStepUpToken above). There is no second way for a
+    // token to reach a frame.
+    return this.withStepUpToken(token, () => this.sendRPC(spec));
+  }
+
+  // proveInTurn runs one ceremony at a time. Two calls refused at once —
+  // a screen with two gated writes in flight — must not put two prompts
+  // on one screen: the second is unattributable, and on most platforms it
+  // simply replaces the first.
+  //
+  // They are SERIALIZED rather than sharing one proof, because a token
+  // proves ONE call: the second refusal needs a ceremony of its own, and
+  // it asks for it once the first prompt has been answered. The queue
+  // tracks order and nothing else, so a ceremony that failed hands the
+  // next caller its turn rather than its failure.
+  private proveInTurn(prover: StepUpProver): Promise<string> {
+    const turn = this.ceremonyQueue.then(() => this.runCeremony(prover));
+    this.ceremonyQueue = turn.then(
+      () => {},
+      () => {},
+    );
+    return turn;
+  }
+
+  // runCeremony holds `ceremonyInFlight` for the whole of the ceremony,
+  // which is what puts its RPCs on the un-intercepted path in
+  // dispatchRPC. Set before `prove` is called and cleared after it
+  // settles, so there is no window where one of its calls is dispatched
+  // without the guard.
+  private async runCeremony(prover: StepUpProver): Promise<string> {
+    this.ceremonyInFlight = true;
+    try {
+      // `this`, so the ceremony's calls ride the connection that refused:
+      // the token is bound to the session that began the ceremony, and
+      // that has to be the session about to spend it. It is also what
+      // makes the guard above cover them, since it is per client.
+      return await prover.prove(this);
+    } finally {
+      this.ceremonyInFlight = false;
+    }
+  }
+
+  // sendRPC generates an id, registers the pending entry, and either
+  // sends immediately (socket open) or after the in-flight connect
+  // resolves (socket connecting). One send, one settlement: the step-up
+  // retry above is the only caller that ever issues a second one.
+  private sendRPC(spec: DispatchSpec): Promise<unknown> {
     if (this.closed) {
       return Promise.reject(new DisconnectedError('client closed'));
     }
@@ -672,7 +1648,6 @@ export class WSClient {
           reject(new TransportError('timeout', `RPC ${id} timed out after ${RPC_TIMEOUT_MS}ms`));
         }
       }, RPC_TIMEOUT_MS);
-      this.pending.set(id, { resolve, reject, timer });
 
       const frame: ClientRPCFrame = {
         type: 'rpc',
@@ -685,6 +1660,20 @@ export class WSClient {
       // method.
       if (typeof spec.methodId === 'number' && spec.methodId !== 0) frame.methodId = spec.methodId;
       if (typeof spec.method === 'string') frame.method = spec.method;
+      // Drained HERE, at frame construction, rather than at send: this
+      // executor runs synchronously inside the arming call, so the token
+      // lands on the call that armed it and on no later one. Draining at
+      // send would leave it in the slot across an await, where the next
+      // RPC any surface issues could take it — and presenting it is what
+      // spends it.
+      if (this.stepUpToken !== null) {
+        frame.stepUpToken = this.stepUpToken;
+        this.stepUpToken = null;
+      }
+      // Allowlist resolved HERE, once, so a call that will never be
+      // retried does not pin its params for the RPC's lifetime.
+      const retry = matchesRetryAllowlist(this.retryAllowlist, spec) ? frame : null;
+      this.pending.set(id, { resolve, reject, timer, retry, sentAt: Date.now() });
 
       // An RPC is live demand: if reconnection is sitting in a queued
       // backoff, run the attempt now instead of making the caller wait
@@ -726,12 +1715,15 @@ export class WSClient {
     if (this.ws && this.ws.readyState === WS_OPEN) {
       return Promise.resolve();
     }
-    if (this.credentialDead) {
+    if (this.terminal !== null) {
       // Terminal: refuse without touching the network. Passive demand
       // (a background poll, a subscribe from a remounting pane) must not
       // turn the stopped ladder back into one fetch per caller.
       return Promise.reject(
-        new DisconnectedError('backend refused this session credential; reopen the share link'),
+        new DisconnectedError(this.terminal.message, {
+          cause: this.terminal.cause,
+          terminal: true,
+        }),
       );
     }
     if (this.connectPromise) {
@@ -756,11 +1748,6 @@ export class WSClient {
     let bootstrap: Bootstrap;
     try {
       bootstrap = await this.getBootstrap();
-      // A manifest in hand means the credential was accepted, so a
-      // latched refusal is history. Republishing here rather than at
-      // socket-open means the banner stops naming a cause that no
-      // longer holds as soon as we have the evidence.
-      this.clearCredentialDead();
     } catch (err) {
       this.connectPromise = null;
       // A refused credential is not a transient failure. For a session
@@ -779,13 +1766,95 @@ export class WSClient {
       // reconnect so a transient bootstrap failure recovers without
       // requiring fresh user input.
       this.scheduleReconnect();
-      throw err;
+      // Wrapped, not re-thrown raw. A failed manifest fetch rejects with
+      // whatever fetch threw (a bare TypeError, "Failed to fetch"), and
+      // that is a TRANSPORT failure that isTransportClassError could not
+      // recognise — so a caller with side effects read it as a definite
+      // "nothing happened" when the request may in fact never have been
+      // sent. Wrapping puts every connect-stage failure in the one class
+      // callers classify on, with the original preserved as `cause`.
+      throw new DisconnectedError('transport unreachable', {
+        cause: err,
+        terminal: this.terminal !== null,
+      });
+    }
+    // Both terminal conditions are decided here, against the manifest
+    // that just landed, and in this order. The pairing rule is asked
+    // FIRST so a page that is going to latch on it never publishes a
+    // moment of 'reconnecting' on the way: clearTerminal below is
+    // evidence that a latched condition has lifted, and for an unpaired
+    // networked page it has not.
+    if (this.pairingRequired(bootstrap.remote === true)) {
+      this.connectPromise = null;
+      this.enterPairingRequired();
+      throw new DisconnectedError('this backend admits paired devices only', {
+        terminal: true,
+      });
+    }
+    // A manifest in hand means the credential was accepted, and the
+    // pairing rule just answered no, so a latched refusal is history.
+    // Republishing here rather than at socket-open means the banner stops
+    // naming a cause that no longer holds as soon as we have the
+    // evidence.
+    this.clearTerminal();
+    // A PAIRED device holds its session credential in script (it arrived
+    // in the /auth/pair response body, not as a cookie), so the upgrade
+    // names its session through the single-use ticket instead
+    // (docs/specs/remote-access.md §4). Minted fresh per attempt — a
+    // ticket lives seconds and is spent whether or not the upgrade
+    // succeeds. Runs before the closed check so a close() during the
+    // mint still stops the attempt. The unpaired path (every embedded
+    // and local page: their cookie rides the upgrade by itself) stays
+    // fully synchronous — no awaited microtask is added to every
+    // ordinary dial.
+    let dialTicket: string | null = null;
+    if (hasPairedSession(this.backend)) {
+      dialTicket = await mintDialTicket(fetch, this.backend);
+      if (dialTicket === null && hasPairedSession(this.backend)) {
+        // No ticket, session still held: the mint could not prove the
+        // stored session right now (endpoint unreachable, or the owner
+        // has not confirmed the pairing yet) and did NOT conclude it is
+        // dead — that verdict clears the store, and the next attempt
+        // dials unpaired. Dialing anyway would let a page cookie this
+        // browser may also hold ride the upgrade and admit this screen
+        // as the LOCAL channel — a socket that revoking this device
+        // never reaches. Fail the attempt instead; the ladder retries.
+        this.connectPromise = null;
+        if (this.outage !== null) this.outage.attempts += 1;
+        this.scheduleReconnect();
+        throw new DisconnectedError('paired session has no dial ticket');
+      }
     }
     if (this.closed) {
       this.connectPromise = null;
-      throw new DisconnectedError('client closed');
+      throw new DisconnectedError('client closed', { terminal: true });
     }
-    const url = appendToken(bootstrap.wsUrl, bootstrap.token);
+    // No credential is appended: the upgrade is same-origin, so the
+    // browser attaches the session cookie itself. Non-browser clients
+    // (the harness client, the e2e suite) present the session token as
+    // a query parameter against the same validation instead.
+    //
+    // What IS appended is this screen's identity, so bound methods can
+    // attribute a write and so this client can recognize the echo of its own
+    // change. It rides the URL rather than a post-open frame because it has to
+    // be in place before the first RPC lands: a draft saved in the window
+    // before a handshake completed would echo back into the composer that
+    // typed it. Both ids are opaque and the backend re-validates their shape.
+    // The manifest's wsUrl, carried onto the home endpoint when this
+    // client's page is not its backend's (./homeEndpoint.ts). The
+    // identity for every same-origin client, and for an ATTACHED
+    // backend's socket in every client — homeWsUrl leaves an absolute
+    // url naming another host exactly as it found it.
+    let url = withClientIdentity(homeWsUrl(bootstrap.wsUrl));
+    if (dialTicket !== null) {
+      const withTicket = new URL(url);
+      withTicket.searchParams.set('ticket', dialTicket);
+      url = withTicket.toString();
+    }
+
+    // Each attempt starts with no known socket-level cause; a stale one
+    // from the previous socket must never be attributed to this close.
+    this.lastSocketError = null;
 
     return await new Promise<void>((resolve, reject) => {
       const attempt: ConnectAttempt = { settled: false, resolve, reject };
@@ -794,10 +1863,14 @@ export class WSClient {
         ws = new this.WebSocketCtor(url);
       } catch (err) {
         this.connectPromise = null;
-        reject(err);
+        // Same wrapping rationale as the bootstrap path: a thrown
+        // constructor (a malformed URL, a blocked scheme) is a transport
+        // failure and must classify as one.
+        reject(new DisconnectedError('socket could not be opened', { cause: err }));
         return;
       }
       this.ws = ws;
+      this.socketNamedPairedSession = dialTicket !== null;
       ws.addEventListener('open', () => this.handleSocketOpen(ws, bootstrap, attempt));
       ws.addEventListener('message', (ev: MessageEvent) => this.handleSocketMessage(ws, ev));
       ws.addEventListener('error', (errEv: Event) => {
@@ -806,6 +1879,12 @@ export class WSClient {
         // signal and the reconnect path takes over. Logging the event
         // leaves a debug breadcrumb for environments where the close
         // reason is opaque.
+        //
+        // Retained as the close's `cause`: on the browser the event
+        // carries no detail, but a `--connect` shell and the test fake
+        // deliver a real Error here, and the close code alone (1006 for
+        // every abnormal end) cannot distinguish them.
+        if (this.ws === ws) this.lastSocketError = errEv;
         console.warn('wsClient: socket error', errEv);
       });
       ws.addEventListener('close', (ev: CloseEvent) => this.handleSocketClose(ws, ev, attempt));
@@ -838,14 +1917,65 @@ export class WSClient {
     // at its floor. handleSocketClose resets it once the connection
     // proved stable (BACKOFF_RESET_AFTER_MS).
     this.connectedAt = Date.now();
+    this.lastConnectedAt = this.connectedAt;
+    // Restate the watched set BEFORE the replay request, and on the same
+    // socket. The backend handles inbound frames in order on one read loop,
+    // so a watch written first is applied before the replay it precedes —
+    // which is what stops a reconnect replaying every watched channel's
+    // whole ring for threads this client stopped looking at. A connection
+    // that has composed no set skips this and stays wildcard.
+    if (this.watchedThreads !== null) {
+      this.sendFrame({ type: 'watch', threads: this.watchedThreads });
+    }
+    // And restate the lease, for the same reason and on the same terms: the
+    // backend starts every connection ACTIVE, so a phone that went to sleep
+    // and reconnected on the OS's schedule would otherwise be streamed at
+    // full rate while its screen is off. Only a non-active state is worth a
+    // frame — `active` is what the new connection already is.
+    if (this.lease !== 'active') {
+      this.sendFrame({ type: 'lease', state: this.lease });
+    }
+    // And the screen presence, on the same terms — but unconditionally for a
+    // client that has composed one, because there is no resting value the new
+    // connection already holds: the backend treats an unstated presence as
+    // UNATTENDED, so a focused screen that reconnected without restating
+    // would start raising notifications for what it is looking at.
+    if (this.presence !== null) {
+      this.sendFrame({
+        type: 'presence',
+        focused: this.presence.focused,
+        threads: this.presence.threads,
+      });
+    }
     // First-frame after open: replay any missed events. The server
     // only acts on this if the map is non-empty; it's still cheap
     // to send unconditionally since channel-by-channel reconciliation
     // is exactly what a reconnect needs.
-    const replay: Record<string, number> = {
-      [NOTIFICATION_ACTIVATED_CHANNEL]: loadNotificationActivationSeq(bootstrap.token),
-    };
-    this.notificationCheckpointScope = bootstrap.token;
+    // Scoped by launch id: the checkpoint is a per-tab dedup for
+    // notification replay, and a backend that restarted numbers its
+    // events from scratch, so a checkpoint from the previous launch must
+    // not suppress the new one's replay.
+    const scope = bootstrap.launchId ?? '';
+    const replay: Record<string, number> = {};
+    // The zero-seeded notification cursor is a LOCAL cold-launch
+    // mechanism, not a general one: it exists because a Windows toast can
+    // start the desktop window, so the click that launched it landed
+    // before this page had a socket to hear it on. A remote page was not
+    // launched by a toast on that host, so asking for the channel's
+    // retained ring would hand it every activation the desk has produced
+    // since boot — and the queue on the other end OPENS each one, which
+    // would walk a phone's panes through all of them on every fresh
+    // attach. It asks for nothing here and receives live activations
+    // only; the ordinary cursor loop below still replays what it actually
+    // missed across a reconnect. Scope stays null for the same reason: a
+    // checkpoint nothing reads back is only writes to sessionStorage per
+    // click.
+    if (!this.isRemoteSession(bootstrap.remote === true)) {
+      replay[NOTIFICATION_ACTIVATED_CHANNEL] = loadNotificationActivationSeq(scope);
+      this.notificationCheckpointScope = scope;
+    } else {
+      this.notificationCheckpointScope = null;
+    }
     this.notificationReplayPending = true;
     this.notificationReplayBuffer = [];
     for (const [channel, cursor] of this.lastSeqByChannel) {
@@ -855,6 +1985,7 @@ export class WSClient {
       type: 'replay',
       lastSeqByChannel: replay,
     });
+    this.flushRetryQueue();
     this.connectPromise = null;
     this.preOpenFailures = 0;
     this.startStaleWatchdog();
@@ -864,7 +1995,7 @@ export class WSClient {
       const detail =
         `down ${downSeconds}s, close code ${this.outage.closeCode}, ${this.outage.attempts} failed attempts`;
       // Console too, not just the sink: remote clients can't persist
-      // through ReportFrontendErrorBatch (LocalOnly), and the console
+      // through ReportFrontendErrorBatch (host-scoped), and the console
       // line is then the only surviving evidence of the outage.
       console.info(`wsClient: reconnected after outage (${detail})`);
       this.diagnosticsSink?.('transport: reconnected after outage', detail);
@@ -878,8 +2009,11 @@ export class WSClient {
     // connection's state (seq tracking, pending RPCs, watchdog).
     if (this.ws !== ws) return;
     // Any inbound frame is proof of life — refresh the staleness
-    // watchdog before any validation can reject the frame.
+    // watchdog before any validation can reject the frame. A frame is
+    // also the only thing that proves the far side was there, so it is
+    // what "last seen" is measured from.
     this.lastFrameAt = Date.now();
+    this.lastConnectedAt = this.lastFrameAt;
     const text = typeof ev.data === 'string' ? ev.data : '';
     if (!text) return;
     if (text.length > this.maxFrameBytes) {
@@ -905,12 +2039,31 @@ export class WSClient {
       }
       return;
     }
+    let parsed: unknown;
     try {
-      const frame = JSON.parse(text) as ServerFrame;
-      this.handleFrame(frame);
-    } catch (err) {
-      console.warn('wsClient: malformed frame', err);
+      parsed = JSON.parse(text);
+    } catch {
+      // Rate-limited, and NOT an error-level log: a peer emitting
+      // unparseable frames would otherwise write one console line per
+      // frame, and console spam during a wire problem buries the one
+      // line that explains it.
+      this.noteUnknownInput('unparseable');
+      return;
     }
+    // A frame is an object with a string `type`. Anything else — a JSON
+    // primitive, an array, null — is not addressable by this client and
+    // is counted rather than thrown on. `null` in particular would make
+    // every property read below throw.
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      this.noteUnknownInput('non-object');
+      return;
+    }
+    const type = (parsed as { type?: unknown }).type;
+    if (typeof type !== 'string') {
+      this.noteUnknownInput('untyped');
+      return;
+    }
+    this.handleFrame(parsed as ServerFrame);
   }
 
   // handleSocketClose tears down after a socket dies: outage
@@ -920,8 +2073,18 @@ export class WSClient {
   // state is not its to touch.
   private handleSocketClose(ws: WSLike, ev: CloseEvent, attempt: ConnectAttempt): void {
     if (this.ws !== ws) {
+      // Superseded: this socket is not the client's any more, so its
+      // death settles its own attempt and nothing else. `connectPromise`
+      // is deliberately NOT nulled here — a replacement attempt has
+      // already installed one on every path that reaches this, and
+      // nulling it would strand the replacement's awaiters. A caller
+      // that detaches WITHOUT replacing owes it that null itself; see
+      // detachSocket.
       attempt.settled = true;
-      attempt.reject(new DisconnectedError('socket superseded'));
+      attempt.reject(new DisconnectedError('socket superseded', {
+        closeCode: ev.code,
+        closeReason: ev.reason,
+      }));
       return;
     }
     this.stopStaleWatchdog();
@@ -932,9 +2095,18 @@ export class WSClient {
     // that opened and died immediately keeps climbing — that is the
     // accept-then-close storm the ladder exists for.
     const connectedFor = this.connectedAt === 0 ? 0 : Date.now() - this.connectedAt;
+    // Nothing to record here: lastConnectedAt was stamped on open and by
+    // every frame since, so it already names the last moment bytes crossed.
+    // A half-open socket the watchdog reaps was dead for up to
+    // STALE_TRAFFIC_THRESHOLD_MS before this runs, and the close time would
+    // tell the user the backend was there half a minute after it was not.
     this.connectedAt = 0;
     if (connectedFor >= BACKOFF_RESET_AFTER_MS) {
       this.reconnectAttempt = 0;
+      // A connection that proved stable retires the ladder's age with its
+      // height: the next outage is a NEW one and earns its own five
+      // minutes before going dormant again.
+      this.ladderStartedAt = 0;
     }
     // Outage bookkeeping: the first close opens the outage record
     // (its code names the original cause — 1006 network death vs
@@ -947,17 +2119,30 @@ export class WSClient {
     // response on this connection. The reconnect path resends a
     // replay frame, but RPCs themselves are not retried (the caller
     // sees DisconnectedError and decides whether to retry at the
-    // app layer).
-    this.failPending(new DisconnectedError('socket closed'));
+    // app layer) — except the explicitly allowlisted few, which
+    // failPending holds for one re-send.
+    //
+    // The close code, the peer's reason, and any preceding socket error
+    // ride the rejection: without them every caller in the app reports
+    // the same "socket closed" for a relay teardown, a backend restart,
+    // and a policy close, and the first question of any triage — WHY did
+    // the wire go — has no answer left in the UI or the error log.
+    this.failPending(new DisconnectedError('socket closed', {
+      closeCode: ev.code,
+      closeReason: ev.reason,
+      cause: this.lastSocketError ?? undefined,
+      terminal: this.terminal !== null,
+    }));
     this.notificationReplayPending = false;
     this.notificationReplayBuffer = [];
     this.ws = null;
+    this.socketNamedPairedSession = false;
     if (!attempt.settled) {
       this.outage.attempts += 1;
       this.preOpenFailures += 1;
       if (this.preOpenFailures >= BOOTSTRAP_INVALIDATE_AFTER_FAILURES && this.bootstrap !== null) {
         // Consecutive attempts died before OPEN: the cached bootstrap
-        // may be stale — a restarted backend mints a new token, and
+        // may be stale — a restarted backend mints a new credential, and
         // reconnecting with the old one is refused forever. Drop the
         // cache so the next attempt refetches; if the server is simply
         // down, the refetch fails into the same backoff it would have
@@ -966,7 +2151,6 @@ export class WSClient {
         // failure from here on.
         this.bootstrap = null;
         this.bootstrapPromise = null;
-        this.bootstrapRevalidate = true;
         this.preOpenFailures = 0;
       }
       // First-attempt failure: surface to the awaiter so the call
@@ -974,7 +2158,12 @@ export class WSClient {
       // hanging on a Promise that never resolves.
       attempt.settled = true;
       this.connectPromise = null;
-      attempt.reject(new DisconnectedError('socket closed before open'));
+      attempt.reject(new DisconnectedError('socket closed before open', {
+        closeCode: ev.code,
+        closeReason: ev.reason,
+        cause: this.lastSocketError ?? undefined,
+        terminal: this.terminal !== null,
+      }));
     }
     if (this.closed) return;
     this.setReconnecting(null);
@@ -995,59 +2184,177 @@ export class WSClient {
   //     backend has no manifest to have learned `remote` from.
   //
   // A session tunnelled over SSH satisfies neither (both ends read as
-  // loopback, exactly as LocalOnlyMethods sees it) and keeps the
+  // loopback, exactly as `loopback.PeerAddress` sees it) and keeps the
   // ordinary retry loop — honest-but-vague beats claiming a share link
   // that may not exist.
-  private isRemoteSession(): boolean {
-    return this.remoteBackend || !this.probeLoopbackOrigin();
+  //
+  // `remoteBackend` defaults to the latched field, which is what the
+  // failure-reporting callers want ("what do we currently believe"). A
+  // caller holding the manifest that produced one specific socket passes
+  // its verdict instead, so a superseded late fetch cannot decide a
+  // question about a different connection.
+  private isRemoteSession(remoteBackend: boolean = this.remoteBackend): boolean {
+    return remoteBackend || !this.probeLoopbackOrigin();
   }
 
-  // enterCredentialDead latches the transport's one terminal state and
-  // is the ONLY place the automatic reconnect ladder is stopped. The
-  // backend answered and refused this session's credential, and this
-  // session cannot produce another one, so every further attempt is
-  // structurally doomed: retrying would be a battery-burning loop
-  // against a server that will refuse each attempt identically.
+  // pairingRequired reports that this page's socket would arrive at the
+  // backend as an off-host peer while this browser holds no paired
+  // session to name on the upgrade — which that backend refuses (spec §4
+  // "Local clients"). Asked BEFORE dialing, because the refusal is an
+  // unfingerprintable 404 the browser surfaces as a bare 1006: dialing
+  // would buy no information and cost one doomed socket per attempt.
+  //
+  // The AND of the two signals isRemoteSession ORs, and each term
+  // excludes a case the other admits wrongly:
+  //
+  //   - `remote` is the backend's own pre-upgrade loopback verdict on
+  //     THIS page's peer (handleWS captures it with the same predicate),
+  //     so it is the exact mirror of the rule. It alone would be wrong
+  //     for a `--connect` stub page, whose manifest sets `remote` from
+  //     the UPSTREAM endpoint while the page's own socket goes to the
+  //     stub on this machine.
+  //   - a non-loopback document origin, which is false for exactly that
+  //     stub page (the stub binds loopback only) and for the embedded
+  //     webview. It alone would be wrong for Tailscale Serve or a
+  //     same-host proxy, where the page origin is a public name and the
+  //     backend still sees a loopback peer.
+  private pairingRequired(remoteBackend: boolean): boolean {
+    return remoteBackend && !this.probeLoopbackOrigin() && !hasPairedSession(this.backend);
+  }
+
+  // enterCredentialDead latches the terminal state for a refused
+  // credential. The backend answered and refused this session's
+  // credential, and this session cannot produce another one, so every
+  // further attempt is structurally doomed: retrying would be a
+  // battery-burning loop against a server that will refuse each attempt
+  // identically.
+  private enterCredentialDead(err: BootstrapRejectedError): void {
+    this.enterTerminal(
+      {
+        status: 'unauthorized',
+        message: 'backend refused this session credential; reopen the share link',
+        cause: err,
+      },
+      `wsClient: backend refused this session's credential (${err.message}); ` +
+        'reconnect stopped. The credential is minted per backend launch, so ' +
+        'only a freshly-opened share link can restore this session',
+    );
+  }
+
+  // enterPairingRequired latches the other terminal state. The manifest
+  // served, so nothing is wrong with the credential; the socket is what
+  // this backend will not open for an unpaired off-host device.
+  private enterPairingRequired(): void {
+    this.enterTerminal(
+      {
+        status: 'pairing-required',
+        message: 'this backend admits paired devices only',
+      },
+      'wsClient: this backend admits paired devices only and this browser holds ' +
+        'no paired session; reconnect stopped until one is paired',
+    );
+  }
+
+  // enterTerminal is the ONLY place the automatic reconnect ladder is
+  // stopped.
   //
   // The latch is deliberately not self-clearing — no timer un-sets it —
-  // because nothing about waiting makes a per-launch token valid again.
-  // It clears on exactly two events, both of them evidence rather than
-  // hope: a manual triggerReconnect (bounded by the user's finger) and
-  // a manifest that fetches clean.
+  // because nothing about waiting makes a per-launch credential valid or
+  // pairs a device. It clears on exactly two events, both of them
+  // evidence rather than hope: a manual triggerReconnect (bounded by the
+  // user's finger) and a connect attempt that gets past the condition.
+  //
+  // A latch of a DIFFERENT status replaces the one held, because the two
+  // conditions are answered by different evidence and the newer answer is
+  // the one that just came off the wire.
   //
   // Leaves any queued attempt alone: whatever settles that attempt's
   // promise is what awaiting RPCs are parked on, and the attempt itself
   // re-enters this path and stops there.
-  private enterCredentialDead(err: BootstrapRejectedError): void {
-    if (this.credentialDead) return;
-    this.credentialDead = true;
-    console.warn(
-      `wsClient: backend refused this session's credential (${err.message}); ` +
-        'reconnect stopped — the token is minted per backend launch, so only a ' +
-        'freshly-opened share link can restore this session',
-    );
+  private enterTerminal(latch: TerminalLatch, log: string): void {
+    if (this.terminal?.status === latch.status) return;
+    this.terminal = latch;
+    console.warn(log);
+    // Nothing is coming back, so a call parked for its one transient
+    // re-send has nothing left to wait for. Release it with the refusal
+    // as its cause instead of letting it sit out the RPC timeout against
+    // a ladder that will never run again.
+    this.releaseRetryQueue(new DisconnectedError(latch.message, {
+      cause: latch.cause,
+      terminal: true,
+    }));
     this.setReconnecting(null);
   }
 
-  // clearCredentialDead is the single un-latch. Both callers are
-  // evidence-driven — a manifest that fetched clean, or a user asking
-  // for one more attempt — and both want the terminal message to stop
-  // immediately rather than linger until a socket opens.
-  private clearCredentialDead(): void {
-    if (!this.credentialDead) return;
-    this.credentialDead = false;
-    if (this.statusSnapshot.status === 'unauthorized') this.setReconnecting(null);
+  // clearTerminal is the single un-latch. Both callers are
+  // evidence-driven — a connect attempt that got past the condition, or
+  // a user asking for one more attempt — and both want the terminal
+  // message to stop immediately rather than linger until a socket opens.
+  private clearTerminal(): void {
+    const held = this.terminal;
+    if (held === null) return;
+    this.terminal = null;
+    if (this.statusSnapshot.status === held.status) this.setReconnecting(null);
   }
 
   // setReconnecting publishes a between-connections status. The terminal
   // latch wins over anything a caller asks for, and carries no
   // nextAttemptAt — there is no next attempt to count down to.
   private setReconnecting(nextAttemptAt: number | null): void {
-    if (this.credentialDead) {
-      this.setStatus({ status: 'unauthorized', nextAttemptAt: null });
+    if (this.terminal !== null) {
+      // A terminal latch carries neither field: there is no ladder to be
+      // dormant, and "last seen" is not the sentence a person needs when
+      // the answer is "sign in again".
+      this.setStatus({ status: this.terminal.status, nextAttemptAt: null });
       return;
     }
-    this.setStatus({ status: 'reconnecting', nextAttemptAt });
+    // Dormancy is derived here rather than passed in, so the several
+    // callers that publish "attempt in flight" (`fire`, `clearTerminal`)
+    // cannot drop it — a banner that flipped out of the dormant sentence
+    // for the second a probe takes and back again would be the only
+    // flicker on an otherwise still screen.
+    this.setStatus({
+      status: 'reconnecting',
+      nextAttemptAt,
+      dormant: this.isDormant(),
+      lastConnectedAt: this.lastConnectedAt === 0 ? null : this.lastConnectedAt,
+    });
+  }
+
+  // isDormant answers whether the ladder has been failing long enough to
+  // drop to the slow cadence. A ladder that has not started is never
+  // dormant, which is what makes the connected and first-failure states
+  // ordinary.
+  private isDormant(): boolean {
+    if (this.ladderStartedAt === 0) return false;
+    return Date.now() - this.ladderStartedAt >= DORMANT_AFTER_MS;
+  }
+
+  // disarmQueuedAttempt cancels the pending backoff TIMER while leaving
+  // the attempt queued. The distinction is load-bearing: the queued entry
+  // owns `connectPromise`, so discarding it would strand every awaiter
+  // until its own timeout, and its `fire` is what every demand path
+  // (an RPC, Retry, the lease going active) calls. Disarmed, the client
+  // puts nothing on the network and still answers demand instantly.
+  private disarmQueuedAttempt(): void {
+    if (this.queuedAttempt === null) return;
+    clearTimeout(this.queuedAttempt.timer);
+  }
+
+  // wakeReconnectLadder is the shared body of every DEMAND path that
+  // deserves a fresh ladder: a page resume, the banner's Retry, the whole
+  // app coming back to the foreground. Each is a person acting, so the
+  // ladder's accumulated pessimism (its height AND its age) is discarded
+  // and the queued attempt runs now.
+  //
+  // Deliberately NOT what an RPC does: an RPC collapses the wait without
+  // resetting anything, so a background poll cannot talk a genuinely
+  // unreachable backend out of its dormancy.
+  private wakeReconnectLadder(): void {
+    this.reconnectAttempt = 0;
+    this.ladderStartedAt = 0;
+    if (this.queuedAttempt === null) return;
+    this.queuedAttempt.fire();
   }
 
   // scheduleReconnect waits an exponentially-backoff'd delay and then
@@ -1063,9 +2370,9 @@ export class WSClient {
   // strictly the safety net for the no-awaiter path.
   private scheduleReconnect(): void {
     if (this.closed) return;
-    if (this.credentialDead) {
-      // Terminal (see enterCredentialDead): no timer, no ladder, no
-      // countdown — just the state that says what the user has to do.
+    if (this.terminal !== null) {
+      // Terminal (see enterTerminal): no timer, no ladder, no countdown
+      // — just the state that says what the user has to do.
       this.setReconnecting(null);
       return;
     }
@@ -1075,15 +2382,42 @@ export class WSClient {
       // multiple reconnects on a flaky socket.
       return;
     }
+    if (this.connectPromise !== null) {
+      // An attempt is already in flight — its settlement owns the next
+      // step (every failure path nulls connectPromise before it
+      // reschedules, and success makes this schedule moot). This arm is
+      // reachable when a dying socket's close event lands during the
+      // pre-socket stage of a fresh connect: queuing beside that
+      // attempt would dial a SECOND socket, and the first one — already
+      // past 'open' by then — never re-fires the event the supersede
+      // guard reaps on, so both would stay attached.
+      return;
+    }
     const attempt = this.reconnectAttempt;
     this.reconnectAttempt = attempt + 1;
-    const cap = this.remoteBackend ? RECONNECT_MAX_REMOTE_MS : RECONNECT_MAX_LOCAL_MS;
-    const base = Math.min(RECONNECT_INITIAL_MS * 2 ** attempt, cap);
-    // Full jitter — picked uniformly in [0, base]. Floor protects
-    // against zero-delay reconnect on Math.random() => 0; without it
-    // a degenerate RNG could spin a tight reconnect loop.
-    const delay = Math.max(50, Math.floor(Math.random() * base));
-    const nextAttemptAt = Date.now() + delay;
+    if (this.ladderStartedAt === 0) this.ladderStartedAt = Date.now();
+    const dormant = this.isDormant();
+    let delay: number;
+    if (dormant) {
+      // Flat cadence plus spread. No exponential growth past here — see
+      // DORMANT_PROBE_MS.
+      delay = DORMANT_PROBE_MS + Math.floor(Math.random() * DORMANT_PROBE_JITTER_MS);
+    } else {
+      const cap = this.remoteBackend ? RECONNECT_MAX_REMOTE_MS : RECONNECT_MAX_LOCAL_MS;
+      const base = Math.min(RECONNECT_INITIAL_MS * 2 ** attempt, cap);
+      // Full jitter — picked uniformly in [0, base]. Floor protects
+      // against zero-delay reconnect on Math.random() => 0; without it
+      // a degenerate RNG could spin a tight reconnect loop.
+      delay = Math.max(50, Math.floor(Math.random() * base));
+    }
+    // A dormant client whose whole app is BACKGROUNDED probes nothing at
+    // all. The lease is the native pause/resume of the entire client
+    // (setLease), so there is no surface to keep current and no person to
+    // keep it current for; waking a phone's radio every five minutes to
+    // find out is the cost with none of the benefit. It costs nothing to
+    // recover from: coming back to the foreground probes immediately.
+    const armed = !(dormant && this.lease === 'background');
+    const nextAttemptAt = armed ? Date.now() + delay : null;
     this.setReconnecting(nextAttemptAt);
     const promise = new Promise<void>((resolve, reject) => {
       // The attempt body is shared between the backoff timer and
@@ -1097,7 +2431,7 @@ export class WSClient {
           this.queuedAttempt = null;
         }
         if (this.closed) {
-          reject(new DisconnectedError('client closed'));
+          reject(new DisconnectedError('client closed', { terminal: true }));
           return;
         }
         // Switch to "in-flight attempt" — clear nextAttemptAt so the UI
@@ -1107,6 +2441,9 @@ export class WSClient {
       };
       this.queuedAttempt = { timer: setTimeout(fire, delay), fire };
     });
+    // Queued either way, so demand still has something to fire and the
+    // promise below still has an owner; only the TIMER is cancelled.
+    if (!armed) this.disarmQueuedAttempt();
     this.connectPromise = promise;
     // Swallow rejections on this branch — see comment above.
     promise.catch(() => {});
@@ -1114,7 +2451,7 @@ export class WSClient {
 
   // getBootstrap caches the manifest fetch so a reconnect doesn't re-hit
   // /bootstrap.json on every attempt. The cache is NOT permanent, and
-  // must not be: the token is bound to one server launch, so a client
+  // must not be: the credential is bound to one server launch, so a client
   // that keeps replaying a cached manifest at a restarted backend never
   // learns it has been refused. handleSocketClose drops the cache every
   // BOOTSTRAP_INVALIDATE_AFTER_FAILURES consecutive pre-open failures,
@@ -1125,7 +2462,7 @@ export class WSClient {
   private getBootstrap(): Promise<Bootstrap> {
     if (this.bootstrap) return Promise.resolve(this.bootstrap);
     if (!this.bootstrapPromise) {
-      const p = this.fetchBootstrap({ revalidate: this.bootstrapRevalidate }).then((b) => {
+      const p = this.fetchBootstrap().then((b) => {
         // Only a still-current fetch may populate the cache: the close
         // handler nulls bootstrapPromise mid-flight when it invalidates
         // the cache, and a superseded fetch landing late must not
@@ -1133,7 +2470,6 @@ export class WSClient {
         if (this.bootstrapPromise === p) {
           this.bootstrap = b;
           this.remoteBackend = b.remote === true;
-          this.bootstrapRevalidate = false;
         }
         return b;
       });
@@ -1169,7 +2505,7 @@ export class WSClient {
         if (pending) {
           this.pending.delete(frame.id);
           clearTimeout(pending.timer);
-          pending.reject(new DisconnectedError('send failed'));
+          pending.reject(new DisconnectedError('send failed', { cause: err }));
         }
       }
     }
@@ -1178,6 +2514,14 @@ export class WSClient {
   // handleFrame routes a parsed server frame. RPC responses are matched
   // by id; event pushes fan out to subscribers; batch frames iterate
   // their event array through the same per-event path.
+  //
+  // FORWARD TOLERANCE (docs/specs/remote-access.md §9): an unknown frame
+  // type is ignored and counted, never thrown on and never logged per
+  // frame. The swap window — an old bundle live against a just-updated
+  // backend for minutes — is a normal operating state, not a fault, so
+  // a client of this generation must run correctly against the next
+  // one's wire. Unknown FIELDS need no handling at all: nothing here
+  // enumerates a frame's properties.
   private handleFrame(frame: ServerFrame): void {
     if (frame.type === 'ping') {
       // Server keepalive heartbeat. The message listener already
@@ -1187,6 +2531,10 @@ export class WSClient {
       this.serverSendsHeartbeats = true;
       return;
     }
+    if (frame.type === 'hello') {
+      this.applyHello(frame);
+      return;
+    }
     if (frame.type === 'rpc') {
       const pending = this.pending.get(frame.id);
       if (!pending) return;
@@ -1194,7 +2542,12 @@ export class WSClient {
       clearTimeout(pending.timer);
       if (frame.error) {
         pending.reject(
-          new TransportError(frame.error.code, clampString(frame.error.message ?? '')),
+          new TransportError(
+            frame.error.code,
+            clampString(frame.error.message ?? ''),
+            frame.error.reason,
+            frame.error.scope,
+          ),
         );
         return;
       }
@@ -1210,13 +2563,21 @@ export class WSClient {
       return;
     }
     if (frame.type === 'batch') {
+      // A batch whose `events` is absent or not an array would throw on
+      // iteration, and the throw would abandon the rest of the frame —
+      // dispatching a prefix and losing the remainder is worse than
+      // dropping the whole thing, because the seq cursor then lies.
+      if (!Array.isArray(frame.events)) {
+        this.noteUnknownInput('batch-without-events');
+        return;
+      }
       for (const evt of frame.events) {
         // Guard BEFORE building the ServerEventFrame shape: replay
         // buffering is live only during the brief post-reconnect window
         // and only for one rare channel, so the steady streaming state
         // (coalesced batches of up to 50 item deltas) must not pay a
         // throwaway spread copy per event just to probe it.
-        if (this.notificationReplayPending && evt.channel === NOTIFICATION_ACTIVATED_CHANNEL) {
+        if (this.notificationReplayPending && evt?.channel === NOTIFICATION_ACTIVATED_CHANNEL) {
           this.notificationReplayBuffer.push({ type: 'event', ...evt });
           continue;
         }
@@ -1230,17 +2591,131 @@ export class WSClient {
       this.notificationReplayBuffer = [];
       this.notificationReplayPending = false;
       for (const event of buffered) this.handleEventEntry(event);
+      return;
+    }
+    // A frame type this build has never heard of. Expected, not
+    // exceptional: see the forward-tolerance note above.
+    //
+    // The cast is the point rather than a workaround: ServerFrame
+    // enumerates the types THIS build knows, so the compiler narrows to
+    // `never` here and would happily let the branch read nothing. The
+    // whole reason the branch exists is that the runtime wire is not
+    // limited to what the type declares.
+    this.noteUnknownInput((frame as { type: string }).type);
+  }
+
+  // noteUnknownInput records one piece of wire input this build cannot
+  // address, and is the ONLY reaction to it.
+  //
+  // Counted, so the condition is observable and a future-dialect test can
+  // assert on it. Rate-limited to one console line per distinct kind, at
+  // debug level, because the alternative — a line per frame — turns a
+  // routine version skew into console spam that buries whatever else was
+  // going wrong. Never `error`: an unknown frame from a newer backend is
+  // the wire working as designed, and routing it to the always-on error
+  // log would fill that log with non-faults.
+  private noteUnknownInput(kind: string): void {
+    this.unknownInputTotal += 1;
+    const label = clampString(kind, UNKNOWN_KIND_LABEL_MAX);
+    const seen = this.unknownInputKinds.get(label);
+    if (seen !== undefined) {
+      this.unknownInputKinds.set(label, seen + 1);
+      return;
+    }
+    // Bounded: a peer that names a new type on every frame must not be
+    // able to grow this map without limit. Past the cap the total still
+    // counts, only the per-kind breakdown stops.
+    if (this.unknownInputKinds.size >= MAX_TRACKED_UNKNOWN_KINDS) return;
+    this.unknownInputKinds.set(label, 1);
+    console.debug(`wsClient: ignoring unrecognized wire input (${label})`);
+  }
+
+  /** Tally of wire input this build could not address, by kind. Read by
+   *  the future-dialect tests; a running client's counters are also the
+   *  quickest way to tell "skewed against a newer backend" from "broken". */
+  getUnknownInputStats(): { total: number; kinds: Record<string, number> } {
+    return {
+      total: this.unknownInputTotal,
+      kinds: Object.fromEntries(this.unknownInputKinds),
+    };
+  }
+
+  // applyHello records the connection's opening frame and publishes it.
+  //
+  // Every field is validated rather than trusted: this is remote input,
+  // and a future backend may send shapes this build has never seen. A
+  // malformed field falls back to its neutral value instead of rejecting
+  // the frame, because a hello we half-understand is still worth more
+  // than none — and refusing it would make an additive server-side change
+  // look like a backend with no capabilities at all. Unknown FIELDS are
+  // ignored for free: nothing here enumerates the object.
+  private applyHello(frame: ServerHelloFrame): void {
+    const capabilities = Array.isArray(frame.capabilities)
+      ? frame.capabilities.filter((c): c is string => typeof c === 'string')
+      : [];
+    const serverTimeMs = Number.isFinite(frame.serverTimeMs) ? frame.serverTimeMs : 0;
+    const next: TransportHello = {
+      protocolVersion: Number.isFinite(frame.protocolVersion) ? frame.protocolVersion : 0,
+      capabilities,
+      backendId: typeof frame.backendId === 'string' ? frame.backendId : '',
+      backendName: typeof frame.backendName === 'string' ? frame.backendName : '',
+      serverTimeMs,
+      clockSkewMs: serverTimeMs === 0 ? 0 : serverTimeMs - Date.now(),
+      bundleId: typeof frame.bundleId === 'string' ? frame.bundleId : '',
+      bundleVersion: typeof frame.bundleVersion === 'string' ? frame.bundleVersion : '',
+      // A floor is a whole number of builds. Anything else is a backend
+      // this build cannot read, and 0 — "no floor" — is the neutral
+      // value that lets the shell decide on the id alone.
+      minShellBuild: Number.isSafeInteger(frame.minShellBuild) ? Number(frame.minShellBuild) : 0,
+    };
+    const previous = this.helloSnapshot;
+    this.helloSnapshot = next;
+    // Publish only on a real change. A reconnect to the same backend
+    // repeats the same answer except for the clock reading, and waking
+    // every consumer for a few milliseconds of skew would turn a routine
+    // reconnect into a re-render.
+    if (previous !== null && sameHello(previous, next)) return;
+    for (const handler of [...this.helloHandlers]) {
+      try {
+        handler(next);
+      } catch (err) {
+        console.warn('wsClient: hello handler threw', err);
+      }
     }
   }
 
   // handleEventEntry processes a single event entry — used by both
   // the regular event path and the batch iteration path.
+  //
+  // The shape check is not defensive padding. Everything below writes
+  // into `lastSeqByChannel`, and that map is echoed back to the server as
+  // the replay cursor on the next reconnect: an entry keyed `undefined`
+  // with a NaN seq serializes as `{"undefined": null}`, which the server
+  // decodes into map[string]uint64, fails, and answers `bad_params` — so
+  // one mis-shaped event from a newer backend would cost the client its
+  // entire gap-recovery handshake, silently, from then on. Validate at
+  // ingest and the cursor map can only ever hold real values.
+  //
+  // An event on a channel nobody subscribes to needs no check: dispatch
+  // is subscriber-keyed, so an unrecognized channel reaches no handler
+  // by construction. That is the steady state today, not an anomaly, and
+  // counting it would fire constantly.
   private handleEventEntry(evt: {
     channel: string;
     seq: number;
     data: unknown;
     gap?: boolean;
   }): void {
+    if (
+      typeof evt !== 'object'
+      || evt === null
+      || typeof evt.channel !== 'string'
+      || !Number.isSafeInteger(evt.seq)
+      || evt.seq < 0
+    ) {
+      this.noteUnknownInput('event-shape');
+      return;
+    }
     if (evt.gap === true) {
       // A gap marker is a resync instruction, not a data event, so it
       // is honoured BEFORE the dedup check and its seq is adopted in
@@ -1271,6 +2746,16 @@ export class WSClient {
       cursor !== undefined
       && cursor.epoch === this.connectionEpoch
       && evt.seq > cursor.seq + 1
+      // …unless the server is deliberately withholding this channel's
+      // frames for threads we did not name. A withheld frame still spent
+      // its channel's seq, so on a narrowed channel a forward skip is the
+      // NORMAL case and means nothing was lost — reading it as a drop would
+      // fire a full resync for every frame addressed to another thread.
+      // Both halves of the condition matter: the exemption applies only to
+      // channels the backend actually narrows, and only once this
+      // connection has armed a filter. Explicit `gap:true` markers are
+      // untouched; they are handled above, before this heuristic runs.
+      && !(this.watchedThreads !== null && isEntityFilteredChannel(evt.channel))
     ) {
       // Forward skip inside one connection: the events between the two
       // seqs existed and never reached us, because the server's fanout
@@ -1381,9 +2866,15 @@ export class WSClient {
   // the handler. Mutating handlers can race during fanout — we copy
   // before iterating to avoid the race.
   private setStatus(next: TransportStatusSnapshot): void {
+    const current = this.statusSnapshot;
     if (
-      next.status === this.statusSnapshot.status
-      && next.nextAttemptAt === this.statusSnapshot.nextAttemptAt
+      next.status === current.status
+      && next.nextAttemptAt === current.nextAttemptAt
+      // Both new fields are optional on the wire shape, so the dedupe
+      // normalizes rather than comparing an absent value against an
+      // explicit one and republishing an identical snapshot.
+      && (next.dormant ?? false) === (current.dormant ?? false)
+      && (next.lastConnectedAt ?? null) === (current.lastConnectedAt ?? null)
     ) return;
     this.statusSnapshot = next;
     if (this.statusHandlers.size === 0) return;
@@ -1396,15 +2887,87 @@ export class WSClient {
     }
   }
 
-  private failPending(err: Error): void {
+  // failPending settles every outstanding RPC with one preserved cause.
+  //
+  // The exception is the allowlisted few (RetryOnTransientCloseEntry):
+  // on a NON-terminal close they keep their Pending entry and their
+  // running timeout, and their frame moves to the retry queue for one
+  // re-send on the next open. A terminal failure, or a closed client,
+  // rejects them like everything else — there is no next open to wait
+  // for. `retry` is nulled either way, so a call gets at most one.
+  //
+  // One error instance is shared across the drained set on purpose: the
+  // cause genuinely IS shared (one socket died), and minting N copies of
+  // it would allocate per in-flight call at exactly the moment the app
+  // is already doing reconnect work.
+  private failPending(err: DisconnectedError): void {
     if (this.pending.size === 0) return;
-    const drained = [...this.pending.values()];
-    this.pending.clear();
+    const holdForRetry = !err.terminal && !this.closed;
+    const drained: Pending[] = [];
+    for (const [id, p] of this.pending) {
+      if (p.retry !== null && holdForRetry) {
+        this.retryQueue.push(p.retry);
+        p.retry = null;
+        continue;
+      }
+      p.retry = null;
+      drained.push(p);
+      this.pending.delete(id);
+    }
     for (const p of drained) {
       clearTimeout(p.timer);
       p.reject(err);
     }
   }
+
+  // releaseRetryQueue settles calls parked for a re-send that will never
+  // happen. Called when the ladder stops (enterTerminal) and when the
+  // client shuts down, so a parked call never outlives the transport
+  // that owed it an answer.
+  private releaseRetryQueue(err: DisconnectedError): void {
+    if (this.retryQueue.length === 0) return;
+    const parked = this.retryQueue.splice(0, this.retryQueue.length);
+    for (const frame of parked) {
+      const pending = this.pending.get(frame.id);
+      if (!pending) continue;
+      this.pending.delete(frame.id);
+      clearTimeout(pending.timer);
+      pending.reject(err);
+    }
+  }
+
+  // flushRetryQueue re-sends the parked calls on a fresh connection.
+  // Runs after the replay frame so the connection's event cursor is
+  // reconciled before new work lands on it. A call whose entry has since
+  // gone (its RPC timeout fired during the outage) is dropped.
+  private flushRetryQueue(): void {
+    if (this.retryQueue.length === 0) return;
+    const parked = this.retryQueue.splice(0, this.retryQueue.length);
+    for (const frame of parked) {
+      const pending = this.pending.get(frame.id);
+      if (!pending) continue;
+      this.sendFrame(frame);
+      // Re-issued on a new socket, so the watchdog's window starts again
+      // from here rather than from the send that died with the old one.
+      pending.sentAt = Date.now();
+    }
+  }
+}
+
+// sameHello compares the two backends' SUBSTANTIVE answers. Clock skew
+// is excluded on purpose: it differs on every connection by definition,
+// so including it would defeat the change check entirely.
+function sameHello(a: TransportHello, b: TransportHello): boolean {
+  return a.protocolVersion === b.protocolVersion
+    && a.backendId === b.backendId
+    && a.backendName === b.backendName
+    // A backend that rebuilt its SPA between two connections is a real
+    // change and the one the shell is subscribed for.
+    && a.bundleId === b.bundleId
+    && a.bundleVersion === b.bundleVersion
+    && a.minShellBuild === b.minShellBuild
+    && a.capabilities.length === b.capabilities.length
+    && a.capabilities.every((cap, i) => cap === b.capabilities[i]);
 }
 
 function loadNotificationActivationSeq(scope: string): number {
@@ -1439,12 +3002,15 @@ function storeNotificationActivationSeq(scope: string, seq: number): void {
   }
 }
 
-// generateId returns a random request id via crypto.randomUUID. Every
-// environment we run in (modern browsers, happy-dom, the Wails webview)
-// ships randomUUID; matches the project precedent in
-// frontend/src/lib/components/primitives/Modal.svelte.
+// generateId returns a random request id. Through `utils/randomId`, never
+// `crypto.randomUUID` directly: that API is SECURE-CONTEXT ONLY, and a
+// plain-HTTP LAN page is a shipped context for this client
+// (docs/specs/remote-access.md §15 constraint 6). Calling it there throws,
+// and since this mints the id of every RPC, the throw landed on the first
+// call of the boot fan-out and left a freshly paired browser staring at a
+// blank page.
 function generateId(): string {
-  return crypto.randomUUID();
+  return randomId();
 }
 
 // createWSClient is the test entry point. Production code uses the

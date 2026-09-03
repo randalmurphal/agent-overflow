@@ -72,7 +72,7 @@ const (
 // resolveSendMessageAttachments.
 func (s *Session) Send(ctx context.Context, content string, opts provider.SendOptions) error {
 	s.mu.Lock()
-	held := s.controlHeld
+	held := s.controlHolder != nil
 	s.mu.Unlock()
 	if held {
 		return fmt.Errorf("claudetui: a human holds take-control of the terminal; release control to send")

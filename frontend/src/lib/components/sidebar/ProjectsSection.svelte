@@ -8,8 +8,10 @@
   import type { ProjectWithCounts, Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
+    entryIdFor,
     getProjectLiveActivityAt,
     getProjects,
+    projectEntries,
     refreshProjects,
     updateProjectLocal,
   } from '../../stores/projects.svelte';
@@ -30,7 +32,7 @@
     openTerminalThread,
   } from '../../stores/threadCreation.svelte';
   import { openSessionImport } from '../../stores/sessionImport.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import History from '@lucide/svelte/icons/history';
   import Plus from '@lucide/svelte/icons/plus';
   import IconButton from '../primitives/IconButton.svelte';
@@ -54,20 +56,20 @@
   let addProjectOpen = $state(false);
   let flashProjectId: string | null = $state(null);
 
-  // Session import reads provider session files off the local disk, so the
-  // trigger is inert in a view-only session (the store refuses the RPC too —
-  // this is the visible half of that guard, not the whole of it).
-  let importViewOnly = $derived(isViewOnlySession());
+  // Session import walks the provider homes and writes threads.
+  let importUngranted = $derived(!hasScope('threads:operate'));
 
   // Normalise the search query once per derivation so every filter path
   // uses the same lowercase form.
   let query = $derived(getThreadFilterQuery().trim().toLowerCase());
 
-  // Threads and groups bucketed by project id, both filtered by the search
-  // query in ONE pass because the two filters are coupled: a group whose
-  // NAME matches shows all of its members, including the ones the thread
-  // filter would have dropped, so the thread bucket cannot be computed
-  // without knowing which group names matched.
+  // Threads and groups bucketed by sidebar ENTRY (a repo checked out on
+  // two attached machines is one entry, and both machines' rows sit under
+  // it), both filtered by the search query in ONE pass because the two
+  // filters are coupled: a group whose NAME matches shows all of its
+  // members, including the ones the thread filter would have dropped, so
+  // the thread bucket cannot be computed without knowing which group
+  // names matched.
   //
   // Project-less threads (no projectId) have no sidebar surface and are
   // skipped. A group that neither matches by name nor holds a surviving
@@ -90,7 +92,7 @@
     const populatedGroupIds = new Set<string>();
     for (const t of getThreads()) {
       if (t.archived) continue;
-      const key = t.projectId ?? '';
+      const key = t.projectId ? entryIdFor(t.projectId) : '';
       if (!key) continue;
       const groupId = t.groupId ?? '';
       // A name-matched group brings its whole membership back. The
@@ -111,9 +113,13 @@
       if (query && !nameMatchedGroupIds.has(group.id) && !populatedGroupIds.has(group.id)) {
         continue;
       }
-      const bucket = groupsByProject.get(group.projectId);
+      // Keyed by ENTRY, like the thread buckets: ProjectList looks both
+      // up under the entry's representative id, so a member project's
+      // groups have to land there or they vanish from a merged entry.
+      const key = entryIdFor(group.projectId);
+      const bucket = groupsByProject.get(key);
       if (bucket) bucket.push(group);
-      else groupsByProject.set(group.projectId, [group]);
+      else groupsByProject.set(key, [group]);
     }
     return { threadsByProject, groupsByProject };
   });
@@ -135,7 +141,7 @@
   let prevVisibleProjects: ProjectWithCounts[] = [];
   let visibleProjects = $derived.by(() => {
     const mode = getProjectSortMode();
-    const entries = getProjects()
+    const entries = projectEntries()
       .filter((p) => !p.project.archived)
       .filter((p) => {
         if (!query) return true;
@@ -311,9 +317,9 @@
     <ProjectSortMenu />
     <IconButton
       label="Import Sessions"
-      title={importViewOnly ? 'Local only' : undefined}
+      title={importUngranted ? 'Not granted to this device' : undefined}
       size="sm"
-      disabled={importViewOnly}
+      disabled={importUngranted}
       onClick={openSessionImport}
     >
       {#snippet children()}

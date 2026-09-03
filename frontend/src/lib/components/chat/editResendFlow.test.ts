@@ -44,6 +44,7 @@ import { DisconnectedError, TransportError } from '../../transport/wsClient';
 import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
 import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { mockAttachmentUpload } from '../../../test/mocks/attachmentTransfer';
 import {
   installPaneMocks,
   installThreadSwitchMocks,
@@ -206,7 +207,7 @@ async function buildPane(
   setBindingMock('SaveDraft', async () => {});
   setBindingMock('ListAttachments', async () => []);
   setBindingMock('DeleteAttachment', async () => {});
-  setBindingMock('UploadAttachment', async () => ({
+  mockAttachmentUpload(async () => ({
     id: 'att-pasted',
     threadId: thread.id,
     filename: 'shot.png',

@@ -14,8 +14,10 @@
 //     --listen 127.0.0.1:0 --print-url-fd 0 and pins the child to a
 //     Win32 Job Object so closing this process kills the WSL-side one.
 //  5. Reads the bootstrap line { port, token } back from the child.
-//  6. Points the Wails WebView2 window at
-//     http://localhost:<port>/?t=<token>.
+//  6. Points the Wails WebView2 window at a BARE
+//     http://localhost:<port>/?host=webview page URL and injects the
+//     one-time page ticket into the document it just loaded, so the
+//     ticket never rides a copyable URL (internal/pagehost).
 //
 // WSL2 forwards 127.0.0.1:<port> from inside the distro to the Windows
 // host's localhost via vEthernet. localhostForwarding=true must be
@@ -65,6 +67,7 @@ import (
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/observability/pprofserve"
+	"agent-overflow/internal/pagehost"
 	"agent-overflow/internal/serialqueue"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/uiwindow"
@@ -542,10 +545,9 @@ type launcherApp struct {
 	// would otherwise block every lifecycle path that takes the mutex.
 	updateInstalling atomic.Bool
 
-	// backendURL holds the full http://127.0.0.1:<port>/?t=<token> URL
-	// once launchAndShow points the WebView at the WSL backend. Read by
-	// the reload keybinding (uikeys.BrowserWithReload) so Ctrl+R
-	// re-navigates with the token instead of reloading the SPA's
+	// backendURL holds the page URL launchAndShow pointed the WebView at.
+	// Read by the reload keybinding (uikeys.BrowserWithReload) so Ctrl+R
+	// re-navigates with a credential instead of reloading the SPA's
 	// scrubbed URL. atomic.Pointer because the writer is launchAndShow
 	// (goroutine) and the reader is the Wails event loop.
 	backendURL atomic.Pointer[string]
@@ -726,36 +728,24 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 		}
 	}
 
-	// 127.0.0.1, not "localhost": Windows resolves "localhost" to both
-	// ::1 and 127.0.0.1, and which the OS hands the dialer first is
-	// non-deterministic. WSL2's localhostForwarding only proxies IPv4,
-	// so a ::1 attempt hits Windows-loopback directly and is refused.
-	// Hard-coding the IPv4 literal makes the WebView navigation
-	// race-free against the OS resolver and the dual-stack hosts file.
-	// Durable UI-state client identity minted by the WSL backend;
-	// threading it onto the page URL keeps the frontend's per-client
-	// ui_state bucket stable across the per-launch origin change.
-	// Escaped before the `url` local below shadows the net/url package.
-	cidParam := ""
-	if bs.ClientID != "" {
-		cidParam = "&cid=" + url.QueryEscape(bs.ClientID)
-	}
-	pageParam := ""
-	if bs.PageMarker != "" {
-		pageParam = "&page=" + url.QueryEscape(bs.PageMarker)
-	}
-	url := fmt.Sprintf("http://127.0.0.1:%d/?t=%s%s%s", bs.Port, bs.Token, cidParam, pageParam)
-	// Same redaction shape probeBootstrap uses. The token is
-	// the per-launch credential; leaking it through launcher.log (which
-	// persists in %APPDATA% across runs and is a likely artifact in user
-	// bug reports) would let an attacker with file-system read replay
-	// the session for as long as the backend is up.
-	log.Printf("backend ready at http://127.0.0.1:%d/ (token=%d bytes)", bs.Port, len(bs.Token))
+	// The backend assembles the page URL (main.go webviewPageURL): the
+	// client id and page marker that ride on it are its own. It carries
+	// no credential — this window's ticket arrives by injection — and it
+	// names 127.0.0.1, not "localhost", because Windows resolves
+	// "localhost" to both ::1 and 127.0.0.1 and WSL2's
+	// localhostForwarding only proxies IPv4, so a ::1 attempt hits
+	// Windows-loopback directly and is refused.
+	pageURL := bs.PageURL
+	// Redacted logging, same shape the probe uses. The URL no longer
+	// carries a credential, but launcher.log persists in %APPDATA% across
+	// runs and is a likely artifact in user bug reports, so the byte
+	// counts stay the whole record.
+	log.Printf("backend ready at http://127.0.0.1:%d/ (page url=%d bytes, token=%d bytes)", bs.Port, len(pageURL), len(bs.Token))
 	// Publish the URL before SetURL so a reload that lands between
-	// SetURL and the SPA's first bootstrap fetch still finds the token.
-	a.backendURL.Store(&url)
+	// SetURL and the SPA's first bootstrap fetch still finds a credential.
+	a.backendURL.Store(&pageURL)
 	phaseStarted = time.Now()
-	w.SetURL(url)
+	w.SetURL(pageURL)
 	logBootPhase("launcher.window_set_url", phaseStarted)
 	return nil
 }
@@ -1056,18 +1046,108 @@ func probeLaunchedBackend(bs *wsllauncher.Bootstrap) error {
 	return err
 }
 
-// currentBackendURL returns the URL the WebView2 is currently pointed
-// at (after launchAndShow's SetURL), or "" before the WSL backend has
-// finished booting. Used by the reload keybinding so Ctrl+R re-navigates
-// with the bootstrap token instead of reloading the SPA's scrubbed URL.
-// "" before launch tells uikeys.BrowserWithReload to fall through to
-// the default window.Reload() — picker / loading / connectivity-error
-// pages are static and reload-safe.
+// currentBackendURL returns a page URL for the reload keybinding, or ""
+// before the WSL backend has finished booting. "" tells
+// uikeys.BrowserWithReload to fall through to the default
+// window.Reload() — picker / loading / connectivity-error pages are
+// static and reload-safe.
+//
+// It asks the backend for a FRESH page URL first, because the boot URL
+// is a string the backend assembled for one navigation and a rebind (the
+// LAN toggle) moves the origin out from under it. The credential is not
+// on either URL — the reloaded document is ticketed by injection like
+// every other one — so the stored URL is a perfectly good fallback and a
+// blip costs a reload nothing. The request is one loopback GET against a
+// backend that is by definition serving.
 func (a *launcherApp) currentBackendURL() string {
+	stored := ""
 	if p := a.backendURL.Load(); p != nil {
-		return *p
+		stored = *p
 	}
-	return ""
+	a.mu.Lock()
+	bs := a.backendBootstrap
+	a.mu.Unlock()
+	if bs == nil {
+		return stored
+	}
+	fresh, err := fetchPageURL(bs.Port, bs.Token)
+	if err != nil {
+		log.Printf("reload: fresh page url unavailable (%v); reusing the launch URL", err)
+		return stored
+	}
+	return fresh
+}
+
+// pageTicket mints one one-time page ticket for the SPA document the
+// WebView2 has just loaded, or fails before the WSL backend exists.
+//
+// The launcher owns this window, so the ticket is injected into the
+// document rather than written into the URL that loaded it
+// (internal/uiwindow.DeliverPageTicket). The failure before a backend is
+// what keeps the launcher's own picker / loading / error pages out of the
+// delivery path even if one of them ever announced itself as a host page.
+func (a *launcherApp) pageTicket() (string, error) {
+	a.mu.Lock()
+	bs := a.backendBootstrap
+	a.mu.Unlock()
+	if bs == nil {
+		return "", errors.New("page ticket requested before the backend booted")
+	}
+	answer, err := fetchWebviewPageURL(bs.Port, bs.Token)
+	if err != nil {
+		return "", err
+	}
+	return answer.Ticket, nil
+}
+
+// pageURLTimeout bounds the reload path's page-URL request. The
+// keybinding runs on the WebView2 UI thread, so this is a stall budget
+// as much as a network one: the backend is local and answering the
+// route from memory.
+const pageURLTimeout = 2 * time.Second
+
+// fetchPageURL asks the backend's transport for a bare page URL to
+// navigate to. The session token goes in a header — the query slot on
+// this backend's routes belongs to the page ticket, and a header keeps
+// the credential out of any URL a proxy or log would see.
+func fetchPageURL(port int, token string) (string, error) {
+	answer, err := fetchWebviewPageURL(port, token)
+	if err != nil {
+		return "", err
+	}
+	return answer.URL, nil
+}
+
+// fetchWebviewPageURL is the one request behind both halves: the bare
+// URL a navigation needs and the ticket the document it produces needs.
+// Asking with the webview marker is what splits them, so neither half
+// ever appears in the other's string.
+func fetchWebviewPageURL(port int, token string) (pagehost.Answer, error) {
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s%s", port, wsllauncher.PageURLPath, wsllauncher.PageURLWebviewQuery)
+	resp, err := getWithToken(&http.Client{Timeout: pageURLTimeout}, endpoint, token)
+	if err != nil {
+		return pagehost.Answer{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return pagehost.Answer{}, fmt.Errorf("GET %s: status %d", endpoint, resp.StatusCode)
+	}
+	// One small JSON object; 8 KiB is far past any real page URL and
+	// bounds a misbehaving responder.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+	if err != nil {
+		return pagehost.Answer{}, err
+	}
+	var answer pagehost.Answer
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return pagehost.Answer{}, fmt.Errorf("decode page url answer: %w", err)
+	}
+	answer.URL = strings.TrimSpace(answer.URL)
+	answer.Ticket = strings.TrimSpace(answer.Ticket)
+	if answer.URL == "" || answer.Ticket == "" {
+		return pagehost.Answer{}, errors.New("page url answer was missing a half")
+	}
+	return answer, nil
 }
 
 // tolerantMultiWriter is io.MultiWriter without abort-on-first-error.
@@ -1144,9 +1224,10 @@ var errBackendUnreachable = errors.New("no HTTP response from the WSL backend ov
 
 // retryWithFreshTransportPort decides whether a failed connectivity
 // probe is worth one relaunch on a fresh transport port. Only the
-// unreachable class qualifies — a startup failure, a token mismatch, or
-// a host-guard rejection all prove the port is reachable, and moving it
-// would cost the user their origin-scoped browser state for nothing.
+// unreachable class qualifies — a startup failure, a refused
+// credential, or a host-guard rejection all prove the port is
+// reachable, and moving it would cost the user their origin-scoped
+// browser state for nothing.
 func retryWithFreshTransportPort(err error) bool {
 	return errors.Is(err, errBackendUnreachable)
 }
@@ -1174,14 +1255,13 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 	// Windows-loopback directly and is refused — surfacing a misleading
 	// connectivity-error page even though the backend is fine on
 	// 127.0.0.1. Pinning the IPv4 literal removes the race.
-	url := fmt.Sprintf("http://127.0.0.1:%d/bootstrap.json?t=%s", port, token)
-	// Errors include the host:path but redact the token. The token is
-	// the launch credential — leaking it through a log line that gets
-	// surfaced anywhere (launcher.log, bug-report scrape, screenshot)
-	// is a credential leak. The host:port is what an operator needs to
-	// debug "is the WSL backend actually listening?".
-	redacted := fmt.Sprintf("http://127.0.0.1:%d/bootstrap.json", port)
-	log.Printf("probe: GET %s (token=%d bytes)", redacted, len(token))
+	url := fmt.Sprintf("http://127.0.0.1:%d/bootstrap.json", port)
+	// The session token rides an Authorization header, not the query
+	// string: the query slot on this route belongs to the one-time page
+	// ticket a browser presents, and this probe is not a browser. The
+	// header also keeps the credential out of URLs that get logged.
+	log.Printf("probe: GET %s (token=%d bytes)", url, len(token))
+	redacted := url
 
 	// Poll, don't one-shot. WSL2 NAT mode installs the Windows-side
 	// forward rule for a fresh WSL listener AFTER the listener binds,
@@ -1211,7 +1291,7 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 	wait := cfg.InitialPollInterval
 	for {
 		attempt++
-		resp, err := client.Get(url)
+		resp, err := getWithToken(client, url, token)
 		if err == nil {
 			sawHTTPResponse = true
 			// 64KB bounds a rogue server's response while leaving room
@@ -1222,7 +1302,7 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				if err := validateBootstrapResponse(body, port, token); err != nil {
+				if err := validateBootstrapResponse(body, port); err != nil {
 					log.Printf("probe: invalid bootstrap response: %v", err)
 					return err
 				}
@@ -1259,16 +1339,31 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 	return fmt.Errorf("GET %s: timed out after %d attempts: %w", redacted, attempt, lastErr)
 }
 
-func validateBootstrapResponse(body []byte, port int, token string) error {
+// getWithToken issues one probe request carrying the session token in
+// an Authorization header. Shared by every launcher-side call so the
+// carrier stays in one place.
+func getWithToken(client *http.Client, url, token string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	return client.Do(req)
+}
+
+// validateBootstrapResponse checks the manifest the backend answered
+// with is the one this launcher booted. The manifest no longer carries
+// a credential to compare — the page's credential is an HttpOnly cookie
+// the backend sets, and this probe authenticates with a header — so the
+// wsUrl's host and port carry the whole check: they prove the responder
+// is our backend on our port rather than some other server that
+// happened to answer on the forwarded loopback hop.
+func validateBootstrapResponse(body []byte, port int) error {
 	var bootstrap struct {
 		WSURL string `json:"wsUrl"`
-		Token string `json:"token"`
 	}
 	if err := json.Unmarshal(body, &bootstrap); err != nil {
 		return fmt.Errorf("decode bootstrap response: %w", err)
-	}
-	if bootstrap.Token != token {
-		return errors.New("bootstrap response token mismatch")
 	}
 	parsed, err := url.Parse(bootstrap.WSURL)
 	if err != nil {
@@ -1482,6 +1577,13 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		w, flush := uiwindow.RestoreAndTrack(app, opts, loadWindowGeometry(), saveWindowGeometry)
 		trimWebviewMemoryOnMinimise(w)
+		// Every SPA document this window loads is handed its one-time
+		// page ticket here, so the URL the launcher navigates to (and
+		// logs, and reports in a window diagnostic) carries no
+		// credential at all. Only the SPA announces itself to its host,
+		// so the picker / loading / error pages never reach this — and
+		// a.pageTicket refuses anyway until a backend exists to mint one.
+		uiwindow.DeliverPageTicket(w, a.pageTicket)
 		a.mu.Lock()
 		a.window = w
 		a.flushGeometry = flush

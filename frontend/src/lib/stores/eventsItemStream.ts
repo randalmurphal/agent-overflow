@@ -2,7 +2,7 @@
 // queue (upsert/delta/meta/patch actions sharing one wire channel), its
 // rAF-scheduled flush, per-item upsert validation, the item-upsert
 // subscriber fan-out consumed by activityRailBackground and
-// workspaceChangeLock, and the discussion live-tail side-channel feed
+// proposedPlans, and the discussion live-tail side-channel feed
 // (assistant_text upserts/deltas from unmounted participant child
 // threads routed through discussionLiveTail.ts — see
 // feedDiscussionLiveTailUpserts). Fan-in target of events.ts's
@@ -15,8 +15,6 @@ import { itemsRenderEqual } from './threadItems';
 import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
 import { isSmoothLiveContentKind } from './threadPaneShared';
-import { projectThreadItem } from './threadStatuses.svelte';
-import { syncProposedPlanStatus, syncThreadActivity, userTextCountsAsActivity } from './eventsThreadRows';
 import { lookupDiscussionLiveTail } from './discussionLiveTail';
 import { isBoundedString, isFiniteNumber } from './eventsGuards';
 import { compositeKey } from '../utils/compositeKey';
@@ -37,11 +35,6 @@ let itemEventQueue: ItemStreamEvent[] = [];
 let itemEventQueueStart = 0;
 let itemEventFlushFrame: number | null = null;
 let itemEventFlushTimeout: number | null = null;
-
-interface PendingItemUpsert {
-  item: Item;
-  countsAsActivity?: boolean;
-}
 
 function requestFrame(callback: () => void): number {
   if (typeof requestAnimationFrame === 'function') {
@@ -120,11 +113,6 @@ function notifyItemUpserts(items: Item[]): void {
   }
 }
 
-function itemUpsertCountsAsActivity(upsert: PendingItemUpsert): boolean {
-  if (upsert.countsAsActivity !== undefined) return upsert.countsAsActivity;
-  return userTextCountsAsActivity(upsert.item);
-}
-
 function providerUpsertAdvancesLiveContent(existing: Item | undefined, incoming: Item): boolean {
   // A brand-new row opens the spring latch THROUGH THIS PREDICATE only
   // for text-like kinds. Non-text appends still stamp — but at the
@@ -173,12 +161,10 @@ function feedDiscussionLiveTailUpserts(itemsByThread: Map<string, Item[]>): void
   }
 }
 
-function applyItemUpserts(upserts: PendingItemUpsert[]): void {
+function applyItemUpserts(upserts: Item[]): void {
   if (upserts.length === 0) return;
   const itemsByThread = new Map<string, Item[]>();
-  const userTextActivityByThread = new Map<string, number>();
-  for (const upsert of upserts) {
-    const { item } = upsert;
+  for (const item of upserts) {
     const list = itemsByThread.get(item.threadId);
     if (list) {
       list.push(item);
@@ -191,16 +177,6 @@ function applyItemUpserts(upserts: PendingItemUpsert[]): void {
     // interrupt (which appears before the echo).
     if (item.kind === 'user_text' && item.id.includes(':flush:')) {
       confirmFlushedByUserItemId(item.threadId, item.id);
-    }
-    // user_text upserts are one of three sidebar-bump boundaries —
-    // alongside provider:turn_completed and approval / user-input
-    // request creation. assistant_text / thinking / tool_call / etc.
-    // upserts deliberately do NOT advance the sidebar timestamp.
-    if (itemUpsertCountsAsActivity(upsert) && Number.isFinite(item.updatedAt)) {
-      const existing = userTextActivityByThread.get(item.threadId) ?? Number.NEGATIVE_INFINITY;
-      if (item.updatedAt > existing) {
-        userTextActivityByThread.set(item.threadId, item.updatedAt);
-      }
     }
   }
   feedDiscussionLiveTailUpserts(itemsByThread);
@@ -251,9 +227,6 @@ function applyItemUpserts(upserts: PendingItemUpsert[]): void {
     // the debounced write-back own the mounted thread's entry.
     if (inactive) void removeReplicaWindow(threadId);
   }
-  for (const [threadId, updatedAt] of userTextActivityByThread) {
-    syncThreadActivity(threadId, updatedAt);
-  }
 }
 
 function applyItemDelta(evt: ItemDeltaEvent): void {
@@ -283,10 +256,11 @@ function applyItemDelta(evt: ItemDeltaEvent): void {
 export function applyItemStreamEvent(evt: ItemStreamEvent): void {
   if (!evt || !evt.threadId) return;
   if (evt.action === 'upsert' && evt.item) {
-    // Boundary validation only. Thread-status projection and
-    // proposed-plan sync happen at flush time alongside the pane
-    // apply — running them here gave every upsert WS message its own
-    // global-store write + effect flush outside the rAF batch.
+    // Boundary validation only, and now the ONLY global work this
+    // channel does: thread status, sidebar activity, and the durable
+    // proposed-plan column all moved to wildcard channels, because this
+    // channel is narrowed to the threads a client watches and a client
+    // that is not watching would never have learned any of them.
     if (!isValidItemForThread(evt.item, evt.threadId)) return;
   } else if (evt.action === 'delta') {
     if (!isBoundedString(evt.threadId, 512)) return;
@@ -350,7 +324,7 @@ export function flushItemEventQueue(): void {
   // beat dominates them, and un-merging multiplies the per-flush fixed
   // costs this single batch amortizes. Numbers in
   // .claude/skills/perf-investigation/REFERENCE.md.
-  const pendingUpserts: PendingItemUpsert[] = [];
+  const pendingUpserts: Item[] = [];
   const pendingUpsertItemKeys = new Set<string>();
   const notifiedUpserts: Item[] = [];
   const pendingDeltas = new Map<string, ItemDeltaEvent & { chunks: string[] }>();
@@ -361,9 +335,8 @@ export function flushItemEventQueue(): void {
 
   const flushPendingUpserts = () => {
     if (pendingUpserts.length === 0) return;
-    const semanticUpserts = pendingUpserts.map((upsert) => upsert.item);
     applyItemUpserts(pendingUpserts);
-    notifiedUpserts.push(...semanticUpserts);
+    notifiedUpserts.push(...pendingUpserts);
     pendingUpserts.length = 0;
     pendingUpsertItemKeys.clear();
   };
@@ -415,11 +388,7 @@ export function flushItemEventQueue(): void {
       // A queued delta for this row must land before the upsert
       // replaces the row's summary wholesale.
       if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
-      // Global projections ride the batched flush (one macrotask, one
-      // effect flush) instead of the per-message WS handler.
-      projectThreadItem(evt.item);
-      syncProposedPlanStatus(evt.item);
-      pendingUpserts.push({ item: evt.item, countsAsActivity: evt.countsAsActivity });
+      pendingUpserts.push(evt.item);
       pendingUpsertItemKeys.add(itemKey);
       continue;
     }
@@ -467,12 +436,12 @@ export function flushItemEventQueue(): void {
   flushPendingDeltas();
   flushPendingUpserts();
   // Sidebar activity is bumped only at meaningful interaction
-  // boundaries: user_text upsert (handled in applyItemUpserts),
-  // provider:turn_completed (applyTurnCompleted), and approval /
-  // user-input request creation (applyApprovalEvent /
-  // applyUserInputEvent). Streaming deltas and assistant / tool /
-  // thinking upserts deliberately do NOT advance the timestamp —
-  // that used to make the sidebar reshuffle every chunk.
+  // boundaries, and none of them is here any more: the reader's own
+  // message arrives as a thread:updated `updatedAt` patch, and turn
+  // completion / approval / user-input creation each ride their own
+  // wildcard channel. Streaming deltas and assistant / tool / thinking
+  // upserts never advanced the timestamp — that used to make the
+  // sidebar reshuffle every chunk — so this channel now bumps nothing.
   notifyItemUpserts(notifiedUpserts);
   if (itemEventQueueStart < itemEventQueue.length) {
     scheduleItemEventFlush();

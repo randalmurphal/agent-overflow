@@ -69,7 +69,7 @@ async function waitForUserMessage(
     // first item lands is the normal case here — the wake is delivered off the
     // engine's command loop — so treat it as "nothing yet" and keep waiting
     // rather than crashing on the first poll and losing the timeout entirely.
-    seen = (await harness.rpc<ThreadItem[] | null>('ListItems', threadId)) ?? [];
+    seen = (await harness.rpc<ThreadItem[] | null>('ListItems', threadId, true)) ?? [];
     const wake = seen.find((item) => item.kind === 'user_text' && match(item.summary));
     if (wake) return wake.summary;
     await new Promise((resolve) => setTimeout(resolve, 100));

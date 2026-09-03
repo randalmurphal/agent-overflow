@@ -378,7 +378,7 @@ export function syncExpandedTreeForActiveThread(input: {
       // Constant message, variables in `detail`: ids in the message would mint
       // a signature per corrupt thread and bypass the per-signature cap.
       // Console too — a remote session cannot persist (the reporter is
-      // LocalOnly), so there the console line is the only evidence.
+      // host-scoped), so there the console line is the only evidence.
       const detail = `revisited ${cursor} expanding ancestors of ${input.activeThreadId}`;
       console.warn(`[sidebarTree] parentThreadId cycle; walk stopped (${detail})`);
       reportFrontendDiagnostic(

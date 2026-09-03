@@ -3,11 +3,13 @@ package app
 import (
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 
 	"agent-overflow/internal/projectapp"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/worktreesetup"
 )
 
@@ -16,6 +18,7 @@ func (a *App) projectApplication() *projectapp.Service {
 		a.projectApp = projectapp.New(projectapp.Deps{
 			Store:     a.store,
 			Workspace: appProjectWorkspace{app: a},
+			Identity:  a.repoIdentity,
 		})
 	})
 	return a.projectApp
@@ -28,8 +31,34 @@ func (w appProjectWorkspace) FindWorktree(projectPath, candidate string) (string
 	return worktree.Path, ok, err
 }
 
+// repoIdentity derives a checkout's repository identity for projectapp.
+// Resolved through gitCore() at call time rather than captured when the
+// service is built, so the shared Core — and with it the repo-meta TTL cache
+// the origin read rides — is the one the rest of the app uses.
+func (a *App) repoIdentity(path string) (remoteURL, rootCommit string) {
+	return a.gitCore().RepoIdentity(path)
+}
+
+// backfillProjectIdentity derives the repository identity of every project row
+// that has none, and announces each row it moved so a client that already
+// loaded its sidebar converges without a refresh.
+//
+// One pass per boot, one derivation per unidentified row, no polling: after
+// the first boot following the v83 upgrade there is nothing left to do and the
+// pass reads the project list and stops.
+func (a *App) backfillProjectIdentity() {
+	if err := a.projectApplication().BackfillIdentity(func(row store.Project) {
+		a.broadcastProjectRow(triage.ProjectActionFull, row)
+	}); err != nil {
+		log.Printf("project identity backfill: %v", err)
+	}
+}
+
 // ListProjects returns projects with a lightweight thread count per
 // project for the sidebar.
+//
+//ao:scope threads:read
+//ao:route all
 func (a *App) ListProjects() ([]store.ProjectWithCounts, error) {
 	return a.projectApplication().List()
 }
@@ -38,30 +67,77 @@ func (a *App) ListProjects() ([]store.ProjectWithCounts, error) {
 // already backing another project. Returns ErrProjectPathInUse when the
 // path already has a project row — the frontend interprets that as
 // "redirect to the existing project" rather than a failure.
+//
+//ao:scope git:operate
+//ao:route selected
 func (a *App) CreateProject(path string) (store.Project, error) {
-	return a.projectApplication().Create(path)
+	row, err := a.projectApplication().Create(path)
+	if err != nil {
+		return store.Project{}, err
+	}
+	a.broadcastProjectRow(triage.ProjectActionListed, row)
+	return row, nil
 }
 
 // RenameProject updates the display name. Path is immutable.
+//
+//ao:scope threads:operate
+//ao:route project
 func (a *App) RenameProject(id, name string) (store.Project, error) {
-	return a.projectApplication().Rename(id, name)
+	write, err := a.projectApplication().Rename(id, name)
+	if err != nil {
+		return store.Project{}, err
+	}
+	a.broadcastProjectWrite(triage.ProjectActionFull, write)
+	return write.Project, nil
 }
 
 // ArchiveProject hides the project without deleting it.
+//
+//ao:scope threads:operate
+//ao:route project
 func (a *App) ArchiveProject(id string) error {
-	return a.projectApplication().Archive(id)
+	write, err := a.projectApplication().Archive(id)
+	if err != nil {
+		return err
+	}
+	a.broadcastProjectWrite(triage.ProjectActionUnlisted, write)
+	return nil
 }
 
 // UnarchiveProject reverses ArchiveProject and returns the refreshed row.
+//
+//ao:scope threads:operate
+//ao:route project
 func (a *App) UnarchiveProject(id string) (store.Project, error) {
-	return a.projectApplication().Unarchive(id)
+	write, err := a.projectApplication().Unarchive(id)
+	if err != nil {
+		return store.Project{}, err
+	}
+	a.broadcastProjectWrite(triage.ProjectActionListed, write)
+	return write.Project, nil
 }
 
 // UpdateProjectSortPositions re-orders the projects list. The frontend
 // emits the full ordered list when the user drops a drag-reorder so the
 // store assigns dense positions 0..N-1 in one transaction.
+//
+// One frame per row written. Every listed project is written, not only the
+// ones whose index moved, because the reorder also bumps updated_at — that
+// bump is deliberate (it makes a reorder count as project activity), so those
+// rows really did change and other clients need them.
+//
+//ao:scope threads:operate
+//ao:route home
 func (a *App) UpdateProjectSortPositions(orderedIDs []string) error {
-	return a.projectApplication().UpdateSortPositions(orderedIDs)
+	moved, err := a.projectApplication().UpdateSortPositions(orderedIDs)
+	if err != nil {
+		return err
+	}
+	for _, row := range moved {
+		a.broadcastProjectRow(triage.ProjectActionFull, row)
+	}
+	return nil
 }
 
 // WorktreeSetupConfig is the wire shape of a project's worktree setup recipe.
@@ -76,6 +152,8 @@ type WorktreeSetupConfig struct {
 // GetProjectWorktreeSetup returns the project's recipe. An unconfigured project
 // returns the empty recipe — the editor's starting state — rather than an
 // error, because "not configured yet" is the normal case, not a fault.
+//
+//ao:scope terminal:operate
 func (a *App) GetProjectWorktreeSetup(projectID string) (WorktreeSetupConfig, error) {
 	config, err := a.projectApplication().GetWorktreeSetup(projectID)
 	if err != nil {
@@ -91,12 +169,20 @@ func (a *App) GetProjectWorktreeSetup(projectID string) (WorktreeSetupConfig, er
 //
 // A recipe that asks for nothing clears the row, so "remove everything" and
 // "never configured" are the same state.
+//
+//ao:scope terminal:operate
+//ao:stepup
 func (a *App) SetProjectWorktreeSetup(projectID string, config WorktreeSetupConfig) (WorktreeSetupConfig, error) {
 	stored := worktreesetup.Config{Copy: config.Copy, Run: config.Run, Timeout: config.Timeout}
-	saved, err := a.projectApplication().SetWorktreeSetup(projectID, stored)
+	saved, write, err := a.projectApplication().SetWorktreeSetup(projectID, stored)
 	if err != nil {
 		return WorktreeSetupConfig{}, err
 	}
+	// The frame carries the project row, which does not include the recipe —
+	// the recipe has its own read (GetProjectWorktreeSetup), and putting it on
+	// every project frame would be wire weight for a surface almost nobody has
+	// open. What the frame says is that this project moved.
+	a.broadcastProjectWrite(triage.ProjectActionFull, write)
 	return toWireWorktreeSetup(saved), nil
 }
 
@@ -139,6 +225,9 @@ type ProjectDeletionResult struct {
 // FIRST, before a single thread lock is taken: cancelling a live run reaches
 // App.InterruptTurn, which locks the run's phase thread — one of the locks this
 // method would otherwise already hold on every thread in the project.
+//
+//ao:scope threads:operate
+//ao:route project
 func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	if a.store == nil {
 		return ProjectDeletionResult{}, fmt.Errorf("delete project: store unavailable")
@@ -250,6 +339,7 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 		}
 		return ProjectDeletionResult{}, err
 	}
+	a.broadcastProjectDeleted(id)
 	result.ThreadIDs = slicesx.OrEmpty(ids)
 	return result, nil
 }
@@ -257,6 +347,14 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 // ensureProjectForWorkspace delegates to project.EnsureForWorkspace.
 // Kept as an *App method so existing callers (and tests in this package)
 // don't need to thread the store through their call sites.
+// A workspace no project covers yet mints one, which is a new sidebar entry
+// and is announced like any other creation. Resolving to an existing project
+// is the common case and says nothing.
 func (a *App) ensureProjectForWorkspace(workspacePath string) (store.Project, error) {
-	return a.projectApplication().EnsureForWorkspace(workspacePath)
+	write, err := a.projectApplication().EnsureForWorkspace(workspacePath)
+	if err != nil {
+		return store.Project{}, err
+	}
+	a.broadcastProjectWrite(triage.ProjectActionListed, write)
+	return write.Project, nil
 }

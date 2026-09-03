@@ -26,9 +26,18 @@ import {
 } from './bindings';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
 import { isTransportClassError } from './transportStatus.svelte';
+import { hasScope } from '../transport/scopes';
 import { wailsEventOn } from './wailsEvents';
 import { errString } from '../utils/errors';
-import { workspaceKeyForThread, workspaceRefForThread } from '../utils/workspaceKey';
+import {
+  composeWorkspaceKey,
+  workspaceKeyBackend,
+  workspaceKeyForThread,
+  workspaceKeyPath,
+  workspaceRefForThread,
+} from '../utils/workspaceKey';
+import { backendKeyForOrigin, withBackendTarget } from '../transport/backends';
+import { HOME_BACKEND } from '../transport/backendKey';
 
 /** What a source needs from whoever is holding the key. */
 export interface GitStatusCtx {
@@ -53,10 +62,17 @@ interface GitStatusEvent {
   status: GitStatus;
 }
 
-// Canonical cwd → the local keys subscribed through it, each stamped with
-// the source RUN that installed it. One-to-many because two spellings of one
-// directory (a symlinked path and its resolution) canonicalize to the same
-// cwd on the backend while staying distinct thread rows here.
+// `${backendId} ${canonical cwd}` → the local keys subscribed through it,
+// each stamped with the source RUN that installed it. One-to-many because
+// two spellings of one directory (a symlinked path and its resolution)
+// canonicalize to the same cwd on the backend while staying distinct thread
+// rows here.
+//
+// Keyed by BACKEND as well as cwd, and for the reason
+// `utils/workspaceKey.ts` states: canonicalization happens on the backend,
+// so two machines holding the same checkout report the same cwd. Routing a
+// `git:status` frame by cwd alone would paint one machine's status onto the
+// other's header — silently, and only ever on a client attached to both.
 //
 // The owner stamp is what makes the map safe under re-sourcing. A superseded
 // run (invalidate, reconnect, retry) resolves LATE and then runs its own
@@ -67,41 +83,50 @@ interface GitStatusEvent {
 type AliasOwner = symbol;
 const localKeysByCwd = new Map<string, Map<string, AliasOwner>>();
 
-function addAlias(cwd: string, key: string, owner: AliasOwner): void {
-  let keys = localKeysByCwd.get(cwd);
+function addAlias(cwdKey: string, key: string, owner: AliasOwner): void {
+  let keys = localKeysByCwd.get(cwdKey);
   if (!keys) {
     keys = new Map<string, AliasOwner>();
-    localKeysByCwd.set(cwd, keys);
+    localKeysByCwd.set(cwdKey, keys);
   }
   keys.set(key, owner);
 }
 
-function removeAlias(cwd: string, key: string, owner: AliasOwner): void {
-  const keys = localKeysByCwd.get(cwd);
+function removeAlias(cwdKey: string, key: string, owner: AliasOwner): void {
+  const keys = localKeysByCwd.get(cwdKey);
   if (keys?.get(key) !== owner) return;
   keys.delete(key);
-  if (keys.size === 0) localKeysByCwd.delete(cwd);
+  if (keys.size === 0) localKeysByCwd.delete(cwdKey);
 }
 
 const store = createEntityStore<GitStatus, GitStatusCtx>({
   name: 'gitStatus',
   source: async ({ key, getCtx, apply, signal }) => {
     const owner: AliasOwner = Symbol(key);
+    const backend = workspaceKeyBackend(key);
     const workspace = getCtx().workspace;
     if (workspace === null) {
       throw new Error(`git status: no workspace to subscribe for ${key}`);
     }
-    const result = (await GitStatusSubscribe(workspace)) as GitStatusSubscriptionResult;
-    const cwd = result.cwd;
+    // Pinned to the KEY's backend rather than routed from the ref: the key
+    // is the entity, and the subscription id the answer carries belongs to
+    // whichever connection minted it, so the two must be one machine.
+    const result = (await withBackendTarget(backend, () =>
+      GitStatusSubscribe(workspace),
+    )) as GitStatusSubscriptionResult;
+    const cwdKey = composeWorkspaceKey(backend, result.cwd);
     // Only a run that is still the live one may claim the alias; a
     // superseded run's cleanup then finds an owner that is not its own and
     // leaves the live routing alone.
-    if (!signal.aborted) addAlias(cwd, key, owner);
+    if (!signal.aborted) addAlias(cwdKey, key, owner);
     apply(result.status as GitStatus);
     return async () => {
-      removeAlias(cwd, key, owner);
+      removeAlias(cwdKey, key, owner);
       try {
-        await GitStatusUnsubscribe(result.id);
+        // A subscription id is meaningful only on the connection that
+        // minted it, and nothing in the id says which that was — hence the
+        // pin rather than a route.
+        await withBackendTarget(backend, () => GitStatusUnsubscribe(result.id));
       } catch (err) {
         // A dead wire needs no unsubscribe: the backend releases every
         // subscription a connection held when it drops. Anything else is a
@@ -129,9 +154,13 @@ let gitStatusEventOff: (() => void) | null = null;
 
 function installGitStatusEventListener(): void {
   gitStatusEventOff?.();
-  gitStatusEventOff = wailsEventOn<GitStatusEvent>('git:status', (payload) => {
+  gitStatusEventOff = wailsEventOn<GitStatusEvent>('git:status', (payload, origin) => {
     if (!payload?.cwd) return;
-    const keys = localKeysByCwd.get(payload.cwd);
+    // The frame names a directory; the connection it arrived on names the
+    // machine. Neither is enough alone.
+    const keys = localKeysByCwd.get(
+      composeWorkspaceKey(backendKeyForOrigin(origin.backendId), payload.cwd),
+    );
     if (!keys) return;
     for (const key of keys.keys()) store.apply(key, payload.status);
   });
@@ -152,8 +181,9 @@ installGitStatusEventListener();
 export interface GitStatusPaneBridge {
   /** Push a persisted thread row into the registry and every pane on it. */
   syncThread(thread: Thread): void;
-  /** Surface a failure on the panes still looking at that workspace. */
-  reportWorkspaceError(workspacePath: string, message: string): void;
+  /** Surface a failure on the panes still looking at that workspace. Takes
+   *  the WORKSPACE KEY (`utils/workspaceKey.ts`), not a bare path. */
+  reportWorkspaceError(workspaceKey: string, message: string): void;
 }
 
 let paneBridge: GitStatusPaneBridge | null = null;
@@ -186,8 +216,8 @@ function bridge(): GitStatusPaneBridge | null {
 const queuedBranchByWorkspace = new Map<string, string>();
 let branchPersistRunning = false;
 
-function queueBranchPersist(workspacePath: string, branch: string): void {
-  queuedBranchByWorkspace.set(workspacePath, branch);
+function queueBranchPersist(workspaceKey: string, branch: string): void {
+  queuedBranchByWorkspace.set(workspaceKey, branch);
   if (branchPersistRunning) return;
   branchPersistRunning = true;
   void drainBranchPersistQueue();
@@ -198,21 +228,27 @@ async function drainBranchPersistQueue(): Promise<void> {
     while (queuedBranchByWorkspace.size > 0) {
       const next = queuedBranchByWorkspace.entries().next();
       if (next.done) return;
-      const [workspacePath, branch] = next.value;
-      queuedBranchByWorkspace.delete(workspacePath);
+      const [workspaceKey, branch] = next.value;
+      queuedBranchByWorkspace.delete(workspaceKey);
       try {
         // No rows back is the common answer, not an edge case: the backend
         // writes only rows whose branch actually moved, so a first
         // observation that agrees with the cache costs zero syncs and zero
         // reactive churn here.
-        const rows = (await UpdateThreadBranch(workspacePath, branch)) as Thread[] | null;
+        // Path-keyed, so the backend is pinned from the key. Un-pinned this
+        // would write one machine's observed branch onto the rows of every
+        // thread the OTHER machine holds in the identically-named
+        // directory.
+        const rows = (await withBackendTarget(workspaceKeyBackend(workspaceKey), () =>
+          UpdateThreadBranch(workspaceKeyPath(workspaceKey), branch),
+        )) as Thread[] | null;
         if (rows && rows.length > 0) {
           const paneBridge = bridge();
           for (const row of rows) paneBridge?.syncThread(row);
         }
       } catch (err) {
         console.error('Failed to persist observed git branch:', err);
-        reportBranchPersistFailure(workspacePath, err);
+        reportBranchPersistFailure(workspaceKey, err);
       }
     }
   } finally {
@@ -222,16 +258,35 @@ async function drainBranchPersistQueue(): Promise<void> {
 
 // Surfaced on the panes still looking at that workspace. A pane that has
 // moved on is not shown an error about a checkout it left.
-function reportBranchPersistFailure(workspacePath: string, err: unknown): void {
-  bridge()?.reportWorkspaceError(workspacePath, `Failed to update thread branch: ${errString(err)}`);
+function reportBranchPersistFailure(workspaceKey: string, err: unknown): void {
+  bridge()?.reportWorkspaceError(workspaceKey, `Failed to update thread branch: ${errString(err)}`);
 }
 
 // ---------------------------------------------------------------------------
 // Public surface
 // ---------------------------------------------------------------------------
 
+// The answer for a session that was not granted `git:operate`: no value,
+// no error, nothing to release. Every RPC this store owns carries that
+// scope (internal/transport/methods_gen.go), so sourcing would be one
+// refusal per workspace per mount — and the store would then hold the
+// refusal as a persistent `statusError`, which the workspace strip
+// renders. A predicted absence is not a failure to report; the strip's
+// no-status state is the honest rendering of "this session does not see
+// git".
+const NO_GIT_STATUS: EntityAttachment<GitStatus> = {
+  get current() {
+    return null;
+  },
+  get error() {
+    return null;
+  },
+  release() {},
+};
+
 /** Refcounted attach for a workspace. Release when the consumer unmounts. */
 export function attachGitStatus(key: string, ctx: GitStatusCtx): EntityAttachment<GitStatus> {
+  if (!hasScope('git:operate', workspaceKeyBackend(key))) return NO_GIT_STATUS;
   assertAttachableWhileSeeding(key);
   return store.attach(key, ctx);
 }
@@ -265,6 +320,7 @@ export async function refreshGitStatus(
   workspace: WorkspaceRef,
   currentKey: () => string | null,
 ): Promise<void> {
+  if (!hasScope('git:operate', workspaceKeyBackend(key))) return;
   try {
     const result = (await GetGitStatus(workspace)) as GitStatus;
     if (currentKey() !== key) return;
@@ -340,6 +396,18 @@ export function resyncGitStatusAfterGap(): void {
 const testHolds = new Map<string, EntityAttachment<GitStatus>>();
 let seedingForTest = false;
 
+/**
+ * A seed may be written with a bare PATH, which reads as "the workspace at
+ * this path on the only backend this test has". Every seeding test holds
+ * one connection — a component test has no registry to attach a second to —
+ * and spelling the home prefix at each call site would be ceremony that
+ * says nothing. Anything already carrying a backend is left alone, so a
+ * test that DOES stage two backends still seeds them apart.
+ */
+function seedKey(key: string): string {
+  return key.includes(' ') ? key : composeWorkspaceKey(HOME_BACKEND, key);
+}
+
 function ensureTestHold(key: string): void {
   if (!seedingForTest) {
     store.suspend();
@@ -368,13 +436,15 @@ function assertAttachableWhileSeeding(key: string): void {
 }
 
 export function __seedGitStatusForTest(key: string, status: GitStatus): void {
-  ensureTestHold(key);
-  store.apply(key, status);
+  const held = seedKey(key);
+  ensureTestHold(held);
+  store.apply(held, status);
 }
 
 export function __seedGitStatusErrorForTest(key: string, message: string): void {
-  ensureTestHold(key);
-  store.applyError(key, new Error(message));
+  const held = seedKey(key);
+  ensureTestHold(held);
+  store.applyError(held, new Error(message));
 }
 
 /**

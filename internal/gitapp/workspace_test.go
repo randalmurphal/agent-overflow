@@ -28,7 +28,7 @@ func newResolveTestService(t *testing.T) (service *Service, project string, work
 	testutil.RunGit(t, project, "worktree", "add", "-b", "feature/wt", worktree)
 
 	now := time.Now().UnixMilli()
-	if err := database.CreateProject(store.Project{
+	if _, err := database.CreateProject(store.Project{
 		ID: "project", Path: project, Name: "project", CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("CreateProject: %v", err)

@@ -7,6 +7,7 @@ import (
 
 	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 // markThreadReadTimeout bounds a read-state stamp's wait for the single
@@ -26,12 +27,16 @@ const markThreadReadTimeout = 5 * time.Second
 // the old provider thread after the revert repointed the row. Internal
 // callers that already hold the lock (sends, deferred config restarts)
 // go through a.startSession / runSessionStart directly.
+//
+//ao:scope threads:operate
 func (a *App) StartSession(threadID string) error {
 	return a.startSessionTakingLock(context.Background(), threadID)
 }
 
 // StopSession tears down the thread's provider session. Idempotent: a thread
 // with no active session still runs triage cleanup so stale state doesn't leak.
+//
+//ao:scope threads:operate
 func (a *App) StopSession(threadID string) error {
 	sess, _ := a.sessionManager().take(threadID)
 	// teardownAndCloseSession tolerates the zero-value session — when
@@ -42,6 +47,8 @@ func (a *App) StopSession(threadID string) error {
 
 // SendMessage is the Wails-bound compatibility entry point for user-typed
 // content. The options-aware path below owns newer composer controls.
+//
+//ao:scope threads:operate
 func (a *App) SendMessage(threadID string, content string, attachmentIDs []string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
@@ -59,10 +66,18 @@ func (a *App) SendMessage(threadID string, content string, attachmentIDs []strin
 // SendMessageWithOptions applies send-time composer settings and dispatches the
 // user turn. RuntimeMode is staged in the composer and persisted here, under
 // the same per-thread action lock as provider session start/send.
-func (a *App) SendMessageWithOptions(threadID string, content string, opts SendMessageOptions) (store.Thread, error) {
+//
+//ao:scope threads:operate
+func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, content string, opts SendMessageOptions) (store.Thread, error) {
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
 	}
+	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
+		return store.Thread{}, err
+	}
+	// The send itself runs on Background, NOT on ctx. ctx belongs to the
+	// caller's connection, and a client that drops mid-send must not cancel
+	// a turn the provider has already been told about.
 	if _, err := a.sendMessageWithOptions(context.Background(), threadID, content, sendMessageOptions{
 		AttachmentIDs:                opts.AttachmentIDs,
 		RuntimeMode:                  opts.RuntimeMode,
@@ -71,6 +86,7 @@ func (a *App) SendMessageWithOptions(threadID string, content string, opts SendM
 		RevisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
 		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
+		SendID:                       opts.SendID,
 		// Wire entry: this text was typed into a composer (D31).
 		ExpandComposerCommands: true,
 	}); err != nil {
@@ -94,6 +110,8 @@ func (a *App) SendMessageWithOptions(threadID string, content string, opts SendM
 // "signal sent, now here's the record" ordering. If the triage
 // bookkeeping fails we log — the provider interrupt already fired, so
 // the session state is correct even if the timeline marker is missing.
+//
+//ao:scope threads:operate
 func (a *App) InterruptTurn(threadID string) error {
 	return a.interruptTurnCtx(context.Background(), threadID)
 }
@@ -117,6 +135,8 @@ func (a *App) InterruptTurn(threadID string) error {
 // itself cannot lose a race either: MarkThreadReadNow never moves
 // last_read_at backward, so a late async stamp cannot revert a newer one
 // the user's own mark-read landed in the meantime.
+//
+//ao:scope threads:operate
 func (a *App) SwitchThread(threadID string) (store.Thread, error) {
 	thread, err := a.loadThreadForFocus(threadID)
 	if err != nil {
@@ -132,6 +152,8 @@ func (a *App) SwitchThread(threadID string) (store.Thread, error) {
 // processes (plus MCP servers) for every thread the user clicked on,
 // accumulating gigabytes of resident memory across a handful of navigations
 // before the 30-minute idle reaper could reclaim them.
+//
+//ao:scope threads:operate
 func (a *App) AutoResumeThread(threadID string) error {
 	return nil
 }
@@ -153,13 +175,20 @@ func (a *App) markThreadFocused(threadID string) {
 		defer a.markThreadRead.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 		defer cancel()
-		if err := a.store.MarkThreadReadNow(ctx, threadID); err != nil {
+		row, changed, err := a.store.MarkThreadReadNow(ctx, threadID)
+		if err != nil {
 			// Nobody is waiting on this write, so a failure would
 			// otherwise be invisible: the sidebar keeps showing the
 			// frontend's optimistic read state and the next launch
 			// reverts to an unread badge with no explanation.
 			log.Printf("app: mark thread %s read: %v", threadID, err)
+			return
 		}
+		// Same broadcast the explicit MarkThreadRead binding makes: focus
+		// on one device clears the Completed pill on the others. A focus
+		// that found the marker already current changes nothing and stays
+		// off the wire, which is the common case.
+		a.broadcastThreadRowIfChanged(triage.ThreadActionFull, row, changed)
 	}()
 }
 
@@ -213,6 +242,8 @@ func (a *App) loadThreadForFocus(threadID string) (store.Thread, error) {
 //     landing mid-revert would resume the pre-revert cursor and clear the
 //     stopped-thread gate). Callers already holding the lock (workspace-
 //     change restarts) use reconnectSessionLocked instead.
+//
+//ao:scope threads:operate
 func (a *App) ReconnectSession(threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown

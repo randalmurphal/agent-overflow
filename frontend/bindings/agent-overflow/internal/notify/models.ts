@@ -14,6 +14,21 @@ export class Target {
     "threadId"?: string;
     "workItemId"?: string;
 
+    /**
+     * BackendID names WHICH backend the route above resolves against — the
+     * deep-link scheme docs/specs/remote-access.md §9 describes ("backend
+     * UUID + thread id"). It is orthogonal to Kind, not a fourth route: a
+     * client attached to several backends holds several threads called
+     * "the one in that notification", and the id is how it tells them apart.
+     * 
+     * Optional, and a single-backend client ignores it. Producing one costs
+     * nothing (the backend knows its own id) and it is what keeps a future
+     * multi-backend client from having to guess; that is the whole of its
+     * job today. Additive, per §9's wire discipline — an older launcher
+     * decoding this shape drops the field and routes exactly as before.
+     */
+    "backendId"?: string;
+
     /** Creates a new Target instance. */
     constructor($$source: Partial<Target> = {}) {
         if (!("kind" in $$source)) {

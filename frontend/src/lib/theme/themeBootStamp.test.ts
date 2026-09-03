@@ -1,5 +1,5 @@
-// Pins the first-paint boot script in `index.html` against the module that
-// writes what it reads.
+// Pins the first-paint boot script (`public/boot-theme.js`) against the module
+// that writes what it reads, and pins the element it fills in `index.html`.
 //
 // The two sides can only agree by convention: the script runs before any
 // bundle exists, so it cannot import a constant, and every disagreement is
@@ -14,13 +14,17 @@ import { describe, expect, it } from 'vitest';
 import { THEME_BOOT_MAX_CSS, THEME_BOOT_STORAGE_KEY, USER_THEME_STYLE_ID } from './themeApply.svelte';
 import { serializeThemeCss, type ResolvedDeclaration } from './themeResolve';
 
-const html = readFileSync(
-  resolve(dirname(fileURLToPath(import.meta.url)), '../../../index.html'),
-  'utf8',
-);
+const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+const html = readFileSync(resolve(frontendRoot, 'index.html'), 'utf8');
+// The script moved out of index.html when the baseline CSP landed:
+// script-src 'self' with no 'unsafe-inline' admits a file and refuses an
+// inline block, and neither a build-tracked hash nor a per-request nonce was
+// worth carrying to keep it inline. public/ is copied to the bundle root
+// verbatim, so these are the exact bytes the browser runs.
+const bootScript = readFileSync(resolve(frontendRoot, 'public/boot-theme.js'), 'utf8');
 
 /**
- * The boot script's CSS validator, lifted out of the HTML and executed.
+ * The boot script's CSS validator, lifted out of the file and executed.
  *
  * Grepping for the guard would prove it is spelled somewhere; this proves it
  * ACCEPTS what the serializer writes and REFUSES everything else. Both halves
@@ -29,11 +33,11 @@ const html = readFileSync(
  * was added to close.
  */
 function bootCssValidator(): (css: string) => boolean {
-  const start = html.indexOf('/* boot-css-validator:start */');
-  const end = html.indexOf('/* boot-css-validator:end */');
+  const start = bootScript.indexOf('/* boot-css-validator:start */');
+  const end = bootScript.indexOf('/* boot-css-validator:end */');
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
-  const source = html.slice(start, end);
+  const source = bootScript.slice(start, end);
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   return new Function(`${source}\nreturn okCss;`)() as (css: string) => boolean;
 }
@@ -46,14 +50,14 @@ function declaration(
   return { key, cssVar: `--${key}`, value, section: 'colors', variant, themeId: 't' };
 }
 
-describe('index.html boot stamp', () => {
+describe('boot stamp', () => {
   it('reads the key the applier writes', () => {
-    expect(html).toContain(`localStorage.getItem('${THEME_BOOT_STORAGE_KEY}')`);
+    expect(bootScript).toContain(`localStorage.getItem('${THEME_BOOT_STORAGE_KEY}')`);
   });
 
   it('fills the same style element the applier rewrites', () => {
     expect(html).toContain(`<style id="${USER_THEME_STYLE_ID}"></style>`);
-    expect(html).toContain(`document.getElementById('${USER_THEME_STYLE_ID}')`);
+    expect(bootScript).toContain(`document.getElementById('${USER_THEME_STYLE_ID}')`);
   });
 
   it('declares that element in the body, after nothing that could outrank it', () => {
@@ -64,26 +68,39 @@ describe('index.html boot stamp', () => {
     expect(styleAt).toBeGreaterThan(headEnd);
   });
 
+  it('is loaded as a parser-blocking classic script, before the app module', () => {
+    // A module (or defer/async) would run AFTER the document parses, which is
+    // after the frame this script exists to paint. Classic and un-deferred is
+    // the whole contract; `type="module"` on this tag would be silent.
+    const bootAt = html.indexOf('<script src="/boot-theme.js"></script>');
+    expect(bootAt).toBeGreaterThan(-1);
+    const styleAt = html.indexOf(`<style id="${USER_THEME_STYLE_ID}">`);
+    expect(bootAt).toBeGreaterThan(styleAt);
+    expect(html.indexOf('src="./src/main.ts"')).toBeGreaterThan(bootAt);
+  });
+
   it('applies the same CSS size cap the writer applies', () => {
-    expect(html).toContain(`stamp.s.length <= ${THEME_BOOT_MAX_CSS}`);
+    expect(bootScript).toContain(`stamp.s.length <= ${THEME_BOOT_MAX_CSS}`);
   });
 
   it('reads the three fields the writer emits, and validates the ground', () => {
-    expect(html).toContain('stamp.c');
-    expect(html).toContain('stamp.b');
-    expect(html).toContain('stamp.s');
+    expect(bootScript).toContain('stamp.c');
+    expect(bootScript).toContain('stamp.b');
+    expect(bootScript).toContain('stamp.s');
     // An origin store is user-writable; the inline style would take an
     // arbitrary string otherwise.
-    expect(html).toContain('/^#[0-9a-fA-F]{6}$/.test(stamp.b)');
+    expect(bootScript).toContain('/^#[0-9a-fA-F]{6}$/.test(stamp.b)');
   });
 
   it('writes the cached CSS only after validating it', () => {
     // The size cap alone was the entire gate; localStorage is same-origin
     // writable, so any script execution became a persistent CSS-injection
     // primitive that outlives the page that planted it.
-    const write = html.indexOf(`document.getElementById('${USER_THEME_STYLE_ID}').textContent`);
+    const write = bootScript.indexOf(
+      `document.getElementById('${USER_THEME_STYLE_ID}').textContent`,
+    );
     expect(write).toBeGreaterThan(-1);
-    const guard = html.lastIndexOf('okCss(stamp.s)', write);
+    const guard = bootScript.lastIndexOf('okCss(stamp.s)', write);
     expect(guard).toBeGreaterThan(-1);
   });
 
@@ -91,13 +108,16 @@ describe('index.html boot stamp', () => {
     // Everything the script DOES is optional decoration; a parse failure of a
     // hand-edited stamp must not stop `main.ts` from loading. The validator is
     // a function declaration above the try and cannot run on its own.
-    const scriptStart = html.indexOf('(function () {');
+    const scriptStart = bootScript.indexOf('(function () {');
     expect(scriptStart).toBeGreaterThan(-1);
-    const tryAt = html.indexOf('try {', scriptStart);
-    const readAt = html.indexOf(`localStorage.getItem('${THEME_BOOT_STORAGE_KEY}')`, scriptStart);
+    const tryAt = bootScript.indexOf('try {', scriptStart);
+    const readAt = bootScript.indexOf(
+      `localStorage.getItem('${THEME_BOOT_STORAGE_KEY}')`,
+      scriptStart,
+    );
     expect(tryAt).toBeGreaterThan(scriptStart);
     expect(readAt).toBeGreaterThan(tryAt);
-    expect(html.indexOf('} catch (err)', tryAt)).toBeGreaterThan(readAt);
+    expect(bootScript.indexOf('} catch (err)', tryAt)).toBeGreaterThan(readAt);
   });
 });
 

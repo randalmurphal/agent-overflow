@@ -16,6 +16,7 @@ import {
 } from '../../stores/composerDraft.svelte';
 import { buildPane } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
@@ -46,9 +47,9 @@ function installMocks() {
   setBindingMock('SaveDraft', async () => {});
   setBindingMock('ClearDraft', async () => {});
   setBindingMock('ListAttachments', async () => []);
-  setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
+  mockAttachmentDownload();
   setBindingMock('DeleteAttachment', async () => {});
-  setBindingMock('UploadAttachment', async (_threadId: string, filename: string) => ({
+  mockAttachmentUpload(async (_threadId: string, filename: string) => ({
     ...makeAttachment('att-uploaded'),
     filename,
   }));
@@ -314,7 +315,7 @@ describe('<ComposerInputSurface>', () => {
   });
 
   it('uploads a pasted image when the host has no objection', async () => {
-    const upload = setBindingMock('UploadAttachment', async () => makeAttachment('att-pasted'));
+    const upload = mockAttachmentUpload(async () => makeAttachment('att-pasted'));
     const { textarea, draft } = await mountSurface();
 
     textarea.dispatchEvent(makeClipboardPaste([new File(['x'], 'shot.png', { type: 'image/png' })]));
@@ -324,7 +325,7 @@ describe('<ComposerInputSurface>', () => {
   });
 
   it('refuses every attachment path the host blocks', async () => {
-    const upload = setBindingMock('UploadAttachment', async () => makeAttachment('att-pasted'));
+    const upload = mockAttachmentUpload(async () => makeAttachment('att-pasted'));
     const blockAttachment = vi.fn(() => true);
     const { textarea, handle, queryByTestId } = await mountSurface({ blockAttachment });
 

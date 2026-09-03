@@ -3,11 +3,13 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/fetch"
@@ -15,6 +17,7 @@ import (
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
@@ -74,6 +77,71 @@ func targetCommandContext(ctx context.Context) context.Context {
 		return ctx
 	}
 	return cdp.WithExecutor(ctx, chromedpContext.Target)
+}
+
+// dialCDPBrowser establishes the browser-level CDP connection on browserCtx
+// WITHOUT creating any target, and enables target discovery.
+//
+// Shared by every CDP engine (the launcher-hosted one and the headless
+// Chromium one), because both want the same two properties and neither can
+// get them from chromedp.Run. It is chromedp's own initContextBrowser
+// through the exported surface — FromContext, one Allocator.Allocate,
+// publish the Browser on the context so every later Run (all of them
+// WithTargetID) finds the shared connection — followed by the
+// Target.setDiscoverTargets(true) chromedp's skipped first-context path
+// would have sent.
+//
+// Not creating a target is load-bearing on both engines. Run against a
+// target-less context issues Target.createTarget, which WebView2 refuses
+// with `-32000 no browser is open` (a WebView2 target exists only as a
+// launcher-created controller, 2026-08-31) and which real Chromium answers
+// with a throwaway tab nobody owns — a whole renderer process per profile,
+// paid for forever. Discovery is what feeds ListenBrowser the target
+// lifecycle events both engines re-key into the seam's vocabulary.
+func dialCDPBrowser(browserCtx context.Context, logf func(string, ...any)) error {
+	c := chromedp.FromContext(browserCtx)
+	if c == nil || c.Allocator == nil {
+		return errors.New("not a chromedp context")
+	}
+	browser, err := c.Allocator.Allocate(browserCtx, chromedp.WithBrowserErrorf(func(format string, args ...any) {
+		logf("browser: chromedp: "+format, args...)
+	}))
+	if err != nil {
+		return err
+	}
+	c.Browser = browser
+	return target.SetDiscoverTargets(true).Do(cdp.WithExecutor(browserCtx, browser))
+}
+
+// cdpDownloadEvent translates the two browser-level download events into the
+// seam's vocabulary, reporting whether it recognised the event.
+//
+// Shared for the same reason as the dial: downloads are a browser-level CDP
+// fact with no engine-specific identity in them — the GUID IS the handle on
+// both engines — so a second copy could only drift. Frames, targets and
+// page ids are the caller's business, which is why nothing here re-keys.
+func cdpDownloadEvent(ev any, events engineEvents) bool {
+	switch event := ev.(type) {
+	case *cdpbrowser.EventDownloadWillBegin:
+		events.DownloadStarted(downloadStart{
+			Frame: string(event.FrameID), ID: event.GUID,
+			URL: event.URL, SuggestedName: event.SuggestedFilename,
+		})
+		return true
+	case *cdpbrowser.EventDownloadProgress:
+		state := downloadInProgress
+		switch event.State {
+		case cdpbrowser.DownloadProgressStateCompleted:
+			state = downloadCompleted
+		case cdpbrowser.DownloadProgressStateCanceled:
+			state = downloadCanceled
+		}
+		events.DownloadProgress(downloadProgress{
+			ID: event.GUID, Received: event.ReceivedBytes, State: state, FilePath: event.FilePath,
+		})
+		return true
+	}
+	return false
 }
 
 func (p *cdpPage) Lifetime() context.Context { return p.ctx }

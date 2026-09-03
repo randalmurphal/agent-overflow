@@ -1,3 +1,4 @@
+import { showCompactList, showCompactThread } from './layoutMode.svelte';
 import type { Thread } from '../types/models';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
 import {
@@ -12,7 +13,18 @@ import {
 import { getThreadById, replaceThread as replaceThreadInRegistry } from './threads.svelte';
 import { setGitStatusPaneBridge } from './gitStatusStore.svelte';
 import { workspaceKeyForThread } from '../utils/workspaceKey';
+import {
+  setActiveBackendPaneResolver,
+  setFocusedThreadResolver,
+  setPaneBackend,
+} from './selectedBackend.svelte';
+import { onBackendDetached } from '../transport/backends';
 import { REVEAL_PANE_EVENT } from './eventNames';
+import {
+  refreshWatchedThreads,
+  registerWatchedThreadSource,
+  watchThreadsBeforeMount,
+} from './watchedThreads';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 
 // Active panes, keyed by pane ID. PaneHost mounts panes from layout order;
@@ -31,6 +43,17 @@ let panePersistenceHandler: (() => void) | null = null;
 // way only (companion stores read the pane registry, never the reverse).
 let paneDestroyedObservers: Array<(paneId: string) => void> = [];
 let paneThreadMountedObservers: Array<(paneId: string, threadId: string) => void> = [];
+
+// Every open pane's thread is watched, foreground and background alike —
+// the registry is the whole membership question and nothing about where a
+// pane sits on screen enters it (watchedThreads.ts). Registered at module
+// load rather than from a component, so the set is composed by the registry
+// that owns it and no mount order can leave it unregistered.
+registerWatchedThreadSource(function* paneThreadIds() {
+  for (const pane of panes.values()) {
+    if (pane.threadId) yield pane.threadId;
+  }
+});
 
 export function setPanePersistenceHandler(handler: (() => void) | null): void {
   panePersistenceHandler = handler;
@@ -74,6 +97,8 @@ function requestPanePersistence(): void {
  */
 export function revealPane(paneId: string): void {
   if (typeof window === 'undefined' || !paneId) return;
+  // Under the compact layout "show this pane" also means "leave the list".
+  showCompactThread();
   window.dispatchEvent(new CustomEvent(REVEAL_PANE_EVENT, {
     detail: { paneId },
   }));
@@ -296,6 +321,10 @@ export function destroyPane(id: string): void {
   panes.delete(id);
   paneActivationById = new Map(paneActivationById);
   paneActivationById.delete(id);
+  // The pane's staged machine goes with the pane. Left behind it is a map
+  // entry that grows for the life of the session and, if a pane id is ever
+  // reused, stages a machine nobody picked.
+  setPaneBackend(id, null);
   removePaneLayoutItem(id, { persist: false });
   // Cascade: paired companion panes close with their source. Fired after the
   // source pane is fully torn down so observers see consistent registry/layout
@@ -307,6 +336,15 @@ export function destroyPane(id: string): void {
     focusedPaneId = nextFocusId;
     if (nextFocusId) revealPane(nextFocusId);
   }
+  // The thread screen with nothing on it is the list. Compact has no close
+  // control of its own, so the last pane goes here only when something
+  // else took it (a deleted thread, a detached machine), and leaving the
+  // person on an empty screen with no back button is a dead end. Off
+  // compact this is a no-op stamp.
+  if (panes.size === 0) showCompactList();
+  // After the companion cascade, so one recompute covers every pane the
+  // close removed rather than one per observer.
+  refreshWatchedThreads();
   requestPanePersistence();
 }
 
@@ -357,6 +395,7 @@ export function resetPanesForTest(): void {
   paneActivationById = new Map();
   focusedPaneId = 'main';
   nextGeneratedPaneId = 1;
+  refreshWatchedThreads();
 }
 
 export function resetPaneRegistry(nextFocusedPaneId: string | null = null): void {
@@ -365,6 +404,7 @@ export function resetPaneRegistry(nextFocusedPaneId: string | null = null): void
   paneActivationById = new Map();
   focusedPaneId = nextFocusedPaneId;
   nextGeneratedPaneId = 1;
+  refreshWatchedThreads();
 }
 
 export async function hydrateRestoredPaneRegistry(
@@ -402,6 +442,10 @@ export async function hydrateRestoredPaneRegistry(
   paneActivationById = nextActivation;
   focusedPaneId = nextFocusedPaneId && panes.has(nextFocusedPaneId) ? nextFocusedPaneId : null;
   nextGeneratedPaneId = 1;
+  // The other door into a mount, and it opens every restored pane's loads
+  // at once — so the whole restored set is watched before any of them fire,
+  // for the reason replaceThreadInPane watches ahead of its own switch.
+  watchThreadsBeforeMount(hydratedPanes.map(({ thread }) => thread.id));
   const results = await Promise.allSettled(
     hydratedPanes.map(({ pane, thread }) => pane.switchThread(thread)),
   );
@@ -411,7 +455,10 @@ export async function hydrateRestoredPaneRegistry(
     droppedPaneIds.add(paneId);
     console.error(`Failed to restore pane "${paneId}":`, result.reason);
   }
-  if (droppedPaneIds.size === 0) return;
+  if (droppedPaneIds.size === 0) {
+    refreshWatchedThreads();
+    return;
+  }
   // Skipped duplicates were never registered, so only their layout slot needs
   // clearing; the map deletes below are no-ops for them.
   for (const paneId of droppedPaneIds) {
@@ -424,6 +471,8 @@ export async function hydrateRestoredPaneRegistry(
     paneActivationById = nextActivation;
     removePaneLayoutItem(paneId, { persist: false });
   }
+  // One recompute for the whole drop pass, after the registry has settled.
+  refreshWatchedThreads();
   // Based on what was REQUESTED, not on what survived the resolve above: a
   // focused pane that was deduplicated never entered `panes`, so
   // `focusedPaneId` is already null here and a truthiness check would skip
@@ -495,7 +544,18 @@ async function replaceThreadInPane(
   addThreadPaneToLayout(target.paneId);
   focusedPaneId = target.paneId;
   revealPane(target.paneId);
+  // Ahead of switchThread, which is what issues this thread's history and
+  // window loads: the backend must already be admitting the thread's
+  // entity-filtered frames by the time those answers stream back, or the
+  // pane renders its first turn without the pushes that accompany it.
+  watchThreadsBeforeMount([thread.id]);
   await target.switchThread(thread);
+  // Authoritative recompute now the registry can see the mount, replacing
+  // the speculative union above. A switchThread that THREW skips this and
+  // leaves that one extra id in the sent set until the next composition
+  // change — wire bytes on a cache-warmer channel, never a missing frame,
+  // which is the direction this may fail in.
+  refreshWatchedThreads();
   for (const observer of paneThreadMountedObservers) {
     try {
       observer(target.paneId, thread.id);
@@ -676,13 +736,40 @@ export function syncThread(thread: Thread): void {
 // decided whether a module-level event listener registered. Importing this
 // module is the whole wiring: no registration order, and no test reset that
 // can leave branch reconciliation unable to reach a pane.
+// The `selected` route's first question is which thread the person is
+// looking at (stores/selectedBackend.svelte). Armed here, at this module's
+// load, for the same reason the git-status bridge is: importing panes from
+// that leaf would close the `panes → thread → gitStatusStore → transport`
+// ring, and the failure mode would be an init order that decides whether
+// routing works.
+setFocusedThreadResolver(() => getFocusedPaneOrNull()?.threadId ?? null);
+// The second half of the same question: which PANE's staged machine the
+// `selected` route should prefer when the focused pane holds a draft that
+// has no indexed thread yet. A resolver rather than a write on every focus
+// change, for the reason above and one more: `focusedPaneId` is assigned
+// in eight places, and a push from each is a rule somebody has to
+// remember. Pulling closes the class instead.
+setActiveBackendPaneResolver(() => getFocusedThreadPaneId());
+
+// A backend that detached takes its panes with it. The alternative is a
+// pane still showing that machine's thread while the entity index has
+// forgotten it, at which point the composer re-enables (nothing is
+// unreachable once the entry is gone) and the next send resolves to the
+// page's own backend. Closing is what this app already does when a thread
+// stops being openable, and it is the only answer that cannot re-route.
+onBackendDetached(({ threadIds }) => {
+  closePanesShowingThreads(threadIds);
+});
+
 setGitStatusPaneBridge({
   syncThread,
-  reportWorkspaceError(workspacePath, message) {
-    // Only the panes still in that workspace. A pane that has moved on is
-    // not shown an error about a checkout it left.
+  reportWorkspaceError(workspaceKey, message) {
+    // Only the panes still in that workspace — same backend AND same path,
+    // since the key carries both. A pane that has moved on is not shown an
+    // error about a checkout it left, and a pane on another machine is not
+    // shown one about a directory that merely shares a name.
     for (const pane of panes.values()) {
-      if (workspaceKeyForThread(pane.thread ?? null) !== workspacePath) continue;
+      if (workspaceKeyForThread(pane.thread ?? null) !== workspaceKey) continue;
       pane.setGeneralError(message);
     }
   },

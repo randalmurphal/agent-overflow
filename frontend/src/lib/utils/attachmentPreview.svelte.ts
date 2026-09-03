@@ -1,5 +1,6 @@
 import { untrack } from 'svelte';
-import { GetAttachmentData, GetAttachmentThumbnail } from '../stores/bindings';
+import { GetAttachmentThumbnail } from '../stores/bindings';
+import { fetchAttachmentBytes } from '../transport/attachmentTransfer';
 import {
   parseUserMessageAttachments,
   type AttachmentPreviewSource,
@@ -39,6 +40,11 @@ export interface ExpandedImagePreview {
  * returned `ImagePreviewItem.url` is a blob: URL of the thumbnail bytes,
  * NOT the full image. For the lightbox modal, call
  * `loadAttachmentFullSize` instead.
+ *
+ * Still an RPC — base64 in a WS frame — while the full-size path below
+ * moved to HTTP. A thumb is ~10-30 KB, which is not the large body the
+ * move was about, and a grid rendering a dozen tiles would otherwise pay
+ * a ticket round trip for each one.
  */
 export async function loadAttachmentPreview(attachment: AttachmentPreviewSource): Promise<ImagePreviewItem> {
   const result = await GetAttachmentThumbnail(attachment.threadId, attachment.id);
@@ -60,15 +66,22 @@ export async function loadAttachmentPreview(attachment: AttachmentPreviewSource)
  * Callers are responsible for revoking the returned blob: URL when the
  * modal closes; `loadExpandedPreview` wires that up via
  * `ExpandedImagePreview.dispose`.
+ *
+ * The bytes arrive over HTTP, admitted by a single-use ticket, rather
+ * than as base64 inside a WebSocket frame — which is what keeps opening
+ * a 10 MiB screenshot from stalling the live event stream behind it.
  */
 export async function loadAttachmentFullSize(attachment: AttachmentPreviewSource): Promise<ImagePreviewItem> {
-  const data = await GetAttachmentData(attachment.threadId, attachment.id);
+  const blob = await fetchAttachmentBytes(attachment.threadId, attachment.id);
   return {
     id: attachment.id,
     filename: attachment.filename,
-    mimeType: attachment.mimeType,
+    // The response's own type, which the backend wrote from the verified
+    // content type on the stored row. Falling back to the row's copy
+    // keeps a caller that passed one from losing it.
+    mimeType: blob.type || attachment.mimeType,
     size: attachment.size,
-    url: imagePreviewUrl(attachment.mimeType, data),
+    url: blobPreviewUrl(blob),
   };
 }
 
@@ -77,6 +90,16 @@ function imagePreviewUrl(mimeType: string, base64Data: string): string {
     return `data:${mimeType};base64,${base64Data}`;
   }
   return URL.createObjectURL(new Blob([base64ToBytes(base64Data)], { type: mimeType }));
+}
+
+/**
+ * Wraps an already-fetched Blob. The base64 branch above has no
+ * counterpart here: a response body is bytes to begin with, so there is
+ * nothing to re-encode when createObjectURL is missing, and every
+ * environment that can run fetch has it.
+ */
+function blobPreviewUrl(blob: Blob): string {
+  return URL.createObjectURL(blob);
 }
 
 function revokePreview(preview: ImagePreviewItem | undefined): void {

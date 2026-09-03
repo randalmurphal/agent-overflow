@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -130,6 +131,67 @@ func TestFakeEngineRefusesPageContentByName(t *testing.T) {
 	}
 	if _, err := manager.Snapshot(t.Context(), access, info.ID); err == nil || !strings.Contains(err.Error(), "renders no page content") {
 		t.Fatalf("snapshot error = %v, want the fake engine's refusal", err)
+	}
+}
+
+// disposeCountingEngine records the profile disposals the Manager performs.
+// It is the fake engine plus a tally, because WHEN a profile is disposed is
+// Manager policy and holds on every engine.
+type disposeCountingEngine struct {
+	*fakeEngine
+	disposed atomic.Int64
+}
+
+func (e *disposeCountingEngine) NewProfile(ctx context.Context, opts profileOptions) (engineProfile, error) {
+	profile, err := e.fakeEngine.NewProfile(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &countingProfile{engineProfile: profile, owner: e}, nil
+}
+
+type countingProfile struct {
+	engineProfile
+	owner *disposeCountingEngine
+}
+
+func (p *countingProfile) Dispose(ctx context.Context) error {
+	p.owner.disposed.Add(1)
+	return p.engineProfile.Dispose(ctx)
+}
+
+// A workspace's profile is disposed when its LAST page closes, not when the
+// idle timer eventually stops the engine. On an engine whose profile owns a
+// browser PROCESS — the headless Chromium one — that is the moment the
+// process dies, so a serve host with no open page runs no browser long
+// before idleBrowserDelay elapses. The engine half of that chain is
+// headless_engine_test.go; this is the half that decides when.
+func TestManagerDisposesAWorkspaceProfileWithItsLastPage(t *testing.T) {
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
+	defer manager.Close()
+	engine := &disposeCountingEngine{fakeEngine: newFakeEngine()}
+	manager.engine = engine
+
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	first, err := manager.Open(t.Context(), access, "https://example.test/one", OpenOptions{})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	second, err := manager.Open(t.Context(), access, "https://example.test/two", OpenOptions{})
+	if err != nil {
+		t.Fatalf("open a second page: %v", err)
+	}
+	if err := manager.ClosePage(t.Context(), access, first.ID); err != nil {
+		t.Fatalf("close the first page: %v", err)
+	}
+	if got := engine.disposed.Load(); got != 0 {
+		t.Fatalf("the workspace profile was disposed with a page still open (%d disposals)", got)
+	}
+	if err := manager.ClosePage(t.Context(), access, second.ID); err != nil {
+		t.Fatalf("close the last page: %v", err)
+	}
+	if got := engine.disposed.Load(); got != 1 {
+		t.Fatalf("the workspace's last page left its profile alive (%d disposals)", got)
 	}
 }
 

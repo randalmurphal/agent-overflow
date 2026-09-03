@@ -16,7 +16,7 @@
   import Button from '../primitives/Button.svelte';
   import type { ProjectDeletionPreview } from '../../types/workflow';
   import { cleanupSummary, retainedInPreview } from '../../utils/projectCleanup';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
 
   interface Props {
     open: boolean;
@@ -37,7 +37,8 @@
     onCancel,
   }: Props = $props();
 
-  let viewOnly = $derived(isViewOnlySession());
+  // Deleting a project is thread/project bookkeeping.
+  let ungranted = $derived(!hasScope('threads:operate'));
   let threadSummary = $derived(
     `Permanently delete "${projectName}" and all ${threadCount} thread${
       threadCount === 1 ? '' : 's'
@@ -91,9 +92,9 @@
       variant="danger"
       size="sm"
       testId="project-delete-confirm"
-      title={viewOnly ? 'Local only' : undefined}
+      title={ungranted ? 'Not granted to this device' : undefined}
       onclick={onConfirm}
-      disabled={viewOnly || submitting}
+      disabled={ungranted || submitting}
       loading={submitting}
     >
       {#snippet children()}{submitting ? 'Deleting…' : 'Delete Project'}{/snippet}

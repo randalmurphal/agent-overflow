@@ -6,12 +6,11 @@ import (
 	"strings"
 
 	"agent-overflow/internal/chatmodel"
+	"agent-overflow/internal/entityid"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
-
-	"github.com/google/uuid"
 )
 
 type CreateOptions struct {
@@ -30,12 +29,34 @@ type CreateOptions struct {
 	WorkspaceOverride          string
 	WorktreePath               string
 	Branch                     string
+	// CreatedByDevice names the screen this call came from, or "" when the
+	// backend created the thread on its own behalf. Root reads it off the
+	// connection; this package only records it.
+	CreatedByDevice string
+	// SettingsBucket names the ui_state bucket holding the calling
+	// connection's device-tier settings, empty for a backend-initiated
+	// create. SettingsClass names the kind of screen behind it. The
+	// recent-workspace write is attributed to the pair — see
+	// RecentWorkspaces.
+	SettingsBucket string
+	SettingsClass  string
+	// AuthorizeRuntimeMode, when set, is asked to approve the RESOLVED
+	// runtime mode — the argument if one was given, otherwise whatever the
+	// seed profile supplies — before the thread persists. Returning an
+	// error aborts the create with that error unwrapped.
+	//
+	// A hook rather than a resolved mode passed in by the caller: the
+	// resolution rules live here, and a caller that re-derived them to
+	// authorize would be a second copy that silently disagrees the day
+	// one of them changes. This package still knows nothing about scopes.
+	AuthorizeRuntimeMode func(mode string) error
 }
 
 type TerminalOptions struct {
-	ProjectID string
-	Cwd       string
-	Title     string
+	ProjectID       string
+	Cwd             string
+	Title           string
+	CreatedByDevice string
 }
 
 type Defaults struct {
@@ -110,6 +131,13 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 			return store.Thread{}, fmt.Errorf("create thread: %w", parseErr)
 		}
 		runtimeMode = string(parsedRuntimeMode)
+	}
+	// The resolved mode is known here and the thread has not persisted, so
+	// this is where an authority decided by the OUTCOME gets asked.
+	if opts.AuthorizeRuntimeMode != nil {
+		if err := opts.AuthorizeRuntimeMode(runtimeMode); err != nil {
+			return store.Thread{}, err
+		}
 	}
 	if trimmed := strings.TrimSpace(opts.ReasoningEffort); trimmed != "" {
 		if !models.SupportsReasoningEffort(providerName, model, trimmed) {
@@ -212,13 +240,15 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 		RuntimeMode:                runtimeMode,
 		CreatedAt:                  now,
 		UpdatedAt:                  now,
+		CreatedByDevice:            opts.CreatedByDevice,
+		Origin:                     s.observeOrigin(workspace),
 	}
 	if err := database.CreateThread(thread); err != nil {
 		return store.Thread{}, err
 	}
 	models.Remember(thread)
 	if s.deps.RecentWorkspaces != nil {
-		s.deps.RecentWorkspaces.AddRecentWorkspace(workspace)
+		s.deps.RecentWorkspaces.AddRecentWorkspace(opts.SettingsBucket, opts.SettingsClass, workspace)
 	}
 	if cutWorktree && s.deps.WorktreeSetup != nil {
 		s.deps.WorktreeSetup.Start(thread)
@@ -282,6 +312,8 @@ func (s *Service) StartTerminal(opts TerminalOptions) (store.Thread, error) {
 		ReasoningEffort: effort,
 		CreatedAt:       now,
 		UpdatedAt:       now,
+		CreatedByDevice: opts.CreatedByDevice,
+		Origin:          s.observeOrigin(workspace),
 	}
 	if err := database.CreateThread(thread); err != nil {
 		return store.Thread{}, fmt.Errorf("start terminal: %w", err)
@@ -338,9 +370,13 @@ func (s *Service) Defaults(opts CreateOptions) (Defaults, error) {
 	}, nil
 }
 
+// newID mints a thread id. Globally unique by construction — a client
+// attached to more than one backend keys its stores, its replica and its
+// deep links by this string, so see internal/entityid before minting one
+// any other way. `deps.NewID` is a test seam; production has no override.
 func (s *Service) newID() string {
 	if s.deps.NewID != nil {
 		return s.deps.NewID()
 	}
-	return uuid.NewString()
+	return entityid.New()
 }

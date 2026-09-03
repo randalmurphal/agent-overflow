@@ -15,7 +15,7 @@ test('boots headless, serves the real SPA, answers harness RPCs', async ({ harne
   expect(info.dbPath).toContain(harness.bootstrap.dataDir);
   expect(info.mockProvider).toBe(harness.bootstrap.mockProvider);
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await expect(page).toHaveTitle('Agent Overflow');
   await expect(page.getByText('No projects yet')).toBeVisible();
 });
@@ -44,7 +44,7 @@ test('seeded projects and history render in the UI', async ({ harness, page }) =
   });
   expect(seed.projects[0].threadIds).toHaveLength(1);
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Sorting question').click();
   await expect(page.getByText('How do I sort an array in JS?')).toBeVisible();
   await expect(page.getByText('Use Array.prototype.sort with a comparator.')).toBeVisible();
@@ -65,7 +65,7 @@ test('a live mock turn runs the full pipeline and renders', async ({ harness, pa
 
   // Deterministic wait on the wire, then semantic assertions in the DOM.
   await harness.waitForEvent('provider:turn_completed');
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Live turn').click();
   await expect(page.getByText('Say hello')).toBeVisible();
   await expect(
@@ -106,7 +106,7 @@ test('step-gated scenario advances frame by frame via HarnessMockCommand', async
     'harness:mock',
     (ev) => ev.report.kind === 'waiting_signal' && ev.report.detail === 'block-start',
   );
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Gated turn').click();
   await expect(page.getByText('stream carefully')).toBeVisible();
   await expect(page.getByText('First chunk.')).not.toBeVisible();
@@ -147,7 +147,7 @@ test('reset returns the harness to a blank slate', async ({ harness, page }) => 
     });
   await seedThrowaway();
   await harness.rpc('HarnessSetScenario', { name: 'step-gated' });
-  await page.goto(harness.url);
+  await harness.open(page);
   await expect(page.getByText('Doomed thread')).toBeVisible();
 
   await harness.reset();

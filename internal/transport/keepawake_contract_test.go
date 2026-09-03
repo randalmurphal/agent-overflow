@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/settings"
 )
 
 // Pins the power:keepawake directive's wire posture (see app_power.go for
@@ -24,7 +25,22 @@ func TestKeepAwakeContractClassifications(t *testing.T) {
 			eventchan.PowerKeepAwake,
 		)
 	}
-	if !LocalOnlyMethods["UpdateSettings"] {
-		t.Error(`"UpdateSettings" must be LocalOnly: it is the only producer of the keep-awake directive, and a LAN peer must not be able to pin the desktop awake`)
+	// UpdateSettings is the only producer of this directive, and what
+	// keeps a remote session from pinning the desktop awake is the KEY's
+	// tier rather than the caller's origin or the method's name: both
+	// keep-awake keys are host-tier, and a host-tier patch key goes
+	// through the step-up proof in internal/app's requireSettingsTier. The
+	// method's own scope is the `session` FLOOR, which admits every live
+	// session on purpose — a view-only device sets its own font size
+	// through this method — so the per-key gate is the whole protection
+	// and the assertion below is what says so.
+	for _, key := range []string{"keepAwakeEnabled", "keepAwakeScreen"} {
+		tier, ok := settings.TierForKey(key)
+		if !ok || tier != settings.TierHost {
+			t.Errorf("%q must be host-tier (got %q, known=%t): it inhibits THIS machine's sleep, so writing it takes a fresh host-presence proof rather than a standing grant", key, tier, ok)
+		}
+	}
+	if scope := classify("UpdateSettings").Scope; scope != ScopeSession {
+		t.Errorf(`"UpdateSettings" is scoped %q, want the %q floor: this directive's producer is gated per KEY, and a method-name scope that looked sufficient would invite dropping the recheck`, scope, ScopeSession)
 	}
 }

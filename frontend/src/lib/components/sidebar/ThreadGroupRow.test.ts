@@ -4,7 +4,7 @@
 // the chevron writing the sidebar's collapsed set, and the drop target that
 // only accepts threads from the group's own project.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadGroupRow from './ThreadGroupRow.svelte';
@@ -29,6 +29,7 @@ import {
   touchThreadActivity,
 } from '../../stores/threads.svelte';
 import type { Thread, ThreadGroup } from '../../types/models';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 
 function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -391,5 +392,32 @@ describe('<ThreadGroupRow>', () => {
     await fireEvent.mouseDown(getByTestId('thread-group-row-expand'));
     await tick();
     expect(queryByRole('menu', { name: 'Group Actions' })).toBeNull();
+  });
+});
+
+describe('<ThreadGroupRow> compact layout', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetSidebarForTest();
+    resetThreadGroupsForTest();
+    resetBindingMocks();
+    replaceAllThreads([mkThread('t1'), mkThread('t2')]);
+    setBindingMock('GetSettings', async () => null);
+    await loadSettings();
+    setCompactLayoutForTest(true);
+  });
+
+  afterEach(() => {
+    setCompactLayoutForTest(false);
+  });
+
+  it('opens the group menu from its menu button without toggling the group', async () => {
+    const { getByTestId } = renderRow({ expanded: true });
+    const wasExpanded = isGroupExpanded('group-1');
+    await fireEvent.click(getByTestId('thread-group-row-menu'));
+    await tick();
+    const sheet = document.querySelector('[data-popover-sheet]');
+    expect(sheet?.querySelector('[role="menu"]')).not.toBeNull();
+    expect(isGroupExpanded('group-1')).toBe(wasExpanded);
   });
 });

@@ -21,7 +21,12 @@ Project-row lifecycle helpers that bridge git repository roots and the
   thread, so a worktree thread keeps working in its worktree.
 
   It takes no `*gitops.Core`: the resolution is pure filesystem reads,
-  so it spawns nothing and is safe to run per row in a listing.
+  so it spawns nothing and is safe to run per row in a listing. That is
+  also why the row's DERIVED repository identity (`remote_url` /
+  `root_commit`, migration v83) is stamped by
+  `projectapp.Service.EnsureForWorkspace` after this returns, on the
+  CREATED row only, rather than here: it needs a git subprocess, and
+  this function must stay free of one.
 
 ## Responsibility boundary
 

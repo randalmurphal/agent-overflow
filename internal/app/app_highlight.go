@@ -102,7 +102,11 @@ type HighlightResult struct {
 
 // HighlightClassNames returns the classId → semantic-name table
 // (index = class id, 0 = "none"). The frontend fetches it once at boot
-// and renders class id N as CSS class `syntax-<name>`. Wire-safe.
+// and renders class id N as CSS class `syntax-<name>`. A static table,
+// so it answers any session granted `files:read`.
+//
+//ao:scope files:read
+//ao:route home
 func (a *App) HighlightClassNames() []string {
 	return highlight.ClassNames()
 }
@@ -111,13 +115,21 @@ func (a *App) HighlightClassNames() []string {
 // span blobs (items.meta codeSpans, payload preview/full spans). The
 // frontend fetches it once at boot and ignores stored spans stamped
 // with anything else — those fall back to the RPC path, which
-// recomputes under the current schema. Wire-safe.
+// recomputes under the current schema. A constant, so it answers any
+// session granted `files:read`.
+//
+//ao:scope files:read
+//ao:route home
 func (a *App) HighlightSchemaVersion() string {
 	return highlight.SchemaVersion()
 }
 
-// HighlightCode returns spans for raw source text. Wire-safe: pure
-// text-in/metadata-out, no local state touched.
+// HighlightCode returns spans for raw source text. Pure
+// text-in/metadata-out, no local state touched, so `files:read` is the
+// whole gate.
+//
+//ao:scope files:read
+//ao:route home
 func (a *App) HighlightCode(req HighlightCodeRequest) (HighlightResult, error) {
 	res, err := a.highlightService().Code(req.Lang, req.Source)
 	return wireHighlightResult(res), err
@@ -126,7 +138,11 @@ func (a *App) HighlightCode(req HighlightCodeRequest) (HighlightResult, error) {
 // HighlightPatch returns patch-aligned spans for one file's unified
 // diff: result line i corresponds to patch line i, add/del spans cover
 // the prefix-stripped body, context spans include a 1-byte plain pad
-// for the kept leading space. Wire-safe.
+// for the kept leading space. Text in, metadata out, same `files:read`
+// reading as HighlightCode.
+//
+//ao:scope files:read
+//ao:route home
 func (a *App) HighlightPatch(req HighlightPatchRequest) (HighlightResult, error) {
 	res, err := a.highlightService().Patch(req.Path, req.Patch)
 	return wireHighlightResult(res), err
@@ -144,8 +160,10 @@ const highlightContextAction = "highlight patch with context"
 // Content resolution is best-effort: if the scope lookup fails (file gone at
 // ref, unreadable path), the unprimed result is returned instead of an error.
 // Resolving the WORKSPACE is not: an unresolvable ref is a caller error and
-// is returned as one. LocalOnlyMethods category 1: it reads workspace/ref
-// file content by path; remote clients use HighlightPatch.
+// is returned as one. It reads workspace/ref file content by path, so it
+// rides `files:read`; a session without that grant uses HighlightPatch.
+//
+//ao:scope files:read
 func (a *App) HighlightPatchWithContext(ws WorkspaceRef, req HighlightPatchContextRequest) (HighlightResult, error) {
 	if a.shuttingDown.Load() {
 		return HighlightResult{}, ErrShuttingDown
@@ -161,6 +179,8 @@ func (a *App) HighlightPatchWithContext(ws WorkspaceRef, req HighlightPatchConte
 // historical file state belonging to ONE thread: the snapshot persisted with
 // the edit, falling back to that thread's own checkout. Thread-keyed for the
 // same reason GetEditDiffContextLines is, and it accepts no other scope.
+//
+//ao:scope files:read
 func (a *App) HighlightEditPatchWithContext(threadID string, req HighlightPatchContextRequest) (HighlightResult, error) {
 	if a.shuttingDown.Load() {
 		return HighlightResult{}, ErrShuttingDown

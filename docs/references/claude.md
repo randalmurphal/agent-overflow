@@ -7,13 +7,18 @@ our own code.
 ## Reference Repos
 
 - **Claude Code source**: local mirror at
-  `/Users/randy/repos/claude-code-source-code/`.
-  - TypeScript source for an older Claude Code release.
+  `~/repos/claude-code-source-code/` (home-relative: the same checkout
+  exists on each development host, and an absolute path here named one
+  of them).
+  - TypeScript source for an older Claude Code release. Its
+    `package.json` `version` is the release it decompiles — 2.1.88 at
+    the time of writing.
   - Useful when the installed `claude` binary's behavior is unclear
     and grepping minified strings is too noisy.
   - **Caveat:** the local copy is older than the installed binary in
-    `~/.local/share/claude/versions/<version>` and may lag specific
-    behaviors. Cross-check what you find against the installed
+    `~/.local/share/claude/versions/<version>` — well over a hundred
+    releases behind, so treat the lag as the default rather than the
+    exception — and may lag specific behaviors. Cross-check what you find against the installed
     binary's `strings` output before relying on it. Examples of
     drift seen in practice: the resume picker filter set
     (`utils/sessionStorage.ts:enrichLog`) gained additional rules

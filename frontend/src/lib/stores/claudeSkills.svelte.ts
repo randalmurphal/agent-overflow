@@ -14,7 +14,7 @@
 import { GetClaudeSkills } from './bindings';
 import type { ClaudeSkill } from './bindings';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
-import { isViewOnlySession } from '../transport/runMode';
+import { hasScope } from '../transport/scopes';
 import { errString } from '../utils/errors';
 
 export type ClaudeSkillsStatus = 'unknown' | 'loading' | 'ready' | 'error';
@@ -44,7 +44,7 @@ export function getClaudeSkills(workspacePath: string | null | undefined): Claud
  */
 export function ensureClaudeSkills(workspacePath: string | null | undefined): Promise<void> {
   if (!workspacePath) return Promise.resolve();
-  if (isViewOnlySession()) {
+  if (!hasScope('threads:operate')) {
     byWorkspace.set(workspacePath, {
       status: 'error',
       skills: [],

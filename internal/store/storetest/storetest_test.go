@@ -12,7 +12,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
 
 func TestCloneYieldsAWorkingMigratedStore(t *testing.T) {
 	s := storetest.Clone(t)
-	if err := s.CreateProject(store.Project{
+	if _, err := s.CreateProject(store.Project{
 		ID: "p1", Path: "/tmp/storetest", Name: "Storetest", CreatedAt: 1, UpdatedAt: 1,
 	}); err != nil {
 		t.Fatalf("create project on clone: %v", err)
@@ -40,7 +40,7 @@ func TestCloneStartsWithNoProjects(t *testing.T) {
 
 func TestClonesAreIndependentFiles(t *testing.T) {
 	first, second := storetest.Clone(t), storetest.Clone(t)
-	if err := first.CreateProject(store.Project{
+	if _, err := first.CreateProject(store.Project{
 		ID: "only-in-first", Path: "/tmp/storetest", Name: "First", CreatedAt: 1, UpdatedAt: 1,
 	}); err != nil {
 		t.Fatalf("create project on first clone: %v", err)
@@ -60,7 +60,7 @@ func TestClonePathReopensTheSameFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open clone path: %v", err)
 	}
-	if err := first.CreateProject(store.Project{
+	if _, err := first.CreateProject(store.Project{
 		ID: "p1", Path: "/tmp/storetest", Name: "Storetest", CreatedAt: 1, UpdatedAt: 1,
 	}); err != nil {
 		t.Fatalf("create project: %v", err)

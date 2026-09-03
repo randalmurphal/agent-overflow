@@ -58,6 +58,7 @@ import {
   type EditSelection,
 } from './reviewPaneLoad';
 import { persistScope, readPersistedScope } from './reviewPaneScope';
+import { hasScope } from '../transport/scopes';
 import { getSettings } from './settings.svelte';
 import { getActiveTurn } from './threadStatuses.svelte';
 import type { BranchCommit, WorkspaceRef } from '../types/git';
@@ -669,6 +670,13 @@ function createReviewPaneState(
    */
   function holdPR(ref: PRRef): PRAttachment | null {
     if (disposed) return null;
+    // Every RPC behind this entity rides `git:operate` — the subscribe, the
+    // detail read, the review threads, the CI jobs. A pane restored into a
+    // saved layout mounts on boot, so a session without that grant would
+    // spend one refusal per pane before anybody touched anything. The
+    // no-attachment answer already exists for the disposed case, and the
+    // pane renders its empty state from it.
+    if (!hasScope('git:operate')) return null;
     const key = prKey(ref);
     if (prAttachment?.key === key) return prAttachment;
     releasePR();
@@ -1008,7 +1016,7 @@ function createReviewPaneState(
   // only those get gap arrows (editExpandablePaths gates the files
   // derived). Candidates come from the unsuppressed merge, NOT the
   // files derived — that one already suppresses everything still
-  // unverified. Any failure (remote client's LocalOnly rejection
+  // unverified. Any failure (a session without `files:read`
   // included) just leaves paths unverified: no arrows, no error
   // banner, exactly what clicking would have found out the hard way.
   // Edits scope is unreachable without a real row: the option is not

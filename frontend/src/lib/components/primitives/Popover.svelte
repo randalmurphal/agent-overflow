@@ -63,6 +63,7 @@
 
   import type { Snippet } from 'svelte';
   import { airspaceSurface } from '../../utils/paneAirspace.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import {
     hasOpenPopoverOwnedBy,
     popoverAnchorChainReaches,
@@ -115,6 +116,13 @@
      */
     restoreFocusTo?: HTMLElement;
     /**
+     * Under the compact layout the popover is a bottom sheet: full width,
+     * pinned to the bottom edge, no anchor geometry. Menus and pickers
+     * want that; a completion list that must sit ON the caret's textarea
+     * (the composer's mention and slash popovers) opts out.
+     */
+    sheet?: boolean;
+    /**
      * Treat a mousedown on the anchor as an outside click. The default
      * exemption exists for a TRIGGER anchor, whose own click handler
      * toggles the popover and would reopen what this closed. A menu
@@ -137,9 +145,12 @@
     ariaLabel,
     claimTab = false,
     restoreFocusTo,
+    sheet = true,
     dismissOnAnchorClick = false,
     children,
   }: Props = $props();
+
+  let asSheet = $derived(sheet && isCompactLayout());
 
   let floatingEl: HTMLDivElement | undefined = $state(undefined);
   let top = $state(0);
@@ -390,6 +401,13 @@
       // next one after it closes.
       if (hasOpenDescendantPopover()) return;
       e.stopPropagation();
+      // Claimed, not merely handled. `stopPropagation` keeps the press off
+      // the surfaces behind this one, but it says nothing to the code that
+      // asks "did anybody take it", and the phone shell's hardware back
+      // button asks exactly that (`native/lifecycle.ts` reads
+      // `defaultPrevented`). Without this line one back press dismissed the
+      // sheet AND went back a screen, or left the app from the list.
+      e.preventDefault();
       onClose('escape');
     };
     // Scroll moves the anchor without resizing anything → follow. Resize
@@ -537,6 +555,9 @@
   // measured we paint the div with `visibility: hidden` so there's no
   // flash at (0,0) before the first layout frame.
   let floatingStyle = $derived.by(() => {
+    if (asSheet) {
+      return 'position: fixed; left: 0; right: 0; bottom: 0; max-height: 70vh; overflow-y: auto; padding-bottom: env(safe-area-inset-bottom);';
+    }
     const widthRule = width !== undefined ? `width: ${width}px;` : '';
     const maxHeightRule = maxHeight !== undefined ? `max-height: ${maxHeight}px; overflow-y: auto;` : '';
     const visibility = resolvedPlacement === null ? 'visibility: hidden;' : '';
@@ -577,7 +598,8 @@
     aria-label={ariaLabel}
     style={floatingStyle}
     data-popover
-    data-placement={resolvedPlacement ?? placement}
+    data-popover-sheet={asSheet ? '' : undefined}
+    data-placement={asSheet ? 'sheet' : (resolvedPlacement ?? placement)}
     class="z-[80]"
     use:airspaceSurface
   >

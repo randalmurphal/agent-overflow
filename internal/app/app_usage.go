@@ -20,8 +20,11 @@ import (
 // update reprices all history the next time this runs. Buckets with
 // UnpricedRows > 0 carry a model the rate table doesn't recognize —
 // the UI should label those buckets' CostUSD as a lower bound.
-// Not a LocalOnlyMethods entry: read-only aggregate data, safe for
-// remote clients.
+// Read-only aggregate data, so it rides `threads:read` rather than a
+// scope only this machine can satisfy.
+//
+//ao:scope threads:read
+//ao:route all
 func (a *App) GetUsageStats(query store.UsageQuery) ([]store.UsageBucket, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("usage stats: store unavailable")

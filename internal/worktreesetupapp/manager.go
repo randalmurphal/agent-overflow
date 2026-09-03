@@ -96,8 +96,9 @@ type worktreeSetupRun struct {
 // restarted since) reports "failed" with no steps and no output — the failure
 // survived; the transcript did not.
 //
-// LocalOnly: the payload is the stdout/stderr of local commands run against
-// the user's checkout, the same data class as GetTerminalReplay.
+// The App wrapper carries //ao:scope terminal:operate: the payload is the
+// stdout/stderr of local commands run against the user's checkout, the same
+// data class as GetTerminalReplay, and it takes the same grant.
 func (s *Service) GetThreadWorktreeSetup(threadID string) (RunState, error) {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
@@ -119,7 +120,11 @@ func (s *Service) GetThreadWorktreeSetup(threadID string) (RunState, error) {
 // project with nothing configured, and a run already in flight are three
 // different mistakes and say so.
 //
-// LocalOnly: this executes the project's argv commands. RCE-equivalent.
+// The App wrapper carries //ao:scope terminal:operate: this executes the
+// project's argv commands, which is running a command on the host by another
+// name. Configuring the recipe is stricter still — SetProjectWorktreeSetup is
+// //ao:stepup, because it stores argv that then runs unattended on every
+// worktree cut.
 func (s *Service) RetryThreadWorktreeSetup(threadID string) error {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {

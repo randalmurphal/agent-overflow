@@ -17,6 +17,8 @@ type WorkspaceFileSearchResult struct {
 // the referenced checkout. Workspace-keyed because the answer is a property
 // of the directory: the composer's @-mention picker asks it from a draft
 // placeholder that has no thread row yet.
+//
+//ao:scope files:read
 func (a *App) SearchWorkspaceFiles(ws WorkspaceRef, query string, limit int) (WorkspaceFileSearchResult, error) {
 	if a.workspaceFiles == nil {
 		return WorkspaceFileSearchResult{}, fmt.Errorf("workspace file searcher not initialized")

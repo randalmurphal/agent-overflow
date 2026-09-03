@@ -331,7 +331,12 @@ and `app_flush_queue_test.go::TestDispatchFlush_EchoLandsAfterRowsThatArrivedFir
 **Rule.** Every timeline row that lands in SQLite goes through
 `Router.persistItem`. The same function handles `parent_id` cycle
 guards, store upsert, canonical `provider:item_event` emission, and the
-persisted-items counter.
+persisted-items counter. Row-shaped facts that also need a WILDCARD
+carrier — because `provider:item_event` is entity-filtered and a client
+not watching the thread never sees the row — hang off the same
+chokepoint rather than off their callers: `thread:error_notice` on an
+`error` row, the `thread:updated` `updatedAt` patch on an
+activity-counting `user_text` row.
 
 **Rationale.** Split write/emit paths are how "item appears in DB but
 not on screen" (or vice versa) bugs happen. Centralizing the two
@@ -636,6 +641,15 @@ LiveTodoPanel pull-up, workspace-change lock) calls
 parallel state slice. No code path rehydrates the registry from
 SQLite or item state.
 
+The store now enforces this structurally: it has no item-shaped entry
+point left. `projectThreadItem` was deleted when
+`provider:item_event` became entity-filtered — a store that reads a
+per-thread stream a client only receives for the threads it watches
+would answer differently on two clients — so the only badge inputs
+are the typed projections (`projectThreadError`,
+`projectReaderMessageSent`, the turn and approval ones), and an item
+row cannot reach the working predicate to be wrong about it.
+
 **Test.** Frontend test: simulate a stuck `tool_call` row + empty
 registry; assert the working indicator is hidden. Regression test
 in `ChatWorkingIndicator.test.ts`: switch away from a thread with
@@ -685,8 +699,8 @@ agent launch that DESCENDS from one (which also supplies the
 intermediate ancestors, so the frontend indents by walking `parentId`
 within the result), and the recent completion siblings of that set. A
 foreground plain tool call under a background agent is NOT a tray row.
-It is the agent's own work, rendered inside its card. This is a DISPLAY
-rule only: the reaper and queue gates in `items_lifecycle.go`
+It is the agent's own work, rendered inside its card. Membership is a
+RENDERING-INDEPENDENT rule: the reaper and queue gates in `items_lifecycle.go`
 (`HasRunningTopLevelForegroundToolCall`, `HasLiveBackgroundToolCall`,
 `HasQueueBlockingBackgroundToolCall`,
 `CountLiveRunningBackgroundToolCalls`,
@@ -694,6 +708,18 @@ rule only: the reaper and queue gates in `items_lifecycle.go`
 `topLevelItemsFilter` keep `parent_id = ''`. Whether the tray SHOWS a
 nested background Bash and whether that Bash blocks the flush queue or
 survives a session teardown are different questions.
+
+The same composition backs `App.ListRunningBackgroundWork`, the
+cross-thread inventory of what a host is currently running
+(`internal/app/app_background_inventory.go`). It is a control surface,
+not a view, so ancestry membership now decides what a caller can be
+handed a stop handle for as well as what the tray draws: a nested
+background Bash is listable and stoppable, and the top-level gates are
+still the only thing that decides whether it blocks a queue. A new
+cross-thread reader MUST go through that composition rather than query
+`items` directly — the store leg is one of three sources, and the Codex
+unified-exec leg is held in the triage router and persisted nowhere, so
+a SQL-only answer under-reports without failing.
 
 Because the launch never leaves `running`, "live" is not expressible as
 a status: it is `running AND live_background_active != 0 AND no
@@ -1079,7 +1105,7 @@ rejection); `app_session_resumeat_test.go`
 ## 29. Stopped-thread event routing is host-controlled
 
 **Rule.** The triage stopped-thread marker is set by
-`CleanupThread` (StopSession / revert / thread delete) and cleared
+`CleanupThread` (StopSession / revert / thread delete / archive) and cleared
 **only** by the host's session-start funnel
 (`startSessionNowWithClaudeResumeAt` → `triage.MarkThreadActive`,
 pre-spawn). No wire event clears it, not even `EventInit`.
@@ -1285,13 +1311,14 @@ run. The composed message itself is bounded and quoted per invariant 34.
   cannot outlive the process it was minted for.
 - **Surface.** `transport.ScopedTokenMethods` is a closed allow-list
   mapping method name to the grants that admit it. Anything absent
-  (every non-workflow RPC, every `LocalOnly` method outside the table)
+  (every non-workflow RPC, every host-tooling method outside the table)
   is `method_not_found` for a scoped token. A phase scope additionally
   needs one of the listed grants and gets the typed `grant_required`
   refusal naming what to add; an interactive scope may call everything
   listed, because a human approves each invocation.
-- **Reach.** Every `ScopedTokenMethods` entry is also in
-  `LocalOnlyMethods`, and `/rpc` refuses non-loopback peers with a 404
+- **Reach.** No `ScopedTokenMethods` entry is observe-tier — a method an
+  unattended agent session may call must not ride a read-only session's
+  default grants either — and `/rpc` refuses non-loopback peers with a 404
   and does not honour the server's own session token.
 
 **Rationale.** The credential sits in the environment of a full-access
@@ -1312,7 +1339,7 @@ enforced by the bound methods from `CallerScopeFrom` in
 
 **Test.** `internal/transport/scopedtoken_test.go`:
 `TestScopedTokenMethodsNameOnlyKnownGrants` (grants exist in `def`'s
-closed set), `TestScopedTokenMethodsAreLocalOnly` (the LAN-reach
+closed set), `TestScopedTokenMethodsAreNotObserveTier` (the read-only-reach
 pairing), `TestAuthorizeScopedMethodByKindAndGrant`,
 `TestScopedRPCRouteAuthorizesAndRevokes`,
 `TestWebviewTokenIsNotAScopedToken`; `app_ao_session_test.go` for

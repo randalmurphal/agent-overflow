@@ -13,7 +13,12 @@
 // current truth rather than a replay of what was lost.
 import type { Thread } from '../types/models';
 import { iterPanes } from './panes.svelte';
-import { GetThread } from './bindings';
+import { GetQueueState, GetThread } from './bindings';
+import {
+  getQueueRevisionForThread,
+  queueItemFromWire,
+  replaceQueueForThread,
+} from './sendQueue.svelte';
 import { refreshSidebarProjections, syncThreadRow } from './eventsThreadRows';
 import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
@@ -23,9 +28,13 @@ import { resyncWorktreeSetups } from './eventsWorktreeSetup';
 import { markImportConnectionLost } from './sessionImport.svelte';
 import { releaseThreadTitleGenerationPending } from './threadTitleGeneration.svelte';
 import { getThreads } from './threads.svelte';
+import { hasScope } from '../transport/scopes';
 import { resyncGitStatusAfterGap } from './gitStatusStore.svelte';
 import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
 import { resyncMcpServersAfterGap } from './mcpServers.svelte';
+import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
+import { hasRememberedDraftSnapshot } from './composerDraftSnapshots';
+import { resyncSettings } from './settings.svelte';
 import { resyncWorkflowRunMapAfterGap } from './workflowRunMap.svelte';
 import {
   applyWorkflowDefinitionsChanged,
@@ -172,6 +181,11 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // local state and must merge forward, not revert. Dedupe by
       // threadId so two panes mounting the same thread don't issue
       // two RPCs for the same refresh.
+      // GetQueueState rides `threads:operate`, and so does everything that
+      // puts a row in that queue. A session without it has no queue to
+      // repair, and a gap on a busy backend would otherwise fan one
+      // refusal out per open pane.
+      if (!hasScope('threads:operate')) return;
       const seen = new Set<string>();
       for (const pane of ingestPanes()) {
         if (!pane.threadId || seen.has(pane.threadId)) continue;
@@ -219,6 +233,112 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
     case 'mcp:status':
       resyncMcpServersAfterGap();
       return;
+    case 'project:updated': {
+      // Edge-triggered like thread:updated: one frame per persisted project
+      // write, and no later frame restates the row a gap swallowed. A missed
+      // 'deleted' or 'unlisted' leaves a project in the sidebar that is not
+      // there any more, which nothing else corrects.
+      //
+      // refreshSidebarProjections re-reads the authoritative ListProjects (and
+      // the thread rows beside it, which is what a project gap usually implies
+      // anyway — a deletion takes its threads with it). Blanket rather than
+      // per-row because the gap carries no entity key.
+      refreshSidebarProjections();
+      return;
+    }
+    case 'provider:queue_state_changed': {
+      // Every frame on this channel carries the WHOLE queue for a thread, so
+      // recovery is one re-read of the same snapshot the frames carry —
+      // GetQueueState is that read, and it is the only thing this channel
+      // could have desynced. The blanket default would have worked by
+      // refetching each pane's timeline window too, which is a page of items
+      // to repair a handful of queue rows.
+      //
+      // Deduped by thread (two panes on one thread share the queue, unlike
+      // their item windows) and revision-guarded exactly like the cold-open
+      // hydration: a live frame landing while the snapshot is in flight wins,
+      // because it is newer than the state we asked for.
+      const seen = new Set<string>();
+      for (const pane of ingestPanes()) {
+        const threadId = pane.threadId;
+        if (!threadId || seen.has(threadId)) continue;
+        seen.add(threadId);
+        const revisionAtRequest = getQueueRevisionForThread(threadId);
+        void GetQueueState(threadId).then((items) => {
+          if (getQueueRevisionForThread(threadId) !== revisionAtRequest) return;
+          replaceQueueForThread(threadId, (items ?? []).map(queueItemFromWire));
+        }).catch((err: unknown) => {
+          console.warn(`events: refresh queue for ${threadId} after transport gap: ${err}`);
+        });
+      }
+      return;
+    }
+    case 'provider:queue_restored': {
+      // Not queue-only, so not the targeted read above. A restore deletes
+      // timeline rows and puts their content back in the composer draft, and
+      // a missed frame leaves both wrong: rows on screen that SQLite no
+      // longer has, and a draft short the text the backend handed back. Both
+      // are what a full pane refresh re-reads, so this falls through to the
+      // blanket recovery below rather than pretending the queue was the only
+      // casualty.
+      dropStampsAfterGap();
+      for (const pane of ingestPanes()) {
+        if (!pane.threadId) continue;
+        void pane.refreshFromBackend();
+      }
+      return;
+    }
+    case 'provider:queue_flushed':
+    case 'provider:command_lifecycle': {
+      // These two cannot be recovered, and nothing pretends otherwise.
+      // They carry the DELIVERY story of a message already on its way —
+      // which queued item became which timeline row, and whether the
+      // provider acknowledged writing it — and no RPC returns that. It is
+      // not persisted anywhere: it is the transient badge state Zone 2
+      // renders while a message is in flight.
+      //
+      // The cost of a lost frame is bounded and cosmetic: a flushed item
+      // keeps its previous badge until the turn moves on, at which point
+      // the real timeline row supersedes it. command_lifecycle is already
+      // optional in exactly this way — it is Claude-only and depends on the
+      // CLI version, so a session that never emits it leaves Zone 2 as it
+      // was. Falling through to the default would refetch every pane's
+      // window to repair a badge, and still not repair it.
+      return;
+    }
+    case 'draft:updated': {
+      // Edge-triggered like the other row channels: one frame per persisted
+      // draft write, and no later frame restates the write a gap swallowed.
+      // A missed frame leaves the composer holding text another screen has
+      // already replaced, and the next thing the user types saves it back
+      // over the newer version.
+      //
+      // Recovery is the same re-read the applier does, minus the identity
+      // checks — after a gap this client cannot know whose write it missed,
+      // and its own writes are already in its composer, so re-reading them
+      // costs a round trip and changes nothing. The unsaved-work guard still
+      // holds: reloadFromBackend would discard text the user is typing, and
+      // a gap is not a reason to do that.
+      for (const pane of ingestPanes()) {
+        const threadId = pane.threadId;
+        if (!threadId || hasRememberedDraftSnapshot(threadId)) continue;
+        void getComposerDraftForPane(pane.paneId)?.reloadFromBackend(threadId);
+      }
+      return;
+    }
+    case 'settings:updated': {
+      // Edge-triggered like the entity channels: one frame per persisted
+      // write, and no later frame restates a key the gap swallowed — the
+      // stale value would sit there looking correct until something else
+      // happened to touch it.
+      //
+      // Blanket by construction rather than by choice: the frame carries the
+      // changed KEYS and the handler ignores them, because settings converge
+      // by re-reading the whole (redacted) projection anyway. One read of an
+      // in-memory value recovers every tier at once.
+      void resyncSettings();
+      return;
+    }
     case 'system:stats':
     case 'highlight:seed':
     case 'highlight:diff_seed': {

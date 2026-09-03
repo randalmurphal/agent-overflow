@@ -114,6 +114,14 @@ export interface ApprovalEvent {
   decision?: '' | 'approved' | 'declined' | 'amended' | 'lost' | 'failed';
   detail?: string;
   requestedAt?: number;
+  /**
+   * The page load whose answer failed, on `action: 'fail'` only. A
+   * failure is not a fact about the thread — the prompt is still open
+   * everywhere else — so only the connection that tried shows the
+   * banner. Absent means no screen was behind it (or a backend too old
+   * to stamp it), which reads as "not mine".
+   */
+  connectionId?: string;
 }
 
 export interface UserInputRequest {
@@ -136,6 +144,8 @@ export interface UserInputEvent {
   decision?: '' | 'answered' | 'declined' | 'lost' | 'failed';
   detail?: string;
   requestedAt?: number;
+  /** Mirrors ApprovalEvent.connectionId, on `action: 'fail'` only. */
+  connectionId?: string;
 }
 
 /**
@@ -200,7 +210,6 @@ export type ItemStreamEvent =
 	      action: 'upsert';
 	      threadId: string;
 	      item: Item;
-	      countsAsActivity?: boolean;
 	    }
 	  | ({ action: 'delta' } & ItemDeltaEvent)
 	  | ({ action: 'meta' } & ItemMetaEvent)
@@ -615,6 +624,20 @@ export interface BackgroundTaskRef {
   toolUseId?: string;
   taskType?: string;
   description?: string;
+}
+
+/**
+ * `settings:updated` payload (Go: app.SettingsUpdatedEvent). One frame per
+ * TIER a persisted settings write moved.
+ *
+ * Values never ride this channel — settings carry redacted fields with no read
+ * path, so the frame names the changed keys and every client re-reads through
+ * `GetSettings` (see `resyncSettings`). `tier` is "host" | "user" | "device":
+ * whose preference moved (the backend machine's, the person's, this screen's).
+ */
+export interface SettingsUpdatedEvent {
+  tier: string;
+  keys: string[];
 }
 
 /**

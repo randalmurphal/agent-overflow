@@ -3,6 +3,7 @@ import { render, cleanup, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadTerminalDrawer from './ThreadTerminalDrawer.svelte';
 import { resetThreadTerminalStatesForTest } from './terminalStore.svelte';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { setupEventListeners } from '../../stores/events';
 import { emitWailsEvent, wailsListenerCount, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 
@@ -17,7 +18,12 @@ import { emitWailsEvent, wailsListenerCount, resetWailsMocks } from '../../../te
 const callLog: Array<{ fn: string; args: unknown[] }> = [];
 let cleanupEvents: (() => void) | null = null;
 
-vi.mock('../../stores/bindings', () => ({
+// importOriginal spread, never a bare factory: a factory listing only the RPCs
+// this suite drives turns every LATER export of the module into `undefined`
+// for it, and the failure lands in whichever store imports the new one next
+// (frontend/AGENTS.md § Testing).
+vi.mock('../../stores/bindings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/bindings')>()),
   OpenTerminal: vi.fn(async (threadID: string, opts: unknown) => {
     callLog.push({ fn: 'OpenTerminal', args: [threadID, opts] });
     return {
@@ -513,5 +519,37 @@ describe('ThreadTerminalDrawer', () => {
     expect(drawerEl.style.height).toMatch(/^\d+px$/);
     const parsed = Number.parseInt(drawerEl.style.height, 10);
     expect(parsed).toBeGreaterThanOrEqual(120);
+  });
+
+  // Compact (phone) layout has one pane, one screen wide: the terminal stops
+  // being a bottom drawer and becomes a stacked screen over the chat column, so
+  // the keyboard and the key row own the bottom edge.
+  describe('compact layout', () => {
+    afterEach(() => setCompactLayoutForTest(false));
+
+    it('fills the chat column and drops the resize handle', async () => {
+      setCompactLayoutForTest(true);
+      const pane = makeSurface();
+      const { container, getByTestId } = render(ThreadTerminalDrawer, {
+        surface: pane as never,
+        manual: true,
+      });
+      await tick();
+
+      // The wrapper leaves the flow and covers the (relative) chat column.
+      const wrapper = getByTestId('terminal-drawer');
+      expect(wrapper.className).toContain('compact:absolute');
+      expect(wrapper.className).toContain('compact:inset-0');
+
+      const drawerEl = container.querySelector('[data-drawer-position="bottom"]') as HTMLElement;
+      // No inline height: a persisted desktop size would otherwise win over the
+      // fill classes, since inline styles beat any class.
+      expect(drawerEl.style.height).toBe('');
+      expect(drawerEl.className).toContain('compact:h-full');
+      // Nothing to resize against, so no dead grab target either.
+      expect(
+        drawerEl.querySelector('[role="separator"][aria-orientation="horizontal"]'),
+      ).toBeNull();
+    });
   });
 });

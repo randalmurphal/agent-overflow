@@ -24,7 +24,8 @@
     createStreamingAssistantLiteralOwner,
   } from './markdown/streamingAssistantLiteralOwner';
   import type { StreamingAssistantRenderContext } from '../../stores/streamingAssistantReveal';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { previewRewriteKey } from '../../stores/devServers.svelte';
+  import { hasScope } from '../../transport/scopes';
   import { isHarnessSession } from '../../transport/harnessMode';
 
   type AssistantMarkdownForensics = {
@@ -129,6 +130,7 @@
   // rebuild ChatMarkdown's marked extension and re-lex every block.
   const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS);
   const workspacePath = $derived(paneWorkspacePath(pane));
+  const threadId = $derived(pane?.threadId ?? '');
   // Stable across per-reveal row replacements. A context transition can
   // remount or reinterpret the volatile parser tree even when its source is
   // unchanged, so the router must drop direct DOM before that transition.
@@ -136,21 +138,24 @@
   const parserRenderContext = $derived.by(() => {
     const nextStreaming = streaming;
     const nextVolatileTailVisible = !nextStreaming || getSettings().streamingEnabled;
-    const nextViewOnly = isViewOnlySession();
+    const nextPathLinksInert = !hasScope('host');
     const nextWorkspacePath = workspacePath;
+    const nextPreviewKey = previewRewriteKey(threadId);
     if (
       cachedParserRenderContext?.streaming === nextStreaming &&
       cachedParserRenderContext.volatileTailVisible === nextVolatileTailVisible &&
-      cachedParserRenderContext.viewOnly === nextViewOnly &&
-      cachedParserRenderContext.workspacePath === nextWorkspacePath
+      cachedParserRenderContext.pathLinksInert === nextPathLinksInert &&
+      cachedParserRenderContext.workspacePath === nextWorkspacePath &&
+      cachedParserRenderContext.previewKey === nextPreviewKey
     ) {
       return cachedParserRenderContext;
     }
     cachedParserRenderContext = {
       streaming: nextStreaming,
       volatileTailVisible: nextVolatileTailVisible,
-      viewOnly: nextViewOnly,
+      pathLinksInert: nextPathLinksInert,
       workspacePath: nextWorkspacePath,
+      previewKey: nextPreviewKey,
     };
     return cachedParserRenderContext;
   });
@@ -301,6 +306,7 @@
       {streaming}
       {workspacePath}
       {pathRefs}
+      {threadId}
     />
   </div>
   {#if hasVisibleBody}

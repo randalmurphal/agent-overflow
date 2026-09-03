@@ -15,6 +15,9 @@ import (
 // binding returns the same without an error so the frontend can call it on
 // every keystroke cheaply. limit caps the result set; callers should pass a
 // reasonable ceiling (50–100) for interactive UIs.
+//
+//ao:scope threads:read
+//ao:route all
 func (a *App) SearchThreadMessages(query string, limit int) ([]store.ThreadMessageHit, error) {
 	hits, err := a.store.SearchThreadMessages(query, limit)
 	if err != nil {
@@ -29,6 +32,8 @@ func (a *App) SearchThreadMessages(query string, limit int) ([]store.ThreadMessa
 // query shape. A blank query short-circuits to an empty slice in the store;
 // this binding returns the same without an error so the frontend can call it
 // on every keystroke cheaply. limit caps the result set.
+//
+//ao:scope threads:read
 func (a *App) SearchThreadItems(threadID, query string, limit int) ([]store.ThreadMessageHit, error) {
 	hits, err := a.store.SearchThreadItems(threadID, query, limit)
 	if err != nil {

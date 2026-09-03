@@ -77,7 +77,7 @@ test('messages sent during a codex turn steer into it and land in order', async 
   // back.
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId);
+      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
       return items.filter((i) => i.kind === 'user_text').map((i) => i.summary);
     })
     .toEqual(['first prompt', 'second prompt', 'third prompt']);
@@ -86,7 +86,7 @@ test('messages sent during a codex turn steer into it and land in order', async 
   // `clientUserMessageId` back as `clientId`, so each message landed on the
   // row it was minted for. An unmatched echo would have persisted as a
   // notification ("Injected provider context") instead.
-  const midTurnItems = await harness.rpc<Item[]>('ListItems', threadId);
+  const midTurnItems = await harness.rpc<Item[]>('ListItems', threadId, true);
   expect(midTurnItems.filter((i) => i.kind === 'notification')).toEqual([]);
 
   // Release turn 1 and let it finish.
@@ -98,13 +98,13 @@ test('messages sent during a codex turn steer into it and land in order', async 
   // double-delivery bug the queue revert exists to prevent.
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId);
+      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
       return items
         .filter((i) => i.kind === 'user_text' || i.kind === 'assistant_text')
         .map((i) => i.summary);
     })
     .toEqual(['first prompt', 'second prompt', 'third prompt', 'Finished turn 1.']);
 
-  const settled = await harness.rpc<Item[]>('ListItems', threadId);
+  const settled = await harness.rpc<Item[]>('ListItems', threadId, true);
   expect(settled.filter((i) => i.status !== 'completed')).toEqual([]);
 });

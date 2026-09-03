@@ -1,8 +1,10 @@
 # internal/uiwindow/
 
-Wails glue between a live `WebviewWindow` and the GUI-free placement logic in
-`internal/windowgeom`: restore a saved placement into creation options, and
-wire window events to a debounced persistence sink.
+Wails glue for a live `WebviewWindow`, in two unrelated jobs. Placement: the
+GUI-free logic in `internal/windowgeom`, restored into creation options and
+wired to a debounced persistence sink. Credential delivery: handing each
+document the window loads its one-time page ticket, so the URL it navigates to
+carries none (`internal/pagehost`).
 
 ## Layout
 
@@ -27,15 +29,33 @@ wire window events to a debounced persistence sink.
   - `Track(window, restored, sink)` registers the move/resize/state events
     onto a `windowgeom.Tracker` and returns a flush func (also wired to
     `WindowClosing`; call it again after the app loop as a backstop).
+- `pageticket.go`
+  - `DeliverPageTicket(window, mint)` subscribes to `WindowRuntimeReady` and
+    answers each one by minting a ticket and `ExecJS`-ing
+    `pagehost.DeliveryScript`. Returns the unsubscribe. **The trigger is not a
+    free choice**: `ExecJS` QUEUES until a document announces itself to its
+    host, and this app's SPA replaces `@wailsio/runtime` with its own transport
+    shim, so nothing announces unless the page does — which it does, from
+    `frontend/src/lib/transport/pageHost.ts`, and re-announces on a bounded
+    cadence until its ticket lands. That re-announcement is what covers the one
+    race a subscription cannot: a document that finished loading before the
+    caller subscribed. Minting per ANNOUNCEMENT (not per navigation) is what
+    gives a page that reloaded itself a live ticket; re-delivering a spent one
+    is harmless, since such a page already holds the cookie and
+    `Credential.Exchange` authenticates before it looks at a ticket.
 
 ## Responsibility boundary
 
 - What BELONGS here: the Wails-specific reads (`Bounds`, `IsMaximised`,
-  `GetScreen`, the event types) and the options mutation. Like `internal/uikeys`
-  it imports the Wails `application` package.
+  `GetScreen`, the event types), the options mutation, and the `ExecJS` call.
+  Like `internal/uikeys` it imports the Wails `application` package.
 - What does NOT belong here: the placement decision logic (that's
-  `windowgeom`) or persistence (the sink is supplied by the caller:
-  `App.persistWindowGeometry` native, `saveWindowGeometry` launcher).
+  `windowgeom`), persistence (the sink is supplied by the caller:
+  `App.persistWindowGeometry` native, `saveWindowGeometry` launcher), or the
+  page-ticket vocabulary and the script text (that's `pagehost`, which stays
+  stdlib-only so the page contract has one definition and no Wails dependency).
+  Minting is the caller's too — each host passes the `mint` its own backend
+  reaches.
 - Every `Bounds`, creation-option size, and `Screen.WorkArea` crossing this
   boundary is DIP. On macOS that depends on the pinned Wails fork converting
   requested outer frames to AppKit content rects at construction and resolving
@@ -44,8 +64,12 @@ wire window events to a debounced persistence sink.
 
 ## Importers (GUI binaries only)
 
-- `main_desktop.go` (native desktop, `!nogui`).
-- `cmd/agent-overflow-windows/main.go` (WSL launcher, `windows`).
+- `main_desktop.go` (native desktop and the `--connect` stub's window,
+  `!nogui`).
+- `cmd/agent-overflow-windows/main.go` (WSL launcher, `windows`). It gates
+  `DeliverPageTicket`'s `mint` on having a backend bootstrap, so the picker,
+  loading and error pages — which are not the SPA and never announce — cannot
+  be injected into.
 
 The nogui WSL backend never imports this, keeping Wails out of that binary.
 Same isolation rule as `internal/uikeys`.

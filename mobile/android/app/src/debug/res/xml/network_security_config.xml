@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  One host, one permission, debug builds only.
+
+  `make e2e-android` runs the harness backend on the developer's machine
+  and exposes it to the device through `adb reverse tcp:<port> tcp:<port>`,
+  which forwards the DEVICE's own loopback to the host's. So the address
+  the WebView fetches is `http://127.0.0.1:<port>`, and this file is what
+  lets it: cleartext is refused for every host by default at targetSdk 28
+  and above, and the WebView honours that policy like any other client.
+
+  Loopback rather than the emulator's `10.0.2.2` host alias, deliberately.
+  The page's origin is `https://shell.agent-overflow.invalid`, and
+  Capacitor leaves the WebView at MIXED_CONTENT_NEVER_ALLOW, so an
+  `http://10.0.2.2:<port>` request would be refused by the renderer before
+  any network policy could be consulted. Chromium treats loopback as a
+  potentially trustworthy origin, so `http://127.0.0.1` is not mixed
+  content at all — the reverse forward is what turns "the host's backend"
+  into a loopback address, and this file is the second and last door it
+  needs. e2e/android/shell-boot.spec.ts argues both in full.
+
+  Nothing else is permitted, and `base-config` is deliberately absent, so
+  every other host keeps the platform's refusal even in a debug build.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

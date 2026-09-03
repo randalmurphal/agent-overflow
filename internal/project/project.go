@@ -39,13 +39,17 @@ import (
 // worktree.
 //
 // Returns an error when the store is nil or the workspace path is empty.
-func EnsureForWorkspace(s *store.Store, workspacePath string) (store.Project, error) {
+//
+// The bool is "a project row was created", which callers need because a new
+// project is a new sidebar entry and has to be announced on `project:updated`.
+// Resolving to an existing row is the common case and announces nothing.
+func EnsureForWorkspace(s *store.Store, workspacePath string) (store.Project, bool, error) {
 	if s == nil {
-		return store.Project{}, fmt.Errorf("resolve project: store unavailable")
+		return store.Project{}, false, fmt.Errorf("resolve project: store unavailable")
 	}
 	trimmed := strings.TrimSpace(workspacePath)
 	if trimmed == "" {
-		return store.Project{}, fmt.Errorf("resolve project: workspace path is required")
+		return store.Project{}, false, fmt.Errorf("resolve project: workspace path is required")
 	}
 
 	// Prefer the repository root when detectable — two threads in sibling
@@ -56,15 +60,15 @@ func EnsureForWorkspace(s *store.Store, workspacePath string) (store.Project, er
 	}
 
 	if existing, err := s.GetProjectByPath(candidatePath); err == nil {
-		return existing, nil
+		return existing, false, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		return store.Project{}, err
+		return store.Project{}, false, err
 	}
 	if candidatePath != trimmed {
 		if existing, err := s.GetProjectByPath(trimmed); err == nil {
-			return existing, nil
+			return existing, false, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
-			return store.Project{}, err
+			return store.Project{}, false, err
 		}
 	}
 
@@ -76,8 +80,9 @@ func EnsureForWorkspace(s *store.Store, workspacePath string) (store.Project, er
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := s.CreateProject(p); err != nil {
-		return store.Project{}, err
+	created, err := s.CreateProject(p)
+	if err != nil {
+		return store.Project{}, false, err
 	}
-	return s.GetProject(p.ID)
+	return created, true, nil
 }

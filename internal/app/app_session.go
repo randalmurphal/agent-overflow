@@ -727,6 +727,22 @@ type SendMessageOptions struct {
 	RevisionSourceCommentIDs     []string            `json:"revisionSourceCommentIds,omitempty"`
 	RevisionSourceDiffReview     *SourceDiffReview   `json:"revisionSourceDiffReview,omitempty"`
 	RevisionSourceDiffCommentIDs []string            `json:"revisionSourceDiffCommentIds,omitempty"`
+	// SendID is the client-minted idempotency id of ONE composer send,
+	// carried identically by SendMessageWithOptions and RegisterQueueItem
+	// (frontend/src/lib/utils/sendOptions.ts mints it in the one place both
+	// paths build their options).
+	//
+	// It exists because a socket that dies after the frame reached the
+	// backend is indistinguishable, on the client, from one that died
+	// before: the person presses Send again and starts the turn twice. With
+	// an id, the second arrival finds the first one's record — the
+	// dispatched row's meta, or the durable queue row — and returns that
+	// outcome instead of sending anything.
+	//
+	// EMPTY IS LEGAL and disables the check for that call: every
+	// app-internal injector leaves it unset, as does any client bundle
+	// older than the field.
+	SendID string `json:"sendId,omitempty"`
 }
 
 // interruptTurnCtx is InterruptTurn with a bounded entry: ctx limits ONLY the
@@ -1083,9 +1099,10 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 
 // teardownAndCloseSession runs the per-thread triage cleanup
 // and closes the provider subprocess. Shared by StopSession (user
-// action) and idleCloseSession (reaper) so the close sequence stays in
-// one place — future per-thread cleanup steps land once and all paths
-// inherit it. teardownDeadPreInitSession mirrors the sequence but owns
+// action), idleCloseSession (reaper), and stopArchivedThreadSession
+// (archive releasing the thread's host resources) so the close sequence
+// stays in one place — future per-thread cleanup steps land once and all
+// paths inherit it. teardownDeadPreInitSession mirrors the sequence but owns
 // its own copy: its CleanupThread must be epoch-guarded against a
 // racing replacement start, and it restores the flush queue first.
 //
@@ -1103,6 +1120,13 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 	a.workflowApplication().ReleaseUsageAttentionForThread(threadID)
 	if a.triage != nil {
+		// CleanupThread DROPS the thread's queued messages rather than
+		// restoring them (teardownDeadPreInitSession is the path that
+		// restores, and it does not come through here), so their durable rows
+		// go with them: a row that outlived the queue it belonged to would
+		// put the message back in the composer at the next boot, long after
+		// the user's Stop threw it away.
+		a.dropDurableFlushQueue(threadID)
 		a.triage.CleanupThread(threadID)
 	}
 	err := a.closeProviderSession(threadID, sess)

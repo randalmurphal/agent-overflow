@@ -3,21 +3,22 @@
   // — so the section is a project picker over a single editor rather than a
   // nested tab set.
   //
-  // The bindings behind the editor are LocalOnly (they configure argv commands
-  // that run unattended on every worktree this project cuts), so a view-only
-  // remote session cannot call them at all. The picker says so instead of
+  // The binding behind the editor carries //ao:stepup (it configures argv
+  // commands that run unattended on every worktree this project cuts), so no
+  // standing grant reaches it from a remote session. The picker says so instead of
   // rendering an editor whose every save would fail.
 
   import { onMount } from 'svelte';
   import { getProjectLabelText, getProjects, isLoaded, refreshProjects } from '../../stores/projects.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import SettingsField from './SettingsField.svelte';
   import WorktreeSetupEditor from './WorktreeSetupEditor.svelte';
   import { SELECT_CLASS } from './styles';
 
   let projects = $derived(getProjects());
   let loaded = $derived(isLoaded());
-  let viewOnly = $derived(isViewOnlySession());
+  // The editable half is the worktree setup command, which runs in a PTY.
+  let ungranted = $derived(!hasScope('terminal:operate'));
   let selectedId = $state('');
 
   onMount(() => {
@@ -38,7 +39,7 @@
 </script>
 
 <div class="settings-sections">
-  {#if viewOnly}
+  {#if ungranted}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-projects-local-only">
       Project configuration is local only. Open Agent Overflow on the host machine to edit it.
     </p>

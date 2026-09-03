@@ -15,8 +15,16 @@
 // the UUID is intentional so `for thread <uuid>` collapses to
 // `for thread` rather than `for thread ` with a trailing space.
 
+import { scopeRefusalMessage } from '../transport/scopeRefusal';
+
 export function userFacingError(err: unknown, fallback = 'Something went wrong.'): string {
   if (err === null || err === undefined) return fallback;
+  // Authorization refusals carry the missing capability as a wire FIELD
+  // (scope_required / step_up_required), and the one presentation module
+  // phrases it — running those through the wrap-trimmer below would
+  // instead surface the tail of a server sentence and drift per surface.
+  const refusal = scopeRefusalMessage(err);
+  if (refusal !== null) return refusal;
   let raw = '';
   if (err instanceof Error) {
     raw = err.message;

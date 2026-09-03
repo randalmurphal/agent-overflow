@@ -1,5 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { getSettings, loadSettings, resetSettingsForTest, updateSetting } from './settings.svelte';
+import {
+  getSettings,
+  loadSettings,
+  resetSettingsForTest,
+  resyncSettings,
+  updateSetting,
+} from './settings.svelte';
 import type { Settings } from '../types/settings';
 import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
 import { makeSettings } from '../../test/helpers/settings';
@@ -232,6 +238,55 @@ describe('settings store', () => {
 
       expect(getSettings().timestampFormat).toBe(before.timestampFormat);
       expect(getSettings().diffWordWrap).toBe(!before.diffWordWrap);
+      consoleErr.mockRestore();
+    });
+  });
+
+  describe('resyncSettings() — settings:updated convergence', () => {
+    it('re-reads the backend projection so a second client converges', async () => {
+      setBindingMock('GetSettings', async () => ({ ...FULL_SETTINGS, fontSize: 19 }));
+      await resyncSettings();
+      expect(getSettings().fontSize).toBe(19);
+    });
+
+    it('queues behind an in-flight write instead of reverting it', async () => {
+      // The echo of our own write arrives while the write is still in
+      // flight. An unordered read would be issued against the pre-write
+      // state and land after the optimistic apply, discarding the value
+      // the user just chose.
+      let releaseWrite: (() => void) | undefined;
+      const writeLanded = new Promise<void>((resolve) => { releaseWrite = resolve; });
+      let readsBeforeWriteSettled = 0;
+      let writeSettled = false;
+      setBindingMock('UpdateSettings', async () => {
+        await writeLanded;
+        writeSettled = true;
+        return { ...FULL_SETTINGS, fontSize: 21 };
+      });
+      setBindingMock('GetSettings', async () => {
+        if (!writeSettled) readsBeforeWriteSettled += 1;
+        return { ...FULL_SETTINGS, fontSize: 21 };
+      });
+
+      const write = updateSetting('fontSize', 21);
+      const echo = resyncSettings();
+      releaseWrite?.();
+      await Promise.all([write, echo]);
+
+      expect(readsBeforeWriteSettled).toBe(0);
+      expect(getSettings().fontSize).toBe(21);
+    });
+
+    it('a failed read leaves the store alone and does not poison the queue', async () => {
+      const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const before = getSettings().fontSize;
+      setBindingMock('GetSettings', async () => { throw new Error('offline'); });
+      await resyncSettings();
+      expect(getSettings().fontSize).toBe(before);
+
+      setBindingMock('GetSettings', async () => ({ ...FULL_SETTINGS, fontSize: 23 }));
+      await resyncSettings();
+      expect(getSettings().fontSize).toBe(23);
       consoleErr.mockRestore();
     });
   });

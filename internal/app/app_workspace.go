@@ -14,6 +14,8 @@ import (
 // caller found it. The ref goes through ResolveWorkspace, so an arbitrary
 // caller-supplied directory cannot be written to — only the project root or
 // one of its registered worktrees.
+//
+//ao:scope git:operate
 func (a *App) WriteWorkspaceFile(ws WorkspaceRef, relativePath, content string) (string, error) {
 	_, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {

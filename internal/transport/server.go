@@ -2,9 +2,11 @@ package transport
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -15,20 +17,29 @@ import (
 	"syscall"
 	"time"
 
-	"agent-overflow/internal/webview2host"
+	"agent-overflow/internal/bundle"
+	"agent-overflow/internal/loopback"
+	"agent-overflow/internal/pagehost"
 
 	"github.com/coder/websocket"
 )
 
 // Bootstrap is the JSON document the SPA fetches at /bootstrap.json on
-// page load. It tells the client where the WS endpoint lives and what
-// token to present. The wsUrl is built from the request's Host header
-// so a LAN bind serves a LAN-reachable URL, not the loopback string
-// the server resolved at bind time.
+// page load. It tells the client where the WS endpoint lives; it carries
+// no credential, because the request that fetched it either arrived with
+// the page cookie or was answered with a Set-Cookie, and the browser
+// presents that cookie on the upgrade without page script ever holding
+// it. The wsUrl is built from the request's Host header so a LAN bind
+// serves a LAN-reachable URL, not the loopback string the server
+// resolved at bind time.
 type Bootstrap struct {
-	WSURL  string `json:"wsUrl"`
-	Token  string `json:"token"`
-	Remote bool   `json:"remote,omitempty"`
+	WSURL string `json:"wsUrl"`
+	// LaunchID identifies this backend launch. The SPA scopes its
+	// notification replay checkpoint by it, since a sequence number from
+	// a previous launch means nothing to this one. Opaque, not a
+	// credential, and safe for page script to read.
+	LaunchID string `json:"launchId,omitempty"`
+	Remote   bool   `json:"remote,omitempty"`
 	// Harness marks a backend booted as the agent test harness or the
 	// soak rig (Config.Harness). The SPA keys its harness bridge on it —
 	// the bridge module ships in every bundle but is only imported when
@@ -51,6 +62,42 @@ type Bootstrap struct {
 	// as "no replica keying available" rather than as a generation.
 	BackendID         string `json:"backendId,omitempty"`
 	ReplicaGeneration string `json:"replicaGeneration,omitempty"`
+	// BackendName is the display name of the machine this backend runs
+	// on, the same string the hello frame carries and the pairing payload
+	// shows. Here as well as on the socket because a page decides what to
+	// label a backend before it has opened one — the manifest is the only
+	// thing a page holding no credential can read.
+	//
+	// Display only: no client keys anything on it, and BackendID stays
+	// the identity. Empty means unknown.
+	BackendName string `json:"backendName,omitempty"`
+	// PasskeysAvailable says a passkey sign-in can be started right now —
+	// this backend has a canonical domain to be a relying party for, and
+	// the identity seam is wired. The pairing screen offers the
+	// no-code-to-type path only when it is true.
+	//
+	// Here rather than in the hello frame's capability list because it is
+	// CONFIGURATION, not a dialect fact: it changes when the owner edits a
+	// setting, and it has to reach a page that holds no credential and has
+	// not opened a socket. The capability list answers the other half —
+	// whether this backend speaks the ceremonies at all
+	// (CapabilityPasskeys).
+	//
+	// Omitted when false, and absent is safe to read as false: a backend
+	// too old to send it has no passkey surface either, so both answers
+	// lead a client to the same screen.
+	PasskeysAvailable bool `json:"passkeysAvailable,omitempty"`
+	// Backends is every machine this installation has attached, each with
+	// the same-origin URLs this listener carries it on
+	// (docs/specs/remote-access.md §10, and attachedroutes.go). Absent
+	// when there are none, which reads as "this page talks to one
+	// backend" — the shape every client had before attaching existed.
+	//
+	// Reachability is deliberately NOT here. Probing every attached
+	// machine to answer one page load would make a boot as slow as the
+	// slowest sleeping laptop; the SPA learns it from each socket, which
+	// is the only place it is ever current.
+	Backends []AttachedBackendEntry `json:"backends,omitempty"`
 }
 
 // MaxRetainedFormerSrvs caps how many retired http.Servers Rebind keeps
@@ -92,15 +139,38 @@ type Config struct {
 	// it on port 0 would fail identically and only obscure the cause.
 	EphemeralPortFallback bool
 
-	// Token is the auth secret presented as ?token=<value> on WS
-	// upgrade. Empty asks Server.New to generate one (recommended).
+	// Token is this launch's session credential. Empty asks Server.New
+	// to generate one (recommended). Browsers never see it — they hold
+	// the page cookie Server.AppURL's one-time ticket buys them — so it
+	// is the credential for clients that are not browsers: the WSL
+	// launcher's probe and notification socket, the `ao-harness` CLI,
+	// the `--connect` stub dialling this server. See credential.go.
 	Token string
+
+	// DecoratePageURL threads whatever else the boot puts on a page URL
+	// (the durable client id, the harness page marker) onto a base this
+	// package built. Served by the PageURLPath route.
+	//
+	// A decorator supplied by the boot, not a whole assembler: the ticket
+	// half differs per consumer — a browser's rides `?t=`, a webview
+	// host's is delivered by injection and the URL is bare — and only
+	// this package can mint one either way. The boot's extra parameters
+	// are the same in both cases, so it contributes those and nothing
+	// else. Optional; nil leaves the base untouched.
+	DecoratePageURL func(base string) string
 
 	// Dispatcher hosts the registered RPC methods. Required.
 	Dispatcher *Dispatcher
 
 	// EventBus pushes server-initiated events. Required.
 	EventBus *EventBus
+
+	// Version is the semantic version this binary reports on /healthz and
+	// in logs. Injected because the string is stamped into package main
+	// at link time; this package never reads a build variable. Empty is
+	// valid (tests, unstamped builds) and reports as empty rather than
+	// inventing a number.
+	Version string
 
 	// AssetHandler serves the SPA assets. Optional — when nil, the
 	// HTTP server returns 404 for non-RPC paths. main.go wires this
@@ -119,8 +189,160 @@ type Config struct {
 	// client keeps its replica disabled.
 	BackendIdentity func() (backendID, replicaGeneration string)
 
+	// BackendName is the display name this backend answers to on the
+	// wire: the host's name, published in the hello frame and the
+	// bootstrap manifest so a client attached to several backends can
+	// label them (docs/specs/remote-access.md §10, "Machine name").
+	//
+	// A plain string rather than a getter, unlike BackendIdentity: a
+	// hostname is knowable at boot and does not arrive with the store.
+	// There is deliberately no setting behind it — the display name IS
+	// the hostname, and the client keeps whatever nickname its owner
+	// typed.
+	//
+	// Optional. Empty publishes no name, which a client reads as unknown.
+	BackendName string
+
+	// SessionForRequest resolves the durable session a request presents,
+	// if any, and says whether the request may proceed at all.
+	//
+	// The seam between this package and internal/identity, in the
+	// direction that keeps transport store-free: the boot passes a
+	// closure over the session core, and this package never learns what a
+	// session row is. A false `ok` refuses the upgrade with the same
+	// http.NotFound shape a bad launch credential gets, which is what
+	// makes a reconnection on a revoked credential fail rather than
+	// silently downgrade to an unattributed connection.
+	//
+	// Optional. Nil means every request proceeds naming no session, which
+	// is the launch-credential behavior this server has always had — and
+	// handleWS then admits such a connection only from a loopback peer,
+	// because a server that cannot resolve a session cannot admit a
+	// session-naming one either.
+	SessionForRequest func(r *http.Request) (sessionID string, ok bool)
+
+	// SessionLive reports whether a session id still admits work. The
+	// same seam as SessionForRequest, taking an ID rather than a request
+	// because its two callers do not have one: the upgrade that spent a
+	// WebSocket ticket (the ticket names the session; nothing about the
+	// request does), and the per-connection re-validation that runs long
+	// after the request is gone.
+	//
+	// Optional. Nil means an established connection is never re-checked
+	// and a ticket's subject is taken as live, which is the behavior
+	// before any client presents a session.
+	SessionLive func(sessionID string) bool
+
+	// SessionAdmitsPeer reports whether a session id may be presented from
+	// one peer address: the BINDING CLASS half of admission
+	// (docs/specs/remote-access.md §2), which SessionForRequest already
+	// applies to every request that carries a credential.
+	//
+	// Shaped like SessionLive, and for the same reason: its caller holds
+	// an id and no credential. A `/ws` upgrade naming its session through
+	// a spent ticket never reaches SessionForRequest at all, so without
+	// this hook the ticket route was the one presentation path where a
+	// loopback-only session admitted an off-host peer. A ticket is minted
+	// by a request that DID present the credential, but it is spent by
+	// whoever holds the URL, and the mint says nothing about where.
+	//
+	// Binding classes are internal/identity's vocabulary and this package
+	// cannot import it, so the comparison stays app-side and this is the
+	// question asked of it.
+	//
+	// Optional. Nil admits every peer, which is the behavior before any
+	// client presents a session.
+	SessionAdmitsPeer func(sessionID, remoteAddr string) bool
+
+	// SessionScopes resolves the capability grants a session holds RIGHT
+	// NOW, or refuses it outright.
+	//
+	// The third hook over the same seam, and the one the per-RPC gate
+	// reads (authorize.go). It answers a scope set and an empty refusal
+	// when the session still admits work, and a non-empty refusal — one
+	// spelling from internal/identity's closed set, which this package
+	// carries without interpreting — when it does not. That second answer
+	// is why the gate needs no separate liveness call: a revoked session
+	// stops authorizing on the very next RPC rather than at the next
+	// watchdog tick.
+	//
+	// Optional. Nil means a connection's scopes are never consulted, which
+	// is the pre-enforcement behavior: the origin gate alone decides, as it
+	// does for every launch-credential client.
+	SessionScopes func(sessionID string) (scopes []string, refusal string)
+
+	// StepUpProof spends the step-up token one RPC presented and reports
+	// whether it was valid FOR THAT SESSION.
+	//
+	// The fourth hook over the same seam, and the one that gives §4's
+	// step-up set a proof other than standing at the machine
+	// (authorize.go). SPENDS is the contract: the token is single-use, so
+	// this is asked exactly once per RPC and its answer is carried into
+	// the call rather than recomputed by the argument-dependent rechecks
+	// inside a method.
+	//
+	// The session id comes from the CONNECTION, never from the frame, so a
+	// token minted for one session cannot be presented on another's socket
+	// — which is what makes "bound to the session that asked" enforceable
+	// at all.
+	//
+	// Optional. Nil leaves host presence as the only step-up proof, which
+	// is the behavior before passkeys.
+	StepUpProof func(sessionID, token string) bool
+
+	// BrowserAvailable reports whether this backend has a browser engine
+	// at all, which is what CapabilityBrowser advertises. A getter for the
+	// reason BackendIdentity is one: the Manager chooses its engine during
+	// the App's startup, after New().
+	//
+	// Optional — nil means the same as false, which is the answer for every
+	// boot that has no browser and every test that does not wire one.
+	BrowserAvailable func() bool
+
+	// PageSessionCredential returns the session credential to plant on
+	// the page as an HttpOnly cookie during the bootstrap exchange, or ""
+	// when there is none.
+	//
+	// A getter for the reason BackendIdentity is one: the local page
+	// channel's session is minted during the App's startup, which runs
+	// after New(). It is also what lets the app re-issue a credential
+	// approaching its expiry without this package knowing a window
+	// exists.
+	//
+	// Optional — when nil, no session cookie is written and local clients
+	// name no session, exactly as before.
+	PageSessionCredential func() string
+
+	// AuthEndpoints backs the device-facing credential routes (pairing
+	// redemption and token rotation). The app satisfies it with an
+	// adapter over internal/identity.
+	// Optional — when nil, neither route is registered.
+	AuthEndpoints AuthEndpoints
+
+	// AttachmentTransfer backs the two attachment byte routes: it opens a
+	// thread-owned attachment for streaming, and persists a streamed
+	// upload. The app satisfies it with an adapter over its attachment
+	// store.
+	//
+	// Optional — when nil, neither route answers anything but the 404 a
+	// spent ticket gets, and the mint methods have nothing to hand out.
+	// That is every boot before the App's startup wires it, and every test
+	// that does not ask for byte transfer.
+	AttachmentTransfer AttachmentTransfer
+
+	// Bundle is the SPA this backend serves, as the two bundle routes and
+	// the hello frame publish it (bundleroutes.go, internal/bundle).
+	//
+	// Optional — when nil the routes answer the same 404 an unpaired
+	// caller gets and the hello frame omits its three bundle fields,
+	// which a shell reads as "this backend does not supply bundles" and
+	// keeps running what it has. That is every test fixture and every
+	// boot whose assets are a live dev server rather than an embedded
+	// tree: a dev bundle is not something a phone should stage.
+	Bundle *bundle.Bundle
+
 	// CDPTunnel consumes the Windows launcher's CDP relay connection on
-	// webview2host.CDPTunnelPath. Optional — when nil the route is not
+	// CDPTunnelPath. Optional — when nil the route is not
 	// registered at all, which is the right answer everywhere the pane
 	// host cannot exist (native desktop builds, remote clients).
 	//
@@ -128,6 +350,12 @@ type Config struct {
 	// multiplexer whose peer is another AO process on this host, admitted
 	// by the same launch token and the same loopback rule as /ws.
 	CDPTunnel CDPTunnelEndpoint
+
+	// AttachedBackends is the set of other machines this installation has
+	// attached, carried same-origin on this listener. Optional — when nil
+	// the three attached-backend routes are not registered and the
+	// manifest carries no backends array. See attachedroutes.go.
+	AttachedBackends AttachedBackends
 
 	// ScopedTokens resolves an `ao` CLI credential to the caller scope it
 	// was minted for. The App owns the registry (a token lives exactly as
@@ -156,10 +384,63 @@ type Config struct {
 	// KeepaliveInterval.
 	KeepalivePongTimeout time.Duration
 
+	// SessionRecheckInterval is how often an established connection
+	// re-asks whether the session it named is still live
+	// (docs/specs/remote-access.md §4). Zero defaults to
+	// defaultSessionRecheck (60s); negative disables the re-check.
+	//
+	// It is a floor on how long a connection can outlive its credential
+	// by a route nothing else covers: revocation force-closes sockets
+	// synchronously, so this catches the two cases revocation does not —
+	// a session that simply EXPIRED, and a revocation this process did
+	// not perform (another replica, a direct database edit).
+	SessionRecheckInterval time.Duration
+
+	// MaxRemoteConnLifetime caps how long one non-loopback connection
+	// naming a session may stay open, forcing a periodic re-ticket. Zero
+	// defaults to defaultRemoteConnLifetime (12h); negative disables the
+	// cap.
+	//
+	// Loopback connections are deliberately exempt. The cap exists so a
+	// credential that travels a network is re-presented periodically; the
+	// local page's session is re-minted at boot and has no network to
+	// travel, so capping it would buy nothing and cost the webview a
+	// visible reconnect.
+	MaxRemoteConnLifetime time.Duration
+
+	// Certificates, when non-nil, makes this server terminate TLS in-app
+	// on the SAME port it serves cleartext on: an accepted connection
+	// that opens with a TLS handshake record is handed to crypto/tls, and
+	// anything else is the plain HTTP this server always spoke
+	// (tlssniff.go). Uniform on every bind — loopback and LAN, boot and
+	// rebind alike — so there is no mode in which a client that pinned
+	// this backend's certificate finds it missing.
+	//
+	// Nil (the default, and what every caller that terminates no TLS
+	// passes) leaves the listener plain, at no cost: the sniff wrapper is
+	// not installed at all. A non-nil source holding NO certificate yet
+	// still installs it, because certificates arrive and renew while the
+	// process runs and a listener that had to be rebound to notice would
+	// drop every connection each time one did.
+	//
+	// The source decides which certificate answers a given handshake
+	// (certsource.go): the self-signed one a paired client pinned, or the
+	// canonical domain's, by SNI. Nothing here mints, renews or persists
+	// either — internal/servercert and internal/acmecert do, and
+	// internal/app installs what they produce.
+	Certificates *CertificateSource
+
 	// OriginPatterns is the WS origin allow-list. Empty (default) uses
 	// InsecureSkipVerify — appropriate for loopback. Phase E (LAN bind
 	// toggle) populates this with the configured remote origins.
 	OriginPatterns []string
+
+	// CanonicalHost is the one DNS name this backend answers to besides
+	// the loopback spellings: the user's configured canonical domain
+	// (docs/specs/remote-access.md §7). Empty is the default and means
+	// "loopback names only" — see loopbackHostGuard for what accepting a
+	// name costs and why exactly one is accepted rather than all of them.
+	CanonicalHost string
 
 	// RequireReadyForBootstrap makes /bootstrap.json return 503 until
 	// MarkReady is called. Default false preserves the normal desktop
@@ -184,6 +465,14 @@ type Config struct {
 	// Diagnostic opt-in (AGENT_OVERFLOW_RENDERER_DIAG) — COEP blocks
 	// remote subresources while on. See WriteCrossOriginIsolationHeaders.
 	CrossOriginIsolate bool
+
+	// DevAssetProxy marks a boot whose AssetHandler forwards to a live
+	// Vite dev server instead of serving the embedded bundle. It picks
+	// CSPDevServer over CSPProduction, once, in New — the strict/relaxed
+	// split is a boot-mode decision, never a per-request one. main.go
+	// sets it from the same condition that built the proxy handler, so
+	// the two can never disagree about which bundle is being served.
+	DevAssetProxy bool
 
 	// HTTPReadHeaderTimeout, HTTPReadTimeout, HTTPWriteTimeout,
 	// HTTPIdleTimeout map onto net/http.Server fields. Zero values
@@ -214,6 +503,24 @@ type Server struct {
 	// for loopback (no browser origin to compare against). Guarded by mu.
 	originPatterns []string
 
+	// canonicalHost is the live copy of Config.CanonicalHost, lower-cased
+	// once, rotated by SetCanonicalHost when the user changes the domain.
+	// Guarded by mu, like the allow-list beside it and for the same
+	// reason: both are read per request and written from a settings call.
+	canonicalHost string
+
+	// auxHosts are the extra Host header names the guard admits because
+	// an AUXILIARY LISTENER is addressed by them — the tailnet node's
+	// MagicDNS name and its tailnet addresses. Rotated by
+	// SetAuxiliaryHosts, cleared when that listener goes away. Guarded by
+	// mu for the same reason as the two names above it.
+	auxHosts []string
+
+	// auxListeners are the caller-owned listeners currently attached
+	// (auxlistener.go). Guarded by mu; Shutdown detaches whatever is
+	// still here.
+	auxListeners []*AuxListener
+
 	// formerSrvs are http.Servers retired by Rebind that are still
 	// draining hijacked WS connections. We keep them around so existing
 	// clients keep working after the bind toggle, and Close them on
@@ -234,7 +541,31 @@ type Server struct {
 	// mu so Addr() reads aren't blocked behind a slow rebind.
 	rebindMu sync.Mutex
 
-	token string
+	// cred is this launch's page credential: the session token clients
+	// that are not browsers present, plus the one-time page tickets that
+	// buy a browser its HttpOnly cookie. See credential.go.
+	cred *Credential
+
+	// launchID identifies this boot to a client that must not reuse
+	// state minted against a previous one (the SPA's notification
+	// replay checkpoint). Opaque and non-credential: it is published in
+	// the manifest precisely so nothing else has to be.
+	launchID string
+
+	// tlsConfig is what an accepted TLS connection is served with, built
+	// once in New from Config.Certificates and nil when there is no
+	// source at all. The struct is immutable afterwards and shared by
+	// every bind — a Rebind changes which address answers — but the
+	// certificate it resolves is read per handshake out of the source, so
+	// a renewal or a first issuance takes effect WITHOUT a rebind.
+	tlsConfig *tls.Config
+
+	// csp is the one Content-Security-Policy every response on this
+	// server carries, resolved from Config.DevAssetProxy in New and
+	// immutable afterwards. Rebind does not revisit it: swapping the
+	// listener changes where the bundle is reachable from, never which
+	// bundle it is.
+	csp ContentSecurityPolicy
 
 	// rootCtx + rootCancel scope every connection's lifetime to the
 	// server. Shutdown cancels rootCtx so live readLoops exit
@@ -261,6 +592,40 @@ type Server struct {
 	ready atomic.Bool
 
 	startupFailed atomic.Bool
+
+	// sessionConns is the live-session registry: which upgraded sockets
+	// carry which durable session, and how to close them. Built at New
+	// and never replaced, because a Rebind must not lose track of the
+	// connections it is deliberately keeping alive.
+	sessionConns *SessionConns
+
+	// Per-peer request budgets for the credential surfaces. Built at New
+	// and never replaced: a Rebind changes which address the server
+	// answers on, not how much work one peer may ask for, and rebuilding
+	// them would hand every peer a fresh burst on a LAN-bind toggle.
+	// Deliberately absent for /healthz and the SPA assets — see
+	// ratelimit.go.
+	bootstrapLimit *rateLimiter
+	pageURLLimit   *rateLimiter
+	scopedRPCLimit *rateLimiter
+	authLimit      *rateLimiter
+
+	// wsTickets holds the single-use tickets minted at AuthTicketPath and
+	// spent on the upgrade. Server-owned rather than Credential-owned
+	// because a ticket names a session, and a session outlives no launch
+	// but belongs to none either.
+	wsTickets *ticketBook
+
+	// The two attachment transfer books (attachmentroutes.go). TWO, not
+	// one: a download ticket is minted by a `threads:read` call and an
+	// upload ticket by an `attachments:write` one, so a single book would
+	// make "can this ticket be presented at the other route" a property of
+	// its subject parsing rather than of which book holds it. Separate
+	// books make the confusion unrepresentable, cost one field, and let
+	// the bounds move independently if reading and writing ever have
+	// different shapes of traffic.
+	attachmentDownloadTickets *ticketBook
+	attachmentUploadTickets   *ticketBook
 
 	// remoteConns counts live non-loopback WebSocket connections.
 	// Feeds HasRemoteClient, which gates work that only benefits
@@ -297,13 +662,13 @@ func New(cfg Config) (*Server, error) {
 	if cfg.HTTPIdleTimeout == 0 {
 		cfg.HTTPIdleTimeout = 120 * time.Second
 	}
-	token := cfg.Token
-	if token == "" {
-		t, err := NewToken()
-		if err != nil {
-			return nil, fmt.Errorf("transport: generate token: %w", err)
-		}
-		token = t
+	cred, err := NewCredential(cfg.Token)
+	if err != nil {
+		return nil, fmt.Errorf("transport: generate credential: %w", err)
+	}
+	launchID, err := NewToken()
+	if err != nil {
+		return nil, fmt.Errorf("transport: generate launch id: %w", err)
 	}
 	// Copy origin patterns so a caller mutating the Config slice after
 	// New can't reach into the live allow-list. The mu-guarded mirror
@@ -313,11 +678,28 @@ func New(cfg Config) (*Server, error) {
 	if len(cfg.OriginPatterns) > 0 {
 		originPatterns = append(originPatterns, cfg.OriginPatterns...)
 	}
+	csp := CSPProduction
+	if cfg.DevAssetProxy {
+		csp = CSPDevServer
+	}
 	s := &Server{
 		cfg:            cfg,
-		token:          token,
+		cred:           cred,
+		launchID:       launchID,
+		csp:            csp,
+		tlsConfig:      serverTLSConfig(cfg.Certificates),
 		originPatterns: originPatterns,
+		canonicalHost:  normalizeCanonicalHost(cfg.CanonicalHost),
 		serveErr:       make(chan error, 1),
+		sessionConns:   newSessionConns(),
+		bootstrapLimit: newRateLimiter("/bootstrap.json", bootstrapRateLimit),
+		pageURLLimit:   newRateLimiter(PageURLPath, pageURLRateLimit),
+		scopedRPCLimit: newRateLimiter(ScopedRPCPath, scopedRPCRateLimit),
+		authLimit:      newRateLimiter("/auth", authRateLimit),
+		wsTickets:      newTicketBook(maxOutstandingWSTickets, wsTicketTTL),
+
+		attachmentDownloadTickets: newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
+		attachmentUploadTickets:   newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 	}
 	if !cfg.RequireReadyForBootstrap {
 		s.ready.Store(true)
@@ -372,7 +754,7 @@ func (s *Server) start() error {
 // main.go uses that to re-persist the pinned port.
 func (s *Server) listen() (net.Listener, error) {
 	addr := net.JoinHostPort(s.cfg.BindAddr, strconv.Itoa(s.cfg.Port))
-	listener, err := net.Listen("tcp", addr)
+	listener, err := s.bindListener(addr)
 	if err == nil {
 		return listener, nil
 	}
@@ -382,12 +764,28 @@ func (s *Server) listen() (net.Listener, error) {
 
 	ephemeral := net.JoinHostPort(s.cfg.BindAddr, "0")
 	log.Printf("transport: listen %s: %v — retrying on an ephemeral port", addr, err)
-	listener, retryErr := net.Listen("tcp", ephemeral)
+	listener, retryErr := s.bindListener(ephemeral)
 	if retryErr != nil {
 		return nil, fmt.Errorf("transport: listen %s: %w (after %s: %v)", ephemeral, retryErr, addr, err)
 	}
 	log.Printf("transport: bound %s instead of %s", listener.Addr(), addr)
 	return listener, nil
+}
+
+// bindListener is the ONE place this server acquires a listener: the
+// bind plus the same-port TLS wrap when a certificate is configured
+// (tlssniff.go). Every path that binds goes through it — boot, the
+// ephemeral fallback, a rebind, the rebind's close-and-retry, and its
+// rollback — so a listener that terminated TLS cannot be replaced by one
+// that quietly does not. A client pinning the certificate would read
+// that as the backend disappearing, and only on the paths a user reaches
+// by toggling LAN access.
+func (s *Server) bindListener(addr string) (net.Listener, error) {
+	inner, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return sniffTLS(inner, s.tlsConfig, s.cfg.HTTPReadHeaderTimeout), nil
 }
 
 // portUnavailable reports whether a bind error is attributable to the
@@ -429,29 +827,131 @@ func matchesErrno(err error, errnos []syscall.Errno) bool {
 // keeps draining hijacked WS connections.
 //
 // Loopback paths (/bootstrap.json, /ws) are wrapped in a Host-header
-// guard that fires when the live origin allow-list is empty (loopback
-// mode). A hostile site whose DNS resolves to 127.0.0.1 can otherwise
-// navigate the user to http://attacker.tld:<our-port>/bootstrap.json
-// and read the bootstrap token; rejecting non-loopback Hosts in
-// loopback mode closes that vector. On LAN bind (origin allow-list
-// non-empty) the guard is a pass-through — origin validation already
-// covers cross-origin attacks for the WS handshake, and HTTP-side
-// callers from the LAN need to reach the server by its LAN host.
+// guard that fires while the live LISTEN ADDRESS is loopback. Loopback
+// binding is not by itself a boundary: a foreign origin whose DNS name
+// resolves to 127.0.0.1 can navigate the user to
+// http://that.name:<our-port>/bootstrap.json, and the request arrives
+// over the loopback interface like any other, carrying that name as its
+// Host and its origin as the document's. Requiring a loopback Host
+// (loopback.HostHeader, which refuses names precisely for this) makes
+// the guard about who is asking rather than about which interface the
+// packets crossed. The one exception is the configured canonical
+// domain. On LAN bind it is a pass-through — origin validation already
+// covers the WS handshake, and HTTP callers from the LAN reach the
+// server by its LAN host. See loopbackHostGuard.
 func (s *Server) buildHTTPServer() *http.Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/bootstrap.json", s.loopbackHostGuard(s.handleBootstrap))
-	mux.HandleFunc("/ws", s.loopbackHostGuard(s.handleWS))
+	// Rate limiting sits OUTSIDE the host guard on the three credential
+	// surfaces, so a peer over budget is refused before any other work is
+	// done for it. /ws is not limited here: a WebSocket is one upgrade per
+	// long-lived connection, and the request that carries the credential
+	// is the same one that starts the connection — the budget that matters
+	// for it is the ticket exchange that precedes it. /healthz and the
+	// assets are never limited (ratelimit.go says why).
+	// The routes a shell page fetches cross-origin carry the CORS answer
+	// for that ONE origin (shellorigin.go). It is composed OUTSIDE the
+	// rate limiter on purpose: a preflight carries no credential and does
+	// no work, and a shell whose preflights were being throttled would
+	// fail in a way nothing on the page could explain. The /ws upgrade is
+	// deliberately absent — a WebSocket handshake is not subject to CORS,
+	// and `OriginAllowed` is what admits the shell there.
+	mux.HandleFunc(BootstrapPath, withShellCORS(http.MethodGet,
+		rateLimited(s.bootstrapLimit, s.loopbackHostGuard(s.handleBootstrap))))
+	mux.HandleFunc(WSPath, s.loopbackHostGuard(s.handleWS))
+	mux.HandleFunc(PageURLPath,
+		rateLimited(s.pageURLLimit, s.loopbackHostGuard(s.handlePageURL)))
+	mux.HandleFunc(HealthPath, s.loopbackHostGuard(s.handleHealthz))
 	if s.cfg.ScopedTokens != nil {
-		mux.HandleFunc(ScopedRPCPath, s.loopbackHostGuard(s.handleScopedRPC))
+		mux.HandleFunc(ScopedRPCPath,
+			rateLimited(s.scopedRPCLimit, s.loopbackHostGuard(s.handleScopedRPC)))
+	}
+	// The credential routes share ONE budget, deliberately: they are
+	// alternative ways for the same peer to ask this backend for a
+	// credential, so a peer that has exhausted its patience on one must
+	// not simply move to the next.
+	if s.cfg.AuthEndpoints != nil {
+		mux.HandleFunc(AuthPairPath, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthPair))))
+		mux.HandleFunc(AuthTokenPath, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthToken))))
+		// Registered whenever the identity seam exists, not whenever a
+		// passkey could be used: availability depends on a setting the owner
+		// edits while the process runs, and a route that appeared and
+		// vanished with it would make a rebind part of changing a domain.
+		// Unavailable is an ANSWER here (`passkey_unavailable`), which is
+		// also the only one a client can explain.
+		mux.HandleFunc(AuthPasskeyBeginPath, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handlePasskeyBegin))))
+		mux.HandleFunc(AuthPasskeyFinishPath, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handlePasskeyFinish))))
+	}
+	// The attachment byte routes. Registered unconditionally, like every
+	// route above that answers a ticket rather than a credential: the
+	// seam is late-bound (the attachment store opens during the App's
+	// startup, after this config is built), so gating registration on it
+	// would mean a boot whose routes depended on when the mux happened to
+	// be built. With no seam they answer the same 404 a spent ticket gets.
+	//
+	// No rate limiter, deliberately — the ticket is minted by an
+	// authorized RPC and spent once, so there is no request a peer can
+	// repeat for free. No Origin allow-list either; both decisions are
+	// argued at the top of attachmentroutes.go and recorded in the
+	// internal/surfaces rows.
+	//
+	// Both patterns are METHOD-QUALIFIED, so the mux itself answers 405 to
+	// an OPTIONS request and a browser reads that as a refused preflight —
+	// the transfer then never starts. Each therefore registers its own
+	// OPTIONS pattern, which answers the preflight for an admitted origin
+	// and the listener's ordinary 404 for anything else.
+	mux.HandleFunc(AttachmentDownloadPath, withShellCORS(http.MethodGet,
+		s.loopbackHostGuard(s.handleAttachmentDownload)))
+	mux.HandleFunc(AttachmentDownloadPreflightPath, shellPreflightHandler(http.MethodGet))
+	mux.HandleFunc(AttachmentUploadPath, withShellCORS(http.MethodPut,
+		s.loopbackHostGuard(s.handleAttachmentUpload)))
+	mux.HandleFunc(AttachmentUploadPreflightPath, shellPreflightHandler(http.MethodPut))
+	// The bundle routes. Registered unconditionally for the reason the
+	// attachment pair is: a route whose presence depended on when the mux
+	// happened to be built would be a boot whose shape varies. With no
+	// Config.Bundle they answer the same 404 a caller with no session
+	// gets.
+	//
+	// No rate limiter. Both demand a live paired session plus its device
+	// proof, so there is no request an unadmitted caller can repeat for
+	// free, and the one client that IS admitted asks at most twice per
+	// update. Method-qualified for the same reason as the attachment
+	// pair, so each brings its own OPTIONS pattern.
+	mux.HandleFunc(BundleManifestPath, withShellCORS(http.MethodGet,
+		s.loopbackHostGuard(s.handleBundleManifest)))
+	mux.HandleFunc(BundleManifestPreflightPath, shellPreflightHandler(http.MethodGet))
+	mux.HandleFunc(BundleArchivePath, withShellCORS(http.MethodGet,
+		s.loopbackHostGuard(s.handleBundleArchive)))
+	mux.HandleFunc(BundleArchivePreflightPath, shellPreflightHandler(http.MethodGet))
+	// The ticket route needs no AuthEndpoints — it mints from the session
+	// the caller already holds — so it is registered whenever a session
+	// can be resolved at all.
+	if s.cfg.SessionForRequest != nil {
+		mux.HandleFunc(AuthTicketPath, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthTicket))))
 	}
 	if s.cfg.CDPTunnel != nil {
-		mux.HandleFunc(webview2host.CDPTunnelPath, s.loopbackHostGuard(s.handleCDPTunnel))
+		mux.HandleFunc(CDPTunnelPath, s.loopbackHostGuard(s.handleCDPTunnel))
+	}
+	// The attached-backend hops, registered only when this installation
+	// attaches to anything. Subtree patterns: the backend id is a path
+	// component the handlers read, and each is refused by the same three
+	// checks (attachedroutes.go). No rate limiter — every one of them
+	// demands the page credential this listener minted, so there is no
+	// request an unadmitted caller can repeat for free.
+	if s.cfg.AttachedBackends != nil {
+		mux.HandleFunc(AttachedWSPrefix, s.loopbackHostGuard(s.handleAttachedWS))
+		mux.HandleFunc(AttachedBootstrapPrefix, s.loopbackHostGuard(s.handleAttachedBootstrap))
+		mux.HandleFunc(AttachedTransferPrefix, s.loopbackHostGuard(s.handleAttachedTransfer))
 	}
 	assetH := s.cfg.AssetHandler
 	if assetH == nil {
 		assetH = http.NotFoundHandler()
 	}
-	assetFinal := withAssetHeaders(assetH)
+	assetFinal := withAssetHeaders(assetH, s.csp)
 	if s.cfg.CrossOriginIsolate {
 		assetFinal = withCrossOriginIsolation(assetFinal)
 	}
@@ -471,28 +971,160 @@ func (s *Server) buildHTTPServer() *http.Server {
 
 // loopbackHostGuard returns a wrapper that rejects non-loopback Host
 // headers when the server is in loopback mode (origin allow-list
-// empty). This is a DNS-rebinding defence: without it, a hostile site
-// resolving to 127.0.0.1 could probe /bootstrap.json and harvest the
-// token. Returns 404 (not 403) so a LAN scanner can't fingerprint the
+// empty). This is a DNS-rebinding defence: without it, any site whose
+// DNS name resolves to 127.0.0.1 could navigate a browser at
+// /bootstrap.json under that name and read the answer as same-origin.
+// Returns 404 (not 403) so a LAN scanner can't fingerprint the
 // agent-overflow server vs an arbitrary 127.0.0.1 service.
 //
-// The mode check reads the live origin allow-list under mu so a
-// post-Rebind LAN bind reaches this function with patterns set and
-// stops gating on Host. Rebinding back to loopback re-enables the
-// guard for the next request.
+// The mode check reads the live LISTEN ADDRESS under mu, so a
+// post-Rebind LAN bind stops gating on Host and rebinding back to
+// loopback re-enables the guard for the next request. It read the origin
+// allow-list's emptiness until wave 8d, which was the same answer for
+// every bind the app performed and the WRONG one twice: a boot that
+// honored a persisted LAN preference set no patterns at all, so every
+// LAN client was answered 404 until the user toggled the setting again,
+// and a canonical domain's origins would have switched the guard off for
+// every OTHER name as a side effect of naming one. The bind address is
+// what "is this listener shared with the network" always meant.
+//
+// A CONFIGURED CANONICAL DOMAIN adds exactly ONE accepted name, and
+// stays inside the guard rather than switching it off. That is the whole
+// point of naming it: a backend the user has named must answer to that
+// name — including through a proxy on this machine that terminates TLS
+// and forwards to the loopback bind, which sends the domain in the Host
+// header and was refused before there was a name to compare it against —
+// while every OTHER DNS name is still refused, which is the rebinding
+// defence above. See SetCanonicalHost.
 func (s *Server) loopbackHostGuard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Only enforce in loopback mode. LAN bind has its own
+		// Only enforce on a loopback bind. A LAN bind has its own
 		// origin-validation story for /ws; HTTP /bootstrap.json on LAN
 		// must be reachable from any LAN host the user shares.
-		if len(s.currentOriginPatterns()) == 0 {
-			if !IsLoopbackHost(r.Host) {
+		if s.boundToLoopback() {
+			if !loopback.HostHeader(r.Host) && !s.hostAdmitted(r.Host) {
 				http.NotFound(w, r)
 				return
 			}
 		}
 		next(w, r)
 	}
+}
+
+// boundToLoopback reports whether the live listen address is one only
+// this machine can reach. An unresolved address (before Start) answers
+// true: the strict branch is the safe one, and no request can arrive on
+// a listener that does not exist.
+func (s *Server) boundToLoopback() bool {
+	addr := s.Addr()
+	return addr == "" || loopback.EndpointAuthority(addr)
+}
+
+// hostAdmitted reports whether an HTTP Host header names something this
+// backend answers to besides the loopback spellings: the configured
+// canonical domain, or a name an attached AUXILIARY LISTENER is reached
+// by. Never true when neither is configured, so the default posture is
+// unchanged.
+//
+// Both are HOST admissions and nothing more. They decide which Host
+// header is answered, never who is authorized: every credential check,
+// the origin allow-list and the per-call scope gate are identical for a
+// request that arrived on one of these names.
+func (s *Server) hostAdmitted(host string) bool {
+	name := hostLabel(host)
+	if name == "" {
+		return false
+	}
+	s.mu.Lock()
+	canonical, aux := s.canonicalHost, s.auxHosts
+	s.mu.Unlock()
+	if canonical != "" && name == canonical {
+		return true
+	}
+	for _, candidate := range aux {
+		if name == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// hostLabel folds a Host header to the one spelling the comparisons
+// above are made against: no port, no trailing root dot, lower case. An
+// empty or unusable header answers empty, which matches no configured
+// name.
+func hostLabel(host string) string {
+	if host == "" {
+		return ""
+	}
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		host = name
+	}
+	return normalizeCanonicalHost(host)
+}
+
+// SetAuxiliaryHosts rotates the Host header names admitted because an
+// auxiliary listener answers to them — for the tailnet node, its MagicDNS
+// name and its tailnet addresses. Passing nil or an empty slice removes
+// them, which is what a node going away must do: a name that stays
+// admitted after the listener behind it is gone is an admission nobody
+// can reach and nobody meant to keep.
+//
+// Like SetCanonicalHost, this binds no listener and closes no socket.
+func (s *Server) SetAuxiliaryHosts(names []string) {
+	normalized := make([]string, 0, len(names))
+	for _, name := range names {
+		folded := hostLabel(name)
+		if folded == "" {
+			continue
+		}
+		normalized = append(normalized, folded)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(normalized) == 0 {
+		s.auxHosts = nil
+		return
+	}
+	s.auxHosts = normalized
+}
+
+// AuxiliaryHosts returns the live extra Host names, for a caller that
+// reports what this listener currently answers to.
+func (s *Server) AuxiliaryHosts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.auxHosts...)
+}
+
+// SetCanonicalHost rotates the one DNS name this backend answers to
+// besides the loopback spellings, without binding a new listener — the
+// same shape as SetOriginPatterns, and normally called with it. Empty
+// clears the name, which returns the Host guard to loopback-only.
+//
+// The name is a HOST admission and nothing more: it decides which Host
+// header is answered, never who is authorized. Every credential check
+// downstream is unchanged.
+func (s *Server) SetCanonicalHost(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.canonicalHost = normalizeCanonicalHost(name)
+}
+
+// CanonicalHost returns the live canonical domain, or empty.
+func (s *Server) CanonicalHost() string { return s.currentCanonicalHost() }
+
+func (s *Server) currentCanonicalHost() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.canonicalHost
+}
+
+// normalizeCanonicalHost folds a configured name to the one spelling
+// comparisons are made against: trimmed, lower-cased, no trailing root
+// dot. Done once at the write rather than per request.
+func normalizeCanonicalHost(name string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
 }
 
 // serve runs srv.Serve(listener) on a tracked goroutine. The first
@@ -555,6 +1187,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 				log.Printf("transport: close former http server: %v", err)
 			}
 		}
+		// Auxiliary listeners run on http.Servers neither list holds, so
+		// they are detached here — before the wait below, which would
+		// otherwise sit on serve goroutines nothing had told to stop.
+		s.closeAuxListeners()
 		if s.cfg.EventBus != nil {
 			s.cfg.EventBus.Close()
 		}
@@ -600,19 +1236,93 @@ func (s *Server) Addr() string {
 	return s.addr
 }
 
-// Token returns the auth token in use.
-func (s *Server) Token() string { return s.token }
+// Token returns this launch's session credential — the carrier for
+// clients that are not browsers. A browser never receives it: it holds
+// the page cookie instead (see credential.go).
+func (s *Server) Token() string { return s.cred.Token() }
+
+// Certificates returns the certificate source this listener resolves
+// every TLS handshake through, or nil for a boot that terminates no TLS.
+//
+// It is how the half of the process that ACQUIRES certificates reaches
+// the half that PRESENTS them without either importing the other: the
+// boot installs the self-signed one, and internal/app installs the
+// canonical domain's whenever an issuance, a renewal or a settings
+// change produces one. Handing back the live source rather than a setter
+// per slot keeps a single object owning "what this listener presents".
+func (s *Server) Certificates() *CertificateSource { return s.cfg.Certificates }
+
+// ServesDomain reports whether this listener can complete a handshake for
+// the given name right now. Answers false for a boot that terminates no
+// TLS, so a caller does not have to nil-check the source. The share URL
+// asks before it says https://.
+func (s *Server) ServesDomain(name string) bool {
+	if s.cfg.Certificates == nil {
+		return false
+	}
+	return s.cfg.Certificates.ServesDomain(name)
+}
+
+// LaunchID returns the opaque identifier for this boot that the manifest
+// publishes. Not a credential.
+func (s *Server) LaunchID() string { return s.launchID }
 
 // PageMarker returns the authenticated harness-page marker, if this server
 // is serving a harness. It is intentionally read-only and immutable after
 // construction so page URLs and bootstrap manifests cannot drift.
 func (s *Server) PageMarker() string { return s.cfg.PageMarker }
 
+// SessionConns is the live-session registry: the connections currently
+// carrying each durable session, and the teardown a revocation runs.
+//
+// Handed to internal/identity's session core at boot, which reaches it
+// through its own one-method interface so neither package imports the
+// other. Never nil for a server built by New.
+func (s *Server) SessionConns() *SessionConns { return s.sessionConns }
+
+// sessionStillLive asks the session core whether a session id admits work
+// right now. A nil hook answers yes, which is the pre-session behavior:
+// nothing has told this server that sessions exist, so nothing may refuse
+// on their behalf.
+func (s *Server) sessionStillLive(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	if check := s.cfg.SessionLive; check != nil {
+		return check(sessionID)
+	}
+	return true
+}
+
+// sessionAdmitsPeer answers the binding-class question for a session id,
+// admitting everything when no hook is installed.
+//
+// The ticket arm of the upgrade is its one caller, and it is the arm that
+// bypasses SessionForRequest, where every other presentation path gets
+// this comparison for free. A ticket names a session; it does not say
+// where that session may be presented from, and a loopback-only session
+// is precisely the one the backend mints for its own page.
+func (s *Server) sessionAdmitsPeer(sessionID, remoteAddr string) bool {
+	if sessionID == "" {
+		return false
+	}
+	if admits := s.cfg.SessionAdmitsPeer; admits != nil {
+		return admits(sessionID, remoteAddr)
+	}
+	return true
+}
+
 // HasRemoteClient reports whether at least one non-loopback WebSocket
 // connection is currently attached. Producers of remote-only event
 // channels (see event_visibility.go) consult this to skip the work
 // entirely when nobody would receive it.
 func (s *Server) HasRemoteClient() bool { return s.remoteConns.Load() > 0 }
+
+// SessionLive is the exported form of the same conjunction every path in
+// here consults: a session admits work only while its own row and its
+// DEVICE's row are both unrevoked. Exported for the preview gateway,
+// which runs its own listeners and has to re-ask on every request.
+func (s *Server) SessionLive(sessionID string) bool { return s.sessionStillLive(sessionID) }
 
 // MarkReady releases a readiness-gated bootstrap endpoint.
 func (s *Server) MarkReady() { s.ready.Store(true) }
@@ -625,29 +1335,103 @@ func (s *Server) MarkStartupFailed() { s.startupFailed.Store(true) }
 // manifest. Servers without RequireReadyForBootstrap start ready.
 func (s *Server) Ready() bool { return s.ready.Load() }
 
-// AppURL returns the HTTP URL the webview should load. The query
-// parameter primes the bootstrap fetch — the SPA reads ?t= and presents
-// it to the WS upgrade.
+// Origin returns this server's own origin ("http://host:port"), with no
+// credential on it. Callers that want a page to navigate to want AppURL;
+// this is for the callers that only need to name the server — the `ao`
+// CLI's endpoint, the harness's page-origin check.
+//
+// Empty before Start, for the same reason AppURL is.
+func (s *Server) Origin() string {
+	host, port, ok := s.hostPort()
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("http://%s:%s", host, port)
+}
+
+// AppURL returns the HTTP URL a browser should load, carrying a FRESHLY
+// MINTED one-time page ticket. Every call mints its own, so a caller
+// that hands out two URLs has handed out two independently usable ones,
+// and the reload path (main_desktop.go's Ctrl+R getter) always produces
+// a URL that works even if the page it replaces already spent its
+// ticket.
+//
+// The ticket is not the session token. It buys the browser one HttpOnly
+// cookie at /bootstrap.json and is spent doing so; the SPA then scrubs
+// it from the URL. See credential.go.
 //
 // Pre-Start (no listener bound yet) returns "" so callers can detect
 // the not-ready state. main.go's `runDesktop` asserts non-empty before
 // passing the URL to Wails, turning that case into a loud boot error
 // rather than letting Wails fall through to its built-in scheme.
+func (s *Server) AppURL() string {
+	host, port, ok := s.hostPort()
+	if !ok {
+		return ""
+	}
+	ticket, err := s.cred.MintPageTicket()
+	if err != nil {
+		log.Printf("transport: AppURL: mint page ticket: %v", err)
+		return ""
+	}
+	return fmt.Sprintf("http://%s:%s/?%s=%s", host, port, PageTicketParam, ticket)
+}
+
+// WebviewPageURL is AppURL's answer for a host that owns the window it
+// is about to load: a BARE page URL, no ticket on it, marked as
+// webview-hosted so the SPA waits for one to be injected instead
+// (internal/pagehost).
+//
+// It mints nothing, and that is the difference that matters beside
+// AppURL. A ticketed URL is single-use, so producing one is producing a
+// credential; a bare one is just an address, so a host may re-read it on
+// every reload without churning the ticket book. The credential comes
+// from MintPageTicket, once per document, at the moment that document
+// asks for it.
+//
+// Pre-Start returns "" for the same reason AppURL does.
+func (s *Server) WebviewPageURL() string {
+	host, port, ok := s.hostPort()
+	if !ok {
+		return ""
+	}
+	return pagehost.MarkWebview(fmt.Sprintf("http://%s:%s/", host, port))
+}
+
+// MintPageTicket hands out a one-time page ticket for a URL this package
+// does not build itself — the LAN share URL, which names a discovered
+// interface address rather than the listener's own host — and for a
+// window host re-ticketing a document it did not navigate (uiwindow's
+// per-load delivery).
+func (s *Server) MintPageTicket() (string, error) { return s.cred.MintPageTicket() }
+
+// decoratePageURL applies the boot's extra page-URL parameters, if it
+// supplied any. The empty base passes through, since every caller
+// already reads "" as "no page to open yet".
+func (s *Server) decoratePageURL(base string) string {
+	if base == "" || s.cfg.DecoratePageURL == nil {
+		return base
+	}
+	return s.cfg.DecoratePageURL(base)
+}
+
+// hostPort resolves the host and port a page URL should name, reporting
+// false when no listener is bound.
 //
 // Post-Start, if the cached addr string fails to parse for any reason,
 // we fall back to the live listener address (net.Listener.Addr() is
-// always well-formed). Either way the URL points at this server with
-// the live token, never at port 80 (which an earlier fallback path
-// produced when SplitHostPort failed).
-func (s *Server) AppURL() string {
+// always well-formed). Either way the result points at this server,
+// never at port 80 (which an earlier fallback path produced when
+// SplitHostPort failed).
+func (s *Server) hostPort() (string, string, bool) {
 	addr := s.Addr()
 	if addr == "" {
 		// Pre-Start: no listener exists yet, so there is no port we
-		// could plausibly point a webview at. Return "" and let the
-		// caller (typically main.go) decide that's a fatal boot
+		// could plausibly point a webview at. Report not-ready and let
+		// the caller (typically main.go) decide that's a fatal boot
 		// condition — better than silently emitting a port-less URL
 		// that hits port 80 on first navigation.
-		return ""
+		return "", "", false
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -662,40 +1446,177 @@ func (s *Server) AppURL() string {
 			live = s.listener.Addr().String()
 		}
 		s.mu.Unlock()
-		log.Printf("transport: AppURL: split %q: %v (falling back to listener.Addr() %q)", addr, err, live)
+		log.Printf("transport: page URL: split %q: %v (falling back to listener.Addr() %q)", addr, err, live)
 		if live == "" {
-			return ""
+			return "", "", false
 		}
 		host, port, err = net.SplitHostPort(live)
 		if err != nil {
-			// Both addr forms unparseable — return "" rather than
+			// Both addr forms unparseable — report not-ready rather than
 			// emit a port-less URL.
-			log.Printf("transport: AppURL: live addr %q also unparseable: %v", live, err)
-			return ""
+			log.Printf("transport: page URL: live addr %q also unparseable: %v", live, err)
+			return "", "", false
 		}
 	}
 	if host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("http://%s:%s/?t=%s", host, port, s.token)
+	return host, port, true
 }
 
-func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
-	supplied := r.URL.Query().Get("t")
-	if err := ConstantTimeEqual(s.token, supplied); err != nil {
-		// Indistinguishable from "no such path" so a LAN scanner can't
-		// fingerprint the agent-overflow server vs other 404 responses.
+// PageURLPath serves a freshly minted page URL to a client that already
+// holds the session token: the Windows launcher pointing its WebView2 at
+// the WSL backend and re-pointing it on reload, `ao-harness open` /
+// `attach`, the e2e rig opening one browser context per test. Each of
+// those navigates more than once over a backend's life, and a page URL
+// is single-use by design, so the URL is minted on demand rather than
+// stored.
+//
+// It grants nothing the caller does not already have: presenting the
+// session token is already full access to this wire.
+//
+// Two answer shapes, one per consumer class. A caller pointing a BROWSER
+// at this backend gets the plain-text ticketed URL, because a URL is the
+// only channel a browser has. A caller that owns the WINDOW it is about
+// to navigate asks with `?host=webview` and gets a bare URL and the
+// ticket as separate JSON fields, so nothing credential-shaped reaches
+// the URL at all — see WebviewPageURL and internal/pagehost.
+const PageURLPath = "/pageurl"
+
+// BootstrapPath and WSPath are the two routes every client of this wire
+// reaches, and the two that were restated the most.
+//
+// Named for the reason PageURLPath and ScopedRPCPath already are: four
+// packages spell these paths without linking this server —
+// `internal/relaysession` derives one from the other, `internal/clientmode`
+// proxies onto both, `internal/deviceclient` dials both, and the Windows
+// launcher links neither this package nor a copy of its mux. A rename here
+// would leave every one of them dialling a route that no longer exists,
+// and the only symptom would be a client that cannot connect. Exported
+// constants give those packages something to pin against; the surfaces
+// gate reads a constant as readily as a literal.
+const (
+	BootstrapPath = "/bootstrap.json"
+	WSPath        = "/ws"
+)
+
+// CDPTunnelPath is the route handleCDPTunnel serves, spelled as a literal
+// here rather than reached for as webview2host.CDPTunnelPath because
+// internal/surfaces' AST gate resolves a route pattern only from a literal
+// or a package-level constant in the REGISTERING package. The launcher
+// dials the other spelling, so the two must agree;
+// TestCDPTunnelPathMatchesWebview2Host is the pin.
+const CDPTunnelPath = "/browser-cdp"
+
+// handlePageURL answers PageURLPath. The default shape is one URL and a
+// newline: plain text because every browser-pointing consumer wants
+// exactly the string, and the two non-Go ones (a shell, the e2e rig)
+// should not need a parser.
+func (s *Server) handlePageURL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.NotFound(w, r)
 		return
 	}
+	if !OriginAllowed(r, s.currentOriginPatterns()) || !s.cred.Authenticate(r) {
+		http.NotFound(w, r)
+		return
+	}
+	if r.URL.Query().Get(pagehost.Param) == pagehost.Webview {
+		s.writeWebviewPageURL(w, r)
+		return
+	}
+	pageURL := s.decoratePageURL(s.AppURL())
+	if pageURL == "" {
+		http.Error(w, "page url unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	h := w.Header()
+	WriteSecurityHeaders(h, s.csp)
+	h.Set("Cache-Control", "no-store, max-age=0")
+	h.Set("Content-Type", "text/plain; charset=utf-8")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	_, _ = io.WriteString(w, pageURL+"\n")
+}
 
-	// CORS not strictly needed (same origin), but emit no-cache so a
-	// stale token never gets reused after a server restart. Security
-	// headers match the asset handler's so the bootstrap response can't
-	// be framed, sniffed, or referrer-leaked from a foreign page.
+// writeWebviewPageURL answers the same route for a caller that owns the
+// window it is about to navigate: the bare URL and the ticket, as JSON,
+// because the two have to arrive as separate strings and a plain-text
+// answer would need a delimiter nobody else wants.
+//
+// The two callers on this branch are Go (the Windows launcher, which
+// decodes pagehost.Answer without linking this package), so the parser
+// the plain-text form exists to spare a shell is not needed here.
+func (s *Server) writeWebviewPageURL(w http.ResponseWriter, r *http.Request) {
+	pageURL := s.decoratePageURL(s.WebviewPageURL())
+	if pageURL == "" {
+		http.Error(w, "page url unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	ticket, err := s.cred.MintPageTicket()
+	if err != nil {
+		log.Printf("transport: page url: mint page ticket: %v", err)
+		http.Error(w, "page url unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	h := w.Header()
+	WriteSecurityHeaders(h, s.csp)
+	h.Set("Cache-Control", "no-store, max-age=0")
+	h.Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(pagehost.Answer{URL: pageURL, Ticket: ticket})
+}
+
+// handleBootstrap answers the SPA's manifest fetch and is the one place
+// a page ticket is exchanged for the page cookie.
+//
+// The origin check runs first and for the same reason it does on the
+// upgrade: this route sets a cookie, and a request another origin
+// initiated must not be able to spend a ticket or be handed a session.
+// A same-origin GET carries no Origin header at all, so the SPA's own
+// fetch passes without one.
+func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	if !OriginAllowed(r, s.currentOriginPatterns()) {
+		http.NotFound(w, r)
+		return
+	}
+	// Exchange writes the Set-Cookie for a request that paid with a
+	// ticket, and must run before anything writes a status — including
+	// the readiness and startup-failure paths below, where issuing the
+	// cookie is exactly right: the credential was good, the backend just
+	// is not serving yet, and the retry should not need another ticket.
+	pageAuthed := s.cred.Exchange(w, r)
+	if !pageAuthed {
+		// The page credential is not the only door: a durable session —
+		// a paired device presenting its credential header, or a session
+		// cookie that outlived the launch credential that planted it —
+		// already admits the /ws upgrade (handleWS's non-ticket arm), so
+		// the manifest, whose whole job is to hand out wsUrl, must not
+		// be stricter than the socket it describes. Without this arm a
+		// paired page whose one-time ?t= is long spent can never load
+		// the manifest again after a backend restart.
+		if !s.sessionAdmitsRequest(r) {
+			// Indistinguishable from "no such path" so a LAN scanner
+			// can't fingerprint the agent-overflow server vs other 404
+			// responses.
+			http.NotFound(w, r)
+			return
+		}
+	}
+
+	// CORS not strictly needed (same origin), but emit no-store so a
+	// manifest from a previous launch is never replayed from a cache.
+	// Security headers match the asset handler's so the bootstrap
+	// response can't be framed, sniffed, or referrer-leaked from a
+	// foreign page.
 	h := w.Header()
 	h.Set("Cache-Control", "no-store, max-age=0")
-	WriteSecurityHeaders(h)
+	WriteSecurityHeaders(h, s.csp)
 	if s.startupFailed.Load() {
 		h.Set("Content-Type", "text/plain; charset=utf-8")
 		http.Error(w, "backend startup failed", http.StatusInternalServerError)
@@ -707,23 +1628,124 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.Set("Content-Type", "application/json")
+	// The local page's session credential rides the SAME exchange the
+	// page credential does, so a local client acquires both in one round
+	// trip and neither needs a route of its own. Written after the
+	// readiness checks above because the credential does not exist until
+	// the App's startup has minted it, and a page that arrives early gets
+	// it on the refetch its reconnect already performs.
+	//
+	// Two gates, and they refuse different requests. The PAGE credential:
+	// a request the session fallback admitted holds a device-bound
+	// session, and planting the local channel's credential on it would
+	// hand that device the one session this surface refuses to revoke.
+	// The PEER: that credential is `loopback-only` by class, so handing it
+	// to an off-host page would mint a credential its own class does not
+	// let it present — the share URL loads the page (deliberately, so the
+	// person holding it sees the pairing prompt) and gets no local
+	// channel with it. The presentation side refuses such a credential
+	// anyway (internal/app bindingAdmitsPeer); not planting it is the
+	// other end of the same rule, so a page is never handed a credential
+	// that would be refused the moment it used one.
+	if issue := s.cfg.PageSessionCredential; issue != nil && pageAuthed && loopback.PeerAddress(r.RemoteAddr) {
+		WriteSessionCookie(w, r, issue())
+	}
 	backendID, replicaGeneration := "", ""
 	if s.cfg.BackendIdentity != nil {
 		backendID, replicaGeneration = s.cfg.BackendIdentity()
+	}
+	// The attached machines, named only for a page that could actually
+	// use them: those routes demand this listener's page credential from
+	// a loopback peer, so listing them for anyone else would be a menu of
+	// doors that answer 404. The same condition the local session
+	// credential is planted under, for the same reason.
+	var attached []AttachedBackendEntry
+	if pageAuthed && loopback.PeerAddress(r.RemoteAddr) {
+		attached = s.attachedBackendEntries(r)
 	}
 	_ = json.NewEncoder(w).Encode(Bootstrap{
 		// Build the wsUrl from the request's Host header so a LAN
 		// client gets a LAN-reachable URL even though the server's
 		// internal addr might say "0.0.0.0:port" (unconnectable).
-		WSURL: deriveWSURL(r),
-		Token: s.token,
+		WSURL:    deriveWSURL(r),
+		LaunchID: s.launchID,
 		// Use the exact predicate captured by handleWS before upgrade so
 		// the client posture cannot disagree with LocalOnly enforcement.
-		Remote:            !remoteAddrIsLoopback(r.RemoteAddr),
+		Remote:            !loopback.PeerAddress(r.RemoteAddr),
 		Harness:           s.cfg.Harness,
 		PageMarker:        s.cfg.PageMarker,
 		BackendID:         backendID,
+		BackendName:       s.cfg.BackendName,
 		ReplicaGeneration: replicaGeneration,
+		PasskeysAvailable: s.cfg.AuthEndpoints != nil && s.cfg.AuthEndpoints.PasskeysAvailable(),
+		Backends:          attached,
+	})
+}
+
+// sessionAdmitsRequest reports whether the request presents a durable
+// session credential the session core verifies as live. The resolver
+// treats "no credential presented" as ok-with-empty-id, so the id check
+// is what distinguishes an anonymous request from an authenticated one.
+func (s *Server) sessionAdmitsRequest(r *http.Request) bool {
+	resolve := s.cfg.SessionForRequest
+	if resolve == nil {
+		return false
+	}
+	id, ok := resolve(r)
+	return ok && id != ""
+}
+
+// HealthPath is the one route on this listener that consults no
+// credential. Its two consumers — the SPA's pre-WS compatibility check
+// and the update watchdog — run precisely when no valid credential is
+// held, so gating it would answer 404 for a restarted backend, which is
+// indistinguishable from down and is the exact condition it exists to
+// detect. Reasoning and posture: internal/surfaces.
+const HealthPath = "/healthz"
+
+// Health is the /healthz document: what backend this is and what version
+// it runs. Deliberately two fields. It answers "is the thing I expect
+// still there, and is it still the build I was talking to", which is all
+// the pre-WS compatibility check and the update watchdog need; readiness
+// keeps its own channel (/bootstrap.json's 503) rather than being folded
+// in here, because a health probe that conflates "booting" with
+// "unreachable" is the failure mode both consumers are trying to avoid.
+//
+// Additive-only, like every other wire shape: a field may be appended,
+// never repurposed.
+type Health struct {
+	// Version is Config.Version, the semantic version stamped at link
+	// time. Empty on an unstamped build, which reads as unknown.
+	Version string `json:"version"`
+	// BackendID identifies this backend. Empty until the history store
+	// opens — the same "unknown, never a wildcard" rule the bootstrap
+	// manifest carries.
+	BackendID string `json:"backendId,omitempty"`
+}
+
+// handleHealthz serves the unauthenticated health document. The posture
+// decision and its reasoning live on the route's row in
+// internal/surfaces; the enforcement here is: GET or HEAD only, no
+// credential consulted, no CORS header (so a foreign page may issue the
+// request but can never read the answer), no-store, and the same
+// security headers every other route sends.
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	WriteSecurityHeaders(h, s.csp)
+	h.Set("Cache-Control", "no-store, max-age=0")
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		h.Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	backendID := ""
+	if s.cfg.BackendIdentity != nil {
+		backendID, _ = s.cfg.BackendIdentity()
+	}
+	h.Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(Health{
+		Version:   s.cfg.Version,
+		BackendID: backendID,
 	})
 }
 
@@ -735,13 +1757,13 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 //
 // Security headers come from WriteSecurityHeaders so the rule set stays
 // in sync between this server and clientmode's stub.
-func withAssetHeaders(next http.Handler) http.Handler {
+func withAssetHeaders(next http.Handler, csp ContentSecurityPolicy) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		WriteSecurityHeaders(h)
+		WriteSecurityHeaders(h, csp)
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/assets/"):
-			if remoteAddrIsLoopback(r.RemoteAddr) {
+			if loopback.PeerAddress(r.RemoteAddr) {
 				// The only loopback consumer is the embedded webview,
 				// which loads the SPA once per process and never
 				// renavigates — a cached asset can never be reused.
@@ -778,19 +1800,60 @@ func withCrossOriginIsolation(next http.Handler) http.Handler {
 	})
 }
 
-// deriveWSURL turns the inbound HTTP request's Host into the matching
-// ws:// URL. Falls back to a loopback path only when r.Host is empty
-// (synthetic test requests).
+// DeriveWSURL turns the inbound HTTP request's Host into the matching
+// ws:// URL on the same authority. Falls back to a loopback path only
+// when r.Host is empty (synthetic test requests).
+//
+// Exported for internal/clientmode, whose stub answers a manifest for
+// the page it serves and must name its own /ws the same way this server
+// names its own — the SPA requires a same-origin wsUrl on every path.
+func DeriveWSURL(r *http.Request) string { return deriveWSURL(r) }
+
 func deriveWSURL(r *http.Request) string {
 	host := r.Host
 	if host == "" {
 		host = "127.0.0.1"
 	}
 	scheme := "ws"
-	if r.TLS != nil {
+	if requestIsHTTPS(r) {
 		scheme = "wss"
 	}
 	return fmt.Sprintf("%s://%s/ws", scheme, strings.TrimSpace(host))
+}
+
+// ForwardedProtoHeader is the de-facto header a TLS-terminating proxy
+// uses to say what scheme the client actually spoke. Exported so the
+// one test that has to send it, and any future reader, name the same
+// string this one does.
+const ForwardedProtoHeader = "X-Forwarded-Proto"
+
+// requestIsHTTPS reports whether the page that will use this manifest
+// was served over TLS — by this server, or by a proxy that terminated it
+// (docs/specs/remote-access.md §7, "Termination by someone else's
+// proxy").
+//
+// The forwarded header is honored HERE and nowhere else. A page served
+// as https: and handed a ws:// socket URL is refused by the browser as
+// mixed content, so the scheme has to follow the page rather than the
+// listener; a caller that sets the header on a request nobody proxied
+// only hands ITSELF a URL that will not connect. That is the whole
+// consequence, which is why this reads a caller-supplied header while
+// the authorization checks beside it refuse to: `OriginAllowed` still
+// derives its scheme from the TLS state alone, so a proxied deployment
+// needs its origin allow-listed explicitly rather than talking its way
+// past the check with a header. The Secure cookie flag stays on r.TLS
+// for the same reason plus one of its own (see pageCookie).
+//
+// Only the declared spelling `https` promotes the scheme. `http` is the
+// other value a proxy is allowed to send and means what this server
+// already assumed; everything else — the comma-joined list a chain of
+// proxies produces, a scheme nobody declared — is ignored rather than
+// guessed at, and lands on that same cleartext answer.
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get(ForwardedProtoHeader)), "https")
 }
 
 // CDPTunnelEndpoint consumes the launcher's CDP relay connection. The
@@ -814,18 +1877,19 @@ func (s *Server) handleCDPTunnel(w http.ResponseWriter, r *http.Request) {
 	s.wg.Add(1)
 	defer s.wg.Done()
 
-	if !remoteAddrIsLoopback(r.RemoteAddr) {
+	if !loopback.PeerAddress(r.RemoteAddr) {
 		// 404, not 403: indistinguishable from "no such path", the same
 		// unfingerprintable refusal /bootstrap.json and /rpc give.
 		http.NotFound(w, r)
 		return
 	}
-	// Empty origin patterns keep the upgrader on InsecureSkipVerify, which
-	// is right here for the same reason it is on a loopback /ws: the peer
-	// is a Go process with no browser origin to present. Compression off —
-	// CDP payloads are already the bulk traffic on a local pipe, and the
-	// launcher's writes are frame-sized.
-	conn, err := upgrade(w, r, s.token, nil, false)
+	// No origin patterns: the peer is a Go process with no browser origin
+	// to present, and OriginAllowed passes a request that carries none.
+	// Compression off — CDP payloads are already the bulk traffic on a
+	// local pipe, and the launcher's writes are frame-sized. No session
+	// ticket either: this route's caller presents the launch credential
+	// directly, exactly as it does on the notification bridge.
+	conn, err := upgrade(w, r, s.cred, nil, false, false)
 	if err != nil {
 		// upgrade has already written the HTTP error code.
 		return
@@ -844,13 +1908,80 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// re-expose the original RemoteAddr. r.RemoteAddr is the kernel-
 	// reported peer address; we only mark a connection loopback when
 	// that address sits on a loopback interface.
-	isLoopback := remoteAddrIsLoopback(r.RemoteAddr)
+	isLoopback := loopback.PeerAddress(r.RemoteAddr)
+
+	// Resolve the durable session BEFORE the upgrade, so a credential
+	// that has been revoked is refused with the same unfingerprintable
+	// 404 a bad launch credential gets. Refusing after the upgrade would
+	// hand the client a live socket first and close it a moment later,
+	// which a reconnect ladder reads as a flaky network rather than as a
+	// dead credential.
+	//
+	// Nil hook means no client presents a session yet, and every request
+	// proceeds naming none — which the peer rule below then admits only
+	// from this machine.
+	//
+	// A ticket on the URL takes precedence, and is spent whether or not
+	// the upgrade goes on to succeed — that is what single use means. It
+	// names the session; it does not authorize the connection, so the
+	// session it names is re-checked for liveness before it is believed.
+	// A ticket for a session revoked during the seconds it was in flight
+	// must not resurrect it.
+	sessionID := ""
+	ticketProven := false
+	if ticket := r.URL.Query().Get(WSTicketParam); ticket != "" {
+		subject, spent := s.wsTickets.consume(ticket)
+		if !spent || !s.sessionStillLive(subject) ||
+			!s.sessionAdmitsPeer(subject, r.RemoteAddr) {
+			http.NotFound(w, r)
+			return
+		}
+		sessionID = subject
+		// The spent ticket authenticates this connection: it was minted
+		// moments ago by a request presenting the session's credential,
+		// and a paired device holds no page credential after a backend
+		// restart. The ambient-cookie arm below does NOT get this waiver
+		// — a cookie is the browser's default behavior, not a deliberate
+		// per-connection proof.
+		ticketProven = true
+	} else if resolve := s.cfg.SessionForRequest; resolve != nil {
+		id, ok := resolve(r)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		sessionID = id
+	}
+
+	// A peer that is not on this machine must NAME a session (spec §4,
+	// "Local clients"). The launch credential says which BACKEND LAUNCH a
+	// client belongs to and nothing about WHICH client it is, so a
+	// connection carrying only that credential is unattributable and
+	// unrevocable — CloseSession has no id to reach it by, and the
+	// per-RPC gate has no grant set to read. That is tolerable exactly
+	// while the peer is one of this host's own processes (the embedded
+	// webview, ao-harness, the e2e rig, the WSL launcher's notification
+	// socket, a --connect stub carrying its page's socket), and it is not
+	// tolerable off-host.
+	//
+	// This narrows what a sessionless credentialled connection may be; it
+	// loosens nothing. A session-naming peer still had to clear
+	// SessionForRequest above, and the launch credential is still
+	// demanded by upgrade() wherever it was demanded before.
+	//
+	// The refusal is the same unfingerprintable http.NotFound a bad
+	// credential and a missing route both get: a LAN scanner learns
+	// nothing from which of the three refused it.
+	if !isLoopback && sessionID == "" {
+		http.NotFound(w, r)
+		return
+	}
 
 	// Read the live (post-rebind) allow-list, not Config's static value.
 	// A LAN-bind toggle rotates the allow-list under the same mu-guarded
 	// swap as the listener; the upgrader must see whichever policy was
 	// in effect when this handshake began.
-	conn, err := upgrade(w, r, s.token, s.currentOriginPatterns(), !isLoopback)
+	conn, err := upgrade(w, r, s.cred, s.currentOriginPatterns(), !isLoopback, ticketProven)
 	if err != nil {
 		// upgrade has already written the HTTP error code.
 		return
@@ -859,11 +1990,37 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	profile := connProfile{
 		isLoopback: isLoopback,
 		remoteAddr: r.RemoteAddr,
+		sessionID:  sessionID,
+		// Read from the pre-upgrade request: websocket.Conn does not
+		// re-expose the handshake URL, and the identity has to be in place
+		// before the first RPC is dispatched.
+		client: ParseClientIdentity(r.URL.Query()),
 	}
 
 	if !isLoopback {
 		s.remoteConns.Add(1)
 		defer s.remoteConns.Add(-1)
+	}
+
+	backendID := ""
+	if s.cfg.BackendIdentity != nil {
+		backendID, _ = s.cfg.BackendIdentity()
+	}
+
+	// The bundle this backend serves, for the one client that has to
+	// compare it against something it already holds. Read per accept
+	// because the manifest is cached behind a sync.Once — the first
+	// connection of a process pays the walk on this goroutine, and every
+	// later one is a struct copy. A backend whose manifest cannot be
+	// built omits all three fields rather than advertising a partial
+	// answer; the failure is logged where the routes serve it.
+	bundleID, bundleVersion, minShellBuild := "", "", 0
+	if s.cfg.Bundle != nil {
+		if manifest, err := s.cfg.Bundle.Manifest(); err == nil {
+			bundleID = manifest.ID
+			bundleVersion = manifest.Version
+			minShellBuild = manifest.MinShellBuild
+		}
 	}
 
 	// Use the server's root context so Shutdown can cancel us promptly,
@@ -873,6 +2030,28 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		maxConcurrentRPCs: s.cfg.MaxConcurrentRPCs,
 		keepaliveInterval: s.cfg.KeepaliveInterval,
 		pongTimeout:       s.cfg.KeepalivePongTimeout,
+		sessionConns:      s.sessionConns,
+		sessionLive:       s.cfg.SessionLive,
+		sessionScopes:     s.cfg.SessionScopes,
+		stepUpProof:       s.cfg.StepUpProof,
+		sessionRecheck:    s.cfg.SessionRecheckInterval,
+		maxLifetime:       s.cfg.MaxRemoteConnLifetime,
+		hello: helloFrame{
+			// Resolved per accept, not at boot: the browser Manager picks
+			// its engine during the App's startup, which runs after this
+			// Config is built.
+			Capabilities: advertisedCapabilities(s.cfg.BrowserAvailable),
+			BackendID:    backendID,
+			BackendName:  s.cfg.BackendName,
+			// Sampled per accept: the field's whole purpose is letting a
+			// client measure its own skew against this backend, which a
+			// value cached at boot would silently corrupt by the process
+			// uptime.
+			ServerTimeMs:  time.Now().UnixMilli(),
+			BundleID:      bundleID,
+			BundleVersion: bundleVersion,
+			MinShellBuild: minShellBuild,
+		},
 	}, profile)
 	// Best-effort close. Read errors above already represent a closed
 	// connection; any normal-closure send here is for the other half

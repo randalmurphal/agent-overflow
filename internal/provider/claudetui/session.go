@@ -88,15 +88,26 @@ type Session struct {
 	sessionID string
 	pid       int
 	closing   bool
-	// sink receives raw PTY output for the take-control pane. nil until a pane
-	// attaches (AttachTerminal); the terminal ring still buffers output for
-	// replay regardless, so a detached session loses nothing.
+	// attachments is the set of live take-control claims, one per attaching
+	// client (the app mints one per connection). Its size is the fan-out
+	// refcount: the tee below is installed while it is non-empty and torn down
+	// when the last claim goes. nil until the first attach. See attach.go.
+	attachments map[*TerminalAttachment]struct{}
+	// sink is the ONE live tee of raw PTY output for the take-control panes.
+	// Every attachment hands in an equivalent sink, because the app answers a
+	// chunk with one thread-keyed broadcast frame that every attached client
+	// already receives; installing a tee per attachment would emit each chunk
+	// once per client and every client would render the duplicates. The
+	// terminal ring buffers output for replay regardless, so a session nobody
+	// is attached to loses nothing.
 	sink func(terminalID string, sequence uint64, data []byte)
-	// controlHeld is the take-control input lease: true while a human drives the
-	// PTY via WriteInput. While held, Send is refused so AO's programmatic turns
-	// and the human's keystrokes never interleave into the TUI composer. Toggled
-	// by SetTakeControl; cleared by DetachTerminal.
-	controlHeld bool
+	// controlHolder is the take-control input lease: the ONE attachment whose
+	// human drives the PTY via WriteInput. While it is set, Send is refused so
+	// AO's programmatic turns and the human's keystrokes never interleave into
+	// the TUI composer, and another attachment's SetControl is refused rather
+	// than silently taking the keyboard away. Cleared by the holder, or by the
+	// holder's Release — which is what a dead WebSocket runs on its behalf.
+	controlHolder *TerminalAttachment
 	// Cold-start composer-ready gate (see composer_ready.go), all under mu.
 	// onPTYOutput feeds raw output to noteComposerOutput until the composer bar
 	// marker is seen (composerMarkerSeen); awaitComposerReady waits on that to

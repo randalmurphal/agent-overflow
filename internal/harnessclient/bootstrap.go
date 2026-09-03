@@ -16,13 +16,17 @@ package harnessclient
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/harness/instanceinfo"
 )
@@ -94,9 +98,69 @@ func (b Bootstrap) ValidateFor(dataRoot, dataDir string) error {
 	return nil
 }
 
-// WSURL is the authenticated WebSocket endpoint for this instance.
+// WSURL is the authenticated WebSocket endpoint for this instance. The
+// token rides the query because a WebSocket client cannot set request
+// headers in every environment this URL is used from (the browser and
+// Node clients in e2e most of all); the transport validates it through
+// the same function that validates a page cookie.
 func (b Bootstrap) WSURL() string {
 	return fmt.Sprintf("ws://127.0.0.1:%d/ws?token=%s", b.Port, url.QueryEscape(b.Token))
+}
+
+// pageURLPath is the transport route that answers a page URL carrying a
+// fresh one-time ticket. Restated rather than imported, like the frame
+// shapes above: this package must stay linkable without the server. A
+// drift guard in the tests compares it to transport.PageURLPath.
+const pageURLPath = "/pageurl"
+
+// pageURLTimeout bounds one page-URL request. The instance is on
+// loopback and answers the route from memory, so this is a stall budget
+// for a CLI command, not a network one.
+const pageURLTimeout = 5 * time.Second
+
+// maxPageURLBytes bounds the response body: one URL and a newline. 8 KiB
+// is far past any real page URL and caps a misbehaving responder.
+const maxPageURLBytes = 8192
+
+// PageURL asks a live instance for a page URL carrying a freshly minted
+// one-time ticket, which is what a browser exchanges for its session
+// cookie on first contact.
+//
+// The URL recorded in the instance file was minted at boot and is spent
+// by the first page that loads it, so any command that hands a human or
+// a browser a URL to open asks for a new one rather than reusing that
+// one. The session token goes in a header: the query slot on the
+// transport's routes belongs to the page ticket, and a header keeps the
+// credential out of process listings and logs.
+func (b Bootstrap) PageURL(ctx context.Context) (string, error) {
+	if b.Port == 0 || b.Token == "" {
+		return "", errors.New("harnessclient: bootstrap carries no port/token")
+	}
+	ctx, cancel := context.WithTimeout(ctx, pageURLTimeout)
+	defer cancel()
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s", b.Port, pageURLPath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+b.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GET %s: status %d", endpoint, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPageURLBytes))
+	if err != nil {
+		return "", err
+	}
+	pageURL := strings.TrimSpace(string(body))
+	if pageURL == "" {
+		return "", errors.New("harnessclient: page url response was empty")
+	}
+	return pageURL, nil
 }
 
 // InstanceFilePath names the data-dir file that carries a live

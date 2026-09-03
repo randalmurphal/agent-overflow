@@ -25,7 +25,8 @@
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { newThreadGroupInProject } from './threadGroupActions';
 
   interface Props {
@@ -37,10 +38,19 @@
      * owns the inline rename UI so the input can render in place of the
      * project name. */
     onRename: () => void;
+    /** Compact only: the header's hover-revealed create controls, which the
+     *  phone cannot reveal, so the menu carries them there. */
+    onNewThread?: () => void;
+    onNewTerminal?: () => void;
   }
 
-  let { project, anchor, open, onClose, onRename }: Props = $props();
-  let viewOnly = $derived(isViewOnlySession());
+  let { project, anchor, open, onClose, onRename, onNewThread, onNewTerminal }: Props = $props();
+  let compact = $derived(isCompactLayout());
+  // The same gates the header's own controls use: visible, inert, and saying why.
+  let newThreadUngranted = $derived(!hasScope('threads:operate'));
+  let newTerminalUngranted = $derived(!hasScope('terminal:operate'));
+  // The one gated entry here opens an editor on the host desktop.
+  let noHost = $derived(!hasScope('host'));
 
   // Disambiguated label (parent-dir prefix when another project shares the
   // name) so confirm/toast copy names the right copy. Falls back to the raw
@@ -73,7 +83,7 @@
   }
 
   async function doOpenInEditor(): Promise<void> {
-    if (viewOnly) return;
+    if (noHost) return;
     try {
       // Project path is already absolute; workspacePath is unused.
       // Empty editorID → the user's default editor.
@@ -140,6 +150,29 @@
   {#snippet children()}
     <Menu ariaLabel="Project Actions" {onClose}>
       {#snippet children()}
+        {#if compact}
+          <!-- Desktop reaches these from the header on hover; the phone has no
+               hover, so the menu is where they live there, and only there. -->
+          <MenuItem
+            label="New Thread"
+            disabled={newThreadUngranted}
+            title={newThreadUngranted ? 'Not granted to this device' : undefined}
+            onSelect={() => {
+              onClose();
+              onNewThread?.();
+            }}
+          />
+          <MenuItem
+            label="New Terminal"
+            disabled={newTerminalUngranted}
+            title={newTerminalUngranted ? 'Not granted to this device' : undefined}
+            onSelect={() => {
+              onClose();
+              onNewTerminal?.();
+            }}
+          />
+          <MenuDivider />
+        {/if}
         <MenuItem
           label="Rename Project"
           onSelect={() => {
@@ -147,7 +180,7 @@
             onRename();
           }}
         />
-        {#if !viewOnly}
+        {#if !noHost}
           <MenuItem
             label="Open in Editor"
             onSelect={() => {

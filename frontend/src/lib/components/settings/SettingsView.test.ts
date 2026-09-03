@@ -25,6 +25,14 @@ async function seed(): Promise<void> {
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('ListThreads', async () => []);
   setBindingMock('ListArchivedThreads', async () => []);
+  // The notifications block below reads the push status on mount.
+  setBindingMock('GetPushSenderStatus', async () => ({
+    configured: false,
+    projectId: '',
+    clientEmail: '',
+    lastError: '',
+    registeredDevices: 0,
+  }));
   setBindingMock('GetThemeFiles', async () => ({
     dir: '/tmp/themes',
     themes: [],
@@ -45,9 +53,9 @@ describe('settings section map', () => {
     ]);
     expect(SETTINGS_SECTION_GROUPS.map((g) => g.sections.map((s) => s.id))).toEqual([
       ['theme', 'typography', 'chat', 'spinner'],
-      ['threads', 'performance', 'keybindings', 'updates'],
+      ['threads', 'performance', 'keybindings', 'notifications', 'updates'],
       ['claude', 'codex', 'commit-messages', 'browser', 'discussions'],
-      ['projects', 'git', 'editor', 'remote'],
+      ['projects', 'git', 'editor', 'remote', 'systems'],
       ['observability', 'storage'],
     ]);
   });

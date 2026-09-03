@@ -145,6 +145,7 @@ describe('cold-open window sync', () => {
     await initReplica({
       backendId: `backend-${Math.random().toString(36).slice(2)}`,
       generation: 'gen-1',
+      name: '',
     });
   });
 
@@ -421,7 +422,7 @@ describe('cold-open window sync', () => {
     const dispose = setupEventListeners();
     const backendId = `backend-${Math.random().toString(36).slice(2)}`;
     setBackendIdentityFromBootstrap(backendId, 'gen-1');
-    await initReplica({ backendId, generation: 'gen-1' });
+    await initReplica({ backendId, generation: 'gen-1', name: '' });
 
     // Session one: attested window, cached in L1 and the replica.
     const pane = createThreadPane();
@@ -539,7 +540,7 @@ describe('cold-open window sync', () => {
   it('refuses the coincidental fresh in EVERY pane in flight across one generation flip', async () => {
     const backendId = `backend-${Math.random().toString(36).slice(2)}`;
     setBackendIdentityFromBootstrap(backendId, 'gen-1');
-    await initReplica({ backendId, generation: 'gen-1' });
+    await initReplica({ backendId, generation: 'gen-1', name: '' });
 
     const A = 'thread-a';
     const B = 'thread-b';
@@ -596,7 +597,7 @@ describe('cold-open window sync', () => {
   it('re-arms the warm gate when a lineage change replaces the painted window', async () => {
     const backendId = `backend-${Math.random().toString(36).slice(2)}`;
     setBackendIdentityFromBootstrap(backendId, 'gen-1');
-    await initReplica({ backendId, generation: 'gen-1' });
+    await initReplica({ backendId, generation: 'gen-1', name: '' });
     await putReplicaWindow(THREAD_ID, replicaBody([row('i0')], 1, 5));
 
     const pane = createThreadPane();

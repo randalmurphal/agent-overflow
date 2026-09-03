@@ -6,15 +6,16 @@
 // imports another events* module. Fan-in target of events.ts's
 // setupEventListeners.
 import type { TurnCompletedEvent } from '../types/events';
-import type { Item, Thread } from '../types/models';
+import type { Thread } from '../types/models';
 import { ListThreads } from './bindings';
-import { findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
+import { closePanesShowingThread, findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { addToast } from './toast.svelte';
-import { getThreadById, getThreadLiveActivityAt, getThreads, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
-import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
+import { getThreadById, getThreadLiveActivityAt, getThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
+import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
+import { pendingLocalReadMarker } from './threadReadWrites';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at its two acquisition points, so a new pane member
@@ -63,14 +64,17 @@ function mergeThreadRowWithLocal(
   // so an n-row resync is O(n) instead of n linear getThreadById scans.
   cachedThread: Thread | undefined = getThreadById(updated.id),
 ): Thread {
-  const readMarkers = [updated.lastReadAt];
+  // The wire value is kept apart from the local ones: `lastReadAt` is the
+  // one field where the two are not interchangeable, because explicit
+  // unread is the SMALLEST value it takes. See mergeReadMarker.
+  const localReadMarkers: number[] = [];
   const latestCompletions = [updated.latestTurnCompletedAt];
   // getThreadLiveActivityAt folds in the live streaming box, so a row
   // snapshotted before recent stream beats catches the durable
   // updatedAt up to the newest live bump here.
   const activityMarkers = [updated.updatedAt, getThreadLiveActivityAt(updated)];
   if (cachedThread?.lastReadAt !== undefined) {
-    readMarkers.push(cachedThread.lastReadAt);
+    localReadMarkers.push(cachedThread.lastReadAt);
   }
   if (cachedThread?.latestTurnCompletedAt !== undefined) {
     latestCompletions.push(cachedThread.latestTurnCompletedAt);
@@ -82,7 +86,7 @@ function mergeThreadRowWithLocal(
   for (const pane of ingestPanes()) {
     if (pane.threadId !== updated.id || !pane.thread) continue;
     if (pane.thread.lastReadAt !== undefined) {
-      readMarkers.push(pane.thread.lastReadAt);
+      localReadMarkers.push(pane.thread.lastReadAt);
     }
     if (pane.thread.latestTurnCompletedAt !== undefined) {
       latestCompletions.push(pane.thread.latestTurnCompletedAt);
@@ -92,7 +96,7 @@ function mergeThreadRowWithLocal(
     }
   }
 
-  const lastReadAt = mergeReadMarkersPreservingUnread(readMarkers);
+  const lastReadAt = mergeReadMarker(updated.id, updated.lastReadAt, localReadMarkers);
   const latestTurnCompletedAt = mergeLatestTurnCompletedAt(latestCompletions);
   const updatedAt = mergeLatestActivityAt(activityMarkers);
   return { ...updated, updatedAt, lastReadAt, latestTurnCompletedAt };
@@ -143,10 +147,6 @@ export function syncThreadActivity(threadId: string, updatedAt: number): void {
   touchProjectActivity(projectId, latestUpdatedAt);
 }
 
-export function userTextCountsAsActivity(item: Item): boolean {
-  return isReaderAuthoredUserText(item);
-}
-
 /**
  * Mid-session sidebar resync (transport-gap recovery). Unlike
  * refreshThreads' wholesale replacement — fine at boot, where no local
@@ -193,15 +193,46 @@ export function refreshSidebarProjections(): void {
   void refreshThreadGroups();
 }
 
-function mergeReadMarkersPreservingUnread(readMarkers: Array<number | undefined>): number | undefined {
-  const definedReadMarkers = readMarkers.filter((value): value is number => value !== undefined);
-  if (definedReadMarkers.length === 0) {
-    return undefined;
+/**
+ * Reconcile a thread row's read marker: the value the backend just sent
+ * against the copies this page load is holding.
+ *
+ * Three rules, in order, and each one is a different question.
+ *
+ * 1. A read marker THIS page load is currently writing wins outright,
+ *    value and all (`threadReadWrites.ts`). It is the newest thing that
+ *    happened to the field and the backend has not answered for it yet,
+ *    so no wire row can be later. This is the only rule that can return
+ *    an explicit unread, and holding the claim is what earns it.
+ * 2. Otherwise a wire 0 wins, because it IS the backend's answer and
+ *    every local write has been settled by rule 1. Without this the
+ *    field is forward-only and no client but the one that pressed the
+ *    button ever sees a thread go unread.
+ * 3. Otherwise the newest of everything defined. Local copies can lead
+ *    the wire by a debounce interval, and a row snapshotted before the
+ *    persist landed must not drag a read thread back to unread.
+ *
+ * Rule 3 used to be the whole function with "any 0 wins" bolted in front
+ * of it, which made a cached 0 permanent: it was folded back into every
+ * later merge and absorbed the timestamp another device's read
+ * broadcast, for the life of the page.
+ */
+function mergeReadMarker(
+  threadId: string,
+  wireReadMarker: number | undefined,
+  localReadMarkers: number[],
+): number | undefined {
+  const pending = pendingLocalReadMarker(threadId);
+  if (pending.held) {
+    return pending.lastReadAt;
   }
-  if (definedReadMarkers.includes(0)) {
+  if (wireReadMarker === 0) {
     return 0;
   }
-  return Math.max(...definedReadMarkers);
+  if (wireReadMarker === undefined && localReadMarkers.length === 0) {
+    return undefined;
+  }
+  return Math.max(wireReadMarker ?? Number.NEGATIVE_INFINITY, ...localReadMarkers);
 }
 
 function mergeLatestTurnCompletedAt(completions: Array<number | undefined>): number | undefined {
@@ -247,12 +278,12 @@ export function patchThreadDurableStatus(
   patch: Pick<Partial<Thread>, 'hasActionableProposedPlan' | 'hasIncompleteTurn'>,
 ): void {
   // No-op dedupe: skip the replace when none of the patch fields actually
-  // change the thread. This is the cooperating half of the item-upsert
-  // dedupe in `applyItemUpsertsToWindow` — `syncProposedPlanStatus` fires
-  // this on every proposed-plan upsert, and without the dedupe a repeated
-  // upsert that doesn't move the durable status STILL replaces
-  // `pane.thread` with a new reference, triggering the same reactive
-  // cascade through any component that reads `pane.thread` directly.
+  // change the thread. Callers are the turn-lifecycle handlers, which fire
+  // on every round; without the dedupe a restated value STILL replaces
+  // `pane.thread` with a new reference, triggering a reactive cascade
+  // through any component that reads `pane.thread` directly. The durable
+  // plan flag's other writer is the backend, which sends the whole row on
+  // `thread:updated` whenever a proposed-plan write moves it.
   const existing = getThreads().find((thread) => thread.id === threadId);
   if (existing && !patchMatchesThread(existing, patch)) {
     replaceThread({ ...existing, ...patch });
@@ -283,59 +314,121 @@ function patchMatchesThread(
   return true;
 }
 
-function isImplementedProposedPlan(item: Item): boolean {
-  if (item.payloadKind !== 'proposed_plan' || item.role !== 'assistant' || item.status !== 'completed') {
-    return false;
-  }
-  if (!item.meta) return false;
-  try {
-    const parsed = JSON.parse(item.meta) as { planImplementedAt?: number };
-    return Number(parsed.planImplementedAt ?? 0) > 0;
-  } catch (err) {
-    // Treat unparseable meta as not-implemented (the plan stays
-    // actionable), but don't lose the signal that a proposed_plan row
-    // carried malformed JSON.
-    console.warn(
-      `isImplementedProposedPlan: unparseable proposed_plan meta for thread ${item.threadId}, item ${item.id}:`,
-      err,
-    );
-    return false;
-  }
-}
-
-export function syncProposedPlanStatus(item: Item): void {
-  if (item.payloadKind !== 'proposed_plan' || item.role !== 'assistant' || item.status !== 'completed') {
-    return;
-  }
-  patchThreadDurableStatus(item.threadId, {
-    hasActionableProposedPlan: !isImplementedProposedPlan(item),
-  });
-}
-
+/**
+ * Payload for thread:updated. Mirrors triage.ThreadUpdateEvent, which owns
+ * the action vocabulary; `action` names what this client must DO with the
+ * row, because sidebar membership is not derivable from the row alone.
+ *
+ * Every persisted thread-row mutation sends one, which is what makes a
+ * second attached client converge without a refresh. The client that issued
+ * the mutation may also have applied its RPC result optimistically; the
+ * broadcast row IS that RPC's return value, so the echo lands on state the
+ * optimistic apply already reached rather than moving it somewhere else.
+ */
 export interface ThreadUpdateEvent {
+  /** 'full' | 'patch' | 'listed' | 'unlisted' | 'deleted' */
   action: string;
   thread?: Thread;
   id?: string;
   title?: string;
   model?: string;
   sessionRef?: string;
+  /**
+   * A sidebar-activity bump from an activity-counting user_text persist,
+   * and nothing else — turn completions and approval requests announce
+   * themselves on their own channels. Deliberately NOT merged into the row:
+   * see the patch branch below.
+   */
+  updatedAt?: number;
+}
+
+/**
+ * Payload for thread:error_notice. Mirrors triage.ThreadErrorNoticeEvent:
+ * ids only, because the error's prose stays on the item row.
+ */
+export interface ThreadErrorNoticeEvent {
+  threadId?: string;
+  itemId?: string;
+}
+
+export function applyThreadErrorNotice(evt: ThreadErrorNoticeEvent): void {
+  if (!evt?.threadId) return;
+  projectThreadError(evt.threadId);
 }
 
 export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
   if (!evt) return;
-  if (evt.action === 'patch' && evt.id) {
-    const cached = getThreadById(evt.id)
-      ?? ingestPaneShowingThread(evt.id)?.thread;
-    if (!cached) return;
-    const merged = { ...cached };
-    if (evt.title !== undefined) merged.title = evt.title;
-    if (evt.model !== undefined) merged.model = evt.model;
-    if (evt.sessionRef !== undefined) merged.sessionRef = evt.sessionRef;
-    syncThreadRow(merged);
-    return;
-  }
-  if (evt.thread?.id) {
-    syncThreadRow(evt.thread);
+  switch (evt.action) {
+    case 'patch': {
+      if (!evt.id) return;
+      // `updatedAt` is applied WITHOUT a cached row, unlike the field
+      // merges below. It carries the reader's own message landing on a
+      // thread, which is a sidebar-ordering and attention-badge fact about
+      // threads this client may have no row for yet; both effects self-guard
+      // on an unknown id (touchThreadActivity no-ops for a thread the list
+      // doesn't hold, and the badge clears are Set deletes). Merging it into
+      // the row instead would replace the row object on every message — the
+      // reason live activity lives in a keyed box in the first place.
+      if (evt.updatedAt !== undefined) {
+        syncThreadActivity(evt.id, evt.updatedAt);
+        projectReaderMessageSent(evt.id);
+      }
+      if (evt.title === undefined && evt.model === undefined && evt.sessionRef === undefined) {
+        // Nothing to merge. Falling through would still run syncThreadRow,
+        // which folds live activity back into the row's own updatedAt and
+        // replaces the object — per-beat churn on the activity-only patch,
+        // for a copy with no changed field in it.
+        return;
+      }
+      const cached = getThreadById(evt.id)
+        ?? ingestPaneShowingThread(evt.id)?.thread;
+      if (!cached) return;
+      const merged = { ...cached };
+      if (evt.title !== undefined) merged.title = evt.title;
+      if (evt.model !== undefined) merged.model = evt.model;
+      if (evt.sessionRef !== undefined) merged.sessionRef = evt.sessionRef;
+      syncThreadRow(merged);
+      return;
+    }
+    case 'deleted': {
+      // The row is gone from SQLite. Same teardown the deleting client
+      // runs on its own RPC result: drop the row and its per-thread
+      // caches, then close panes that were showing it — a pane on a row
+      // that no longer exists cannot load, send, or resume.
+      if (!evt.id) return;
+      removeThread(evt.id);
+      closePanesShowingThread(evt.id);
+      return;
+    }
+    case 'unlisted': {
+      // Archived: still in SQLite, no longer in the active sidebar. The
+      // row is carried so a pane showing it converges before the pane
+      // closes, which is the order the archiving client's own sequence
+      // produces.
+      const id = evt.thread?.id ?? evt.id;
+      if (!id) return;
+      if (evt.thread) syncThreadRow(evt.thread);
+      removeThread(id);
+      closePanesShowingThread(id);
+      return;
+    }
+    case 'listed': {
+      // Created, forked, or unarchived: the row belongs in the active
+      // sidebar now. Insert it if this client does not have it — the
+      // initiating client's own prepend is the same step, so an echo of
+      // its own creation is idempotent.
+      if (!evt.thread?.id) return;
+      const merged = mergeThreadRowWithLocal(evt.thread);
+      if (!getThreadById(merged.id)) prependThread(merged);
+      syncThread(merged);
+      return;
+    }
+    default: {
+      // 'full': the row's current state. Says nothing about membership,
+      // so a row this client does not have is not invented here — the
+      // authoritative ListThreads resync owns that.
+      if (evt.thread?.id) syncThreadRow(evt.thread);
+    }
   }
 }
 

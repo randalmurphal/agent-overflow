@@ -1,7 +1,7 @@
 package app
 
 import (
-	"encoding/base64"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -84,19 +84,9 @@ func waitForCapturedUserEnvelopes(t *testing.T, capturePath string, want int) []
 // must produce.
 func mixedTurnFixture(t *testing.T, app *App, threadID string) (ids []string, fileLine string) {
 	t.Helper()
-	first, err := app.UploadAttachment(threadID, "one.png", "image/png", tinyPNGBase64())
-	if err != nil {
-		t.Fatalf("upload one.png: %v", err)
-	}
-	file, err := app.UploadAttachment(threadID, "report.pdf", "application/pdf",
-		base64.StdEncoding.EncodeToString([]byte("%PDF-1.7\n")))
-	if err != nil {
-		t.Fatalf("upload report.pdf: %v", err)
-	}
-	second, err := app.UploadAttachment(threadID, "two.png", "image/png", tinyPNGBase64())
-	if err != nil {
-		t.Fatalf("upload two.png: %v", err)
-	}
+	first := uploadTestAttachment(t, app, threadID, "one.png", "image/png", tinyPNG())
+	file := uploadTestAttachment(t, app, threadID, "report.pdf", "application/pdf", []byte("%PDF-1.7\n"))
+	second := uploadTestAttachment(t, app, threadID, "two.png", "image/png", tinyPNG())
 	_, path, err := app.attachments.PathForThread(threadID, file.ID)
 	if err != nil {
 		t.Fatalf("PathForThread: %v", err)
@@ -216,7 +206,7 @@ func TestQueuedFlush_MixedAttachmentTurnReachesTheWire(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("EventTurnStart: %v", err)
 	}
-	if _, err := app.RegisterQueueItem(thread.ID, mixedTurnMessage, SendMessageOptions{AttachmentIDs: ids}); err != nil {
+	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, mixedTurnMessage, SendMessageOptions{AttachmentIDs: ids}); err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
 	}
 	envelopes := waitForCapturedUserEnvelopes(t, capturePath, 1)
@@ -241,7 +231,7 @@ func TestRevertAndResend_MixedAttachmentTurnReachesTheWire(t *testing.T) {
 	}
 
 	ids, fileLine := mixedTurnFixture(t, app, thread.ID)
-	if err := app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{
+	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{
 		Content:       mixedTurnMessage,
 		AttachmentIDs: ids,
 	}); err != nil {

@@ -14,11 +14,14 @@
   import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
   import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
   import Globe from '@lucide/svelte/icons/globe';
+  import Command from '@lucide/svelte/icons/command';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getProject, getProjectLabelText } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { chordHintForCommand, chordHintSuffix } from '../../stores/keybindings.svelte';
   import { runTerminalToggle } from '../terminal/terminalToggle';
+  import { openPalette } from '../../stores/palette.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { openTerminalThread } from '../../stores/threadCreation.svelte';
   import { openReviewCompanion, reviewSubjectForPane } from '../../stores/reviewPane.svelte';
   import { attachGitStatus } from '../../stores/gitStatusStore.svelte';
@@ -38,6 +41,7 @@
   } from '../../stores/browserCompanion.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
+  let compact = $derived(isCompactLayout());
 
   // Take-control is a claude-tui-only affordance: it opens a paired terminal
   // pane mirroring the live TUI session. Absent for other providers (an
@@ -297,4 +301,23 @@
       <Icon icon={SquareTerminal} size={12} strokeWidth={2} class="opacity-90" />
     {/snippet}
   </Button>
+
+  {#if compact}
+    <!-- The palette is a keyboard chord on the desktop (palette.open). The
+         phone has no chord, so the header carries the one button that
+         reaches every command. -->
+    <Button
+      variant="secondary"
+      size="xs"
+      ariaLabel="Commands"
+      title="Command palette"
+      onclick={() => openPalette(pane.paneId)}
+      testId="palette-open"
+      class="shrink-0 w-6 px-0"
+    >
+      {#snippet children()}
+        <Icon icon={Command} size={12} strokeWidth={2} class="opacity-90" />
+      {/snippet}
+    </Button>
+  {/if}
 </div>

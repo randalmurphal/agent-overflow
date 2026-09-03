@@ -9,7 +9,6 @@ import {
 } from './harnessMode';
 
 beforeEach(() => {
-  delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
   __resetHarnessModeForTest();
 });
 
@@ -69,11 +68,5 @@ describe('harness session flag', () => {
     whenHarnessSession(arm)();
     setHarnessSessionFromBootstrap(true);
     expect(arm).not.toHaveBeenCalled();
-  });
-
-  it('reads an injected --connect manifest at module load', () => {
-    (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__ = { harness: true };
-    __resetHarnessModeForTest();
-    expect(isHarnessSession()).toBe(true);
   });
 });

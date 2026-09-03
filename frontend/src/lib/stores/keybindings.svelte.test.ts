@@ -9,6 +9,7 @@ import {
   getKeybindingIssues,
   getKeybindingLoadError,
   resetKeybindingsToDefaults,
+  resyncKeybindings,
   formatChord,
   encodeChordFromEvent,
   eventMatchesKeybindingCommand,
@@ -956,5 +957,58 @@ describe('keybindings store — chord-recorder guard', () => {
     const plainEvent = ev('b', { ctrlKey: true });
     Object.defineProperty(plainEvent, 'target', { value: document.createElement('button') });
     expect(eventMatchesKeybindingCommand(plainEvent, baseCtx(), ids, { isMac: false })).toBe(true);
+  });
+});
+
+// `keybindings:updated` is the convergence half: UpdateKeybindings and
+// ResetKeybindings persisted and answered their own caller, so a shortcut
+// rebound on one device kept firing the old chord on every other one until
+// reload.
+describe('keybindings store — resync', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetKeybindingsStore();
+    for (const t of [...getToasts()]) removeToast(t.id);
+  });
+
+  it('re-reads the file after another client rewrote it', async () => {
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [{ key: 'mod+k', command: 'palette.open' }],
+    }));
+    await loadKeybindings();
+    expect(keybindingForCommand('palette.open')).toBe('mod+k');
+
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [{ key: 'mod+shift+p', command: 'palette.open' }],
+    }));
+    await resyncKeybindings();
+
+    expect(keybindingForCommand('palette.open')).toBe('mod+shift+p');
+  });
+
+  // Silent on purpose: the toast belongs to a load the user asked for, and
+  // the initiator's own save already reloads, so announcing here would say the
+  // same thing twice for one gesture.
+  it('says nothing about a file error it did not go looking for', async () => {
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [{ key: 'mod+k', command: 'palette.open' }],
+      loadError: 'parse keybindings: invalid character',
+    }));
+
+    await resyncKeybindings();
+
+    // The banner still knows — only the toast is withheld.
+    expect(getKeybindingLoadError()).toBe('parse keybindings: invalid character');
+    expect(getToasts()).toHaveLength(0);
+  });
+
+  it('reports nothing when the re-read itself fails', async () => {
+    setBindingMock('GetKeybindings', async () => {
+      throw new Error('transport down');
+    });
+
+    await resyncKeybindings();
+
+    expect(getToasts()).toHaveLength(0);
   });
 });

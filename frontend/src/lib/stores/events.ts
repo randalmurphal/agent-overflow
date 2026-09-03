@@ -11,6 +11,8 @@
 //   - eventsTerminal.ts      — backgrounded-terminal output/exit
 //   - eventsQueue.ts         — send-queue mirror (state/flushed/restored)
 //   - eventsMessageRevert.ts — user-message revert (Stop/Esc un-send)
+//   - eventsDraftRows.ts     — composer-draft convergence across clients
+//   - eventsProjectRows.ts   — project row projections (sidebar list)
 //   - eventsTransportGap.ts  — missed-seq resync
 //   - eventsDiscussion.ts    — discussion:message / discussion:state push
 //   - eventsNotification.ts  — OS activation routing + cold-start queue
@@ -19,6 +21,7 @@
 //   - eventsSessionImport.ts — session-import:progress run frames (+ the
 //                              transport-loss end condition a run has no
 //                              other way to learn about)
+//   - eventsReviewComments.ts — inline plan / diff-review comment sets
 //
 // This file itself stays a thin fan-in: channel names, generics, and the
 // teardown order live here; the reaction logic lives in the domain modules.
@@ -29,6 +32,7 @@ import type {
   ProviderAccountEvent,
   ProviderAccountUsageErrorEvent,
   ProviderSessionAccountEvent,
+  SettingsUpdatedEvent,
   SystemStatsEvent,
   TodoUpdateEvent,
   ProviderStatusEvent,
@@ -42,12 +46,22 @@ import type {
 } from '../types/events';
 import type {
   TerminalExitEventPayload,
+  TerminalHandle,
   TerminalOutputEventPayload,
 } from '../types/terminal';
 import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { setSystemStats } from './systemStats.svelte';
 import { applyThreadGroupUpdated } from './threadGroups.svelte';
 import { transportGapChannel } from '../transport/wsClient';
+import { backendKeyForOrigin } from '../transport/backends';
+import {
+  forgetProject,
+  forgetThread,
+  forgetThreadGroup,
+  noteProject,
+  noteThread,
+  noteThreadGroup,
+} from '../transport/entityIndex';
 // wailsEventOn lives in a leaf module so low-level stores can subscribe to
 // backend events without importing this handler module; imported here for
 // setupEventListeners() use and re-exported below for existing import sites.
@@ -58,6 +72,24 @@ import {
   resetItemEventQueue,
 } from './eventsItemStream';
 import {
+  applyBackendAttach,
+  applyBackendSetChange,
+  type BackendAttachEvent,
+  type BackendSetChangeEvent,
+} from './systems.svelte';
+import { applyChatBarFavorites } from './chatBarFavorites.svelte';
+import { applyNewThreadDefaults, type NewThreadDefaultsChangedEvent } from './newThreadDefaults';
+import { applyDiscussionDefinitionsChanged } from './discussionDefinitions.svelte';
+import { applyProviderAccountsChanged } from './providerAccounts.svelte';
+import { resyncKeybindings } from './keybindings.svelte';
+import { resyncEditorPreference } from './editors.svelte';
+import {
+  applyReviewCommentsChanged,
+  type ReviewCommentsChangedEvent,
+} from './eventsReviewComments';
+import {
+  applyThreadErrorNotice,
+  type ThreadErrorNoticeEvent,
   applyThreadUpdated,
   type ThreadUpdateEvent,
   applyModeChanged,
@@ -65,6 +97,14 @@ import {
   applyRuntimeModeChanged,
   type RuntimeModeChangedPayload,
 } from './eventsThreadRows';
+import {
+  applyProjectUpdated,
+  type ProjectUpdateEvent,
+} from './eventsProjectRows';
+import {
+  applyDraftUpdated,
+  type DraftUpdatedEvent,
+} from './eventsDraftRows';
 import {
   applyApprovalEvent,
   applyUserInputEvent,
@@ -79,7 +119,12 @@ import {
   applyTodoUpdate,
   applyModelFallback,
 } from './eventsProvider';
-import { applyTerminalOutput, applyTerminalExit } from './eventsTerminal';
+import {
+  applyProviderLogin,
+  hydrateProviderLogins,
+} from './providerAccounts.svelte';
+import type { ProviderLoginState } from './bindings';
+import { applyTerminalOutput, applyTerminalExit, applyTerminalOpened } from './eventsTerminal';
 import {
   applyQueueStateChanged,
   applyQueueFlushed,
@@ -104,6 +149,7 @@ import {
   applyProviderCommands,
   type ProviderCommandsPayload,
 } from './providerCommands.svelte';
+import { resyncSettings } from './settings.svelte';
 import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { applyUserMessageReverted } from './eventsMessageRevert';
 import { applyTransportGap } from './eventsTransportGap';
@@ -206,6 +252,18 @@ export function setupEventListeners(): () => void {
     'provider:session_account',
     applyProviderSessionAccount,
   );
+  // provider:login — one provider sign-in's live state. The flow is driven
+  // from wherever the owner is, so this is how a screen that did not start it
+  // (a second window, the same device after a reload) follows one that is
+  // already running. The hydrate below is the other half: an ephemeral
+  // channel replays nothing, so a client that attached mid-flow asks.
+  const cancelProviderLoginState = wailsEventOn<ProviderLoginState>(
+    'provider:login',
+    applyProviderLogin,
+  );
+  void hydrateProviderLogins().catch((error) => {
+    console.warn('events: hydrate provider sign-in state failed', error);
+  });
   const cancelProviderAccountUsageError = wailsEventOn<ProviderAccountUsageErrorEvent>(
     'provider:account_usage_error',
     (evt) => {
@@ -259,6 +317,68 @@ export function setupEventListeners(): () => void {
     const threadId = payload?.threadId;
     if (threadId) bumpUsageRefresh(threadId);
   });
+  // settings:updated — a persisted settings write moved keys in one tier, on
+  // this client or another. Payload is the tier and the changed key names
+  // only: settings carry redacted fields with no read path, so nothing that
+  // could reconstruct the new state may ride the wire. Every client — the
+  // initiator included — converges by re-reading GetSettings, queued behind
+  // any in-flight local write. See resyncSettings.
+  const cancelSettingsUpdated = wailsEventOn<SettingsUpdatedEvent>(
+    'settings:updated',
+    (payload) => {
+      void resyncSettings();
+      // The editor preference is a settings value with its own RPC and its
+      // own store, sitting behind a catalog TTL that nothing invalidated —
+      // so a change made anywhere else left every open header icon pointing
+      // at the previous editor. Gated on the KEY the frame names, because
+      // the re-read this triggers is a second RPC and every other settings
+      // write would otherwise pay for it.
+      if (payload?.keys?.includes('editor')) void resyncEditorPreference();
+    },
+  );
+  // keybindings:updated — the user keybindings file was rewritten or reset,
+  // on this client or another. Payload-less: GetKeybindings is where the
+  // effective list AND the file-read error both come from, so there is one
+  // answer and one place that produces it.
+  const cancelKeybindingsUpdated = wailsEventOn('keybindings:updated', () => {
+    void resyncKeybindings();
+  });
+  // chatbar:favorites — the starred model / discussion list, whole, after any
+  // client's write. `SetChatBarFavorite` answers with the same slice, so the
+  // writer's own echo settles on bytes it already applied.
+  const cancelChatBarFavorites = wailsEventOn<unknown>(
+    'chatbar:favorites',
+    (payload) => { applyChatBarFavorites(payload as never); },
+  );
+  // chatbar:new-thread-defaults — the seed a future thread gets, plus the
+  // project whose open draft placeholders adopt it. Without this a second
+  // device's "+ New" composer kept the superseded model, effort and runtime
+  // mode, and would have created a thread with them.
+  const cancelNewThreadDefaults = wailsEventOn<NewThreadDefaultsChangedEvent>(
+    'chatbar:new-thread-defaults',
+    applyNewThreadDefaults,
+  );
+  // provider:accounts_changed — the saved-account SET moved (sign-in, switch,
+  // removal). Distinct from provider:account, which reports one card's
+  // contents on every usage probe and can express neither an addition nor a
+  // removal.
+  const cancelProviderAccountsChanged = wailsEventOn('provider:accounts_changed', () => {
+    applyProviderAccountsChanged();
+  });
+  // discussion:definitions-changed — a discussion definition was created,
+  // renamed, edited or deleted. Payload-less, the same shape
+  // workflow:definitions-changed carries: the list is read by SCOPE and a
+  // rename moves a definition between names, so only a re-read can say what
+  // any reader's list now holds.
+  const cancelDiscussionDefinitions = wailsEventOn('discussion:definitions-changed', () => {
+    applyDiscussionDefinitionsChanged();
+  });
+  // review:comments-changed — one inline review comment SET moved: a plan's
+  // (keyed by plan item) or a diff review's (keyed by scope + source key).
+  const cancelReviewComments = wailsEventOn<ReviewCommentsChangedEvent>(
+    'review:comments-changed',
+    applyReviewCommentsChanged,
+  );
   // provider:session_died — provider subprocess exited mid-turn. Drives
   // the per-pane Reconnect banner (separately from the synthesized
   // turn-completed event that clears the working indicator). The
@@ -279,6 +399,15 @@ export function setupEventListeners(): () => void {
   const cancelTerminalExit = wailsEventOn<TerminalExitEventPayload>(
     'terminal:exit',
     applyTerminalExit,
+  );
+  // terminal:opened — the other half of terminal:exit. The surface reads the
+  // set once at mount, so a terminal opened on another client was invisible
+  // here and its output frames were dropped as belonging to an unknown id.
+  // Closing needs no counterpart: it kills the process, and the exit carries
+  // it.
+  const cancelTerminalOpened = wailsEventOn<TerminalHandle>(
+    'terminal:opened',
+    applyTerminalOpened,
   );
 
   // provider:queue_state_changed — backend per-thread queue snapshot.
@@ -349,15 +478,99 @@ export function setupEventListeners(): () => void {
     applyUserMessageReverted,
   );
 
-  const cancelThreadUpdated = wailsEventOn<ThreadUpdateEvent>('thread:updated', applyThreadUpdated);
+  // The row's own backend is learned HERE and not inside the applier: the
+  // frame names the row, the connection it arrived on names the machine
+  // that holds it, and only the subscription sees both. It is also the only
+  // way a thread created on another screen — never in any list this client
+  // fetched — becomes routable, which is what keeps the next RPC about it
+  // from silently going to the wrong machine.
+  const cancelThreadUpdated = wailsEventOn<ThreadUpdateEvent>('thread:updated', (evt, origin) => {
+    const id = evt?.thread?.id ?? evt?.id;
+    if (id) {
+      if (evt.action === 'deleted') forgetThread(id);
+      else noteThread(id, backendKeyForOrigin(origin.backendId));
+    }
+    applyThreadUpdated(evt);
+  });
+
+  // thread:error_notice — a row of kind `error` was persisted on some
+  // thread. The wildcard carrier for the sidebar's Failed pill: the
+  // transcript stream it used to ride (`provider:item_event`) is narrowed
+  // to the threads this client has a surface for, and the pill exists
+  // precisely for the ones it does not. Ids only; the prose stays on the
+  // item, which the panes that want it already receive.
+  const cancelThreadErrorNotice = wailsEventOn<ThreadErrorNoticeEvent>(
+    'thread:error_notice',
+    applyThreadErrorNotice,
+  );
+
+  // backend:attach — how a pairing this machine started from Settings →
+  // Systems ended, minutes after AddBackend returned the verification
+  // number. Loopback-only and host-scoped on the Go side, so only the page
+  // that can manage systems ever receives it. The ORIGIN is still checked:
+  // this subscription is installed on every attached backend, and only
+  // home's profile directory is what those RPCs act on (see
+  // `applyBackendAttach`).
+  const cancelBackendAttach = wailsEventOn<BackendAttachEvent>(
+    'backend:attach',
+    (evt, origin) => {
+      const outcome = applyBackendAttach(evt, backendKeyForOrigin(origin.backendId));
+      if (outcome === null) return;
+      if (outcome.error) addToast('error', `Could not attach ${outcome.name}: ${outcome.error}`);
+      else addToast('success', `Attached ${outcome.name}`);
+    },
+  );
+
+  // backend:set-changed — a removal or a rename of an attached machine, made
+  // by any page on this host. Its own channel rather than a second meaning on
+  // backend:attach, which answers how one pairing ended and retires a pending
+  // row. Origin-checked for the same reason (see `applyBackendSetChange`).
+  const cancelBackendSetChanged = wailsEventOn<BackendSetChangeEvent>(
+    'backend:set-changed',
+    (evt, origin) => { applyBackendSetChange(evt, backendKeyForOrigin(origin.backendId)); },
+  );
+
+  // project:updated — one frame per project row a persisted write moved. The
+  // sidebar list is otherwise refreshed only on mount and after the issuing
+  // client's own RPC, so this is what converges a second attached client.
+  const cancelProjectUpdated = wailsEventOn<ProjectUpdateEvent>(
+    'project:updated',
+    (evt, origin) => {
+      const id = evt?.project?.id ?? evt?.id;
+      if (id) {
+        if (evt.action === 'deleted') forgetProject(id);
+        else noteProject(id, backendKeyForOrigin(origin.backendId));
+      }
+      applyProjectUpdated(evt);
+    },
+  );
+
+  // draft:updated — one frame per persisted composer-draft write, naming the
+  // thread and the screen that wrote it. The applier drops this client's own
+  // echo and re-reads otherwise, so a draft typed on one screen appears on
+  // every other screen showing that thread.
+  const cancelDraftUpdated = wailsEventOn<DraftUpdatedEvent>(
+    'draft:updated',
+    applyDraftUpdated,
+  );
 
   // thread-group:updated — one frame per thread-group write. Membership is
   // NOT on this channel: a group write that moved threads also emits
   // thread:updated `replace` for each row, so the thread registry stays
   // the one owner of `groupId`.
+  // The group's backend is learned here for the reason thread:updated's
+  // is: a group created on another screen is in no list this client
+  // fetched, and its next RPC (rename, pin, delete) names the group.
   const cancelThreadGroupUpdated = wailsEventOn<ThreadGroupUpdateEvent>(
     'thread-group:updated',
-    applyThreadGroupUpdated,
+    (evt, origin) => {
+      const id = evt?.group?.id;
+      if (id) {
+        if (evt.action === 'delete') forgetThreadGroup(id);
+        else noteThreadGroup(id, backendKeyForOrigin(origin.backendId));
+      }
+      applyThreadGroupUpdated(evt);
+    },
   );
 
   // thread:title_generation — the completion frame of one title-generation
@@ -371,8 +584,9 @@ export function setupEventListeners(): () => void {
 
   // worktree:setup — the per-project setup recipe streaming over a worktree a
   // chat thread just had cut. Its own channel because only the setup panel
-  // consumes it and its frames carry local command output (transport keeps it
-  // loopback-only). GetThreadWorktreeSetup is the reconnect companion; see
+  // consumes it, and its frames carry local command output, so transport
+  // gates it on `terminal:operate` — the same grant
+  // GetThreadWorktreeSetup takes. That read is the reconnect companion; see
   // stores/worktreeSetup.svelte.ts for the sequence/hydration contract.
   const cancelWorktreeSetup = wailsEventOn<WorktreeSetupEvent>(
     'worktree:setup',
@@ -481,16 +695,25 @@ export function setupEventListeners(): () => void {
     cancelModelFallback();
     cancelProviderStatus();
     cancelProviderAccount();
+    cancelProviderLoginState();
     cancelProviderSessionAccount();
     cancelProviderAccountUsageError();
     cancelSystemStats();
     cancelTurnStarted();
     cancelTurnCompleted();
     cancelThreadCost();
+    cancelSettingsUpdated();
+    cancelKeybindingsUpdated();
+    cancelChatBarFavorites();
+    cancelNewThreadDefaults();
+    cancelProviderAccountsChanged();
+    cancelDiscussionDefinitions();
+    cancelReviewComments();
     cancelSessionDied();
     cancelTodoUpdate();
     cancelTerminalOutput();
     cancelTerminalExit();
+    cancelTerminalOpened();
     cancelQueueStateChanged();
     cancelQueueFlushed();
     cancelQueueRestored();
@@ -501,6 +724,11 @@ export function setupEventListeners(): () => void {
     cancelProviderCommands();
     cancelUserMessageReverted();
     cancelThreadUpdated();
+    cancelThreadErrorNotice();
+    cancelBackendAttach();
+    cancelBackendSetChanged();
+    cancelProjectUpdated();
+    cancelDraftUpdated();
     cancelThreadGroupUpdated();
     cancelThreadTitleGeneration();
     cancelWorktreeSetup();

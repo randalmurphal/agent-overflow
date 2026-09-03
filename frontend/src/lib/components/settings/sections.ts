@@ -69,6 +69,13 @@ export const SETTINGS_SECTIONS = [
       'Click a chord to re-bind; press the desired key combination or Escape to cancel. Shortcuts use mod as ⌘ on macOS and Ctrl elsewhere.',
   },
   {
+    id: 'notifications',
+    label: 'Notifications',
+    group: 'App',
+    description:
+      'Desktop alerts and phone push for turns that finish or need you, and which threads they cover.',
+  },
+  {
     id: 'updates',
     label: 'Updates',
     group: 'App',
@@ -133,7 +140,14 @@ export const SETTINGS_SECTIONS = [
     label: 'Remote access',
     group: 'Workspace',
     description:
-      "Open this backend to other devices on your network, or attach this window to another machine's backend.",
+      "Open this backend to other devices on your network, and the devices that are paired to it.",
+  },
+  {
+    id: 'systems',
+    label: 'Systems',
+    group: 'Workspace',
+    description:
+      "The machines this window is attached to: this one, and any other backend it reaches over a paired session.",
   },
   {
     id: 'observability',

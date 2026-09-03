@@ -12,6 +12,7 @@ import SpinnerSection from './SpinnerSection.svelte';
 import ThreadSettings from './ThreadSettings.svelte';
 import PerformanceSettings from './PerformanceSettings.svelte';
 import KeybindingsSettings from './KeybindingsSettings.svelte';
+import NotificationsSection from './NotificationsSection.svelte';
 import UpdatesSettings from './UpdatesSettings.svelte';
 import ClaudeSettings from './ClaudeSettings.svelte';
 import CodexSettings from './CodexSettings.svelte';
@@ -22,6 +23,7 @@ import ProjectsSettings from './ProjectsSettings.svelte';
 import GitSettings from './GitSettings.svelte';
 import EditorSection from './EditorSection.svelte';
 import RemoteAccessSettings from './RemoteAccessSettings.svelte';
+import SystemsSection from './SystemsSection.svelte';
 import ObservabilitySettings from './ObservabilitySettings.svelte';
 import StorageSettings from './StorageSettings.svelte';
 
@@ -33,6 +35,7 @@ export const SETTINGS_PAGES: Record<SettingsSection, Component> = {
   threads: ThreadSettings,
   performance: PerformanceSettings,
   keybindings: KeybindingsSettings,
+  notifications: NotificationsSection,
   updates: UpdatesSettings,
   claude: ClaudeSettings,
   codex: CodexSettings,
@@ -43,6 +46,7 @@ export const SETTINGS_PAGES: Record<SettingsSection, Component> = {
   git: GitSettings,
   editor: EditorSection,
   remote: RemoteAccessSettings,
+  systems: SystemsSection,
   observability: ObservabilitySettings,
   storage: StorageSettings,
 };

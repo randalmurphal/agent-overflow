@@ -74,6 +74,11 @@ const WORKFLOW_RUN_MAP_STORE = 'lib/stores/workflowRunMap.svelte.ts';
 const APPEARANCE_STORE = 'lib/stores/appearance.svelte.ts';
 const EDITORS_STORE = 'lib/stores/editors.svelte.ts';
 const BROWSER_COMPANION_STORE = 'lib/stores/browserCompanion.svelte.ts';
+const PROVIDER_ACCOUNTS_STORE = 'lib/stores/providerAccounts.svelte.ts';
+const SYSTEMS_STORE = 'lib/stores/systems.svelte.ts';
+const SERVICE_UPDATE_STORE = 'lib/stores/serviceUpdate.svelte.ts';
+const DEV_SERVERS_STORE = 'lib/stores/devServers.svelte.ts';
+const THREADS_STORE = 'lib/stores/threads.svelte.ts';
 
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionPaneAttach: owned(BROWSER_COMPANION_STORE, 'attachBrowserCompanion()'),
@@ -81,6 +86,14 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionPaneRect: owned(BROWSER_COMPANION_STORE, 'reportBrowserPaneRect()'),
   BrowserCompanionDo: owned(BROWSER_COMPANION_STORE, 'browserCompanionAct()'),
   BrowserCompanionThreadState: owned(BROWSER_COMPANION_STORE, 'hydrateBrowserCompanionState()'),
+  // The read marker is the one thread-row field where the newest value is
+  // not the largest one (explicit unread persists as epoch 0), so the
+  // merge in eventsThreadRows.ts can only tell a local write from a stale
+  // wire row by asking whether one is in flight. Both RPCs are made under
+  // that claim (threadReadWrites.ts) and a caller that made either one
+  // directly would produce exactly the row the claim exists to settle.
+  MarkThreadRead: owned(THREADS_STORE, 'markThreadRead()'),
+  MarkThreadUnread: owned(THREADS_STORE, 'markThreadUnread()'),
   GetGitStatus: owned(GIT_STATUS_STORE, 'refreshGitStatus()'),
   GitStatusSubscribe: owned(GIT_STATUS_STORE, 'attachGitStatus()'),
   GitStatusUnsubscribe: owned(GIT_STATUS_STORE, 'the attachment release()'),
@@ -115,6 +128,47 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   GetThemeFiles: owned(APPEARANCE_STORE, 'loadAppearance()'),
   SetAppearance: owned(APPEARANCE_STORE, 'setAppearance()'),
   SetWindowBackgroundColor: owned(APPEARANCE_STORE, 'syncWindowBackground()'),
+  // The provider-account surface is one listing and one credential slot per
+  // provider, and every mutation on it invalidates the others. A component
+  // calling one of these directly would hold a listing the store never sees,
+  // or start a sign-in the panel showing sign-ins knows nothing about.
+  ListProviderAccounts: owned(PROVIDER_ACCOUNTS_STORE, 'runLoad()'),
+  SwitchProviderAccount: owned(PROVIDER_ACCOUNTS_STORE, 'switchProviderAccount()'),
+  RemoveProviderAccount: owned(PROVIDER_ACCOUNTS_STORE, 'removeProviderAccount()'),
+  RefreshProviderAccountUsage: owned(
+    PROVIDER_ACCOUNTS_STORE,
+    'refreshProviderAccountUsage()',
+  ),
+  StartProviderLogin: owned(PROVIDER_ACCOUNTS_STORE, 'startProviderLogin()'),
+  GetProviderLoginState: owned(PROVIDER_ACCOUNTS_STORE, 'hydrateProviderLogins()'),
+  SubmitProviderLoginCode: owned(PROVIDER_ACCOUNTS_STORE, 'submitProviderLoginCode()'),
+  CancelProviderLogin: owned(PROVIDER_ACCOUNTS_STORE, 'cancelProviderLogin()'),
+  // The attached-machine list is one fact with a two-step pairing hanging
+  // off it: a section calling AddBackend itself would show a verification
+  // number the backend:attach frame has no way to retire.
+  ListBackends: owned(SYSTEMS_STORE, 'loadSystems()'),
+  AddBackend: owned(SYSTEMS_STORE, 'addSystem()'),
+  RemoveBackend: owned(SYSTEMS_STORE, 'removeSystem()'),
+  RenameBackend: owned(SYSTEMS_STORE, 'renameSystem()'),
+  // Updating a supervised machine is one status box per backend fed by two
+  // channels and one request. A card calling RequestServiceUpdate itself
+  // would start a flow the box the card renders from never marked as its
+  // own, and a second reader of GetServiceUpdateStatus would hold a status
+  // the frames never converge.
+  GetServiceUpdateStatus: owned(SERVICE_UPDATE_STORE, 'loadMachineUpdate()'),
+  ListServiceReleases: owned(SERVICE_UPDATE_STORE, 'loadServiceReleases()'),
+  RequestServiceUpdate: owned(SERVICE_UPDATE_STORE, 'requestServiceUpdate()'),
+  // One machine's shareable ports is one list per backend fed by one
+  // channel, and the two mutations reconcile against it. A markdown link
+  // or a settings row calling AllowPreviewPort itself would share a port
+  // the list the link renders from never learns about, and a second
+  // reader of GetDevServers would answer from a snapshot the frames never
+  // converge. MintPreviewURL spends a single-use ticket, so a caller
+  // outside the store could mint one nothing opens.
+  GetDevServers: owned(DEV_SERVERS_STORE, 'loadDevServers()'),
+  AllowPreviewPort: owned(DEV_SERVERS_STORE, 'allowPreviewPort()'),
+  DisallowPreviewPort: owned(DEV_SERVERS_STORE, 'disallowPreviewPort()'),
+  MintPreviewURL: owned(DEV_SERVERS_STORE, 'openPreview()'),
   ListAvailableEditors: owned(EDITORS_STORE, 'startLoad()'),
   GetEditorSettings: owned(EDITORS_STORE, 'startLoad()'),
   SetEditorSettings: owned(EDITORS_STORE, 'setEditorPreference()'),
@@ -253,6 +307,59 @@ const EVENT_SUBSCRIPTION_IMPORTS = ['wailsEventOn', 'onItemUpsert'] as const;
 const DEBOUNCED_EVENT_REFRESH_ALLOWLIST: Record<string, string> = {};
 
 // ---------------------------------------------------------------------------
+// Rule 6 — random identifiers come from the one mint.
+//
+// `crypto.randomUUID` is a SECURE-CONTEXT API. A plain-HTTP LAN page is a
+// shipped context for this app (docs/specs/remote-access.md §15 constraint 6:
+// a phone reaching the desk over the LAN has no https and gets no secure
+// context), and there the property is not merely restricted — it is ABSENT,
+// so a call is a TypeError.
+//
+// That is a boot-time crash, not a degraded feature, which is why this one
+// API gets a rule while its secure-context siblings do not. `wsClient`'s
+// `generateId` mints the id of every RPC, so the throw landed on the first
+// call of the boot fan-out and a freshly paired browser rendered a blank
+// page — no error surface, because the code that would have drawn one had
+// not mounted (found by the harness, 2026-08-31). `crypto.subtle` is absent
+// on the same page and is fine: `transport/deviceKey.ts` feature-tests it
+// and the device enrols with a bearer identifier instead. `navigator.clipboard`
+// is absent too, and fails a CLICK rather than a launch.
+//
+// `lib/utils/randomId.ts` is the one place the fallback is written, and it
+// falls back to `crypto.getRandomValues` — which is NOT secure-context gated,
+// so the answer stays a CSPRNG rather than `Math.random` on the pages that
+// need it most. The allowlist is empty and stays that way: a second call site
+// is a second remembered answer, and the last four were four different ones.
+const RANDOM_ID_OWNER = 'lib/utils/randomId.ts';
+// A CALL, not the word: the comments at the converted call sites name the API
+// they no longer reach for, and must not read as offenders.
+const RANDOM_UUID_CALL = /\brandomUUID\s*\(/;
+const RANDOM_ID_ALLOWLIST: Record<string, string> = {};
+
+// 7. A send is built by the one builder that mints its idempotency id.
+//
+// A frame re-sent over a replacement socket is answered from the first
+// arrival's record, and the id is the whole basis of that match. A send vector
+// that assembles its own options object therefore looks like a NEW message on
+// every retry — which is one turn started twice. `implementProposedPlan` was
+// exactly that: an inline literal, no id, until this rule existed.
+//
+// The rule is on the IMPORT rather than the call, because the call's third
+// argument is a variable at most sites and matching its provenance textually
+// would be a guess. A module that reaches one of these RPCs either BUILDS its
+// options (imports `buildSendOptions`) or was HANDED them already built (names
+// `OutgoingSendOptions`, the only type that shape has) — a pass-through like
+// `sendQueue.registerQueueItem` is the second. Inlining an object literal is
+// neither, and that is the whole offence. The allowlist is empty.
+const SEND_RPCS = ['SendMessageWithOptions', 'RegisterQueueItem'] as const;
+const SEND_OPTIONS_BUILDER = 'buildSendOptions';
+// A TEXT probe rather than an import name: the type arrives through
+// `import type`, which `parseClause` deliberately drops as a non-runtime read.
+const SEND_OPTIONS_TYPE = /\bOutgoingSendOptions\b/;
+const SEND_OPTIONS_OWNER = 'lib/utils/sendOptions.ts';
+const SEND_OPTIONS_ALLOWLIST: Record<string, string> = {};
+
+// ---------------------------------------------------------------------------
 
 interface ParsedImport {
   /** Module specifier as written. */
@@ -344,6 +451,8 @@ describe('architecture', () => {
       path: repoPath(file),
       imports: parseImports(text),
       callsEventsOn: EVENTS_ON_CALL.test(text),
+      callsRandomUUID: RANDOM_UUID_CALL.test(text),
+      namesSendOptionsType: SEND_OPTIONS_TYPE.test(text),
       inStores: file.startsWith(STORES_DIR + sep),
     };
   });
@@ -400,7 +509,7 @@ describe('architecture', () => {
       offenders,
       {},
       'New violations.',
-      `Call openInEditor() from ${OPEN_IN_EDITOR_OWNER} so view-only sessions cannot reach the LocalOnly RPC.`,
+      `Call openInEditor() from ${OPEN_IN_EDITOR_OWNER} so view-only sessions cannot reach the host-scoped RPC.`,
     );
   });
 
@@ -499,6 +608,61 @@ describe('architecture', () => {
       `Drive the refresh with ${REFRESH_SCHEDULER_MODULE}, whose absolute deadline fires`
       + ' under a stream that never goes quiet. Plain debounce stays correct only for a'
       + ' quiet-edge persist that nothing reads mid-burst.',
+    );
+  });
+
+  it('keeps random identifiers on the secure-context-safe mint', () => {
+    const offenders = new Map<string, string[]>();
+    for (const source of sources) {
+      if (source.path === RANDOM_ID_OWNER) continue;
+      if (!source.callsRandomUUID) continue;
+      offenders.set(source.path, [
+        'calls crypto.randomUUID(), which is absent on a plain-HTTP LAN page and throws there',
+      ]);
+    }
+    expectAllowlistExact(
+      offenders,
+      RANDOM_ID_ALLOWLIST,
+      'New violations.',
+      `Call randomId() from ${RANDOM_ID_OWNER}, which falls back to crypto.getRandomValues`
+      + ' on the pages where crypto.randomUUID does not exist.',
+    );
+  });
+
+  it('keeps every send on the builder that mints its idempotency id', () => {
+    const offenders = new Map<string, string[]>();
+    let senders = 0;
+    for (const source of sources) {
+      if (source.path === BINDINGS_WRAPPER || source.path === SEND_OPTIONS_OWNER) continue;
+      const reached = new Set<string>();
+      let buildsOptions = false;
+      for (const parsed of source.imports) {
+        for (const name of parsed.names) {
+          if ((SEND_RPCS as readonly string[]).includes(name)) reached.add(name);
+          if (name === SEND_OPTIONS_BUILDER) buildsOptions = true;
+        }
+      }
+      if (reached.size === 0) continue;
+      senders += 1;
+      if (buildsOptions || source.namesSendOptionsType) continue;
+      offenders.set(source.path, [
+        `calls ${[...reached].sort().join(' / ')} while neither importing ${SEND_OPTIONS_BUILDER}`
+        + ' nor taking built OutgoingSendOptions, so its options carry no send id and a retried'
+        + ' frame starts a second turn',
+      ]);
+    }
+    // A rule scanning for RPCs nobody imports any more finds nothing and says
+    // so cheerfully; the renames these names could take are exactly the case.
+    expect(
+      senders,
+      `no module imports ${SEND_RPCS.join(' or ')}; this rule is scanning for nothing`,
+    ).toBeGreaterThan(0);
+    expectAllowlistExact(
+      offenders,
+      SEND_OPTIONS_ALLOWLIST,
+      'New violations.',
+      `Build the options with ${SEND_OPTIONS_BUILDER} from ${SEND_OPTIONS_OWNER}. It is the`
+      + ' one place a sendId is minted, and one call is one send.',
     );
   });
 

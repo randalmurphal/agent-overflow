@@ -834,7 +834,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 	// echo of this consumed envelope unmatched — and the wire-only branch
 	// would persist an injected:wire:* duplicate of the user's message.
 	r.markWireOnlyUserTextSeen(threadID, providerItemID)
-	r.emitItemUpsertWithActivity(persisted, false)
+	r.emitItemUpsert(persisted)
 	// Eager quiet flush rows reach their final state only here — bumped
 	// to the turn tail with provider ids stamped — so this is their
 	// anchor-record moment, mirroring persistDeferredUserText's hook for

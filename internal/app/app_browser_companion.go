@@ -33,6 +33,9 @@ func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
 // is ephemeral (no replay), so a freshly loaded UI has no way to know a
 // thread already has live pages — this is the hydration read behind the chat
 // header's browser chip and the pane-reopen reconcile.
+//
+//ao:scope host
+//ao:route home
 func (a *App) BrowserCompanionThreadState(threadID string) (appbrowser.CompanionEvent, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
@@ -49,6 +52,9 @@ func (a *App) BrowserCompanionThreadState(threadID string) (appbrowser.Companion
 // a paintable rect exists, so connection cleanup guarantees a dead UI can
 // never leave a browser view painted over a window that no longer renders
 // the pane under it.
+//
+//ao:scope host
+//ao:route home
 func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (appbrowser.CompanionSubscription, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionSubscription{}, fmt.Errorf("browser manager unavailable")
@@ -70,6 +76,8 @@ func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (
 	return result, nil
 }
 
+//ao:scope host
+//ao:route home
 func (a *App) BrowserCompanionPaneDetach(paneID string) error {
 	if a.browser.manager != nil {
 		a.browser.manager.DetachPane(paneID)
@@ -79,6 +87,9 @@ func (a *App) BrowserCompanionPaneDetach(paneID string) error {
 
 // BrowserCompanionPaneRect reports where the mounted pane's host rect sits,
 // coalesced to one call per changed frame by the frontend.
+//
+//ao:scope host
+//ao:route home
 func (a *App) BrowserCompanionPaneRect(paneID string, rect appbrowser.PaneRect) error {
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
@@ -90,6 +101,9 @@ func (a *App) BrowserCompanionPaneRect(paneID string, rect appbrowser.PaneRect) 
 // file a companion page is displaying selected, so it can be dragged into
 // chat and mail apps — which accept file drops but not a pasted file object.
 // Remote pages have no file to reveal.
+//
+//ao:scope host
+//ao:route home
 func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, pageID string) error {
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
@@ -101,6 +115,8 @@ func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, page
 	return a.browser.manager.RevealPageFile(ctx, access, pageID)
 }
 
+//ao:scope host
+//ao:route home
 func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action BrowserCompanionAction) (appbrowser.CompanionEvent, error) {
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")

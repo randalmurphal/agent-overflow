@@ -119,6 +119,61 @@ func TestServerFrame_RPCError(t *testing.T) {
 	}
 }
 
+// TestServerFrame_ScopeRefusalRoundTrip — the missing capability rides a
+// FIELD, so it has to survive marshal/unmarshal under the exact JSON name
+// the client reads (frontend/src/lib/transport/frames.ts). Prose does not
+// survive the wire for a non-loopback caller, so if the field is lost the
+// only thing left to explain a disabled surface is a generic message.
+func TestServerFrame_ScopeRefusalRoundTrip(t *testing.T) {
+	in := ServerFrame{
+		Type:  frameTypeRPC,
+		ID:    "req-9",
+		Error: scopeRefusal(ScopeGitOperate, "GitPruneBranches"),
+	}
+	buf, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(string(buf), `"scope":"git:operate"`) {
+		t.Fatalf("the scope name is not on the wire under the name the client reads: %s", buf)
+	}
+	var out ServerFrame
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Error == nil || out.Error.Code != ErrCodeScopeRequired {
+		t.Fatalf("refusal code lost: %+v", out.Error)
+	}
+	if out.Error.Scope != string(ScopeGitOperate) {
+		t.Fatalf("scope field lost: %q", out.Error.Scope)
+	}
+
+	// Every OTHER error omits it, so a client reading "was this an
+	// authorization refusal, and for what" gets an unambiguous answer.
+	plain, err := json.Marshal(ServerFrame{
+		Type:  frameTypeRPC,
+		ID:    "req-10",
+		Error: &FrameError{Code: ErrCodeMethodError, Message: "boom"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(string(plain), `"scope"`) {
+		t.Fatalf("an ordinary method error carried a scope field: %s", plain)
+	}
+	stepUp, err := json.Marshal(ServerFrame{
+		Type:  frameTypeRPC,
+		ID:    "req-11",
+		Error: &FrameError{Code: ErrCodeStepUpRequired, Message: "needs a proof"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(string(stepUp), `"scope"`) {
+		t.Fatalf("a step-up refusal named a scope; no grant satisfies it: %s", stepUp)
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
@@ -126,4 +181,52 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestClientFrame_LeaseRoundTrip(t *testing.T) {
+	in := ClientFrame{Type: frameTypeLease, State: leaseStateBackground}
+	buf, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The wire shape the phone shell writes, spelled out: what a client
+	// reads is this string, not this struct.
+	if string(buf) != `{"type":"lease","state":"background"}` {
+		t.Fatalf("lease frame on the wire = %s", buf)
+	}
+	var out ClientFrame
+	if err := json.Unmarshal(buf, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Type != in.Type || out.State != in.State {
+		t.Fatalf("lease fields lost: in=%+v out=%+v", in, out)
+	}
+}
+
+// TestClientFrameVocabularyIsFrozen pins the set of frame types a client may
+// send. A frame type is a wire contract two codebases hold: adding one means
+// teaching frontend/src/lib/transport/frames.ts the same word, documenting it
+// on ClientFrame, and routing it in readLoop. Freezing the list makes that a
+// deliberate edit rather than something the compiler waves through.
+func TestClientFrameVocabularyIsFrozen(t *testing.T) {
+	frozen := []string{
+		frameTypeRPC,
+		frameTypeReplay,
+		frameTypeSubscribe,
+		frameTypeWatch,
+		frameTypeLease,
+		frameTypePresence,
+	}
+	want := map[string]bool{
+		"rpc": true, "replay": true, "subscribe": true, "watch": true, "lease": true,
+		"presence": true,
+	}
+	if len(frozen) != len(want) {
+		t.Fatalf("client frame vocabulary changed: %v", frozen)
+	}
+	for _, name := range frozen {
+		if !want[name] {
+			t.Fatalf("unfrozen client frame type %q", name)
+		}
+	}
 }

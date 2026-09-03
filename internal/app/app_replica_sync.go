@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 )
@@ -39,6 +38,14 @@ type SyncThreadWindowRequest struct {
 	ItemBudget int   `json:"itemBudget"`
 	HaveEpoch  int64 `json:"haveEpoch"`
 	HaveRev    int64 `json:"haveRev"`
+	// InlinePreviews is the client's stated projection preference: true
+	// when it paints inline diff previews on arrival, false when they
+	// sit behind a chevron (`collapseDiffPreviews`, the default) and
+	// none of the patch text is rendered until clicked. It rides the
+	// request because it is a per-CLIENT setting and one backend serves
+	// several clients that can disagree; the server never reads the
+	// setting itself.
+	InlinePreviews bool `json:"inlinePreviews,omitempty"`
 }
 
 // SyncThreadWindowResponse is the answer. Page is nil for "fresh"
@@ -62,10 +69,12 @@ type SyncThreadWindowResponse struct {
 // ListThreadSliceAround: it answers with the window only when the
 // caller's stamps prove it necessary. Store-read-only — it opens one
 // read-pool transaction and touches no local FS, process, or credential
-// state, so it is deliberately NOT in transport.LocalOnlyMethods.
+// state, so it rides `threads:read` like the history it answers with.
 //
 // The other paging RPCs are unchanged; this one covers the initial
 // window only.
+//
+//ao:scope threads:read
 func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (SyncThreadWindowResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), syncThreadWindowTimeout)
 	defer cancel()
@@ -85,8 +94,11 @@ func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (Sy
 		Generation: result.Generation,
 	}
 	if result.Page != nil {
-		page := *result.Page
-		page.Items = slicesx.OrEmpty(page.Items)
+		// Same window as ListThreadSliceAround, so the same projection
+		// and the same byte backstop. A cold open that reached this RPC
+		// and a gap refresh that reached that one must not disagree
+		// about how a row is shaped, or one window would hold both.
+		page := projectPage(*result.Page, req.InlinePreviews, keepNewest)
 		out.Page = &page
 	}
 	return out, nil

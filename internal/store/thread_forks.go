@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/itemmeta"
 )
 
@@ -37,7 +38,7 @@ import (
 func BuildForkedThread(source Thread) Thread {
 	now := time.Now().UnixMilli()
 	return Thread{
-		ID:                 uuid.NewString(),
+		ID:                 entityid.New(),
 		ProjectID:          source.ProjectID,
 		Title:              source.Title + " (fork)",
 		Provider:           source.Provider,

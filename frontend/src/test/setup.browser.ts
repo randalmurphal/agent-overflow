@@ -15,6 +15,7 @@ import './helpers/firstDivergence';
 import { cleanup } from '@testing-library/svelte';
 import { resetWailsMocks } from './mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from './mocks/bindings-app';
+import { resetAttachmentTransferMocks } from './mocks/attachmentTransfer';
 import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/threadStatuses.svelte';
 import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
 import { clearThreadScrollSnapshotsForTest } from '../lib/utils/threadScrollSnapshots';
@@ -41,6 +42,7 @@ afterEach(() => {
   cleanup();
   resetWailsMocks();
   resetBindingMocks();
+  resetAttachmentTransferMocks();
   // A trace flush timer can outlive the component that scheduled it. Keep
   // the browser project's documented no-op sink installed across the gap
   // between this teardown and the next test's beforeEach.

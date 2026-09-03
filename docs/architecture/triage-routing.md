@@ -19,7 +19,7 @@ Every normalized `ProviderEvent` flows through `Router.Handle` in
 | `approval_resolved` | `handleApprovalResolved`: fold decision onto the row, emit `provider:approval` (resolve). |
 | `session_status` | `handleSessionStatus`: precise mapping to `ProviderStatusEventKind`, emit `provider:status` when persistent. |
 | `token_usage` | `handleTokenUsage`: persist and emit a provider-normalized context-window snapshot. Generic token-spend totals are ignored here. |
-| `error` | `handleError`: persist error row, mark turn items errored on fatal, emit `provider:item_event` upsert. |
+| `error` | `handleError`: persist error row, mark turn items errored on fatal, emit `provider:item_event` upsert + `thread:error_notice` (the sidebar's Failed badge, on a wildcard channel — see below). |
 | `compact_boundary` | `handleCompaction`: persist compaction marker; emit an included context-window snapshot when present, otherwise emit `provider:usage` reset. |
 | `rate_limits` | `handleRateLimits`: emit `provider:usage` (rate_limits). |
 | `content_block_start` / `content_block_stop` | Streaming text/thinking block markers; settle streaming rows on stop. |
@@ -29,7 +29,7 @@ Every normalized `ProviderEvent` flows through `Router.Handle` in
 | `diff` | `handleDiff`: persist payload + meta, upgrade summary-only tool results, emit `provider:item_event` upsert. |
 | `command_output` | `handleCommandOutput`: streaming deltas accumulate in the stream-persist buffer and land as one payload append + one `provider:item_event` upsert per flush window (100ms / 64KB / lifecycle boundary); a `Replace` snapshot (Codex aggregatedOutput) discards the pending buffer and rewrites the payload. |
 | `thinking` | `handleThinking`: create the thinking row/payload on first content, emit ordered `provider:item_event` deltas for follow-up reasoning, flush summary preview + payload data from the stream buffer. |
-| `proposed_plan` | `handleProposedPlan`: persist plan payload, emit `provider:item_event` upsert. |
+| `proposed_plan` | `handleProposedPlan`: persist plan payload, emit `provider:item_event` upsert + a `thread:updated` `full` row (the Plan ready badge is a derived column of that row). |
 
 Routing lands on typed channels. Timeline mutations use
 `provider:item_event` (ordered upserts and live text/thinking deltas);
@@ -38,6 +38,20 @@ background-task changes each use their own typed channel.
 There is no generic `provider:event` passthrough. The router exposes a
 `SetEventHook` test-only observer so Go tests can synchronize on the
 routing pipeline without a wire channel.
+
+`provider:item_event` is **entity-filtered**: the backend withholds
+frames for threads a client is not watching
+(`internal/transport/event_channels.go`). Anything the sidebar or a
+global store must know about a thread nobody has open therefore cannot
+be derived from an item row, and rides a wildcard carrier instead —
+`thread:error_notice` for the Failed badge, `thread:updated` for the
+Plan ready badge (a `full` row) and the reader's own message
+(a `patch` carrying only `updatedAt`), and
+`provider:background_tasks_changed` for the workspace-change lock. Emit
+sites for the first three live beside the persists that cause them
+(`emitErrorNotice`, `emitThreadRow`, `bumpThreadActivityForUserText` in
+`router.go`). Adding a new global consumer of an item row is the thing
+this split exists to prevent.
 
 ## Pre-dispatch rewrites
 

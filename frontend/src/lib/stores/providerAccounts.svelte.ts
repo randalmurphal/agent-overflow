@@ -1,6 +1,12 @@
 // Saved native provider accounts (Claude + Codex): the ONE load / login /
 // switch / refresh / remove path in the app.
 //
+// PHASE 7, HOME-ONLY: `ListProviderAccounts` and every login/switch RPC
+// take the `home` route, so this is the page's own machine's accounts. A
+// provider login is a credential ON a machine — the same account signed in
+// twice is two logins, not one — so unifying this list is a remote-access
+// §10 plan item with its own design, not a keying change.
+//
 // Two surfaces consume it — the provider settings pages → Accounts (per-provider
 // slice, with removal) and the account-switcher picker (all providers, switch
 // + refresh only). They share this module rather than each owning a copy so a
@@ -14,26 +20,33 @@
 // PER-PROVIDER: logging in to Claude must not disable the Codex buttons, and
 // an account id belongs to exactly one provider anyway.
 //
-// Every one of these RPCs is LocalOnly on the transport
-// (internal/transport/internalmethods.go). The command that opens the picker
-// is gated on `!viewOnlySession`, but the listing is also pulled unprompted at
-// startup, so `loadProviderAccounts` refuses in a view-only session rather than
-// relying on every entry point to remember.
+// Every one of these RPCs carries the `access:admin` scope (billing identity;
+// docs/specs/remote-access.md §5). The command that opens the picker gates on
+// that capability, but the listing is also pulled unprompted at startup, so
+// `loadProviderAccounts` refuses without the grant rather than relying on
+// every entry point to remember.
 
 import {
+  CancelProviderLogin,
+  GetProviderLoginState,
   ListProviderAccounts,
-  LoginProviderAccount,
+  ProviderLoginMethod,
+  ProviderLoginPhase,
+  ProviderLoginState,
   RefreshProviderAccountUsage,
   RemoveProviderAccount,
+  StartProviderLogin,
+  SubmitProviderLoginCode,
   SwitchProviderAccount,
 } from './bindings';
 import type { ManagedProviderAccount } from './bindings';
+import { canUseHostOpenExternalURL } from '../utils/externalLinks';
 import { clearProviderAccount, setProviderAccount } from './accountInfo.svelte';
 import { clearProviderRateLimits, setProviderRateLimits } from './rateLimitsInfo.svelte';
 import { addToast } from './toast.svelte';
 import { recheckProviderAccount } from '../providers/actions';
 import { getProviderDefinition, PROVIDER_SETTINGS_ORDER } from '../providers/catalog';
-import { isViewOnlySession } from '../transport/runMode';
+import { hasScope } from '../transport/scopes';
 import { PROVIDER_IDS, type ProviderID } from '../types/providers';
 import { userFacingError } from '../utils/userFacingError';
 
@@ -176,12 +189,12 @@ export function providerAccountActionLabel(account: ManagedProviderAccount): str
  * that the user's accounts went away.
  */
 export function loadProviderAccounts(): Promise<void> {
-  // Every RPC in this module is LocalOnly on the transport, so in a view-only
-  // remote session the listing call can only be refused — and this one runs
-  // unprompted at startup (eventsProvider's hydrate) and on transport-gap
-  // recovery, where the refusal would surface as an unexplained error toast.
-  // Settle into "loaded, nothing saved" instead of asking.
-  if (isViewOnlySession()) {
+  // The provider-account surface is billing identity, which `access:admin`
+  // covers. Without the grant the listing call can only be refused — and this
+  // one runs unprompted at startup (eventsProvider's hydrate) and on
+  // transport-gap recovery, where the refusal would surface as an unexplained
+  // error toast. Settle into "loaded, nothing saved" instead of asking.
+  if (!hasScope('access:admin')) {
     loading = false;
     return Promise.resolve();
   }
@@ -195,6 +208,28 @@ export function loadProviderAccounts(): Promise<void> {
  */
 function reloadProviderAccounts(): Promise<void> {
   return startLoad();
+}
+
+/**
+ * `provider:accounts_changed` — the saved-account SET moved on some client:
+ * a sign-in added a card, a switch moved which one is active, a removal took
+ * one away.
+ *
+ * Its own channel rather than a reaction to `provider:account`, which reports
+ * one card's CONTENTS and fires on every usage probe: re-listing on those
+ * would spend an RPC per probe, and never re-listing (the state before this
+ * existed) missed a removal outright — removing an account that was not the
+ * active one published nothing at all, so the card stayed on every other
+ * client's Settings screen until reload.
+ *
+ * A reload rather than a merge, because the listing carries per-account quota
+ * snapshots and a `needsLogin` verdict only the backend can compute. Refuses
+ * without the grant for the same reason `loadProviderAccounts` does: an
+ * ungranted session would turn each frame into an unexplained error toast.
+ */
+export function applyProviderAccountsChanged(): void {
+  if (!hasScope('access:admin')) return;
+  void reloadProviderAccounts();
 }
 
 function startLoad(): Promise<void> {
@@ -237,28 +272,6 @@ function projectListing(listing: readonly ManagedProviderAccount[]): void {
   }
 }
 
-/**
- * Run the provider's native login flow, then reload. Resolves true when a
- * login completed.
- */
-export async function loginProviderAccount(provider: ProviderID): Promise<boolean> {
-  if (isProviderCredentialOpInFlight(provider)) return false;
-  const action = actions[provider];
-  const label = providerLabel(provider);
-  action.loggingIn = true;
-  try {
-    await LoginProviderAccount(provider);
-    await reloadProviderAccounts();
-    addToast('success', `${label} account connected.`);
-    return true;
-  } catch (error) {
-    console.error(`${label} login failed:`, error);
-    addToast('error', userFacingError(error, `${label} login failed.`));
-    return false;
-  } finally {
-    action.loggingIn = false;
-  }
-}
 
 /**
  * Make `account` the provider's active credential. Resolves true only when the
@@ -395,11 +408,167 @@ function projectRemovedAccount(provider: ProviderID, account: ManagedProviderAcc
   setProviderAccount(provider, replacement, replacement.id, replacement.generation);
 }
 
+// ---- sign-in --------------------------------------------------------------
+//
+// A provider sign-in is a session on the backend, not one blocking call: the
+// person finishing it may be at a different screen than the one that started
+// it. This half holds the live state, drives the four RPCs, and is the only
+// consumer of the `provider:login` push.
+
+function seedLogins(): Record<ProviderID, ProviderLoginState> {
+  const seeded = {} as Record<ProviderID, ProviderLoginState>;
+  for (const provider of PROVIDER_IDS) seeded[provider] = idleLogin(provider);
+  return seeded;
+}
+
+function idleLogin(provider: ProviderID): ProviderLoginState {
+  return new ProviderLoginState({ provider, phase: ProviderLoginPhase.LoginPhaseIdle });
+}
+
+let logins = $state<Record<ProviderID, ProviderLoginState>>(seedLogins());
+
+/** One provider's sign-in, idle when nothing is running. */
+export function getProviderLogin(provider: ProviderID): ProviderLoginState {
+  return logins[provider];
+}
+
+/**
+ * True while a sign-in is running — anything that is not idle and not already
+ * over. It is what both surfaces render their flow panel on, and what keeps a
+ * switch or a removal from racing the credential the sign-in is about to
+ * replace.
+ */
+export function isProviderLoginActive(provider: ProviderID): boolean {
+  const phase = logins[provider].phase;
+  return (
+    phase !== ProviderLoginPhase.LoginPhaseIdle
+    && phase !== ProviderLoginPhase.LoginPhaseSucceeded
+    && phase !== ProviderLoginPhase.LoginPhaseFailed
+  );
+}
+
+/**
+ * Which way this client can finish a sign-in. `browser` means the backend
+ * opens the page on ITS machine, which is only useful when that machine is
+ * also the one being read — the same question `handleExternalURL` asks before
+ * choosing between the host binding and `window.open`.
+ */
+function loginMethodForThisClient(): ProviderLoginMethod {
+  return canUseHostOpenExternalURL()
+    ? ProviderLoginMethod.LoginMethodBrowser
+    : ProviderLoginMethod.LoginMethodRemote;
+}
+
+/**
+ * Apply one pushed transition. The backend is the only author of this state:
+ * a client that missed a frame and one that polled see the same thing, so
+ * nothing here merges.
+ */
+export function applyProviderLogin(state: ProviderLoginState | null | undefined): void {
+  const provider = state?.provider as ProviderID | undefined;
+  if (!provider || !(provider in logins)) return;
+  adoptProviderLogin(provider, state as ProviderLoginState);
+}
+
+function adoptProviderLogin(provider: ProviderID, state: ProviderLoginState): void {
+  logins[provider] = state;
+  actions[provider].loggingIn = isProviderLoginActive(provider);
+  if (state.phase === ProviderLoginPhase.LoginPhaseSucceeded) {
+    // The panel has nothing left to show, and the listing behind it is stale
+    // by exactly the account that just landed.
+    logins[provider] = idleLogin(provider);
+    void reloadProviderAccounts();
+    addToast('success', `${providerLabel(provider)} account connected.`);
+  }
+}
+
+/**
+ * Rejoin a sign-in that is already running — on mount, and after a transport
+ * gap. Only a LIVE flow is adopted: a succeeded or failed state is retained
+ * on the backend so the last transition is never lost, but a client arriving
+ * long afterwards must not open a panel about a sign-in nobody is watching.
+ */
+export async function hydrateProviderLogins(): Promise<void> {
+  if (!hasScope('access:admin')) return;
+  await Promise.all(
+    ACCOUNT_PROVIDERS.map(async (provider) => {
+      try {
+        const state = await GetProviderLoginState(provider);
+        if (!state) return;
+        const live = state.phase !== ProviderLoginPhase.LoginPhaseIdle
+          && state.phase !== ProviderLoginPhase.LoginPhaseSucceeded
+          && state.phase !== ProviderLoginPhase.LoginPhaseFailed;
+        if (live) adoptProviderLogin(provider, state);
+      } catch (error) {
+        console.warn(`providerAccounts: read ${provider} sign-in state failed`, error);
+      }
+    }),
+  );
+}
+
+/**
+ * Begin a sign-in. Resolves once there is something to show; how it ends
+ * arrives as state, because on every path but a browser on this machine the
+ * ending depends on a person at another screen.
+ */
+export async function startProviderLogin(provider: ProviderID): Promise<void> {
+  if (isProviderCredentialOpInFlight(provider)) return;
+  actions[provider].loggingIn = true;
+  logins[provider] = new ProviderLoginState({
+    provider,
+    phase: ProviderLoginPhase.LoginPhaseStarting,
+  });
+  try {
+    adoptProviderLogin(provider, await StartProviderLogin(provider, loginMethodForThisClient()));
+  } catch (error) {
+    console.error(`${providerLabel(provider)} sign-in failed to start:`, error);
+    adoptProviderLogin(
+      provider,
+      new ProviderLoginState({
+        provider,
+        phase: ProviderLoginPhase.LoginPhaseFailed,
+        error: userFacingError(error, `${providerLabel(provider)} sign-in could not be started.`),
+      }),
+    );
+  }
+}
+
+/**
+ * Hand back the code Claude's sign-in page shows after approval. A refusal
+ * here is about the code itself, so it lands in the flow's own prose rather
+ * than as a toast over a panel the user is reading.
+ */
+export async function submitProviderLoginCode(
+  provider: ProviderID,
+  code: string,
+): Promise<void> {
+  try {
+    adoptProviderLogin(provider, await SubmitProviderLoginCode(provider, code));
+  } catch (error) {
+    logins[provider] = new ProviderLoginState({
+      ...logins[provider],
+      error: userFacingError(error, 'That code could not be submitted.'),
+    });
+  }
+}
+
+/** End a sign-in, or dismiss one that is already over. */
+export async function cancelProviderLogin(provider: ProviderID): Promise<void> {
+  logins[provider] = idleLogin(provider);
+  actions[provider].loggingIn = false;
+  try {
+    await CancelProviderLogin(provider);
+  } catch (error) {
+    console.warn(`providerAccounts: cancel ${provider} sign-in failed`, error);
+  }
+}
+
 /** Test-only reset, mirroring the sibling provider stores. */
 export function resetForTest(): void {
   accounts = [];
   loading = true;
   actions = seedActions();
+  logins = seedLogins();
   // Bumped, never zeroed: a load still in flight from the previous test must
   // not match a generation handed out after the reset and project into it.
   loadGeneration++;

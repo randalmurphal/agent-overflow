@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -23,18 +24,23 @@ import (
 	"agent-overflow/internal/aocli"
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appdirs"
+	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/attachedbackends"
+	"agent-overflow/internal/bundle"
 	"agent-overflow/internal/cdprelay"
 	"agent-overflow/internal/diagenv"
-	"agent-overflow/internal/externalurl"
 	"agent-overflow/internal/harness/darwinbundle"
 	"agent-overflow/internal/logging"
+	"agent-overflow/internal/network"
 	"agent-overflow/internal/observability/goroutinedump"
 	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/platform"
 	"agent-overflow/internal/provider/claudetui"
+	"agent-overflow/internal/servercert"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/shellenv"
+	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/transport"
 )
 
@@ -92,12 +98,6 @@ func main() {
 	if err := disclaimHarnessResponsibility(); err != nil {
 		fatalf("isolate macOS harness responsibility: %v", err)
 	}
-	if os.Getenv(externalurl.BrowserHelperEnvironment) == externalurl.BrowserHelperValue && len(os.Args) == 2 {
-		if err := externalurl.Open(context.Background(), os.Args[1]); err != nil {
-			fatalf("open URL: %v", err)
-		}
-		return
-	}
 	// The orphan-reaper sidecar (macOS) re-execs this binary with the
 	// __reap subcommand. Short-circuit before any other startup — flag
 	// parsing, shell-env sync, Wails — so the sidecar stays a tiny pipe
@@ -117,16 +117,41 @@ func main() {
 		return
 	}
 
+	// A supervisor asks a staged binary what it is before it writes anything
+	// down. Short-circuit with the other internal re-execs: the answer is one
+	// JSON line and an exit, and a version being asked whether it can be
+	// talked to must not boot a transport to say so. See internal/supervise.
+	if len(os.Args) > 1 && os.Args[1] == supervise.PreflightSubcommand {
+		if err := supervise.WritePreflight(os.Stdout, version); err != nil {
+			fatalf("service preflight: %v", err)
+		}
+		return
+	}
+
 	// This binary is also the workflow CLI (D30): there is no separate `ao`
 	// executable, and a provider session finds this one on its PATH under the
 	// canonical name (see ensureCLISymlink). The two sidecars above are internal
 	// re-execs of our own making and win the argv outright; everything from here
 	// is somebody typing a command.
+	bootArgs := os.Args[1:]
+	serveMode := false
+	superviseMode := false
 	switch mode := decideEntry(os.Args[1:], os.LookupEnv); mode {
 	case entryCLI:
 		os.Exit(aocli.Run(os.Args[1:], os.Stdout, os.Stderr))
 	case entryRefuse:
 		refuseInSessionBoot(os.Args[1:])
+	case entryServe:
+		// The verb names the mode; everything after it is an ordinary boot
+		// flag, so the flag set below is the same one every other boot
+		// parses (main_serve.go argues why serve is not an aocli row).
+		serveMode = true
+		bootArgs = bootArgsAfterVerb(os.Args[1:], serveVerb)
+	case entrySupervise:
+		// Same shape one layer up: the flags after the verb are the ones the
+		// supervisor will hand to the `serve` child it starts.
+		superviseMode = true
+		bootArgs = bootArgsAfterVerb(os.Args[1:], superviseVerb)
 	case entryBoot:
 		// Fall through to flag parsing and the mode switch below.
 	default:
@@ -136,9 +161,23 @@ func main() {
 		fatalf("entry dispatch: unhandled mode %d", mode)
 	}
 
-	flags, err := parseFlags(os.Args[1:])
+	flags, err := parseFlags(bootArgs)
 	if err != nil {
 		fatalf("%v", err)
+	}
+	if serveMode {
+		if err := checkBackendVerbFlags(serveVerb, flags); err != nil {
+			fatalf("%v", err)
+		}
+	}
+	if superviseMode {
+		// The same refusals, for the same reason one layer up: every flag
+		// checkBackendVerbFlags rejects names a different mode, and the
+		// supervisor passes its flags straight through to a `serve` child
+		// that would reject them anyway — after the unit had already started.
+		if err := checkBackendVerbFlags(superviseVerb, flags); err != nil {
+			fatalf("%v", err)
+		}
 	}
 	if runtime.GOOS == "darwin" && flags.window {
 		// A windowed isolated macOS boot must come from the per-run bundle
@@ -187,6 +226,16 @@ func main() {
 	goroutinedump.Install(bootLogsDir(), log.Printf)
 
 	switch {
+	case superviseMode:
+		// Before serve: `supervise` starts one, and a supervisor that fell
+		// through into being its own child would be an install with no
+		// launch state and no way to update.
+		runSupervise(bootArgs)
+	case serveMode:
+		// Before every other arm: `serve` is the mode the operator NAMED,
+		// and checkBackendVerbFlags already refused every flag that would
+		// have selected a different one.
+		runServe(flags)
 	case flags.connect != "":
 		runClient(flags.connect)
 	case flags.harness:
@@ -241,14 +290,15 @@ func syncShellEnvForBoot() {
 // two copies in sync as the registration call evolves (allow lists,
 // bus capacity, asset handler choices).
 //
-// loadPersistedBindAll is the desktop-path-only escape hatch for the
-// stored Phase E LAN-bind preference. Headless boots only honor the
-// explicit --listen flag (the Windows launcher always passes one), so
-// it passes false here. Pulling the load out of the helper keeps the
-// boot graph linear: this function makes deterministic decisions from
-// its arguments, never reads disk on its own.
+// LoadPersistedNetwork is the desktop-path-only escape hatch for the
+// stored network preferences: the Phase E LAN-bind toggle and the
+// canonical domain. Headless boots only honor the explicit --listen flag
+// (the Windows launcher always passes one), so it passes false here.
+// Pulling the load out of the helper keeps the boot graph linear: this
+// function makes deterministic decisions from its arguments, never reads
+// disk on its own.
 type bootTransportOptions struct {
-	LoadPersistedBindAll     bool
+	LoadPersistedNetwork     bool
 	RequireReadyForBootstrap bool
 	// HarnessReceiver, when non-nil, is registered on the dispatcher as
 	// a second RPC receiver under "main.Harness.<Method>". Only harness
@@ -328,7 +378,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	appService.SetEventBus(bus)
 
 	phaseStarted = time.Now()
-	assetHandler, err := buildAssetHandler(assets, isNativeDevMode() || opts.AllowDevServerAssets)
+	assetHandler, devAssetProxy, spaBundle, err := buildAssetHandler(assets, isNativeDevMode() || opts.AllowDevServerAssets)
 	if err != nil {
 		fatalf("transport: build asset handler: %v", err)
 	}
@@ -339,11 +389,30 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	}
 	logBootPhase("transport.assets", phaseStarted)
 
+	// The other machines this installation drives. Built here rather than
+	// during startup because the transport's routes for them are decided
+	// at construction, and the profile directory is known before anything
+	// opens: it is this installation's identity, not this launch's state.
+	//
+	// A boot with no resolvable config root attaches to nothing. That is
+	// a real state (a relocation mid-flight, a locked-down profile) and
+	// not a failure to abort on — the four admin methods answer it, the
+	// routes are absent, and the local backend still works.
+	attached := bootAttachedBackends()
+	if attached != nil {
+		appservice.SetAttachedBackends(appService.App, attached)
+	}
+
 	cfg := transport.Config{
 		Dispatcher:               dispatcher,
 		EventBus:                 bus,
 		AssetHandler:             assetHandler,
+		DevAssetProxy:            devAssetProxy,
 		RequireReadyForBootstrap: opts.RequireReadyForBootstrap,
+		// The link-time stamp, injected rather than read by the transport:
+		// /healthz reports it, and the update watchdog compares it across
+		// a restart to tell a new build from a bounce.
+		Version: version,
 		// One condition, two surfaces: the boots that register the Harness
 		// receiver are exactly the boots whose /bootstrap.json says
 		// harness, so the SPA's bridge can never load against a wire that
@@ -356,14 +425,67 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		BackendIdentity: func() (string, string) {
 			return appservice.BackendIdentity(appService.App)
 		},
+		// Not late-bound, unlike the identity above: a hostname is
+		// knowable before the store opens, and it is the same string the
+		// pairing payload shows a device deciding whether to trust this
+		// offer (internal/app backendDisplayName).
+		BackendName: appidentity.HostDisplayName(),
 		// The `ao` CLI's scoped-token registry. The App owns it because a
 		// token's lifetime is a provider session's lifetime; the transport
 		// only asks what a presented token is allowed to do.
 		ScopedTokens: appService,
+		// The session core's six seams, all late-bound for the reason
+		// BackendIdentity is: identity boots during ServiceStartup, after
+		// this config is built. The transport never learns what a session
+		// row is — it asks these six questions and nothing else.
+		SessionForRequest: func(r *http.Request) (string, bool) {
+			return appservice.SessionForRequest(appService.App, r)
+		},
+		SessionLive: func(sessionID string) bool {
+			return appservice.SessionLive(appService.App, sessionID)
+		},
+		SessionAdmitsPeer: func(sessionID, remoteAddr string) bool {
+			return appservice.SessionAdmitsPeer(appService.App, sessionID, remoteAddr)
+		},
+		SessionScopes: func(sessionID string) ([]string, string) {
+			return appservice.SessionScopes(appService.App, sessionID)
+		},
+		StepUpProof: func(sessionID, token string) bool {
+			return appservice.StepUpProof(appService.App, sessionID, token)
+		},
+		// Whether this backend can drive a browser for an agent at all.
+		// Late-bound like the seams above: the browser Manager picks its
+		// engine during ServiceStartup, and on a serve host that choice
+		// depends on finding a Chromium installed on the machine
+		// (docs/specs/remote-access.md §7).
+		BrowserAvailable: func() bool {
+			return appservice.BrowserToolsAvailable(appService.App)
+		},
+		PageSessionCredential: func() string {
+			return appservice.PageSessionCredential(appService.App)
+		},
+		// Pairing redemption and credential rotation. The App adapts the
+		// session core onto the transport's dumb DTOs.
+		AuthEndpoints: appservice.AuthEndpoints(appService.App),
+		// Attachment bytes, which cross on HTTP rather than inside a WS
+		// frame. Late-bound the same way: the adapter holds the App and
+		// reads its attachment store per call, so the store opening during
+		// ServiceStartup is not a problem this config has to sequence.
+		AttachmentTransfer: appservice.AttachmentTransfer(appService.App),
+		// The SPA a paired phone shell downloads from this backend
+		// (internal/bundle, docs/specs/remote-access.md §9). Nil on a
+		// dev-server boot, which leaves the two routes answering 404 and
+		// the hello frame silent about bundles — the answer that keeps a
+		// shell running what it has.
+		Bundle: spaBundle,
 		// Diagnostic cross-origin isolation so the renderer exposes
 		// measureUserAgentSpecificMemory. Opt-in: COEP breaks remote
 		// subresources such as chat-markdown images.
 		CrossOriginIsolate: envTruthy(os.Getenv(diagenv.RendererDiag)),
+		// Nil when this boot keeps no pairings, which is what leaves the
+		// three carried route families unregistered rather than serving
+		// 404s from an empty set.
+		AttachedBackends: attachedBackendsSeam(attached),
 	}
 	// The embedded browser pane's Windows leg. Inside WSL the browser
 	// engine lives in the launcher process, reached over a tunnel the
@@ -378,6 +500,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	if cfg.CrossOriginIsolate {
 		log.Printf("transport: renderer diag mode — cross-origin isolation headers on (remote subresources will not load)")
 	}
+	applyServerCertificate(&cfg, appService)
 	if listenAddr != "" {
 		host, port, err := splitListenAddr(listenAddr)
 		if err != nil {
@@ -389,28 +512,68 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		}
 		cfg.BindAddr = host
 		cfg.Port = port
-	} else if opts.LoadPersistedBindAll {
-		// Honor the persisted Phase E LAN-bind preference at boot so a
-		// user who toggled "Allow remote access" in a previous session
-		// doesn't see the server snap back to loopback after restart.
-		// CLI --listen still wins — operator override beats stored prefs.
-		if persisted := loadPersistedNetworkSettings(); persisted.BindAll {
+	}
+	settingsPort := 0
+	canonicalDomain := ""
+	if opts.LoadPersistedNetwork {
+		// Honor the persisted network preferences at boot so a user who
+		// turned these on in a previous session doesn't see the server
+		// snap back after a restart. CLI --listen still wins for the BIND
+		// — operator override beats stored prefs — but the canonical
+		// domain is not an address and applies either way: it decides
+		// which Host header this listener answers to, whatever it bound.
+		persisted := loadPersistedNetworkSettings()
+		if persisted.BindAll && listenAddr == "" {
 			cfg.BindAddr = "0.0.0.0"
 		}
+		// The saved port is applied by pinTransportPort, which owns the
+		// whole three-way precedence and the cache interaction.
+		settingsPort = persisted.ListenPort
+		cfg.CanonicalHost = persisted.CanonicalDomain
+		// The origin allow-list is NOT computed here. Every pattern it
+		// emits names the bound port, and this boot has not resolved one
+		// yet — the pin below and then the bind itself decide it. It is
+		// installed after Start, where the number is a fact.
+		canonicalDomain = persisted.CanonicalDomain
 	}
 
-	// Pin the listen port unless the operator named one. Applies to
-	// every bind host: a stable port also stabilises the LAN share URL.
-	// --reset-transport-port drops the existing pin first, which is how
-	// the Windows launcher escapes a pinned port the host cannot reach.
-	portPin := pinTransportPort(&cfg, bootSettingsDir(), resetTransportPortPin)
+	// Resolve the listen port: --listen, else the saved network.listenPort,
+	// else the pin. Applies to every bind host — a stable port also
+	// stabilises the LAN share URL. --reset-transport-port drops the
+	// existing pin first, which is how the Windows launcher escapes a
+	// pinned port the host cannot reach.
+	portPin := pinTransportPort(&cfg, bootSettingsDir(), settingsPort, resetTransportPortPin)
+
+	// One decoration rule for every page URL this backend hands out, and
+	// the transport serves it (PageURLPath) to the local tooling that
+	// navigates more than once over a backend's life: the Windows
+	// launcher, `ao-harness open` / `attach`, the e2e rig. The transport
+	// owns the credential half (a `?t=` ticket for a browser, injection
+	// for a window host); this owns the two parameters only the boot
+	// knows.
+	// Closing over srv is safe because nothing calls this before New
+	// returns.
+	var srv *transport.Server
+	cfg.DecoratePageURL = func(base string) string { return decoratePageURL(base, srv) }
 
 	phaseStarted = time.Now()
-	srv, err := transport.New(cfg)
+	srv, err = transport.New(cfg)
 	if err != nil {
 		fatalf("transport: construct server: %v", err)
 	}
 	appService.SetTransportServer(srv)
+	// A settings-driven rebind moves the listener without going through
+	// the boot path, so the port cache would otherwise keep naming an
+	// address nothing is on. Installed only when there is a directory to
+	// write to; a nil recorder is a no-op inside the App.
+	if dir := bootSettingsDir(); dir != "" {
+		appservice.SetBoundPortRecorder(appService.App, func(port int) { storeTransportPort(dir, port) })
+	}
+	// Revocation is only real if it reaches live connections: hand the
+	// session core the registry of open sockets, so revoking a session
+	// force-closes the ones carrying it. Before Start, so no connection
+	// can be accepted into a registry the core cannot reach.
+	appservice.AttachSessionConns(appService.App, srv.SessionConns())
 	logBootPhase("transport.construct", phaseStarted)
 
 	phaseStarted = time.Now()
@@ -421,12 +584,78 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// fallback predicate missed. Clear the pin so the next launch
 		// binds ephemeral instead of replaying the same failure.
 		portPin.clearOnFailedBind(err)
+		if settingsPort != 0 && listenAddr == "" {
+			// A settings-chosen port deliberately has no ephemeral fallback,
+			// so this is the one bind failure the operator can fix from the
+			// UI. Name the setting and both ways out, because the raw
+			// "address already in use" says nothing about where the number
+			// came from.
+			fatalf("transport: start server: %v (network.listenPort is %d in Settings > Network; change or clear it there, or pass --listen for one launch)",
+				err, settingsPort)
+		}
 		fatalf("transport: start server: %v", err)
 	}
 	portPin.adopt(srv.Addr())
+	// The WS origin allow-list, installed now that the listener has a
+	// port. Every pattern names it exactly (internal/network.OriginPatterns
+	// argues why), so it can only be built once the bind has happened —
+	// --listen, the saved port and the pin all feed the same answer, and
+	// an ephemeral bind has no answer at all until Start returns. Nothing
+	// has been accepted yet, so there is no window where a connection is
+	// judged against an empty list.
+	bindAll := cfg.BindAddr == "0.0.0.0"
+	srv.SetOriginPatterns(network.OriginPatterns(
+		bindAll, bootLANIP(bindAll), canonicalDomain, portFromAddr(srv.Addr()),
+	))
 	log.Printf("transport: serving on %s", srv.Addr())
 	logBootPhase("transport.start", phaseStarted)
 	return srv
+}
+
+// applyServerCertificate resolves this install's self-signed TLS
+// certificate and hands it to the two halves that need it: the listener
+// terminates TLS with it on the port it already binds, and every pairing
+// link this backend mints carries its fingerprint so a client that owns
+// its own TLS configuration pins it (docs/specs/remote-access.md §7).
+//
+// One resolution feeding both, deliberately: the string a device is told
+// to pin and the certificate that listener presents can then never be two
+// different things.
+//
+// The certificate SOURCE is installed either way, even when this
+// resolution fails. It is the slot the canonical domain's certificate
+// lands in later (internal/app reconciles it from settings, and
+// internal/acmecert renews it), and a listener bound without one could
+// not serve that certificate without a restart.
+//
+// Best-effort, also deliberately. With no resolvable config directory
+// there is nowhere to keep a certificate that survives a restart, and one
+// re-minted every boot would un-pin every paired device each time — worse
+// than not offering TLS at all. Boot continues on the cleartext half,
+// which is what every browser uses regardless.
+func applyServerCertificate(cfg *transport.Config, appService *App) {
+	source := transport.NewCertificateSource()
+	cfg.Certificates = source
+	dir := bootSettingsDir()
+	if dir == "" {
+		log.Print("transport: no config directory resolved — serving cleartext only, so no client can pin this backend")
+		return
+	}
+	material, err := servercert.Load(dir)
+	if err != nil {
+		log.Printf("transport: %v — serving cleartext only, so no client can pin this backend", err)
+		return
+	}
+	source.SetSelfSigned(&material.Certificate)
+	appservice.SetCertFingerprint(appService.App, material.Fingerprint)
+	if material.Minted {
+		// The replacement case logs its own reason inside servercert,
+		// because a fingerprint change un-pins paired devices and must be
+		// loud wherever Load is called from.
+		log.Printf("transport: minted this install's TLS certificate; fingerprint %s", material.Fingerprint)
+		return
+	}
+	log.Printf("transport: TLS certificate fingerprint %s", material.Fingerprint)
 }
 
 // runHeadless is the Phase D entry point used by the Windows-side
@@ -556,7 +785,16 @@ func shutdownHeadless(appService *App, srv *transport.Server) {
 	}
 }
 
-// writeBootstrap publishes the listener address + token to the launcher.
+// writeBootstrap publishes the listener address, the session credential
+// and a ready-to-navigate page URL to the launcher.
+//
+// The page URL is assembled here, not on the Windows side, because the
+// client id and page marker it carries are only this process's to know.
+// It carries NO credential: the launcher owns the window it navigates,
+// so it asks the transport's PageURLPath route (`?host=webview`) for a
+// ticket and injects it into the document that navigation produces
+// (internal/pagehost). The same route answers a fresh bare URL whenever
+// the launcher needs to navigate again.
 //
 // Why two channels: the spec asks for fd 3 because it gives the
 // launcher a clean separation from any startup chatter the backend
@@ -571,18 +809,22 @@ func writeBootstrap(fd int, srv *transport.Server) error {
 		Port  int    `json:"port"`
 		Token string `json:"token"`
 		PID   int    `json:"pid"`
+		// PageURL is the fully assembled URL the launcher's WebView2
+		// navigates to. Bare — the launcher's ticket arrives by
+		// injection (webviewPageURL).
+		PageURL string `json:"pageUrl,omitempty"`
 		// ClientID is this installation's durable UI-state identity
-		// (see ensureClientID). The launcher threads it onto the
-		// webview URL as ?cid= so the frontend's per-client ui_state
-		// bucket survives the per-launch origin change. Empty when the
-		// backend couldn't persist one; the frontend then falls back
-		// to a best-effort browser-cached ID.
+		// (see ensureClientID). It rides PageURL as ?cid= already, and
+		// is reported separately for the launcher's own diagnostics.
+		// Empty when the backend couldn't persist one; the frontend then
+		// falls back to a best-effort browser-cached ID.
 		ClientID   string `json:"clientId,omitempty"`
 		PageMarker string `json:"pageMarker,omitempty"`
 	}{
 		Port:       portFromAddr(srv.Addr()),
 		Token:      srv.Token(),
 		PID:        os.Getpid(),
+		PageURL:    webviewPageURL(srv),
 		ClientID:   ensureClientID(),
 		PageMarker: srv.PageMarker(),
 	}
@@ -744,9 +986,53 @@ func ensureClientID() string {
 	return appservice.EnsureClientIDIn(bootSettingsDir())
 }
 
+// decoratePageURL threads the two parameters a shell has to add onto a
+// page URL the transport built: the harness page marker and the durable
+// client id. One expression, because the stdout bootstrap line, the
+// Windows launcher and `ao-harness` must all open the SAME page — a URL
+// missing the client id silently changes which ui_state bucket the
+// frontend reads.
+//
+// It is the transport's Config.DecoratePageURL hook, so the same rule
+// applies to both credential shapes: the ticketed URL a browser opens
+// and the bare one a window host loads.
+func decoratePageURL(base string, srv *transport.Server) string {
+	if base == "" || srv == nil {
+		return base
+	}
+	return appURLWithClientID(appURLWithPageMarker(base, srv.PageMarker()), ensureClientID())
+}
+
+// fullPageURL assembles the page URL this backend's own tooling should
+// navigate to with a BROWSER: a freshly minted one-time ticket on the
+// URL, plus the boot's own parameters.
+//
+// A nil or pre-Start server yields "", which every caller already treats
+// as "no page to open yet".
+func fullPageURL(srv *transport.Server) string {
+	if srv == nil {
+		return ""
+	}
+	return decoratePageURL(srv.AppURL(), srv)
+}
+
+// webviewPageURL assembles the page URL a host that owns its WINDOW
+// should load: the same page with no credential on it at all, because
+// that host delivers the ticket by injection instead
+// (internal/pagehost, internal/uiwindow.DeliverPageTicket). The ticket
+// minted alongside is deliberately discarded here — the caller of this
+// function is publishing a URL for another process to navigate, and that
+// process asks PageURLPath for its own ticket once its document is live.
+func webviewPageURL(srv *transport.Server) string {
+	if srv == nil {
+		return ""
+	}
+	return decoratePageURL(srv.WebviewPageURL(), srv)
+}
+
 // appURLWithClientID threads the durable UI-state client ID onto a page
 // URL as `&cid=`. The `&` (not `?`) is correct: every page URL the
-// transport hands out already carries the auth token query param.
+// transport hands out already carries its one-time page ticket.
 //
 // One helper because every window-opening boot needs the same rule and
 // they are spread across three files (runDesktop, runWindowedShell, the
@@ -762,7 +1048,7 @@ func appURLWithClientID(pageURL, clientID string) string {
 }
 
 // appURLWithPageMarker adds the per-harness page marker without changing an
-// ordinary boot URL. The marker remains in browser history after the token is
+// ordinary boot URL. The marker remains in browser history after the ticket is
 // scrubbed, which lets CDP match the exact page rather than a same-origin tab.
 func appURLWithPageMarker(pageURL, marker string) string {
 	if pageURL == "" || marker == "" {
@@ -786,6 +1072,16 @@ func loadPersistedNetworkSettings() settings.NetworkSettings {
 		return settings.NetworkSettings{}
 	}
 	return settings.NewService(dir).Get().Network
+}
+
+// bootLANIP answers the LAN address the boot-time origin allow-list
+// names, and only walks the interfaces when a LAN bind is what was
+// asked for. A loopback boot pays nothing.
+func bootLANIP(bindAll bool) string {
+	if !bindAll {
+		return ""
+	}
+	return network.DiscoverLocalLANIP()
 }
 
 // isolatedPprofEphemeralAddr answers what an isolated boot should bind
@@ -849,6 +1145,63 @@ func isolatedDevAssetWarning(devURL string) string {
 		"is of the DEV bundle, not the shipped one. Unset FRONTEND_DEVSERVER_URL to measure the embedded build."
 }
 
+// deviceProfileDirName holds this installation's device identity: the one
+// key every backend knows it by, and one session file per backend it has
+// paired with.
+//
+// Under the app config root and NOT under --data-dir, which `--connect`
+// refuses to be combined with anyway (main_entry.go): a data dir is one
+// backend's database, while the device key is this installation's name on
+// every backend it has ever met.
+const deviceProfileDirName = "device"
+
+func deviceProfileDir() (string, error) {
+	root := bootSettingsDir()
+	if root == "" {
+		return "", errors.New("no config directory is resolvable, so this device has nowhere to keep its pairing")
+	}
+	return filepath.Join(root, deviceProfileDirName), nil
+}
+
+// deviceLabel is what this installation asks to be called in the owner's
+// device list on every backend it pairs with. The hostname is what the
+// person confirming the pairing recognises — the same string this backend
+// publishes as its OWN name — and a machine that will not tell us its name
+// gets a generic label rather than an empty row.
+func deviceLabel() string {
+	if host := appidentity.HostDisplayName(); host != "" {
+		return host
+	}
+	return "Agent Overflow desktop"
+}
+
+// bootAttachedBackends builds the set of other machines this installation
+// drives, or nil when there is nowhere to keep pairings.
+func bootAttachedBackends() *attachedbackends.Manager {
+	dir, err := deviceProfileDir()
+	if err != nil {
+		log.Printf("attached backends: %v", err)
+		return nil
+	}
+	manager, err := attachedbackends.New(dir, deviceLabel(), runtime.GOOS)
+	if err != nil {
+		log.Printf("attached backends: %v", err)
+		return nil
+	}
+	return manager
+}
+
+// attachedBackendsSeam hands the manager to the transport as an
+// interface. A typed nil in an interface is not nil, and the transport
+// registers its carried routes on exactly that test — so the conversion
+// has to happen where the nil is still visible as one.
+func attachedBackendsSeam(manager *attachedbackends.Manager) transport.AttachedBackends {
+	if manager == nil {
+		return nil
+	}
+	return manager
+}
+
 // buildAssetHandler returns the http.Handler that the transport mounts
 // at "/" for non-RPC requests. Two cases:
 //
@@ -863,18 +1216,35 @@ func isolatedDevAssetWarning(devURL string) string {
 //     Serve the embedded frontend/dist bundle. http.FS over fs.Sub is
 //     the safe pairing — http.Dir would expose path traversal of the
 //     developer's local filesystem.
-func buildAssetHandler(embeddedAssets embed.FS, allowDevAssets bool) (http.Handler, error) {
+//
+// The devProxy return says which case was taken. It is the transport's
+// Config.DevAssetProxy — the one input that picks the relaxed CSP — so
+// the policy is decided by the same condition that decided the handler,
+// rather than by a second reading of the environment that could drift
+// from it.
+//
+// The `spa` return is the same tree seen as the BUNDLE a phone shell may
+// download (internal/bundle, transport's Config.Bundle). It comes back
+// from here for the same reason devProxy does: whether this boot has a
+// bundle to publish is exactly the question "are the assets embedded",
+// and answering it anywhere else would be a second reading of the
+// environment. A dev-server boot answers nil — a bundle that changes on
+// every save is not something a phone should stage, and there is no
+// file tree to hash.
+func buildAssetHandler(embeddedAssets embed.FS, allowDevAssets bool) (handler http.Handler, devProxy bool, spa *bundle.Bundle, err error) {
 	if devURL := os.Getenv("FRONTEND_DEVSERVER_URL"); devURL != "" && allowDevAssets {
 		parsed, err := url.Parse(devURL)
 		if err != nil {
-			return nil, fmt.Errorf("parse FRONTEND_DEVSERVER_URL %q: %w", devURL, err)
+			return nil, false, nil, fmt.Errorf("parse FRONTEND_DEVSERVER_URL %q: %w", devURL, err)
 		}
 		log.Printf("transport: dev mode — proxying assets to %s", devURL)
-		return httputil.NewSingleHostReverseProxy(parsed), nil
+		return httputil.NewSingleHostReverseProxy(parsed), true, nil, nil
 	}
 	embeddedSPA, err := fs.Sub(embeddedAssets, "frontend/dist")
 	if err != nil {
-		return nil, fmt.Errorf("locate embedded frontend/dist: %w", err)
+		return nil, false, nil, fmt.Errorf("locate embedded frontend/dist: %w", err)
 	}
-	return http.FileServer(http.FS(embeddedSPA)), nil
+	// Nothing is read here: the walk is lazy, so a backend no shell ever
+	// pairs with never hashes the tree at all.
+	return http.FileServer(http.FS(embeddedSPA)), false, bundle.New(embeddedSPA, version), nil
 }

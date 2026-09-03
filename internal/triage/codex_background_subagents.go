@@ -314,7 +314,7 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 	}
 	r.observeCodexSpawnChildTerminalInMemory(threadID, launch.item.ID, allTerminal)
 	if allTerminal {
-		r.emitCodexBackgroundTasksChanged(threadID)
+		r.emitBackgroundTasksChangedNudge(threadID)
 	}
 	return nil
 }
@@ -371,7 +371,7 @@ func (r *Router) reactivateCodexSpawnChild(threadID, launchID, childID string) e
 	tracker.hasRunningChildren = true
 	tracker.receiverThreadIDs = append([]string(nil), launch.meta.ReceiverThreadIDs...)
 	r.mu.Unlock()
-	r.emitCodexBackgroundTasksChanged(threadID)
+	r.emitBackgroundTasksChangedNudge(threadID)
 	return nil
 }
 

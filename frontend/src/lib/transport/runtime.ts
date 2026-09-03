@@ -9,10 +9,46 @@
 // passes type-check under the test alias also type-checks here.
 //
 // The actual transport — opening the WS, dispatching frames, reconciling
-// reconnects — lives in ./wsClient.ts. This file is just the thin glue
-// that exposes a Wails-shaped API on top of it.
+// reconnects — lives in ./wsClient.ts, and this file reaches it through
+// ./handle.ts rather than importing that singleton: the connection a call
+// routes over is resolved per call, which is the seam a second attached
+// backend needs (docs/specs/remote-access.md §10). This file stays thin
+// glue exposing a Wails-shaped API on top of whichever handle answers.
+//
+// Phase 7 makes "whichever handle" a decision rather than a constant, and
+// the decision is the METHOD's rather than the caller's: ./methodRoutes.ts
+// (generated from the Go method table) says whether a call follows its
+// thread, its project, the composer's chosen backend, the page's own, or
+// every attached backend at once. `Call.ByID` reads that table, resolves
+// the handle, and dispatches — the generated bindings above it are
+// untouched and unregenerated.
+//
+// Two rules hold the fallback honest. An unknown method id, an
+// unresolvable entity and a `selected` backend that has detached ALL
+// resolve home, because a single-backend app must behave exactly as it did
+// and a throw here would be a blank screen for a table that is merely
+// incomplete. And the fallback is announced once per method id in dev, so
+// a route that is genuinely missing is visible to whoever added the
+// method rather than silently correct on the only machine they test on.
 
-import { wsClient } from './wsClient';
+import { resolveTransport, type EventOrigin } from './handle';
+import {
+  attachedBackendCount,
+  callEveryBackend,
+  homeBackend,
+  subscribeEveryBackend,
+  takePinnedBackend,
+} from './backends';
+import { HOME_BACKEND, type BackendKey } from './backendKey';
+import {
+  noteFamilyRowsFromCall,
+  noteRowsFromCall,
+  projectBackend,
+  threadBackend,
+} from './entityIndex';
+import { METHOD_ROUTES, type MethodRoute } from './methodRoutes';
+import { familyBackend } from './methodFamilies';
+import { selectedBackend } from '../stores/selectedBackend.svelte';
 
 // CancellablePromise is the wrapper Wails-generated bindings always
 // return. The real runtime ships a complex implementation (see
@@ -129,15 +165,134 @@ function wrap<T>(p: Promise<T>): CancellablePromise<T> {
   });
 }
 
-// Call.ByID / Call.ByName route through the wsClient. Generated
-// bindings hit ByID exclusively; hand-written code paths (none today)
-// can use ByName.
+// Method ids whose missing / unresolvable route has already been reported.
+// Bounded by the method table, and only ever written in dev.
+const warnedRoutes = new Set<number>();
+
+function warnOnceForMethod(methodId: number, why: string): void {
+  if (!import.meta.env.DEV) return;
+  if (warnedRoutes.has(methodId)) return;
+  warnedRoutes.add(methodId);
+  console.warn(`transport: method ${methodId} ${why}; routed to the home backend`);
+}
+
+/**
+ * Which backend a call goes to, from its route and its arguments.
+ *
+ * Returns `null` for the `all` route, which is not one backend. Every
+ * other answer is a registry id, `HOME_BACKEND` included; no allocation
+ * beyond the two Map lookups the entity index costs.
+ */
+function resolveRoute(methodId: number, args: unknown[]): BackendKey | null {
+  // The ID-FAMILY table first. 49 methods are keyed by an id that is
+  // neither a thread nor a project — a workflow item, an automation, a
+  // terminal, a subscription — and the generated table parks all of them
+  // on `home` because it has no vocabulary to infer them. Home is the
+  // right fallback but the wrong answer once one of them lives on a second
+  // machine, so an id the index KNOWS wins over the parked route; an id it
+  // does not know falls through and lands where it always did.
+  const owned = familyBackend(methodId, args);
+  if (owned !== undefined) return owned;
+  const route: MethodRoute | undefined = METHOD_ROUTES[methodId];
+  if (route === undefined) {
+    warnOnceForMethod(methodId, 'has no route');
+    return HOME_BACKEND;
+  }
+  switch (route) {
+    case 'thread': {
+      const id = args[0];
+      const owner = typeof id === 'string' ? threadBackend(id) : undefined;
+      return owner ?? HOME_BACKEND;
+    }
+    case 'project': {
+      const id = args[0];
+      const owner = typeof id === 'string' ? projectBackend(id) : undefined;
+      return owner ?? HOME_BACKEND;
+    }
+    case 'workspace': {
+      // A WorkspaceRef: the project id inside it names the machine. The
+      // zero ref (projectId '', the PR-review RPCs' "no local clone")
+      // resolves home, which is the forge-API path's only sensible home.
+      const ref = args[0];
+      const id = ref !== null && typeof ref === 'object' ? (ref as { projectId?: unknown }).projectId : undefined;
+      const owner = typeof id === 'string' ? projectBackend(id) : undefined;
+      return owner ?? HOME_BACKEND;
+    }
+    case 'selected':
+      return selectedBackend();
+    case 'all':
+      return null;
+    case 'home':
+    default:
+      return HOME_BACKEND;
+  }
+}
+
+// Call.ByID / Call.ByName route through the resolved transport handle.
+// Generated bindings hit ByID exclusively; hand-written code paths (none
+// today) can use ByName.
 export const Call = {
   ByID(methodId: number, ...args: unknown[]): CancellablePromise<unknown> {
-    return wrap(wsClient.callByID(methodId, args));
+    // Drained FIRST, before anything can await: a pinned target is armed
+    // for one synchronous dispatch and must not survive into the next.
+    const pinned = takePinnedBackend();
+    // The single-backend fast path, and the reason a client with one
+    // connection pays nothing for the registry: there is no route to
+    // resolve when there is only one place a call can go.
+    if (attachedBackendCount() === 1) {
+      return wrap(homeBackend().handle.callByID(methodId, args));
+    }
+    // A pinned call is still a call that can MINT an id (a git-status
+    // subscribe is pinned by its own store), and an id nobody indexed
+    // routes home on the next call about it. So the pinned path indexes
+    // its answer exactly as the routed path below does: the pin names the
+    // machine, which is the fact the index wants.
+    if (pinned !== null) {
+      return wrap(
+        resolveTransport(pinned)
+          .callByID(methodId, args)
+          .then((result) => {
+            noteFamilyRowsFromCall(methodId, result, pinned);
+            return result;
+          }),
+      );
+    }
+    const target = resolveRoute(methodId, args);
+    if (target === null) {
+      return wrap(
+        callEveryBackend(methodId, args, (result, backendId) => {
+          noteRowsFromCall(methodId, result, backendId);
+        }),
+      );
+    }
+    // Ids a routed call ANSWERS with are indexed too: a workflow item, a
+    // terminal and a subscription are only ever learned from the call that
+    // listed or minted them, and the next call about one has to know which
+    // machine that was. Only on the multi-backend path — the fast path
+    // above returns before any of this exists.
+    return wrap(
+      resolveTransport(target)
+        .callByID(methodId, args)
+        .then((result) => {
+          noteFamilyRowsFromCall(methodId, result, target);
+          return result;
+        }),
+    );
   },
+  // ByName has no id to look up, so it takes the route every unclassified
+  // call takes: the page's own backend. A PINNED target still wins, and
+  // must — `withBackendTarget` is the caller saying which machine it means,
+  // and a door that quietly dropped it would ask home about another
+  // machine's ports and get a plausible answer. The pin is drained here
+  // whether or not it is used, for the reason ByID drains it first: it is
+  // armed for one synchronous dispatch and must not survive into the next.
+  //
+  // Anything reaching this door wants a route of its own rather than a
+  // second name→route table beside the generated one; the pin is the
+  // stopgap a hand-declared wrapper uses until its method is generated.
   ByName(method: string, ...args: unknown[]): CancellablePromise<unknown> {
-    return wrap(wsClient.callByName(method, args));
+    const pinned = takePinnedBackend();
+    return wrap(resolveTransport(pinned ?? undefined).callByName(method, args));
   },
 };
 
@@ -195,16 +350,25 @@ export const Create = {
   Events: {} as Record<string, (source: unknown) => unknown>,
 };
 
-// Events.On registers a subscriber via wsClient. The handler receives
-// `{name, data}` to match Wails' real runtime contract — the events.ts
-// store and other consumers expect the wrapped shape.
+// Events.On registers a subscriber on EVERY attached backend, and on every
+// backend attached afterwards. The handler receives `{name, data}` to
+// match Wails' real runtime contract — the events.ts store and other
+// consumers expect the wrapped shape — plus `origin`, the connection the
+// event arrived on.
+//
+// The origin comes from the DELIVERING handle rather than from one
+// resolved at subscribe time, which is the whole difference between one
+// backend and several: the stamp used to be a property of the app and is
+// now a property of the delivery. Stamping stays free — each handle hands
+// back the same origin object until its identity moves, so this adds a
+// property to an envelope that was already being allocated per event.
 export const Events = {
   On(
     name: string,
-    handler: (ev: { name: string; data: unknown }) => void,
+    handler: (ev: { name: string; data: unknown; origin?: EventOrigin }) => void,
   ): () => void {
-    return wsClient.subscribe(name, (data) => {
-      handler({ name, data });
+    return subscribeEveryBackend(name, (data, transport) => {
+      handler({ name, data, origin: transport.origin });
     });
   },
   Emit(_event: { name: string; data: unknown }): void {

@@ -207,7 +207,7 @@ func TestGitStatusSubscribeReleasesOnConnectionClose(t *testing.T) {
 	// the WS connection ends, RunCleanups fires and our registered
 	// callback releases the subscription. This is the safety net for
 	// unclean disconnects (network drop, kill -9 client).
-	ctx, state := transport.WithConnState(context.Background())
+	ctx, state := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
 	res, err := app.GitStatusSubscribe(ctx, workspaceRefForThread(thread))
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)

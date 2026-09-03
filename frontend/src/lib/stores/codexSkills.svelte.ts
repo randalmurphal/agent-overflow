@@ -14,7 +14,7 @@
 import { GetCodexSkills } from './bindings';
 import type { CodexCwdSkills, CodexSkill } from './bindings';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
-import { isViewOnlySession } from '../transport/runMode';
+import { hasScope } from '../transport/scopes';
 import { errString } from '../utils/errors';
 
 export type CodexSkillsStatus = 'unknown' | 'loading' | 'ready' | 'error';
@@ -51,9 +51,10 @@ export function ensureCodexSkills(
   forceReload = false,
 ): Promise<void> {
   if (!workspacePath) return Promise.resolve();
-  // A remote client cannot reach a local-only method at all. Answer from here
-  // so the menu can hide the section without a round trip that would reject.
-  if (isViewOnlySession()) {
+  // A session without the grant cannot reach the method at all. Answer from
+  // here so the menu can hide the section without a round trip that would
+  // only be refused.
+  if (!hasScope('threads:operate')) {
     byWorkspace.set(workspacePath, {
       status: 'error',
       skills: [],

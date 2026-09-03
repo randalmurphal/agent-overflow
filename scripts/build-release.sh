@@ -104,6 +104,26 @@ validate_elf() {
 	fi
 }
 
+# The headless artifact is what `agent-overflow serve` runs on a machine with
+# no desktop session: `-tags nogui` links no GTK and no WebKit, so it installs
+# on a server that has neither. The flag set is deliberately the SAME one
+# build/windows/Taskfile.yml uses for the WSL payload — that binary is this
+# binary, and two shipping artifacts built with one tag should not disagree
+# about how they were built. It is built here rather than copied out of the WSL
+# leg so --skip-wsl cannot silently drop it from a release.
+#
+# Depends on frontend/dist being fresh, so it must run after `make build`.
+build_headless_linux() {
+	out=$1
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build \
+		-tags production,nogui \
+		-trimpath \
+		-buildvcs=false \
+		-ldflags="-w -s -X main.version=$VERSION" \
+		-o "$out" \
+		"$ROOT_DIR"
+}
+
 validate_launcher() {
 	path=$1
 	[ -f "$path" ] || { echo "ERROR: missing Windows launcher: $path" >&2; exit 1; }
@@ -167,6 +187,11 @@ if [ "$ONLY_MACOS" -eq 0 ]; then
 			make -C "$ROOT_DIR" build VERSION="$VERSION"
 			validate_elf "$ROOT_DIR/bin/agent-overflow"
 			copy_file "$ROOT_DIR/bin/agent-overflow" "$OUT_DIR/agent-overflow-linux-amd64"
+
+			echo "==> Building headless Linux artifact"
+			build_headless_linux "$ROOT_DIR/bin/agent-overflow-headless"
+			validate_elf "$ROOT_DIR/bin/agent-overflow-headless"
+			copy_file "$ROOT_DIR/bin/agent-overflow-headless" "$OUT_DIR/agent-overflow-headless-linux-amd64"
 			;;
 	*)
 			echo "ERROR: Linux amd64 release artifacts must be built on Linux amd64/WSL." >&2

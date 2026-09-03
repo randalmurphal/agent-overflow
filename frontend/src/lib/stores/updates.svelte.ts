@@ -14,8 +14,11 @@ import {
 } from './bindings';
 import type { ReleaseSummary } from './bindings';
 import { wailsEventOn } from './wailsEvents';
+import { isScopeRefusal } from '../transport/scopeRefusal';
+import { hasScope } from '../transport/scopes';
 import { isMethodUnavailableError } from './transportStatus.svelte';
 import { userFacingError } from '../utils/userFacingError';
+import { hasPendingServiceUpdate } from './serviceUpdate.svelte';
 
 export type { ReleaseSummary };
 
@@ -51,8 +54,8 @@ interface ErrorPayload {
 
 const state = $state({
   // supported is false on builds that can't self-update (dev builds) and on
-  // remote sessions, where the updater RPCs are LocalOnly; the UI hides the
-  // section and the badge stays dark.
+  // remote sessions, where the updater RPCs are `host`-scoped and no grant
+  // reaches them; the UI hides the section and the badge stays dark.
   supported: true,
   phase: 'idle' as UpdaterPhase,
   currentVersion: '',
@@ -96,9 +99,14 @@ export function getUpdateState(): UpdateState {
  * installed+restarted. Drives the sidebar badge. A successful restart relaunches
  * into the new version, whose on-launch check returns up-to-date and clears
  * latestVersion, so the badge naturally goes dark.
+ *
+ * The same badge also lights for a SUPERVISED machine this client is attached
+ * to with a newer release waiting (`serviceUpdate.svelte.ts`): the two
+ * updaters are different mechanisms, but "something on Settings → Updates
+ * wants you" is one fact, and the badge sites ask it here once.
  */
 export function hasPendingUpdate(): boolean {
-  return state.supported && state.latestVersion !== '';
+  return (state.supported && state.latestVersion !== '') || hasPendingServiceUpdate();
 }
 
 /** isDownloadInFlight reports whether the phase is one of the active
@@ -188,6 +196,14 @@ export async function runUpdateCheck(): Promise<void> {
   if (isUpdateFlowBusy(state.phase)) {
     return;
   }
+  // The updater RPCs are `host`-scoped, and this one runs unprompted at
+  // launch. Off-host that call can only be refused, so ask first and land in
+  // the same resting state the refusal would have produced — the reactive
+  // catch below stays as the backstop for a refusal nobody predicted.
+  if (!hasScope('host')) {
+    markUnsupported();
+    return;
+  }
   state.phase = 'checking';
   state.error = '';
   try {
@@ -220,13 +236,17 @@ export async function runUpdateCheck(): Promise<void> {
       state.phase = 'up-to-date';
     }
   } catch (err) {
-    if (isMethodUnavailableError(err)) {
-      // A remote (non-loopback) session. The updater RPCs are LocalOnly, and
-      // the transport refuses them with the same method_not_found envelope it
-      // uses for an unregistered method — see isMethodUnavailableError. That
-      // is not a failure worth alarming the user about; it is this session
-      // telling us in-app updates aren't reachable from here, which is exactly
-      // what the unsupported copy says.
+    if (isScopeRefusal(err) || isMethodUnavailableError(err)) {
+      // A remote session. The updater RPCs carry `//ao:scope host`, which no
+      // session may be granted, so the transport refuses them with
+      // `scope_required` naming `host`. That is not a failure worth alarming
+      // the user about; it is this session telling us in-app updates aren't
+      // reachable from here, which is exactly what the unsupported copy says.
+      //
+      // `method_not_found` is still accepted beside it: a backend older than
+      // this bundle refused the same call by NAME, and a tab that outlived an
+      // update must not start reporting an error where it used to say
+      // "unsupported".
       markUnsupported();
       return;
     }
@@ -239,8 +259,9 @@ export async function runUpdateCheck(): Promise<void> {
  * markUnsupported puts the store in the "self-update isn't available on this
  * session" resting state. Two paths reach it — the backend answering
  * supported=false (dev build, no updater configured) and a remote session
- * whose LocalOnly updater RPCs are refused — and neither writes these fields
- * directly, so the two can't drift into leaving stale release metadata behind.
+ * whose `host`-scoped updater RPCs are refused — and neither writes these
+ * fields directly, so the two can't drift into leaving stale release metadata
+ * behind.
  */
 function markUnsupported(): void {
   state.supported = false;

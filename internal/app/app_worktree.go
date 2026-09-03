@@ -44,6 +44,8 @@ type WorktreeListItem struct {
 
 // GitCreateWorktree creates a new worktree for the requested branch and returns its path.
 // Preserves legacy semantics — no carry-over of local changes.
+//
+//ao:scope git:operate
 func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 	updated, err := a.PrepareThreadWorktree(threadID, "", branch, false)
 	if err != nil {
@@ -67,6 +69,8 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 //
 // On stash-apply failure the worktree is removed and the stash entry is
 // kept so the user can recover via `git stash list`.
+//
+//ao:scope git:operate
 func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string, carryLocalChanges bool) (store.Thread, error) {
 	unlock := a.threadLocks().Lock(threadID)
 	// Registered BEFORE the unlock defer so LIFO runs it AFTER the lock is
@@ -142,37 +146,18 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 
 	// ProjectID is already set on the thread; the project's Path is the
 	// git repo root. WorktreePath + WorkspacePath diverge at this point.
-	previousWorkspace := thread.WorkspacePath
+	move := checkoutMoveFrom(thread, "create worktree")
+	// The worktree was created on disk, so any failure past here tears it
+	// back down rather than leaking a directory — and a transcript that
+	// cannot be relocated refuses the whole create, leaving the thread
+	// resumable from the workspace it still occupies.
+	move.rollback = func() { _ = core.RemoveWorktreeForce(project, worktreePath, true) }
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
 	thread.Branch = resolvedBranch
-	var purge []string
-	if !gitops.SameFilesystemPath(previousWorkspace, thread.WorkspacePath) {
-		// Carry the Claude transcript to the new slug BEFORE committing. A
-		// relocation that can't preserve the conversation refuses the whole
-		// create — tear the worktree back down and leave the thread resumable
-		// from its current workspace rather than silently start fresh.
-		moved, err := a.copyClaudeSessionForWorkspaceChange(thread, previousWorkspace)
-		if err != nil {
-			_ = core.RemoveWorktreeForce(project, worktreePath, true)
-			return store.Thread{}, fmt.Errorf("create worktree: %w", err)
-		}
-		purge = moved
-	}
-	if err := a.store.UpdateThread(thread); err != nil {
-		// Worktree was created on disk but the store update failed. Clean up
-		// so we don't leak a worktree directory.
-		_ = core.RemoveWorktreeForce(project, worktreePath, true)
-		return store.Thread{}, err
-	}
-	// Commit succeeded — drop the stale pre-move copies (best-effort).
-	a.purgeRelocatedClaudeSessions(threadID, purge)
-	// The thread just left whatever workspace it was in; a setup run still
-	// going for that one describes a worktree it no longer occupies.
-	a.releaseThreadWorktreeSetup(threadID, thread.WorkspacePath)
-	refreshed, err := a.restartSessionIfAffected(threadID, "workspace")
+	refreshed, err := a.commitThreadCheckout(thread, move)
 	if err != nil {
-		return store.Thread{}, fmt.Errorf("create worktree: refresh thread after workspace switch: %w", err)
+		return store.Thread{}, err
 	}
 	// This call cut the worktree, so the project's recipe runs over it — see
 	// the deferred kickoff above for why it is not started here.
@@ -186,6 +171,8 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 // add <path> <existing>` and refuses if the branch is already checked out
 // elsewhere — git's own one-branch-one-worktree invariant. Frontend dedups by
 // flipping to the existing worktree before calling here.
+//
+//ao:scope git:operate
 func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error) {
 	unlock := a.threadLocks().Lock(threadID)
 	// Registered BEFORE the unlock defer so LIFO runs it AFTER the lock is
@@ -229,32 +216,17 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 		return store.Thread{}, err
 	}
 
-	previousWorkspace := thread.WorkspacePath
+	move := checkoutMoveFrom(thread, "attach worktree")
+	// Same posture as the create path: the checkout exists on disk now, so a
+	// transcript that cannot be relocated (or a store write that fails) tears
+	// it back down instead of leaving it behind.
+	move.rollback = func() { _ = core.RemoveWorktreeForce(project, worktreePath, true) }
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
 	thread.Branch = branch
-	var purge []string
-	if !gitops.SameFilesystemPath(previousWorkspace, thread.WorkspacePath) {
-		// Carry the Claude transcript to the new slug before committing; refuse
-		// the attach (and tear the worktree back down) if it can't be preserved.
-		moved, err := a.copyClaudeSessionForWorkspaceChange(thread, previousWorkspace)
-		if err != nil {
-			_ = core.RemoveWorktreeForce(project, worktreePath, true)
-			return store.Thread{}, fmt.Errorf("attach worktree: %w", err)
-		}
-		purge = moved
-	}
-	if err := a.store.UpdateThread(thread); err != nil {
-		_ = core.RemoveWorktreeForce(project, worktreePath, true)
-		return store.Thread{}, err
-	}
-	a.purgeRelocatedClaudeSessions(threadID, purge)
-	// The thread just left whatever workspace it was in; a setup run still
-	// going for that one describes a worktree it no longer occupies.
-	a.releaseThreadWorktreeSetup(threadID, thread.WorkspacePath)
-	refreshed, err := a.restartSessionIfAffected(threadID, "workspace")
+	refreshed, err := a.commitThreadCheckout(thread, move)
 	if err != nil {
-		return store.Thread{}, fmt.Errorf("attach worktree: refresh thread after workspace switch: %w", err)
+		return store.Thread{}, err
 	}
 	// This call cut the worktree. The branch already existed, but the checkout
 	// is freshly created (attach refuses a branch checked out anywhere else),
@@ -268,6 +240,8 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 // Stays thread-keyed because its subject IS the thread's own attachment (the
 // sidebar row action, archived threads, proposed-plan implementation); it
 // resolves that attachment and hands the workspace-keyed removal the answer.
+//
+//ao:scope git:operate
 func (a *App) GitRemoveWorktree(threadID string) error {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -289,6 +263,8 @@ func (a *App) GitRemoveWorktree(threadID string) error {
 // The returned state is the CALLER's workspace after the removal: unchanged
 // when it removed some other worktree, reset to the project root when it
 // removed its own.
+//
+//ao:scope git:operate
 func (a *App) RemoveOtherWorktree(ws WorkspaceRef, worktreePath string, force bool) (GitWorkspaceState, error) {
 	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
@@ -451,7 +427,7 @@ func (a *App) removeProjectWorktree(project, worktreePath string, force bool) er
 		// worktree path until the user navigates. The caller's pane gets a
 		// redundant echo (the binding return already syncs it), which the
 		// pane store treats as idempotent.
-		a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: "full", Thread: &t})
+		a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &t})
 		if _, err := a.restartSessionIfAffected(id, "workspace"); err != nil {
 			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s session refresh failed: %w", id, err))
 			continue
@@ -606,6 +582,8 @@ func (a *App) threadsReferencingWorkspace(path string) ([]string, error) {
 
 // GitWorktreeStatus classifies any worktree of the referenced workspace's
 // project for the cleanup UI.
+//
+//ao:scope git:operate
 func (a *App) GitWorktreeStatus(ws WorkspaceRef, worktreePath string) (WorktreeStatus, error) {
 	project, _, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
@@ -624,6 +602,8 @@ func (a *App) computeWorktreeStatus(project, worktreePath string) (WorktreeStatu
 
 // GitListWorktrees lists the worktrees of the referenced workspace's
 // repository.
+//
+//ao:scope git:operate
 func (a *App) GitListWorktrees(ws WorkspaceRef) ([]WorktreeListItem, error) {
 	project, _, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
@@ -664,7 +644,7 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 	}
 
 	core := a.gitCore()
-	previousWorkspace := thread.WorkspacePath
+	move := checkoutMoveFrom(thread, "switch workspace")
 	switch {
 	case gitops.SameFilesystemPath(target, project):
 		thread.WorkspacePath = project
@@ -685,31 +665,92 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 			thread.Branch = core.CurrentBranch(worktree.Path)
 		}
 	}
+	// Switching into an existing workspace has nothing to roll back: the
+	// target was provisioned (or not) by whoever cut it, and a refused
+	// relocation leaves the thread where it already was.
+	return a.commitThreadCheckout(thread, move)
+}
+
+// threadCheckoutMove is one thread's move to a different checkout: where its
+// workspace / worktree / branch triple stood before the caller wrote the new
+// one onto the row, plus what to do if the move cannot be committed.
+type threadCheckoutMove struct {
+	previousWorkspace string
+	previousWorktree  string
+	previousBranch    string
+	// label prefixes the errors this move can produce ("create worktree").
+	label string
+	// rollback tears down a checkout THIS call created, when the transcript
+	// relocation or the store write fails. Nil for a move between checkouts
+	// that both already existed.
+	rollback func()
+}
+
+// checkoutMoveFrom snapshots the triple a move is leaving, before the caller
+// overwrites it.
+func checkoutMoveFrom(thread store.Thread, label string) threadCheckoutMove {
+	return threadCheckoutMove{
+		previousWorkspace: thread.WorkspacePath,
+		previousWorktree:  thread.WorktreePath,
+		previousBranch:    thread.Branch,
+		label:             label,
+	}
+}
+
+// commitThreadCheckout persists a thread whose workspace / worktree / branch
+// the caller has just rewritten, and BROADCASTS the row it moved.
+//
+// It is the chokepoint for all three paths that move a thread's checkout —
+// cutting a new worktree, attaching an existing branch's, and switching to a
+// workspace that already exists — so no caller can move one silently: the
+// RPC's return value only ever reaches the client that issued it, and the two
+// worktree paths returned it with no broadcast at all until 2026-09-03. It
+// also keeps the ORDER those paths share in one place: relocate the Claude
+// transcript, commit, purge the stale copies, release a setup run for the
+// workspace the thread has left, then restart the session.
+func (a *App) commitThreadCheckout(thread store.Thread, move threadCheckoutMove) (store.Thread, error) {
+	threadID := thread.ID
+	rollback := func() {
+		if move.rollback != nil {
+			move.rollback()
+		}
+	}
 	var purge []string
-	if !gitops.SameFilesystemPath(previousWorkspace, thread.WorkspacePath) {
-		// Carry the Claude transcript to the target slug before committing. If it
-		// can't be preserved, refuse the switch: the thread stays in its current
-		// workspace, where its history still resolves, rather than moving into a
-		// state where resume fails.
-		moved, err := a.copyClaudeSessionForWorkspaceChange(thread, previousWorkspace)
+	if !gitops.SameFilesystemPath(move.previousWorkspace, thread.WorkspacePath) {
+		// Carry the Claude transcript to the target slug BEFORE committing. A
+		// relocation that cannot preserve the conversation refuses the whole
+		// move, leaving the thread resumable from the workspace it is in
+		// rather than silently starting fresh.
+		moved, err := a.copyClaudeSessionForWorkspaceChange(thread, move.previousWorkspace)
 		if err != nil {
-			return store.Thread{}, fmt.Errorf("switch workspace: %w", err)
+			rollback()
+			return store.Thread{}, fmt.Errorf("%s: %w", move.label, err)
 		}
 		purge = moved
 	}
 	if err := a.store.UpdateThread(thread); err != nil {
+		rollback()
 		return store.Thread{}, err
 	}
+	// Commit succeeded — drop the stale pre-move copies (best-effort).
 	a.purgeRelocatedClaudeSessions(threadID, purge)
-	// Switching into an existing workspace never runs setup — the target was
-	// provisioned (or not) by whoever cut it. Switching AWAY releases the run
-	// whose worktree the thread has left; switching back into the same path is
-	// a no-op the helper recognises by comparing paths.
+	// The thread just left whatever workspace it was in; a setup run still
+	// going for that one describes a worktree it no longer occupies. Moving
+	// back into the same path is a no-op the helper recognises by comparing
+	// paths.
 	a.releaseThreadWorktreeSetup(threadID, thread.WorkspacePath)
 	refreshed, err := a.restartSessionIfAffected(threadID, "workspace")
 	if err != nil {
-		return store.Thread{}, fmt.Errorf("switch workspace: refresh thread after workspace switch: %w", err)
+		return store.Thread{}, fmt.Errorf("%s: refresh thread after workspace switch: %w", move.label, err)
 	}
+	// Broadcast so a second attached client's pane follows the thread to its
+	// new checkout. `store.UpdateThread` rewrites the whole row, so the
+	// no-change test is the three fields a move owns — re-selecting the
+	// workspace the thread already sits in moves nothing and says nothing.
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, refreshed,
+		move.previousWorkspace != thread.WorkspacePath ||
+			move.previousWorktree != thread.WorktreePath ||
+			move.previousBranch != thread.Branch)
 	return refreshed, nil
 }
 

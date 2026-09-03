@@ -19,7 +19,9 @@ Two callers:
 - `distro.go` is the `wsl.exe -l -v` output parser. UTF-16 LE BOM-aware,
   whitespace-tolerant (column widths shift across Windows versions).
 - `launcher.go` is the public surface: `Distro`, `Bootstrap`, `Launcher`,
-  `LaunchOptions`, plus the `readBootstrapLine` helper. Cross-platform
+  `LaunchOptions`, the two-binary contract constants
+  (`ResetTransportPortFlag`, `PageURLPath`, `PageURLWebviewQuery`), plus the `readBootstrapLine`
+  helper. Cross-platform
   in shape; Linux/macOS callers get errors from `Launch` /
   `InstallPayload` so the package compiles for unit tests on those hosts.
   Also owns `buildLaunchArgs` (the wsl.exe argv builder) so the argument
@@ -116,6 +118,71 @@ Two callers:
   - The WSL-side backend itself. That's the root `main.go`'s headless
     mode (`--print-url-fd`).
 
+## The page URL comes from the backend, and its ticket does not
+
+`Bootstrap.PageURL` is the URL the WebView2 navigates to, and the
+launcher never builds one — only the backend knows its own origin, and a
+bootstrap line without `pageUrl` is refused at the parse boundary rather
+than opening an empty window. The URL carries **no credential**: it is
+copyable, it lands in `launcher.log` and in window diagnostics, and it
+outlives its single use. The page's **one-time page ticket** arrives by
+`ExecJS` instead, from `uiwindow.DeliverPageTicket` in
+`cmd/agent-overflow-windows`, and the page exchanges it for its session
+cookie exactly as a browser exchanges a URL ticket
+(`internal/pagehost`).
+
+A ticket is spent by the document it was minted for, so every navigation
+needs its own. The launcher asks the backend's `PageURLPath` (`/pageurl`)
+route with `PageURLWebviewQuery` (`?host=webview`), presenting
+`Bootstrap.Token` as a bearer header; that shape answers JSON with the
+bare URL and the ticket in separate fields rather than the plain-text
+ticketed URL a browser tool gets. Both constants are restated here rather
+than imported so this package stays linkable without the transport
+server; drift-guard tests compare them to `transport.PageURLPath` and
+`pagehost.Param`/`Webview`. If the request fails the launcher logs and
+reuses the launch URL — a page that must wait for its next injection at
+worst, never a wedge.
+
+`Bootstrap.Token` is the session credential for the launcher's OWN
+requests (the connectivity probe, the notification socket). It is never
+put on a page URL either.
+
+## The launcher forwards the backend's session credential
+
+`internal/relaysession`, reached through the small
+`newSessionCredentialSource` adapter in `notification_client.go`. Every
+launcher connection reaches the WSL backend through the localhost relay,
+so it looks like a loopback peer at the socket — indistinguishable from a
+same-host relay carrying somebody else's traffic. Presenting the
+credential the backend minted for its own local page channel is what makes
+the notification socket attributable and revocable instead of trusted for
+its apparent topology (`docs/specs/remote-access.md` §4, "Local clients").
+
+The mechanism is shared with the `--connect` stub, which has the same
+problem with the same shape, so it lives in one package rather than twice.
+That package restates the cookie prefix and the header name for the reason
+`PageURLPath` is restated here — the Windows launcher links it and does
+not link the transport server — and its
+`TestSessionCarriersMatchTransport` pins both spellings. Read
+`internal/relaysession`'s package doc for the full contract; what matters
+here is the launcher's half:
+
+- **It rides a header on the dial** (`X-AO-Session`), never the URL. A Go
+  dial can set one, and a credential in a URL lands in every log that
+  records them.
+- **Best-effort by construction.** A backend still booting (503), an older
+  backend, or one whose session core did not start all leave the
+  credential empty, and the connection carries the launch token alone
+  exactly as before. Forwarding improves attribution; it is never a new
+  requirement for the launcher to connect. A WebSocket URL that will not
+  map onto a bootstrap URL yields an inert source, not a construction
+  failure.
+- **A refused dial marks the credential stale** (`Source.Stale`), because
+  that is the one signal a forwarded credential has gone dead (the backend
+  restarted, or the session was revoked). The next attempt in the ladder
+  fetches — after the backoff, when the backend is likelier to answer —
+  rather than replaying a dead credential until the launcher restarted.
+
 ## WSL2 localhost forwarding
 
 WSL2 forwards `127.0.0.1:<port>` from inside the distro to the Windows
@@ -136,7 +203,8 @@ package because both binaries need the same spelling.
 
 `cmd/agent-overflow-windows/main.go::launchAndProbe` runs a
 deadline-bounded HTTP probe against `http://localhost:<port>/bootstrap.json`
-after `Launch` returns, and drives that single retry. If the retry also
+after `Launch` returns, presenting `Bootstrap.Token` as an
+`Authorization: Bearer` header, and drives that single retry. If the retry also
 fails, it routes the WebView to a `/connectivity-error` page that names
 the actionable mitigation explicitly:
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -103,4 +104,27 @@ func verifyBootstrapProcess(bs harnessclient.Bootstrap) error {
 		return fmt.Errorf("pid namespace %q is not this CLI's %q; refusing cross-namespace signal", bs.PIDNamespace, instanceinfo.CurrentPIDNamespace())
 	}
 	return instanceinfo.VerifyProcessIdentity(bs.PID, expected)
+}
+
+// pageURLForTarget returns a page URL a browser can actually boot from:
+// one carrying a freshly minted one-time ticket, asked of the instance
+// itself.
+//
+// Every command that hands out a URL goes through here. The URL recorded
+// in the instance file was minted when the backend booted and is spent
+// by the first page that loads it (a `--window` boot spends it
+// immediately), so reusing it would hand out a link whose credential
+// exchange has already happened.
+//
+// Falls back to the recorded URL when the instance cannot answer, with a
+// warning: the recorded URL still boots any browser that already holds
+// the session cookie, and every other command reports an unreachable
+// instance in its own terms.
+func pageURLForTarget(ctx context.Context, e *env, bs harnessclient.Bootstrap) string {
+	fresh, err := bs.PageURL(ctx)
+	if err != nil {
+		e.warnf("could not mint a fresh page url (%v); using the boot url, whose ticket may be spent", err)
+		return bs.URL
+	}
+	return fresh
 }

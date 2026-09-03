@@ -308,9 +308,9 @@ function reportSpanFailure(path: string, err: unknown): void {
  * above each hunk, routed by scope: the checkout scopes prime out of
  * the context's workspace (`HighlightPatchWithContext`), the edits scope
  * out of its thread's persisted snapshots
- * (`HighlightEditPatchWithContext`). Both are LocalOnly; on rejection —
- * the expected path for `--connect` remote clients — the request
- * degrades to the wire-safe HighlightPatch, still recorded under the
+ * (`HighlightEditPatchWithContext`). Both RPCs carry `files:read`; on
+ * rejection — the expected path for `--connect` remote clients — the
+ * request degrades to the wire-safe HighlightPatch, still recorded under the
  * scoped key so the primed path is not retried within this client's
  * lifetime. Chat cards pass no context.
  *
@@ -389,7 +389,7 @@ export async function requestFileSpans(
           ? await HighlightEditPatchWithContext(subject, req)
           : await HighlightPatchWithContext(primed.workspace, req);
       } catch {
-        // LocalOnly method rejected — remote client or scope failure.
+        // Priming refused — a session without `files:read`, or a scope failure.
         // Fall through to the wire-safe unprimed request.
       }
     }

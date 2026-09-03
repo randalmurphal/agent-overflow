@@ -3,13 +3,16 @@ package app
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/sessionimport"
 	"agent-overflow/internal/slicesx"
+	"agent-overflow/internal/triage"
 )
 
 // --- Session import: provider sessions on disk → AO threads ---
@@ -20,9 +23,10 @@ import (
 // per imported thread would turn "import my sessions" into a billed
 // operation.
 //
-// Every method in this file is LocalOnly (internal/transport/internalmethods.go):
-// they read the user's provider homes and hand back file paths and prompt
-// text from them.
+// Every method here carries //ao:scope threads:operate: they read the user's
+// provider homes and hand back file paths and prompt text from them, and they
+// write threads. A session granted that scope may run an import from off-host,
+// which is what the grant means.
 
 // ImportScanRequest is how a caller asks for the listing.
 //
@@ -190,6 +194,9 @@ type SessionImportProgressEvent struct {
 // Cached for sessionimport.ScanTTL; the request's ForceRefresh bypasses it. A
 // provider whose home cannot be read is reported in Providers and does not
 // fail the call — a broken Codex home must not take Claude's sessions away.
+//
+//ao:scope threads:operate
+//ao:route selected
 func (a *App) ListImportableSessions(req ImportScanRequest) (ImportScanResult, error) {
 	scan, err := a.sessionImporter().List(req.ForceRefresh)
 	if err != nil {
@@ -211,6 +218,8 @@ func (a *App) ListImportableSessions(req ImportScanRequest) (ImportScanResult, e
 // the thread diverged; a send landing between those reads would make the
 // answer describe a thread that no longer exists — reporting "3 new items" for
 // a thread that is, by the time the user clicks, diverged-local.
+//
+//ao:scope threads:operate
 func (a *App) CheckThreadImportUpdates(threadID string) (ImportUpdateStatus, error) {
 	update, err := a.sessionImporter().CheckThreadUpdates(threadID)
 	if err != nil {
@@ -233,6 +242,8 @@ func (a *App) CheckThreadImportUpdates(threadID string) (ImportUpdateStatus, err
 // It re-plans rather than trusting a status the caller checked earlier: the
 // file and the thread can both have moved since, and a stale plan would
 // append rows against indices the thread has since allocated.
+//
+//ao:scope threads:operate
 func (a *App) ImportThreadUpdates(threadID string) (ImportUpdateResult, error) {
 	result, err := a.sessionImporter().ApplyThreadUpdates(threadID)
 	if err != nil {
@@ -252,6 +263,9 @@ func (a *App) ImportThreadUpdates(threadID string) (ImportUpdateResult, error) {
 // Duplicate ids in one request collapse: the scan's dedup happens BEFORE a
 // run, so importing one row twice in the same run would create the threads
 // twice.
+//
+//ao:scope threads:operate
+//ao:route selected
 func (a *App) ImportSessions(req ImportSessionsRequest) (ImportRunHandle, error) {
 	handle, err := a.sessionImporter().Start(req.IDs)
 	if err != nil {
@@ -263,6 +277,9 @@ func (a *App) ImportSessions(req ImportSessionsRequest) (ImportRunHandle, error)
 // CancelSessionImport stops the named run. The run still emits its terminal
 // frame, with Completed short of Total — a listener never has to infer the
 // end from silence.
+//
+//ao:scope threads:operate
+//ao:route selected
 func (a *App) CancelSessionImport(importID string) error {
 	return a.sessionImporter().Cancel(importID)
 }
@@ -354,10 +371,78 @@ func (a *App) newSessionImportManager(config sessionimport.ManagerConfig) *sessi
 	}
 	config.LockThread = a.threadLocks().Lock
 	config.ShutdownError = ErrShuttingDown
+	var imported importedRowBroadcast
 	config.EmitProgress = func(frame sessionimport.ProgressEvent) {
+		imported.announce(a, frame)
 		a.emit(eventchan.SessionImportProgress, wireSessionImportProgress(frame))
 	}
 	return sessionimport.NewManager(config)
+}
+
+// importedRowBroadcast turns the rows an import run creates into the ordinary
+// per-row frames every other write path emits.
+//
+// An import is the one write path that persisted threads and auto-created
+// projects with nothing said about them: the run reported its own progress and
+// the importing client compensated by re-reading the whole sidebar when the
+// run finished. Every OTHER connected client learned nothing until reload, and
+// the compensation could not be given to them because it is a whole-list
+// resync, not a row.
+//
+// The frames are `listed` in both families — an imported thread and an
+// auto-created project are new rows a sidebar must INSERT, which is exactly
+// what that action means — and the project goes first, so a client has the
+// project before the threads that name it.
+//
+// Projects are deduplicated for the life of one run: an import of forty
+// sessions in one repository would otherwise send forty identical project
+// frames. Threads are not, because each id appears in exactly one frame.
+type importedRowBroadcast struct {
+	mu       sync.Mutex
+	runID    string
+	projects map[string]struct{}
+}
+
+func (b *importedRowBroadcast) announce(a *App, frame sessionimport.ProgressEvent) {
+	if a.store == nil || len(frame.ThreadIDs) == 0 {
+		return
+	}
+	for _, threadID := range frame.ThreadIDs {
+		thread, err := a.store.GetThread(threadID)
+		if err != nil {
+			// The row is committed; a read that fails here costs this client
+			// the live insert and nothing else, since the next list has it.
+			log.Printf("session import: broadcast imported thread %s: %v", threadID, err)
+			continue
+		}
+		if b.claimProject(frame.ImportID, thread.ProjectID) {
+			if project, err := a.store.GetProject(thread.ProjectID); err != nil {
+				log.Printf("session import: broadcast imported project %s: %v", thread.ProjectID, err)
+			} else {
+				a.broadcastProjectRow(triage.ProjectActionListed, project)
+			}
+		}
+		a.broadcastThreadRow(triage.ThreadActionListed, thread)
+	}
+}
+
+// claimProject reports whether this run still owes a frame for the project,
+// resetting the set when a new run's id appears.
+func (b *importedRowBroadcast) claimProject(runID, projectID string) bool {
+	if projectID == "" {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.runID != runID || b.projects == nil {
+		b.runID = runID
+		b.projects = make(map[string]struct{})
+	}
+	if _, seen := b.projects[projectID]; seen {
+		return false
+	}
+	b.projects[projectID] = struct{}{}
+	return true
 }
 
 func wireImportScanResult(scan sessionimport.CachedScan) ImportScanResult {

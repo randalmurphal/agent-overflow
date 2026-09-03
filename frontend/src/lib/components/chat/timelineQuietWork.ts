@@ -322,7 +322,7 @@ export function createTimelineQuietWork(
         // in the message would mint a signature per pass and per count, which
         // is both unbounded map growth and a walk around the per-signature
         // cap. Console too, because a remote session cannot persist
-        // (`ReportFrontendErrorBatch` is LocalOnly) and the console line is
+        // (`ReportFrontendErrorBatch` is host-scoped) and the console line is
         // then the only surviving evidence.
         const detail = `pass "${mutatedBy}", ${mutatingLaps + 1} consecutive callbacks`;
         console.warn(

@@ -49,7 +49,7 @@ test('drag onto a group moves in, drag onto the list outside it moves out', asyn
   await harness.rpc('PinThread', alphaId);
   await harness.rpc('SetThreadGroup', [alphaId], group.id);
 
-  await page.goto(harness.url);
+  await harness.open(page);
   const groupRow = page.getByTestId('thread-group-row');
   await expect(groupRow).toHaveCount(1);
   // Grouping stripped Alpha's pin: the group carries the only pin affordance.
@@ -94,7 +94,7 @@ test('New Group… from a thread row renames inline, pins, and deletes back to t
   );
   const [oneId] = seed.projects[0].threadIds;
 
-  await page.goto(harness.url);
+  await harness.open(page);
   const oneRow = page.getByTestId('thread-row').filter({ hasText: 'One' });
   await oneRow.click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Move to Group' }).hover();

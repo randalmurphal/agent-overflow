@@ -17,7 +17,6 @@ import (
 	"agent-overflow/internal/eventchan"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
-	"github.com/wailsapp/wails/v3/pkg/updater/providers/github"
 )
 
 // testValidDigestHex is a syntactically valid 64-hex-char (32-byte) sha256
@@ -26,15 +25,29 @@ const testValidDigestHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123
 
 const testRepo = "owner/repo"
 
-// platformAssetName matches DefaultAssetMatcher on whatever GOOS/GOARCH the test
-// runs on: the literal tokens are embedded, so the matcher's substring check
-// (and arch aliasing) always finds it.
+// platformAssetName is the release artifact for whatever GOOS/GOARCH the test
+// runs on, spelled the way matchReleaseAsset requires: the product prefix, the
+// exact platform and arch tokens, and a shipped extension.
 var platformAssetName = "agent-overflow-" + runtime.GOOS + "-" + runtime.GOARCH + ".zip"
 
 // wslAssetName is the asset the headless WSL backend targets: a Windows binary
 // the launcher swaps in, named for platform "wsl" rather than the linux/amd64
 // process that downloads it.
 const wslAssetName = "agent-overflow-wsl-amd64.exe"
+
+// headlessAssetName is the windowless serve binary, and headlessPlatform is
+// the token a serve host targets it with. It is in these fixtures because it
+// is the artifact whose name CONTAINS another target's — the collision that
+// made matchReleaseAsset exact — so a source built for either of the two must
+// resolve only its own.
+const (
+	headlessPlatform  = "headless-linux"
+	headlessArch      = "amd64"
+	headlessAssetName = "agent-overflow-headless-linux-amd64"
+	// plainLinuxAssetName is the desktop artifact headlessAssetName must never
+	// be confused with, and vice versa.
+	plainLinuxAssetName = "agent-overflow-linux-amd64"
+)
 
 // Asset payloads the mock release server hands out, and the real SHA-256 of the
 // WSL one. Tests that download end to end need a checksum sidecar that actually
@@ -45,7 +58,29 @@ var (
 	platformAssetBytes = []byte("agent-overflow desktop payload — deterministic test bytes\n")
 	wslAssetDigest     = sha256.Sum256(wslAssetBytes)
 	wslAssetDigestHex  = hex.EncodeToString(wslAssetDigest[:])
+
+	// The serve host's pair: the windowless binary a supervised host installs,
+	// and the desktop binary in the same release that it must not take.
+	headlessAssetBytes     = []byte("agent-overflow headless serve payload — deterministic test bytes\n")
+	headlessAssetDigest    = sha256.Sum256(headlessAssetBytes)
+	headlessAssetDigestHex = hex.EncodeToString(headlessAssetDigest[:])
+	plainLinuxAssetBytes   = []byte("agent-overflow linux desktop payload — deterministic test bytes\n")
 )
+
+// sumsForHeadless is a SHASUMS256 body whose headless entry is the TRUE digest
+// of headlessAssetBytes, so a download through the real verifier succeeds. The
+// desktop entry beside it is deliberately bogus: nothing here should be able to
+// install that one, and a wrong digest is how that shows up as a refusal.
+func sumsForHeadless(string) string {
+	return headlessAssetDigestHex + "  " + headlessAssetName + "\n" +
+		testValidDigestHex + "  " + plainLinuxAssetName + "\n"
+}
+
+// sumsForHeadlessCorrupt claims a digest the headless bytes do not have, which
+// is what a mangled upload or a truncated transfer looks like from here.
+func sumsForHeadlessCorrupt(string) string {
+	return testValidDigestHex + "  " + headlessAssetName + "\n"
+}
 
 // sumsForWSL is a SHASUMS256 body whose wsl entry is the TRUE digest of
 // wslAssetBytes, so a download through the real verifier succeeds.
@@ -62,6 +97,7 @@ type relSpec struct {
 	draft        bool
 	withPlatform bool // include an asset matching the running platform
 	withWSL      bool // include the wsl-target asset the WSL backend installs
+	withHeadless bool // include the serve host's pair: headless AND plain linux
 	withChecksum bool // include the SHASUMS256 sidecar
 	withBogus    bool // include a non-matching asset (no platform/arch tokens)
 	published    time.Time
@@ -90,6 +126,25 @@ func buildRelease(srvURL string, s relSpec) apiRelease {
 			Size:               2048,
 			BrowserDownloadURL: srvURL + "/dl/wsl/" + s.tag,
 		})
+	}
+	if s.withHeadless {
+		// Both, and the plain one FIRST: that is the ordering under which the
+		// library's substring matcher would have handed a serve host the
+		// desktop binary, so a fixture listing only one would not exercise
+		// the rule that replaced it.
+		r.Assets = append(r.Assets,
+			apiAsset{
+				Name:               plainLinuxAssetName,
+				ContentType:        "application/octet-stream",
+				Size:               4096,
+				BrowserDownloadURL: srvURL + "/dl/linux/" + s.tag,
+			},
+			apiAsset{
+				Name:               headlessAssetName,
+				ContentType:        "application/octet-stream",
+				Size:               3072,
+				BrowserDownloadURL: srvURL + "/dl/headless/" + s.tag,
+			})
 	}
 	if s.withBogus {
 		r.Assets = append(r.Assets, apiAsset{
@@ -174,6 +229,8 @@ func newMockGitHub(t *testing.T, specs []relSpec, checksumBody func(tag string) 
 	}
 	mux.HandleFunc("/dl/wsl/", serveAsset(wslAssetBytes))
 	mux.HandleFunc("/dl/bin/", serveAsset(platformAssetBytes))
+	mux.HandleFunc("/dl/headless/", serveAsset(headlessAssetBytes))
+	mux.HandleFunc("/dl/linux/", serveAsset(plainLinuxAssetBytes))
 
 	srv = httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -191,7 +248,7 @@ func newTestTargetableFor(srv *httptest.Server, current, platform, arch string) 
 		req:           updater.CheckRequest{CurrentVersion: current, Platform: platform, Arch: arch},
 		baseURL:       srv.URL,
 		httpClient:    srv.Client(),
-		matcher:       github.DefaultAssetMatcher,
+		matcher:       matchReleaseAsset,
 	}
 }
 
@@ -327,7 +384,7 @@ func TestTargetableProviderResolveTagAllowsDowngrade(t *testing.T) {
 }
 
 func TestTargetableProviderResolveTagRejectsInvalidTag(t *testing.T) {
-	tp := &targetableProvider{repo: testRepo, checksumAsset: "SHASUMS256", matcher: github.DefaultAssetMatcher}
+	tp := &targetableProvider{repo: testRepo, checksumAsset: "SHASUMS256", matcher: matchReleaseAsset}
 	if _, err := tp.resolveTag(context.Background(), "../etc/passwd", platformRequest()); err == nil {
 		t.Fatal("expected resolveTag to reject an unsafe tag, got nil error")
 	}
@@ -578,14 +635,9 @@ func TestDownloadUpdateRejectedWhileBusy(t *testing.T) {
 // mock GitHub server, so service-level updater methods can be driven end to end.
 func newUpdaterApp(t *testing.T, srv *httptest.Server, current string) (*Service, *targetableProvider) {
 	t.Helper()
-	gh, err := github.New(github.Config{
-		Repository:    testRepo,
-		ChecksumAsset: "SHASUMS256",
-		BaseURL:       srv.URL,
-		HTTPClient:    srv.Client(),
-	})
+	gh, err := newGitHubProvider(testRepo, "SHASUMS256", srv.URL, srv.Client())
 	if err != nil {
-		t.Fatalf("github.New: %v", err)
+		t.Fatalf("newGitHubProvider: %v", err)
 	}
 	req := updater.CheckRequest{CurrentVersion: current, Platform: runtime.GOOS, Arch: runtime.GOARCH}
 	tp := newTargetableProvider(gh, testRepo, "SHASUMS256", req, srv.Client())

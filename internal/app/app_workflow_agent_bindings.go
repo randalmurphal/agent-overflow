@@ -397,6 +397,9 @@ type WorkflowAgentAmendSeedsResult struct {
 //
 // LocalOnly: it mutates what autonomous provider sessions will be told to do,
 // which is the same authority as resuming the run.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAgentAmendSeeds(ctx context.Context, input WorkflowAgentAmendSeedsInput) (WorkflowAgentAmendSeedsResult, error) {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -513,6 +516,9 @@ type WorkflowAgentGuideRunResult struct {
 //
 // LocalOnly: it changes what an autonomous provider session will be told to do,
 // which is the same authority as amending its seeds or resuming it.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAgentGuideRun(ctx context.Context, input WorkflowAgentGuideRunInput) (WorkflowAgentGuideRunResult, error) {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -750,6 +756,9 @@ type WorkflowAgentUnitView struct {
 //
 // LocalOnly: see WorkflowAgentRunStatus. It additionally names local worktree
 // paths, which is a fact about this machine's filesystem.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAgentInspectRun(ctx context.Context, input WorkflowAgentInspectInput) (WorkflowAgentRunInspection, error) {
 	inspection, err := a.workflowApplication().InspectRun(ctx, workflowapp.InspectInput{
 		ItemID: input.ItemID, PhaseID: input.PhaseID, Attempt: input.Attempt,
@@ -824,6 +833,9 @@ type WorkflowAgentMemoryLog struct {
 // WorkflowAgentAddMemory is `agent-overflow memory add`.
 //
 // LocalOnly: it appends to a file under this machine's app-managed config root.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAgentAddMemory(ctx context.Context, input WorkflowAgentMemoryInput) (WorkflowAgentMemoryResult, error) {
 	result, err := a.workflowApplication().AddMemory(ctx, workflowapp.MemoryInput{
 		ItemID: input.ItemID, Kind: input.Kind, Text: input.Text, Files: input.Files,
@@ -839,6 +851,9 @@ func (a *App) WorkflowAgentAddMemory(ctx context.Context, input WorkflowAgentMem
 // WorkflowAgentListMemory is `agent-overflow memory list`.
 //
 // LocalOnly: it reads a file under this machine's app-managed config root.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAgentListMemory(ctx context.Context, input WorkflowAgentMemoryListInput) (WorkflowAgentMemoryLog, error) {
 	result, err := a.workflowApplication().ListMemory(ctx, workflowapp.MemoryListInput{
 		ItemID: input.ItemID, Kind: input.Kind,
@@ -898,6 +913,9 @@ type WorkflowAgentNarrative struct {
 //
 // LocalOnly: it reads a file out of this machine's app-managed run directory,
 // like every other local-filesystem read on the agent surface.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAgentRunNarrative(ctx context.Context, input WorkflowAgentNarrativeInput) (WorkflowAgentNarrative, error) {
 	narrative, err := a.workflowApplication().RunNarrative(ctx, workflowapp.NarrativeInput{
 		ItemID: input.ItemID, PhaseID: input.PhaseID, Attempt: input.Attempt, UnitID: input.UnitID,
@@ -1231,6 +1249,9 @@ type WorkflowAgentNotesResult struct {
 //
 // LocalOnly: it starts autonomous provider sessions, like every other entry to
 // the workflow start path.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAgentStartRun(ctx context.Context, input WorkflowAgentStartInput) (WorkflowAgentStartResult, error) {
 	scope, err := requireCallerScope(ctx)
 	if err != nil {
@@ -1365,6 +1386,9 @@ func (a *App) resolveAgentWorkflow(scope transport.CallerScope, workflowID, work
 //
 // LocalOnly: the whole ao surface is reachable only through credentials minted
 // for local provider processes.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAgentRunStatus(ctx context.Context, itemID string) (WorkflowAgentRunView, error) {
 	view, err := a.workflowApplication().RunStatus(ctx, itemID)
 	if err != nil {
@@ -1376,6 +1400,9 @@ func (a *App) WorkflowAgentRunStatus(ctx context.Context, itemID string) (Workfl
 // WorkflowAgentListRuns is `ao run list`, scoped to the caller's project.
 //
 // LocalOnly: see WorkflowAgentRunStatus.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAgentListRuns(ctx context.Context, activeOnly bool) ([]WorkflowAgentRunView, error) {
 	views, err := a.workflowApplication().ListRuns(ctx, activeOnly)
 	if err != nil {
@@ -1392,6 +1419,9 @@ func (a *App) WorkflowAgentListRuns(ctx context.Context, activeOnly bool) ([]Wor
 // not start the run" path (D15).
 //
 // LocalOnly: see WorkflowAgentRunStatus.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAgentRunOutput(ctx context.Context, itemID string) (WorkflowAgentRunOutputs, error) {
 	result, err := a.workflowApplication().RunOutput(ctx, itemID)
 	if err != nil {
@@ -1408,6 +1438,9 @@ func (a *App) WorkflowAgentRunOutput(ctx context.Context, itemID string) (Workfl
 //
 // LocalOnly: an automation is a standing instruction to start autonomous
 // provider sessions, like every other automation mutation.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAgentSchedule(ctx context.Context, input WorkflowAgentScheduleInput) (WorkflowAgentScheduleResult, error) {
 	scope, err := requireCallerScope(ctx)
 	if err != nil {
@@ -1470,6 +1503,9 @@ func (a *App) WorkflowAgentSchedule(ctx context.Context, input WorkflowAgentSche
 // WorkflowAgentGetNotes is `ao notes get`.
 //
 // LocalOnly: see WorkflowAgentRunStatus.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAgentGetNotes(ctx context.Context, automationID string) (string, error) {
 	scope, err := requireCallerScope(ctx)
 	if err != nil {
@@ -1487,6 +1523,9 @@ func (a *App) WorkflowAgentGetNotes(ctx context.Context, automationID string) (s
 // second write, so a re-entered phase does not churn the row.
 //
 // LocalOnly: it mutates local automation state.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAgentSetNotes(ctx context.Context, automationID, notes string) (WorkflowAgentNotesResult, error) {
 	scope, err := requireCallerScope(ctx)
 	if err != nil {
@@ -1614,6 +1653,9 @@ type WorkflowAgentWatchResult struct {
 // LocalOnly: see WorkflowAgentRunStatus. It takes the same grants as reading a
 // run's status, because that is what it is — the same fact, delivered when it
 // changes instead of when it is asked for.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAgentWatchRun(ctx context.Context, input WorkflowAgentWatchInput) (WorkflowAgentWatchResult, error) {
 	result, err := a.workflowApplication().WatchRun(ctx, workflowapp.WatchInput{
 		ItemID: input.ItemID, Cursor: input.Cursor, Tree: input.Tree, WaitMillis: input.WaitMillis,

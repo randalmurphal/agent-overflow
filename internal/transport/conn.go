@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
-	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,7 +27,7 @@ const DefaultReadLimit = 75 * 1024 * 1024
 
 // DefaultMaxConcurrentRPCs caps how many RPC dispatches a single WS
 // connection can have in flight at once. Bound exists so a misbehaving
-// or malicious client can't fan out unbounded goroutines on the
+// or misbehaving client can't fan out unbounded goroutines on the
 // server. Sized for typical streaming UX (chat thread expansion can
 // fire ~30 GetPayloadData in parallel).
 const DefaultMaxConcurrentRPCs = 64
@@ -59,6 +57,44 @@ const (
 	// needs. Sized for the largest legitimate frame (a tens-of-MiB
 	// thread load) crossing a slow WAN link.
 	writeTimeout = 30 * time.Second
+	// defaultSessionRecheck is how often an established connection
+	// re-asks whether the session it named is still live. A minute is far
+	// below every access-token window this backend issues and far above
+	// the per-RPC fast path's cost, so it bounds the outlier — an expiry
+	// or an out-of-process revocation — without turning a quiet
+	// connection into a polling one. Config.SessionRecheckInterval
+	// overrides (tests shrink it).
+	defaultSessionRecheck = time.Minute
+	// defaultRemoteConnLifetime caps a non-loopback session-bearing
+	// connection, forcing a periodic re-ticket
+	// (docs/specs/remote-access.md §4). Long enough that a person working
+	// through a day is not interrupted by it, short enough that a
+	// connection cannot outlive several rotations of the credential that
+	// opened it. Config.MaxRemoteConnLifetime overrides.
+	defaultRemoteConnLifetime = 12 * time.Hour
+)
+
+// Why a connection was torn down from this side. Recorded so the
+// per-connection close line names the cause: every one of these cancels
+// the connection context, which at the error alone is indistinguishable
+// from a server shutdown — and that is exactly the moment somebody is
+// checking whether a revocation took effect.
+//
+// A closed set of int32 constants rather than a bool per cause: the next
+// cause is a constant and a case, not a fourth atomic that three call
+// sites have to remember to read.
+const (
+	closeCauseNone int32 = iota
+	// closeCauseRevoked is the live-session registry force-closing this
+	// socket because its session was revoked.
+	closeCauseRevoked
+	// closeCauseSessionEnded is a liveness re-check finding the session no
+	// longer live: expired, or revoked by something that is not this
+	// process. Two re-checks set it, the periodic one and the single one
+	// the handler runs right after joining the live-session registry.
+	closeCauseSessionEnded
+	// closeCauseLifetime is the connection reaching its own cap.
+	closeCauseLifetime
 )
 
 // heartbeatFrame is the keepalive frame, encoded once from the same
@@ -83,6 +119,15 @@ type connProfile struct {
 	// remoteAddr is the peer's kernel-reported address, carried for the
 	// per-connection close log so concurrent clients' lines correlate.
 	remoteAddr string
+	// client is the screen on the other end, declared on the upgrade URL.
+	// Zero when the client declared nothing, which is normal.
+	client ClientIdentity
+	// sessionID is the durable session this connection presented, resolved
+	// before the upgrade by Config.SessionForRequest. Empty means the
+	// connection names no session — every connection today, and still the
+	// ordinary case for the local webview afterwards — and such a
+	// connection is not tracked by the live-session registry.
+	sessionID string
 }
 
 // connSettings carries the server-config knobs runConnHandler needs.
@@ -92,6 +137,32 @@ type connSettings struct {
 	maxConcurrentRPCs int
 	keepaliveInterval time.Duration
 	pongTimeout       time.Duration
+	// sessionConns is the server's live-session registry, or nil when the
+	// handler runs outside one (unit tests). A connection naming a session
+	// registers itself here so a revocation can reach it.
+	sessionConns *SessionConns
+	// sessionLive re-checks the named session, or nil when nothing can
+	// answer. See Config.SessionLive.
+	sessionLive func(sessionID string) bool
+	// sessionScopes reads the named session's grants per RPC, or nil when
+	// nothing can answer. See Config.SessionScopes.
+	sessionScopes func(sessionID string) ([]string, string)
+	// stepUpProof spends a step-up token an RPC presented, or nil when
+	// nothing can answer — in which case host presence is the only proof,
+	// which is the behavior before passkeys. See Config.StepUpProof.
+	stepUpProof func(sessionID, token string) bool
+
+	// sessionRecheck and maxLifetime are Config.SessionRecheckInterval
+	// and Config.MaxRemoteConnLifetime, unresolved: zero takes the
+	// package default, negative disables.
+	sessionRecheck time.Duration
+	maxLifetime    time.Duration
+	// hello is the frame written before any other traffic. Populated per
+	// connection rather than once at boot because ServerTimeMs is the
+	// clock at accept time — a value cached at startup would be a
+	// confidently wrong answer to the one question the field exists to
+	// settle.
+	hello helloFrame
 }
 
 // connHandler owns one upgraded WebSocket. It pumps client frames into
@@ -124,12 +195,52 @@ type connHandler struct {
 	keepaliveInterval time.Duration
 	pongTimeout       time.Duration
 
+	// sessionLive / sessionRecheck / maxLifetime configure watchSession.
+	// Unresolved: watchSession applies the defaults, because it is the
+	// only reader and a resolved zero would lose "disabled".
+	sessionLive    func(sessionID string) bool
+	sessionRecheck time.Duration
+	maxLifetime    time.Duration
+
+	// sessionScopes is the per-RPC grant read for a connection that named
+	// a session (authorize.go). Nil disables the scope gate, which is the
+	// pre-enforcement behavior every launch-credential client still has.
+	sessionScopes func(sessionID string) ([]string, string)
+
+	// stepUpProof spends a step-up token presented on one RPC. Nil leaves
+	// host presence as the only step-up proof.
+	stepUpProof func(sessionID, token string) bool
+
+	// eventScopes is the grant half of this connection's event filter,
+	// resolved once at upgrade (see connEventScopes).
+	eventScopes eventScopeFilter
+
+	// leaseBackground is this connection's lease (lease.go), written by
+	// the read loop and read by the pump — two goroutines, so the VALUE is
+	// an atomic rather than a field. It is authoritative; leaseWake only
+	// says "re-read me".
+	leaseBackground atomic.Bool
+	// leaseWake nudges the pump, which otherwise parks in select and would
+	// not learn about a resume until the next event arrived — exactly the
+	// wrong moment, since resuming must FLUSH what the window is holding.
+	//
+	// Buffered by one and sent to non-blockingly, so a read loop never
+	// waits on a pump that is mid-write. Dropping a nudge is safe because
+	// the store happens BEFORE the send: a send that finds a token already
+	// queued is a send whose value the pending token will deliver anyway.
+	leaseWake chan struct{}
+
 	// inRead is true exactly while the read loop sits in ws.Read.
 	// coder/websocket only surfaces pongs from inside Read, so a
 	// missing pong while the reader is off processing a frame
 	// (streaming a replay, waiting on rpcSem) says nothing about the
 	// peer — the keepalive loop skips its teardown verdict then.
 	inRead atomic.Bool
+	// closeCause is set by whichever server-side teardown ran before it
+	// cancels the connection, so the close line names the cause rather
+	// than reporting the context cancel as a server shutdown. One store
+	// per teardown, one load per connection close.
+	closeCause atomic.Int32
 	// lastReadAt (unix nanos) is stamped after each successful Read.
 	// Second guard for the same race: a reader that re-entered Read
 	// moments ago may not have had time to surface a pong yet.
@@ -140,9 +251,9 @@ type connHandler struct {
 // disconnects or ctx is cancelled. Blocks until done.
 //
 // profile is captured at upgrade time and carries per-connection
-// transport policy. profile.isLoopback is forwarded to every
-// dispatcher resolution so LocalOnlyMethods gets enforced for
-// non-loopback peers.
+// transport policy. profile.isLoopback is forwarded to every dispatcher
+// resolution (host-tooling receivers, redacted error text) and seeds the
+// per-call CallerProof the scope gate judges step-up on.
 func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus *EventBus, settings connSettings, profile connProfile) {
 	if settings.readLimit <= 0 {
 		settings.readLimit = DefaultReadLimit
@@ -164,6 +275,11 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// subscriber's buffer slots during bursts (they'd force drops of
 	// visible events and gap-driven re-fetches).
 	sub.SetOriginLoopback(profile.isLoopback)
+	// The grant half of the same arming. A connection naming no session
+	// leaves it inactive, which admits every channel — the unchanged
+	// behavior every launch-credential client still has.
+	eventScopes := connEventScopes(settings, profile)
+	sub.SetScopeFilter(eventScopes)
 	h := &connHandler{
 		ws:                ws,
 		dispatcher:        d,
@@ -173,6 +289,13 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		rpcSem:            make(chan struct{}, settings.maxConcurrentRPCs),
 		keepaliveInterval: settings.keepaliveInterval,
 		pongTimeout:       settings.pongTimeout,
+		sessionLive:       settings.sessionLive,
+		sessionRecheck:    settings.sessionRecheck,
+		maxLifetime:       settings.maxLifetime,
+		sessionScopes:     settings.sessionScopes,
+		stepUpProof:       settings.stepUpProof,
+		eventScopes:       eventScopes,
+		leaseWake:         make(chan struct{}, 1),
 	}
 	h.lastReadAt.Store(time.Now().UnixNano())
 	defer h.sub.Close()
@@ -185,8 +308,64 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// long-lived server-side resources without waiting for the App to
 	// shut down. runCleanups runs in LIFO order after the read loop
 	// exits and after in-flight RPC goroutines drain.
-	connCtx, state := WithConnState(connCtx)
+	//
+	// The principal carries BOTH halves of "who is this": the session the
+	// upgrade admitted and the screen that declared itself on the URL.
+	// Handlers that scope durable state read the session first and fall
+	// back to the screen, which is why neither may be dropped here.
+	connCtx, state := WithConnState(connCtx, ConnPrincipal{
+		Client:    profile.client,
+		SessionID: profile.sessionID,
+	})
 	defer state.RunCleanups()
+
+	// A connection carrying a durable session joins the live-session
+	// registry, so revoking that session force-closes this socket instead
+	// of leaving it streaming under a credential the database says is
+	// dead. Deregistration rides the SAME cleanup pass every other
+	// per-connection resource uses, rather than a parallel teardown that
+	// could disagree with it about when this connection ended.
+	if detach := settings.sessionConns.attach(
+		profile.sessionID, h.closeForRevocation(cancel),
+	); !state.RegisterCleanup(detach) {
+		// The connection was already closing when we got here. Nothing
+		// will run the cleanup list again, so undo the attach ourselves.
+		detach()
+	}
+
+	// The attach closes a window rather than opening one. The upgrade read
+	// this session's liveness BEFORE the socket joined the registry, so a
+	// revocation landing in between iterated a registry this connection
+	// was not in yet and reached nothing: CloseSession returned having
+	// closed every socket except the one that was still arriving. Asking
+	// once more, now that a CloseSession would find us, is what makes a
+	// revocation mean closed instead of closed whenever watchSession next
+	// ticks. At that cadence the local page's connection is 60 seconds of
+	// streaming under a credential the database already ended.
+	//
+	// Ordered after the attach for the same reason: re-checking before it
+	// would leave the identical window one instruction narrower.
+	if profile.sessionID != "" && h.sessionLive != nil && !h.sessionLive(profile.sessionID) {
+		log.Printf("transport: ws %s session %s ended during the upgrade; closing",
+			profile.remoteAddr, profile.sessionID)
+		h.closeWithCause(closeCauseSessionEnded, cancel)()
+		return
+	}
+
+	// Hello first, synchronously, before the pump and keepalive
+	// goroutines exist. Ordering is the contract: a client that reads
+	// hello as the first frame can seed its compatibility state before
+	// the first event or RPC answer lands, and does not need a
+	// "have I been told yet" branch on every other frame. Racing it
+	// against the pump would make the guarantee probabilistic.
+	//
+	// A failed write means the peer is already gone. Nothing to recover:
+	// return and let the deferred teardown run, rather than serving a
+	// connection whose first frame never arrived.
+	if err := h.writeHello(connCtx, settings.hello); err != nil {
+		log.Printf("transport: ws %s hello write failed: %s", profile.remoteAddr, closeReason(err))
+		return
+	}
 
 	// Event pump: deliver every event the bus produces to the wire.
 	// Lives on its own goroutine so a slow read doesn't backpressure
@@ -200,6 +379,14 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// to unblock it).
 	go h.keepalive(connCtx)
 
+	// Session watchdog: the interval re-check and the lifetime cap. Only
+	// for a connection that named a session — one that named none has
+	// nothing to re-validate and no credential to force back through the
+	// ticket route.
+	if profile.sessionID != "" {
+		go h.watchSession(connCtx, cancel)
+	}
+
 	started := time.Now()
 	readErr := h.readLoop(connCtx)
 	// One line per connection lifetime, graceful closes included — the
@@ -209,7 +396,7 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// relay-flap diagnosis needlessly indirect.
 	log.Printf("transport: ws %s closed after %s (loopback=%t): %s",
 		profile.remoteAddr, time.Since(started).Round(time.Millisecond),
-		profile.isLoopback, closeReason(readErr))
+		profile.isLoopback, h.closeReason(readErr))
 
 	// Wait for in-flight RPC handlers to finish writing their
 	// responses before we let the parent close the WS underneath them.
@@ -269,6 +456,121 @@ func (h *connHandler) keepalive(ctx context.Context) {
 	}
 }
 
+// closeForRevocation builds the teardown the live-session registry calls
+// when this connection's session is revoked.
+//
+// Three steps, and the order is why it is not just ws.Close:
+//
+//  1. Close the event subscriber. The bus stops delivering to this
+//     connection immediately, which is what makes "stops their event
+//     streams synchronously" true at the moment CloseSession returns
+//     rather than whenever the read loop happens to notice.
+//  2. Cancel the connection context, stopping the pump and the keepalive.
+//  3. CloseNow the socket, which unblocks the reader parked in ws.Read so
+//     the ordinary teardown path runs and the cleanups fire.
+//
+// Every step is idempotent, because this races the connection's own
+// close: Subscriber.close is a compare-and-swap, context cancel is
+// idempotent by definition, and CloseNow on a closed connection is a
+// no-op error nobody reads.
+func (h *connHandler) closeForRevocation(cancel context.CancelFunc) func() {
+	return h.closeWithCause(closeCauseRevoked, cancel)
+}
+
+// closeWithCause is the one server-side teardown. Records why, stops event
+// delivery, cancels the connection context, and closes the socket — in
+// that order, because a close that raced ahead of the subscriber shutdown
+// would let the pump write into a dead connection.
+func (h *connHandler) closeWithCause(cause int32, cancel context.CancelFunc) func() {
+	return func() {
+		h.closeCause.CompareAndSwap(closeCauseNone, cause)
+		h.sub.Close()
+		cancel()
+		_ = h.ws.CloseNow()
+	}
+}
+
+// watchSession re-validates the connection's session on an interval and
+// caps the connection's own lifetime (docs/specs/remote-access.md §4).
+//
+// Runs only for a connection that names a session. The interval exists
+// because revocation reaches live sockets synchronously but the two other
+// ways a session stops — it expires, or something outside this process
+// revokes it — reach nothing at all; without this, such a connection
+// streams until the client disconnects. The cap exists so a credential
+// that travels a network is re-presented periodically rather than once.
+func (h *connHandler) watchSession(ctx context.Context, cancel context.CancelFunc) {
+	recheck, lifetime := resolveWatchWindows(
+		h.sessionRecheck, h.maxLifetime, h.profile.isLoopback, h.sessionLive != nil)
+	if recheck <= 0 && lifetime <= 0 {
+		return
+	}
+
+	var ticks <-chan time.Time
+	if recheck > 0 {
+		ticker := time.NewTicker(recheck)
+		defer ticker.Stop()
+		ticks = ticker.C
+	}
+	var expiry <-chan time.Time
+	if lifetime > 0 {
+		timer := time.NewTimer(lifetime)
+		defer timer.Stop()
+		expiry = timer.C
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-expiry:
+			log.Printf("transport: ws %s reached its connection lifetime (%s); closing to force a re-ticket",
+				h.profile.remoteAddr, lifetime)
+			h.closeWithCause(closeCauseLifetime, cancel)()
+			return
+		case <-ticks:
+			if h.sessionLive(h.profile.sessionID) {
+				continue
+			}
+			log.Printf("transport: ws %s session %s is no longer live; closing",
+				h.profile.remoteAddr, h.profile.sessionID)
+			h.closeWithCause(closeCauseSessionEnded, cancel)()
+			return
+		}
+	}
+}
+
+// resolveWatchWindows turns the two configured knobs into the two windows
+// watchSession actually runs, applying every default and every exemption
+// in one place.
+//
+// Zero takes the package default and negative disables, for both. Two
+// further rules:
+//
+//   - no re-check without something to ask. A nil hook is the state before
+//     any client presents a session, and a timer that could only ever
+//     answer "still live" is a timer nobody needs.
+//   - loopback connections are exempt from the LIFETIME cap. It exists so
+//     a credential that travels a network is re-presented periodically;
+//     the local page's session is re-minted at boot and travels none, so
+//     capping it would cost the webview a visible reconnect and buy
+//     nothing. The re-check still applies — a local session can expire or
+//     be revoked like any other.
+func resolveWatchWindows(recheck, lifetime time.Duration, isLoopback, canCheck bool) (time.Duration, time.Duration) {
+	if recheck == 0 {
+		recheck = defaultSessionRecheck
+	}
+	if !canCheck || recheck < 0 {
+		recheck = 0
+	}
+	if lifetime == 0 {
+		lifetime = defaultRemoteConnLifetime
+	}
+	if isLoopback || lifetime < 0 {
+		lifetime = 0
+	}
+	return recheck, lifetime
+}
+
 // closeReason renders readLoop's terminal error (always non-nil — the
 // loop only exits by returning a Read error) for the per-connection
 // close log line. WS-level close statuses (1000 normal, 1001 going
@@ -285,6 +587,23 @@ func closeReason(err error) string {
 		return fmt.Sprintf("close status %d", status)
 	}
 	return fmt.Sprintf("%.200q", err.Error())
+}
+
+// closeReason is closeReason plus the one thing the error cannot carry:
+// a revoked connection is torn down by cancelling its context, which is
+// indistinguishable from a server shutdown at the error alone. Reporting
+// both the same way would make a revocation invisible in the log exactly
+// when somebody is checking whether one took effect.
+func (h *connHandler) closeReason(err error) string {
+	switch h.closeCause.Load() {
+	case closeCauseRevoked:
+		return "session revoked"
+	case closeCauseSessionEnded:
+		return "session no longer live"
+	case closeCauseLifetime:
+		return "connection lifetime reached"
+	}
+	return closeReason(err)
 }
 
 // readLoop processes inbound frames until the client closes or an
@@ -326,6 +645,12 @@ func (h *connHandler) readLoop(ctx context.Context) error {
 			h.handleReplay(ctx, frame)
 		case frameTypeSubscribe:
 			h.handleSubscribe(ctx, frame)
+		case frameTypeWatch:
+			h.handleWatch(ctx, frame)
+		case frameTypeLease:
+			h.handleLease(ctx, frame)
+		case frameTypePresence:
+			h.handlePresence(ctx, frame)
 		default:
 			h.writeError(ctx, frame.ID, &FrameError{
 				Code:    ErrCodeBadParams,
@@ -349,6 +674,107 @@ func (h *connHandler) handleSubscribe(ctx context.Context, frame ClientFrame) {
 	h.sub.SetChannels(frame.Channels)
 }
 
+// handleWatch narrows this connection's EntityFiltered channels to the
+// entities the frame names (event_entity.go). The set is ABSOLUTE and
+// idempotent: each frame replaces the last, and re-sending the same one
+// changes nothing.
+//
+// An EMPTY array is legal and is not the same as never sending one — it
+// means "watching nothing", which is a client with no panes open, and it is
+// the whole point of accepting the frame at all. That is why the length
+// check here is one-sided where handleSubscribe's is not: an empty
+// SUBSCRIBE would be a connection asking for no channels, which no client
+// wants and which a serialization bug produces by accident, so that one
+// refuses it.
+//
+// Like SetChannels, this is a ONE-WAY LATCH out of wildcard — nothing
+// restores the unfiltered state, and a client that wants it back reconnects.
+// The alternative (a sentinel meaning "everything") would put a wildcard
+// spelling on the wire that a client could send by accident.
+func (h *connHandler) handleWatch(ctx context.Context, frame ClientFrame) {
+	if len(frame.Threads) > MaxWatchThreads {
+		h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid entity watch"})
+		return
+	}
+	for _, entityID := range frame.Threads {
+		if entityID == "" || len(entityID) > MaxWatchThreadIDBytes {
+			h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid entity watch"})
+			return
+		}
+	}
+	h.sub.SetWatchedThreads(frame.Threads)
+}
+
+// handleLease records whether this connection's CLIENT is in the foreground
+// (lease.go). Idempotent, and not a latch: a phone that pauses and resumes
+// states both, and `active` restores exactly the delivery it had.
+//
+// An unrecognised state is refused and changes nothing. "The client sent a
+// spelling this build does not know" and "the client meant active" are
+// different facts, and the only reading that cannot silently un-background a
+// connection — or silently background one — is the refusal.
+//
+// The verdict lands in TWO places because it is read on two goroutines:
+//
+//   - The subscriber, for the withheld channels. That check runs at ENQUEUE
+//     time on the bus fanout goroutine, beside the origin, grant and watch
+//     filters, so a withheld frame never occupies a buffer slot and never
+//     reaches gap accounting.
+//   - The pump, for the delta window. It owns the pending merges, so it
+//     must both learn the new state and be WOKEN by it: resuming has to
+//     flush immediately rather than at the next event.
+func (h *connHandler) handleLease(ctx context.Context, frame ClientFrame) {
+	var background bool
+	switch frame.State {
+	case leaseStateActive:
+	case leaseStateBackground:
+		background = true
+	default:
+		h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid lease state"})
+		return
+	}
+	h.sub.SetBackground(background)
+	// Store, then nudge. The order is what makes a dropped nudge safe: a
+	// token already queued is one the pump has not consumed yet, so it will
+	// read this value when it does.
+	h.leaseBackground.Store(background)
+	select {
+	case h.leaseWake <- struct{}{}:
+	default:
+	}
+}
+
+// handlePresence records what this connection's screen is already showing
+// (presence.go). Both halves are ABSOLUTE and replace the last frame
+// together, and an empty thread array is legal — it means "no thread on
+// screen", which is a client sitting on its settings page.
+//
+// The bounds are the watch frame's, because the payload is the same thing:
+// a bounded set of thread ids this client named. An oversized set or an
+// unusable id is a bad_params refusal that leaves the previous presence
+// standing, mirroring handleWatch — and standing on the LAST STATED
+// presence is the safe direction here for the same reason it is there: a
+// truncated set would claim a thread is not on screen when it is, and the
+// person would stop being told about it.
+//
+// One reader, deliberately: the OS-notification gate. Nothing on the
+// delivery path may learn this connection is unattended, so this touches
+// neither the subscriber's filters nor the pump — the whole of the write is
+// one atomic store.
+func (h *connHandler) handlePresence(ctx context.Context, frame ClientFrame) {
+	if len(frame.Threads) > MaxWatchThreads {
+		h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid screen presence"})
+		return
+	}
+	for _, threadID := range frame.Threads {
+		if threadID == "" || len(threadID) > MaxWatchThreadIDBytes {
+			h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid screen presence"})
+			return
+		}
+	}
+	h.sub.SetPresence(frame.Focused, frame.Threads)
+}
+
 // dispatchRPC enforces the per-conn concurrency cap and spawns a
 // handler goroutine. A blocked semaphore acquire waits for an
 // in-flight RPC to finish — back-pressuring the read loop instead of
@@ -369,17 +795,31 @@ func (h *connHandler) dispatchRPC(ctx context.Context, frame ClientFrame) {
 // name) and writes the response. Errors from the dispatcher already
 // arrive as FrameError values — we don't need to translate.
 //
-// ResolveForOrigin enforces LocalOnlyMethods against the per-conn
-// isLoopback flag. A non-loopback peer attempting a privileged method
-// gets ErrCodeMethodNotFound (matching an unregistered method) rather
-// than a distinct forbidden code, so the privileged surface stays
-// unenumerable from the LAN.
+// Two gates run in order, and they answer different questions.
+// ResolveForOrigin judges the RECEIVER against the per-conn isLoopback
+// flag: a non-loopback peer calling into a RegisterOptions{LocalOnly}
+// receiver (host tooling — the harness) gets ErrCodeMethodNotFound,
+// matching an unregistered method rather than a distinct forbidden code,
+// so that surface stays unenumerable off-host. authorizeSession then
+// judges the CALL against the session's grants, and its refusals DO name
+// what is missing, because the caller is already authenticated.
 func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 	method, fe := h.dispatcher.ResolveForOrigin(frame.MethodID, frame.Method, h.profile.isLoopback)
 	if fe != nil {
 		h.writeError(ctx, frame.ID, fe)
 		return
 	}
+
+	// Resolved once, before either gate, and carried into the call. The
+	// pre-call gate below and the method's own argument recheck read the
+	// SAME answer — which they must, because resolving it SPENDS a step-up
+	// token and a second resolution would find it gone.
+	proof := h.callerProof(frame)
+	if fe := h.authorizeSession(method.Name, proof); fe != nil {
+		h.writeError(ctx, frame.ID, fe)
+		return
+	}
+	ctx = WithCallerProof(ctx, proof)
 
 	result, fe := h.dispatcher.InvokeForOrigin(ctx, method, frame.Params, h.profile.isLoopback)
 	if fe != nil {
@@ -392,6 +832,56 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 		ID:     frame.ID,
 		Result: result,
 	})
+}
+
+// authorizeSession runs the per-RPC scope gate for a connection that
+// named a durable session. A nil return authorizes the call.
+//
+// Three ways to answer nothing, and they are all the same statement: this
+// connection carries no session (every launch-credential client, which
+// keeps exactly the reachability the origin gate gives it), or nothing in
+// this process can resolve a session's grants. Both leave the origin gate
+// as the only judge, which is what it was before enforcement.
+//
+// The grants are read HERE, per call, rather than captured at upgrade:
+// revoking a session must stop the next RPC on a socket that is already
+// open, and the refusal the hook returns is how it does (§4
+// "Revocation").
+func (h *connHandler) authorizeSession(methodName string, proof CallerProof) *FrameError {
+	if h.profile.sessionID == "" || h.sessionScopes == nil {
+		return nil
+	}
+	granted, refusal := h.sessionScopes(h.profile.sessionID)
+	if refusal != "" {
+		// The session stopped admitting work between the upgrade and this
+		// call. That is the credential channel's refusal, not the scope
+		// gate's, so it keeps the credential channel's shape.
+		return AuthFailure(refusal)
+	}
+	return AuthorizeSessionMethod(granted, methodName, proof)
+}
+
+// callerProof resolves what THIS call proved about its caller.
+//
+// Host presence comes from the connection and costs nothing. The token
+// half is asked only when it could change the answer: a host-present
+// caller is already proven, so presenting a token there would spend it for
+// nothing, and a caller naming no session has nothing a token could be
+// bound to.
+//
+// The token is spent by the asking, whatever the answer. That is what
+// single use means, and it is why this runs once per RPC rather than once
+// per gate.
+func (h *connHandler) callerProof(frame ClientFrame) CallerProof {
+	proof := CallerProof{HostPresent: h.profile.isLoopback}
+	if proof.HostPresent || frame.StepUpToken == "" {
+		return proof
+	}
+	if h.stepUpProof == nil || h.profile.sessionID == "" {
+		return proof
+	}
+	proof.StepUp = h.stepUpProof(h.profile.sessionID, frame.StepUpToken)
+	return proof
 }
 
 // handleReplay streams every event missed since the client's
@@ -411,7 +901,7 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 // writeMu, spliceBatchFrame preserves slice order inside a chunk, and
 // every batch consumer iterates entries in order.
 //
-// The map size is capped so a malicious replay request can't force
+// The map size is capped so an oversized replay request can't force
 // the bus to allocate proportionally large response slices.
 func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 	if len(frame.LastSeqByChannel) > MaxReplayChannels {
@@ -426,10 +916,19 @@ func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 	// before returning, so nothing retains the Event slice afterwards.
 	chunk := make([]Event, 0, min(len(missed), DefaultCoalesceMaxEvents))
 	for _, e := range missed {
-		if !eventVisibleToOrigin(e.Channel, h.profile.isLoopback) {
+		if !h.eventVisible(e.Channel) {
 			continue
 		}
 		if !h.sub.accepts(e.Channel) {
+			continue
+		}
+		// The watch filter applies to replay for the same reason it applies
+		// to live delivery: a reconnecting client asked for its cursor to be
+		// caught up, not for the entities it stopped watching. Filtered here
+		// rather than inside EventBus.Replay so the subscriber stays the one
+		// place the connection's filters live — and, like the two above it,
+		// a frame this filter drops produces no event and no gap marker.
+		if !h.sub.watches(e.Channel, e.EntityKey) {
 			continue
 		}
 		chunk = append(chunk, e)
@@ -467,21 +966,60 @@ func (h *connHandler) pumpEvents(ctx context.Context) {
 	})
 	defer buf.stop()
 
+	// The lease's delta window (lease.go). A value, not a pointer, and it
+	// allocates nothing until a frame is actually merged — a connection
+	// that never leases background pays two idle select arms and no more.
+	// Stopped BEFORE the batch buffer (defers run LIFO) because it feeds
+	// into it: held text has to reach buf before buf makes its last write.
+	deltas := deltaCoalescer{window: leaseDeltaWindow, emit: buf.add}
+	defer deltas.stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-h.sub.Done():
 			return
+		case <-h.leaseWake:
+			// Resuming flushes NOW rather than at the window's next tick,
+			// which is the difference between a phone that paints on the
+			// first frame after resume and one that paints a quarter second
+			// later. The event branch flushes too, so this nudge is what
+			// covers a resume into silence.
+			if !h.leaseBackground.Load() {
+				deltas.flushAll()
+			}
+		case <-deltas.timerC():
+			deltas.flushAll()
 		case <-buf.timerC():
 			buf.flushNow()
 		case e := <-h.sub.Events():
 			// Correctness gate. Enqueue-time filtering (Subscriber
-			// SetOriginLoopback) already keeps invisible frames out of
-			// the buffer; this backstop covers any event enqueued
-			// before the filter was armed.
-			if !eventVisibleToOrigin(e.Channel, h.profile.isLoopback) {
+			// SetOriginLoopback / SetScopeFilter) already keeps
+			// invisible frames out of the buffer; this backstop covers
+			// any event enqueued before the filters were armed.
+			if !h.eventVisible(e.Channel) {
 				continue
+			}
+			// The lease is read here, per event, rather than mirrored from
+			// the nudge: the read loop's store then strictly precedes every
+			// event the pump has not yet taken, so a lease applies to
+			// exactly the frames emitted after the client stated it. A
+			// mirror would apply it to "the frames after the pump noticed",
+			// which is a different and unpredictable set.
+			if h.leaseBackground.Load() {
+				// Absorbed into a pending merge, or handed back unchanged
+				// with everything that had to precede it already emitted.
+				if deltas.intercept(e) {
+					continue
+				}
+			} else {
+				// Resumed since the last event. Whatever the window still
+				// holds goes out AHEAD of this frame: its seq is lower, and
+				// a client drops any frame at or below its channel cursor,
+				// so a late merge is lost text rather than late text. No-op
+				// (one length check) on every connection that never leased.
+				deltas.flushAll()
 			}
 			buf.add(e)
 		}
@@ -592,6 +1130,26 @@ func (h *connHandler) writeFrame(ctx context.Context, frame ServerFrame) {
 	}
 }
 
+// writeHello writes the connection's opening frame. Unlike writeFrame it
+// RETURNS the error: hello is the one frame whose failure is worth
+// abandoning the connection over, since everything after it assumes the
+// client has been told what it is talking to.
+func (h *connHandler) writeHello(ctx context.Context, hello helloFrame) error {
+	hello.Type = frameTypeHello
+	hello.ProtocolVersion = ProtocolVersion
+	if hello.Capabilities == nil {
+		// Never `null` on the wire: an empty array says "advertises
+		// nothing", which a client reads without a nil check, while null
+		// invites one more branch at every consumer.
+		hello.Capabilities = []string{}
+	}
+	buf, err := json.Marshal(hello)
+	if err != nil {
+		return fmt.Errorf("marshal hello frame: %w", err)
+	}
+	return h.writeRaw(ctx, buf)
+}
+
 // writeRaw is the single wire-write chokepoint: pre-encoded bytes go
 // out under the write lock with the shared write bound. A write that
 // exhausts writeTimeout means the peer stopped draining (half-open TCP
@@ -638,9 +1196,19 @@ func isClosedError(err error) bool {
 		status == websocket.StatusNoStatusRcvd
 }
 
-// upgrade authenticates the request via ?token= query param and
-// upgrades to WebSocket. Returns the connection on success or writes
-// the appropriate HTTP status on failure.
+// upgrade validates the request and upgrades it to a WebSocket.
+// Returns the connection on success, or writes the HTTP refusal and
+// returns the error.
+//
+// Two gates, in order. The origin check first: a handshake carrying an
+// Origin outside what this listener serves is refused before its
+// credential is read, because a browser attaches the page cookie to
+// such a handshake whether or not the page that opened it could ever
+// read that cookie (OriginAllowed explains why another port on the same
+// host is not a different cookie scope). Then the credential itself,
+// through the same Credential.Authenticate every other route uses: the
+// page cookie for a browser, the session token for a client that is not
+// one.
 //
 // enableCompression negotiates permessage-deflate with context
 // takeover when true. Intended for non-loopback connections where
@@ -648,67 +1216,78 @@ func isClosedError(err error) bool {
 // Loopback connections skip compression — shared-memory pipe, no
 // benefit. Clients that don't support permessage-deflate (Safari /
 // WKWebView) fall back to uncompressed transparently.
-func upgrade(w http.ResponseWriter, r *http.Request, expectedToken string, originPatterns []string, enableCompression bool) (*websocket.Conn, error) {
-	supplied := r.URL.Query().Get("token")
-	if err := ConstantTimeEqual(expectedToken, supplied); err != nil {
+// sessionProven says the caller already authenticated this request
+// through a spent WS ticket naming a live session — the ticket was
+// minted moments ago by presenting that session's credential, so the
+// page credential (which a paired device loses on every backend
+// restart) is not demanded on top. The Origin check runs regardless:
+// it is about which documents may open a socket here, not about who
+// the caller is.
+func upgrade(w http.ResponseWriter, r *http.Request, cred *Credential, originPatterns []string, enableCompression, sessionProven bool) (*websocket.Conn, error) {
+	if !OriginAllowed(r, originPatterns) {
+		// Same 404 as a refused credential and as a path that does not
+		// exist, so no response shape tells one apart from the others.
+		http.NotFound(w, r)
+		return nil, errOriginNotServed
+	}
+	if !sessionProven && !cred.Authenticate(r) {
 		// Match the unauth path's response shape with the static asset
 		// 404. Distinguishable status codes let a LAN scanner fingerprint
 		// "this is the agent-overflow server" — return 404 instead.
 		http.NotFound(w, r)
-		return nil, err
+		return nil, errCredentialRefused
 	}
-	opts := &websocket.AcceptOptions{}
+	opts := &websocket.AcceptOptions{
+		// The origin decision is made above, against the live allow-list
+		// and this request's own authority, and it answers with this
+		// package's 404 rather than the library's 403. Leaving the
+		// library's own check on as well would mean two policies to keep
+		// in agreement, one of them writing a fingerprintable status.
+		InsecureSkipVerify: true,
+	}
 	if enableCompression {
 		opts.CompressionMode = websocket.CompressionContextTakeover
-	}
-	if len(originPatterns) == 0 {
-		// Loopback-only: skip origin checks. The token itself is the
-		// gate, and there's no LAN-attached browser-origin to validate.
-		opts.InsecureSkipVerify = true
-	} else {
-		opts.OriginPatterns = originPatterns
 	}
 	return websocket.Accept(w, r, opts)
 }
 
-// remoteAddrIsLoopback reports whether the peer's RemoteAddr is a
-// loopback interface. Used at upgrade time to decide whether to allow
-// LocalOnlyMethods for the resulting connection.
+// errOriginNotServed and errCredentialRefused name the two handshake
+// refusals for the caller's own logging. Neither reaches the wire: both
+// answer the same 404.
+var (
+	errOriginNotServed   = errors.New("transport: request origin is not served by this listener")
+	errCredentialRefused = errors.New("transport: request carries no valid credential")
+)
+
+// connEventScopes resolves the grant half of a connection's event filter,
+// once, at upgrade.
 //
-// Three parse paths:
+// Inactive — every channel admitted — for a connection that named no
+// session, or on a server with no SessionScopes hook. Those are the
+// launch-credential clients, and their visibility stays exactly what the
+// origin gate alone decided.
 //
-//  1. netip.ParseAddrPort handles the canonical "ip:port" form
-//     (e.g. "127.0.0.1:54321", "[::1]:54321"). The IsLoopback method
-//     understands every loopback variant — IPv4 127/8, IPv6 ::1, and
-//     IPv4-mapped-in-IPv6 ::ffff:127.0.0.1.
-//  2. net.SplitHostPort + netip.ParseAddr is the fallback for inputs
-//     that ParseAddrPort rejects (rare — typically synthetic test
-//     requests with malformed addresses).
-//  3. An unparseable RemoteAddr is treated as non-loopback (fail
-//     closed). httptest sometimes leaves RemoteAddr empty; the
-//     production transport always populates it. Defaulting to "not
-//     loopback" means a synthetic request can't inadvertently bypass
-//     LocalOnly enforcement just because its RemoteAddr was malformed.
-//
-// Note: this trusts that the kernel reports a true peer address. A
-// reverse-proxy fronting the transport would have to terminate WS
-// upgrades and re-issue them with a real loopback peer for the
-// LocalOnlyMethods enforcement to remain meaningful — that's the
-// documented deployment model for v1.
-func remoteAddrIsLoopback(remoteAddr string) bool {
-	if remoteAddr == "" {
-		return false
+// A session whose grants cannot be read right now gets an ACTIVE filter
+// holding nothing: the connection sees only what host presence opens.
+// That is unreachable on the ordinary path (the upgrade verified the
+// session before it got here) and fail-closed if it ever is reached.
+func connEventScopes(settings connSettings, profile connProfile) eventScopeFilter {
+	if profile.sessionID == "" || settings.sessionScopes == nil {
+		return eventScopeFilter{}
 	}
-	if addrPort, err := netip.ParseAddrPort(remoteAddr); err == nil {
-		return addrPort.Addr().IsLoopback()
+	granted, refusal := settings.sessionScopes(profile.sessionID)
+	if refusal != "" {
+		granted = nil
 	}
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	addr, err := netip.ParseAddr(host)
-	if err != nil {
-		return false
-	}
-	return addr.IsLoopback()
+	return sessionScopeFilter(granted, profile.isLoopback)
+}
+
+// eventVisible is the whole visibility question for this connection:
+// locality first, then grants. Both gates are live at once for the same
+// reason the RPC path runs two (authorize.go) — the origin gate is what a
+// launch-credential client has always been judged by, and it is deleted
+// when every client authenticates.
+func (h *connHandler) eventVisible(channel string) bool {
+	return eventVisibleToOrigin(channel, h.profile.isLoopback) &&
+		h.eventScopes.allows(channel)
 }

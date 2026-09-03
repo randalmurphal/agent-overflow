@@ -892,7 +892,7 @@ func TestSessionImporterRefusesASecondThreadForOneSession(t *testing.T) {
 		ID: "project-one-thread", Path: t.TempDir(), Name: "One thread",
 		CreatedAt: 1, UpdatedAt: 1,
 	}
-	if err := st.CreateProject(proj); err != nil {
+	if _, err := st.CreateProject(proj); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	row := Row{

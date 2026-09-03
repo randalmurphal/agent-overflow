@@ -792,8 +792,9 @@ describe('threadRevealGate', () => {
         const renderContext = {
           streaming: true,
           volatileTailVisible: true,
-          viewOnly: false,
+          pathLinksInert: false,
           workspacePath: '/workspace',
+          previewKey: '',
         } as const;
         pane.upsertItem(
           makeItem({

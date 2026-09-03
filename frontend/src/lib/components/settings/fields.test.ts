@@ -36,13 +36,60 @@ async function seed(): Promise<void> {
   }));
   setBindingMock('ListAvailableEditors', async () => []);
   setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
+  setBindingMock('GetSpinnerFiles', async () => ({ dir: '/tmp/spinners', sprites: [], warnings: [] }));
+  // The notifications page reads the phone-push status on mount.
+  setBindingMock('GetPushSenderStatus', async () => ({
+    configured: false,
+    projectId: '',
+    clientEmail: '',
+    lastError: '',
+    registeredDevices: 0,
+  }));
+  // Remote access: the whole persisted record plus the two derived
+  // status blocks, because the page reads `tls.renewing` and
+  // `tailnet.running` to decide whether to poll (network.Settings).
   setBindingMock('GetNetworkSettings', async () => ({
     bindAll: false,
-    url: 'http://127.0.0.1:1/',
+    listenPort: 0,
+    canonicalDomain: '',
+    acmeDnsHook: [],
+    externalCertFile: '',
+    externalKeyFile: '',
+    tailnetEnabled: false,
+    tailnetControlUrl: '',
+    tls: {
+      serving: 'self-signed',
+      notAfter: 0,
+      renewing: false,
+      lastError: '',
+      selfSignedFingerprint: '',
+    },
+    tailnet: {
+      running: false,
+      state: '',
+      authUrl: '',
+      dnsName: '',
+      ips: [],
+      url: '',
+      https: false,
+      hasState: false,
+      lastError: '',
+    },
+    url: 'http://127.0.0.1:1/?t=t',
     token: 't',
+    insecure: false,
   }));
+  setBindingMock('GetAccessOverview', async () => ({
+    devices: [],
+    pendingPairings: [],
+    audit: [],
+  }));
+  setBindingMock('ListPasskeys', async () => []);
+  setBindingMock('GetDevServers', async () => ({ previewHost: '', servers: [] }));
   setBindingMock('IsWSL', async () => false);
-  setBindingMock('ListRemoteEndpoints', async () => []);
+  setBindingMock('ListWSLDistros', async () => []);
+  setBindingMock('GetWSLDistroPreference', async () => '');
+  setBindingMock('ListBackends', async () => []);
   resetKeybindingsStore();
   await loadSettings();
 }

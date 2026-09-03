@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/store"
 )
 
+//ao:scope threads:read
 func (a *App) CountRunningBackgroundTasks(threadID string) (int, error) {
 	return a.countRunningBackgroundTasks(threadID)
 }

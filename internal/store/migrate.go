@@ -1476,6 +1476,119 @@ ALTER TABLE threads ADD COLUMN group_id TEXT
 
 CREATE INDEX idx_threads_group ON threads(group_id) WHERE group_id IS NOT NULL;`,
 	},
+	{
+		Version: 77,
+		Name:    "thread_created_by_device",
+		// Which screen started this thread. One backend now serves several
+		// clients, and a thread carries no record of where it came from.
+		//
+		// Creation only, never "last touched": a single column can hold one
+		// answer, and overwriting it on every mutation would destroy the
+		// provenance it exists to keep while still not being an audit trail
+		// (that needs a log, not a slot).
+		//
+		// NOT NULL DEFAULT '' so "unattributed" has one spelling, which is
+		// the honest value for every existing row and for every thread the
+		// backend creates on its own. A plain ADD COLUMN, so the FK-parent
+		// threads table is not rebuilt.
+		SQL: `ALTER TABLE threads ADD COLUMN created_by_device TEXT NOT NULL DEFAULT '';`,
+	},
+	{
+		Version: 78,
+		Name:    "thread_created_git_origin",
+		// The git coordinates of the workspace at the moment the thread was
+		// created: branch, remote URL, head commit.
+		//
+		// Recorded because they are unrecoverable later. A fork or a transfer
+		// needs to know which repository and which commit a thread grew from,
+		// and by then the branch has moved, the commit may have been rebased
+		// away, and the workspace may hold something else entirely. The live
+		// `branch` column answers a different question — it tracks the
+		// CHECKOUT and is rewritten whenever the working tree moves.
+		//
+		// Empty is a first-class value: a non-git workspace, a detached HEAD,
+		// a repository with no remote, and every pre-migration row all read
+		// as "not known", and no caller may treat empty as an error. Three
+		// plain ADD COLUMNs, no rebuild.
+		SQL: `ALTER TABLE threads ADD COLUMN created_branch TEXT NOT NULL DEFAULT '';
+ALTER TABLE threads ADD COLUMN created_remote_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE threads ADD COLUMN created_head_commit TEXT NOT NULL DEFAULT '';`,
+	},
+	{
+		Version: 79,
+		Name:    "identity_core",
+		// Users, devices, sessions, signing keys, recovery codes, and the
+		// credential audit log. The first authoritative (non-cache) rows in
+		// this database — see the const's doc comment for why they are one
+		// migration and what each table's non-obvious columns decide.
+		SQL: identityCoreV79SQL,
+	},
+	{
+		Version: 80,
+		Name:    "pairing_and_refresh",
+		// Pairing links, rotating refresh secrets, the implicit-channel
+		// device key, and the confirmation gate on a session. See the
+		// const's doc comment for why the four are one migration and what
+		// each non-obvious column decides.
+		SQL: pairingAndRefreshV80SQL,
+	},
+	{
+		Version: 81,
+		Name:    "device_proof_kind",
+		// How a device proves possession of the key its row names: an
+		// opaque enrollment identifier compared as a string, or an ECDSA
+		// P-256 key whose only accepted presentation is a signed proof.
+		// See the const's doc comment for why one column makes the
+		// stronger form enforceable.
+		SQL: deviceProofKindV81SQL,
+	},
+	{
+		Version: 82,
+		Name:    "passkeys",
+		// The owner's passkey credentials and the WebAuthn user handle
+		// they register against. See the const's doc comment for why the
+		// handle is a column on `users`, why credentials hang off the
+		// account rather than off a device row, and what the counter and
+		// backup flags decide.
+		SQL: passkeysV82SQL,
+	},
+	{
+		Version: 83,
+		Name:    "project_identity",
+		// A project's DERIVED repository identity, computed by the backend
+		// that owns the checkout. `remote_url` is the `origin` remote
+		// exactly as git reports it — unnormalised, because the client
+		// attached to several backends is the side that matches them and
+		// owns the normalisation. `root_commit` is the lexicographically
+		// smallest root of HEAD, which is what lets a repository with no
+		// remote (or several roots) still answer the same on every machine.
+		//
+		// Empty is a first-class value: a non-git directory, a repository
+		// with no origin, an unborn HEAD, and every pre-migration row all
+		// read as "not known", and no caller may treat empty as an error.
+		// Two plain ADD COLUMNs, no CHECK, so the FK-parent `projects`
+		// table is not rebuilt.
+		SQL: `ALTER TABLE projects ADD COLUMN remote_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE projects ADD COLUMN root_commit TEXT NOT NULL DEFAULT '';`,
+	},
+	{
+		Version: 84,
+		Name:    "push",
+		// A device's phone-push registration token, and the singleton
+		// service-account credential this backend sends with. See the
+		// const's doc comment for why the token table is keyed by device
+		// and why the sender is one row.
+		SQL: pushV84SQL,
+	},
+	{
+		Version: 85,
+		Name:    "flush_queue",
+		// The per-thread flush queue, made durable: a message the user
+		// already sent, waiting out an active turn. See the const's doc
+		// comment for why the row is not cache content, why `id` alone is
+		// the key, and why `send_id` carries no unique index.
+		SQL: flushQueueV85SQL,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

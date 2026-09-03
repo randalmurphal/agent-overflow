@@ -188,7 +188,7 @@ func (s *Server) Rebind(addr string, opts *RebindOptions) error {
 // working listener cannot change any of those answers. Callers (Rebind)
 // keep their state-intact guarantee for all of them.
 func (s *Server) bindRebindListener(addr string, oldListener net.Listener, oldAddr string) (net.Listener, error) {
-	listener, err := net.Listen("tcp", addr)
+	listener, err := s.bindListener(addr)
 	if err == nil {
 		return listener, nil
 	}
@@ -209,7 +209,7 @@ func (s *Server) bindRebindListener(addr string, oldListener net.Listener, oldAd
 	if closeErr := oldListener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
 		log.Printf("transport: rebind: close old listener for retry: %v", closeErr)
 	}
-	listener, retryErr := net.Listen("tcp", addr)
+	listener, retryErr := s.bindListener(addr)
 	if retryErr == nil {
 		return listener, nil
 	}
@@ -218,7 +218,7 @@ func (s *Server) bindRebindListener(addr string, oldListener net.Listener, oldAd
 	// contract is honored. If even the rollback bind fails, surface
 	// the original error along with the rollback error — the server is
 	// genuinely degraded and the caller (and the user) should know.
-	rollback, rollbackErr := net.Listen("tcp", oldAddr)
+	rollback, rollbackErr := s.bindListener(oldAddr)
 	if rollbackErr != nil {
 		return nil, fmt.Errorf("transport: rebind listen %s: %w (state-intact rollback to %s also failed: %v)", addr, retryErr, oldAddr, rollbackErr)
 	}

@@ -230,13 +230,30 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 		}
 		return fmt.Errorf("start workflow engine: %w", err)
 	}
+	// A queued workflow wake is process memory. Re-surface the prior process's
+	// transferred claims only after the engine has rebuilt their item rows.
+	a.workflowApplication().SurfaceReclaimedUsageAttention(usageAttentionRecoveries)
+	return nil
+}
+
+// startWorkflowAutomation arms the two things that make a run happen with
+// nobody asking: the self-resume timers and the §11 scheduler.
+//
+// Split out of initWorkflowEngine because those two are the workflow half of
+// the activation gate's set (app_activation.go). Rebuilding engine state from
+// SQLite is what a supervisor trial has to prove; firing a trigger into a
+// backend that may be rolled back in ninety seconds is what it must not do —
+// an auto-resume's boot delay is thirty seconds, comfortably inside a trial's
+// budget, and what it resumes is a provider turn that spends real tokens and
+// runs real commands.
+//
+// On every ordinary boot this runs inline from Start, in the same order and
+// with the same fatal-on-failure behaviour it had inside initWorkflowEngine.
+func (a *App) startWorkflowAutomation() error {
 	// Self-resume schedules are re-armed over the engine that just rebuilt: a
 	// timer must not be able to fire into a run the rebuild has not decided
 	// about yet, and the rebuild is what parks the runs a crash interrupted.
 	a.workflowApplication().SweepAutoResumes()
-	// A queued workflow wake is process memory. Re-surface the prior process's
-	// transferred claims only after the engine has rebuilt their item rows.
-	a.workflowApplication().SurfaceReclaimedUsageAttention(usageAttentionRecoveries)
 	// The §11 scheduler starts last and over the running engine: a trigger must
 	// never be able to fire into an engine that does not exist yet.
 	if err := a.initWorkflowScheduler(); err != nil {
@@ -307,6 +324,9 @@ func (a *App) startAutomationRun(automation store.Automation, goal string, seeds
 //
 // It returns the armed moment in RFC 3339 so the caller prints the time the app
 // holds rather than re-deriving one from a duration it sent.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowScheduleResume(ctx context.Context, itemID, at string) (string, error) {
 	// The engine is required even though nothing resumes now: what this arms is
 	// a `WorkflowResumeItem`, and an app with no engine would take the schedule,
@@ -324,6 +344,8 @@ func (a *App) WorkflowScheduleResume(ctx context.Context, itemID, at string) (st
 // WorkflowStartRun is the one start path every producer calls. The run begins
 // immediately; contention shows up as its first phase waiting on resource
 // capacity, never as a queued item.
+//
+//ao:scope threads:autonomy
 func (a *App) WorkflowStartRun(projectID, workflowID, workflowScope, goal string, seeds json.RawMessage, budget *profile.Budget, baseBranch string, stepMode bool) (store.WorkItem, error) {
 	return a.startWorkflowRun(projectID, workflowID, workflowScope, goal, seeds, budget, baseBranch, stepMode, "manual", "")
 }
@@ -440,6 +462,8 @@ func decodeWorkflowSeeds(seeds json.RawMessage) (map[string]any, json.RawMessage
 	return values, normalized, nil
 }
 
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowCancelItem(ctx context.Context, itemID string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -465,6 +489,9 @@ func (a *App) WorkflowCancelItem(ctx context.Context, itemID string) error {
 // this entry instead of rendering the definition the run froze at start — the
 // repair for a phase whose prompt was edited while the run was parked. The
 // engine offers it at fresh phase entries only.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowResumeItem(ctx context.Context, itemID, targetPhase string, refreshDefinition bool) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -510,6 +537,9 @@ func (a *App) WorkflowResumeItem(ctx context.Context, itemID, targetPhase string
 
 // WorkflowCompleteTakeover runs one schema-attached finalize turn on the
 // phase thread currently parked under human control.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowCompleteTakeover(itemID string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -583,6 +613,9 @@ func currentWorkflowPhaseAttempt(phases []store.WorkItemPhase) (store.WorkItemPh
 // deliberately. The scope check is the same one every run-control RPC applies —
 // a webview call carries none and passes untouched, a phase session is confined
 // to the runs it started.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowAnswerQuestion(ctx context.Context, itemID, answer string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -594,6 +627,8 @@ func (a *App) WorkflowAnswerQuestion(ctx context.Context, itemID, answer string)
 	return workflowEngine.Answer(itemID, answer)
 }
 
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowResolveGate(ctx context.Context, itemID, decision, note string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -609,17 +644,25 @@ func (a *App) WorkflowResolveGate(ctx context.Context, itemID, decision, note st
 // phase starts anywhere while paused, in-flight turns finish. It is persisted
 // before it is applied, so a restart recovers the requested state even if
 // shutdown races the live update.
+//
+// This is the ONE write path for the `workflowPaused` setting: the generic
+// UpdateSettings patch refuses the key (docs/specs/remote-access.md §6, "one
+// write path per key"), because persisting a pause the engine never heard
+// about is not the same act as pausing.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowSetGlobalPause(paused bool) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return err
 	}
 	previous := a.currentSettings()
-	if _, err := a.settings.Update(map[string]any{"workflowPaused": paused}); err != nil {
+	if _, err := a.settings.SetWorkflowPaused(paused); err != nil {
 		return err
 	}
 	if err := workflowEngine.PauseDetachedStarts(paused); err != nil {
-		_, rollbackErr := a.settings.Update(map[string]any{"workflowPaused": previous.WorkflowPaused})
+		_, rollbackErr := a.settings.SetWorkflowPaused(previous.WorkflowPaused)
 		return errors.Join(err, rollbackErr)
 	}
 	return nil
@@ -627,6 +670,9 @@ func (a *App) WorkflowSetGlobalPause(paused bool) error {
 
 // WorkflowGetEngineState reports the live global pause flag. The engine is the
 // authority; settings are only its restart-surviving copy.
+//
+//ao:scope threads:read
+//ao:route home
 func (a *App) WorkflowGetEngineState() (engine.EngineState, error) {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -639,6 +685,7 @@ func (a *App) WorkflowGetEngineState() (engine.EngineState, error) {
 	return engine.EngineState{Paused: paused}, nil
 }
 
+//ao:scope threads:read
 func (a *App) WorkflowListItems(projectID string) ([]store.WorkItem, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("workflow store unavailable")
@@ -649,6 +696,8 @@ func (a *App) WorkflowListItems(projectID string) ([]store.WorkItem, error) {
 // WorkflowListUnresolvedItems returns summary rows for active runs and
 // terminal runs that still need a disposition. An empty project ID is
 // app-wide, matching WorkflowListItems.
+//
+//ao:scope threads:read
 func (a *App) WorkflowListUnresolvedItems(projectID string) ([]store.WorkItem, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("workflow store unavailable")
@@ -786,6 +835,8 @@ type WorkflowRunSpend struct {
 	UnpricedRows int64 `json:"unpricedRows"`
 }
 
+//ao:scope threads:read
+//ao:route home
 func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 	if a.store == nil {
 		return WorkflowItemDetailView{}, fmt.Errorf("workflow store unavailable")

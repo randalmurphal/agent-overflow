@@ -2448,6 +2448,197 @@ func TestProposedPlanPersistsHeavy(t *testing.T) {
 	}
 }
 
+// threadRowEmissions returns the thread:updated `full` rows — the
+// wildcard carrier the sidebar's Plan ready pill reads since
+// provider:item_event was narrowed. The pill is a DERIVED COLUMN of the
+// row (threads.hasActionableProposedPlan), so the row is the whole fact
+// and the plan item never has to be seen for it to paint.
+func threadRowEmissions(t *testing.T, emissions []emitted) []store.Thread {
+	t.Helper()
+	out := make([]store.Thread, 0)
+	for _, e := range filterEmissions(emissions, "thread:updated") {
+		evt, ok := e.data.(ThreadUpdateEvent)
+		if !ok {
+			t.Fatalf("thread:updated payload type = %T, want ThreadUpdateEvent", e.data)
+		}
+		if evt.Action != ThreadActionFull || evt.Thread == nil {
+			continue
+		}
+		out = append(out, *evt.Thread)
+	}
+	return out
+}
+
+func TestProposedPlanPersistBroadcastsTheThreadRow(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventProposedPlan,
+		ThreadID:  "t1",
+		ItemID:    "plan-1",
+		Content:   "# Ship it\n\n- one",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle plan: %v", err)
+	}
+
+	rows := threadRowEmissions(t, emissions.snapshot())
+	if len(rows) == 0 {
+		t.Fatalf("expected a thread:updated full row after the plan persist, got %+v", emissions.snapshot())
+	}
+	last := rows[len(rows)-1]
+	if last.ID != "t1" {
+		t.Fatalf("broadcast row id = %q, want t1", last.ID)
+	}
+	if !last.HasActionableProposedPlan {
+		t.Fatal("broadcast row carries hasActionableProposedPlan=false after an in-turn plan persist")
+	}
+
+	// Order matters for a client that IS watching: it applies the item
+	// first and the row second, which is the same order the originating
+	// client's own RPC sequence produces.
+	var sawUpsert bool
+	for _, e := range emissions.snapshot() {
+		if e.eventName == "provider:item_event" {
+			if evt, ok := e.data.(ItemStreamEvent); ok && evt.Action == itemStreamActionUpsert {
+				sawUpsert = true
+			}
+			continue
+		}
+		if e.eventName == "thread:updated" {
+			if evt, ok := e.data.(ThreadUpdateEvent); ok && evt.Action == ThreadActionFull && !sawUpsert {
+				t.Fatal("thread row broadcast preceded the plan item upsert")
+			}
+		}
+	}
+}
+
+func TestNonPlanPersistBroadcastsNoThreadRow(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	emissions.reset()
+
+	now := time.Now().UnixMilli()
+	if err := router.PersistItem(store.Item{
+		ID: "asst:0:0", ThreadID: "t1", Kind: "assistant_text", Role: "assistant",
+		Status: "completed", Summary: "ok", CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("persist assistant_text: %v", err)
+	}
+
+	if rows := threadRowEmissions(t, emissions.snapshot()); len(rows) != 0 {
+		t.Fatalf("ordinary persist broadcast %d thread rows, want 0", len(rows))
+	}
+}
+
+// ---------------------------------------------------------------------
+// thread:error_notice — the Failed pill's wildcard carrier.
+
+func errorNotices(t *testing.T, emissions []emitted) []ThreadErrorNoticeEvent {
+	t.Helper()
+	out := make([]ThreadErrorNoticeEvent, 0)
+	for _, e := range filterEmissions(emissions, "thread:error_notice") {
+		evt, ok := e.data.(ThreadErrorNoticeEvent)
+		if !ok {
+			t.Fatalf("thread:error_notice payload type = %T, want ThreadErrorNoticeEvent", e.data)
+		}
+		out = append(out, evt)
+	}
+	return out
+}
+
+func TestErrorItemPersistEmitsErrorNotice(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	emissions.reset()
+
+	now := time.Now().UnixMilli()
+	if err := router.PersistItem(store.Item{
+		ID: "error-1", ThreadID: "t1", Kind: ItemKindError, Role: "system",
+		Status: "completed", Summary: "boom", CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("persist error item: %v", err)
+	}
+
+	notices := errorNotices(t, emissions.snapshot())
+	if len(notices) != 1 {
+		t.Fatalf("error notices = %d, want 1 (%+v)", len(notices), emissions.snapshot())
+	}
+	if notices[0].ThreadID != "t1" || notices[0].ItemID != "error-1" {
+		t.Fatalf("notice = %+v, want {t1 error-1}", notices[0])
+	}
+}
+
+// The provider's own error frame — the route every non-turn_completed
+// failure takes (reconnect refusal, steer failure, flush-dispatch
+// failure, the orphan error result). All of them land on the one
+// persistItemWithEmit chokepoint, so covering the funnel covers them.
+func TestProviderErrorEventEmitsErrorNotice(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	emissions.reset()
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventError,
+		ThreadID:  "t1",
+		Content:   "reconnect failed: binary not found",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle error event: %v", err)
+	}
+
+	notices := errorNotices(t, emissions.snapshot())
+	if len(notices) != 1 {
+		t.Fatalf("error notices = %d, want 1 (%+v)", len(notices), emissions.snapshot())
+	}
+	if notices[0].ThreadID != "t1" {
+		t.Fatalf("notice thread = %q, want t1", notices[0].ThreadID)
+	}
+}
+
+func TestNonErrorPersistsEmitNoErrorNotice(t *testing.T) {
+	// api_error is the retry-banner row, not a failed thread: it renders
+	// inline while the provider retries and the turn may still succeed.
+	// A quiet persist has no reader-visible consequence at all.
+	cases := []struct {
+		name  string
+		kind  string
+		quiet bool
+	}{
+		{name: "api_error", kind: "api_error"},
+		{name: "assistant_text", kind: "assistant_text"},
+		{name: "quiet error", kind: ItemKindError, quiet: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, emissions := newTestRouter(t)
+			createTestThread(t, st, "t1")
+			emissions.reset()
+
+			now := time.Now().UnixMilli()
+			item := store.Item{
+				ID: "row-1", ThreadID: "t1", Kind: tc.kind, Role: "system",
+				Status: "completed", Summary: "boom", CreatedAt: now, UpdatedAt: now,
+			}
+			var err error
+			if tc.quiet {
+				err = router.PersistItemQuiet(item, nil)
+			} else {
+				err = router.PersistItem(item, nil)
+			}
+			if err != nil {
+				t.Fatalf("persist %s: %v", tc.name, err)
+			}
+
+			if notices := errorNotices(t, emissions.snapshot()); len(notices) != 0 {
+				t.Fatalf("%s emitted %d error notices, want 0", tc.name, len(notices))
+			}
+		})
+	}
+}
+
 func TestProposedPlanDedupesMatchingContentWithinTurn(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

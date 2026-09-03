@@ -131,7 +131,7 @@ runtime palette change repaints everything for free **except**:
 |---|---|---|
 | **xterm terminals** (`terminal/terminalTheme.ts`, applied in `terminalXterm.ts`, `TerminalBody.svelte`, `TakeControlTerminal.svelte`) | **BRIDGED (phase 2).** Was: hand-maintained hex `DARK`/`LIGHT` `ITheme` duplicates (44 values) that CSS vars never reached, because xterm rejects `oklch`, and the app.css comment claiming otherwise was stale. Now the `ITheme` is resolved from the live cascade through `utils/cssColorProbe.ts` (the same module the phase-1 mermaid bridge uses, so there is still exactly one resolver), and the re-apply effect tracks the palette identity rather than just the light/dark flip. See §9. | WebGL addon has a GPU glyph-atlas cache, so verify visually after palette changes. |
 | **Mermaid** (`StreamdownMermaidHost.svelte` + `markdown/render/Streamdown.svelte`) | **BRIDGED (phase 1).** Was: built-in `'dark'`/`'default'` palettes only, diagram fills/strokes/labels a wholly uncaptured surface. Now `theme:'base'` + `themeVariables` resolved from app tokens (`chat/markdown/mermaidTokens.ts`, via the probe in `utils/cssColorProbe.ts`); the `{#key}` and the SVG cache key both key on the palette. | Widen the palette identity when theme files land (see §7 phase 2). |
-| **Native window background** (`main_desktop.go`) | **BRIDGED (phase 2).** Was: `NewRGBA(22,22,30)` hardcoded at construction, the resize-flash color, wrong for light theme already. Now `SetWindowBackgroundColor` (LocalOnly) paints it live from the app's cascade-reading `$effect`, and construction reads the `windowBackground` cache out of `themes/appearance.json` before the webview exists. See §9.3. | — |
+| **Native window background** (`main_desktop.go`) | **BRIDGED (phase 2).** Was: `NewRGBA(22,22,30)` hardcoded at construction, the resize-flash color, wrong for light theme already. Now `SetWindowBackgroundColor` (`//ao:scope host`) paints it live from the app's cascade-reading `$effect`, and construction reads the `windowBackground` cache out of `themes/appearance.json` before the webview exists. See §9.3. | — |
 | **WSL launcher pages** (`cmd/agent-overflow-windows/picker.go`) | Inline HTML, hardcoded `#16161e` + Tokyo Night. Pre-app bootstrap; could at best read settings JSON off disk for light/dark. | Low priority. |
 | **Favicon** (`public/favicon.svg`) | Static, dark tile. | Optional `prefers-color-scheme` inside the SVG. |
 | **Second window / `--connect` client** | No `settings:changed` push event exists, so another client learns of a theme change only on reload. | Needs a push event if themes should sync live (template: `app_workflow_definitions_watcher.go`'s `a.emit`). |
@@ -280,8 +280,8 @@ recoloring, breaks under token renames).
 - **`keybindings.json` is the strongest precedent for a separate
   file**: own package + `Service` (`Get/Update/Reset`), own atomic
   write, defaults + user-override merge, read RPC deliberately
-  LAN-allowed while writes stay in `LocalOnlyMethods`. A theme read is
-  the same class as `GetKeybindings`; theme writes are local-only.
+  LAN-allowed (`settings:read`, observe tier) while writes need
+  `settings:write`. A theme read is the same class as `GetKeybindings`.
 - The in-flight prompt-overrides work establishes the in-`settings.json`
   alternative: typed sub-struct in its own file, `omitempty`, bounds
   consts, validate/sanitize dual, accessor methods. Collision risk with
@@ -326,13 +326,13 @@ recoloring, breaks under token renames).
 - `--connect` client mode (`main_desktop.go#runClient`): the client
   process registers **no services**. The SPA RPCs entirely against the
   remote backend; the local process is a static stub
-  (`internal/clientmode`) that injects `window.__AO_BOOTSTRAP__` into
-  index.html. But the client binary DOES have a durable per-machine
+  (`internal/clientmode`) that serves the SPA shell verbatim and answers
+  `/bootstrap.json`. But the client binary DOES have a durable per-machine
   ClientID (`ensureClientID`) and its own `<configDir>` on the client
   machine. So client-side theme files are *storable* there today, but
   there is no live channel from the stub to the webview, so theme data
-  would ride the bootstrap injection (applied at page load; live
-  file-watch reload needs a small stub endpoint later).
+  would ride the stub's manifest (applied at page load; live file-watch
+  reload needs a small stub endpoint later).
 - Pure-browser remote sessions: no local process, no files. Built-in
   themes + localStorage selection only.
 
@@ -429,11 +429,11 @@ window background, both carried into phase 2 below.
   atomic renames) → `theme:changed` emit → frontend re-resolves. This
   is the agent-edit loop. Errors are user-facing: a broken theme file
   surfaces a visible warning and falls back per-token, never silently.
-- **Native window background** binding (classified in
-  `LocalOnlyMethods`) + FOUC stamp for the first frame.
+- **Native window background** binding (`//ao:scope host` — it paints a
+  window on this desktop) + FOUC stamp for the first frame.
 - **Transport posture**: theme reads LAN-allowed (keybindings parity),
-  writes local-only; view-only sessions render with built-ins or the
-  values the bootstrap/read path supplies.
+  writes need `settings:write`; a session without that grant renders with
+  built-ins or the values the bootstrap/read path supplies.
 
 ### Phase 2/3 concrete contract (build spec, 2026-08-18)
 
@@ -494,8 +494,10 @@ Go is pipe and never parses theme JSON beyond `appearance.json`):
 - `GetThemeFiles() → { dir, themes: [{id, raw}], appearance,
   warnings: [string] }` is one RPC, LAN-read-allowed (keybindings
   parity). Unreadable files/dir problems land in `warnings`.
-- `SetAppearance(appearance)` is LOCAL-ONLY (`LocalOnlyMethods`),
-  atomic write, validated (mode enum, id shape, hex shape), sparse.
+- `SetAppearance(appearance)` is `host` scope (decision 4: the file is
+  this desktop's own, and a paired device keeps its selection in its own
+  storage), atomic write,
+  validated (mode enum, id shape, hex shape), sparse.
 - Watcher on `themes/` (template
   `app_workflow_definitions_watcher.go`: 250ms debounce, ignore own
   atomic renames) → `a.emit("theme:changed")`; frontend refetches.
@@ -506,7 +508,8 @@ Go is pipe and never parses theme JSON beyond `appearance.json`):
   frontend picker off it.
 - Native window: `BackgroundColour` at window creation reads
   `appearance.windowBackground` (fallback: current hardcoded value);
-  a `SetWindowBackgroundColor` App method (LOCAL-ONLY) applies live
+  a `SetWindowBackgroundColor` App method (`//ao:scope host` — it paints
+  a window this process owns, so it has no remote form) applies live
   changes.
 
 **Frontend** (`frontend/src/lib/theme/`):
@@ -541,8 +544,8 @@ Go is pipe and never parses theme JSON beyond `appearance.json`):
   Monokai, Dracula, Solarized, Tokyo Night, Catppuccin, …) shipped as
   built-in code themes: syntax 21 + ansi 16 + terminal + code-block/
   inline backgrounds, mapped by hand onto the 29-family taxonomy.
-- `--connect`: theme payload injected via `__AO_BOOTSTRAP__`; optional
-  stub endpoint for live reload. Browser sessions: built-ins +
+- `--connect`: theme payload carried on the stub's `/bootstrap.json`
+  manifest; optional stub endpoint for live reload. Browser sessions: built-ins +
   localStorage selection.
 - Optional later: in-app theme editing UI. The file format is the
   contract either way; agents are the primary editor.
@@ -672,8 +675,8 @@ read):
   Not an error to report: it is a session without a themes directory.
   Built-ins only, and the settings surface says so.
 - **`writesRefused`**: a refused `SetAppearance` or a refused read, and
-  a view-only session is write-blocked up front rather than after a
-  failure. A write-blocked session still TAKES the wire's themes,
+  a session not on the host (`hasScope('host')`) is write-blocked up front
+  rather than after a failure. A write-blocked session still TAKES the wire's themes,
   directory and warnings; what it never adopts is the SELECTION. That is
   the client-residency decision (§6.1) enforced at the read: a remote
   browser renders its own choice out of `localStorage`, which is the only
@@ -709,8 +712,8 @@ line each:
 
 - **A remote session keeps its own selection.** §9.6's one degrade flag
   split into three independent facts: `readAvailable` (no themes
-  directory at all), `writesRefused` (structural, and view-only sessions
-  are write-blocked up front), and `loadError` (transient, latches
+  directory at all), `writesRefused` (structural, and a session
+  without `settings:write` is write-blocked up front), and `loadError` (transient, latches
   nothing). A write-blocked session still takes the wire's themes,
   directory and warnings but never adopts its SELECTION, which stays in
   `localStorage`: the theme is a property of the CLIENT, so a browser

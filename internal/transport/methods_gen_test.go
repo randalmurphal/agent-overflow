@@ -6,322 +6,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"strconv"
+	"strings"
 	"testing"
 )
-
-// wireSafeMethods is the hand-maintained allow-list of every App method
-// the dispatcher exposes to non-loopback (LAN-attached) peers. It is
-// the positive partner to LocalOnlyMethods: the union of the two MUST
-// cover every entry in GeneratedMethods.
-//
-// The list lives in test scope (not internalmethods.go) on purpose:
-// nothing in the runtime dispatcher consults it. The dispatcher
-// already refuses LocalOnlyMethods from non-loopback peers and lets
-// everything else through; this map is a forcing function that makes
-// "let everything else through" a deliberate per-method choice instead
-// of an implicit default.
-//
-// Adding a new App method falls into one of these cases:
-//
-//  1. The method touches local FS, spawns processes, mutates settings,
-//     controls a provider session, writes attachments, or returns
-//     credentials. Add to LocalOnlyMethods in internalmethods.go (with
-//     a category-block comment explaining the threat shape).
-//  2. The method is safe for a LAN-attached token-holder to call.
-//     Add to wireSafeMethods below.
-//
-// TestGeneratedMethods_AllClassified will fail with a missing-name
-// pointer if a new method lands without a classification. The test
-// failure message names the method and reminds the developer to pick
-// one branch — never default by silence.
-var wireSafeMethods = map[string]bool{
-	// Syntax-highlight span metadata: pure text-in/metadata-out over
-	// content the caller already holds. The scope-resolving variant
-	// (HighlightPatchWithContext) reads local file content and lives in
-	// LocalOnlyMethods.
-	"HighlightClassNames":    true,
-	"HighlightSchemaVersion": true,
-	"HighlightCode":          true,
-	"HighlightPatch":         true,
-
-	// Project lifecycle (CRUD, sort, archive). User-driven UI surface
-	// the remote browser must reach.
-	"ArchiveProject":             true,
-	"UnarchiveProject":           true,
-	"DeleteProject":              true,
-	"RenameProject":              true,
-	"ListProjects":               true,
-	"UpdateProjectSortPositions": true,
-
-	// Thread lifecycle (CRUD, archive, pin, read/unread). Same
-	// user-driven UI surface.
-	"ArchiveThread":        true,
-	"UnarchiveThread":      true,
-	"DeleteThread":         true,
-	"RenameThread":         true,
-	"GetThread":            true,
-	"ListArchivedThreads":  true,
-	"ListThreads":          true,
-	"PinThread":            true,
-	"SetThreadPinGroup":    true,
-	"UnpinThread":          true,
-	"MarkThreadRead":       true,
-	"MarkThreadUnread":     true,
-	"SwitchThread":         true,
-	"GetThreadRuntimeMode": true,
-
-	// Sidebar thread groups (migration v76). Pure SQLite CRUD over a
-	// project id, a user-chosen name, a pin, and thread membership: no
-	// filesystem, no process, no provider session, no settings. They sit
-	// beside the thread pin methods for the same reason — the remote
-	// browser renders the same sidebar and must be able to drive it.
-	"ListThreadGroups":       true,
-	"CreateThreadGroup":      true,
-	"RenameThreadGroup":      true,
-	"DeleteThreadGroup":      true,
-	"PinThreadGroup":         true,
-	"UnpinThreadGroup":       true,
-	"SetThreadGroupPinGroup": true,
-	"SetThreadGroup":         true,
-
-	// Usage accounting reads (append-only ledger aggregates and the
-	// latest provider-reported quota windows; no credentials, no FS).
-	"GetUsageStats":          true,
-	"GetRateLimitsSnapshots": true,
-
-	// GetClaudeSlashCommands returns {name, description, argumentHint} for
-	// the provider-executed commands the last account probe reported. It is
-	// the composer's cold-thread menu seed and is deliberately NOT
-	// loopback-only, on the same grounds as GetKeybindings below:
-	//
-	//   - it never spawns, never reads the filesystem, and never touches
-	//     credentials — it is an in-memory read of what a probe already
-	//     left behind (internal/claudecommands);
-	//   - the shape carries no paths and no environment: names, prose
-	//     descriptions, and argument hints, which is UI affordance data,
-	//     not the URL/bearer-reference inventory that puts the MCP surface
-	//     in category 8;
-	//   - the SAME rich entries already reach remote peers on the
-	//     `provider:commands` event channel, whose registry row is
-	//     AudienceAny, so refusing the RPC would buy no
-	//     confidentiality while emptying the command menu on any thread
-	//     without a live session.
-	//
-	// A future reviewer running this exercise: if provider:commands ever
-	// becomes loopback-only, or the shape grows a path/env field, re-run the
-	// decision — don't leave this entry standing on a premise that moved.
-	"GetClaudeSlashCommands": true,
-
-	// Per-client UI view state (ui_state table). Remote clients are
-	// the point: each presents an opaque client ID and can only touch
-	// its own "client:<id>" scope (built server-side in app_uistate.go,
-	// which also bounds batch/key/value sizes). Opaque preference
-	// strings — no credentials, no FS, same reasoning as keybindings.
-	"GetUIState":    true,
-	"SetUIState":    true,
-	"DeleteUIState": true,
-
-	// Timeline reads (item slice / turn / search).
-	"GetThreadItem": true,
-	// Same read surface as GetThreadItem: pure SQLite history reads
-	// backing the nav rail (whole-thread tick list; hover preview for
-	// an unloaded turn).
-	"GetThreadUserMessageTicks": true,
-	// Composer ArrowUp history recall: the same pure SQLite history
-	// read, full message text, bounded by the app-side limit clamp.
-	"GetThreadUserMessageHistory": true,
-	"GetThreadTurnPreview":        true,
-	"ListItems":                   true,
-	"ListItemsAfterCursor":        true,
-	"ListItemsBeforeCursor":       true,
-	"ListRecentTurns":             true,
-	"ListSubagentDescendants":     true,
-	"ListThreadSliceAround":       true,
-	// The stamp-gated form of ListThreadSliceAround: same store read,
-	// same window, plus the two counters that let the caller skip the
-	// rows entirely. Store-read-only — no FS, no process, no credentials
-	// — and it is the RPC remote clients benefit from most.
-	"SyncThreadWindow":     true,
-	"SearchThreadMessages": true,
-	"SearchThreadItems":    true,
-
-	// Payload reads. Authorization via getThreadPayloadMeta's
-	// (threadID, payloadID) linkage check. Moved from LocalOnly
-	// to support remote-mode timeline rendering.
-	"GetPayloadPreview": true,
-	"GetPayloadChunk":   true,
-	"GetPayloadData":    true,
-
-	// Edits-scope review reads: SQLite-only projections of persisted
-	// tool-call diff payloads (no FS, no git, no provider session).
-	"ListThreadEditDiffs": true,
-	"GetTurnEditsDiff":    true,
-
-	// Live-state counts (the per-thread surface is LocalOnly in
-	// category 2 because it leaks composer drafts; these are
-	// global-thread-count reads with no sensitive content).
-	"CountRunningBackgroundTasks": true,
-	"ListLiveBackgroundTasks":     true,
-
-	// Discussion CRUD + transcript reads. Channel messages and FSM
-	// state are the user's deliberation surface from the browser — both
-	// pure reads with no provider side effect. PostChannelMessage moved
-	// to LocalOnly (internalmethods.go category 2): it now arms the
-	// next participant's turn prompt, which drives a live provider
-	// session the same way SendMessage does. This is the "discussion
-	// channels grow a side-effecting path" case the comment used to
-	// warn about.
-	"CreateDiscussion":         true,
-	"DeleteDiscussion":         true,
-	"UpdateDiscussion":         true,
-	"GetDiscussion":            true,
-	"ListDiscussions":          true,
-	"ListDiscussionsForThread": true,
-	"GetChannelMessages":       true,
-	"GetChannelState":          true,
-
-	// Proposed-plan inline comments. CRUD is wire-safe; the
-	// LocalOnly SendPlanRevisionComments path is what hands them to
-	// the provider for a revision turn.
-	"CreateProposedPlanComment": true,
-	"DeleteProposedPlanComment": true,
-	"UpdateProposedPlanComment": true,
-	"ListProposedPlanComments":  true,
-	"ListThreadProposedPlans":   true,
-
-	// Attachment listings (metadata only — bytes/thumbnails are
-	// LocalOnly in category 4).
-	"ListAttachments": true,
-
-	// Composer-favorite reads (writes go through SetChatBarFavorite,
-	// which is LocalOnly in category 3).
-	"ListChatBarFavorites": true,
-
-	// Settings reads. GetSettings defensively redacts every
-	// RemoteEndpoint.Token before returning so the LAN-bound caller
-	// cannot enumerate saved credentials; the on-demand
-	// GetRemoteEndpointToken path stays loopback-only in category 6.
-	"GetSettings":        true,
-	"GetEditorSettings":  true,
-	"GetContextSettings": true,
-	// GetKeybindings: see the explicit carve-out comment in
-	// internalmethods.go above the LocalOnlyMethods map. Frontend
-	// has no client-side defaults; LocalOnly would zero every
-	// keyboard shortcut on the remote browser. Mutations stay
-	// LocalOnly in category 3.
-	"GetKeybindings": true,
-	// GetThemeFiles: keybindings parity, and for the same reason. It
-	// returns UI preferences — theme files as opaque text plus which
-	// ones are selected — and it names the themes directory, which is
-	// the one host path it discloses (a fixed subdirectory of a config
-	// dir the remote client can already infer). Refusing it would leave
-	// a remote browser on built-ins with no way to learn the desktop's
-	// palette. The writers (SetAppearance, SetWindowBackgroundColor)
-	// stay LocalOnly in category 3.
-	"GetThemeFiles": true,
-	// GetSpinnerFiles: the same call, one directory over. It returns the
-	// user's custom working-indicator sprites — an opaque manifest string
-	// plus base64 PNG bytes per sprite — and names the spinners
-	// directory, which is the same fixed subdirectory of the same config
-	// dir GetThemeFiles already discloses. A remote browser refused this
-	// renders the built-in sprites and never sees the ones the desktop
-	// user added, which is precisely the theme situation. There is no
-	// write companion at all: sprites are authored by dropping files in.
-	"GetSpinnerFiles": true,
-
-	// Host environment probe (no FS read, no credential).
-	"IsWSL": true,
-
-	"WorkflowListItems":           true,
-	"WorkflowListUnresolvedItems": true,
-	"WorkflowGetItem":             true,
-	// The run map is WorkflowGetItem's tree-shaped sibling: the same store rows
-	// projected to metadata (states, timings, the frozen definition's phase
-	// list), with no envelope, narrative, or artifact content. It is NOT
-	// path-free: a phase attempt's `cause` is the engine's own park diagnosis
-	// and can name an absolute host path (the worktree that would not cut).
-	// That is the same exposure WorkflowGetItem already carries for one run —
-	// which is the bar here, since a remote caller can read any run through it
-	// — and the cause is deliberately not scrubbed: it is the whole account of
-	// why the run stopped.
-	"WorkflowGetRunMap":       true,
-	"WorkflowListItemCosts":   true,
-	"WorkflowListDefinitions": true,
-	"WorkflowGetJobNotes":     true,
-	// Automation rows: definition, trigger rendering, next fire, and the fire
-	// record. Read-only, no FS/process reach; every automation mutation
-	// (including Run now) is LocalOnly.
-	"WorkflowListAutomations": true,
-	// Pure read of the global pause flag — one boolean, no FS/process
-	// reach. The mutating WorkflowSetGlobalPause stays LocalOnly.
-	"WorkflowGetEngineState": true,
-
-	// Build version string.
-	"Version": true,
-}
-
-// TestGeneratedMethods_AllClassified is the positive partner to
-// TestLocalOnlyMethods_AllExist. It walks every GeneratedMethods entry
-// and asserts the method is classified as EITHER LocalOnly (in
-// internalmethods.go) OR wireSafe (the allowlist above) — never
-// neither. A new App method that lands without a classification fails
-// the test with a name + remediation pointer.
-//
-// Failure here means a new method needs a deliberate LAN-safety
-// decision: lock it down in LocalOnlyMethods or add it to
-// wireSafeMethods.
-func TestGeneratedMethods_AllClassified(t *testing.T) {
-	var unclassified []string
-	for _, m := range GeneratedMethods {
-		if !LocalOnlyMethods[m.Name] && !wireSafeMethods[m.Name] {
-			unclassified = append(unclassified, m.Name)
-		}
-	}
-	if len(unclassified) == 0 {
-		return
-	}
-	sort.Strings(unclassified)
-	t.Fatalf(
-		"%d App methods landed without a LAN-safety classification.\n"+
-			"Each method below must be added to EITHER LocalOnlyMethods "+
-			"(internal/transport/internalmethods.go) — for methods that touch "+
-			"local FS, spawn processes, mutate settings, control a provider "+
-			"session, write attachments, or return credentials — OR "+
-			"wireSafeMethods (this file) for methods that are safe to expose "+
-			"to LAN-attached peers.\nUnclassified: %v",
-		len(unclassified), unclassified,
-	)
-}
-
-// TestWireSafeMethods_AllExist guards wireSafeMethods against silent
-// decay (the symmetric check to TestLocalOnlyMethods_AllExist). A
-// rename in the App receiver should fail the test rather than leave a
-// stale entry that quietly stops covering anything.
-func TestWireSafeMethods_AllExist(t *testing.T) {
-	known := make(map[string]bool, len(GeneratedMethods))
-	for _, m := range GeneratedMethods {
-		known[m.Name] = true
-	}
-	for name := range wireSafeMethods {
-		if !known[name] {
-			t.Errorf("wireSafeMethods[%q] does not match any entry in GeneratedMethods — typo or stale entry", name)
-		}
-	}
-}
-
-// TestWireSafeAndLocalOnlyDisjoint asserts the two classification sets
-// don't overlap. A method classified both ways is a logic bug: the
-// runtime would refuse it from LAN callers (LocalOnly wins in the
-// dispatcher), while the test gate would treat it as deliberately
-// exposed. Catching the overlap statically is the right place.
-func TestWireSafeAndLocalOnlyDisjoint(t *testing.T) {
-	for name := range wireSafeMethods {
-		if LocalOnlyMethods[name] {
-			t.Errorf("%q appears in both wireSafeMethods and LocalOnlyMethods — pick one", name)
-		}
-	}
-}
 
 // TestMethodsGen_InSync regenerates methods_gen.go into a tempfile and
 // asserts the bytes match the committed file. A developer who adds an
@@ -340,16 +28,22 @@ func TestMethodsGen_InSync(t *testing.T) {
 
 	tempDir := t.TempDir()
 	tempOut := filepath.Join(tempDir, "methods_gen.go")
+	tempTSOut := filepath.Join(tempDir, "methodRoutes.ts")
+	tempInputs := filepath.Join(tempDir, "inputs.txt")
 
 	cmd := exec.Command("go", "run", "./internal/transport/methodgen",
 		"-out", tempOut,
+		"-ts-out", tempTSOut,
 		"-root", repoRoot,
+		"-inputs", tempInputs,
 	)
 	cmd.Dir = repoRoot
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("run methodgen: %v", err)
 	}
+
+	observeGeneratorInputs(t, tempInputs)
 
 	want, err := os.ReadFile(tempOut)
 	if err != nil {
@@ -362,28 +56,146 @@ func TestMethodsGen_InSync(t *testing.T) {
 
 	if !bytes.Equal(want, got) {
 		t.Fatalf("methods_gen.go is out of sync with App methods.\n" +
-			"Run `go run ./internal/transport/methodgen` and commit the result.")
+			"Run `make methodgen` and commit the result.")
+	}
+
+	// The TS route mirror comes out of the SAME run, so it is checked by
+	// the same gate. A separate command to regenerate it would be a
+	// separate command to forget, and the failure would then land on a
+	// developer who had no reason to think that file was stale.
+	wantTS, err := os.ReadFile(tempTSOut)
+	if err != nil {
+		t.Fatalf("read TS tempfile: %v", err)
+	}
+	gotTS, err := os.ReadFile(filepath.Join(repoRoot, tsRouteMirrorPath))
+	if err != nil {
+		t.Fatalf("read committed TS mirror: %v", err)
+	}
+	if !bytes.Equal(wantTS, gotTS) {
+		t.Fatalf("%s is out of sync with App methods.\n"+
+			"Run `make methodgen` and commit the result.", tsRouteMirrorPath)
 	}
 }
 
-// TestLocalOnlyMethods_AllExist guards the LocalOnlyMethods set against
-// silent decay. Every name in LocalOnlyMethods MUST correspond to a
-// real method in GeneratedMethods — a typo would otherwise let a
-// LAN-attached caller invoke the privileged method with no enforcement
-// at all (the dispatcher would never find a name match, so the LAN-
-// only refusal branch wouldn't fire either).
+// tsRouteMirrorPath is the generated client-side copy of the Route
+// column, named once so the drift gate and the parse gate below cannot
+// point at different files.
+const tsRouteMirrorPath = "frontend/src/lib/transport/methodRoutes.ts"
+
+// TestFrontendMethodRoutesMatchGeneratedTable pins the TS mirror against
+// GeneratedMethods, in both directions, by ID and by route.
 //
-// Failure here means LocalOnlyMethods drifted: rename the entry to
-// match the App method, or drop it if the App method has been removed.
-func TestLocalOnlyMethods_AllExist(t *testing.T) {
-	known := make(map[string]bool, len(GeneratedMethods))
-	for _, m := range GeneratedMethods {
-		known[m.Name] = true
+// The byte-diff above already fails on a stale mirror, but it fails by
+// shelling out — which is exactly the cache-key hole the input manifest
+// exists to close, and it closes it for internal/app, not for the TS
+// file. This test READS the committed mirror in-process, so a hand-edit
+// to it is in this package's cache key and cannot survive a cached PASS.
+// It is also the test that states the contract in the terms the client
+// uses: $Call.ByID(<id>) must find a route for every method it can
+// reach, and must find no route for a method that is gone.
+func TestFrontendMethodRoutesMatchGeneratedTable(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", tsRouteMirrorPath))
+	if err != nil {
+		t.Fatalf("read %s: %v", tsRouteMirrorPath, err)
 	}
-	for name := range LocalOnlyMethods {
-		if !known[name] {
-			t.Errorf("LocalOnlyMethods[%q] does not match any entry in GeneratedMethods — typo or stale entry", name)
+	declared := parseMethodRouteMirror(t, string(source))
+
+	if len(declared) != len(GeneratedMethods) {
+		t.Fatalf("%s declares %d routes, the generated table has %d methods",
+			tsRouteMirrorPath, len(declared), len(GeneratedMethods))
+	}
+	for _, m := range GeneratedMethods {
+		route, ok := declared[m.ID]
+		if !ok {
+			t.Errorf("%s (id %d) has no row in %s", m.Name, m.ID, tsRouteMirrorPath)
+			continue
 		}
+		if route != string(m.Route) {
+			t.Errorf("%s (id %d): mirror says %q, the generated table says %q",
+				m.Name, m.ID, route, m.Route)
+		}
+		if !m.Route.Valid() {
+			t.Errorf("%s carries route %q, which routes.go does not declare", m.Name, m.Route)
+		}
+	}
+}
+
+// parseMethodRouteMirror reads the `<id>: '<route>',` rows out of the
+// generated module. Textual on purpose, the way the scope vocabulary
+// gate reads scopes.ts: the literal is a flat map by construction, and
+// parsing it with a real TS parser would be a second dependency for a
+// shape the generator controls.
+func parseMethodRouteMirror(t *testing.T, module string) map[uint32]string {
+	t.Helper()
+	const marker = "export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {"
+	start := strings.Index(module, marker)
+	if start < 0 {
+		t.Fatalf("no METHOD_ROUTES literal in %s; the gate is reading the wrong shape", tsRouteMirrorPath)
+	}
+	rest := module[start+len(marker):]
+	end := strings.Index(rest, "\n};")
+	if end < 0 {
+		t.Fatalf("METHOD_ROUTES literal never closes")
+	}
+	out := map[uint32]string{}
+	for _, line := range strings.Split(rest[:end], "\n") {
+		line = strings.TrimSpace(line)
+		colon := strings.Index(line, ":")
+		if colon < 0 {
+			continue
+		}
+		id, err := strconv.ParseUint(line[:colon], 10, 32)
+		if err != nil {
+			continue
+		}
+		value := strings.TrimSpace(line[colon+1:])
+		quoteEnd := strings.Index(value[1:], "'")
+		if len(value) < 3 || value[0] != '\'' || quoteEnd < 0 {
+			t.Fatalf("row %q does not carry a quoted route", line)
+		}
+		out[uint32(id)] = value[1 : 1+quoteEnd]
+	}
+	if len(out) == 0 {
+		t.Fatalf("METHOD_ROUTES parsed to nothing; the gate is reading the wrong shape")
+	}
+	return out
+}
+
+// observeGeneratorInputs opens, and immediately closes, every path the
+// generator read. Nothing is done with the contents; the OPEN is the
+// point.
+//
+// `go test` keys its result cache on the files the test PROCESS opens, and
+// everything this test actually inspects lives in package transport. The
+// source that decides the answer — internal/app — is opened by a
+// subprocess, which the cache cannot see. Without these reads the gate
+// reports a cached PASS over an internal/app it never looked at, so a
+// newly exported App method stays undeclared through a green `make
+// go-test` (that is exactly how RedeemPairing and RenewSession slipped
+// past a full gate run on 2026-08-30). Reading the manifest's files puts
+// them in the cache key.
+//
+// Directories are in the manifest alongside their files, and both halves
+// are load-bearing: Go hashes a file by content and a directory by its
+// entry list, so files alone would still miss a method declared in a file
+// that did not exist on the cached run.
+func observeGeneratorInputs(t *testing.T, manifest string) {
+	t.Helper()
+	listing, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatalf("read generator input manifest: %v", err)
+	}
+	paths := strings.Split(strings.TrimSpace(string(listing)), "\n")
+	if len(paths) < 5 {
+		t.Fatalf("the generator named %d inputs; it reads at least the skip list, the scope vocabulary, "+
+			"the route vocabulary, one receiver directory, and its files", len(paths))
+	}
+	for _, path := range paths {
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatalf("open generator input %s: %v", path, err)
+		}
+		_ = f.Close()
 	}
 }
 

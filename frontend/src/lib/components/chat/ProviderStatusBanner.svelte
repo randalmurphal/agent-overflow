@@ -12,10 +12,18 @@
     type ProviderStatusEvent,
   } from '../../stores/providerStatus.svelte';
   import { handleExternalURL } from '../../utils/externalLinks';
+  import { hasScope } from '../../transport/scopes';
   import {
     recheckProviderAccount,
     recheckResultClearsAuthBanner,
   } from '../../providers/actions';
+  import {
+    isProviderLoginActive,
+    startProviderLogin,
+  } from '../../stores/providerAccounts.svelte';
+  import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
+  import { providerSettingsSection } from '../settings/sections';
+  import { isProviderID } from '../../types/providers';
   import {
     getProviderDefinition,
     providerCliLabel,
@@ -29,6 +37,13 @@
   let reconnecting = $state(false);
   let retryingHistory = $state(false);
   let rechecking = $state(false);
+  // Reconnecting a provider session is a thread write; rechecking a
+  // provider account reads the machine's CLI install and login state, which
+  // rides `access:admin` along with the whole provider-account surface. The
+  // banners still render — they explain why a thread is stuck — and only
+  // the buttons go inert.
+  let operateUngranted = $derived(!hasScope('threads:operate'));
+  let accountsUngranted = $derived(!hasScope('access:admin'));
 
   // Provider-level status is keyed by the pane's current provider. When
   // the pane has no thread yet (boot, between switches) we stay empty.
@@ -135,8 +150,28 @@
     }
   });
 
+  // "Not signed in" is the one status with a remedy this banner can start.
+  // Recheck stays beside it: a sign-in done elsewhere (another window, the
+  // provider's own CLI) is cleared by re-reading, not by signing in again.
+  let signingIn = $derived(
+    !!providerStatus && isProviderLoginActive(providerStatus.provider),
+  );
+
+  async function handleSignIn() {
+    const status = providerStatus;
+    if (!status || accountsUngranted || signingIn) return;
+    // The flow renders on the provider's own Settings page and in the
+    // account switcher, both of which own the surface it needs. Opening
+    // Settings is what puts the user in front of the link the sign-in is
+    // about to produce.
+    openSettingsOverlay(
+      isProviderID(status.provider) ? providerSettingsSection(status.provider) : undefined,
+    );
+    await startProviderLogin(status.provider);
+  }
+
   async function handleReconnect() {
-    if (!pane.threadId || reconnecting) return;
+    if (!pane.threadId || reconnecting || operateUngranted) return;
     reconnecting = true;
     try {
       await ReconnectSession(pane.threadId);
@@ -171,7 +206,7 @@
 
   async function handleRecheckAuth() {
     const status = providerStatus;
-    if (!status || rechecking) return;
+    if (!status || rechecking || accountsUngranted) return;
     rechecking = true;
     try {
       // RecheckProviderAccount evicts the per-process probe cache before
@@ -201,7 +236,7 @@
   // refreshed provider:status which the store consumes — same path
   // the boot probe takes.
   async function handleRecheckBinary() {
-    if (rechecking) return;
+    if (rechecking || accountsUngranted) return;
     rechecking = true;
     try {
       await GetProviderStatuses();
@@ -255,17 +290,30 @@
       {#if providerStatus?.status === 'not_found'}
         <button
           onclick={handleRecheckBinary}
-          disabled={rechecking}
+          disabled={rechecking || accountsUngranted}
+          title={accountsUngranted ? 'Not granted to this device' : undefined}
           data-testid="provider-status-recheck"
           class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           {rechecking ? 'Checking…' : 'Recheck'}
         </button>
       {/if}
+      {#if providerStatus?.status === 'unauthenticated'}
+        <button
+          onclick={() => void handleSignIn()}
+          disabled={signingIn || accountsUngranted}
+          title={accountsUngranted ? 'Not granted to this device' : undefined}
+          data-testid="provider-status-signin"
+          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
+          {signingIn ? 'Signing in…' : 'Sign in'}
+        </button>
+      {/if}
       {#if providerStatus?.status === 'binary_stale'}
         <button
           onclick={handleReconnect}
-          disabled={reconnecting}
+          disabled={reconnecting || operateUngranted}
+          title={operateUngranted ? 'Not granted to this device' : undefined}
           data-testid="provider-status-restart"
           class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
@@ -275,7 +323,8 @@
       {#if providerStatus?.actionable && primaryActionLabel}
         <button
           onclick={handlePrimaryAction}
-          disabled={rechecking}
+          disabled={rechecking || accountsUngranted}
+          title={accountsUngranted ? 'Not granted to this device' : undefined}
           data-testid="provider-status-action"
           class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
@@ -301,7 +350,8 @@
         {#if err.kind === 'session'}
           <button
             onclick={handleReconnect}
-            disabled={reconnecting}
+            disabled={reconnecting || operateUngranted}
+            title={operateUngranted ? 'Not granted to this device' : undefined}
             class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
           >
             {reconnecting ? 'Reconnecting...' : 'Reconnect'}

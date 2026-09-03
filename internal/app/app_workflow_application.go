@@ -106,7 +106,20 @@ func (a *App) workflowApplication() *workflowapp.Service {
 			},
 			Attention: workflowapp.AttentionPorts{
 				Notify: func(itemID, title, body string) error {
-					return a.notifyOS(title, body, notify.Target{Kind: "workflow-item", WorkItemID: itemID})
+					// Keyed on the item, so a run that rests twice replaces
+					// its own notification instead of stacking a second one
+					// beside a state that is no longer true.
+					return a.notifyOS(notify.Send{
+						ID:    "workflow-item:" + itemID,
+						Kind:  notify.KindWorkflowAttention,
+						Title: title,
+						Body:  body,
+						Target: notify.Target{
+							Kind:       notify.TargetWorkflowItem,
+							WorkItemID: itemID,
+							BackendID:  a.notificationBackendID(),
+						},
+					})
 				},
 				CanUpgradeDigest: func() bool {
 					return a.eventBus.Load() != nil && a.osNotifications != nil

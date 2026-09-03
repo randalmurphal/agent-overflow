@@ -12,15 +12,23 @@
     count: number;
     onResolve: (response: ApprovalResponse) => Promise<void>;
     onError: (message: string) => void;
+    /**
+     * This session was not granted `approvals:respond`. The panel still
+     * renders — the request is what explains why the turn is parked — and
+     * its buttons go inert. Distinct from `responding`, which the sub-panels
+     * also read as "primary button is loading": an ungranted control is
+     * disabled, never spinning.
+     */
+    ungranted?: boolean;
   }
 
-  let { approval, count, onResolve, onError }: Props = $props();
+  let { approval, count, onResolve, onError, ungranted = false }: Props = $props();
   let responding = $state(false);
 
   const summary = $derived(approval.description || approval.title || approval.toolName || 'Approval required');
 
   async function resolve(response: ApprovalResponse): Promise<void> {
-    if (responding) return;
+    if (responding || ungranted) return;
     responding = true;
     try {
       await onResolve(response);
@@ -56,10 +64,10 @@
   </div>
 
   {#if approval.kind === 'permission' && approval.permissions}
-    <PermissionPanel {approval} onResolve={resolve} {responding} />
+    <PermissionPanel {approval} onResolve={resolve} {responding} {ungranted} />
   {:else if approval.kind === 'mcp-elicitation' && approval.elicitation}
-    <McpElicitationPanel {approval} onResolve={resolve} onError={onError} responding={responding} />
+    <McpElicitationPanel {approval} onResolve={resolve} onError={onError} responding={responding} {ungranted} />
   {:else}
-    <ToolApprovalPanel {approval} onResolve={resolve} {responding} />
+    <ToolApprovalPanel {approval} onResolve={resolve} {responding} {ungranted} />
   {/if}
 </section>

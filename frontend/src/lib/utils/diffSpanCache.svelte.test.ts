@@ -220,7 +220,7 @@ describe('requestFileSpans', () => {
 
   // A pr-anchor review names no clone, so there is nothing to prime FROM.
   // Taking the unprimed path directly is the point: the alternative is one
-  // refused LocalOnly round trip per file to learn the same thing.
+  // refused priming round trip per file to learn the same thing.
   it('takes the unprimed path when the context names no subject', async () => {
     const file = makeFile('src/anchor.ts', ['const a = 1;']);
     const primed = setBindingMock('HighlightPatchWithContext', async () => keywordResult(file));
@@ -259,7 +259,7 @@ describe('requestFileSpans', () => {
 
     // The primed attempt is recorded under the scoped key:
     // re-requesting with context is a cache hit, not another doomed
-    // LocalOnly round trip.
+    // priming round trip.
     await requestFileSpans(file, 'thread-1', workspaceContext);
     expect(primed).toHaveBeenCalledTimes(1);
     expect(unprimed).toHaveBeenCalledTimes(1);

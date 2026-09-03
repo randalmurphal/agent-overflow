@@ -261,7 +261,7 @@ func newCorpusWriter(t *testing.T, providerName string) *corpusWriter {
 		CreatedAt: seedMillis,
 		UpdatedAt: seedMillis,
 	}
-	if err := st.CreateProject(project); err != nil {
+	if _, err := st.CreateProject(project); err != nil {
 		t.Fatalf("import corpus (%s): seed project: %v", providerName, err)
 	}
 	return &corpusWriter{store: st, project: project, provider: providerName}

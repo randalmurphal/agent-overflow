@@ -168,7 +168,10 @@ export const GetPayloadData = dispatch('GetPayloadData');
 export const ListItems = dispatch('ListItems');
 export const GetRateLimitsSnapshots = dispatch('GetRateLimitsSnapshots');
 export const ListProviderAccounts = dispatch('ListProviderAccounts');
-export const LoginProviderAccount = dispatch('LoginProviderAccount');
+export const StartProviderLogin = dispatch('StartProviderLogin');
+export const GetProviderLoginState = dispatch('GetProviderLoginState');
+export const SubmitProviderLoginCode = dispatch('SubmitProviderLoginCode');
+export const CancelProviderLogin = dispatch('CancelProviderLogin');
 export const SwitchProviderAccount = dispatch('SwitchProviderAccount');
 export const RemoveProviderAccount = dispatch('RemoveProviderAccount');
 export const RefreshProviderAccountUsage = dispatch('RefreshProviderAccountUsage');
@@ -182,10 +185,12 @@ export const BrowserCompanionPaneAttach = dispatch('BrowserCompanionPaneAttach')
 export const BrowserCompanionPaneDetach = dispatch('BrowserCompanionPaneDetach');
 export const BrowserCompanionPaneRect = dispatch('BrowserCompanionPaneRect');
 export const BrowserCompanionThreadState = dispatch('BrowserCompanionThreadState');
+export const BrowserHostReport = dispatch('BrowserHostReport');
 
-// Appearance / themes (stores/appearance.svelte.ts). Both writes are
-// local-only on the wire, so a test that wants the DEGRADED path throws a
-// `method_not_found` error from its mock rather than omitting one.
+// Appearance / themes (stores/appearance.svelte.ts). Both writes are gated
+// on the wire — `SetAppearance` needs `settings:write` and
+// `SetWindowBackgroundColor` is `host`-scoped — so a test that wants the
+// DEGRADED path throws from its mock rather than omitting the binding.
 export const GetThemeFiles = dispatch('GetThemeFiles');
 export const GetSpinnerFiles = dispatch('GetSpinnerFiles');
 export const SetAppearance = dispatch('SetAppearance');
@@ -247,6 +252,30 @@ export const UpdateContextSettingsProfile = dispatch('UpdateContextSettingsProfi
 export const UpdateThreadContextSettings = dispatch('UpdateThreadContextSettings');
 export const GetNetworkSettings = dispatch('GetNetworkSettings');
 export const SetNetworkSettings = dispatch('SetNetworkSettings');
+export const ForgetTailnetNode = dispatch('ForgetTailnetNode');
+export const RenewCanonicalDomainCert = dispatch('RenewCanonicalDomainCert');
+
+// Device access (Settings → Remote access → Devices).
+export const GetAccessOverview = dispatch('GetAccessOverview');
+export const MintDevicePairing = dispatch('MintDevicePairing');
+export const DevicePairingStatus = dispatch('DevicePairingStatus');
+export const ConfirmDevicePairing = dispatch('ConfirmDevicePairing');
+export const CancelDevicePairing = dispatch('CancelDevicePairing');
+export const RevokeAccessDevice = dispatch('RevokeAccessDevice');
+export const RevokeAccessSession = dispatch('RevokeAccessSession');
+export const RestoreAccessDevice = dispatch('RestoreAccessDevice');
+export const ForgetAccessDevice = dispatch('ForgetAccessDevice');
+export const RegisterPushToken = dispatch('RegisterPushToken');
+export const UnregisterPushToken = dispatch('UnregisterPushToken');
+export const GetPushSenderStatus = dispatch('GetPushSenderStatus');
+export const SetPushSenderCredential = dispatch('SetPushSenderCredential');
+export const ClearPushSenderCredential = dispatch('ClearPushSenderCredential');
+export const BeginPasskeyRegistration = dispatch('BeginPasskeyRegistration');
+export const FinishPasskeyRegistration = dispatch('FinishPasskeyRegistration');
+export const ListPasskeys = dispatch('ListPasskeys');
+export const DeletePasskey = dispatch('DeletePasskey');
+export const BeginPasskeyStepUp = dispatch('BeginPasskeyStepUp');
+export const FinishPasskeyStepUp = dispatch('FinishPasskeyStepUp');
 
 // WSL distro switcher (Settings → Remote access → WSL distro).
 // IsWSL gates whether the section renders at all; the other three
@@ -281,42 +310,58 @@ export const OpenInEditor = dispatch('OpenInEditor');
 export const OpenExternalURL = dispatch('OpenExternalURL');
 export const ProbeDevServerURL = dispatch('ProbeDevServerURL');
 export const ListAvailableEditors = dispatch('ListAvailableEditors');
+
+// The port gateway (docs/specs/remote-access.md §7).
+export const GetDevServers = dispatch('GetDevServers');
+export const AllowPreviewPort = dispatch('AllowPreviewPort');
+export const DisallowPreviewPort = dispatch('DisallowPreviewPort');
+export const MintPreviewURL = dispatch('MintPreviewURL');
 export const GetEditorSettings = dispatch('GetEditorSettings');
 export const SetEditorSettings = dispatch('SetEditorSettings');
-export const ListRemoteEndpoints = dispatch('ListRemoteEndpoints');
-export const AddRemoteEndpoint = dispatch('AddRemoteEndpoint');
-export const UpdateRemoteEndpoint = dispatch('UpdateRemoteEndpoint');
-export const DeleteRemoteEndpoint = dispatch('DeleteRemoteEndpoint');
-export const TouchRemoteEndpoint = dispatch('TouchRemoteEndpoint');
-export const GetRemoteEndpointToken = dispatch('GetRemoteEndpointToken');
-// RemoteEndpoint mirrors the Phase F generated class; tests stub the
-// list/add/update calls and read fields off the returned objects.
-export class RemoteEndpoint {
-  id: string;
-  name: string;
-  url: string;
-  token: string;
-  lastUsedAt?: number;
-  constructor(s: Partial<RemoteEndpoint> = {}) {
-    this.id = s.id ?? '';
-    this.name = s.name ?? '';
-    this.url = s.url ?? '';
-    this.token = s.token ?? '';
-    this.lastUsedAt = s.lastUsedAt;
-  }
-}
+export const ListBackends = dispatch('ListBackends');
+export const AddBackend = dispatch('AddBackend');
+export const RemoveBackend = dispatch('RemoveBackend');
+export const RenameBackend = dispatch('RenameBackend');
 // NetworkSettings is a class re-exported alongside the bindings; the
 // mock just needs a constructor-compatible stand-in so test code that
 // builds `new NetworkSettings({ bindAll })` doesn't try to load the
 // real generated module. Real instantiation (createFrom) is exercised
 // in component tests that run against the live binding.
+//
+// Every persisted field is carried, because SetNetworkSettings writes
+// the WHOLE record: a stand-in that dropped the domain half would let a
+// test pass while the real call erased it.
+export class TLSStatus {
+  serving: string;
+  notAfter: number;
+  renewing: boolean;
+  lastError: string;
+  selfSignedFingerprint: string;
+  constructor(s: Partial<TLSStatus> = {}) {
+    this.serving = s.serving ?? '';
+    this.notAfter = s.notAfter ?? 0;
+    this.renewing = s.renewing ?? false;
+    this.lastError = s.lastError ?? '';
+    this.selfSignedFingerprint = s.selfSignedFingerprint ?? '';
+  }
+}
 export class NetworkSettings {
   bindAll: boolean;
+  canonicalDomain: string;
+  acmeDnsHook: string[];
+  externalCertFile: string;
+  externalKeyFile: string;
+  tls: TLSStatus;
   url: string;
   token: string;
   insecure: boolean;
   constructor(s: Partial<NetworkSettings> = {}) {
     this.bindAll = s.bindAll ?? false;
+    this.canonicalDomain = s.canonicalDomain ?? '';
+    this.acmeDnsHook = s.acmeDnsHook ?? [];
+    this.externalCertFile = s.externalCertFile ?? '';
+    this.externalKeyFile = s.externalKeyFile ?? '';
+    this.tls = s.tls ?? new TLSStatus();
     this.url = s.url ?? '';
     this.token = s.token ?? '';
     this.insecure = s.insecure ?? false;
@@ -408,10 +453,10 @@ export const ConcludeDiscussion = dispatch('ConcludeDiscussion');
 
 
 // Composer enhancements
-export const UploadAttachment = dispatch('UploadAttachment');
+export const MintAttachmentUploadTicket = dispatch('MintAttachmentUploadTicket');
 export const ListAttachments = dispatch('ListAttachments');
 export const DeleteAttachment = dispatch('DeleteAttachment');
-export const GetAttachmentData = dispatch('GetAttachmentData');
+export const MintAttachmentDownloadTicket = dispatch('MintAttachmentDownloadTicket');
 export const GetAttachmentThumbnail = dispatch('GetAttachmentThumbnail');
 export const GetLocalImageData = dispatch('GetLocalImageData');
 export const SaveDraft = dispatch('SaveDraft');
@@ -514,6 +559,7 @@ export const SyncThreadWindow = async (
 export const ListItemsBeforeCursor = dispatch('ListItemsBeforeCursor');
 export const ListItemsAfterCursor = dispatch('ListItemsAfterCursor');
 export const ListSubagentDescendants = dispatch('ListSubagentDescendants');
+export const GetThreadItemProjectionSource = dispatch('GetThreadItemProjectionSource');
 export const ListThreadProposedPlans = dispatch('ListThreadProposedPlans');
 export const ListProposedPlanComments = dispatch('ListProposedPlanComments');
 export const CreateProposedPlanComment = dispatch('CreateProposedPlanComment');
@@ -591,7 +637,8 @@ export const GetQueueState = dispatch('GetQueueState');
 // transitively imports one of these. They are RPCs no current test exercises;
 // dispatch() makes them reject loudly if a test ever does hit them unmocked.
 // Keep this block a superset of bindings/agent-overflow/app.ts so it can't
-// drift again (see scripts diffing real-vs-mock exports).
+// drift again — `bindings-app.test.ts` beside this file fails on a missing
+// or vanished name in either direction.
 export const CheckForUpdate = dispatch('CheckForUpdate');
 export const DownloadUpdate = dispatch('DownloadUpdate');
 export const RestartToUpdate = dispatch('RestartToUpdate');
@@ -616,3 +663,18 @@ export const WorkflowAgentRunStatus = dispatch('WorkflowAgentRunStatus');
 export const WorkflowAgentSchedule = dispatch('WorkflowAgentSchedule');
 export const WorkflowAgentSetNotes = dispatch('WorkflowAgentSetNotes');
 export const WorkflowAgentStartRun = dispatch('WorkflowAgentStartRun');
+export const WorkflowAgentAddMemory = dispatch('WorkflowAgentAddMemory');
+export const WorkflowAgentAmendSeeds = dispatch('WorkflowAgentAmendSeeds');
+export const WorkflowAgentGuideRun = dispatch('WorkflowAgentGuideRun');
+export const WorkflowAgentInspectRun = dispatch('WorkflowAgentInspectRun');
+export const WorkflowAgentListMemory = dispatch('WorkflowAgentListMemory');
+export const WorkflowAgentRunNarrative = dispatch('WorkflowAgentRunNarrative');
+export const WorkflowAgentWatchRun = dispatch('WorkflowAgentWatchRun');
+export const WorkflowScheduleResume = dispatch('WorkflowScheduleResume');
+export const ListMcpServerStatuses = dispatch('ListMcpServerStatuses');
+export const ListRunningBackgroundWork = dispatch('ListRunningBackgroundWork');
+export const StopThreadBackgroundWork = dispatch('StopThreadBackgroundWork');
+export const ReportUpdateInstallStatus = dispatch('ReportUpdateInstallStatus');
+export const GetServiceUpdateStatus = dispatch('GetServiceUpdateStatus');
+export const ListServiceReleases = dispatch('ListServiceReleases');
+export const RequestServiceUpdate = dispatch('RequestServiceUpdate');

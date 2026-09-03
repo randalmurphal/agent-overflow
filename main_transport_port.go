@@ -58,16 +58,49 @@ type transportPortPin struct {
 // every launch. Only the party that can observe the failure (the
 // launcher, from the Windows side) can say so, so the reset is an
 // explicit signal rather than anything this process could infer.
-func pinTransportPort(cfg *transport.Config, dir string, reset bool) transportPortPin {
+//
+// settingsPort is `network.listenPort` from Settings → Remote access, or 0 for
+// automatic. It sits BETWEEN the two existing inputs in precedence and
+// behaves like neither of them:
+//
+//   - It loses to --listen, because a flag is one launch and a setting is
+//     the install.
+//   - It beats the cache outright, and it does NOT take the cache's
+//     ephemeral fallback. The whole reason to set it is that every share
+//     URL, pairing link and paired client's stored endpoint names this
+//     number; a backend that quietly moved somewhere else would be
+//     unreachable at the only address anybody has, with nothing said. A
+//     bind that cannot be had is a loud boot failure naming the setting.
+//   - It still ADOPTS. The file documents itself as a cache of the
+//     previous bind, and a port the setting asked for and the kernel gave
+//     is exactly that. Recording it is what makes clearing the setting
+//     later mean "stay here and float from now on" instead of "jump back
+//     to whatever ephemeral port was cached before you set this".
+func pinTransportPort(cfg *transport.Config, dir string, settingsPort int, reset bool) transportPortPin {
 	if cfg.Port != 0 {
 		if reset {
 			log.Printf("transport-port: --%s has nothing to do: --listen named port %d explicitly, so no pin is consulted or written", resetTransportPortFlag, cfg.Port)
+		}
+		if settingsPort != 0 && settingsPort != cfg.Port {
+			log.Printf("transport-port: --listen names port %d, overriding network.listenPort=%d for this launch only", cfg.Port, settingsPort)
 		}
 		return transportPortPin{}
 	}
 	if dir == "" {
 		log.Printf("transport-port: no settings dir resolvable; using an ephemeral port (browser-side storage resets each launch)")
 		return transportPortPin{}
+	}
+	if settingsPort != 0 {
+		cfg.Port = settingsPort
+		log.Printf("transport-port: binding network.listenPort=%d from Settings > Network", settingsPort)
+		if reset {
+			log.Printf("transport-port: --%s has nothing to do: network.listenPort names port %d, so no pin is consulted", resetTransportPortFlag, settingsPort)
+		}
+		// requested stays 0 so adopt records the bound port unconditionally,
+		// which is the cache-coherence half argued above. clearOnFailedBind
+		// is a no-op for the same reason, and correctly so: a settings port
+		// that could not bind says nothing about the cached one.
+		return transportPortPin{dir: dir}
 	}
 	if reset {
 		clearTransportPort(dir, fmt.Sprintf("--%s was passed", resetTransportPortFlag))

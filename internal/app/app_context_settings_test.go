@@ -80,7 +80,7 @@ func TestThreadDefaultsSeedWireOnlyClaudeModelFromCatalogDefault(t *testing.T) {
 		t.Fatalf("defaults ContextWindow = %d, want 1M %d", defaults.ContextWindow, provider.ClaudeExtendedContextWindow)
 	}
 
-	thread, err := app.CreateThread(CreateThreadOptions{
+	thread, err := app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: defaultTestProjectID, Provider: "claude", Model: "claude-fable-5-1",
 	})
 	if err != nil {
@@ -91,7 +91,7 @@ func TestThreadDefaultsSeedWireOnlyClaudeModelFromCatalogDefault(t *testing.T) {
 	}
 
 	// An explicit choice is still the user's: 200k stays 200k.
-	standard, err := app.CreateThread(CreateThreadOptions{
+	standard, err := app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: defaultTestProjectID, Provider: "claude", Model: "claude-fable-5-1",
 		ContextWindow: provider.ClaudeStandardContextWindow,
 	})
@@ -114,7 +114,7 @@ func TestThreadDefaultsSeedWireOnlyClaudeModelFromCatalogDefault(t *testing.T) {
 	}
 
 	// So do the project's new-thread defaults, in both directions.
-	updated, err := app.UpdateNewThreadDefaults(NewThreadDefaultsUpdate{
+	updated, err := app.UpdateNewThreadDefaults(t.Context(), NewThreadDefaultsUpdate{
 		ProjectID: defaultTestProjectID, Provider: "claude", Model: "claude-fable-5-1",
 		ContextWindow: provider.ClaudeExtendedContextWindow,
 	})
@@ -124,7 +124,7 @@ func TestThreadDefaultsSeedWireOnlyClaudeModelFromCatalogDefault(t *testing.T) {
 	if updated.ContextWindow != provider.ClaudeExtendedContextWindow {
 		t.Fatalf("new-thread default ContextWindow = %d, want 1M", updated.ContextWindow)
 	}
-	if _, err := app.UpdateNewThreadDefaults(NewThreadDefaultsUpdate{
+	if _, err := app.UpdateNewThreadDefaults(t.Context(), NewThreadDefaultsUpdate{
 		ProjectID: defaultTestProjectID, Provider: "claude", Model: "claude-fable-5-1",
 		ContextWindow: 12345,
 	}); err == nil {

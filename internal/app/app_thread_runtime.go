@@ -10,6 +10,7 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadapp"
 )
@@ -74,6 +75,10 @@ func (p threadWorkspacePort) CurrentBranch(workspacePath string) string {
 	return p.app.gitCore().CurrentBranch(workspacePath)
 }
 
+func (p threadWorkspacePort) ObserveOrigin(workspacePath string) store.ThreadOrigin {
+	return p.app.observeThreadOrigin(workspacePath)
+}
+
 func (p threadWorkspacePort) FindWorktree(projectPath, candidate string) (string, string, bool, error) {
 	worktree, found, err := p.app.findWorktree(projectPath, candidate)
 	return worktree.Path, worktree.Branch, found, err
@@ -103,9 +108,19 @@ func (p threadWorktreeSetupPort) Start(thread store.Thread) {
 
 type threadRecentWorkspacePort struct{ app *App }
 
-func (p threadRecentWorkspacePort) AddRecentWorkspace(path string) {
+// AddRecentWorkspace attributes the write to the connection that asked for the
+// thread. The list is device tier, so an empty bucket — a backend-initiated
+// create, an import, a test — lands on the backend machine's own screen
+// rather than being dropped (internal/settings/residency.go).
+//
+// The class travels with the bucket because a Caller is one screen, not two
+// halves. It moves no key on this path — the only key the write touches is
+// recentWorkspaces, which no class row names — but it is what the pre-write
+// projection is taken against, and a Caller assembled from a bucket and
+// somebody else's class is the bug the pair exists to prevent.
+func (p threadRecentWorkspacePort) AddRecentWorkspace(bucket, class, path string) {
 	if p.app.settings != nil {
-		p.app.settings.AddRecentWorkspace(path)
+		p.app.settings.For(bucket, settings.DeviceClass(class)).AddRecentWorkspace(path)
 	}
 }
 
@@ -189,6 +204,7 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 			}
 			return a.replay.RemoveThreadLog(threadID)
 		},
+		Deleted: func(thread store.Thread) { a.broadcastThreadDeleted(thread.ID) },
 	}
 }
 
@@ -223,10 +239,17 @@ func (a *App) removeDeliberationByID(channelID string) {
 	a.discussionService().Remove(channelID)
 }
 
-type threadPullRequestPort struct{ app *App }
+// threadPullRequestPort carries the caller's settings bucket because the
+// recent-workspace list it searches is device tier: the clone this screen has
+// opened before is the one to seed the PR thread with.
+type threadPullRequestPort struct {
+	app    *App
+	bucket string
+	class  settings.DeviceClass
+}
 
 func (p threadPullRequestPort) ResolveWorkspace(ref gitops.PRReference) string {
-	return p.app.resolveRepoWorkspace(ref)
+	return p.app.resolveRepoWorkspace(p.bucket, p.class, ref)
 }
 
 func (p threadPullRequestPort) Load(workspace string, ref gitops.PRReference) (gitops.PRMetadata, string, error) {
@@ -246,13 +269,13 @@ func (p threadPullRequestPort) EnsureProject(workspaceOrAnchor string) (store.Pr
 	return p.app.ensureProjectForWorkspace(workspaceOrAnchor)
 }
 
-func (a *App) resolveRepoWorkspace(ref gitops.PRReference) string {
+func (a *App) resolveRepoWorkspace(bucket string, class settings.DeviceClass, ref gitops.PRReference) string {
 	if a.settings == nil {
 		return ""
 	}
 	suffix := "/" + ref.Repo
 	fullSuffix := "/" + ref.Project()
-	for _, workspace := range a.settings.Get().RecentWorkspaces {
+	for _, workspace := range a.settings.For(bucket, class).Get().RecentWorkspaces {
 		workspace = strings.TrimSpace(strings.TrimRight(workspace, "/"))
 		if workspace != "" && (strings.HasSuffix(workspace, suffix) || strings.HasSuffix(workspace, fullSuffix)) {
 			return workspace

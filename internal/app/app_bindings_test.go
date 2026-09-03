@@ -61,7 +61,7 @@ func TestGetSettingsReturnsCurrentServiceState(t *testing.T) {
 	}
 
 	app := &App{settings: svc}
-	got, err := app.GetSettings()
+	got, err := app.GetSettings(context.Background())
 	if err != nil {
 		t.Fatalf("GetSettings() error = %v", err)
 	}
@@ -74,7 +74,7 @@ func TestUpdateSettingsPersistsPatch(t *testing.T) {
 	dir := t.TempDir()
 	app := &App{settings: settings.NewService(dir)}
 
-	got, err := app.UpdateSettings(map[string]any{
+	got, err := app.UpdateSettings(context.Background(), map[string]any{
 		"timestampFormat": "24-hour",
 		"paneDensity":     "spacious",
 	})
@@ -97,38 +97,22 @@ func TestUpdateSettingsPersistsPatch(t *testing.T) {
 	}
 }
 
-func TestSettingsRollbackPatchRestoresEveryPatchedField(t *testing.T) {
-	previous := settings.DefaultSettings
-	previous.TimestampFormat = "12-hour"
-	previous.WorkflowPaused = true
-	rollback, err := settingsRollbackPatch(previous, map[string]any{
-		"timestampFormat": "24-hour", "workflowPaused": false,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rollback["timestampFormat"] != "12-hour" || rollback["workflowPaused"] != true {
-		t.Fatalf("rollback patch = %#v", rollback)
-	}
-}
-
-func TestUpdateSettingsRollsBackMixedPatchWhenWorkflowEngineRejects(t *testing.T) {
+// workflowPaused has a dedicated RPC (WorkflowSetGlobalPause), so the generic
+// patch refuses it — and refuses the whole patch with it, leaving nothing
+// half-applied. That is what replaced the rollback this test used to pin:
+// there is no longer a write to undo, because the engine and the setting move
+// together or not at all (docs/specs/remote-access.md §6).
+func TestUpdateSettingsRefusesTheWorkflowPauseKey(t *testing.T) {
 	app := newTestAppWithStore(t)
-	if err := app.initWorkflowEngine(t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-	if err := app.workflowApplication().Engine().Close(); err != nil {
-		t.Fatal(err)
-	}
 	previous := app.currentSettings()
-	if _, err := app.UpdateSettings(map[string]any{
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{
 		"timestampFormat": "24-hour", "workflowPaused": true,
 	}); err == nil {
-		t.Fatal("UpdateSettings with closed workflow engine succeeded")
+		t.Fatal("UpdateSettings wrote workflowPaused through the generic patch")
 	}
 	current := app.currentSettings()
 	if current.TimestampFormat != previous.TimestampFormat || current.WorkflowPaused != previous.WorkflowPaused {
-		t.Fatalf("mixed patch was not rolled back: got %+v, previous %+v", current, previous)
+		t.Fatalf("a refused patch still moved something: got %+v, previous %+v", current, previous)
 	}
 }
 
@@ -205,7 +189,7 @@ func TestUpdateSettingsInvalidatesCodexCatalogOnBinaryChange(t *testing.T) {
 	if _, err := app.GetModelsForProvider("codex"); err != nil {
 		t.Fatalf("GetModelsForProvider first: %v", err)
 	}
-	if _, err := app.UpdateSettings(map[string]any{"codexBinaryPath": second}); err != nil {
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{"codexBinaryPath": second}); err != nil {
 		t.Fatalf("UpdateSettings codexBinaryPath: %v", err)
 	}
 	models, err := app.GetModelsForProvider("codex")
@@ -317,7 +301,7 @@ func TestCreateThreadInheritsWorktreeAndBranch(t *testing.T) {
 		t.Fatalf("ensureProjectForWorkspace: %v", err)
 	}
 
-	thread, err := app.CreateThread(CreateThreadOptions{
+	thread, err := app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID:    project.ID,
 		Provider:     string(provider.Codex),
 		Model:        "gpt-5.4",
@@ -347,8 +331,9 @@ func TestCreateThreadInheritsWorktreeAndBranch(t *testing.T) {
 // CreateThread rejects a WorktreePath that isn't actually a registered
 // worktree of the project. Without this check, a misbehaving (or future
 // careless) caller could spawn a provider session with WorkDir set to
-// any path on disk — directly under LocalOnlyMethods is enough for now,
-// but defense in depth is cheap.
+// any path on disk. The method's scope narrows WHO may ask, but the
+// path itself still has to be one the project owns; defense in depth is
+// cheap.
 func TestCreateThreadRejectsUnknownWorktreePath(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
@@ -361,7 +346,7 @@ func TestCreateThreadRejectsUnknownWorktreePath(t *testing.T) {
 	if err := os.MkdirAll(bogus, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	_, err = app.CreateThread(CreateThreadOptions{
+	_, err = app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID:    project.ID,
 		Provider:     string(provider.Codex),
 		Model:        "gpt-5.4",
@@ -932,7 +917,7 @@ func TestSwitchThreadDoesNotChangeRememberedContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create opened thread: %v", err)
 	}
-	if err := app.store.UpdateContextSettings(opened.ID, 1000000, 0, 0); err != nil {
+	if _, _, err := app.store.UpdateContextSettings(opened.ID, 1000000, 0, 0); err != nil {
 		t.Fatalf("UpdateContextSettings(opened): %v", err)
 	}
 
@@ -1112,10 +1097,15 @@ func newTestAppWithStorePath(t *testing.T) (*App, string) {
 		_ = st.Close()
 	})
 
-	app := &App{
-		store:    st,
-		settings: settings.NewService(t.TempDir()),
-	}
+	app := &App{store: st}
+	// Through the helper, exactly as newTestApp and app_startup.go do. A
+	// composite literal escapes both halves of
+	// TestSettingsServiceIsInstalledThroughOneHelper — it scans assignment
+	// statements in non-test files — and the App it produced held a settings
+	// service whose writes announced nothing, so any test of settings
+	// convergence built on this fixture would have passed by observing
+	// silence.
+	app.setSettingsService(settings.NewService(t.TempDir()))
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
 	// The same structural spawn/home isolation setupE2EApp gets. This
 	// fixture is the majority one (~600 call sites); before this call was

@@ -44,4 +44,12 @@ export interface UserMessageRevertedEvent {
    */
   historyRev?: number;
   historyEpoch?: number;
+  /**
+   * The page load whose edit-and-resend saga produced this cut, set only
+   * alongside `draftPendingResend`. Every client applies the cut; only
+   * the one that started the saga records the marker its own failure
+   * handler consumes (`stores/eventsMessageRevert.ts`). Absent means no
+   * screen was behind the call, or a backend too old to stamp it.
+   */
+  connectionId?: string;
 }

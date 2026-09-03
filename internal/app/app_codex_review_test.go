@@ -237,11 +237,11 @@ func TestCodexReviewCannotBeQueuedOrSteeredIntoAnActiveTurn(t *testing.T) {
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := newCodexThreadForReviewTest(t, app, "thread-codex-review-active")
 
-	if _, err := app.RegisterQueueItem(thread.ID, "/review", SendMessageOptions{}); err == nil ||
+	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "/review", SendMessageOptions{}); err == nil ||
 		!strings.Contains(err.Error(), "idle thread") {
 		t.Fatalf("queue /review error = %v", err)
 	}
-	if _, err := app.SteerMessageWithOptions(thread.ID, "/review", SendMessageOptions{}); err == nil ||
+	if _, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "/review", SendMessageOptions{}); err == nil ||
 		!strings.Contains(err.Error(), "idle thread") {
 		t.Fatalf("steer /review error = %v", err)
 	}
@@ -320,7 +320,7 @@ func TestComposerReviewUsesOneTurnWithAgentActivityAndSourcedResult(t *testing.T
 		Provider: string(provider.Codex), Token: "codex-projected-review", Codex: sess,
 	})
 
-	if _, err := app.SendMessageWithOptions(thread.ID, "/review", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/review", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessageWithOptions /review: %v", err)
 	}
 	waitForCapturedRequest(t, capturePath, `"method":"review/start"`)

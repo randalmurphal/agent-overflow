@@ -49,8 +49,9 @@ function publish(
 const RENDER_CONTEXT = {
   streaming: true,
   volatileTailVisible: true,
-  viewOnly: false,
+  pathLinksInert: false,
   workspacePath: '/workspace',
+  previewKey: '',
 } as const;
 
 function parserSource(
@@ -427,7 +428,7 @@ describe('streaming assistant reveal bridge', () => {
   it.each([
     ['streaming mode', { streaming: false }],
     ['volatile-tail visibility', { volatileTailVisible: false }],
-    ['view-only mode', { viewOnly: true }],
+    ['view-only mode', { pathLinksInert: true }],
     ['workspace path', { workspacePath: '/other-workspace' }],
   ] as const)('drops the checkpoint when %s changes', (_name, change) => {
     const router = new StreamingAssistantRevealRouter();

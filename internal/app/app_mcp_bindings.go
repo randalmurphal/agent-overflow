@@ -180,6 +180,8 @@ func threadMCPServers(rows []mcpapp.ThreadMCPServer) []ThreadMCPServer {
 // http/sse / streamable_http MCP server. The thread must be live
 // because the OAuth listener is owned by the provider process; if no
 // session is live, we auto-start one for the round-trip.
+//
+//ao:scope settings:write
 func (a *App) TriggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
 	if isAppManagedMCPServer(name) {
 		return MCPAuthInitResult{}, errors.New("trigger mcp auth: built-in browser does not use provider OAuth")
@@ -196,6 +198,8 @@ func (a *App) TriggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
 // re-pushes MCP state into the loaded thread (`config/mcpServer/reload`).
 // Requires a live session: with none, the next session start connects
 // fresh anyway, so there is nothing to fix.
+//
+//ao:scope settings:write
 func (a *App) ReconnectMcpServer(threadID, name string) error {
 	if isAppManagedMCPServer(name) {
 		return errors.New("reconnect mcp server: built-in browser is controlled in Settings")
@@ -208,6 +212,9 @@ func (a *App) ReconnectMcpServer(threadID, name string) error {
 // (Claude `mcp list` / Codex `mcpServerStatus/list`) to populate
 // the cache, then returns the result. force=true bypasses cache
 // hits but still single-flights concurrent callers.
+//
+//ao:scope settings:write
+//ao:route home
 func (a *App) GetMcpServerStatus(providerName, name string, force bool) (mcpstatus.ServerStatus, error) {
 	return a.mcpService().GetMcpServerStatus(providerName, name, force)
 }
@@ -218,6 +225,9 @@ func (a *App) GetMcpServerStatus(providerName, name string, force bool) (mcpstat
 // Live sessions push their own state into the cache continuously,
 // so for any provider that has run a thread this lifetime the
 // snapshot is already populated.
+//
+//ao:scope settings:write
+//ao:route home
 func (a *App) ListMcpServerStatuses(providerName string) ([]mcpstatus.ServerStatus, error) {
 	return a.mcpService().ListMcpServerStatuses(providerName)
 }
@@ -229,6 +239,9 @@ func (a *App) ListMcpServerStatuses(providerName string) ([]mcpstatus.ServerStat
 // reach the no-session view. workspacePath becomes the fetch cwd so
 // `claude mcp list` sees the workspace's project-scope servers; pass
 // "" for a workspace-agnostic refresh.
+//
+//ao:scope settings:write
+//ao:route selected
 func (a *App) RefreshMcpServerStatus(providerName, workspacePath string) ([]mcpstatus.ServerStatus, error) {
 	return a.mcpService().RefreshMcpServerStatus(providerName, workspacePath)
 }
@@ -240,6 +253,8 @@ func (a *App) RefreshMcpServerStatus(providerName, workspacePath string) ([]mcps
 // about. Without one, the provider-native config plus the status cache
 // stand in, labeled Source "config" so the UI can say the rows describe
 // what the next session will get rather than a running one.
+//
+//ao:scope settings:write
 func (a *App) ListThreadMcpServers(threadID string) ([]ThreadMCPServer, error) {
 	rows, err := a.mcpService().ListThreadMcpServers(threadID)
 	if err != nil {
@@ -263,6 +278,9 @@ func (a *App) ListThreadMcpServers(threadID string) ([]ThreadMCPServer, error) {
 // entry — a worktree shares the main checkout's toggles, exactly like
 // the CLI. For Codex the `enabled` flag is global and workspacePath is
 // ignored.
+//
+//ao:scope settings:write
+//ao:route selected
 func (a *App) ListWorkspaceMcpServers(providerName, workspacePath string) ([]ThreadMCPServer, error) {
 	rows, err := a.mcpService().ListWorkspaceMcpServers(providerName, workspacePath)
 	return threadMCPServers(rows), err
@@ -280,6 +298,9 @@ func (a *App) ListWorkspaceMcpServers(providerName, workspacePath string) ([]Thr
 // hot-reloaded into this thread's live session when there is one.
 // Other running threads keep their current state until their next
 // session start — provider-native semantics, by design.
+//
+//ao:scope settings:write
+//ao:stepup
 func (a *App) SetThreadMcpServerEnabled(threadID, name string, enabled bool) error {
 	if isAppManagedMCPServer(name) {
 		thread, err := a.store.GetThread(threadID)
@@ -295,6 +316,10 @@ func (a *App) SetThreadMcpServerEnabled(threadID, name string, enabled bool) err
 // SetThreadMcpServerEnabled: no thread row exists yet, so the toggle
 // goes straight to provider-native config for the workspace a new
 // thread would start in.
+//
+//ao:scope settings:write
+//ao:route selected
+//ao:stepup
 func (a *App) SetWorkspaceMcpServerEnabled(providerName, workspacePath, name string, enabled bool) error {
 	if isAppManagedMCPServer(name) {
 		return errors.New("set workspace mcp server enabled: built-in browser is controlled in Settings")
@@ -306,6 +331,9 @@ func (a *App) SetWorkspaceMcpServerEnabled(providerName, workspacePath, name str
 // without creating an Agent Overflow thread. A temporary provider process owns
 // the loopback listener through the browser hop, then exits when completion is
 // confirmed, rejected, timed out, or the app shuts down.
+//
+//ao:scope settings:write
+//ao:route selected
 func (a *App) TriggerWorkspaceMcpAuth(providerName, workspacePath, serverName string) (MCPAuthInitResult, error) {
 	result, err := a.mcpService().TriggerWorkspaceMcpAuth(providerName, workspacePath, serverName)
 	return mcpAuthInitResult(result), err

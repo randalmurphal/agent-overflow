@@ -26,7 +26,7 @@ func newCostTestHarness(t *testing.T) *costTestHarness {
 	t.Helper()
 	st := storetest.Clone(t)
 	now := time.Now().UnixMilli()
-	if err := st.CreateProject(store.Project{
+	if _, err := st.CreateProject(store.Project{
 		ID: costTestProjectID, Path: "/tmp/codexthread", Name: "Codex Thread Test",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
@@ -53,7 +53,7 @@ func newCostTestHarnessWithPath(t *testing.T) (*costTestHarness, string) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	now := time.Now().UnixMilli()
-	if err := st.CreateProject(store.Project{
+	if _, err := st.CreateProject(store.Project{
 		ID: costTestProjectID, Path: "/tmp/codexthread", Name: "Codex Thread Test",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {

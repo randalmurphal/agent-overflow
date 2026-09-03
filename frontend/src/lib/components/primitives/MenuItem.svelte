@@ -155,7 +155,7 @@
   onclick={handleClick}
   onkeydown={handleKeydown}
   class={[
-    'w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left',
+    'w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left compact:py-2.5',
     'cursor-pointer select-none',
     'focus-visible:outline-none',
     'hover:bg-surface-2/40 focus:bg-surface-2/40',

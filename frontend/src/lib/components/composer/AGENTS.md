@@ -17,7 +17,13 @@ a host can name what it holds without importing the component's chunk.
 captures the current thread id and draft snapshot, then delegates back to
 the pane and draft store. Drag, drop, paste and upload live in
 `composerUploads.svelte.ts`, which carries a per-thread guard so a slow
-upload cannot land in the wrong pane.
+upload cannot land in the wrong pane. The bytes themselves go over HTTP,
+not the RPC wire: `uploadAttachmentBytes`
+(`lib/transport/attachmentTransfer.ts`) mints a single-use ticket for
+exactly this file and PUTs the `File` as the body, so a 10 MiB paste is
+never a base64 string in a WebSocket frame. `compressImageToFit` still
+runs first and is unchanged — a re-encode that fits beats a rejection,
+whatever carries the result.
 
 ## An attachment is one of two kinds
 
@@ -39,18 +45,53 @@ more: an unrecognised one is a `file`. The caps differ (10 MiB image,
   appends nothing for it. Its only removal gesture is its own chip:
   `reconcileImagePlaceholders` must never drop a file, because a file has
   no marker whose absence could mean the user deleted it.
-- **A file's bytes are never served.** `GetAttachmentData` and
-  `GetAttachmentThumbnail` error for one, so `createAttachmentPreviews`
+- **A file's bytes are never served.** `GetAttachmentThumbnail` errors
+  for one and the download route refuses it, so `createAttachmentPreviews`
   skips the kind entirely rather than logging a guaranteed failure per
   file per mount.
 
 Paste stays image-only (`extractClipboardImages`); drag and drop takes
 anything.
 
+An upload whose composer moved threads mid-flight DELETES its record.
+The bytes finished landing on a thread nobody is looking at any more, and
+nothing will ever reference the row — so it is discarded through the same
+fire-and-forget `discardAbandonedAttachmentRecords` an abandoned draft
+uses, rather than left as a database row and a file on disk that no
+message, no draft and no later pass knows about.
+
 A send awaits `waitForUploads()` before it snapshots `draft.attachments`
 — dropping a file and pressing Enter is one gesture, and an upload still
 in the air is not in the draft yet. Guarded on `uploading()` so the
 common send stays synchronous.
+
+## One send has one id, and a dead socket is not a verdict
+
+`utils/sendOptions.ts#buildSendOptions` mints a `sendId` on every call,
+and it is the ONLY place one is minted. Every outgoing path builds its
+options there — the direct `SendMessageWithOptions`, the queueing
+`RegisterQueueItem`, and `utils/proposedPlanImplementation.ts`'s Implement
+button — so a message that queues carries the id on the same terms as one
+that dispatches, and no call site can ship without one by forgetting.
+Rule 7 in `lib/architecture.test.ts` is what keeps that true: a module
+reaching either RPC has to build its options or take them already built.
+One call is one send: a retry must re-send the options it already built
+rather than rebuild them, which is what the transport's retained frame
+does (`RETRY_ON_TRANSIENT_CLOSE` in `lib/transport/`).
+The backend answers a repeat from the first arrival's record, so a
+duplicated frame costs a duplicate answer and never a duplicate turn.
+
+That is what makes the ASK in `composerSend.ts` honest. A send whose
+socket died after the transport's own retry also failed is genuinely
+unknown — the frame may have reached the agent or may not — so
+`dispatchSend` asks (`stores/unsentMessageConfirmation.svelte.ts`)
+instead of silently putting text back that is already running. Answering
+"Leave it" discards the snapshot and reports nothing further: the user
+has just said they know, and an error banner underneath their own answer
+is noise. Every OTHER failure, including a terminal disconnect, is a
+definite "nothing happened" and restores exactly as it always did, with
+no question. Keep that split — a question in front of a known failure
+trains people to dismiss it.
 
 ## Rail visibility is one predicate
 
@@ -84,3 +125,19 @@ wall-clock timer was the single most expensive thing in the renderer:
 from `utils/ambientPhase.ts`, so a remount lands mid-cycle on the same
 beat every other ambient indicator shares. Any new indicator here follows
 the same shape.
+
+## The workspace strip reads outer to inner
+
+`workspace/ComposerWorkspaceStrip.svelte` is "where am I" for the draft:
+machine, project, checkout, branch. `MachinePicker.svelte` leads it and
+mounts only while `hasMultipleBackends()`, so a single-backend app has no
+trace of it. The picker's label is the machine that owns the pane's
+project; choosing another machine flips the draft to the SAME repository
+there when the sidebar entry spans it (`projectSiblingOn`), else to that
+machine's first project. It stages the pane's backend BEFORE the flip
+because the flip's own RPCs take the `selected` route. The project picker
+beside it lists merged ENTRIES, one per repository, so a repo on two
+machines is one project choice and one machine choice. An unreachable machine stays listed, dimmed and
+disabled — never a silent failover. The same answer drives the composer's
+disabled reason (`unreachableTarget` in `composerInputState.ts`) and the
+dimmed sidebar row, all from `stores/attachedBackends.svelte.ts`.

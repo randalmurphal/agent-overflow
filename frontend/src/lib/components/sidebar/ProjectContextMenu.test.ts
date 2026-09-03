@@ -5,6 +5,8 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ProjectContextMenu from './ProjectContextMenu.svelte';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import {
   resetBindingMocks,
   setBindingMock,
@@ -13,7 +15,7 @@ import {
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import type { ProjectWithCounts } from '../../types/models';
 import type { ProjectDeletionPreview, ProjectDeletionResult } from '../../types/workflow';
-import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { isProjectExpanded, resetSidebarForTest } from '../../stores/sidebar.svelte';
 import {
   consumePendingGroupRename,
@@ -109,17 +111,17 @@ function toastMessages(): string[] {
 describe('<ProjectContextMenu> delete flow', () => {
   beforeEach(() => {
     resetBindingMocks();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
     for (const toast of [...getToasts()]) removeToast(toast.id);
     setBindingMock('DeleteProject', async () => emptyResult());
   });
 
   afterEach(() => {
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   it('omits Open in Editor in a view-only session', () => {
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
     const open = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const { baseElement } = renderMenu();
 
@@ -234,7 +236,7 @@ describe('<ProjectContextMenu> delete flow', () => {
 describe('<ProjectContextMenu> New Group…', () => {
   beforeEach(() => {
     resetBindingMocks();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
     resetSidebarForTest();
     resetThreadGroupsForTest();
     setThreadFilterQuery('');
@@ -292,5 +294,55 @@ describe('<ProjectContextMenu> New Group…', () => {
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
     expect(getThreadFilterQuery()).toBe('');
+  });
+});
+
+// The create items exist for the phone only: on the desktop they are the
+// header's hover controls, and the desktop menu stays what it was.
+describe('<ProjectContextMenu> compact create items', () => {
+  afterEach(() => {
+    setCompactLayoutForTest(false);
+    resetToLocalPage();
+  });
+
+  function renderMenu(extra: Record<string, unknown> = {}) {
+    return render(ProjectContextMenu, {
+      props: {
+        project: makeProject(),
+        anchor: document.body,
+        open: true,
+        onClose: vi.fn(),
+        onRename: vi.fn(),
+        ...extra,
+      } as never,
+    });
+  }
+
+  it('are absent on the desktop', () => {
+    const { queryByRole } = renderMenu();
+    expect(queryByRole('menuitem', { name: 'New Thread' })).toBeNull();
+    expect(queryByRole('menuitem', { name: 'New Terminal' })).toBeNull();
+  });
+
+  it('run the row handlers and close the menu under compact', async () => {
+    setCompactLayoutForTest(true);
+    const onClose = vi.fn();
+    const onNewThread = vi.fn();
+    const onNewTerminal = vi.fn();
+    const { getByRole } = renderMenu({ onClose, onNewThread, onNewTerminal });
+    await fireEvent.click(getByRole('menuitem', { name: 'New Thread' }));
+    expect(onNewThread).toHaveBeenCalledTimes(1);
+    await fireEvent.click(getByRole('menuitem', { name: 'New Terminal' }));
+    expect(onNewTerminal).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it('go inert, saying why, for a session without the grant', async () => {
+    setCompactLayoutForTest(true);
+    await pairViewOnly();
+    const { getByRole } = renderMenu();
+    const item = getByRole('menuitem', { name: 'New Terminal' });
+    expect(item.getAttribute('aria-disabled')).toBe('true');
+    expect(item.getAttribute('title')).toBe('Not granted to this device');
   });
 });

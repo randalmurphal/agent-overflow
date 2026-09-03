@@ -861,7 +861,7 @@ func TestWorkflowBindThreadRefusesThreadsARunCannotReportInto(t *testing.T) {
 	if err := h.app.store.CreateWorkItem(child); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.app.store.CreateProject(store.Project{
+	if _, err := h.app.store.CreateProject(store.Project{
 		ID: "other-project", Name: "other", Path: "/tmp/other", Slug: "other", CreatedAt: 1,
 	}); err != nil {
 		t.Fatal(err)
@@ -1227,7 +1227,7 @@ func TestWorkflowStartRunResolvesBaseBranchAndCancelKeepsTheRecord(t *testing.T)
 	writeWorkspaceWorkflow(t, configRoot, "done")
 	// Paused: every run is admitted and persisted, but its first phase is held,
 	// so no provider process starts and the assertions stay deterministic.
-	if _, err := app.settings.Update(map[string]any{"workflowPaused": true}); err != nil {
+	if _, err := app.settings.SetWorkflowPaused(true); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.initWorkflowEngine(configRoot); err != nil {

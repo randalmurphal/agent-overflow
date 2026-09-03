@@ -20,6 +20,19 @@
 //  - **Nothing is migrated.** Envelope version, schema version and
 //    generation mismatches drop records (or the whole database). See
 //    envelope.ts.
+//  - **One session per ATTACHED BACKEND.** The database was already named
+//    per backend; phase 7 gives each one its own open connection, its own
+//    accounting mirror and its own token, because two backends' histories
+//    are two histories. The TOKEN is the session handle: it is minted
+//    globally-monotonic and every read carries it, so a caller holding a
+//    token needs to know nothing about which backend it belongs to and a
+//    superseded token resolves to no session at all. `replicaToken()`
+//    still defaults to the page's own backend, which is why every existing
+//    call site kept its shape.
+//
+//    The FAILURE latch stays global on purpose: a wedged IndexedDB engine
+//    is a fact about the origin, not about one backend, and disabling per
+//    backend would retry the same broken engine once per attached machine.
 //  - **The database outranks this page.** One origin can have more than
 //    one page, so `session.index` is a mirror and never the authority:
 //    commits re-read and merge the stored accounting record inside their
@@ -28,7 +41,10 @@
 //    transaction, and it is marked dirty (re-read lazily) whenever a
 //    commit rejects without saying whether it landed.
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { noteThread } from '../transport/entityIndex';
 import {
+  UNKNOWN_BACKEND_IDENTITY,
   onBackendIdentity,
   type BackendIdentity,
 } from '../transport/backendIdentity';
@@ -52,14 +68,18 @@ import {
   clearStores,
   commitEnvelope,
   commitRemoval,
+  deleteDatabase,
   deleteEnvelopes,
   indexedDbAvailable,
+  listDatabaseNames,
   openReplicaDb,
   readRecord,
   readThreadKeys,
   writeRecord,
   type ReplicaIndexEntry,
 } from './idb';
+import { replicaDatabaseName, unclaimedReplicaDatabases } from './purge';
+import { onPurgeClientState, type PurgeScope } from '../transport/clientPurge';
 
 /**
  * Consecutive failed operations before the replica gives up for the
@@ -69,12 +89,11 @@ import {
  */
 const MAX_CONSECUTIVE_FAILURES = 3;
 
-export function replicaDatabaseName(backendId: string): string {
-  return `ao-replica-${backendId}`;
-}
-
 interface ReplicaSession {
-  /** Monotonic token; every identity change invalidates in-flight work. */
+  /** Which backend this session holds the database of. */
+  readonly backend: BackendKey;
+  /** Monotonic token; every identity change invalidates in-flight work.
+   *  Unique across backends, so it names a session on its own. */
   token: number;
   identity: BackendIdentity;
   db: IDBDatabase | null;
@@ -98,16 +117,52 @@ interface ReplicaSession {
   ready: Promise<void> | null;
 }
 
-let session: ReplicaSession = {
-  token: 0,
-  identity: { backendId: '', generation: '' },
-  db: null,
-  index: [],
-  indexDirty: false,
-  ready: null,
-};
+// Tokens are minted from one counter across every backend, so a token
+// identifies a session without naming one. `sessionByToken` is what turns
+// a caller's token back into its session — and a token that has been
+// superseded simply is not in it, which is the same "superseded" check the
+// single-session code made by comparing numbers.
+let nextToken = 0;
+const sessions = new Map<BackendKey, ReplicaSession>();
+const sessionByToken = new Map<number, ReplicaSession>();
 let disabled = false;
 let consecutiveFailures = 0;
+
+function mintToken(): number {
+  nextToken += 1;
+  return nextToken;
+}
+
+/** This backend's session, created empty on first ask. */
+function sessionFor(backend: BackendKey): ReplicaSession {
+  let held = sessions.get(backend);
+  if (held === undefined) {
+    held = {
+      backend,
+      token: mintToken(),
+      identity: UNKNOWN_BACKEND_IDENTITY,
+      db: null,
+      index: [],
+      indexDirty: false,
+      ready: null,
+    };
+    sessions.set(backend, held);
+    sessionByToken.set(held.token, held);
+  }
+  return held;
+}
+
+/** The session a caller's token names, or null once it is superseded. */
+function sessionOf(token: number): ReplicaSession | null {
+  return sessionByToken.get(token) ?? null;
+}
+
+/** Move a session's token on, invalidating every in-flight caller. */
+function retoken(held: ReplicaSession): void {
+  sessionByToken.delete(held.token);
+  held.token = mintToken();
+  sessionByToken.set(held.token, held);
+}
 
 function isIndexEntry(value: unknown): value is ReplicaIndexEntry {
   if (!value || typeof value !== 'object') return false;
@@ -147,7 +202,10 @@ function noteFailure(operation: string, err: unknown): void {
       'replica: disabled for this session',
       `${consecutiveFailures} consecutive IndexedDB failures`,
     );
-    closeSession();
+    // A wedged engine is an ORIGIN fact, so every backend's session closes
+    // with it — retrying the same broken IndexedDB once per attached
+    // machine would only multiply the diagnostics.
+    for (const held of sessions.values()) closeSession(held);
   }
 }
 
@@ -155,9 +213,12 @@ function noteSuccess(): void {
   consecutiveFailures = 0;
 }
 
-function closeSession(): void {
-  const db = session.db;
-  session = { ...session, db: null, index: [], indexDirty: false, ready: null };
+function closeSession(held: ReplicaSession): void {
+  const db = held.db;
+  held.db = null;
+  held.index = [];
+  held.indexDirty = false;
+  held.ready = null;
   if (db) {
     try {
       db.close();
@@ -165,6 +226,48 @@ function closeSession(): void {
       console.error('replica: closing database failed', err);
     }
   }
+}
+
+/**
+ * Close the connection AND move the token on, leaving the replica bound
+ * to no backend. Both halves matter before deleting a database this page
+ * has open: the connection is what would block the deletion, and the
+ * token is what stops an in-flight commit re-creating what was deleted.
+ * The next identity event re-opens; nothing else does.
+ */
+function detachSession(held: ReplicaSession): void {
+  closeSession(held);
+  retoken(held);
+  held.identity = UNKNOWN_BACKEND_IDENTITY;
+}
+
+/**
+ * Backend ids whose replica database must survive a sweep: the backends
+ * this client is attached to. The multi-backend attach list
+ * (docs/specs/remote-access.md §10) is exactly what this set is now built
+ * from — one entry per bound session.
+ *
+ * An unidentified backend contributes nothing, so the set can come back
+ * empty. Callers must read that as "no live backend can be named", never
+ * as "nothing is live" — the same rule backendIdentity.ts states for the
+ * empty identity itself.
+ */
+function attachedBackendIds(): Set<string> {
+  const ids = new Set<string>();
+  for (const held of sessions.values()) {
+    if (held.identity.backendId !== '') ids.add(held.identity.backendId);
+  }
+  return ids;
+}
+
+/** Names of every database this client currently has open. */
+function openDatabaseNames(): string[] {
+  const names: string[] = [];
+  for (const held of sessions.values()) {
+    const backendId = held.identity.backendId;
+    if (backendId !== '') names.push(replicaDatabaseName(backendId));
+  }
+  return names;
 }
 
 /**
@@ -176,17 +279,15 @@ function closeSession(): void {
  * Returns once the session is usable — awaited by the operations below,
  * never by callers.
  */
-export function initReplica(identity: BackendIdentity): Promise<void> {
-  closeSession();
-  const token = session.token + 1;
-  session = {
-    token,
-    identity,
-    db: null,
-    index: [],
-    indexDirty: false,
-    ready: null,
-  };
+export function initReplica(
+  identity: BackendIdentity,
+  backend: BackendKey = HOME_BACKEND,
+): Promise<void> {
+  const session = sessionFor(backend);
+  closeSession(session);
+  retoken(session);
+  session.identity = identity;
+  const token = session.token;
   if (disabled || !identity.backendId || !identity.generation || !indexedDbAvailable()) {
     return Promise.resolve();
   }
@@ -244,14 +345,169 @@ export function initReplica(identity: BackendIdentity): Promise<void> {
   })().then(
     () => {
       noteSuccess();
+      scheduleUnclaimedSweep(token);
     },
     (err: unknown) => {
-      if (session.token === token) closeSession();
+      if (session.token === token) closeSession(session);
       noteFailure('open', err);
     },
   );
   session.ready = ready;
   return ready;
+}
+
+/** What a purge did. Every field is a distinct outcome, not a detail. */
+export interface ReplicaPurgeResult {
+  /** Databases dropped. */
+  deleted: readonly string[];
+  /** Databases that were targeted and did not go (blocked, or wedged). */
+  failed: readonly string[];
+  /**
+   * False when this engine cannot list the origin's databases, so only
+   * the database this page had open could be considered (idb.ts
+   * `listDatabaseNames`).
+   */
+  enumerated: boolean;
+  /** True when an identity change cut the purge short. */
+  cancelled: boolean;
+}
+
+/** One deletion failure: loud, but not evidence the read path is wedged. */
+function notePurgeFailure(name: string, err: unknown): void {
+  const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  console.error(`replica: deleting ${name} failed — ${detail}`);
+  reportFrontendDiagnostic(`replica: deleting ${name} failed`, detail);
+}
+
+/**
+ * Delete `targets`, re-checking `token` before each one so an identity
+ * change arriving mid-purge cancels the rest instead of deleting the
+ * database that identity just opened. The session is already detached
+ * from anything in this list — its caller does that before it decides
+ * what the list is — so no target here can be an open database.
+ */
+async function deleteDatabases(
+  targets: readonly string[],
+  token: number,
+): Promise<{ deleted: string[]; failed: string[]; cancelled: boolean }> {
+  const deleted: string[] = [];
+  const failed: string[] = [];
+  for (const name of targets) {
+    if (sessionOf(token) === null) return { deleted, failed, cancelled: true };
+    try {
+      await deleteDatabase(name);
+      deleted.push(name);
+    } catch (err) {
+      failed.push(name);
+      notePurgeFailure(name, err);
+    }
+  }
+  return { deleted, failed, cancelled: false };
+}
+
+/**
+ * Delete every replica database on this origin that `liveBackendIds` does
+ * not claim.
+ *
+ * **This is the purge primitive sign-out and device revocation call**
+ * (docs/specs/remote-access.md §9: the replica is "purged on sign-out and
+ * device revocation"). Pass the backends that REMAIN attached — an empty
+ * set for a full sign-out, which drops the current backend's database
+ * too. Boot passes the attached set, which is what stops a backend id
+ * that moved from leaving a database nothing will ever open again: it
+ * sits outside every per-database cap, so nothing else can ever reclaim
+ * it.
+ *
+ * Runs even when the replica has disabled itself after repeated failures.
+ * The latch protects the READ path from a wedged engine; a purge that
+ * skipped a disabled session would leave exactly the data a sign-out was
+ * asked to remove.
+ *
+ * A purge that took the open database leaves the replica bound to no
+ * backend, which is what a sign-out wants. Identity events only fire on
+ * CHANGE, so a caller that stays attached to the same backend afterwards
+ * (revoking one of several, purging then continuing) re-arms with
+ * `initReplica`; nothing else will.
+ *
+ * Where `indexedDB.databases()` is missing (Firefox before 126) the
+ * origin cannot be enumerated: only the database this page has open can
+ * be named, so that one is still purged when the live set does not claim
+ * it, and older orphans wait for an engine that can list them. The result
+ * says which case ran.
+ */
+export async function purgeReplicaDatabases(
+  liveBackendIds: ReadonlySet<string>,
+  token: number = replicaToken(),
+): Promise<ReplicaPurgeResult> {
+  if (!indexedDbAvailable()) {
+    return { deleted: [], failed: [], enumerated: false, cancelled: false };
+  }
+  // The open database is the one target nameable without enumerating, and
+  // it is decided FIRST, before any await: an open still in flight would
+  // otherwise re-create it a moment after a listing failed to see it, and
+  // the purge would report success over a database that came back.
+  // Detaching here also means nothing below can be looking at a database
+  // it is about to delete.
+  const openNames = openDatabaseNames();
+  const targets = openNames.length === 0
+    ? []
+    : unclaimedReplicaDatabases(openNames, liveBackendIds);
+  let live = token;
+  if (targets.length > 0) {
+    const requester = sessionOf(live);
+    if (requester === null) {
+      return { deleted: [], failed: [], enumerated: false, cancelled: true };
+    }
+    // Detach EVERY session whose database is about to go — an open
+    // connection blocks the deletion, and a live token would let an
+    // in-flight commit re-create what was deleted.
+    for (const held of sessions.values()) {
+      const backendId = held.identity.backendId;
+      if (backendId === '' || !targets.includes(replicaDatabaseName(backendId))) continue;
+      detachSession(held);
+    }
+    live = requester.token;
+  }
+  const names = await listDatabaseNames();
+  if (names !== null) {
+    for (const name of unclaimedReplicaDatabases(names, liveBackendIds)) {
+      if (!targets.includes(name)) targets.push(name);
+    }
+  }
+  return { ...(await deleteDatabases(targets, live)), enumerated: names !== null };
+}
+
+/**
+ * The in-flight sweep, so one cannot overlap the next. Not a latch: an
+ * identity change after a sweep finished schedules another, because the
+ * backend that just went is exactly the one with a database to reap.
+ */
+let sweepInFlight: Promise<void> | null = null;
+
+/**
+ * Reap replica databases no attached backend claims, after the session
+ * is usable. Scheduled rather than awaited: this is storage hygiene over
+ * the whole origin, and the cold-open read that `initReplica` gates must
+ * not wait behind it.
+ */
+function scheduleUnclaimedSweep(token: number): void {
+  if (sweepInFlight) return;
+  if (sessionOf(token) === null) return;
+  const live = attachedBackendIds();
+  // Nothing nameable is live. Sweeping on an empty set would read
+  // "delete everything", which is a sign-out's instruction, not an
+  // unidentified backend's.
+  if (live.size === 0) return;
+  sweepInFlight = purgeReplicaDatabases(live, token)
+    .then(
+      () => undefined,
+      (err: unknown) => {
+        noteFailure('purge', err);
+      },
+    )
+    .finally(() => {
+      sweepInFlight = null;
+    });
 }
 
 /**
@@ -261,10 +517,11 @@ export function initReplica(identity: BackendIdentity): Promise<void> {
  */
 async function activeDb(token: number): Promise<IDBDatabase | null> {
   if (disabled) return null;
-  if (session.token !== token) return null;
+  const session = sessionOf(token);
+  if (session === null) return null;
   const ready = session.ready;
   if (ready) await ready;
-  if (disabled || session.token !== token) return null;
+  if (disabled || sessionOf(token) === null) return null;
   return session.db;
 }
 
@@ -278,9 +535,11 @@ async function syncedIndex(
   db: IDBDatabase,
   token: number,
 ): Promise<readonly ReplicaIndexEntry[] | null> {
+  const session = sessionOf(token);
+  if (session === null) return null;
   if (!session.indexDirty) return session.index;
   const stored = await readRecord<unknown>(db, META_STORE, META_INDEX_KEY);
-  if (session.token !== token) return null;
+  if (sessionOf(token) === null) return null;
   session.index = readIndexEntries(stored);
   session.indexDirty = false;
   return session.index;
@@ -288,14 +547,22 @@ async function syncedIndex(
 
 /** Adopt the rows a commit merged, replacing this page's mirror. */
 function adoptMergedIndex(merged: ReplicaIndexEntry[], token: number): void {
-  if (session.token !== token) return;
+  const session = sessionOf(token);
+  if (session === null) return;
   session.index = merged;
   session.indexDirty = false;
 }
 
-/** The token a caller must hand back to have its result honoured. */
-export function replicaToken(): number {
-  return session.token;
+/**
+ * The token a caller must hand back to have its result honoured.
+ *
+ * Defaults to the page's own backend, which is what every existing call
+ * site means. A surface reading another backend's replica passes that
+ * backend's registry id; the token it gets back carries the session, so
+ * nothing below this line takes a backend argument.
+ */
+export function replicaToken(backend: BackendKey = HOME_BACKEND): number {
+  return sessionFor(backend).token;
 }
 
 /**
@@ -311,10 +578,16 @@ export async function getReplicaWindow(
     const db = await activeDb(token);
     if (!db) return null;
     const raw = await readRecord<unknown>(db, THREADS_STORE, threadId);
-    if (session.token !== token) return null;
+    if (sessionOf(token) === null) return null;
     if (raw === undefined) return null;
     const body = readEnvelope(raw);
     noteSuccess();
+    // A HIT is evidence of ownership: the record was written under this
+    // backend's identity into a database named for it, so the thread lives
+    // there. That is the cold-open leg of the entity index — the pane opens
+    // before any list has answered, and without this the first RPC about a
+    // thread painted from the replica would route home.
+    noteThread(threadId, sessionOf(token)?.backend ?? HOME_BACKEND);
     if (!body) {
       // Stored by an older build. Drop rather than repair.
       void removeReplicaWindow(threadId, token);
@@ -356,7 +629,8 @@ export async function putReplicaWindow(
     adoptMergedIndex(merged, token);
     noteSuccess();
   } catch (err) {
-    session.indexDirty = true;
+    const session = sessionOf(token);
+    if (session !== null) session.indexDirty = true;
     noteFailure('write', err);
   }
 }
@@ -384,7 +658,8 @@ export async function removeReplicaWindow(
     adoptMergedIndex(merged, token);
     noteSuccess();
   } catch (err) {
-    session.indexDirty = true;
+    const session = sessionOf(token);
+    if (session !== null) session.indexDirty = true;
     noteFailure('remove', err);
   }
 }
@@ -395,31 +670,72 @@ export async function removeReplicaWindow(
  * reconnect refetch) re-points the database, and a generation change
  * clears it before any read can serve a row from the previous one.
  */
-onBackendIdentity((identity) => {
-  void initReplica(identity);
+onBackendIdentity((identity, backend) => {
+  void initReplica(identity, backend);
 });
 
-/** Test-only: forget the session and re-enable after a failure latch. */
+/**
+ * The replica's half of a sign-out, a detach and a refused credential
+ * (`transport/clientPurge.ts` owns the three moments).
+ *
+ * Sign-out passes `null` and takes every database on the origin, which is
+ * the empty live set `purgeReplicaDatabases` already documents. A single
+ * backend is expressed the same way: keep every OTHER attached backend's
+ * database and let the sweep drop the one that is going. Naming the
+ * survivors rather than the target is what keeps one code path for both,
+ * and it is the safer direction too, since the sweep's own guard against
+ * an unidentified backend still applies.
+ */
+function purgeForScope(scope: PurgeScope): Promise<unknown> {
+  if (scope === null) return purgeReplicaDatabases(new Set());
+  const survivors = new Set<string>();
+  for (const [backend, held] of sessions) {
+    if (backend === scope) continue;
+    if (held.identity.backendId !== '') survivors.add(held.identity.backendId);
+  }
+  const goingId = sessions.get(scope)?.identity.backendId ?? '';
+  // Nothing nameable is going, and an empty survivor set would then read
+  // as "drop everything". That is sign-out's instruction, not this one.
+  if (goingId === '' || survivors.has(goingId)) return Promise.resolve(null);
+  return purgeReplicaDatabases(survivors);
+}
+
+// `void` on the promise, not because nothing awaits it (`purgeClientState`
+// contains a rejection either way) but because the step's contract is
+// `void | Promise<void>` and this one answers a value nobody reads.
+onPurgeClientState(async (scope) => {
+  await purgeForScope(scope);
+});
+
+/** Test-only: forget every session and re-enable after a failure latch. */
 export function __resetReplicaForTest(): void {
-  closeSession();
-  session = {
-    token: session.token + 1,
-    identity: { backendId: '', generation: '' },
-    db: null,
-    index: [],
-    indexDirty: false,
-    ready: null,
-  };
+  for (const held of sessions.values()) {
+    closeSession(held);
+    retoken(held);
+    held.identity = UNKNOWN_BACKEND_IDENTITY;
+  }
+  for (const [backend, held] of [...sessions]) {
+    if (backend === HOME_BACKEND) continue;
+    sessions.delete(backend);
+    sessionByToken.delete(held.token);
+  }
   disabled = false;
   consecutiveFailures = 0;
 }
 
+/** Test-only: the in-flight unclaimed-database sweep, when one is running. */
+export function __replicaSweepForTest(): Promise<void> | null {
+  return sweepInFlight;
+}
+
 /** Test-only: is a database open and the session un-latched? */
-export function __replicaEnabledForTest(): boolean {
-  return !disabled && session.db !== null;
+export function __replicaEnabledForTest(backend: BackendKey = HOME_BACKEND): boolean {
+  return !disabled && sessionFor(backend).db !== null;
 }
 
 /** Test-only: current accounting rows. */
-export function __replicaIndexForTest(): readonly ReplicaIndexEntry[] {
-  return session.index;
+export function __replicaIndexForTest(
+  backend: BackendKey = HOME_BACKEND,
+): readonly ReplicaIndexEntry[] {
+  return sessionFor(backend).index;
 }

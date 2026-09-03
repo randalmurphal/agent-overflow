@@ -255,73 +255,6 @@ func createKeepAliveBinary(t *testing.T, markerPath string) string {
 	return script
 }
 
-// TestGetSettings_RedactsRemoteEndpointTokens pins the LAN-bind safety
-// contract on the Settings bulk-read path. Without redaction here, a
-// LAN-attached token-holder could harvest every saved endpoint's token
-// in a single GetSettings call — defeating the on-demand
-// GetRemoteEndpointToken model that the dedicated remote-endpoint
-// listing path enforces.
-func TestGetSettings_RedactsRemoteEndpointTokens(t *testing.T) {
-	app := &App{settings: settings.NewService(t.TempDir())}
-
-	// Seed two endpoints with distinguishable tokens so we can assert
-	// neither leaks.
-	if _, err := app.settings.AddRemoteEndpoint("Tailnet", "ws://10.0.0.5:54321/", "token-A-supersecret"); err != nil {
-		t.Fatalf("seed A: %v", err)
-	}
-	if _, err := app.settings.AddRemoteEndpoint("Local", "ws://192.168.1.10:443/", "token-B-supersecret"); err != nil {
-		t.Fatalf("seed B: %v", err)
-	}
-
-	got, err := app.GetSettings()
-	if err != nil {
-		t.Fatalf("GetSettings: %v", err)
-	}
-	if len(got.RemoteEndpoints) != 2 {
-		t.Fatalf("got %d endpoints, want 2", len(got.RemoteEndpoints))
-	}
-	for i, ep := range got.RemoteEndpoints {
-		if ep.Token != "" {
-			t.Fatalf("endpoint %d Token leaked: %q (id=%s)", i, ep.Token, ep.ID)
-		}
-		// Sanity-check that the other identifying fields survived; the
-		// frontend's Settings panel renders these on every refresh.
-		if ep.URL == "" || ep.ID == "" {
-			t.Fatalf("endpoint %d missing fields after redaction: %+v", i, ep)
-		}
-	}
-
-	// The persisted settings must still contain the tokens — redaction
-	// is a wire-shape concern only. GetRemoteEndpointToken is the
-	// authoritative single-record fetch.
-	if tok, err := app.GetRemoteEndpointToken(got.RemoteEndpoints[0].ID); err != nil || tok == "" {
-		t.Fatalf("explicit token fetch failed after redaction: tok=%q err=%v", tok, err)
-	}
-}
-
-// TestAddRemoteEndpoint_RedactsTokenInResponse pins the same contract
-// on the mutation paths. A LAN-attached token-holder calling Add with
-// arbitrary inputs would otherwise see the persisted token echoed back
-// in the response. Update is exercised in app_remote_test.go.
-func TestAddRemoteEndpoint_RedactsTokenInResponse(t *testing.T) {
-	app := &App{settings: settings.NewService(t.TempDir())}
-
-	got, err := app.AddRemoteEndpoint("Tailnet", "ws://10.0.0.5:54321/", "supersecret-token")
-	if err != nil {
-		t.Fatalf("AddRemoteEndpoint: %v", err)
-	}
-	if got.URL == "" || got.ID == "" {
-		t.Fatalf("AddRemoteEndpoint returned empty fields: %+v", got)
-	}
-	// The structural change to RemoteEndpointSummary makes a Token
-	// field absence a compile-time guarantee. We still grep the values
-	// to catch any future regression that smuggles the token through
-	// Name or URL.
-	if got.Name == "supersecret-token" || got.URL == "supersecret-token" {
-		t.Fatalf("token leaked into Add response: %+v", got)
-	}
-}
-
 // TestUpdateSettings_RefreshesEditorCacheWhenEditorPatched pins the
 // cache-invalidation hook on the generic UpdateSettings path. Without
 // it, the catalog detection cache (process-global) survives a
@@ -341,7 +274,7 @@ func TestUpdateSettings_RefreshesEditorCacheWhenEditorPatched(t *testing.T) {
 		t.Fatalf("test pre-condition: detection cache should be primed")
 	}
 
-	if _, err := app.UpdateSettings(map[string]any{
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{
 		"editor": map[string]any{"preference": "code"},
 	}); err != nil {
 		t.Fatalf("UpdateSettings(editor): %v", err)
@@ -366,43 +299,11 @@ func TestUpdateSettings_DoesNotRefreshEditorCacheForUnrelatedPatch(t *testing.T)
 		t.Fatalf("test pre-condition: detection cache should be primed")
 	}
 
-	if _, err := app.UpdateSettings(map[string]any{"theme": "dark"}); err != nil {
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{"theme": "dark"}); err != nil {
 		t.Fatalf("UpdateSettings(theme): %v", err)
 	}
 
 	if _, ok := editor.PeekDetectionCache(); !ok {
 		t.Fatalf("UpdateSettings(theme) wrongly invalidated the editor detection cache")
-	}
-}
-
-// TestUpdateRemoteEndpoint_RedactsTokenInResponse mirrors the Add path
-// and pins the threat that motivated the Summary-shaped return: a
-// no-op Update from a LAN-attached token-holder would let them fetch
-// the token by writing nothing.
-func TestUpdateRemoteEndpoint_RedactsTokenInResponse(t *testing.T) {
-	app := &App{settings: settings.NewService(t.TempDir())}
-
-	created, err := app.AddRemoteEndpoint("Original", "ws://x/", "original-token")
-	if err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	// No-op update — only Name changes.
-	got, err := app.UpdateRemoteEndpoint(created.ID, "Renamed", "", "")
-	if err != nil {
-		t.Fatalf("UpdateRemoteEndpoint: %v", err)
-	}
-	if got.Name != "Renamed" {
-		t.Fatalf("Name = %q, want Renamed", got.Name)
-	}
-	if got.Name == "original-token" || got.URL == "original-token" {
-		t.Fatalf("Update response leaked token: %+v", got)
-	}
-
-	// The persisted token must still be readable via the explicit
-	// fetch path — Summary redaction is a wire-shape concern, not a
-	// data-deletion concern.
-	if tok, err := app.GetRemoteEndpointToken(created.ID); err != nil || tok != "original-token" {
-		t.Fatalf("explicit token fetch after Update: tok=%q err=%v", tok, err)
 	}
 }

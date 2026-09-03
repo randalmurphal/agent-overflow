@@ -6,12 +6,17 @@ import {
   externalURLForEventTarget,
   handleExternalURL,
   installExternalLinkDelegate,
+  installPreviewLinkActions,
   loopbackDevServerURL,
   safeExternalURL,
 } from './externalLinks';
 import { buildPathLinkHref } from './pathLinkExtension';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { resetRunMode, setRunMode } from '../../test/runMode';
+import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../test/helpers/scopes';
+import { __resetScopesForTest } from '../transport/scopes';
+import { resetBrowserCompanionForTest } from '../stores/browserCompanion.svelte';
+import { noteThread, __resetEntityIndexForTest } from '../transport/entityIndex';
 
 describe('safeExternalURL', () => {
   beforeEach(() => {
@@ -260,5 +265,277 @@ describe('devServerLabel', () => {
 
   it('falls back to the raw value when it cannot be parsed', () => {
     expect(devServerLabel('not a url')).toBe('not a url');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The preview and companion-browser branches of the same delegate
+// (docs/specs/remote-access.md §7, "What the person sees" and "Link clicks
+// in general").
+// ---------------------------------------------------------------------------
+
+describe('the delegate’s preview branches', () => {
+  let cleanup = () => {};
+  let originalOpen: typeof window.open;
+  const actions = { open: vi.fn(async () => {}), allow: vi.fn(async () => {}) };
+
+  function previewAnchor(attrs: Record<string, string>): HTMLAnchorElement {
+    const link = document.createElement('a');
+    link.href = 'http://localhost:5173/app';
+    for (const [name, value] of Object.entries(attrs)) link.setAttribute(name, value);
+    document.body.appendChild(link);
+    return link;
+  }
+
+  const leftClick = (el: Element): boolean =>
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+
+  beforeEach(() => {
+    resetBindingMocks();
+    resetRunMode();
+    resetToLocalPage();
+    originalOpen = window.open;
+    window.open = vi.fn();
+    document.body.innerHTML = '';
+    actions.open.mockClear();
+    actions.allow.mockClear();
+    installPreviewLinkActions(actions);
+    cleanup = installExternalLinkDelegate();
+  });
+
+  afterEach(() => {
+    cleanup();
+    cleanup = () => {};
+    installPreviewLinkActions(null);
+    window.open = originalOpen;
+    resetRunMode();
+    resetToLocalPage();
+    __resetScopesForTest();
+    document.body.innerHTML = '';
+  });
+
+  it('opens the preview for a link whose port is shared', () => {
+    const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+    const link = previewAnchor({
+      'data-preview-state': 'open',
+      'data-preview-port': '5173',
+      'data-preview-path': '/app?q=1',
+      'data-preview-thread': 'thread-1',
+    });
+
+    expect(leftClick(link)).toBe(false);
+    expect(actions.open).toHaveBeenCalledWith('thread-1', 5173, '/app?q=1');
+    // Never the system browser: the href names a listener on the machine
+    // the agent is on, not on this one.
+    expect(open).not.toHaveBeenCalled();
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
+  it('swallows the click on a link that is inert, and opens nothing', () => {
+    const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+    for (const state of ['not-shared', 'no-address']) {
+      document.body.innerHTML = '';
+      const link = previewAnchor({
+        'data-preview-state': state,
+        'data-preview-port': '5173',
+        'data-preview-path': '/',
+        'data-preview-thread': 'thread-1',
+      });
+      expect(leftClick(link)).toBe(false);
+    }
+    expect(actions.open).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it('swallows a middle-click on a shared link, and opens nothing', () => {
+    // The href is the agent's machine's `localhost`, so "somewhere other
+    // than here" has nowhere to go: the delegate eats the gesture rather
+    // than handing this reader's browser a port it does not have.
+    const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+    const link = previewAnchor({
+      'data-preview-state': 'open',
+      'data-preview-port': '5173',
+      'data-preview-path': '/',
+      'data-preview-thread': 'thread-1',
+    });
+
+    const dispatched = link.dispatchEvent(
+      new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }),
+    );
+
+    expect(dispatched).toBe(false);
+    expect(actions.open).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
+  it('shares the port from the inline Allow action, naming the backend it belongs to', () => {
+    const button = document.createElement('button');
+    button.dataset.previewAllow = '5173';
+    button.dataset.previewBackend = 'laptop';
+    document.body.appendChild(button);
+
+    expect(leftClick(button)).toBe(false);
+    expect(actions.allow).toHaveBeenCalledWith('laptop', 5173);
+  });
+
+  it('does nothing for a preview anchor when no actions are installed', () => {
+    installPreviewLinkActions(null);
+    const link = previewAnchor({
+      'data-preview-state': 'open',
+      'data-preview-port': '5173',
+      'data-preview-path': '/',
+      'data-preview-thread': 'thread-1',
+    });
+    expect(leftClick(link)).toBe(false);
+    expect(actions.open).not.toHaveBeenCalled();
+  });
+});
+
+describe('mod+click on an ordinary external link', () => {
+  let cleanup = () => {};
+  let originalOpen: typeof window.open;
+
+  function linkInThread(): HTMLAnchorElement {
+    const host = document.createElement('div');
+    host.dataset.threadId = 'thread-1';
+    const link = document.createElement('a');
+    link.href = 'https://example.com/docs';
+    host.appendChild(link);
+    document.body.appendChild(host);
+    return link;
+  }
+
+  const modClick = (el: Element, init: MouseEventInit = {}): boolean =>
+    el.dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, metaKey: true, ...init }),
+    );
+
+  // Which of the two plain doors a click takes is the run mode's and the
+  // page origin's answer, and both are pinned by their own cases above.
+  // This block asserts the OUTCOME instead, for a reason worth knowing:
+  // one case above deliberately lets a click navigate, which leaves
+  // happy-dom's `window.location` blank for every case after it — so the
+  // host door is not deterministic from here.
+  const openedExternally = (binding: { mock: { calls: unknown[][] } }, url: string): boolean => {
+    const viaHost = binding.mock.calls.some((call) => call[0] === url);
+    const browserOpen = window.open as unknown as { mock: { calls: unknown[][] } };
+    const viaBrowser = browserOpen.mock.calls.some((call) => call[0] === url);
+    return viaHost || viaBrowser;
+  };
+
+  beforeEach(() => {
+    resetBindingMocks();
+    resetRunMode();
+    resetToLocalPage();
+    resetBrowserCompanionForTest();
+    __resetEntityIndexForTest();
+    originalOpen = window.open;
+    window.open = vi.fn();
+    document.body.innerHTML = '';
+    cleanup = installExternalLinkDelegate();
+  });
+
+  afterEach(() => {
+    cleanup();
+    cleanup = () => {};
+    resetBrowserCompanionForTest();
+    __resetEntityIndexForTest();
+    window.open = originalOpen;
+    resetRunMode();
+    resetToLocalPage();
+    __resetScopesForTest();
+    document.body.innerHTML = '';
+  });
+
+  it('opens a new companion tab on that address, on host', async () => {
+    const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({
+      threadId: 'thread-1',
+      kind: 'state',
+      pages: [{ id: 'page-1' }],
+      activePageId: 'page-1',
+    })));
+
+    expect(modClick(linkInThread())).toBe(false);
+    await waitFor(() => expect(act).toHaveBeenCalledTimes(2));
+    expect(act.mock.calls[0][1]).toMatchObject({ kind: 'new' });
+    expect(act.mock.calls[1][1]).toMatchObject({
+      kind: 'navigate',
+      pageId: 'page-1',
+      address: 'https://example.com/docs',
+    });
+    expect(systemOpen).not.toHaveBeenCalled();
+  });
+
+  it('does not navigate when the new tab was refused', async () => {
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => {
+      throw new Error('browser manager unavailable');
+    }));
+
+    expect(modClick(linkInThread())).toBe(false);
+    await waitFor(() => expect(act).toHaveBeenCalledTimes(1));
+    expect(act).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the plain behaviour off host, where there is no pane to open', async () => {
+    // A paired device holds no `host`: the companion pane is a native view
+    // the host process paints, which no remote client renders. Which of
+    // the two plain doors that page then uses is the run mode's answer,
+    // not this branch's, so the assertion is that the click took the
+    // ordinary external path at all.
+    await pairWithScopes(OBSERVE_SCOPES);
+    const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ threadId: 'thread-1', kind: 'state', pages: [] })));
+
+    expect(modClick(linkInThread())).toBe(false);
+    await waitFor(() =>
+      expect(openedExternally(systemOpen, 'https://example.com/docs')).toBe(true),
+    );
+    expect(act).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the plain behaviour when the thread runs on another machine', async () => {
+    // `host` in hand says nothing about WHERE the pane would open:
+    // `browserCompanionAct` routes to the thread's backend, so on a thread
+    // attached to another machine the tab would be minted in an engine
+    // this window cannot paint, and the person would see nothing happen.
+    noteThread('thread-1', 'laptop');
+    const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ threadId: 'thread-1', kind: 'state', pages: [] })));
+
+    expect(modClick(linkInThread())).toBe(false);
+    await waitFor(() =>
+      expect(openedExternally(systemOpen, 'https://example.com/docs')).toBe(true),
+    );
+    expect(act).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the plain behaviour for a link outside any thread', async () => {
+    const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ threadId: '', kind: 'state', pages: [] })));
+    const link = document.createElement('a');
+    link.href = 'https://example.com/docs';
+    document.body.appendChild(link);
+
+    expect(modClick(link)).toBe(false);
+    await waitFor(() =>
+      expect(openedExternally(systemOpen, 'https://example.com/docs')).toBe(true),
+    );
+    expect(act).not.toHaveBeenCalled();
+  });
+
+  it('keeps middle-click on the system browser, modifier or not', async () => {
+    const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ threadId: '', kind: 'state', pages: [] })));
+    const link = linkInThread();
+
+    link.dispatchEvent(
+      new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1, metaKey: true }),
+    );
+    await waitFor(() =>
+      expect(openedExternally(systemOpen, 'https://example.com/docs')).toBe(true),
+    );
+    expect(act).not.toHaveBeenCalled();
   });
 });

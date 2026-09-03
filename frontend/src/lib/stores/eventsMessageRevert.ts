@@ -10,6 +10,7 @@ import { adoptEventStamp, dropThreadHistoryStamp } from './threadHistoryStamps';
 import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
 import { compositeKey } from '../utils/compositeKey';
+import { getConnectionId } from '../transport/clientIdentity';
 import { onBackendIdentity } from '../transport/backendIdentity';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 
@@ -63,6 +64,13 @@ function ingestPanes(): Iterable<ThreadPaneIngest> {
 // misreport a committed revert as "nothing happened". The map value is
 // the thread id so the per-thread sweep below compares values instead of
 // parsing keys — no separator can then be confused for one inside an id.
+//
+// Recorded only for a saga THIS page load started (`connectionId`). The
+// cut is a fact about the thread and every client applies it; the marker
+// answers a different question — "did MY revert commit" — and a second
+// client's saga on the same anchor would otherwise answer it yes for a
+// call that never got that far. The CONNECTION and not the device: two
+// tabs of one browser run independent flows.
 const pendingResendReverts = new Map<string, string>();
 // The initiating RPC and the event bus both deliver the same committed cut.
 // Their order is intentionally unspecified. The post-cut history stamp is the
@@ -87,6 +95,15 @@ function markerKey(threadId: string, userItemId: string): string {
   return compositeKey(threadId, userItemId);
 }
 
+// An UNSTAMPED saga frame is recorded, which is the pre-stamp behaviour
+// kept verbatim: the stamp is additive, and a bundle running against a
+// backend too old to send it must not stop recording its OWN markers —
+// that would turn every committed revert into "nothing happened" and send
+// the failure handler down the wrong recovery branch.
+function resendIsOurs(connectionId: string | undefined): boolean {
+  return !connectionId || connectionId === getConnectionId();
+}
+
 // Consume-on-read from both saga outcomes, so a stale marker can never
 // misclassify a later, unrelated failure. Deletes ONLY its own key: a
 // concurrent flow's marker on the same thread is not this caller's to
@@ -97,11 +114,10 @@ export function consumeResendRevertMarker(threadId: string, userItemId: string):
 
 // Every marker on a thread is stale the moment a newer revert lands on
 // it: the conversation the older saga was reverting no longer exists in
-// the shape it recorded. This is also what self-heals markers set by
-// reverts that originated from ANOTHER connected client — nothing local
-// ever consumes those, so without a sweep they would accumulate for the
-// process's lifetime and answer `true` to an unrelated later failure on
-// the same anchor.
+// the shape it recorded. It runs on EVERY revert, including one another
+// client made, because such a revert invalidates our own markers just as
+// surely as one of ours does — it is only the RECORDING below that is
+// ours alone.
 function clearResendRevertMarkersForThread(threadId: string): void {
   for (const [key, owner] of pendingResendReverts) {
     if (owner === threadId) pendingResendReverts.delete(key);
@@ -125,7 +141,7 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
   if (revision !== null && appliedRevision !== undefined && appliedRevision >= revision) return;
   const rehydrateDrafts = payload.draftPendingResend !== true;
   clearResendRevertMarkersForThread(payload.threadId);
-  if (payload.draftPendingResend === true) {
+  if (payload.draftPendingResend === true && resendIsOurs(payload.connectionId)) {
     pendingResendReverts.set(
       markerKey(payload.threadId, payload.userItemId),
       payload.threadId,

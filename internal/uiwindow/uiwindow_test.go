@@ -253,3 +253,22 @@ func TestPrepareOptionsCentersWhenNormalWindowOffEveryKnownScreen(t *testing.T) 
 		t.Fatalf("opts mutated = %+v, want centered default", opts)
 	}
 }
+
+// TestDeliverPageTicketToleratesAnAbsentWindow: the ticket delivery is
+// wired from an ApplicationStarted handler, which is exactly the boot
+// path where a window or a backend may not exist yet. Neither is worth a
+// panic on a path whose failure mode is already "the page waits and
+// retries".
+func TestDeliverPageTicketToleratesAnAbsentWindow(t *testing.T) {
+	stop := DeliverPageTicket(nil, func() (string, error) { return "ticket", nil })
+	if stop == nil {
+		t.Fatal("DeliverPageTicket returned no unsubscribe func")
+	}
+	stop()
+
+	stop = DeliverPageTicket(&application.WebviewWindow{}, nil)
+	if stop == nil {
+		t.Fatal("DeliverPageTicket returned no unsubscribe func for a nil mint")
+	}
+	stop()
+}

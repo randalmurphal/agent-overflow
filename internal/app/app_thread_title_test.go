@@ -1,8 +1,8 @@
 package app
 
 import (
+	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -658,11 +658,13 @@ func TestGeneratedThreadTitle_CodexPathHappy(t *testing.T) {
 		t.Fatalf("attachment store: %v", err)
 	}
 	app.attachments = attachments
+	pngHeader := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 	record, err := app.attachments.Upload(
 		thread.ID,
 		"screenshot.png",
 		"image/png",
-		base64.StdEncoding.EncodeToString([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}),
+		int64(len(pngHeader)),
+		bytes.NewReader(pngHeader),
 		time.Now().UnixMilli(),
 	)
 	if err != nil {

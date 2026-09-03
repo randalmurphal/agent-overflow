@@ -16,6 +16,7 @@ import {
   type SyncThreadWindowResult,
 } from './bindings';
 import { addToast } from './toast.svelte';
+import { hasScope } from '../transport/scopes';
 import { errString } from '../utils/errors';
 import {
   createRefreshScheduler,
@@ -25,6 +26,7 @@ import {
   closeCompanionsForSource,
 } from './companionPanes.svelte';
 import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
+import { clearItemProjectionSourcesForThread } from '../utils/itemProjectionSource.svelte';
 import {
   MAX_CACHED_SNAPSHOT_ITEMS,
   threadItemCache,
@@ -99,6 +101,7 @@ import {
   REPLICA_WRITE_BACK_DELAY_MS,
   SLICE_AROUND_ITEM_BUDGET,
   SPINNER_THRESHOLD_MS,
+  wantsInlinePreviews,
   type DraftThreadPlaceholder,
   type PaneErrorKind,
   type PaneScrollController,
@@ -659,6 +662,7 @@ export function createThreadSwitchLoad(
       // shared cache tracks per-key thread ownership, so entries a
       // still-open thread also requested survive the drop.
       evictDiffSpansForThread(outgoingThreadId);
+      clearItemProjectionSourcesForThread(outgoingThreadId);
     }
   }
 
@@ -680,6 +684,7 @@ export function createThreadSwitchLoad(
     if (!outgoingThreadId) return;
     cacheOutgoingWindow(outgoingThreadId);
     evictDiffSpansForThread(outgoingThreadId);
+    clearItemProjectionSourcesForThread(outgoingThreadId);
   }
 
   /**
@@ -1020,6 +1025,7 @@ export function createThreadSwitchLoad(
         itemBudget: SLICE_AROUND_ITEM_BUDGET,
         haveEpoch: stamp ? stamp.epoch : UNKNOWN_STAMP_VALUE,
         haveRev: stamp ? stamp.rev : UNKNOWN_STAMP_VALUE,
+        inlinePreviews: wantsInlinePreviews(),
       });
 
     try {
@@ -1184,7 +1190,15 @@ export function createThreadSwitchLoad(
     liveStateHydrationToken: number,
   ): Promise<{ liveStateHydrationConsumed: boolean }> {
     let liveStateHydrationConsumed = false;
+    // Focus bookkeeping, not a read: SwitchThread stamps the thread read
+    // and AutoResumeThread is a retained no-op, and both ride
+    // `threads:operate`. A session without that grant opens threads all
+    // day, so issuing them anyway would put a refusal — and, for the
+    // first, a toast — on every open. The row the pane already holds
+    // from the thread list is what SwitchThread would have returned.
+    const mayOperate = hasScope('threads:operate');
     const switchPromise = (async () => {
+      if (!mayOperate) return;
       try {
         const switched = (await SwitchThread(newThread.id)) as
           | Thread
@@ -1206,6 +1220,7 @@ export function createThreadSwitchLoad(
     })();
 
     const autoResumePromise = (async () => {
+      if (!mayOperate) return;
       try {
         await AutoResumeThread(newThread.id);
       } catch (err) {
@@ -1429,6 +1444,7 @@ export function createThreadSwitchLoad(
           currentThread.id,
           anchorItemId,
           ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+          wantsInlinePreviews(),
         );
       } catch (err) {
         if (!refreshIsCurrent()) return;

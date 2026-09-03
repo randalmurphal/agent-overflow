@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 
 	"github.com/google/uuid"
@@ -193,6 +194,11 @@ func (a *App) ensureFlushDispatchMapsLocked() {
 }
 
 func (a *App) clearFlushDispatchForRollback(threadID string) {
+	// The rollback is deleting the history these messages were queued
+	// against, so they are being thrown away rather than deferred: their
+	// durable rows go with them, or the next boot restores messages the
+	// user's revert already discarded.
+	a.dropDurableFlushQueue(threadID)
 	a.flushDispatch.mu.Lock()
 	a.ensureFlushDispatchMapsLocked()
 	a.flushDispatch.generation[threadID]++
@@ -380,6 +386,10 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		// App-injected wake prose keeps this false so a leading slash reaches
 		// the model rather than Claude's local router.
 		expandComposerCommands: payload.ExpandComposerCommands,
+		// The send id moves from the durable queue row onto the row this
+		// dispatch persists, so the message keeps one idempotency record for
+		// its whole life (app_send_idempotency.go).
+		sendID: payload.SendID,
 	})
 	if err != nil {
 		return QueueFlushedItem{}, false, requeue, err
@@ -526,7 +536,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		// Deferred: row persists at echo time via persistDeferredUserText.
 		a.triage.RegisterPendingFlushSendWithExpectation(threadID, item.ID, userItem, item.EnqueuedAt, sendExpect)
 	}
-	if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
+	if draftErr := a.removeThreadDraft(transport.ClientIdentity{}, threadID); draftErr != nil {
 		log.Printf("flush queue: delete draft for thread %s: %v", threadID, draftErr)
 	}
 
@@ -748,7 +758,7 @@ func (a *App) persistFlushDispatchError(threadID string, turnIndex int, dispatch
 		ID:        triage.NewErrorID(turnIndex, "", seq),
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
-		Kind:      "error",
+		Kind:      triage.ItemKindError,
 		Role:      "system",
 		Status:    "completed",
 		Summary:   fmt.Sprintf("Failed to deliver queued message: %v", dispatchErr),
@@ -778,7 +788,12 @@ func (a *App) persistFlushDispatchError(threadID string, turnIndex int, dispatch
 // without an extra round-trip. Emits `provider:queue_state_changed`
 // for any other client (remote `--connect` peers, additional
 // webviews) that may be observing the same thread.
-func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessageOptions) (QueuedItem, error) {
+//
+//ao:scope threads:operate
+func (a *App) RegisterQueueItem(ctx context.Context, threadID string, message string, opts SendMessageOptions) (QueuedItem, error) {
+	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
+		return QueuedItem{}, err
+	}
 	// A user queueing a message has just consumed their composer draft, so the
 	// bound entry point clears it, and nothing is waiting on the dispatch.
 	return a.registerQueueItem(threadID, message, opts, injectedQueueOptions{
@@ -803,6 +818,43 @@ type injectedQueueOptions struct {
 	// injector whose bookkeeping outlives the message must settle here rather
 	// than at register time because the queues in between are process memory.
 	onDurable func()
+}
+
+// flushQueueSettlement is the durable-endpoint hook every queued message
+// carries: it deletes the message's durable row, then runs whatever
+// bookkeeping an injector added.
+//
+// The row's whole life is "registered, not yet anywhere else", so the two
+// moments that end it are exactly the two a FlushSettlement already models —
+// a successful provider write, and a session-death restore into the composer
+// draft. Composing here rather than deleting at those two call sites is what
+// makes the delete exactly-once when they race, and what keeps a future third
+// endpoint from having to remember this table.
+//
+// A delete that fails is logged and not surfaced: the message has already
+// arrived somewhere durable, so the only cost is that the boot sweep may
+// restore it into the composer once, which is recoverable in a way that
+// failing a delivered send is not.
+func (a *App) flushQueueSettlement(threadID, id string, onDurable func()) *triage.FlushSettlement {
+	return triage.NewFlushSettlement(func() {
+		if err := a.store.DeleteFlushQueueItem(id); err != nil {
+			log.Printf("flush queue: delete durable row %s/%s: %v", threadID, id, err)
+		}
+		if onDurable != nil {
+			onDurable()
+		}
+	})
+}
+
+// dropDurableFlushQueue deletes every durable queue row of a thread. Its
+// callers are the WHOLESALE DROPS — a teardown whose triage cleanup discards
+// the in-memory queue without restoring it, and the Codex rollback purge —
+// where a surviving row would resurrect at the next boot the very messages
+// the user's Stop or revert threw away.
+func (a *App) dropDurableFlushQueue(threadID string) {
+	if err := a.store.DeleteFlushQueueItemsForThread(threadID); err != nil {
+		log.Printf("flush queue: drop durable rows for thread %s: %v", threadID, err)
+	}
 }
 
 // registerQueueItem is RegisterQueueItem plus the injected-message axes.
@@ -875,6 +927,31 @@ func (a *App) registerQueueItem(
 	a.flushDispatch.handoffMu.Lock()
 	defer a.flushDispatch.handoffMu.Unlock()
 
+	// Idempotency, before the length cap and before anything is appended: a
+	// repeated frame is answered with what the first one produced, and a
+	// duplicate must not be able to report "queue full" either. This mutex
+	// is the queue path's serialization point, so two frames carrying one id
+	// cannot both pass. See app_send_idempotency.go.
+	if record, found, err := a.findRecordedSend(threadID, opts.SendID); err != nil {
+		return QueuedItem{}, fmt.Errorf("register queue item: %w", err)
+	} else if found {
+		if !record.dispatched {
+			return flushqueue.ItemFromStore(record.queued), nil
+		}
+		// The queue already handed this message to the provider between the
+		// first frame and this one, so there is no queue row left to project.
+		// The answer names the row the message became: Zone 1 is driven by
+		// `provider:queue_state_changed`, which has already removed the
+		// entry, so what matters here is that the caller reads a success and
+		// does not send a second copy.
+		return QueuedItem{
+			ID:         record.item.ID,
+			ThreadID:   threadID,
+			Message:    record.item.Summary,
+			EnqueuedAt: record.item.CreatedAt,
+		}, nil
+	}
+
 	totalQueued := a.triage.QueuedFlushItemCount(threadID) + a.triage.DeferredPendingFlushItemCount(threadID) + a.flushDispatchItemCount(threadID)
 	if totalQueued >= maxQueueLength() {
 		return QueuedItem{}, fmt.Errorf("register queue item: queue full (max %d items per thread)", maxQueueLength())
@@ -889,17 +966,38 @@ func (a *App) registerQueueItem(
 		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		ExpandComposerCommands:       injected.expandComposerCommands,
+		SendID:                       opts.SendID,
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return QueuedItem{}, fmt.Errorf("register queue item: encode payload: %w", err)
 	}
 
-	enqueuedAt := a.triage.RegisterQueueItem(threadID, triage.QueuedFlushItem{
+	// DURABLE FIRST, then memory. The composer clears the moment this
+	// returns, so between the register and the provider write the queue row
+	// is the message's only copy — and it lived in process memory, which a
+	// crash or an ungraceful restart threw away with no trace on screen that
+	// a message had ever existed. Writing it first means the failure mode is
+	// a visible refusal to queue rather than a message that quietly is not
+	// there tomorrow morning.
+	enqueuedAt := time.Now().UnixMilli()
+	if err := a.store.InsertFlushQueueItem(store.FlushQueueItem{
+		ID:         id,
+		ThreadID:   threadID,
+		SendID:     opts.SendID,
+		Message:    message,
+		Payload:    payloadBytes,
+		EnqueuedAt: enqueuedAt,
+	}); err != nil {
+		return QueuedItem{}, fmt.Errorf("register queue item: %w", err)
+	}
+
+	a.triage.RegisterQueueItem(threadID, triage.QueuedFlushItem{
 		ID:         id,
 		Message:    message,
 		Payload:    payloadBytes,
-		Settlement: triage.NewFlushSettlement(injected.onDurable),
+		EnqueuedAt: enqueuedAt,
+		Settlement: a.flushQueueSettlement(threadID, id, injected.onDurable),
 	})
 
 	wireItem := QueuedItem{
@@ -915,7 +1013,7 @@ func (a *App) registerQueueItem(
 		EnqueuedAt:                   enqueuedAt,
 	}
 	if !injected.preserveDraft {
-		if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
+		if draftErr := a.removeThreadDraft(transport.ClientIdentity{}, threadID); draftErr != nil {
 			log.Printf("register queue item: delete draft for thread %s: %v", threadID, draftErr)
 		}
 	}
@@ -931,9 +1029,12 @@ func (a *App) registerQueueItem(
 // per-thread mirror; also by remote `--connect` clients attaching
 // mid-session. Read-only — no emission.
 //
-// LocalOnly: the snapshot exposes the user's drafted-but-not-yet-sent
-// prompts, attachment IDs, and plan refs. Same disclosure shape as
-// the diff bindings, hence loopback-only at the transport layer.
+// threads:operate rather than threads:read: the snapshot exposes the
+// user's drafted-but-not-yet-sent prompts, attachment IDs, and plan
+// refs, which is what a session driving the thread sees and not what a
+// read-only observer signed up for.
+//
+//ao:scope threads:operate
 func (a *App) GetQueueState(threadID string) ([]QueuedItem, error) {
 	if strings.TrimSpace(threadID) == "" {
 		return nil, fmt.Errorf("get queue state: empty thread id")
@@ -991,8 +1092,9 @@ func maxQueueLength() int { return queueMaxLength }
 
 // maxQueueMessageBytes caps the in-flight message text per queue
 // entry. Chat-shaped messages comfortably fit; the cap protects
-// against a 16 MiB-frame DoS vector. Attachments ride the existing
-// UploadAttachment path and are not subject to this cap.
+// against a 16 MiB-frame DoS vector. Attachments never reach this cap
+// because they never reach this socket: they cross on their own HTTP
+// route, and a queue entry carries only their ids.
 const queueMaxMessageBytes = 512 * 1024 // 512 KiB
 
 func maxQueueMessageBytes() int { return queueMaxMessageBytes }

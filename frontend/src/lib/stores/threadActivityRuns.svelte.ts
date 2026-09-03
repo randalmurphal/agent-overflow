@@ -456,7 +456,7 @@ function resolvableAnchor(
     // in the message would mint a fresh signature per run, which is unbounded
     // map growth in the capture pipeline AND a walk around its per-signature
     // cap. Console too — a remote session cannot persist the record
-    // (`ReportFrontendErrorBatch` is LocalOnly), and the console line is then
+    // (`ReportFrontendErrorBatch` is host-scoped), and the console line is then
     // the only surviving evidence.
     const detail = `anchor "${anchorItemId}" not in run ${runId} (${entry.members.size} members)`;
     console.warn(`[threadActivityRuns] unresolvable window anchor; tail-follow (${detail})`);

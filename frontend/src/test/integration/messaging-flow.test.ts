@@ -76,6 +76,9 @@ describe('App integration — messaging flow', () => {
     expect(sendMock.mock.calls[0][1]).toBe('hello agent');
     expect(sendMock.mock.calls[0][2]).toEqual({
       attachmentIds: [],
+      // Minted per send by `buildSendOptions`; the value is the client's,
+      // so the assertion names its presence.
+      sendId: expect.any(String),
     });
     // The send schedules an idle-slot swap of the <textarea> element to
     // release Blink's per-keystroke edit-command retention (recreateInput),

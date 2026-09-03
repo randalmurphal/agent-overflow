@@ -63,13 +63,22 @@ func NewHarness(app *App, paths HarnessPaths) *harnessrpc.Harness {
 
 func (h *harnessHost) Store() *store.Store { return h.app.store }
 
+// PushSent and ForgetPushSent expose the harness push recorder. Both are
+// no-ops on a boot that never installed one (app_push_harness.go).
+func (h *harnessHost) PushSent() []harnessrpc.PushMessage { return h.app.harnessPushMessages() }
+
+func (h *harnessHost) ForgetPushSent() { h.app.harnessPushForget() }
+
 func (h *harnessHost) ReplayLog() *replaylog.Manager { return h.app.replay }
 
 func (h *harnessHost) Shutdown(ctx context.Context) error { return h.app.Shutdown(ctx) }
 
 func (h *harnessHost) ExpectedOrigin() string {
 	if server := h.app.transportServer.Load(); server != nil {
-		return server.AppURL()
+		// Origin, not AppURL: this answers "which origin is ours" and
+		// nothing here navigates, so minting a page ticket per check
+		// would spend one for nothing.
+		return server.Origin()
 	}
 	return ""
 }
@@ -96,9 +105,29 @@ func (h *harnessHost) Emit(channel eventchan.Channel, data any) {
 	h.app.emit(channel, data)
 }
 
+// Notify drives the send pipe and the activation pipe from one RPC, which is
+// what lets the e2e rig observe both halves without a presenter.
+//
+// It sends through notifyOSUngated, the one bypass of the preference and
+// attended-screen gates (app_notifications.go), because every one of those
+// reads something the test cannot see or control. The kind toggle would need
+// a preference the test never set, and the attended-screen rules read window
+// focus — a Playwright page HAS focus, so the default `notifyMuteWhenFocused`
+// would silence every harness notification the moment a spec opened the app.
+// Riding KindWorkflowAttention because it had no toggle was the old version
+// of this argument; it has one now, so the bypass is explicit instead.
+//
+// An allocated id rather than a stable one, for the same reason: this call
+// names no moment to retract.
 func (h *harnessHost) Notify(title, body string, target notify.Target) error {
 	return errors.Join(
-		h.app.notifyOS(title, body, target),
+		h.app.notifyOSUngated(notify.Send{
+			ID:     notify.NewID(h.app.notifications.harnessSeq.Add(1)),
+			Kind:   notify.KindWorkflowAttention,
+			Title:  title,
+			Body:   body,
+			Target: target,
+		}),
 		h.app.activateNotificationTarget(target),
 	)
 }
@@ -176,7 +205,10 @@ func (h *harnessHost) CreateProject(path string) (store.Project, error) {
 }
 
 func (h *harnessHost) CreateThread(options harnessrpc.ThreadOptions) (store.Thread, error) {
-	return h.app.CreateThread(CreateThreadOptions{
+	// The harness RPC is its own screenless caller, so the created thread
+	// carries no device attribution — the same answer a script driving the
+	// app locally should get.
+	return h.app.CreateThread(context.Background(), CreateThreadOptions{
 		ProjectID:   options.ProjectID,
 		Title:       options.Title,
 		Provider:    options.Provider,
@@ -219,7 +251,16 @@ func (h *harnessHost) ClearUIState() error {
 	if h.app.store == nil {
 		return fmt.Errorf("store unavailable")
 	}
-	return h.app.store.ClearUIState()
+	if err := h.app.store.ClearUIState(); err != nil {
+		return err
+	}
+	// The wipe took the user tier's rows with it (internal/settings/residency.go),
+	// and the settings cache keys on the FILE — which this did not touch. Tell
+	// it what happened, or the next read serves preferences whose rows are gone.
+	if h.app.settings != nil {
+		h.app.settings.InvalidateTierCache()
+	}
+	return nil
 }
 
 func (h *harnessHost) ResetSessionImporter() {

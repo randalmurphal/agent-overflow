@@ -1,6 +1,16 @@
 import type { StreamdownContext } from './context.svelte';
 import type { StreamdownToken } from '../parser/index';
+import type { Tokens } from '../parser/engine';
 import { transformUrl } from './elements/url';
+import {
+	PREVIEW_ALLOW_CLASS,
+	PREVIEW_ALLOW_LABEL,
+	previewAllowAttributes,
+	previewAllowVisible,
+	previewAnchorAttributes,
+	previewAnchorClass,
+	previewOfToken,
+} from './previewLink';
 
 function escapeHtml(value: unknown): string {
 	return String(value ?? '')
@@ -15,6 +25,12 @@ function attribute(name: string, value: unknown): string {
 	return value === null || value === undefined || (name === 'class' && value === '')
 		? ''
 		: ` ${name}="${escapeHtml(value)}"`;
+}
+
+function attributes(values: Record<string, string>): string {
+	let out = '';
+	for (const name in values) out += attribute(name, values[name]);
+	return out;
 }
 
 function childrenOf(token: StreamdownToken): StreamdownToken[] {
@@ -207,6 +223,32 @@ export function renderStaticTokenHtml(
 						token.href,
 						streamdown.allowedLinkPrefixes ?? [],
 					);
+					// Mirrors Link.svelte's first branch: a preview anchor is an
+					// ordinary anchor plus the data attributes the click delegate
+					// reads (render/previewLink.ts owns both spellings).
+					const preview = previewOfToken(token as Tokens.Link);
+					if (preview && href) {
+						output.push(
+							`<a data-streamdown-link="${dataId}"` +
+							attribute('class', previewAnchorClass(streamdown.theme.link.base)) +
+							attribute('href', href) +
+							' target="_blank" rel="noopener noreferrer"' +
+							attribute('title', token.title ?? undefined) +
+							attributes(previewAnchorAttributes(preview)) +
+							'>',
+						);
+						if (!render(children)) return false;
+						output.push('</a>');
+						if (previewAllowVisible(preview)) {
+							output.push(
+								'<button type="button"' +
+								attribute('class', PREVIEW_ALLOW_CLASS) +
+								attributes(previewAllowAttributes(preview)) +
+								`>${escapeHtml(PREVIEW_ALLOW_LABEL)}</button>`,
+							);
+						}
+						break;
+					}
 					if (href || token.href === 'streamdown:incomplete-link') {
 						output.push(
 							`<a data-streamdown-link="${dataId}"` +

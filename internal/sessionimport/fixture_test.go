@@ -45,7 +45,7 @@ func newTestStore(t *testing.T) *store.Store {
 func seedThread(t *testing.T, st *store.Store, threadID, providerName, workspace string) store.Thread {
 	t.Helper()
 	if _, err := st.GetProject(testProjectID); err != nil {
-		if err := st.CreateProject(store.Project{
+		if _, err := st.CreateProject(store.Project{
 			ID:        testProjectID,
 			Path:      workspace,
 			Name:      "Session Import Tests",

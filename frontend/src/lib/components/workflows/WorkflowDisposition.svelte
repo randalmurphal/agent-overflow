@@ -14,7 +14,7 @@
   import { openWorkflowThread } from '../../stores/workflowThreads';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
 
   interface Props {
     item: WorkItem;
@@ -22,7 +22,8 @@
   }
   let { item, disposition }: Props = $props();
 
-  let viewOnly = $derived(isViewOnlySession());
+  // Every control here drives the workflow engine, which is `threads:autonomy`.
+  let ungranted = $derived(!hasScope('threads:autonomy'));
   let base = $derived(disposition.base || item.baseBranch || 'base');
   let mode = $derived(disposition.mode === 'ff' ? 'fast-forward' : disposition.mode === 'merge' ? 'merge commit' : 'merged');
   let headline = $derived(
@@ -42,7 +43,7 @@
   // it is fetched once per (run, PR) and never on a non-PR disposition.
   $effect(() => {
     const key = `${item.id}\n${disposition.prRef ?? ''}`;
-    if (viewOnly || disposition.action !== 'pr' || key === countedFor) return;
+    if (ungranted || disposition.action !== 'pr' || key === countedFor) return;
     countedFor = key;
     reviewCount = null;
     reviewError = '';
@@ -57,7 +58,7 @@
   });
 
   async function openPRThread(kind: 'review' | 'discuss'): Promise<void> {
-    if (viewOnly || busy) return;
+    if (ungranted || busy) return;
     busy = kind;
     try {
       const thread = (kind === 'review'
@@ -92,15 +93,15 @@
       <button
         class="rounded-md border border-border-subtle px-2.5 py-1 text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
         onclick={() => { void openPRThread('review'); }}
-        disabled={viewOnly || busy !== '' || reviewCount === null}
-        title={viewOnly ? 'Local only' : reviewError || undefined}
+        disabled={ungranted || busy !== '' || reviewCount === null}
+        title={ungranted ? 'Not granted to this device' : reviewError || undefined}
         data-testid="workflow-pr-review-comments"
       >Review comments ({reviewError ? '–' : reviewCount ?? '…'})</button>
       <button
         class="rounded-md border border-border-subtle px-2.5 py-1 text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
         onclick={() => { void openPRThread('discuss'); }}
-        disabled={viewOnly || busy !== ''}
-        title={viewOnly ? 'Local only' : undefined}
+        disabled={ungranted || busy !== ''}
+        title={ungranted ? 'Not granted to this device' : undefined}
         data-testid="workflow-pr-discuss"
       >Discuss this PR</button>
     </div>

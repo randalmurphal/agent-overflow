@@ -14,11 +14,20 @@ import (
 	"agent-overflow/internal/platform"
 )
 
-const (
-	// BrowserHelperEnvironment marks an Agent Overflow re-exec requested by
-	// a provider's BROWSER hook. The sole argument is the OAuth HTTP(S) URL.
-	BrowserHelperEnvironment = "AGENT_OVERFLOW_BROWSER_HELPER"
-	BrowserHelperValue       = "1"
+// ErrNoOpener reports that this host has no program able to hand a URL to a
+// browser: every platform candidate was absent from PATH, or the platform has
+// no candidate at all. It is a fact about the MACHINE rather than about the
+// URL, which is why it is a sentinel and not prose — a caller with somewhere
+// else to put the link (the provider login flow, which can show it to a remote
+// device instead) branches on errors.Is and keeps its flow alive, while every
+// caller that only wanted a browser opened still gets an error with the same
+// remedy in it.
+//
+// A candidate that WAS on PATH and failed to start is deliberately not this:
+// an opener exists, it just did not work, and retrying or fixing the desktop
+// session is the answer there.
+var ErrNoOpener = errors.New(
+	"no browser opener is installed on this host; open the link on the device you are reading this on",
 )
 
 // Command describes the platform command used to hand a URL to the OS.
@@ -62,31 +71,36 @@ func Validate(rawURL string) (string, error) {
 type commandStarter func(context.Context, Command) error
 type commandLookup func(string) (string, error)
 
+// open walks the platform's opener candidates in order. The two failure
+// shapes are kept apart on purpose: nothing was INSTALLED (ErrNoOpener, a
+// host property a caller can degrade around) versus an installed opener
+// REFUSED to start (an ordinary failure). Lookup failures are still reported
+// alongside a start failure, because which candidates were missing is what
+// explains why the one that ran was the one that ran.
 func open(ctx context.Context, candidates []Command, lookup commandLookup, start commandStarter) error {
-	if len(candidates) == 0 {
-		return fmt.Errorf("external URL opening is unsupported on %s", runtime.GOOS)
-	}
-
-	var errs []error
+	var lookupErrs, startErrs []error
 	for _, candidate := range candidates {
 		if candidate.Name == "" {
 			continue
 		}
 		if _, err := lookup(candidate.Name); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", candidate.Name, err))
+			lookupErrs = append(lookupErrs, fmt.Errorf("%s: %w", candidate.Name, err))
 			continue
 		}
 		if err := start(ctx, candidate); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", candidate.Name, err))
+			startErrs = append(startErrs, fmt.Errorf("%s: %w", candidate.Name, err))
 			continue
 		}
 		return nil
 	}
 
-	if len(errs) == 0 {
-		return fmt.Errorf("external URL opening is unsupported on %s", runtime.GOOS)
+	if len(startErrs) == 0 {
+		if len(lookupErrs) == 0 {
+			return fmt.Errorf("%w (%s names no opener command)", ErrNoOpener, runtime.GOOS)
+		}
+		return fmt.Errorf("%w (%w)", ErrNoOpener, errors.Join(lookupErrs...))
 	}
-	return fmt.Errorf("open external URL: %w", errors.Join(errs...))
+	return fmt.Errorf("open external URL: %w", errors.Join(append(lookupErrs, startErrs...)...))
 }
 
 func commandCandidates(goos string, isWSL bool, safeURL string) []Command {

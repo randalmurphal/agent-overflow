@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ func newProject(id, path, name string) Project {
 func TestCreateProjectHappyPath(t *testing.T) {
 	s := newTestStore(t)
 	p := newProject("p1", "/tmp/p1", "P1")
-	if err := s.CreateProject(p); err != nil {
+	if _, err := s.CreateProject(p); err != nil {
 		t.Fatalf("CreateProject(): %v", err)
 	}
 	got, err := s.GetProject("p1")
@@ -69,7 +70,7 @@ func TestCreateProjectAssignsUniqueImmutableSlugs(t *testing.T) {
 	second := newProject("slug-2", "/tmp/slug-2", "collision---name")
 	third := newProject("slug-3", "/tmp/slug-3", "Collision Name")
 	for _, project := range []Project{first, second, third} {
-		if err := s.CreateProject(project); err != nil {
+		if _, err := s.CreateProject(project); err != nil {
 			t.Fatalf("CreateProject(%s): %v", project.ID, err)
 		}
 	}
@@ -88,7 +89,7 @@ func TestCreateProjectAssignsUniqueImmutableSlugs(t *testing.T) {
 		}
 	}
 
-	if err := s.UpdateProjectName(first.ID, "Renamed Project"); err != nil {
+	if _, _, err := s.UpdateProjectName(first.ID, "Renamed Project"); err != nil {
 		t.Fatalf("UpdateProjectName: %v", err)
 	}
 	renamed, err := s.GetProject(first.ID)
@@ -103,11 +104,11 @@ func TestCreateProjectAssignsUniqueImmutableSlugs(t *testing.T) {
 func TestCreateProjectDuplicatePathRejected(t *testing.T) {
 	s := newTestStore(t)
 	p := newProject("p1", "/tmp/shared", "first")
-	if err := s.CreateProject(p); err != nil {
+	if _, err := s.CreateProject(p); err != nil {
 		t.Fatalf("first CreateProject: %v", err)
 	}
 	dup := newProject("p2", "/tmp/shared", "second")
-	err := s.CreateProject(dup)
+	_, err := s.CreateProject(dup)
 	if !errors.Is(err, ErrProjectPathInUse) {
 		t.Fatalf("CreateProject(duplicate path) = %v, want ErrProjectPathInUse", err)
 	}
@@ -116,7 +117,7 @@ func TestCreateProjectDuplicatePathRejected(t *testing.T) {
 func TestGetProjectByPath(t *testing.T) {
 	s := newTestStore(t)
 	p := newProject("p1", "/tmp/lookup", "lookup")
-	if err := s.CreateProject(p); err != nil {
+	if _, err := s.CreateProject(p); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	got, err := s.GetProjectByPath("/tmp/lookup")
@@ -136,7 +137,7 @@ func TestGetProjectByPath(t *testing.T) {
 func TestGetProjectBySlug(t *testing.T) {
 	s := newTestStore(t)
 	project := Project{ID: "p-slug", Path: "/tmp/slug", Name: "Slug Project", CreatedAt: 1, UpdatedAt: 1}
-	if err := s.CreateProject(project); err != nil {
+	if _, err := s.CreateProject(project); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetProjectBySlug("slug-project")
@@ -157,7 +158,7 @@ func TestListProjectsOrdersByName(t *testing.T) {
 		newProject("a", "/tmp/a", "apple"),
 		newProject("c", "/tmp/c", "cherry"),
 	} {
-		if err := s.CreateProject(p); err != nil {
+		if _, err := s.CreateProject(p); err != nil {
 			t.Fatalf("CreateProject(%s): %v", p.ID, err)
 		}
 	}
@@ -183,10 +184,10 @@ func TestListProjectsWithThreadCounts(t *testing.T) {
 
 	empty := newProject("proj-empty", "/tmp/empty", "empty")
 	populated := newProject("proj-populated", "/tmp/populated", "populated")
-	if err := s.CreateProject(empty); err != nil {
+	if _, err := s.CreateProject(empty); err != nil {
 		t.Fatalf("CreateProject(empty): %v", err)
 	}
-	if err := s.CreateProject(populated); err != nil {
+	if _, err := s.CreateProject(populated); err != nil {
 		t.Fatalf("CreateProject(populated): %v", err)
 	}
 
@@ -242,7 +243,7 @@ func TestListProjectsWithThreadCountsExcludesDrafts(t *testing.T) {
 	s := newTestStore(t)
 
 	proj := newProject("proj-mixed", "/tmp/mixed", "mixed")
-	if err := s.CreateProject(proj); err != nil {
+	if _, err := s.CreateProject(proj); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
@@ -302,10 +303,10 @@ func TestListProjectsWithThreadCountsExcludesDrafts(t *testing.T) {
 func TestUpdateProjectName(t *testing.T) {
 	s := newTestStore(t)
 	p := newProject("p1", "/tmp/upd", "old-name")
-	if err := s.CreateProject(p); err != nil {
+	if _, err := s.CreateProject(p); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if err := s.UpdateProjectName("p1", "new-name"); err != nil {
+	if _, _, err := s.UpdateProjectName("p1", "new-name"); err != nil {
 		t.Fatalf("UpdateProjectName: %v", err)
 	}
 	got, _ := s.GetProject("p1")
@@ -317,11 +318,11 @@ func TestUpdateProjectName(t *testing.T) {
 func TestArchiveAndUnarchiveProject(t *testing.T) {
 	s := newTestStore(t)
 	p := newProject("p1", "/tmp/arc", "archive-me")
-	if err := s.CreateProject(p); err != nil {
+	if _, err := s.CreateProject(p); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
-	if err := s.ArchiveProject("p1"); err != nil {
+	if _, _, err := s.ArchiveProject("p1"); err != nil {
 		t.Fatalf("ArchiveProject: %v", err)
 	}
 	list, _ := s.ListProjects()
@@ -331,7 +332,7 @@ func TestArchiveAndUnarchiveProject(t *testing.T) {
 		}
 	}
 
-	if err := s.UnarchiveProject("p1"); err != nil {
+	if _, _, err := s.UnarchiveProject("p1"); err != nil {
 		t.Fatalf("UnarchiveProject: %v", err)
 	}
 	got, _ := s.GetProject("p1")
@@ -343,7 +344,7 @@ func TestArchiveAndUnarchiveProject(t *testing.T) {
 func TestDeleteProjectRefusesThreads(t *testing.T) {
 	s := newTestStore(t)
 	p := newProject("proj-del", "/tmp/del", "delete-me")
-	if err := s.CreateProject(p); err != nil {
+	if _, err := s.CreateProject(p); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
@@ -388,12 +389,12 @@ func TestUpdateProjectSortPositionsAssignsDensePositions(t *testing.T) {
 	c := newProject("p-c", "/tmp/c", "C")
 	c.SortPosition = 99
 	for _, p := range []Project{a, b, c} {
-		if err := s.CreateProject(p); err != nil {
+		if _, err := s.CreateProject(p); err != nil {
 			t.Fatalf("CreateProject(%s): %v", p.ID, err)
 		}
 	}
 
-	if err := s.UpdateProjectSortPositions([]string{"p-c", "p-a", "p-b"}); err != nil {
+	if _, err := s.UpdateProjectSortPositions([]string{"p-c", "p-a", "p-b"}); err != nil {
 		t.Fatalf("UpdateProjectSortPositions: %v", err)
 	}
 
@@ -423,14 +424,14 @@ func TestUpdateProjectSortPositionsEmptySliceIsNoop(t *testing.T) {
 
 	p := newProject("p-only", "/tmp/only", "Only")
 	p.SortPosition = 42
-	if err := s.CreateProject(p); err != nil {
+	if _, err := s.CreateProject(p); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
-	if err := s.UpdateProjectSortPositions(nil); err != nil {
+	if _, err := s.UpdateProjectSortPositions(nil); err != nil {
 		t.Fatalf("UpdateProjectSortPositions(nil): %v", err)
 	}
-	if err := s.UpdateProjectSortPositions([]string{}); err != nil {
+	if _, err := s.UpdateProjectSortPositions([]string{}); err != nil {
 		t.Fatalf("UpdateProjectSortPositions([]): %v", err)
 	}
 
@@ -455,12 +456,12 @@ func TestUpdateProjectSortPositionsOmittedIdsKeepPosition(t *testing.T) {
 	b := newProject("p-b", "/tmp/b", "B")
 	b.SortPosition = 99
 	for _, p := range []Project{a, b} {
-		if err := s.CreateProject(p); err != nil {
+		if _, err := s.CreateProject(p); err != nil {
 			t.Fatalf("CreateProject(%s): %v", p.ID, err)
 		}
 	}
 
-	if err := s.UpdateProjectSortPositions([]string{"p-a"}); err != nil {
+	if _, err := s.UpdateProjectSortPositions([]string{"p-a"}); err != nil {
 		t.Fatalf("UpdateProjectSortPositions: %v", err)
 	}
 
@@ -482,11 +483,11 @@ func TestUpdateProjectSortPositionsBumpsUpdatedAt(t *testing.T) {
 
 	p := newProject("p-bump", "/tmp/bump", "Bump")
 	p.UpdatedAt = 1
-	if err := s.CreateProject(p); err != nil {
+	if _, err := s.CreateProject(p); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
-	if err := s.UpdateProjectSortPositions([]string{"p-bump"}); err != nil {
+	if _, err := s.UpdateProjectSortPositions([]string{"p-bump"}); err != nil {
 		t.Fatalf("UpdateProjectSortPositions: %v", err)
 	}
 
@@ -497,4 +498,168 @@ func TestUpdateProjectSortPositionsBumpsUpdatedAt(t *testing.T) {
 	if got.UpdatedAt <= 1 {
 		t.Errorf("updated_at = %d, want > 1 (bumped to nowMillis)", got.UpdatedAt)
 	}
+}
+
+func TestCreateProjectRoundTripsRepositoryIdentity(t *testing.T) {
+	s := newTestStore(t)
+	p := newProject("p1", "/tmp/ident", "Ident")
+	p.RemoteURL = "git@github.com:owner/repo.git"
+	p.RootCommit = "0f1e2d3c4b5a69788796a5b4c3d2e1f001234567"
+	created, err := s.CreateProject(p)
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if created.RemoteURL != p.RemoteURL || created.RootCommit != p.RootCommit {
+		t.Fatalf("created row identity = (%q, %q), want (%q, %q)",
+			created.RemoteURL, created.RootCommit, p.RemoteURL, p.RootCommit)
+	}
+	got, err := s.GetProject("p1")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.RemoteURL != p.RemoteURL || got.RootCommit != p.RootCommit {
+		t.Fatalf("read-back identity = (%q, %q), want (%q, %q)",
+			got.RemoteURL, got.RootCommit, p.RemoteURL, p.RootCommit)
+	}
+
+	// The sidebar's own projection carries the identity too, since that is
+	// the read the merged-entry grouping runs against.
+	counts, err := s.ListProjectsWithThreadCounts()
+	if err != nil {
+		t.Fatalf("ListProjectsWithThreadCounts: %v", err)
+	}
+	found := false
+	for _, row := range counts {
+		if row.Project.ID != "p1" {
+			continue
+		}
+		found = true
+		if row.Project.RemoteURL != p.RemoteURL || row.Project.RootCommit != p.RootCommit {
+			t.Fatalf("sidebar projection identity = (%q, %q), want (%q, %q)",
+				row.Project.RemoteURL, row.Project.RootCommit, p.RemoteURL, p.RootCommit)
+		}
+	}
+	if !found {
+		t.Fatal("ListProjectsWithThreadCounts did not return the created project")
+	}
+}
+
+func TestUpdateProjectIdentityReportsWhetherItMoved(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.CreateProject(newProject("p1", "/tmp/ident-upd", "Ident")); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	row, changed, err := s.UpdateProjectIdentity("p1", "https://example.com/repo.git", "aaaa1111")
+	if err != nil {
+		t.Fatalf("UpdateProjectIdentity: %v", err)
+	}
+	if !changed {
+		t.Fatal("first identity write reported no change")
+	}
+	if row.RemoteURL != "https://example.com/repo.git" || row.RootCommit != "aaaa1111" {
+		t.Fatalf("written row = (%q, %q)", row.RemoteURL, row.RootCommit)
+	}
+
+	if _, changed, err = s.UpdateProjectIdentity("p1", "https://example.com/repo.git", "aaaa1111"); err != nil {
+		t.Fatalf("UpdateProjectIdentity (repeat): %v", err)
+	}
+	if changed {
+		t.Fatal("re-deriving the same identity reported a change")
+	}
+
+	// Either half moving on its own is a change.
+	if _, changed, err = s.UpdateProjectIdentity("p1", "https://example.com/repo.git", "bbbb2222"); err != nil {
+		t.Fatalf("UpdateProjectIdentity (root only): %v", err)
+	}
+	if !changed {
+		t.Fatal("a moved root commit reported no change")
+	}
+	if _, changed, err = s.UpdateProjectIdentity("p1", "", "bbbb2222"); err != nil {
+		t.Fatalf("UpdateProjectIdentity (clear remote): %v", err)
+	}
+	if !changed {
+		t.Fatal("a cleared remote URL reported no change")
+	}
+}
+
+// The sidebar orders projects by updated_at under "latest activity". Identity
+// is derived by the backend, not done by the user, so a backfill must not
+// reshuffle the list.
+func TestUpdateProjectIdentityLeavesUpdatedAtAlone(t *testing.T) {
+	s := newTestStore(t)
+	p := newProject("p1", "/tmp/ident-clock", "Ident")
+	p.UpdatedAt = 4242
+	if _, err := s.CreateProject(p); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, _, err := s.UpdateProjectIdentity("p1", "https://example.com/repo.git", "aaaa1111"); err != nil {
+		t.Fatalf("UpdateProjectIdentity: %v", err)
+	}
+	got, err := s.GetProject("p1")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.UpdatedAt != 4242 {
+		t.Fatalf("UpdatedAt = %d, want it untouched at 4242", got.UpdatedAt)
+	}
+}
+
+// A row written before v83 gets the ADD COLUMN default. Insert one the way the
+// pre-migration INSERT did — naming no identity columns — and it must read
+// back as "not known" rather than failing the scan.
+func TestLegacyProjectRowReadsIdentityAsEmpty(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UnixMilli()
+	if _, err := s.db.Exec(
+		`INSERT INTO projects (id, path, name, slug, color, sort_position, created_at, updated_at, archived)
+		 VALUES ('legacy', '/tmp/legacy', 'Legacy', 'legacy', '', 0, ?, ?, 0)`, now, now,
+	); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	got, err := s.GetProject("legacy")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.RemoteURL != "" || got.RootCommit != "" {
+		t.Fatalf("legacy identity = (%q, %q), want both empty", got.RemoteURL, got.RootCommit)
+	}
+}
+
+func TestListAllProjectsIncludesArchived(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.CreateProject(newProject("p1", "/tmp/all-1", "Alpha")); err != nil {
+		t.Fatalf("CreateProject alpha: %v", err)
+	}
+	if _, err := s.CreateProject(newProject("p2", "/tmp/all-2", "Beta")); err != nil {
+		t.Fatalf("CreateProject beta: %v", err)
+	}
+	if _, _, err := s.ArchiveProject("p2"); err != nil {
+		t.Fatalf("ArchiveProject: %v", err)
+	}
+
+	visible, err := s.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if slices.Contains(projectIDs(visible), "p2") {
+		t.Fatal("ListProjects returned the archived project")
+	}
+
+	all, err := s.ListAllProjects()
+	if err != nil {
+		t.Fatalf("ListAllProjects: %v", err)
+	}
+	ids := projectIDs(all)
+	if !slices.Contains(ids, "p1") || !slices.Contains(ids, "p2") {
+		t.Fatalf("ListAllProjects = %v, want both the live and the archived project", ids)
+	}
+}
+
+func projectIDs(rows []Project) []string {
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	return ids
 }

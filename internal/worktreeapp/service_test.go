@@ -50,7 +50,7 @@ func seedThread(t *testing.T, database *store.Store, id, projectID, workspace, w
 func seedProject(t *testing.T, database *store.Store, id, path string) {
 	t.Helper()
 	now := time.Now().UnixMilli()
-	if err := database.CreateProject(store.Project{ID: id, Path: path, Name: id, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := database.CreateProject(store.Project{ID: id, Path: path, Name: id, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 }

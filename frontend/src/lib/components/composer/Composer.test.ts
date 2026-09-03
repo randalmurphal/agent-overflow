@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Composer from './Composer.svelte';
@@ -9,6 +9,8 @@ import {
 import { createThreadPane } from '../../stores/thread.svelte';
 import { buildPane, makeItem, makeThread as makeTestThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import type { Attachment } from '../../types/attachment';
 import { classifyAttachment } from './attachmentHelpers';
 import {
@@ -47,6 +49,17 @@ import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 import { resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
 import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRevert';
 
+/**
+ * Send options as they reach the wire. Every send carries a freshly minted
+ * idempotency id (`utils/sendOptions.ts#buildSendOptions`), and its VALUE is
+ * the client's own, so an assertion names its presence. Still an exact
+ * object rather than `expect.objectContaining`, so a field that should not
+ * be on the wire keeps failing the test.
+ */
+function sentWith(options: Record<string, unknown>): Record<string, unknown> {
+  return { sendId: expect.any(String), ...options };
+}
+
 function installDraftMocks() {
   setBindingMock('GetDraft', async (threadId: string) => ({
     threadId,
@@ -59,7 +72,7 @@ function installDraftMocks() {
   setBindingMock('ClearDraft', async () => {});
   setBindingMock('DeleteEmptyDraftThread', async () => false);
   setBindingMock('ListAttachments', async () => []);
-  setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
+  mockAttachmentDownload();
   setBindingMock('ListLiveBackgroundTasks', async () => []);
   setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   // The composer toolbar's MCP trigger holds the pane's MCP entity for as
@@ -184,7 +197,7 @@ describe('<Composer>', () => {
     setBindingMock('SendMessageWithOptions', async () => makeTestThread({ runtimeMode: 'full-access' }));
     setBindingMock('InterruptTurn', async () => {});
     setBindingMock('DeleteAttachment', async () => {});
-    setBindingMock('UploadAttachment', async (
+    mockAttachmentUpload(async (
       _threadId: string,
       filename: string,
       mimeType: string,
@@ -268,9 +281,9 @@ describe('<Composer>', () => {
     await fireEvent.input(textarea, { target: { value: 'first send' } });
     await fireEvent.click(getByTestId('composer-send'));
 
-    await waitFor(() => expect(send).toHaveBeenCalledWith('materialized-send', 'first send', {
+    await waitFor(() => expect(send).toHaveBeenCalledWith('materialized-send', 'first send', sentWith({
       attachmentIds: [],
-    }));
+    })));
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       projectId: 'project-placeholder',
       provider: 'codex',
@@ -294,7 +307,7 @@ describe('<Composer>', () => {
       projectPath: '/tmp/placeholder',
     });
     setBindingMock('CreateThread', async () => created);
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -314,7 +327,7 @@ describe('<Composer>', () => {
       'materialized-upload',
       'first.png',
       'image/png',
-      expect.any(String),
+      expect.any(Number),
     ));
     expect(draft.threadId).toBe('materialized-upload');
     expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['uploaded']);
@@ -332,7 +345,7 @@ describe('<Composer>', () => {
       isDraft: true,
     });
     const create = setBindingMock('CreateThread', async () => created);
-    const upload = setBindingMock('UploadAttachment', async () =>
+    const upload = mockAttachmentUpload(async () =>
       makeAttachment('should-not-upload'));
     const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => true);
 
@@ -369,7 +382,7 @@ describe('<Composer>', () => {
     });
     setBindingMock('CreateThread', async () => created);
     const save = setBindingMock('SaveDraft', async () => {});
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -389,7 +402,7 @@ describe('<Composer>', () => {
       created.id,
       'dropped.png',
       'image/png',
-      expect.any(String),
+      expect.any(Number),
     ));
     expect(draft.content).toBe('[Image #1]');
     expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['dropped']);
@@ -401,7 +414,7 @@ describe('<Composer>', () => {
   it('uploads a pasted image on a claude thread (control for the claude-tui gate)', async () => {
     const pane = await buildPane(makeTestThread({ provider: 'claude' }));
     const draft = await buildDraft();
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -418,7 +431,7 @@ describe('<Composer>', () => {
       'thread-1',
       'shot.png',
       'image/png',
-      expect.any(String),
+      expect.any(Number),
     ));
   });
 
@@ -429,7 +442,7 @@ describe('<Composer>', () => {
     // fails if the claude-tui attachment capability regresses to false.
     const pane = await buildPane(makeTestThread({ provider: 'claude-tui' }));
     const draft = await buildDraft();
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -446,7 +459,7 @@ describe('<Composer>', () => {
       'thread-1',
       'shot.png',
       'image/png',
-      expect.any(String),
+      expect.any(Number),
     ));
   });
 
@@ -456,7 +469,7 @@ describe('<Composer>', () => {
     // capability-gated provider preventDefault'd every paste, text included.
     const pane = await buildPane(makeTestThread({ provider: 'claude-tui' }));
     const draft = await buildDraft();
-    const upload = setBindingMock('UploadAttachment', async () =>
+    const upload = mockAttachmentUpload(async () =>
       makeAttachment('should-not-upload'));
 
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
@@ -486,7 +499,7 @@ describe('<Composer>', () => {
     const create = setBindingMock('CreateThread', async () => created);
     const save = setBindingMock('SaveDraft', async () => {});
     let nextId = 1;
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -504,11 +517,17 @@ describe('<Composer>', () => {
       new File(['png-two'], 'two.png', { type: 'image/png' }),
     ]));
 
-    await waitFor(() => expect(upload).toHaveBeenCalledTimes(2));
+    // Wait on the DRAFT rather than on the mint. A transfer is two hops
+    // now, so the second ticket being minted no longer implies the second
+    // record has landed — the ordering this test is about is still the
+    // upload loop's, which runs one file at a time.
+    await waitFor(() => expect(
+      draft.attachments.map((attachment) => attachment.id),
+    ).toEqual(['att-1', 'att-2']));
+    expect(upload).toHaveBeenCalledTimes(2);
     expect(create).toHaveBeenCalledTimes(1);
     expect(upload.mock.calls.map((call) => call[0])).toEqual([created.id, created.id]);
     expect(draft.content).toBe('[Image #1] [Image #2]');
-    expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-1', 'att-2']);
     await waitFor(() => {
       expect(save).toHaveBeenCalledWith(created.id, '[Image #1] [Image #2]', ['att-1', 'att-2'], [], null);
     });
@@ -530,7 +549,7 @@ describe('<Composer>', () => {
     const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => true);
     let releaseUpload: (() => void) | undefined;
     const uploadStarted = new Promise<void>((resolve) => {
-      setBindingMock('UploadAttachment', async (
+      mockAttachmentUpload(async (
         threadId: string,
         filename: string,
         mimeType: string,
@@ -587,7 +606,7 @@ describe('<Composer>', () => {
     setBindingMock('CreateThread', async () => created);
     let releaseUpload: (() => void) | undefined;
     const uploadStarted = new Promise<void>((resolve) => {
-      setBindingMock('UploadAttachment', async (
+      mockAttachmentUpload(async (
         threadId: string,
         filename: string,
         mimeType: string,
@@ -650,7 +669,7 @@ describe('<Composer>', () => {
     const save = setBindingMock('SaveDraft', async () => {});
     const deleteGate = deferred<boolean>();
     const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => deleteGate.promise);
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -681,7 +700,7 @@ describe('<Composer>', () => {
         replacement.id,
         'first.png',
         'image/png',
-        expect.any(String),
+        expect.any(Number),
       );
     });
     deleteGate.resolve(true);
@@ -710,7 +729,7 @@ describe('<Composer>', () => {
     });
     setBindingMock('CreateThread', async () => created);
     const save = setBindingMock('SaveDraft', async () => {});
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -740,7 +759,7 @@ describe('<Composer>', () => {
       created.id,
       'first.png',
       'image/png',
-      expect.any(String),
+      expect.any(Number),
     ));
 
     await fireEvent.click(getByLabelText('Remove first.png'));
@@ -934,11 +953,8 @@ describe('<Composer>', () => {
   it('uploads a dropped pdf as a file chip, with no textarea placeholder', async () => {
     const pane = await buildPane();
     const draft = await buildDraft();
-    const upload = setBindingMock('UploadAttachment', async (
-      _threadId: string,
-      filename: string,
-      mimeType: string,
-    ) => makeAttachment('dropped-pdf', filename, mimeType));
+    const upload = mockAttachmentUpload((_threadId, filename, mimeType) =>
+      makeAttachment('dropped-pdf', filename, mimeType));
 
     const { getByTestId, findByTestId, getByLabelText } = render(Composer, { props: { pane, draft } });
 
@@ -950,12 +966,14 @@ describe('<Composer>', () => {
       'thread-1',
       'report.pdf',
       'application/pdf',
-      expect.any(String),
+      expect.any(Number),
     ));
     // The file reaches the agent as a path line the BACKEND appends, so the
     // draft text stays exactly what the user typed.
+    await waitFor(() => {
+      expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['dropped-pdf']);
+    });
     expect(draft.content).toBe('');
-    expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['dropped-pdf']);
     expect(await findByTestId('attachment-file-chip')).toBeInTheDocument();
     expect(getByLabelText('Remove report.pdf')).toBeInTheDocument();
   });
@@ -963,11 +981,8 @@ describe('<Composer>', () => {
   it('numbers images only when a drop mixes them with a file', async () => {
     const pane = await buildPane();
     const draft = await buildDraft();
-    setBindingMock('UploadAttachment', async (
-      _threadId: string,
-      filename: string,
-      mimeType: string,
-    ) => makeAttachment(`att-${filename}`, filename, mimeType));
+    mockAttachmentUpload((_threadId, filename, mimeType) =>
+      makeAttachment(`att-${filename}`, filename, mimeType));
 
     const { getByTestId } = render(Composer, { props: { pane, draft } });
 
@@ -988,7 +1003,7 @@ describe('<Composer>', () => {
     const pane = await buildPane();
     const draft = await buildDraft();
     const uploadGate = deferred<Attachment>();
-    setBindingMock('UploadAttachment', async () => uploadGate.promise);
+    mockAttachmentUpload(() => uploadGate.promise);
     const send = setBindingMock('SendMessageWithOptions', async () =>
       makeTestThread({ runtimeMode: 'full-access' }));
 
@@ -999,7 +1014,7 @@ describe('<Composer>', () => {
     await fireEvent(getByTestId('composer-root'), makeFileDrop([
       new File(['%PDF'], 'report.pdf', { type: 'application/pdf' }),
     ]));
-    // Enter lands while UploadAttachment is still pending: without the wait
+    // Enter lands while the upload is still pending: without the wait
     // the draft snapshot is taken here, and the message goes without the file.
     await fireEvent.keyDown(textarea, { key: 'Enter' });
     await tick();
@@ -1008,9 +1023,9 @@ describe('<Composer>', () => {
     uploadGate.resolve(makeAttachment('late-pdf', 'report.pdf', 'application/pdf'));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'have a look', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'have a look', sentWith({
         attachmentIds: ['late-pdf'],
-      });
+      }));
     });
   });
 
@@ -1027,9 +1042,9 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-send'));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'hello world', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'hello world', sentWith({
         attachmentIds: [],
-      });
+      }));
     });
     expect(draft.content).toBe('');
   });
@@ -1063,7 +1078,7 @@ describe('<Composer>', () => {
     // Control: the same keystroke outside a composition sends.
     await fireEvent.keyDown(textarea, { key: 'Enter' });
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'にほん', { attachmentIds: [] });
+      expect(send).toHaveBeenCalledWith('thread-1', 'にほん', sentWith({ attachmentIds: [] }));
     });
   });
 
@@ -1323,13 +1338,13 @@ describe('<Composer>', () => {
     await findByText('Implement');
     await fireEvent.click(getByTestId('composer-send'));
 
-    expect(send).toHaveBeenCalledWith('thread-1', 'Implement the plan.', {
+    expect(send).toHaveBeenCalledWith('thread-1', 'Implement the plan.', sentWith({
       attachmentIds: [],
       sourceProposedPlan: expect.objectContaining({
         itemId: 'plan-1',
         payloadId: 'payload-1',
       }),
-    });
+    }));
   });
 
   it('prepares a pending worktree before implementing the current plan', async () => {
@@ -1371,13 +1386,13 @@ describe('<Composer>', () => {
 
     expect(prepare).toHaveBeenCalledWith('thread-1', 'release', 'feature/custom', false);
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'Implement the plan.', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'Implement the plan.', sentWith({
         attachmentIds: [],
         sourceProposedPlan: expect.objectContaining({
           itemId: 'plan-1',
           payloadId: 'payload-1',
         }),
-      });
+      }));
     });
     expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
     expect(pane.thread?.worktreePath).toBe('/tmp/wt-feature');
@@ -1864,9 +1879,9 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-send'));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'use persisted access', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'use persisted access', sentWith({
         attachmentIds: [],
-      });
+      }));
     });
   });
 
@@ -1881,9 +1896,9 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-send'));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'use persisted mode', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'use persisted mode', sentWith({
         attachmentIds: [],
-      });
+      }));
     });
   });
 
@@ -1923,9 +1938,9 @@ describe('<Composer>', () => {
       false,
     );
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'work there', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'work there', sentWith({
         attachmentIds: [],
-      });
+      }));
     });
     expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
     expect(pane.thread?.worktreePath).toBe('/tmp/wt-feature');
@@ -2001,9 +2016,9 @@ describe('<Composer>', () => {
     releaseClear();
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'race send', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'race send', sentWith({
         attachmentIds: [],
-      });
+      }));
     });
     expect(pane.thread?.id).toBe('thread-2');
   });
@@ -2019,9 +2034,9 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-send'));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', '[Image #1]', {
+      expect(send).toHaveBeenCalledWith('thread-1', '[Image #1]', sentWith({
         attachmentIds: ['att-1'],
-      });
+      }));
     });
   });
 
@@ -2029,7 +2044,7 @@ describe('<Composer>', () => {
     const pane = await buildPane();
     const draft = await buildDraft();
     let nextId = 1;
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       threadId: string,
       filename: string,
       mimeType: string,
@@ -2057,9 +2072,9 @@ describe('<Composer>', () => {
 
     await fireEvent.click(getByTestId('composer-send'));
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'please inspect [Image #1] [Image #2]', {
+      expect(send).toHaveBeenCalledWith('thread-1', 'please inspect [Image #1] [Image #2]', sentWith({
         attachmentIds: ['att-1', 'att-2'],
-      });
+      }));
     });
   });
 
@@ -2558,7 +2573,7 @@ describe('<Composer>', () => {
     await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'idle send' } });
     await fireEvent.click(getByTestId('composer-send'));
 
-    await waitFor(() => expect(send).toHaveBeenCalledWith('thread-1', 'idle send', { attachmentIds: [] }));
+    await waitFor(() => expect(send).toHaveBeenCalledWith('thread-1', 'idle send', sentWith({ attachmentIds: [] })));
     expect(getQueueForThread('thread-1')).toEqual([]);
   });
 
@@ -3127,7 +3142,7 @@ describe('<Composer>', () => {
       await waitFor(() => expect(send).toHaveBeenCalledWith(
         thread.id,
         '/workflow start the release',
-        { attachmentIds: [] },
+        sentWith({ attachmentIds: [] }),
       ));
     });
   });
@@ -3235,6 +3250,60 @@ describe('<Composer>', () => {
       await fireEvent.keyDown(textarea, { key: 'ArrowDown' });
       await tick();
       expect(textarea.value).toBe('second message, edited');
+    });
+  });
+
+  // View-only mode, at the surface the owner's live test found first. The
+  // rule is per-capability, never per-device-class: send asks for
+  // `threads:operate`, attaching asks for `attachments:write`.
+  describe('a session without threads:operate', () => {
+    afterEach(() => {
+      resetToLocalPage();
+    });
+
+    it('leaves the composer mounted and inert, and says so in the placeholder', async () => {
+      const pane = await buildPane(makeTestThread({ provider: 'claude' }));
+      const draft = await buildDraft();
+      await pairViewOnly();
+
+      const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+      expect(textarea.disabled).toBe(true);
+      expect(textarea.placeholder).toBe('This device has read-only access');
+      expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('refuses a pasted image without a toast', async () => {
+      const pane = await buildPane(makeTestThread({ provider: 'claude' }));
+      const draft = await buildDraft();
+      const upload = mockAttachmentUpload(async () => makeAttachment('uploaded'));
+      await pairViewOnly();
+
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      await fireEvent(getByLabelText('Message Input'), makeClipboardPaste([
+        new File(['png'], 'shot.png', { type: 'image/png' }),
+      ]));
+      await tick();
+
+      expect(upload).not.toHaveBeenCalled();
+      expect(document.querySelectorAll('[data-testid="toast"]').length).toBe(0);
+    });
+
+    it('goes inert without a remount when the grant set narrows mid-session', async () => {
+      const pane = await buildPane(makeTestThread({ provider: 'claude' }));
+      const draft = await buildDraft();
+
+      const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+      expect(textarea.disabled).toBe(false);
+
+      // What a revocation-and-repair looks like from this module's side.
+      await pairViewOnly();
+      await tick();
+
+      expect(textarea.disabled).toBe(true);
+      expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
     });
   });
 });

@@ -16,6 +16,8 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
+  import { threadBackend } from '../../transport/entityIndex';
+  import { HOME_BACKEND } from '../../transport/backendKey';
   import { displayModelLabel } from '../../utils/modelLabels';
   import type { Thread } from '../../types/models';
 
@@ -120,7 +122,7 @@
               <p class="mt-0.5 truncate text-[0.6875rem] text-fg-subtle">
 				{thread.provider}{thread.model ? ` · ${displayModelLabel(thread.provider, thread.model)}` : ''}
                 {#if thread.updatedAt}
-                  <span class="text-fg-hint"> · {relativeTime(thread.updatedAt)}</span>
+                  <span class="text-fg-hint"> · {relativeTime(thread.updatedAt, 'locale', threadBackend(thread.id) ?? HOME_BACKEND)}</span>
                 {/if}
               </p>
             </div>

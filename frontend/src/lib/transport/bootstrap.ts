@@ -1,39 +1,47 @@
 // Bootstrap manifest handling for the transport: the /bootstrap.json
-// fetch, the per-tab token stash that survives URL scrubbing, and the
-// WS-URL validation that keeps a hijacked manifest from pivoting the
-// connection to an arbitrary scheme.
+// fetch that exchanges the page's one-time ticket for its session
+// cookie, and the WS-URL validation that keeps a tampered manifest from
+// pivoting the connection to another origin or scheme.
+//
+// The page holds no credential of its own. It arrives carrying a
+// one-time ticket, spends it on the first manifest fetch, and from then
+// on the server's HttpOnly cookie authenticates every request this
+// document makes — the manifest refetch, the WebSocket upgrade, a
+// reload. Nothing readable from script is involved, which is why there
+// is no token field on the manifest and no stash anywhere in this file.
+//
+// The ticket arrives by one of two channels, decided by who served the
+// document rather than by anything this file branches on twice. A
+// BROWSER can only be told things through its URL, so its ticket rides
+// `?t=` and is scrubbed once spent. A page hosted by a WINDOW this
+// application owns is handed its ticket by injection instead, and its
+// URL carries no credential at all (./pageHost.ts). Both end at the same
+// exchange, on the same route, with the same cookie.
 
-import { setViewOnlySessionFromBootstrap } from './runMode';
+import { setPageGrantsFromBootstrap } from './scopes';
+import {
+  publishManifestBackends,
+  readBackendDescriptors,
+  setBackendManifestFetcher,
+} from './manifestBackends';
 import { setHarnessPageMarkerFromBootstrap, setHarnessSessionFromBootstrap } from './harnessMode';
+import { setPasskeysAvailableFromBootstrap } from './passkey';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { clampString } from './frames';
-
-// RunMode marks how the SPA is attached to its backend:
-//   - 'local'    — desktop binary booted a local transport in the same
-//                  process. The default whenever the bootstrap omits
-//                  the field, since /bootstrap.json on the local
-//                  transport doesn't carry mode.
-//   - 'client'   — desktop binary launched with --connect; the local
-//                  process owns only a stub HTTP server and the SPA
-//                  RPCs flow to a remote backend. Local-only settings
-//                  panels must hide / placeholder in this mode.
-//   - 'headless' — reserved for the WSL launcher path. Not currently
-//                  emitted by any boot flow (the Windows-side WebView2
-//                  bootstrap-injected page doesn't inject mode), but
-//                  defined here so a future Phase D bootstrap can mark
-//                  itself without an enum widening.
-export type RunMode = 'local' | 'client' | 'headless';
+import { hasPairedSession, pairedSessionHeaders, renewPairedSession } from './deviceSession';
+import { awaitInjectedPageTicket, clearInjectedPageTicket, isWebviewHosted } from './pageHost';
+import { homeCredentials, homeOriginParts, homeUrl, originPartsOf } from './homeEndpoint';
 
 // BootstrapRejectedError marks the one bootstrap failure that retrying
-// cannot fix: the server answered, and refused our credential. Tokens
-// are minted per backend launch (internal/transport/server.go
-// handleBootstrap answers a bad `?t=` with 404, deliberately
-// indistinguishable from "no such path"), so a remote/LAN client whose
-// backend restarted holds a token that will never be honoured again —
-// only reopening the share link mints a new one. Distinct from a
-// transient failure (network error, the 503 readiness gate, the 500
-// startup-failure page) so the transport can surface an actionable
-// state instead of a silent forever-loop.
+// cannot fix: the server answered, and refused our credential. The
+// cookie is minted per backend launch (internal/transport/server.go
+// handleBootstrap answers an unrecognised credential with 404,
+// deliberately indistinguishable from "no such path"), so a remote/LAN
+// client whose backend restarted holds a cookie that will never be
+// honoured again — only reopening the share link mints a new one.
+// Distinct from a transient failure (network error, the 503 readiness
+// gate, the 500 startup-failure page) so the transport can surface an
+// actionable state instead of a silent forever-loop.
 export class BootstrapRejectedError extends Error {
   status: number;
   constructor(status: number) {
@@ -47,16 +55,29 @@ export class BootstrapRejectedError extends Error {
 // than "try again later".
 const CREDENTIAL_REFUSED_STATUSES = new Set([401, 403, 404]);
 
+// The URL parameter carrying the one-time page ticket. Mirrors
+// transport.PageTicketParam (internal/transport/credential.go).
+const PAGE_TICKET_PARAM = 't';
+
 // isLoopbackHostname reports whether a document host names this machine.
 // Exported pure so the predicate is testable without a document.
+//
+// The Go counterpart is internal/loopback (which names this function in
+// its package doc). This one stays here — a different language with no
+// way to call that one — and it is deliberately WIDER than
+// loopback.EndpointHostname: it also accepts any *.localhost name,
+// because a document host is the browser's own idea of where it is
+// rather than something this process is deciding to trust. Nothing here
+// authorizes anything; the decision below is only whether a retry is
+// worth attempting.
 //
 // The distinction matters exactly once: a refused credential is only
 // terminal for a session that cannot mint a new one. The embedded
 // webview and the `--connect` stub always load from loopback and are
-// handed a live token by the shell that owns the backend, so a refusal
+// handed a fresh ticket by the shell that owns the backend, so a refusal
 // there is a transient boot race worth retrying. A page served over the
-// network got its token from a share link, and only re-opening that link
-// (a fresh page load) can produce another one.
+// network got its ticket from a share link, and only re-opening that
+// link (a fresh page load) can produce another one.
 export function isLoopbackHostname(hostname: string): boolean {
   const host = hostname.trim().toLowerCase();
   if (host === 'localhost' || host.endsWith('.localhost')) return true;
@@ -76,32 +97,63 @@ export function pageServedOverLoopback(): boolean {
   return isLoopbackHostname(window.location.hostname ?? '');
 }
 
-// Bootstrap is the JSON the SPA fetches at /bootstrap.json on first load.
-// Mirror the Go-side shape (internal/transport/server.go Bootstrap).
-// `mode` is optional on the wire — only the clientmode injection
-// emits it today; the local /bootstrap.json path leaves it absent and
-// the SPA treats absence as 'local'.
+// Bootstrap is the JSON the SPA fetches at /bootstrap.json on first
+// load. Mirror the Go-side shape (internal/transport/server.go
+// Bootstrap, and internal/clientmode's manifestJSON, which answers the
+// same shape from the `--connect` stub's own origin).
+//
+// It carries no credential. Everything here is a fact about the backend
+// the page just authenticated to.
+export interface AttachedBackend {
+  /** This backend's own address for the profile, and the id in every URL below. */
+  id: string;
+  /** What that machine calls itself. The identity a replica is keyed by. */
+  backendId?: string;
+  /** What to show a person: the owner's nickname, else the machine's name. */
+  name?: string;
+  /** Absolute, same-origin. A WebSocket needs a scheme. */
+  wsUrl: string;
+  /** A same-origin path, which is what a fetch takes. */
+  bootstrapUrl: string;
+}
+
 export interface Bootstrap {
   wsUrl: string;
-  token: string;
-  mode?: RunMode;
-  remote?: boolean;
   /**
-   * Durable UI-state client identity minted by the local shell
-   * (--connect injection only; the embedded-webview paths carry it as
-   * the ?cid= URL param instead). Consumed by stores/appStorage.ts at
-   * module init, not by the transport itself.
+   * Identifies this backend launch. Not a credential and not a secret:
+   * it exists so per-tab state that must not survive a backend restart
+   * (the notification replay checkpoint in wsClient.ts) can tell one
+   * launch from the next.
    */
-  clientId?: string;
+  launchId?: string;
+  remote?: boolean;
   /**
    * Stable per-store UUID keying the client-side thread replica, plus
    * the generation that is re-minted whenever the backend's history
    * counters lose continuity (docs/architecture/thread-replica-sync.md §3.3).
-   * Absent from the `--connect` stub's injected manifest — absence
-   * disables the replica rather than sharing another backend's database.
+   * Absent from the `--connect` stub's manifest — absence disables the
+   * replica rather than sharing another backend's database.
    */
   backendId?: string;
   replicaGeneration?: string;
+  /**
+   * The backend's display name — its hostname, the same string the hello
+   * frame carries and the pairing payload showed. Display only: nothing
+   * is keyed on it and `backendId` stays the identity. Absent means the
+   * backend published none.
+   */
+  backendName?: string;
+  /**
+   * Every OTHER machine this installation has attached, each with the
+   * same-origin URLs this backend carries it on
+   * (internal/transport/attachedroutes.go). Absent when there are none,
+   * which reads as "this page talks to one backend" — the shape every
+   * client had before attaching existed.
+   *
+   * Reachability is deliberately absent: nothing is probed to answer a
+   * page load, and each socket is the only current answer.
+   */
+  backends?: AttachedBackend[];
   /**
    * The backend was booted as the agent test harness or the soak rig
    * (`--harness` / `--soak`), which is the only thing that arms the
@@ -110,122 +162,108 @@ export interface Bootstrap {
    */
   harness?: boolean;
   pageMarker?: string;
+  /**
+   * The backend has a canonical domain, so it can run passkey ceremonies
+   * (internal/app/app_passkey.go — WebAuthn requires a domain and refuses
+   * an address, so a backend without one has no relying party to be).
+   *
+   * Manifest rather than hello, because the page that most needs it is the
+   * one whose socket this backend will not open: a browser that has never
+   * paired sees no hello at all, and a passkey is exactly how it gets in.
+   */
+  passkeysAvailable?: boolean;
 }
 
-// Session-scoped stash for the bootstrap token. The token arrives once
-// as `?t=` and is immediately scrubbed from the URL (see replaceState
-// below), so without this stash any reload — browser F5, the Ctrl+R
-// uikeys binding in the embedded webview, a Playwright page.reload() —
-// loses the token and every subsequent /bootstrap.json fetch 404s.
-// sessionStorage is per-tab and dies with it, matching the token's
-// soft-secret posture. Access is fault-tolerant: sandboxed frames and
-// some embeddings throw on storage access, and a broken stash must
-// degrade to "reload needs the tokened URL again", not a crash.
-const TOKEN_STORAGE_KEY = 'ao:bootstrap-token';
-
-function readStoredToken(): string {
-  try {
-    return window.sessionStorage.getItem(TOKEN_STORAGE_KEY) ?? '';
-  } catch {
-    return '';
-  }
-}
-
-function writeStoredToken(token: string): void {
-  try {
-    window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
-  } catch {
-    // Stash unavailable — reloads will need the tokened URL again.
-  }
-}
-
-// Default bootstrap fetcher: read from window.__AO_BOOTSTRAP__ (set by
-// Phase F's `--connect` flow) or fall back to `/bootstrap.json?t=<token>`
-// where the token comes from `?t=` in window.location.search, or — on a
-// reload, after the URL was scrubbed — from sessionStorage. This runs
-// the first time anyone calls `ensureConnected`; subsequent calls reuse
-// the cached promise.
+// defaultBootstrap fetches /bootstrap.json from this page's own origin,
+// spending the one-time ticket its host gave it — off the URL for a
+// browser, by injection for a page whose window this application owns.
+// This runs the first time anyone calls `ensureConnected`; subsequent
+// calls reuse the cached promise, and the reconnect path refetches
+// through the same function.
 //
-// The injected path CAN observe a refusal, via its own origin: the
-// `--connect` stub serves /bootstrap.json by probing the upstream
-// backend with its configured token from Go, where CORS does not apply
-// (clientmode.handleBootstrap). The page itself could never ask the
-// upstream — a cross-origin fetch dies on CORS and a rejected WS
-// upgrade is a bare 1006 — so `revalidate` is what routes a reconnect
-// outage's refetch through the stub instead of short-circuiting on the
-// injected global. First load keeps the zero-round-trip injected
-// answer.
-export async function defaultBootstrap(opts?: { revalidate?: boolean }): Promise<Bootstrap> {
-  const injected = (globalThis as { __AO_BOOTSTRAP__?: Bootstrap }).__AO_BOOTSTRAP__;
-  if (injected && typeof injected.wsUrl === 'string' && typeof injected.token === 'string') {
-    if (opts?.revalidate) {
-      // Ask the stub for the upstream's verdict. 404 → the same
-      // BootstrapRejectedError a browser session gets, which is what
-      // lets the credentialDead latch cover --connect clients too; the
-      // manifest a 200 returns is the stub's own (wsUrl as configured,
-      // mode:"client"), so nothing about the session shifts.
-      //
-      // The fetch itself is same-origin (the stub serves both the page
-      // and /bootstrap.json); it is the UPSTREAM BACKEND the wsUrl names
-      // that is cross-origin, which is why requireSameOrigin=false. The
-      // trust anchor is the local stub, so pin the answer to what it
-      // injected at page load: a revalidate must confirm the session,
-      // never retarget it (2026-08-25 security review, finding 7).
-      const revalidated = await fetchManifest(injected.token, '', false);
-      if (revalidated.wsUrl !== injected.wsUrl) {
-        throw new Error(
-          `bootstrap revalidate returned a different wsUrl than the injected manifest (${revalidated.wsUrl} vs ${injected.wsUrl})`,
-        );
-      }
-      return revalidated;
+// Every boot flow lands here — embedded webview, `--connect` stub, WSL
+// launcher window, LAN browser, dev (where the Go server proxies Vite
+// and the page origin is still the Go server's). They differ only in who
+// served the page; the credential exchange and the same-origin manifest
+// are identical, which is what lets this file hold no per-flow branches.
+export async function defaultBootstrap(): Promise<Bootstrap> {
+  if (isWebviewHosted()) {
+    // The host window injects the ticket; there is none on the URL to
+    // read and nothing to scrub afterwards. A delivery that never
+    // arrives rejects rather than hanging, and rejects TRANSIENTLY —
+    // the reconnect ladder's next attempt re-announces this document to
+    // its host, which answers with a fresh ticket.
+    //
+    // A refetch re-presents the ticket already delivered, which the
+    // server treats as it treats a spent one on a reloaded URL: the
+    // cookie authenticates first. Only a REFUSAL means that ticket is
+    // worth nothing, and then the stale copy has to go or the retry
+    // would present it forever.
+    try {
+      return await fetchManifest(await awaitInjectedPageTicket());
+    } catch (err) {
+      if (err instanceof BootstrapRejectedError) clearInjectedPageTicket();
+      throw err;
     }
-    validateWsUrl(injected.wsUrl, false);
-    const normalized = { ...injected, mode: normalizeRunMode(injected.mode), remote: injected.remote === true };
-    setViewOnlySessionFromBootstrap(normalized.remote);
-    setHarnessPageMarkerFromBootstrap(normalized.pageMarker);
-    setHarnessSessionFromBootstrap(normalized.harness === true);
-    setBackendIdentityFromBootstrap(normalized.backendId, normalized.replicaGeneration);
-    return normalized;
   }
   const search = typeof window !== 'undefined' ? window.location.search : '';
-  const params = new URLSearchParams(search);
-  const urlToken = params.get('t') ?? '';
-  const token = urlToken !== '' ? urlToken : readStoredToken();
-  // Nothing injected this manifest, so the page was served by the
-  // transport itself (embedded webview, WSL launcher window, LAN
-  // browser, or dev — where the Go server proxies Vite and the page
-  // origin is still the Go server's). Its wsUrl is derived from this
-  // request's own Host header, so it must name this very origin.
-  return fetchManifest(token, urlToken, true);
+  const ticket = new URLSearchParams(search).get(PAGE_TICKET_PARAM) ?? '';
+  return fetchManifest(ticket);
 }
 
-// fetchManifest is the one /bootstrap.json fetch + validation path,
-// shared by the browser flow (token from URL or sessionStorage) and the
-// injected flow's revalidation (token from the injected manifest, and
-// the stub answers). urlToken gates the history scrub — only a page
-// that actually carries ?t= has anything to remove.
+// fetchManifest is the one /bootstrap.json fetch + validation path.
 //
-// requireSameOrigin is the CALLER's statement about which flow this is,
-// not something read out of the response. See validateWsUrl.
-async function fetchManifest(
-  token: string,
-  urlToken: string,
-  requireSameOrigin: boolean,
-): Promise<Bootstrap> {
-  const url = `/bootstrap.json?t=${encodeURIComponent(token)}`;
-  const resp = await fetch(url, { credentials: 'same-origin' });
+// The ticket rides the request when the URL still carries one; on every
+// later fetch there is none and the cookie speaks alone. The server
+// treats a live cookie as sufficient (internal/transport/credential.go
+// Exchange authenticates first, and only then looks at the ticket), so
+// re-presenting a spent ticket is harmless and a refetch mid-session
+// needs nothing from the URL.
+async function fetchManifest(ticket: string): Promise<Bootstrap> {
+  // ./homeEndpoint.ts is the one seam between "this page's origin" and
+  // "the home backend's". It is the identity for every client that was
+  // served its bundle by the backend it talks to, so this line is the
+  // same request it has always been for all of them.
+  const url = homeUrl(ticket === ''
+    ? '/bootstrap.json'
+    : `/bootstrap.json?${PAGE_TICKET_PARAM}=${encodeURIComponent(ticket)}`);
+  // same-origin credentials is the default for a same-origin request,
+  // but state it: this fetch is the cookie's whole delivery path, and a
+  // future caller passing a different mode would silently unauthenticate
+  // the page. A PAIRED page also presents its stored session credential:
+  // its one-time ticket is long spent and its cookie dies with the
+  // backend launch that planted it, so after a restart the session
+  // credential is the only thing that still names this page.
+  let resp = await fetch(url, {
+    credentials: homeCredentials(),
+    // The PATH, never the absolute URL: a device proof binds
+    // (method, path) and the backend compares `r.URL.Path`
+    // (internal/identity/deviceproof.go), so a cross-origin fetch signs
+    // exactly what a same-origin one signs.
+    headers: await pairedSessionHeaders('GET', '/bootstrap.json'),
+  });
+  if (!resp.ok && CREDENTIAL_REFUSED_STATUSES.has(resp.status) && hasPairedSession()) {
+    // The stored access credential may simply have aged out between
+    // visits; the refresh exchange decides whether the session is dead.
+    // One renewal, one retry — a renewal the backend refuses as dead
+    // clears the store, and the retry below then runs unpaired.
+    if (await renewPairedSession()) {
+      resp = await fetch(url, {
+        credentials: homeCredentials(),
+        // A fresh proof: proofs are single-use, so the one the first
+        // attempt carried is spent.
+        headers: await pairedSessionHeaders('GET', '/bootstrap.json'),
+      });
+    }
+  }
   if (!resp.ok) {
     if (!CREDENTIAL_REFUSED_STATUSES.has(resp.status)) {
       // Transient: the server is up but not serving the manifest yet
       // (503 readiness gate, 500 startup failure) or something in
-      // between failed. The stashed token is still the right one.
+      // between failed. The cookie the exchange already set is still
+      // the right one — the server issues it before those gates run.
       throw new Error(`bootstrap fetch failed: HTTP ${resp.status}`);
     }
-    // The stashed token is deliberately KEPT on a refusal. Dropping it
-    // buys nothing — re-presenting a stale token yields the identical
-    // 404 — and it destroys the one copy that would let a page reload
-    // recover from a refusal that wasn't real (a proxy blip answering
-    // 404 for a token the server still honours).
     throw new BootstrapRejectedError(resp.status);
   }
   const contentType = resp.headers.get('content-type') ?? '';
@@ -236,14 +274,18 @@ async function fetchManifest(
   if (!data || typeof data !== 'object') {
     throw new Error('bootstrap response not an object');
   }
-  if (typeof data.wsUrl !== 'string' || typeof data.token !== 'string') {
-    throw new Error('bootstrap response missing wsUrl/token');
+  if (typeof data.wsUrl !== 'string') {
+    throw new Error('bootstrap response missing wsUrl');
   }
-  validateWsUrl(data.wsUrl, requireSameOrigin);
-  data.mode = normalizeRunMode(data.mode);
+  validateWsUrl(data.wsUrl);
   data.remote = data.remote === true;
-  setViewOnlySessionFromBootstrap(data.remote);
+  // Locality is this page's half of the capability answer: a page served
+  // over loopback IS the owner's screen, and a page served over the
+  // network holds only what it paired for. Published before the harness
+  // latch below, which reads it at arm time.
+  setPageGrantsFromBootstrap(data.remote);
   setHarnessPageMarkerFromBootstrap(data.pageMarker);
+  setPasskeysAvailableFromBootstrap(data.passkeysAvailable === true);
   // The harness bridge registers its page synchronously when this latch
   // flips. Publish the marker first so that first-load registration cannot
   // race with the waiter callback.
@@ -251,42 +293,38 @@ async function fetchManifest(
   // Re-validated on every manifest resolution, which is what makes a
   // mid-session generation re-mint (a restored backend) observable on
   // the reconnect refetch rather than at the next app launch.
-  setBackendIdentityFromBootstrap(data.backendId, data.replicaGeneration);
-  // Stash the server-confirmed token so the tab survives reloads once
-  // the URL is scrubbed below.
-  writeStoredToken(data.token);
-  // Removes the token from history, Referer, and Performance Resource
-  // Timing entries. Same-origin redirects and tab-history scrubbing both
-  // benefit. Skip when history.replaceState isn't available (older
+  setBackendIdentityFromBootstrap(data.backendId, data.replicaGeneration, data.backendName);
+  // The attached-backend list is re-read on every manifest resolution —
+  // including the reconnect refetch — so a backend added or removed from
+  // Settings takes effect without a reload. The publisher notifies only on
+  // a real change, so a reconnect that repeats the list sweeps nothing. An
+  // ABSENT list is a single-backend page and not an error: the attached
+  // routes answer loopback only, so an off-host page is never given one.
+  publishManifestBackends(readBackendDescriptors(data.backends));
+  // Remove the spent ticket from history, Referer, and Performance
+  // Resource Timing entries. The cookie carries the session from here,
+  // so a reload of the scrubbed URL still boots. Skipped for a
+  // webview-hosted page, whose ticket was never on the URL to begin
+  // with, and when history.replaceState isn't available (older
   // happy-dom builds, weird host pages).
   if (
+    ticket !== '' &&
+    !isWebviewHosted() &&
     typeof window !== 'undefined' &&
     typeof window.history !== 'undefined' &&
-    typeof window.history.replaceState === 'function' &&
-    urlToken !== ''
+    typeof window.history.replaceState === 'function'
   ) {
     try {
       const retained = new URLSearchParams(window.location.search);
-      retained.delete('t');
+      retained.delete(PAGE_TICKET_PARAM);
       const suffix = retained.toString();
       window.history.replaceState(null, '', window.location.pathname + (suffix ? `?${suffix}` : '') + window.location.hash);
     } catch {
-      // Some embeddings throw on replaceState; the token-on-URL is
-      // already a soft secret, so swallowing is acceptable.
+      // Some embeddings throw on replaceState; the ticket is spent
+      // either way, so swallowing is acceptable.
     }
   }
   return data;
-}
-
-// normalizeRunMode coerces an incoming mode value to the typed enum.
-// Anything outside the known set falls back to 'local' — same as
-// absent. Keeping this loose-and-default-safe is intentional: a future
-// backend that sends an unrecognised mode shouldn't crash the SPA;
-// the worst case is a remote-mode panel rendering when the user is
-// actually local, which is benign.
-function normalizeRunMode(mode: unknown): RunMode {
-  if (mode === 'client' || mode === 'headless' || mode === 'local') return mode;
-  return 'local';
 }
 
 // wsUrlMatchesPageOrigin reports whether wsUrl addresses the same origin
@@ -296,11 +334,13 @@ function normalizeRunMode(mode: unknown): RunMode {
 //
 // Origin here is scheme + host + PORT, with ws:/wss: mapped onto their
 // http:/https: counterparts. Host alone would not do: a second listener
-// on the same machine is a different security principal, and on a LAN
-// bind it need not be ours at all. The scheme pairing is what stops a
-// TLS-fronted page being downgraded onto a cleartext socket. Explicit
-// default ports normalise away on both sides (ws:/http: share 80,
-// wss:/https: share 443), so the two spellings still match.
+// on the same machine is a different principal, and on a LAN bind it
+// need not be ours at all. Host alone is also exactly what a cookie
+// scopes to, which is why this check and the server's own Origin check
+// on the upgrade are both port-aware. The scheme pairing is what stops a
+// TLS-fronted page being moved onto a cleartext socket. Explicit default
+// ports normalise away on both sides (ws:/http: share 80, wss:/https:
+// share 443), so the two spellings still match.
 export function wsUrlMatchesPageOrigin(
   wsUrl: string,
   page: { protocol: string; host: string },
@@ -319,29 +359,33 @@ export function wsUrlMatchesPageOrigin(
 }
 
 // validateWsUrl rejects a bootstrap manifest that points the client's
-// WebSocket somewhere it must not go. Two independent checks:
+// WebSocket somewhere it must not go. Two checks, both unconditional:
 //
-//  1. Scheme — always. A manifest can't pivot the connection to an
-//     arbitrary URL handler, whichever flow produced it.
-//  2. Origin — only when the CALL SITE asks for it. A manifest fetched
-//     from /bootstrap.json on the transport's own origin carries a wsUrl
-//     the server derived from that very request's Host header
-//     (internal/transport/server.go deriveWSURL), so anything naming
-//     another authority was tampered with in flight — and honouring it
-//     would hand the bootstrap token to the attacker's socket.
+//  1. Scheme. A manifest can't pivot the connection to an arbitrary URL
+//     handler.
+//  2. Origin. Every manifest the SPA can receive is served by the same
+//     origin as the page, and names a wsUrl that server derived from
+//     this very request's Host header (internal/transport/server.go
+//     deriveWSURL, and clientmode's manifestJSON via the same helper).
+//     Anything naming another authority was tampered with in flight.
 //
-// The origin requirement is a PARAMETER rather than something inferred
-// from the manifest, and that is the whole security property: the two
-// legitimately cross-origin flows are both `--connect`
-// (internal/clientmode), where the local stub injects
-// window.__AO_BOOTSTRAP__ naming a remote backend and serves the same
-// manifest again from its own /bootstrap.json for the reconnect
-// revalidation. What distinguishes them is HOW the manifest reached the
-// page — an out-of-band injection by the shell that owns this process,
-// which already implies script execution — never a field inside the
-// manifest. Reading the exemption off `mode: "client"` would let any
-// spoofed manifest exempt itself by saying so.
-export function validateWsUrl(wsUrl: string, requireSameOrigin: boolean): void {
+// The `--connect` stub used to be an exemption: it injected a manifest
+// naming a remote backend and the page opened a cross-origin socket. It
+// now serves its own origin's manifest and carries the socket to the
+// upstream itself, so no client class opts out of the check.
+//
+// What the check compares against is a PARAMETER, and that is the phone
+// wave's whole change here. Origin still means "the one authority this
+// manifest is allowed to describe" — it is just that a shell page's
+// backend is not the page's own origin, and an ATTACHED backend's is
+// neither. `expected` defaults to the home backend's
+// (./homeEndpoint.ts, which answers this document's origin whenever no
+// endpoint is set), so every existing call is unchanged; the attached
+// fetcher below passes that backend's own.
+export function validateWsUrl(
+  wsUrl: string,
+  expected: { protocol: string; host: string } | null = homeOriginParts(),
+): void {
   let parsed: URL;
   try {
     parsed = new URL(wsUrl);
@@ -351,31 +395,59 @@ export function validateWsUrl(wsUrl: string, requireSameOrigin: boolean): void {
   if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
     throw new Error(`bootstrap wsUrl scheme not ws/wss: ${clampString(parsed.protocol)}`);
   }
-  if (!requireSameOrigin) return;
-  if (typeof window === 'undefined' || typeof window.location === 'undefined') {
-    // A same-origin requirement we cannot evaluate is a requirement we
-    // cannot meet. Unreachable in practice — this branch's only caller
-    // fetched a relative '/bootstrap.json', which already needs a
-    // document base — but it must fail closed, not open.
+  if (expected === null) {
+    // An origin requirement we cannot evaluate is a requirement we
+    // cannot meet. Unreachable in practice — the only caller fetched a
+    // relative '/bootstrap.json', which already needs a document base —
+    // but it must fail closed, not open.
     throw new Error('bootstrap wsUrl cannot be origin-checked: no document origin');
   }
-  if (!wsUrlMatchesPageOrigin(wsUrl, window.location)) {
+  if (!wsUrlMatchesPageOrigin(wsUrl, expected)) {
     throw new Error(`bootstrap wsUrl not same-origin: ${clampString(wsUrl)}`);
   }
 }
 
-// appendToken adds `?token=<value>` to the WS URL. Handles URLs that
-// already carry query params via the URL constructor.
-export function appendToken(wsUrl: string, token: string): string {
-  try {
-    const parsed = new URL(wsUrl);
-    parsed.searchParams.set('token', token);
-    return parsed.toString();
-  } catch {
-    // Relative or otherwise un-parseable — fall back to a plain
-    // concatenation. We bias toward letting the browser's WS
-    // implementation reject a bad URL rather than silently mutating it.
-    const sep = wsUrl.includes('?') ? '&' : '?';
-    return `${wsUrl}${sep}token=${encodeURIComponent(token)}`;
+// An attached backend's manifest fetch: the same exchange this module
+// performs for the page's own backend, against that backend's own path
+// (`/bootstrap/<id>.json`, the `clientmode` proxy of spec §10).
+//
+// No ticket rides it. The local process in front of an attached backend
+// holds that backend's credential and presents it upstream itself, which
+// is the whole reason the desktop realization is a proxy: CSP stays
+// `'self'` and no credential enters page script. On a phone the
+// per-backend session slot supplies one instead (./deviceSession.ts,
+// keyed by the same registry id).
+//
+// `validateWsUrl` still applies; what it compares against is the
+// descriptor's OWN origin. Under the desktop proxy that is the page's,
+// because every attached backend is same-origin by construction there,
+// and a manifest naming another authority was tampered with in flight
+// exactly as it would be for home. On a phone each descriptor is
+// absolute (./manifestBackends.ts, `descriptorForAttachedId`) and the
+// check follows it, so the rule is the same sentence with a different
+// subject rather than an exemption.
+setBackendManifestFetcher(async (descriptor) => {
+  const remote = originPartsOf(descriptor.bootstrapUrl);
+  const resp = await fetch(descriptor.bootstrapUrl, {
+    credentials: remote === null ? 'same-origin' : 'omit',
+  });
+  if (!resp.ok) {
+    // Same split the page's own manifest makes: a refused credential is
+    // terminal for this backend and the reconnect ladder must stop, while
+    // a 503 or a 500 is the proxy not being ready yet and is worth
+    // retrying. Reusing the same two classes is what makes an attached
+    // backend's transport states read like home's.
+    if (CREDENTIAL_REFUSED_STATUSES.has(resp.status)) throw new BootstrapRejectedError(resp.status);
+    throw new Error(`bootstrap fetch failed: HTTP ${resp.status}`);
   }
-}
+  const data = (await resp.json()) as Partial<Bootstrap>;
+  const wsUrl = typeof data.wsUrl === 'string' ? data.wsUrl : descriptor.wsUrl;
+  validateWsUrl(wsUrl, remote ?? homeOriginParts());
+  setBackendIdentityFromBootstrap(
+    data.backendId,
+    data.replicaGeneration,
+    data.backendName ?? descriptor.name,
+    descriptor.id,
+  );
+  return { ...data, wsUrl };
+});

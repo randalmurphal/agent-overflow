@@ -9,6 +9,10 @@
   import PaneCloseButton from '../panes/PaneCloseButton.svelte';
   import ThreadTitleRegenerateButton from './ThreadTitleRegenerateButton.svelte';
   import ChatHeaderActions from './ChatHeaderActions.svelte';
+  import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+  import Icon from '../primitives/Icon.svelte';
+  import PaneHeaderIconButton from '../panes/PaneHeaderIconButton.svelte';
+  import { isCompactLayout, showCompactList } from '../../stores/layoutMode.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -18,6 +22,10 @@
   let { pane, onPaneDragStart }: Props = $props();
   let attentionDot = $derived(resolvePaneAttentionDot(pane.thread ?? null));
   let titleGlow = $derived(attentionDot?.pill.glowClass ?? '');
+  // Compact: the way back to the list leads the header, and the pane
+  // close control goes, because the only pane closing would leave the
+  // thread screen empty with no list under it.
+  let compact = $derived(isCompactLayout());
 </script>
 
 {#if pane.thread}
@@ -27,6 +35,11 @@
     data-testid="chat-header"
     class="relative z-10 flex items-center gap-2 border-b border-border-subtle bg-transparent px-5 py-2 shrink-0 min-w-0 flex-nowrap"
   >
+    {#if compact}
+      <PaneHeaderIconButton label="Back to threads" testId="compact-back" onclick={showCompactList}>
+        <Icon icon={ArrowLeft} size={14} strokeWidth={2} />
+      </PaneHeaderIconButton>
+    {/if}
     {#if attentionDot}
       <span
         aria-label={attentionDot.pill.label}
@@ -50,7 +63,9 @@
       inputTestId="chat-header-title-input"
     />
     <ThreadTitleRegenerateButton {pane} />
-    <PaneCloseButton paneId={pane.paneId} testId="pane-close" />
+    {#if !compact}
+      <PaneCloseButton paneId={pane.paneId} testId="pane-close" />
+    {/if}
 
     <ChatHeaderActions {pane} />
   </div>

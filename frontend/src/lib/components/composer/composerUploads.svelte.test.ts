@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { mockAttachmentUpload } from '../../../test/mocks/attachmentTransfer';
 import type { Attachment } from '../../types/attachment';
 import { createComposerUploads, type UploadInsertionPoint } from './composerUploads.svelte';
 import { compressImageToFit } from './imageCompress';
@@ -47,7 +48,7 @@ describe('createComposerUploads', () => {
 
   it('does not spend an attachment slot on rejected files', async () => {
     const addAttachment = vi.fn();
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       _threadId: string,
       filename: string,
     ) => attachment(`att-${filename}`, filename));
@@ -74,7 +75,7 @@ describe('createComposerUploads', () => {
 
   it('keeps paste/drop insertion points scoped to each upload batch', async () => {
     const addAttachment = vi.fn();
-    setBindingMock('UploadAttachment', async (
+    mockAttachmentUpload(async (
       _threadId: string,
       filename: string,
     ) => attachment(`att-${filename}`, filename));
@@ -102,7 +103,7 @@ describe('createComposerUploads', () => {
     Object.defineProperty(oversized, 'size', { value: 20 * 1024 * 1024 });
     const compressed = new File(['small'], 'huge.webp', { type: 'image/webp' });
     vi.mocked(compressImageToFit).mockResolvedValue(compressed);
-    const upload = setBindingMock('UploadAttachment', async (
+    const upload = mockAttachmentUpload(async (
       _threadId: string,
       filename: string,
     ) => attachment(`att-${filename}`, filename));
@@ -124,7 +125,7 @@ describe('createComposerUploads', () => {
     const oversized = new File(['big'], 'huge.png', { type: 'image/png' });
     Object.defineProperty(oversized, 'size', { value: 20 * 1024 * 1024 });
     vi.mocked(compressImageToFit).mockResolvedValue(null);
-    const upload = setBindingMock('UploadAttachment', async () => attachment('att-x'));
+    const upload = mockAttachmentUpload(async () => attachment('att-x'));
     const uploads = createComposerUploads({
       getThreadId: () => 'thread-1',
       addAttachment: vi.fn(),
@@ -136,9 +137,41 @@ describe('createComposerUploads', () => {
     expect(upload).not.toHaveBeenCalled();
   });
 
+  // An upload that finished after the composer moved threads backs
+  // nothing: no message, no draft and no later pass knows the id, so the
+  // row and its bytes on disk are a leak the user cannot see or reach.
+  it('deletes the record when the composer moved threads mid-upload', async () => {
+    const deleted: Array<[string, string]> = [];
+    setBindingMock('DeleteAttachment', async (threadId: string, id: string) => {
+      deleted.push([threadId, id]);
+    });
+    const addAttachment = vi.fn();
+    let current = 'thread-1';
+    mockAttachmentUpload(async (_threadId: string, filename: string) => {
+      // The switch happens while the bytes are in flight, which is the
+      // whole case: the guard below is what sees it.
+      current = 'thread-2';
+      return attachment(`att-${filename}`, filename);
+    });
+    const uploads = createComposerUploads({
+      getThreadId: () => current,
+      addAttachment,
+      removeAttachment: vi.fn(),
+    });
+
+    await uploads.handlePaste(makeClipboardPaste([
+      new File(['image'], 'moved.png', { type: 'image/png' }),
+    ]));
+    // The delete is fire-and-forget, so let its microtask run.
+    await Promise.resolve();
+
+    expect(addAttachment).not.toHaveBeenCalled();
+    expect(deleted).toEqual([['thread-1', 'att-moved.png']]);
+  });
+
   it('does not attempt compression for images already within the limit', async () => {
     vi.mocked(compressImageToFit).mockResolvedValue(null);
-    setBindingMock('UploadAttachment', async (
+    mockAttachmentUpload(async (
       _threadId: string,
       filename: string,
     ) => attachment(`att-${filename}`, filename));

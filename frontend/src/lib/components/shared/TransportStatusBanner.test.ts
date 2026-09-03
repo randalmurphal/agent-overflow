@@ -22,6 +22,18 @@ vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => ({
 }));
 
 import TransportStatusBanner from './TransportStatusBanner.svelte';
+import {
+  __resetBundleNoticeForTest,
+  noteBundleReady,
+  noteBundleTooOld,
+} from '../../stores/bundleNotice.svelte';
+import { hasPairedSession } from '../../transport/deviceSession';
+import {
+  __resetHomeEndpointForTest,
+  setHomeEndpoint,
+  storeBackendEndpoint,
+  storedBackendEndpoint,
+} from '../../transport/homeEndpoint';
 
 // The banner is gated behind a 1s boot grace (so a momentary pre-handshake
 // disconnect doesn't flash on mount). Trip it with fake timers.
@@ -91,6 +103,85 @@ describe('<TransportStatusBanner>', () => {
     expect(getByTestId('transport-status-retry')).not.toBeNull();
   });
 
+  // The other terminal state, and the one whose remedy is different in
+  // kind: this page loads fine, the backend simply will not open a
+  // socket for it until the device is paired. Telling this person to
+  // reopen a share link would send them around the loop they are
+  // already in.
+  it('names the pairing action when the backend admits paired devices only', async () => {
+    h.snapshot = { status: 'pairing-required', nextAttemptAt: Date.now() + 5_000 };
+    const { getByTestId } = render(TransportStatusBanner);
+    await settleBootGrace();
+
+    const banner = getByTestId('transport-status-banner');
+    expect(banner.dataset.status).toBe('pairing-required');
+    expect(banner.textContent).toContain('Pair this device to use this backend.');
+    expect(banner.textContent).not.toContain('share link');
+    expect(banner.textContent).not.toContain('Reconnecting');
+    expect(getByTestId('transport-status-retry')).not.toBeNull();
+  });
+
+  // A ladder reconnecting for minutes goes dormant: one probe every five
+  // minutes, nothing else on the network. A countdown restarting from 300
+  // every time would read as "nearly back" forever, so the banner states the
+  // fact and says when the connection was last alive.
+  it('states the fact and the last-seen time while the ladder is dormant', async () => {
+    h.snapshot = {
+      status: 'reconnecting',
+      nextAttemptAt: Date.now() + 280_000,
+      dormant: true,
+      lastConnectedAt: Date.now() - 12 * 60_000,
+    };
+    const { getByTestId } = render(TransportStatusBanner);
+    await settleBootGrace();
+
+    const banner = getByTestId('transport-status-banner');
+    expect(banner.dataset.status).toBe('reconnecting');
+    expect(banner.textContent).toContain('Not reachable. Last seen 12m ago. Checking every 5 minutes.');
+    // No countdown may leak out beside it: the two sentences answer the same
+    // question and one of them would be wrong.
+    expect(banner.textContent).not.toContain('Reconnecting in');
+    // Retry stays: it wakes the ladder for one user-initiated attempt.
+    expect(getByTestId('transport-status-retry')).not.toBeNull();
+  });
+
+  // The ordinary ladder is untouched by dormancy existing.
+  it('keeps the countdown while the ladder is still climbing', async () => {
+    h.snapshot = {
+      status: 'reconnecting',
+      nextAttemptAt: Date.now() + 4_000,
+      dormant: false,
+      lastConnectedAt: Date.now() - 12 * 60_000,
+    };
+    const { getByTestId } = render(TransportStatusBanner);
+    await settleBootGrace();
+
+    const banner = getByTestId('transport-status-banner');
+    expect(banner.textContent).toContain('Reconnecting in');
+    expect(banner.textContent).not.toContain('Last seen');
+  });
+
+  // A page that has never reached its backend has no last-seen moment to
+  // report, and the banner invents none — it drops the clause and keeps the
+  // sentence. It must NOT fall back to the countdown: the ladder really is at
+  // one probe per five minutes, and a number ticking down from 300 would
+  // describe a cadence that is not happening.
+  it('drops only the last-seen clause when dormant with nothing ever connected', async () => {
+    h.snapshot = {
+      status: 'reconnecting',
+      nextAttemptAt: Date.now() + 4_000,
+      dormant: true,
+      lastConnectedAt: null,
+    };
+    const { getByTestId } = render(TransportStatusBanner);
+    await settleBootGrace();
+
+    const banner = getByTestId('transport-status-banner');
+    expect(banner.textContent).toContain('Not reachable. Checking every 5 minutes.');
+    expect(banner.textContent).not.toContain('Last seen');
+    expect(banner.textContent).not.toContain('Reconnecting in');
+  });
+
   it('forces a reconnect when Retry is clicked', async () => {
     h.snapshot = { status: 'disconnected', nextAttemptAt: null };
     const { getByTestId } = render(TransportStatusBanner);
@@ -98,5 +189,96 @@ describe('<TransportStatusBanner>', () => {
 
     await fireEvent.click(getByTestId('transport-status-retry'));
     expect(h.retry).toHaveBeenCalledOnce();
+  });
+
+  // A page whose origin is not its backend's (the phone shell) cannot be
+  // navigated to a new pairing link and cannot run a passkey ceremony
+  // bound to the backend's domain. Its recovery is to forget home and
+  // boot into "scan a code" again.
+  it('offers Pair again, and no passkey, when the page is served from its own origin', async () => {
+    setHomeEndpoint('https://desk.tail-scale.ts.net:7777');
+    storeBackendEndpoint('', 'https://desk.tail-scale.ts.net:7777');
+    try {
+      h.snapshot = { status: 'unauthorized', nextAttemptAt: null };
+      const { getByTestId, queryByTestId } = render(TransportStatusBanner);
+      await settleBootGrace();
+
+      expect(queryByTestId('transport-status-passkey')).toBeNull();
+      const again = getByTestId('transport-status-pair-again');
+      expect(storedBackendEndpoint('')).toBe('https://desk.tail-scale.ts.net:7777');
+
+      await fireEvent.click(again);
+      expect(storedBackendEndpoint('')).toBe('');
+      expect(hasPairedSession()).toBe(false);
+    } finally {
+      __resetHomeEndpointForTest();
+      localStorage.clear();
+    }
+  });
+
+  it('offers no Pair again on a page that is its backend\'s own origin', async () => {
+    h.snapshot = { status: 'unauthorized', nextAttemptAt: null };
+    const { queryByTestId } = render(TransportStatusBanner);
+    await settleBootGrace();
+    expect(queryByTestId('transport-status-pair-again')).toBeNull();
+  });
+});
+
+// The phone shell's update channel says at most two things, and this is
+// the strip they are said in. Everything else bundle sync does — picking
+// a backend, downloading, verifying, staging, rolling back — is silent
+// (stores/bundleNotice.svelte.ts).
+describe('<TransportStatusBanner> and the bundle notice', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    h.snapshot = { status: 'connected', nextAttemptAt: null };
+    __resetBundleNoticeForTest();
+  });
+
+  afterEach(() => {
+    __resetBundleNoticeForTest();
+    vi.useRealTimers();
+  });
+
+  it('says nothing on a connected client with no bundle news', async () => {
+    const { queryByTestId } = render(TransportStatusBanner);
+    await tick();
+    expect(queryByTestId('transport-status-banner')).toBeNull();
+  });
+
+  it('shows a staged bundle as a restart, with no button to press', async () => {
+    noteBundleReady();
+    const { getByTestId, queryByTestId } = render(TransportStatusBanner);
+    await tick();
+
+    const banner = getByTestId('transport-status-banner');
+    expect(banner.textContent).toContain(
+      'A newer Agent Overflow is ready. It loads the next time the app starts.',
+    );
+    // Nothing to retry: the transport is fine, and the swap happens on
+    // the next cold start whether or not anybody acknowledges it.
+    expect(queryByTestId('transport-status-retry')).toBeNull();
+  });
+
+  it('names the machine a phone is too old for', async () => {
+    noteBundleTooOld('desk');
+    const { getByTestId } = render(TransportStatusBanner);
+    await tick();
+    expect(getByTestId('transport-status-banner').textContent).toContain(
+      'This app is too old for desk. Install a newer Agent Overflow on this phone.',
+    );
+  });
+
+  it('lets a staged bundle outrank a floor this phone is under', async () => {
+    // A restart is an action; "update from the app store" is not one
+    // this app can perform, and replacing the actionable sentence with
+    // the unactionable one would be the wrong trade.
+    noteBundleReady();
+    noteBundleTooOld('laptop');
+    const { getByTestId } = render(TransportStatusBanner);
+    await tick();
+    expect(getByTestId('transport-status-banner').textContent).toContain(
+      'A newer Agent Overflow is ready.',
+    );
   });
 });

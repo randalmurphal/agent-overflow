@@ -173,25 +173,45 @@ emitters identical.
 
 ## Take-control
 
-Take-control is WIRED, end to end: `attach.go` here
-(`AttachTerminal`, `DetachTerminal`, `TerminalReplaySnapshot`,
-`SetTakeControl`, `WriteInput`, `ResizeTerminal`, `RefreshTerminal`), the
-seven `ProviderTerminal*` App methods in `app_claudetui_terminal.go`
-(classified in `internal/transport/internalmethods.go`), and
+Take-control is WIRED, end to end: `attach.go` here (`AttachTerminal`
+plus the `*TerminalAttachment` a caller gets back — `Release`,
+`SetControl`, `HoldsControl`, `WriteInput` — and the session-wide
+`TerminalReplaySnapshot`, `HasTakeControl`, `ResizeTerminal`,
+`RefreshTerminal`), the seven `ProviderTerminal*` App methods in
+`app_claudetui_terminal.go` (all `//ao:scope terminal:operate`), and
 `frontend/src/lib/components/takecontrol/`. Design is
 [`claude-tui-provider.md §Attach & take-control`](../../../docs/architecture/claude-tui-provider.md).
 
 Rules that live in this package:
 
-- **The input lease is the arbitration.** `WriteInput` is refused unless
-  the lease is held, so a read-only attach can never inject keystrokes;
-  `Send` is refused while it IS held, so AO's driver and the human never
-  interleave into the composer.
-- **Fan-out is gated on attach; the ring buffer never is.** The TUI
-  repaints constantly. `AttachTerminal` only starts the live tee, and a
-  detached session loses nothing because `internal/terminal` keeps
-  buffering. Attach is idempotent (a second attach replaces the sink),
-  which is exactly what a transport reconnect needs.
+- **A claim belongs to the client that made it.** `AttachTerminal`
+  returns a `*TerminalAttachment`, and everything a client armed is given
+  back through that one handle. The app mints one per CONNECTION and
+  registers its `Release` with the socket's teardown, so a client that
+  dies mid-take-control gives the lease back on its own. Before this the
+  lease was one session-wide `bool`: a dead socket left it held and every
+  `Send` on the thread was refused until the session restarted, and a
+  second attach displaced the first viewer's sink while either detach
+  stripped the other's lease.
+- **The input lease is the arbitration, and it has ONE holder.**
+  `WriteInput` is refused unless the CALLING attachment holds the lease,
+  so neither a read-only attach nor a second pane watching over the
+  holder's shoulder can inject keystrokes; `Send` is refused while any
+  attachment holds it, so AO's driver and the human never interleave into
+  the composer. Acquiring while another attachment holds it is REFUSED,
+  never taken — seizing it would put two humans in one composer.
+  Releasing without holding it is always a no-op, because the client's
+  own detach and its socket's teardown both run that path and cannot
+  order themselves against each other.
+- **Fan-out is gated on attach and REFCOUNTED; the ring buffer never is.**
+  The TUI repaints constantly. Attaching only starts the live tee, and a
+  session nobody is attached to loses nothing because `internal/terminal`
+  keeps buffering. One tee serves every attachment, because the app
+  answers a chunk with one thread-keyed broadcast frame every attached
+  client already receives — a tee per attachment would emit each chunk
+  once per client and every client would render the duplicates. It is
+  torn down when the LAST claim goes, so one pane closing never blinds
+  another.
 - **Repaint through `RefreshTerminal`.** A freshly attached xterm shows a
   stale Ink frame. Never call `Process.Resize` directly, which bypasses
   `resizeMu`.

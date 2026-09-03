@@ -2,9 +2,12 @@
   // Settings → Updates. Renders the reactive updater store and drives the
   // check / download / restart flow. Every state-changing action is an explicit
   // button press — nothing downloads or installs on its own. The "Advanced"
-  // version picker (rollback included) lives in VersionPicker.
+  // version picker (rollback included) lives in VersionPicker, and the
+  // supervised machines this client is attached to render below it in
+  // MachineUpdates, from their own store.
   import SettingsCallout from './SettingsCallout.svelte';
   import VersionPicker from './VersionPicker.svelte';
+  import MachineUpdates from './MachineUpdates.svelte';
   import { PRIMARY_BUTTON_CLASS, SECONDARY_BUTTON_CLASS } from './styles';
   import {
     getUpdateState,
@@ -13,6 +16,9 @@
     runUpdateCheck,
     startUpdateDownload,
     restartForUpdate,
+    loadVersions,
+    selectVersion,
+    canInstallSelected,
   } from '../../stores/updates.svelte';
 
   const s = getUpdateState();
@@ -23,6 +29,7 @@
   // flow and a by-tag rollback alike — so it can't hang off the latestVersion
   // card (a rollback while up-to-date has no latestVersion).
   const showActive = $derived(downloading || s.phase === 'ready' || s.phase === 'restarting');
+  const canInstallPicked = $derived(canInstallSelected());
   const progressPercent = $derived(
     s.total > 0 ? Math.min(100, Math.round((s.written / s.total) * 100)) : 0,
   );
@@ -166,7 +173,19 @@
     <!-- Hidden during an active install so a second, conflicting install can't
          be started; canInstallSelected() is the in-flight guard otherwise. -->
     {#if !showActive}
-      <VersionPicker />
+      <VersionPicker
+        versions={s.availableVersions}
+        loaded={s.versionsLoaded}
+        loading={s.versionsLoading}
+        error={s.versionsError}
+        selectedTag={s.selectedTag}
+        canInstall={canInstallPicked}
+        onOpen={() => void loadVersions()}
+        onSelect={selectVersion}
+        onInstall={(tag) => void startUpdateDownload(tag)}
+      />
     {/if}
   {/if}
+
+  <MachineUpdates />
 </div>

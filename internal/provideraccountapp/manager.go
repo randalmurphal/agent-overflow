@@ -38,24 +38,39 @@ type UsageBackoff interface {
 type AccountSink interface {
 	PublishAccount(providerName string, account provideraccounts.Account, info provider.AccountInfo, generation uint64)
 	PublishCleared(providerName string, generation uint64)
+	// PublishAccountsChanged says the SET of saved accounts for a provider
+	// moved — one was added, removed, or made active. It is deliberately
+	// separate from PublishAccount, which reports one card's contents and
+	// fires on every usage probe: a receiver that re-listed on those would
+	// spend an RPC per probe, and one that never re-lists (the state before
+	// this existed) misses a removal entirely. It names no provider: the one
+	// read behind it, ListProviderAccounts, answers for every provider at once.
+	PublishAccountsChanged()
 	PublishUsageError(providerName, accountID string, err error)
+	PublishLogin(state LoginState)
 }
 
 // Deps are the narrow process/lifecycle ports used by Manager.
 type Deps struct {
-	Context           func() context.Context
-	IsShuttingDown    func() bool
-	ShutdownError     error
-	CurrentSettings   func() settings.Settings
-	ProviderBinary    func(providerName string) string
-	BrowserExecutable func() (string, error)
-	OpenBrowser       func(context.Context, string) error
-	HTTPClient        func() *http.Client
-	Sessions          SessionGateway
-	Probes            ProbeInvalidator
-	RateLimits        RateLimitSink
-	Backoff           UsageBackoff
-	Accounts          AccountSink
+	Context         func() context.Context
+	IsShuttingDown  func() bool
+	ShutdownError   error
+	CurrentSettings func() settings.Settings
+	ProviderBinary  func(providerName string) string
+	OpenBrowser     func(context.Context, string) error
+	// LoginSpawnEnv is the boot-mode environment a sign-in spawn carries on
+	// top of the user's configured provider environment. Empty (or nil) in
+	// production. A harness boot puts the mock-control address and token
+	// here, so a test can steer a sign-in the way it steers a session —
+	// which matters because a device-code flow finishes on another screen
+	// and has no other way to be finished.
+	LoginSpawnEnv func() map[string]string
+	HTTPClient    func() *http.Client
+	Sessions      SessionGateway
+	Probes        ProbeInvalidator
+	RateLimits    RateLimitSink
+	Backoff       UsageBackoff
+	Accounts      AccountSink
 }
 
 // Manager owns the complete managed-account consistency boundary. Every
@@ -72,6 +87,13 @@ type Manager struct {
 	claudeReconcileMu sync.Mutex
 	codexReconcileMu  sync.Mutex
 	auditPath         string
+
+	// The sign-in registry (loginsession.go). Its lock is a leaf: no other
+	// Manager lock is taken under it, and nothing is published while it is
+	// held.
+	loginMu     sync.Mutex
+	logins      map[string]*loginRun
+	loginStates map[string]LoginState
 }
 
 // NewManager constructs an unattached manager. Attach installs the two stores

@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/usermessage"
 )
 
@@ -174,7 +175,7 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 	// A nil promptDraft means the caller already put a durable copy in
 	// that row itself and owns settling it.
 	if args.promptDraft != nil {
-		if err := a.store.UpsertThreadDraft(*args.promptDraft); err != nil {
+		if err := a.writeThreadDraft(transport.ClientIdentity{}, *args.promptDraft); err != nil {
 			return revertedConversationCut{}, fmt.Errorf("%s: restore prompt draft: %w", args.errorPrefix, err)
 		}
 	}

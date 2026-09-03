@@ -9,10 +9,11 @@ import (
 
 // TestAppURLWithClientID pins the one rule every windowed boot shares.
 // `&` rather than `?` is load-bearing: a transport page URL already
-// carries its auth token as a query param, so `?` would produce a URL
-// whose token is part of the cid value and whose auth fails.
+// carries its one-time ticket as a query param, so `?` would fold the
+// ticket into the cid value and the page would arrive with nothing to
+// exchange.
 func TestAppURLWithClientID(t *testing.T) {
-	const page = "http://127.0.0.1:34567/?token=abc"
+	const page = "http://127.0.0.1:34567/?t=page-ticket"
 	if got := appURLWithClientID(page, "cid-1"); got != page+"&cid=cid-1" {
 		t.Fatalf("appURLWithClientID = %q", got)
 	}
@@ -26,6 +27,21 @@ func TestAppURLWithClientID(t *testing.T) {
 	if got := appURLWithClientID(page, "a b&c"); !strings.Contains(got, "cid=a+b%26c") {
 		t.Fatalf("client id was not query-escaped: %q", got)
 	}
+}
+
+// newBootstrapTestServer builds a real (unstarted) transport server. A
+// zero-value one will not do: the server owns the launch credential that
+// mints page tickets, and a bootstrap is partly a description of it.
+func newBootstrapTestServer(t *testing.T) *transport.Server {
+	t.Helper()
+	srv, err := transport.New(transport.Config{
+		Dispatcher: transport.NewDispatcher(),
+		EventBus:   transport.NewEventBus(4),
+	})
+	if err != nil {
+		t.Fatalf("transport.New: %v", err)
+	}
+	return srv
 }
 
 // TestHarnessBootstrapCarriesTheClientID: the harness bootstrap is the
@@ -46,12 +62,12 @@ func TestHarnessBootstrapCarriesTheClientID(t *testing.T) {
 		t.Fatal("ensureClientID returned empty under a writable data root")
 	}
 
-	bs := newHarnessBootstrap(&transport.Server{}, harnessPaths{DataRoot: dataDirRoot}, nil)
+	bs := newHarnessBootstrap(newBootstrapTestServer(t), harnessPaths{DataRoot: dataDirRoot}, nil)
 	if bs.ClientID != want {
 		t.Fatalf("bootstrap clientId = %q, want %q", bs.ClientID, want)
 	}
 	// Stable across boots: a minted-per-boot id would defeat the point.
-	if again := newHarnessBootstrap(&transport.Server{}, harnessPaths{}, nil); again.ClientID != want {
+	if again := newHarnessBootstrap(newBootstrapTestServer(t), harnessPaths{}, nil); again.ClientID != want {
 		t.Fatalf("clientId changed between boots: %q then %q", want, again.ClientID)
 	}
 }

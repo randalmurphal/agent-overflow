@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -17,6 +15,9 @@ import (
 // banners (ProviderStatusBanner) stay in sync with the settings page without
 // polling. Idempotent: re-emitting the same state is harmless — the frontend
 // keeps only the latest per-provider entry.
+//
+//ao:scope access:admin
+//ao:route home
 func (a *App) GetProviderStatuses() ([]provider.ProviderStatus, error) {
 	return a.providerDiscoveryService().ProviderStatuses(), nil
 }
@@ -30,35 +31,40 @@ func (a *App) currentSettings() settings.Settings {
 
 // GetSettings returns the current persisted settings merged over defaults,
 // with every secret redacted (see redactedSettings).
-func (a *App) GetSettings() (settings.Settings, error) {
-	return redactedSettings(a.currentSettings()), nil
+//
+// Resolved PER CALLER. The host and user tiers are global to this backend;
+// the device tier comes out of the calling connection's own ui_state bucket
+// over its DEVICE-CLASS defaults (docs/specs/remote-access.md §6,
+// internal/settings/classdefaults.go), so two screens attached to one backend
+// see two font sizes and one shared set of confirmations, and a paired phone
+// that never touched lowPowerMode reads it on. A caller with no device behind
+// it — a background saga, a test — reads the desktop class's defaults.
+//
+//ao:scope settings:read
+//ao:route home
+func (a *App) GetSettings(ctx context.Context) (settings.Settings, error) {
+	if a.settings == nil {
+		return settings.DefaultSettings, nil
+	}
+	caller, err := a.settingsCaller(ctx)
+	if err != nil {
+		return settings.Settings{}, err
+	}
+	return redactedSettings(caller.Get()), nil
 }
 
 // redactedSettings is the projection every bound method returning a full
 // Settings value goes through.
 //
-// SECURITY: RemoteEndpoints[*].Token and the values of custom environment
-// variables flagged sensitive are cleared. A LAN-attached token-holder calling
-// GetSettings must not be able to harvest credentials — without this, a single
-// call enumerates every saved token, defeating the on-demand fetch model that
-// ListRemoteEndpoints + GetRemoteEndpointToken were designed to enforce.
-// Callers that need an actual token (the "Copy launch command" affordance)
-// fetch it through GetRemoteEndpointToken, which is a logged single-record
-// lookup; a sensitive environment value has no read path at all — the UI
-// overwrites it by re-entry.
+// SECURITY: the values of custom environment variables flagged sensitive
+// are cleared. A LAN-attached token-holder calling GetSettings must not be
+// able to harvest credentials — a sensitive environment value has no read
+// path at all, and the UI overwrites it by re-entry.
 //
-// Both fields are copied before clearing: settings.Service.Get returns a value
-// copy of Settings, but its slices share backing memory with the service's
+// The values are copied before clearing: settings.Service.Get returns a value
+// copy of Settings, but its maps share backing memory with the service's
 // cache, so clearing in place would corrupt every later reader.
 func redactedSettings(current settings.Settings) settings.Settings {
-	if len(current.RemoteEndpoints) > 0 {
-		redacted := make([]settings.RemoteEndpoint, len(current.RemoteEndpoints))
-		for i, ep := range current.RemoteEndpoints {
-			redacted[i] = ep
-			redacted[i].Token = ""
-		}
-		current.RemoteEndpoints = redacted
-	}
 	current.ClaudeCustomEnv = settings.RedactProviderEnvVars(current.ClaudeCustomEnv)
 	current.CodexCustomEnv = settings.RedactProviderEnvVars(current.CodexCustomEnv)
 	return current
@@ -77,31 +83,45 @@ func redactedSettings(current settings.Settings) settings.Settings {
 // after a generic update would leave the picker showing the wrong
 // availability flags until the next app launch.
 //
+// Each key is routed to its own tier's storage — settings.json for host keys,
+// the `user:default` ui_state scope for user keys, the CALLING connection's
+// bucket for device keys (docs/specs/remote-access.md §6). Validation runs on
+// the whole merged struct first, so every key is validated the same way
+// wherever it ends up.
+//
+// The patch is applied over the caller's CLASS-RESOLVED view, which is what
+// lets a device write the opposite of its class default: a phone patching
+// lowPowerMode to false is a change from the true its class resolves to, so
+// it persists a row and outranks the table from then on.
+//
 // The returned snapshot is redacted like GetSettings': the frontend store
 // re-seeds from it, and the two read paths must not disagree about whether the
-// store holds a plaintext secret. (Nothing consumes the secrets from here —
-// tokens are fetched through GetRemoteEndpointToken and sensitive environment
-// values have no read path at all.)
-func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
+// store holds a plaintext secret. (Nothing consumes the secrets from here:
+// sensitive environment values have no read path at all.)
+//
+// The scope below is the FLOOR, and it is the floor VALUE: one method carries
+// all three of §6's tiers, so the only honest thing its name can require is a
+// live session. requireSettingsTier is where the real answer is decided, per
+// key — device keys ride the session, user keys need settings:write, host keys
+// need a fresh step-up proof.
+//
+//ao:scope session
+//ao:route home
+func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (settings.Settings, error) {
 	if a.settings == nil {
 		return settings.Settings{}, fmt.Errorf("settings service unavailable")
 	}
-	prev := a.settings.Get()
-	next, err := a.settings.Update(patch)
+	if err := a.requireSettingsTier(ctx, patch); err != nil {
+		return settings.Settings{}, err
+	}
+	caller, err := a.settingsCaller(ctx)
 	if err != nil {
 		return settings.Settings{}, err
 	}
-	if workflowEngine := a.workflowApplication().Engine(); workflowEngine != nil {
-		if _, workflowPausedChanged := patch["workflowPaused"]; workflowPausedChanged {
-			if err := workflowEngine.PauseDetachedStarts(next.WorkflowPaused); err != nil {
-				rollback, rollbackBuildErr := settingsRollbackPatch(prev, patch)
-				var rollbackErr error
-				if rollbackBuildErr == nil {
-					_, rollbackErr = a.settings.Update(rollback)
-				}
-				return settings.Settings{}, errors.Join(err, rollbackBuildErr, rollbackErr)
-			}
-		}
+	prev := a.settings.Get()
+	next, err := caller.Update(patch)
+	if err != nil {
+		return settings.Settings{}, err
 	}
 	if patchTouchesLiveClaudeAxis(patch) {
 		// The settings-owned session axes a LIVE session reacts to. They
@@ -193,26 +213,6 @@ func patchTouchesLiveClaudeAxis(patch map[string]any) bool {
 	return false
 }
 
-func settingsRollbackPatch(previous settings.Settings, patch map[string]any) (map[string]any, error) {
-	encoded, err := json.Marshal(previous)
-	if err != nil {
-		return nil, fmt.Errorf("settings rollback: encode previous settings: %w", err)
-	}
-	var values map[string]any
-	if err := json.Unmarshal(encoded, &values); err != nil {
-		return nil, fmt.Errorf("settings rollback: decode previous settings: %w", err)
-	}
-	rollback := make(map[string]any, len(patch))
-	for key := range patch {
-		value, ok := values[key]
-		if !ok {
-			return nil, fmt.Errorf("settings rollback: previous value for %q is unavailable", key)
-		}
-		rollback[key] = value
-	}
-	return rollback, nil
-}
-
 // GetModelsForProvider returns the known model registry for the given provider.
 //
 // Each provider's catalog source is declared by its Capabilities, not by a
@@ -220,6 +220,9 @@ func settingsRollbackPatch(previous settings.Settings, patch map[string]any) (ma
 // TTL-cached), Claude's is the shipped catalog enriched by whatever the last
 // zero-token account probe reported (never a spawn of its own), and anything
 // else is the shipped list verbatim.
+//
+//ao:scope threads:operate
+//ao:route selected
 func (a *App) GetModelsForProvider(providerName string) ([]provider.ModelInfo, error) {
 	return a.providerDiscoveryService().ModelsForProvider(context.Background(), providerName)
 }

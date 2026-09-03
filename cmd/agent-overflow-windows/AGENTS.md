@@ -81,12 +81,6 @@ doubles up to `bootstrapProbePollInterval` (250 ms). A miss is an instant
 503 or RST, so early retries are free; the flat 250 ms gap it replaced
 cost every boot ~250 ms of sleep after the backend was already ready.
 
-
-The probe gap starts at `bootstrapProbeInitialPollInterval` (25 ms) and
-doubles up to `bootstrapProbePollInterval` (250 ms). A miss is an instant
-503 or RST, so early retries are free; the flat 250 ms gap it replaced
-cost every boot ~250 ms of sleep after the backend was already ready.
-
 ## Payload path: recorded, not re-resolved
 
 `ensurePayloadInstalled` returns the path wsl.json recorded
@@ -98,6 +92,28 @@ warm boot trusts without asking WSL, so `launchAndShow` treats
 `errLaunchFailed` on a recorded path as "maybe stale": it re-resolves once,
 reinstalls at the fresh path if it differs, and retries. A path that
 resolves the same is a real launch failure.
+
+## Presenting a bridged notification
+
+`notifications.go` is the host-side presenter for everything the backend
+sends on `notification:send`. The wire shape, its limits and its admission
+check are `internal/notify`'s, re-run here because a cross-process boundary
+validates what it is handed rather than trusting the sender.
+
+- **A send carries a STABLE id and may be a RETRACTION.** `present` branches
+  on `Send.Retract`: withdraw by id, or `UpdateNotification` with the id the
+  mapping chose. Never allocate an id here — replace-in-place is exactly the
+  platform recognising a second send about the same moment as the same
+  notification.
+- **Retraction degrades to nothing on Windows, silently, on purpose.**
+  wintoast exposes no call that pulls a delivered toast back out of the Action
+  Center, so Wails' `RemoveDeliveredNotification` answers nil without acting.
+  Refusing the retraction, or logging it as a failure, would turn a platform
+  limit into an error the user sees — for an operation whose whole purpose is
+  to make things quieter. Linux (D-Bus `CloseNotification` + `replaces_id`)
+  and macOS (remove the delivered notification) do act — through
+  `RemoveDeliveredNotification`, never the similarly-shaped
+  `RemoveNotification`, which is a nil stub everywhere but Linux.
 
 ## Self-update: acting on an install directive
 

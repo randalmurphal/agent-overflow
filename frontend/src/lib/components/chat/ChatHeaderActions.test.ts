@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChatHeaderActions from './ChatHeaderActions.svelte';
@@ -6,6 +6,8 @@ import { resetPanesForTest } from '../../stores/panes.svelte';
 import { setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetEditorsForTest } from '../../stores/editors.svelte';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { closePalette, getPaletteTargetPaneId, isPaletteOpen } from '../../stores/palette.svelte';
 import type { GitStatus } from '../../types/git';
 import type { Project, Thread } from '../../types/models';
 import { createThreadPane } from '../../stores/thread.svelte';
@@ -397,5 +399,41 @@ describe('<ChatHeaderActions> subscription effect', () => {
     b.unmount();
     await flush();
     expect(getBindingMock('GitStatusUnsubscribe')).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('<ChatHeaderActions> compact palette button', () => {
+  // The palette is a keyboard chord on the desktop; the phone has no chord,
+  // so the header carries the one button that reaches every command.
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetEditorsForTest();
+    setBindingMock('GetSettings', async () => null);
+    setBindingMock('GetProviderStatuses', async () => []);
+    setBindingMock('ListAvailableEditors', async () => []);
+    setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
+    await loadSettings();
+    closePalette();
+  });
+
+  afterEach(() => {
+    setCompactLayoutForTest(false);
+    closePalette();
+  });
+
+  it('is absent on the desktop and opens the palette for this pane under compact', async () => {
+    installSubscribeMock(status({}));
+    const pane = await buildPane();
+    const desktop = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+    expect(desktop.queryByTestId('palette-open')).toBeNull();
+    desktop.unmount();
+
+    setCompactLayoutForTest(true);
+    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+    await fireEvent.click(getByTestId('palette-open'));
+    expect(isPaletteOpen()).toBe(true);
+    expect(getPaletteTargetPaneId()).toBe(pane.paneId);
   });
 });

@@ -188,6 +188,18 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launched, error) {
 			_ = c.Close()
 		}
 	}()
+	// The child's ends of any pipe read here. Closed the moment Start
+	// returns, whether or not it succeeded: by then the child holds its own
+	// copies, or never will, and a write end still open in the parent would
+	// keep a reader from ever seeing the child's exit as EOF.
+	var childEnds []io.Closer
+	closeChildEnds := func() {
+		for _, c := range childEnds {
+			_ = c.Close()
+		}
+		childEnds = nil
+	}
+	defer closeChildEnds()
 
 	if opts.StdoutPath != "" {
 		if err := validateCapturePath(opts.StdoutPath); err != nil {
@@ -200,7 +212,7 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launched, error) {
 		closers = append(closers, out)
 		cmd.Stdout = out
 	} else {
-		pipe, err := cmd.StdoutPipe()
+		pipe, err := ownedPipe(&cmd.Stdout, &childEnds)
 		if err != nil {
 			return nil, fmt.Errorf("stdout pipe: %w", err)
 		}
@@ -219,7 +231,7 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launched, error) {
 		closers = append(closers, errFile)
 		cmd.Stderr = errFile
 	} else {
-		pipe, err := cmd.StderrPipe()
+		pipe, err := ownedPipe(&cmd.Stderr, &childEnds)
 		if err != nil {
 			return nil, fmt.Errorf("stderr pipe: %w", err)
 		}
@@ -236,16 +248,26 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launched, error) {
 		}
 	}
 
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start %s: %w", opts.Binary, err)
+	startErr := cmd.Start()
+	closeChildEnds()
+	if startErr != nil {
+		return nil, fmt.Errorf("start %s: %w", opts.Binary, startErr)
 	}
+	// Our ends of the pipes are closed on every failure path below, and on
+	// the success path when the child exits, which is when cmd.Wait used
+	// to close them. Never before the bootstrap read has finished.
+	readersOwned := true
+	defer func() {
+		if readersOwned {
+			closeLaunchPipes(stdoutPipe, stderrPipe)
+		}
+	}()
 	launched.PID = cmd.Process.Pid
 	ownedGroup := group
 	launched.containment = ownedGroup
 	group = nil
 	if ownedGroup != nil {
 		if err := ownedGroup.Adopt(cmd); err != nil {
-			closeLaunchPipes(stdoutPipe, stderrPipe)
 			launched.unverified = true
 			launched.startWaiter()
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), postStartCleanupTimeout)
@@ -320,8 +342,10 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launched, error) {
 	// Drain the wait result in the background. An attached caller reaps
 	// its child this way; a detached one is about to exit and must never
 	// block on a backend that runs for hours.
+	readersOwned = false
 	go func() {
 		<-exited
+		closeLaunchPipes(stdoutPipe, stderrPipe)
 		if err := launched.closeContainment(); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "harnessclient: close memory containment: %v\n", err)
 		}
@@ -375,6 +399,27 @@ func validateCapturePath(path string) error {
 	}
 }
 
+// ownedPipe wires one of the child's output streams to a pipe whose BOTH
+// ends belong to the launcher, and returns the read end.
+//
+// Not cmd.StdoutPipe. cmd.Wait closes the read ends exec hands out as part
+// of reaping the child, and it does so concurrently with a reader still
+// draining the last buffered line: a backend that printed its bootstrap
+// line and exited at once lost the line to "file already closed", and its
+// reported cause with it. With both ends ours, Wait touches neither, and a
+// read ends with the child's stdout rather than with the reap. The write
+// end is the child's copy and is closed in the parent as soon as Start
+// returns; the read end is closed by Launch, never by exec.
+func ownedPipe(stream *io.Writer, childEnds *[]io.Closer) (io.ReadCloser, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	*stream = w
+	*childEnds = append(*childEnds, w)
+	return r, nil
+}
+
 // awaitFromPipe reads the child's stdout pipe until the bootstrap line.
 func (l *Launched) awaitFromPipe(ctx context.Context, pipe io.Reader, exited <-chan struct{}) (Bootstrap, error) {
 	type result struct {
@@ -396,11 +441,10 @@ func (l *Launched) awaitFromPipe(ctx context.Context, pipe io.Reader, exited <-c
 			if res.err == nil {
 				return res.bs, nil
 			}
-			// cmd.Wait closes its pipe as part of reaping the child. The
-			// scanner can therefore report the platform-specific
-			// "file already closed" error instead of io.EOF. Normalize both
-			// forms to the launch contract rather than leaking an
-			// implementation detail that makes a failed boot look unrelated.
+			// The pipe is ours (ownedPipe), so the child's exit reaches the
+			// scanner as EOF and this is the read ending on any other error.
+			// Normalized to the launch contract rather than leaking a detail
+			// that makes a failed boot look unrelated.
 			return Bootstrap{}, fmt.Errorf("harness closed stdout without printing its bootstrap line: %w", res.err)
 		case <-time.After(time.Second):
 			return Bootstrap{}, errors.New("harness closed stdout without printing its bootstrap line")

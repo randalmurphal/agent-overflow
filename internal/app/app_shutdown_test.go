@@ -242,6 +242,15 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"cancel app context",
 		"drain triage",
 		"drain flush dispatch",
+		// "drain notifications" MUST appear before "close store" — a queued
+		// notification reads the thread's title out of SQLite to name it,
+		// and it joins the other reactor drains because the events it
+		// reacts to stop arriving once triage has drained.
+		"drain notifications",
+		// "drain push" MUST follow "drain notifications" and precede
+		// "close store" — the notification queue is what FEEDS it, and a
+		// fan-out job reads the live registrations out of SQLite.
+		"drain push",
 		"close replay manager",
 		"shutdown telemetry",
 		"stop idle session reaper",
@@ -268,6 +277,11 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// SwitchThread's read-state stamp runs off the RPC path, so an
 		// in-flight one is a SQLite write with nobody holding it open.
 		"stop thread read stamps",
+		// "stop provider logins" MUST appear before "close store" — a
+		// sign-in that completes writes the account's metadata row, and
+		// joining here is also what removes its temporary credential home
+		// instead of leaving it for the next boot's sweep.
+		"stop provider logins",
 		"close provider sessions",
 		// "stop orphan reaper" follows session close: each session
 		// releases its watched group on a clean close, so the sidecar has

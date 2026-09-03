@@ -513,9 +513,26 @@ func (e *engine) handleCommand(cmd control.Command) {
 		}
 	case control.CommandExit:
 		e.terminate(cmd.Code)
+	case control.CommandLoginComplete:
+		// Only the Codex adapter has a sign-in to settle: Claude's runs in an
+		// invocation mode of its own, with no engine and no control channel,
+		// because it finishes on a code the person pastes back.
+		completer, ok := e.adapter.(loginCompleter)
+		if !ok {
+			log.Printf("login_complete: this adapter serves no sign-in (ignored)")
+			return
+		}
+		completer.completeLogin(cmd.Error == "", cmd.Error)
 	default:
 		log.Printf("unknown control command type %q (ignored)", cmd.Type)
 	}
+}
+
+// loginCompleter is the adapter half of CommandLoginComplete. Declared here
+// because handleCommand is the only caller and the engine must not depend on
+// which adapter it is driving.
+type loginCompleter interface {
+	completeLogin(success bool, message string)
 }
 
 // advance releases the open gate when it matches, otherwise buffers the

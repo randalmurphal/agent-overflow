@@ -176,7 +176,7 @@ func TestSendMessageWithOptionsAppendsDraftPlanComments(t *testing.T) {
 	t.Cleanup(func() { _ = sess.Close() })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 
-	_, err = app.SendMessageWithOptions(thread.ID, "Please revise.", SendMessageOptions{
+	_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "Please revise.", SendMessageOptions{
 		RevisionSourceProposedPlan: &SourceProposedPlan{ThreadID: thread.ID, ItemID: "plan-item"},
 		RevisionSourceCommentIDs:   []string{comment.ID},
 	})

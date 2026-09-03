@@ -10,7 +10,7 @@ import {
   resetBindingMocks,
 } from '../../../test/mocks/bindings-app';
 import type { EditorInfo } from '../../stores/bindings';
-import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 
 // Popover/Menu transitions poke Element.animate on mount; happy-dom lacks it.
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
@@ -41,11 +41,11 @@ describe('<OpenInEditorControl>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetEditorsForTest();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   afterEach(() => {
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   it('opens in the default editor and shows no dropdown with a single editor', async () => {
@@ -124,7 +124,7 @@ describe('<OpenInEditorControl>', () => {
   });
 
   it('renders no editor control and makes no editor RPC in a view-only session', async () => {
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
     const list = setBindingMock('ListAvailableEditors', vi.fn(async () => []));
     const settings = setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
     const open = setBindingMock('OpenInEditor', vi.fn(async () => undefined));

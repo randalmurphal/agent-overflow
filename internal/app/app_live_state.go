@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/flushqueue"
+	"agent-overflow/internal/itemwire"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -71,9 +72,12 @@ type LiveStateTodoStep struct {
 // It is the refresh/reconnect companion to the push events emitted during a
 // normal uninterrupted frontend session.
 //
-// LocalOnly: the payload can expose pending prompts, tool approvals, drafted
-// queued messages, attachment ids, and provider session state. It belongs in
-// the same loopback-only class as GetQueueState and ListPendingInteractiveRequests.
+// threads:operate rather than threads:read: the payload can expose pending
+// prompts, tool approvals, drafted queued messages, attachment ids, and
+// provider session state. Same class as GetQueueState and
+// ListPendingInteractiveRequests, and annotated to match.
+//
+//ao:scope threads:operate
 func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	threadID = strings.TrimSpace(threadID)
 	state := ThreadLiveState{
@@ -112,7 +116,13 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 		}
 	}
 	state.Interactive = live.Interactive
-	state.DeferredItems = append(state.DeferredItems, live.DeferredItems...)
+	// Deferred rows are merged straight into the same window the slice
+	// RPCs filled, so they take the same projection. A page whose rows
+	// came from two paths that shaped them differently is one window
+	// holding mixed rows, which reads as a bug wherever the difference
+	// shows. These are un-echoed user sends with no diff previews to
+	// weigh, so previews stay on and only the meta budget applies.
+	state.DeferredItems = append(state.DeferredItems, itemwire.ProjectItems(live.DeferredItems, true)...)
 	for _, item := range live.QueueItems {
 		state.QueueItems = append(state.QueueItems, flushqueue.ItemFromTriage(threadID, item))
 	}

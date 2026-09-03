@@ -178,7 +178,7 @@ func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
 					return
 				default:
 				}
-				items, err := app.ListItems(thread.ID)
+				items, err := app.ListItems(thread.ID, true)
 				if err != nil {
 					t.Errorf("ListItems: %v", err)
 					return
@@ -228,7 +228,7 @@ func TestConcurrent_SettingsUpdateDuringStartup(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if _, err := app.UpdateSettings(map[string]any{
+			if _, err := app.UpdateSettings(context.Background(), map[string]any{
 				"theme": themes[i%len(themes)],
 			}); err != nil {
 				t.Errorf("UpdateSettings[%d]: %v", i, err)
@@ -238,7 +238,7 @@ func TestConcurrent_SettingsUpdateDuringStartup(t *testing.T) {
 
 	wg.Wait()
 
-	got, err := app.GetSettings()
+	got, err := app.GetSettings(context.Background())
 	if err != nil {
 		t.Fatalf("GetSettings: %v", err)
 	}

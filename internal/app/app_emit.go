@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/eventscope"
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/transport"
 )
 
 // emit publishes an event onto the transport's event bus. The bus
@@ -29,15 +30,57 @@ import (
 // eventchan.Channel(...) conversion — which only the harness escape
 // hatches (app_harness.go, app_harness_replay.go) spell.
 func (a *App) emit(name eventchan.Channel, data any) {
+	a.emitKeyed(name, data)
+}
+
+// entityFilteredChannels is the set of channels whose frames are addressed
+// per entity on the wire (transport's EntityFiltered column). Built once
+// from transport's own list rather than restated, so a row added there
+// starts having its key derived here with no second edit.
+var entityFilteredChannels = func() map[string]bool {
+	names := transport.EntityFilteredChannels()
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		set[name] = true
+	}
+	return set
+}()
+
+// emitKeyed is emit plus the entity key it derived, returned so the one
+// caller that needs the same value (emitWithReplay) does not derive it a
+// second time.
+//
+// The derivation is a reflect walk with a JSON round-trip fallback
+// (internal/eventscope), which is why it is conditional and why it happens
+// exactly once. Two consumers want it and they want it for different frames:
+// the transport bus needs it on EntityFiltered channels so a watching
+// connection can be narrowed, and the NDJSON replay log needs it on EVERY
+// thread-scoped channel. The condition is therefore their union, not the
+// bus's half — narrowing it to EntityFiltered channels alone would silently
+// stop attributing replay records for everything else, which is the whole
+// content of that log.
+func (a *App) emitKeyed(name eventchan.Channel, data any) string {
 	a.rememberRateLimitsEvent(name, data)
+	// The OS-notification mapping taps the same funnel: four moments are
+	// worth interrupting a person for and all four are announced here
+	// (app_notification_mapping.go). It projects and queues; it never
+	// blocks this goroutine.
+	a.tapNotification(name, data)
+	entityKey := ""
+	if entityFilteredChannels[string(name)] || (a.replay != nil && a.replay.Enabled()) {
+		entityKey = eventscope.ThreadIDFromEvent(data)
+	}
 	// Snapshot the bus pointer once so a concurrent SetEventBus cannot
-	// flip nil/non-nil between the guard and the Emit call.
+	// flip nil/non-nil between the guard and the Emit call. Deliberately
+	// AFTER the derivation: the replay log is written by a caller of this
+	// function and does not depend on a bus existing, so bailing first
+	// would stop attributing replay records during the pre-Startup window.
 	bus := a.eventBus.Load()
 	if bus == nil && a.testEmitHook == nil {
-		return
+		return entityKey
 	}
 	if bus != nil {
-		if _, err := bus.Emit(name, data); err != nil {
+		if _, err := bus.EmitEntity(name, entityKey, data); err != nil {
 			// json.Marshal failure on a payload we own — log and drop.
 			// The bus is best-effort by design (drops on full subscriber
 			// channels) so we don't propagate an error to callers.
@@ -47,6 +90,7 @@ func (a *App) emit(name eventchan.Channel, data any) {
 	if a.testEmitHook != nil {
 		a.testEmitHook(string(name), data)
 	}
+	return entityKey
 }
 
 // emitRateLimitsSnapshot publishes an account-scoped rate-limit
@@ -72,16 +116,21 @@ func (a *App) emitRateLimitsSnapshot(snap provider.RateLimitsSnapshot) {
 // `threadId` field so we don't introduce a hard dependency on any
 // single event shape.
 //
-// The emission goes through a.emit so the bus stamps its per-channel
+// The emission goes through a.emitKeyed so the bus stamps its per-channel
 // seq; the replay log receives the same payload because the replay
 // format records provider events, not wire envelopes.
+//
+// The thread id comes BACK from that call rather than being extracted
+// again. There is one derivation per emit and this is the only place that
+// could have made it two — the bus wants the same value for entity
+// addressing, and eventscope's lookup ends in a JSON round trip for the
+// anonymous-struct payloads that dominate this funnel.
 func (a *App) emitWithReplay() func(eventchan.Channel, any) {
 	return func(eventName eventchan.Channel, data any) {
-		a.emit(eventName, data)
+		threadID := a.emitKeyed(eventName, data)
 		if a.replay == nil || !a.replay.Enabled() {
 			return
 		}
-		threadID := eventscope.ThreadIDFromEvent(data)
 		if threadID == "" {
 			return
 		}

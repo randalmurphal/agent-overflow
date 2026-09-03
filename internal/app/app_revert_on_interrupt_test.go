@@ -291,7 +291,7 @@ func TestRegisterQueueItemSerializesInterruptRevertAcrossFlushHandoff(t *testing
 	// flush, so this goroutine parks inside the interpose with the mutex held.
 	registered := make(chan error, 1)
 	go func() {
-		_, err := app.RegisterQueueItem(thread.ID, "follow-up M", SendMessageOptions{})
+		_, err := app.RegisterQueueItem(context.Background(), thread.ID, "follow-up M", SendMessageOptions{})
 		registered <- err
 	}()
 
@@ -609,7 +609,7 @@ func TestInterruptRollbackPreservesConcurrentEffortChange(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load rollback snapshot: %v", err)
 			}
-			if err := app.store.UpdateReasoningEffort(thread.ID, "xhigh"); err != nil {
+			if _, _, err := app.store.UpdateReasoningEffort(thread.ID, "xhigh"); err != nil {
 				t.Fatalf("update effort during rollback: %v", err)
 			}
 

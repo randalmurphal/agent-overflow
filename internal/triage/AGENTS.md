@@ -47,6 +47,13 @@ the file list. A `Handle` case in `router.go` makes a handler reachable.
   code-block rendering here, no rendered cache column, no server-side
   kind-to-renderer dispatch. The frontend renders; it knows what is
   mounted.
+- **A command row carries a failure message only when it FAILED.**
+  `buildCommandOutputPayloadMeta` reads the explicit message out of
+  provider meta whose fallbacks (`tool_use_result.stdout`,
+  `tool_result.content`) are a successful command's ordinary output, so
+  the read is gated on `exit_code != 0 || is_error`; before that gate a
+  dev server's startup banner was persisted as the `errorMessage` of
+  every row that exited 0 (found by the wave-9 preview e2e, 2026-09-02).
 
 ## Subagent scope stays subagent scope
 
@@ -97,9 +104,10 @@ subagent-aware path as guilty until it proves scope containment.
 - Tray membership and lifecycle gates must not share a filter.
   `Store.ListLiveBackgroundTasks` lists by backgrounded ancestry at any
   depth, while the reaper and queue gates beside it in
-  `store/items_lifecycle.go` stay `parent_id = ''`. Showing a nested
-  background Bash in the tray is display; whether it blocks the flush
-  queue is top-level only (invariant 24). Settlement is NOT top-level:
+  `store/items_lifecycle.go` stay `parent_id = ''`. Listing a nested
+  background Bash — in the tray or in the cross-thread inventory — is a
+  membership question; whether it blocks the flush queue is top-level
+  only (invariant 24). Settlement is NOT top-level:
   `SettleBackgroundLaunchesForSessionEnd` (session close and death)
   and the boot sweep settle launches at any depth, because the gates'
   exemption is exactly what used to leave nested rows ticking forever.
@@ -196,6 +204,28 @@ Categories, for placing new state:
 
 A new map holding user-blocking live state goes into `HasPendingWork`
 (`interactive_requests.go`) with matching test coverage.
+
+**Answering an open question is arbitrated** (`interactive_claim.go`).
+One backend serves several clients, each rendering the same approval
+prompt and the same structured-input form, so two of them can answer
+within the same second. `ClaimApprovalResponse` /
+`ClaimUserInputResponse` let the first answer through and refuse the
+rest; the App turns a refusal into `transport.ErrAlreadyHandled`, which
+crosses the wire as a code rather than as redacted prose. Three rules
+hold it together, and each one is a defect if dropped:
+
+- It refuses only on POSITIVE evidence — an answer this router
+  forwarded. A request it has no record of passes through, because the
+  router's pending map is not the only authority on what is answerable
+  (a Codex session keeps its own request table) and reporting "someone
+  else answered" about a request nobody answered is a worse report than
+  the one this closes.
+- It does not consume the pending entry. `handleApprovalResolved` reads
+  that entry to build the resolved tool row's summary; taking it here
+  leaves the row describing the wrong input.
+- A write that never reached the provider must
+  `ReleaseInteractiveResponse`, or the prompt is wedged open with
+  nobody — including the client that just failed — able to answer it.
 
 ## Pending sends
 

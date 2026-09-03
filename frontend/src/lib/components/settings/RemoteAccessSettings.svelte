@@ -1,10 +1,11 @@
 <script lang="ts">
-  // Settings → Remote access: opening this backend to the network, the WSL
-  // distro the launcher boots, and the saved `--connect` targets.
+  // Settings → Remote access: opening this backend to the network, the
+  // devices paired to it, and the WSL distro the launcher boots. The
+  // machines this window reaches are the Systems page.
 
   import NetworkSection from './NetworkSection.svelte';
+  import DevicesSection from './DevicesSection.svelte';
   import WSLSection from './WSLSection.svelte';
-  import RemoteEndpointsSection from './RemoteEndpointsSection.svelte';
 </script>
 
 <!--
@@ -16,6 +17,6 @@
 -->
 <div class="settings-sections">
   <NetworkSection />
+  <DevicesSection />
   <WSLSection />
-  <RemoteEndpointsSection />
 </div>

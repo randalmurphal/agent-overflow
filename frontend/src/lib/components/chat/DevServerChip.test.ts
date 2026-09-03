@@ -28,6 +28,40 @@ describe('<DevServerChip>', () => {
     expect(open).toHaveBeenCalledWith('http://127.0.0.1:3000/');
   });
 
+  // With a `preview` the port is on another machine, so `localhost` here is
+  // not it: the click mints a URL on that machine's port gateway and opens
+  // THAT, and the button says where it is going.
+  it('mints a preview and names the machine when the port is on another one', async () => {
+    const external = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+    const mint = setBindingMock(
+      'MintPreviewURL',
+      vi.fn(async () => 'https://laptop.tail.ts.net/preview/5173/app?t=1'),
+    );
+
+    const { getByTestId } = render(DevServerChip, {
+      props: {
+        url: 'http://localhost:5173/app',
+        preview: {
+          url: 'http://localhost:5173/app',
+          threadId: 'thread-1',
+          port: 5173,
+          path: '/app',
+          machine: 'Laptop',
+        },
+      },
+    });
+
+    const chip = getByTestId('dev-server-chip');
+    expect(chip.getAttribute('aria-label')).toBe('Open localhost:5173 on Laptop');
+    expect(chip.dataset.machine).toBe('Laptop');
+
+    await fireEvent.click(chip);
+    expect(mint).toHaveBeenCalledWith('thread-1', 5173, '/app');
+    await vi.waitFor(() =>
+      expect(external).toHaveBeenCalledWith('https://laptop.tail.ts.net/preview/5173/app?t=1'),
+    );
+  });
+
   it('falls back to window.open for a remote client session', async () => {
     setRunMode('client');
     const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));

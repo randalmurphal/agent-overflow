@@ -13,7 +13,23 @@ canonical-name symlink at `<configDir>/bin/agent-overflow` and
 user-facing string here therefore says `agent-overflow`, never `ao`; the AO_*
 environment variable names are an internal contract and keep their prefix.
 
-The CLI has two halves:
+**Two verbs are not rows in that table: `serve` and `supervise`.** Both boot,
+and a boot needs the embedded asset filesystem and the whole transport/App
+graph, both of which live in package `main` by construction. `decideEntry`
+matches each BEFORE the `IsCommand` check; this package only documents them,
+because `usage.go` is the one help text a person reads. The arguments are at
+`serveVerb` and `superviseVerb` in `main_entry.go`, and both seams are pinned
+(`TestServeVerbIsNotACLICommand`, `TestSuperviseVerbIsNotACLICommand`) — adding
+a row here would create a verb that means two different things depending on
+which file you read.
+
+`serve` is in the root usage and `supervise` deliberately is not: nobody types
+the second one, a service manager does, and documenting it would invite an
+operator to start a supervisor by hand beside the one their unit already runs.
+The operator-facing walkthrough for both is
+[docs/architecture/serve-mode.md](../../docs/architecture/serve-mode.md).
+
+The CLI has three halves:
 
 - **Offline** (`agent-overflow workflow …`): scope discovery, definition
   validation, listing, scaffolding, and the embedded authoring schema. Needs no
@@ -22,6 +38,29 @@ The CLI has two halves:
   one HTTP POST per invocation against a running Agent Overflow, authenticated
   with the scoped credential the app injected into the calling agent's session
   (spec §5, D15).
+- **Host** (`agent-overflow service …`): manages the machine, not a backend. It
+  talks to no app and holds no credential — it writes a unit file and drives
+  the platform's service manager through `internal/serviceinstall`. `serve` and
+  `supervise` are the host verbs that are not rows here.
+
+`service update` is the one host verb that writes state a BACKEND later reads:
+it stages the named binary into `internal/supervise`'s versions directory and
+selects it, with the unit stopped on either side. It still runs no binary
+itself — the preflight that asks the file what version it is goes through the
+same injected `Runner` as every service-manager command, so a `service update`
+test describes a binary rather than executing one. That is also what makes it
+the LOCAL update path: no trial and no rollback, because the operator is
+standing there. Over-the-wire updates are the supervisor's, not this package's.
+
+`service.go` resolves every host fact ONCE, into a `serviceEnv` it passes down
+(`hostServiceEnv` is the production reader). That is why its tests describe a
+machine rather than running on one, and why there is no package-level seam a
+test must remember to reset — a `service` test that reached the real host would
+enable a service on the developer's own login. `--help` works on a host where
+`os.Executable()` does not, which is why `serviceEnv` carries its two possible
+failures rather than resolving them eagerly. The unit-file rules, the injected
+`Runner`, and what install deliberately does not do live in
+[internal/serviceinstall](../serviceinstall/AGENTS.md).
 
 Workflow definition behavior belongs to `internal/workflow/def`, and starter
 content to `internal/workflow/starters`. This package discovers scopes, loads
@@ -442,8 +481,8 @@ verbatim: it is the point of the command, the header above it already says what
 it is, and quoting prose into `\n` escapes would make it unreadable.
 
 Both verbs take the same grants as `run status` (`introspect`, or `start-run`
-for a run this phase started) and are `LocalOnly`: a wider view of a run the
-caller may already see is not a wider set of runs.
+for a run this phase started) and stay off the observe tier: a wider view of a
+run the caller may already see is not a wider set of runs.
 
 ## Parsing
 

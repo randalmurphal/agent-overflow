@@ -2,6 +2,7 @@ package externalurl
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -95,6 +96,63 @@ func TestOpenUsesFirstAvailableCandidate(t *testing.T) {
 
 func execNotFound(name string) error {
 	return &exec.Error{Name: name, Err: exec.ErrNotFound}
+}
+
+func TestOpenReportsNoOpenerWhenEveryCandidateIsMissing(t *testing.T) {
+	err := open(
+		t.Context(),
+		[]Command{{Name: "xdg-open"}, {Name: "x-www-browser"}},
+		func(name string) (string, error) { return "", execNotFound(name) },
+		func(context.Context, Command) error {
+			t.Fatal("start called with no opener on PATH")
+			return nil
+		},
+	)
+	if !errors.Is(err, ErrNoOpener) {
+		t.Fatalf("open error = %v, want ErrNoOpener", err)
+	}
+	// The names are what makes the sentence diagnosable; the sentinel alone
+	// says nothing about which candidates were tried.
+	if !strings.Contains(err.Error(), "xdg-open") || !strings.Contains(err.Error(), "x-www-browser") {
+		t.Fatalf("open error %q does not name the candidates it tried", err)
+	}
+}
+
+func TestOpenReportsNoOpenerWhenThePlatformNamesNone(t *testing.T) {
+	err := open(
+		t.Context(),
+		nil,
+		func(string) (string, error) { t.Fatal("lookup called with no candidates"); return "", nil },
+		func(context.Context, Command) error { t.Fatal("start called with no candidates"); return nil },
+	)
+	if !errors.Is(err, ErrNoOpener) {
+		t.Fatalf("open error = %v, want ErrNoOpener", err)
+	}
+}
+
+// A candidate that exists and fails is NOT the no-opener answer: something is
+// installed, so a caller must not degrade to "this host cannot open links".
+func TestOpenDoesNotReportNoOpenerWhenAnInstalledOpenerFails(t *testing.T) {
+	err := open(
+		t.Context(),
+		[]Command{{Name: "xdg-open"}, {Name: "x-www-browser"}},
+		func(name string) (string, error) {
+			if name == "xdg-open" {
+				return "", execNotFound(name)
+			}
+			return "/usr/bin/" + name, nil
+		},
+		func(context.Context, Command) error { return errors.New("display refused the launch") },
+	)
+	if err == nil {
+		t.Fatal("open returned nil, want the start failure")
+	}
+	if errors.Is(err, ErrNoOpener) {
+		t.Fatalf("open error = %v, want a start failure rather than ErrNoOpener", err)
+	}
+	if !strings.Contains(err.Error(), "display refused the launch") {
+		t.Fatalf("open error %q dropped the start failure", err)
+	}
 }
 
 func TestCommandCandidatesByPlatform(t *testing.T) {

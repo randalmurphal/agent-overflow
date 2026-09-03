@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The DEBUG build type only, merged over src/main/AndroidManifest.xml.
+
+  Its whole content is one attribute: the debug APK gets a network
+  security config that permits cleartext to the device's own loopback, so
+  `make e2e-android` can drive the app against a harness backend on this
+  machine. The release build declares nothing here and keeps the platform
+  default, where cleartext is refused for every host at targetSdk 28 and
+  above.
+
+  That default is the correct posture for a phone rather than an
+  inconvenience: the shell's path to a backend is tailnet TLS
+  (docs/specs/remote-access.md, "The phone client"), so a pairing link
+  naming an `http://` endpoint fails at the fetch on a real device, which
+  is the answer that should be given. See
+  res/xml/network_security_config.xml for what exactly this opens, and
+  mobile/AGENTS.md for why it opens only that.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:networkSecurityConfig="@xml/network_security_config" />
+</manifest>

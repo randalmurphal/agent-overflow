@@ -41,6 +41,8 @@ type GeneratedCommitMessage struct {
 // The caller is expected to have the commit dialog open — it will
 // present the result (or the error) to the user for edit before
 // actually committing.
+//
+//ao:scope git:operate
 func (a *App) GenerateCommitMessage(ws WorkspaceRef) (GeneratedCommitMessage, error) {
 	_, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {

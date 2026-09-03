@@ -19,8 +19,9 @@ export interface ImportCtaRun {
 export interface ImportCtaInput {
   status: SessionImportStatus;
   run: ImportCtaRun | null;
-  /** A view-only session cannot import at all. */
-  viewOnly: boolean;
+  /** True when this session was not granted `threads:operate`, which is
+   *  what importing sessions exercises. */
+  importUngranted: boolean;
   /**
    * Failed rows of a SETTLED run — the store returns none while a run is in
    * flight, so a non-empty list is itself the "offer a retry" condition.
@@ -39,7 +40,7 @@ export interface ImportCta {
 }
 
 export function resolveImportCta(input: ImportCtaInput): ImportCta {
-  const { status, run, viewOnly, failedIds, selection, filteredIds } = input;
+  const { status, run, importUngranted, failedIds, selection, filteredIds } = input;
   const runActive = run?.active === true;
 
   // A settled run that left failures behind owns the button: the rows are
@@ -64,6 +65,6 @@ export function resolveImportCta(input: ImportCtaInput): ImportCta {
   return {
     targetIds,
     label,
-    enabled: !viewOnly && !runActive && status === 'ready' && targetIds.length > 0,
+    enabled: !importUngranted && !runActive && status === 'ready' && targetIds.length > 0,
   };
 }

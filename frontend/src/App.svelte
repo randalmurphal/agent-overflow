@@ -28,6 +28,12 @@
   } from './lib/stores/settingsOverlay.svelte';
   import { hydrateWorkflowAttention } from './lib/stores/workflowRuns.svelte';
   import { syncSidebarLayoutFromAppStorage } from './lib/stores/sidebarLayout.svelte';
+  import { installLayoutMode } from './lib/stores/layoutMode.svelte';
+  import {
+    installScreenPresence,
+    refreshScreenPresence,
+  } from './lib/stores/screenPresence';
+  import { installLongPressContextMenu } from './lib/utils/longPressContextMenu';
   import { syncUsagePeriodFromSettings } from './lib/stores/usagePeriod.svelte';
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
   import { applyThemeClass } from './lib/utils/theme';
@@ -63,6 +69,7 @@
   import MessageSearch from './lib/components/palette/MessageSearch.svelte';
   import UnifiedThreadPicker from './lib/components/palette/UnifiedThreadPicker.svelte';
   import ThreadActionConfirmationHost from './lib/components/palette/ThreadActionConfirmationHost.svelte';
+  import UnsentMessageConfirmationHost from './lib/components/composer/UnsentMessageConfirmationHost.svelte';
   import type { Thread } from './lib/types/models';
   import { getPaletteTargetPaneId, isPaletteOpen } from './lib/stores/palette.svelte';
   import { closeCheatSheet, isCheatSheetOpen } from './lib/stores/cheatSheet.svelte';
@@ -96,6 +103,8 @@
   import { addToast } from './lib/stores/toast.svelte';
   import { userFacingError } from './lib/utils/userFacingError';
   import { initUpdates } from './lib/stores/updates.svelte';
+  import { initServiceUpdates } from './lib/stores/serviceUpdate.svelte';
+  import { initDevServers } from './lib/stores/devServers.svelte';
 
   let discussionStartFor = $state<Thread | null>(null);
   let searchFocuser = $state<(() => void) | null>(null);
@@ -357,6 +366,19 @@
     return () => obs.disconnect();
   });
 
+  // Restate this screen's presence whenever the panes or the compact screen
+  // change. The composer reads that state on every run, so the effect keeps
+  // its dependencies, and the transport dedups — an unchanged screen writes
+  // nothing. The document's own focus and visibility edges are the module's
+  // (installScreenPresence below), not this effect's.
+  //
+  // Read for ONE decision on the backend: whether an OS notification is
+  // RAISED. It changes nothing about what this client is sent or renders, and
+  // nothing else in the app may read it.
+  $effect(() => {
+    refreshScreenPresence();
+  });
+
   onMount(() => {
     const cleanupEvents = setupEventListeners();
     // Theme first, and not awaited: the pre-effects above already painted the
@@ -366,9 +388,18 @@
     // the agent-edit loop (write themes/*.json, see the app repaint).
     void loadAppearance();
     const cleanupAppearance = installAppearanceEvents();
+    const cleanupLayoutMode = installLayoutMode();
     // Passive on-launch update check + updater:* event bridge. No-op on builds
     // without an updater; never downloads or installs without an explicit click.
     const cleanupUpdates = initUpdates();
+    // The supervised machines this client can update over the wire: their
+    // status on every hello, and their flow frames. Silent where no backend
+    // reports a supervisor.
+    const cleanupServiceUpdates = initServiceUpdates();
+    // Which ports each attached machine will share a preview of, and the
+    // two actions the external-link delegate calls. Silent on a machine
+    // this session holds no `preview:open` for.
+    const cleanupDevServers = initDevServers();
     // appStorage hydration gates the view-state consumers: pane layout
     // restore reads the per-client bucket, and the sidebar syncs adopt
     // the durable copies over the pre-hydration cache. A failed
@@ -429,7 +460,11 @@
     // graph. See lib/stores/harnessBridge.ts.
     const cleanupHarnessBridge = installHarnessBridge();
     const cleanupExternalLinks = installExternalLinkDelegate();
+    // The phone's right-click: a held touch under the compact layout raises
+    // `contextmenu` at the pressed element, so every menu opens on the phone.
+    const cleanupLongPress = installLongPressContextMenu();
     const cleanupZoomKeys = installZoomKeybindings();
+    const cleanupScreenPresence = installScreenPresence();
 
     // Register the built-in commands. The hooks close over stable references
     // so commands see the live pane state each time they run.
@@ -495,9 +530,14 @@
       flushPaneLayout();
       cleanupEvents();
       cleanupAppearance();
+      cleanupLayoutMode();
       cleanupUpdates();
+      cleanupServiceUpdates();
+      cleanupDevServers();
       cleanupExternalLinks();
+      cleanupLongPress();
       cleanupZoomKeys();
+      cleanupScreenPresence();
       cleanupLoafTrace();
       cleanupHarnessBridge();
       window.removeEventListener('pagehide', flushPaneLayout);
@@ -556,6 +596,8 @@
 />
 <CommandPalette context={paletteContext} contextForPane={makeCommandContextForPaneId} />
 <ThreadActionConfirmationHost />
+
+<UnsentMessageConfirmationHost />
 <KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />
 <MessageSearch open={isMessageSearchOpen()} pane={messageSearchPane} mode={getMessageSearchMode()} onClose={closeMessageSearch} />
 <UnifiedThreadPicker open={isThreadPickerOpen()} pane={threadPickerPane} onClose={closeThreadPicker} />

@@ -35,6 +35,8 @@ import {
 import { expandProject } from '../../stores/sidebar.svelte';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
 import { addToast } from '../../stores/toast.svelte';
+import { threadBackend } from '../../transport/entityIndex';
+import type { BackendKey } from '../../transport/backendKey';
 import { userFacingError } from '../../utils/userFacingError';
 import type { Thread, ThreadGroup } from '../../types/models';
 import { PIN_GROUP_BACK, PIN_GROUP_FRONT } from './threadRowActions';
@@ -198,12 +200,49 @@ export async function removeThreadsFromGroupAction(
   return setThreadGroupMembership(threadIds, '', 'remove threads from group');
 }
 
+/** Shown when a batch names threads on two machines. A group belongs to one
+ * project and a project to one machine, so there is no group that could
+ * hold them and nothing to do but say so. */
+export const CROSS_MACHINE_GROUP_REFUSAL =
+  'Threads on different machines cannot share a group. Select threads from one machine and try again.';
+
+/**
+ * Whether this batch names threads on more than one machine.
+ *
+ * `SetThreadGroup` takes a LIST, and the `threadList` id family reads the
+ * FIRST id to name the backend, so a mixed list would send every id to
+ * whichever machine the first one happens to live on and the rest would
+ * come back unknown. The sidebar cannot assemble one today: every door into
+ * the group actions is gated on the selection sharing a project, and a
+ * project lives on exactly one machine. But that gate is a derived value in
+ * one component, while this module is the exported seam all four doors go
+ * through, so the check belongs here where it holds for callers that do not
+ * exist yet.
+ *
+ * An id the index has never seen disagrees with nobody: it routes where it
+ * always did, which is what the family table already does with it.
+ */
+function spansBackends(threadIds: readonly string[]): boolean {
+  let seen: BackendKey | undefined;
+  for (const id of threadIds) {
+    const owner = threadBackend(id);
+    if (owner === undefined) continue;
+    if (seen === undefined) seen = owner;
+    else if (seen !== owner) return true;
+  }
+  return false;
+}
+
 async function setThreadGroupMembership(
   threadIds: readonly string[],
   groupId: string,
   what: string,
 ): Promise<boolean> {
   if (threadIds.length === 0) return false;
+  if (spansBackends(threadIds)) {
+    addToast('error', CROSS_MACHINE_GROUP_REFUSAL);
+    return false;
+  }
   try {
     const rows = await SetThreadGroup([...threadIds], groupId) as Thread[];
     updateThreadGroupState(rows);

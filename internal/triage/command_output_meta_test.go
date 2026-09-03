@@ -177,3 +177,45 @@ func TestCommandOutputMetaFallsBackToOutputTailForNonZeroExit(t *testing.T) {
 		t.Fatalf("errorMessage = %q", meta.ErrorMessage)
 	}
 }
+
+// A command that exited 0 has no failure message, whatever the provider
+// meta holds. The explicit-message read falls through to
+// `tool_use_result.stdout` and `tool_result.content`, which on a
+// successful command are its ordinary output; before this rule a dev
+// server's startup banner was persisted as the row's errorMessage.
+func TestCommandOutputPayloadMetaHasNoFailureMessageOnSuccess(t *testing.T) {
+	banner := "  VITE ready in 214 ms\n\n  Local:   http://localhost:5173/\n"
+	obj := map[string]json.RawMessage{
+		"command":         json.RawMessage(`"npm run dev"`),
+		"exit_code":       json.RawMessage(`0`),
+		"is_error":        json.RawMessage(`false`),
+		"tool_use_result": json.RawMessage(`{"stdout":` + mustJSONString(banner) + `}`),
+	}
+	var meta CommandOutputMeta
+	if err := json.Unmarshal([]byte(buildCommandOutputPayloadMeta(banner, obj)), &meta); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if meta.ErrorMessage != "" {
+		t.Fatalf("a successful command carried errorMessage = %q", meta.ErrorMessage)
+	}
+	if meta.DevServerURL != "http://localhost:5173/" {
+		t.Fatalf("devServerUrl = %q, want the banner's", meta.DevServerURL)
+	}
+
+	// The same row failing keeps the message, read from the same place.
+	obj["exit_code"] = json.RawMessage(`1`)
+	if err := json.Unmarshal([]byte(buildCommandOutputPayloadMeta(banner, obj)), &meta); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if meta.ErrorMessage == "" {
+		t.Fatal("a failed command lost its failure message")
+	}
+}
+
+func mustJSONString(s string) string {
+	data, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}

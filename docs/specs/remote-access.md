@@ -22,7 +22,7 @@ is per-device by design; prefer over-doing it to under-doing it.
   under backend sections.
 - An always-on personal machine (home server) is a first-class case:
   every other device pairs once over LAN and attaches automatically
-  thereafter. No tailnet is required; tailnet/tunnel exist for
+  thereafter. No tailnet is required; the tailnet exists for
   off-network reach only.
 - Teammates' *backends* peer with ours (federation) holding read-only
   scoped sessions over shared workspaces, and can fork enrolled threads
@@ -52,7 +52,6 @@ anywhere. Authorization is therefore a product of three axes:
 |---|---|---|
 | `loopback-only` | embedded webview, WSL launcher relay, `ao` CLI | loopback listeners only |
 | `device-bound` | paired devices with a key (DPoP) or passkey | any listener |
-| `public` | sessions used over tunnel/Funnel | any listener; DPoP proof required per request |
 
 Rules:
 
@@ -63,7 +62,65 @@ Rules:
 - **Execute-tier scopes (§5) require `binding ≥ device-bound`.** A
   leaked `loopback-only` webview session therefore carries no remote
   capability at all.
-- Publicly-reachable listeners accept only `public`-class presentations.
+- **Revocation is absolute** (owner ruling 2026-08-31). A session is
+  live only while its own row AND its device's row are both
+  unrevoked, and that conjunction is what every consult reads —
+  rotation, ticket mint, the connection's interval re-check, per-call
+  authorization. A session row that outlives its device's revocation
+  (a mint racing the revoke, a sweep that missed) is therefore inert
+  by definition rather than a standing credential; sweeps and
+  mint-time re-checks are hygiene on top, not the enforcement.
+  Re-revoking an already-revoked device re-sweeps rather than
+  early-returning, and a revoke that closed nothing says so. The
+  incident that forced the shape: `store.RevokeDevice`'s
+  already-revoked early return made every later revoke a silent no-op.
+
+  LANDED 2026-08-31 (wave 7c1). The straggler origin was NAMED, not
+  the rotation race first suspected: pairing redemption read the
+  device row as live outside the revoke transaction and its
+  `CreateSession` landed after the sweep (`ConfirmPairing` then
+  activated it, checking only the session row); `Sessions.Mint` also
+  accepted a revoked device with no race at all. Enforcement as
+  built: `store.sessionSelect` JOINs the device's revocation stamp
+  onto every session read and `Session.Live` folds it in — one extra
+  integer comparison per RPC, no second lookup or round trip;
+  `CreateSession` is an `INSERT ... WHERE EXISTS (device un-revoked)`
+  and Activate/Extend/Touch carry the same predicate inside their own
+  statements, atomic against the single-transaction mark-and-sweep;
+  `RevokeDevice` re-sweeps when already revoked and moves the
+  fast-path generation unconditionally (`forgetAll`), covering the
+  zero-session case; `RevokeAccessDevice` answers
+  `DeviceRevocationResult{deviceMoved, sessionsEnded,
+  connectionsClosed}` and the devices pane says which outcome
+  happened. `TestEveryCredentialProducingCallGoesThroughAChokepoint`
+  is the class gate on future mint paths.
+
+  LANDED 2026-08-31 (wave 7c2), the surfaces around it. Devices list:
+  per-device access label (derived from `AccessSession.Scopes`, wire
+  additive), connected-now / signed-out / last-seen, and an
+  error-styled anomaly row for a session standing on a revoked device
+  (unreachable by construction after 7c1; rendered as the alarm it
+  would be). `ForgetAccessDevice` (access:admin, no step-up, revoked
+  devices only): deletes the device row, sessions and refresh secrets
+  cascade, ui_state dropped defensively; audit rows stay
+  (`AuditDeviceForgotten`); the key thumbprint becomes free to
+  re-enroll, gated as ever by an owner-minted link plus the
+  verification number. The revoked-key pairing refusal names both
+  remedies (restore, or forget then pair fresh). View-only UX (owner
+  ruling): scope-ungranted controls go inert in place — disabled,
+  never hidden, no toasts — behind `hasScope` per capability;
+  passive mount-time RPCs check capability before firing;
+  `isViewOnly()` (no execute scope granted) drives exactly one quiet
+  "View only" chip in the sidebar footer. Post-pairing error burst
+  root-caused: the app mounted on redial REQUEST, not readiness —
+  `redialAfterPairing` now retires the pre-pairing socket detached
+  (its close settles only its own attempt) and resolves when the
+  transport is usable, bounded at 5s; `main.ts` awaits it. Ungranted
+  tooltip vocabulary is "Not granted to this device"; "Local only"
+  survives only on host-presence gates. Adjudicated against retier:
+  `GetThreadLiveState` stays threads:operate — its snapshot embeds
+  queued drafts and pending approvals, both above read tier; a
+  view-only thread open hydrates from the threads:read channels.
 
 ### Principal tiers
 
@@ -86,7 +143,11 @@ device is not equally privileged everywhere:
 |---|---|
 | loopback / same host | full (subject to tier) |
 | private network: LAN with TLS, tailnet | full (subject to tier) |
-| public: Funnel, Cloudflare tunnel | full **minus the step-up set**, and `public` binding required |
+
+These are the only paths. The backend never listens on a publicly
+reachable endpoint: tunnel/Funnel exposure was cut entirely (ruled
+2026-08-31, §18), so every connection is a device the owner enrolled,
+arriving over a network the owner controls.
 
 ### Effective scopes
 
@@ -100,10 +161,10 @@ push, attachments, and snapshots) authorizes from that one
 set (§13). There is no second code path that decides access, so there is
 no surface that can drift out of policy.
 
-This is what makes "my phone on my tailnet" and "my phone over a public
-tunnel" different privileges without maintaining two device records, and
-what makes a teammate's backend structurally incapable of holding an
-execute scope even if a grant were mis-issued.
+This is what makes the host's own window and a paired phone different
+privileges without maintaining two device records, and what makes a
+teammate's backend structurally incapable of holding an execute scope
+even if a grant were mis-issued.
 
 ### Scope of impact (stated plainly)
 
@@ -117,6 +178,11 @@ granted. Design effort goes to the gate; the boundaries doc lists what
 is deliberately out of scope.
 
 ## 3. Identity model
+
+LANDED 2026-08-31 (wave 5a): migration v79 holds all five entity
+families below (the backend row predates it, store v55), accessors in
+`internal/store/identity.go`, vocabulary and cross-checks in
+`internal/identity`. See §16 phase 2 for the landed/open split.
 
 Entities in SQLite are authoritative data, not cache (see §12):
 
@@ -171,10 +237,31 @@ remain a separate, narrower credential class, unchanged.
    IP. Discovery is convenience only. It grants nothing and changes
    no trust step.
 
+LANDED 2026-08-31 (wave 5b), steps 1-5: `identity` pairing over
+migration v80, `/auth/pair` as the one wire route, redemption minting
+the real credential pair UNACTIVATED with the confirmation gate inside
+`Session.Live`, and the verification number as a backend-derived MAC
+over (link id, redeeming key). Wave 5c added the owner-facing surface:
+eight `CategoryDeviceAccess` RPCs in `internal/app/app_access.go`
+(overview / mint / status / confirm / cancel / revoke-session /
+revoke-device / restore-device — restore being the remedy the
+revoked-key redemption refusal names) and the redeeming client — `#pair=` fragment parse,
+`frontend/src/lib/transport/deviceSession.ts` (thumbprint mint,
+ticket renewal single-flight ACROSS BROWSING CONTEXTS via
+`renewalLease.ts`: `navigator.locks` where the context is secure, a
+short-TTL localStorage lease where it is not, since a plain-HTTP LAN
+page has neither Web Locks nor `crypto.subtle`; store-before-use
+rotation, never retried unread, re-reading its own stored state inside
+the lease so a lost race answers with the other context's success
+instead of spending the secret twice), and the
+full-page `PairingScreen`. Step 6's fingerprint field is reserved in
+the payload and the row (phase 5 fills it); step 7 (mDNS) is not
+built.
+
 ### Sessions
 
 - **Access tokens are short-lived** (minutes–hours), always
-  key-bound for `device-bound`/`public` classes.
+  key-bound for the `device-bound` class.
 - **Refresh is rotating with reuse detection**: each renewal issues a
   new refresh secret and invalidates its predecessor; replay of a spent
   refresh forks the family, **auto-revokes the whole family**, and
@@ -185,6 +272,48 @@ remain a separate, narrower credential class, unchanged.
 - Browser class: short TTL, non-renewable without passkey re-auth where
   passkeys are available.
 
+LANDED 2026-08-31 (wave 5b): rotating refresh in
+`internal/identity/refresh.go` over `refresh_secrets` (v80). The family
+key IS the session id — a renewal extends the session row rather than
+minting a new one, so revoke-the-family is exactly revoke-the-session
+and every open socket keys on one durable id. Reuse spends the whole
+chain FIRST, then revokes. Windows live in `policy.go` (browser
+15m/12h, native 1h/30d). Browser passkey re-auth gating is phase 5.
+
+LANDED 2026-08-31 (wave 8a): the signed device-key proof replaced the
+bare thumbprint on `X-AO-Device-Key` for every path that binds to a
+device key (`/auth/pair`, `/auth/token`, `/auth/ticket` via the one
+SessionForRequest hook). ES256 compact JWS, public key embedded,
+payload binds method + PATH (deliberately not RFC 9449's full URI — one
+backend answers under several authorities) + `jti` + `iatMs`
+(milliseconds); alg pinned, no agility. Verification:
+`internal/identity/deviceproof.go`, replay guard two rotating
+generations capped 8192 with rotate-early-at-cap
+(`proofreplay.go`), freshness ±2min symmetric. The ROW decides the
+acceptable shape (`devices.proof_kind`, v81, DEFAULT `bearer`): a
+`key` row presenting a bare string is `proof_downgraded`, never a
+fallback, enrollment included; a `bearer` row (plain-HTTP LAN browser,
+constraint 6 — no secure context, no WebCrypto) keeps its exact prior
+path, so no migration step runs. Client key: non-extractable WebCrypto
+ECDSA P-256 in IndexedDB, generated at enrollment ONLY
+(`frontend/src/lib/transport/deviceKey.ts`); a key-bound session whose
+key vanished clears itself rather than retrying a refusal the backend
+answers by design. New reasons: `proof_replayed` (retryable),
+`proof_not_bound`, `proof_downgraded`. A real-Chromium proof vector
+pins Go↔WebCrypto agreement.
+
+Every authentication failure carries a **closed, typed reason code**
+end-to-end (missing/malformed proof, key mismatch, time window,
+invalid signature, …), with signature checked *before* the time
+window so a forged proof is never misreported as clock skew, and one
+client-side presentation module mapping codes to actionable hints
+("check automatic date & time on both devices" for skew — the
+dominant real cause). Adapted from t3code's DPoP-failure rework.
+LANDED 2026-08-31 (wave 5a): `internal/identity/reason.go` (the
+ordering enforced structurally — `withinWindow` is a method on the
+type only the MAC check constructs), `transport.AuthFailure`, and
+`authReason.ts`, with gate tests pinning the three sets together.
+
 ### WebSocket tickets
 
 The session credential never rides a WS URL. Client POSTs for a ticket
@@ -194,6 +323,26 @@ connection re-validates session liveness on an interval and caps its own
 lifetime, forcing periodic re-ticket. Per-RPC scope checks still apply
 after upgrade.
 
+LANDED 2026-08-31 (wave 5b): one `ticketBook`
+(`internal/transport/ticket.go`) behind both the page ticket and the
+session-named `/auth/ticket` (30s TTL, spent on the upgrade whether or
+not it succeeds, subject re-checked against `SessionLive` so a ticket
+cannot resurrect a session revoked in flight, and compared against its
+session's binding class through `Config.SessionAdmitsPeer`, since the
+mint says only that a credentialled request asked for a ticket, never
+where it will be redeemed). Key-binding rides
+`/auth/ticket`'s use of the same `SessionForRequest` hook, which runs
+`CheckDeviceProof`; the DPoP proof itself is phase 5. The interval
+re-check (60s default) and the 12h non-loopback lifetime cap live in
+`conn.go`'s `watchSession`, with the loopback exemption argued at
+`resolveWatchWindows`. Liveness is also asked once more immediately
+AFTER the socket joins the live-session registry: the upgrade's read
+happens before the attach, so a revocation landing between them
+iterates a registry the arriving connection is not yet in and closes
+every socket but that one; the post-attach re-check is what makes a
+revocation mean closed rather than closed at the next 60s tick. `/ws` still ALSO admits launch-credential
+clients naming no session; migrating them off is phase 3.
+
 ### Revocation
 
 Revocation is only real if it reaches live connections. A live-session
@@ -201,6 +350,13 @@ registry keyed by session id **force-closes** matching WebSockets and
 stops their event streams synchronously on revoke; the in-memory session
 table is the per-RPC fast path and is invalidated at the same instant.
 No RPC authorizes from state cached at upgrade time.
+
+LANDED 2026-08-31 (wave 5a): `transport.SessionConns` +
+`identity.Sessions.RevokeSession`/`RevokeDevice` (device revocation
+flips the device and its live sessions in one store transaction), the
+generation counter that keeps a slow-path read racing a revoke from
+re-caching a dead row, and the `session revoked` close-log attribution.
+The revocation RPC and its UI wait for the device-management surface.
 
 ### Passkeys (where a real domain fronts the backend, §7)
 
@@ -211,14 +367,101 @@ expiry, and **mandatory step-up** for the catastrophic set (below).
 Cross-device (phone signs for a browser via QR) is native CTAP hybrid.
 Fallback is always pairing.
 
+**Wave 8f LANDED 2026-09-01 (67cff7d8..4d007991): passkeys, both
+uses.** `github.com/go-webauthn/webauthn` v0.18.0, with the four
+policies the library deliberately leaves to the caller owned in
+`internal/identity/passkey.go` and argued in that package's guide: a
+single-use ceremony book (the library ACCEPTS SessionData replay;
+ours deletes the ceremony on the first finish attempt, purpose
+mismatch included, so a step-up challenge can never finish as a
+sign-in), enforced ceremony expiry (`Timeouts.Enforce` is off by
+default), single-owner credential accounting under the wave-8a user
+row (32-byte lazy user handle; `credentialFor` round-trips
+BackupEligible exactly because the library refuses a BE flip), and a
+relying party resolved per ceremony (`internal/app/app_passkey.go`:
+canonical domain as the only RP ID candidate, origins =
+`https://domain` + `https://domain:port`, http only for the
+`.localhost` family the e2e rig uses). Sign-in mints through the same
+`Mint`/`issueFor` chokepoints pairing uses, with a REQUIRED device-key
+proof: the passkey proves the PERSON, the device row is what
+revocation reaches, and `resolvePasskeyDevice` applies pairing's
+adoption rules (revoked refused, other-user key mismatch, class
+always `DeviceBrowser`). Step-up gained its second proof: a 2-minute
+single-use token bound to the asking session, spent by the transport
+ONCE per call (`CallerProof` resolved before the gate, carried in
+context; `ConnPrincipal.HostPresent` is gone, replaced by
+`StepUpProvenFromContext`), presented via the additive
+`ClientFrame.StepUpToken` field with `CapabilityPasskeys` +
+`Bootstrap.PasskeysAvailable` telling the client both halves.
+`FinishPasskeyStepUp` reads the assertion's OWN userVerified flag
+(stored flags latch) and compares credential owner against the asking
+session's account. Registration is `access:admin` + step-up on the
+BEGIN only — a proof on the finish would ask the authenticator to
+assert with the credential it just created and the backend has not
+stored, which breaks remote registration on its own success; the
+finish rides the single-use ceremony handle instead (f39a233b, e2e
+case 3 proves the remote round-trip on the wire). Removal ends no
+session and carries no step-up (it issues nothing, and the phone you
+can reach must be able to remove the credential on the one you
+cannot). UI: a Passkeys block inside Settings → Devices, "Sign in
+with a passkey" on both the pairing screen and the terminal-state
+transport banner, and `withStepUp` retrying a refused call once with
+a fresh assertion. The banner path fixed a real defect its e2e rig
+found: a page that mounted while transport was terminal had loaded
+nothing, so the first connection of such a page reloads it.
+
+**Wave 8f2 LANDED 2026-09-01 (2e3aa3cd, 35d3abf3): step-up reaches
+every gated surface.** Wave 8f left the ceremony wrapped around one
+call site (the passkey block's own begin); every other step-up method
+had host presence as its only reachable proof from a remote screen,
+invisibly, because on the owner's own machine the gate passes
+silently. The per-call wrapper is deleted and the ceremony now runs
+behind ONE interception in the RPC dispatch path
+(`wsClient.installStepUpProver`, filled at boot by
+`transport/stepUp.ts` — the client-side mirror of the backend's
+`Config.StepUpProof` seam, injected because the ceremony is itself
+two RPCs through the same client). A refused call proves the touch
+and is dispatched once more with the token; a future `//ao:stepup`
+method's UI wires nothing. Structural properties: the recursion guard
+is a dispatch-time read of `ceremonyInFlight` (the ceremony's own
+RPCs take the un-intercepted path by construction, never by name
+matching; the pinning test fails on the deadlock rather than
+hanging); the retry goes below the interception so exactly one retry;
+the token still reaches a frame only through `withStepUpToken`'s
+frame-construction drain; ceremonies serialize (one prompt at a time,
+each refusal gets its own token — a token proves one call); any
+ceremony failure settles the caller with the ORIGINAL refusal; the
+ceremony's two RPCs are issued on the CONNECTION THAT REFUSED, handed
+to the prover as a `StepUpTarget` rather than through the generated
+bindings, because both methods route `home` and a refusal on an
+attached backend would otherwise be answered with a token minted on
+the page's own backend, bound to a different session and refused on
+arrival after the person had already touched their sensor. One
+deliberate narrowing, documented and pinned: a call dispatched WHILE
+a prompt is open gets its refusal rather than queueing (press again).
+Proven remotely end to end: MintDevicePairing (e2e drives it from a
+paired remote page with zero passkey code in the component, asserting
+refusal → ceremony → armed retry → landed link off the wire),
+BeginPasskeyRegistration, MCP config writes, provider custom-env
+writes, worktree-setup recipes, and every host-tier UpdateSettings
+key whose control mounts remotely. Two step-up entries in §4's list
+remain unreachable remotely for a reason OUTSIDE step-up: the network
+section's READ (`GetNetworkSettings`) and the WSL distro methods
+carry `//ao:scope host`, so those screens never load on a paired
+device — widening that read scope is a product decision, not a
+mechanism gap.
+
 ### Step-up (mandatory, not optional)
 
 A per-call fresh passkey (or host-presence) proof, never an ambient
 standing scope, is required for: minting pairing links, network bind /
 exposure changes, provider custom-env writes, MCP config writes, WSL
-distro preference, and remote update triggering (§7). Optional step-up
-is theater; these are the calls that re-key the system or re-route every
-prompt.
+distro preference, worktree-setup recipe writes (stored argv that runs
+unattended with the user's environment on every worktree cut — the
+same class as an MCP config write), and remote update triggering (§7).
+Optional step-up is theater; these are the calls that re-key the
+system, re-route every prompt, or register something the host will
+execute.
 
 ### Local clients
 
@@ -229,12 +472,61 @@ relying on apparent loopback origin. With topology no longer
 authorizing by itself, "looks like loopback" must stop being a trust
 basis (a same-host relay can otherwise launder remote peers).
 
+LANDED 2026-08-31 (wave 5b), with one delivery difference: the session
+credential rides the existing bootstrap EXCHANGE (an HttpOnly
+`ao_session_<port>` cookie planted by `/bootstrap.json`) rather than
+the fd/stdout line, because the session core boots after the transport
+binds. The page keeps `?t=` — dropping it is the phase-3 migration.
+The channel device row (`devices.channel = "local"`, one row per boot
+via partial unique index) backs a session re-minted per boot with no
+refresh secret. The WSL launcher fetches the cookie over its
+authenticated bootstrap exchange and forwards it as a header on every
+dial, re-fetching after a refused dial. Wave 5c moved that fetch/cache
+into `internal/relaysession` (transport-free so the Windows launcher
+can link it; a drift test pins the restated cookie prefix and header
+name) and the `--connect` stub now forwards the credential on every
+carried upgrade too, marking it stale on any non-101 response.
+
+LANDED 2026-08-31 (wave 6c2): the `?t=` drop itself. Every webview
+window loads a BARE page URL (marked `host=webview`) and is handed its
+one-time ticket by `ExecJS` injection instead — `internal/pagehost`
+holds the marker, the two injected names, and the one rendered script;
+`uiwindow.DeliverPageTicket` answers `WindowRuntimeReady` (which the
+SPA raises itself, `pageHost.ts`, since it replaces `@wailsio/runtime`)
+in all three window hosts: desktop/windowed boots, the Windows
+launcher, the `--connect` stub. `/pageurl?host=webview` answers
+`{url, ticket}` as separate JSON fields for the launcher. Browsers
+keep `?t=` — a URL is the only channel that reaches one. Same
+`ticketBook`, same exchange, same cookie; only the delivery moved.
+
+LANDED 2026-08-31 (wave 6d1): a `/ws` upgrade from an off-host peer
+must NAME a live session (ticket, `X-AO-Session`, or session cookie —
+the carriers `SessionForRequest` already reads); refusal is the
+unfingerprintable 404. Loopback peers keep the launch-credential path
+BY ADJUDICATION, not as leftover migration: the embedded webview,
+`ao-harness`, the e2e rig, the launcher's notification socket, and the
+`--connect` stub's carried dial are the host's own processes
+presenting the boot secret, which is authentication of the host
+itself. The SPA decides the unpaired-networked condition BEFORE
+dialing (`manifest.remote` AND non-loopback origin AND no paired
+session) and latches a second terminal state, `pairing-required`,
+phrased by `connectionRefusal.ts`. Residual, pulled into the
+origin-gate deletion as a prerequisite: the bootstrap exchange still
+plants the local-channel session cookie without comparing peer
+locality against the session's `loopback-only` binding class, so a
+share-URL page can name that session on the wire even while the UI
+refuses to dial — the UI is stricter than the wire until the binding
+class is enforced at presentation.
+
 ## 5. Authorization
 
-### Two enforcement tiers, eight labels
+### Two enforcement tiers, twelve grantable labels
 
 Scope names are the audit vocabulary; the enforced boundary is
-**observe vs. execute**, crossed with binding class (§2).
+**observe vs. execute**, crossed with binding class (§2). Two more
+declared values are method properties rather than grants: `session`,
+the floor (its own tier below observe — wave 7b, §6), and `host`
+(presence-only, §2).
 
 | Scope | Tier | Covers |
 |---|---|---|
@@ -244,10 +536,13 @@ Scope names are the audit vocabulary; the enforced boundary is
 | `approvals:respond` | execute | answering tool-use approvals |
 | `threads:autonomy` | execute | creating or moving threads into auto / auto-accept-edits / full-access; running workflows & automations |
 | `terminal:operate` | execute | PTY create/attach/write/replay, worktree-setup output |
+| `preview:open` | execute | opening this machine's dev-server previews from another machine: the discovered port list and the ticketed preview URL for one port (§7; deliberately not `terminal:operate`) |
 | `git:operate` | execute | git mutations, worktrees, PR surface |
 | `attachments:write` | execute | uploads (reads ride payload auth) |
+| `settings:read` | observe | settings and preference reads: settings snapshot, keybindings, themes, spinners, chat-bar favorites (added wave 6b — the original ten could not spell a settings read) |
 | `settings:write` | execute | user/device-tier settings; host-tier and the step-up set are excluded |
 | `access:admin` | execute | device list/revoke, audit read; **minting and network changes additionally require step-up** |
+| `session` | floor (not a grant) | any named live session: the per-argument methods — the settings patch (per-key tiers), the ui_state methods (own bucket only) |
 
 Rationale for the splits: answering an approval authorizes host command
 execution, and a thread in `full-access` mode needs no approval at all,
@@ -260,6 +555,18 @@ settings write.
 The scopes are separate *names* because peers, viewers, and the audit
 log need to distinguish them, **not** because the owner's own devices
 should be gated against each other.
+
+The same names gate SERVER PUSH, and they are the whole gate for it.
+Ruled 2026-09-03: every event about a thread or a workspace must
+reach, in real time, any connected client that has visibility of it, a
+sidebar row or an open pane, the phone and the `--connect` browser
+included. A channel therefore carries the scope of the pull RPC that
+returns the same data, and its audience is `any`, because a session
+granted that scope is granted that state and the push must not be a
+second, narrower answer to a question the pull already answered.
+`loopback-only` on a channel is a statement about its CONSUMER (a
+launcher directive, harness tooling, the self-updater) and never a
+disclosure control.
 
 Default profiles:
 
@@ -296,6 +603,56 @@ of phase 3 (privileged scope ⇒ local-only), so only one hand-edited
 source exists while clients are migrating; the origin gate is deleted
 once every client authenticates.
 
+LANDED 2026-08-31 (wave 6a): all 360 bound methods annotated, the
+generator gate live, `wireSafeMethods` / `localOnlyCategories` / the
+eleven-value category set retired, `LocalOnlyMethods` derived, step-up
+set pinned by test. Three facts the annotation pass established, each
+a decision the enforcement wave inherits rather than one it may
+rediscover:
+
+- **The day-one derivation rule is not reachability-preserving.** 21
+  thread/project/discussion bookkeeping mutations (rename, archive,
+  pin, read-state, plan/discussion CRUD) are execute-tier by any
+  honest reading and were wire-reachable before the table existed. A
+  shrink-only `transitionalReachability` override map (43 entries,
+  reasons inline) pins today's partition bit-identically; each entry
+  is adjudicated and deleted during enforcement, when a session grant
+  rather than the origin gate carries the answer.
+- **The ten scopes cannot spell a settings or preference read.** Ten
+  getters (settings, keybindings, themes, spinners, chat-bar
+  favorites, ui_state) sit in `settings:write` only because no
+  observe-tier name exists for them. Enforcement either adds
+  `settings:read` (observe) or rules that a read through a
+  settings-scoped method enforces as observe; until then the override
+  map keeps them wire-reachable.
+- **`files:read` = observe deliberately reverses the 2026-05 decision
+  that locked the diff surface loopback-only.** Twelve workspace-content
+  methods stay loopback-only via overrides; unlocking them for
+  sessions granted `files:read` is the intent of the scope and lands
+  with enforcement as a deliberate reachability change.
+
+ENFORCEMENT LANDED 2026-08-31 (wave 6b): per-RPC scope gate for
+session-carrying connections (`transport.AuthorizeSessionMethod`,
+grants re-read per call through `Config.SessionScopes`, nothing cached
+at upgrade time); typed `scope_required` (missing scope as a wire
+FIELD) and `step_up_required` refusal codes following the
+`grant_required` precedent; step-up as one `stepUpProven` function
+whose proof this phase is host presence and which phase 5 swaps for a
+passkey assertion without moving call sites; the argument-dependent
+autonomy recheck judging the EFFECTIVE runtime mode (resolved default
+at both thread-create paths via a `threadapp.AuthorizeRuntimeMode`
+hook, override-else-current-thread-mode on send/steer/queue — an
+omitted argument resolving to full-access is an autonomy act);
+per-key settings-tier enforcement on `UpdateSettings`; `settings:read`
+added (resolving eight overrides, 35 remain). The launch-credential
+path is untouched and BOTH gates stay live for session connections
+until every client authenticates. Known gap, phase 4: the scope
+vocabulary cannot spell "any valid session", so a device-tier-only
+settings patch still needs `settings:write` to reach the per-key gate
+(stricter than §6, never looser), and `SetUIState`/`DeleteUIState`
+keep their overrides for the same reason. Scope refusals are not yet
+written to the auth audit log (no transport→identity hook for it).
+
 ### Host-only scope (`scope: host`)
 
 Acts on the host desktop or reconfigures the host itself; no remote
@@ -313,14 +670,78 @@ Filters become scope-driven: terminal frames require
 `access:admin`; approval/queue channels follow their scopes.
 Loopback-vs-remote survives only as a transport optimization signal.
 
+LANDED 2026-08-31 (wave 6b): every `channelPolicies` row carries a
+`Scope`; a session-scoped connection filters frames through a
+per-connection grant mask computed at attach. That once-per-connection
+mask is sound because session grants are immutable and revocation
+force-closes the socket through the live-connection registry — a
+future "narrow a session's grants in place" API must revisit it.
+`system:stats` took `threads:read` as its observe floor (push-only
+channel with no pull half to derive from).
+
 ### Frontend capability model
 
 `isViewOnlySession()` (bootstrap boolean) is replaced by a granted-scope
-capability object; the ~15 gating files key off the capability they
-need. Scope-refusal errors are structured and name the required scope,
+capability object; the gating files key off the capability they
+need — 36 non-test consumers as of 2026-08-30 (24 components, 9
+stores, 3 utils), so budget the phase-3 migration for that, not for
+the ~15 this section first claimed. Scope-refusal errors are structured and name the required scope,
 so disabled-state tooltips are self-describing. **The server never
 trusts the client's capability object**. Every RPC re-checks
 server-side; hello-frame flags are compat hints, never authorization.
+
+LANDED 2026-08-31 (wave 6c1): `frontend/src/lib/transport/scopes.ts`
+answers `hasScope()` from, in precedence order, a paired session's
+published grants (which win even on loopback — the upgrade presents
+that session), then the local page (an explicit every-scope answer),
+else nothing. `host` is answered from presence, never a grant,
+mirroring the server gate. The grant list rides the existing
+credential-route DTOs (`TokenGrant.Scopes`, always an array — absent
+means a backend too old to say and falls back to judging the page,
+`[]` means granted nothing). `isViewOnlySession` is deleted; run mode
+survives as the process-boot axis only ("whose settings would this
+RPC edit"), and the two axes are read together where both apply.
+`scopeRefusal.ts` is the one presentation module for
+`scope_required` / `step_up_required` (wired through
+`userFacingError`), sibling to `authReason.ts`'s credential half; a
+Go gate pins the TS scope vocabulary to `transport.Scopes` in order.
+Policy note: an unpaired networked page answers "granted nothing"
+rather than borrowing the local channel's grants it cannot enumerate
+— stricter than the backend would permit, moot once pairing is the
+only way onto a networked page.
+
+### Phase 3 closed
+
+LANDED 2026-08-31 (wave 6d2). The local-channel session's
+`loopback-only` binding class is enforced at presentation
+(`bindingAdmitsPeer` inside the one `SessionForRequest` hook, so the
+manifest fallback, `/auth/ticket` and `/ws`'s header and cookie arms
+inherit it; `/ws`'s TICKET arm asks the same question directly through
+`Config.SessionAdmitsPeer`, because a spent ticket names its subject
+and never reaches that hook, and one carrier that skipped the class
+would be a full admission; a binding-refused presentation resolves NO
+session and falls to the sessionless rules), and `/bootstrap.json` plants the session cookie
+only for loopback peers — a LAN share-URL page gets the page cookie
+and reaches the pairing prompt with no local channel. On that
+foundation the origin gate is DELETED: `LocalOnlyMethods`, the
+derivation, all 35 `transitionalReachability` overrides, and the
+frozen partition are gone; `AuthorizeSessionMethod` is the one
+per-method gate, and receiver-level `RegisterOptions{LocalOnly}` (the
+harness) is the only locality rule left on the dispatcher. The 2026-05
+diff-surface lock is deliberately open: the twelve workspace-content
+methods answer a session granted `files:read` (three ride
+`threads:read`), the 21 bookkeeping mutations ride `threads:operate`,
+and `reachability_test.go` pins each by name plus the floors (`host`
+refused for every off-host session; step-up still demands its proof).
+Consequence recorded in `internal/relaysession`: a cross-host
+`--connect` stub can no longer borrow the upstream's local channel —
+it needs a paired device session.
+
+Posture notes from the deletion, adjudicated: a paired session with
+`threads:operate` can run a session import (reads the host's provider
+homes) — accepted, that is what pairing a trusted device means. OPEN
+product decision: `MintDevicePairing` grants every scope; a per-grant
+pairing surface is a later decision, not a phase-3 gap.
 
 ## 6. Per-device and per-user state
 
@@ -336,35 +757,191 @@ it; the backend derives scope from the authenticated session's device.
   before identity or the DB matter (network bind, port, provider
   binaries + custom env, retention, observability, WSL preference) and
   must be hand-editable when the UI is unreachable. Keeps
-  `settings.Service` + `atomicfile`.
+  `settings.Service` and its own inline atomic write (`os.CreateTemp`
+  → `Sync` → `os.Rename`; the package does not use
+  `internal/atomicfile`, despite an earlier draft of this line).
 - **User and device tiers live in the `ui_state` table**, which already
   exists for exactly this shape (and already migrated pane layout out of
   settings). User tier = `user:<id>` scope; device tier = `device:<id>`
   scope, with typed validation over the same store. Device rows cascade
   on device deletion. Revoking a device drops its state for free.
+
+  LANDED 2026-08-31 (wave 5c), the device half: the ui_state scope is
+  derived from the CONNECTION (the session the upgrade presented →
+  `device:<id>`; the client id the RPC parameter used to carry is
+  gone). The local page channel deliberately keeps per-screen
+  `client:<declared id>` buckets, because every same-host surface
+  (embedded webview, WSL relay, `--connect` stub) presents the same
+  channel session and one shared bucket would regress multi-screen.
+  The user tier and typed validation remain phase-4 work.
 - Device tier (defaults per device class; phone ships `lowPowerMode`
-  on): `lowPowerMode`, theme, fonts + `fontSize`, `paneDensity`,
+  on): `lowPowerMode`, fonts + `fontSize`, `paneDensity`,
   `activityRunWindowRows`, `activityRunDefault`, `streamingEnabled`,
   `diffWordWrap`, `collapseDiffPreviews`, `timestampFormat`,
-  `editor.preference`, `backgroundGitFetch`, `projectSortMode`,
-  `usagePeriod`, `recentWorkspaces`, `remoteEndpoints` (also ends
-  today's credential fan-out), window geometry (ends the single global
-  slot two desktops fight over).
-- User tier: confirmations, commit-message style, textgen routing,
-  hidden models, default thread env mode, worktree branch prefix,
-  auto-compact thresholds, GitLab hosts.
+  `editor.preference`, `backgroundGitFetch`, `usagePeriod`,
+  `recentWorkspaces`, plus the six spinner-appearance keys the taxonomy
+  wave classified device (display, like fonts and motion).
+  `projectSortMode` was device here until 2026-09-03 and is user tier
+  now (how a person orders their projects follows the person); its
+  value is promoted out of the screen bucket on first read
+  (`retieredKeys`, internal/settings/residency.go).
+
+  Adjudicated OUT of this list (2026-08-31, phase-4 design):
+  - **Theme** is client-file-resident by design (appearance.json on a
+    native client, built-ins + localStorage in a browser) and is NOT a
+    ui_state member. The selection is a property of the client
+    MACHINE: the `--connect` stub has no DB and a browser has no
+    backend bucket of its own, and `theme-system.md` §6.1 already
+    landed that argument. `settings.theme` is retired, not relocated.
+  - **Window geometry** retiers to HOST: it is the backend machine's
+    own window, written by the geometry tracker with no RPC and no
+    connection to derive a device from, and the Windows launcher
+    already keeps its own per-installation file. The "two desktops"
+    fight this line predicted does not exist — a `--connect` window
+    persists nothing today.
+  - **`remoteEndpoints` retiers to HOST**: the list holds plaintext
+    session tokens (its own SECURITY NOTE says so) and the token read
+    is already `host`-scoped; a device-tier row would declare a phone
+    may edit it. Its storage is redesigned in phase 7 with the
+    multi-backend UI, not here.
+  - **`backgroundGitFetch` and `editor` retier to USER** (wave 7a
+    finding): both are consumed by BACKEND behavior — the unattended
+    fetch loop and the editor `OpenInEditor` spawns — and one global
+    behavior cannot be driven by a per-screen value. The rule is now
+    stated at the tier map: a key backend logic reads is not device
+    tier.
+- User tier (stored under the reserved `user:default` scope until
+  phase 8 introduces real user identities): confirmations,
+  commit-message style, textgen routing, hidden models, default thread
+  env mode, worktree branch prefix, auto-compact thresholds, GitLab
+  hosts, plus the eleven agent-behavior keys the taxonomy wave
+  classified user (thinking defaults, prompt overrides, disabled
+  tools, cross-session, output style, subagent limits, auto-pin).
+
+Multi-machine convenience without a sync engine: host- and user-tier
+settings are per-machine by design (divergence is a feature), but the
+settings UI shows which machine is being edited and offers "apply to
+all / selected machines" on eligible keys — the client fans the same
+write out per backend; no cross-backend settings replication exists.
 
 The **key→tier taxonomy lands in phase 3**, with the scope table:
 device-tier writes ride a valid session (they touch only `device:self`),
 user-tier writes need `settings:write`, host-tier needs step-up. Phase 4
 is then pure storage migration with no scope churn.
 
+LANDED 2026-08-31 (wave 6b), with one deliberate deviation: the
+per-key tier gate enforces exactly the three rules above, but the
+METHOD floor on `UpdateSettings` is `settings:write`, so a
+device-tier-only patch still needs that grant to reach the per-key
+gate — the scope vocabulary has no name for "any valid session".
+Stricter than this section, never looser; phase 4 either adds a
+session-floor value or moves device-tier writes onto their own name.
+
+Phase-4 design decisions (2026-08-31), settled ahead of the storage
+waves:
+
+- **One service, tiered storage.** `settings.Service` stays the one
+  API and the wire keeps `GetSettings`/`UpdateSettings`; what changes
+  is residency. Host tier stays in `settings.json`; user tier is
+  backed by `ui_state` under `user:default`; device tier by the
+  caller's own bucket (`device:<id>` for a paired session, the
+  existing per-screen `client:<id>` for the local page channel).
+  `GetSettings` resolves the device slice per CALLER; the settings
+  validators keep running on the merged patch regardless of where a
+  key lands, and `settings:updated` still announces `{tier, keys}` —
+  a device-tier frame prompts each client to re-read and each gets
+  its own values.
+- **Seeding**: on first boot after migration, the file's user-tier
+  values seed `user:default` and its device-tier values seed the
+  backend machine's own screen bucket (the embedded webview's
+  `client:<id>`); other devices start from device-class defaults.
+  Moved keys join `retiredSettingsFieldNames`. Never-overwrite,
+  log-and-continue — the pattern `migrateUIStateFromSettings` set.
+- **Backend-initiated writers**: `recentWorkspaces` is written on
+  thread creation, which is an RPC and therefore has a caller to
+  attribute the write to. Window geometry has no caller and stays a
+  host-tier file value (adjudication above).
+- **The session floor** lands as a scope value meaning "any named
+  session" carried by `UpdateSettings` (and the ui_state methods),
+  with the per-key tier gate doing all real enforcement: device keys
+  pass on session presence, user keys require `settings:write`, host
+  keys require step-up. A view-only device changing its own font size
+  is the case the floor exists for.
+- **One write path per key, closed as a class**: a settings key with
+  a dedicated RPC is refused by the generic patch. `network`,
+  `claudeCustomEnv`/`codexCustomEnv`, and `remoteEndpoints` already
+  are; `workflowPaused` joins (its dedicated RPC enforces
+  `threads:autonomy`, and the generic patch demanding host step-up
+  for the same act was two answers to one question).
+
+LANDED 2026-08-31 (wave 7a), the storage half: one `settings.Service`,
+tiered residency (`internal/settings/residency.go`). The struct and
+wire keep every key; the FILE CODEC holds host keys only, the user
+tier overlays from `ui_state` `user:default`, and the device tier
+overlays per caller through `Service.For(bucket)` (bucket derivation
+shared with `uiStateScope`; sessionless in-process callers read device
+defaults). Validators run on every write regardless of destination,
+and the device overlay re-runs `sanitizeLoadedSettings` on READ, so a
+value poked directly into a bucket via `SetUIState` is clamped exactly
+like a hand-edited file. Seeding runs once at boot: file values seed
+`user:default` and the backend screen's `client:<id>` bucket,
+never-overwrite, defaults skipped; moved keys are NOT retired (they
+must stay on the wire) — the codec split is the mechanism instead.
+`workflowPaused` joined the refused-from-patch class. `settings.json`
+writes now happen only when a host key moves. A store-less Service
+keeps every tier in the file, which the pre-database boot readers
+(bind address, window geometry) depend on.
+
+Device-class defaults LANDED 2026-09-01 (wave 6c, phone phase): the
+class table (`internal/settings/classdefaults.go`) resolves a
+device-tier read as Default < class row < the bucket's own writes, AT
+READ and never written into a bucket, so a device that never wrote a
+key tracks a future table change with no migration. Phone is the only
+populated row — `lowPowerMode: true`, exactly what this section
+commits — and the table is total over the declared classes with the
+empty rows pinned as decisions. A written key outranks the class
+(including writing the class default's opposite; the mutate pre-read
+is class-resolved so the opposite registers as a change), and clearing
+a key returns to the CLASS default. `settings.DeviceClass` mirrors
+`identity.DeviceClass` rather than importing it (settings stays
+dependency-free for the pre-database boot readers) with a
+both-directions drift test in `internal/app`; `Service.For(bucket)`
+became `For(bucket, class)` so a bucket and its class travel as one
+answer, resolved together in `settingsCaller` /
+`uiStateScreen` — a paired device's class comes off its device row,
+the local page channel and sessionless callers are desktop, and an
+unreadable class falls back to desktop (safe while desktop's row is
+empty, asserted in a test). Store-less services apply no class row:
+pre-database the file IS the screen's write, and a class row on top
+would outrank it. Open upstream: nothing validates that a phone
+pairing actually declares class `phone` (`MintDevicePairing` takes the
+caller's word); revisit when the phone shell's pairing surface lands.
+
+LANDED 2026-08-31 (wave 7b), the floor half: `session` is a declared
+scope value in both vocabularies' senses at once — transport declares
+it beside `host` as a method property no session can be granted, in
+its own `TierSession` below observe (a floor call is not read-only; a
+device-tier settings write rides it), and `AuthorizeSessionMethod`
+admits it on session presence alone, liveness re-read per call.
+`UpdateSettings` and the three ui_state methods carry it; the frozen
+floor set, "never a grant", and the event-filter bit are each pinned
+by test. `GetSettings` deliberately stays `settings:read` — it answers
+the merged host+user+device view, more than the caller's own bucket.
+Alongside it, §5's per-device narrowing became real at the mint
+surface: `MintDevicePairing(deviceClass, access)` with `full` (empty
+means full — the parameter was appended to an existing call) or
+`view-only`, resolving to `identity.ObserveScopes`
+(threads:read/files:read/settings:read, pinned to transport's observe
+tier by test); an undeclared level is refused, never widened, and the
+grant set is fixed at mint. The pairing modal offers the choice as a
+two-option control defaulting to Full access.
+
 ## 7. Transport, reachability, TLS
 
 ### Multi-listener, one session store
 
-Loopback (webview, CLI), optional LAN bind, optional tsnet listener,
-optional tunnel-fronted. Sessions are valid across listeners **subject
+Loopback (webview, CLI), optional LAN bind, optional tsnet listener.
+Sessions are valid across listeners **subject
 to their binding class** (§2). Local clients never hairpin through the
 tailnet, and a soft listener cannot launder a strong credential into a
 weaker presentation.
@@ -373,11 +950,34 @@ Cross-origin defense is explicit: strict Host allow-list (canonical
 domain + known loopback names), Origin / `Sec-Fetch-Site` checks on
 `/ws` and every auth endpoint, DNS-rebinding rejection.
 
+Listener and endpoint-advertisement init is **per-listener isolated**:
+one integration failing to start (a broken `tailscale` binary on
+PATH) degrades that listener only and surfaces its
+error — it never takes down the others (t3code shipped exactly this
+bug: one spawn defect killed all endpoint advertisement).
+
 ### Stable endpoint
 
-Port becomes a setting (pick-random-once-then-persist default,
-user-fixable). Durable sessions remove re-pairing after restarts; origin
+The pick-random-once-then-persist half already shipped
+(`main_transport_port.go`: `transport-port.json` pin next to
+`client-id.json`, engages only when no explicit `--listen` port is
+given, falls back to ephemeral and re-pins if the pinned port is
+taken, `--reset-transport-port` to clear). What remains is the
+**user-fixable setting** surface: today the only controls are CLI
+flags. Durable sessions remove re-pairing after restarts; origin
 stability keeps browser storage attached.
+
+LANDED 2026-09-01 (wave 8g, c06a77e3): `network.listenPort` in
+Settings → Remote access (0 = automatic, the pin-cache behavior). Precedence
+`--listen` > saved port > cache; the saved port deliberately takes NO
+ephemeral fallback — every share URL and stored endpoint names it, so
+an unbindable saved port is a loud boot failure naming the setting and
+both ways out. Clearing back to 0 does not move the listener (it means
+"stop pinning", and the cache re-pin makes the next boot agree). The
+editor states the true costs: a changed port changes the share URL,
+browsers re-sign-in and lose origin storage, and a paired Go client
+keeps dialing the old port until re-paired (it stores its endpoint
+verbatim and never rediscovers).
 
 ### LAN access without a tailnet
 
@@ -385,7 +985,7 @@ The always-on home machine is a first-class case, not a degraded one:
 enable the LAN listener, pair each device once (QR/code), and durable
 rotating sessions plus the stable endpoint make every later attach
 automatic. Laptop, phone app, and the machine's own window connect
-the same way, no tailnet involved. Tailscale/Funnel are for
+the same way, no tailnet involved. Tailscale is for
 *off-network* reach only, never a LAN prerequisite. The one
 platform-imposed limit (constraint 6): plain-HTTP LAN **browsers** are
 bearer-only: no passkeys, no service workers. The desktop app, CLI,
@@ -394,16 +994,94 @@ subject to browser secure-context rules, and get encrypted TLS with no
 domain at all via cert pinning anchored in the pairing payload (see
 TLS below). Wanting passkeys in a LAN browser is the one thing that
 requires the DNS-01 owned-domain path: real HTTPS on a private
-address, still no tunnel. It is an optional upgrade, never a
+address, nothing publicly reachable. It is an optional upgrade, never a
 dependency.
 
 ### TLS (in-app termination)
+
+**Wave 8b LANDED 2026-08-31 (2ccbe6cd): the termination half.**
+`internal/servercert` load-or-mints the install's self-signed ECDSA
+P-256 certificate (one combined 0600 PEM under the config root,
+ten-year validity, unreadable material replaced loudly — a replacement
+un-pins every paired device and `Material.Replaced` says so). The
+transport terminates TLS on the SAME port it serves cleartext on
+(`tlssniff.go`: first byte 0x16 → `tls.Server`, else plain; one
+goroutine per conn off the accept loop, bounded by
+`HTTPReadHeaderTimeout`), with `bindListener` as the one listener
+constructor so boot / ephemeral fallback / rebind / retry / rollback
+all keep the wrap. `deriveWSURL` follows the request (`r.TLS` or a
+validated `X-Forwarded-Proto: https` → `wss://`) — the
+forwarded header is honored there and nowhere else; `OriginAllowed`
+and the Secure cookie flag stay on `r.TLS`. The pairing payload's
+`certFingerprint` is populated from the minted cert
+(`sha256:<lowercase hex>` over the leaf DER), injected at
+`MintDevicePairing` and read back off the minted row. The pinning
+CLIENT (desktop attach + CLI) is the next wave; browsers keep the
+cleartext half and `network.Settings.URL` stays `http://`.
+
+**Wave 8c LANDED 2026-08-31 (23c3003d): the Go-native pinned client.**
+`internal/deviceclient` is the paired device in Go: enrollment-only key
+mint (ECDSA P-256, PKCS#8 0600), per-request JWS proofs matching
+`deviceproof.go`, pairing-link decode (URL, `#pair=` fragment, or bare
+payload), redemption + terminal verification-number ceremony
+(`main_connect.go`; the number is in the `/auth/pair` RESPONSE, derived
+from the key the device just proved), activation polling via ticket
+mints, rotating session store (single-flight, which for the browser
+client spans browsing contexts through `renewalLease.ts`;
+store-before-use, never retry an unread exchange; every ended-session
+refusal collapses to one re-pair remedy), and the pinned dial —
+`InsecureSkipVerify+VerifyPeerCertificate` equality against the leaf's
+`servercert.Fingerprint`, http→https promotion iff a fingerprint is
+present, WebPKI when none (no encrypted-but-unverified state).
+`--connect` resolves three forms by structure (ws:// endpoint → today's
+same-host attach unchanged; `#` → pairing link; else stored profile,
+then bare payload). A paired `clientmode` stub carries the upgrade with
+a fresh single-use `?ticket=` per handshake over the pinned transport
+(the ticket is the whole admission; the header arm deliberately does
+not stand in for the launch credential), probes `/bootstrap.json` with
+session + per-request proof, and preflights one ticket before the
+window exists so a removed device is a terminal sentence, not a
+reconnect loop. Wire spellings pinned by drift tests
+(`wire_drift_test.go`, 8 rows + a real redemption round-trip);
+`/bootstrap.json` and `/ws` are exported constants
+(`transport.BootstrapPath`/`WSPath`) shared by every restating package.
+Five app-level integration tests drive pair→confirm→pinned-wss→RPC,
+view-only grants, fingerprint mismatch, revocation, and refresh reuse.
+
+**Wave 8d LANDED 2026-09-01 (2344e33c): the owned-domain path.**
+`internal/acmecert` obtains and renews the canonical domain's
+certificate over DNS-01 with `x/crypto/acme` directly (decided: no
+lego/certmagic/libdns; the DNS integration is a user-configured hook
+run as `<argv...> set|clear _acme-challenge.<domain> <value>`, own
+process group, timeout, output captured into the failure; persisted
+account key; set→validate→clear with clear-on-failure; tests drive a
+narrow `CA` fake, a real LE issuance is live-only). The transport's
+certificate is now resolved per handshake (`certsource.go`,
+`tls.Config.GetCertificate` over two atomic slots): SNI naming the
+canonical domain → the domain cert (ACME or the user's external
+cert/key pair, which WINS over issuance), everything else including
+SNI-less → the self-signed cert, so device pins never move; both slots
+swap live, no rebind. `internal/app`'s reconciler goroutine owns
+when: daily tick + kick on settings write / renew-now, 30-day renewal
+window, 5m→6h backoff, the serving cert never dropped on failure.
+Settings: `NetworkSettings` grew CanonicalDomain / ACMEDNSHook /
+ExternalCertFile+KeyFile (both-or-neither, absolute; domain with
+neither = the proxy-in-front deployment, allowed), riding the step-up
+SetNetworkSettings; read-only `TLSStatus` (serving kind, notAfter,
+last error) + "Check certificate now" (`//ao:scope host`, no step-up:
+config is what step-up gates). Share URL flips to `https://<domain>`
+only when the LISTENER completes a handshake for that exact name
+(`ServesDomain(name)`), Insecure false then. The Host guard's mode
+signal moved from origin-list emptiness to the BIND ADDRESS (the old
+signal 404'd LAN clients on a persisted-preference boot), and
+`Config.CanonicalHost` adds exactly one accepted DNS name inside the
+guard. Settings → Remote access grew the "Domain and HTTPS" block.
 
 Two supported paths; others are documented escape hatches, not built:
 
 1. **Owned domain + DNS-01**. DNS record → LAN IP (public DNS may hold
    private addresses), Let's Encrypt via DNS-01, backend renews. Real
-   HTTPS on a LAN-only path, valid passkey RP ID, no tunnel.
+   HTTPS on a LAN-only path, valid passkey RP ID.
 2. **tsnet cert**. LE cert for the node's `*.ts.net` name, MagicDNS
    resolution, direct peer connections.
 
@@ -420,20 +1098,369 @@ WebSocket bridge (§9, constraint 8). Plain browsers are the one class
 that cannot pin, so they remain the cleartext-LAN / owned-domain
 cases; passkey RP ID still requires the owned-domain path.
 
-Escape hatches: private CA (mkcert-style, manual trust), cloudflared
-subprocess with an owned domain. The chosen HTTPS name is the backend's
+Escape hatch: private CA (mkcert-style, manual trust). The chosen HTTPS name is the backend's
 **canonical domain**: passkey RP ID, related-origins anchor (max 5), and
 the phone app's dial target.
 
+**Termination by someone else's proxy** is the third path people will
+try regardless of what we build, so it gets a defined answer rather
+than a broken one. Two things break today. `deriveWSURL` derives the
+socket scheme from the listener, not the request, so an `https:` page
+served through a TLS-terminating proxy is handed a `ws://` URL and the
+browser refuses it as mixed content; the fix is honoring a validated
+`X-Forwarded-Proto`. And a same-host proxy makes every remote peer
+look like loopback, which is exactly the fact `LocalOnlyMethods` reads
+as "this is the machine's own window". Both are why the scope table
+replaces topology-based trust rather than extending it: with §5's
+model, forwarded-header handling is a routing detail. Until phase 3
+lands, a reverse proxy in front of the backend is documented as
+unsupported, not silently degraded.
+
+### Dev-server preview across machines (the port gateway)
+
+An agent on machine M says "running at http://localhost:5173". The
+person reading that is on a phone, or a laptop at an airport, or the
+desktop beside M. Each has to be able to open that page, and the
+in-app browser story has to stay honest about which machine a page is
+rendering on. Ruled 2026-09-01 (wave 9 design), reasoned from what
+t3code shipped and did not: its relay case errors with "needs the
+planned authenticated preview gateway", and its `ssh -L` branch never
+merged.
+
+**What "reach the dev server" means, per path.** The viewer's page is
+on machine V and the thread is on machine M.
+
+- V = M and the page holds `host`: the link is a plain link to
+  `localhost:5173`. Nothing changes.
+- Otherwise the link is rewritten to a URL on M's **preview listener**
+  for that port: M's tailnet node opens a TLS listener on the **same
+  port number** as the dev server (`https://<node>.<tailnet>.ts.net:5173`),
+  so a dev server's own absolute URLs, `<base href>`, and every HMR
+  client that derives its socket from `location.host` keep working
+  unmodified. Vite's dev client is the one that matters and it derives
+  from the page origin; a path-prefixed proxy would break it.
+- No tailnet on M but LAN bind on: the same listeners bind
+  `<lanIP>:5173` under the in-app TLS certificate. Same posture, same
+  ticket, the LAN reach ceiling of §2 applies. If the dev server itself
+  already bound beyond loopback on that port, the bind fails and the
+  entry reports "already reachable on the LAN" rather than proxying.
+- Neither: the link renders disabled with the reason.
+
+**Why the same node and a different port, not a second node.** Proxied
+content is agent-authored and must never share the SPA origin (§13,
+`AuthorAgentOrUser`). A different port IS a different origin, so
+scripts on a preview page reach nothing of the SPA's; what a shared
+host leaks is cookies, which browsers scope by host. A second tsnet
+node would make the boundary a hostname the browser enforces, but each
+tsnet node is its own interactive sign-in, its own row in the admin
+console and its own ACL subject, and that is a second enrollment flow
+in Settings for every install. Ruled: one node, port-distinct
+listeners, and the cookie leak closed structurally instead. The page
+cookie (`ao_page_<port>`) is honoured only by routes that also check
+the Origin allow-list, which is now **exact-port** (the wildcard-port
+defect, fixed in this wave: `OriginPatterns` admitted
+`http://localhost:*`, so a document on any local port could open the
+SPA's socket with the page cookie attached), and a contract test
+enumerates every reader of that cookie and proves each refuses a
+request from a preview origin. The preview cookie is its own name per
+port and is never read by the main listener. In the other direction
+the proxy strips every cookie in the reserved `ao_` namespace out of
+the request it forwards, by PREFIX rather than by name, so a dev
+server never receives the page cookie, the session cookie, or another
+port's preview cookie, and a fourth cookie added later is covered
+before it exists. The LAN leg is the same design on the LAN address.
+
+**The allow-list, never arbitrary.** A loopback proxy that forwards
+anywhere reaches every host-local service on the box. This one
+forwards only to ports in the machine's **preview set**: ports the
+discovery below attributed to a thread's provider session or
+terminal, plus ports the user allowed by hand (host-tier setting
+`network.previewPorts`, `access:admin` to change, no step-up: it exposes
+the owner's own dev server to the owner's own devices). Never a port
+THIS backend is listening on: several of its own loopback listeners
+answer a GET like a page and so appear in the list as candidates with
+an Allow action; the scan already reports the PID holding each socket,
+so one comparison against `os.Getpid()` refuses them on the list, in
+`AllowPreviewPort` before the set is written, and at the mint. One preview
+listener exists per port in the set; the set is reconciled on every
+discovery tick, and a port leaves it 60 seconds after its listener
+disappears so a dev-server restart does not tear the URL down.
+
+**Discovery.** Server-side, no `lsof` dependency on Linux:
+`/proc/net/tcp` + `/proc/net/tcp6` for LISTEN sockets bound to loopback
+or wildcard, `/proc/<pid>/fd` for the socket inode → pid, `/proc/<pid>/stat`
+for the parent chain. macOS: `lsof -iTCP -sTCP:LISTEN -P -n -F pcn`
+plus `ps -eo pid=,ppid=` for the chain. Windows is the WSL payload and
+takes the Linux path. Attribution: a listener belongs to a thread when
+its pid's ancestor chain reaches a provider session's pid, a thread
+terminal's pid, or shares a provider session's process group (the
+group survives a daemonising dev server that reparented to init).
+Only candidates whose bounded 1s probe answers HTML or a redirect are
+published (t3code's shape, proven); probe results cache 15s keyed
+`url+pid`; the 3s poll runs only while a non-loopback session holding
+`preview:open` is connected (an SPA subscriber receives every channel,
+so channel subscription is not the signal), and `GetDevServers` scans
+on demand when the loop is idle, so a desktop-only install never
+scans. The channel `devserver:list` is per-backend, `LatestOnly`,
+scope `preview:open`: the list is a port-scan oracle for the host, so
+it is execute-tier like the gateway.
+
+**Credential.** The session credential never reaches a preview origin.
+`MintPreviewURL(threadID, port, path)` (scope `preview:open`, routed to
+the thread's machine) returns the preview URL carrying a 60-second,
+single-use ticket bound to `(principal, port)`; the preview listener's
+first hit consumes it, sets a cookie, and 302s to the same URL without
+the ticket parameter so a reload or a share of the address bar carries
+nothing. The path is validated before the ticket is minted: the book
+is bounded and evicts its oldest entry, so a call that was always going
+to be refused would otherwise spend a slot and invalidate a ticket
+another page was about to present. The cookie value is an opaque server-side token mapped to
+`{principal, expiry}` in memory, checked on every request against the
+live session store, so revoking the device ends its previews on the
+next request and a backend restart ends them all. An UPGRADED
+connection makes no further requests, so each preview listener also
+tracks the connections it is carrying and, on a coarse 10-second
+sweep, re-asks each one the question its last request was admitted on
+(grant present, for this port, not lapsed, principal live) and cuts
+the ones refused; retiring a port cuts every socket it handed out
+before the graceful shutdown starts, because net/http stops tracking a
+connection once a handler takes it over and neither `Shutdown` nor
+`Listener.Close` reaches one. Name `ao_preview_<port>`, because the host is
+shared with the SPA and with the other previews. `HttpOnly; Secure;
+SameSite=Strict`, 12h. The principal for
+an owner's local page is the host presence itself. A request with no
+valid cookie gets one plain page: "This preview session ended. Open
+the link again from Agent Overflow."
+
+**`preview:open` is a new execute-tier scope**, not `terminal:operate`
+reused. A future named reviewer (§11) who may look at a preview but
+not run terminals is a real shape; the scope vocabulary is exactly
+where that distinction has to be expressible, and the two vocabulary
+gates (`TestFrontendScopeVocabularyMatches`,
+`TestScopeVocabularyMatchesIdentity`) carry it through. View-only
+devices cannot open previews, which is what execute tier means.
+
+**The proxy.** One `http.Server` per preview listener,
+`httputil.ReverseProxy` to loopback (the upstream dials `localhost`
+resolved statically to `127.0.0.1` and `::1`, because a `::1`-only
+dev server is common). WebSocket upgrades forward unchanged (HMR).
+Toward the upstream, `Host` is rewritten to `localhost:<port>` on every
+request including the upgrade (spiked 2026-09-02 against Vite 8.2.2:
+it refuses any other `Host` with 403 on HTTP and 400 on the HMR
+socket, on both paths), and `Origin` is rewritten, never stripped, to
+`http://localhost:<port>` (Vite never compares its value but its
+presence keeps the HMR token check mandatory; Next.js 15+ checks the
+origin instead, unverified). Path and query are forwarded byte for
+byte: the HMR upgrade is routed only on Vite's exact `base` path and
+carries its per-boot token in the query. Facts and versions:
+`docs/references/dev-server-proxy.md`. `Location` headers pointing at the upstream
+are rewritten back to the preview origin. No `WriteSecurityHeaders` on
+proxied responses: the bytes are the dev server's, posture
+`PostureProxied`, and the route is excluded by name in
+`TestEveryHTTPRouteCarriesThePolicy` with a contract test of its own
+(`devgateway_contract_test.go`) pinning the ticket exchange, the
+cookie flags, the per-request session check, the Host/Origin rewrite
+and the Location rewrite. Surfaces rows: one Listener (the preview
+port set), one Route (the whole port), one Origin (`AuthorAgentOrUser`,
+`PostureProxied`).
+
+**What the person sees.** In transcripts and tool output, a
+`localhost:<port>` / `127.0.0.1:<port>` / `0.0.0.0:<port>` link on a
+thread whose machine is not the page's:
+
+- port in the preview set: the link opens the preview URL, with a
+  small "via <machine>" marker after the text (native `title` says
+  "Opens on <machine> through its preview listener").
+- port not in the set: the link renders inert with the reason
+  ("Not reachable from here. Port 5173 on <machine> is not shared.")
+  and an inline **Allow port** action beside it (hidden without
+  `access:admin`). Allowing adds the port to `network.previewPorts` on
+  that machine and the link becomes live on the next list frame.
+- no preview address at all on that machine: inert with "<machine> has
+  no tailnet or LAN address to share it on."
+
+Both the markdown path and `CommandOutput`'s dev-server chip read the
+same per-backend list store; the chip stops probing off-host and uses
+the list. The rewrite happens at marked-extension token time (the
+`pathLinkExtension` model) with data attributes, so the static HTML
+fast path stays.
+
+**Link clicks in general.** Plain click on an external link opens the
+system browser (`OpenExternalURL` on host, `window.open` elsewhere;
+the phone shell's external-URL seam). **Mod+click opens the link in
+the in-app browser pane** of that thread when the page holds `host`
+(the pane is a native view of the host process). Off host, mod+click
+falls back to the plain behaviour. One shared predicate for "modifier
+held" replaces the inline `metaKey || ctrlKey` sites.
+
+**Browser tool rows say where the page is.** A tool call from the
+`ao-browser-tools` server rendered on a page that is not the thread's
+machine (or holds no `host`) carries an indicator in its header
+actions: "Browsing on <machine>. The page is only visible there."
+The machine chip in the sidebar and the composer's machine picker note
+"No browser on this machine" when that backend's hello does not
+advertise the `browser` capability, which a backend advertises when its
+engine is available.
+
+**Headless Chromium engine (serve mode).** `docs/specs/embedded-browser.md`
+§9 said a windowless deployment gets no engine; that sentence is
+reversed here. A serve-mode backend selects a **headless Chromium
+engine** as an explicit positive option set by `runServe` before
+`App.Start` (never inferred from the absence of a window:
+`TestSelectEngineWithoutAWindowHasNoEngine` keeps passing). It finds a
+system Chromium (`chromium`, `chromium-browser`, `google-chrome`,
+`google-chrome-stable`, `chrome`, the macOS app bundle paths, or the host-tier
+setting `browserChromiumPath`) and **never downloads one**; not found
+means `unavailableEngine`, no `browser` capability, one boot log line
+naming the setting. Lifecycle mirrors the hosted engine's policy: one
+Chromium process per profile started on first page, `--headless=new`,
+`--user-data-dir` under `browser-profiles/<hash>/chromium` (temp dir
+removed on Dispose when site data does not persist), downloads pinned
+to the profile's `DownloadDir` via `Browser.setDownloadBehavior`, the
+existing idle close after two minutes, page and profile caps
+unchanged. An ephemeral directory carries a marker naming the process
+that made it, and engine start removes every `ao-browser-ephemeral-*`
+root whose owner is no longer alive and no unmarked directory at all,
+which is what reclaims a profile left by a backend that was killed; a
+per-profile watcher on the chromedp browser context reports every
+bound page closed and disposes the profile when the browser dies, so a
+dead Chromium leaves no pages a tool call could still address. Strictly no `--no-sandbox`: a launch that fails for lack of
+a sandbox surfaces the engine's error and serve-mode.md says to run
+the service as a non-root user. `cdp_page.go` is reused whole. The
+pane host, DevTools, and site-data listing are not implemented
+(omission = refusal, as the seam already reads). Tests spawn a fake
+`chromium` script that advertises a fake CDP server, never a real
+browser; a real launch is the manual `AO_HEADLESS_CHROMIUM_SMOKE=1`
+gate beside the provider smoke.
+
+**Wave 9 LANDED 2026-09-02 (1d48b49c..271b926d): the port gateway, the
+link and tool-row affordances, the headless Chromium engine.** Built as
+the section reads, with these calls made where it was silent or where
+the build corrected it. **Discovery** (`internal/devscan`): a listener
+is attributed by process group FIRST and the ancestor walk second
+(bounded at 64), never by command name; `DevServer` rows carry a
+`scheme`, because the probe accepts an https-only dev server and a
+proxy that then dialled cleartext was a listed preview that failed on
+its first request, so the scheme travels probe → row →
+`transport.PreviewTarget` → dial (loopback hop, verification skipped
+for the same reason the probe skips it; `Origin` is rewritten to
+`<scheme>://localhost:<port>`, not the constant above). Probes run
+concurrently (8 in flight, the per-scan cap taken from the ports
+sorted so a machine over the cap offers the same subset every tick),
+and a probe the scan deadline cut short is never memoized: a deadline
+is not a verdict. A hand-named port is ALWAYS `source: "allowed"`,
+even when a thread also owns it, or the settings screen would lose the
+persisted entry it offers to take back; it is probed for its scheme
+only and published whatever answers. The loop's signal is
+`EventBus.RemoteReceiverCount("devserver:list")` (an off-loopback
+connection whose scope filter admits the channel), not subscription.
+**Gateway** (`internal/transport/previewgateway.go`, `previewproxy.go`):
+the LAN source binds the LAN ADDRESS, never `0.0.0.0`, because the dev
+server holds the same port on loopback; a port the gateway could not
+bind is flipped to `allowed: false` with the gateway's own note BEFORE
+the list is published, so `MintPreviewURL` and the list agree by
+construction; a port whose scheme changed is rebuilt, an unchanged one
+keeps its listener (live HMR sockets survive the 3s reconcile).
+`network.previewPorts` is deliberately NOT in the `network.Settings`
+wire record: Settings → Remote access reads the `GetDevServers` rows, which
+are the only truth about what is served. `AllowPreviewPort` /
+`DisallowPreviewPort` answer with the set and take no step-up. The
+exact-port `OriginPatterns` fix and `pagecookie_contract_test.go` (an
+AST gate: every reader of the page cookie calls `OriginAllowed` in the
+same body, plus a behavioural check that the six cookie-reading routes
+404 a preview-shaped Origin) close the cookie leak structurally. One
+loopback dialer (`loopback.Dialer`) serves the probe and the proxy;
+`devserverprobe` keeps its own on purpose (it validates a URL it was
+handed). **Affordances**: the markdown rewrite is an inline marked
+extension AHEAD of the path-link one, both renderers spelling the
+anchor from `markdown/render/previewLink.ts`; the delegate swallows
+the click in EVERY state (following it would load whatever answers on
+that port on the reader's own machine), middle-click included, and only
+`open` mints. The rewrite arms only after a machine's first list frame,
+so a link is plain rather than wrongly inert before the machine has
+spoken; a pushed frame outranks a read in flight. One deviation from
+"mod+click ... when the page holds `host`": the companion browser is
+the THREAD's machine's engine, so the gesture is gated on
+`threadActsHere` (thread on the page's own machine AND `host` held);
+with `host` alone it would mint a page in an engine this window cannot
+paint. `previewRouted` is that predicate's negation, stated once in
+`attachedBackends.svelte.ts`. Settings → Remote access lists attributed ports
+as a sentence ("Shared while vite runs it") with no control, because
+`DisallowPreviewPort` edits only the persisted set. **Headless engine**
+(`internal/browser`): as specified; `no-sandbox` is asserted PRESENT
+and false in the launch flags, `browserChromiumPath` is a host-tier
+setting with a Settings input, and the hello advertises `browser` only
+when the engine is available. **Only live use proves**: a real tsnet
+`ListenTLSOn` on a joined node, a real Vite HMR session through the
+proxy, a real Chromium launched on a serve host (the manual
+`AO_HEADLESS_CHROMIUM_SMOKE=1` gate), a LAN bind reached from a second
+physical machine, a revoked device's open preview tab going to the
+"session ended" page mid-session, and a backend restart ending every
+grant. **E2E:** `e2e/tests/preview-gateway.spec.ts` and its compact twin drive
+the whole chain from a browser paired through the real screen: a
+`node:http` dev server in the spec process that discovery finds on its
+own as a `seen` candidate, the inert link and its Allow action, the
+live link and chip, the minted URL spent against the real LAN preview
+listener, and every crossing (Host, Origin, path and query byte for
+byte, the stripped cookie, the rewritten Location) asserted on what
+that server RECORDED; then the spent ticket refused, revocation ending
+the grant, and Stop sharing closing the listener (ECONNREFUSED, not a
+timeout). No two-backend Playwright rig exists, so the "thread on an
+attached machine" leg of the link rewrite and the mod+click fallback
+are unit-tested (`devServers.svelte.test.ts`, `externalLinks.test.ts`)
+rather than driven end to end.
+
 ### Anywhere access
 
-tsnet embedded (BSD-3, userspace, works in WSL2 without TUN) with
-Funnel for public reach; cloudflared subprocess as the alternative.
-Public listeners: `public`-class sessions only, step-up set unreachable
-without fresh proof, pairing/token/ticket endpoints rate-limited with
-limits keyed by **token/account with a global counter across listeners**
-(per-IP fails behind a tunnel, where every request shares one source
-address; derive real client IP from our own validated forwarded header).
+tsnet embedded (BSD-3, userspace, works in WSL2 without TUN): the
+backend joins the owner's tailnet as its own node, and off-network
+reach IS the tailnet. There is no public listener and no tunnel
+integration — Funnel/cloudflared were cut (ruled 2026-08-31, §18) —
+so "anywhere" always means a device the owner enrolled on a network
+path the owner controls. Pairing/token/ticket endpoints stay
+rate-limited, keyed by **token/account with a global counter across
+listeners**.
+
+**Wave 8e LANDED 2026-09-01 (a0757888..63716a92): the tailnet
+listener.** `internal/tailnet` owns the node's lifecycle over
+`tailscale.com/tsnet` v1.102.3 (Go floor moved to 1.26.6): construct
+free, start lazy, status published off the IPN bus — deliberately
+never `Up`, which cannot exit NeedsLogin — with the sign-in link
+carried as `Status.AuthURL` and cleared on join. The log upload tsnet
+performs by default is opted out unconditionally
+(`envknob.SetNoLogsNoSupport()` before Start, no setting behind it).
+The state dir `<config root>/tsnet/` IS the node identity at rest
+(kept on disable, deleted only by the explicit Forget), `Close` is
+guarded against tsnet's never-started panic and bounds its drain, and
+a node is single-use: a restart is a new Node on the same dir.
+`transport.ServeAuxiliary` serves a caller-owned listener with the
+same mux, credentials, Host/Origin rules, scope gate and session
+registry — its own `http.Server` (so a Rebind cannot close it), its
+failures to the caller's sink never `ServeErr`, no TLS sniffer
+(WireGuard already encrypted the bytes), and
+`SetAuxiliaryHosts` admits the node's MagicDNS name and addresses
+inside the Host guard only while a listener answers on them. Each
+auxiliary attach is identified by a slot created before serving
+begins, so one listener failing drops only itself and the host names
+are withdrawn only when no listener is left. The app
+reconciler (`app_tailnet.go`, domain-cert shape; a lifecycle mutex
+serializes passes against `ForgetTailnetNode`) attaches the cleartext
+listener on the SAME numeric port as the main bind the moment the
+node reports Running, plus tsnet's own `ListenTLS` on 443 when the
+tailnet's admin panel has HTTPS on (`CertDomains` non-empty; tsnet
+owns that certificate end to end). Settings: `TailnetEnabled` /
+`TailnetControlURL` (empty = Tailscale; Headscale is why it exists)
+ride the step-up SetNetworkSettings; read-only `TailnetStatus`
+carries state/auth URL/name/IPs/ticketed share URL (no Insecure flag
+beside an http tailnet URL — every byte crosses the WireGuard link);
+`ForgetTailnetNode` is `//ao:scope host`, no step-up, refused while
+enabled. Settings → Remote access grew the "Tailnet" block; tailnet peers
+are real non-loopback peers, so the session-naming admission rule
+applies unchanged. Tests run an in-process control server + loopback
+DERP/STUN (never the real control plane; the rig refuses ambient
+TS_* env), including a two-node story through the real transport;
+live-only: a real Tailscale sign-in, real ts.net issuance, and
+DERP-relayed cross-network reach.
 
 ### Headless serve mode and remote update
 
@@ -444,6 +1471,73 @@ frequently cannot unlock without a login session, so the signing key,
 provider credentials, and tsnet state need a defined at-rest strategy
 for unattended boot.
 
+**Wave 8g LANDED 2026-09-01 (c20d2cdc..5e5248c3): serve mode, the
+headless artifact, the service verb.** Operator doc:
+`docs/architecture/serve-mode.md`. The `serve` verb is a BOOT MODE
+recognized before the aocli verb table (it needs the embed FS and the
+boot graph; a callback into the CLI package would invert the
+dependency), refused in-session like every boot, with mode-selecting
+flags refused as contradictions. `runServe` = the headless shape plus:
+persisted network settings honored (`--listen` still wins),
+`RequireReadyForBootstrap` so a remote browser never loads against a
+half-open store, endpoints printed through the same
+`network.FromServer` formatter Settings → Remote access reads, and a
+startup failure keeps serving the terminal bootstrap failure rather
+than restart-looping under a service manager. **Credential posture:**
+serve sets the same file-keychain pin the mocked boots use, for the
+opposite reason — an unattended host has no login session to unlock a
+keychain, so provider credentials and the browser state key live in
+0600 files under the config root; everything else already did.
+**First-device enrollment:** a fresh serve host has no owner surface,
+so when stdin is a TTY and no unrevoked non-channel device exists, the
+console becomes one — mint (browser class, full access; a view-only
+first device could not enroll a second), print the link, poll
+redemption, show the verification number, y/N confirm — through the
+same four bound methods the settings screen calls, no identity rule
+touched (an in-process call is the host-present caller app_authz.go
+already admits). Revoked rows deliberately do not count as enrolled,
+or revoking your last device would lock a screenless host out
+permanently. Non-TTY with no devices logs the remedy and keeps
+serving. **Headless artifact:** `agent-overflow-headless-linux-amd64`
+(-tags production,nogui — zero GTK/WebKit, verified by ldd), built in
+build-release.sh with the WSL payload's exact flags; `make go-build`
+compiles the nogui half every run as the rot guard. Adding it exposed
+a real updater defect, fixed: the library's default asset matcher
+substring-matches platform+arch, so every Linux desktop install would
+have been offered the headless binary as its next update.
+`matchReleaseAsset` matches exact artifact names, shared by both
+provider halves, with a test that reads the names back out of
+build-release.sh. **Service verb:** `agent-overflow service
+install|uninstall|status` (aocli — a pure CLI job), writing a systemd
+user unit / launchd LaunchAgent with Restart=on-failure semantics,
+all execution behind an injected Runner (tests never reach a real
+manager; both formats golden-tested via a GOOS parameter), uninstall
+removes only the unit, Windows refused naming the WSL launcher as the
+supervisor. No linger enabled; `loginctl enable-linger` is
+documented, not run. Darwin ships no headless artifact — serve runs
+in the regular binary there and never opens a window. Serve does not
+self-update; W8h owns that.
+
+**Session lifecycle on an unattended host.** LANDED 2026-08-31
+(b809e997). `ArchiveThread` closes the thread's provider session — the
+group kill cascades to dev servers and monitors — with a stop-time
+re-check against the newest turn's durable `started_at` so an archive
+that waited out a send does not kill the session that send just
+engaged (`internal/app/app_thread_archive.go`). The reaper's
+keep-alive-while-working choice stays (killing quiet-but-working
+sessions is rejected doctrine); what an unattended host adds is
+**visibility and control, not timeouts**:
+`ListRunningBackgroundWork` (wire-safe) reports the cross-thread
+inventory, unioning the same three sources `ListLiveBackgroundTasks`
+does (the store query, live Codex subagent launches, and the triage
+layer's in-memory Codex unified-exec tasks, which exist in no table),
+with per-thread unreadability carried in the payload rather than an
+error that would discard the rows; `StopThreadBackgroundWork`
+(LocalOnly) routes each row through the existing per-kind stop
+methods. The tray's 2-second completed-sibling retention is a
+live-tray tuning value, not an inventory history; the inventory
+reports what is running now.
+
 Update is a genuine availability requirement once the machine is
 unattended, and a supply-chain risk if remotely triggerable. Resolution:
 download/apply remain `scope: host`; a **remote trigger** exists but
@@ -452,41 +1546,275 @@ behind a healthcheck-and-auto-rollback watchdog that preserves listener
 config and the session store. A bad update must never lock the owner
 out of a machine they cannot physically reach.
 
-### Provider re-authentication while remote
+The watchdog adopts t3code's proven architecture (its
+`server-updates` internals doc), which is concrete where "watchdog"
+is vague: a separate, stable **supervisor** process owns the launch
+state — the running server never mutates its own launch config; the
+new version installs into an immutable staged dir and its
+compatibility with the installed supervisor is checked *before*
+anything is touched; the store is **snapshotted while quiescent**
+before migrations; the new version boots fully as a trial — runs
+migrations, binds listeners, starts everything — but parks at an
+activation gate until it reports prepared within a hard time budget;
+only then does the supervisor durably commit. Failure or timeout
+restores the snapshot and restarts the old version, with a durable
+restore marker so a supervisor crash mid-rollback resumes correctly.
+The update carries an id the client correlates through its reconnect,
+so "update succeeded" means the new version answered, not that the
+old one stopped.
+
+**Wave 8h1 LANDED 2026-09-01 (6e89bdbf..baa35c54): the supervisor
+core.** t3code's server-updates architecture in one Go binary:
+`agent-overflow supervise` (the process the service manager owns)
+decides which version runs and spawns `serve` as its child; the unit
+`serviceinstall` writes now names `supervise`, with a drift test
+pinning the spelling. `internal/supervise` owns the JSON-lines
+protocol over one inherited pipe pair (fds 3/4, marked by
+`AO_SERVICE_CHANNEL` — an absent marker means "no supervisor" and is
+never an error, so a bare `serve` is untouched forever), the durable
+`service-state.json` whose five-row selection table lives in ONE
+function (invalid state FAILS CLOSED: exit non-zero, start nothing),
+the immutable `versions/<v>/` layout, and the SQLite-triple snapshot
+taken only between child stop and trial start — at the first trial
+SPAWN (`Attempts == 0`), where the record is consumed, never where the
+update was accepted, so a death in the response-grace window cannot
+leave a pending record with no snapshot beside it; a record already
+mid-trial with no snapshot fails closed, naming `agent-overflow
+service update` as the remedy — restored manifest-first, then
+marker-first (snapshot manifest confirmed present → marker fsynced →
+live triple removed → manifest's exact set copied back → dir synced →
+marker cleared; `ResumeRestore` runs before the state file is even
+read). The manifest check comes first because the marker is the one
+durable thing nothing else clears: a marker fsynced for a snapshot
+that does not exist fails every later boot at `ResumeRestore`. The supervisor loop is ONE goroutine, one
+select — no lock exists and none must. Two of its rules were bugs its
+own tests caught first: the child's exit is a FACT (closed channel +
+field), not a one-shot message, or a crashed trial wedges the
+supervisor in exactly the case rollback exists for; and the message
+channel closing is the SAME event as the exit, so that select arm is
+disabled on close and the exit status supplies the settled reason.
+Ordering rules that are the mechanism: preflight
+(`__service-preflight` in the target's own process) before anything
+durable; commit written durably BEFORE the commit frame; the trial
+attempt counted durably BEFORE the spawn (TrialAttemptLimit=2 — an
+unbounded retry would brick an unattended host, an addition over
+t3code, which has no bound). The child half: `main_serve_supervisor.go`
+reads the opening frame synchronously before the App exists, because
+the frame decides whether the App boots with its activation gate
+closed; `finishServeSupervision` runs on its own goroutine so the
+SIGTERM wait stays live; a trial reports prepared → awaits commit →
+activates, and a non-trial boot publishes the PRECEDING update's
+outcome — including a rollback, which only the version that came back
+can report. A settled outcome is announced exactly ONCE: the record's
+`reported` flag is set in the commit write itself (the committing
+child publishes from the commit frame) or when a non-trial child says
+hello, and `Select` withholds the outcome once it is set. The activate
+frame carries TWO versions, the one running and the one the update
+aimed at, because on a rollback they differ and only the record knows
+both; the client renders "The update to version X was rolled back.
+Running Y." The activation gate (`internal/app/app_activation.go`) is
+one gate, zero-value OPEN; the parked set is every subsystem whose
+work a database restore could not undo (probes, rate-limit loops,
+reaper, retention, git fetch, cert/tailnet reconcilers, workflow
+automation — membership rule: "would restoring the database undo
+it?"). `ParkUnattendedWork` / `ActivateUnattendedWork` /
+`SetServiceUpdateRequester` are bootstrap-boundary functions, not App
+methods, because an exported App method IS a wire RPC;
+`serviceUpdateRequest` stays unexported; the step-up gate in front of
+it is W8h2's `RequestServiceUpdate`. `service update <version>` is the
+LOCAL path (preflight → stop unit → stage → adopt → save → start); the
+REMOTE trigger is W8h2 (Go half LANDED 2026-09-02, note below),
+unblocked by the 2026-09-01 signing cut: it rides step-up, and the
+download is verified against the published checksum over HTTPS.
+`internal/atomicfile` gained the directory-fsync half of durability
+(own commit) — every existing caller was exposed. Tests drive
+scripted fake children over the real protocol on the real
+descriptors, HOME detached; race-clean at -count=3.
+
+**W8h2 (Go half) LANDED (2026-09-02).** The remote update trigger
+(de75e8c8, 86b5a5d0, 645703b4, 9b887ff1, 7906146f, 2a1c5b88, plus the
+trial refusal in review):
+- *The release chain without a window* (`appupdate.ReleaseSource`):
+  `List` / `Latest` / `Fetch(ctx, tag, dst, onProgress)`, built from
+  the same two provider types `Configure` builds, so a serve host and
+  the desktop cannot disagree about which asset is this host's.
+  `Fetch` hashes the stream and compares it to the sidecar digest;
+  a release with nothing to verify against is refused before a byte is
+  requested. `NewReleaseSource` refuses an empty platform token rather
+  than defaulting to `runtime.GOOS`, which would be the wrong artifact
+  on WSL and on a headless build.
+- *The flow* (`internal/app/app_service_update.go`): `resolving →
+  downloading → verifying → staging → requested`, the local command's
+  order. Download to `os.CreateTemp` under the layout root (one
+  filesystem, so `StageBinary` is a local copy), preflight BEFORE
+  stage, the staged version is the preflight's answer, "is this the
+  version already running" asked TWICE (the tag before the fetch, the
+  binary's own reported version before staging), temp removed on
+  every exit, 20 min ceiling under the app's life context, progress
+  throttled to 250 ms on `service:update-status` (AudienceAny,
+  LatestOnly, `access:admin`). After `requested` the status stays put
+  with its `UpdateID`; the supervisor's `service:update-outcome` frame
+  (its scope fixed from `host`, which no session can hold, to
+  `access:admin`) is what closes the loop for the client that asked.
+- *The RPCs*: `GetServiceUpdateStatus` and `ListServiceReleases` are
+  `access:admin`; `RequestServiceUpdate(tag)` is `access:admin` +
+  step-up, `route selected`. It refuses an invalid tag, the running
+  version, a host with no supervisor, a build with no single-file
+  artifact, a second flow, a shutting-down backend, and a TRIAL boot
+  (the supervisor is already mid-update; refusing before the download
+  is the review addition). `host` would have made the whole feature
+  reachable only from the machine it exists to save a trip to.
+- *Where it is absent*: `ConfigureServiceUpdates` runs only from a
+  supervised `serve` whose build has a stageable artifact
+  (`serviceArtifactPlatform()`: `headless-<GOOS>` for the windowless
+  build, `linux` for the GUI one, empty on darwin's app-bundle zip and
+  on windows). An empty answer is the `Unavailable` sentence, not a
+  button that cannot work. The passive `Latest` check runs once,
+  unparked, during a trial too.
+- *Frontend half LANDED (2026-09-02)*: `stores/serviceUpdate.svelte.ts`,
+  one box per attached backend keyed by the frame origin, status
+  replaced wholesale, read on every hello the session holds
+  `access:admin` for (the hello after the restart is what shows the
+  new version), box kept through a dropped socket and dropped on
+  detach. Settings → Updates gains a "Machines" section below the
+  in-app updater with one card per machine that reports a supervisor:
+  what it runs, the newer release with an Update button (step-up
+  collected by the dispatch interception), the phases with a progress
+  bar, `requested` as "Restarting into version X…", the outcome
+  callout (committed / rolled back with the reason), the flow error,
+  the `Unavailable` sentence with no button, and the rollback picker
+  (`VersionPicker` became prop-driven so the in-app updater and each
+  machine drive one component). The footer badge lights through
+  `hasPendingUpdate()` for any supervised machine with a newer
+  release. Nothing renders on a desktop with no supervised backend
+  attached, which is every harness run, so the e2e suite proves only
+  that; unit suites (`serviceUpdate.svelte.test.ts`,
+  `MachineUpdates.test.ts`) cover the keying, the scope gate on a second
+  backend (`test/helpers/scopes.ts#grantBackendScopes`), the flow and
+  the picker. Live-only: a real GitHub release feed and a real
+  supervised restart.
+
+### Provider accounts and remote login
+
+Provider credentials live in each backend's provider homes, so
+accounts are a **per-machine fact**: configured per machine (account
+dropdown scoped to the machine, usage keyed per backend), and the
+composer's target picker shows which account a thread will run and
+bill against (§10). All account management works over the wire —
+switching the active account *and adding a new login remotely*.
 
 Provider OAuth redirects to `localhost` **on the host**, unreachable
 from a phone, yet provider logins die at inconvenient times (see the
 2026-08-03 credential-death incident chain). Without a remote path, one
 token rotation bricks the backend until the owner is physically present.
 Required: provider auth state is a first-class remote-visible signal
-with a push event, and re-auth is completable remotely: the backend
-surfaces the authorize URL to the authenticated remote client and
-proxies its own loopback callback (or relays the paste-code/setup-token
-flow). If any provider makes this impossible, that limitation is
-documented explicitly rather than discovered in the field.
+with a push event, and login/re-auth is completable remotely: the
+backend surfaces the authorize URL to the authenticated remote client
+and proxies its own loopback callback (or relays the
+paste-code/setup-token flow). If any provider makes this impossible,
+that limitation is documented explicitly rather than discovered in the
+field.
+
+LANDED 2026-09-01 (wave 8i, 9 commits ending a5b63bf6). The shipped
+shape takes the *or* branch: the backend surfaces the authorize URL and
+relays the paste-code (Claude) / device-code (Codex) flow; it does not
+proxy the loopback callback, because both CLIs bind that listener
+themselves and complete on it only host-side. A sign-in is a SESSION,
+not a blocking RPC (`internal/provideraccountapp/loginsession.go`):
+`StartProviderLogin` / `GetProviderLoginState` /
+`SubmitProviderLoginCode` / `CancelProviderLogin`, all `access:admin`,
+with every transition pushed on `provider:login`
+(AudienceAny/RetentionEphemeral/ScopeAccessAdmin — a replayed authorize
+URL is a dead one-use PKCE link, so reconnectors read the state RPC
+instead). The CLIENT picks the method: `canUseHostOpenExternalURL()`
+false means the page asks for `remote` by itself; a host with no opener
+degrades browser→remote server-side via the typed
+`externalurl.ErrNoOpener`. Drivers:
+`internal/provider/claude/login.go` (headless `claude_authenticate` /
+`claude_oauth_callback` / `claude_oauth_wait_for_completion` control
+channel, burned-flow restart with a fresh link, managed-settings
+account-type retry) and `internal/provider/codex/login.go` (app-server
+`account/login/start` both variants, `loginId`-correlated completion,
+15-minute device-code countdown hard-coded because the wire carries no
+TTL). Wire references: claude-wire.md § The sign-in control channel,
+codex-wire.md § Account sign-in. `provider:status`,
+`provider:account`, and `provider:account_usage_error` widened
+loopback-only → `access:admin` (auth state as a remote-visible signal;
+the status banner carries a Sign in action). Adoption epilogue
+unchanged; the wave also closed a pre-existing hole where a sign-in
+spawn ignored the user's configured provider environment
+(ANTHROPIC_BASE_URL) that the account probe honored. One flow surface
+(`ProviderLoginFlow.svelte`) rendered by Settings → Providers, the
+account switcher, and started from the status banner. Verified by
+driver unit suites against scripted fakes, `cmd/ao-mockprovider`
+speaking both sign-in wires with real-driver bin tests, and a
+paired-device e2e over a LAN origin where the client selects the
+remote method unprompted. A real OAuth issuance is live-only by
+construction. Rider a5b63bf6: the coordinator's start-error path now
+closes `run.done` (a cancel or shutdown join during a slow spawn
+parked forever), with a red-proven transition test.
 
 ## 8. State sync completeness
 
 Prerequisite sweep, valuable standalone:
 
-- Emit on every persisted mutation: the ~12 thread-row RPCs
-  (create/delete/archive/pin/read/model/effort/fastMode/contextWindow/
-  branch/workspace), `settings:updated` (with tier + keys),
-  `project:*`. Frontend replaces local-only applies (`syncThread`,
-  `*Local`) with event-driven convergence; initiators may still apply
-  optimistically.
-- `draft:updated` with initiator echo-suppression; last-write-wins plus
-  an "edited on <device>" affordance (cuttable polish).
-- Wire `GetQueueState` as the fresh-attach bootstrap.
-- Races: backend is single-writer; losers get typed already-handled
-  responses; state-change events flip other devices to "answered on
-  <device>" live.
-- **Device attribution** on persisted mutations (which device did it).
-  A trivial column now, required later for audit and shared-thread
-  provenance.
-- Gap-recovery switch gains an entry per new channel.
-- Threads begin recording **branch / remote / head** so future forks are
-  possible for threads created before team sharing exists.
+- Emit on every persisted mutation. Thread-row RPCs LANDED
+  2026-08-31 (9d48ee7c): every persisted thread-row mutation
+  broadcasts `thread:updated` carrying the written row plus an action
+  (`full`/`patch`/`listed`/`unlisted`/`deleted`, constants in
+  `internal/triage/router.go`); the store's write helper reads the row
+  back inside the write transaction and reports no-op writes so
+  repeats stay silent; the broadcast row is also the RPC's return
+  value, so initiator echo equals optimistic apply
+  (`frontend/src/lib/stores/eventsThreadRows.ts` is the applier).
+  `settings:updated` and `project:updated`: LANDED 2026-08-31 (wave
+  4b). Settings frames carry the tier plus changed KEY NAMES, never
+  values (the redaction GetSettings applies must not have a push-side
+  bypass; receivers re-read); one frame per tier moved; the write
+  chokepoint is `internal/settings/mutate.go` with an AST tripwire, and
+  the tier map (`tier.go`) is total by test. Project frames reuse the
+  thread action vocabulary through the generic `internal/store/rowwrite.go`
+  helper; two tripwires classify every projectapp method and hold
+  emit-on-write.
+- `draft:updated`: LANDED 2026-08-31 (wave 4b). Emits ride the persist
+  (autosave no-ops stay silent via the upsert's change-tested ON
+  CONFLICT), the frame names the writer (`transport.ClientIdentity`,
+  `did`/`conn` on the WS upgrade URL, readable before the first RPC)
+  and never the text; echo suppression keys on the CONNECTION so two
+  tabs of one browser do not sit on each other's stale text. The
+  channel reaches any client whose session holds `threads:operate`,
+  the grant `GetDraft` takes for the same text (re-adjudicated
+  2026-09-03; it shipped loopback-only). The "edited on <device>"
+  affordance remains cuttable polish.
+- Queue: LANDED 2026-08-31 (wave 4b), with the brief's premise
+  corrected — `GetThreadLiveState` already bootstrapped queue state on
+  every authoritative attach, so no second bootstrap was added. What
+  landed: `GetQueueState` is the targeted gap-recovery read for
+  `provider:queue_state_changed`, `queue_restored` takes the full pane
+  refresh, and the two unrecoverable badge channels say so explicitly.
+- Races: LANDED 2026-08-31 (wave 4b). The triage router arbitrates
+  concurrent approval/user-input answers on positive evidence and
+  releases the claim when a write never reached the provider; losers
+  get the typed `already_handled` transport code, which the composer
+  treats as answered-elsewhere. Fixing this surfaced a live defect:
+  the benign-race filter matched error STRINGS, which dispatcher
+  redaction blanks for every non-loopback caller, so remote clients
+  saw error banners where the desktop saw nothing. "Answered on
+  <device>" live flip is not built (needs the attribution UI).
+- **Device attribution**: LANDED 2026-08-31 (wave 4b) as CREATION
+  attribution — v77 `threads.created_by_device`, write-once by the
+  `import_source` mechanism, empty = the backend created it. Mutation
+  audit is a log table and its own decision; a single column
+  re-stamped per mutation would destroy provenance without producing
+  history.
+- Gap-recovery switch gains an entry per new channel: LANDED (wave 4b)
+  for settings/project/draft/queue.
+- Thread **branch / remote / head** at creation: LANDED 2026-08-31
+  (wave 4b) — v78 `created_branch` / `created_remote_url` /
+  `created_head_commit`, surfaced as `Thread.Origin`, observed at the
+  one moment the answer is true; forks re-observe, workflow threads
+  attribute to no device, session import records nothing. Nothing
+  renders it yet.
 
 ## 9. Wire evolution, phone, notifications
 
@@ -495,7 +1823,16 @@ Prerequisite sweep, valuable standalone:
   portals drift, and silent DPoP skew failures are undebuggable).
   Additive-only discipline on frames and channels. An HTTP
   `/healthz`-with-version endpoint doubles as the update watchdog probe
-  and the pre-WS compatibility check.
+  and the pre-WS compatibility check. LANDED 2026-08-31 (wave 4a):
+  `hello` is written synchronously before the pump goroutines exist, so
+  first-frame ordering is a contract; `serverTimeMs` samples at accept,
+  the client derives `clockSkewMs` at receipt; capabilities serialize
+  `[]`-never-`null` and are frozen by a test (`notifications.remote` is
+  the first); `/healthz` answers `{version, backendId}` with no
+  credential — both consumers run exactly when none is held — behind the
+  Host guard with no CORS read-back, and has its `internal/surfaces`
+  row. The client exposes `backendHasCapability()` and deliberately no
+  version accessor.
 - **Compatibility policy** (what the hello frame enforces): features
   gate on capability flags, never version comparison. A client asks
   "does the server have X", so mismatched pairs degrade instead of
@@ -510,7 +1847,15 @@ Prerequisite sweep, valuable standalone:
   backend for minutes) requires one-step wire tolerance by
   construction; the shared client is made and kept forward-tolerant
   (unknown events, fields, and frame types ignored), tested with a
-  future-dialect fixture.
+  future-dialect fixture. Tolerance LANDED 2026-08-31 (wave 4a):
+  unknown input is counted (`noteUnknownInput`, bounded per-kind tally,
+  one `console.debug` per kind, never error-level), a `batch` missing
+  `events` drops whole rather than dispatching a prefix, and event
+  entries are shape-checked before they touch the replay cursor —
+  one `undefined`/NaN entry used to cost the session its entire gap
+  recovery. Fixtures at both levels: `wsClient.test.ts` (salted
+  future-dialect stream, exact counts, silent console) and
+  `e2e/tests/transport-forward-tolerance.spec.ts`.
 - **The phone app is the same app.** Capacitor shell around the
   existing SPA: same Svelte code, same TS transport client and
   generated bindings, same IndexedDB replica. No Swift/Kotlin
@@ -532,17 +1877,22 @@ Prerequisite sweep, valuable standalone:
   never stuck behind a download. Bundles declare a minimum shell
   version (a too-old native shell is the one case that gates on a
   store update); last-known-good is kept with first-boot healthcheck
-  and auto-rollback, mirroring the remote-update posture. Trust line:
-  bundles are code, so transport trust is not enough. The shell
-  verifies every bundle against the **release signing key baked into
-  the shell itself**. A backend can only relay genuine signed
-  releases, never arbitrary script, so one compromised backend cannot
-  reach the phone's device keys or its *other* backends' credentials
-  through an update. Self-built/dev bundles require an explicit
-  per-device "trust dev bundles from this backend" toggle. Only
-  owner-tier backends may supply bundles at all; peer and hub
-  connections never push executable content and are served by
-  capability flags instead. With this, the SPA layer is effectively
+  and auto-rollback, mirroring the remote-update posture. Trust line
+  (ruled 2026-09-01: release signing is CUT; a key the owner has to
+  keep across machines would be lost, and the phone's backends are the
+  owner's and friends' own): the paired session over pinned TLS is the
+  integrity boundary. The shell verifies each bundle against the
+  SHA-256 manifest the backend serves on that same session, so a
+  bundle is exactly as trusted as the backend it came from, which is
+  the trust the device already extended by pairing. Only owner-tier
+  backends may supply bundles at all; peer and hub connections never
+  push executable content and are served by capability flags instead.
+  Stated plainly: one misbehaving owner-tier backend can reach the
+  phone's device key and its *other* backends' credentials through an
+  update, so the phone pairs only with backends whose operator the
+  owner would trust with the desktop, which is the self-and-friends
+  posture ruled for it; shell-baked signing returns as its own addition
+  if distribution ever widens. With this, the SPA layer is effectively
   skew-free for the single-backend common case (multi-backend runs
   the newest attached backend's bundle and speaks flags to older
   ones).
@@ -550,35 +1900,70 @@ Prerequisite sweep, valuable standalone:
   desktop attach client load the SPA *from* the backend they connect
   to. A member using a browser against a team hub executes
   hub-served code, ordinary web trust, and no trust line pretends
-  otherwise. The phone shell is the only code-isolated client: its
-  bundle comes solely from signed releases via owner-tier backends,
-  and it speaks to hubs and peers with data plus capability flags
-  only.
-- **Phone transport security.** WKWebView cannot accept a self-signed
-  cert for WebSocket at all (the auth-challenge hook covers HTTPS
-  only; ATS exceptions are ignored for WS), so the webview never
-  touches the socket. The shell ships a **native WebSocket bridge**
+  otherwise. The phone shell is the only client whose code arrives
+  over a pinned, paired session rather than plain web trust: its
+  bundle comes solely from owner-tier backends, verified against the
+  manifest served on that session (signing cut, 2026-09-01), and it
+  speaks to hubs and peers with data plus capability flags only.
+- **Phone transport security.** The ruled phone path is the tailnet
+  (2026-09-01), where the backend's tsnet cert (or an owned domain's)
+  is WebPKI-valid, so the WebView's own WebSocket carries the
+  transport and nothing native touches frames. The domainless LAN
+  case is the deferred fallback, not the shipped path: WKWebView
+  cannot accept a self-signed cert for WebSocket at all (the
+  auth-challenge hook covers HTTPS only; ATS exceptions are ignored
+  for WS), so that path would need a **native WebSocket bridge**
   (StarScream on iOS / OkHttp on Android) that owns the connection,
   pins the pairing-payload cert fingerprint exactly as the Go clients
-  do (§7), and hands frames to the same TS transport client. The
-  phone thereby meets the SSH bar: encrypted and pinned on the LAN
-  with no domain and no tailnet, trust anchored by the pairing
-  ceremony. **No cleartext phone path exists.** Tailnet and owned
-  domain remain reachability/browser options, never security
-  prerequisites.
+  do (§7), and hands frames to the same TS transport client. It is
+  built only if a domainless phone path is ever wanted. Either way
+  **no cleartext phone path exists.**
 - **The client replica is the diff foundation.** The shipped
   IndexedDB thread replica (cold opens paint locally, then
   `SyncThreadWindow` reconciles a windowed diff) is the remote story
   too: over a slow link, attach cost is a diff against the replica,
-  not a full load. Obligations it takes on: keyed by backend UUID
-  before multi-backend UI lands (§10), purged on sign-out and device
-  revocation, and the resume ladder becomes replay-ring → windowed
-  replica diff → full snapshot, in that order. At rest: the phone
+  not a full load. Backend-UUID keying already shipped (one database
+  per backend, `ao-replica-<backendId>`; generation mismatch clears
+  and re-stamps). Lifecycle LANDED 2026-08-31 (wave 4c):
+  `purgeReplicaDatabases(liveBackendIds)` is the named purge
+  primitive sign-out and revocation will call (empty set = drop
+  everything), a boot sweep reaps `ao-replica-*` databases no live
+  backend claims, deletion is token-sequenced against the session's
+  own open machinery, and engines without `indexedDB.databases()`
+  report `enumerated: false` honestly. Still open: the sign-out /
+  revocation CALLERS (phase 2), and the resume ladder becomes
+  replay-ring → windowed replica diff → full snapshot, in that
+  order. At rest: the phone
   replica is encrypted with a key held in native secure storage
   outside the webview (biometric-gateable); browser profiles cannot
   do this. Revocation is not remote wipe. Cutting a device's access
   does not un-disclose what its replica already held (boundaries
   doc).
+- **Reconnect discipline** (two t3code patterns adopted; **mostly
+  built**, the remainder is phase 1). The target shape is already
+  in-tree and generic: `stores/transportStatus.svelte.ts`'s
+  `onTransportStatusChange` is the one canonical connection-state
+  observable, `isTransportClassError` the shared classifier, and
+  `entityStore.svelte.ts` wires the transport edge once for every
+  entity store — `connected` re-acquires, anything else *suspends*
+  rather than grinding a retry curve against a dead socket. Nine
+  stores ride it, and its header records that five carried a
+  verbatim copy before it moved there. Explicit retry-on-reconnect
+  exists too (`editors.svelte.ts`, `prReviewStore`, `gitStatusStore`,
+  `threadSwitchLoad`'s `retryHistoryLoad`). **Do not build a second
+  suspension mechanism.** The narrower remainder LANDED
+  2026-08-31 (wave 4a): `DisconnectedError` carries `closeCode`,
+  clamped `closeReason`, `cause`, and `terminal`, and renders the cause
+  into `message` — ~150 call sites and the error log read only
+  `message`, so a cause on a field alone reaches nobody. Connect-stage
+  failures (manifest fetch, thrown constructor) wrap instead of
+  re-throwing raw, so `isTransportClassError` classifies them.
+  Retry-on-transient-close is `RETRY_ON_TRANSIENT_CLOSE`, an explicit
+  allowlist frozen EMPTY by a test with the admission criteria written
+  at the seam (idempotent on the backend AND a known transient window,
+  e.g. the seconds after an update restart) — never a blanket policy.
+  On a flaky link this is the difference between an app that pauses
+  and one that throws.
 - **Ticket primitive generalizes beyond WS**: short-lived signed URLs
   for attachment upload/download and snapshot fetches, designed once in
   phase 2 rather than bolted on later. Attachments ride authenticated
@@ -593,13 +1978,96 @@ Prerequisite sweep, valuable standalone:
   assistant deltas, background scope leases (client reports visibility +
   interested scopes with TTL; backend skips unleased work, generalizing
   `HasRemoteClient`), `afterSeq`-with-snapshot-fallback resume.
+
+  Subscription narrowing LANDED 2026-09-01 (wave 6d, phone phase), by
+  ENTITY rather than by channel. A new `watch` wire frame
+  (`{"type":"watch","threads":[...]}`, absolute and idempotent, empty
+  array = "no panes open", never-sent = wildcard, max 256 ids) narrows
+  only the channels the registry marks `EntityFiltered` — a third
+  orthogonal filter beside audience and scope. The entity key is
+  derived ONCE per emit (`internal/app`'s funnel shares the derivation
+  with the NDJSON replay log) and rides `transport.Event`; delivery
+  AND replay withhold foreign-entity frames BEFORE gap accounting, so
+  a withheld frame is never a loss, and the SPA exempts exactly these
+  channels from its forward-skip resync heuristic while a filter is
+  armed (TS list drift-guarded against the Go table in both
+  directions). Explicit `gap:true` markers keep full meaning. Replay
+  rings are created lazily at a channel's first emit, so a channel
+  with NO ring and a non-zero cursor is answered with a `gap:true`
+  marker at seq 0 rather than skipped: a cursor this process cannot
+  place is answered with a reset, never with silence, and a zero
+  cursor asks for nothing and gets nothing. Watch is
+  deliberately NOT the `subscribe` frame: channel-subscribe stays a
+  bridge-client mechanism, which is what keeps
+  `ChannelSubscriberCount`'s "no connected launcher subscriber"
+  diagnostic sound. The watched set is composed from surface
+  EXISTENCE only — every open pane foreground or background, plus the
+  discussion live-tail roster's pane-less child threads — never from
+  visibility or focus; pane open sends the union ahead of the mount so
+  the history load and the narrowed pushes cannot race (same-socket
+  frame ordering is the seam). Two channels are entity-filtered
+  today: `highlight:diff_seed` and `highlight:seed`, the large-payload
+  cache warmers whose designed fallback is the highlight RPC. The
+  central finding: **`provider:item_event` is NOT narrowable yet** —
+  six off-pane consumers read it for threads with no pane (sidebar
+  error/interrupted/Plan badges, activity ordering bumps, proposed-plan
+  status, discussion child routing, the workspace change lock, and the
+  inactive-thread cache eviction), argued on its policy row. Narrowing
+  the transcript stream requires re-homing those six onto
+  low-frequency channels first — that re-home is the open design item
+  for the phone client, which cannot afford every thread's transcript.
+  One accepted loss: a content-addressed highlight cache hit across
+  threads now pays an RPC.
+
+  The re-home LANDED 2026-09-01 (wave 6d2, phone phase) and
+  `provider:item_event` is now entity-filtered. Each off-pane fact got
+  the cheapest wildcard frame that states it, chosen from the survey
+  rather than invented: the Plan ready pill is a DERIVED COLUMN the
+  store already computes (`hasActionableProposedPlan`), so every
+  proposed-plan write (the in-turn persist in triage, the
+  implemented mark and the ensure-state settles in app) now broadcasts
+  the thread row as a `thread:updated` `full`, and the client's two
+  live re-derivations of that column were deleted rather than
+  duplicated. The user_text sidebar bump and the reader-answered badge
+  clear ride one `thread:updated` `patch` carrying `updatedAt` alone,
+  emitted exactly where an activity-counting user_text persist bumps
+  `MarkThreadActivity` (never on turn completion or approvals, which
+  announce themselves); the client applies it WITHOUT a cached row,
+  into the keyed live-activity box, never merged into the row object.
+  The Failed pill rides a new `thread:error_notice` channel
+  (`{threadId, itemId}`, wildcard by design), emitted from the ONE
+  persist funnel every error row crosses — the classes that never
+  produce a `provider:turn_completed` (non-fatal wire errors, orphan
+  error results, the ambiguous-turn-start timeout, flush-dispatch and
+  steer failures) are covered structurally, `api_error` keeps its
+  no-badge behavior. The workspace-change lock dropped its item trigger
+  (foreground tool completions never changed its answer) and
+  `provider:background_tasks_changed` now fires on Claude's exit,
+  drain and orphan-recovery transitions, which previously reached only
+  the `threads:read`-gated `background_task_state`. Discussion child threads
+  were already watched via the live-tail roster. The eviction branch
+  stays as written and simply stops firing for unwatched threads: both
+  the warm-reentry cache and the replica window are stamp-validated on
+  every open (`SyncThreadWindow` answers `stale` with a replacing
+  page), so the cost is one stale first paint on reopen, not a wrong
+  render. Two accepted ordering deltas on the ORIGINATING client: a
+  plan-ready pill now sits below a live `interrupted` (the durable
+  ordering every other client already saw), and a quiet eager-persist
+  bumps the sidebar at dispatch rather than at echo. The remaining
+  in-stream consumers (send-queue flush confirm, proposedPlans warm
+  cache, activity rail) are pane-lifetime or watched-thread scoped by
+  construction. The one hard rule this leaves behind: a new global
+  consumer of an item row is the thing this split exists to prevent;
+  it gets a wildcard carrier or it does not ship.
 - **Push**: senders run in the backend, outbound-only. Constraint to
   resolve before shipping to anyone but the owner: APNs/FCM require the
   *app vendor's* signing key, which cannot ship inside distributed
   self-hosted binaries. Personal builds can send directly; distribution
   requires either a blind relay (payload encrypted end-to-end, gateway
   cannot read it), UnifiedPush, or PWA Web Push (VAPID keys are
-  genuinely per-backend). Decide before the phone app ships publicly.
+  genuinely per-backend). Decide before the phone app ships publicly;
+  the concrete options for friends' backends and the recommendation
+  are under "The phone client" below (push, 6g).
 - **Notification semantics**: event→push mapping (turn complete,
   approval needed, error, provider signed out), redaction policy
   (payloads transit Apple/Google, and titles and command text are
@@ -607,32 +2075,792 @@ Prerequisite sweep, valuable standalone:
   than presence-guessing: presence heuristics are wrong whenever the
   desktop is attached but unattended), and a deep-link scheme carrying
   backend UUID + thread id.
+- **Desktop notifications ride the same event mapping.** An attached
+  client already receives the *thread* events, so it raises native OS
+  notifications for any attached backend — remote behaves exactly as
+  native on the box, no push infrastructure involved (push is the
+  phone/unattached path). Audience change LANDED 2026-08-31 (wave
+  4a): both channels are `AudienceAny`, producing them stays host-only
+  (`LocalOnlyMethods`), and a paired test fails if that two-file
+  decision comes apart. The SPA's zero-seeded `notification:activated`
+  cursor — the cold-launch replay of the channel's whole retained ring —
+  is gated on the session being local in both senses, so a fresh remote
+  attach is not walked through every activation since boot; the ordinary
+  cursor still replays real gaps. `NotificationSend`'s retained
+  (non-ephemeral) retention stays — the Windows launcher replays it by
+  cursor after reconnect. The preferences UI is still open.
+  Notification preferences become a general device-tier setting (per
+  event type × per backend); today's always-on notifications fold
+  into this and become configurable. Note there are two production
+  senders through `notifyOS`, not one: workflow items needing a human
+  or failing, and the WSL launcher's "update didn't apply" notice.
+  The handled-elsewhere retraction applies to local OS notifications
+  the same as to push.
+
+  LANDED 2026-09-01 (wave 6a, phone phase): the event→notification
+  mapping and the preference gate, desktop-first. `internal/notify`
+  gained a PURE mapping half (`mapping.go`): the four moments (turn
+  complete, approval needed, error, provider signed out) as functions
+  over deliberately under-informed input types, so redaction is a type
+  shape rather than a filter — a body can only be one of the package's
+  fixed phrases plus a clipped tool name, and a title is the thread's
+  own label (80 runes, `SummaryLine` drops non-printing runes and
+  collapses whitespace). Every moment derives a STABLE id from what it
+  is about (`thread:<id>`, `approval:<thread>:<request>`,
+  `provider-auth:<provider>`); a later send replaces in place and the
+  ending transition retracts (`Send.Retract`, id+kind only,
+  `ValidateSend` holds retractions to that narrower contract). Turn
+  complete / failed / provider-exit share one id per thread — a thread
+  stops once — and thread resume is the retraction moment; approvals
+  are per request; provider auth is per provider, mapped on the EDGE
+  (the unauthenticated status is a level, re-emitted on every status
+  read). The tap is on `emit` itself
+  (`app_notification_mapping.go`), not the six emitters, projecting
+  synchronously and dispatching on a serial queue (order is the
+  retraction contract); the thread-title SQLite read runs on the
+  queue, and shutdown drains it before the store closes. `notifyOS` is
+  the one preference gate (five device-tier keys, §6, all default ON;
+  read from the backend machine's own screen via
+  `settings.Service.BackendScreen()`); a RETRACTION IS NEVER GATED, so
+  a toggle flipped mid-flight cannot strand an alert. Presenters
+  (desktop + Windows launcher) pass the stable id through verbatim and
+  branch on retract — `UpdateNotification` to replace,
+  `RemoveDeliveredNotification` to withdraw (the vendored
+  `RemoveNotification` is a nil stub on macOS; Windows retraction
+  degrades silently by design, wintoast has no removal call).
+  `Target.BackendID` (the §9 deep-link attribution half) rides every
+  presentation on every kind, orthogonal to the one-id route rule, and
+  the SPA's activation parser carries it. The two legacy senders
+  (workflow attention, WSL update notice) now ride typed kinds with
+  stable ids under the master switch only. Out-of-band `claude login`
+  does not clear the signed-out alert (the retraction rides
+  `provider:login` succeeded) — accepted for this wave; push senders,
+  the phone presenter, and remote-raised native notifications stay
+  open here.
 - **Approval policy**: pending approvals need a TTL / abandon policy so
   a turn does not hang forever holding a workspace when no device
   answers; approving from a notification is not allowed (app-open, and
   `approvals:respond` scope, and optionally biometric).
 
+### The phone client (wave 6f design, ruled 2026-09-01)
+
+Rulings (user, 2026-09-01): the phone is the FULL app — anything the
+desktop can do, the phone can do, unless the surface is physically
+host-bound. All approvals are answerable from the phone. Answerable means
+ASKED: the `provider:approval` frame reaches the phone the moment the
+provider raises it, not on its next attach, and the same holds for every
+channel carrying thread or workspace state (queue, drafts, terminal
+output, git status, session import, MCP status, PR, usage). Nineteen of
+them were withheld from every off-host client until 2026-09-03, on
+`Why` strings citing a per-method local-only table wave 6d2 had already
+deleted, so the phone could drive a thread it then watched go stale.
+`e2e/tests/harness-offhost-live-thread-state.spec.ts` walks the whole
+path for the two that made it visible. Opening the app
+requires the strongest local gate the platform offers (the phone is more
+sensitive than anything else on it). Voice input is wanted. The phone is
+for the owner and a few friends, each running their OWN backend on their
+OWN tailnet; Tailscale is the remote path. No tablet layout now, but
+nothing may make one hard later. No panes: single-thread navigation.
+Release signing is CUT (the paired session over TLS is the trust root;
+distribution-grade signing returns as its own addition if that day comes).
+
+**Shape.** One Capacitor project, `mobile/`, wrapping the SAME built SPA
+(`frontend/dist` is the web dir; nothing is forked). Android is the
+first target and the only one buildable from the Linux box; the iOS
+target is generated by the same tooling and built on the Mac when the
+owner wants it. Native plugins, each behind one TS seam in
+`frontend/src/lib/native/`: app lifecycle (pause/resume), secure key +
+biometric gate, QR scan, push registration, file/camera pickers. The
+WebSocket stays the WebView's own, over the tailnet's WebPKI TLS
+(CapacitorHttp interception off for the transport); the native side holds the device key and signs session
+proofs on request from the bridge, so the private key never enters JS.
+
+**Layout mode, not device class.** `layout = 'compact'` is chosen from
+viewport width and coarse pointer, never from the paired device class.
+That is the whole tablet story: a wider viewport falls out of compact
+into the existing layout, and the day a tablet layout is wanted it is a
+third breakpoint, not a new app. Compact rules:
+- The thread list is the ROOT screen (the sidebar, full width). Tap opens
+  the thread full-screen; the platform back gesture returns. The pane
+  registry holds exactly one pane at all times, so the watched set is
+  that thread plus its live-tail children — the narrowing from 6d/6d2 is
+  what makes a phone-sized connection affordable.
+- Popovers become bottom sheets. (A popover is the small floating menu
+  anchored to the button that opened it; a sheet is a panel that slides
+  up from the bottom edge and is dismissed by dragging down. Same
+  content, touch-native chrome.) Project / worktree / branch / machine /
+  model / mode / effort pickers, the approval card, the plan decision
+  card, and the interactive-request prompts are all sheets.
+- Settings, devices, workflows, and git views are stacked screens, not
+  modals.
+- The composer pins to the bottom above the keyboard. Send is a button;
+  Return inserts a newline (phone keyboards have no modifier). The
+  context strip scrolls horizontally as chips. Slash commands and
+  mentions keep their menus, rendered as a sheet above the keyboard.
+- Transcript components are the desktop ones unchanged. Width-driven
+  adjustments only: code blocks and diffs keep monospace with horizontal
+  scroll inside the card (never re-wrapped, so alignment survives), tool
+  cards collapse by default, the message nav rail is hidden (a desktop
+  affordance) and its jump-to-message role moves to a long-press on the
+  scroll indicator later if wanted. Scroll, reveal-queue, spring and
+  fade behaviors are the same code; touch inertia is the platform's.
+- Hidden on the phone because they cannot exist there: the in-app
+  browser (a native page view on the host), "open in editor" path links
+  (become copy-path), and host-window controls. The terminal IS shown
+  and is a first-class phone surface (user ruling: running simple
+  commands from the phone is a headline use). It is the same xterm.js
+  drawer over `terminal:operate`; what compact adds is what every phone
+  terminal adds: a key row docked above the keyboard for the keys phone
+  keyboards lack (Esc, Tab, Ctrl as a sticky modifier, arrows, `|`, `-`,
+  `~`, `/`), autocorrect and autocapitalize off on xterm's hidden input,
+  a font size the thumb can read, and the drawer sized to the visible
+  viewport above the keyboard. The terminal is a stacked screen in
+  compact, not a bottom drawer, so the keyboard and the key row own the
+  bottom edge.
+
+**Voice.** Comes free: the composer is a real text field, so the phone
+keyboard's dictation key types into it, and the platform's recognizer is
+better than anything a laptop has. No plugin, no permission, nothing to
+build. A dedicated mic button that streams to a recognizer is a later
+option, not a first-shell need.
+
+**Opening the app.** The app lock is the platform's biometric or
+credential prompt, run on cold start and on a resume past a
+configurable background window (default 5 minutes; per-device
+setting). The cover goes up when the OS PAUSES the app, not on resume,
+so the app's own pixels never reach the task switcher's thumbnail or
+the frame before a resume handler runs. No `FLAG_SECURE`, by the
+2026-09-03 ruling: the lock is bank-app behaviour, a timed re-lock and
+nothing more, and screenshots and recordings of one's own threads stay
+allowed. What resume decides is only whether to
+prompt, and a prompt that was outstanding when the app paused is still
+owed when it comes back. As shipped the prompt is an INDEPENDENT gate
+in front of the WebView, not the device key's own unlock: the key is a
+non-extractable WebCrypto P-256 pair in IndexedDB, and neither it nor
+the thread replica is sealed by the ceremony. Binding the key to the
+Android keystore with user-authentication required, and wrapping the
+replica under it, is deferred and named in `mobile/AGENTS.md`
+§ Deferred. No passkey ceremony is needed in
+the WebView: step-up already lives at pairing-mint on the GRANTING side,
+which is the owner's desktop with its passkey. The phone's job at
+pairing is to scan a QR and prove its fresh key; the desktop's job is
+to approve it with the strong ceremony that already exists.
+
+**Pairing and remote-only.** A phone never has a local backend. First
+run is one screen: "Scan the QR from Agent Overflow → Settings →
+Devices". More backends pair the same way from the phone's own
+settings, and the machine picker (phase 7) is the root-level context:
+which machine's threads am I looking at. Connectivity is a top banner
+with the transport states the desktop already has; a backend that is
+unreachable is dimmed, not hidden. Offline: threads the replica holds
+open read-only with a banner, the composer is disabled (no
+cross-disconnect send queue; the queue semantics were hard enough with
+one live socket), and reconnect replays from the per-channel cursors as
+today.
+
+**Lifecycle (feeds 6e).** The app plugin's pause/resume is the ONLY
+visibility signal the client ever sends, as one `lease` frame
+(`{"type":"lease","state":"background"|"active"}`) — whole-client native
+lifecycle, never per-pane, never document visibility (the off-view shedding rule above).
+A backgrounded client keeps its socket until the OS closes it; the
+backend stops highlight seeds and coalesces assistant deltas for that
+connection (one frame per thread per 250 ms) while the lease says
+background, and turn/approval/error events keep flowing so the push
+mapping and the badge carriers are unaffected. Resume restores full
+streaming; a socket the OS did close reconnects through the ordinary
+replay. The desktop and browser clients send no lease and stay exactly
+as they are.
+
+**Push (6g).** Native push on Android is Firebase Cloud Messaging: free,
+but SENDING requires the app's Firebase service credential, which
+belongs to the app's Firebase project and cannot be handed to every
+friend's backend. So:
+- The owner's own backend: enter the service-account credential once in
+  settings; the backend sends directly. Payloads carry ids only (the
+  6a redaction rule: the summary is fetched from the backend after tap).
+- Friends' backends: DECISION OPEN (§18 item 1 made concrete). Options:
+  (a) a tiny blind relay the owner hosts — friends' backends POST
+  `{deviceToken, ciphertext}` to it, it forwards to FCM as a data
+  message, the app decrypts with the device key, the relay never reads
+  content; (b) UnifiedPush via ntfy, which needs the ntfy app on the
+  friend's phone; (c) each friend creates their own Firebase project and
+  builds their own APK. Recommendation: (a); it is ~200 lines of Go, runs
+  anywhere with HTTPS, and the friend's backend needs only a relay URL.
+The tap route is the 6a target shape as a deep link
+(`thread` / `approval` / `provider-auth`), opening the app through the
+lock and landing on the thread with the relevant sheet raised.
+
+**Bundle sync (6g).** The APK ships with the SPA bundle it was built
+with. On connect the backend advertises its bundle version and minimum
+shell version; a newer bundle downloads in the background over the
+paired session and is verified against the SHA-256 manifest the backend
+served on that same session (signing is cut; the session is the
+integrity boundary), swaps in on the next cold start, and rolls back to
+last-known-good if the first boot fails its health check. A backend
+older than the shell's minimum is refused with a clear message, never a
+half-working UI.
+
+**Verification.** Playwright already drives the SPA against the harness;
+a compact-viewport project (390×844, touch enabled) runs the same
+suites plus the compact-specific specs (root list → thread → back, sheet
+open/dismiss, composer above keyboard, approval sheet from a deep link)
+with no device involved. The APK builds from the Android SDK installed
+in WSL and is sideloaded for the on-device checks that only a phone can
+prove: biometric lock, push tap-through, background lease timing
+(keystore-bound signing is deferred; see "Opening the app").
+
+**Order.** Phase 7 (machine picker, the phone's root context) first, then
+the shell with lease work designed against its real lifecycle, then push
+and bundle sync.
+
+**6f LANDED (2026-09-01).** Compact layout, the terminal key row, the
+lease frame, the own-origin seam, the Android shell, its emulator
+smoke, and the phone's machine list. What each is, and where the design
+text above was deviated from:
+- *Compact layout* (77ceed40, 7c3a7c05): `stores/layoutMode.svelte.ts`
+  picks `compact` from `(max-width: 640px) and (pointer: coarse)` and
+  nothing else, stamps `layout-compact` and `data-compact-screen` on
+  `<html>`, and a `compact:` Tailwind variant keys on the class. The
+  sidebar is the list screen and the pane strip the thread screen; both
+  stay MOUNTED and swap `visibility` plus `inert`, so a trip back to the
+  list keeps the timeline's observers and scroll position. `revealPane`
+  flips to the thread screen; the chat header grows a back button and
+  loses the pane close control. Panes are one screen wide with no
+  dividers, so companions still open and the reveal glide is the screen
+  switch. Popovers are bottom sheets by default (`Popover`'s `sheet`
+  prop; the composer's completion lists opt out), overlays fill the
+  screen, Return inserts a newline (`enterSends`), the nav rail and its
+  gutter are gone. Deviation from the design text above: the terminal is
+  a stacked screen over the chat column rather than a route of its own,
+  and "settings, devices, workflows, git as stacked screens" is met by
+  the existing overlays filling the screen, not by new screens.
+- *Terminal key row* (1b5a016c): `TerminalKeyRow.svelte` docks under the
+  xterm surface under compact (Esc, Tab, sticky Ctrl, arrows, `-` `/` `|`
+  `~`), writes through `term.input` so the PTY keeps one writer, and
+  sticky Ctrl converts the next input chunk from any source in
+  `terminalKeys.ts`. Not built here: autocorrect/autocapitalize off on
+  xterm's hidden input, the thumb font size, and sizing to the visual
+  viewport above the keyboard; those are on-device checks for the Mac
+  pass.
+- *Lease frame* (27cfb2fd): `{"type":"lease","state":...}` parsed in
+  `conn.go`; `highlight:seed` is withheld at `Subscriber.deliver` before
+  gap accounting; `provider:item_event` deltas are merged per (thread,
+  item) per 250 ms in `lease.go` with the LAST merged seq, and every
+  pass-through on the channel flushes ALL pending rows first so the
+  channel never goes backwards. `transport/lease.ts` `setClientLease` is
+  the one door; only the shell calls it. The loopback harness never
+  receives a seed (remote-only audience), so the e2e asserts a floor and
+  the withholding is proved at the seam.
+- *Verification*: Playwright has a second project, `compact` (Pixel 7,
+  `compact-*.spec.ts`), inside `make e2e`; the 390×844 figure above is
+  the descriptor's 412×915 in practice. Rule recorded in the guides: a
+  surface is done only when both projects pass.
+- *Own-origin seam* (bfa31c35, d8c50230): the phone is the first client
+  whose page origin is not its backend's, so every home-backend URL that
+  used to be relative now passes through
+  `frontend/src/lib/transport/homeEndpoint.ts` (`homeUrl`, `homeWsUrl`,
+  `homeCredentials`), where empty is the identity and the desktop's
+  answer forever. The shell's document origin is the fixed
+  `https://shell.agent-overflow.invalid` (reserved, resolves nowhere);
+  `internal/transport/shellorigin.go` admits that exact string on the
+  upgrade and answers CORS for it on `/bootstrap.json`, the five
+  `/auth/*` routes and the two attachment routes, echo-exact origin and
+  no credentials flag, since a cross-origin page presents
+  `X-AO-Session` plus the device proof in headers rather than a cookie.
+  Endpoints are stored beside the session slots they belong to, one map
+  keyed by registry id with home under `''`. `acceptPairingEndpoint`
+  asks the two client classes different questions: a browser refuses a
+  payload naming another endpoint, a shell adopts it. `unpairHome()`
+  and the banner's "Pair again" are the way back for a page that cannot
+  navigate to a new link.
+- *Android shell* (eebe2d5a; Capacitor 8 in 3a415165): `mobile/` is a
+  Capacitor project whose `webDir` is `frontend/dist`, so the phone runs
+  the desktop's bundle under the compact layout. Plugins (`app`,
+  `barcode-scanner`, `biometric-auth`) are dependencies of `mobile/`
+  only; `AO_SHELL=1` aliases their specifiers there and every other
+  build resolves a null stub, so the desktop bundle cannot carry them.
+  Seams in `frontend/src/lib/native/`: lifecycle (pause/resume to
+  `setClientLease`, hardware back to the list screen or Escape through
+  the keybinding path), lock (biometric on cold start and on resume,
+  the app root marked `inert` underneath), QR scan, a documented picker
+  stub, and `boot.ts` whose `adoptPairingEndpoint` is the one place
+  both pairing doors point the shell at a backend. Deviations from the
+  text above: `minSdkVersion` 26 (the scanner's native library declares
+  it); dictation is the keyboard's, as ruled; no signing key (debug
+  signing until there is a distribution); pickers answer `null`; iOS
+  not added. An `http://` pairing link fails at the fetch on a device
+  by design, the debug build alone permits cleartext to `127.0.0.1`
+  for the emulator smoke.
+- *Emulator smoke + phone machine list* (17d7a2f5, 44e29850):
+  `make e2e-android` drives the shell's own WebView through Playwright's
+  Android API, with the harness backend reached through `adb reverse`
+  at the device's loopback (the emulator's `10.0.2.2` alias is mixed
+  content under the `https://` origin and is refused before any policy
+  is read). It exits clean without a device and has NOT yet run on one;
+  its first run is the Mac pass. A phone lists, pairs and detaches a
+  second machine through `backendAttach.ts` (redeem into one more
+  session slot and endpoint, poll activation, detach socket then
+  credential then address), which Settings → Systems renders under the
+  shell.
+- *Not done on this box, by ruling*: every on-device check waits for
+  the Mac at the end of the campaign: the first emulator run, a
+  physical phone, xterm's hidden-input attributes and thumb sizing, the
+  visual-viewport height above the keyboard, and the biometric prompt
+  itself.
+
+**6g-a LANDED (2026-09-01).** Bundle sync, the backend as the phone's
+update server (6e375500, b07099f2, e417f01d, 8f1bfd66, 3224aab1, and
+the review fixes that follow them):
+- *The bundle* (`internal/bundle`): the embedded `frontend/dist` as a
+  SHA-256 manifest whose id is the content hash, plus a deflated zip
+  built from that manifest's own list and re-verified as it compresses.
+  Walked lazily on first use; `*.map` and `bundle-id.txt` excluded;
+  every path must pass `CleanPath` or the tree is refused;
+  `MinShellBuild = 1` is the one version gate in the design.
+  `frontend/scripts/bundleId.ts` is the build-side twin and stamps
+  `dist/bundle-id.txt`, the APK's own answer to "what am I running";
+  one fixture directory and one golden id pin the two implementations.
+- *The routes* (`internal/transport/bundleroutes.go`): `GET
+  /bundle/manifest.json` and `GET /bundle/archive.zip`, admitted by the
+  paired session plus its device proof and by nothing else (the shell
+  holds no cookie for its backend), 404 otherwise, shell CORS with its
+  own preflights, `http.ServeContent` so Range resumes a lost transfer,
+  no rate limit. The hello frame carries `bundleId`, `bundleVersion`,
+  `minShellBuild`; all three are omitted on a dev-server boot, which a
+  shell reads as "keep running what I have". The owner-tier gate has
+  its place reserved in `bundleSessionAdmits` for when tiers exist.
+- *The shell* (`BundleStore`, `BundlePlugin`, `MainActivity`): one
+  state file `{current, next, pendingHealth, lastKnownGood,
+  rolledBack}` beside one directory per id; the swap is decided before
+  `super.onCreate` because the Bridge loads from its builder's path
+  once; a 30 s watchdog rolls back in place when the health flag is
+  still set; staging verifies every entry against the manifest by
+  canonical path, digest and size. `BundleStore` takes a directory and
+  no Android type, so the whole mechanic is a JVM test that `make apk`
+  runs before it assembles.
+- *The decision* (`frontend/src/lib/native/bundleSync.ts`): a pure
+  `decideBundleSync` with one row per case; the newest attached backend
+  wins, home on ties; deferred while the OS has the app paused; the
+  attempt cap is an INPUT to the decision (`attempts`, six per id per
+  launch) with its own `exhausted` row, because a cap the decision
+  could not see only slowed the schedule; only a SUCCESS re-evaluates
+  inline, a failure leaves the next look to the retry timer; two
+  sentences and nothing else, through the transport banner.
+- Deviations from the text above: (1) the swap is next-cold-start only.
+  "Swaps when ready" is not built: a live swap under a running app
+  would drop in-flight composer and scroll state, and a phone's next
+  cold start is never far away. (2) Health is "the SPA booted to
+  `native/boot.ts`", not "reached the backend". A phone launched with
+  no network would otherwise roll back a working bundle and refuse it
+  on every later hello; a bundle that boots but cannot talk shows the
+  transport banner, which is that problem's own surface. (3) The phone
+  does not recompute a manifest's id from its list: the id arrives on
+  the same session as the files it names, and the Go tests pin it to
+  that list.
+- *Not done on this box, by ruling*: the emulator cases in
+  `e2e/android/shell-boot.spec.ts` (stage, cold-start swap, a damaged
+  archive refused, health confirmed inside the watchdog) are written
+  against the docs and unrun; bundle sync end to end on a real phone
+  is on the Mac list.
+
+**6g-b LANDED (2026-09-02).** Push, owner-only by the 2026-09-01
+ruling (f19fe7df, 603ab0a2, 96a036a7, 5d4e9ff9, c7807064, and the
+review-fix commit after them):
+- *The message* (`internal/push`): `MessageFor` is the one builder and
+  composes exactly `id`, `backend`, `kind`, `retract`, `title`, `body`,
+  `target`. `title` is one of six fixed phrases (`notify.KindPhrase`),
+  `body` is the backend's display name, `target` is the tap route as its
+  own JSON document; there is nowhere to put a thread title, which is
+  how the §9 redaction rule is enforced. DATA-ONLY always, high
+  priority, collapse key = send id, so a queued send is replaced by the
+  next one about the same moment. `ErrTokenGone` (404 / `UNREGISTERED`)
+  is the only error a caller acts on; `INVALID_ARGUMENT` deliberately is
+  not. `ParseCredential` checks shape and never dials; the tests point
+  both the OAuth exchange and the send at one `httptest` server.
+- *The fan-out* (`internal/app/app_push.go`): hangs off
+  `queueNotification`'s job after `notifyOS`, on its own serial queue;
+  the per-device gate is `notificationKindEnabledIn` over each phone's
+  device-tier bucket, the same switch the desktop asks; retractions are
+  never gated; `store.LivePushTokens` joins registered with
+  still-admitted so a revoked device is never sent to. A nil `Sender`
+  is the whole of what a friend's backend does differently, and the
+  designed relay is a different `Sender`, not a different fan-out.
+- *The RPCs*: `RegisterPushToken` / `UnregisterPushToken` at the
+  session floor, keyed by the CALLING session's device and refusing the
+  local page channel; `GetPushSenderStatus` at `access:admin`;
+  `SetPushSenderCredential` / `ClearPushSenderCredential` at
+  `access:admin` + step-up. The brief said `host` for the credential
+  pair and that was wrong on review: host presence is granted to no
+  session, so the paste would have been reachable from nowhere but the
+  machine's own window, and the machine that most needs the key is the
+  serve host nobody sits at. Same posture as minting a pairing link.
+- *The phone* (`mobile/android/.../push/`, `native/push.ts`,
+  `stores/pushPresenter.svelte.ts`): our own plugin, not
+  `@capacitor/push-notifications`, because that one renders only
+  Google-composed notifications and cannot cancel. `TrayNotifier` is
+  the one builder for BOTH paths (pushed message and socket frame) and
+  takes no Android type, so the decision half is a JVM test. A pushed
+  presentation is dropped while the app is on screen; a retraction is
+  never dropped. The socket presenter presents only while the lease is
+  `background`. **The tray tag is `<backend>|<id>` on both paths**
+  (`push.TrayTag`, `TrayNotifier.tagFor`, `pushTag`), from the
+  message's `backend` key and from the frame's origin respectively,
+  which is what makes one moment told twice one notification and two
+  machines' identical ids two; the agent's version tagged home's socket
+  frames by the bare id and the pushed message by the bare id, which
+  doubled every notification on a backgrounded phone with a live
+  socket, and that is the defect the review fix closed. Registration is
+  idempotent and runs on every attach and on token rotation; the
+  unregister rides both detach doors through `transport/detachSteps.ts`
+  because it is an RPC over the socket being taken away.
+- *The tap*: both intent doors are read (`handleOnNewIntent` and the
+  launch intent in `load()`), the cold-start tap is held until the page
+  asks (`takePendingTap`), and the route crosses as one opaque JSON
+  string that Java never parses.
+- *Verification*: `internal/push` and `internal/app` unit tests,
+  `TrayNotifierTest` on the JVM under `make apk`, the presenter's Vitest
+  suite, and `e2e/tests/push.spec.ts`, which drives a REAL turn through
+  the production mapping and dispatch into a recorder installed at the
+  `Sender` seam (`InstallHarnessPushSender`, a package-level function so
+  no session can reach it) and asserts the payload byte for byte: two
+  wakes per turn (the start's withdrawal, then the rest), the phone's
+  own toggle silencing presentations and never retractions, a revoked
+  device dropped from the live set.
+- *Only a device can prove*: Firebase accepting the message, real
+  token rotation, the tray rendering, the cold-launch tap, and the
+  `POST_NOTIFICATIONS` prompt. All on the Mac list with the Firebase
+  project, `google-services.json` and the service-account key the owner
+  creates there. `firebase-messaging` is pinned at 25.1.2, the newest
+  this box could see with the registry unreachable; re-check on the Mac.
+
 ## 10. Multi-backend clients
 
-Decide the **seams** in phase 1, not a speculative store rewrite:
+Decide the **seams** in phase 1, not a speculative store rewrite.
+LANDED 2026-08-31 (wave 4c):
 
-- Document and enforce global uniqueness of thread/project ids (already
-  UUIDs) so most stores need no re-keying.
-- `bindings.ts` routes RPCs through a resolvable transport handle
-  rather than importing a singleton.
-- Event fan-out carries connection origin (backend UUID).
-- The IndexedDB thread replica keys its stores by backend UUID so two
-  backends' threads can never collide in one browser profile.
+- Thread/project id global uniqueness is a stated contract:
+  `internal/entityid` mints them (canonical v4 UUIDs, `Valid` pins the
+  format), every mint site calls it, and mint-site tests fail a
+  short-id regression.
+- `bindings.ts` routes RPCs through `resolveTransport()`
+  (`frontend/src/lib/transport/handle.ts`) rather than importing the
+  `wsClient` singleton; one resolution today, the multi-backend form
+  changes only the resolution.
+- Event fan-out carries connection origin: every delivered event's
+  handler receives `{backendId}` as a second argument, stamped from
+  the connection's identity (empty = unknown, never "mine").
+- The IndexedDB thread replica keys its **database** by backend UUID
+  so two backends' threads can never collide in one browser profile.
+  Already shipped (`replica/session.ts`, `ao-replica-${backendId}`) —
+  listed here as a seam the multi-backend work must not break, not as
+  one to decide. Its lifecycle is not: see §9.
 
 The genuinely collision-prone singletons (git status by path, provider
 accounts/usage, settings, sysstat) get keyed when multi-backend UI
-lands. `--connect` becomes "add/attach endpoint", and the sidebar groups
-projects under backend sections.
+lands. `--connect` becomes "add/attach endpoint".
+
+### Unified sidebar: the machine is a property, not a partition
+
+One sidebar, no backend sections. Threads live on backends and appear
+in every attached UI; concurrent viewing is ordinary multi-client
+sync, so a thread started from one UI shows up natively on the
+machine that hosts it and everywhere else attached. The machine
+surfaces in exactly three places:
+
+- **Project identity is the repo, not the checkout.** A project entry
+  is the repository — matched by primary remote URL, root-commit hash
+  when remoteless — and each machine × checkout path is a **target**
+  under it. Two clones of the same repo, on one machine or five, are
+  simply two targets of one project, exactly as worktrees already are:
+  project ≠ workspace generalizes to project ≠ checkout ≠ machine.
+  Thread rows carry a target chip only when their project spans more
+  than one target. Identity is user-correctable (link/split) when the
+  remote-URL match gets it wrong; nothing beyond that match is
+  guessed.
+- **The composer picks the target.** Sticky last-used per project. An
+  unreachable target disables the composer for it and offers the
+  reachable alternatives — never silent failover to a different
+  machine. The picker shows what the choice implies: machine,
+  checkout/branch, and the provider account that runs and bills the
+  thread (§7).
+- **Reachability is ambient, not modal.** Per-backend status lives
+  where the backend is chosen: the composer's machine picker dims an
+  unreachable entry in place, and Settings → Systems carries the
+  detail. Threads on an unreachable backend dim and stay readable
+  from the replica. The full-width transport banner is reserved for
+  the visible thread's own backend dropping.
+
+Ruled 2026-09-01 (user), phase 7 UI: the machine picker is one more
+dropdown in the composer's existing project / worktree / branch strip,
+not a new row, and it stays hidden until more than one backend is
+paired, so the single-backend app looks exactly as it does today.
+Unreachable entries are dimmed, never removed. The worktree picker's
+"Local" entry is renamed "Base" (it means the project's root checkout,
+and "Local" collides with "this machine" once machines are a choice).
+Per-backend sidebar footer rows are CUT: Settings is where systems are
+added, the composer is where one is picked, and nothing else advertises
+the fleet.
+
+### Phase 7 plan (2026-09-01)
+
+Survey facts the plan answers: the client holds exactly one connection
+everywhere (one `WSClient`, one backend identity, one scope snapshot,
+one transport status, one replica session, one device-session slot,
+one `appStorage` bucket); no machine name exists on the wire (the
+hello carries `backendId` only, and the pairing payload's
+`backendName` is read once and discarded); projects have no repo
+identity field; a page served by backend A cannot redeem a pairing
+against backend B (CSP `connect-src 'self'` plus the origin check in
+`PairingScreen`); and two path-keyed stores (`gitStatusStore`,
+`workspaceChangeLock`) would collide across machines, the second of
+which gates destructive git operations.
+
+**One seam, two realizations.** `handle.ts` already resolves the
+transport per call. Phase 7 makes `resolveTransport` take a backend
+and holds one `TransportHandle` per attached backend, each wrapping
+its own `WSClient`, so hello, session, replay cursors, watch set and
+status stay per socket and unchanged. How a handle's socket reaches
+its backend depends on the client class:
+
+- **Phone (and any shell with its own origin):** the SPA opens the
+  socket itself to the backend's endpoint over WebPKI TLS, with that
+  backend's paired session in a per-backend credential slot.
+- **Desktop (embedded webview and `--connect`):** the local Go process
+  holds the paired profiles (`internal/deviceclient`, the same
+  profiles `--connect` resolves), dials each backend with the pinned
+  transport, and exposes it to its page as the same-origin pair
+  `/ws/backend/<id>` + `/bootstrap/<id>.json`: the `clientmode` proxy,
+  one instance per attached backend, running inside the local backend.
+  CSP stays `'self'`, credentials never enter JS, and self-signed LAN
+  backends work because Go pins.
+
+Rule that follows: the **browser class is single-backend**. A page
+served by a backend talks to that backend; the multi-backend clients
+are the desktop and the phone. `--connect` against one backend is
+unchanged; "add a system" is the same profile pairing driven from
+Settings instead of the command line.
+
+**Routing an RPC.** The generated method table grows a Route column:
+`thread` (arg 0 is a thread id: the backend that owns it), `project`
+(arg 0 is a project id), `workspace` (arg 0 is a `WorkspaceRef`: the
+backend that owns its project), `home` (the page's own backend: host
+actions, this machine's settings, this backend's access admin),
+`selected` (creation-shaped calls: the composer's chosen backend), and
+`all` (fan-out and merge: the list calls that feed the unified
+sidebar). `methodgen` infers `thread` / `project` from the Go
+parameter name, `workspace` from the parameter TYPE, and requires
+`//ao:route` on every other method; an
+unclassified method fails the build, the same fail-closed pattern as
+scope. The TS side keeps an entity → backend index (rows carry the
+`backendId` of the connection they arrived on, at load and on every
+event via the existing origin stamp), so the generated bindings and
+`bindings.ts` do not change: `Call.ByID` resolves the handle from
+(route, args).
+
+**Per-backend state.** Backend identity, scope snapshot, transport
+status, replica session, `appStorage` bucket and (phone) device
+session become per-backend maps keyed by `backendId`. Path-keyed
+stores key by (backend, path), the workspace change lock first. Stores
+keyed by thread or project id stay unkeyed (UUIDs, the §10 contract).
+Settings, system stats and provider accounts read from the backend of
+the visible thread (the selected backend on a draft); a settings
+section offers a machine choice only where the setting is per backend.
+
+**Machine name.** The hello frame carries `backendName` (the backend's
+display name, defaulting to its hostname, which the access overview
+already reads); the client keeps the pairing-time name as an editable
+nickname.
+
+**Project identity = repo.** Projects gain `remoteURL` and
+`rootCommit`; the sidebar merges entries across backends that match
+on remote URL (root commit when remoteless) into one project with
+targets. The machine chip renders in the worktree chip's slot only
+when the project spans more than one backend. Link/split is a settings
+action.
+
+**Waves.** 7a Go: the Route column and its TS mirror; `backendName` in
+the hello; attached-backend proxies with their §13 rows; the
+`remoteEndpoints` list retired in favour of `deviceclient` profiles
+managed by `AddBackend(pairingLink)` / `RemoveBackend` /
+`ListBackends` (host), and the plaintext token RPC deleted. 7b TS:
+backend registry, one handle per backend, per-backend singletons, the
+entity index and route resolution, path stores keyed by backend.
+7c UI: machine picker in the strip, dimming, the composer's
+"unreachable" reason, the Base rename in both pickers (the branch
+picker's "Local (with changes)" becomes "Base (with changes)" so one
+word means one thing in the strip), Settings "Systems", the machine
+chip. 7d: project identity and merged entries.
+
+**7a LANDED 2026-09-01 (842d78e5).** Route column + generated TS mirror
+(155 thread, 21 project, 153 home, 38 selected, 6 all at landing;
+122 / 14 / 162 / 43 / 7 plus 31 `workspace` after the 2026-09-03 main
+merge added that inferred route; the methods keyed by workflow item,
+automation, terminal, subscription, thread-group or thread-batch ids
+are parked `home` in the table, and the client's index resolves the
+49 of them that carry that id as argument 0, a count
+`methodFamilies.test.ts` asserts; the `WorkflowAgent*` methods whose
+id sits inside a struct argument stay on home, a gap named in
+`methodFamilies.ts`);
+`backendName` on hello and manifest; `internal/backendproxy` extracted
+from `clientmode`; the attached routes `/ws/backend/<id>`,
+`/bootstrap/<id>.json`, `/backend/<id>/attachments/…`. One narrowing
+beyond the plan: the attached routes and the manifest's `backends`
+list answer **loopback pages only**, so a remote page never borrows
+this machine's pinned credentials for a backend it did not pair with,
+and a revocation on the far backend stays visible to the client that
+drives it. `AddBackend` returns the verification number and the
+confirmation wait announces itself on `backend:attach`. The
+`remoteEndpoints` list and its plaintext token RPC are deleted.
+
+**7b LANDED 2026-09-01.** `transport/backends.ts` holds one entry per
+attached backend (the home entry wraps the existing `wsClient`;
+attachment is eager, and the list's source is one injectable function
+fed by the manifest today and by client-local storage on the phone).
+`resolveTransport(backendId?)` is one Map lookup; a client with one
+connection takes a fast path in `Call.ByID` and pays nothing. Route
+resolution: a one-call pin (`withBackendTarget`, drained at dispatch)
+for path-argument and subscription calls, then the id-family index for
+workflow items, automations and terminals, then the generated table;
+`all` fans out and merges in one place (arrays concatenate in attach
+order, id-keyed objects shallow-merge, a failed backend's share is
+dropped and recorded on its entry). `selected` resolves focused thread
+→ draft choice → home. Identity, scopes (`onHost` is home's alone),
+transport status, replica session, `appStorage` bucket and the device
+session slot are per backend; the workspace key is `${backendId} ${path}`
+so the change lock and git status cannot cross machines. Settings,
+system stats and provider accounts stay home-only reads until a
+surface needs otherwise.
+
+**7c LANDED 2026-09-01.** `MachinePicker.svelte` leads the composer's
+workspace strip and mounts only while more than one backend is
+attached; the single-backend app is pixel-identical. In this wave a
+project lives on exactly one machine, so the picker's label is the
+owner of the pane's project and choosing another machine flips the
+draft to that machine's first project (a machine with none says so and
+moves nothing); the pane's backend is staged before the flip because
+the flip's RPCs take the `selected` route. Unreachable entries are
+listed, dimmed and disabled with the reason in place; the composer on
+a thread whose machine is unreachable disables with "<name> is
+unreachable" (after the read-only reason, before the prompt copy) and
+its sidebar row dims — never for home, whose outage is the transport
+banner's. The project picker prefixes each entry with its machine while
+several are attached. Settings → Systems (Workspace group) lists the
+attached machines with live reachability, renames inline, detaches on a
+second press, and starts a pairing from a pasted link, holding the
+verification number until `backend:attach` retires it; the store
+(`stores/systems.svelte.ts`) owns the four `host` RPCs and publishes the
+confirmed descriptor to the registry itself. "Local" is "Base" in both
+pickers. Deferred to 7d, where a project first spans machines: the
+machine chip in the worktree-chip slot and the sticky per-project
+choice. No Playwright coverage yet: the harness runs one backend, and
+staging a second is a harness change 7d will need anyway; the wave is
+proved by component suites over a staged second backend
+(`test/helpers/backends.ts`).
+
+**7d design (2026-09-01).** Identity is derived, never declared: a
+project row carries `remoteURL` (the `origin` remote as git reports
+it) and `rootCommit` (the lexicographically smallest root of `HEAD`,
+so a repo with several roots answers the same on every machine), both
+computed by the backend that owns the checkout at creation (the
+`CreateProject` RPC and the workspace-ensure path alike) and backfilled
+once per boot for rows that have neither, each backfilled row
+announced as a `project:updated` `full` frame so a client that loaded
+first converges. The CLIENT merges: `utils/repoKey.ts` normalises the
+URL (scheme, user, `.git`, case of the host, the SSH alias form) and
+falls back to `commit:<rootCommit>`, and the projects store groups
+rows by that key only while more than one backend is attached, so a
+single-backend app computes nothing. A merged entry renders once in
+the sidebar under its home member (else its first member), with every
+member's threads beneath it; the project picker lists the entry, and
+the machine picker becomes a TARGET choice, flipping the draft to the
+sibling on the chosen machine. The machine chip renders in the
+worktree chip's slot only for threads of a project that spans more
+than one backend. Manual sort and the reorder RPC keep acting on
+home's rows; a member on another machine follows its entry. Link and
+split as a settings action are DEFERRED: derived identity covers the
+repo case, and a manual override needs persistence and a surface of
+its own — it is listed under the open items until a case that needs it
+appears. A remote re-pointed after creation keeps its stored identity
+until the next boot's backfill does not touch it (both fields are set);
+recomputing on `InvalidateForgeCache` is the residual.
+
+**7d LANDED 2026-09-01 (a1ee9e90 client, 1afa6c30 backend).** As
+designed. Migration v83 adds `remote_url` / `root_commit`;
+`git.RepoIdentity` derives them (origin verbatim through the shared
+repo-meta cache, smallest root of HEAD uncached); `projectapp` stamps a
+row at creation and on the workspace-ensure path's created rows, and
+`BackfillIdentity` runs once per boot outside the activation gate
+(its effect is two columns inside the snapshot boundary), announcing
+each moved row as `project:updated` `full` without touching
+`updated_at`. Archived rows are backfilled too, so an unarchive never
+yields the one entry that cannot merge. The client merges in
+`projects.svelte.ts` (`projectEntries`, `entryIdFor`,
+`projectMembers`, `projectSpansBackends`, `projectSiblingOn`), keyed
+by `utils/repoKey.ts`; the machine chip is `thread-row-machine` in the
+worktree slot; the project picker lists entries and the machine picker
+flips to the sibling. Accepted residuals: rename, colour and manual
+sort act on the representative row only; the reorder RPC stays
+`home`; a re-pointed remote keeps its stored identity. Still no
+Playwright coverage for two backends (harness has one).
+
+Path links and open-in-editor from a UI that is not on the thread's
+host default to copy/preview, with "open on <machine>" as the explicit
+secondary. The recommended posture for real remote editing is the
+editor's own remote mode over the tailnet (VS Code Remote-SSH against
+the host's tailnet name and the like): a per-machine editor command
+template lets the local UI open the *local* editor pointed at the
+remote checkout (`vscode://vscode-remote/ssh-remote+<host><path>`
+deep links — the editor's own SSH does the work). The backend
+self-probes before advertising remote-open targets: no `sshd`
+listening means no link offered (a clear "no SSH route" beats a
+hanging deep link), and offered hosts are ordered
+most-reachable-first (tailnet name, then mDNS `.local`). We do not
+build a file-open protocol.
+
+**Additions from the 2026-09-03 merge of main** (any-file attachments,
+workspace-keyed git RPCs, thread groups, the settings search index):
+
+- **Migration numbering.** The live database had already run main's
+  v73–v76 (user-text index, settle triggers, `attachment_kind`, thread
+  groups), so the branch's own migrations moved, not main's: identity
+  core is v79, pairing v80, device proof v81, passkeys v82, project
+  identity v83, push v84. The rule for the next merge is the same:
+  whichever side the user's store has not yet run is the side that
+  renumbers.
+- **The `workspace` route.** main re-keyed every checkout-scoped git RPC
+  on a `WorkspaceRef{projectId, workspacePath}` instead of a thread id,
+  which the `thread`/`project` inference could not see (the parameter is
+  named `ws`). `methodgen` now infers `workspace` from the parameter
+  type, and the client resolves it through the project index. Residual:
+  `NO_WORKSPACE_REF` (the zero ref the PR-review RPCs accept as "no
+  local clone") carries no project id and so routes `home`; on a
+  multi-backend client a forge-only PR read lands on the home backend.
+  Thread groups ride the id-family table (`threadGroup`, and
+  `threadList` for the batch move) and are learned from the group list
+  and create answers.
+- **`file` attachments over the ticketed PUT.** main's any-file
+  attachments arrived as a base64 RPC; here they take the same
+  `PUT /attachments/upload` ticket images do. The kind is decided at
+  MINT (`ClassifyUpload`), so the per-kind cap (50 MiB files, 10 MiB
+  images) is refused for the price of one RPC, and the transfer window
+  scales with the declared length (`AttachmentTransferWindowFor`, a
+  5-minute floor at 35 KiB/s) instead of cutting a large file at the
+  old fixed deadline, and it replaces BOTH of the request's deadlines,
+  since net/http arms the write deadline when the request headers
+  finish reading, before the handler runs, and a slow upload was
+  otherwise cut by a clock started before its first byte arrived. Download tickets refuse the `file` kind at mint:
+  files reach the provider by path only, never the browser.
+- **Settings pages.** main replaced the free-form settings view with a
+  paged rail and a search index that every control registers in. The
+  branch's controls are registered; `notifications` (desktop + phone
+  push) and `systems` (attached backends) are their own pages because
+  main deleted the General page they used to sit on.
 
 ## 11. Team sharing (federation)
 
 Chosen topology: **peer backends, not teammate devices.** A teammate's
-backend holds one read-only, `public`-class, key-bound session against
+backend holds one read-only, key-bound peer session (class named at
+phase-8 design time) against
 ours, scoped to shared workspaces, and re-projects to its own devices.
 Reviewed alternative (teammates' browsers connecting directly) is
 simpler but puts N of their devices and credentials against our machine;
@@ -683,8 +2911,8 @@ no new store.
   That would require the store to become a full-fidelity event store
   (violating principle 3) and is untestable under the no-real-provider
   invariant.
-- Reachability: Tailscale node sharing (cross-tailnet, no merge),
-  Funnel/Cloudflare URL, or LAN.
+- Reachability: Tailscale node sharing (cross-tailnet, no merge) or
+  LAN.
 
 ## 12. Consequences for existing principles
 
@@ -702,11 +2930,17 @@ no new store.
 
 ## 13. Surface inventory
 
-Complete coverage has to be structural, not a promise. The defect that exposed
-this requirement was the retired `/design/` route, which served agent-written
-files from the SPA origin outside the authorization model. Design mode and that
-route were removed on 2026-08-30; the lesson remains part of the boundary
-contract (see the boundaries doc's findings and §16 phase 0).
+Complete coverage has to be structural, not a promise. The worked
+counter-example, now removed: `/design/` served agent-written files
+from the SPA origin with **no token, no response headers, no
+per-thread check, and symlinks unresolved** — an entire HTTP surface
+sitting outside the authorization model, found only because it was
+audited, and closed in 2026-08-30's design-mode removal rather than
+by the fix that audit prescribed. It is kept here because deletion is
+not a mechanism: the same surface would have gone unenumerated for
+its whole life, and the dev-server gateway in §7 is the next thing
+shaped like it. What follows is what makes the next one visible
+without an audit (see the boundaries doc's findings, and §16 phase 0).
 
 Every externally-reachable surface is enumerated in one place with four
 declared properties: **listener** (which port/origin), **principal tiers
@@ -725,16 +2959,68 @@ Classes to enumerate:
   tickets, attachments, snapshots, health/version.
 - **Event channels**: required scope per channel, resolved into the
   connection's precomputed visible set.
-- **Listeners**: loopback, LAN, tsnet, tunnel, plus the auxiliary
-  loopback servers (browser MCP, harness control, claudetui gateway,
-  pprof) which must each declare that they carry no session credential.
+- **Listeners**: loopback, LAN, tsnet, plus the auxiliary
+  loopback servers (browser MCP, harness control, claudetui gateway +
+  hook relay, pprof, the `--connect` client stub, the dev supervisor)
+  and the **implicit** ones our own child processes open — chromedp
+  gives every managed Chrome a loopback DevTools port, which no
+  inventory named until this audit. Each declares what capability it
+  carries and how it authenticates, not merely that it holds no
+  session credential: the browser MCP endpoint carries page
+  evaluation and workspace file reads behind an unguessable path
+  alone, which is a larger grant than "no session credential"
+  suggests. A listener whose credential is weaker than the surface it
+  gates is the pattern the enumeration exists to make visible. The
+  starting inventory is 9 listeners across 7 packages, one of them
+  implicit, verified 2026-08-30 against the design-mode-less tree.
 - **Content origins**: anything serving bytes an agent or user
   authored declares its origin and content-type posture; agent-authored
   bytes never execute at the SPA origin.
 
+Additions from the 2026-09-01 merge of main v0.0.14, which replaced the
+streamed browser companion with a **native page view** (a WKWebView /
+WebView2 / WebKitGTK child view clipped into the pane):
+
+- **The page view is host-only.** It is a native view on the host with
+  no remote form. Its RPCs (`BrowserCompanion*`, `BrowserHostReport`)
+  and its `browser:companion-state` / `browser:host` channels are
+  `scope: host`, which `authorize.go` judges by `proof.HostPresent`
+  before any grant is consulted: no session holds host. The frontend's
+  `hasScope('host')` is `snapshot.onHost`, so a remote client never
+  hydrates the companion state and never opens the pane; the e2e
+  view-only sweep caught the unguarded hydrate on main and it is now
+  gated. `ClearBrowserSiteData` stays at `terminal:operate` (it clears
+  the host's browsing profile but needs no host window); flagged, not
+  decided.
+- **CDP relay listener** (`internal/cdprelay`): loopback, WSL only,
+  direction launcher → backend, carrying the WebView2 DevTools byte
+  stream. Credential: kernel peer locality (`loopback.PeerAddress`)
+  plus the launch credential. Declared in the Listener rows.
+- **WebView2 debug-port reservation** (`webview2host.freeLoopbackPort`):
+  the host binds a free loopback port so the page view's DevTools port
+  is ours before Chromium takes it. Implicit, listed the way chromedp's
+  port was.
+- **`/browser-cdp` route** (`transport.CDPTunnelPath`): a byte-stream
+  mux the scope gate never sees, so it is enumerated as a route with
+  its own posture. Loopback `Host` guard, launch credential, and
+  kernel peer address each fail as 404; the upgrade runs with the
+  session unproven. `cdptunnel_contract_test.go` pins the route row,
+  the listener rows, and the origin row together.
+
 Rules that follow: a new listener declares its binding class and what it
 accepts; a new route declares tier + scope + content posture; a new
 event channel declares its scope. Unclassified means unbuilt.
+
+A channel's AUDIENCE is declared on that same row, and it is declared
+by DATA CLASS: `loopback-only` means the only legitimate consumer is a
+process on this host, and it may never be justified by the reachability
+of an RPC. A `Why` that cites what some method admits today goes stale
+the moment that method's reachability changes, which is exactly how
+nineteen rows outlived the local-only table by three months
+(re-adjudicated 2026-09-03). `internal/transport`'s
+`TestLoopbackOnlyIsForHostDirectivesOnly` holds both lists by name and
+fails on any third loopback-only row, so the next re-classification is
+a deliberate edit of two lists rather than a row nobody reviewed.
 
 ## 14. Performance and resource budget
 
@@ -771,13 +3057,231 @@ frame.**
 - **tsnet is opt-in and lazily initialized.** An embedded userspace
   WireGuard stack costs memory and keeps DERP connections alive; a user
   who never enables remote access must not pay for it. Same for the
-  tunnel subprocess and the TLS listener.
+  TLS listener.
 - **CSP and security headers are constant strings** set from a
   prebuilt header block, with no per-request construction.
 - **Symlink-safe file serving** costs a few extra syscalls per *open*
   (not per byte), on a path served rarely.
 - **Snapshot and attachment transfers ride HTTP**, not the WS, so large
   bodies never block the event socket or inflate the replay ring.
+
+  Attachments: LANDED 2026-09-01 (wave 6b, 7 commits ending 0a2188be).
+  `UploadAttachment` / `GetAttachmentData` deleted as RPCs; bytes cross
+  on `GET /attachments/{threadID}/{attachmentID}` and
+  `PUT /attachments/upload` (`internal/transport/attachmentroutes.go`),
+  each admitted by a single-use subject-bound ticket minted by a
+  scope-gated RPC (`MintAttachmentDownloadTicket` re-checks thread
+  ownership at the mint AND at open; `MintAttachmentUploadTicket` fixes
+  filename/type/exact byte count in the ticket so the PUT contributes
+  bytes and nothing else). Two ticket books (download/upload, 30 s TTL,
+  64 outstanding each); tickets are consumed at the first byte, so the
+  transfer itself rides a per-request 5-minute deadline
+  (`AttachmentTransferWindow`, shared with the `--connect` stub's
+  relay). The routes carry no cookie, no Origin requirement, answer 404
+  for every refusal, and are deliberately not rate-limited (admission
+  is already a bounded-issuance token; argued in the transport guide).
+  The attachment store streams end to end (declared-length contract,
+  12-byte signature peek, 32 KiB copy buffer — a 10 MiB image is never
+  a `[]byte` or a base64 string on either side). Thumbnails STAY an
+  RPC by decision (~10-30 KB, grid path, a ticket round trip per tile
+  costs more than the frame). The `--connect` stub relays
+  `/attachments/` under its own page credential, attaching no upstream
+  credential (the routes accept none) and never rewriting the URL.
+  **Resumable upload is deliberately deferred to the phone waves**:
+  uploads are single-shot PUT (bodies ≤ 10 MiB, composer compresses
+  first), and a failed upload re-mints and re-PUTs. Snapshot fetches
+  over HTTP remain open (they ride RPC today).
+
+**Initial wire budgets** — starting targets, revised by measurement,
+never by feel; a harness scenario counts actual bytes on the wire and
+fails on regression:
+
+- Warm attach to an already-replicated thread: **< 5 KB**.
+- Cold attach to a typical thread window: **< 50 KB compressed**;
+  heavy payloads stay on-demand and never ride the attach.
+- Idle attached thread: **keepalive only** (tens of bytes per 10 s
+  tick); an idle *unfocused* thread with subscription narrowing: zero.
+- Streaming a turn: **≤ 1.3×** the raw delta bytes after compression
+  and framing.
+- A backgrounded / unleased client: **zero event traffic** until it
+  leases back in.
+
+### Measured baseline, and why the budget is missed today
+
+Measured 2026-08-30 against a real 65,877-item thread, at the size the
+cold open actually asks for — `SLICE_AROUND_ITEM_BUDGET = 200`, not the
+500 of `ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS`, which is the *retention*
+target after paging and was the first figure this section carried. The
+200-row window serializes to **330 KB raw, 59 KB compressed**: 1.2×
+the budget above, not the 3× first recorded here.
+
+Where it goes matters more than the total. Of 200 rows, 109 are
+`tool_call` and they carry **81%** of the bytes. Per-field, across the
+whole window: payload metadata 100 KB (38%), item `meta` 63 KB (24%),
+`summary` 48 KB (18%, mostly thinking text), preview highlight spans
+17 KB (6%), ids and timestamps the rest. Payload *bodies* are
+correctly withheld; this is the metadata riding alongside.
+
+Two of those fields are content that **does not paint on first
+render**:
+
+- **Full tool arguments** (`meta.input`) are 59 KB of the 63 KB. A
+  4.2 KB `Bash` argument object ships so a card can show one command
+  line. Three consumers read sub-fields of it — `input.files`
+  (`utils/fileChangeRows.ts`), `input.questions`
+  (`AskUserQuestionCard.svelte`), `input.tool`
+  (`utils/subagentGrouping.ts`) — and nothing reads the whole object.
+- **Diff preview text and its highlight spans** are 51 KB, 15% of the
+  window. `collapseDiffPreviews` defaults to `true`, so by default the
+  patch sits behind a chevron and none of it paints until clicked.
+
+That is ~110 KB of 330 KB raw rendering nothing on arrival. The
+correction that follows is therefore *not* a shorter window: the row
+count is what makes the timeline look complete, and the reader pages
+back through it seamlessly already (auto-load fires 800 px before the
+top edge, one page per gesture, with the keyed virtualizer emitting
+exact scroll compensation on prepend). Cut the fields that arrive
+unrendered and the same 200 rows — or more — fit the budget.
+
+One wrinkle to design around rather than ignore: `collapseDiffPreviews`
+is a *client* setting. With it off the diff text does paint on first
+load, so that half of the elision is conditioned on the attaching
+client's preference, not dropped outright. The projection therefore
+belongs where the connection's state is known, not in the store.
+
+**The precedent already exists in-tree, and it is the right shape.**
+An earlier version of this section claimed every cap in the wire path
+was a count. That was wrong. Two byte budgets already bound the
+derived-cache fields, both justified in code by exactly the reasoning
+above:
+
+- `persistedCodeSpansMaxBytes = 256 << 10` (`app_highlight_persist.go`)
+  bounds the `codeSpans` blob on `items.meta` — *"Meta rides every
+  item-list load, so a pathological all-code message must not attach
+  megabytes of runs; fences past the budget fall back to the RPC path
+  lazily."* It spends a running budget across fences and **skips
+  rather than breaks**, so one giant fence cannot starve later small
+  ones.
+- The same constant caps `preview_spans`
+  (`app_highlight_diff_seed.go`) — *"preview_spans rides every item
+  list read, so it gets the same retained-bytes guardrail"* — behind
+  per-file (256 KB) and aggregate (1 MB) input caps.
+
+Both already satisfy the "elision ships with its recovery route" rule
+below: what they skip is fetchable through the highlight RPC. The gap
+is not that the pattern is missing, it is that it was applied to the
+two fields we authored ourselves and never to the provider-shaped
+fields the measurement blames. Count caps that remain count-only:
+`SLICE_AROUND_ITEM_BUDGET = 200`, `LOAD_OLDER_ITEM_BUDGET = 200`,
+`ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS = 500`,
+`inlineDiffPreviewLineCount = 30`, and the 8 MB on-disk tool-output
+file cap. A row with thirty very long lines still satisfies all of
+them.
+
+Calibration, so the target is not mistaken for a crisis: t3code's own
+comment on their page size says it is *"sized so first paint on the
+heaviest observed threads stays around 100K gzipped."* Their widely
+quoted small figures (a 15.5 KB CI ceiling) come from a fixture whose
+point is that 9 MB of retained tool output ships as almost nothing —
+it measures their elision, not their window, and we already keep
+payload bodies off the wire. On comparable ground, heaviest thread to
+heaviest thread, they are at ~100 KB and we are at 59 KB — we are
+already ahead of them, and the only thing we are behind is our own
+50 KB target, by 9 KB. That target stays where it is: it is more
+aggressive than what they achieve, and the elision above clears it
+with room to spare.
+
+Rules that follow, and hold for any future payload:
+
+- **Elide unrendered fields before shortening the window.** The row
+  count is what makes a reopened thread look complete; the fields are
+  where the bytes are. Cutting rows trades visible history for bytes,
+  cutting a field nothing paints trades nothing. Reach for the window
+  only once the fields are clean.
+- **Every count budget still carries a byte budget**, as the backstop
+  that field elision cannot provide: a window admits rows until either
+  the row count or the encoded byte budget is reached, whichever comes
+  first. Count alone bounds reducer churn; bytes alone bounds a small
+  number of large rows. Neither substitutes for the other, and neither
+  substitutes for not sending the field.
+- **One oversized row is always admitted when the page is otherwise
+  empty**, or pagination stalls forever on a single item.
+- **A budget skips, it does not break.** Spending a running budget
+  across items and stopping at the first overage lets one giant item
+  starve every later small one, which reads to the user as history
+  that thins out for no reason. `buildPersistedCodeSpans` gets this
+  right and says so at the `continue`.
+- **Byte accounting charges what actually goes on the wire**,
+  including any row that appears twice in one payload.
+- **Elision ships with its recovery route in the same change.** A
+  truncated field carries a typed marker saying so, and the endpoint
+  that returns the full value lands with it, never "later". t3code
+  cut full MCP results from their payloads (12.2 MB → 546 KB) on the
+  stated promise of an on-demand detail endpoint and never built it,
+  turning an accepted temporary loss into a permanent one.
+- **Truncate at the wire boundary, not in storage.** The persisted
+  record stays complete; only the projection shrinks.
+
+### Wire budget enforcement
+
+LANDED 2026-08-31 (1fbb771c) as a Go gate rather than a harness
+scenario, deliberately: `internal/app/app_wire_budget_test.go` seeds a
+deterministic heavy thread built to the field split above (fixture
+entropy corrected until its deflate ratio matches the real thread's
+5.6:1), marshals the cold 200-row window into the same
+`transport.ServerFrame` the connection writes, and deflates it at the
+socket's own level. That puts the gate in `make go-test` on every
+commit instead of `make e2e`, with ceilings for both clients (default
+193.1 KB raw / 38.4 KB deflated measured, ceilings 216 KB / 44 KB —
+under the 50 KB budget with room; previews-on 248.4 / 49.0, ceilings
+272 / 54) plus an anti-rot companion that measures the same window
+unprojected and fails if the projection's saving disappears. Budgets
+live in that test rather than in logs, so a regression fails locally
+before it ships.
+
+### What t3code did that we do not need, and what we do
+
+Their largest wins were architectural catch-up we already have.
+Their activity rows stored full tool payloads inline, so they built
+an allowlist projection to strip them on the way out (12.2 MB → 546
+KB for MCP results) and later a second one at ingestion, after
+discovering one 65 KB tool result had persisted 238.7 MB across 2,226
+streaming updates. Our payload bodies have always lived in a separate
+table behind an id, and items persist on completion rather than per
+update, so neither problem exists here. We also already have the
+partial-window guard they rate as their most valuable idea: an event
+for an item outside the loaded window must not be appended at the
+end. Ours is cursor-based in both directions and handles negative
+item indexes from head-healed prompts.
+
+Deliberately not adopted, three things:
+
+- **Their field-allowlist projection.** It is only as correct as the
+  inventory of fields the client reads, and that inventory decayed
+  twice in production — once dropping the real status so failed tool
+  calls rendered as successful, once matching tool identity on the
+  wrong field so the dedupe silently fell back to comparing titles. A
+  byte cap on a field we already know is heavy carries no such
+  inventory.
+- **Summarizing tool output to one line at ingestion, permanently.**
+  It is their single largest lever (9 MB of retained output shipping
+  as under 16 KB) and it is irreversible by construction: a 900 KB
+  result becomes 84 characters and no endpoint returns the rest. Our
+  payload table exists precisely so the full value stays fetchable.
+- **Buffering assistant text server-side and flushing at block
+  boundaries.** Their token streaming is a legacy opt-in that
+  defaults off, so a turn's prose crosses as a handful of frames.
+  That is a byte win bought with the live-typing feel the reveal
+  queue and spinner work are built around. We keep streaming and
+  bound its overhead with the ≤1.3× budget instead. Worth noting our
+  thread stream already coalesces (16 ms / 50 events) where theirs
+  does not — only their sidebar stream has a coalescing window.
+
+Worth taking beyond the byte budgets: dropping rows a snapshot does
+not need (they found 47k superseded tool-update rows in one database,
+and stale context-window rows were 24–37% of snapshot bytes), applied
+to snapshots only and never to live events, since the client folds
+live rows itself.
 
 Phase 6's phone work (subscription narrowing, buffered deltas, scope
 leases) is a net *reduction* in wire and CPU cost, not an addition.
@@ -794,8 +3298,8 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    free Firebase project; iOS Web Push requires home-screen install and
    is unavailable to EU-mode PWAs. Vendor push keys cannot ship in
    self-hosted binaries (§9).
-5. cloudflared is subprocess-only; tsnet needs a control plane
-   (Tailscale account or self-hosted Headscale).
+5. tsnet needs a control plane (Tailscale account or self-hosted
+   Headscale).
 6. Plain-HTTP LAN browsers lose WebAuthn, service workers, clipboard,
    **and non-extractable WebCrypto**, so they are bearer-only. There is
    no LAN-HTTP DPoP path.
@@ -811,65 +3315,442 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 
 0. **Open content-isolation defects.** Independent of everything else
    and reachable today, in the desktop webview, with no remote feature
-   enabled: the markdown renderer's `Link.svelte` relative branch
-   (root-relative and protocol-relative hrefs render as live anchors,
-   bypassing `transformUrl`), an anchor-navigation guard, retirement of the
-   unsafe `/design/` content route, and a baseline CSP that
-   is strict in production and relaxed in dev (the Vite dev server injects
-   inline styles regardless of HMR, so the split is not an HMR
-   concession; disabling HMR is an independent preference). The boot
-   credential moves out of script reach entirely: bootstrap exchanges
-   the one-time `?t=` URL token for an HttpOnly cookie, strips the
-   token from the URL, and the WS upgrade authenticates via cookie
-   plus the §7 Origin allow-list, deleting the `sessionStorage` copy
-   and `window.__AO_BOOTSTRAP__`. This is the same channel that
-   carries session credentials from phase 2 on, not a stopgap. Also:
-   `safeExternalURL` on the two unvalidated `PRStep.svelte` hrefs, tests
-   for `/`- and `//`-leading hrefs, a correction to the false claim in
-   `frontend/CLAUDE.md`, and the §13 surface enumeration + CI gate
-   seeded with HTTP routes, listeners, and content origins (the
-   RPC-method and event-channel columns join in phase 3 when the scope
-   table generates).
+   enabled. Re-verified against this tree on 2026-08-30, after design
+   mode was removed on main. That removal closed the largest item on
+   this list outright — the `/design/` route was the only same-origin
+   surface serving agent-authored bytes, and with it went the
+   unauthenticated read, the symlink following, the directory
+   listings, the second Chrome launcher's sandbox disagreement, and
+   half the MCP-endpoint item. Four other entries left the list
+   earlier and are recorded elsewhere rather than here: the markdown
+   renderer's relative-href branch (fixed at the render layer, both
+   paths verified), the persisted stable port and the backend-keyed
+   replica (both already shipped, §7 and §9), and a `frontend/CLAUDE.md`
+   correction whose claim now lives in a code comment.
 
-1. **Sync sweep + seams.** Emits, channels, gap entries, race handling,
-   device attribution column, thread branch/remote/head recording,
-   backend UUID, hello frame, multi-backend seams (§10).
+   Two items were considered and **deliberately not taken**, so they
+   do not come back on a later pass. The click delegate's
+   no-`preventDefault` fall-through stays as it is: an agent that
+   could plant a foreign anchor already has a shell, so the anchor
+   buys it nothing, and the markdown path can no longer emit one
+   regardless. `PRStep.svelte`'s two unvalidated forge hrefs stay as
+   they are: a forge API returns the same URL the real pull request
+   page would link, so validating ours while the real page does not
+   is theater. The click delegate is recorded in the boundaries doc
+   as observed behavior rather than debt; PRStep is recorded here
+   only, because it is a decision about our own component and not a
+   property of the boundary.
+
+   - **A baseline CSP.** LANDED 2026-08-31 (2eb5c7dc): every served
+     response carries a prebuilt policy (`transport.CSPProduction` /
+     `CSPDevServer`), chosen once at server construction from the
+     dev-asset-proxy condition so policy and handler cannot disagree,
+     and `WriteSecurityHeaders` takes the policy as a typed argument
+     so a route cannot ship without naming one. `script-src 'self'`
+     with no hash and no nonce — the first-paint theme stamp moved to
+     `frontend/public/boot-theme.js` (byte-identical validator), and
+     `index.html` holds no inline script or style, held by a test.
+     The dev variant relaxes `connect-src` alone (Vite's baked-in
+     direct HMR socket fallback); a test fails if the two policies
+     differ anywhere else. The e2e page fixture collects
+     `securitypolicyviolation` events across the suite. Verified in
+     Chromium end to end; the WKWebView leg (macOS) is verified by
+     spec reading only and is the first thing to eyeball on a Mac
+     boot. The `--connect` stub now serves the exact root via
+     `/{$}` and everything else from the bundle file server, because
+     the shell answering for `/boot-theme.js` under `nosniff` would
+     have silently dropped the theme stamp on that origin.
+   - **The boot credential moves out of script reach.** LANDED
+     2026-08-31 (24486360): a page URL carries a one-time ticket
+     (`?t=`), the first `/bootstrap.json` exchanges it for an
+     HttpOnly, SameSite=Strict, port-qualified cookie
+     (`ao_page_<port>`), and the SPA strips the ticket from the URL.
+     `sessionStorage['ao:bootstrap-token']`, `window.__AO_BOOTSTRAP__`
+     and every reader of either are gone. `OriginAllowed` gates `/ws`,
+     `/bootstrap.json` and the new `/pageurl` ahead of the credential
+     and is load-bearing on loopback too (cookies do not scope by
+     port). Consumers that navigate more than once (Windows launcher
+     reload, `ao-harness`, the e2e rig) ask the credentialled
+     `GET /pageurl` for a fresh URL. One validation function
+     (`Credential.Authenticate`), three carriers: cookie, bearer
+     header, `?token=` for URL-only WebSocket APIs. This is the same
+     channel that carries session credentials from phase 2 on, not a
+     stopgap.
+   - **The `--connect` client stub hands out that same credential.**
+     LANDED 2026-08-31 (same commit): the stub serves the SPA shell
+     verbatim on its own origin, issues its own page cookie, and
+     carries `/ws` to the upstream through `httputil.ReverseProxy`
+     with the upstream token attached server-side, so `validateWsUrl`
+     now holds same-origin with no exemptions in every mode. The
+     upstream's verdict on the configured token is relayed through the
+     stub's own manifest probe (bearer header, refusal maps to 404,
+     transient to 503).
+   - **The browser MCP endpoint authenticates on an unguessable path
+     alone.** LANDED 2026-08-30 (476f428f): every request now clears a
+     loopback-peer check off `r.RemoteAddr` (the claudetui gateway's
+     precedent), a refusal of any `Origin` header, and an
+     `application/json` requirement that forces a preflight where a
+     `text/plain` POST would have been a CORS simple request. Both
+     real provider clients verified against their header
+     construction. The listener still binds eagerly — its URL rides
+     provider argv at spawn — and that property is now documented at
+     `ensureStarted`.
+   - **Tests.** LANDED 2026-08-30 (7897c969): the `//`-leading href
+     is pinned through the real `ChatMarkdown` on both render paths,
+     and `ChatMarkdown.compactStaticLinkUrls.test.ts` drives a
+     20-class href corpus through `staticHtml.ts` and `Link.svelte`
+     with per-class test names, so a future edit to one path that
+     forgets the other fails the case naming the divergent class.
+   - **The §13 surface enumeration + CI gate.** LANDED 2026-08-31
+     (7ead32ed): `internal/surfaces` holds the authored rows — 9
+     listeners across 7 packages (the tree had not drifted from the
+     audit), 17 HTTP routes across all four muxes, 8 content origins,
+     each with binding class, credential, posture and a Why — and its
+     AST gate scans the Makefile's package roots, failing in both
+     directions (unenumerated bind/route, or a row whose file no
+     longer binds) with zero exclusions. The RPC-method and
+     event-channel columns LANDED 2026-08-31 (wave 6d2) as two
+     `Registry` REFERENCE rows — listener, routes, authored-table
+     source/symbol, required row fields, and the gate functions that
+     read each — with an AST cross-check that fails on a moved symbol,
+     an unclassified entry, or a deleted gate, rather than a duplicate
+     of the 360-method / 72-channel tables that would only ever drift
+     from them. Open repo-hygiene item the sweep surfaced:
+     `spike/claude-mitm` is checked in with two live `net.Listen`
+     calls against spike-policy step 5; it sits outside the gate's
+     package roots.
+   - **Doc drift inside the classification table.** LANDED 2026-08-31
+     (0114caed): `LocalOnlyCategory` is a closed typed set (ten at
+     landing; wave 5c added `CategoryDeviceAccess` as the eleventh),
+     each entry in the authored `localOnlyCategories` map carries one,
+     and `LocalOnlyMethods` is derived from it — the name set held
+     byte-identical through the change, with the wave-2 addition
+     (`StopThreadBackgroundWork`) categorized at the merge. Gates pin
+     the set closed, the ordinals contiguous, and every entry tagged.
+     Sibling landing, same commit series (d7b67946): seven loopback
+     predicates consolidated into `internal/loopback` (four named
+     predicates; `EndpointAuthority` and `EndpointHostname` provably
+     cannot fold and a test pins why).
+
+1. **Sync sweep + seams.** Archive-closes-session fix: LANDED
+   2026-08-31 (b809e997, §7). Thread-row emits: LANDED 2026-08-31
+   (9d48ee7c, §8). The sync sweep is COMPLETE: settings/project/draft
+   emits, gap entries, race arbitration with the typed
+   `already_handled` code, the device-attribution column, and thread
+   branch/remote/head recording all LANDED 2026-08-31 (wave 4b, §8).
+   Hello frame + `/healthz`, per-call cause preservation with the
+   frozen-empty retry allowlist, forward tolerance with its
+   future-dialect fixtures, and the notification audience change:
+   LANDED 2026-08-31 (wave 4a, §9). The suspension mechanism itself
+   was already built and was not duplicated. Replica lifecycle and the
+   multi-backend seams, backend UUID on the wire included (§10):
+   LANDED 2026-08-31 (wave 4c). Byte budgets: LANDED 2026-08-31 (1fbb771c, §14
+   "Wire budget enforcement") — `internal/itemwire` projects every
+   item path (pagers, `SyncThreadWindow`, live upserts/patches), with
+   typed markers, the `GetThreadItemProjectionSource` recovery route,
+   a per-window byte backstop, and the counting gate in `make
+   go-test`. The window keeps its 200 rows.
 2. **Identity core.** Genuinely N-user from the start, with no implicit
    single owner anywhere in queries, session checks, or audit
    attribution (hub deployments depend on it; §11). Schema
-   (users/devices/sessions/audit), pairing
-   with proof-of-possession + verification number, token exchange,
-   rotating refresh with reuse detection, generalized ticket primitive
-   (WS + HTTP), revocation with live teardown, recovery codes, device
-   management UI, rate limiting, webview/WSL credential forwarding,
-   ui_state device binding.
+   (users/devices/sessions/audit), revocation with live teardown,
+   recovery codes, rate limiting, and the typed refusal vocabulary:
+   LANDED 2026-08-31 (wave 5a, 7dccc702) — migration v79 (six tables;
+   `EnsureOwnerUser` is the one role-resolved read and says so),
+   `internal/identity` (HMAC session claims with signature checked
+   structurally before the time window, both-halves verification, the
+   in-memory per-RPC fast path invalidated synchronously on revoke,
+   Crockford-alphabet recovery codes consumed by one CAS statement,
+   idempotent `Bootstrap`), the transport live-session registry with
+   three-step synchronous teardown behind `Config.SessionForRequest`
+   (nil until phase 3 migrates clients), per-peer token buckets on the
+   three credential surfaces refusing 429 + `Retry-After`, and
+   `auth_failed` + reason on the wire with
+   `frontend/src/lib/transport/authReason.ts` as the one hint module,
+   pinned against the Go set in both directions.
+   Pairing, token exchange, rotating refresh, tickets, and local-client
+   sessions: LANDED 2026-08-31 (wave 5b) — migration v80
+   (pairing_links, refresh_secrets, devices.channel,
+   sessions.activated_at with the confirmation gate INSIDE
+   Session.Live), keypair-first redemption with the owner verification
+   number derived from the redeeming key, rotating refresh whose
+   family key IS the session id (reuse spends the chain then revokes
+   the session), one ticketBook behind both the page ticket and the
+   30s session-named /ws ticket, per-connection liveness re-check +
+   remote lifetime cap, /auth/pair + /auth/token + /auth/ticket on one
+   shared tight budget, the implicit loopback page-channel session
+   riding the bootstrap exchange as an HttpOnly cookie, WSL launcher
+   credential forwarding, and `SessionForRequest`/`SessionLive` wired
+   from app boot. Device-access RPC surface, ui_state device binding,
+   the shared `relaysession` credential source (now also on the
+   `--connect` hop), and the redeeming client: LANDED 2026-08-31 (wave
+   5c). The owner-facing devices pane in Settings (list / pair /
+   confirm / revoke UI over those RPCs) and the paired client's
+   restart-recovery legs: LANDED 2026-08-31 (wave 5c close). Live
+   verification surfaced three wire rules now pinned in
+   `internal/transport/AGENTS.md` and the frontend transport guide:
+   while a paired session is stored it is the ONLY identity the
+   upgrade may present (a dial that cannot mint a ticket fails and
+   retries instead of proceeding on the page cookie); the manifest
+   admits a live durable session when the page-credential exchange
+   refuses, without planting the local channel's session cookie; and
+   a spent WS ticket naming a live session stands in for the launch
+   credential on that upgrade, with the Origin check unconditional.
 3. **Authorization.** Annotation-driven generated method table, scope
    tiers + binding enforcement + step-up set, event visibility, settings
    key→tier taxonomy, capability-driven frontend, `LocalOnlyMethods`
-   derived then deleted.
+   derived then deleted. The table, tier vocabulary, step-up
+   annotations, and derived `LocalOnlyMethods` (43 transitional
+   overrides): LANDED 2026-08-31 (wave 6a — see §5 for what the pass
+   established). Enforcement — the per-RPC scope gate, typed
+   refusals, host-presence step-up, the effective-runtime-mode
+   autonomy recheck, scope-driven event visibility, settings-tier
+   gate, `settings:read` (35 overrides remain): LANDED 2026-08-31
+   (wave 6b — §5 has the shape and the two recorded gaps). The
+   capability-driven frontend: LANDED 2026-08-31 (wave 6c1 — §5). The
+   webview dropping `?t=`: LANDED 2026-08-31 (wave 6c2 — §4 "Local
+   clients"). `/ws` onto session credentials: LANDED 2026-08-31 (wave
+   6d1 — §4 "Local clients") for every off-host peer; loopback tooling
+   keeps the launch credential by adjudication. Origin-gate deletion,
+   the binding-class prerequisite, and §13's RPC and event-channel
+   registry rows: LANDED 2026-08-31 (wave 6d2 — §5 "Phase 3 closed").
+   **Phase 3 is complete.**
 4. **Settings storage.** Host JSON / user+device in `ui_state`,
-   migrations, per-class defaults.
+   migrations, per-class defaults. Tiered residency: LANDED 2026-08-31
+   (wave 7a — §6). The session floor and view-only pairing: LANDED
+   2026-08-31 (wave 7b — §6). Device-class defaults: LANDED 2026-09-01
+   (wave 6c — §6). **Phase 4 is complete.**
 5. **Serve mode, endpoint, TLS, tsnet, passkeys, remote update with
    rollback, provider remote re-auth.** DPoP mandatory here (the token
    endpoint accepts thumbprints from phase 2 so nothing reworks).
    Includes a headless build target that does not link the webview/GTK
    stack, and the unattended credential-storage posture (§7), both
-   prerequisites for server deployments.
-6. **Phone preparation.** Subscription narrowing, buffered deltas, scope
-   leases, reduced snapshots, attachment flows, push senders +
-   notification semantics + deep links. The Capacitor shell itself
+   prerequisites for server deployments. Provider remote re-auth:
+   LANDED 2026-09-01 (wave 8i — §7 "Provider accounts and remote
+   login"). Release signing: CUT by
+   2026-09-01 ruling (§9 bundle sync states the trust line that
+   replaces it); the W8h2 remote update trigger LANDED
+   2026-09-02 behind step-up, Go half and Settings surface both.
+6. **Phone preparation.** Subscription narrowing (LANDED 2026-09-01,
+   wave 6d — §9 "Phone-era efficiency": the watch frame + entity
+   filter on the two highlight channels; the six-consumer re-home
+   LANDED 2026-09-01, wave 6d2, and `provider:item_event` is now
+   entity-filtered too), buffered deltas, scope
+   leases, reduced snapshots, attachment flows (LANDED 2026-09-01,
+   wave 6b — §14 "Snapshot and attachment transfers"), push senders +
+   notification semantics + deep links (notification mapping,
+   preference gate, retraction, and desktop presenters: LANDED
+   2026-09-01, wave 6a — §9 "Desktop notifications ride the same event
+   mapping"; push senders stay gated on the signing discussion). The Capacitor shell itself
    (same SPA + native plugins, §9) is scaffolded here, including the
-   native WebSocket bridge (the phone's only transport, §9) and
-   bundle sync from the backend with rollback (§9); store builds
+   WebView's own socket over WebPKI TLS (§9; the pinned native bridge
+   is the deferred domainless fallback) and bundle sync from the backend with rollback (§9); store builds
    come whenever the app ships.
-7. **Multi-backend UI.** Keying the collision-prone singletons, sidebar
-   sections.
+7. **Multi-backend UI.** Keying the collision-prone singletons; the
+   unified sidebar with project targets, composer target picker, and
+   ambient reachability (§10); the port gateway's remote wiring in
+   the in-app browser (§7). Rulings of 2026-09-01 (§10): picker in the
+   composer strip, hidden until more than one backend, dimmed
+   unreachable entries, "Base" rename, footer rows cut.
 8. **Team sharing.** Hub-first: team-server deployment, shared
    workspaces with roles, peer sessions, hub-to-hub peering, payload
    sensitivity tiers, fork pipeline. Ingress triggers and per-workflow
    scope grants land alongside as workflows-system work (§11).
 
 Each phase leaves `make check` green.
+
+**Whole-branch review pass LANDED (2026-09-03).** After the 2026-09-03
+main merge, four review waves went over every seam on the branch for
+dropped connections, partial failure and polish. Serve: the supervisor
+reports an outcome once, snapshots the manifest at spawn, and asks
+"already running" twice (§7, §8). Transport: the no-ring replay gap
+marker, the renewal lease across tabs, the step-up target on the
+refusing handle, the post-attach session re-check, and
+`SessionAdmitsPeer` on the ticket arm (§4, §7, §12). Frontend: the
+phone lock keeps "covered" and "owed" apart, a detach drops rows and
+panes and returns a compact client to the list, and the review pane's
+PR calls are pinned to the thread's machine (§9, §10). Attachments and
+previews: the reserved cookie namespace, both transfer deadlines, the
+held-socket sweep, the self-port refusal, ephemeral profile reclaim
+and the browser-death watcher (§7, §14). Residuals, recorded and left:
+(transport) a `localStorage` write that fails mid-renewal is logged
+rather than surfaced; an RPC in flight when its socket dies waits out
+its own timeout rather than the socket's; the ticket book is one
+global 64-entry ring, so a burst of activation probes can evict a live
+page ticket. (frontend) Sheets under the software keyboard are
+verified on-device only; nothing enforces one pane per compact client
+beyond the UI that opens them; the `WorkflowAgent*` struct-argument
+routing gap named in the 7a note. (previews) A directory under the
+ephemeral prefix with no owner marker is never reclaimed by design.
+`backends.ts` (747 lines) and `app_preview.go` (591) are flagged for a
+split when either is next touched.
+
+**Polish pass, first two waves LANDED (2026-09-03).** Adjudicated from
+the four polish audits (subscription cleanup, cross-device convergence,
+single-client assumptions, desktop regressions). Take-control: a
+claude-tui PTY attachment now belongs to the CONNECTION that made it;
+a socket that dies mid-take-control releases its own lease through
+`ConnState` cleanup (one cleanup per connection, releasing every claim
+it holds), a second client's attach takes nothing from the first, and
+its acquire is refused while another holds the keyboard (§7 "Anywhere
+access", the take-control rule). `TestArmingMethodsAreTiedToTheirConnection`
+holds the class: an `App` method whose name arms or releases a
+per-client resource reads `ConnStateFromContext` or says why not.
+Convergence: eleven write paths that persisted and answered only their
+caller now emit, under the real-time ruling (§5, §8): worktree cut and
+attach ride the thread-row chokepoint; `terminal:opened` completes
+`terminal:exit`; `keybindings:updated`, `chatbar:favorites`,
+`chatbar:new-thread-defaults`, `discussion:definitions-changed`,
+`provider:accounts_changed` (which also fixes a removal of an inactive
+account announcing nothing) and `review:comments-changed` are new rows;
+`backend:set-changed` is a host-directive row beside `backend:attach`;
+the editor preference re-reads on a `settings:updated` naming its key;
+session import announces every imported project and thread as the
+ordinary `listed` frame and the importing client's whole-sidebar resync
+is gone. A terminal another client opened lands beside the active tab,
+never over it. `SetAppearance` is `host` (theme-system decision 4: the
+file is this desktop's own), and the appearance store gates on
+`hasScope('host')`. Residuals, recorded and left: the review-comment
+nudge is wildcard rather than thread-filtered, so a client re-reads only
+sets it already holds; an in-process take-control caller (a saga, a
+test) has no `ConnState` and owes its own detach.
+
+**Polish pass, touch menus LANDED (2026-09-03, wave R4).** Under the
+phone ruling (full function, adapted to touch), the right-click has a
+touch equivalent and a visible one. One window-level detector
+(`utils/longPressContextMenu.ts`, installed once from `App.svelte`,
+compact layout and touch pointers only) turns a 500ms hold within 8px
+into a single `contextmenu` at the pressed element, so every existing
+`oncontextmenu` site works unchanged: engines that raise their own
+`contextmenu` on a hold win and the synthetic one is dropped, a
+native duplicate after a handled synthetic one is swallowed, and the
+compatibility mouse sequence that follows the release is swallowed for
+a 700ms grace so the release neither opens the row nor dismisses the
+menu it just raised. Editable targets are left to the engine (the
+selection handles), and a press nobody handled is forgotten. Because
+the hold is hidden, every sidebar row (thread, group, project header)
+carries a 36px `SidebarRowMenuButton` under compact that raises the
+same handler; `ContextMenu` renders as a bottom sheet there, matching
+`Popover`; rows are 36px and `select-none`; nothing is draggable
+under compact (rows, project headers, pane title); the project
+header keeps only `+`, its menu gaining New Thread and New Terminal
+(scope-gated); the chat header gains a palette button. Desktop pixels
+are unchanged. Verified by the detector's unit suite, component
+tests per row, and the compact Playwright project driving a real
+held touch through CDP. Residuals, recorded and left: header `xs`
+buttons stay 24px (the WCAG AA minimum, not the 44px Android target);
+the terminal tab strip is unchanged; the Android WebView's own
+long-press behaviour (whether it raises `contextmenu`, and when) is
+unverified until the on-device pass. The manifest declares
+VIBRATE so the 10ms tick on a handled hold is real on the device.
+
+**Polish pass, convergence residue LANDED (2026-09-03, wave R3).** The
+rest of the cross-device audit. Read markers: explicit unread persists
+as epoch 0, the smallest value `lastReadAt` takes, and the old merge let
+any 0 win forever, so one device's mark-unread could never be read
+again on another short of a reload; `threadReadWrites.ts` now holds a
+claim for the value THIS page load is writing, and the merge is three
+ordered rules (a held claim wins, else a wire 0 wins, else the newest)
+with both RPCs owned by the thread store. Failure frames on
+`provider:approval`, `provider:user_input` and the edit-and-resend cut
+carry the originating `connectionId` (never the device: two tabs answer
+independently) and a receiver reacts only to its own; an unstamped
+frame is applied, the pre-stamp behaviour, so a bundle ahead of its
+backend swallows nothing (§8; the rule is in internal/app/AGENTS.md "A
+broadcast about ONE client's attempt names that client"). No
+"thread is being edited" channel: the thread lock already serialises
+the saga and a client-produced busy flag on a broadcast channel is the
+deferred steering primitive. The watched-thread set is SPLIT across
+attached backends (each machine gets the ids it owns plus every id
+whose owner is unknown) and restated on every later attach; before, the
+home socket alone was narrowed and a pane on an attached machine
+received nothing. `projectSortMode` moved from the device tier to the
+user tier (§6), with `retieredKeys` / `promoteRetieredKeys` as the
+one-shot that lifts the value out of the screen bucket on first read.
+Relative timestamps subtract against the minting backend's clock
+(`backendClock.ts`, from the hello's `clockSkewMs`, a closure per
+backend because a skew-only hello is deliberately not republished);
+absolute forms stay on the device clock, and forge comment times stay
+unskewed because they are the forge's clock. Preview listeners are
+released (`SetPorts(nil)`) on every path that stops scanning, not only
+at shutdown. Residuals, recorded and left: the edit-and-resend
+`executingThreads` set covers one page load only, by design; a
+retiered key that was never set anywhere costs one store read per
+bucket per process until its new home holds a row.
+
+**Polish pass, notification preferences LANDED (2026-09-03, wave R5).**
+Under the B3 ruling (every kind its own toggle, plus quiet-while-focused
+and quiet-while-the-thread-is-on-screen), §9's preference gate grew
+from four toggles to six (`notifyWorkflowAttention`, `notifyAppUpdate`;
+`notificationKindEnabledIn` is now TOTAL over `notify.Kind` with a
+fail-closed default, and a phone's push fan-out reads the same two
+rows from its own bucket) and gained the attended-screen half:
+`notifyMuteWhenFocused` (default on) and `notifyMuteWhenThreadVisible`
+(default off), both device tier, both read only by `notifyOS` against
+the backend machine's own screen. The facts come from a new client
+frame, `presence` (`{focused, threads}`, the watch frame's bounds,
+absolute and replaced whole, never a latch), kept on the Subscriber and
+read by `EventBus.LocalScreenPresence`, which ORs over LOOPBACK
+connections only: the embedded webview, the WSL launcher's WebView2
+(which arrives on loopback through WSL2's localhost forwarding) and a
+`--connect` tab on the same machine are that screen; a phone or a
+remote browser never silences the desk. The frame changes what is
+RAISED and never what is SENT: nothing on the delivery path reads it,
+and the SPA composes it in one leaf (`stores/screenPresence.ts`,
+focus/blur/visibilitychange plus the pane and compact-screen edges)
+that nothing else may import. Refusals are typed apart
+(`NotificationScreenAttended` beside `NotificationSuppressed`) and
+neither is logged; a retraction is never gated by either half; the
+phones are not subject to the attended half. The harness RPC is the one
+named bypass (`notifyOSUngated`, caller list pinned to one by test),
+because a Playwright page HAS focus and the default would silence every
+harness notification. Residuals, recorded and left: a desktop pane
+scrolled off the horizontal strip still counts as on screen (an
+observer per pane is more machinery than the decision is worth); a
+spec that drives a real turn and wants the toast must turn both quiet
+rules off through `UpdateSettings` (e2e/AGENTS.md).
+
+**Polish pass, send safety and the slow ladder LANDED (2026-09-03, wave
+R6).** Four rulings from the polish sheet, together. (6) The Android
+shell backs up nothing: `allowBackup="false"`, `fullBackupContent=
+"false"`, and a `data_extraction_rules.xml` that excludes every domain
+from both cloud backup and device transfer, because the shell holds a
+device signing key and the backend believes one `devices` row is one
+machine (mobile/AGENTS.md). (7) A send is answered once however many
+times it arrives: `buildSendOptions` mints a `sendId` per composer send
+(the only minting site, pinned by architecture rule 7), both
+`SendMessageWithOptions` and `RegisterQueueItem` carry it, and the
+backend answers a repeat from the record the first arrival left, the
+`user_text` row's meta or the durable queue row, under the same lock and
+before any side effect. No id table: the message is the record, matched
+in SQL inside a bounded newest-64 window
+(`store.FindUserTextItemBySendID`). `RETRY_ON_TRANSIENT_CLOSE` holds
+exactly those two methods, and a send whose retry ALSO failed asks
+before restoring ("This message may have reached the agent. Put it back
+in the composer?"; "Leave it" discards and reports nothing further) while
+a definite failure restores silently as before. (8) A reconnect ladder
+failing for five minutes goes dormant: one probe every five minutes with
+jitter, none at all under a `background` lease, `dormant` and
+`lastConnectedAt` on the status snapshot, and the banner reads "Not
+reachable. Last seen 12m ago. Checking every 5 minutes." Every demand
+path still probes at once; Retry, a page resume and the foreground
+transition also reset the ladder's age, an RPC or a fresh subscribe
+deliberately does not. Dormancy changes what is DIALED and nothing
+about what a connection carries. (9) The per-thread flush queue is
+durable (`flush_queue_items`, migration v85): the row is written before
+the in-memory register, deleted through the existing `FlushSettlement`
+at either durable endpoint (the dispatcher's persisted row, a
+session-death restore into the draft), kept across a requeue, dropped
+with the queue on Stop and on the Codex rollback purge, and every row
+still present at boot is restored into the composer draft and never
+re-dispatched. Residuals, recorded and left: `make apk` is not runnable
+on the WSL box (no JDK), so the manifest and rules file are reviewed by
+eye until the Mac pass; an idle-reaper close of a thread whose queue
+held a requeued-after-failure message drops it, as it did before the
+row existed (the row now goes with it rather than resurrecting at boot);
+`triage.clearFlushQueueLocked` has no callers and is left for a triage
+cleanup; a send id that has scrolled past the 64-row window is not
+found, which is the accepted edge of a bounded check.
 
 ## 17. Testing
 
@@ -890,22 +3771,54 @@ Each phase leaves `make check` green.
 
 ## 18. Decisions still open
 
-1. Whether `access:admin` exists as a standing remote scope at all, or
-   whether every admin action requires step-up.
-2. Push distribution posture (§9). Direct for personal builds is fine;
-   the distributed answer must be chosen before public release.
-3. How much of the payload-sensitivity machinery (§11) is built at
+1. Push delivery for friends' self-hosted backends (§9 "The phone
+   client", push). The owner's backend sends directly with the app's
+   Firebase credential; a friend's backend cannot hold it. Options:
+   (a) a blind relay the owner hosts (recommended), (b) UnifiedPush
+   via ntfy, (c) a Firebase project and APK per friend. Chosen before
+   the phone app reaches a friend. Ruled 2026-09-01 (user): push is
+   OWNER-ONLY for now (the owner's backend sends; any other backend
+   records the token and sends nothing), and the seam is shaped so the
+   owner's home backend can later double as the wake relay. ORDERING,
+   ruled the same day: everything that connects other people (this
+   relay, §11 sharing in either shape of item 5) comes AFTER ownership
+   and permissions exist: named accounts beyond the single owner,
+   attribution on threads and approvals, and links minted for a named
+   person. Nothing multi-person is designed in detail before that.
+2. How much of the payload-sensitivity machinery (§11) is built at
    team-time vs. designed-only now.
-4. Whether draft "edited on <device>" and presence-aware routing survive
+3. Whether draft "edited on <device>" and presence-aware routing survive
    at all (marked cuttable).
-5. Whether the public-path ceiling (§2) should exclude anything beyond
-   the step-up set, e.g. whether `terminal:operate` over a public
-   tunnel is acceptable given it is already key-bound and TLS-wrapped.
-6. Hub-thread operability (§11): whether shared-workspace threads on a
+4. Hub-thread operability (§11): whether shared-workspace threads on a
    team server are operable by members via workspace roles (personal
    backends stay read-only + fork regardless), and who may answer
    approvals on a hub thread: any member holding the scope, the
    thread starter, or a role gate.
+5. The team-sharing GRANT model itself (§11). Two shapes are on the
+   table and neither is chosen: enrollment-as-grant over shared
+   workspaces (what §11 states today), or per-request consent, where a
+   teammate asks and the author approves each view and each fork.
+   Ruled 2026-09-01 (user): team sharing is not in the cards yet, and
+   nothing built before then may foreclose either shape. Concretely,
+   nothing may assume that a peer session's reads are unconditional, or
+   that a fork needs no author-side moment; both stay behind the peer
+   principal and the scope gate, where either answer can be wired.
+
+Ruled 2026-08-31 (user): `access:admin` exists as a standing remote
+scope. Device revoke and rename from a paired device ride the standing
+grant behind a confirmation dialog; step-up stays on pairing-grant
+minting only, because pairing is where the strong ceremony already
+lives (passkey once phase 5 lands) and a device's own unlock covers
+casual access. Also ruled, superseding an
+earlier same-day ceiling ruling: the public path does not exist. The
+reachable paths are loopback, LAN, and the owner's tailnet, all
+trusted alike — every granted scope, `terminal:operate` included,
+works over the tailnet. Funnel/cloudflared tunnel exposure is cut from
+the design entirely (the `public` session class with it): every
+connection is an intentional one through an enrolled device, and
+sharing rides proper channels (tailnet node sharing, LAN) rather than
+a published endpoint. If a no-tailnet share link is ever wanted, it
+returns as a phase-8 question against a team hub, not this backend.
 
 Settled in review: approvals are never gated on the owner's own devices;
 terminal access is not withheld from native clients by device class;

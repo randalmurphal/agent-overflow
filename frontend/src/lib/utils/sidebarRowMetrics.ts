@@ -6,6 +6,7 @@
 // these constants is how that drifts, so they have one home here.
 
 import { getSettings } from '../stores/settings.svelte';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { relativeTime } from './format';
 
 /**
@@ -43,9 +44,13 @@ export function sidebarRowPaddingLeftPx(indent: number, inGroup = false): number
  *
  * Callers must read `getMinuteNow()` in the same derived: this function has no
  * clock dependency of its own, so an idle row would otherwise never re-render.
+ *
+ * `backendId` is the machine whose clock minted `timestampMs`
+ * (`transport/backendClock.ts`); omitting it means home, which is what a
+ * single-backend page has always meant.
  */
-export function sidebarTimeLabel(timestampMs: number): string {
-  const label = relativeTime(timestampMs, getSettings().timestampFormat);
+export function sidebarTimeLabel(timestampMs: number, backendId: BackendKey = HOME_BACKEND): string {
+  const label = relativeTime(timestampMs, getSettings().timestampFormat, backendId);
   if (getSettings().timestampFormat !== 'locale') return label;
   return label === 'just now' ? 'now' : label.replace(/ ago$/, '');
 }

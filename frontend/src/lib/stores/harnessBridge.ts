@@ -39,12 +39,12 @@
 // repo-root `App` type only; `Harness` is deliberately not scanned, which
 // is what keeps harness RPCs out of the production binding surface
 // entirely. Teaching the generator a second receiver to reach ONE method
-// would put a LocalOnly, harness-only call into `frontend/bindings/` for
+// would put a host-tooling, harness-only call into `frontend/bindings/` for
 // every build, where the architecture rules would then have to carve it
 // out by name. `Call.ByName` goes through `wsClient.callByName`, which
 // emits the identical `{type:"rpc", id, method, params}` frame the
 // generated `Call.ByID` wrappers emit — same socket, same dispatcher,
-// same LocalOnly authorization check on the Go side. Nothing about the
+// same receiver-level LocalOnly check on the Go side. Nothing about the
 // transport boundary is bypassed; only the method IDENTIFICATION differs,
 // and a name is what the harness client and `ao-harness` already use.
 //
@@ -57,9 +57,10 @@
 
 import { Call } from '@wailsio/runtime';
 import { harnessPageMarker, whenHarnessSession } from '../transport/harnessMode';
-import { isViewOnlySession } from '../transport/runMode';
+import { hasScope } from '../transport/scopes';
 import { wailsEventOn } from './wailsEvents';
 import { onTransportStatusChange } from './transportStatus.svelte';
+import { randomId } from '../utils/randomId';
 
 interface UIQueryEvent {
 	id?: unknown;
@@ -73,10 +74,7 @@ let bridgeModule: Promise<BridgeModule> | null = null;
 
 // Immutable for this document lifetime. Re-installing the bridge after a
 // reconnect must not let a stale page identity answer a newer page's query.
-const FRONTEND_PAGE_ID = (() => {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  return `page-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
-})();
+const FRONTEND_PAGE_ID = randomId();
 
 /** Test seam for constructing a targeted synthetic event. */
 export function __frontendPageIDForTest(): string {
@@ -167,13 +165,15 @@ export function installHarnessBridge(): () => void {
   };
   const cancelArm = whenHarnessSession(() => {
     if (!active) return;
-    // Locality, read at ARM time rather than at install time: the manifest
-    // sets the remote bit before it sets the harness bit (see
+    // Host presence, read at ARM time rather than at install time: the
+    // manifest publishes locality before it sets the harness bit (see
     // transport/bootstrap.ts), so by the time this runs the answer is
-    // final. A remote page can never be sent a `harness:ui-query`, so a
-    // subscription here would be a listener for an event that cannot
-    // arrive — and the module it would load is loopback-only tooling.
-    if (isViewOnlySession()) return;
+    // final. The harness drives THIS desktop's renderer, which is what the
+    // `host` scope names — a page elsewhere can never be sent a
+    // `harness:ui-query`, so a subscription would be a listener for an
+    // event that cannot arrive, and the module it would load is host
+    // tooling.
+    if (!hasScope('host')) return;
     publishPageIdentity();
     stopTransportStatus = onTransportStatusChange((status) => {
       if (!active) return;

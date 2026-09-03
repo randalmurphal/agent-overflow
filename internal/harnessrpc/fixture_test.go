@@ -33,6 +33,7 @@ type testHost struct {
 	sent              []string
 	browserScroll     func(string, string, float64, float64) error
 	browserScreenshot func(string, string) ([]byte, error)
+	pushSent          []PushMessage
 }
 
 func newHarnessTestHost(t *testing.T) (*Harness, *testHost) {
@@ -89,6 +90,11 @@ func (h *testHost) Emit(channel eventchan.Channel, data any) {
 	}
 }
 func (h *testHost) Notify(string, string, notify.Target) error { return nil }
+
+// The fixture never installs a push recorder, which is what a boot with no
+// push configured looks like.
+func (h *testHost) PushSent() []PushMessage { return h.pushSent }
+func (h *testHost) ForgetPushSent()         { h.pushSent = nil }
 func (h *testHost) BrowserPressKey(string, string, keybindings.Accelerator) error {
 	return errors.New("no browser engine in the fixture")
 }
@@ -107,7 +113,7 @@ func (h *testHost) BrowserScreenshot(threadID, pageID string) ([]byte, error) {
 func (h *testHost) CreateProject(path string) (store.Project, error) {
 	now := time.Now().UnixMilli()
 	project := store.Project{ID: uuid.NewString(), Path: path, Name: filepath.Base(path), CreatedAt: now, UpdatedAt: now}
-	return project, h.store.CreateProject(project)
+	return h.store.CreateProject(project)
 }
 func (h *testHost) CreateThread(options ThreadOptions) (store.Thread, error) {
 	now := time.Now().UnixMilli()
@@ -123,7 +129,10 @@ func (h *testHost) CreateThread(options ThreadOptions) (store.Thread, error) {
 	thread.WorkspacePath = project.Path
 	return thread, h.store.CreateThread(thread)
 }
-func (h *testHost) ArchiveThread(threadID string) error   { return h.store.ArchiveThread(threadID) }
+func (h *testHost) ArchiveThread(threadID string) error {
+	_, _, err := h.store.ArchiveThread(threadID)
+	return err
+}
 func (h *testHost) StopSession(string) error              { return nil }
 func (h *testHost) DeleteProject(projectID string) error  { return h.store.DeleteProject(projectID) }
 func (h *testHost) RecoverCrashedTurns() error            { return nil }
@@ -158,7 +167,7 @@ func (h *testHost) SendMessage(threadID, message string) error {
 func seedHarnessThread(t *testing.T, database *store.Store, threadID string) {
 	t.Helper()
 	now := time.Now().UnixMilli()
-	if err := database.CreateProject(store.Project{
+	if _, err := database.CreateProject(store.Project{
 		ID: "proj-" + threadID, Path: filepath.Join(t.TempDir(), "ws"), Name: "p",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {

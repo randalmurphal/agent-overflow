@@ -59,6 +59,9 @@ type BusyThread struct {
 // canonicalizes a few paths per call rather than two per thread ever created.
 // That ordering is what makes the call cheap enough to re-run on every
 // background-task event.
+//
+//ao:scope git:operate
+//ao:route selected
 func (a *App) GetWorkspaceActivity(workspacePath string) (WorkspaceActivity, error) {
 	activity, err := a.worktreeApplication().Activity(workspacePath)
 	if err != nil {

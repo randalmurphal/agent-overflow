@@ -213,6 +213,10 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 	accountLocked = false
 	m.invalidateProviderAccountProbe(providerName, binary)
 	m.forgetRateLimits(providerName, accountID)
+	// BEFORE the branch, not inside it: removing an account that was not the
+	// active one took every early return below and published nothing at all,
+	// so the card stayed on every other client's Settings screen until reload.
+	m.emitProviderAccountsChanged()
 
 	if !removingActive {
 		return nil

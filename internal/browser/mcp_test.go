@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	neturl "net/url"
 	"strings"
 	"testing"
 )
@@ -255,4 +257,144 @@ func postRPC(t *testing.T, url string, request map[string]any) map[string]any {
 		t.Fatal(err)
 	}
 	return result
+}
+
+// TestMCPRequestChecksApplyToEveryMethod locks the request checks onto
+// every method the endpoint dispatches, not just tools/call: an Origin
+// header or a non-JSON content type is refused before the body is
+// decoded, on initialize and tools/list too.
+func TestMCPRequestChecksApplyToEveryMethod(t *testing.T) {
+	fake := &fakeController{}
+	server := NewMCPServer(fake, true)
+	url := registerTestThread(t, server)
+	bodies := map[string]string{
+		"initialize": `{"jsonrpc":"2.0","id":1,"method":"initialize"}`,
+		"tools/list": `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+		"tools/call": `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_open","arguments":{"url":"https://example.com"}}}`,
+	}
+	refusals := []struct {
+		name        string
+		contentType string
+		headers     map[string]string
+		want        int
+	}{
+		{"cross-origin header", "application/json", map[string]string{"Origin": "https://example.com"}, http.StatusForbidden},
+		{"same-origin header", "application/json", map[string]string{"Origin": "http://127.0.0.1:1234"}, http.StatusForbidden},
+		{"simple content type", "text/plain;charset=UTF-8", nil, http.StatusUnsupportedMediaType},
+		{"form content type", "application/x-www-form-urlencoded", nil, http.StatusUnsupportedMediaType},
+		{"absent content type", "", nil, http.StatusUnsupportedMediaType},
+	}
+	for method, body := range bodies {
+		for _, refusal := range refusals {
+			resp := postMCPRequest(t, url, refusal.contentType, refusal.headers, body)
+			if resp.StatusCode != refusal.want {
+				t.Errorf("%s with %s: status = %d, want %d", method, refusal.name, resp.StatusCode, refusal.want)
+			}
+		}
+	}
+	if fake.openedURL != "" {
+		t.Fatalf("a refused request reached the controller: opened %q", fake.openedURL)
+	}
+
+	// The same bodies still work end to end once they declare JSON.
+	for method, body := range bodies {
+		resp := postMCPRequest(t, url, "application/json", nil, body)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200", method, resp.StatusCode)
+		}
+	}
+	if fake.openedURL != "https://example.com" {
+		t.Fatalf("accepted tools/call did not reach the controller: opened %q", fake.openedURL)
+	}
+}
+
+// TestMCPRequestChecksRefuseNonLoopbackPeer drives handle through a
+// recorder because the peer address is the one input a request over the
+// loopback listener cannot vary.
+func TestMCPRequestChecksRefuseNonLoopbackPeer(t *testing.T) {
+	server := NewMCPServer(&fakeController{}, true)
+	endpoint, err := neturl.Parse(registerTestThread(t, server))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, peer := range []struct {
+		remoteAddr string
+		want       int
+	}{
+		{"127.0.0.1:51000", http.StatusOK},
+		{"[::1]:51000", http.StatusOK},
+		{"192.0.2.10:51000", http.StatusForbidden},
+		{"[2001:db8::1]:51000", http.StatusForbidden},
+		{"", http.StatusForbidden},
+	} {
+		request := httptest.NewRequest(http.MethodPost, endpoint.Path, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.RemoteAddr = peer.remoteAddr
+		recorder := httptest.NewRecorder()
+		server.handle(recorder, request)
+		if recorder.Code != peer.want {
+			t.Errorf("peer %q: status = %d, want %d", peer.remoteAddr, recorder.Code, peer.want)
+		}
+	}
+}
+
+// TestMCPPreflightIsRefusedWithoutCORSHeaders locks the property the
+// content-type check depends on: requiring JSON makes a browser
+// preflight first, and the preflight gets nothing it can act on.
+func TestMCPPreflightIsRefusedWithoutCORSHeaders(t *testing.T) {
+	server := NewMCPServer(&fakeController{}, true)
+	url := registerTestThread(t, server)
+	request, err := http.NewRequest(http.MethodOptions, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Origin", "https://example.com")
+	request.Header.Set("Access-Control-Request-Method", "POST")
+	request.Header.Set("Access-Control-Request-Headers", "content-type")
+	resp, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("preflight status = %d, want 405", resp.StatusCode)
+	}
+	for _, header := range []string{"Access-Control-Allow-Origin", "Access-Control-Allow-Methods", "Access-Control-Allow-Headers"} {
+		if value := resp.Header.Get(header); value != "" {
+			t.Errorf("preflight answered %s: %q", header, value)
+		}
+	}
+}
+
+func TestJSONContentTypeAllowsParametersAndCasing(t *testing.T) {
+	for _, accepted := range []string{"application/json", "application/json; charset=utf-8", "Application/JSON", " application/json "} {
+		if !jsonContentType(accepted) {
+			t.Errorf("jsonContentType(%q) = false", accepted)
+		}
+	}
+	for _, refused := range []string{"", "text/plain", "text/plain;charset=UTF-8", "application/json-patch+json", "multipart/form-data"} {
+		if jsonContentType(refused) {
+			t.Errorf("jsonContentType(%q) = true", refused)
+		}
+	}
+}
+
+func postMCPRequest(t *testing.T, url, contentType string, headers map[string]string, body string) *http.Response {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
+	}
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	resp, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
 }

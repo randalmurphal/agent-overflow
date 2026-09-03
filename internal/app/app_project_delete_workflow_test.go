@@ -41,7 +41,7 @@ func newProjectDeleteFixture(t *testing.T, itemID string) *projectDeleteFixture 
 		phaseID:        "run",
 	}
 
-	chatThread, err := base.app.CreateThread(CreateThreadOptions{
+	chatThread, err := base.app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: base.project.ID, Provider: "claude", Model: "claude-sonnet-4-6",
 	})
 	if err != nil {
@@ -49,7 +49,7 @@ func newProjectDeleteFixture(t *testing.T, itemID string) *projectDeleteFixture 
 	}
 	fixture.chatThread = chatThread
 
-	phaseThread, err := base.app.CreateThread(CreateThreadOptions{
+	phaseThread, err := base.app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: base.project.ID, Provider: "claude", Model: "claude-sonnet-4-6",
 	})
 	if err != nil {
@@ -260,16 +260,34 @@ func TestProjectDeletionSourceCallsNoBranchDeletion(t *testing.T) {
 	}
 }
 
-// The transport classification, restated for the shape that exists now: the
-// preview reads local checkouts, so it stays LocalOnly; the deletion destroys
-// nothing git cannot still reach, so it stays reachable from a remote client
-// like every other project-management call.
+// The transport classification, restated in the vocabulary that decides
+// reachability now that the per-method origin partition is gone: the
+// preview reads local checkouts and their uncommitted paths, so it rides
+// `git:operate` rather than an observe scope; the deletion destroys
+// nothing git cannot still reach, so it stays ordinary project
+// bookkeeping under `threads:operate` like every other project-management
+// call. Neither is `host` — both have a remote form — and neither is
+// observe-tier, so a read-only session reaches neither.
 func TestProjectDeletionTransportClassification(t *testing.T) {
-	if !transport.LocalOnlyMethods["ProjectDeletionPreview"] {
-		t.Fatal("ProjectDeletionPreview reads local checkouts and their uncommitted paths; it must be LocalOnly")
+	want := map[string]transport.Scope{
+		"ProjectDeletionPreview": transport.ScopeGitOperate,
+		"DeleteProject":          transport.ScopeThreadsOperate,
 	}
-	if transport.LocalOnlyMethods["DeleteProject"] {
-		t.Fatal("DeleteProject deletes no branch; classifying it LocalOnly removes remote project management for no gain")
+	for _, method := range transport.GeneratedMethods {
+		expected, watched := want[method.Name]
+		if !watched {
+			continue
+		}
+		delete(want, method.Name)
+		if method.Scope != expected {
+			t.Errorf("%s is scoped %q, want %q", method.Name, method.Scope, expected)
+		}
+		if method.Scope.Tier() == transport.TierObserve {
+			t.Errorf("%s is observe-tier; a read-only session must not reach it", method.Name)
+		}
+	}
+	for name := range want {
+		t.Errorf("%s names no generated method", name)
 	}
 }
 

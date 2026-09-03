@@ -389,3 +389,21 @@ describe('dispatchComposerInputKeydown', () => {
     expect(chord.defaultPrevented).toBe(false);
   });
 });
+
+// Compact layout: Return is a newline and the Send button is the one way
+// to send, so the Enter gate yields the key to the textarea untouched.
+describe('dispatchComposerInputKeydown under compact', () => {
+  it('plain Enter inserts a newline when enterSends is false', () => {
+    const submitEnter = vi.fn();
+    const ev = kdown('Enter');
+    dispatchComposerInputKeydown(ev, {
+      mentions: stubMentions(),
+      slash: stubSlash(),
+      placeholderKeydown: vi.fn(() => false),
+      submitEnter,
+      enterSends: false,
+    });
+    expect(submitEnter).not.toHaveBeenCalled();
+    expect(ev.defaultPrevented).toBe(false);
+  });
+});

@@ -27,7 +27,7 @@
   import { openInEditor } from '../../stores/openInEditor';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import {
     getWorkflowCatalog,
     getWorkflowCosts,
@@ -41,7 +41,8 @@
 
   let item = $derived(getWorkflowRun(itemId));
   let detail = $derived(getWorkflowDetail(itemId));
-  let viewOnly = $derived(isViewOnlySession());
+  // The only gated affordance is opening a run artifact in an editor.
+  let noHost = $derived(!hasScope('host'));
   let expandFirstDiff = $state(false);
 
   $effect(() => {
@@ -80,7 +81,7 @@
   });
 
   async function openArtifact(path: string): Promise<void> {
-    if (viewOnly) return;
+    if (noHost) return;
     try {
       await openInEditor(path, 0, 0, '', '');
     } catch (err) {
@@ -121,7 +122,7 @@
           <WorkflowOutputs
             values={detail.outputs ?? {}}
             artifacts={detail.artifacts ?? []}
-            {viewOnly}
+            openDisabled={noHost}
             onOpenArtifact={(path) => { void openArtifact(path); }}
           />
         </div>

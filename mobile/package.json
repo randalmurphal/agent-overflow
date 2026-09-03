@@ -1,0 +1,21 @@
+{
+  "name": "agent-overflow-mobile",
+  "version": "0.0.14",
+  "private": true,
+  "description": "The Capacitor shell that wraps the Agent Overflow SPA on Android.",
+  "scripts": {
+    "sync": "cap sync android",
+    "apk": "./scripts/build-apk.sh"
+  },
+  "dependencies": {
+    "@aparajita/capacitor-biometric-auth": "10.0.0",
+    "@capacitor/android": "8.5.1",
+    "@capacitor/app": "8.1.1",
+    "@capacitor/barcode-scanner": "3.1.1",
+    "@capacitor/core": "8.5.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.1",
+    "typescript": "6.0.2"
+  }
+}

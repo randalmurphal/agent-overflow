@@ -101,7 +101,7 @@ test('a subagent’s approval and denial rows nest under its card; the composer 
   });
 
   const threadId = await seedAgentThread(harness, 'approval-app', 'Subagent approval');
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Subagent approval').click();
   await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'write the spike file', null);
@@ -221,7 +221,7 @@ test('backgrounding a running inline agent returns the turn and the transcript c
   });
 
   const threadId = await seedAgentThread(harness, 'background-app', 'Background button');
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Background button').click();
   const mockId = await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'sweep the corpus', null);

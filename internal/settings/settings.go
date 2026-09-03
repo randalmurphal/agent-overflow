@@ -14,17 +14,6 @@ import (
 	"agent-overflow/internal/windowgeom"
 )
 
-// NetworkSettings groups LAN-bind preferences for the embedded
-// transport server. Persisted as a nested object so the JSON shape
-// stays stable when more network fields land (origin allow-list,
-// TLS hints, etc.).
-type NetworkSettings struct {
-	// BindAll, when true, asks the transport server to listen on
-	// 0.0.0.0 so other devices on the LAN can reach the app. Default
-	// false keeps the bind on 127.0.0.1 — the safe loopback behaviour.
-	BindAll bool `json:"bindAll"`
-}
-
 // EditorSettings groups the open-in-editor preferences. Lives in its
 // own nested object so future fields (custom argv template, last-used
 // editor for analytics, etc.) can land without reshuffling the
@@ -107,16 +96,23 @@ type Settings struct {
 	// checkpoints encrypted cookies and local storage per workspace. Both
 	// default on. Outside-workspace
 	// file access is the separate, deliberately off-by-default authority grant.
-	BrowserEnabled               bool   `json:"browserEnabled"`
-	BrowserPersistSiteData       bool   `json:"browserPersistSiteData"`
-	BrowserAllowOutsideWorkspace bool   `json:"browserAllowOutsideWorkspace,omitempty"`
-	ConfirmArchive               bool   `json:"confirmArchive"`
-	ConfirmDelete                bool   `json:"confirmDelete"`
-	AutoPinNewThreads            bool   `json:"autoPinNewThreads"`
-	ClaudeBinaryPath             string `json:"claudeBinaryPath"`
-	CodexBinaryPath              string `json:"codexBinaryPath"`
-	ClaudeEnabled                bool   `json:"claudeEnabled"`
-	CodexEnabled                 bool   `json:"codexEnabled"`
+	BrowserEnabled               bool `json:"browserEnabled"`
+	BrowserPersistSiteData       bool `json:"browserPersistSiteData"`
+	BrowserAllowOutsideWorkspace bool `json:"browserAllowOutsideWorkspace,omitempty"`
+	// BrowserChromiumPath names the Chromium the HEADLESS engine runs, on a
+	// deployment that has one: serve mode, which has no window to host a
+	// browser view in and drives a Chromium process instead
+	// (docs/specs/remote-access.md §7). Empty means "find one on PATH", and
+	// nothing is ever downloaded. It has no effect on a windowed
+	// deployment, whose engine is the platform's own.
+	BrowserChromiumPath string `json:"browserChromiumPath,omitempty"`
+	ConfirmArchive      bool   `json:"confirmArchive"`
+	ConfirmDelete       bool   `json:"confirmDelete"`
+	AutoPinNewThreads   bool   `json:"autoPinNewThreads"`
+	ClaudeBinaryPath    string `json:"claudeBinaryPath"`
+	CodexBinaryPath     string `json:"codexBinaryPath"`
+	ClaudeEnabled       bool   `json:"claudeEnabled"`
+	CodexEnabled        bool   `json:"codexEnabled"`
 
 	// ClaudeTUIEnabled surfaces the claude-tui provider — the real
 	// interactive Claude TUI driven inside a PTY — in the model/provider
@@ -397,22 +393,6 @@ type Settings struct {
 	// lowercase, deduped, and stripped of scheme/path on write.
 	GitLabSelfHostedHosts []string `json:"gitlabSelfHostedHosts,omitempty"`
 
-	// RemoteEndpoints stores the user's `--connect` targets: remote-
-	// hosted backends the desktop binary can attach to instead of
-	// booting a local transport. Persisted as a flat list keyed by
-	// stable IDs so the settings UI can rename / re-order without
-	// disturbing the connect commands the user has already shared.
-	//
-	// SECURITY NOTE: this list contains ephemeral session tokens. They
-	// are stored in plaintext alongside settings.json (file lands at
-	// 0600, parent dir at 0700). That matches the threat model
-	// documented above — settings.json must not contain anything more
-	// sensitive than what a local-process attacker could already read
-	// out of running webviews. If the remote endpoints' tokens ever
-	// become long-lived bearer tokens, move this field to a
-	// keychain-backed store and remove the JSON persistence path.
-	RemoteEndpoints []RemoteEndpoint `json:"remoteEndpoints,omitempty"`
-
 	// ProjectSortMode controls sidebar project ordering. One of
 	// {"lastActivity", "createdAt", "manual"}. Persisted here rather
 	// than in the webview's localStorage because localStorage is
@@ -502,6 +482,66 @@ type Settings struct {
 	// starts at the meaning of the phrase and the user narrows it. An
 	// absent key must read as on, which only DefaultSettings can do.
 	KeepAwakeScreen bool `json:"keepAwakeScreen"`
+
+	// The OS-notification preferences (docs/specs/remote-access.md §9).
+	// NotificationsEnabled is the master switch: with it off this screen
+	// raises no OS notification at all. The six per-kind toggles below cover
+	// every notify.Kind — the four mapped moments plus the two senders that
+	// predate the mapping (a workflow item needing a human, and the WSL
+	// launcher's "update didn't apply" notice), which used to have the
+	// master switch as their only silencer.
+	//
+	// ALL SEVEN DEFAULT TRUE, and are therefore all present in
+	// DefaultSettings. That is the KeepAwakeScreen pattern and it is what
+	// makes an absent key read as ON — which matters more here than
+	// anywhere else, because notifications were unconditional before these
+	// keys existed. A user upgrading into them must keep exactly the
+	// behaviour they had, and only then narrow it.
+	//
+	// The defaults are also the honest answer to "what is worth
+	// interrupting someone for": every one of these moments is one where
+	// either the agent has stopped needing the machine and started needing
+	// the person, or nothing will run again until the person acts.
+	NotificationsEnabled bool `json:"notificationsEnabled"`
+	// NotifyTurnComplete covers a top-level turn arriving at rest. The
+	// noisiest of the four by volume, and the first one a user with many
+	// threads turns off.
+	NotifyTurnComplete bool `json:"notifyTurnComplete"`
+	// NotifyApprovalNeeded covers the agent blocked on permission.
+	NotifyApprovalNeeded bool `json:"notifyApprovalNeeded"`
+	// NotifyError covers a turn that failed and a provider process that
+	// died under a thread.
+	NotifyError bool `json:"notifyError"`
+	// NotifyProviderSignedOut covers a provider whose login is gone.
+	NotifyProviderSignedOut bool `json:"notifyProviderSignedOut"`
+	// NotifyWorkflowAttention covers a workflow item waiting on a person or
+	// failed. It reaches the same gate as the four above; there is no
+	// "predates the mapping" carve-out any more, because a kind nobody can
+	// silence individually is one the master switch is the only answer to.
+	NotifyWorkflowAttention bool `json:"notifyWorkflowAttention"`
+	// NotifyAppUpdate covers the WSL launcher's "update didn't apply"
+	// notice. Same reasoning as NotifyWorkflowAttention.
+	NotifyAppUpdate bool `json:"notifyAppUpdate"`
+
+	// The ATTENDED-SCREEN preferences: not "which moments are worth an
+	// interruption" but "is this screen already being looked at". Both are
+	// read by the host-side sender only (app_notifications.go notifyOS),
+	// against the backend machine's own screen, and neither changes what any
+	// client is SENT or renders — a notification that is not raised is one
+	// less toast, never one less frame.
+	//
+	// NotifyMuteWhenFocused defaults TRUE: a toast on the window you are
+	// typing in tells you something you can already see. It is the half of
+	// this pair almost everyone wants, which is why it is the one that is on.
+	NotifyMuteWhenFocused bool `json:"notifyMuteWhenFocused"`
+	// NotifyMuteWhenThreadVisible defaults FALSE, so it stays out of
+	// DefaultSettings (the ClaudeTUIEnabled rule: a field whose intended
+	// default is the Go zero value must not be listed there, or writeSparse
+	// drops a user's `true` on write). Off by default because a thread being
+	// on screen in some pane of an unfocused window is much weaker evidence
+	// that a person saw the moment than the window having focus is, and a
+	// missed turn-complete is worse than a redundant one.
+	NotifyMuteWhenThreadVisible bool `json:"notifyMuteWhenThreadVisible"`
 
 	// Per-client UI view state (pane layout, collapsed projects,
 	// sidebar width, …) deliberately does NOT live here: it moved to
@@ -595,6 +635,22 @@ var DefaultSettings = Settings{
 	// itself (KeepAwakeEnabled) is the zero value and deliberately NOT
 	// here. See both fields for why the pair is split this way.
 	KeepAwakeScreen: true,
+	// Every notification preference defaults ON so an absent key reads as
+	// the unconditional behaviour that shipped before these keys existed.
+	// See the block on the fields.
+	NotificationsEnabled:    true,
+	NotifyTurnComplete:      true,
+	NotifyApprovalNeeded:    true,
+	NotifyError:             true,
+	NotifyProviderSignedOut: true,
+	NotifyWorkflowAttention: true,
+	NotifyAppUpdate:         true,
+	// Muting a screen you are already looking at is what a person means by
+	// "notify me": the interruption is worth nothing when the answer is
+	// already in front of them. Its weaker sibling
+	// (NotifyMuteWhenThreadVisible) is the Go zero value and deliberately
+	// not here — see the field.
+	NotifyMuteWhenFocused: true,
 }
 
 // HiddenModelsForProvider returns the hidden-model slug list for the
@@ -624,18 +680,43 @@ func (s Settings) AutoCompactPercents(provider string) (standard, extended int) 
 	}
 }
 
-// Service manages reading and writing the settings JSON file.
+// Service manages reading and writing settings across their three homes:
+// settings.json for the host tier, and — once AttachTierStore has wired one —
+// the `ui_state` table for the user and device tiers. See residency.go.
 type Service struct {
-	path        string
-	mu          sync.RWMutex
+	path string
+	mu   sync.RWMutex
+	// cached is the SHARED half of the settings: host tier from the file,
+	// user tier from UserScope, device tier at its defaults. A caller's own
+	// device slice is overlaid per read (Caller.Get), never cached here,
+	// because one caller's screen is not every caller's answer.
 	cached      *Settings
 	cachedState fileState
+	// store and backendBucket are the user/device residency, nil and empty
+	// until AttachTierStore runs. A store-less service keeps every tier in
+	// the file — the pre-phase-4 behaviour the pre-database boot readers in
+	// main.go and main_desktop.go depend on.
+	store         TierStore
+	backendBucket string
+	// retieredBuckets and retieredSettled bound the one-shot promotion of a
+	// key that CHANGED tier (residency.go, retieredKeys) to one attempt per
+	// bucket per process, and to none at all once every retiered key holds a
+	// row in its new home. Written under s.mu.
+	retieredBuckets map[string]bool
+	retieredSettled bool
 	// unknownFields captures any top-level JSON keys from the on-disk file
 	// that do not map to a field on the Settings struct. We preserve them
 	// verbatim on writeSparse so downgrading the app, or running a build
 	// with forward-compat fields the Settings struct doesn't yet know
 	// about, does not silently drop those fields. Written under s.mu.
 	unknownFields map[string]json.RawMessage
+
+	// observer is notified after a persisted change (see mutate.go). Its own
+	// lock, not s.mu: the notification deliberately runs with s.mu released so
+	// an observer may read settings back, and guarding the field with s.mu
+	// would put the read back inside the section it just left.
+	observerMu sync.RWMutex
+	observer   ChangeObserver
 }
 
 type fileState struct {
@@ -725,85 +806,121 @@ func (s *Service) Get() Settings {
 // Update applies a partial patch to the current settings, persists the result
 // with sparse serialization, and returns the new full settings.
 //
-// The "remoteEndpoints" key is rejected at the patch boundary: applyPatch
-// merges top-level keys via wholesale assignment, so a caller doing
-// `GetSettings -> mutate one field -> Update(full struct)` would clobber
-// every saved endpoint's token with the redacted (empty) values returned
-// by GetSettings. Tokens are only mutated through the dedicated CRUD
-// helpers (AddRemoteEndpoint / UpdateRemoteEndpoint / DeleteRemoteEndpoint
-// / TouchRemoteEndpoint) which read the persisted token before writing.
-// This guard keeps a future caller — including a refactor or remote
-// loopback path — from regressing the contract.
+// The provider custom-environment keys are rejected at the patch boundary:
+// applyPatch merges top-level keys via wholesale assignment, so a caller
+// doing `GetSettings -> mutate one field -> Update(full struct)` would
+// persist the redaction GetSettings returned and destroy every sensitive
+// value. They are mutated through the dedicated helpers instead. This
+// guard keeps a future caller — including a refactor or remote loopback
+// path — from regressing the contract.
 func (s *Service) Update(patch map[string]any) (Settings, error) {
-	if _, ok := patch["remoteEndpoints"]; ok {
-		return Settings{}, fmt.Errorf("settings: use AddRemoteEndpoint / UpdateRemoteEndpoint / DeleteRemoteEndpoint to mutate remote endpoints")
-	}
+	return s.update("", DeviceDesktop, patch)
+}
+
+func (s *Service) update(bucket string, class DeviceClass, patch map[string]any) (Settings, error) {
 	for _, key := range []string{"claudeCustomEnv", "codexCustomEnv"} {
 		if _, ok := patch[key]; ok {
-			// Same trap as remoteEndpoints: GetSettings redacts sensitive
-			// values, so a read-mutate-write round trip through this path
-			// would persist the redaction and destroy them.
+			// GetSettings redacts sensitive values, so a read-mutate-write
+			// round trip through this path would persist the redaction and
+			// destroy them.
 			return Settings{}, fmt.Errorf("settings: use SetProviderEnvVar / DeleteProviderEnvVar to mutate %s", key)
 		}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	current := s.loadFromFile()
-
-	patched, err := applyPatch(current, patch)
-	if err != nil {
-		return Settings{}, fmt.Errorf("settings: apply patch: %w", err)
+	if _, ok := patch["network"]; ok {
+		// Network exposure changes ride the SetNetworkSettings RPC, which
+		// carries the //ao:stepup annotation (docs/specs/remote-access.md
+		// §4) and calls SetNetwork below. Accepting the key here would
+		// perform the same bind change through a method with no step-up
+		// requirement.
+		return Settings{}, fmt.Errorf("settings: use SetNetworkSettings to change network exposure")
 	}
-	patched, err = validateSettings(patched)
+	if _, ok := patch["workflowPaused"]; ok {
+		// The fourth key with a dedicated RPC, and the class is closed here
+		// (docs/specs/remote-access.md §6): WorkflowSetGlobalPause enforces
+		// threads:autonomy and applies the pause to the live engine in the
+		// same act. Accepting the key here made the generic patch demand host
+		// step-up for the same change, which was two answers to one question.
+		return Settings{}, fmt.Errorf("settings: use WorkflowSetGlobalPause to pause or resume workflows")
+	}
+	return s.mutate(bucket, class, func(current Settings) (Settings, error) {
+		patched, err := applyPatch(current, patch)
+		if err != nil {
+			return Settings{}, fmt.Errorf("settings: apply patch: %w", err)
+		}
+		patched, err = validateSettings(patched)
+		if err != nil {
+			return Settings{}, fmt.Errorf("settings: validate: %w", err)
+		}
+		return patched, nil
+	})
+}
+
+// SetNetwork persists the network exposure preference. It is the ONE
+// write path for the "network" key, which Update refuses: the key
+// changes what the transport listens on, what name it answers to, and
+// which certificate it presents, so it belongs to the step-up-annotated
+// SetNetworkSettings RPC, and a generic settings patch must not carry
+// the same change past that requirement.
+//
+// Validation happens HERE rather than in the caller: this is the one
+// write path, so a value that reached the file could only have come
+// through it.
+func (s *Service) SetNetwork(n NetworkSettings) (Settings, error) {
+	validated, err := validateNetwork(n)
 	if err != nil {
 		return Settings{}, fmt.Errorf("settings: validate: %w", err)
 	}
-
-	if err := s.writeSparse(patched); err != nil {
-		return Settings{}, err
-	}
-
-	s.cached = &patched
-	s.cachedState = readFileState(s.path)
-	return patched, nil
+	return s.mutate("", DeviceDesktop, func(current Settings) (Settings, error) {
+		current.Network = validated
+		return current, nil
+	})
 }
 
-// AddRecentWorkspace pushes a workspace path to the front of the recent list,
-// deduplicating and capping at 10 entries.
+// SetWorkflowPaused persists the global workflow kill switch. It is the ONE
+// write path for the "workflowPaused" key, which update refuses: the switch
+// is applied to the live engine in the same act, by the
+// threads:autonomy-scoped WorkflowSetGlobalPause RPC, and a generic settings
+// patch must not persist a pause the engine never heard about.
+func (s *Service) SetWorkflowPaused(paused bool) (Settings, error) {
+	return s.mutate("", DeviceDesktop, func(current Settings) (Settings, error) {
+		current.WorkflowPaused = paused
+		return current, nil
+	})
+}
+
+// AddRecentWorkspace pushes a workspace path to the front of the BACKEND's
+// own recent list, deduplicating and capping at 10 entries. The list is
+// device tier, so an RPC-driven caller should reach it through
+// `For(bucket, class).AddRecentWorkspace` instead — this spelling is the one
+// for a call with no connection behind it.
 func (s *Service) AddRecentWorkspace(path string) {
+	s.addRecentWorkspace("", DeviceDesktop, path)
+}
+
+func (s *Service) addRecentWorkspace(bucket string, class DeviceClass, path string) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	current := s.loadFromFile()
-
-	// Build new list: path first, then existing entries minus duplicates.
-	seen := map[string]bool{path: true}
-	recent := []string{path}
-	for _, ws := range current.RecentWorkspaces {
-		if !seen[ws] {
-			seen[ws] = true
-			recent = append(recent, ws)
+	if _, err := s.mutate(bucket, class, func(current Settings) (Settings, error) {
+		// Build new list: path first, then existing entries minus duplicates.
+		seen := map[string]bool{path: true}
+		recent := []string{path}
+		for _, ws := range current.RecentWorkspaces {
+			if !seen[ws] {
+				seen[ws] = true
+				recent = append(recent, ws)
+			}
 		}
-	}
-	if len(recent) > 10 {
-		recent = recent[:10]
-	}
-
-	current.RecentWorkspaces = recent
-
-	if err := s.writeSparse(current); err != nil {
+		if len(recent) > 10 {
+			recent = recent[:10]
+		}
+		current.RecentWorkspaces = recent
+		return current, nil
+	}); err != nil {
 		log.Printf("settings: persist recent workspace: %v", err)
-		return
 	}
-
-	s.cached = &current
-	s.cachedState = readFileState(s.path)
 }
 
 // loadFromFile reads the settings file and merges over defaults.
@@ -822,9 +939,12 @@ func (s *Service) AddRecentWorkspace(path string) {
 func (s *Service) loadFromFile() Settings {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
-		// Missing file is normal on first run.
+		// Missing file is normal on first run — and it stays missing far
+		// longer than that: mutate rewrites settings.json only for a write
+		// that moved a key still resident in it, so an install whose owner
+		// has only ever changed preferences has no file at all.
 		s.unknownFields = nil
-		return copyDefaults()
+		return sanitizeLoadedSettings(s.overlayUserTier(copyDefaults()))
 	}
 
 	// Start from defaults, then overlay file values.
@@ -837,10 +957,46 @@ func (s *Service) loadFromFile() Settings {
 			log.Printf("settings: malformed JSON in %s; original preserved at %s, falling back to defaults: %v", s.path, preservedPath, err)
 		}
 		s.unknownFields = nil
-		return copyDefaults()
+		return sanitizeLoadedSettings(s.overlayUserTier(copyDefaults()))
 	}
 	s.unknownFields = captureUnknownFields(data)
-	return sanitizeLoadedSettings(result)
+	return sanitizeLoadedSettings(s.overlayUserTier(result))
+}
+
+// overlayUserTier applies the user tier over whatever the FILE produced, and
+// is the only place that decides where user-tier values come from. Must be
+// called with s.mu held.
+//
+// Every one of loadFromFile's three exits goes through it, which is the fix
+// and not tidiness: the two fallback exits returned bare defaults, so an
+// install with no settings.json — or one whose file had just been preserved
+// as corrupt — silently ignored every user-tier ROW in the store. The user
+// tier does not live in that file; a file that cannot be read says nothing
+// about it.
+//
+// A store-less service has no user tier to apply: its keys are still in the
+// file, which is the pre-phase-4 behaviour the boot readers depend on.
+func (s *Service) overlayUserTier(current Settings) Settings {
+	if s.store == nil {
+		return current
+	}
+	// Non-host keys no longer persist in the file. Whatever it still holds
+	// for them is a pre-migration leftover that seedTiers already consumed,
+	// so it is reset to the default and then overlaid from the user scope —
+	// otherwise a stale file value would outrank the row the user's last
+	// save actually wrote.
+	resetTieredFields(&current)
+	return overlayScope(current, s.store, UserScope, TierUser)
+}
+
+// resetTieredFields restores the DEFAULT of every key that no longer persists
+// in settings.json, undoing the whole-file unmarshal for the user and device
+// tiers. The unmarshal stays whole so a type-mismatched file is still
+// detected and preserved as corrupt, which a key-filtered decode would let
+// through one field at a time.
+func resetTieredFields(target *Settings) {
+	applyRows(target, defaultKeyValues(), TierUser)
+	applyRows(target, defaultKeyValues(), TierDevice)
 }
 
 // captureUnknownFields returns a map of top-level JSON keys from raw that
@@ -872,7 +1028,7 @@ func captureUnknownFields(raw []byte) map[string]json.RawMessage {
 // knownSettingsFieldNames returns the set of JSON field names the
 // Settings struct serializes. Computed by reflecting on the struct's
 // fields rather than marshalling DefaultSettings — `omitempty` fields
-// with zero defaults (e.g. RemoteEndpoints) would be missing from the
+// with zero defaults would be missing from the
 // marshalled view, which would mis-classify a user-written value as
 // "unknown" and double-publish it through unknownFields preservation.
 //
@@ -923,7 +1079,8 @@ func retiredSettingsFieldNames() map[string]struct{} {
 	}
 }
 
-// writeSparse persists only the fields that differ from DefaultSettings.
+// writeSparse persists only the FILE-RESIDENT fields that differ from
+// DefaultSettings.
 // Uses atomic write (temp file + rename). Unknown fields previously read
 // from the file are preserved alongside the sparse known fields so
 // forward-compat / downgrade values are not dropped by an Update.
@@ -937,6 +1094,15 @@ func (s *Service) writeSparse(current Settings) error {
 	sparse, err := buildSparseMap(current)
 	if err != nil {
 		return fmt.Errorf("settings: build sparse map: %w", err)
+	}
+	// Once a store is attached, the user and device tiers live in `ui_state`
+	// and their keys leave this file on the next write. Dropping them here
+	// rather than in buildSparseMap keeps the residency question in one place
+	// (fileResident) and leaves the sparse projection about defaults only.
+	for key := range sparse {
+		if key != schemaVersionKey && !s.fileResident(key) {
+			delete(sparse, key)
+		}
 	}
 
 	// Merge unknown fields under the sparse known fields. Known keys win
@@ -957,9 +1123,9 @@ func (s *Service) writeSparse(current Settings) error {
 	}
 	data = append(data, '\n')
 
-	// Ensure the directory exists. 0700 because this struct now stores
-	// per-launch tokens (RemoteEndpoints[*].Token); even though the
-	// renamed temp file lands at 0600 itself, a 0755 parent would let
+	// Ensure the directory exists. 0700 because this struct stores
+	// provider environment values the user marked sensitive; even though
+	// the renamed temp file lands at 0600 itself, a 0755 parent would let
 	// other local accounts list the dir contents. MkdirAll is a no-op
 	// when dir already exists with looser perms — that's acceptable
 	// because the file's own 0600 still gates the contents.

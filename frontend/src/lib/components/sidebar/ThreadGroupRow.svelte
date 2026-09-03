@@ -23,6 +23,7 @@
   import Icon from '../primitives/Icon.svelte';
   import ThreadGroupContextMenu from './ThreadGroupContextMenu.svelte';
   import ThreadRowPinButton from './ThreadRowPinButton.svelte';
+  import SidebarRowMenuButton from './SidebarRowMenuButton.svelte';
   import {
     moveThreadsToGroupAction,
     pinThreadGroupAction,
@@ -33,6 +34,8 @@
   import { PIN_GROUP_BACK, PIN_GROUP_FRONT } from './threadRowActions';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { sidebarRowPaddingLeftPx, sidebarTimeLabel } from '../../utils/sidebarRowMetrics';
+  import { threadGroupBackend } from '../../transport/entityIndex';
+  import { HOME_BACKEND } from '../../transport/backendKey';
   import {
     canDropThreadInGroup,
     endThreadRowDrag,
@@ -94,7 +97,9 @@
       const at = getThreadLiveActivityAt(member);
       if (at > latest) latest = at;
     }
-    return sidebarTimeLabel(latest || (group.updatedAt ?? 0));
+    // A group and its members live on one machine, so the group's own
+    // backend is the clock for every stamp folded in above.
+    return sidebarTimeLabel(latest || (group.updatedAt ?? 0), threadGroupBackend(group.id) ?? HOME_BACKEND);
   });
 
   // ── Inline rename ────────────────────────────────────────────────────────
@@ -277,7 +282,7 @@
     tabindex={0}
     draggable={false}
     aria-expanded={expanded}
-    class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+    class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 compact:h-9 compact:select-none rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
     style="padding-left: {rowPaddingLeftPx}px"
     data-testid="thread-group-row"
     data-sidebar-group-id={group.id}
@@ -361,6 +366,7 @@
           </span>
         {/if}
       </div>
+      <SidebarRowMenuButton label="Group actions" testId="thread-group-row-menu" onOpen={handleContextMenu} />
     {/if}
   </div>
 </div>

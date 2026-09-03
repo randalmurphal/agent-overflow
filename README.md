@@ -32,7 +32,7 @@ when `AGENT_OVERFLOW_DEBUG=provider`, plus runtime logs), `attachments/`
 
 ## Setup
 
-Requires Go 1.26.2+, Node 24+, and pnpm 10+. On Linux, Wails v3 also needs
+Requires Go 1.26.6+, Node 24+, and pnpm 10+. On Linux, Wails v3 also needs
 `libgtk-4-dev`, `libwebkitgtk-6.0-dev`, `pkg-config`, and `gcc`
 (install via your distro's package manager; the GTK4 / WebKitGTK 6.0
 stack ships on Ubuntu 23.04+ / Debian 13+).
@@ -91,6 +91,12 @@ local artifact path still works when you want to bypass download mode:
 ./scripts/install.sh --wsl ./dist/release/0.0.1/agent-overflow-wsl-amd64.exe
 ```
 
+A release also carries `agent-overflow-headless-linux-amd64`, the same backend
+built without GTK or WebKit, for a machine you reach from elsewhere rather than
+sit at. It is not an `install.sh` target — it wants no desktop entry and no
+icon; copy it onto `PATH` and run `agent-overflow serve`. See
+[serve-mode.md](docs/architecture/serve-mode.md).
+
 The installer download path has a local smoke test:
 
 ```sh
@@ -136,21 +142,51 @@ make verify     # full release gate
 
 Agent Overflow's transport (the HTTP+WebSocket layer between the Svelte
 SPA and the Go backend) defaults to loopback-only and binds to a fresh
-ephemeral port at every launch. The launch URL — `http://127.0.0.1:<port>/?t=<token>` —
-is what the embedded webview attaches to.
+ephemeral port at every launch. Every page gets a one-time ticket and
+exchanges it, on its first load, for an HttpOnly session cookie — so no
+page script ever holds a credential. A URL a person opens carries the
+ticket (`http://127.0.0.1:<port>/?t=<ticket>`), stripped from the address
+bar once spent, so a copied URL opens exactly one session. The embedded
+webview's URL carries no credential at all: the same process that mints
+the ticket owns the window, so it hands the loaded page its ticket
+directly rather than putting it somewhere copyable.
 
 A handful of opt-in modes extend that:
 
 - **`--listen <addr>`** binds the transport to a different interface
-  (e.g. `0.0.0.0:54321` for LAN). The same launch URL works from any
-  host that can reach the bound interface; the token gates access.
+  (e.g. `0.0.0.0:54321` for LAN). Settings → Remote access renders a share URL
+  for the bound interface; each render carries its own one-time ticket,
+  so a second device needs the panel read again.
   Equivalent to flipping the "Allow remote access" toggle in Settings →
   Network, which persists the preference across launches.
-- **`--connect ws://host:port/?token=<value>`** runs the desktop
-  binary as a thin client against a remote backend. The local
-  process boots a stub static-asset server, injects the bootstrap
-  manifest, and points the webview at the remote backend over
-  WebSocket. No local transport, store, or providers are started.
+- **`--connect <endpoint | pairing link | backend>`** runs the desktop
+  binary as a thin client against a remote backend. The local process
+  boots a stub static-asset server, keeps the upstream credential in Go,
+  and carries the webview's WebSocket to the remote backend. No local
+  transport, store, or providers are started. Three forms:
+  - `ws://host:port/ws?token=<value>` — a backend on this machine, or
+    one reached through an SSH tunnel. The upstream's launch token
+    authenticates the hop.
+  - a pairing link copied from the other machine's Settings → Remote access —
+    for a backend across a network, where a launch token is not enough.
+    The terminal shows a six-digit verification number to compare and
+    confirm on that machine; once confirmed, this installation holds a
+    device credential it renews on its own and pins that backend's TLS
+    certificate with.
+  - the paired backend's name or endpoint — reuses that stored
+    credential, so pairing happens once per machine.
+- **Tailnet access** (Settings → Remote access) joins this backend to your own
+  Tailscale network as its own machine, so it is reachable from anywhere
+  you are signed in — with no port forwarded, no public listener, and no
+  tunnel process to run. Turning it on gives you a link to approve the
+  machine in your tailnet; once approved, the panel shows the address it
+  answers on. It answers the same routes and demands the same paired
+  session as every other way in: joining a tailnet is how a device
+  REACHES this backend, never how it gets in. If your tailnet has HTTPS
+  enabled, the address is `https://` with a certificate browsers already
+  trust. Turning the feature off keeps the machine's identity, so
+  turning it back on rejoins as the same device; "Forget this node"
+  is the separate act that deletes it.
 - **Windows + WSL silent mode** (`agent-overflow-windows.exe`) drops
   the Linux backend into a chosen WSL distro, runs it headless, and
   forwards `localhost:<port>` from inside the distro to the Windows
@@ -159,19 +195,26 @@ A handful of opt-in modes extend that:
 
 ### Trust model
 
-**Anyone holding the bootstrap token can RPC the host as the user that
-launched the binary.** The transport's `LocalOnlyMethods` set refuses a
-narrow surface (terminal spawn, git mutators, settings writes,
-credential retrieval) for non-loopback peers — that's defense-in-depth
-against a token leak on a shared LAN, not a security boundary you can
-expose to the public internet.
+**Anyone holding the session token — or a live page cookie — can RPC the
+host as the user that launched the binary.** The token never rides a page
+URL (a URL carries a one-time ticket, exchanged once for an HttpOnly
+cookie), so page script cannot read a credential back out; that narrows
+how a credential leaks, not what one is worth. A peer that is not on this
+machine has to name a paired device's session, and every call it makes is
+checked against that session's granted scopes — with a `host` tier
+(terminal spawn, editor open, updater, credential retrieval) that no
+session can be granted at all. That's defense-in-depth, not a security
+boundary you can expose to the public internet.
 
-For non-trusted networks, deploy behind a tunnel that handles
-authentication and TLS:
+For non-trusted networks, reach the backend over a network you control
+rather than exposing a port on one you do not:
 
-- [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) —
-  HTTPS on a `*.ts.net` hostname, ACL-gated.
+- **Tailnet access** (above) — the built-in form, and the one to
+  prefer: no listener on any public interface, and every path in is one
+  you enrolled.
 - SSH local port forward (`ssh -L 54321:localhost:54321 host`).
+- [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve),
+  run outside the app, if you would rather manage the node yourself.
 - Reverse proxy (Caddy / Nginx / Cloudflare Tunnel) terminating TLS
   in front of the backend.
 
@@ -183,10 +226,12 @@ password. The token is regenerated on every launch, so closing and
 reopening the app rotates it; if you've shared a launch URL, restart to
 invalidate.
 
-Tokens for saved `--connect` endpoints are stored plaintext in the
-local settings file (the launcher needs to replay them when you click
-Connect). The Settings UI exposes them only behind explicit "Show" /
-"Copy" actions; bulk reads through `ListRemoteEndpoints` strip them.
+Other machines you attach to are stored as PAIRED DEVICE SESSIONS, not
+as saved tokens: one file per backend under the app config directory,
+each holding a rotating credential this installation renews and the
+certificate fingerprint it pinned when it paired. Nothing there is a
+bearer token you can copy, and nothing is ever handed to the page —
+the local backend carries the connection itself.
 
 ## Docs
 

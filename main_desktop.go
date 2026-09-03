@@ -15,6 +15,8 @@ import (
 	"errors"
 	"io/fs"
 	"log"
+	"os"
+	"os/signal"
 	"sync"
 	"unsafe"
 
@@ -32,23 +34,35 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
-// runClient is the Phase F remote-client entry point. Instead of
+// runClient is the remote-client entry point. Instead of
 // booting the local transport (HTTP+WS server, App service registration,
 // SQLite, observability, sessions), the desktop binary points the
-// Wails webview at a tiny static-asset HTTP server whose index.html
-// has window.__AO_BOOTSTRAP__ pre-injected so the SPA's wsClient
-// connects to the operator-supplied remote endpoint instead.
+// Wails webview at a tiny loopback stub that serves the SPA shell
+// verbatim, answers /bootstrap.json on its own origin, and carries the
+// SPA's WebSocket to the backend named on the command line with the
+// upstream credential attached in Go (internal/clientmode).
+//
+// What that credential is, and whether reaching it needs a pairing
+// ceremony first, is prepareConnection's answer (main_connect.go). The
+// ceremony runs BEFORE the window exists, on purpose: it is a
+// conversation between two people at two screens, and a window that
+// opened first would be showing an outage for the length of it.
 //
 // Why we still need a loopback HTTP server: the Wails webview only
 // loads `http://`/`https://` URLs (or the embedded asset URL with the
 // devserver path). Pointing it directly at `ws://...` won't work, and
-// the bootstrap-injection step has to happen somewhere. The stub
-// server is single-purpose: serve the SPA shell with the bootstrap
-// snippet, plus the static assets the shell loads from /assets/.
+// the page needs an origin of its own for its cookie and its
+// same-origin manifest. The stub server is single-purpose: the shell,
+// the assets under /assets/, the manifest, and the /ws carry.
 func runClient(rawURL string) {
-	cfg, err := clientmode.ParseConnectURL(rawURL)
+	// Interrupt reaches the ceremony's waits: the confirmation poll runs
+	// for up to ten minutes, and Ctrl-C during it must end the process
+	// rather than be swallowed by a client that is mid-request.
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
+	cfg, err := prepareConnection(ctx, rawURL)
+	stopSignals()
 	if err != nil {
-		fatalf("--connect: %v", err)
+		fatalConnect(err)
 	}
 
 	embeddedSPA, err := fs.Sub(assets, "frontend/dist")
@@ -73,7 +87,7 @@ func runClient(rawURL string) {
 	// RPC against a remote backend instead.
 	app := application.New(desktopApplicationOptions(title))
 
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            title,
 		Width:            1280,
 		Height:           800,
@@ -83,6 +97,10 @@ func runClient(rawURL string) {
 		URL:              stub.AppURL(),
 		KeyBindings:      uikeys.WithDevTools(uikeys.BrowserWithReload(stub.AppURL)),
 	})
+	// The stub's page URL carries no credential — this process owns the
+	// window, so each document it loads is handed its one-time ticket
+	// directly (internal/uiwindow, internal/pagehost).
+	uiwindow.DeliverPageTicket(window, stub.MintPageTicket)
 
 	runErr := app.Run()
 
@@ -133,10 +151,16 @@ type webviewShell struct {
 	// starts. runDesktop boots its transport here, because the updater
 	// must observe the application first.
 	beforeRun func(app *application.App)
-	// pageURL returns the CURRENT page URL (the transport's AppURL). A
-	// getter, not a value: Ctrl+R re-reads it so a rebind (the LAN
-	// toggle) reloads onto the new origin.
+	// pageURL returns the CURRENT page URL, bare and marked
+	// webview-hosted (the transport's WebviewPageURL). A getter, not a
+	// value: Ctrl+R re-reads it so a rebind (the LAN toggle) reloads
+	// onto the new origin.
 	pageURL func() string
+	// mintTicket hands out one one-time page ticket. Separate from
+	// pageURL because this shell owns the window: the credential is
+	// injected into each document it loads rather than written into the
+	// URL that loaded it (internal/uiwindow.DeliverPageTicket).
+	mintTicket func() (string, error)
 	// loadGeometry / persistGeometry are the saved window placement's
 	// reader and writer. Both resolve through the boot data dir, so an
 	// isolated instance remembers its own window, not the user's.
@@ -222,6 +246,7 @@ func (s webviewShell) run() error {
 	// uiwindow.RestoreAndTrack for why creation must happen here.
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		w, flush := uiwindow.RestoreAndTrack(app, opts, s.loadGeometry(), s.persistGeometry)
+		uiwindow.DeliverPageTicket(w, s.mintTicket)
 		winMu.Lock()
 		window = w
 		flushGeometry = flush
@@ -294,13 +319,19 @@ func runDesktop(listenAddr string) {
 			// URL. Repeating it here only added a second wording for one
 			// failure, and a fatalf that skipped the transport shutdown
 			// the shell's error return runs.
-			srv = bootTransport(appService, listenAddr, bootTransportOptions{LoadPersistedBindAll: true})
+			srv = bootTransport(appService, listenAddr, bootTransportOptions{LoadPersistedNetwork: true})
 		},
 		pageURL: func() string {
 			if srv == nil {
 				return ""
 			}
-			return srv.AppURL()
+			return srv.WebviewPageURL()
+		},
+		mintTicket: func() (string, error) {
+			if srv == nil {
+				return "", errors.New("transport: not started")
+			}
+			return srv.MintPageTicket()
 		},
 		loadGeometry: loadPersistedWindowGeometry,
 		persistGeometry: func(geometry windowgeom.Geometry) {

@@ -3,38 +3,60 @@
 Built-in browser MCP over one engine behind the `driver.go` seam:
 launcher-hosted WebView2 controllers on the Windows/WSL deployment, WebKit
 views embedded in the app's own window on the native Linux (WebKitGTK) and
-macOS (WKWebView) desktops, and a fake engine for the mocked boot modes.
+macOS (WKWebView) desktops, a headless Chromium process per workspace on the
+windowless serve deployment, and a fake engine for the mocked boot modes.
 
-**A deployment without a window has NO engine and no browser tools.** The
-engines live in the desktop app instance, so a remote `--connect` backend, a
-headless serve mode, and `go test` get `unavailableEngine`, whose one refusal
-sentence is the entire windowless story. The App declines to construct the MCP
-server at all in that case, so the model reads an absence rather than 28 tools
-that could only fail.
+**A deployment without a window OR a headless engine has NO engine and no
+browser tools.** The windowed engines live in the desktop app instance, and
+the one windowless engine — headless Chromium, `headless_engine.go` — is an
+explicit POSITIVE option only the serve boot sets. So a remote `--connect`
+backend, a serve host with no Chromium on it, and `go test` get
+`unavailableEngine`, whose one refusal sentence is the entire story. The App
+declines to construct the MCP server at all in that case, so the model reads
+an absence rather than 28 tools that could only fail.
 
 ## Ownership and isolation
 
 - `MCPServer` owns the loopback Streamable HTTP endpoint. Every provider
   thread receives an unguessable capability URL; unregistering the thread
   revokes it and closes only that thread's pages.
+- The capability URL is not the only check. Before any method dispatch,
+  every request must come from a loopback peer (`r.RemoteAddr`, set from
+  the accepted socket), carry no `Origin` header, and declare
+  `Content-Type: application/json`. The client is always a provider CLI
+  this app spawned, and both real ones match; a document in a browser
+  does not. Requiring JSON is load-bearing rather than hygiene — a
+  `text/plain` POST is a CORS simple request that skips the preflight, so
+  dropping it would let a page invoke tools. Keep new endpoints on the
+  same three checks; the URL rides provider argv, so it is not secret
+  from local software.
+- The listener binds at the first thread registration, not on first use:
+  its URL rides provider argv at spawn, so it must exist before the
+  process starts. Do not make it lazy.
 - An ENGINE is reached only through the seam in `driver.go`: `browserEngine`
   (the process and its profile factory), `engineProfile` (one workspace's
   isolated site data), and `pageDriver` (every per-page tool operation).
   `hosted_engine.go` is the launcher-hosted implementation of those three (its
-  per-page half is `cdp_page.go` — CDP is CDP), `webkit_*.go` the WebKitGTK one,
+  per-page half is `cdp_page.go` — CDP is CDP),
+  `headless_engine.go` / `headless_profile.go` the headless Chromium one (same
+  per-page half, for the same reason), `webkit_*.go` the WebKitGTK one,
   `wkwebview_*.go` the WKWebView one, `fake_engine.go` the mocked-boot one, and
   `engine_unavailable.go` the null object every other deployment gets (spec
   `docs/specs/embedded-browser.md` §6). An engine implements the seam and
   nothing else.
 - WHICH engine is a WIRING answer, never a `runtime.GOOS` check. `selectEngine`
-  is a three-fact table: `ManagerOptions.FakeEngine` (the harness and soak
+  is a four-fact table: `ManagerOptions.FakeEngine` (the harness and soak
   pins, spec §10 — default-on, and lifted only by the manual
   `AO_HARNESS_REAL_BROWSER` gate) wins first; then `ManagerOptions.PaneHost`,
   non-nil exactly when the executable built a CDP relay (WSL only), which selects the hosted
-  engine; then the native one, only when `ManagerOptions.NativeWindow` answers
+  engine; then `ManagerOptions.HeadlessChromium`, which only `runServe` sets;
+  then the native one, only when `ManagerOptions.NativeWindow` answers
   a real window AND the platform half can actually host it. Anything else is
   `unavailableEngine`. `Manager.Available()` is how the App asks, and it is
-  what gates the MCP server.
+  what gates the MCP server. The absence of a window NEVER selects an engine —
+  that is what `TestSelectEngineWithoutAWindowHasNoEngine` pins, and it is why
+  the headless engine is an option somebody sets rather than a fallback
+  somebody falls into.
 - `unavailableEngine` is a VALUE, not a nil `browserEngine`. Every Manager path
   — start, teardown, pane presentation, devtools — would otherwise need its own
   nil check, and one missed check is a nil deref inside a tool call. Here the
@@ -59,7 +81,7 @@ that could only fail.
 - Pages are created hidden and stay hidden. The user-visible surface is the
   calling thread's companion pane, presenting the exact same page the MCP tools
   drive; do not reintroduce a separate browser window or a second session.
-- **No engine is ever downloaded.** AO used to install a Chrome-for-Testing
+- **No engine is ever downloaded, on any deployment.** AO used to install a Chrome-for-Testing
   build on first use; that whole path (`internal/chromium` and the
   `browser:install-progress` channel) is deleted. This package makes no network
   request of its own — every byte it fetches is a page a tool navigated to.
@@ -163,6 +185,102 @@ controller exactly as it drives a Chrome tab. Only LIFETIME differs.
   `Browser.setDownloadBehavior` and `Browser.setPermission` are not confirmed on
   WebView2. The existing code path is kept rather than guessed at; if one turns
   out unsupported, the refusal is bounded by the Manager's own caps.
+
+## The headless Chromium engine (serve mode)
+
+`headless_engine.go` and `headless_profile.go` are the windowless
+implementation of the same three interfaces (spec
+`docs/specs/remote-access.md` §7, "Headless Chromium engine (serve mode)").
+Page OPERATIONS are `cdp_page.go` again, unchanged — CDP is CDP — and the
+browser-level dial and the download-event translation are literally the same
+functions the hosted engine calls (`dialCDPBrowser`, `cdpDownloadEvent`).
+Only LIFETIME differs.
+
+- **Selection is an explicit POSITIVE option**, `ManagerOptions.HeadlessChromium`,
+  set only by `runServe`. It is never inferred from the absence of a window,
+  because that absence is what `go test`, `--connect` and every unwired boot
+  share: inferring would mean a suite silently launching browsers. Both sides
+  of the rule are pinned tag-free (`manager_test.go`,
+  `headless_engine_test.go`).
+- **No browser is ever downloaded.** `headless_binary.go` finds a SYSTEM
+  Chromium (the `browserChromiumPath` host setting, then `chromium`,
+  `chromium-browser`, `google-chrome`, `google-chrome-stable`, `chrome`, then
+  the macOS app bundles) and nothing else. A bad override is the ANSWER, never
+  a fallback to a different browser the operator did not name. Not finding one
+  is not an error state to recover from: selection logs one line and the
+  deployment gets `unavailableEngine`, exactly like a machine with no window.
+- **One Chromium process PER PROFILE**, launched by that profile's first page
+  and killed by its Dispose. A `--user-data-dir` is the whole of a workspace's
+  isolation here — there is no per-view network session to use instead — so two
+  workspaces must never share a process. The Manager already disposes a profile
+  when its last page closes, so an idle serve host runs no browser well before
+  `idleBrowserDelay` stops the engine.
+- **`--no-sandbox` is PRESENT AND FALSE, never absent.** chromedp adds
+  `--no-sandbox` by itself when the process runs as root unless the flag is
+  already in its map (`allocate.go`), so an absent flag would silently drop the
+  renderer sandbox on exactly the deployment most likely to run as root — a
+  service unit. Present-and-false makes a root install FAIL to launch, loudly,
+  with Chromium's own refusal in the error, and
+  `docs/architecture/serve-mode.md` says to run the service as a non-root user.
+  Two tests guard it: the argv assertion and the flag-set one, because the argv
+  assertion alone passes on every developer machine and fails only in
+  production.
+- **A failed launch carries what the browser said.** chromedp's error holds
+  everything the process printed before it died, which is where a sandbox
+  refusal is legible — and it is unbounded, because the process chose how much
+  to print, so it is TAILED. The operator sees only what the engine carries
+  out.
+- **`profileOptions.Persist` is a directory, not a mode.** Chromium has no
+  in-memory profile, so an ephemeral session is a real profile on a temp
+  directory `Dispose` removes, and a failed removal is an ERROR — the user was
+  promised nothing was kept.
+- **A browser that dies takes its profile with it.** chromedp cancels the
+  BROWSER context when the connection is lost (its `LostConnection`
+  goroutine calls the context's own cancel), so a per-profile watcher on
+  `browserCtx.Done()` is the whole detection — no polling, no process
+  reap of our own. It reports every page still bound to that profile
+  through `engineEvents.PageClosed` and disposes the profile, which is
+  what keeps a dead Chromium from leaving a registry full of pages every
+  later tool call would happily address. It exits silently when the
+  profile was disposed or has since adopted a newer browser, so an
+  ordinary Dispose reports nothing twice.
+- **`ensureBrowser` cancels what it replaces.** The alloc cancel is a
+  SEPARATE function from the browser cancel and it holds a goroutine, a
+  WaitGroup and the process reap, so overwriting either field without
+  calling the old one leaked both per relaunch. `adopt` is the one place
+  the pair is installed and it cancels the stale pair first.
+- **An ephemeral profile directory carries its owner's pid**
+  (`headless_ephemeral.go`). A process killed between `os.MkdirTemp` and
+  `Dispose` cannot clean up after itself, so the marker is what lets the
+  NEXT engine start reclaim the leak: `Start` sweeps
+  `ao-browser-ephemeral-*` under the same temp root and removes only the
+  ones whose owner pid is no longer alive. A directory with no marker is
+  never touched — it cannot be attributed, and deleting a root a live
+  instance is using would take a workspace's session with it. An empty
+  `tempRoot` sweeps nothing, which is what keeps a fixture from walking
+  the machine's real temp directory.
+- **Not implemented, deliberately** (omission is refusal on this seam):
+  `paneHost` and `paneDevTools` (there is no window to present in),
+  `engineUIThread` and `engineAccelerators` (no UI thread, no key events), and
+  `engineSiteData` — this engine's data is under the Manager's own
+  `browser-profiles/` tree, so the tree delete already IS the clear.
+  `ReadOnlyCaveat()` is empty here, like every CDP engine: Chromium rejects the
+  side effect itself.
+- **Downloads are pinned by `Browser.setDownloadBehavior`** with `allowAndName`
+  and events on. `allowAndName` is not a preference: the Manager renames from
+  the GUID-named file it writes (`downloads.go`), and events are what make a
+  download reportable and cappable at all.
+
+- **Never call the Manager inline from a chromedp listener.** This is one rule
+  for BOTH CDP engines, and the reason is in chromedp: browser listeners run on
+  the single goroutine reading that browser's connection, under its listeners
+  mutex. `engineEvents.PageClosed` is `Manager.removeClosedPage`, which on a
+  workspace's last page reaches `disposeScope` and then the profile's
+  `Dispose` — which waits on that same connection (the headless one blocks
+  until Chromium is reaped). Inline, that is a deadlock, not an ordering
+  choice, so both engines hand `targetDestroyed` to a goroutine. A
+  non-listener caller, such as the hosted engine's launcher report path, calls
+  it inline and should.
 
 ## The WebKitGTK engine (native Linux desktop)
 
@@ -356,15 +474,18 @@ builder for macOS.
 - **Site data is the ENGINE's, on disk, per workspace** (spec §4). Nothing here
   reads or writes cookies or localStorage: the hosted engine keeps a named
   `CoreWebView2Profile`, WebKitGTK a `WebKitNetworkSession` under
-  `<data root>/browser-profiles/<workspace-hash>/`, and WKWebView a
-  `+dataStoreForIdentifier:` store inside WebKit's own directory.
+  `<data root>/browser-profiles/<workspace-hash>/`, headless Chromium a
+  `--user-data-dir` under `<data root>/browser-profiles/<workspace-hash>/chromium`,
+  and WKWebView a `+dataStoreForIdentifier:` store inside WebKit's own directory.
 - `browserPersistSiteData=false` is an EPHEMERAL session, not a suppressed
   write. It reaches an engine as `profileOptions.Persist`.
 - Clear site data closes every engine page, then clears BOTH halves: the
   Manager deletes the AO-owned `browser-profiles/` tree, and an engine whose
   data lives somewhere the Manager cannot reach by path (the launcher's
   WebView2 user-data folder, WebKit's macOS data-store directory) implements
-  `engineSiteData` and clears its own. The button must clear real state on
+  `engineSiteData` and clears its own. An engine under that tree — WebKitGTK,
+  headless Chromium — implements nothing, because the tree delete already is
+  the clear. The button must clear real state on
   every platform — a per-engine silent no-op is a bug, not a platform quirk.
 - The AES-GCM checkpoint store (`state.go`, its keyring key, the harness
   force-file-key path) is DELETED. Its leftovers — `browser-state/` and
@@ -374,7 +495,7 @@ builder for macOS.
 
 ## Tests
 
-- **No test starts a browser.** `fake_engine.go` is production code — the
+- **No test starts a browser, and none downloads one.** `fake_engine.go` is production code — the
   harness and soak boots render the pane's chrome and host rect on it (spec
   §10) — and the same engine carries this package's policy tests
   (`manager_test.go`): pages exist, navigate, are owned by one thread, and
@@ -384,7 +505,20 @@ builder for macOS.
   against invented content. Do not build a second fake.
 - Windowless selection must keep choosing NO engine, and that rule is tag-free
   (`manager_test.go`) because its only failure mode is a silently launched
-  browser.
+  browser. The headless engine does not weaken it: it is chosen by an option
+  the serve boot sets, and `headless_engine_test.go` proves the other side —
+  asked for and found, it is selected; asked for and missing, it is still no
+  engine.
+- The headless engine's own tests run against a FAKE Chromium: a shell script
+  that records its argv, advertises the same loopback CDP endpoint the hosted
+  engine's tests use, and sleeps until it is killed. That covers everything
+  about lifetime — the command line, one process per profile, the download
+  pin, browser reuse, the kill on Dispose and Stop, the ephemeral directory,
+  and what a refused launch says. What it CANNOT cover is whether a real
+  Chromium accepts that command line, which is the manual
+  `AO_HEADLESS_CHROMIUM_SMOKE=1` gate (`TestHeadlessChromiumReal`, documented
+  in the root CLAUDE.md beside `make provider-smoke`). Run it after a Chromium
+  major upgrade and before shipping a change to the launch flags.
 - The tag-free suite stays display-free BECAUSE the mocked boots' fake-engine
   pin is default-ON, not because a real engine is unreachable from here. The
   lift is one manual gate — `AO_HARNESS_REAL_BROWSER` on an attended

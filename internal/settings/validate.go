@@ -3,6 +3,7 @@ package settings
 import (
 	"fmt"
 	"log"
+	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
@@ -121,6 +122,17 @@ func validateSettings(current Settings) (Settings, error) {
 		return Settings{}, err
 	}
 	current.WorktreeBranchPrefix, err = validateWorktreeBranchPrefix(current.WorktreeBranchPrefix)
+	if err != nil {
+		return Settings{}, err
+	}
+	current.BrowserChromiumPath, err = validateChromiumPath(current.BrowserChromiumPath)
+	if err != nil {
+		return Settings{}, err
+	}
+	// The generic patch path cannot CHANGE this key (update refuses it),
+	// but it does re-validate the whole struct, so the rules stay stated
+	// in one place rather than only on the SetNetwork path.
+	current.Network, err = validateNetwork(current.Network)
 	if err != nil {
 		return Settings{}, err
 	}
@@ -338,7 +350,9 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.CodexBinaryPath,
 	)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
+	current.BrowserChromiumPath = sanitizeChromiumPath(current.BrowserChromiumPath)
 	current.GitLabSelfHostedHosts = sanitizeGitLabHosts(current.GitLabSelfHostedHosts)
+	current.Network = sanitizeNetwork(current.Network)
 	current.ClaudeHiddenModels = dedupeTrimmed(current.ClaudeHiddenModels, MaxHiddenModels)
 	current.CodexHiddenModels = dedupeTrimmed(current.CodexHiddenModels, MaxHiddenModels)
 	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
@@ -715,6 +729,42 @@ func sanitizeBinaryPath(field, value, fallback string) string {
 	}
 	log.Printf("settings: empty %s, using default %q", field, fallback)
 	return fallback
+}
+
+// validateChromiumPath checks the headless engine's browser override.
+//
+// Empty is the normal value and means "find one on PATH" — the setting
+// exists for the machine where discovery cannot: a browser outside PATH, or
+// two installed and the wrong one first. A non-empty value must be ABSOLUTE,
+// because a bare name would be resolved against the serve process's own PATH
+// and an operator naming a browser deserves to get that browser rather than
+// whichever one a service manager's environment happens to reach.
+//
+// Whether the file exists is deliberately NOT checked here: settings are
+// validated at write and at every load, the browser is installed and
+// upgraded independently of both, and a rule that fails a whole settings
+// save because a package was mid-upgrade would be worse than the boot log
+// that names the missing binary (internal/browser/headless_binary.go).
+func validateChromiumPath(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(trimmed) {
+		return "", fmt.Errorf("browserChromiumPath must be an absolute path to a Chromium executable, got %q", trimmed)
+	}
+	return trimmed, nil
+}
+
+// sanitizeChromiumPath is the load-path half: a hand-edited file with a
+// relative path loses the override rather than failing the load, and says so.
+func sanitizeChromiumPath(value string) string {
+	cleaned, err := validateChromiumPath(value)
+	if err != nil {
+		log.Printf("settings: %v; ignoring it and searching PATH", err)
+		return ""
+	}
+	return cleaned
 }
 
 func normalizeBinaryPath(value, fallback string) string {

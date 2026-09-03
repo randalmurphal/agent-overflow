@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -23,17 +24,17 @@ import (
 func TestRevertAndResendValidatesArgs(t *testing.T) {
 	app := newTestApp(t)
 
-	if err := app.RevertConversationAndResendMessage("", "user:1", RevertAndResendOptions{Content: "edited"}); err == nil ||
+	if err := app.RevertConversationAndResendMessage(context.Background(), "", "user:1", RevertAndResendOptions{Content: "edited"}); err == nil ||
 		!strings.Contains(err.Error(), "thread id is required") {
 		t.Fatalf("empty thread id error = %v, want required", err)
 	}
-	if err := app.RevertConversationAndResendMessage("t1", "  ", RevertAndResendOptions{Content: "edited"}); err == nil ||
+	if err := app.RevertConversationAndResendMessage(context.Background(), "t1", "  ", RevertAndResendOptions{Content: "edited"}); err == nil ||
 		!strings.Contains(err.Error(), "user item id is required") {
 		t.Fatalf("blank item id error = %v, want required", err)
 	}
 	// An edit-resend with nothing to resend is a caller bug: this method
 	// replaces a message, so a blank replacement has no meaning.
-	if err := app.RevertConversationAndResendMessage("t1", "user:1", RevertAndResendOptions{Content: "  \n\t "}); err == nil ||
+	if err := app.RevertConversationAndResendMessage(context.Background(), "t1", "user:1", RevertAndResendOptions{Content: "  \n\t "}); err == nil ||
 		!strings.Contains(err.Error(), "content is required") {
 		t.Fatalf("blank content error = %v, want required", err)
 	}
@@ -203,7 +204,7 @@ func assertRevertAndResendRejected(
 	}
 	defer func() { app.testEmitHook = nil }()
 
-	rejection := app.RevertConversationAndResendMessage(threadID, userItemID, RevertAndResendOptions{
+	rejection := app.RevertConversationAndResendMessage(context.Background(), threadID, userItemID, RevertAndResendOptions{
 		Content:                    "edited replacement",
 		KillRunningBackgroundTasks: killBackground,
 	})

@@ -10,14 +10,27 @@
   // external-open wrapper: it re-validates the URL, then either hands it
   // to the Go binding (which owns the WSL → Windows browser bridge) or
   // falls back to window.open in a remote client session.
+  //
+  // With a `preview`, the port is on another machine and `localhost` here
+  // is not it. The click mints a URL on that machine's port gateway
+  // instead (`stores/devServers#openPreview`), which is a different
+  // destination and so a different sentence on the button.
   import { devServerLabel, handleExternalURL } from '../../utils/externalLinks';
+  import { openPreview, type PreviewChip } from '../../stores/devServers.svelte';
 
-  let { url }: { url: string } = $props();
+  let { url, preview }: { url: string; preview?: PreviewChip } = $props();
 
   let label = $derived(devServerLabel(url));
+  let action = $derived(
+    preview ? `Open ${label} on ${preview.machine}` : `Open ${url} in browser`,
+  );
 
   function open(event: MouseEvent): void {
     event.stopPropagation();
+    if (preview) {
+      void openPreview(preview.threadId, preview.port, preview.path);
+      return;
+    }
     void handleExternalURL(url);
   }
 </script>
@@ -28,10 +41,11 @@
          text-[0.6875rem] font-medium text-accent cursor-pointer hover:bg-accent/20
          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
   onclick={open}
-  title={`Open ${url} in browser`}
-  aria-label={`Open ${url} in browser`}
+  title={action}
+  aria-label={action}
   data-testid="dev-server-chip"
   data-url={url}
+  data-machine={preview?.machine}
 >
   <svg
     class="size-3"

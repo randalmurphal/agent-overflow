@@ -1,42 +1,57 @@
 // App-scoped UI-state storage: the durable replacement for raw
-// localStorage. Values live in the backend's ui_state table under this
-// client's bucket (Go settings-dir identity when the shell provides
-// one), because webview localStorage silently resets every launch —
-// the transport binds an ephemeral port, so the page origin (and its
-// per-origin storage) changes each run.
+// localStorage. Values live in the backend's ui_state table, because
+// webview localStorage silently resets every launch — the transport
+// binds an ephemeral port, so the page origin (and its per-origin
+// storage) changes each run.
 //
 // Layering:
 //   - in-memory Map — source of truth after hydration; consumers'
 //     $state syncs from it via their sync*FromAppStorage functions.
 //   - localStorage blob — same-session cache so the pre-hydration
-//     render (module-init reads) doesn't flash defaults, plus the
-//     best-effort identity cache for plain-browser clients.
+//     render (module-init reads) doesn't flash defaults.
 //   - ui_state RPCs — the durable copy. Writes batch through a
 //     debounce so a drag interaction is one RPC, not fifty.
 //
-// Client identity resolution (module init, synchronous — must run
-// before wsClient scrubs the URL): --connect's injected
-// __AO_BOOTSTRAP__.clientId, else the ?cid= URL param stamped by the
-// native shell / WSL launcher, else the localStorage-cached id, else a
-// freshly minted UUID. The first two are durable (persisted in the Go
-// config dir); the latter two are best-effort and reset with the
-// origin, degrading to fresh defaults — exactly today's behavior.
+// WHICH bucket is not this module's decision and is deliberately not
+// something it can name. The backend derives the scope from the
+// connection — the session the WebSocket upgrade presented, else the
+// device id that upgrade declared (docs/specs/remote-access.md §6). A
+// client id travelling as an RPC parameter would be a bearer string any
+// client could spell, which is the identity hole that change closed.
 //
 // Consumers own their reactivity and parsing: this module stores
 // opaque strings. Structured values are JSON-encoded by the caller.
+//
+// **One bucket per attached backend** (phase 7, spec §10). The bucket is
+// the BACKEND's — it lives in that backend's ui_state table and is scoped
+// there by the connection presenting it — so a client attached to two
+// machines holds two, and each flushes to its own. `withBackendTarget` is
+// how a flush names its backend: the ui_state methods are `home`-routed
+// (they are this machine's settings for every other caller), and this is
+// the one class of call whose backend is a property of the CONNECTION
+// rather than of an entity or of the method.
+//
+// Every exported function defaults to the page's own backend, so every
+// existing call site — which is all of them — keeps its shape and its
+// behaviour. Cross-backend UI state (reading another machine's bucket to
+// render its pane layout) is deliberately NOT built here: nothing asks for
+// it yet, and a bucket that could answer for a backend it was not written
+// against is a merge policy nobody has designed.
 
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { withBackendTarget } from '../transport/backends';
+import { onPurgeClientState, type PurgeScope } from '../transport/clientPurge';
 import { DeleteUIState, GetUIState, SetUIState } from './bindings';
 import { addToast } from './toast.svelte';
 
-const CLIENT_ID_CACHE_KEY = 'agent-overflow:uistate:clientId';
 const BUCKET_CACHE_KEY = 'agent-overflow:uistate:bucket';
 const WRITE_DEBOUNCE_MS = 300;
 
-// Mirrors validClientID in app_uistate.go.
-const CLIENT_ID_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
-
-function isValidClientId(value: unknown): value is string {
-  return typeof value === 'string' && CLIENT_ID_PATTERN.test(value);
+// The home bucket keeps TODAY'S cache key, unsuffixed: an already-running
+// browser has a blob under that exact string, and a key that gained a
+// suffix would flash defaults on the first paint after an update.
+function bucketCacheKey(backend: BackendKey): string {
+  return backend === HOME_BACKEND ? BUCKET_CACHE_KEY : `${BUCKET_CACHE_KEY}:${backend}`;
 }
 
 function readLocal(key: string): string | null {
@@ -57,42 +72,8 @@ function writeLocal(key: string, value: string): void {
   }
 }
 
-function resolveClientId(): string {
-  const injected = (globalThis as { __AO_BOOTSTRAP__?: { clientId?: unknown } }).__AO_BOOTSTRAP__;
-  if (injected && isValidClientId(injected.clientId)) {
-    writeLocal(CLIENT_ID_CACHE_KEY, injected.clientId);
-    return injected.clientId;
-  }
-  if (typeof window !== 'undefined') {
-    const cid = new URLSearchParams(window.location.search).get('cid');
-    if (isValidClientId(cid)) {
-      writeLocal(CLIENT_ID_CACHE_KEY, cid);
-      return cid;
-    }
-  }
-  const cached = readLocal(CLIENT_ID_CACHE_KEY);
-  if (isValidClientId(cached)) return cached;
-  const minted =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : mintFallbackId();
-  writeLocal(CLIENT_ID_CACHE_KEY, minted);
-  return minted;
-}
-
-// Non-crypto fallback for environments without crypto.randomUUID
-// (older happy-dom builds in tests). The id names a preference bucket,
-// not a credential, so Math.random-grade uniqueness is acceptable.
-function mintFallbackId(): string {
-  let out = '';
-  for (let i = 0; i < 32; i++) {
-    out += Math.floor(Math.random() * 16).toString(16);
-  }
-  return out;
-}
-
-function readCachedBucket(): Map<string, string> {
-  const raw = readLocal(BUCKET_CACHE_KEY);
+function readCachedBucket(backend: BackendKey): Map<string, string> {
+  const raw = readLocal(bucketCacheKey(backend));
   if (!raw) return new Map();
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -107,48 +88,74 @@ function readCachedBucket(): Map<string, string> {
   }
 }
 
-function writeCachedBucket(): void {
-  writeLocal(BUCKET_CACHE_KEY, JSON.stringify(Object.fromEntries(bucket)));
+function writeCachedBucket(store: BackendStore): void {
+  writeLocal(bucketCacheKey(store.backend), JSON.stringify(Object.fromEntries(store.bucket)));
 }
 
-let clientId = resolveClientId();
-// Pre-hydration reads serve the same-session cache; hydration
-// reconciles it against the server bucket.
-let bucket: Map<string, string> = readCachedBucket();
-let hydrated = false;
+// One backend's bucket and its write queue.
+//
+// `pendingSets` / `pendingDeletes` are the keys written locally but not
+// yet confirmed by a SetUIState / DeleteUIState round-trip; local values
+// win over the server for these during hydration, because the user
+// interacted before hydration finished.
+interface BackendStore {
+  readonly backend: BackendKey;
+  bucket: Map<string, string>;
+  hydrated: boolean;
+  readonly pendingSets: Map<string, string>;
+  readonly pendingDeletes: Set<string>;
+  flushTimer: ReturnType<typeof setTimeout> | null;
+  flushInFlight: Promise<void> | null;
+  saveFailureToastShown: boolean;
+}
 
-// Keys written locally but not yet confirmed by a SetUIState /
-// DeleteUIState round-trip. Local values win over the server for these
-// during hydration — the user interacted before hydration finished.
-const pendingSets = new Map<string, string>();
-const pendingDeletes = new Set<string>();
-let flushTimer: ReturnType<typeof setTimeout> | null = null;
-let flushInFlight: Promise<void> | null = null;
-let saveFailureToastShown = false;
+const stores = new Map<BackendKey, BackendStore>();
 
-export function getAppStorageClientId(): string {
-  return clientId;
+function storeFor(backend: BackendKey): BackendStore {
+  let held = stores.get(backend);
+  if (held === undefined) {
+    held = {
+      backend,
+      // Pre-hydration reads serve the same-session cache; hydration
+      // reconciles it against the server bucket.
+      bucket: readCachedBucket(backend),
+      hydrated: false,
+      pendingSets: new Map(),
+      pendingDeletes: new Set(),
+      flushTimer: null,
+      flushInFlight: null,
+      saveFailureToastShown: false,
+    };
+    stores.set(backend, held);
+  }
+  return held;
 }
 
 /** Sync read. Null means "no persisted value" — callers apply their own default. */
-export function appStorageGet(key: string): string | null {
-  return bucket.get(key) ?? null;
+export function appStorageGet(key: string, backend: BackendKey = HOME_BACKEND): string | null {
+  return storeFor(backend).bucket.get(key) ?? null;
 }
 
-export function appStorageSet(key: string, value: string): void {
-  bucket.set(key, value);
-  pendingDeletes.delete(key);
-  pendingSets.set(key, value);
-  writeCachedBucket();
-  scheduleFlush();
+export function appStorageSet(
+  key: string,
+  value: string,
+  backend: BackendKey = HOME_BACKEND,
+): void {
+  const store = storeFor(backend);
+  store.bucket.set(key, value);
+  store.pendingDeletes.delete(key);
+  store.pendingSets.set(key, value);
+  writeCachedBucket(store);
+  scheduleFlush(store);
 }
 
-export function appStorageDelete(key: string): void {
-  bucket.delete(key);
-  pendingSets.delete(key);
-  pendingDeletes.add(key);
-  writeCachedBucket();
-  scheduleFlush();
+export function appStorageDelete(key: string, backend: BackendKey = HOME_BACKEND): void {
+  const store = storeFor(backend);
+  store.bucket.delete(key);
+  store.pendingSets.delete(key);
+  store.pendingDeletes.add(key);
+  writeCachedBucket(store);
+  scheduleFlush(store);
 }
 
 /**
@@ -164,6 +171,9 @@ export function appStorageAdoptLegacyKey(
   parse: (raw: string) => string | null,
 ): string | null {
   const existing = appStorageGet(key);
+  // Legacy adoption is the HOME backend's alone: the keys it migrates were
+  // written by a build with one connection, so there is exactly one bucket
+  // they can have belonged to.
   if (existing !== null) return existing;
   const raw = readLocal(legacyStorageKey);
   if (raw === null) return null;
@@ -185,7 +195,7 @@ function removeLegacyKey(legacyStorageKey: string): void {
 }
 
 /**
- * Fetch this client's server-side bucket and reconcile:
+ * Fetch this connection's server-side bucket and reconcile:
  *   - server value wins for every key without a pending local write
  *     (the durable copy is authoritative on boot);
  *   - keys that exist only locally are pushed up (first run after a
@@ -194,45 +204,50 @@ function removeLegacyKey(legacyStorageKey: string): void {
  * Returns false when the fetch failed; the session then runs on the
  * localStorage cache and queued writes retry on the next mutation.
  */
-export async function hydrateAppStorage(): Promise<boolean> {
+export async function hydrateAppStorage(backend: BackendKey = HOME_BACKEND): Promise<boolean> {
+  const store = storeFor(backend);
   let server: { [key: string]: string | undefined };
   try {
-    server = (await GetUIState(clientId)) ?? {};
+    server = (await withBackendTarget(backend, () => GetUIState())) ?? {};
   } catch (err) {
     console.error('appStorage: hydrate failed:', err);
     return false;
   }
   const push = new Map<string, string>();
-  for (const [key, value] of bucket) {
-    if (server[key] === undefined && !pendingSets.has(key) && !pendingDeletes.has(key)) {
+  for (const [key, value] of store.bucket) {
+    if (
+      server[key] === undefined &&
+      !store.pendingSets.has(key) &&
+      !store.pendingDeletes.has(key)
+    ) {
       push.set(key, value);
     }
   }
   for (const [key, value] of Object.entries(server)) {
     if (typeof value !== 'string') continue;
-    if (pendingSets.has(key) || pendingDeletes.has(key)) continue;
-    bucket.set(key, value);
+    if (store.pendingSets.has(key) || store.pendingDeletes.has(key)) continue;
+    store.bucket.set(key, value);
   }
   for (const [key, value] of push) {
-    pendingSets.set(key, value);
+    store.pendingSets.set(key, value);
   }
-  hydrated = true;
-  writeCachedBucket();
-  if (pendingSets.size > 0 || pendingDeletes.size > 0) {
-    scheduleFlush();
+  store.hydrated = true;
+  writeCachedBucket(store);
+  if (store.pendingSets.size > 0 || store.pendingDeletes.size > 0) {
+    scheduleFlush(store);
   }
   return true;
 }
 
-export function isAppStorageHydrated(): boolean {
-  return hydrated;
+export function isAppStorageHydrated(backend: BackendKey = HOME_BACKEND): boolean {
+  return storeFor(backend).hydrated;
 }
 
-function scheduleFlush(): void {
-  if (flushTimer !== null) return;
-  flushTimer = setTimeout(() => {
-    flushTimer = null;
-    void flushAppStorage();
+function scheduleFlush(store: BackendStore): void {
+  if (store.flushTimer !== null) return;
+  store.flushTimer = setTimeout(() => {
+    store.flushTimer = null;
+    void flushAppStorage(store.backend);
   }, WRITE_DEBOUNCE_MS);
 }
 
@@ -240,52 +255,100 @@ function scheduleFlush(): void {
  * Send pending writes now. Safe to call at any time (pagehide,
  * tests); coalesces with an in-flight send instead of racing it.
  */
-export async function flushAppStorage(): Promise<void> {
-  if (flushInFlight) {
-    await flushInFlight;
+export async function flushAppStorage(backend: BackendKey = HOME_BACKEND): Promise<void> {
+  const store = storeFor(backend);
+  if (store.flushInFlight) {
+    await store.flushInFlight;
   }
-  if (pendingSets.size === 0 && pendingDeletes.size === 0) return;
-  if (flushTimer !== null) {
-    clearTimeout(flushTimer);
-    flushTimer = null;
+  if (store.pendingSets.size === 0 && store.pendingDeletes.size === 0) return;
+  if (store.flushTimer !== null) {
+    clearTimeout(store.flushTimer);
+    store.flushTimer = null;
   }
-  const sets = new Map(pendingSets);
-  const deletes = new Set(pendingDeletes);
-  pendingSets.clear();
-  pendingDeletes.clear();
+  const sets = new Map(store.pendingSets);
+  const deletes = new Set(store.pendingDeletes);
+  store.pendingSets.clear();
+  store.pendingDeletes.clear();
 
-  flushInFlight = (async () => {
+  const run = (async () => {
     try {
       if (sets.size > 0) {
-        await SetUIState(clientId, Object.fromEntries(sets));
+        await withBackendTarget(backend, () => SetUIState(Object.fromEntries(sets)));
       }
       if (deletes.size > 0) {
-        await DeleteUIState(clientId, [...deletes]);
+        await withBackendTarget(backend, () => DeleteUIState([...deletes]));
       }
     } catch (err) {
       console.error('appStorage: flush failed:', err);
-      if (!saveFailureToastShown) {
-        saveFailureToastShown = true;
+      if (!store.saveFailureToastShown) {
+        store.saveFailureToastShown = true;
         addToast('error', 'Failed to save UI state');
       }
       // Re-queue what didn't land, but never clobber a newer write
       // that arrived while this flush was in flight.
       for (const [key, value] of sets) {
-        if (!pendingSets.has(key) && !pendingDeletes.has(key)) {
-          pendingSets.set(key, value);
+        if (!store.pendingSets.has(key) && !store.pendingDeletes.has(key)) {
+          store.pendingSets.set(key, value);
         }
       }
       for (const key of deletes) {
-        if (!pendingSets.has(key)) {
-          pendingDeletes.add(key);
+        if (!store.pendingSets.has(key)) {
+          store.pendingDeletes.add(key);
         }
       }
     } finally {
-      flushInFlight = null;
+      store.flushInFlight = null;
     }
   })();
-  await flushInFlight;
+  store.flushInFlight = run;
+  await run;
 }
+
+/**
+ * Drop one backend's bucket, in memory and in the same-session cache.
+ *
+ * The localStorage blob is the half that outlives the tab, so a sign-out
+ * that cleared only the Map would leave the pane layout, the pinned rows
+ * and every other persisted preference of a backend this device no longer
+ * has a credential for readable by whoever opens the page next.
+ *
+ * Pending writes are dropped rather than flushed: they are addressed to a
+ * backend this client is in the middle of letting go of, and a flush would
+ * either fail or write state back into a bucket that was just emptied.
+ */
+function dropBucket(store: BackendStore): void {
+  if (store.flushTimer !== null) {
+    clearTimeout(store.flushTimer);
+    store.flushTimer = null;
+  }
+  store.pendingSets.clear();
+  store.pendingDeletes.clear();
+  store.bucket = new Map();
+  store.hydrated = false;
+  store.saveFailureToastShown = false;
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.removeItem(bucketCacheKey(store.backend));
+  } catch {
+    // Best-effort, exactly as the write side is.
+  }
+}
+
+// The bucket's half of a sign-out, a detach and a refused credential
+// (`transport/clientPurge.ts` owns the three moments). A null scope is
+// every backend; anything else is one, and a scope this client holds no
+// bucket for is a no-op rather than an error.
+onPurgeClientState((scope: PurgeScope) => {
+  if (scope === null) {
+    for (const store of stores.values()) dropBucket(store);
+    stores.clear();
+    return;
+  }
+  const held = stores.get(scope);
+  if (held === undefined) return;
+  dropBucket(held);
+  stores.delete(scope);
+});
 
 /**
  * Test helper — re-run module-init resolution against the CURRENT
@@ -293,38 +356,36 @@ export async function flushAppStorage(): Promise<void> {
  * caches survive).
  */
 export function reinitAppStorageForTest(): void {
-  if (flushTimer !== null) {
-    clearTimeout(flushTimer);
-    flushTimer = null;
+  for (const store of stores.values()) {
+    if (store.flushTimer !== null) {
+      clearTimeout(store.flushTimer);
+      store.flushTimer = null;
+    }
+    store.flushInFlight = null;
+    store.pendingSets.clear();
+    store.pendingDeletes.clear();
+    store.hydrated = false;
+    store.saveFailureToastShown = false;
+    store.bucket = readCachedBucket(store.backend);
   }
-  flushInFlight = null;
-  pendingSets.clear();
-  pendingDeletes.clear();
-  hydrated = false;
-  saveFailureToastShown = false;
-  clientId = resolveClientId();
-  bucket = readCachedBucket();
+  storeFor(HOME_BACKEND);
 }
 
-/** Test helper — reset identity, bucket, and queues; wipe the caches. */
+/** Test helper — reset the bucket and queues; wipe the cache. */
 export function resetAppStorageForTest(): void {
-  if (flushTimer !== null) {
-    clearTimeout(flushTimer);
-    flushTimer = null;
-  }
-  flushInFlight = null;
-  pendingSets.clear();
-  pendingDeletes.clear();
-  hydrated = false;
-  saveFailureToastShown = false;
-  if (typeof localStorage !== 'undefined') {
-    try {
-      localStorage.removeItem(CLIENT_ID_CACHE_KEY);
-      localStorage.removeItem(BUCKET_CACHE_KEY);
-    } catch {
-      // ignore
+  for (const store of stores.values()) {
+    if (store.flushTimer !== null) {
+      clearTimeout(store.flushTimer);
+      store.flushTimer = null;
+    }
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.removeItem(bucketCacheKey(store.backend));
+      } catch {
+        // ignore
+      }
     }
   }
-  clientId = resolveClientId();
-  bucket = new Map();
+  stores.clear();
+  storeFor(HOME_BACKEND);
 }

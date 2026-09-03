@@ -97,7 +97,7 @@ async function runSurveyTurn(
 ): Promise<string> {
   await harness.rpc('HarnessSetScenario', { scenario: surveyScenario() });
   const threadId = await seedAgentThread(harness, projectName, title);
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText(title).click();
   await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'survey the parser', null);
@@ -151,11 +151,16 @@ test('an agent card opens as a scoped, read-only thread view that survives reloa
   // rather than the local cache: hydration lets the SERVER value win for
   // any key with no pending local write, so reloading before the flush
   // would restore whatever the server still had.
-  const clientId = await page.evaluate((key) => localStorage.getItem(key), CLIENT_ID_CACHE_KEY);
-  expect(clientId).toBeTruthy();
+  //
+  // GetUIState takes no bucket name: the backend scopes it by the calling
+  // connection. The harness socket declares the instance's durable client
+  // id, which is also the `&cid=` the page URL carries, so both sides land
+  // on one bucket — assert that they agree rather than assuming it.
+  const pageClientId = await page.evaluate((key) => localStorage.getItem(key), CLIENT_ID_CACHE_KEY);
+  expect(pageClientId).toBe(harness.bootstrap.clientId);
   await expect
     .poll(async () => {
-      const state = await harness.rpc<Record<string, string>>('GetUIState', clientId);
+      const state = await harness.rpc<Record<string, string>>('GetUIState');
       return state?.paneLayout ?? '';
     })
     .toContain('tu-survey');

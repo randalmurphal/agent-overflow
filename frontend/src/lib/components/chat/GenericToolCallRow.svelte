@@ -31,6 +31,15 @@
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { createRunningElapsed } from './useRunningElapsed.svelte';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
+  import { isBrowserToolMeta } from '../../utils/browserTools';
+  import {
+    attachedBackendEntry,
+    backendDisplayName,
+    threadMachine,
+  } from '../../stores/attachedBackends.svelte';
+  import { previewRouted } from '../../stores/devServers.svelte';
+  import Icon from '../primitives/Icon.svelte';
+  import Monitor from '@lucide/svelte/icons/monitor';
 
   let {
     pane,
@@ -158,7 +167,38 @@ let hasExpandableBody = $derived(
     await expansion.toggle();
   }
 
+  // A browser tool drives a real page on the machine the agent runs on.
+  // On the owner's own screen that page is the companion browser and there
+  // is nothing to say. Read anywhere else, the row is the only sign the
+  // page exists at all, so it names the machine it is on.
+  let browserMachine = $derived.by(() => {
+    if (!isBrowserToolMeta(itemMeta)) return '';
+    const threadId = pane?.threadId ?? '';
+    if (!threadId || !previewRouted(threadId)) return '';
+    const entry = attachedBackendEntry(threadMachine(threadId, null));
+    return entry ? backendDisplayName(entry) : 'that machine';
+  });
+  let browsingLabel = $derived(
+    browserMachine ? `Browsing on ${browserMachine}. The page is only visible there.` : '',
+  );
 </script>
+
+{#snippet browserOnAnotherMachine()}
+  <span
+    class="inline-flex shrink-0 items-center text-fg-hint"
+    title={browsingLabel}
+    aria-label={browsingLabel}
+    data-testid="tool-call-card-browser-machine"
+    data-machine={browserMachine}
+  >
+    <Icon icon={Monitor} class="size-3" />
+  </span>
+{/snippet}
+
+{#snippet metaActions()}
+  {#if browserMachine}{@render browserOnAnotherMachine()}{/if}
+  {#if hostActions}{@render hostActions()}{/if}
+{/snippet}
 
 {#snippet headerActions()}
   <ToolDecisionChip decision={item.decision} reason={permissionDenialReason} />
@@ -171,7 +211,7 @@ let hasExpandableBody = $derived(
     timestamp={showTimestamp
       ? { testId: 'tool-call-card-time', value: effectiveStatusItem.createdAt, label: time }
       : undefined}
-    actions={hostActions}
+    actions={browserMachine || hostActions ? metaActions : undefined}
   >
     {#snippet status()}
       <ToolRowStatusIndicator item={effectiveStatusItem} state={indicatorState} testId="tool-call-card-status" />

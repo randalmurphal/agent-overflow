@@ -217,7 +217,7 @@ func TestWorkflowWakeDeliversToAnIdleBoundThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A draft the user has typed but not sent must survive a background wake.
-	if err := h.app.store.UpsertThreadDraft(store.ThreadDraft{
+	if _, err := h.app.store.UpsertThreadDraft(store.ThreadDraft{
 		ThreadID: thread.ID, Content: "half-written thought", UpdatedAt: 5,
 	}); err != nil {
 		t.Fatal(err)
@@ -1590,7 +1590,7 @@ func TestWorkflowWakeStaleBindingSpendsTheRecord(t *testing.T) {
 
 	// The thread is archived, so the next wake falls back to the unbound
 	// surface — and takes the record with it.
-	if err := h.app.store.ArchiveThread(thread.ID); err != nil {
+	if _, _, err := h.app.store.ArchiveThread(thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	h.park(item.ID, item.ProjectID, engine.StateNeedsHuman)

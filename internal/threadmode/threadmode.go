@@ -152,6 +152,24 @@ func ParseRuntime(mode string) (provider.RuntimeMode, error) {
 	return normalized, nil
 }
 
+// RuntimeNeedsAutonomy reports whether selecting mode lets the agent act
+// without a human in the loop, which is what the threads:autonomy scope
+// grants (docs/specs/remote-access.md §5).
+//
+// Written as the set that does NOT need it — read-only, where every
+// mutating action is refused outright, and approval-required, where every
+// one is put to a person. A tier added to provider.AllRuntimeModes
+// therefore needs the scope until somebody argues it does not, which is
+// the direction a mistake should fall: the opposite spelling would let a
+// new tier ship unguarded by omission.
+func RuntimeNeedsAutonomy(mode provider.RuntimeMode) bool {
+	switch mode {
+	case provider.RuntimeReadOnly, provider.RuntimeApprovalRequired:
+		return false
+	}
+	return true
+}
+
 // ParseOptionalRuntime parses an optional runtime-mode value. An empty
 // input returns (zero, false, nil) so callers can branch on "no value
 // supplied"; a non-empty input runs through ParseRuntime.

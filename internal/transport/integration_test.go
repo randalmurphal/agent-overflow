@@ -38,6 +38,16 @@ func (s *integrationStub) SimpleCall(name string) string {
 	return "hello " + name
 }
 
+// ReportStepUp answers what the transport resolved THIS call to have
+// proved. Nothing production-shaped: it exists so a socket-level test can
+// pin that the per-call proof reaches a method BODY, which is where
+// internal/app's argument-dependent rechecks read it — a gate-only proof
+// would leave every one of those rechecks refusing a caller the gate had
+// just admitted.
+func (s *integrationStub) ReportStepUp(ctx context.Context) bool {
+	return StepUpProvenFromContext(ctx)
+}
+
 // MaybeFail returns (T, error). The error path proves
 // ErrCodeMethodError surfaces through the wire with the receiver's own
 // message preserved.
@@ -61,6 +71,12 @@ func (s *integrationStub) CtxLabel(ctx context.Context, label string) string {
 		return "no-ctx"
 	}
 	return "ctx:" + label
+}
+
+// WhoAmI reports the connection principal a handler sees, which is what a
+// bound method scoping durable state reads instead of a caller-supplied id.
+func (s *integrationStub) WhoAmI(ctx context.Context) string {
+	return SessionFromContext(ctx) + "|" + ClientFromContext(ctx).DeviceID
 }
 
 // JoinLines accepts a slice param — the most common production shape.

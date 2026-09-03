@@ -7,9 +7,9 @@
   // Pending state is thread-entity state in threadTitleGeneration (the run
   // outlives this component and its completion arrives as an event), so the
   // spinner survives pane switches and a remount mid-run resumes spinning.
-  // RegenerateThreadTitle runs provider CLIs on the host (LocalOnlyMethods),
-  // so a remote view-only session gets a disabled button rather than an RPC
-  // the transport would refuse.
+  // RegenerateThreadTitle runs provider CLIs on the host, so it rides
+  // `threads:operate`: a remote view-only session gets a disabled button
+  // rather than an RPC the transport would refuse.
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Icon from '../primitives/Icon.svelte';
   import PaneHeaderIconButton from '../panes/PaneHeaderIconButton.svelte';
@@ -20,19 +20,20 @@
     regenerateThreadTitle,
     titleGenerationPending,
   } from '../../stores/threadTitleGeneration.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
 
   let { pane }: { pane: PaneSession } = $props();
 
   let pending = $derived(pane.threadId ? titleGenerationPending(pane.threadId) : false);
-  let viewOnly = $derived(isViewOnlySession());
+  // Regenerating a title runs a provider turn and writes the thread.
+  let ungranted = $derived(!hasScope('threads:operate'));
 </script>
 
 {#if pane.thread}
   <PaneHeaderIconButton
     label="Regenerate title"
-    title={viewOnly ? 'Local only' : 'Regenerate title'}
-    disabled={pending || viewOnly}
+    title={ungranted ? 'Not granted to this device' : 'Regenerate title'}
+    disabled={pending || ungranted}
     testId="thread-title-regenerate"
     {pending}
     onclick={() => {

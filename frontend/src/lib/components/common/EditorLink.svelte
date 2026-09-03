@@ -23,7 +23,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { openInEditorLabel } from '../../utils/editorLinkLabel';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
 
   interface Props {
     path: string;
@@ -74,7 +74,8 @@
     class: className = '',
   }: Props = $props();
 
-  let viewOnly = $derived(isViewOnlySession());
+  // Opening a file in an editor acts on the host desktop.
+  let noHost = $derived(!hasScope('host'));
   const targetLabel = $derived(openLabel ?? label ?? path);
   const generatedAriaLabel = $derived(openInEditorLabel(targetLabel, line, col));
   const effectiveAriaLabel = $derived(ariaLabel ?? generatedAriaLabel);
@@ -89,7 +90,7 @@
     // failure.
     e.preventDefault();
     if (stopPropagation) e.stopPropagation();
-    if (viewOnly) return;
+    if (noHost) return;
     try {
       // Empty editorID → the user's default editor. Inline path links
       // never target a specific editor.
@@ -100,7 +101,7 @@
   }
 </script>
 
-{#if viewOnly && !asIcon}
+{#if noHost && !asIcon}
   <span
     data-testid="editor-link-disabled"
     data-path={path}
@@ -109,7 +110,7 @@
   >
     {label ?? path}
   </span>
-{:else if !viewOnly && asIcon}
+{:else if !noHost && asIcon}
   <button
     type="button"
     onclick={handleClick}
@@ -127,7 +128,7 @@
   >
     <Icon icon={Edit3} size={12} strokeWidth={2} class="opacity-90" />
   </button>
-{:else if !viewOnly}
+{:else if !noHost}
   <!-- The brief calls for `<a href="#">` semantics (focusable inline link
        look). Svelte's a11y rule rejects href="#"; a <button> with
        role="link" keeps the inline-link affordance without the unsafe

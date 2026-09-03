@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Nothing this app stores may be copied off the device, by either route
+    Android offers (API 31+; `android:allowBackup="false"` covers the older
+    one, and it deliberately does NOT cover device-to-device transfer).
+
+    The reason is identity, not privacy. The shell holds a device signing
+    key and the session material minted against it, and the backend
+    believes one device row is one machine. A cloud restore or a
+    phone-to-phone transfer would hand a SECOND handset the same key and
+    the same session, so two machines would present one identity, revoking
+    either would be revoking both, and reuse detection on the rotating
+    refresh secret would fire on whichever one dialed second.
+
+    Every domain is named on both sides because an unlisted domain is
+    INCLUDED. There is no wildcard.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+        <exclude domain="device_root" />
+        <exclude domain="device_file" />
+        <exclude domain="device_database" />
+        <exclude domain="device_sharedpref" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+        <exclude domain="device_root" />
+        <exclude domain="device_file" />
+        <exclude domain="device_database" />
+        <exclude domain="device_sharedpref" />
+    </device-transfer>
+</data-extraction-rules>

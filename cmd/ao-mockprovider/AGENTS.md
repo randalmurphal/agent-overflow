@@ -14,14 +14,60 @@ sniffs argv to pick a mode:
 - `exec --ephemeral` → Codex one-shot text generation (`textgen.go`).
   Checked BEFORE the protocol sniff, which reads every argv without
   `app-server` as Claude. `codex exec` carries no such marker.
+- `-p --output-format stream-json` → Claude account sign-in
+  (`login.go`). Checked after the text-generation sniff, which asks for
+  `--output-format json`; a streaming SESSION never passes `-p`.
 - `--version` → a string satisfying both providers' version gates
   (`version.go`).
 
+## Account sign-in
+
+Both providers' sign-ins finish somewhere this process cannot reach — a
+browser on somebody's phone — so what is reproduced is the wire on THIS
+side of that: the URLs and codes AO shows, the answers it decodes, and
+the credential it then adopts. `login.go` owns Claude's half and
+`codex_login.go` owns Codex's.
+
+**A credential is written only into the isolated home the invocation
+named** (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`), and an invocation that
+named none writes nothing and says so. AO points those at a fresh
+ephemeral directory for every sign-in, so this can never reach a
+developer's real provider home.
+
+- **Claude is a whole invocation mode**, like the probe: control_requests
+  only, no scenario, no control-channel registration. `claude_authenticate`
+  mints a flow whose `state` changes every time — which is what makes a
+  replaced link OBSERVABLE, since the URL after a burned flow is not the
+  URL before it. `claude_oauth_callback` completes on
+  `mockClaudeLoginCode` paired with the live state and BURNS the flow on
+  anything else, answering the CLI's own opaque
+  `Request failed with status code 400` and then its
+  `No active claude_authenticate flow` to everything after. That burn is
+  upstream's real behaviour and the reason AO restarts rather than
+  re-prompts; a mock that let a second paste through would hide a
+  coordinator that never restarted.
+  `claude_oauth_wait_for_completion` is deliberately NEVER answered: the
+  real CLI resolves it only when its own loopback listener sees a browser
+  come back, and sends no keepalive meanwhile.
+- **Codex arrives at the ordinary adapter**, because its sign-in runs over
+  an ordinary `app-server` connection with the same argv. `account/login/start`
+  branches on the EXACT discriminant spelling (`chatgptDeviceCode`),
+  matching upstream's literal match, and `account/login/cancel` answers
+  `notFound` as a real outcome rather than an error.
+- **The device flow's completion is a control-channel command**
+  (`control.CommandLoginComplete`), because the person finishes on another
+  screen and nothing written to stdin reaches that moment. A generic
+  `emit` cannot serve: the completion has to be paired with the credential
+  adoption then reads, and only the mock knows where the login home is.
+  `Command.Error` empty completes successfully; set, it fails with that
+  text. The engine dispatches it through the adapter, which is why
+  `main.go` installs the adapter BEFORE it starts polling.
+
 ## One-shot text generation
 
-The third invocation shape, beside a session and the probe: a prompt on
-stdin, one structured answer, exit. No scenario, no control-channel
-registration, no turn lifecycle. `internal/textgen`'s `RunClaude` /
+Another invocation shape of its own, beside a session, the probe and the
+Claude sign-in: a prompt on stdin, one structured answer, exit. No
+scenario, no control-channel registration, no turn lifecycle. `internal/textgen`'s `RunClaude` /
 `RunCodex` build both argvs; the answer travels differently per provider
 and `textgen.go` matches each side exactly: Claude prints a `result`
 line carrying `structured_output` (the LAST non-empty stdout line is what
@@ -254,11 +300,18 @@ The default is now the JSON-RPC MethodNotFound error, which means the
 methods the app calls as a matter of course need real answers or the
 DEFAULT harness experience breaks rather than only the optional
 surfaces. `handleReadRequest` covers those (`account/read`,
-`account/usage/read`, `thread/read`, `thread/turns/list`,
-`thread/settings/update`, `skills/list`, `config/read`,
-`mcpServerStatus/list`, `thread/backgroundTerminals/list`), each with
+`account/rateLimits/read`, `account/usage/read`, `thread/read`,
+`thread/turns/list`, `thread/settings/update`, `skills/list`,
+`config/read`, `mcpServerStatus/list`,
+`thread/backgroundTerminals/list`), each with
 the minimum the app's own decoder needs and nothing invented beyond it
 (a terminating cursor, a `thread.status.type`, an account with a plan).
+`account/rateLimits/read` is the ACCOUNT PROBE's only call, so its
+absence failed every identity read the app makes — adoption after a
+sign-in most visibly, with a JSON-RPC method name in the user's face.
+It reports a plan and NO window: a window carries an absolute
+`resetsAt`, and a hardcoded one is either already in the past or a date
+this file outlives.
 Genuinely optional or newer surfaces (`thread/compact/start`,
 `review/start`, `config/batchWrite`, `config/mcpServer/reload`,
 `mcpServer/oauth/login`, background-terminal `terminate`/`clean`) stay

@@ -288,8 +288,9 @@ func InitGitRepoWithCommits(t *testing.T, commits []CommitSpec) string {
 }
 
 // shellSingleQuote wraps s in single quotes suitable for `bash`, escaping any
-// embedded single quotes as `'\”`. The returned value already includes the
-// outer quotes.
+// embedded single quotes by closing the quote, emitting a backslash-escaped
+// quote, and reopening it. The returned value already includes the outer
+// quotes.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

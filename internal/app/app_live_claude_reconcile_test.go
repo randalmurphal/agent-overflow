@@ -44,7 +44,7 @@ func TestSettingsSaveReconcilesLiveClaudeSessions(t *testing.T) {
 	registerLiveClaudeSession(t, app, "thread-live-claude")
 	steps := observeReconcileSteps(app)
 
-	if _, err := app.UpdateSettings(map[string]any{
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{
 		"claudePromptOverrides": []any{
 			map[string]any{
 				"id":      "override-1",
@@ -349,7 +349,7 @@ func TestSettingsSaveReachesTheWireOfASessionThatWasStillStarting(t *testing.T) 
 	})
 
 	const housePrompt = "Answer in the house style."
-	if _, err := app.UpdateSettings(map[string]any{
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{
 		"claudePromptOverrides": []any{
 			map[string]any{
 				"id":      "override-1",

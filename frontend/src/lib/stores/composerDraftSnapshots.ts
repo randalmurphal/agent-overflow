@@ -68,6 +68,19 @@ export function getRememberedDraftSnapshotForStore(threadId: string): ComposerDr
   return localDraftSnapshots.get(threadId);
 }
 
+/**
+ * Does this client hold composer work for the thread that the durable row
+ * does not have yet? An entry exists only between a mutation and the save
+ * that persists it, so this is exactly "there is unsaved text here".
+ *
+ * Read by the `draft:updated` applier, which must not pull another client's
+ * text over a buffer the user is still typing into. That client's write is
+ * not the last one yet — this client's pending save is.
+ */
+export function hasRememberedDraftSnapshot(threadId: string): boolean {
+  return localDraftSnapshots.has(threadId);
+}
+
 export function rememberDraftSnapshot(threadId: string, snapshot: ComposerDraftSnapshot): void {
   if (localDraftSnapshots.has(threadId)) {
     localDraftSnapshots.delete(threadId);

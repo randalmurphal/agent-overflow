@@ -2584,6 +2584,42 @@ func TestRecoverOrphanedBackgroundTasks(t *testing.T) {
 	}
 }
 
+// Boot-time recovery is the third transition the workspace-change lock
+// has to hear about: the launches it retires were `running` in the store
+// a moment ago, so a client that mounted before the sweep finished holds
+// a lock answer the sweep just invalidated. Each recovered launch nudges
+// through writeBackgroundCompletionSibling, which is why the sweep needs
+// no post-pass emit of its own — and could not have one, since the
+// channel is thread-keyed and the sweep spans threads.
+func TestRecoverOrphanedBackgroundTasksNudgesTheWorkspaceLock(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "long-running"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-orphan",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed launch: %v", err)
+	}
+	emissions.reset()
+
+	recovered, err := router.RecoverOrphanedBackgroundTasks()
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1", recovered)
+	}
+	if n := countEvents(emissions.snapshot(), "provider:background_tasks_changed"); n != 1 {
+		t.Fatalf("recovery emitted %d background_tasks_changed, want 1 (%+v)", n, emissions.snapshot())
+	}
+}
+
 // TestRecoverOrphanedBackgroundTasksWithoutTaskID pins that a launch
 // carrying no task_id is still recovered. claude-tui backgrounded tools
 // never receive a task_started meta merge, so their launches are

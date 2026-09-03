@@ -1,10 +1,36 @@
 import { OpenExternalURL } from '../stores/bindings';
+import { threadActsHere } from '../stores/attachedBackends.svelte';
+import { browserCompanionAct, browserCompanionState } from '../stores/browserCompanion.svelte';
 import { addToast } from '../stores/toast.svelte';
 import { runMode } from '../transport/runMode';
+import type { BackendKey } from '../transport/backendKey';
 import { errString } from './errors';
+import { isModClick } from './modClick';
 import { PATH_LINK_HREF_PREFIX } from './pathLinkExtension';
 
 let delegateInstallCount = 0;
+
+/**
+ * What a preview anchor's click does, supplied by `stores/devServers`.
+ *
+ * Taken by REGISTRATION rather than by import, and for the reason the
+ * pane registry arms its focused-pane resolver the same way: that store
+ * opens a minted URL through `handleExternalURL` below, so an import back
+ * from here would close a ring around two modules that both run at boot.
+ * The store installs these in `initDevServers()` and clears them on
+ * teardown; with none installed there are no preview anchors in the
+ * document either, because the rewrite is armed by the same list frame.
+ */
+export interface PreviewLinkActions {
+  open: (threadId: string, port: number, path: string) => Promise<void>;
+  allow: (backend: BackendKey, port: number) => Promise<void>;
+}
+
+let previewActions: PreviewLinkActions | null = null;
+
+export function installPreviewLinkActions(actions: PreviewLinkActions | null): void {
+  previewActions = actions;
+}
 
 export function safeExternalURL(raw: string | null | undefined): string | null {
   if (!raw) return null;
@@ -103,14 +129,95 @@ export function externalURLForEventTarget(target: EventTarget | null): string | 
   return safeExternalURL(rawHref);
 }
 
+/**
+ * The preview anchor a click landed on, or null. The anchor's `href` stays
+ * the ORIGINAL `localhost:<port>` URL so copying and inspecting it say what
+ * the agent said; where it goes is decided here, from the data attributes
+ * the markdown rewrite stamped (`utils/previewLinkExtension.ts`).
+ */
+function previewLinkForEventTarget(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof Element)) return null;
+  return target.closest<HTMLElement>('[data-preview-port]');
+}
+
+function threadIdForTarget(target: EventTarget | null): string {
+  if (!(target instanceof Element)) return '';
+  return target.closest<HTMLElement>('[data-thread-id]')?.dataset.threadId ?? '';
+}
+
+/**
+ * Open a URL in the thread's companion browser pane.
+ *
+ * Two calls because the backend has no new-page-with-address action: `new`
+ * mints the page and pushes the state that names it active, and the
+ * navigate follows on that id. A refused `new` stops the sequence rather
+ * than navigating whatever tab happened to be active, which would take a
+ * page the person was reading.
+ */
+async function openInCompanionBrowser(threadId: string, url: string): Promise<void> {
+  if (await browserCompanionAct(threadId, { kind: 'new' })) return;
+  const pageId = browserCompanionState(threadId)?.activePageId ?? '';
+  if (!pageId) return;
+  await browserCompanionAct(threadId, { kind: 'navigate', pageId, address: url });
+}
+
 function handleExternalLinkClick(event: MouseEvent): void {
   if (event.defaultPrevented) return;
   if (event.button !== 0 && event.button !== 1) return;
+
+  // The inline Allow port action beside a link that is not shared. It is a
+  // real button rather than an anchor, so it is checked before the link
+  // resolution below ever runs.
+  if (event.button === 0 && event.target instanceof Element) {
+    const allow = event.target.closest<HTMLElement>('[data-preview-allow]');
+    if (allow) {
+      event.preventDefault();
+      const port = Number(allow.dataset.previewAllow ?? '');
+      if (previewActions && Number.isSafeInteger(port)) {
+        void previewActions.allow(allow.dataset.previewBackend ?? '', port);
+      }
+      return;
+    }
+  }
+
+  const preview = previewLinkForEventTarget(event.target);
+  if (preview) {
+    // Every state swallows the click: the href names a listener on the
+    // machine the agent is on, and following it here would load whatever
+    // answers on that port of the machine the READER is on, or nothing.
+    event.preventDefault();
+    if (event.button !== 0) return;
+    if ((preview.dataset.previewState ?? '') !== 'open') return;
+    const port = Number(preview.dataset.previewPort ?? '');
+    const threadId = preview.dataset.previewThread ?? '';
+    if (!previewActions || !threadId || !Number.isSafeInteger(port)) return;
+    void previewActions.open(threadId, port, preview.dataset.previewPath ?? '/');
+    return;
+  }
 
   const safeURL = externalURLForEventTarget(event.target);
   if (!safeURL) return;
 
   event.preventDefault();
+
+  // Mod+click opens the link in the thread's companion browser, which is a
+  // NATIVE view of ONE host process — the thread's, since that is where
+  // `browserCompanionAct` routes. So the gesture needs more than `host` in
+  // hand: with the thread on another machine it would mint a page in that
+  // machine's engine, which this window has no way to show, and the person
+  // would see nothing happen. `threadActsHere` is both halves of the
+  // question, and off it the click falls back to the plain behaviour.
+  // Middle-click is deliberately not in this branch: it means "somewhere
+  // other than here" in every browser, and the system browser is that
+  // somewhere.
+  if (event.button === 0 && isModClick(event)) {
+    const threadId = threadIdForTarget(event.target);
+    if (threadId && threadActsHere(threadId)) {
+      void openInCompanionBrowser(threadId, safeURL);
+      return;
+    }
+  }
+
   void handleExternalURL(safeURL);
 }
 

@@ -25,6 +25,8 @@ type ThreadRuntimeModeChangedEvent struct {
 // GetThreadRuntimeMode returns the persisted runtime mode for a thread.
 // Exposed as a convenience binding so the frontend picker doesn't have to
 // round-trip the full Thread shape.
+//
+//ao:scope threads:read
 func (a *App) GetThreadRuntimeMode(threadID string) (string, error) {
 	t, err := a.store.GetThread(threadID)
 	if err != nil {

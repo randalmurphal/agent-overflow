@@ -8,6 +8,15 @@
   import { clearSidebarCursor, getSidebarCursorThreadId } from '../../stores/sidebarCursor.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById, getThreadLiveActivityAt } from '../../stores/threads.svelte';
+  import {
+    attachedBackendEntry,
+    backendDisplayName,
+    threadMachine,
+    threadMachineUnreachable,
+  } from '../../stores/attachedBackends.svelte';
+  import { backendHasBrowser } from '../../utils/browserTools';
+  import { projectSpansBackends } from '../../stores/projects.svelte';
+  import MonitorIcon from '@lucide/svelte/icons/monitor';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import {
     findPaneShowingThread,
@@ -32,6 +41,8 @@
   import ThreadRowForkAffordance from './ThreadRowForkAffordance.svelte';
   import ThreadContextMenu from './ThreadContextMenu.svelte';
   import ThreadRowPinButton from './ThreadRowPinButton.svelte';
+  import SidebarRowMenuButton from './SidebarRowMenuButton.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import {
     archiveThreadAction,
     deleteThreadAction,
@@ -58,6 +69,8 @@
     type ThreadDragPayload,
   } from '../../utils/threadDragPayload';
   import { sidebarRowPaddingLeftPx, sidebarTimeLabel } from '../../utils/sidebarRowMetrics';
+  import { threadBackend } from '../../transport/entityIndex';
+  import { HOME_BACKEND } from '../../transport/backendKey';
 
   let {
     thread,
@@ -107,6 +120,9 @@
   let isActive = $derived(pane?.threadId === thread.id);
   let isOpen = $derived(findPaneShowingThread(thread.id) !== null);
   let isCursorTarget = $derived(getSidebarCursorThreadId() === thread.id);
+  // Compact: no drag (a phone's long press is the menu, and Android starts a
+  // drag on a held draggable), no text selection under a hold, taller rows.
+  let compact = $derived(isCompactLayout());
   // Terminals aren't archivable — the row offers Delete (X) instead of
   // Archive, and the leading glyph is the terminal icon.
   let isTerminal = $derived(thread.mode === 'terminal');
@@ -276,7 +292,11 @@
   // forward now that unrelated beats no longer re-render every row.
   let timeLabel = $derived.by(() => {
     getMinuteNow();
-    return sidebarTimeLabel(getThreadLiveActivityAt(thread));
+    // Read against the clock of the machine that minted the stamp
+    // (transport/backendClock.ts); a row whose owner is not known yet
+    // reads as home, which is what every row meant before a second
+    // machine could be attached.
+    return sidebarTimeLabel(getThreadLiveActivityAt(thread), threadBackend(thread.id) ?? HOME_BACKEND);
   });
 
   function handleContextMenu(e: MouseEvent) {
@@ -329,8 +349,33 @@
   // the member rows under it line up to the pixel.
   let rowPaddingLeftPx = $derived(sidebarRowPaddingLeftPx(indent, inGroup));
 
+  // A thread on an attached machine this client cannot reach right now
+  // dims in place and stays readable from the replica (spec §10). Home is
+  // never dimmed here: its drop is the transport banner's.
+  let machineUnreachable = $derived(threadMachineUnreachable(thread.id, thread.projectId));
   let worktreeName = $derived(pathBasename(thread.worktreePath));
-  let showWorktreeMeta = $derived(!editing && Boolean(thread.worktreePath && worktreeName));
+  // The machine chip shares the worktree chip's slot and appears only when
+  // the row's project spans more than one machine (spec §10, wave 7d):
+  // under an entry with one target the machine is implied.
+  let machineName = $derived.by(() => {
+    if (!thread.projectId || !projectSpansBackends(thread.projectId)) return '';
+    const entry = attachedBackendEntry(threadMachine(thread.id, thread.projectId));
+    return entry ? backendDisplayName(entry) : '';
+  });
+  // An agent on a machine with no browser tools cannot open a page at all.
+  // Said on the chip that already names the machine rather than on a row of
+  // its own: it is a property of that machine, and the chip is where the
+  // reader is already looking to find out which one this thread is on.
+  let machineTitle = $derived(
+    machineName === ''
+      ? ''
+      : backendHasBrowser(threadMachine(thread.id, thread.projectId))
+        ? `Machine: ${machineName}`
+        : `Machine: ${machineName}. No browser on this machine.`,
+  );
+  let showWorktreeMeta = $derived(
+    !editing && (Boolean(thread.worktreePath && worktreeName) || machineName !== ''),
+  );
   const WORKTREE_META_OFFSET_PX = 14;
   let worktreeIndentPx = $derived(rowPaddingLeftPx + WORKTREE_META_OFFSET_PX);
   let worktreeRightPaddingPx = $derived(52);
@@ -369,15 +414,17 @@
     onkeydown={(e) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); } if (!editing && e.key === 'F2') { e.preventDefault(); startRename(); } }}
     role="button"
     tabindex={0}
-    draggable={!editing}
+    draggable={!editing && !compact}
     aria-pressed={selected}
-    class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
-      {selected || isOpen ? 'text-fg' : 'text-fg-muted group-hover/thread-item:text-fg'}"
+    class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 compact:h-9 compact:select-none rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
+      {selected || isOpen ? 'text-fg' : 'text-fg-muted group-hover/thread-item:text-fg'}
+      {machineUnreachable ? 'opacity-50' : ''}"
     style="padding-left: {rowPaddingLeftPx}px"
     data-testid="thread-row"
     data-sidebar-thread-id={thread.id}
     data-live-status={liveStatus}
     data-effective-status={effectiveStatus}
+    data-machine-unreachable={machineUnreachable || undefined}
   >
   {#if showPinAffordance}
     <!--
@@ -533,6 +580,7 @@
         </div>
       {/if}
     </div>
+    <SidebarRowMenuButton label="Thread actions" testId="thread-row-menu" onOpen={handleContextMenu} />
   {/if}
   </div>
 
@@ -540,22 +588,36 @@
     <div
       class="relative -mt-1.5 flex h-3.5 items-center text-[0.625rem] leading-none text-fg-hint"
       style="padding-left: {worktreeIndentPx}px; padding-right: {worktreeRightPaddingPx}px"
-      title="Worktree: {thread.worktreePath}"
-      aria-label="Worktree {worktreeName}"
+      title={worktreeName ? `Worktree: ${thread.worktreePath}` : machineTitle}
+      aria-label={worktreeName ? `Worktree ${worktreeName}` : `Machine ${machineName}`}
       data-testid="thread-row-worktree"
     >
-      <span
-        class="inline-flex min-w-0 max-w-full items-center gap-1 px-1 py-0 text-fg-hint"
-        data-testid="thread-row-worktree-label"
-      >
-        <Icon icon={FolderGit2} size={10} strokeWidth={1.8} class="shrink-0 opacity-85" />
+      {#if machineName}
         <span
-          class="min-w-0 truncate font-mono text-[0.625rem]"
-          data-testid="thread-row-worktree-name"
+          class="inline-flex min-w-0 max-w-full shrink-0 items-center gap-1 px-1 py-0 text-fg-hint"
+          data-testid="thread-row-machine"
+          title={machineTitle}
         >
-          {worktreeName}
+          <Icon icon={MonitorIcon} size={10} strokeWidth={1.8} class="shrink-0 opacity-85" />
+          <span class="min-w-0 truncate text-[0.625rem]" data-testid="thread-row-machine-name">
+            {machineName}
+          </span>
         </span>
-      </span>
+      {/if}
+      {#if worktreeName}
+        <span
+          class="inline-flex min-w-0 max-w-full items-center gap-1 px-1 py-0 text-fg-hint"
+          data-testid="thread-row-worktree-label"
+        >
+          <Icon icon={FolderGit2} size={10} strokeWidth={1.8} class="shrink-0 opacity-85" />
+          <span
+            class="min-w-0 truncate font-mono text-[0.625rem]"
+            data-testid="thread-row-worktree-name"
+          >
+            {worktreeName}
+          </span>
+        </span>
+      {/if}
     </div>
   {/if}
 </div>

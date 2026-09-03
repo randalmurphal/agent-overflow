@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -25,7 +26,16 @@ import (
 // signal the Windows launcher passes on its one retry. Callers that
 // boot twice must stop the first server before the second call, exactly
 // as two real launches would be sequential.
+//
+// The saved network.listenPort is zero here; bootOnceWithSettingsPort is
+// the same launch with one, so the cases for the third precedence input
+// read as what they add.
 func bootOnce(t *testing.T, dir string, cfg transport.Config, reset bool) (port int, stop func()) {
+	t.Helper()
+	return bootOnceWithSettingsPort(t, dir, cfg, 0, reset)
+}
+
+func bootOnceWithSettingsPort(t *testing.T, dir string, cfg transport.Config, settingsPort int, reset bool) (port int, stop func()) {
 	t.Helper()
 	cfg.Dispatcher = transport.NewDispatcher()
 	cfg.EventBus = transport.NewEventBus(0)
@@ -33,7 +43,7 @@ func bootOnce(t *testing.T, dir string, cfg transport.Config, reset bool) (port 
 		cfg.BindAddr = "127.0.0.1"
 	}
 
-	pin := pinTransportPort(&cfg, dir, reset)
+	pin := pinTransportPort(&cfg, dir, settingsPort, reset)
 
 	srv, err := transport.New(cfg)
 	if err != nil {
@@ -235,7 +245,7 @@ func TestTransportPortResetDiscardsThePinAndAdoptsANewOne(t *testing.T) {
 	writePinnedPortRaw(t, dir, `{"port":`+strconv.Itoa(pinned)+`}`)
 
 	cfg := transport.Config{BindAddr: "127.0.0.1"}
-	pin := pinTransportPort(&cfg, dir, true)
+	pin := pinTransportPort(&cfg, dir, 0, true)
 
 	if cfg.Port != 0 {
 		t.Fatalf("reset boot still asked for port %d, want an ephemeral bind", cfg.Port)
@@ -292,6 +302,105 @@ func TestTransportPortResetLeavesTheFileAloneForAnExplicitPort(t *testing.T) {
 	}
 	if got := readPinnedPort(t, dir); got != pinned {
 		t.Fatalf("reset deleted the pin on an explicit-port boot (file now %d, want %d)", got, pinned)
+	}
+}
+
+// The three inputs in precedence order: --listen, then the saved
+// network.listenPort, then the pin cache. Each case names the pair it
+// separates, because the whole value of the middle one is that it sits
+// between two behaviours it shares nothing with.
+
+func TestTransportPortSettingsPortBeatsTheCache(t *testing.T) {
+	dir := t.TempDir()
+	cached := freePort(t)
+	writePinnedPortRaw(t, dir, `{"port":`+strconv.Itoa(cached)+`}`)
+	chosen := freePort(t)
+	if chosen == cached {
+		t.Skip("the two probe ports collided; nothing to separate")
+	}
+
+	bound, _ := bootOnceWithSettingsPort(t, dir, transport.Config{}, chosen, false)
+	if bound != chosen {
+		t.Fatalf("bound %d, want the saved network.listenPort %d", bound, chosen)
+	}
+}
+
+// The cache-coherence half: a port the setting asked for and the kernel
+// gave IS the previous bind, so clearing the setting later means "stay
+// here" rather than "jump back to a number from before you set this".
+func TestTransportPortSettingsPortIsAdoptedIntoTheCache(t *testing.T) {
+	dir := t.TempDir()
+	stale := freePort(t)
+	writePinnedPortRaw(t, dir, `{"port":`+strconv.Itoa(stale)+`}`)
+	chosen := freePort(t)
+	if chosen == stale {
+		t.Skip("the two probe ports collided; nothing to separate")
+	}
+
+	bound, _ := bootOnceWithSettingsPort(t, dir, transport.Config{}, chosen, false)
+	if got := readPinnedPort(t, dir); got != bound {
+		t.Fatalf("the cache holds %d after binding the saved port %d; it must name the previous bind", got, bound)
+	}
+}
+
+// An explicit --listen is one launch and the setting is the install, so
+// the flag wins for the BIND and writes nothing: a debugging run must not
+// rewrite where this install lives.
+func TestTransportPortExplicitListenBeatsTheSettingsPort(t *testing.T) {
+	dir := t.TempDir()
+	explicit := freePort(t)
+	saved := explicit + 1
+
+	bound, _ := bootOnceWithSettingsPort(t, dir, transport.Config{Port: explicit}, saved, false)
+	if bound != explicit {
+		t.Fatalf("bound %d, want the explicitly requested %d", bound, explicit)
+	}
+	if got := readPinnedPort(t, dir); got != -1 {
+		t.Fatalf("an explicit --listen wrote a pin file (port %d) while a settings port was saved", got)
+	}
+}
+
+// The setting deliberately takes no ephemeral fallback. The whole reason
+// to set it is that every share URL names the number, so a backend that
+// quietly moved would be unreachable at the only address anybody has.
+func TestTransportPortSettingsPortDoesNotFallBack(t *testing.T) {
+	dir := t.TempDir()
+	squatter, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupy a port: %v", err)
+	}
+	defer squatter.Close()
+	taken := portFromAddr(squatter.Addr().String())
+
+	cfg := transport.Config{
+		Dispatcher: transport.NewDispatcher(),
+		EventBus:   transport.NewEventBus(0),
+		BindAddr:   "127.0.0.1",
+	}
+	pin := pinTransportPort(&cfg, dir, taken, false)
+	if cfg.Port != taken {
+		t.Fatalf("cfg.Port = %d, want the saved %d", cfg.Port, taken)
+	}
+	if cfg.EphemeralPortFallback {
+		t.Fatal("a saved network.listenPort took the cache's ephemeral fallback; it must fail loudly instead")
+	}
+
+	srv, err := transport.New(cfg)
+	if err != nil {
+		t.Fatalf("transport.New: %v", err)
+	}
+	if err := srv.Start(); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+		t.Fatal("Start succeeded on an occupied saved port; the bind must fail so the operator is told")
+	}
+
+	// And the failure says nothing about the cache, which is unrelated to
+	// a port the setting named.
+	pin.clearOnFailedBind(errors.New("bind failed"))
+	if got := readPinnedPort(t, dir); got != -1 {
+		t.Fatalf("a failed settings-port bind touched the cache (file now %d)", got)
 	}
 }
 

@@ -82,7 +82,7 @@ const errorToasts = (page: Page) => page.locator('[role="alert"].text-error');
 
 /** Open a project's brand-new draft placeholder: a pane, no thread row. */
 async function openFreshDraft(harness: HarnessApp, page: Page): Promise<void> {
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByTestId('project-item-new-thread').first().click();
   await expect(page.getByTestId('composer-workspace-strip')).toBeVisible();
   // The precondition the whole file rests on: a placeholder is not a row.
@@ -179,7 +179,7 @@ test('sending from that draft reuses the thread already bound to the worktree', 
   await expectSameFilesystemPath(rows[0].workspacePath, worktree!.path);
   expect(rows[0].branch).toBe(EXISTING_BRANCH);
 
-  // And the send did not move the user's strip back to Local.
+  // And the send did not move the user's strip back to Base.
   await expect(stripLabels(page).env).toHaveText(basename(worktree!.path));
   await expect(stripLabels(page).branch).toHaveText(EXISTING_BRANCH);
   await expect(page.getByTestId('thread-row')).toHaveCount(1);

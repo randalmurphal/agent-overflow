@@ -156,10 +156,17 @@ binds:
 | `PinThreadGroup(id)` / `UnpinThreadGroup(id)` / `SetThreadGroupPinGroup(id, group)` | `store.ThreadGroup` |
 | `SetThreadGroup(threadIDs, groupID)` | `[]store.Thread` (every row the call touched, children included) |
 
-None touch local FS, processes, or settings, so none are
-`LocalOnlyMethods`; `methods_gen.go` is regenerated and the
-classification test passes. Names are trimmed and non-empty; a blank
-rename is rejected.
+Every one of these is a wire RPC, so each carries a `//ao:scope` and a
+route (`internal/transport/AGENTS.md`). `ListThreadGroups` is
+`threads:read` and `//ao:route all`, because a group belongs to one
+backend's project and the unified sidebar merges what every attached
+backend answers. The rest are `threads:operate`: `CreateThreadGroup`
+takes the inferred `project` route off its `projectID` parameter, and the
+others declare `//ao:route home`, because a GROUP id is neither a thread
+nor a project id and nothing infers a route from one. That includes
+`SetThreadGroup`, whose first parameter is a slice of thread ids.
+`methods_gen.go` is regenerated with them and its in-sync test passes.
+Names are trimmed and non-empty; a blank rename is rejected.
 
 ### Events
 

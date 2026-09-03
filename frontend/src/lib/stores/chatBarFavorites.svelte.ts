@@ -24,7 +24,9 @@ const store = createEntityStore<ChatBarFavorite[], void>({
   name: 'chatBarFavorites',
   source: async ({ apply }) => {
     apply(await fetchFavorites());
-    // Nothing to release: the list is a pull, not a subscription.
+    // Nothing to release: the seed is a pull, and the backend pushes every
+    // later list on `chatbar:favorites` through applyChatBarFavorites — a
+    // fan-out from events.ts, not a per-key subscription this source owns.
     return () => {};
   },
 });
@@ -64,6 +66,23 @@ export async function setChatBarFavorite(
   ensureChatBarFavorites();
   const updated = (await SetChatBarFavorite(favorite, starred)) as ChatBarFavorite[] | null;
   store.apply(KEY, Array.isArray(updated) ? updated : []);
+}
+
+/**
+ * The whole list, as any client's write left it.
+ *
+ * Star and unstar used to reach only the client that clicked: the RPC answers
+ * with the new list and nothing else was ever told, so a second device kept
+ * showing the old stars in every menu until reload. The frame is the same
+ * slice the RPC returns, so the writer's own echo settles on bytes it already
+ * applied.
+ *
+ * Ignored before anything holds the list. Applying would seed an entry no
+ * menu is reading, and the first `ensureChatBarFavorites` sources it anyway.
+ */
+export function applyChatBarFavorites(list: ChatBarFavorite[] | null): void {
+  if (!hold) return;
+  store.apply(KEY, Array.isArray(list) ? list : []);
 }
 
 /** Test seam: drop the entry and the hold, as a fresh module load would. */

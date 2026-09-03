@@ -437,8 +437,9 @@ that run and adopts the new port, so a permanently squatted port
 churns once, not forever, and a collision run merely re-primes the
 replica. An explicit `--listen host:port` still wins unchanged.
 
-Port obscurity was never a security control (the bootstrap token and
-Host checks are), so pinning it costs nothing. Side benefit: webview
+Port obscurity was never a security control (the page credential and the
+Host/Origin checks are), so pinning it costs nothing. The page cookie's
+name carries the port, so a stable port also means a stable cookie name. Side benefit: webview
 localStorage (the pre-hydration cache in `appStorage`) stops resetting
 every launch. The `--connect` client-mode stub keeps its ephemeral
 port for now; it can adopt the same helper when remote-attach windows
@@ -447,6 +448,27 @@ want durable replicas.
 - **Database** `ao-replica-<backendId>`, per-backend keying per
   remote-access §10/§12. One object store `threads` keyed by
   `threadId`, one `meta` record `{generation, schemaVersion}`.
+- **Database lifecycle**: the per-database caps below bound one
+  database, and nothing inside a database nobody opens ever runs, so a
+  backend id that MOVES would strand its database on the origin
+  permanently. `purgeReplicaDatabases(liveBackendIds, token)`
+  (`replica/session.ts`) is the cross-database sweep that closes that,
+  and the same call is the purge sign-out and device revocation use
+  (remote-access §9): the argument is the set of backends that remain
+  attached, so an empty set drops the open databases too. Boot schedules
+  it after the session is ready, never in front of the cold-open read.
+  It is sequenced against the session by the same token every other
+  replica operation carries — an identity change mid-sweep cancels the
+  rest, and a target that some attached backend has open detaches THAT
+  backend's session first. One replica session per attached backend
+  (phase 7b): the database was already named per backend, so what
+  changed is only that `replica/session.ts` holds a map instead of one
+  slot, and the token every operation carries is what names the session
+  it belongs to. A client that cannot name a live backend does not sweep at all,
+  because an empty live set is an instruction, not an unknown. Where
+  `indexedDB.databases()` is missing (Firefox before 126) only the open
+  database can be named, so older orphans wait for an engine that can
+  list them.
 - **Envelope** per thread:
 
   ```ts
@@ -499,6 +521,13 @@ want durable replicas.
   window. That fires at flush rate for every background and workflow
   thread, most of which the replica has never held, so the drop
   short-circuits on the mirror before it opens a transaction.
+  Since `provider:item_event` became entity-filtered the drop only
+  reaches threads this client watches, so a thread with neither a pane
+  nor a live-tail registration keeps its envelope while it streams
+  elsewhere. Nothing is needed for that: the entry's attested stamp
+  still predates the writes, so the next open answers `stale` and gets
+  a replacing page — the understate rule (§3.4) covering a wider case
+  than it was written for.
 - **Desktop threat model note**: in the embedded webview the replica
   sits in the same OS-user boundary as the SQLite store itself, so v1
   plaintext adds no exposure. Encryption-at-rest becomes load-bearing
@@ -621,7 +650,11 @@ the freshly returned window, so there is nothing stale to page into.
   response's generation (the coincidental-`fresh` refusal, driven with
   TWO panes in flight across one flip so a per-process "did it change?"
   answer cannot pass); `rewritten` scrollback drop; eviction under the
-  char/thread caps; IDB failure degrades cleanly.
+  char/thread caps; IDB failure degrades cleanly; and the cross-database
+  sweep — a moved backend id's database reaped at the next open, a
+  database this app did not mint left alone, an empty live set dropping
+  the OPEN database (the sign-out contract), and a purge cancelled rather
+  than deleting what a newer identity just opened.
 - **Attestation pairing (frontend)**: a replica paint whose sync then
   FAILS must write back under the envelope's stamp even when the
   registry holds a newer attested one for that thread; a window

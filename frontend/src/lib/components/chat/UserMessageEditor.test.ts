@@ -12,6 +12,7 @@ import type { UserMessageEditSession, UserMessageEditStage } from './userMessage
 import { createUserMessageEditUiState } from './userMessageEditUi.svelte';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import {
   createComposerDraftStore,
   resetComposerDraftSnapshotsForTest,
@@ -42,7 +43,7 @@ function installMocks(): void {
   setBindingMock('ClearDraft', async () => {});
   setBindingMock('ListAttachments', async () => []);
   setBindingMock('GetAttachmentThumbnail', async () => ({ data: 'iVBORw0KGgo=', mimeType: 'image/png' }));
-  setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
+  mockAttachmentDownload();
   setBindingMock('DeleteAttachment', async () => {});
   setBindingMock('SearchWorkspaceFiles', async () => ({ files: [], truncated: false, root: '/tmp' }));
   setBindingMock('GetClaudeSlashCommands', async () => ({ probed: false, commands: [] }));

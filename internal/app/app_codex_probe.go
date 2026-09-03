@@ -46,6 +46,9 @@ func resetCodexProbeCacheForTest() {
 // hook: an empty planType is ambiguous (backend latency can produce it
 // for an authenticated user) so surfacing a banner here would create
 // false positives. (Drift D3 from the app-root refactor.)
+//
+//ao:scope access:admin
+//ao:route home
 func (a *App) ProbeCodexAccount() (provider.AccountInfo, error) {
 	return a.providerDiscoveryService().ProbeCodexAccount()
 }
@@ -56,6 +59,9 @@ func (a *App) ProbeCodexAccount() (provider.AccountInfo, error) {
 // auth-state refresh has explicit intent on both providers; today
 // only Claude has a Recheck UI but the surface is here when Codex
 // needs one (e.g. after a `codex login` flow lands).
+//
+//ao:scope access:admin
+//ao:route home
 func (a *App) RecheckCodexAccount() (provider.AccountInfo, error) {
 	return a.providerDiscoveryService().RecheckCodexAccount()
 }

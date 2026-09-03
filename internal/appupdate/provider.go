@@ -49,54 +49,32 @@ type Config struct {
 
 // Configure wires a Wails updater handle to the GitHub release provider and
 // retains the targetable provider used by ListReleases and tagged downloads.
+//
+// The chain comes from NewReleaseSource rather than being built here, so the
+// desktop's updater and a serve host's ReleaseSource are the SAME resolve,
+// the same matcher and the same fail-closed verification wrapper. Two
+// constructors would be two answers to "which asset is this host's", and the
+// one that is wrong is the one nobody is looking at.
 func (a *Service) Configure(handle *updater.Updater, config Config) error {
 	if handle == nil {
 		return errors.New("updater: nil updater handle")
 	}
-	if config.Repository == "" {
-		config.Repository = updaterRepository
-	}
-	if config.ChecksumAsset == "" {
-		config.ChecksumAsset = updaterChecksumAsset
-	}
-	if config.HTTPClient == nil {
-		config.HTTPClient = &http.Client{}
-	}
-
-	providerConfig := github.Config{
-		Repository:    config.Repository,
-		ChecksumAsset: config.ChecksumAsset,
-		HTTPClient:    config.HTTPClient,
-	}
-	if config.BaseURL != "" {
-		providerConfig.BaseURL = config.BaseURL
-	}
-	provider, err := github.New(providerConfig)
+	source, err := NewReleaseSource(config)
 	if err != nil {
-		return fmt.Errorf("github provider: %w", err)
-	}
-
-	req := updater.CheckRequest{
-		CurrentVersion: config.CurrentVersion,
-		Platform:       config.Platform,
-		Arch:           config.Arch,
-	}
-	targetable := newTargetableProvider(provider, config.Repository, config.ChecksumAsset, req, config.HTTPClient)
-	if config.BaseURL != "" {
-		targetable.baseURL = config.BaseURL
+		return err
 	}
 	if err := handle.Init(updater.Config{
-		CurrentVersion: req.CurrentVersion,
-		Platform:       req.Platform,
-		Arch:           req.Arch,
-		Providers:      []updater.Provider{verifiedProvider{inner: targetable}},
+		CurrentVersion: source.req.CurrentVersion,
+		Platform:       source.req.Platform,
+		Arch:           source.req.Arch,
+		Providers:      []updater.Provider{source.verified},
 		Window:         updater.WindowNone,
 	}); err != nil {
 		return fmt.Errorf("init updater: %w", err)
 	}
 
 	a.updater.handle = handle
-	a.updater.provider = targetable
+	a.updater.provider = source.targetable
 	return nil
 }
 
@@ -122,6 +100,14 @@ const (
 var releaseTagPattern = regexp.MustCompile(`^v?[0-9A-Za-z][0-9A-Za-z.\-_+]{0,63}$`)
 
 func validReleaseTag(tag string) bool { return releaseTagPattern.MatchString(tag) }
+
+// ValidReleaseTag is the same rule for a caller outside this package. The
+// remote update trigger (internal/app) refuses a tag SYNCHRONOUSLY, before it
+// claims the one-flow fence and hands the work to a goroutine, so a bad
+// argument comes back as a bad argument rather than as a failed update three
+// frames later. It stays one predicate: a second spelling of "is this a tag"
+// is how the two ends of one flow end up disagreeing about what they accept.
+func ValidReleaseTag(tag string) bool { return validReleaseTag(tag) }
 
 // ReleaseSummary describes one installable release for the version picker. Only
 // releases that ship an asset for the running platform AND a checksum sidecar
@@ -178,7 +164,7 @@ func newTargetableProvider(inner updater.Provider, repo, checksumAsset string, r
 		req:           req,
 		baseURL:       defaultGitHubAPIBase,
 		httpClient:    httpClient,
-		matcher:       github.DefaultAssetMatcher,
+		matcher:       matchReleaseAsset,
 	}
 }
 

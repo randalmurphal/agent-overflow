@@ -10,7 +10,7 @@ import (
 // have somewhere to refuse a move TO.
 func seedThreadGroupProject(t *testing.T, s *Store, id, path string) {
 	t.Helper()
-	if err := s.CreateProject(Project{
+	if _, err := s.CreateProject(Project{
 		ID: id, Path: path, Name: "Project " + id, CreatedAt: 1, UpdatedAt: 1,
 	}); err != nil {
 		t.Fatalf("create project %s: %v", id, err)
@@ -131,7 +131,7 @@ func TestSetThreadGroupStripsThePin(t *testing.T) {
 	mustCreateThread(t, s, "t-pinned")
 	group := mustCreateGroup(t, s, defaultTestProjectID, "Group")
 
-	if err := s.PinThread("t-pinned"); err != nil {
+	if _, _, err := s.PinThread("t-pinned"); err != nil {
 		t.Fatalf("pin thread: %v", err)
 	}
 	moved, err := s.SetThreadGroup([]string{"t-pinned"}, group.ID)
@@ -161,10 +161,10 @@ func TestPinThreadOnAGroupedRowIsRefused(t *testing.T) {
 		t.Fatalf("set thread group: %v", err)
 	}
 
-	if err := s.PinThread("t-grouped"); !errors.Is(err, ErrThreadGrouped) {
+	if _, _, err := s.PinThread("t-grouped"); !errors.Is(err, ErrThreadGrouped) {
 		t.Fatalf("PinThread on a grouped row: error = %v, want ErrThreadGrouped", err)
 	}
-	if err := s.PinThread("no-such-thread"); !errors.Is(err, sql.ErrNoRows) {
+	if _, _, err := s.PinThread("no-such-thread"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("PinThread on a missing row: error = %v, want sql.ErrNoRows", err)
 	}
 	thread, err := s.GetThread("t-grouped")
@@ -313,7 +313,7 @@ func TestUngroupKeepsThePinsOfUngroupedRows(t *testing.T) {
 	mustCreateThread(t, s, "t-pinned")
 	mustCreateThread(t, s, "t-grouped")
 	group := mustCreateGroup(t, s, defaultTestProjectID, "Group")
-	if err := s.PinThread("t-pinned"); err != nil {
+	if _, _, err := s.PinThread("t-pinned"); err != nil {
 		t.Fatalf("pin thread: %v", err)
 	}
 	if _, err := s.SetThreadGroup([]string{"t-grouped"}, group.ID); err != nil {
@@ -347,7 +347,7 @@ func TestDeleteThreadGroupUngroupsActiveAndArchivedMembers(t *testing.T) {
 	if _, err := s.SetThreadGroup([]string{"t-active", "t-archived"}, group.ID); err != nil {
 		t.Fatalf("set thread group: %v", err)
 	}
-	if err := s.ArchiveThread("t-archived"); err != nil {
+	if _, _, err := s.ArchiveThread("t-archived"); err != nil {
 		t.Fatalf("archive thread: %v", err)
 	}
 

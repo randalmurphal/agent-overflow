@@ -10,6 +10,8 @@ import { SendMessageWithOptions } from '../../stores/bindings';
 import type { Attachment } from '../../types/attachment';
 import type { TerminalChip } from '../../types/draft';
 import { addToast } from '../../stores/toast.svelte';
+import { isUndeliveredSendError } from '../../stores/transportStatus.svelte';
+import { confirmUnsentMessageRestore } from '../../stores/unsentMessageConfirmation.svelte';
 import { userFacingError } from '../../utils/userFacingError';
 import { syncThread } from '../../stores/panes.svelte';
 import {
@@ -102,6 +104,21 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     if (sendStarted) {
       projectSendResolved(opts.threadId, { error: true });
     }
+    // A send whose socket broke is UNDECIDABLE here, and the transport has
+    // already spent its one retry by the time this runs
+    // (RETRY_ON_TRANSIENT_CLOSE). The message may be with the agent. Putting
+    // it back silently is a guess whose wrong answer sends it twice, so ask —
+    // and only for this class: a backend that answered with an error, or a
+    // terminal disconnect, is a definite "nothing happened" and restores
+    // exactly as it always did.
+    //
+    // "Leave it" discards the snapshot AND reports nothing further: the
+    // person was shown the ambiguity and decided it, and a banner restating
+    // the failure they just adjudicated would contradict their answer.
+    if (isUndeliveredSendError(err) && !(await confirmUnsentMessageRestore())) {
+      return false;
+    }
+
     // restoreDraft always persists to the captured thread; it only touches
     // the local draft store if it's still on that thread. If the user has
     // moved on, surface a toast so the failed send is visible rather than

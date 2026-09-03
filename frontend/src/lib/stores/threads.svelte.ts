@@ -3,7 +3,8 @@ import { clearPayloadCacheForThread } from '../utils/payloadDataCache';
 import { clearThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { clearThreadSizePriors } from '../utils/virtual/priors';
 import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
-import { ListThreads } from './bindings';
+import { clearItemProjectionSourcesForThread } from '../utils/itemProjectionSource.svelte';
+import { ListThreads, MarkThreadRead, MarkThreadUnread } from './bindings';
 import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './liveTodoState.svelte';
 import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
@@ -13,6 +14,8 @@ import { clearThreadStatus } from './threadStatuses.svelte';
 import { addToast } from './toast.svelte';
 import { releaseThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
+import { onBackendDetached } from '../transport/backends';
+import { withLocalReadMarker } from './threadReadWrites';
 
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn'>>;
 
@@ -42,6 +45,16 @@ export function getThreads(): Thread[] {
  * the debounced MarkThreadRead persist and revert lastReadAt. Mid-session
  * resyncs go through eventsThreadRows' refreshSidebarProjections, which
  * merges each row against local state first.
+ *
+ * `ListThreads` is routed to EVERY attached backend and the arrays are
+ * concatenated (`transport/methodRoutes.ts` → `transport/backends.ts`), so
+ * one sidebar shows every machine's threads and this store needs no
+ * knowledge of how many there are. A backend that fails to answer is
+ * dropped from the merge and recorded on its own entry rather than failing
+ * the load, so one unreachable machine cannot blank the sidebar of the
+ * ones that answered — which is also why nothing here treats a short list
+ * as a deletion. Which backend a row came from is recorded in
+ * `transport/entityIndex.ts`, not on the row.
  */
 export async function loadThreads(): Promise<Thread[]> {
   threads = await ListThreads() as Thread[];
@@ -98,6 +111,7 @@ export function removeThread(id: string): void {
   clearThreadScrollSnapshot(id);
   clearThreadSizePriors(id);
   evictDiffSpansForThread(id);
+  clearItemProjectionSourcesForThread(id);
   clearPayloadCacheForThread(id);
   clearLiveUsageSnapshot(id);
   releaseThreadTerminalState(id);
@@ -166,6 +180,43 @@ export function updateThreadLastRead(id: string, lastReadAt: number | undefined)
 }
 
 /**
+ * Persist the read stamp this client just applied locally.
+ *
+ * The RPC and the claim are one call because they have to be: the claim
+ * is what tells `mergeThreadRowWithLocal` that a row arriving mid-flight
+ * from another client's mark-unread is older than what this page did,
+ * and a caller that could make the write without it would reintroduce
+ * exactly the merge the claim exists to settle.
+ *
+ * Fire-and-forget by contract — a failed read stamp is a sidebar pill
+ * that lingers, not something to interrupt anyone over — so the caller
+ * gets the promise and the rejection is logged here.
+ */
+export function markThreadRead(id: string, lastReadAt: number): Promise<void> {
+  return withLocalReadMarker(id, lastReadAt, () => MarkThreadRead(id))
+    .catch((err) => {
+      console.error('Failed to mark thread read:', err);
+    });
+}
+
+/**
+ * Mark a thread unread and patch the local row to match.
+ *
+ * Explicit unread is persisted as epoch 0; `undefined` means "never
+ * tracked" and is deliberately read as read, for rows that predate the
+ * column. The claim spans the RPC AND the local patch, because the
+ * window a wire row can land in covers both halves — 0 is the smallest
+ * value the field takes, so nothing downstream can tell it from a stale
+ * one on the numbers alone.
+ */
+export async function markThreadUnread(id: string): Promise<void> {
+  await withLocalReadMarker(id, 0, async () => {
+    await MarkThreadUnread(id);
+    updateThreadLastRead(id, 0);
+  });
+}
+
+/**
  * Patches the complete pin state in one array replacement so a group move or
  * unpin cannot expose a transient mismatched pinnedAt / pinGroup pair.
  */
@@ -213,6 +264,36 @@ export function clearThreadGroupMembership(groupId: string): void {
   });
   if (changed) threads = next;
 }
+
+/**
+ * Drop every row a detached backend owned.
+ *
+ * NOT `removeThread`: these threads were not deleted, they merely stopped
+ * being reachable from this client, so nothing durable is evicted here.
+ * What has to go is the ROW, because the entity index has already forgotten
+ * which machine it came from and every call about it would resolve to the
+ * page's own backend from now on. A row nobody can route is worse than no
+ * row: it looks live and answers wrong.
+ *
+ * The ids arrive in the detach payload rather than being read back from
+ * the index, which is what makes this ordering-free
+ * (`transport/backends.ts`, `BackendDetachment`).
+ */
+export function dropThreadsForDetachedBackend(ids: readonly string[]): void {
+  if (ids.length === 0) return;
+  const gone = new Set(ids);
+  const kept = threads.filter((t) => !gone.has(t.id));
+  if (kept.length === threads.length) return;
+  threads = kept;
+  for (const id of gone) {
+    liveActivityAt.drop(id);
+    clearThreadStatus(id);
+    dropLiveTodoUiPrefs(id);
+    dropActivityRailUiPrefs(id);
+  }
+}
+
+onBackendDetached(({ threadIds }) => dropThreadsForDetachedBackend(threadIds));
 
 /**
  * Returns the thread with the given id, or undefined if the sidebar doesn't

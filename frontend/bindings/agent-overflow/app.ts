@@ -17,6 +17,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as app$0 from "./internal/app/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as attachedbackends$0 from "./internal/attachedbackends/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as browser$0 from "./internal/browser/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -24,6 +27,9 @@ import * as claudeconfig$0 from "./internal/claudeconfig/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as codexskills$0 from "./internal/codexskills/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as devscan$0 from "./internal/devscan/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as dirbrowse$0 from "./internal/dirbrowse/models.js";
@@ -56,6 +62,9 @@ import * as notify$0 from "./internal/notify/models.js";
 import * as provider$0 from "./internal/provider/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as provideraccountapp$0 from "./internal/provideraccountapp/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as settings$0 from "./internal/settings/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -83,21 +92,36 @@ import * as wsllauncher$0 from "./internal/wsllauncher/models.js";
 import * as json$0 from "../encoding/json/models.js";
 
 /**
- * AddRemoteEndpoint persists a new --connect target. The settings
- * service mints the ID; the operator-supplied name is optional (a
- * blank nickname renders as the URL).
+ * AddBackend spends a pairing link and returns the verification number
+ * the owner of the far machine has to match.
  * 
- * SECURITY: returns the redacted Summary shape, not the raw stored
- * record. A LAN-attached token-holder calling AddRemoteEndpoint with
- * arbitrary inputs would otherwise see the persisted token echoed back
- * (and Update with a no-op patch would harvest the existing token
- * without writing). Forcing the return through Summary keeps both
- * paths token-free; the local UI fetches the token explicitly via
- * GetRemoteEndpointToken when the user copies the launch command.
+ * It returns BEFORE the pairing admits anything, and that is not a
+ * shortcut: the confirmation window is ten minutes
+ * (deviceclient.AwaitActivation), which is longer than any timeout
+ * between here and the page. So the wait runs on its own and the outcome
+ * arrives on the backend:attach channel — the same split the terminal
+ * ceremony makes between printing the number and waiting for it.
  */
-export function AddRemoteEndpoint(name: string, url: string, token: string): $CancellablePromise<app$0.RemoteEndpointSummary> {
-    return $Call.ByID(893963951, name, url, token).then(($result: any) => {
+export function AddBackend(pairingLink: string): $CancellablePromise<app$0.BackendAttachment> {
+    return $Call.ByID(2629313140, pairingLink).then(($result: any) => {
         return $$createType0($result);
+    });
+}
+
+/**
+ * AllowPreviewPort adds a port to this machine's hand-named preview set,
+ * so a dev server the scan could not attribute to a thread becomes
+ * reachable from the owner's other devices. Returns the whole set.
+ * 
+ * `access:admin` and deliberately no step-up. The act exposes the
+ * owner's own dev server to the owner's own paired devices, over the
+ * same authenticated listener everything else here rides; it changes
+ * nothing about what this backend binds, which is the class of change
+ * step-up exists for.
+ */
+export function AllowPreviewPort(port: number): $CancellablePromise<number[]> {
+    return $Call.ByID(4007046465, port).then(($result: any) => {
+        return $$createType1($result);
     });
 }
 
@@ -119,7 +143,17 @@ export function ArchiveProject(id: string): $CancellablePromise<void> {
 }
 
 /**
- * ArchiveThread flips archived to true so the thread leaves the active sidebar.
+ * ArchiveThread flips archived to true so the thread leaves the active
+ * sidebar, and closes the thread's provider session so the host stops
+ * carrying it.
+ * 
+ * The row flip commits first and the close follows. A failed close is
+ * logged rather than returned: the archive itself has already succeeded
+ * durably, and failing the call would tell the caller otherwise. That
+ * is also the policy the desktop client encoded before this moved
+ * server-side — it called StopSession, swallowed any failure, and
+ * archived anyway. Moving it here is what makes the stop true for every
+ * client instead of only the one that remembers to ask.
  */
 export function ArchiveThread(id: string): $CancellablePromise<void> {
     return $Call.ByID(3655608409, id);
@@ -135,7 +169,7 @@ export function ArchiveThread(id: string): $CancellablePromise<void> {
  */
 export function AttachThreadWorktree(threadID: string, branch: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2367642633, threadID, branch).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -186,6 +220,40 @@ export function BackgroundClaudeTask(threadID: string, toolUseID: string): $Canc
 }
 
 /**
+ * BeginPasskeyRegistration starts enrolling a new credential for the
+ * owner account.
+ * 
+ * `access:admin` puts it beside pairing and revocation, which is what it
+ * is: adding a way for a device to get in. //ao:stepup for the reason
+ * minting a pairing link carries it — this issues something that admits a
+ * future caller, and a standing grant that could register a credential
+ * could register its way around its own revocation.
+ */
+export function BeginPasskeyRegistration(label: string): $CancellablePromise<app$0.PasskeyChallengeResult> {
+    return $Call.ByID(1189501287, label).then(($result: any) => {
+        return $$createType3($result);
+    });
+}
+
+/**
+ * BeginPasskeyStepUp starts the ceremony that proves a person is at the
+ * keyboard right now, for the session making the call.
+ * 
+ * `session` is the FLOOR, and it has to be: this is how a session
+ * SATISFIES the gate that just refused it, so requiring any grant would
+ * make step-up reachable only to sessions that had already been granted
+ * something — and the calls behind step-up are precisely the ones no
+ * grant can open. It discloses nothing either: the challenge is random,
+ * the session is the connection's own, and finishing it requires a
+ * signature from a credential registered on this account.
+ */
+export function BeginPasskeyStepUp(): $CancellablePromise<app$0.PasskeyChallengeResult> {
+    return $Call.ByID(3214812657).then(($result: any) => {
+        return $$createType3($result);
+    });
+}
+
+/**
  * BookmarkUIRenderTrace freezes the current trace contents (and any
  * rotated `.1` predecessor) into a non-rotating bookmark file under
  * `<configDir>/ui-trace/bookmarks/`. The frontend invokes this from
@@ -204,13 +272,13 @@ export function BookmarkUIRenderTrace(): $CancellablePromise<string> {
  */
 export function BrowseDirectory(path: string): $CancellablePromise<dirbrowse$0.Listing> {
     return $Call.ByID(320967638, path).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType4($result);
     });
 }
 
 export function BrowserCompanionDo(threadID: string, action: app$0.BrowserCompanionAction): $CancellablePromise<browser$0.CompanionEvent> {
     return $Call.ByID(197228034, threadID, action).then(($result: any) => {
-        return $$createType3($result);
+        return $$createType5($result);
     });
 }
 
@@ -223,7 +291,7 @@ export function BrowserCompanionDo(threadID: string, action: app$0.BrowserCompan
  */
 export function BrowserCompanionPaneAttach(threadID: string): $CancellablePromise<browser$0.CompanionSubscription> {
     return $Call.ByID(205254296, threadID).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType6($result);
     });
 }
 
@@ -258,7 +326,7 @@ export function BrowserCompanionRevealPageFile(threadID: string, pageID: string)
  */
 export function BrowserCompanionThreadState(threadID: string): $CancellablePromise<browser$0.CompanionEvent> {
     return $Call.ByID(1485125416, threadID).then(($result: any) => {
-        return $$createType3($result);
+        return $$createType5($result);
     });
 }
 
@@ -277,12 +345,31 @@ export function BrowserCompanionThreadState(threadID: string): $CancellablePromi
  * handle the backend re-derives — so this returns quickly and never
  * blocks on browser work.
  * 
- * LocalOnly: it settles pane-host state for real browser windows on this
- * machine, and its only legitimate caller is the launcher process beside
- * this backend.
+ * Scoped host: it settles pane-host state for real browser windows on
+ * this machine, and its only legitimate caller is the launcher process
+ * beside this backend. No remote session can host a native view, so no
+ * grant opens it.
  */
 export function BrowserHostReport(pageID: string, kind: string, detail: string): $CancellablePromise<void> {
     return $Call.ByID(2848608143, pageID, kind, detail);
+}
+
+/**
+ * CancelDevicePairing refuses a link and revokes whatever a redemption
+ * already created — the number did not match, or the link was minted by
+ * mistake.
+ */
+export function CancelDevicePairing(linkID: string): $CancellablePromise<void> {
+    return $Call.ByID(2608316491, linkID);
+}
+
+/**
+ * CancelProviderLogin ends a sign-in and leaves the provider idle.
+ */
+export function CancelProviderLogin(providerName: string): $CancellablePromise<provideraccountapp$0.LoginState> {
+    return $Call.ByID(341374423, providerName).then(($result: any) => {
+        return $$createType7($result);
+    });
 }
 
 /**
@@ -304,7 +391,7 @@ export function CancelSessionImport(importID: string): $CancellablePromise<void>
  */
 export function CheckForUpdate(): $CancellablePromise<app$0.UpdateAvailability> {
     return $Call.ByID(2347956003).then(($result: any) => {
-        return $$createType5($result);
+        return $$createType8($result);
     });
 }
 
@@ -325,7 +412,7 @@ export function CheckForUpdate(): $CancellablePromise<app$0.UpdateAvailability> 
  */
 export function CheckThreadImportUpdates(threadID: string): $CancellablePromise<app$0.ImportUpdateStatus> {
     return $Call.ByID(2932719708, threadID).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType9($result);
     });
 }
 
@@ -371,6 +458,22 @@ export function ClearBrowserSiteData(): $CancellablePromise<void> {
  */
 export function ClearDraft(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(296814681, threadID);
+}
+
+/**
+ * ClearPushSenderCredential stops this backend sending.
+ * 
+ * The REGISTRATIONS are deliberately left alone. A credential can be
+ * replaced in a minute, and dropping every phone's token with it would cost
+ * each of them a launch to come back — while the phones themselves have not
+ * changed their minds about being woken.
+ * 
+ * Same scope and proof as installing one: withdrawing the credential is the
+ * same decision from the other side, and the owner who can no longer reach
+ * the machine is the one who most needs to be able to make it.
+ */
+export function ClearPushSenderCredential(): $CancellablePromise<void> {
+    return $Call.ByID(1055713894);
 }
 
 /**
@@ -425,8 +528,16 @@ export function CompactCodexThread(threadID: string): $CancellablePromise<void> 
  */
 export function ConcludeDiscussion(channelID: string): $CancellablePromise<app$0.ChannelStatePayload> {
     return $Call.ByID(4019739936, channelID).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType10($result);
     });
+}
+
+/**
+ * ConfirmDevicePairing activates the session a redemption created, after
+ * the owner has matched the verification number.
+ */
+export function ConfirmDevicePairing(linkID: string): $CancellablePromise<void> {
+    return $Call.ByID(3813775159, linkID);
 }
 
 export function CountRunningBackgroundTasks(threadID: string): $CancellablePromise<number> {
@@ -435,7 +546,7 @@ export function CountRunningBackgroundTasks(threadID: string): $CancellablePromi
 
 export function CreateDiffReviewComment(threadID: string, input: store$0.DiffReviewCommentInput): $CancellablePromise<store$0.DiffReviewComment> {
     return $Call.ByID(565306783, threadID, input).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType11($result);
     });
 }
 
@@ -454,13 +565,13 @@ export function CreateDiscussion(def: store$0.DiscussionDefinition): $Cancellabl
  */
 export function CreateProject(path: string): $CancellablePromise<store$0.Project> {
     return $Call.ByID(969543070, path).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType12($result);
     });
 }
 
 export function CreateProposedPlanComment(threadID: string, input: store$0.ProposedPlanCommentInput): $CancellablePromise<store$0.ProposedPlanComment> {
     return $Call.ByID(4246792665, threadID, input).then(($result: any) => {
-        return $$createType10($result);
+        return $$createType13($result);
     });
 }
 
@@ -472,10 +583,14 @@ export function CreateProposedPlanComment(threadID: string, input: store$0.Propo
  * every normal new thread starts as a chat thread. "discussion" is rejected
  * as mode values because discussion/workflow threads must come through their
  * owning coordination sagas, which wire channels or phase run records.
+ * 
+ * The created row is broadcast as `listed` so a second attached client puts
+ * it in its sidebar without a refresh, matching what the creating client does
+ * with the return value.
  */
 export function CreateThread(opts: app$0.CreateThreadOptions): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2579322833, opts).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -497,7 +612,7 @@ export function CreateThread(opts: app$0.CreateThreadOptions): $CancellablePromi
  */
 export function CreateThreadFromPR(project: string, $number: number, providerName: string, model: string, forge: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(1716017387, project, $number, providerName, model, forge).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -508,7 +623,7 @@ export function CreateThreadFromPR(project: string, $number: number, providerNam
  */
 export function CreateThreadGroup(projectID: string, name: string): $CancellablePromise<store$0.ThreadGroup> {
     return $Call.ByID(1478438024, projectID, name).then(($result: any) => {
-        return $$createType11($result);
+        return $$createType14($result);
     });
 }
 
@@ -546,6 +661,22 @@ export function DeleteEmptyDraftThread(threadID: string): $CancellablePromise<bo
 }
 
 /**
+ * DeletePasskey removes one credential. Reports whether a row was there,
+ * so a second click from a stale list answers what it asked rather than a
+ * lookup failure.
+ * 
+ * Carries no //ao:stepup, on the same argument every subtraction on the
+ * access surface makes: it issues nothing, and a device the owner granted
+ * `access:admin` must be able to remove a passkey from a phone it can
+ * still reach. It also ends no SESSION — a session a passkey signed in is
+ * an ordinary session on an ordinary device row, revoked the way every
+ * other one is — and the surface says so rather than implying otherwise.
+ */
+export function DeletePasskey(passkeyID: string): $CancellablePromise<boolean> {
+    return $Call.ByID(151243274, passkeyID);
+}
+
+/**
  * DeleteProject removes a project from Agent Overflow: every contained thread,
  * every workflow run and automation the project owns, the worktrees the app
  * created for those runs, and the project row. A project with active turns or
@@ -565,7 +696,7 @@ export function DeleteEmptyDraftThread(threadID: string): $CancellablePromise<bo
  */
 export function DeleteProject(id: string): $CancellablePromise<app$0.ProjectDeletionResult> {
     return $Call.ByID(3379369923, id).then(($result: any) => {
-        return $$createType12($result);
+        return $$createType15($result);
     });
 }
 
@@ -580,22 +711,18 @@ export function DeleteProposedPlanComment(threadID: string, commentID: string): 
  */
 export function DeleteProviderCustomEnvVar(providerName: string, name: string): $CancellablePromise<settings$0.Settings> {
     return $Call.ByID(784096448, providerName, name).then(($result: any) => {
-        return $$createType13($result);
+        return $$createType16($result);
     });
-}
-
-/**
- * DeleteRemoteEndpoint removes the named-by-ID record. Returns an
- * error if the ID isn't found so a stale UI gets a clear signal
- * rather than silently no-oping.
- */
-export function DeleteRemoteEndpoint(id: string): $CancellablePromise<void> {
-    return $Call.ByID(3667944297, id);
 }
 
 /**
  * DeleteThread tears down the thread and any child threads. The recursive
  * cascade logic lives in app_thread_delete.go.
+ * 
+ * Every dropped row — the named thread and each of its children — is
+ * broadcast as `deleted` so a second attached client drops the same rows and
+ * their caches without a refresh. The fan-out rides the delete port's
+ * per-row Deleted callback, which is the only place the child ids are known.
  */
 export function DeleteThread(id: string): $CancellablePromise<void> {
     return $Call.ByID(1186337974, id);
@@ -614,11 +741,33 @@ export function DeleteThreadGroup(id: string): $CancellablePromise<void> {
 }
 
 /**
- * DeleteUIState removes keys from the calling client's bucket.
+ * DeleteUIState removes keys from the calling connection's bucket.
  * Missing keys are a no-op.
  */
-export function DeleteUIState(clientID: string, keys: string[]): $CancellablePromise<void> {
-    return $Call.ByID(1186757769, clientID, keys);
+export function DeleteUIState(keys: string[]): $CancellablePromise<void> {
+    return $Call.ByID(1186757769, keys);
+}
+
+/**
+ * DevicePairingStatus reads one link, for the surface polling while it
+ * waits.
+ */
+export function DevicePairingStatus(linkID: string): $CancellablePromise<app$0.PairingStatusView> {
+    return $Call.ByID(604263015, linkID).then(($result: any) => {
+        return $$createType17($result);
+    });
+}
+
+/**
+ * DisallowPreviewPort removes a port from the hand-named preview set.
+ * A port the scan attributed to a live thread stays in the list on its
+ * own account: this call removes the owner's standing choice, and the
+ * answer says what the set is now.
+ */
+export function DisallowPreviewPort(port: number): $CancellablePromise<number[]> {
+    return $Call.ByID(1061100039, port).then(($result: any) => {
+        return $$createType1($result);
+    });
 }
 
 /**
@@ -649,6 +798,108 @@ export function DownloadUpdate(tag: string): $CancellablePromise<void> {
 }
 
 /**
+ * FinishPasskeyRegistration records the credential the authenticator just
+ * produced.
+ * 
+ * The account is the one the BEGIN named and never one the response could
+ * claim, which is the session core's rule; this method only carries bytes.
+ * 
+ * Deliberately NO //ao:stepup, and the argument is the ceremony's own
+ * shape: this call is unreachable without a ceremony id, and the only
+ * thing that mints one is a BeginPasskeyRegistration that already passed
+ * step-up. That handle is in-memory, single-use, expires in
+ * identity.PasskeyCeremonyTTL, and cannot be answered without a signature
+ * over its challenge — so one proof per registration is the granularity,
+ * and a second would guard nothing the first does not.
+ * 
+ * It is also actively harmful, which is how the omission was found. A
+ * REMOTE registration proves step-up with a passkey, and by the time the
+ * finish runs, the credential the authenticator just created is
+ * discoverable and NOT yet registered here — so the second ceremony can
+ * be answered by the one credential this backend cannot verify, and the
+ * registration fails on its own success (`e2e/tests/harness-passkey-
+ * lifecycle.spec.ts`). Registering remotely also cost two prompts.
+ */
+export function FinishPasskeyRegistration(ceremonyID: string, response: json$0.RawMessage): $CancellablePromise<app$0.PasskeySummary> {
+    return $Call.ByID(1601396603, ceremonyID, response).then(($result: any) => {
+        return $$createType18($result);
+    });
+}
+
+/**
+ * FinishPasskeyStepUp verifies the assertion and answers the single-use
+ * token the caller attaches to its next call.
+ * 
+ * The session the token binds to is the one the CEREMONY recorded, not
+ * one this call names, so a caller cannot obtain a proof for somebody
+ * else's session — and the token is judged against the presenting
+ * connection's session when it is spent (transport.Config.StepUpProof).
+ */
+export function FinishPasskeyStepUp(ceremonyID: string, response: json$0.RawMessage): $CancellablePromise<app$0.PasskeyStepUpGrant> {
+    return $Call.ByID(1569276637, ceremonyID, response).then(($result: any) => {
+        return $$createType19($result);
+    });
+}
+
+/**
+ * ForgetAccessDevice deletes a REVOKED device row entirely, along with
+ * everything the schema cascades from it — its sessions, and their
+ * refresh secrets. The credential log is deliberately not among them:
+ * its rows name the device by string and have no foreign key, so what
+ * this backend admitted and withdrew survives the row it happened to.
+ * 
+ * It refuses an un-revoked device, and says so. Revoking is what ENDS
+ * access — it is the call that closes live sockets and drops the
+ * device's persisted UI state — and deleting the row first would take
+ * away the only handle the person has on a device that still holds
+ * credentials. Revoke, then forget.
+ * 
+ * The local page channel is refused ahead of that, on the same grounds
+ * as RevokeAccessDevice: it is never revoked, so the ordering refusal
+ * would tell the owner to do something this surface will not let them
+ * do.
+ * 
+ * Forgetting frees the device's key thumbprint, so the same key may
+ * enroll again through a fresh pairing link. That is intended and is the
+ * whole difference from RestoreAccessDevice, which says "that is still
+ * my device": either way the owner mints the link and confirms the
+ * verification number, so nothing re-enrolls unwatched.
+ * 
+ * Carries no //ao:stepup, matching every call on this surface but the
+ * mint: it issues no credential, and a device the owner already granted
+ * `access:admin` must be able to finish tidying up a phone it revoked.
+ */
+export function ForgetAccessDevice(deviceID: string): $CancellablePromise<void> {
+    return $Call.ByID(516065248, deviceID);
+}
+
+/**
+ * ForgetTailnetNode deletes this backend's tailnet identity from disk, so
+ * the next enable enrolls a fresh device. It is how the owner moves the
+ * backend to a different tailnet or a different account: the node key and
+ * the machine key live in that one directory and there is no other way to
+ * change which tailnet they belong to.
+ * 
+ * Refused while the feature is enabled. Deleting the state under a live
+ * node would leave this process holding an identity nothing on disk
+ * records, and the owner's admin panel would keep showing a device that
+ * no longer has a way back.
+ * 
+ * `host` scope and deliberately NO step-up. Every act this call can
+ * perform is a DELETION of local state: it cannot widen what this backend
+ * exposes, it cannot enroll anything, and it cannot run at all until the
+ * feature has already been turned off — which is itself a step-up-gated
+ * write through SetNetworkSettings. Demanding a second proof would gate
+ * the cleanup after an act that was already proved, which is the same
+ * argument RenewCanonicalDomainCert makes.
+ */
+export function ForgetTailnetNode(): $CancellablePromise<network$0.Settings> {
+    return $Call.ByID(767560289).then(($result: any) => {
+        return $$createType20($result);
+    });
+}
+
+/**
  * ForkThread copies a source thread's timeline into a new fork and wires
  * the provider-specific resume state. The whole sequence is atomic from
  * the caller's point of view: if any step fails, the partially-created
@@ -675,7 +926,7 @@ export function DownloadUpdate(tag: string): $CancellablePromise<void> {
  */
 export function ForkThread(sourceThreadID: string, atTurnIndex: number | null): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(4063914461, sourceThreadID, atTurnIndex).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -686,7 +937,7 @@ export function ForkThread(sourceThreadID: string, atTurnIndex: number | null): 
  */
 export function ForkThreadFromMessage(sourceThreadID: string, userItemID: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3977213964, sourceThreadID, userItemID).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -715,22 +966,18 @@ export function ForkThreadFromMessage(sourceThreadID: string, userItemID: string
  */
 export function GenerateCommitMessage(ws: app$0.WorkspaceRef): $CancellablePromise<app$0.GeneratedCommitMessage> {
     return $Call.ByID(1669373286, ws).then(($result: any) => {
-        return $$createType14($result);
+        return $$createType21($result);
     });
 }
 
 /**
- * GetAttachmentData returns the base64-encoded raw bytes for rendering a
- * thread-owned attachment inline in the UI. Keeping this behind RPC avoids
- * exposing a static file server.
- * 
- * This is the FULL-SIZE path used by the lightbox modal. Inline grid
- * rendering should call GetAttachmentThumbnail instead so we don't ship
- * 5 MB of pixels for a 128 px tile (especially over the remote
- * `--connect` transport).
+ * GetAccessOverview returns the device, pairing, and audit lists in one
+ * read.
  */
-export function GetAttachmentData(threadID: string, attachmentID: string): $CancellablePromise<string> {
-    return $Call.ByID(71154490, threadID, attachmentID);
+export function GetAccessOverview(): $CancellablePromise<app$0.AccessOverview> {
+    return $Call.ByID(1559710962).then(($result: any) => {
+        return $$createType22($result);
+    });
 }
 
 /**
@@ -740,10 +987,16 @@ export function GetAttachmentData(threadID: string, attachmentID: string): $Canc
  * the savings matter even locally (base64 + JSON encode cost) and become
  * the difference between "instant grid" and "watch them load" over the
  * remote `--connect` transport.
+ * 
+ * This one STAYS an RPC while the full-size paths moved to HTTP, and the
+ * size is the whole reason. A thumbnail is ~10-30 KB, so base64 inside a
+ * WS frame costs a frame the socket would not notice; the round trip a
+ * ticket adds is pure latency, and a grid opens many of them at once. The
+ * rule the move was about is large bodies, and a thumbnail is not one.
  */
 export function GetAttachmentThumbnail(threadID: string, attachmentID: string): $CancellablePromise<app$0.AttachmentThumbnail> {
     return $Call.ByID(3414107538, threadID, attachmentID).then(($result: any) => {
-        return $$createType15($result);
+        return $$createType23($result);
     });
 }
 
@@ -762,7 +1015,7 @@ export function GetBranchBaseDiff(ws: app$0.WorkspaceRef, baseBranch: string, ig
  */
 export function GetChannelMessages(channelID: string, afterSeq: number, limit: number): $CancellablePromise<store$0.ChannelMessage[]> {
     return $Call.ByID(3595031866, channelID, afterSeq, limit).then(($result: any) => {
-        return $$createType17($result);
+        return $$createType25($result);
     });
 }
 
@@ -776,7 +1029,7 @@ export function GetChannelMessages(channelID: string, afterSeq: number, limit: n
  */
 export function GetChannelState(channelID: string): $CancellablePromise<app$0.ChannelStatePayload> {
     return $Call.ByID(3664812883, channelID).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType10($result);
     });
 }
 
@@ -803,7 +1056,7 @@ export function GetChannelState(channelID: string): $CancellablePromise<app$0.Ch
  */
 export function GetClaudeSkills(workspacePath: string): $CancellablePromise<claudeconfig$0.Skill[]> {
     return $Call.ByID(1573335127, workspacePath).then(($result: any) => {
-        return $$createType19($result);
+        return $$createType27($result);
     });
 }
 
@@ -822,10 +1075,16 @@ export function GetClaudeSkills(workspacePath: string): $CancellablePromise<clau
  * (see internal/triage/provider_commands.go).
  * 
  * Never spawns — a pure read of what a probe already left behind.
+ * 
+ * Wire-reachable deliberately: the SAME rich entries already reach remote
+ * peers on the `provider:commands` channel, whose registry row is
+ * AudienceAny, so refusing the RPC would empty a cold thread's menu and buy
+ * no confidentiality. If that channel ever becomes loopback-only, or this
+ * shape grows a path or env field, re-run the decision.
  */
 export function GetClaudeSlashCommands(): $CancellablePromise<app$0.ClaudeSlashCommands> {
     return $Call.ByID(2854892544).then(($result: any) => {
-        return $$createType20($result);
+        return $$createType28($result);
     });
 }
 
@@ -852,7 +1111,7 @@ export function GetClaudeSlashCommands(): $CancellablePromise<app$0.ClaudeSlashC
  */
 export function GetCodexAccountUsage(): $CancellablePromise<app$0.CodexAccountUsage | null> {
     return $Call.ByID(1110466608).then(($result: any) => {
-        return $$createType22($result);
+        return $$createType30($result);
     });
 }
 
@@ -876,7 +1135,7 @@ export function GetCodexAccountUsage(): $CancellablePromise<app$0.CodexAccountUs
  */
 export function GetCodexSkills(workspacePath: string, forceReload: boolean): $CancellablePromise<codexskills$0.CwdSkills> {
     return $Call.ByID(1018032480, workspacePath, forceReload).then(($result: any) => {
-        return $$createType23($result);
+        return $$createType31($result);
     });
 }
 
@@ -890,7 +1149,26 @@ export function GetCommitDiff(ws: app$0.WorkspaceRef, sha: string, ignoreWhitesp
 
 export function GetContextSettings(providerName: string, model: string): $CancellablePromise<app$0.ContextSettingsProfile> {
     return $Call.ByID(3416004963, providerName, model).then(($result: any) => {
-        return $$createType24($result);
+        return $$createType32($result);
+    });
+}
+
+/**
+ * GetDevServers returns this machine's dev-server list.
+ * 
+ * It scans on demand rather than reading whatever the loop last
+ * published, because the loop is idle on every install nobody is
+ * watching this machine from — which includes the ordinary desktop case
+ * where this call is the only reader there will ever be.
+ * 
+ * `preview:open`, not a read scope. The list names every loopback port
+ * on this host that answers like a page, along with the process holding
+ * each one: that is a port-scan of the machine, and it rides the same
+ * execute-tier capability as the gateway it feeds.
+ */
+export function GetDevServers(): $CancellablePromise<devscan$0.DevServerList> {
+    return $Call.ByID(139818238).then(($result: any) => {
+        return $$createType33($result);
     });
 }
 
@@ -899,12 +1177,12 @@ export function GetContextSettings(providerName: string, model: string): $Cancel
  * hunk-gap expansion in the LIVE scopes — workspace, branch, commit and pr —
  * whose new side is content the referenced checkout already holds. The edits
  * scope is a different subject (one thread's own history) and has its own
- * entry point. Same wire-exposure class as the diff getters: classified
- * LocalOnlyMethods.
+ * entry point. Same wire-exposure class as the diff getters: it answers a
+ * session granted `files:read`, and no other.
  */
 export function GetDiffContextLines(ws: app$0.WorkspaceRef, req: app$0.DiffContextRequest): $CancellablePromise<app$0.DiffContextResult> {
     return $Call.ByID(1590634674, ws, req).then(($result: any) => {
-        return $$createType25($result);
+        return $$createType34($result);
     });
 }
 
@@ -913,7 +1191,7 @@ export function GetDiffContextLines(ws: app$0.WorkspaceRef, req: app$0.DiffConte
  */
 export function GetDiscussion(name: string, scope: string): $CancellablePromise<store$0.DiscussionDefinition> {
     return $Call.ByID(1924583939, name, scope).then(($result: any) => {
-        return $$createType26($result);
+        return $$createType35($result);
     });
 }
 
@@ -923,7 +1201,7 @@ export function GetDiscussion(name: string, scope: string): $CancellablePromise<
  */
 export function GetDraft(threadID: string): $CancellablePromise<app$0.Draft> {
     return $Call.ByID(875977146, threadID).then(($result: any) => {
-        return $$createType27($result);
+        return $$createType36($result);
     });
 }
 
@@ -935,7 +1213,7 @@ export function GetDraft(threadID: string): $CancellablePromise<app$0.Draft> {
  */
 export function GetEditDiffContextLines(threadID: string, req: app$0.DiffContextRequest): $CancellablePromise<app$0.DiffContextResult> {
     return $Call.ByID(949275134, threadID, req).then(($result: any) => {
-        return $$createType25($result);
+        return $$createType34($result);
     });
 }
 
@@ -947,7 +1225,7 @@ export function GetEditDiffContextLines(threadID: string, req: app$0.DiffContext
  */
 export function GetEditorSettings(): $CancellablePromise<settings$0.EditorSettings> {
     return $Call.ByID(1655853383).then(($result: any) => {
-        return $$createType28($result);
+        return $$createType37($result);
     });
 }
 
@@ -964,7 +1242,7 @@ export function GetEditorSettings(): $CancellablePromise<settings$0.EditorSettin
  */
 export function GetGitStatus(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitStatus> {
     return $Call.ByID(4123560639, ws).then(($result: any) => {
-        return $$createType29($result);
+        return $$createType38($result);
     });
 }
 
@@ -980,7 +1258,7 @@ export function GetGitStatus(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.
  */
 export function GetKeybindings(): $CancellablePromise<keybindings$0.LoadResult> {
     return $Call.ByID(3015840904).then(($result: any) => {
-        return $$createType30($result);
+        return $$createType39($result);
     });
 }
 
@@ -992,7 +1270,7 @@ export function GetKeybindings(): $CancellablePromise<keybindings$0.LoadResult> 
  */
 export function GetLocalImageData(path: string, workspacePath: string): $CancellablePromise<app$0.LocalImageData> {
     return $Call.ByID(3247514443, path, workspacePath).then(($result: any) => {
-        return $$createType31($result);
+        return $$createType40($result);
     });
 }
 
@@ -1005,7 +1283,7 @@ export function GetLocalImageData(path: string, workspacePath: string): $Cancell
  */
 export function GetMcpServerStatus(providerName: string, name: string, force: boolean): $CancellablePromise<mcpstatus$0.ServerStatus> {
     return $Call.ByID(4139359668, providerName, name, force).then(($result: any) => {
-        return $$createType32($result);
+        return $$createType41($result);
     });
 }
 
@@ -1024,31 +1302,46 @@ export function GetMergeConflictFile(ws: app$0.WorkspaceRef, treeOID: string, pa
  */
 export function GetModelsForProvider(providerName: string): $CancellablePromise<provider$0.ModelInfo[]> {
     return $Call.ByID(1632984917, providerName).then(($result: any) => {
-        return $$createType34($result);
+        return $$createType43($result);
     });
 }
 
 /**
- * GetNetworkSettings returns the current persisted bind-all
- * preference plus the server-derived URL and token. The URL and
- * token are recomputed on every call so a rebind (e.g. via
- * SetNetworkSettings) reflects immediately on the next read.
+ * GetNetworkSettings returns the persisted network preferences — the
+ * bind toggle, the canonical domain, the DNS hook, the external
+ * certificate pair, the tailnet toggle and its coordination server —
+ * plus what only the running process knows: the certificate status, the
+ * tailnet node's status, and — for a caller at the machine — the share
+ * URLs and this launch's token. Everything server-derived is recomputed on
+ * every call, so a rebind, a renewal or a node joining reflects on the
+ * next read. The screen polls this while an issuance or a sign-in is in
+ * flight; there is no push channel for it.
+ * 
+ * `access:admin` rather than `host`, and the two halves of that decision
+ * are separate. WHO may read it: managing how a backend is exposed is what
+ * a paired admin device is for, and a `host` annotation refused every one
+ * of them — leaving Settings → Remote access unreachable from any device that
+ * was not the machine itself. WHAT they read: the credential half is
+ * withheld from a caller that is not host-present, which
+ * network.FromServerRedacted argues field by field. The bind toggle, the
+ * domain, the certificate status and the tailnet node — including its
+ * sign-in link — are what remote administration needs, and they travel.
  */
 export function GetNetworkSettings(): $CancellablePromise<network$0.Settings> {
     return $Call.ByID(1026796858).then(($result: any) => {
-        return $$createType35($result);
+        return $$createType20($result);
     });
 }
 
 export function GetPRCIJobLog(pr: git$0.PRReference, jobID: string): $CancellablePromise<app$0.PRCIJobLogResult> {
     return $Call.ByID(2411810578, pr, jobID).then(($result: any) => {
-        return $$createType36($result);
+        return $$createType44($result);
     });
 }
 
 export function GetPRCIJobs(pr: git$0.PRReference): $CancellablePromise<git$0.CIPipeline> {
     return $Call.ByID(2370852281, pr).then(($result: any) => {
-        return $$createType37($result);
+        return $$createType45($result);
     });
 }
 
@@ -1064,7 +1357,7 @@ export function GetPRCommitDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, s
 
 export function GetPRDetail(pr: git$0.PRReference): $CancellablePromise<git$0.PRDetail> {
     return $Call.ByID(2443547196, pr).then(($result: any) => {
-        return $$createType38($result);
+        return $$createType46($result);
     });
 }
 
@@ -1074,13 +1367,13 @@ export function GetPRDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, baseRef
 
 export function GetPRMergeConflicts(ws: app$0.WorkspaceRef, pr: git$0.PRReference, baseRef: string, headRefName: string): $CancellablePromise<app$0.PRMergeConflictsResult> {
     return $Call.ByID(106351482, ws, pr, baseRef, headRefName).then(($result: any) => {
-        return $$createType39($result);
+        return $$createType47($result);
     });
 }
 
 export function GetPayloadChunk(threadID: string, payloadID: string, offset: number, maxBytes: number): $CancellablePromise<app$0.PayloadChunk> {
     return $Call.ByID(73280836, threadID, payloadID, offset, maxBytes).then(($result: any) => {
-        return $$createType40($result);
+        return $$createType48($result);
     });
 }
 
@@ -1092,7 +1385,7 @@ export function GetPayloadChunk(threadID: string, payloadID: string, offset: num
  */
 export function GetPayloadData(threadID: string, payloadID: string): $CancellablePromise<app$0.PayloadContent> {
     return $Call.ByID(3448919335, threadID, payloadID).then(($result: any) => {
-        return $$createType41($result);
+        return $$createType49($result);
     });
 }
 
@@ -1102,7 +1395,7 @@ export function GetPayloadData(threadID: string, payloadID: string): $Cancellabl
  */
 export function GetPayloadPreview(threadID: string, payloadID: string, maxBytes: number): $CancellablePromise<app$0.PayloadPreview> {
     return $Call.ByID(4070214921, threadID, payloadID, maxBytes).then(($result: any) => {
-        return $$createType42($result);
+        return $$createType50($result);
     });
 }
 
@@ -1113,7 +1406,18 @@ export function GetPayloadPreview(threadID: string, payloadID: string, maxBytes:
  */
 export function GetProjectWorktreeSetup(projectID: string): $CancellablePromise<app$0.WorktreeSetupConfig> {
     return $Call.ByID(471350242, projectID).then(($result: any) => {
-        return $$createType43($result);
+        return $$createType51($result);
+    });
+}
+
+/**
+ * GetProviderLoginState is how a client that just mounted, or just
+ * reconnected, rejoins a sign-in that is already running. It never fails: a
+ * provider with nothing in flight is idle.
+ */
+export function GetProviderLoginState(providerName: string): $CancellablePromise<provideraccountapp$0.LoginState> {
+    return $Call.ByID(84914540, providerName).then(($result: any) => {
+        return $$createType7($result);
     });
 }
 
@@ -1126,7 +1430,22 @@ export function GetProjectWorktreeSetup(projectID: string): $CancellablePromise<
  */
 export function GetProviderStatuses(): $CancellablePromise<provider$0.ProviderStatus[]> {
     return $Call.ByID(3829328996).then(($result: any) => {
-        return $$createType45($result);
+        return $$createType53($result);
+    });
+}
+
+/**
+ * GetPushSenderStatus answers whether this backend can wake a phone, and
+ * how many are registered.
+ * 
+ * `access:admin`, like the credential writes, and without their step-up:
+ * reading whether this works changes nothing. "My phone stopped buzzing" is
+ * answered by this shape, and answering it should not require walking to
+ * the machine.
+ */
+export function GetPushSenderStatus(): $CancellablePromise<app$0.PushSenderStatus> {
+    return $Call.ByID(447579616).then(($result: any) => {
+        return $$createType54($result);
     });
 }
 
@@ -1136,13 +1455,14 @@ export function GetProviderStatuses(): $CancellablePromise<provider$0.ProviderSt
  * per-thread mirror; also by remote `--connect` clients attaching
  * mid-session. Read-only — no emission.
  * 
- * LocalOnly: the snapshot exposes the user's drafted-but-not-yet-sent
- * prompts, attachment IDs, and plan refs. Same disclosure shape as
- * the diff bindings, hence loopback-only at the transport layer.
+ * threads:operate rather than threads:read: the snapshot exposes the
+ * user's drafted-but-not-yet-sent prompts, attachment IDs, and plan
+ * refs, which is what a session driving the thread sees and not what a
+ * read-only observer signed up for.
  */
 export function GetQueueState(threadID: string): $CancellablePromise<app$0.QueuedItem[]> {
     return $Call.ByID(3079581691, threadID).then(($result: any) => {
-        return $$createType47($result);
+        return $$createType56($result);
     });
 }
 
@@ -1155,29 +1475,48 @@ export function GetQueueState(threadID: string): $CancellablePromise<app$0.Queue
  */
 export function GetRateLimitsSnapshots(): $CancellablePromise<provider$0.RateLimitsSnapshot[]> {
     return $Call.ByID(3325141610).then(($result: any) => {
-        return $$createType49($result);
+        return $$createType58($result);
     });
 }
 
 /**
- * GetRemoteEndpointToken returns the token for a saved endpoint by ID.
- * Split off ListRemoteEndpoints so the bulk-read path doesn't carry
- * credentials. Used by the frontend's "Copy launch command" affordance,
- * which is an explicit user action; ListRemoteEndpoints fires on every
- * settings render and would otherwise leak tokens to any LAN-attached
- * token-holder.
+ * GetServiceUpdateStatus reports what this backend knows about updating
+ * itself. It NEVER touches the network: it is the read a client polls, the
+ * read the push channel mirrors, and a read that could block on GitHub would
+ * make the update surface unopenable on an offline host.
+ * 
+ * Off a supervised host it answers Supervised:false and the current version,
+ * with no error — the client hides the surface rather than showing a failure
+ * for a machine that simply is not supervised.
+ * 
+ * `access:admin` rather than `host`: choosing which build a machine runs is
+ * what a paired admin device is for, and `host` would leave the surface
+ * readable only from the machine this feature exists to save a trip to. It
+ * discloses this build's version, a release tag, a phase word and a byte
+ * count, all of which the same device could read from the release feed
+ * itself.
  */
-export function GetRemoteEndpointToken(id: string): $CancellablePromise<string> {
-    return $Call.ByID(3604571249, id);
+export function GetServiceUpdateStatus(): $CancellablePromise<app$0.ServiceUpdateStatus> {
+    return $Call.ByID(2230314013).then(($result: any) => {
+        return $$createType59($result);
+    });
 }
 
 /**
  * GetSettings returns the current persisted settings merged over defaults,
  * with every secret redacted (see redactedSettings).
+ * 
+ * Resolved PER CALLER. The host and user tiers are global to this backend;
+ * the device tier comes out of the calling connection's own ui_state bucket
+ * over its DEVICE-CLASS defaults (docs/specs/remote-access.md §6,
+ * internal/settings/classdefaults.go), so two screens attached to one backend
+ * see two font sizes and one shared set of confirmations, and a paired phone
+ * that never touched lowPowerMode reads it on. A caller with no device behind
+ * it — a background saga, a test — reads the desktop class's defaults.
  */
 export function GetSettings(): $CancellablePromise<settings$0.Settings> {
     return $Call.ByID(2554697378).then(($result: any) => {
-        return $$createType13($result);
+        return $$createType16($result);
     });
 }
 
@@ -1198,7 +1537,7 @@ export function GetSettings(): $CancellablePromise<settings$0.Settings> {
  */
 export function GetSpinnerFiles(): $CancellablePromise<spinner$0.Files> {
     return $Call.ByID(2622552651).then(($result: any) => {
-        return $$createType50($result);
+        return $$createType60($result);
     });
 }
 
@@ -1209,7 +1548,7 @@ export function GetSpinnerFiles(): $CancellablePromise<spinner$0.Files> {
  */
 export function GetTerminalReplay(terminalID: string): $CancellablePromise<app$0.TerminalReplay> {
     return $Call.ByID(2329592604, terminalID).then(($result: any) => {
-        return $$createType51($result);
+        return $$createType61($result);
     });
 }
 
@@ -1230,7 +1569,7 @@ export function GetTerminalReplay(terminalID: string): $CancellablePromise<app$0
  */
 export function GetThemeFiles(): $CancellablePromise<theme$0.Files> {
     return $Call.ByID(2000462111).then(($result: any) => {
-        return $$createType52($result);
+        return $$createType62($result);
     });
 }
 
@@ -1239,7 +1578,7 @@ export function GetThemeFiles(): $CancellablePromise<theme$0.Files> {
  */
 export function GetThread(id: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(1098302047, id).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -1260,7 +1599,7 @@ export function GetThread(id: string): $CancellablePromise<store$0.Thread> {
  */
 export function GetThreadContextUsage(threadID: string): $CancellablePromise<app$0.ThreadContextUsage> {
     return $Call.ByID(3852033265, threadID).then(($result: any) => {
-        return $$createType53($result);
+        return $$createType63($result);
     });
 }
 
@@ -1275,7 +1614,7 @@ export function GetThreadContextUsage(threadID: string): $CancellablePromise<app
  */
 export function GetThreadDefaults(opts: app$0.CreateThreadOptions): $CancellablePromise<app$0.ThreadDefaults> {
     return $Call.ByID(3362481473, opts).then(($result: any) => {
-        return $$createType54($result);
+        return $$createType64($result);
     });
 }
 
@@ -1288,7 +1627,25 @@ export function GetThreadDefaults(opts: app$0.CreateThreadOptions): $Cancellable
  */
 export function GetThreadItem(threadID: string, itemID: string): $CancellablePromise<store$0.Item> {
     return $Call.ByID(1969869112, threadID, itemID).then(($result: any) => {
-        return $$createType55($result);
+        return $$createType65($result);
+    });
+}
+
+/**
+ * GetThreadItemProjectionSource returns one item's unprojected meta,
+ * payload meta and preview spans. Thread-scoped for the same reason
+ * GetThreadItem is: an item id must not be a key to arbitrary history.
+ * Returns the zero value when no row matches — callers check ItemID != "".
+ * 
+ * Deliberately NOT routed through the projection: this IS the route out
+ * of it, and a projection applied here would make an elided field
+ * unrecoverable, which is exactly the failure remote-access.md §14 names
+ * (a promised on-demand endpoint that never arrived turns an accepted
+ * temporary loss into a permanent one).
+ */
+export function GetThreadItemProjectionSource(threadID: string, itemID: string): $CancellablePromise<app$0.ItemProjectionSource> {
+    return $Call.ByID(1848576136, threadID, itemID).then(($result: any) => {
+        return $$createType66($result);
     });
 }
 
@@ -1297,13 +1654,14 @@ export function GetThreadItem(threadID: string, itemID: string): $CancellablePro
  * It is the refresh/reconnect companion to the push events emitted during a
  * normal uninterrupted frontend session.
  * 
- * LocalOnly: the payload can expose pending prompts, tool approvals, drafted
- * queued messages, attachment ids, and provider session state. It belongs in
- * the same loopback-only class as GetQueueState and ListPendingInteractiveRequests.
+ * threads:operate rather than threads:read: the payload can expose pending
+ * prompts, tool approvals, drafted queued messages, attachment ids, and
+ * provider session state. Same class as GetQueueState and
+ * ListPendingInteractiveRequests, and annotated to match.
  */
 export function GetThreadLiveState(threadID: string): $CancellablePromise<app$0.ThreadLiveState> {
     return $Call.ByID(70226550, threadID).then(($result: any) => {
-        return $$createType56($result);
+        return $$createType67($result);
     });
 }
 
@@ -1326,7 +1684,7 @@ export function GetThreadRuntimeMode(threadID: string): $CancellablePromise<stri
  */
 export function GetThreadTurnPreview(threadID: string, itemID: string): $CancellablePromise<store$0.TurnPreview> {
     return $Call.ByID(1512475224, threadID, itemID).then(($result: any) => {
-        return $$createType57($result);
+        return $$createType68($result);
     });
 }
 
@@ -1339,7 +1697,7 @@ export function GetThreadTurnPreview(threadID: string, itemID: string): $Cancell
  */
 export function GetThreadUserMessageHistory(threadID: string, limit: number): $CancellablePromise<store$0.UserMessageHistoryEntry[]> {
     return $Call.ByID(3340938325, threadID, limit).then(($result: any) => {
-        return $$createType59($result);
+        return $$createType70($result);
     });
 }
 
@@ -1352,7 +1710,7 @@ export function GetThreadUserMessageHistory(threadID: string, limit: number): $C
  */
 export function GetThreadUserMessageTicks(threadID: string): $CancellablePromise<store$0.UserMessageTick[]> {
     return $Call.ByID(556088547, threadID).then(($result: any) => {
-        return $$createType61($result);
+        return $$createType72($result);
     });
 }
 
@@ -1368,7 +1726,7 @@ export function GetThreadUserMessageTicks(threadID: string): $CancellablePromise
  */
 export function GetThreadWorktreeSetup(threadID: string): $CancellablePromise<app$0.WorktreeSetupRunState> {
     return $Call.ByID(49371251, threadID).then(($result: any) => {
-        return $$createType62($result);
+        return $$createType73($result);
     });
 }
 
@@ -1380,7 +1738,7 @@ export function GetThreadWorktreeSetup(threadID: string): $CancellablePromise<ap
  */
 export function GetTurnEditsDiff(threadID: string, turnIndex: number): $CancellablePromise<app$0.TurnEditsDiff> {
     return $Call.ByID(2905371438, threadID, turnIndex).then(($result: any) => {
-        return $$createType63($result);
+        return $$createType74($result);
     });
 }
 
@@ -1394,12 +1752,12 @@ export function GetUIRenderTracePath(): $CancellablePromise<string> {
 }
 
 /**
- * GetUIState returns the calling client's full persisted UI-state
+ * GetUIState returns the calling connection's full persisted UI-state
  * bucket. A fresh client gets an empty map — defaults, not an error.
  */
-export function GetUIState(clientID: string): $CancellablePromise<{ [_ in string]?: string }> {
-    return $Call.ByID(3380106838, clientID).then(($result: any) => {
-        return $$createType64($result);
+export function GetUIState(): $CancellablePromise<{ [_ in string]?: string }> {
+    return $Call.ByID(3380106838).then(($result: any) => {
+        return $$createType75($result);
     });
 }
 
@@ -1417,12 +1775,12 @@ export function GetUIState(clientID: string): $CancellablePromise<{ [_ in string
  * update reprices all history the next time this runs. Buckets with
  * UnpricedRows > 0 carry a model the rate table doesn't recognize —
  * the UI should label those buckets' CostUSD as a lower bound.
- * Not a LocalOnlyMethods entry: read-only aggregate data, safe for
- * remote clients.
+ * Read-only aggregate data, so it rides `threads:read` rather than a
+ * scope only this machine can satisfy.
  */
 export function GetUsageStats(query: store$0.UsageQuery): $CancellablePromise<store$0.UsageBucket[]> {
     return $Call.ByID(3135466533, query).then(($result: any) => {
-        return $$createType66($result);
+        return $$createType77($result);
     });
 }
 
@@ -1459,7 +1817,7 @@ export function GetWSLDistroPreference(): $CancellablePromise<string> {
  */
 export function GetWorkspaceActivity(workspacePath: string): $CancellablePromise<app$0.WorkspaceActivity> {
     return $Call.ByID(673985705, workspacePath).then(($result: any) => {
-        return $$createType67($result);
+        return $$createType78($result);
     });
 }
 
@@ -1487,7 +1845,7 @@ export function GetWorkspaceCurrentDiff(ws: app$0.WorkspaceRef, ignoreWhitespace
  */
 export function GitCheckout(ws: app$0.WorkspaceRef, branch: string): $CancellablePromise<app$0.GitWorkspaceState> {
     return $Call.ByID(1598126927, ws, branch).then(($result: any) => {
-        return $$createType68($result);
+        return $$createType79($result);
     });
 }
 
@@ -1498,7 +1856,7 @@ export function GitCheckout(ws: app$0.WorkspaceRef, branch: string): $Cancellabl
  */
 export function GitCommit(ws: app$0.WorkspaceRef, subject: string, body: string): $CancellablePromise<git$0.GitActionResult> {
     return $Call.ByID(1971060042, ws, subject, body).then(($result: any) => {
-        return $$createType69($result);
+        return $$createType80($result);
     });
 }
 
@@ -1524,7 +1882,7 @@ export function GitCommit(ws: app$0.WorkspaceRef, subject: string, body: string)
  */
 export function GitCreateBranchFrom(ws: app$0.WorkspaceRef, name: string, baseBranch: string, carryLocalChanges: boolean): $CancellablePromise<app$0.GitWorkspaceState> {
     return $Call.ByID(429779991, ws, name, baseBranch, carryLocalChanges).then(($result: any) => {
-        return $$createType68($result);
+        return $$createType79($result);
     });
 }
 
@@ -1534,7 +1892,7 @@ export function GitCreateBranchFrom(ws: app$0.WorkspaceRef, name: string, baseBr
  */
 export function GitCreatePR(ws: app$0.WorkspaceRef, title: string, body: string, draft: boolean): $CancellablePromise<git$0.GitActionResult> {
     return $Call.ByID(4106667105, ws, title, body, draft).then(($result: any) => {
-        return $$createType69($result);
+        return $$createType80($result);
     });
 }
 
@@ -1559,7 +1917,7 @@ export function GitCreateWorktree(threadID: string, branch: string): $Cancellabl
  */
 export function GitListBranchPruneCandidates(ws: app$0.WorkspaceRef): $CancellablePromise<app$0.BranchPruneCandidates> {
     return $Call.ByID(3795082615, ws).then(($result: any) => {
-        return $$createType70($result);
+        return $$createType81($result);
     });
 }
 
@@ -1568,7 +1926,7 @@ export function GitListBranchPruneCandidates(ws: app$0.WorkspaceRef): $Cancellab
  */
 export function GitListBranches(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitBranch[]> {
     return $Call.ByID(2693102179, ws).then(($result: any) => {
-        return $$createType72($result);
+        return $$createType83($result);
     });
 }
 
@@ -1578,7 +1936,7 @@ export function GitListBranches(ws: app$0.WorkspaceRef): $CancellablePromise<git
  */
 export function GitListWorktrees(ws: app$0.WorkspaceRef): $CancellablePromise<app$0.WorktreeListItem[]> {
     return $Call.ByID(3232495403, ws).then(($result: any) => {
-        return $$createType74($result);
+        return $$createType85($result);
     });
 }
 
@@ -1609,7 +1967,7 @@ export function GitMaybeFetchRemotes(ws: app$0.WorkspaceRef): $CancellablePromis
  */
 export function GitPruneBranches(ws: app$0.WorkspaceRef, selections: app$0.BranchPruneSelection[]): $CancellablePromise<app$0.BranchPruneResult> {
     return $Call.ByID(3331815821, ws, selections).then(($result: any) => {
-        return $$createType75($result);
+        return $$createType86($result);
     });
 }
 
@@ -1618,7 +1976,7 @@ export function GitPruneBranches(ws: app$0.WorkspaceRef, selections: app$0.Branc
  */
 export function GitPull(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitActionResult> {
     return $Call.ByID(3933172764, ws).then(($result: any) => {
-        return $$createType69($result);
+        return $$createType80($result);
     });
 }
 
@@ -1627,7 +1985,7 @@ export function GitPull(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitAc
  */
 export function GitPush(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitActionResult> {
     return $Call.ByID(4036251239, ws).then(($result: any) => {
-        return $$createType69($result);
+        return $$createType80($result);
     });
 }
 
@@ -1647,10 +2005,10 @@ export function GitRemoveWorktree(threadID: string): $CancellablePromise<void> {
  * caller can render immediately, plus the canonical cwd the stream is
  * keyed on and a handle used to call GitStatusUnsubscribe.
  * 
- * LocalOnly: workspace paths are local FS paths and gitwatch can spawn
- * recursive fs watches plus continuous git invocations; exposing this
- * surface to LAN peers would leak repo locations and let a token-only
- * peer enumerate threads via probe attempts.
+ * It rides `git:operate`: workspace paths are local FS paths and gitwatch
+ * can spawn recursive fs watches plus continuous git invocations, so a
+ * session without that grant is refused rather than told where repos live
+ * or left free to enumerate threads by probing.
  * 
  * The subscription is automatically released when the calling WS
  * connection drops (via transport.ConnState cleanup). The frontend
@@ -1659,7 +2017,7 @@ export function GitRemoveWorktree(threadID: string): $CancellablePromise<void> {
  */
 export function GitStatusSubscribe(ws: app$0.WorkspaceRef): $CancellablePromise<app$0.GitStatusSubscriptionResult> {
     return $Call.ByID(3282404643, ws).then(($result: any) => {
-        return $$createType76($result);
+        return $$createType87($result);
     });
 }
 
@@ -1681,7 +2039,7 @@ export function GitStatusUnsubscribe(subscriptionID: string): $CancellablePromis
  */
 export function GitSyncBranch(ws: app$0.WorkspaceRef, branch: string): $CancellablePromise<git$0.GitBranch[]> {
     return $Call.ByID(1057032236, ws, branch).then(($result: any) => {
-        return $$createType72($result);
+        return $$createType83($result);
     });
 }
 
@@ -1691,28 +2049,30 @@ export function GitSyncBranch(ws: app$0.WorkspaceRef, branch: string): $Cancella
  */
 export function GitWorktreeStatus(ws: app$0.WorkspaceRef, worktreePath: string): $CancellablePromise<app$0.WorktreeStatus> {
     return $Call.ByID(1333748060, ws, worktreePath).then(($result: any) => {
-        return $$createType77($result);
+        return $$createType88($result);
     });
 }
 
 /**
  * HighlightClassNames returns the classId → semantic-name table
  * (index = class id, 0 = "none"). The frontend fetches it once at boot
- * and renders class id N as CSS class `syntax-<name>`. Wire-safe.
+ * and renders class id N as CSS class `syntax-<name>`. A static table,
+ * so it answers any session granted `files:read`.
  */
 export function HighlightClassNames(): $CancellablePromise<string[]> {
     return $Call.ByID(2772816619).then(($result: any) => {
-        return $$createType78($result);
+        return $$createType89($result);
     });
 }
 
 /**
- * HighlightCode returns spans for raw source text. Wire-safe: pure
- * text-in/metadata-out, no local state touched.
+ * HighlightCode returns spans for raw source text. Pure
+ * text-in/metadata-out, no local state touched, so `files:read` is the
+ * whole gate.
  */
 export function HighlightCode(req: app$0.HighlightCodeRequest): $CancellablePromise<app$0.HighlightResult> {
     return $Call.ByID(4080150350, req).then(($result: any) => {
-        return $$createType79($result);
+        return $$createType90($result);
     });
 }
 
@@ -1724,7 +2084,7 @@ export function HighlightCode(req: app$0.HighlightCodeRequest): $CancellableProm
  */
 export function HighlightEditPatchWithContext(threadID: string, req: app$0.HighlightPatchContextRequest): $CancellablePromise<app$0.HighlightResult> {
     return $Call.ByID(3749810774, threadID, req).then(($result: any) => {
-        return $$createType79($result);
+        return $$createType90($result);
     });
 }
 
@@ -1732,11 +2092,12 @@ export function HighlightEditPatchWithContext(threadID: string, req: app$0.Highl
  * HighlightPatch returns patch-aligned spans for one file's unified
  * diff: result line i corresponds to patch line i, add/del spans cover
  * the prefix-stripped body, context spans include a 1-byte plain pad
- * for the kept leading space. Wire-safe.
+ * for the kept leading space. Text in, metadata out, same `files:read`
+ * reading as HighlightCode.
  */
 export function HighlightPatch(req: app$0.HighlightPatchRequest): $CancellablePromise<app$0.HighlightResult> {
     return $Call.ByID(834878499, req).then(($result: any) => {
-        return $$createType79($result);
+        return $$createType90($result);
     });
 }
 
@@ -1751,12 +2112,12 @@ export function HighlightPatch(req: app$0.HighlightPatchRequest): $CancellablePr
  * Content resolution is best-effort: if the scope lookup fails (file gone at
  * ref, unreadable path), the unprimed result is returned instead of an error.
  * Resolving the WORKSPACE is not: an unresolvable ref is a caller error and
- * is returned as one. LocalOnlyMethods category 1: it reads workspace/ref
- * file content by path; remote clients use HighlightPatch.
+ * is returned as one. It reads workspace/ref file content by path, so it
+ * rides `files:read`; a session without that grant uses HighlightPatch.
  */
 export function HighlightPatchWithContext(ws: app$0.WorkspaceRef, req: app$0.HighlightPatchContextRequest): $CancellablePromise<app$0.HighlightResult> {
     return $Call.ByID(3722752402, ws, req).then(($result: any) => {
-        return $$createType79($result);
+        return $$createType90($result);
     });
 }
 
@@ -1765,7 +2126,8 @@ export function HighlightPatchWithContext(ws: app$0.WorkspaceRef, req: app$0.Hig
  * span blobs (items.meta codeSpans, payload preview/full spans). The
  * frontend fetches it once at boot and ignores stored spans stamped
  * with anything else — those fall back to the RPC path, which
- * recomputes under the current schema. Wire-safe.
+ * recomputes under the current schema. A constant, so it answers any
+ * session granted `files:read`.
  */
 export function HighlightSchemaVersion(): $CancellablePromise<string> {
     return $Call.ByID(2896867980);
@@ -1782,7 +2144,7 @@ export function HighlightSchemaVersion(): $CancellablePromise<string> {
  */
 export function ImportSessions(req: app$0.ImportSessionsRequest): $CancellablePromise<app$0.ImportRunHandle> {
     return $Call.ByID(786331585, req).then(($result: any) => {
-        return $$createType80($result);
+        return $$createType91($result);
     });
 }
 
@@ -1797,7 +2159,7 @@ export function ImportSessions(req: app$0.ImportSessionsRequest): $CancellablePr
  */
 export function ImportThreadUpdates(threadID: string): $CancellablePromise<app$0.ImportUpdateResult> {
     return $Call.ByID(535929682, threadID).then(($result: any) => {
-        return $$createType81($result);
+        return $$createType92($result);
     });
 }
 
@@ -1821,7 +2183,7 @@ export function ImportThreadUpdates(threadID: string): $CancellablePromise<app$0
  */
 export function InterruptAndRevertIfClean(threadID: string): $CancellablePromise<app$0.InterruptAndRevertResult> {
     return $Call.ByID(753394581, threadID).then(($result: any) => {
-        return $$createType82($result);
+        return $$createType93($result);
     });
 }
 
@@ -1859,7 +2221,7 @@ export function IsWSL(): $CancellablePromise<boolean> {
  */
 export function ListArchivedThreads(): $CancellablePromise<store$0.Thread[]> {
     return $Call.ByID(2451527188).then(($result: any) => {
-        return $$createType83($result);
+        return $$createType94($result);
     });
 }
 
@@ -1868,7 +2230,7 @@ export function ListArchivedThreads(): $CancellablePromise<store$0.Thread[]> {
  */
 export function ListAttachments(threadID: string): $CancellablePromise<store$0.Attachment[]> {
     return $Call.ByID(1730798413, threadID).then(($result: any) => {
-        return $$createType85($result);
+        return $$createType96($result);
     });
 }
 
@@ -1888,7 +2250,21 @@ export function ListAttachments(threadID: string): $CancellablePromise<store$0.A
  */
 export function ListAvailableEditors(): $CancellablePromise<app$0.EditorInfo[]> {
     return $Call.ByID(2556802234).then(($result: any) => {
-        return $$createType87($result);
+        return $$createType98($result);
+    });
+}
+
+/**
+ * ListBackends returns every machine this installation has attached.
+ * 
+ * Reachability is last-known and never probed: waking every attached
+ * laptop to answer one list would make the settings pane as slow as the
+ * slowest of them, and the SPA already learns the live answer from each
+ * carried socket.
+ */
+export function ListBackends(): $CancellablePromise<app$0.AttachedBackend[]> {
+    return $Call.ByID(130055792).then(($result: any) => {
+        return $$createType100($result);
     });
 }
 
@@ -1899,19 +2275,19 @@ export function ListAvailableEditors(): $CancellablePromise<app$0.EditorInfo[]> 
  */
 export function ListBranchCommits(ws: app$0.WorkspaceRef, baseBranch: string): $CancellablePromise<app$0.BranchCommit[]> {
     return $Call.ByID(352990129, ws, baseBranch).then(($result: any) => {
-        return $$createType89($result);
+        return $$createType102($result);
     });
 }
 
 export function ListChatBarFavorites(): $CancellablePromise<store$0.ChatBarFavorite[]> {
     return $Call.ByID(2114948965).then(($result: any) => {
-        return $$createType91($result);
+        return $$createType104($result);
     });
 }
 
 export function ListDiffReviewComments(threadID: string, scope: string, sourceKey: string): $CancellablePromise<store$0.DiffReviewComment[]> {
     return $Call.ByID(3057473088, threadID, scope, sourceKey).then(($result: any) => {
-        return $$createType92($result);
+        return $$createType105($result);
     });
 }
 
@@ -1920,13 +2296,13 @@ export function ListDiffReviewComments(threadID: string, scope: string, sourceKe
  */
 export function ListDiscussions(scope: string): $CancellablePromise<store$0.DiscussionDefinition[]> {
     return $Call.ByID(942288562, scope).then(($result: any) => {
-        return $$createType93($result);
+        return $$createType106($result);
     });
 }
 
 export function ListDiscussionsForThread(threadID: string): $CancellablePromise<store$0.DiscussionDefinition[]> {
     return $Call.ByID(2502562885, threadID).then(($result: any) => {
-        return $$createType93($result);
+        return $$createType106($result);
     });
 }
 
@@ -1940,16 +2316,18 @@ export function ListDiscussionsForThread(threadID: string): $CancellablePromise<
  */
 export function ListImportableSessions(req: app$0.ImportScanRequest): $CancellablePromise<app$0.ImportScanResult> {
     return $Call.ByID(99668597, req).then(($result: any) => {
-        return $$createType94($result);
+        return $$createType107($result);
     });
 }
 
 /**
- * ListItems returns every item persisted for a thread in chronological order.
+ * ListItems returns every item persisted for a thread in chronological
+ * order. Unwindowed, so it carries the byte backstop the same way the
+ * paged loads do; active panes use the bounded slice surface instead.
  */
-export function ListItems(threadID: string): $CancellablePromise<store$0.Item[]> {
-    return $Call.ByID(2158085763, threadID).then(($result: any) => {
-        return $$createType95($result);
+export function ListItems(threadID: string, inlinePreviews: boolean): $CancellablePromise<store$0.Item[]> {
+    return $Call.ByID(2158085763, threadID, inlinePreviews).then(($result: any) => {
+        return $$createType108($result);
     });
 }
 
@@ -1958,9 +2336,9 @@ export function ListItems(threadID: string): $CancellablePromise<store$0.Item[]>
  * frontend's current item-coordinate window ceiling. It is the forward pager
  * companion to ListItemsBeforeCursor.
  */
-export function ListItemsAfterCursor(threadID: string, after: store$0.TimelineCursor, itemBudget: number): $CancellablePromise<store$0.PagedItems> {
-    return $Call.ByID(2915892537, threadID, after, itemBudget).then(($result: any) => {
-        return $$createType96($result);
+export function ListItemsAfterCursor(threadID: string, after: store$0.TimelineCursor, itemBudget: number, inlinePreviews: boolean): $CancellablePromise<store$0.PagedItems> {
+    return $Call.ByID(2915892537, threadID, after, itemBudget, inlinePreviews).then(($result: any) => {
+        return $$createType109($result);
     });
 }
 
@@ -1970,9 +2348,9 @@ export function ListItemsAfterCursor(threadID: string, after: store$0.TimelineCu
  * primary-row cap; render-support ancestors can be stitched in above it, but
  * same-turn rows outside the cursor range stay omitted until explicitly paged.
  */
-export function ListItemsBeforeCursor(threadID: string, before: store$0.TimelineCursor, itemBudget: number): $CancellablePromise<store$0.PagedItems> {
-    return $Call.ByID(162135710, threadID, before, itemBudget).then(($result: any) => {
-        return $$createType96($result);
+export function ListItemsBeforeCursor(threadID: string, before: store$0.TimelineCursor, itemBudget: number, inlinePreviews: boolean): $CancellablePromise<store$0.PagedItems> {
+    return $Call.ByID(162135710, threadID, before, itemBudget, inlinePreviews).then(($result: any) => {
+        return $$createType109($result);
     });
 }
 
@@ -1993,7 +2371,7 @@ export function ListItemsBeforeCursor(threadID: string, before: store$0.Timeline
  */
 export function ListLiveBackgroundTasks(threadID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(320784263, threadID).then(($result: any) => {
-        return $$createType95($result);
+        return $$createType108($result);
     });
 }
 
@@ -2007,7 +2385,7 @@ export function ListLiveBackgroundTasks(threadID: string): $CancellablePromise<s
  */
 export function ListMcpServerStatuses(providerName: string): $CancellablePromise<mcpstatus$0.ServerStatus[]> {
     return $Call.ByID(2582096622, providerName).then(($result: any) => {
-        return $$createType97($result);
+        return $$createType110($result);
     });
 }
 
@@ -2025,13 +2403,22 @@ export function ListMcpServerStatuses(providerName: string): $CancellablePromise
  */
 export function ListPRCommits(ws: app$0.WorkspaceRef, pr: git$0.PRReference, baseRef: string, headSHA: string): $CancellablePromise<app$0.BranchCommit[]> {
     return $Call.ByID(4110818691, ws, pr, baseRef, headSHA).then(($result: any) => {
-        return $$createType89($result);
+        return $$createType102($result);
     });
 }
 
 export function ListPRReviewThreads(pr: git$0.PRReference): $CancellablePromise<git$0.ReviewThread[]> {
     return $Call.ByID(763649720, pr).then(($result: any) => {
-        return $$createType99($result);
+        return $$createType112($result);
+    });
+}
+
+/**
+ * ListPasskeys returns the owner's registered credentials, oldest first.
+ */
+export function ListPasskeys(): $CancellablePromise<app$0.PasskeySummary[]> {
+    return $Call.ByID(3860831272).then(($result: any) => {
+        return $$createType113($result);
     });
 }
 
@@ -2042,7 +2429,7 @@ export function ListPRReviewThreads(pr: git$0.PRReference): $CancellablePromise<
  */
 export function ListPendingInteractiveRequests(threadID: string): $CancellablePromise<provider$0.PendingInteractiveRequests> {
     return $Call.ByID(4186874978, threadID).then(($result: any) => {
-        return $$createType100($result);
+        return $$createType114($result);
     });
 }
 
@@ -2052,7 +2439,7 @@ export function ListPendingInteractiveRequests(threadID: string): $CancellablePr
  */
 export function ListProjects(): $CancellablePromise<store$0.ProjectWithCounts[]> {
     return $Call.ByID(2721360259).then(($result: any) => {
-        return $$createType102($result);
+        return $$createType116($result);
     });
 }
 
@@ -2063,13 +2450,13 @@ export function ListProjects(): $CancellablePromise<store$0.ProjectWithCounts[]>
  */
 export function ListProposedPlanComments(threadID: string, planItemID: string): $CancellablePromise<store$0.ProposedPlanComment[]> {
     return $Call.ByID(2030403250, threadID, planItemID).then(($result: any) => {
-        return $$createType103($result);
+        return $$createType117($result);
     });
 }
 
 export function ListProviderAccounts(): $CancellablePromise<app$0.ManagedProviderAccount[]> {
     return $Call.ByID(981125684).then(($result: any) => {
-        return $$createType105($result);
+        return $$createType119($result);
     });
 }
 
@@ -2081,7 +2468,7 @@ export function ListProviderAccounts(): $CancellablePromise<app$0.ManagedProvide
  */
 export function ListRecentCommits(ws: app$0.WorkspaceRef): $CancellablePromise<app$0.BranchCommit[]> {
     return $Call.ByID(1937809620, ws).then(($result: any) => {
-        return $$createType89($result);
+        return $$createType102($result);
     });
 }
 
@@ -2098,7 +2485,7 @@ export function ListRecentCommits(ws: app$0.WorkspaceRef): $CancellablePromise<a
  */
 export function ListRecentTurns(threadID: string, limit: number): $CancellablePromise<store$0.Turn[]> {
     return $Call.ByID(1083162294, threadID, limit).then(($result: any) => {
-        return $$createType107($result);
+        return $$createType121($result);
     });
 }
 
@@ -2108,21 +2495,58 @@ export function ListRecentTurns(threadID: string, limit: number): $CancellablePr
  */
 export function ListReleases(): $CancellablePromise<app$0.ReleaseSummary[]> {
     return $Call.ByID(397986043).then(($result: any) => {
-        return $$createType109($result);
+        return $$createType123($result);
     });
 }
 
 /**
- * ListRemoteEndpoints returns every saved `--connect` target with the
- * Token field stripped. The local UI fetches a token on-demand via
- * GetRemoteEndpointToken when copying a launch command — that pattern
- * keeps the bulk read path free of credentials so a remote token-
- * holder enumerating saved endpoints can't grab tokens for unrelated
- * backends.
+ * ListRunningBackgroundWork returns every background task running right
+ * now, across every thread, oldest first — the answer to "what is this
+ * host still carrying" from a client that cannot look at the machine.
+ * 
+ * Scope is the set of threads with a LIVE provider session, and that is
+ * the honest domain rather than a shortcut. All three sources of
+ * background work are session-bound: a Claude task dies with its
+ * process group, a Codex background terminal and a spawned child belong
+ * to that thread's app-server, and the transient unified-exec trackers
+ * live in the triage router and are dropped when the session ends. A
+ * `running` row on a thread with no session is a residue the boot sweep
+ * settles, not work in progress; listing it would invite a client to
+ * stop something that is not there.
+ * 
+ * Per thread it calls ListLiveBackgroundTasks — the SAME composition
+ * the tray reads, which is the point. That method already unions the
+ * three sources (the store query, live Codex subagent launches, and the
+ * triage layer's in-memory Codex unified-exec tasks, which exist in no
+ * table); re-deriving the union here would give a SQLite-only answer
+ * that silently under-reports the third source. Only the projection
+ * differs: the tray's completed-sibling retention window is a
+ * live-render tuning value, so the terminal rows it carries are dropped
+ * and an inventory reports what is running.
+ * 
+ * The WRITE half is scoped separately, and higher:
+ * StopThreadBackgroundWork carries threads:operate. Seeing what a host
+ * is running and killing it are different authorizations, and a session
+ * granted only reads gets the inventory and not the stop.
  */
-export function ListRemoteEndpoints(): $CancellablePromise<app$0.RemoteEndpointSummary[]> {
-    return $Call.ByID(3443007043).then(($result: any) => {
-        return $$createType110($result);
+export function ListRunningBackgroundWork(): $CancellablePromise<app$0.BackgroundWorkInventory> {
+    return $Call.ByID(3808352241).then(($result: any) => {
+        return $$createType124($result);
+    });
+}
+
+/**
+ * ListServiceReleases returns the releases this host could install, newest
+ * first, for the version picker.
+ * 
+ * A network read, and the only one on this surface a client drives: it runs
+ * when the picker opens, bounded by the check timeout so an unreachable feed
+ * fails in seconds. `access:admin` for the same reason
+ * GetServiceUpdateStatus is, and its answer is the public release list.
+ */
+export function ListServiceReleases(): $CancellablePromise<app$0.ReleaseSummary[]> {
+    return $Call.ByID(4211718354).then(($result: any) => {
+        return $$createType123($result);
     });
 }
 
@@ -2133,12 +2557,12 @@ export function ListRemoteEndpoints(): $CancellablePromise<app$0.RemoteEndpointS
  * internal/store/paging.go topLevelItemsFilter); this is the expansion
  * path that hydrates them. The result is every visible transitive
  * descendant in timeline order, capped store-side at the same scale as
- * maxWindowItems (newest rows win) so a malicious LAN-attached caller
+ * maxWindowItems (newest rows win) so an unintended LAN-attached caller
  * can't stream an unbounded subtree per call.
  */
-export function ListSubagentDescendants(threadID: string, rootItemID: string): $CancellablePromise<store$0.Item[]> {
-    return $Call.ByID(1299118478, threadID, rootItemID).then(($result: any) => {
-        return $$createType95($result);
+export function ListSubagentDescendants(threadID: string, rootItemID: string, inlinePreviews: boolean): $CancellablePromise<store$0.Item[]> {
+    return $Call.ByID(1299118478, threadID, rootItemID, inlinePreviews).then(($result: any) => {
+        return $$createType108($result);
     });
 }
 
@@ -2147,7 +2571,7 @@ export function ListSubagentDescendants(threadID: string, rootItemID: string): $
  */
 export function ListTerminals(threadID: string): $CancellablePromise<terminal$0.SessionSummary[]> {
     return $Call.ByID(2445206506, threadID).then(($result: any) => {
-        return $$createType112($result);
+        return $$createType126($result);
     });
 }
 
@@ -2157,7 +2581,7 @@ export function ListTerminals(threadID: string): $CancellablePromise<terminal$0.
  */
 export function ListThreadEditDiffs(threadID: string): $CancellablePromise<app$0.EditDiffList> {
     return $Call.ByID(2243533007, threadID).then(($result: any) => {
-        return $$createType113($result);
+        return $$createType127($result);
     });
 }
 
@@ -2167,7 +2591,7 @@ export function ListThreadEditDiffs(threadID: string): $CancellablePromise<app$0
  */
 export function ListThreadGroups(): $CancellablePromise<store$0.ThreadGroup[]> {
     return $Call.ByID(2176447381).then(($result: any) => {
-        return $$createType114($result);
+        return $$createType128($result);
     });
 }
 
@@ -2182,7 +2606,7 @@ export function ListThreadGroups(): $CancellablePromise<store$0.ThreadGroup[]> {
  */
 export function ListThreadMcpServers(threadID: string): $CancellablePromise<app$0.ThreadMCPServer[]> {
     return $Call.ByID(245278513, threadID).then(($result: any) => {
-        return $$createType116($result);
+        return $$createType130($result);
     });
 }
 
@@ -2193,7 +2617,7 @@ export function ListThreadMcpServers(threadID: string): $CancellablePromise<app$
  */
 export function ListThreadProposedPlans(threadID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(2485050629, threadID).then(($result: any) => {
-        return $$createType95($result);
+        return $$createType108($result);
     });
 }
 
@@ -2205,9 +2629,9 @@ export function ListThreadProposedPlans(threadID: string): $CancellablePromise<s
  * the function returns the tail `targetItemCount` items — the bottom-snapshot
  * restore case.
  */
-export function ListThreadSliceAround(threadID: string, anchorItemID: string, targetItemCount: number): $CancellablePromise<store$0.PagedItems> {
-    return $Call.ByID(4176102096, threadID, anchorItemID, targetItemCount).then(($result: any) => {
-        return $$createType96($result);
+export function ListThreadSliceAround(threadID: string, anchorItemID: string, targetItemCount: number, inlinePreviews: boolean): $CancellablePromise<store$0.PagedItems> {
+    return $Call.ByID(4176102096, threadID, anchorItemID, targetItemCount, inlinePreviews).then(($result: any) => {
+        return $$createType109($result);
     });
 }
 
@@ -2220,7 +2644,7 @@ export function ListThreadSliceAround(threadID: string, anchorItemID: string, ta
  */
 export function ListThreads(): $CancellablePromise<store$0.Thread[]> {
     return $Call.ByID(1090132042).then(($result: any) => {
-        return $$createType83($result);
+        return $$createType94($result);
     });
 }
 
@@ -2231,7 +2655,7 @@ export function ListThreads(): $CancellablePromise<store$0.Thread[]> {
  */
 export function ListWSLDistros(): $CancellablePromise<wsllauncher$0.Distro[]> {
     return $Call.ByID(2332614075).then(($result: any) => {
-        return $$createType118($result);
+        return $$createType132($result);
     });
 }
 
@@ -2249,18 +2673,7 @@ export function ListWSLDistros(): $CancellablePromise<wsllauncher$0.Distro[]> {
  */
 export function ListWorkspaceMcpServers(providerName: string, workspacePath: string): $CancellablePromise<app$0.ThreadMCPServer[]> {
     return $Call.ByID(2808137798, providerName, workspacePath).then(($result: any) => {
-        return $$createType116($result);
-    });
-}
-
-/**
- * LoginProviderAccount runs the provider's native browser login in a
- * short-lived isolated home, retains only the resulting native credential,
- * atomically activates it, and registers non-secret metadata.
- */
-export function LoginProviderAccount(providerName: string): $CancellablePromise<app$0.ManagedProviderAccount> {
-    return $Call.ByID(1520009058, providerName).then(($result: any) => {
-        return $$createType104($result);
+        return $$createType130($result);
     });
 }
 
@@ -2279,6 +2692,11 @@ export function MarkDiffReviewCommentsSent(threadID: string, scope: string, sour
  * matches the store's busy_timeout — a wait past that is a wedged writer,
  * and the frontend has already patched its own read state optimistically,
  * so returning the error beats holding the RPC open.
+ * 
+ * Broadcasts the stamped row so the other devices' sidebars stop showing the
+ * pill too. Opening a thread whose marker already covers its newest turn
+ * changes nothing and says nothing, which is what keeps every thread switch
+ * off the wire.
  */
 export function MarkThreadRead(id: string): $CancellablePromise<void> {
     return $Call.ByID(1480646012, id);
@@ -2294,12 +2712,91 @@ export function MarkThreadUnread(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * MintAttachmentDownloadTicket authorizes ONE read of one thread-owned
+ * attachment and returns the relative URL its bytes come from.
+ * 
+ * The thread-ownership check runs here, on metadata, before any ticket
+ * exists — the same check ReadThreadBytes made and for the same reason: a
+ * stale cross-thread id must not resolve to another thread's file. The
+ * route cannot make this check itself (it has no idea what an attachment
+ * row is), which is exactly why it has to happen at the mint. The kind
+ * check is the same story: only an image is ever served, so a ticket for
+ * a `file` would be a round trip spent on a refusal.
+ */
+export function MintAttachmentDownloadTicket(threadID: string, attachmentID: string): $CancellablePromise<string> {
+    return $Call.ByID(3197504008, threadID, attachmentID);
+}
+
+/**
+ * MintAttachmentUploadTicket authorizes ONE attachment upload and returns
+ * the relative URL its bytes go to.
+ * 
+ * The three metadata arguments are fixed HERE, travel inside the ticket,
+ * and are what the stored row will say. The upload request contributes the
+ * bytes and nothing else, so a client cannot describe its payload as one
+ * thing while minting and another thing while sending.
+ * 
+ * Both checks are deliberately duplicated with the attachment store's own.
+ * Refusing an oversize payload BEFORE it is sent turns "50 MiB of upload,
+ * then a rejection" into one failed round trip, which on a phone is the
+ * whole difference; the store still checks again, and for an image its
+ * signature check is the one a content type cannot talk its way past.
+ * 
+ * The cap is the KIND's (docs/specs/file-attachments.md): the kind is
+ * decided here from the declared type and filename, exactly as the store
+ * decides it, so a 30 MiB PNG is refused at the image cap rather than
+ * sliding under the file one.
+ */
+export function MintAttachmentUploadTicket(threadID: string, filename: string, mimeType: string, sizeBytes: number): $CancellablePromise<string> {
+    return $Call.ByID(1857144453, threadID, filename, mimeType, sizeBytes);
+}
+
+/**
+ * MintDevicePairing issues a pairing link for a new device of the named
+ * class and access level, and returns the URL that device should open.
+ * 
+ * The CLASS is decided here and the redeeming device never names its own
+ * (identity.PairingRequest says why). `backend-peer` is refused: enrolling
+ * another backend is §8's federation flow, with its own trust decisions,
+ * and admitting one through the device-pairing surface would grant it the
+ * posture of an owner's own device.
+ * 
+ * The ACCESS level is `full` or `view-only` (identity.PairingAccess), and
+ * an EMPTY string is full — the parameter was appended to a call that
+ * already existed, so naming none asks for what the surface always did.
+ * An unrecognized level is refused rather than widened.
+ */
+export function MintDevicePairing(deviceClass: string, access: string): $CancellablePromise<app$0.PairingInvite> {
+    return $Call.ByID(400809065, deviceClass, access).then(($result: any) => {
+        return $$createType133($result);
+    });
+}
+
+/**
+ * MintPreviewURL returns the URL that opens a thread's dev server from
+ * the device asking. The ticket it carries is single-use, expires in a
+ * minute and is bound to (this caller, this port), so the URL is worth
+ * nothing to anyone else and nothing at all after it is opened once.
+ * 
+ * The path is the dev server's own, taken verbatim from the link the
+ * person clicked and preserved byte for byte: a dev server routes its
+ * hot-reload upgrade only when the path matches exactly.
+ * 
+ * The thread is what ROUTES the call — the preview lives on the machine
+ * running that thread — and it is deliberately not what authorizes it.
+ * `preview:open` is, on the machine that answers.
+ */
+export function MintPreviewURL(threadID: string, port: number, path: string): $CancellablePromise<string> {
+    return $Call.ByID(1471520668, threadID, port, path);
+}
+
+/**
  * MoveThreadTerminals rekeys live terminal sessions from a placeholder thread
  * id to the materialized thread id without restarting their PTYs.
  */
 export function MoveThreadTerminals(fromThreadID: string, toThreadID: string): $CancellablePromise<terminal$0.SessionSummary[]> {
     return $Call.ByID(3013708277, fromThreadID, toThreadID).then(($result: any) => {
-        return $$createType112($result);
+        return $$createType126($result);
     });
 }
 
@@ -2372,21 +2869,17 @@ export function OpenInEditor(path: string, line: number, col: number, workspaceP
  */
 export function OpenTerminal(threadID: string, opts: app$0.TerminalOpenOptions): $CancellablePromise<app$0.TerminalHandle> {
     return $Call.ByID(2247958725, threadID, opts).then(($result: any) => {
-        return $$createType119($result);
+        return $$createType134($result);
     });
 }
 
 /**
  * PinThread marks the thread as front-burner pinned. Pinned threads sort into
  * two manual attention groups above needs-attention.
- * 
- * The three pin mutators each emit a whole-row thread:updated "replace"
- * frame. They used to emit nothing, so a second connected client kept
- * showing stale pin state until something else touched the row.
  */
 export function PinThread(id: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(1748405812, id).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -2396,7 +2889,7 @@ export function PinThread(id: string): $CancellablePromise<store$0.Thread> {
  */
 export function PinThreadGroup(id: string): $CancellablePromise<store$0.ThreadGroup> {
     return $Call.ByID(842795367, id).then(($result: any) => {
-        return $$createType11($result);
+        return $$createType14($result);
     });
 }
 
@@ -2413,15 +2906,15 @@ export function PinThreadGroup(id: string): $CancellablePromise<store$0.ThreadGr
  * next-turn context automatically (see promptDiscussionSpeaker's
  * unseen-messages window).
  * 
- * PostChannelMessage now has a side-effecting path (it can dispatch a
+ * PostChannelMessage has a side-effecting path (it can dispatch a
  * prompt into a participant's live provider session via
- * promptDiscussionSpeakerAsync → sendMessage), so it is classified
- * LocalOnly in internal/transport/internalmethods.go alongside
- * SendMessage — see the category-2 comment there.
+ * promptDiscussionSpeakerAsync → sendMessage), so it carries
+ * threads:operate rather than a read scope — the same annotation
+ * SendMessage does, for the same reason.
  */
 export function PostChannelMessage(channelID: string, content: string): $CancellablePromise<store$0.ChannelMessage> {
     return $Call.ByID(1315440605, channelID, content).then(($result: any) => {
-        return $$createType16($result);
+        return $$createType24($result);
     });
 }
 
@@ -2444,7 +2937,7 @@ export function PostChannelMessage(channelID: string, content: string): $Cancell
  */
 export function PrepareThreadWorktree(threadID: string, baseBranch: string, requestedBranch: string, carryLocalChanges: boolean): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2870364785, threadID, baseBranch, requestedBranch, carryLocalChanges).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -2467,7 +2960,7 @@ export function PrepareThreadWorktree(threadID: string, baseBranch: string, requ
  */
 export function ProbeClaudeAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(1313986574).then(($result: any) => {
-        return $$createType120($result);
+        return $$createType135($result);
     });
 }
 
@@ -2504,7 +2997,7 @@ export function ProbeClaudeAccount(): $CancellablePromise<provider$0.AccountInfo
  */
 export function ProbeCodexAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(2614227175).then(($result: any) => {
-        return $$createType120($result);
+        return $$createType135($result);
     });
 }
 
@@ -2527,7 +3020,7 @@ export function ProbeDevServerURL(rawURL: string): $CancellablePromise<boolean> 
  */
 export function ProjectDeletionPreview(projectID: string): $CancellablePromise<app$0.ProjectDeletionPreview> {
     return $Call.ByID(2575010484, projectID).then(($result: any) => {
-        return $$createType121($result);
+        return $$createType136($result);
     });
 }
 
@@ -2537,16 +3030,24 @@ export function ProjectDeletionPreview(projectID: string): $CancellablePromise<a
  * for every chunk; the terminal ring keeps buffering for replay regardless, so
  * nothing is lost between attach and the frontend's first replay fetch (the
  * frontend dedupes overlap by the replay watermark).
+ * 
+ * The claim is released when this connection drops, so a client that dies
+ * mid-take-control does not leave the input lease held. The frontend SHOULD
+ * still call ProviderTerminalDetach on unmount; the connection-tied cleanup is
+ * the safety net for unclean disconnects.
  */
 export function ProviderTerminalAttach(threadID: string): $CancellablePromise<app$0.ProviderTerminalHandle> {
     return $Call.ByID(1393518281, threadID).then(($result: any) => {
-        return $$createType122($result);
+        return $$createType137($result);
     });
 }
 
 /**
- * ProviderTerminalDetach stops output fan-out and releases the take-control
- * lease for the session's terminal. Called when a take-control pane closes.
+ * ProviderTerminalDetach stops output fan-out for this caller and releases the
+ * take-control lease if it held it. Called when a take-control pane closes.
+ * Idempotent, and never an error: the connection-cleanup safety net may have
+ * released the same claim first, and a caller that already has nothing to give
+ * back has nothing to be told.
  */
 export function ProviderTerminalDetach(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(2584141779, threadID);
@@ -2554,8 +3055,9 @@ export function ProviderTerminalDetach(threadID: string): $CancellablePromise<vo
 
 /**
  * ProviderTerminalInput delivers base64-encoded human keystrokes to the PTY.
- * The session refuses input unless the take-control lease is held, so a
- * read-only attach cannot inject keystrokes even if a caller tries.
+ * The session refuses input unless THIS caller's attachment holds the
+ * take-control lease, so neither a read-only attach nor a second pane watching
+ * over the holder's shoulder can inject keystrokes.
  */
 export function ProviderTerminalInput(threadID: string, dataB64: string): $CancellablePromise<void> {
     return $Call.ByID(1783659784, threadID, dataB64);
@@ -2576,7 +3078,7 @@ export function ProviderTerminalRefresh(threadID: string): $CancellablePromise<v
  */
 export function ProviderTerminalReplay(threadID: string): $CancellablePromise<app$0.TerminalReplay> {
     return $Call.ByID(907422467, threadID).then(($result: any) => {
-        return $$createType51($result);
+        return $$createType61($result);
     });
 }
 
@@ -2590,8 +3092,14 @@ export function ProviderTerminalResize(threadID: string, rows: number, cols: num
 
 /**
  * ProviderTerminalSetControl acquires (control=true) or releases the human
- * take-control input lease. While a human holds it, AO's programmatic Send is
- * refused so the two input drivers never interleave.
+ * take-control input lease for THIS caller's attachment. While a human holds
+ * it, AO's programmatic Send is refused so the two input drivers never
+ * interleave, and another client's acquire is refused rather than taking the
+ * keyboard away.
+ * 
+ * Releasing without an attachment is a no-op: a pane unmounting after its
+ * session died has nothing left to give back, and reporting that as a failure
+ * would leave the UI showing a lease nobody holds.
  */
 export function ProviderTerminalSetControl(threadID: string, control: boolean): $CancellablePromise<void> {
     return $Call.ByID(1382066673, threadID, control);
@@ -2611,7 +3119,7 @@ export function ProviderTerminalSetControl(threadID: string, control: boolean): 
  */
 export function RecheckClaudeAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(2274850917).then(($result: any) => {
-        return $$createType120($result);
+        return $$createType135($result);
     });
 }
 
@@ -2625,7 +3133,7 @@ export function RecheckClaudeAccount(): $CancellablePromise<provider$0.AccountIn
  */
 export function RecheckCodexAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(227978482).then(($result: any) => {
-        return $$createType120($result);
+        return $$createType135($result);
     });
 }
 
@@ -2691,7 +3199,7 @@ export function ReconnectSession(threadID: string): $CancellablePromise<void> {
  */
 export function RefreshMcpServerStatus(providerName: string, workspacePath: string): $CancellablePromise<mcpstatus$0.ServerStatus[]> {
     return $Call.ByID(2215279661, providerName, workspacePath).then(($result: any) => {
-        return $$createType97($result);
+        return $$createType110($result);
     });
 }
 
@@ -2751,6 +3259,19 @@ export function RegenerateThreadTitle(threadID: string): $CancellablePromise<voi
 }
 
 /**
+ * RegisterPushToken records the platform registration token of the calling
+ * device, so this backend can wake it.
+ * 
+ * At the SESSION FLOOR, on the same argument as the ui_state calls: the
+ * authority is decided by the caller's own identity rather than by a grant,
+ * because this call reaches exactly one row — the calling device's — and no
+ * other. A session that was granted nothing still owns its own phone.
+ */
+export function RegisterPushToken(platform: string, token: string): $CancellablePromise<void> {
+    return $Call.ByID(2641306153, platform, token);
+}
+
+/**
  * RegisterQueueItem appends a user message to the thread's pending-send
  * queue. The composer keeps this item above the chat box immediately; if a
  * provider session is live, the backend dispatches it as soon as possible and
@@ -2772,8 +3293,17 @@ export function RegenerateThreadTitle(threadID: string): $CancellablePromise<voi
  */
 export function RegisterQueueItem(threadID: string, message: string, opts: app$0.SendMessageOptions): $CancellablePromise<app$0.QueuedItem> {
     return $Call.ByID(1034543696, threadID, message, opts).then(($result: any) => {
-        return $$createType46($result);
+        return $$createType55($result);
     });
+}
+
+/**
+ * RemoveBackend forgets one machine. The device key survives — it names
+ * this DEVICE, and the far side adopts its row again by thumbprint if
+ * this installation ever pairs with that machine a second time.
+ */
+export function RemoveBackend(id: string): $CancellablePromise<void> {
+    return $Call.ByID(3005272623, id);
 }
 
 /**
@@ -2788,7 +3318,7 @@ export function RegisterQueueItem(threadID: string, message: string, opts: app$0
  */
 export function RemoveOtherWorktree(ws: app$0.WorkspaceRef, worktreePath: string, force: boolean): $CancellablePromise<app$0.GitWorkspaceState> {
     return $Call.ByID(2899196344, ws, worktreePath, force).then(($result: any) => {
-        return $$createType68($result);
+        return $$createType79($result);
     });
 }
 
@@ -2803,11 +3333,20 @@ export function RemoveProviderAccount(providerName: string, accountID: string): 
 }
 
 /**
+ * RenameBackend sets what this installation calls one machine, or clears
+ * it when the nickname is empty. Local: nothing is sent to the machine
+ * being renamed, which goes on calling itself whatever it calls itself.
+ */
+export function RenameBackend(id: string, nickname: string): $CancellablePromise<void> {
+    return $Call.ByID(1528076361, id, nickname);
+}
+
+/**
  * RenameProject updates the display name. Path is immutable.
  */
 export function RenameProject(id: string, name: string): $CancellablePromise<store$0.Project> {
     return $Call.ByID(3728890856, id, name).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType12($result);
     });
 }
 
@@ -2827,7 +3366,28 @@ export function RenameThread(id: string, title: string): $CancellablePromise<voi
  */
 export function RenameThreadGroup(id: string, name: string): $CancellablePromise<store$0.ThreadGroup> {
     return $Call.ByID(723690026, id, name).then(($result: any) => {
-        return $$createType11($result);
+        return $$createType14($result);
+    });
+}
+
+/**
+ * RenewCanonicalDomainCert asks the reconciler to check the canonical
+ * domain's certificate now: load an external pair that changed, or order
+ * one when there is none or it is inside the renewal window. Returns
+ * immediately with the current status — the work happens on the
+ * reconciler's goroutine and the screen polls GetNetworkSettings while
+ * `tls.renewing` is set, because a DNS-01 exchange takes minutes and no
+ * RPC may wait that long.
+ * 
+ * No step-up: this call carries no argument and changes no
+ * configuration — it re-runs what the daily timer would have run anyway,
+ * against settings that were themselves written through the
+ * step-up-gated SetNetworkSettings, so demanding a second proof would
+ * gate the retry of an act that was already proved.
+ */
+export function RenewCanonicalDomainCert(): $CancellablePromise<network$0.Settings> {
+    return $Call.ByID(95139518).then(($result: any) => {
+        return $$createType20($result);
     });
 }
 
@@ -2876,6 +3436,33 @@ export function ReportUpdateInstallStatus(stage: string, version: string, messag
 }
 
 /**
+ * RequestServiceUpdate downloads a release, proves it runs here, stages it,
+ * and asks this backend's supervisor to boot it.
+ * 
+ * It returns as soon as the flow is claimed. The work is a multi-minute
+ * download and the process is about to be stopped by its own supervisor, so
+ * binding it to an RPC's lifetime would mean a client that switched networks
+ * mid-download cancelled its own update. The client follows
+ * `service:update-status` instead, and correlates the restart through
+ * `service:update-outcome`.
+ * 
+ * `//ao:stepup`: this replaces the code the machine runs. It is the same class
+ * of act as minting a pairing link or rebinding the listener, and §4 puts
+ * those behind a fresh per-call proof — host presence, or a passkey assertion
+ * this backend verified moments ago.
+ * 
+ * `access:admin` rather than `host`, deliberately. `host` would make this
+ * callable only from the machine, which is exactly `agent-overflow service
+ * update`, and would leave the wave with no remote trigger at all; the spec
+ * (§7) asks for one that "requires step-up plus artifact verification", which
+ * is what this is. The download is verified against the published checksum and
+ * preflighted before anything is staged.
+ */
+export function RequestServiceUpdate(tag: string): $CancellablePromise<void> {
+    return $Call.ByID(3093237072, tag);
+}
+
+/**
  * RequestWebviewMemoryTrim asks the webview's owning process to run a
  * memory-reducing GC in the renderer. Called by the embedded frontend when
  * user input has been idle past its threshold; inputSinceLastTrim is the
@@ -2883,7 +3470,8 @@ export function ReportUpdateInstallStatus(stage: string, version: string, messag
  * the last trim this caller saw accepted. Returns what happened —
  * "requested", "skipped-active-turn", "skipped-recent", or
  * "skipped-no-activity" — so the caller can log without a second RPC.
- * LocalOnly (internal/transport/internalmethods.go).
+ * //ao:scope host: it reaches into the process that owns this window, so it
+ * has no remote form.
  */
 export function RequestWebviewMemoryTrim(inputSinceLastTrim: boolean): $CancellablePromise<string> {
     return $Call.ByID(2045178958, inputSinceLastTrim);
@@ -2906,6 +3494,18 @@ export function ResizeTerminal(terminalID: string, rows: number, cols: number): 
 
 /**
  * RespondToApproval forwards an interactive response to the active provider session.
+ * 
+ * Several clients render the same prompt, so two of them can answer it. The
+ * router arbitrates: the loser gets transport.ErrAlreadyHandled and no
+ * failure event, because nothing failed — the question was answered without
+ * them, which is the state they wanted. Forwarding both answers would send
+ * the provider a second response for a request it has already resolved.
+ * 
+ * ctx is here for the CALLER's identity, not for cancellation: the failure
+ * events below are stamped with the connection that asked, so the sticky
+ * banner they raise lands on that screen and not on every other one. The
+ * generated TS bindings strip a leading ctx, so the wire signature is
+ * unchanged.
  */
 export function RespondToApproval(threadID: string, response: provider$0.ApprovalResponse): $CancellablePromise<void> {
     return $Call.ByID(1919237704, threadID, response);
@@ -2913,6 +3513,10 @@ export function RespondToApproval(threadID: string, response: provider$0.Approva
 
 /**
  * RespondToUserInput forwards structured answers to the active provider session.
+ * 
+ * Arbitrated the same way as RespondToApproval: a form two screens can both
+ * submit is answered once, and the second submitter is told it arrived second
+ * rather than handed a failure.
  */
 export function RespondToUserInput(threadID: string, response: provider$0.UserInputResponse): $CancellablePromise<void> {
     return $Call.ByID(1071592868, threadID, response);
@@ -2924,7 +3528,7 @@ export function RespondToUserInput(threadID: string, response: provider$0.UserIn
  */
 export function RestartTerminal(terminalID: string): $CancellablePromise<app$0.TerminalHandle> {
     return $Call.ByID(4152403588, terminalID).then(($result: any) => {
-        return $$createType119($result);
+        return $$createType134($result);
     });
 }
 
@@ -2942,6 +3546,15 @@ export function RestartTerminal(terminalID: string): $CancellablePromise<app$0.T
  */
 export function RestartToUpdate(): $CancellablePromise<void> {
     return $Call.ByID(3141913084);
+}
+
+/**
+ * RestoreAccessDevice re-admits a revoked device's key to pairing — the
+ * remedy RedeemPairing's revoked-key refusal names. No credential moves:
+ * the device still redeems a fresh link and passes the number check.
+ */
+export function RestoreAccessDevice(deviceID: string): $CancellablePromise<void> {
+    return $Call.ByID(3386497005, deviceID);
 }
 
 /**
@@ -3016,13 +3629,59 @@ export function RetryThreadWorktreeSetup(threadID: string): $CancellablePromise<
  * lock this saga holds across the whole sequence. Rather than reach
  * half of the takeover machinery from inside the lock, an unguarded
  * call fails loudly.
+ * 
+ * ctx is here for the CALLER's identity, not for cancellation: the cut event
+ * below is stamped with the connection that asked, because the frontend's
+ * own failure handler keys on it (see UserMessageRevertedEvent.ConnectionID).
+ * The generated TS bindings strip a leading ctx, so the wire signature is
+ * unchanged.
  */
 export function RevertConversationAndResendMessage(threadID: string, userItemID: string, opts: app$0.RevertAndResendOptions): $CancellablePromise<void> {
     return $Call.ByID(2059566413, threadID, userItemID, opts);
 }
 
 /**
+ * RevokeAccessDevice ends a device and every session it holds, then drops
+ * its persisted UI state (§6: revoking a device drops its state).
+ * 
+ * The local page channel is refused. That row is not a device somebody
+ * paired: it is this backend's own page channel, which the embedded
+ * webview, the WSL relay and the `--connect` stub all present. Revoking
+ * it would sign the host's own window out, and identity refuses to
+ * re-mint around a revoked channel device by design — so the refusal
+ * belongs in front of the call, where it can say what happened.
+ * 
+ * It reports what it did rather than only that it succeeded. A revoke
+ * that swept nothing is a real and different answer from one that ended
+ * two sessions, and a surface that renders both the same way is how a
+ * device kept access unnoticed (spec §2). Re-revoking an already-revoked
+ * device is deliberately still allowed: it re-sweeps, and a session that
+ * outlived a first revocation is exactly the one worth reaching.
+ */
+export function RevokeAccessDevice(deviceID: string): $CancellablePromise<app$0.DeviceRevocationResult> {
+    return $Call.ByID(2945903583, deviceID).then(($result: any) => {
+        return $$createType138($result);
+    });
+}
+
+/**
+ * RevokeAccessSession ends one session, leaving its device paired.
+ * 
+ * Refused for the local page channel on the same grounds as
+ * RevokeAccessDevice, resolved through the session's device row: the
+ * channel's session is re-minted at boot, so revoking it mid-run would
+ * close the host's own window until a restart.
+ */
+export function RevokeAccessSession(sessionID: string): $CancellablePromise<void> {
+    return $Call.ByID(2284519219, sessionID);
+}
+
+/**
  * SaveDraft replaces the draft row for a thread.
+ * 
+ * ctx carries the calling screen's identity so the broadcast can name it and
+ * so that screen can recognize the echo of its own save. The generated TS
+ * bindings strip a leading ctx parameter, so the wire signature is unchanged.
  */
 export function SaveDraft(threadID: string, content: string, attachmentIDs: string[], terminalChips: app$0.TerminalChip[], sourceProposedPlan: app$0.SourceProposedPlan | null): $CancellablePromise<void> {
     return $Call.ByID(3025273299, threadID, content, attachmentIDs, terminalChips, sourceProposedPlan);
@@ -3051,7 +3710,7 @@ export function SavePayloadToFile(threadID: string, payloadID: string): $Cancell
  */
 export function SearchThreadItems(threadID: string, query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(1414650511, threadID, query, limit).then(($result: any) => {
-        return $$createType124($result);
+        return $$createType140($result);
     });
 }
 
@@ -3067,7 +3726,7 @@ export function SearchThreadItems(threadID: string, query: string, limit: number
  */
 export function SearchThreadMessages(query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(3644945077, query, limit).then(($result: any) => {
-        return $$createType124($result);
+        return $$createType140($result);
     });
 }
 
@@ -3079,13 +3738,13 @@ export function SearchThreadMessages(query: string, limit: number): $Cancellable
  */
 export function SearchWorkspaceFiles(ws: app$0.WorkspaceRef, query: string, limit: number): $CancellablePromise<app$0.WorkspaceFileSearchResult> {
     return $Call.ByID(3852272821, ws, query, limit).then(($result: any) => {
-        return $$createType125($result);
+        return $$createType141($result);
     });
 }
 
 export function SendDiffReviewComments(threadID: string, scope: string, sourceKey: string, commentIDs: string[], input: app$0.SendDiffReviewCommentsInput): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2317109106, threadID, scope, sourceKey, commentIDs, input).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3104,7 +3763,7 @@ export function SendMessage(threadID: string, content: string, attachmentIDs: st
  */
 export function SendMessageWithOptions(threadID: string, content: string, opts: app$0.SendMessageOptions): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3632185196, threadID, content, opts).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3115,7 +3774,7 @@ export function SendMessageWithOptions(threadID: string, content: string, opts: 
  */
 export function SendPlanRevisionComments(threadID: string, planItemID: string, commentIDs: string[]): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(1407159655, threadID, planItemID, commentIDs).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3130,6 +3789,11 @@ export function SendPlanRevisionComments(threadID: string, planItemID: string, c
  * change cost a redundant round trip. Suppression is re-armed after the
  * write because the event arrives asynchronously, after os.Rename has
  * already returned.
+ * 
+ * Host-scoped because the file it writes is THIS machine's appearance
+ * (theme-system.md decision 4: local-only writes, per client). A paired
+ * device holds its own selection in its own storage; settings:write would
+ * have let it repaint the desktop it is not looking at.
  */
 export function SetAppearance(appearance: theme$0.Appearance): $CancellablePromise<void> {
     return $Call.ByID(3167202905, appearance);
@@ -3137,7 +3801,7 @@ export function SetAppearance(appearance: theme$0.Appearance): $CancellablePromi
 
 export function SetChatBarFavorite(fav: store$0.ChatBarFavorite, starred: boolean): $CancellablePromise<store$0.ChatBarFavorite[]> {
     return $Call.ByID(2813580982, fav, starred).then(($result: any) => {
-        return $$createType91($result);
+        return $$createType104($result);
     });
 }
 
@@ -3154,33 +3818,46 @@ export function SetChatBarFavorite(fav: store$0.ChatBarFavorite, starred: boolea
  */
 export function SetEditorSettings(s: settings$0.EditorSettings): $CancellablePromise<settings$0.EditorSettings> {
     return $Call.ByID(3655340267, s).then(($result: any) => {
-        return $$createType28($result);
+        return $$createType37($result);
     });
 }
 
 /**
- * SetNetworkSettings persists the new bind-all preference and
- * rebinds the transport server. Going false → true rebinds to
- * 0.0.0.0:<port> so LAN clients can reach the app; true → false
- * rebinds back to 127.0.0.1:<port>. The port is reused so a
- * previously-shared URL stays valid (only the host changes).
+ * SetNetworkSettings persists the network preferences and applies the
+ * ones the transport holds live.
  * 
- * On rebind failure the transport state is unchanged (Rebind is
- * state-intact on error) and the persisted setting is rolled back
- * so a subsequent GetNetworkSettings returns the actual transport
- * state. Returns the post-rebind Settings so the UI can update the
- * URL display in one round trip.
+ * The bind: false → true rebinds to 0.0.0.0:<port> so LAN clients can
+ * reach the app; true → false rebinds back to 127.0.0.1:<port>. The port
+ * is reused so a previously-shared URL stays valid (only the host
+ * changes). On rebind failure the transport state is unchanged (Rebind
+ * is state-intact on error) and the persisted setting is rolled back, so
+ * a subsequent GetNetworkSettings returns the actual transport state.
  * 
- * Origin allow-list: a LAN bind requires an explicit allow-list so
- * a stray browser tab on the LAN can't WebSocket-hijack a leaked
- * token (CSWSH). On bind-all=true the list contains loopback
- * variants plus the discovered LAN IP; on bind-all=false the list
- * is empty (loopback has no browser-origin to validate, and
- * InsecureSkipVerify is fine).
+ * The canonical domain: applied to the listener as the one DNS name its
+ * Host guard accepts besides the loopback spellings, and to the origin
+ * allow-list as the https origins a page served under that name has. The
+ * certificate for it is NOT obtained here — that is the reconciler in
+ * app_domaincert.go, kicked at the end of this call, because a DNS-01
+ * exchange outlives any RPC.
+ * 
+ * The tailnet: the toggle and its coordination server are persisted and
+ * the reconciler is kicked, exactly like the certificate half and for the
+ * same reason — a node's first bring-up ends in an interactive sign-in,
+ * which outlives any RPC. Nothing about the node is done inline here.
+ * 
+ * Origin allow-list: a LAN bind requires an explicit allow-list, so a
+ * page loaded from some other origin cannot open a socket here with a
+ * token it happened to learn. On bind-all=true the list contains
+ * loopback variants plus the discovered LAN IP; a canonical domain adds
+ * its own https origins on either bind.
+ * 
+ * The answer it returns is picked for the caller on the same terms as
+ * GetNetworkSettings: this call is step-up reachable from a paired device,
+ * and its return carried the launch token to it until that pick existed.
  */
 export function SetNetworkSettings(s: network$0.Settings): $CancellablePromise<network$0.Settings> {
     return $Call.ByID(3915514446, s).then(($result: any) => {
-        return $$createType35($result);
+        return $$createType20($result);
     });
 }
 
@@ -3213,7 +3890,7 @@ export function SetPRUpdatesActive(subscriptionID: string, active: boolean): $Ca
  */
 export function SetProjectWorktreeSetup(projectID: string, config: app$0.WorktreeSetupConfig): $CancellablePromise<app$0.WorktreeSetupConfig> {
     return $Call.ByID(322092470, projectID, config).then(($result: any) => {
-        return $$createType43($result);
+        return $$createType51($result);
     });
 }
 
@@ -3225,20 +3902,47 @@ export function SetProjectWorktreeSetup(projectID: string, config: app$0.Worktre
  */
 export function SetProviderCustomEnvVar(providerName: string, name: string, value: string, sensitive: boolean): $CancellablePromise<settings$0.Settings> {
     return $Call.ByID(2118904465, providerName, name, value, sensitive).then(($result: any) => {
-        return $$createType13($result);
+        return $$createType16($result);
     });
+}
+
+/**
+ * SetPushSenderCredential installs the service-account key this backend
+ * sends with.
+ * 
+ * `access:admin` plus //ao:stepup, the posture of every other
+ * credential-shaped write on the admin surface (minting a pairing link,
+ * beginning a passkey registration, the network exposure writes). NOT
+ * `host`: host presence is granted to no session, so a host annotation would
+ * make the paste reachable from nowhere but the machine's own window — and
+ * the machine this credential most needs installing on is the serve host
+ * nobody sits at. The step-up is the proof §4 asks of a write that changes
+ * what every registered phone is woken by.
+ * 
+ * VALIDATION IS SHAPE ONLY. Minting a token against the key would be the
+ * stronger check and it is deliberately not done: it would put a network
+ * call inside an RPC that must be testable, and this repo's tests reach no
+ * network. The first real send reports the rest, through
+ * GetPushSenderStatus's lastError, which is the surface the owner is already
+ * watching.
+ */
+export function SetPushSenderCredential(credentialJSON: string): $CancellablePromise<void> {
+    return $Call.ByID(719170063, credentialJSON);
 }
 
 /**
  * SetThreadGroup moves threads into groupID, or out of any group when it
  * is empty. It returns every row the call touched — the discussion
  * children that travelled with a named root included — and emits one
- * thread:updated "replace" frame per row, because a move rewrites the
+ * thread:updated "full" frame per row, because a move rewrites the
  * group and strips the pin together.
+ * 
+ * The client routes this from the thread ids (methodFamilies.ts); home is
+ * the single-backend fallback.
  */
 export function SetThreadGroup(threadIDs: string[], groupID: string): $CancellablePromise<store$0.Thread[]> {
     return $Call.ByID(2514763466, threadIDs, groupID).then(($result: any) => {
-        return $$createType83($result);
+        return $$createType94($result);
     });
 }
 
@@ -3248,7 +3952,7 @@ export function SetThreadGroup(threadIDs: string[], groupID: string): $Cancellab
  */
 export function SetThreadGroupPinGroup(id: string, group: number): $CancellablePromise<store$0.ThreadGroup> {
     return $Call.ByID(4218979176, id, group).then(($result: any) => {
-        return $$createType11($result);
+        return $$createType14($result);
     });
 }
 
@@ -3276,15 +3980,15 @@ export function SetThreadMcpServerEnabled(threadID: string, name: string, enable
  */
 export function SetThreadPinGroup(id: string, group: number): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3112222989, id, group).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
 /**
- * SetUIState batch-upserts entries into the calling client's bucket.
+ * SetUIState batch-upserts entries into the calling connection's bucket.
  */
-export function SetUIState(clientID: string, entries: { [_ in string]?: string }): $CancellablePromise<void> {
-    return $Call.ByID(1514250938, clientID, entries);
+export function SetUIState(entries: { [_ in string]?: string }): $CancellablePromise<void> {
+    return $Call.ByID(1514250938, entries);
 }
 
 /**
@@ -3350,7 +4054,7 @@ export function SetWorkspaceMcpServerEnabled(providerName: string, workspacePath
  */
 export function StartCodexReview(threadID: string, target: app$0.CodexReviewTarget): $CancellablePromise<app$0.CodexReviewStarted> {
     return $Call.ByID(1913732562, threadID, target).then(($result: any) => {
-        return $$createType126($result);
+        return $$createType142($result);
     });
 }
 
@@ -3363,6 +4067,24 @@ export function StartDiscussion(threadID: string, discussionName: string): $Canc
 
 export function StartDiscussionByID(threadID: string, discussionID: string): $CancellablePromise<void> {
     return $Call.ByID(2336869067, threadID, discussionID);
+}
+
+/**
+ * The four sign-in calls. A provider login is a SESSION rather than one long
+ * call, because the person finishing it may not be at this machine: the link
+ * has to reach them and their answer has to come back to the flow still
+ * holding it open. Each returns as soon as it has done its part; every
+ * transition after that arrives on `provider:login`.
+ * 
+ * StartProviderLogin begins one and returns as soon as there is something to
+ * show — for `browser` a page is opened on this host, for `remote` a link (and
+ * on Codex a device code) comes back to be shown wherever the caller is.
+ * Whatever was already running for this provider is cancelled.
+ */
+export function StartProviderLogin(providerName: string, method: provideraccountapp$0.LoginMethod): $CancellablePromise<provideraccountapp$0.LoginState> {
+    return $Call.ByID(1484798083, providerName, method).then(($result: any) => {
+        return $$createType7($result);
+    });
 }
 
 /**
@@ -3397,7 +4119,7 @@ export function StartSession(threadID: string): $CancellablePromise<void> {
  */
 export function StartTerminal(opts: app$0.StartTerminalOptions): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3009548683, opts).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3444,7 +4166,7 @@ export function StartTerminal(opts: app$0.StartTerminalOptions): $CancellablePro
  */
 export function SteerMessageWithOptions(threadID: string, content: string, opts: app$0.SendMessageOptions): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(1698485705, threadID, content, opts).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3489,9 +4211,37 @@ export function StopSession(threadID: string): $CancellablePromise<void> {
     return $Call.ByID(3838500111, threadID);
 }
 
+/**
+ * StopThreadBackgroundWork terminates every background task one thread
+ * is running and returns how many it stopped. The provider session
+ * stays up: this is the control for "stop what the agent left running",
+ * not for "release the thread" — archiving does the latter.
+ * 
+ * Each task goes through the same per-task RPC a client would call for
+ * that row (StopClaudeTask, StopCodexSubagent,
+ * TerminateCodexBackgroundTerminal), so there is exactly one
+ * termination path per provider and this method adds none. Failures are
+ * joined rather than short-circuiting: a task that refuses to die must
+ * not keep the rest alive.
+ */
+export function StopThreadBackgroundWork(threadID: string): $CancellablePromise<number> {
+    return $Call.ByID(2155771620, threadID);
+}
+
 export function SubmitPRReview(pr: git$0.PRReference, review: git$0.SubmitReviewRequest): $CancellablePromise<app$0.SubmitPRReviewResult> {
     return $Call.ByID(2692607191, pr, review).then(($result: any) => {
-        return $$createType127($result);
+        return $$createType143($result);
+    });
+}
+
+/**
+ * SubmitProviderLoginCode hands back the code Claude's sign-in page shows
+ * after approval. Codex has no counterpart: its device flow finishes on the
+ * ChatGPT page.
+ */
+export function SubmitProviderLoginCode(providerName: string, code: string): $CancellablePromise<provideraccountapp$0.LoginState> {
+    return $Call.ByID(3556446736, providerName, code).then(($result: any) => {
+        return $$createType7($result);
     });
 }
 
@@ -3516,13 +4266,13 @@ export function SubmitPRReview(pr: git$0.PRReference, review: git$0.SubmitReview
  */
 export function SubscribePRUpdates(pr: git$0.PRReference): $CancellablePromise<app$0.PRUpdateSubscriptionResult> {
     return $Call.ByID(3272491649, pr).then(($result: any) => {
-        return $$createType128($result);
+        return $$createType144($result);
     });
 }
 
 export function SwitchProviderAccount(providerName: string, accountID: string): $CancellablePromise<app$0.ManagedProviderAccount> {
     return $Call.ByID(1249964095, providerName, accountID).then(($result: any) => {
-        return $$createType104($result);
+        return $$createType118($result);
     });
 }
 
@@ -3549,7 +4299,7 @@ export function SwitchProviderAccount(providerName: string, accountID: string): 
  */
 export function SwitchThread(threadID: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3897387725, threadID).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3558,14 +4308,14 @@ export function SwitchThread(threadID: string): $CancellablePromise<store$0.Thre
  * ListThreadSliceAround: it answers with the window only when the
  * caller's stamps prove it necessary. Store-read-only — it opens one
  * read-pool transaction and touches no local FS, process, or credential
- * state, so it is deliberately NOT in transport.LocalOnlyMethods.
+ * state, so it rides `threads:read` like the history it answers with.
  * 
  * The other paging RPCs are unchanged; this one covers the initial
  * window only.
  */
 export function SyncThreadWindow(threadID: string, req: app$0.SyncThreadWindowRequest): $CancellablePromise<app$0.SyncThreadWindowResponse> {
     return $Call.ByID(3841902986, threadID, req).then(($result: any) => {
-        return $$createType129($result);
+        return $$createType145($result);
     });
 }
 
@@ -3602,15 +4352,6 @@ export function TerminateCodexBackgroundTerminal(threadID: string, processID: st
 }
 
 /**
- * TouchRemoteEndpoint bumps the LastUsedAt timestamp on the named
- * record. Used by the settings UI's "Connect" affordance so the
- * list can sort or visually emphasise recently-used endpoints.
- */
-export function TouchRemoteEndpoint(id: string): $CancellablePromise<void> {
-    return $Call.ByID(2647456459, id);
-}
-
-/**
  * TriggerMcpAuth drives the provider-side OAuth handshake for an
  * http/sse / streamable_http MCP server. The thread must be live
  * because the OAuth listener is owned by the provider process; if no
@@ -3618,7 +4359,7 @@ export function TouchRemoteEndpoint(id: string): $CancellablePromise<void> {
  */
 export function TriggerMcpAuth(threadID: string, name: string): $CancellablePromise<app$0.MCPAuthInitResult> {
     return $Call.ByID(1291217507, threadID, name).then(($result: any) => {
-        return $$createType130($result);
+        return $$createType146($result);
     });
 }
 
@@ -3630,7 +4371,7 @@ export function TriggerMcpAuth(threadID: string, name: string): $CancellableProm
  */
 export function TriggerWorkspaceMcpAuth(providerName: string, workspacePath: string, serverName: string): $CancellablePromise<app$0.MCPAuthInitResult> {
     return $Call.ByID(417766274, providerName, workspacePath, serverName).then(($result: any) => {
-        return $$createType130($result);
+        return $$createType146($result);
     });
 }
 
@@ -3639,7 +4380,7 @@ export function TriggerWorkspaceMcpAuth(providerName: string, workspacePath: str
  */
 export function UnarchiveProject(id: string): $CancellablePromise<store$0.Project> {
     return $Call.ByID(2561521885, id).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType12($result);
     });
 }
 
@@ -3647,10 +4388,23 @@ export function UnarchiveProject(id: string): $CancellablePromise<store$0.Projec
  * UnarchiveThread flips archived back to false so the thread reappears in the
  * active sidebar. Returns the refreshed row so the caller can re-render
  * without a follow-up GetThread round-trip.
+ * 
+ * It deliberately starts NO session. The thread comes back exactly as
+ * cold as any other thread whose session was closed — by the reaper, by
+ * StopSession, by an app restart — and the next send lazy-starts a
+ * process through the ordinary runSessionStart path. Restarting here
+ * would spawn a provider process for a thread the reader may only want
+ * to look at.
+ * 
+ * Takes the per-thread action lock so the archive/unarchive pair is
+ * serialized against each other and against every send/start entry
+ * point. An unarchive can no longer land between an archive's row flip
+ * and its session close, which is the one ordering that would leave a
+ * visibly-active thread with a session dying underneath it.
  */
 export function UnarchiveThread(id: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3655125512, id).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3659,7 +4413,7 @@ export function UnarchiveThread(id: string): $CancellablePromise<store$0.Thread>
  */
 export function UnpinThread(id: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3175043037, id).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3668,8 +4422,20 @@ export function UnpinThread(id: string): $CancellablePromise<store$0.Thread> {
  */
 export function UnpinThreadGroup(id: string): $CancellablePromise<store$0.ThreadGroup> {
     return $Call.ByID(48743460, id).then(($result: any) => {
-        return $$createType11($result);
+        return $$createType14($result);
     });
+}
+
+/**
+ * UnregisterPushToken forgets the calling device's registration.
+ * 
+ * The shell calls this before it closes the socket to a backend it is
+ * detaching, which is the only moment it still can: the registration lives
+ * on the backend, and a device that has already dropped the connection has
+ * no way to say "stop waking me".
+ */
+export function UnregisterPushToken(): $CancellablePromise<void> {
+    return $Call.ByID(3065043012);
 }
 
 export function UnsubscribePRUpdates(subscriptionID: string): $CancellablePromise<void> {
@@ -3678,13 +4444,13 @@ export function UnsubscribePRUpdates(subscriptionID: string): $CancellablePromis
 
 export function UpdateContextSettingsProfile(update: app$0.ContextSettingsUpdate): $CancellablePromise<app$0.ContextSettingsProfile> {
     return $Call.ByID(1472386383, update).then(($result: any) => {
-        return $$createType24($result);
+        return $$createType32($result);
     });
 }
 
 export function UpdateDiffReviewComment(threadID: string, commentID: string, input: store$0.DiffReviewCommentUpdate): $CancellablePromise<store$0.DiffReviewComment> {
     return $Call.ByID(2452201652, threadID, commentID, input).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType11($result);
     });
 }
 
@@ -3711,7 +4477,7 @@ export function UpdateKeybindings(bindings: keybindings$0.Keybinding[]): $Cancel
  */
 export function UpdateNewThreadDefaults(update: app$0.NewThreadDefaultsUpdate): $CancellablePromise<app$0.ThreadDefaults> {
     return $Call.ByID(595194384, update).then(($result: any) => {
-        return $$createType54($result);
+        return $$createType64($result);
     });
 }
 
@@ -3719,6 +4485,11 @@ export function UpdateNewThreadDefaults(update: app$0.NewThreadDefaultsUpdate): 
  * UpdateProjectSortPositions re-orders the projects list. The frontend
  * emits the full ordered list when the user drops a drag-reorder so the
  * store assigns dense positions 0..N-1 in one transaction.
+ * 
+ * One frame per row written. Every listed project is written, not only the
+ * ones whose index moved, because the reorder also bumps updated_at — that
+ * bump is deliberate (it makes a reorder count as project activity), so those
+ * rows really did change and other clients need them.
  */
 export function UpdateProjectSortPositions(orderedIDs: string[]): $CancellablePromise<void> {
     return $Call.ByID(3717363955, orderedIDs);
@@ -3726,23 +4497,7 @@ export function UpdateProjectSortPositions(orderedIDs: string[]): $CancellablePr
 
 export function UpdateProposedPlanComment(threadID: string, commentID: string, input: store$0.ProposedPlanCommentUpdate): $CancellablePromise<store$0.ProposedPlanComment> {
     return $Call.ByID(2747956806, threadID, commentID, input).then(($result: any) => {
-        return $$createType10($result);
-    });
-}
-
-/**
- * UpdateRemoteEndpoint mutates the named-by-ID record. Empty fields
- * in the patch leave the existing value untouched, matching the
- * settings-service semantics, so the UI can update a nickname
- * without re-typing the URL or token.
- * 
- * SECURITY: returns RemoteEndpointSummary so a no-op Update from a
- * LAN-attached token-holder can't harvest the persisted token. See
- * AddRemoteEndpoint for the threat model.
- */
-export function UpdateRemoteEndpoint(id: string, name: string, url: string, token: string): $CancellablePromise<app$0.RemoteEndpointSummary> {
-    return $Call.ByID(4268476031, id, name, url, token).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType13($result);
     });
 }
 
@@ -3760,15 +4515,31 @@ export function UpdateRemoteEndpoint(id: string, name: string, url: string, toke
  * after a generic update would leave the picker showing the wrong
  * availability flags until the next app launch.
  * 
+ * Each key is routed to its own tier's storage — settings.json for host keys,
+ * the `user:default` ui_state scope for user keys, the CALLING connection's
+ * bucket for device keys (docs/specs/remote-access.md §6). Validation runs on
+ * the whole merged struct first, so every key is validated the same way
+ * wherever it ends up.
+ * 
+ * The patch is applied over the caller's CLASS-RESOLVED view, which is what
+ * lets a device write the opposite of its class default: a phone patching
+ * lowPowerMode to false is a change from the true its class resolves to, so
+ * it persists a row and outranks the table from then on.
+ * 
  * The returned snapshot is redacted like GetSettings': the frontend store
  * re-seeds from it, and the two read paths must not disagree about whether the
- * store holds a plaintext secret. (Nothing consumes the secrets from here —
- * tokens are fetched through GetRemoteEndpointToken and sensitive environment
- * values have no read path at all.)
+ * store holds a plaintext secret. (Nothing consumes the secrets from here:
+ * sensitive environment values have no read path at all.)
+ * 
+ * The scope below is the FLOOR, and it is the floor VALUE: one method carries
+ * all three of §6's tiers, so the only honest thing its name can require is a
+ * live session. requireSettingsTier is where the real answer is decided, per
+ * key — device keys ride the session, user keys need settings:write, host keys
+ * need a fresh step-up proof.
  */
 export function UpdateSettings(patch: { [_ in string]?: any }): $CancellablePromise<settings$0.Settings> {
     return $Call.ByID(2894041249, patch).then(($result: any) => {
-        return $$createType13($result);
+        return $$createType16($result);
     });
 }
 
@@ -3804,13 +4575,13 @@ export function UpdateSettings(patch: { [_ in string]?: any }): $CancellableProm
  */
 export function UpdateThreadBranch(workspacePath: string, branch: string): $CancellablePromise<store$0.Thread[]> {
     return $Call.ByID(2929723500, workspacePath, branch).then(($result: any) => {
-        return $$createType83($result);
+        return $$createType94($result);
     });
 }
 
 export function UpdateThreadContextSettings(threadID: string, update: app$0.ContextSettingsUpdate): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2621473242, threadID, update).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3821,7 +4592,7 @@ export function UpdateThreadContextSettings(threadID: string, update: app$0.Cont
  */
 export function UpdateThreadContextWindow(id: string, tokens: number): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2456875639, id, tokens).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3833,7 +4604,7 @@ export function UpdateThreadContextWindow(id: string, tokens: number): $Cancella
  */
 export function UpdateThreadFastMode(id: string, on: boolean): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(4175109385, id, on).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3849,7 +4620,7 @@ export function UpdateThreadFastMode(id: string, on: boolean): $CancellablePromi
  */
 export function UpdateThreadMode(threadID: string, mode: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3609479719, threadID, mode).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3860,7 +4631,7 @@ export function UpdateThreadMode(threadID: string, mode: string): $CancellablePr
  */
 export function UpdateThreadModel(threadID: string, model: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(4179686417, threadID, model).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3872,7 +4643,7 @@ export function UpdateThreadModel(threadID: string, model: string): $Cancellable
  */
 export function UpdateThreadModelSelection(threadID: string, providerName: string, model: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3140398729, threadID, providerName, model).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3891,7 +4662,7 @@ export function UpdateThreadModelSelection(threadID: string, providerName: strin
  */
 export function UpdateThreadProvider(id: string, providerName: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(665741969, id, providerName).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3902,7 +4673,7 @@ export function UpdateThreadProvider(id: string, providerName: string): $Cancell
  */
 export function UpdateThreadReasoningEffort(id: string, effort: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(892204206, id, effort).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3913,7 +4684,7 @@ export function UpdateThreadReasoningEffort(id: string, effort: string): $Cancel
  */
 export function UpdateThreadRuntimeMode(id: string, mode: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(325190827, id, mode).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -3925,17 +4696,7 @@ export function UpdateThreadRuntimeMode(id: string, mode: string): $CancellableP
  */
 export function UpdateThreadWorkspace(id: string, path: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3875142865, id, path).then(($result: any) => {
-        return $$createType1($result);
-    });
-}
-
-/**
- * UploadAttachment decodes base64 bytes, validates + persists them on disk,
- * and returns the new attachment metadata.
- */
-export function UploadAttachment(threadID: string, filename: string, mimeType: string, dataB64: string): $CancellablePromise<store$0.Attachment> {
-    return $Call.ByID(2485473713, threadID, filename, mimeType, dataB64).then(($result: any) => {
-        return $$createType84($result);
+        return $$createType2($result);
     });
 }
 
@@ -3949,13 +4710,13 @@ export function UploadAttachment(threadID: string, filename: string, mimeType: s
  * deliberate divergence from click-time resolution, and it only errs
  * fail-closed: an over-cap file shows no arrow (snapshots never exceed
  * the cap either; only a huge pre-snapshot workspace file can hit it).
- * Same wire-exposure class as GetDiffContextLines: classified
- * LocalOnlyMethods; remote clients' rejection leaves every path
- * unexpandable, which is exactly what their clicks would find.
+ * Same wire-exposure class as GetDiffContextLines: `files:read`. A
+ * session without that grant is refused here and refused at click time
+ * too, so the arrows it sees match the expansions it can perform.
  */
 export function VerifyEditDiffs(threadID: string, req: app$0.VerifyEditDiffsRequest): $CancellablePromise<app$0.VerifyEditDiffsResult> {
     return $Call.ByID(3907724148, threadID, req).then(($result: any) => {
-        return $$createType131($result);
+        return $$createType147($result);
     });
 }
 
@@ -3963,7 +4724,7 @@ export function VerifyEditDiffs(threadID: string, req: app$0.VerifyEditDiffsRequ
  * Version returns the build-stamped semantic version (e.g. "0.0.1") or
  * "dev" for unstamped builds. The frontend's Settings footer reads
  * this to display the current release. Read-only, no FS / process /
- * settings touch — intentionally NOT in LocalOnlyMethods so a
+ * settings touch — deliberately an observe scope rather than `host`, so a
  * remote --connect client sees the backend's version too.
  */
 export function Version(): $CancellablePromise<string> {
@@ -3977,7 +4738,7 @@ export function Version(): $CancellablePromise<string> {
  */
 export function WorkflowAgentAddMemory(input: app$0.WorkflowAgentMemoryInput): $CancellablePromise<app$0.WorkflowAgentMemoryResult> {
     return $Call.ByID(4000394635, input).then(($result: any) => {
-        return $$createType132($result);
+        return $$createType148($result);
     });
 }
 
@@ -3989,7 +4750,7 @@ export function WorkflowAgentAddMemory(input: app$0.WorkflowAgentMemoryInput): $
  */
 export function WorkflowAgentAmendSeeds(input: app$0.WorkflowAgentAmendSeedsInput): $CancellablePromise<app$0.WorkflowAgentAmendSeedsResult> {
     return $Call.ByID(4273669366, input).then(($result: any) => {
-        return $$createType133($result);
+        return $$createType149($result);
     });
 }
 
@@ -4010,7 +4771,7 @@ export function WorkflowAgentGetNotes(automationID: string): $CancellablePromise
  */
 export function WorkflowAgentGuideRun(input: app$0.WorkflowAgentGuideRunInput): $CancellablePromise<app$0.WorkflowAgentGuideRunResult> {
     return $Call.ByID(76499272, input).then(($result: any) => {
-        return $$createType134($result);
+        return $$createType150($result);
     });
 }
 
@@ -4022,7 +4783,7 @@ export function WorkflowAgentGuideRun(input: app$0.WorkflowAgentGuideRunInput): 
  */
 export function WorkflowAgentInspectRun(input: app$0.WorkflowAgentInspectInput): $CancellablePromise<app$0.WorkflowAgentRunInspection> {
     return $Call.ByID(1146143060, input).then(($result: any) => {
-        return $$createType135($result);
+        return $$createType151($result);
     });
 }
 
@@ -4033,7 +4794,7 @@ export function WorkflowAgentInspectRun(input: app$0.WorkflowAgentInspectInput):
  */
 export function WorkflowAgentListMemory(input: app$0.WorkflowAgentMemoryListInput): $CancellablePromise<app$0.WorkflowAgentMemoryLog> {
     return $Call.ByID(1978122086, input).then(($result: any) => {
-        return $$createType136($result);
+        return $$createType152($result);
     });
 }
 
@@ -4044,7 +4805,7 @@ export function WorkflowAgentListMemory(input: app$0.WorkflowAgentMemoryListInpu
  */
 export function WorkflowAgentListRuns(activeOnly: boolean): $CancellablePromise<app$0.WorkflowAgentRunView[]> {
     return $Call.ByID(717593283, activeOnly).then(($result: any) => {
-        return $$createType138($result);
+        return $$createType154($result);
     });
 }
 
@@ -4056,7 +4817,7 @@ export function WorkflowAgentListRuns(activeOnly: boolean): $CancellablePromise<
  */
 export function WorkflowAgentRunNarrative(input: app$0.WorkflowAgentNarrativeInput): $CancellablePromise<app$0.WorkflowAgentNarrative> {
     return $Call.ByID(3748461612, input).then(($result: any) => {
-        return $$createType139($result);
+        return $$createType155($result);
     });
 }
 
@@ -4068,7 +4829,7 @@ export function WorkflowAgentRunNarrative(input: app$0.WorkflowAgentNarrativeInp
  */
 export function WorkflowAgentRunOutput(itemID: string): $CancellablePromise<app$0.WorkflowAgentRunOutputs> {
     return $Call.ByID(315193175, itemID).then(($result: any) => {
-        return $$createType140($result);
+        return $$createType156($result);
     });
 }
 
@@ -4080,7 +4841,7 @@ export function WorkflowAgentRunOutput(itemID: string): $CancellablePromise<app$
  */
 export function WorkflowAgentRunStatus(itemID: string): $CancellablePromise<app$0.WorkflowAgentRunView> {
     return $Call.ByID(49502656, itemID).then(($result: any) => {
-        return $$createType137($result);
+        return $$createType153($result);
     });
 }
 
@@ -4093,7 +4854,7 @@ export function WorkflowAgentRunStatus(itemID: string): $CancellablePromise<app$
  */
 export function WorkflowAgentSchedule(input: app$0.WorkflowAgentScheduleInput): $CancellablePromise<app$0.WorkflowAgentScheduleResult> {
     return $Call.ByID(3469145856, input).then(($result: any) => {
-        return $$createType141($result);
+        return $$createType157($result);
     });
 }
 
@@ -4106,7 +4867,7 @@ export function WorkflowAgentSchedule(input: app$0.WorkflowAgentScheduleInput): 
  */
 export function WorkflowAgentSetNotes(automationID: string, notes: string): $CancellablePromise<app$0.WorkflowAgentNotesResult> {
     return $Call.ByID(8517788, automationID, notes).then(($result: any) => {
-        return $$createType142($result);
+        return $$createType158($result);
     });
 }
 
@@ -4121,7 +4882,7 @@ export function WorkflowAgentSetNotes(automationID: string, notes: string): $Can
  */
 export function WorkflowAgentStartRun(input: app$0.WorkflowAgentStartInput): $CancellablePromise<app$0.WorkflowAgentStartResult> {
     return $Call.ByID(1060823172, input).then(($result: any) => {
-        return $$createType143($result);
+        return $$createType159($result);
     });
 }
 
@@ -4135,7 +4896,7 @@ export function WorkflowAgentStartRun(input: app$0.WorkflowAgentStartInput): $Ca
  */
 export function WorkflowAgentWatchRun(input: app$0.WorkflowAgentWatchInput): $CancellablePromise<app$0.WorkflowAgentWatchResult> {
     return $Call.ByID(2308429865, input).then(($result: any) => {
-        return $$createType144($result);
+        return $$createType160($result);
     });
 }
 
@@ -4158,11 +4919,12 @@ export function WorkflowAnswerQuestion(itemID: string, answer: string): $Cancell
  * The run's results are delivered there from then on, replacing any previous
  * binding.
  * 
- * LocalOnly: it associates a local run record with a local provider session.
+ * threads:autonomy: it decides where an unattended run reports, which is a
+ * statement about the autonomous work itself and not thread bookkeeping.
  */
 export function WorkflowBindThread(itemID: string, threadID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(1931806823, itemID, threadID).then(($result: any) => {
-        return $$createType145($result);
+        return $$createType161($result);
     });
 }
 
@@ -4184,7 +4946,7 @@ export function WorkflowCompleteTakeover(itemID: string): $CancellablePromise<vo
  */
 export function WorkflowCreateAutomation(input: app$0.WorkflowAutomationInput): $CancellablePromise<app$0.WorkflowAutomationView> {
     return $Call.ByID(3011758347, input).then(($result: any) => {
-        return $$createType146($result);
+        return $$createType162($result);
     });
 }
 
@@ -4194,7 +4956,7 @@ export function WorkflowCreateAutomation(input: app$0.WorkflowAutomationInput): 
  */
 export function WorkflowCreateItemPR(itemID: string): $CancellablePromise<app$0.WorkflowDispositionReceipt> {
     return $Call.ByID(1792283305, itemID).then(($result: any) => {
-        return $$createType147($result);
+        return $$createType163($result);
     });
 }
 
@@ -4213,7 +4975,7 @@ export function WorkflowDeleteAutomation(automationID: string): $CancellableProm
  */
 export function WorkflowDiscardItem(itemID: string): $CancellablePromise<app$0.WorkflowDispositionReceipt> {
     return $Call.ByID(2163033761, itemID).then(($result: any) => {
-        return $$createType147($result);
+        return $$createType163($result);
     });
 }
 
@@ -4221,11 +4983,12 @@ export function WorkflowDiscardItem(itemID: string): $CancellablePromise<app$0.W
  * WorkflowDiscardPreview reports what discarding a run tree would destroy. It
  * runs read-only git queries and mutates nothing.
  * 
- * LocalOnly: it reads local checkouts and repository history.
+ * git:operate: it reads local checkouts and repository history, the same
+ * grant the git reads it is built out of take.
  */
 export function WorkflowDiscardPreview(itemID: string): $CancellablePromise<app$0.WorkflowDiscardPreview> {
     return $Call.ByID(2659721862, itemID).then(($result: any) => {
-        return $$createType148($result);
+        return $$createType164($result);
     });
 }
 
@@ -4235,7 +4998,7 @@ export function WorkflowDiscardPreview(itemID: string): $CancellablePromise<app$
  */
 export function WorkflowDiscussPR(itemID: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(1236472344, itemID).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -4256,7 +5019,7 @@ export function WorkflowDropUnit(itemID: string, unitID: string, note: string): 
  */
 export function WorkflowFetchPRReviewComments(itemID: string): $CancellablePromise<app$0.WorkflowPRReviewComments> {
     return $Call.ByID(819019128, itemID).then(($result: any) => {
-        return $$createType149($result);
+        return $$createType165($result);
     });
 }
 
@@ -4266,13 +5029,13 @@ export function WorkflowFetchPRReviewComments(itemID: string): $CancellablePromi
  */
 export function WorkflowGetEngineState(): $CancellablePromise<engine$0.EngineState> {
     return $Call.ByID(2130001947).then(($result: any) => {
-        return $$createType150($result);
+        return $$createType166($result);
     });
 }
 
 export function WorkflowGetItem(itemID: string): $CancellablePromise<app$0.WorkflowItemDetailView> {
     return $Call.ByID(70120675, itemID).then(($result: any) => {
-        return $$createType151($result);
+        return $$createType167($result);
     });
 }
 
@@ -4296,7 +5059,7 @@ export function WorkflowGetJobNotes(automationID: string): $CancellablePromise<s
  */
 export function WorkflowGetRunMap(itemID: string): $CancellablePromise<app$0.WorkflowRunMapView> {
     return $Call.ByID(4156752389, itemID).then(($result: any) => {
-        return $$createType152($result);
+        return $$createType168($result);
     });
 }
 
@@ -4306,7 +5069,7 @@ export function WorkflowGetRunMap(itemID: string): $CancellablePromise<app$0.Wor
  */
 export function WorkflowListAutomations(projectID: string): $CancellablePromise<app$0.WorkflowAutomationView[]> {
     return $Call.ByID(2319799628, projectID).then(($result: any) => {
-        return $$createType153($result);
+        return $$createType169($result);
     });
 }
 
@@ -4316,7 +5079,7 @@ export function WorkflowListAutomations(projectID: string): $CancellablePromise<
  */
 export function WorkflowListDefinitions(projectID: string): $CancellablePromise<app$0.WorkflowDefinitionCatalog> {
     return $Call.ByID(2064216126, projectID).then(($result: any) => {
-        return $$createType154($result);
+        return $$createType170($result);
     });
 }
 
@@ -4339,13 +5102,13 @@ export function WorkflowListDefinitions(projectID: string): $CancellablePromise<
  */
 export function WorkflowListItemCosts(projectID: string): $CancellablePromise<{ [_ in string]?: number }> {
     return $Call.ByID(1544440599, projectID).then(($result: any) => {
-        return $$createType155($result);
+        return $$createType171($result);
     });
 }
 
 export function WorkflowListItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3037887964, projectID).then(($result: any) => {
-        return $$createType156($result);
+        return $$createType172($result);
     });
 }
 
@@ -4356,7 +5119,7 @@ export function WorkflowListItems(projectID: string): $CancellablePromise<store$
  */
 export function WorkflowListUnresolvedItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3613211765, projectID).then(($result: any) => {
-        return $$createType156($result);
+        return $$createType172($result);
     });
 }
 
@@ -4366,7 +5129,7 @@ export function WorkflowListUnresolvedItems(projectID: string): $CancellableProm
  */
 export function WorkflowMergeItem(itemID: string): $CancellablePromise<app$0.WorkflowDispositionReceipt> {
     return $Call.ByID(3006532931, itemID).then(($result: any) => {
-        return $$createType147($result);
+        return $$createType163($result);
     });
 }
 
@@ -4376,8 +5139,8 @@ export function WorkflowMergeItem(itemID: string): $CancellablePromise<app$0.Wor
  * comes down through the engine's one teardown path. Resuming continues on the
  * provider sessions the runs parked on.
  * 
- * LocalOnly: pausing interrupts local provider processes and releases the
- * worktrees they hold.
+ * threads:autonomy: pausing interrupts autonomous provider processes and
+ * releases the worktrees they hold.
  */
 export function WorkflowPauseItem(itemID: string): $CancellablePromise<void> {
     return $Call.ByID(3764767257, itemID);
@@ -4394,8 +5157,8 @@ export function WorkflowPauseItem(itemID: string): $CancellablePromise<void> {
  * the path that set it, and a caller that can only ever arm would have no way to
  * change its mind.
  * 
- * LocalOnly: the request decides whether the next wave of autonomous provider
- * sessions runs, which is the same control plane as pause.
+ * threads:autonomy: the request decides whether the next wave of autonomous
+ * provider sessions runs, which is the same control plane as pause.
  */
 export function WorkflowRequestSoftStop(itemID: string, armed: boolean): $CancellablePromise<void> {
     return $Call.ByID(2570221545, itemID, armed);
@@ -4466,7 +5229,7 @@ export function WorkflowRetryUnit(itemID: string, unitID: string, note: string):
  */
 export function WorkflowRunAutomationNow(automationID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(2615697354, automationID).then(($result: any) => {
-        return $$createType145($result);
+        return $$createType161($result);
     });
 }
 
@@ -4494,7 +5257,7 @@ export function WorkflowScheduleResume(itemID: string, at: string): $Cancellable
  */
 export function WorkflowSendPRReviewCommentsToThread(itemID: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(1172404443, itemID).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -4511,6 +5274,11 @@ export function WorkflowSetAutomationEnabled(automationID: string, enabled: bool
  * phase starts anywhere while paused, in-flight turns finish. It is persisted
  * before it is applied, so a restart recovers the requested state even if
  * shutdown races the live update.
+ * 
+ * This is the ONE write path for the `workflowPaused` setting: the generic
+ * UpdateSettings patch refuses the key (docs/specs/remote-access.md §6, "one
+ * write path per key"), because persisting a pause the engine never heard
+ * about is not the same act as pausing.
  */
 export function WorkflowSetGlobalPause(paused: boolean): $CancellablePromise<void> {
     return $Call.ByID(774492663, paused);
@@ -4530,7 +5298,7 @@ export function WorkflowSetJobNotes(automationID: string, notes: string): $Cance
  */
 export function WorkflowStartRun(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, budget: profile$0.Budget | null, baseBranch: string, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(1009082601, projectID, workflowID, workflowScope, goal, seeds, budget, baseBranch, stepMode).then(($result: any) => {
-        return $$createType145($result);
+        return $$createType161($result);
     });
 }
 
@@ -4548,11 +5316,11 @@ export function WorkflowTakeOverUnit(itemID: string, unitID: string): $Cancellab
  * WorkflowUnbindThread drops a run's origin binding. Its results go back to the
  * workflows overlay and the OS notification.
  * 
- * LocalOnly: same surface as WorkflowBindThread.
+ * threads:autonomy: same surface as WorkflowBindThread.
  */
 export function WorkflowUnbindThread(itemID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(2006703348, itemID).then(($result: any) => {
-        return $$createType145($result);
+        return $$createType161($result);
     });
 }
 
@@ -4562,7 +5330,7 @@ export function WorkflowUnbindThread(itemID: string): $CancellablePromise<store$
  */
 export function WorkflowUpdateAutomation(automationID: string, input: app$0.WorkflowAutomationInput): $CancellablePromise<app$0.WorkflowAutomationView> {
     return $Call.ByID(536579134, automationID, input).then(($result: any) => {
-        return $$createType146($result);
+        return $$createType162($result);
     });
 }
 
@@ -4589,160 +5357,176 @@ export function WriteWorkspaceFile(ws: app$0.WorkspaceRef, relativePath: string,
 }
 
 // Private type creation functions
-const $$createType0 = settings$0.RemoteEndpointSummary.createFrom;
-const $$createType1 = store$0.Thread.createFrom;
-const $$createType2 = dirbrowse$0.Listing.createFrom;
-const $$createType3 = browser$0.CompanionEvent.createFrom;
-const $$createType4 = browser$0.CompanionSubscription.createFrom;
-const $$createType5 = app$0.UpdateAvailability.createFrom;
-const $$createType6 = app$0.ImportUpdateStatus.createFrom;
-const $$createType7 = app$0.ChannelStatePayload.createFrom;
-const $$createType8 = store$0.DiffReviewComment.createFrom;
-const $$createType9 = store$0.Project.createFrom;
-const $$createType10 = store$0.ProposedPlanComment.createFrom;
-const $$createType11 = store$0.ThreadGroup.createFrom;
-const $$createType12 = app$0.ProjectDeletionResult.createFrom;
-const $$createType13 = settings$0.Settings.createFrom;
-const $$createType14 = app$0.GeneratedCommitMessage.createFrom;
-const $$createType15 = app$0.AttachmentThumbnail.createFrom;
-const $$createType16 = store$0.ChannelMessage.createFrom;
-const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = claudeconfig$0.Skill.createFrom;
-const $$createType19 = $Create.Array($$createType18);
-const $$createType20 = app$0.ClaudeSlashCommands.createFrom;
-const $$createType21 = app$0.CodexAccountUsage.createFrom;
-const $$createType22 = $Create.Nullable($$createType21);
-const $$createType23 = codexskills$0.CwdSkills.createFrom;
-const $$createType24 = app$0.ContextSettingsProfile.createFrom;
-const $$createType25 = app$0.DiffContextResult.createFrom;
-const $$createType26 = store$0.DiscussionDefinition.createFrom;
-const $$createType27 = app$0.Draft.createFrom;
-const $$createType28 = settings$0.EditorSettings.createFrom;
-const $$createType29 = git$0.GitStatus.createFrom;
-const $$createType30 = keybindings$0.LoadResult.createFrom;
-const $$createType31 = app$0.LocalImageData.createFrom;
-const $$createType32 = mcpstatus$0.ServerStatus.createFrom;
-const $$createType33 = provider$0.ModelInfo.createFrom;
-const $$createType34 = $Create.Array($$createType33);
-const $$createType35 = network$0.Settings.createFrom;
-const $$createType36 = app$0.PRCIJobLogResult.createFrom;
-const $$createType37 = git$0.CIPipeline.createFrom;
-const $$createType38 = git$0.PRDetail.createFrom;
-const $$createType39 = app$0.PRMergeConflictsResult.createFrom;
-const $$createType40 = app$0.PayloadChunk.createFrom;
-const $$createType41 = app$0.PayloadContent.createFrom;
-const $$createType42 = app$0.PayloadPreview.createFrom;
-const $$createType43 = app$0.WorktreeSetupConfig.createFrom;
-const $$createType44 = provider$0.ProviderStatus.createFrom;
-const $$createType45 = $Create.Array($$createType44);
-const $$createType46 = flushqueue$0.QueuedItem.createFrom;
-const $$createType47 = $Create.Array($$createType46);
-const $$createType48 = provider$0.RateLimitsSnapshot.createFrom;
-const $$createType49 = $Create.Array($$createType48);
-const $$createType50 = spinner$0.Files.createFrom;
-const $$createType51 = app$0.TerminalReplay.createFrom;
-const $$createType52 = theme$0.Files.createFrom;
-const $$createType53 = app$0.ThreadContextUsage.createFrom;
-const $$createType54 = app$0.ThreadDefaults.createFrom;
-const $$createType55 = store$0.Item.createFrom;
-const $$createType56 = app$0.ThreadLiveState.createFrom;
-const $$createType57 = store$0.TurnPreview.createFrom;
-const $$createType58 = store$0.UserMessageHistoryEntry.createFrom;
-const $$createType59 = $Create.Array($$createType58);
-const $$createType60 = store$0.UserMessageTick.createFrom;
-const $$createType61 = $Create.Array($$createType60);
-const $$createType62 = app$0.WorktreeSetupRunState.createFrom;
-const $$createType63 = app$0.TurnEditsDiff.createFrom;
-const $$createType64 = $Create.Map($Create.Any, $Create.Any);
-const $$createType65 = store$0.UsageBucket.createFrom;
-const $$createType66 = $Create.Array($$createType65);
-const $$createType67 = app$0.WorkspaceActivity.createFrom;
-const $$createType68 = app$0.GitWorkspaceState.createFrom;
-const $$createType69 = git$0.GitActionResult.createFrom;
-const $$createType70 = app$0.BranchPruneCandidates.createFrom;
-const $$createType71 = git$0.GitBranch.createFrom;
+const $$createType0 = attachedbackends$0.Attachment.createFrom;
+const $$createType1 = $Create.Array($Create.Any);
+const $$createType2 = store$0.Thread.createFrom;
+const $$createType3 = app$0.PasskeyChallengeResult.createFrom;
+const $$createType4 = dirbrowse$0.Listing.createFrom;
+const $$createType5 = browser$0.CompanionEvent.createFrom;
+const $$createType6 = browser$0.CompanionSubscription.createFrom;
+const $$createType7 = provideraccountapp$0.LoginState.createFrom;
+const $$createType8 = app$0.UpdateAvailability.createFrom;
+const $$createType9 = app$0.ImportUpdateStatus.createFrom;
+const $$createType10 = app$0.ChannelStatePayload.createFrom;
+const $$createType11 = store$0.DiffReviewComment.createFrom;
+const $$createType12 = store$0.Project.createFrom;
+const $$createType13 = store$0.ProposedPlanComment.createFrom;
+const $$createType14 = store$0.ThreadGroup.createFrom;
+const $$createType15 = app$0.ProjectDeletionResult.createFrom;
+const $$createType16 = settings$0.Settings.createFrom;
+const $$createType17 = app$0.PairingStatusView.createFrom;
+const $$createType18 = app$0.PasskeySummary.createFrom;
+const $$createType19 = app$0.PasskeyStepUpGrant.createFrom;
+const $$createType20 = network$0.Settings.createFrom;
+const $$createType21 = app$0.GeneratedCommitMessage.createFrom;
+const $$createType22 = app$0.AccessOverview.createFrom;
+const $$createType23 = app$0.AttachmentThumbnail.createFrom;
+const $$createType24 = store$0.ChannelMessage.createFrom;
+const $$createType25 = $Create.Array($$createType24);
+const $$createType26 = claudeconfig$0.Skill.createFrom;
+const $$createType27 = $Create.Array($$createType26);
+const $$createType28 = app$0.ClaudeSlashCommands.createFrom;
+const $$createType29 = app$0.CodexAccountUsage.createFrom;
+const $$createType30 = $Create.Nullable($$createType29);
+const $$createType31 = codexskills$0.CwdSkills.createFrom;
+const $$createType32 = app$0.ContextSettingsProfile.createFrom;
+const $$createType33 = devscan$0.DevServerList.createFrom;
+const $$createType34 = app$0.DiffContextResult.createFrom;
+const $$createType35 = store$0.DiscussionDefinition.createFrom;
+const $$createType36 = app$0.Draft.createFrom;
+const $$createType37 = settings$0.EditorSettings.createFrom;
+const $$createType38 = git$0.GitStatus.createFrom;
+const $$createType39 = keybindings$0.LoadResult.createFrom;
+const $$createType40 = app$0.LocalImageData.createFrom;
+const $$createType41 = mcpstatus$0.ServerStatus.createFrom;
+const $$createType42 = provider$0.ModelInfo.createFrom;
+const $$createType43 = $Create.Array($$createType42);
+const $$createType44 = app$0.PRCIJobLogResult.createFrom;
+const $$createType45 = git$0.CIPipeline.createFrom;
+const $$createType46 = git$0.PRDetail.createFrom;
+const $$createType47 = app$0.PRMergeConflictsResult.createFrom;
+const $$createType48 = app$0.PayloadChunk.createFrom;
+const $$createType49 = app$0.PayloadContent.createFrom;
+const $$createType50 = app$0.PayloadPreview.createFrom;
+const $$createType51 = app$0.WorktreeSetupConfig.createFrom;
+const $$createType52 = provider$0.ProviderStatus.createFrom;
+const $$createType53 = $Create.Array($$createType52);
+const $$createType54 = app$0.PushSenderStatus.createFrom;
+const $$createType55 = flushqueue$0.QueuedItem.createFrom;
+const $$createType56 = $Create.Array($$createType55);
+const $$createType57 = provider$0.RateLimitsSnapshot.createFrom;
+const $$createType58 = $Create.Array($$createType57);
+const $$createType59 = app$0.ServiceUpdateStatus.createFrom;
+const $$createType60 = spinner$0.Files.createFrom;
+const $$createType61 = app$0.TerminalReplay.createFrom;
+const $$createType62 = theme$0.Files.createFrom;
+const $$createType63 = app$0.ThreadContextUsage.createFrom;
+const $$createType64 = app$0.ThreadDefaults.createFrom;
+const $$createType65 = store$0.Item.createFrom;
+const $$createType66 = app$0.ItemProjectionSource.createFrom;
+const $$createType67 = app$0.ThreadLiveState.createFrom;
+const $$createType68 = store$0.TurnPreview.createFrom;
+const $$createType69 = store$0.UserMessageHistoryEntry.createFrom;
+const $$createType70 = $Create.Array($$createType69);
+const $$createType71 = store$0.UserMessageTick.createFrom;
 const $$createType72 = $Create.Array($$createType71);
-const $$createType73 = app$0.WorktreeListItem.createFrom;
-const $$createType74 = $Create.Array($$createType73);
-const $$createType75 = app$0.BranchPruneResult.createFrom;
-const $$createType76 = app$0.GitStatusSubscriptionResult.createFrom;
-const $$createType77 = app$0.WorktreeStatus.createFrom;
-const $$createType78 = $Create.Array($Create.Any);
-const $$createType79 = app$0.HighlightResult.createFrom;
-const $$createType80 = app$0.ImportRunHandle.createFrom;
-const $$createType81 = app$0.ImportUpdateResult.createFrom;
-const $$createType82 = app$0.InterruptAndRevertResult.createFrom;
-const $$createType83 = $Create.Array($$createType1);
-const $$createType84 = store$0.Attachment.createFrom;
+const $$createType73 = app$0.WorktreeSetupRunState.createFrom;
+const $$createType74 = app$0.TurnEditsDiff.createFrom;
+const $$createType75 = $Create.Map($Create.Any, $Create.Any);
+const $$createType76 = store$0.UsageBucket.createFrom;
+const $$createType77 = $Create.Array($$createType76);
+const $$createType78 = app$0.WorkspaceActivity.createFrom;
+const $$createType79 = app$0.GitWorkspaceState.createFrom;
+const $$createType80 = git$0.GitActionResult.createFrom;
+const $$createType81 = app$0.BranchPruneCandidates.createFrom;
+const $$createType82 = git$0.GitBranch.createFrom;
+const $$createType83 = $Create.Array($$createType82);
+const $$createType84 = app$0.WorktreeListItem.createFrom;
 const $$createType85 = $Create.Array($$createType84);
-const $$createType86 = app$0.EditorInfo.createFrom;
-const $$createType87 = $Create.Array($$createType86);
-const $$createType88 = gitdiff$0.Commit.createFrom;
-const $$createType89 = $Create.Array($$createType88);
-const $$createType90 = store$0.ChatBarFavorite.createFrom;
-const $$createType91 = $Create.Array($$createType90);
-const $$createType92 = $Create.Array($$createType8);
-const $$createType93 = $Create.Array($$createType26);
-const $$createType94 = app$0.ImportScanResult.createFrom;
-const $$createType95 = $Create.Array($$createType55);
-const $$createType96 = store$0.PagedItems.createFrom;
-const $$createType97 = $Create.Array($$createType32);
-const $$createType98 = git$0.ReviewThread.createFrom;
-const $$createType99 = $Create.Array($$createType98);
-const $$createType100 = provider$0.PendingInteractiveRequests.createFrom;
-const $$createType101 = store$0.ProjectWithCounts.createFrom;
+const $$createType86 = app$0.BranchPruneResult.createFrom;
+const $$createType87 = app$0.GitStatusSubscriptionResult.createFrom;
+const $$createType88 = app$0.WorktreeStatus.createFrom;
+const $$createType89 = $Create.Array($Create.Any);
+const $$createType90 = app$0.HighlightResult.createFrom;
+const $$createType91 = app$0.ImportRunHandle.createFrom;
+const $$createType92 = app$0.ImportUpdateResult.createFrom;
+const $$createType93 = app$0.InterruptAndRevertResult.createFrom;
+const $$createType94 = $Create.Array($$createType2);
+const $$createType95 = store$0.Attachment.createFrom;
+const $$createType96 = $Create.Array($$createType95);
+const $$createType97 = app$0.EditorInfo.createFrom;
+const $$createType98 = $Create.Array($$createType97);
+const $$createType99 = attachedbackends$0.Attached.createFrom;
+const $$createType100 = $Create.Array($$createType99);
+const $$createType101 = gitdiff$0.Commit.createFrom;
 const $$createType102 = $Create.Array($$createType101);
-const $$createType103 = $Create.Array($$createType10);
-const $$createType104 = app$0.ManagedProviderAccount.createFrom;
-const $$createType105 = $Create.Array($$createType104);
-const $$createType106 = store$0.Turn.createFrom;
-const $$createType107 = $Create.Array($$createType106);
-const $$createType108 = app$0.ReleaseSummary.createFrom;
-const $$createType109 = $Create.Array($$createType108);
-const $$createType110 = $Create.Array($$createType0);
-const $$createType111 = terminal$0.SessionSummary.createFrom;
+const $$createType103 = store$0.ChatBarFavorite.createFrom;
+const $$createType104 = $Create.Array($$createType103);
+const $$createType105 = $Create.Array($$createType11);
+const $$createType106 = $Create.Array($$createType35);
+const $$createType107 = app$0.ImportScanResult.createFrom;
+const $$createType108 = $Create.Array($$createType65);
+const $$createType109 = store$0.PagedItems.createFrom;
+const $$createType110 = $Create.Array($$createType41);
+const $$createType111 = git$0.ReviewThread.createFrom;
 const $$createType112 = $Create.Array($$createType111);
-const $$createType113 = app$0.EditDiffList.createFrom;
-const $$createType114 = $Create.Array($$createType11);
-const $$createType115 = app$0.ThreadMCPServer.createFrom;
+const $$createType113 = $Create.Array($$createType18);
+const $$createType114 = provider$0.PendingInteractiveRequests.createFrom;
+const $$createType115 = store$0.ProjectWithCounts.createFrom;
 const $$createType116 = $Create.Array($$createType115);
-const $$createType117 = wsllauncher$0.Distro.createFrom;
-const $$createType118 = $Create.Array($$createType117);
-const $$createType119 = app$0.TerminalHandle.createFrom;
-const $$createType120 = provider$0.AccountInfo.createFrom;
-const $$createType121 = app$0.ProjectDeletionPreview.createFrom;
-const $$createType122 = app$0.ProviderTerminalHandle.createFrom;
-const $$createType123 = store$0.ThreadMessageHit.createFrom;
-const $$createType124 = $Create.Array($$createType123);
-const $$createType125 = app$0.WorkspaceFileSearchResult.createFrom;
-const $$createType126 = app$0.CodexReviewStarted.createFrom;
-const $$createType127 = app$0.SubmitPRReviewResult.createFrom;
-const $$createType128 = app$0.PRUpdateSubscriptionResult.createFrom;
-const $$createType129 = app$0.SyncThreadWindowResponse.createFrom;
-const $$createType130 = app$0.MCPAuthInitResult.createFrom;
-const $$createType131 = app$0.VerifyEditDiffsResult.createFrom;
-const $$createType132 = app$0.WorkflowAgentMemoryResult.createFrom;
-const $$createType133 = app$0.WorkflowAgentAmendSeedsResult.createFrom;
-const $$createType134 = app$0.WorkflowAgentGuideRunResult.createFrom;
-const $$createType135 = app$0.WorkflowAgentRunInspection.createFrom;
-const $$createType136 = app$0.WorkflowAgentMemoryLog.createFrom;
-const $$createType137 = app$0.WorkflowAgentRunView.createFrom;
-const $$createType138 = $Create.Array($$createType137);
-const $$createType139 = app$0.WorkflowAgentNarrative.createFrom;
-const $$createType140 = app$0.WorkflowAgentRunOutputs.createFrom;
-const $$createType141 = app$0.WorkflowAgentScheduleResult.createFrom;
-const $$createType142 = app$0.WorkflowAgentNotesResult.createFrom;
-const $$createType143 = app$0.WorkflowAgentStartResult.createFrom;
-const $$createType144 = app$0.WorkflowAgentWatchResult.createFrom;
-const $$createType145 = store$0.WorkItem.createFrom;
-const $$createType146 = app$0.WorkflowAutomationView.createFrom;
-const $$createType147 = app$0.WorkflowDispositionReceipt.createFrom;
-const $$createType148 = app$0.WorkflowDiscardPreview.createFrom;
-const $$createType149 = app$0.WorkflowPRReviewComments.createFrom;
-const $$createType150 = engine$0.EngineState.createFrom;
-const $$createType151 = app$0.WorkflowItemDetailView.createFrom;
-const $$createType152 = app$0.WorkflowRunMapView.createFrom;
-const $$createType153 = $Create.Array($$createType146);
-const $$createType154 = app$0.WorkflowDefinitionCatalog.createFrom;
-const $$createType155 = $Create.Map($Create.Any, $Create.Any);
-const $$createType156 = $Create.Array($$createType145);
+const $$createType117 = $Create.Array($$createType13);
+const $$createType118 = app$0.ManagedProviderAccount.createFrom;
+const $$createType119 = $Create.Array($$createType118);
+const $$createType120 = store$0.Turn.createFrom;
+const $$createType121 = $Create.Array($$createType120);
+const $$createType122 = app$0.ReleaseSummary.createFrom;
+const $$createType123 = $Create.Array($$createType122);
+const $$createType124 = app$0.BackgroundWorkInventory.createFrom;
+const $$createType125 = terminal$0.SessionSummary.createFrom;
+const $$createType126 = $Create.Array($$createType125);
+const $$createType127 = app$0.EditDiffList.createFrom;
+const $$createType128 = $Create.Array($$createType14);
+const $$createType129 = app$0.ThreadMCPServer.createFrom;
+const $$createType130 = $Create.Array($$createType129);
+const $$createType131 = wsllauncher$0.Distro.createFrom;
+const $$createType132 = $Create.Array($$createType131);
+const $$createType133 = app$0.PairingInvite.createFrom;
+const $$createType134 = app$0.TerminalHandle.createFrom;
+const $$createType135 = provider$0.AccountInfo.createFrom;
+const $$createType136 = app$0.ProjectDeletionPreview.createFrom;
+const $$createType137 = app$0.ProviderTerminalHandle.createFrom;
+const $$createType138 = app$0.DeviceRevocationResult.createFrom;
+const $$createType139 = store$0.ThreadMessageHit.createFrom;
+const $$createType140 = $Create.Array($$createType139);
+const $$createType141 = app$0.WorkspaceFileSearchResult.createFrom;
+const $$createType142 = app$0.CodexReviewStarted.createFrom;
+const $$createType143 = app$0.SubmitPRReviewResult.createFrom;
+const $$createType144 = app$0.PRUpdateSubscriptionResult.createFrom;
+const $$createType145 = app$0.SyncThreadWindowResponse.createFrom;
+const $$createType146 = app$0.MCPAuthInitResult.createFrom;
+const $$createType147 = app$0.VerifyEditDiffsResult.createFrom;
+const $$createType148 = app$0.WorkflowAgentMemoryResult.createFrom;
+const $$createType149 = app$0.WorkflowAgentAmendSeedsResult.createFrom;
+const $$createType150 = app$0.WorkflowAgentGuideRunResult.createFrom;
+const $$createType151 = app$0.WorkflowAgentRunInspection.createFrom;
+const $$createType152 = app$0.WorkflowAgentMemoryLog.createFrom;
+const $$createType153 = app$0.WorkflowAgentRunView.createFrom;
+const $$createType154 = $Create.Array($$createType153);
+const $$createType155 = app$0.WorkflowAgentNarrative.createFrom;
+const $$createType156 = app$0.WorkflowAgentRunOutputs.createFrom;
+const $$createType157 = app$0.WorkflowAgentScheduleResult.createFrom;
+const $$createType158 = app$0.WorkflowAgentNotesResult.createFrom;
+const $$createType159 = app$0.WorkflowAgentStartResult.createFrom;
+const $$createType160 = app$0.WorkflowAgentWatchResult.createFrom;
+const $$createType161 = store$0.WorkItem.createFrom;
+const $$createType162 = app$0.WorkflowAutomationView.createFrom;
+const $$createType163 = app$0.WorkflowDispositionReceipt.createFrom;
+const $$createType164 = app$0.WorkflowDiscardPreview.createFrom;
+const $$createType165 = app$0.WorkflowPRReviewComments.createFrom;
+const $$createType166 = engine$0.EngineState.createFrom;
+const $$createType167 = app$0.WorkflowItemDetailView.createFrom;
+const $$createType168 = app$0.WorkflowRunMapView.createFrom;
+const $$createType169 = $Create.Array($$createType162);
+const $$createType170 = app$0.WorkflowDefinitionCatalog.createFrom;
+const $$createType171 = $Create.Map($Create.Any, $Create.Any);
+const $$createType172 = $Create.Array($$createType161);

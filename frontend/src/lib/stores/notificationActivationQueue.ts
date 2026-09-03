@@ -4,14 +4,22 @@
 // the thread/pane stores into the test module graph.
 import type { Thread } from '../types/models';
 
+/**
+ * `backendId` names WHICH backend the route resolves against — the deep-link
+ * scheme in docs/specs/remote-access.md §9. It is orthogonal to `kind`, not a
+ * fourth route, which is why it is a property of every member rather than a
+ * member of its own. Single-backend routing ignores it; it is parsed and
+ * carried so the shape does not silently drop on this half of the wire.
+ */
 export type NotificationTarget =
-  | { kind: 'thread'; threadId: string }
-  | { kind: 'workflow-item'; workItemId: string }
-  | { kind: 'none' };
+  | { kind: 'thread'; threadId: string; backendId?: string }
+  | { kind: 'workflow-item'; workItemId: string; backendId?: string }
+  | { kind: 'none'; backendId?: string };
 
 const pendingActivationCapacity = 8;
 const maxNotificationThreadIdBytes = 256;
 const maxNotificationWorkItemIdBytes = 256;
+const maxNotificationBackendIdBytes = 256;
 
 export interface NotificationActivationDependencies {
   getThreadById(id: string): Thread | undefined | Promise<Thread | undefined>;
@@ -37,9 +45,13 @@ function byteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
-// Mirrors internal/notify.ValidateTarget: each kind owns exactly one
+// Mirrors internal/notify.ValidateTarget: each ROUTE kind owns exactly one
 // identifier, so a target carrying an identifier from another kind is
 // ambiguous and rejected rather than partially honored.
+//
+// `backendId` is deliberately outside that exclusivity, exactly as it is on
+// the Go side: it answers "whose", not "where", so it is legal on every kind
+// including `none` and is bounded rather than branched on.
 export function parseNotificationTarget(value: unknown): NotificationTarget | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const target = value as Record<string, unknown>;
@@ -47,21 +59,25 @@ export function parseNotificationTarget(value: unknown): NotificationTarget | nu
     (target.threadId !== undefined && typeof target.threadId !== 'string')
     || (target.workItemId !== undefined && typeof target.workItemId !== 'string')
     || (target.projectId !== undefined && typeof target.projectId !== 'string')
+    || (target.backendId !== undefined && typeof target.backendId !== 'string')
   ) return null;
   const threadId = typeof target.threadId === 'string' ? target.threadId : '';
   const workItemId = typeof target.workItemId === 'string' ? target.workItemId : '';
   const projectId = Boolean(target.projectId);
+  const backendId = typeof target.backendId === 'string' ? target.backendId : '';
+  if (byteLength(backendId) > maxNotificationBackendIdBytes) return null;
+  const attribution = backendId ? { backendId } : {};
   switch (target.kind) {
     case 'thread':
       return threadId && byteLength(threadId) <= maxNotificationThreadIdBytes && !workItemId && !projectId
-        ? { kind: 'thread', threadId }
+        ? { kind: 'thread', threadId, ...attribution }
         : null;
     case 'workflow-item':
       return workItemId && byteLength(workItemId) <= maxNotificationWorkItemIdBytes && !threadId && !projectId
-        ? { kind: 'workflow-item', workItemId }
+        ? { kind: 'workflow-item', workItemId, ...attribution }
         : null;
     case 'none':
-      return !threadId && !workItemId && !projectId ? { kind: 'none' } : null;
+      return !threadId && !workItemId && !projectId ? { kind: 'none', ...attribution } : null;
     default:
       return null;
   }

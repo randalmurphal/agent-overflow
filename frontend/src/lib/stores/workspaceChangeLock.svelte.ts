@@ -59,36 +59,38 @@
 
 import type { ThreadPane } from './thread.svelte';
 import { GetWorkspaceActivity, type WorkspaceActivity } from './bindings';
-// Imported from the leaf that OWNS the fan-out, not from the `events.ts`
-// composition root: this module is loaded by the test setup (it holds a
-// module-level store that has to be reset between tests), and pulling the
-// whole event graph in there would evaluate every handler module before a
-// suite's own `vi.mock` calls register.
-import { onItemUpsert } from './eventsItemStream';
 import { wailsEventOn } from './wailsEvents';
+import { hasScope } from '../transport/scopes';
 import { getActiveTurn } from './threadStatuses.svelte';
 import { createEntityStore } from './entityStore.svelte';
 import { isMethodUnavailableError } from './transportStatus.svelte';
 import { createRefreshScheduler } from '../utils/refreshScheduler';
-import { workspaceKeyForThread } from '../utils/workspaceKey';
+import {
+  workspaceKeyBackend,
+  workspaceKeyForThread,
+  workspaceKeyPath,
+} from '../utils/workspaceKey';
+import { withBackendTarget } from '../transport/backends';
 
-// Item-stream events fire per wire round — several per second while any pane
-// streams — and every live key answers each one. 100ms collapses that burst;
-// 400ms is the hard ceiling on how stale a lock gating an irreversible action
-// may be, and unlike the debounce it replaced it holds under a stream that
-// never pauses.
+// Turn and background-task events burst — a thread cycling wire rounds emits
+// several per second — and every live key answers each one. 100ms collapses
+// that burst; 400ms is the hard ceiling on how stale a lock gating an
+// irreversible action may be, and unlike the debounce it replaced it holds
+// under a stream that never pauses.
 const REFRESH_DELAY_MS = 100;
 const REFRESH_MAX_WAIT_MS = 400;
 
 const TURN_REASON = 'Workspace changes are unavailable while the agent is responding.';
 const TASKS_REASON = 'Workspace changes are unavailable while background tasks are running.';
 const CHECKING_REASON = 'Checking workspace availability...';
-// GetWorkspaceActivity is loopback-only, so a remote session can never
-// verify a workspace and never will — the refusal is a permanent property
-// of the session, not a failure to report. Unverified stays LOCKED; only
-// the reason changes, because "method not registered" reads as a broken
-// app rather than as the remote posture every other local-only affordance
-// already states (workflows UI-SPEC §10).
+// A backend that does not register GetWorkspaceActivity at all cannot
+// verify a workspace, and never will on this connection — the refusal is a
+// standing property rather than a failure to report. Unverified stays
+// LOCKED; only the reason changes, because "method not registered" reads
+// as a broken app rather than as a posture (workflows UI-SPEC §10). This is
+// no longer the ordinary remote answer: the per-method origin partition is
+// gone, so a session that simply lacks `git:operate` is answered by the
+// scope check in the refresh below and never reaches this sentence.
 const LOCAL_ONLY_REASON = 'Workspace changes are only available on the local machine.';
 
 function activityError(err: unknown): unknown {
@@ -100,6 +102,8 @@ function activityError(err: unknown): unknown {
 const store = createEntityStore<WorkspaceActivity, void>({
   name: 'workspaceChangeLock',
   source: async ({ key, apply, fail, signal }) => {
+    const backend = workspaceKeyBackend(key);
+    const path = workspaceKeyPath(key);
     // Responses used to be able to overtake each other: the initial load and
     // every debounced event refresh were separate RPCs on ONE entity
     // generation, and an older IDLE answer landing after a newer BUSY one
@@ -114,8 +118,25 @@ const store = createEntityStore<WorkspaceActivity, void>({
       delayMs: REFRESH_DELAY_MS,
       maxWaitMs: REFRESH_MAX_WAIT_MS,
       run: async (token) => {
+        // GetWorkspaceActivity rides `git:operate`, and everything this
+        // lock gates — removing a checkout, moving a thread's workspace —
+        // rides it too. A session without that grant is not being offered
+        // any of those controls, so asking would be one refusal per
+        // workspace and one fail() painting a lock reason on a surface
+        // that has nothing to unlock. Asked of THIS key's backend: a grant
+        // is a property of one session on one machine, and reading home's
+        // answer for a remote checkout is how a control appears that its
+        // own backend will refuse.
+        if (!hasScope('git:operate', backend)) return;
         try {
-          const activity = (await GetWorkspaceActivity(key)) as WorkspaceActivity;
+          // The key is `${backendId} ${path}`; the RPC wants the path, and
+          // it has to be asked of the machine the path is ON. Nothing in
+          // the argument says which — a path is not an entity — so the
+          // backend is pinned from the key rather than routed from the
+          // arguments.
+          const activity = (await withBackendTarget(backend, () =>
+            GetWorkspaceActivity(path),
+          )) as WorkspaceActivity;
           if (token.isCurrent()) apply(activity);
         } catch (err) {
           // fail() is the whole recovery: the lock reads as blocked
@@ -128,13 +149,19 @@ const store = createEntityStore<WorkspaceActivity, void>({
       },
     });
 
-    // None of these filter on the event's threadId: the busy thread may be
-    // one this client has never mounted, so there is nothing to compare a
-    // workspace key against. See EVENT ROUTING in the header.
+    // Every source here is a WILDCARD channel, deliberately, and none of
+    // them filters on the event's threadId: the busy thread may be one this
+    // client has never mounted, so there is nothing to compare a workspace
+    // key against. See EVENT ROUTING in the header. That rules out the
+    // transcript stream — `provider:item_event` is narrowed to the threads
+    // this client has a surface for (transport/entityFilteredChannels.ts),
+    // so a background launch or completion in a sibling thread would simply
+    // not arrive. The two legs of the backend's answer are covered:
+    // open turns by turn_started / turn_completed, and live background
+    // tasks by background_tasks_changed, which fires at launch on both
+    // providers and at Claude's exit / drain / orphan-recovery
+    // transitions.
     const cancels = [
-      onItemUpsert((item) => {
-        if (item.isBackground || item.completionOf) refresh.request();
-      }),
       // A turn opening or closing in ANY thread can flip a workspace's lock:
       // the local pane's own turn is covered synchronously below, but a
       // sibling thread's is only visible through these.
@@ -144,7 +171,9 @@ const store = createEntityStore<WorkspaceActivity, void>({
       // Background-task state events fire on host-process exit
       // (state=exited) and on agent-observation drain (state=drained). Both
       // transitions can flip the lock if a backgrounded task drops out of
-      // the live set.
+      // the live set. Gated on `threads:read`, which every client that can
+      // read the thread already holds, so this one reaches the same clients
+      // as the nudge above and refines it rather than replacing it.
       wailsEventOn('provider:background_task_state', () => refresh.request()),
     ];
     let released = false;

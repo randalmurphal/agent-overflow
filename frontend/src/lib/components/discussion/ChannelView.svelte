@@ -11,6 +11,8 @@
   import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
   import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../../utils/liveContentActivity';
   import { relativeTime } from '../../utils/format';
+  import { threadBackend } from '../../transport/entityIndex';
+  import { HOME_BACKEND } from '../../transport/backendKey';
   import Button from '../primitives/Button.svelte';
   import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
   import ChannelHeader from './ChannelHeader.svelte';
@@ -351,7 +353,7 @@
               badgeClass={roleBadgeClass(msg)}
               roleLabel={roleLabel(msg)}
               sequenceLabel={`#${msg.sequence}`}
-              timestampLabel={relativeTime(msg.createdAt, getSettings().timestampFormat)}
+              timestampLabel={relativeTime(msg.createdAt, getSettings().timestampFormat, threadBackend(pane.threadId ?? '') ?? HOME_BACKEND)}
               content={msg.content}
               pathRefs={getPathRefsFromMeta(msg.meta) ?? EMPTY_PATH_REFS}
             />

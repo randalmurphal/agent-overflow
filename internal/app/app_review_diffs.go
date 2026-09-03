@@ -34,6 +34,8 @@ func (a *App) reviewWorkspace(action string, ws WorkspaceRef) (string, error) {
 //
 // ignoreWhitespace is the review pane's "hide whitespace changes"
 // toggle (`-w`); see gitdiff.Options.
+//
+//ao:scope files:read
 func (a *App) GetWorkspaceCurrentDiff(ws WorkspaceRef, ignoreWhitespace bool) (string, error) {
 	const action = "get workspace current diff"
 	workspace, err := a.reviewWorkspace(action, ws)
@@ -55,6 +57,8 @@ func (a *App) GetWorkspaceCurrentDiff(ws WorkspaceRef, ignoreWhitespace bool) (s
 // (committed work since merge-base plus uncommitted changes) against the
 // merge base of baseBranch and the workspace HEAD — i.e. what a PR onto
 // baseBranch would contain.
+//
+//ao:scope files:read
 func (a *App) GetBranchBaseDiff(ws WorkspaceRef, baseBranch string, ignoreWhitespace bool) (string, error) {
 	const action = "get branch base diff"
 	if strings.TrimSpace(baseBranch) == "" {
@@ -82,6 +86,8 @@ type BranchCommit = gitdiff.Commit
 // ListBranchCommits returns the commits a PR from the workspace HEAD
 // onto baseBranch would carry (`base..HEAD`, newest first). Empty for
 // non-git workspaces.
+//
+//ao:scope git:operate
 func (a *App) ListBranchCommits(ws WorkspaceRef, baseBranch string) ([]BranchCommit, error) {
 	const action = "list branch commits"
 	if strings.TrimSpace(baseBranch) == "" {
@@ -109,6 +115,8 @@ const recentCommitLimit = 100
 // `git log` from HEAD, newest first) — the same source codex's own
 // review picker uses, so a workspace on the default branch still gets a
 // list. Empty for non-git workspaces.
+//
+//ao:scope git:operate
 func (a *App) ListRecentCommits(ws WorkspaceRef) ([]BranchCommit, error) {
 	const action = "list recent commits"
 	workspace, err := a.reviewWorkspace(action, ws)
@@ -127,6 +135,8 @@ func (a *App) ListRecentCommits(ws WorkspaceRef) ([]BranchCommit, error) {
 
 // GetCommitDiff returns the unified patch a single local commit
 // introduced (first-parent diff; empty-tree diff for a root commit).
+//
+//ao:scope files:read
 func (a *App) GetCommitDiff(ws WorkspaceRef, sha string, ignoreWhitespace bool) (string, error) {
 	const action = "get commit diff"
 	workspace, err := a.reviewWorkspace(action, ws)
@@ -193,8 +203,10 @@ const maxDiffContextLines = 1000
 // hunk-gap expansion in the LIVE scopes — workspace, branch, commit and pr —
 // whose new side is content the referenced checkout already holds. The edits
 // scope is a different subject (one thread's own history) and has its own
-// entry point. Same wire-exposure class as the diff getters: classified
-// LocalOnlyMethods.
+// entry point. Same wire-exposure class as the diff getters: it answers a
+// session granted `files:read`, and no other.
+//
+//ao:scope files:read
 func (a *App) GetDiffContextLines(ws WorkspaceRef, req DiffContextRequest) (DiffContextResult, error) {
 	const action = "get diff context lines"
 	if a.shuttingDown.Load() {
@@ -211,6 +223,8 @@ func (a *App) GetDiffContextLines(ws WorkspaceRef, req DiffContextRequest) (Diff
 // historical file state: the snapshot persisted with the edit, falling back to
 // the THREAD's own workspace for edits that predate snapshots. Both sources
 // are verified against the request's patch before a line is served.
+//
+//ao:scope files:read
 func (a *App) GetEditDiffContextLines(threadID string, req DiffContextRequest) (DiffContextResult, error) {
 	const action = "get edit diff context lines"
 	if a.shuttingDown.Load() {
@@ -330,9 +344,11 @@ const maxVerifyEditDiffFiles = 200
 // deliberate divergence from click-time resolution, and it only errs
 // fail-closed: an over-cap file shows no arrow (snapshots never exceed
 // the cap either; only a huge pre-snapshot workspace file can hit it).
-// Same wire-exposure class as GetDiffContextLines: classified
-// LocalOnlyMethods; remote clients' rejection leaves every path
-// unexpandable, which is exactly what their clicks would find.
+// Same wire-exposure class as GetDiffContextLines: `files:read`. A
+// session without that grant is refused here and refused at click time
+// too, so the arrows it sees match the expansions it can perform.
+//
+//ao:scope files:read
 func (a *App) VerifyEditDiffs(threadID string, req VerifyEditDiffsRequest) (VerifyEditDiffsResult, error) {
 	const action = "verify edit diffs"
 	if a.shuttingDown.Load() {

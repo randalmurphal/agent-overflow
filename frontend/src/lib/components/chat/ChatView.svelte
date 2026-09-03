@@ -15,12 +15,12 @@
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import {
     ForkThreadFromMessage,
-    MarkThreadRead,
   } from '../../stores/bindings';
-  import { prependThread, updateThreadReadState } from '../../stores/threads.svelte';
+  import { markThreadRead, prependThread, updateThreadReadState } from '../../stores/threads.svelte';
   import { getFocusedThreadPaneId, openThreadInPane } from '../../stores/panes.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { hasScope } from '../../transport/scopes';
   import { autoPinNewThread } from '../../stores/threadAutoPin';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
   import { hydrateWorktreeSetupForThread } from '../../stores/eventsWorktreeSetup';
@@ -156,6 +156,10 @@
   let lastReadPersistStartedAt = 0;
   let readPersistInFlight = false;
   let queuedReadThreadId: string | null = null;
+  // The read stamp travels with its thread id through the debounce: the
+  // store claims the marker at that value while the RPC is in flight, so
+  // a queued persist that lost its value would claim the wrong one.
+  let queuedReadAt = 0;
   let queuedReadTimer: ReturnType<typeof setTimeout> | null = null;
 
   const READ_PERSIST_DEBOUNCE_MS = 100;
@@ -167,17 +171,19 @@
     void draft.setThread(current);
   });
 
-  function startPersistThreadRead(threadId: string): void {
+  function startPersistThreadRead(threadId: string, readAt: number): void {
     lastReadPersistStartedAt = Date.now();
     readPersistInFlight = true;
-    void MarkThreadRead(threadId)
-      .catch((err) => {
-        console.error('Failed to mark thread read:', err);
-      })
+    // markThreadRead, not the raw RPC: the store holds a claim on this
+    // thread's read marker for as long as the write is in flight, which
+    // is what stops a thread:updated row that another client's
+    // mark-unread produced from winning against a stamp the backend has
+    // not been told about yet.
+    void markThreadRead(threadId, readAt)
       .finally(() => {
         readPersistInFlight = false;
         if (queuedReadThreadId && queuedReadTimer === null) {
-          schedulePersistThreadRead(queuedReadThreadId);
+          schedulePersistThreadRead(queuedReadThreadId, queuedReadAt);
         }
       });
   }
@@ -186,13 +192,20 @@
     queuedReadTimer = null;
     if (readPersistInFlight) return;
     const threadId = queuedReadThreadId;
+    const readAt = queuedReadAt;
     queuedReadThreadId = null;
     if (threadId) {
-      startPersistThreadRead(threadId);
+      startPersistThreadRead(threadId, readAt);
     }
   }
 
-  function schedulePersistThreadRead(threadId: string): void {
+  function schedulePersistThreadRead(threadId: string, readAt: number): void {
+    // MarkThreadRead rides `threads:operate` — the read stamp is a write
+    // on the thread row. Reading a thread is the most ordinary thing a
+    // view-only device does, so a session without that grant would issue
+    // one refused RPC per thread open and per settling turn. The local
+    // read state below still updates; only the durable stamp is skipped.
+    if (!hasScope('threads:operate')) return;
     const elapsed = Date.now() - lastReadPersistStartedAt;
     const canPersistNow =
       !readPersistInFlight
@@ -200,11 +213,12 @@
       && queuedReadThreadId === null
       && elapsed >= READ_PERSIST_DEBOUNCE_MS;
     if (canPersistNow) {
-      startPersistThreadRead(threadId);
+      startPersistThreadRead(threadId, readAt);
       return;
     }
 
     queuedReadThreadId = threadId;
+    queuedReadAt = readAt;
     if (queuedReadTimer !== null) {
       clearTimeout(queuedReadTimer);
     }
@@ -285,7 +299,7 @@
       // dot correctly clears.
       pane.replaceThread({ ...thread, ...readPatch });
     });
-    schedulePersistThreadRead(pane.threadId);
+    schedulePersistThreadRead(pane.threadId, readAt);
   });
 
   // Error and Interrupted pills are attention state, like Completed. Once
@@ -428,8 +442,9 @@
     }
     if (queuedReadThreadId && !readPersistInFlight) {
       const threadId = queuedReadThreadId;
+      const readAt = queuedReadAt;
       queuedReadThreadId = null;
-      startPersistThreadRead(threadId);
+      startPersistThreadRead(threadId, readAt);
     }
   });
 </script>

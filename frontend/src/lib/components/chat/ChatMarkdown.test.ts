@@ -4,7 +4,7 @@ import ChatMarkdown from './ChatMarkdown.svelte';
 import FootnotePopoverHost from './FootnotePopoverHost.svelte';
 import { CHAT_MARKDOWN_PRESENCE_CONTEXT } from './markdownSettledContext';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 
 // Integration coverage for the path-link primitive flowing through
 // Streamdown's URL gate. The unit suite in `pathLinkExtension.test.ts`
@@ -19,7 +19,7 @@ import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
 
 describe('<ChatMarkdown> path-link rendering', () => {
   afterEach(() => {
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   it('renders an agent-overflow:open anchor when the path is on the allowlist', async () => {
@@ -60,7 +60,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
   });
 
   it('emits no local path affordance in a view-only session', async () => {
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
     const { container } = render(ChatMarkdown, {
       props: {
         source: 'See src/foo.ts here',
@@ -406,6 +406,65 @@ describe('<ChatMarkdown> path-link rendering', () => {
 
     expect(container.textContent).not.toContain('[blocked]');
     expect(container.querySelector('a')).toBeNull();
+  });
+
+  it.each([
+    ['settled (compact static path)', false],
+    ['streaming (component path)', true],
+  ])('never renders a raw anchor for a //-leading href — %s', async (_name, streaming) => {
+    // `//host/x` is a protocol-relative reference: it names a real host, so
+    // a live anchor is a top-level cross-origin navigation off the app
+    // origin. Both halves of the gate have to reject it — `transformUrl`
+    // parses with no base, so it throws and fails closed, and the schemeless
+    // predicate excludes `//` explicitly so the rejection keeps its tag
+    // rather than reading as ordinary repo-relative prose.
+    //
+    // Asserted through the real component on BOTH render paths, because a
+    // settled ChatMarkdown serializes through `staticHtml.ts` and only a
+    // streaming one mounts `Link.svelte` — see markdown/AGENTS.md
+    // § Security boundary and the corpus in
+    // ChatMarkdown.compactStaticLinkUrls.test.ts.
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: 'see [my notes](//example.test/path) here',
+        streaming,
+        pathRefs: [],
+      },
+    });
+
+    await waitFor(() => {
+      const span = container.querySelector('[data-streamdown-link-blocked]');
+      expect(span).not.toBeNull();
+      expect(span?.textContent).toContain('my notes [blocked]');
+      expect(span?.getAttribute('title')).toBe('Blocked URL: //example.test/path');
+    });
+
+    expect(container.querySelector('a')).toBeNull();
+  });
+
+  it('renders a half-typed link as an inert anchor while the tail streams', async () => {
+    // The completer rewrites `[text](https://exa` to the
+    // `streamdown:incomplete-link` sentinel so the reader sees link styling
+    // land before the URL finishes arriving. Both render paths carry a branch
+    // for it, and both emit an anchor with NO href — the one place an anchor
+    // is rendered without a transformUrl-approved URL, so it must stay
+    // non-navigable.
+    //
+    // Only the component path can ever reach it: the compact static path is
+    // gated on `parseIncompleteMarkdown === false`, and the sentinel exists
+    // only while that flag is true. That is why this class is absent from the
+    // both-paths corpus in ChatMarkdown.compactStaticLinkUrls.test.ts.
+    const { container } = render(ChatMarkdown, {
+      props: { source: 'see [my notes](https://exa', streaming: true, pathRefs: [] },
+    });
+
+    await waitFor(() => {
+      expect(container.querySelector('a[data-streamdown-link]')).not.toBeNull();
+    });
+
+    const anchor = container.querySelector('a[data-streamdown-link]');
+    expect(anchor?.hasAttribute('href')).toBe(false);
+    expect(anchor?.textContent).toBe('my notes');
   });
 
   it('keeps the [blocked] tag on a disallowed absolute URL', async () => {

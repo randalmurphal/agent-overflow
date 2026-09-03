@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e
+.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e apk e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -14,10 +14,19 @@ help:
 		'Perf:    make perf-wsl | make soak-contract' \
 		'Smoke:   make e2e (mocked) | make provider-smoke (real tokens)' \
 		'Import:  make import-corpus-smoke AO_IMPORT_CORPUS_CLAUDE=/copy AO_IMPORT_CORPUS_CODEX=/copy' \
-		'Docs:    make ao-harness-docs'
+		'Docs:    make ao-harness-docs' \
+		'Codegen: make methodgen'
 
 ao-harness-docs:
 	go generate ./cmd/ao-harness
+
+# Regenerate the bound-method classification table and its client-side
+# route mirror. ONE command for both halves, because they come out of one
+# scan: internal/transport/methods_gen.go and
+# frontend/src/lib/transport/methodRoutes.ts. `make go-test`'s
+# TestMethodsGen_InSync fails on either being stale and names this target.
+methodgen:
+	go run ./internal/transport/methodgen
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing, raw provider
@@ -97,11 +106,30 @@ endif
 # Use these targets for Go verification instead of bare `go build` / `go test`.
 # On Darwin, the exported CGO flags keep Wails Objective-C objects and the final
 # binary on the same macOS deployment target, avoiding noisy linker warnings.
+#
+# The second pass compiles the `nogui` half. That tag selects a whole
+# alternative file set (`main_nogui.go`, `internal/app/app_startup.go`'s
+# windowless branch, and every `!nogui` desktop file's absence), and TWO
+# shipping artifacts are built with it: the Windows launcher's WSL payload and
+# the headless Linux binary serve mode runs on. Nothing else in the default
+# gates compiles it, so a `!nogui` file gaining a symbol the nogui half does
+# not define breaks only the release build, at release time.
+#
+# It lives here rather than in `check` because `make go-build` is the target
+# the repo's own per-task checklist names, and `check`, `verify` and
+# `scripts/release-check.sh` all reach it from here. Cost, measured on an idle
+# WSL host: ~3s on top of go-build's ~7s warm (most packages have an identical
+# file set under both tag sets, so the build cache answers them outright), ~35s
+# from a cold cache. `TestGoBuildCompilesTheNoguiHalf` fails if this pass is
+# removed.
 go-build:
 	@set -e; \
 	packages=$$(go list -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' $(GO_PACKAGE_ROOTS) | sed '/^$$/d'); \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
-	go build $$packages
+	go build $$packages; \
+	nogui=$$(go list -tags nogui -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' $(GO_PACKAGE_ROOTS) | sed '/^$$/d'); \
+	if [ -z "$$nogui" ]; then echo "ERROR: no Go packages found for the nogui build"; exit 1; fi; \
+	go build -tags nogui $$nogui
 
 go-test:
 	@set -e; \
@@ -487,6 +515,23 @@ endif
 e2e: harness-build
 	cd e2e && pnpm install --frozen-lockfile
 	bin/ao-harness-e2e
+
+# The Android shell (mobile/). Builds the SPA with the shell aliases on,
+# syncs it into the native project, and assembles the debug APK. See
+# mobile/AGENTS.md for the toolchain this needs and what is deferred.
+apk:
+	cd mobile && pnpm install --frozen-lockfile
+	mobile/scripts/build-apk.sh
+
+# The compact Playwright project driven inside a running emulator's
+# WebView, which is the only place the native seams are real. It is
+# deliberately NOT a blocking gate: a laptop with no emulator prints how
+# to start one and exits clean, because the seams' web fallbacks are
+# already covered by `make test` and an unrunnable check that fails is a
+# check people learn to skip.
+e2e-android: harness-build
+	cd e2e && pnpm install --frozen-lockfile
+	e2e/scripts/android-smoke.sh
 
 # AO_PERF_CONTRACT=1 enforces the wall-clock timing contracts (see
 # frontend/src/test/helpers/perfContract.ts). They are gated off by

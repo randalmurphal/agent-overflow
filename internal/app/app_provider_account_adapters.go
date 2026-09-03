@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"os"
 
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/eventchan"
@@ -163,27 +162,42 @@ func (s providerAccountEventSink) PublishCleared(providerName string, generation
 	})
 }
 
+// PublishAccountsChanged is a payload-less refetch nudge: the listing carries
+// per-account quota snapshots and a `needsLogin` verdict that only
+// ListProviderAccounts can compute, so a frame trying to carry the set would
+// be a second, divergent projection of it.
+func (s providerAccountEventSink) PublishAccountsChanged() {
+	s.app.emit(eventchan.ProviderAccountsChanged, nil)
+}
+
 func (s providerAccountEventSink) PublishUsageError(providerName, accountID string, err error) {
 	s.app.emit(eventchan.ProviderAccountUsageError, map[string]string{
 		"provider": providerName, "accountId": accountID, "message": err.Error(),
 	})
 }
 
+// PublishLogin pushes one sign-in transition. The state is already the wire
+// shape GetProviderLoginState answers with, so a client that missed a frame
+// and one that polled see the same thing.
+func (s providerAccountEventSink) PublishLogin(state provideraccountapp.LoginState) {
+	s.app.emit(eventchan.ProviderLogin, state)
+}
+
 func newProviderAccountManager(app *App) *provideraccountapp.Manager {
 	return provideraccountapp.NewManager(provideraccountapp.Deps{
-		Context:           app.lifeCtx,
-		IsShuttingDown:    func() bool { return app.shuttingDown.Load() },
-		ShutdownError:     ErrShuttingDown,
-		CurrentSettings:   app.currentSettings,
-		ProviderBinary:    app.providerBinaryPath,
-		BrowserExecutable: os.Executable,
-		OpenBrowser:       func(ctx context.Context, rawURL string) error { return externalurl.Open(ctx, rawURL) },
-		HTTPClient:        app.rateLimitProbeClient,
-		Sessions:          providerAccountSessionGateway{app: app},
-		Probes:            providerAccountProbeInvalidator{app: app},
-		RateLimits:        providerAccountRateLimitSink{app: app},
-		Backoff:           app.providerLifecycleService(),
-		Accounts:          providerAccountEventSink{app: app},
+		Context:         app.lifeCtx,
+		IsShuttingDown:  func() bool { return app.shuttingDown.Load() },
+		ShutdownError:   ErrShuttingDown,
+		CurrentSettings: app.currentSettings,
+		ProviderBinary:  app.providerBinaryPath,
+		OpenBrowser:     func(ctx context.Context, rawURL string) error { return externalurl.Open(ctx, rawURL) },
+		LoginSpawnEnv:   func() map[string]string { return app.providerExtraEnv },
+		HTTPClient:      app.rateLimitProbeClient,
+		Sessions:        providerAccountSessionGateway{app: app},
+		Probes:          providerAccountProbeInvalidator{app: app},
+		RateLimits:      providerAccountRateLimitSink{app: app},
+		Backoff:         app.providerLifecycleService(),
+		Accounts:        providerAccountEventSink{app: app},
 	})
 }
 

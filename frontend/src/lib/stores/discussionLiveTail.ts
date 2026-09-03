@@ -17,6 +17,7 @@
 // Deliberately rune-free: this is a plain module-level Map, not reactive
 // state. The channel-state instance holding a registered handler is the
 // reactive side; this registry is just routing.
+import { refreshWatchedThreads, registerWatchedThreadSource } from './watchedThreads';
 
 export interface DiscussionLiveTailHandler {
   /** Upserts carry the full accumulated text — replaces, doesn't append.
@@ -27,6 +28,15 @@ export interface DiscussionLiveTailHandler {
 }
 
 const registry = new Map<string, Set<DiscussionLiveTailHandler>>();
+
+// A registered child thread is a thread this client is looking at, even
+// though no pane will ever hold it: its live text is rendered inside the
+// parent's ChannelView. So the routing table is a watched-thread source in
+// its own right (watchedThreads.ts) — without it, narrowing would withhold
+// exactly the participant threads this side-channel exists to carry.
+registerWatchedThreadSource(function* liveTailThreadIds() {
+  yield* registry.keys();
+});
 
 /** Register `handler` to receive live-tail traffic for `threadId`. One
  * channel-state instance registers the SAME handler under every id in
@@ -43,6 +53,7 @@ export function registerDiscussionLiveTail(
     registry.set(threadId, handlers);
   }
   handlers.add(handler);
+  refreshWatchedThreads();
 }
 
 export function unregisterDiscussionLiveTail(
@@ -52,7 +63,10 @@ export function unregisterDiscussionLiveTail(
   const handlers = registry.get(threadId);
   if (!handlers) return;
   handlers.delete(handler);
-  if (handlers.size === 0) registry.delete(threadId);
+  if (handlers.size === 0) {
+    registry.delete(threadId);
+    refreshWatchedThreads();
+  }
 }
 
 /** Read-only lookup for `eventsItemStream.ts`. `undefined` (not an empty
@@ -69,4 +83,5 @@ export function lookupDiscussionLiveTail(
  * re-attached listener set starts from a clean slate. */
 export function clearAllDiscussionLiveTail(): void {
   registry.clear();
+  refreshWatchedThreads();
 }

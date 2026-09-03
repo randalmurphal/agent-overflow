@@ -20,6 +20,7 @@ import {
   type ComposerDraftSnapshot,
 } from './composerDraftSnapshots';
 import { addToast } from './toast.svelte';
+import { hasScope } from '../transport/scopes';
 import { errString } from '../utils/errors';
 import { ensureImagePlaceholders } from '../utils/imagePlaceholders';
 
@@ -96,6 +97,22 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   // `persists` guard. That is the ONE mechanism that makes a local store
   // inert: there is no second place to consult, and a new call site is
   // inert by construction rather than by remembering to add a check.
+  //
+  // `draftRowsReachable()` is the second, narrower guard, and it answers
+  // a different question: not "is this store allowed to persist" but
+  // "can this SESSION reach a draft row at all". GetDraft, SaveDraft and
+  // ClearDraft all carry `threads:operate`, so a view-only device that
+  // opens a thread and types would spend one refused hydrate per open
+  // and one refused save per debounce tick — and the save path toasts.
+  // It gates only the three RPC-issuing functions; the shared snapshot
+  // registry stays live, so a draft typed on such a device still follows
+  // it between panes for as long as the tab is open. Read per call, not
+  // captured: a pane can be constructed before the bootstrap manifest
+  // resolves, and a captured `false` would leave the owner's own
+  // composer silently not saving.
+  function draftRowsReachable(): boolean {
+    return persists && hasScope('threads:operate');
+  }
 
   function rememberSnapshot(id: string, snapshot: ComposerDraftSnapshot): void {
     if (!persists) return;
@@ -119,7 +136,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
    * thread open, so it is logged rather than swallowed.
    */
   function clearPersistedDraft(id: string): void {
-    if (!persists) return;
+    if (!draftRowsReachable()) return;
     void ClearDraft(id).catch((err) => {
       console.error(`Failed to clear the persisted draft for thread ${id}:`, err);
     });
@@ -160,7 +177,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   }
 
   async function saveSnapshot(id: string, snapshot: ComposerDraftSnapshot): Promise<void> {
-    if (!persists) return;
+    if (!draftRowsReachable()) return;
     try {
       const savePromise = SaveDraft(
         id,
@@ -194,7 +211,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   }
 
   async function hydrate(id: string, expectedGeneration: number): Promise<void> {
-    if (!persists) return;
+    if (!draftRowsReachable()) return;
     hydrating = true;
     const cached = peekSnapshot(id);
     if (cached) {
@@ -224,7 +241,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   }
 
   function queueSave(): void {
-    if (!threadId || !persists) return;
+    if (!threadId || !draftRowsReachable()) return;
     clearDebounce();
     const id = threadId;
     const generation = ++pendingSaveGeneration;
@@ -247,7 +264,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   }
 
   async function flush(): Promise<void> {
-    if (!threadId || !persists) return;
+    if (!threadId || !draftRowsReachable()) return;
     clearDebounce();
     const id = threadId;
     const snapshot = buildSnapshot();

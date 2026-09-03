@@ -4,6 +4,12 @@
 // a new App method is added on the Go side, run
 // `wails3 task common:generate:bindings` and re-export it from this file
 // -- do not hand-wrap bindings.
+//
+// Every call below lands on the transport `lib/transport/handle.ts`
+// resolves: the generated wrappers call the runtime shim's `Call.ByID`,
+// which asks for the connection per call instead of importing the WS
+// singleton, so a second attached backend is a change to that resolution
+// and not to this file (docs/specs/remote-access.md §10).
 export {
   // Thread management
   ArchiveThread,
@@ -133,7 +139,14 @@ export {
   GetCodexAccountUsage,
   GetRateLimitsSnapshots,
   ListProviderAccounts,
-  LoginProviderAccount,
+  // A provider sign-in is a session, not one blocking call: it may be
+  // finished on a different device than the one that started it, so the
+  // link goes out and the answer comes back through four fast calls plus
+  // the `provider:login` push. See internal/provideraccountapp/loginsession.go.
+  StartProviderLogin,
+  GetProviderLoginState,
+  SubmitProviderLoginCode,
+  CancelProviderLogin,
   SwitchProviderAccount,
   RemoveProviderAccount,
   RefreshProviderAccountUsage,
@@ -143,9 +156,60 @@ export {
   SetUIState,
   DeleteUIState,
 
-  // Network bindings (LAN-bind toggle for the embedded transport).
+  // Network bindings (LAN-bind toggle, canonical domain and its
+  // certificate, for the embedded transport). RenewCanonicalDomainCert
+  // kicks the reconciler and returns immediately: obtaining a
+  // certificate outlives an RPC, so the screen polls
+  // GetNetworkSettings while `tls.renewing` is set.
   GetNetworkSettings,
   SetNetworkSettings,
+  RenewCanonicalDomainCert,
+
+  // The tailnet node rides the same two calls: the toggle and its
+  // coordination server are fields on the network record, so turning it
+  // on is one step-up-gated write. ForgetTailnetNode is the separate act
+  // that deletes the node's identity, and the backend refuses it until
+  // the feature is off.
+  ForgetTailnetNode,
+
+  // Device access (Settings → Remote access → Devices): the paired-device
+  // list, the pairing lifecycle, and revocation. Every one needs
+  // `access:admin`; MintDevicePairing also needs a host-presence proof,
+  // so a link can only be created from the backend's own screen.
+  GetAccessOverview,
+  MintDevicePairing,
+  DevicePairingStatus,
+  ConfirmDevicePairing,
+  CancelDevicePairing,
+  RevokeAccessDevice,
+  RevokeAccessSession,
+  RestoreAccessDevice,
+  ForgetAccessDevice,
+
+  // Phone push (docs/specs/remote-access.md §9). The two registrations
+  // are at the SESSION FLOOR because each reaches the calling device's own
+  // row and no other; the status read and the credential pair are
+  // `access:admin`, the pair step-up gated on top, so both "my phone
+  // stopped buzzing" and "install the key on the serve host" are done from
+  // somewhere other than the machine.
+  RegisterPushToken,
+  UnregisterPushToken,
+  GetPushSenderStatus,
+  SetPushSenderCredential,
+  ClearPushSenderCredential,
+
+  // Passkeys, on the same `access:admin` surface. Registration is
+  // additionally step-up gated, because it issues something that admits a
+  // future caller; the two ceremony calls below are the FLOOR, since they
+  // are how a session satisfies that gate rather than something it is
+  // granted. Signing IN has no binding at all — its caller holds no
+  // session, so it is an HTTP route (transport/deviceSession.ts).
+  BeginPasskeyRegistration,
+  FinishPasskeyRegistration,
+  ListPasskeys,
+  DeletePasskey,
+  BeginPasskeyStepUp,
+  FinishPasskeyStepUp,
 
   // WSL distro switcher — exposed only when the backend is running
   // inside a WSL distribution spawned by the Windows launcher. The
@@ -167,15 +231,20 @@ export {
   // so a remote session's probe fails and the chip stays hidden there.
   ProbeDevServerURL,
 
-  // Remote endpoint storage. Token-redacted Summary on every read
-  // path; explicit GetRemoteEndpointToken for the copy-launch-command
-  // flow. See app_remote.go for the threat model.
-  ListRemoteEndpoints,
-  AddRemoteEndpoint,
-  UpdateRemoteEndpoint,
-  DeleteRemoteEndpoint,
-  TouchRemoteEndpoint,
-  GetRemoteEndpointToken,
+  // The port gateway (docs/specs/remote-access.md §7): one machine's
+  // shareable dev-server ports, and a single-use URL to open one from
+  // another device. Read through stores/devServers.svelte.ts.
+  GetDevServers,
+  AllowPreviewPort,
+  DisallowPreviewPort,
+  MintPreviewURL,
+
+  // The other machines this installation drives. Host-scoped: attaching
+  // one is something only the person at this keyboard does.
+  ListBackends,
+  AddBackend,
+  RemoveBackend,
+  RenameBackend,
 
   // Provider detection
   GetProviderStatuses,
@@ -251,11 +320,17 @@ export {
   PostChannelMessage,
   ConcludeDiscussion,
 
-  // Composer enhancements
-  UploadAttachment,
+  // Composer enhancements.
+  //
+  // Attachment BYTES do not cross here: they ride HTTP, admitted by a
+  // single-use ticket one of the two Mint calls returns a relative URL
+  // for (lib/transport/attachmentTransfer.ts). GetAttachmentThumbnail is
+  // the deliberate exception — ~10-30 KB is not a large body, and a grid
+  // would pay a mint round trip per tile.
+  MintAttachmentUploadTicket,
+  MintAttachmentDownloadTicket,
   ListAttachments,
   DeleteAttachment,
-  GetAttachmentData,
   GetAttachmentThumbnail,
   GetLocalImageData,
   SaveDraft,
@@ -330,6 +405,11 @@ export {
   ListItemsBeforeCursor,
   ListItemsAfterCursor,
   ListSubagentDescendants,
+  // Recovery route out of the wire projection: returns the complete
+  // stored `meta` / `payloadMeta` / `payloadPreviewSpans` for one item,
+  // for a consumer that reached a projection marker and now needs the
+  // value behind it. Fetched on expand, never on arrival.
+  GetThreadItemProjectionSource,
   ListThreadProposedPlans,
   ListProposedPlanComments,
   CountRunningBackgroundTasks,
@@ -375,9 +455,9 @@ export {
   UnarchiveProject,
   UpdateProjectSortPositions,
 
-  // Session import (provider session files → AO threads). All five are
-  // LOCAL-ONLY: they read the provider homes and name file paths, so a
-  // remote client gets a method_not_found refusal and the surface has to
+  // Session import (provider session files → AO threads). All five ride
+  // `threads:operate`: they read the provider homes and name file paths,
+  // so a session without that grant is refused and the surface has to
   // stay disabled there (stores/sessionImport.svelte.ts refuses first).
   // ImportSessions starts an ASYNC run — progress arrives on the
   // `session-import:progress` channel, never as a return value.
@@ -399,11 +479,19 @@ export {
   TriggerMcpAuth,
   TriggerWorkspaceMcpAuth,
 
-  // In-app self-update (internal/appupdate, via root bindings). LocalOnly — loopback callers only.
+  // In-app self-update (internal/appupdate, via root bindings). `host`-scoped — no grant reaches them.
   CheckForUpdate,
   ListReleases,
   DownloadUpdate,
   RestartToUpdate,
+
+  // Updating a SUPERVISED serve host from wherever you are
+  // (docs/architecture/serve-mode.md § Updating over the wire). All three
+  // are `access:admin` and `route selected`; the request is step-up gated
+  // on top, and the interception in the dispatch path collects that proof.
+  GetServiceUpdateStatus,
+  ListServiceReleases,
+  RequestServiceUpdate,
 
   // Workflows
   WorkflowAnswerQuestion,
@@ -466,9 +554,15 @@ export {
   ServerStatus as MCPServerStatus,
 } from '../../../bindings/agent-overflow/internal/mcpstatus/models.js';
 export {
-  EditorSettings,
-  RemoteEndpoint,
-} from '../../../bindings/agent-overflow/internal/settings/models.js';
+  LoginMethod as ProviderLoginMethod,
+  LoginPhase as ProviderLoginPhase,
+  LoginState as ProviderLoginState,
+} from '../../../bindings/agent-overflow/internal/provideraccountapp/models.js';
+export { EditorSettings } from '../../../bindings/agent-overflow/internal/settings/models.js';
+export {
+  Attached as AttachedBackend,
+  Attachment as BackendAttachment,
+} from '../../../bindings/agent-overflow/internal/attachedbackends/models.js';
 export {
   ManagedProviderAccount,
   CodexAccountUsage,
@@ -480,7 +574,6 @@ export {
   GitStatusSubscriptionResult,
   MCPAuthInitResult,
   ReleaseSummary,
-  RemoteEndpointSummary,
   TerminalOpenOptions,
   ThreadMCPServer,
   BrowserCompanionAction,
@@ -505,6 +598,29 @@ export {
 export {
   Settings as NetworkSettings,
 } from '../../../bindings/agent-overflow/internal/network/models.js';
+// Dev-server rows are read-only views of one machine's scan, never
+// constructed by a component.
+export type {
+  DevServer,
+  DevServerList,
+} from '../../../bindings/agent-overflow/internal/devscan/models.js';
+// Device-access DTOs are read-only views; components never construct
+// one, so type-only exports keep the classes out of the bundle.
+export type {
+  AccessOverview,
+  AccessDevice,
+  AccessSession,
+  AccessAuditEntry,
+  PendingPairing,
+  PairingInvite,
+  PairingStatusView,
+  DeviceRevocationResult,
+  PasskeySummary,
+  PasskeyChallengeResult,
+  PasskeyStepUpGrant,
+  PushSenderStatus,
+  ServiceUpdateStatus,
+} from '../../../bindings/agent-overflow/internal/app/models.js';
 export {
   Distro as WSLDistro,
 } from '../../../bindings/agent-overflow/internal/wsllauncher/models.js';
@@ -623,6 +739,14 @@ export function GetThreadDefaults(opts: CreateThreadOptions): Promise<ThreadDefa
 
 export interface SendMessageOptions {
   attachmentIds?: string[];
+  /**
+   * Idempotency id for this send, minted by
+   * `utils/sendOptions.ts#buildSendOptions` and by nothing else. Optional
+   * on the wire because it is optional on the backend: an empty one simply
+   * does not dedupe. Every call site that a person can trigger twice
+   * should carry one.
+   */
+  sendId?: string;
   runtimeMode?: string;
   sourceProposedPlan?: SourceProposedPlan;
   revisionSourceProposedPlan?: SourceProposedPlan;
@@ -767,6 +891,17 @@ export interface SyncThreadWindowInput {
   /** -1 when no cached window backs the stamp. */
   haveEpoch: number;
   haveRev: number;
+  /**
+   * The client's stated projection preference — `wantsInlinePreviews()`
+   * in threadPaneShared, never a literal.
+   *
+   * Required here although the generated request class types it optional
+   * (Go's `omitempty`): the positional item-window bindings make the
+   * preference impossible to omit, and the one path that passes a request
+   * object should be no easier to under-specify. Omitting it would ask
+   * for a different projection than the rest of the window.
+   */
+  inlinePreviews: boolean;
 }
 
 export interface SyncThreadWindowResult {

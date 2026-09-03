@@ -115,6 +115,17 @@ export interface PendingCutPosition {
 // the same time can attribute each other's events. Module-level because
 // the panes are separate component instances with separate flows —
 // there is no shared owner below the module.
+//
+// It covers this PAGE LOAD and nothing else, deliberately. Another
+// client's saga cannot be attributed here any more, because the
+// reverted-event marker is now recorded only for the connection that
+// started it (`stores/eventsMessageRevert.ts`), and that is the whole of
+// what cross-client correctness needed. A backend-broadcast "an edit is
+// in flight" state would be a second, weaker copy of a mutual exclusion
+// the thread lock already enforces authoritatively — and, being
+// client-produced, a steering primitive on a channel every client
+// renders. The two panes below share one connection, so one marker map,
+// which is exactly the collision this Set still exists to prevent.
 
 const executingThreads = new Set<string>();
 

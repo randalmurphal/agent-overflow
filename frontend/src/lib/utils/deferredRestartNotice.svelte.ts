@@ -26,7 +26,7 @@
  * the event that finally makes the notice untrue. Nothing on the wire reports
  * a thread's pending config restart today — `pendingConfigReconnects` lives
  * entirely inside app_session_config.go — so deriving THAT half means new
- * App-bound surface (and a LocalOnlyMethods classification for it). This is
+ * App-bound surface (and an `//ao:scope` annotation for it). This is
  * the half that needs none.
  *
  * Usage (from a `.svelte` component, since it uses runes):

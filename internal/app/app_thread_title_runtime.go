@@ -32,7 +32,7 @@ func (a *App) threadTitleApplication() *threadtitleapp.Service {
 			Generate:    generator,
 			Applied: func(applied threadtitleapp.Applied) {
 				a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{
-					Action: "patch",
+					Action: triage.ThreadActionPatch,
 					ID:     applied.ThreadID,
 					Title:  &applied.Title,
 				})

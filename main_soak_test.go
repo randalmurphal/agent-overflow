@@ -178,6 +178,14 @@ func TestSoakScenarioIsShipped(t *testing.T) {
 // or fails this test. Three of four is the failure shape that burned a
 // real login (see the incident history in CLAUDE.md).
 //
+// One documented exception, and the rule below still holds it: the `serve`
+// boot sets fileKeychainOverride on its own through app.UseFileKeychain,
+// because an unattended host has no login session to unlock a keychain
+// with — nothing to do with mocking. That function lives in the same
+// bootstrap.go this test pins every assignment to, so a mode reaching for
+// it still cannot pick up an isolation pin without going through the file
+// that owns them. The other three remain isolation-only.
+//
 // mockEngine rides the same rule for the same reason. Unlike the four it
 // is LIFTABLE (realBrowserEngineRequested, the manual real-engine gate in
 // docs/specs/embedded-browser.md §10), which makes a second assignment

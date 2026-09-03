@@ -17,6 +17,7 @@ import {
   openCompanion,
 } from './companionPanes.svelte';
 import { addPaneThreadMountedObserver, focusPane, getAllPanes, getFocusedPaneId, getPane } from './panes.svelte';
+import { hasScope } from '../transport/scopes';
 import { errString } from '../utils/errors';
 
 // The browser pane's state store. The pane surface itself is an empty host
@@ -229,7 +230,15 @@ export function closeFocusedBrowserTab(): boolean {
 // dropped.
 export function hydrateBrowserCompanionState(threadId: string): void {
   if (!threadId || hydratedThreads.has(threadId)) return;
+  // The read rides `host`, and it runs on every pane thread mount, so a
+  // session off the host would spend one refusal per thread open on a
+  // surface it cannot use anyway: the pane is a NATIVE view this machine
+  // paints, which no remote client renders, and no grant can ever open
+  // it. Marking the thread hydrated first is deliberate — the answer for
+  // such a session is "no pages", and it will not change while the page
+  // stays remote.
   hydratedThreads.add(threadId);
+  if (!hasScope('host')) return;
   void (async () => {
     // The async wrapper folds a SYNCHRONOUS throw from the binding into the
     // same failure path as a rejection: callers run this from $effect bodies,

@@ -156,6 +156,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 		return nil
 	}())
+	// The preview listeners come down with the app context, and for the
+	// same reason: they are network-facing, and every request they carry
+	// is proxied into a dev server owned by a session the steps below are
+	// about to close. Recorded only when one was ever built.
+	if a.previewGatewayBuilt() {
+		record("close preview gateway", a.closePreviewGateway())
+	}
 	if a.workflowApplication().HasDefinitionsWatcher() {
 		record("close workflow definitions watcher", a.workflowApplication().CloseDefinitionsWatcher())
 	}
@@ -180,6 +187,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// the rest of teardown.
 	record("drain triage", a.drainTriage(ctx, reactorDrainTimeout))
 	record("drain flush dispatch", a.drainFlushDispatch(ctx, reactorDrainTimeout))
+	// Notification jobs read the thread title out of SQLite, so they drain
+	// with the other reactors rather than after the database closes.
+	record("drain notifications", a.drainNotifications(ctx, notificationDrainTimeout))
+	// The push fan-out reads registrations out of the same database, so it
+	// drains here too — and after the notification queue, because that is
+	// what feeds it.
+	record("drain push", a.drainPush(ctx, pushDrainTimeout))
 
 	// Step 3: flush observability writers BEFORE closing provider
 	// sessions. Provider close events pass through the replay log; if
@@ -254,6 +268,16 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// already in flight.
 	a.stopMarkThreadReads()
 	record("stop thread read stamps", nil)
+
+	// Step 3h: end any provider sign-in still waiting on a person. It holds a
+	// provider CLI open and a temporary credential home on disk, and joining
+	// here is what removes the home — a login abandoned by process exit leaves
+	// one for the next boot's sweep instead. Bounded by the cancelled app
+	// context above, which is what each run is already unblocking from.
+	if a.providerAccounts != nil {
+		a.providerAccounts.ShutdownProviderLogins()
+	}
+	record("stop provider logins", nil)
 
 	// Step 4: stop provider sessions. Session closers aggregate their errors via
 	// closeSessionsParallel — we surface them under a single

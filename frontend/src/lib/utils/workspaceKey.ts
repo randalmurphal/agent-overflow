@@ -1,8 +1,33 @@
 import type { WorkspaceRef } from '../types/git';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { projectBackend, threadBackend } from '../transport/entityIndex';
 
 /**
  * The entity key for a WORKSPACE — the checkout a thread's provider operates
- * in — derived from the thread row that points at it.
+ * in — as `${backendId} ${path}`.
+ *
+ * **The path alone is not the entity.** `/home/me/repos/app` names a
+ * different checkout on every machine, and two machines holding the same
+ * checkout is the ordinary case rather than the exotic one: it is what a
+ * laptop and a desktop attached to one account look like. A path-keyed store
+ * that is not keyed by backend answers one machine's git status for the
+ * other's directory, and the branch-persist queue would then write a branch
+ * observed on one machine onto the threads of the other. Unlike thread and
+ * project ids — globally unique UUIDs from `internal/entityid`, which is why
+ * those stores stay un-keyed — a path carries no origin at all.
+ *
+ * Composite STRING rather than a two-level map, because the hot path here is
+ * `Map.get(key)` on every status frame and every lock read, and a string
+ * concatenation done once at derivation is cheaper than two lookups done on
+ * every read. It also keeps `createEntityStore`'s single-string key, so the
+ * refcounting, the suspension and the diagnostics are untouched.
+ *
+ * The separator is a space and the split is on the FIRST one, which is
+ * unambiguous because a registry id contains no space
+ * (`transport/manifestBackends.ts` drops a descriptor whose id does) while a
+ * path may contain several. The home backend's id is the empty string, so
+ * its keys are `" /home/me/repos/app"` — one leading space, and identical
+ * for every client that has only ever had one backend.
  *
  * Not `worktreePath ?? workspacePath` — a thread in a worktree carries the
  * same value in both columns (see app_worktree.go), and `workspace_path` is
@@ -16,24 +41,52 @@ import type { WorkspaceRef } from '../types/git';
  * of bug entity keying exists to remove.
  */
 export function workspaceKeyForThread(
-  // Structural for the same reason as `workspaceRefForThread` below, and so
-  // the wire ref can be keyed through the SAME derivation: a `WorkspaceRef`
-  // satisfies this shape, which is what `workspaceKeyForRef` relies on.
-  thread: { workspacePath?: string } | null | undefined,
+  // Structural for the same reason as `workspaceRefForThread` below: the
+  // pane hands over the two fields it already keys on, not a whole row.
+  thread: { id: string; workspacePath?: string } | null | undefined,
 ): string | null {
   const path = thread?.workspacePath?.trim() ?? '';
-  return path === '' ? null : path;
+  if (path === '') return null;
+  // The thread's own backend, which the entity index learned when the row
+  // arrived. An id it has not seen resolves home — the same fallback every
+  // other unresolvable route takes, and the only possible answer on a
+  // single-backend client.
+  return composeWorkspaceKey(thread ? threadBackend(thread.id) : undefined, path);
+}
+
+/** The key for a path known to live on a given backend. */
+export function composeWorkspaceKey(backend: BackendKey | undefined, path: string): string {
+  return `${backend ?? HOME_BACKEND} ${path}`;
+}
+
+/** The backend a workspace key names. */
+export function workspaceKeyBackend(key: string): BackendKey {
+  const cut = key.indexOf(' ');
+  return cut < 0 ? HOME_BACKEND : key.slice(0, cut);
+}
+
+/**
+ * The filesystem path a workspace key names — what every RPC that takes a
+ * workspace wants, and never the key itself.
+ */
+export function workspaceKeyPath(key: string): string {
+  const cut = key.indexOf(' ');
+  return cut < 0 ? key : key.slice(cut + 1);
 }
 
 /**
  * The same entity key, derived from the wire ref instead of the row — for
  * caches whose subject arrives as a `WorkspaceRef` (the diff span cache's
  * primed entries, which must key on exactly the subject their RPC resolves
- * content from). One derivation, so a ref-keyed entry and a row-keyed entry
- * for one directory are the same entry.
+ * content from). The backend comes from the PROJECT index here and from
+ * the thread index above; a thread and its project are rows of one
+ * backend, so a ref-keyed entry and a row-keyed entry for one directory
+ * are the same entry.
  */
 export function workspaceKeyForRef(ws: WorkspaceRef | null | undefined): string | null {
-  return workspaceKeyForThread(ws);
+  const path = ws?.workspacePath?.trim() ?? '';
+  if (path === '') return null;
+  return composeWorkspaceKey(ws ? projectBackend(ws.projectId) : undefined, path);
 }
 
 /**

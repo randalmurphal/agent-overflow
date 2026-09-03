@@ -11,6 +11,7 @@ import {
   hasEditorsSnapshot,
   setEditorPreference,
   resetEditorsForTest,
+  resyncEditorPreference,
 } from './editors.svelte';
 import {
   setBindingMock,
@@ -312,5 +313,95 @@ describe('editors store', () => {
     expect(listMock).toHaveBeenCalledTimes(2);
     expect(getResolvedEditor()?.id).toBe('code');
     consoleError.mockRestore();
+  });
+});
+
+// The preference is a settings value with its own RPC, and this store held it
+// behind a 60-second catalog TTL with nothing invalidating it: a change made
+// anywhere else left every open header icon pointing at the previous editor.
+// `settings:updated` naming the `editor` key is the trigger.
+describe('resyncEditorPreference', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    resetEditorsForTest();
+  });
+
+  it('adopts the preference another client saved, without re-walking the catalog', async () => {
+    const listMock = setBindingMock('ListAvailableEditors', vi.fn(async () => [
+      ed('code', true),
+      ed('cursor', true),
+    ]));
+    const readMock = setBindingMock('GetEditorSettings', vi.fn(async () => ({
+      preference: 'code',
+    })));
+    await ensureEditorsLoaded();
+    expect(getResolvedEditor()?.id).toBe('code');
+
+    readMock.mockImplementation(async () => ({ preference: 'cursor' }));
+    await resyncEditorPreference();
+
+    expect(getResolvedEditor()?.id).toBe('cursor');
+    // The catalog is a PATH and /mnt/c walk, and nothing about a settings
+    // write changes what is installed.
+    expect(listMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks nothing before the first load, whose own read answers anyway', async () => {
+    const readMock = setBindingMock('GetEditorSettings', vi.fn(async () => ({
+      preference: 'cursor',
+    })));
+
+    await resyncEditorPreference();
+
+    expect(readMock).not.toHaveBeenCalled();
+    expect(hasEditorsSnapshot()).toBe(false);
+  });
+
+  // A local write still in flight is newer than anything the backend can
+  // answer with, so its optimistic value must survive the frame.
+  it('leaves a write that is still in flight alone', async () => {
+    setBindingMock('ListAvailableEditors', vi.fn(async () => [
+      ed('code', true),
+      ed('cursor', true),
+    ]));
+    const readMock = setBindingMock('GetEditorSettings', vi.fn(async () => ({
+      preference: 'code',
+    })));
+    await ensureEditorsLoaded();
+
+    let finishWrite!: () => void;
+    const write = new Promise<{ preference: string }>((resolve) => {
+      finishWrite = () => resolve({ preference: 'cursor' });
+    });
+    setBindingMock('SetEditorSettings', vi.fn(() => write));
+    const saving = setEditorPreference('cursor');
+    readMock.mockImplementation(async () => ({ preference: 'code' }));
+
+    await resyncEditorPreference();
+    expect(readMock).toHaveBeenCalledTimes(1);
+    expect(getResolvedEditor()?.id).toBe('cursor');
+
+    finishWrite();
+    await saving;
+    expect(getResolvedEditor()?.id).toBe('cursor');
+  });
+
+  it('keeps the working picker when the re-read fails', async () => {
+    setBindingMock('ListAvailableEditors', vi.fn(async () => [
+      ed('code', true),
+      ed('cursor', true),
+    ]));
+    const readMock = setBindingMock('GetEditorSettings', vi.fn(async () => ({
+      preference: 'cursor',
+    })));
+    await ensureEditorsLoaded();
+
+    readMock.mockImplementation(async () => {
+      throw new Error('transport down');
+    });
+    await resyncEditorPreference();
+
+    expect(getResolvedEditor()?.id).toBe('cursor');
+    expect(getEditorsError()).toBeNull();
   });
 });

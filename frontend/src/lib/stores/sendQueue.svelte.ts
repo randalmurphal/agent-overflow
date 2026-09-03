@@ -1,5 +1,6 @@
 import type { SourceDiffReview, SourceProposedPlan } from '../types/models';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/internal/app/models';
+import type { OutgoingSendOptions } from '../utils/sendOptions';
 import { RegisterQueueItem } from './bindings';
 import { createKeyedSignalRegistry, type KeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
@@ -179,42 +180,34 @@ function removeQueuedItemsById(threadId: string, queueItemIds: Set<string>): boo
  * stores the item, emits `provider:queue_state_changed`, and the
  * event handler in events.ts updates Zone 1. Returns the
  * backend-resolved id+timestamp so the caller can reconcile
- * optimistically if needed. */
+ * optimistically if needed.
+ *
+ * It takes the SAME `OutgoingSendOptions` the direct send path builds, from
+ * the same `buildSendOptions` call. Queueing and sending are one decision
+ * the composer makes about one message, so they carry one payload — which
+ * is also what puts the send's idempotency id on both, since that id is
+ * minted where the options are. A second option shape here was a second
+ * place for the two paths to disagree. */
 export async function registerQueueItem(
   threadId: string,
   message: string,
-  options: {
-    attachmentIds?: readonly string[];
-    sourceProposedPlan?: SourceProposedPlan | null;
-    revisionSourceProposedPlan?: SourceProposedPlan | null;
-    revisionSourceCommentIds?: readonly string[];
-    revisionSourceDiffReview?: SourceDiffReview | null;
-    revisionSourceDiffCommentIds?: readonly string[];
-  } = {},
+  options: OutgoingSendOptions,
 ): Promise<QueueItem> {
   if (!threadId) {
     throw new Error('sendQueue.registerQueueItem: threadId is required');
   }
-  const wire = await RegisterQueueItem(threadId, message, {
-    attachmentIds: options.attachmentIds ? [...options.attachmentIds] : undefined,
-    sourceProposedPlan: options.sourceProposedPlan ?? undefined,
-    revisionSourceProposedPlan: options.revisionSourceProposedPlan ?? undefined,
-    revisionSourceCommentIds: options.revisionSourceCommentIds
-      ? [...options.revisionSourceCommentIds]
-      : undefined,
-    revisionSourceDiffReview: options.revisionSourceDiffReview ?? undefined,
-    revisionSourceDiffCommentIds: options.revisionSourceDiffCommentIds
-      ? [...options.revisionSourceDiffCommentIds]
-      : undefined,
-  });
+  const wire = await RegisterQueueItem(threadId, message, options);
   return queueItemFromWire(wire);
 }
 
-// Note: `GetQueueState` (stores/bindings.ts) exists for remote-client / re-attach
-// bootstrap, but no caller wires it today (events drive Zone 1 in the
-// running session). Re-add a `fetchQueueState` wrapper here when the
-// bootstrap path needs it; keeping a dead helper around invites
-// confusion about which API the composer should call.
+// Note: the queue is READ from the backend in two places, and neither is
+// here. The attach path takes it inside `GetThreadLiveState` (one round trip
+// for the whole live snapshot — turn, queue, prompts, todos), and the
+// transport-gap handler re-reads it alone through `GetQueueState`, because a
+// gap on `provider:queue_state_changed` desynced the queue and nothing else.
+// Both apply through `replaceQueueForThread` below under the same revision
+// guard. A `fetchQueueState` wrapper here would be a third API for a job two
+// callers already do correctly.
 
 // ---- Event-handler surface (called from events.ts) -------------------
 

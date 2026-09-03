@@ -13,10 +13,18 @@ stateful composition with the production app through `Host`.
 - `seed.go` / `workflows.go` — declarative fixture creation and reset ordering.
 - `soak.go` — free-function soak autopilot over the same receiver.
 - `paths.go` — canonical path comparison shared with isolated boot setup.
+- `push.go` — `HarnessPushSent`, the ledger of what the push fan-out would
+  have sent. The recorder itself lives in `internal/app`
+  (`app_push_harness.go`): the harness boot installs it in the
+  `push.Sender` seam ONLY where no credential is configured, so everything
+  above that seam stays production and a spec can assert §9's redaction
+  rule on the real payload. `HarnessReset` clears the ledger through
+  `Host.ForgetPushSent`; device rows and their registrations survive,
+  because they are access state rather than test state.
 
 ## Wire and lifecycle invariants
 
-- `Harness` has exactly 37 exported `Harness*` methods. Root registers the
+- `Harness` has exactly 38 exported `Harness*` methods. Root registers the
   receiver with `Package: "main"`, `TypeName: "Harness"`, and `LocalOnly:
   true`; do not add exported lifecycle helpers to the receiver.
 - Keep method names and JSON tags stable. `transport_registration_test.go`
@@ -35,8 +43,9 @@ stateful composition with the production app through `Host`.
   immediately through `Host.PublishStoreIdentity` before replay starts.
 - Reset order is load-bearing: stop harness emitters, pause/cancel/sync workflow
   startup, stop sessions, settle turns, clear mocks, delete workflow records,
-  delete projects, invalidate import projection, remove harness-owned files,
-  then clear workflow pause via the deferred resume closure.
+  delete projects, invalidate import projection, drop the push ledger,
+  remove harness-owned files, then clear workflow pause via the deferred
+  resume closure.
 
 ## Safety boundary
 

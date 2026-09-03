@@ -24,6 +24,10 @@ import (
 // a provider and returns the redacted settings snapshot the frontend store
 // re-seeds from. Reserved names, malformed names, oversize values, and
 // duplicates are rejected here — never dropped silently at spawn time.
+//
+//ao:scope settings:write
+//ao:route home
+//ao:stepup
 func (a *App) SetProviderCustomEnvVar(
 	providerName, name, value string,
 	sensitive bool,
@@ -38,6 +42,10 @@ func (a *App) SetProviderCustomEnvVar(
 // DeleteProviderCustomEnvVar removes one custom environment variable. A name
 // that isn't configured is an error, so a UI acting on a stale list learns
 // about it instead of appearing to succeed.
+//
+//ao:scope settings:write
+//ao:route home
+//ao:stepup
 func (a *App) DeleteProviderCustomEnvVar(providerName, name string) (settings.Settings, error) {
 	next, err := a.providerDiscoveryService().DeleteProviderCustomEnvVar(providerName, name)
 	if err != nil {

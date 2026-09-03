@@ -59,6 +59,13 @@ func (a *App) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// The session core, and the local page channel's own session. After
+	// the store because every row it touches lives there, and before the
+	// subsystems because the transport's hooks read it the moment a page
+	// connects. Never fatal — see initIdentity.
+	backendID, _ := a.backendIdentity()
+	a.initIdentity(backendID)
+
 	// Publish this executable as the `agent-overflow` command before any
 	// session can be started, so the very first session already has it on
 	// PATH. Best-effort by design: the helper logs its own failure and
@@ -87,6 +94,71 @@ func (a *App) Start(ctx context.Context) error {
 		return fmt.Errorf("start orphan reaper: %w", err)
 	}
 
+	// Start the sidebar's host CPU/memory sampler. Emits a
+	// `system:stats` event every ~2s. See app_sysstat.go.
+	//
+	// NOT behind the activation gate: it reads this host's own counters and
+	// emits them. A sampler takes no action, so a trial running one and being
+	// rolled back leaves nothing behind.
+	a.startSystemStatsSampler()
+
+	// Start the dev-server discovery loop. It reads this machine's
+	// listening sockets, and ONLY while a session that is both off this
+	// machine and granted `preview:open` is attached — so a desktop-only
+	// install never scans at all. See app_preview.go.
+	//
+	// NOT behind the activation gate, for the same reason as the sampler
+	// above: it reads and publishes, takes no action, and leaves nothing
+	// behind for a rollback to undo.
+	a.startDevServerPreviews()
+
+	// Fill in the repository identity of projects that have none, so a
+	// client attached to several backends can recognise the same repo
+	// checked out on two machines. In a goroutine because each
+	// unidentified row costs a `git rev-list` (and, on a cold repo-meta
+	// cache, a `git remote get-url`), and a user with many projects would
+	// otherwise wait for them before the window paints. Bounded by
+	// construction: one pass, one derivation per unidentified row, and
+	// nothing to do at all on every boot after the first. See
+	// app_projects.go.
+	//
+	// NOT behind the activation gate. Its whole effect is two TEXT columns
+	// in SQLite, which is inside the snapshot boundary — restoring the
+	// database undoes it — and the git reads it makes take no action.
+	go a.backfillProjectIdentity()
+
+	// Assert the persisted keep-awake state. Synchronous and cheap (one
+	// D-Bus round trip at most, nothing at all when the setting is off),
+	// and it must run on the boot path rather than lazily: the whole
+	// point of persisting the switch is that the machine stays awake
+	// across a restart without the user touching the toggle again. The
+	// event bus is wired before Start (bootTransport → SetEventBus), so
+	// the directive this emits is retained on its latest-only ring and
+	// reaches a launcher that connects later. See app_power.go.
+	//
+	// NOT behind the activation gate, and this one is a judgement rather
+	// than a category: it does touch the host, but it asserts an idempotent
+	// state that the OS releases when the process exits, and a trial boot IS
+	// a restart — the exact moment the persisted switch exists to survive.
+	// Gating it would let the machine sleep in the middle of an update.
+	a.applyKeepAwake(a.currentSettings())
+
+	// Everything that can act on its own waits for the activation gate. On
+	// every boot but a supervisor trial the gate is already open and this
+	// runs inline, right here, in the order it always did.
+	return a.activation.Run(a.appCtx, a.startUnattendedWork)
+}
+
+// startUnattendedWork starts every subsystem that can take an action nobody
+// asked for in the moment: spawn a provider, run a command, reach the network,
+// delete a file, spend a token.
+//
+// This is the set a supervisor trial parks. The membership rule is one
+// question — "if this ran and the update were rolled back, would restoring the
+// database undo it?" — and everything here answers no. The snapshot boundary
+// is the SQLite triple; provider credentials, attachment files, git objects,
+// ACME rate limits and tailnet state are all outside it.
+func (a *App) startUnattendedWork() error {
 	// Probe provider binaries once on boot so the thread-level banner can
 	// surface "claude not found" / "codex too old" before the user opens
 	// settings. Runs in a goroutine because DetectProvider spawns subprocesses
@@ -98,6 +170,11 @@ func (a *App) Start(ctx context.Context) error {
 	// short-lived provider process and runs the wire handshake — slower
 	// than DetectProvider's version check. Results land on the frontend
 	// via the `provider:account` event.
+	//
+	// The most important member of this set: the handshake reaches the
+	// provider's own credential store, and a Claude refresh token is
+	// single-use. A trial that rotated one and was then rolled back would
+	// leave the restored version holding a credential that is already spent.
 	go a.probeStartupAccountInfo()
 
 	// Start the Claude rate-limit probe loop. Startup account adoption runs
@@ -121,27 +198,18 @@ func (a *App) Start(ctx context.Context) error {
 	// Start the retention TTL sweep. Reads Settings.Retention.Days
 	// every tick so toggling retention on/off (or changing the window)
 	// doesn't require a restart. See app_retention_cleanup.go.
+	//
+	// It prunes on-disk side effects — attachments, dated log files, bug
+	// report bookmarks — which no database snapshot restores, and its first
+	// sweep is 30 seconds in, well inside a trial's budget.
 	a.startRetentionCleanup()
-
-	// Start the sidebar's host CPU/memory sampler. Emits a
-	// `system:stats` event every ~2s. See app_sysstat.go.
-	a.startSystemStatsSampler()
 
 	// Watch the provider binaries for an upgrade under a running app: a
 	// quiet tick is two stats, and a changed file re-reads the version,
 	// refreshes the model catalog, and flags live sessions still running
-	// the old build. See app_provider_binary_watch.go.
+	// the old build. Behind the activation gate because a changed file
+	// spawns `<binary> --version`. See app_provider_binary_watch.go.
 	a.startProviderBinaryWatcher()
-
-	// Assert the persisted keep-awake state. Synchronous and cheap (one
-	// D-Bus round trip at most, nothing at all when the setting is off),
-	// and it must run on the boot path rather than lazily: the whole
-	// point of persisting the switch is that the machine stays awake
-	// across a restart without the user touching the toggle again. The
-	// event bus is wired before Start (bootTransport → SetEventBus), so
-	// the directive this emits is retained on its latest-only ring and
-	// reaches a launcher that connects later. See app_power.go.
-	a.applyKeepAwake(a.currentSettings())
 
 	// Start the background `git fetch` cadence so ahead/behind counts
 	// track the remote instead of the user's last manual fetch. Reads
@@ -149,7 +217,35 @@ func (a *App) Start(ctx context.Context) error {
 	// harness mode. See app_git_background_fetch.go.
 	a.startBackgroundGitFetch()
 
-	return nil
+	// Serve the canonical domain's certificate, and keep serving it: the
+	// loop loads what is on disk, orders one when the user configured
+	// issuance and there is none (or it is inside the renewal window),
+	// and publishes each result into the listener's certificate source
+	// without a rebind. Does nothing at all when no domain is configured,
+	// which is the default. See app_domaincert.go.
+	//
+	// An order runs the operator's own DNS hook as a subprocess and counts
+	// against a certificate authority's rate limit. Neither is undoable.
+	a.startDomainCertificateLoop(a.configDir)
+
+	// Join the owner's tailnet when they asked for it, and keep the node's
+	// listeners attached to the transport that is already running. Honors
+	// the persisted preference, which is what makes off-network access
+	// survive a restart without the user touching the toggle again. Builds
+	// nothing at all while the setting is off, which is the default. See
+	// app_tailnet.go.
+	//
+	// Bringing a node up mutates the tsnet state directory, which lives
+	// outside the snapshot boundary, and announces this machine to a
+	// coordination server.
+	a.startTailnetLoop(a.configDir)
+
+	// Workflow automation: the self-resume schedules and the §11 trigger
+	// cadence, both of which START PROVIDER TURNS with no one asking. The
+	// engine itself is already running (initWorkflowEngine, during
+	// initSubsystems) because rebuilding its state from SQLite is exactly
+	// what a trial has to prove works; what waits is the part that acts.
+	return a.startWorkflowAutomation()
 }
 
 // initStores resolves the on-disk data directory, opens SQLite, wires the
@@ -183,7 +279,7 @@ func (a *App) initStores() (string, *store.Store, error) {
 	if err := repairStartupOwnedPaths(dbDir); err != nil {
 		return "", nil, err
 	}
-	dbPath := filepath.Join(dbDir, "agent-overflow.db")
+	dbPath := filepath.Join(dbDir, databaseFileName)
 	if err := prepareAppSensitiveFile(dbPath); err != nil {
 		return "", nil, fmt.Errorf("failed to prepare database file %s: %w", dbPath, err)
 	}
@@ -220,7 +316,20 @@ func (a *App) initStores() (string, *store.Store, error) {
 		FastStatusFn: a.git.StatusFast,
 		WatchRootsFn: a.git.WatchRoots,
 	})
-	a.settings = settings.NewService(dbDir)
+	a.setSettingsService(settings.NewService(dbDir))
+	// Tiered residency (docs/specs/remote-access.md §6): the user and device
+	// tiers live in ui_state from here on, and whatever settings.json still
+	// holds for them seeds this machine's own screen and the reserved
+	// `user:default` scope. Runs before the first Get so nothing reads a
+	// pre-migration snapshot, and writes no settings file — which is what
+	// keeps it clear of initThemeDirectory's one-shot read of the retired
+	// `theme` key further down the boot.
+	a.settings.AttachTierStore(st, "client:"+EnsureClientIDIn(dbDir))
+	// The phone-push sender, if this backend has one (docs/specs/
+	// remote-access.md §9). Absent is the resting state and costs nothing;
+	// it is read here because the fan-out's own no-credential branch must
+	// be a nil check and not a per-notification database read.
+	a.loadPushSender()
 	accountStore, err := provideraccounts.NewStore(dbDir)
 	if err != nil {
 		closeErr := st.Close()
@@ -391,6 +500,15 @@ func prepareAppSensitiveFile(path string) error {
 	return chmodAppSensitiveFileIfExists(path)
 }
 
+// databaseFileName is the one name this app's SQLite database has. It is a
+// constant rather than a literal because a SECOND package now depends on it:
+// internal/supervise snapshots and restores this file and its two sidecars
+// while no process holds them, and it cannot import this package. Its
+// DatabaseFiles() restates the names, and a drift test in this package pins the
+// two together — a rename here that missed it would leave the supervisor
+// snapshotting a file nobody writes and restoring nothing.
+const databaseFileName = "agent-overflow.db"
+
 func repairSQLiteSidecarPermissions(dbPath string) error {
 	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
 		if err := chmodAppSensitiveFileIfExists(path); err != nil {
@@ -526,25 +644,34 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	worktreeSetupSweepStarted := time.Now()
 	a.sweepCrashedWorktreeSetups()
 	logBootPhase("app.sweep_crashed_worktree_setups", worktreeSetupSweepStarted)
+	// Put back into the composer every message the previous process had
+	// queued and never delivered. Here, beside the other crash sweeps and
+	// before any session can start, so a row cannot belong to something still
+	// running — and it never re-dispatches. See
+	// restoreDurableFlushQueueAtBoot.
+	flushQueueSweepStarted := time.Now()
+	a.restoreDurableFlushQueueAtBoot()
+	logBootPhase("app.restore_durable_flush_queue", flushQueueSweepStarted)
 	browserSettings := a.currentSettings()
 	a.refreshBrowserAccelerators()
 	a.browser.manager = appbrowser.NewManager(
 		dbDir,
 		browserConfigFromSettings(browserSettings),
 		appbrowser.ManagerOptions{
-			FakeEngine:   a.browser.mockEngine,
-			PaneHost:     a.paneHostOptions(),
-			NativeWindow: a.browser.nativeWindow,
-			Accelerators: a.browserAccelerators,
+			FakeEngine:       a.browser.mockEngine,
+			PaneHost:         a.paneHostOptions(),
+			HeadlessChromium: a.headlessChromiumOptions(browserSettings),
+			NativeWindow:     a.browser.nativeWindow,
+			Accelerators:     a.browserAccelerators,
 		},
 	)
 	a.browser.manager.SetEventSink(func(event appbrowser.CompanionEvent) {
 		a.emit(eventchan.BrowserCompanionState, event)
 	})
-	// No engine, no browser MCP server. A deployment without a window hosts
-	// no pages (spec §9), so offering a thread 28 tools that can only refuse
-	// would be worse than offering none: the absence is what the model and
-	// the UI can both read.
+	// No engine, no browser MCP server. A deployment with neither a window
+	// nor a headless engine hosts no pages (spec §9), so offering a thread 28
+	// tools that can only refuse would be worse than offering none: the
+	// absence is what the model and the UI can both read.
 	if a.browser.manager.Available() {
 		a.browser.mcp = appbrowser.NewMCPServer(a.browser.manager, browserSettings.BrowserEnabled)
 	}

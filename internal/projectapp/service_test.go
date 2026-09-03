@@ -68,11 +68,14 @@ func TestServiceProjectLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Rename: %v", err)
 	}
-	if renamed.Name != "Shiny" || renamed.Path != wantPath {
+	if renamed.Project.Name != "Shiny" || renamed.Project.Path != wantPath {
 		t.Fatalf("Rename() = %+v, want trimmed name and immutable path", renamed)
 	}
+	if !renamed.Changed {
+		t.Fatal("Rename() reported no change for a name that moved")
+	}
 
-	if err := service.Archive(project.ID); err != nil {
+	if _, err := service.Archive(project.ID); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 	projects, err = service.List()
@@ -86,7 +89,7 @@ func TestServiceProjectLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unarchive: %v", err)
 	}
-	if unarchived.Archived {
+	if unarchived.Project.Archived {
 		t.Fatal("Unarchive returned Archived=true")
 	}
 
@@ -98,7 +101,7 @@ func TestServiceProjectLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create second: %v", err)
 	}
-	if err := service.UpdateSortPositions([]string{second.ID, project.ID}); err != nil {
+	if _, err := service.UpdateSortPositions([]string{second.ID, project.ID}); err != nil {
 		t.Fatalf("UpdateSortPositions: %v", err)
 	}
 	for id, wantPosition := range map[string]int{second.ID: 0, project.ID: 1} {
@@ -152,9 +155,9 @@ func TestServiceUnavailableStoreErrorsPreserveBindingContract(t *testing.T) {
 		{name: "list", call: func() error { _, err := service.List(); return err }, want: "list projects: store unavailable"},
 		{name: "create", call: func() error { _, err := service.Create("path"); return err }, want: "create project: store unavailable"},
 		{name: "rename", call: func() error { _, err := service.Rename("id", "name"); return err }, want: "rename project: store unavailable"},
-		{name: "archive", call: func() error { return service.Archive("id") }, want: "archive project: store unavailable"},
+		{name: "archive", call: func() error { _, err := service.Archive("id"); return err }, want: "archive project: store unavailable"},
 		{name: "unarchive", call: func() error { _, err := service.Unarchive("id"); return err }, want: "unarchive project: store unavailable"},
-		{name: "sort", call: func() error { return service.UpdateSortPositions(nil) }, want: "update project sort positions: store unavailable"},
+		{name: "sort", call: func() error { _, err := service.UpdateSortPositions(nil); return err }, want: "update project sort positions: store unavailable"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -173,7 +176,7 @@ func TestServiceWorkspaceAndSetupValidationOrderPreservesBindingContract(t *test
 	if _, err := service.GetWorktreeSetup(" "); err == nil || err.Error() != "project id is required" {
 		t.Fatalf("GetWorktreeSetup error = %v, want required id", err)
 	}
-	if _, err := service.SetWorktreeSetup(" ", worktreesetup.Config{Run: [][]string{{}}}); err == nil || err.Error() != "project id is required" {
+	if _, _, err := service.SetWorktreeSetup(" ", worktreesetup.Config{Run: [][]string{{}}}); err == nil || err.Error() != "project id is required" {
 		t.Fatalf("SetWorktreeSetup error = %v, want required id before recipe validation", err)
 	}
 }
@@ -181,7 +184,7 @@ func TestServiceWorkspaceAndSetupValidationOrderPreservesBindingContract(t *test
 func TestServiceResolvesProjectWorkspaceMembership(t *testing.T) {
 	service, database := newTestService(t)
 	project := store.Project{ID: "project", Path: filepath.Join(t.TempDir(), "repo"), Name: "repo"}
-	if err := database.CreateProject(project); err != nil {
+	if _, err := database.CreateProject(project); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	service.deps.Workspace = workspaceResolverFunc(func(projectPath, candidate string) (string, bool, error) {
@@ -221,27 +224,27 @@ func TestServiceRejectsUnregisteredSourceWorkspace(t *testing.T) {
 func TestServiceWorktreeSetupRoundTripValidationAndClear(t *testing.T) {
 	service, database := newTestService(t)
 	project := store.Project{ID: "project", Path: t.TempDir(), Name: "repo"}
-	if err := database.CreateProject(project); err != nil {
+	if _, err := database.CreateProject(project); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
 	want := worktreesetup.Config{
 		Copy: []string{".env"}, Run: [][]string{{"make", "install"}}, Timeout: "15m",
 	}
-	got, err := service.SetWorktreeSetup(" project ", worktreesetup.Config{
+	got, _, err := service.SetWorktreeSetup(" project ", worktreesetup.Config{
 		Copy: want.Copy, Run: want.Run, Timeout: " 15m ",
 	})
 	if err != nil || !slices.Equal(got.Copy, want.Copy) || got.Timeout != want.Timeout || len(got.Run) != 1 {
 		t.Fatalf("SetWorktreeSetup = (%+v, %v), want %+v", got, err, want)
 	}
-	if _, err := service.SetWorktreeSetup(project.ID, worktreesetup.Config{Run: [][]string{{}}}); err == nil {
+	if _, _, err := service.SetWorktreeSetup(project.ID, worktreesetup.Config{Run: [][]string{{}}}); err == nil {
 		t.Fatal("SetWorktreeSetup accepted an empty argv")
 	}
 	got, err = service.GetWorktreeSetup(project.ID)
 	if err != nil || got.Timeout != want.Timeout {
 		t.Fatalf("GetWorktreeSetup after rejected save = (%+v, %v)", got, err)
 	}
-	got, err = service.SetWorktreeSetup(project.ID, worktreesetup.Config{})
+	got, _, err = service.SetWorktreeSetup(project.ID, worktreesetup.Config{})
 	if err != nil || !got.IsZero() {
 		t.Fatalf("clear SetWorktreeSetup = (%+v, %v)", got, err)
 	}
@@ -253,7 +256,7 @@ func TestServiceWorktreeSetupRoundTripValidationAndClear(t *testing.T) {
 func TestServiceWorkflowFootprintFindsEveryDeletionRoot(t *testing.T) {
 	service, database := newTestService(t)
 	project := store.Project{ID: "project", Path: t.TempDir(), Name: "repo"}
-	if err := database.CreateProject(project); err != nil {
+	if _, err := database.CreateProject(project); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	items := []store.WorkItem{

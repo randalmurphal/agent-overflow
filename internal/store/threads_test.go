@@ -23,7 +23,7 @@ func newTestProject(t *testing.T, s *Store, id, path string) Project {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := s.CreateProject(p); err != nil {
+	if _, err := s.CreateProject(p); err != nil {
 		t.Fatalf("CreateProject(%s): %v", id, err)
 	}
 	return p
@@ -907,7 +907,7 @@ func TestUpdateReasoningEffortPersists(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 
-	if err := s.UpdateReasoningEffort(thr.ID, "xhigh"); err != nil {
+	if _, _, err := s.UpdateReasoningEffort(thr.ID, "xhigh"); err != nil {
 		t.Fatalf("UpdateReasoningEffort(): %v", err)
 	}
 	got, err := s.GetThread(thr.ID)
@@ -929,7 +929,7 @@ func TestUpdateReasoningEffortPersistsCodexUltra(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 
-	if err := s.UpdateReasoningEffort(thr.ID, "ultra"); err != nil {
+	if _, _, err := s.UpdateReasoningEffort(thr.ID, "ultra"); err != nil {
 		t.Fatalf("UpdateReasoningEffort(ultra): %v", err)
 	}
 	got, err := s.GetThread(thr.ID)
@@ -951,7 +951,7 @@ func TestUpdateReasoningEffortRejectsUnknown(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 
-	if err := s.UpdateReasoningEffort(thr.ID, "ultranope"); !errors.Is(err, ErrInvalidEffort) {
+	if _, _, err := s.UpdateReasoningEffort(thr.ID, "ultranope"); !errors.Is(err, ErrInvalidEffort) {
 		t.Fatalf("UpdateReasoningEffort(ultranope) error = %v, want ErrInvalidEffort", err)
 	}
 }
@@ -1027,7 +1027,7 @@ func TestUpdateFastModePersists(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 
-	if err := s.UpdateFastMode(thr.ID, true); err != nil {
+	if _, _, err := s.UpdateFastMode(thr.ID, true); err != nil {
 		t.Fatalf("UpdateFastMode(true): %v", err)
 	}
 	got, _ := s.GetThread(thr.ID)
@@ -1035,7 +1035,7 @@ func TestUpdateFastModePersists(t *testing.T) {
 		t.Fatalf("FastMode = false, want true")
 	}
 
-	if err := s.UpdateFastMode(thr.ID, false); err != nil {
+	if _, _, err := s.UpdateFastMode(thr.ID, false); err != nil {
 		t.Fatalf("UpdateFastMode(false): %v", err)
 	}
 	got, _ = s.GetThread(thr.ID)
@@ -1054,8 +1054,8 @@ func TestUpdateContextWindowValid(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 
-	if err := s.UpdateContextWindow(thr.ID, 200000); err != nil {
-		t.Fatalf("UpdateContextWindow(200000): %v", err)
+	if _, _, err := s.UpdateContextSettings(thr.ID, 200000, 0, 0); err != nil {
+		t.Fatalf("UpdateContextSettings(200000): %v", err)
 	}
 	got, _ := s.GetThread(thr.ID)
 	if got.ContextWindow != 200000 {
@@ -1073,8 +1073,8 @@ func TestUpdateContextWindowInvalid(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 
-	if err := s.UpdateContextWindow(thr.ID, -1); !errors.Is(err, ErrInvalidContextWindow) {
-		t.Fatalf("UpdateContextWindow(-1) = %v, want ErrInvalidContextWindow", err)
+	if _, _, err := s.UpdateContextSettings(thr.ID, -1, 0, 0); !errors.Is(err, ErrInvalidContextWindow) {
+		t.Fatalf("UpdateContextSettings(-1) = %v, want ErrInvalidContextWindow", err)
 	}
 }
 
@@ -1813,7 +1813,7 @@ func TestListArchivedThreads(t *testing.T) {
 	}
 
 	// Unarchiving removes from the archived list.
-	if err := s.UnarchiveThread(archived1.ID); err != nil {
+	if _, _, err := s.UnarchiveThread(archived1.ID); err != nil {
 		t.Fatalf("UnarchiveThread: %v", err)
 	}
 	got2, err := s.ListArchivedThreads()
@@ -1864,7 +1864,7 @@ func TestListThreadsWithItemsSurfacesNonEmptyDrafts(t *testing.T) {
 		}
 	}
 
-	if err := s.UpsertThreadDraft(ThreadDraft{
+	if _, err := s.UpsertThreadDraft(ThreadDraft{
 		ThreadID:                  implDraft.ID,
 		Content:                   "PLEASE IMPLEMENT THIS PLAN:\n# Foo",
 		Attachments:               "[]",
@@ -1876,7 +1876,7 @@ func TestListThreadsWithItemsSurfacesNonEmptyDrafts(t *testing.T) {
 	}
 	// emptyDraft gets a content-only draft with no source-plan link. That is
 	// still user-authored state, so it should now surface in the sidebar.
-	if err := s.UpsertThreadDraft(ThreadDraft{
+	if _, err := s.UpsertThreadDraft(ThreadDraft{
 		ThreadID:      emptyDraft.ID,
 		Content:       "typed but never sent",
 		Attachments:   "[]",
@@ -2027,7 +2027,7 @@ func TestListThreadsWithItemsClearsIncompleteNewestTurnAfterRead(t *testing.T) {
 	}
 
 	lastReadAt := startedAt - 1
-	if err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
+	if _, _, err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
 		t.Fatalf("setThreadLastRead(before): %v", err)
 	}
 	got := mustListSingleThreadWithItems(t, s)
@@ -2036,7 +2036,7 @@ func TestListThreadsWithItemsClearsIncompleteNewestTurnAfterRead(t *testing.T) {
 	}
 
 	lastReadAt = startedAt
-	if err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
+	if _, _, err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
 		t.Fatalf("setThreadLastRead(equal): %v", err)
 	}
 	got = mustListSingleThreadWithItems(t, s)
@@ -2214,7 +2214,7 @@ func TestThreadMutationsReturnNotFoundForMissingRows(t *testing.T) {
 	if err := s.DeleteThread(thread.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("DeleteThread() error = %v, want sql.ErrNoRows", err)
 	}
-	if err := s.ArchiveThread(thread.ID); !errors.Is(err, sql.ErrNoRows) {
+	if _, _, err := s.ArchiveThread(thread.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("ArchiveThread() error = %v, want sql.ErrNoRows", err)
 	}
 	if _, err := s.UpdateSessionRef(thread.ID, "session-ref"); !errors.Is(err, sql.ErrNoRows) {
@@ -2248,7 +2248,7 @@ func TestSetThreadLastReadRoundTrip(t *testing.T) {
 
 	// Set to a concrete timestamp.
 	ts := int64(1_700_000_000_000)
-	if err := s.setThreadLastRead(thr.ID, &ts); err != nil {
+	if _, _, err := s.setThreadLastRead(thr.ID, &ts); err != nil {
 		t.Fatalf("setThreadLastRead(set): %v", err)
 	}
 	got, err = s.GetThread(thr.ID)
@@ -2260,7 +2260,7 @@ func TestSetThreadLastReadRoundTrip(t *testing.T) {
 	}
 
 	// Clear back to NULL via nil pointer.
-	if err := s.setThreadLastRead(thr.ID, nil); err != nil {
+	if _, _, err := s.setThreadLastRead(thr.ID, nil); err != nil {
 		t.Fatalf("setThreadLastRead(clear): %v", err)
 	}
 	got, err = s.GetThread(thr.ID)
@@ -2273,7 +2273,7 @@ func TestSetThreadLastReadRoundTrip(t *testing.T) {
 
 	// Missing thread should surface sql.ErrNoRows, mirroring the other
 	// mutation helpers above.
-	if err := s.setThreadLastRead("missing", &ts); !errors.Is(err, sql.ErrNoRows) {
+	if _, _, err := s.setThreadLastRead("missing", &ts); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("setThreadLastRead(missing) error = %v, want sql.ErrNoRows", err)
 	}
 }
@@ -2307,7 +2307,7 @@ func TestMarkThreadReadNowClampsToLatestCompletedTurn(t *testing.T) {
 	completedAt := time.Now().UnixMilli() + 60_000
 	insertCompletedTurn(t, s, thr.ID, "turn-read-clamp", completedAt-1000, completedAt)
 
-	if err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
+	if _, _, err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
 		t.Fatalf("MarkThreadReadNow: %v", err)
 	}
 	got, err := s.GetThread(thr.ID)
@@ -2342,7 +2342,7 @@ func TestMarkThreadReadNowClearsIncompleteNewestTurn(t *testing.T) {
 		t.Fatalf("InsertTurn: %v", err)
 	}
 
-	if err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
+	if _, _, err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
 		t.Fatalf("MarkThreadReadNow: %v", err)
 	}
 	got, err := s.GetThread(thr.ID)
@@ -2370,10 +2370,10 @@ func TestMarkThreadReadNowAlreadyReadDoesNotRewrite(t *testing.T) {
 	insertCompletedTurn(t, s, thr.ID, "turn-read-noop", 500, 1000)
 
 	ts := int64(2000)
-	if err := s.setThreadLastRead(thr.ID, &ts); err != nil {
+	if _, _, err := s.setThreadLastRead(thr.ID, &ts); err != nil {
 		t.Fatalf("setThreadLastRead: %v", err)
 	}
-	if err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
+	if _, _, err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
 		t.Fatalf("MarkThreadReadNow: %v", err)
 	}
 
@@ -2397,7 +2397,7 @@ func TestMarkThreadReadNowRefreshesEmptyThreadBaseline(t *testing.T) {
 	}
 
 	before := nowMillis()
-	if err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
+	if _, _, err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
 		t.Fatalf("MarkThreadReadNow: %v", err)
 	}
 
@@ -2424,10 +2424,10 @@ func TestMarkThreadReadNowIgnoresMetadataOnlyUpdatedAt(t *testing.T) {
 	insertCompletedTurn(t, s, thr.ID, "turn-read-metadata", 500, 1000)
 
 	ts := int64(1000)
-	if err := s.setThreadLastRead(thr.ID, &ts); err != nil {
+	if _, _, err := s.setThreadLastRead(thr.ID, &ts); err != nil {
 		t.Fatalf("setThreadLastRead: %v", err)
 	}
-	if err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
+	if _, _, err := s.MarkThreadReadNow(context.Background(), thr.ID); err != nil {
 		t.Fatalf("MarkThreadReadNow: %v", err)
 	}
 
@@ -2475,7 +2475,7 @@ func TestUpdateThreadPreservesLastReadAt(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 	ts := int64(1_700_000_000_000)
-	if err := s.setThreadLastRead(thr.ID, &ts); err != nil {
+	if _, _, err := s.setThreadLastRead(thr.ID, &ts); err != nil {
 		t.Fatalf("setThreadLastRead: %v", err)
 	}
 
@@ -2522,7 +2522,7 @@ func TestSetThreadLastReadDoesNotBumpUpdatedAt(t *testing.T) {
 	}
 
 	ts := int64(1_700_000_000_000)
-	if err := s.setThreadLastRead(thr.ID, &ts); err != nil {
+	if _, _, err := s.setThreadLastRead(thr.ID, &ts); err != nil {
 		t.Fatalf("setThreadLastRead(set): %v", err)
 	}
 	afterSet, err := s.GetThread(thr.ID)
@@ -2534,7 +2534,7 @@ func TestSetThreadLastReadDoesNotBumpUpdatedAt(t *testing.T) {
 			before.UpdatedAt, afterSet.UpdatedAt)
 	}
 
-	if err := s.setThreadLastRead(thr.ID, nil); err != nil {
+	if _, _, err := s.setThreadLastRead(thr.ID, nil); err != nil {
 		t.Fatalf("setThreadLastRead(clear): %v", err)
 	}
 	afterClear, err := s.GetThread(thr.ID)
@@ -2558,7 +2558,7 @@ func TestPinUnpinLifecycle(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	if err := s.PinThread(thr.ID); err != nil {
+	if _, _, err := s.PinThread(thr.ID); err != nil {
 		t.Fatalf("PinThread: %v", err)
 	}
 	pinned, err := s.GetThread(thr.ID)
@@ -2571,7 +2571,7 @@ func TestPinUnpinLifecycle(t *testing.T) {
 	if pinned.PinGroup == nil || *pinned.PinGroup != PinGroupFront {
 		t.Fatalf("PinGroup = %v after PinThread, want front", pinned.PinGroup)
 	}
-	if err := s.SetThreadPinGroup(thr.ID, PinGroupBack); err != nil {
+	if _, _, err := s.SetThreadPinGroup(thr.ID, PinGroupBack); err != nil {
 		t.Fatalf("SetThreadPinGroup(back): %v", err)
 	}
 	back, err := s.GetThread(thr.ID)
@@ -2582,7 +2582,7 @@ func TestPinUnpinLifecycle(t *testing.T) {
 		t.Fatalf("PinGroup = %v after back-burner move, want back", back.PinGroup)
 	}
 
-	if err := s.PinThread(thr.ID); err != nil {
+	if _, _, err := s.PinThread(thr.ID); err != nil {
 		t.Fatalf("PinThread (repeat): %v", err)
 	}
 	repinned, err := s.GetThread(thr.ID)
@@ -2596,7 +2596,7 @@ func TestPinUnpinLifecycle(t *testing.T) {
 		t.Fatalf("re-pin left PinGroup = %v, want front", repinned.PinGroup)
 	}
 
-	if err := s.UnpinThread(thr.ID); err != nil {
+	if _, _, err := s.UnpinThread(thr.ID); err != nil {
 		t.Fatalf("UnpinThread: %v", err)
 	}
 	unpinned, err := s.GetThread(thr.ID)
@@ -2609,10 +2609,10 @@ func TestPinUnpinLifecycle(t *testing.T) {
 	if unpinned.PinGroup != nil {
 		t.Fatalf("PinGroup = %v after UnpinThread, want nil", *unpinned.PinGroup)
 	}
-	if err := s.SetThreadPinGroup(thr.ID, PinGroupBack); !errors.Is(err, sql.ErrNoRows) {
+	if _, _, err := s.SetThreadPinGroup(thr.ID, PinGroupBack); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("SetThreadPinGroup on unpinned row error = %v, want sql.ErrNoRows", err)
 	}
-	if err := s.SetThreadPinGroup(thr.ID, 2); !errors.Is(err, ErrInvalidPinGroup) {
+	if _, _, err := s.SetThreadPinGroup(thr.ID, 2); !errors.Is(err, ErrInvalidPinGroup) {
 		t.Fatalf("SetThreadPinGroup(invalid) error = %v, want ErrInvalidPinGroup", err)
 	}
 }
@@ -2632,7 +2632,7 @@ func TestPinDoesNotBumpUpdatedAt(t *testing.T) {
 		t.Fatalf("GetThread: %v", err)
 	}
 
-	if err := s.PinThread(thr.ID); err != nil {
+	if _, _, err := s.PinThread(thr.ID); err != nil {
 		t.Fatalf("PinThread: %v", err)
 	}
 	afterPin, err := s.GetThread(thr.ID)
@@ -2643,7 +2643,7 @@ func TestPinDoesNotBumpUpdatedAt(t *testing.T) {
 		t.Fatalf("PinThread bumped updated_at: %d -> %d", before.UpdatedAt, afterPin.UpdatedAt)
 	}
 
-	if err := s.UnpinThread(thr.ID); err != nil {
+	if _, _, err := s.UnpinThread(thr.ID); err != nil {
 		t.Fatalf("UnpinThread: %v", err)
 	}
 	afterUnpin, err := s.GetThread(thr.ID)
@@ -2665,7 +2665,7 @@ func TestUpdateThreadPreservesPinState(t *testing.T) {
 	if err := s.CreateThread(thr); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := s.PinThread(thr.ID); err != nil {
+	if _, _, err := s.PinThread(thr.ID); err != nil {
 		t.Fatalf("PinThread: %v", err)
 	}
 
@@ -2676,7 +2676,7 @@ func TestUpdateThreadPreservesPinState(t *testing.T) {
 	if got.PinnedAt == nil {
 		t.Fatalf("expected pinnedAt set after PinThread")
 	}
-	if err := s.SetThreadPinGroup(thr.ID, PinGroupBack); err != nil {
+	if _, _, err := s.SetThreadPinGroup(thr.ID, PinGroupBack); err != nil {
 		t.Fatalf("SetThreadPinGroup: %v", err)
 	}
 	got, err = s.GetThread(thr.ID)
@@ -2742,7 +2742,7 @@ func TestListThreadsWithItemsDerivesInterruptedSettledNewestTurn(t *testing.T) {
 
 	// A read mid-turn (before the interrupt landed) does not clear it.
 	lastReadAt := completedAt - 1
-	if err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
+	if _, _, err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
 		t.Fatalf("setThreadLastRead(mid-turn): %v", err)
 	}
 	got = mustListSingleThreadWithItems(t, s)
@@ -2752,7 +2752,7 @@ func TestListThreadsWithItemsDerivesInterruptedSettledNewestTurn(t *testing.T) {
 
 	// Reading at/after the settle clears it.
 	lastReadAt = completedAt
-	if err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
+	if _, _, err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
 		t.Fatalf("setThreadLastRead(after): %v", err)
 	}
 	got = mustListSingleThreadWithItems(t, s)
@@ -2783,7 +2783,7 @@ func TestMarkThreadReadNowClearsInterruptedSettledTurn(t *testing.T) {
 		t.Fatalf("UpdateTurnCompleted(): %v", err)
 	}
 
-	if err := s.MarkThreadReadNow(context.Background(), thread.ID); err != nil {
+	if _, _, err := s.MarkThreadReadNow(context.Background(), thread.ID); err != nil {
 		t.Fatalf("MarkThreadReadNow(): %v", err)
 	}
 	got := mustListSingleThreadWithItems(t, s)
@@ -2830,8 +2830,8 @@ func updateThreadWrittenColumns(t *testing.T) map[string]bool {
 // cover every column the table has, and no column may appear in both.
 // TestUpdateThreadColumnGate enforces both halves against
 // `PRAGMA table_info('threads')`, so a new column cannot land unclassified —
-// the same forcing-function shape transport's LocalOnlyMethods /
-// wireSafeMethods pair uses for App methods.
+// the same forcing-function shape transport's //ao:scope annotation gate
+// uses for App methods: a new one cannot land unclassified.
 //
 // A new column belongs in updateThreadSetSQL only if a whole-row write from a
 // stale `Thread` struct is the CORRECT outcome for it. Anything owned by a
@@ -2858,6 +2858,10 @@ var threadColumnsNotWrittenByUpdateThread = map[string]string{
 	"history_bulk_load":        "a transaction-private flag ApplyImportBatch and DeleteThread raise to suppress the per-row triggers; it is never visible outside their transaction",
 	"group_id":                 "sidebar group membership (v76), owned by SetThreadGroup — the one writer of the column; a whole-row write from a stale struct could move a thread back into a group the user just left, or resurrect one that was deleted",
 	"live_todo":                "the provider's live todo list (v65), owned by SetThreadLiveTodo / ClearThreadLiveTodo; a rename must not drop a list the user is still working through",
+	"created_by_device":        "write-once provenance (v77); the screen that started the thread is a fact about its creation, and a later mutation from anywhere must not restate it",
+	"created_branch":           "write-once git origin (v78); it records where the workspace STOOD at creation, which is exactly what a whole-row write from a thread that has since moved would destroy",
+	"created_remote_url":       "write-once git origin (v78), same reason",
+	"created_head_commit":      "write-once git origin (v78), same reason",
 }
 
 // TestUpdateThreadColumnGate is the standing version of the six
@@ -2871,8 +2875,8 @@ var threadColumnsNotWrittenByUpdateThread = map[string]string{
 //
 // The column set comes from PRAGMA table_info on a migrated database rather
 // than from a list in this file, so a migration that adds a column fails here
-// until somebody decides which side it belongs on. Mirrors the
-// LocalOnlyMethods / wireSafeMethods gate in internal/transport.
+// until somebody decides which side it belongs on. Mirrors the //ao:scope
+// completeness gate in internal/transport.
 func TestUpdateThreadColumnGate(t *testing.T) {
 	s := newTestStore(t)
 

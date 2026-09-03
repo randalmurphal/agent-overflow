@@ -19,11 +19,11 @@ const systemStatsInterval = 2 * time.Second
 // is in bytes; the frontend converts to GB for display so the
 // precision stays on the producer side.
 //
-// system:stats is a latest-only replay channel (see
-// transport/event_visibility.go): every frame is complete current
+// system:stats is a latest-only replay channel (see its row in
+// transport/event_channels.go): every frame is complete current
 // state, so the bus retains and replays only the newest one.
 //
-// Not added to transport/event_visibility.go loopback-only set:
+// Its row is AudienceAny rather than loopback-only:
 // coarse host CPU% + memory totals plus a single boolean OS-runtime
 // hint (`isWsl`) are operational data a remote `--connect` operator
 // would want to see, and disclose neither identity nor user content.

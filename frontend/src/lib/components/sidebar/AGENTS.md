@@ -38,7 +38,9 @@ That, not a row's `groupId` field, is the member drop target's identity:
 ## Row grammar
 
 `ThreadRow` and `ThreadGroupRow` are siblings, not two widgets. Both are
-24px (`h-6`), both open with the reserved pin gutter (except a row inside
+24px (`h-6`; 36px under the compact layout, `compact:h-9`, where a trailing
+`SidebarRowMenuButton` is the visible way into the row's menu), both open
+with the reserved pin gutter (except a row inside
 a group, below), both take their numbers and their relative-time label
 from `utils/sidebarRowMetrics.ts` (`PIN_SLOT_PX`, `INDENT_PX`,
 `sidebarRowPaddingLeftPx`, `sidebarTimeLabel`). Never restate those

@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+        Backup and device transfer are OFF, and the reason is identity.
+        The shell holds a device signing key and the session material
+        minted against it in app storage, and the backend believes one
+        device row is one machine. A cloud restore or a phone-to-phone
+        transfer would put that same key on a SECOND handset: two devices
+        presenting one identity, one revocation covering both, and reuse
+        detection firing on whichever dialed second.
+
+        Three attributes because the platform split the decision across
+        API levels. `allowBackup="false"` and `fullBackupContent="false"`
+        cover pre-31 backup; on 31+ `allowBackup="false"` disables cloud
+        backup but LEAVES device-to-device transfer on, which is what
+        `@xml/data_extraction_rules` turns off (it excludes every domain
+        from both halves).
+    -->
+    <application
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
+            android:name=".MainActivity"
+            android:label="@string/title_activity_main"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTask"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+        <!--
+            Push (docs/specs/remote-access.md §9). Ours rather than the
+            Capacitor push plugin's, because the backend sends DATA-ONLY
+            messages so that this service runs on every one and can drop a
+            notification the app is already showing and cancel one that is
+            already on the tray. This app declares NO OTHER messaging
+            service: Android dispatches MESSAGING_EVENT to the first match,
+            so a second declaration anywhere in the merged manifest would
+            silently take the messages instead.
+        -->
+        <service
+            android:name=".push.PushMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"></meta-data>
+        </provider>
+    </application>
+
+    <!-- Permissions -->
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+        Runtime-prompted on API 33+ and implicit below it. The shell asks
+        for it once per cold start and remembers a refusal for that launch
+        only (frontend/src/lib/native/push.ts).
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!--
+        Install-time, no prompt. The long-press detector
+        (frontend/src/lib/utils/longPressContextMenu.ts) taps the motor for
+        10ms when a hold opened a menu; without this the WebView makes
+        `navigator.vibrate` a silent no-op.
+    -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+</manifest>

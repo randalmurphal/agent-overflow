@@ -1,6 +1,6 @@
 // Package attachment manages disk storage for the files tied to threads.
 // The SQLite side keeps metadata (id, size, mime, path, kind); this package
-// decides the KIND, validates it, and writes the raw bytes to a bounded
+// decides the KIND, validates it, and streams the raw bytes to a bounded
 // on-disk layout.
 //
 // Two kinds, and the kind is what every other layer switches on
@@ -20,13 +20,14 @@
 package attachment
 
 import (
-	"encoding/base64"
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"agent-overflow/internal/store"
@@ -41,8 +42,8 @@ const DefaultMaxSize int64 = 10 * 1024 * 1024
 // DefaultMaxFileSize is the largest non-image payload we accept
 // (Config.MaxFileSize). Bigger than the image cap because an image is
 // re-encoded into a model's context while a file is only referenced by
-// path — but still bounded, because the transitional transfer carrier
-// base64s the bytes through one WS frame.
+// path. Still bounded: the upload ticket carries the declared size, and this
+// is the number the ticket is refused against before a byte moves.
 const DefaultMaxFileSize int64 = 50 * 1024 * 1024
 
 // DefaultMaxCount is the largest number of attachments accepted for a single
@@ -91,10 +92,10 @@ var allowedExtensions = map[string]string{
 // that, and an empty mime_type column would be a second spelling of it.
 const fallbackFileMIME = "application/octet-stream"
 
-// maxDeclaredMIMEBytes bounds the caller-declared content type a `file`
+// MaxDeclaredMIMEBytes bounds the caller-declared content type a `file`
 // upload is stored with. Files skip the MIME allowlist entirely, so this is
 // the only thing between an unbounded wire string and the metadata row.
-const maxDeclaredMIMEBytes = 128
+const MaxDeclaredMIMEBytes = 128
 
 // Config describes runtime knobs for the store. A zero MaxSize / MaxFileSize
 // means "use the default"; a negative one means "no upload allowed" and is
@@ -145,12 +146,44 @@ func NewStore(cfg Config, meta *store.Store) (*Store, error) {
 // without a permission prompt; the app must not re-derive the path.
 func (s *Store) Root() string { return s.root }
 
-// Upload accepts base64-encoded bytes, decides the kind, validates them,
-// writes the file and inserts a metadata row atomically from the caller's
-// point of view. The sequence is: write to a tmp file first, INSERT the DB
-// row, then atomic rename to the final path on commit. If the DB insert
-// fails the staged bytes are removed; if the atomic rename fails the DB row
-// is deleted. ThreadID must reference an existing thread (FK enforced).
+// MaxSizeFor is the per-kind payload cap: images are re-encoded into a
+// model's context, a file is only ever referenced by path. Exported so a
+// caller that must refuse an oversize transfer BEFORE it starts (the upload
+// ticket mint) reads the same number the write path enforces rather than
+// restating the default.
+func (s *Store) MaxSizeFor(kind string) int64 {
+	if kind == store.AttachmentKindFile {
+		return s.maxFileSize
+	}
+	return s.maxSize
+}
+
+// ClassifyUpload is the kind rule as a pre-check: the kind an upload of
+// this declared MIME and filename will land as, and the MIME its row will
+// carry. It exists so the ticket mint can pick the right size cap and refuse
+// an over-long MIME before the bytes move; it is never a substitute, because
+// Upload classifies again and, for an image, checks the bytes as well.
+func ClassifyUpload(mimeType, filename string) (kind, mime string, err error) {
+	upload, err := classifyUpload(mimeType, filename)
+	if err != nil {
+		return "", "", err
+	}
+	return upload.kind, upload.mime, nil
+}
+
+// copyBufferSize is how much of an upload is in memory at once. The whole
+// point of the streaming write is that a 50 MiB file never exists as a
+// single heap buffer, so this is sized for syscall efficiency rather than
+// for the payload: it also backs the header peek below, which needs 12
+// bytes.
+const copyBufferSize = 32 << 10
+
+// Upload STREAMS one attachment body onto disk, decides its kind, validates
+// it, and inserts a metadata row atomically from the caller's point of view.
+// The sequence is: write to a tmp sibling file first, INSERT the DB row,
+// then atomic rename to the final path on commit. If the DB insert fails
+// the staged bytes are removed; if the atomic rename fails the DB row is
+// deleted. ThreadID must reference an existing thread (FK enforced).
 //
 // The tmp-then-rename pattern means a crash at ANY point leaves a
 // consistent view: either the DB row + final file both exist, or
@@ -160,37 +193,41 @@ func (s *Store) Root() string { return s.root }
 //
 // The kind is decided BEFORE the size check, so a 30 MiB PNG is still
 // refused at the image cap rather than sliding under the file one.
-func (s *Store) Upload(threadID, filename, mimeType, dataB64 string, createdAt int64) (store.Attachment, error) {
+//
+// declaredSize is what the caller was told to expect, and the body must
+// deliver EXACTLY that many bytes. Two parties agreeing on a length
+// before the transfer is what lets an HTTP caller refuse an oversize
+// request from its headers instead of after 50 MiB of it arrived, and it
+// is why a short body is a failure here rather than a truncated file
+// nobody notices until it is read. The cap is enforced inside this
+// function too (io.LimitReader below), so a caller that forgot its own
+// bound still cannot make this store write past the kind's cap.
+//
+// An image's signature check reads the first bytes through a peek rather
+// than the whole payload: the format is decided by at most 12 bytes, and
+// buffering the rest to look at them would put back exactly the
+// allocation this path exists to remove. A file streams verbatim: there is
+// no signature that would mean anything for an arbitrary file.
+func (s *Store) Upload(threadID, filename, mimeType string, declaredSize int64, body io.Reader, createdAt int64) (store.Attachment, error) {
 	if strings.TrimSpace(threadID) == "" {
 		return store.Attachment{}, errors.New("attachment: thread id is required")
 	}
 	if strings.TrimSpace(filename) == "" {
 		return store.Attachment{}, errors.New("attachment: filename is required")
 	}
+	if body == nil {
+		return store.Attachment{}, errors.New("attachment: body is required")
+	}
+	if declaredSize <= 0 {
+		return store.Attachment{}, errors.New("attachment: payload is empty")
+	}
 
 	upload, err := classifyUpload(mimeType, filename)
 	if err != nil {
 		return store.Attachment{}, err
 	}
-
-	data, err := base64.StdEncoding.DecodeString(dataB64)
-	if err != nil {
-		return store.Attachment{}, fmt.Errorf("attachment: decode base64: %w", err)
-	}
-	if len(data) == 0 {
-		return store.Attachment{}, errors.New("attachment: payload is empty")
-	}
-	if limit := s.limitFor(upload.kind); int64(len(data)) > limit {
-		return store.Attachment{}, fmt.Errorf("attachment: payload %d bytes exceeds limit %d", len(data), limit)
-	}
-	if upload.kind == store.AttachmentKindImage {
-		// An image says what it is, so it has to be it. A mismatch is
-		// refused rather than demoted to a file: the caller asked for the
-		// image path (inline bytes, a `[Image #N]` slot, a thumbnail) and
-		// silently giving it something else would be the surprise.
-		if err := validateImagePayload(upload.mime, data); err != nil {
-			return store.Attachment{}, err
-		}
+	if limit := s.MaxSizeFor(upload.kind); declaredSize > limit {
+		return store.Attachment{}, fmt.Errorf("attachment: payload %d bytes exceeds limit %d", declaredSize, limit)
 	}
 
 	id := uuid.NewString()
@@ -201,16 +238,27 @@ func (s *Store) Upload(threadID, filename, mimeType, dataB64 string, createdAt i
 	}
 	tmpPath := absolutePath + ".tmp"
 
+	// Everything staged below comes off again on any failure, by this one
+	// defer: a streaming write has more ways to fail part-way than a single
+	// os.WriteFile did, and for a file the stage includes its own directory.
+	committed := false
+	defer func() {
+		if !committed {
+			s.rollbackStagedWrite(upload.kind, tmpPath, absolutePath)
+		}
+	}()
+
 	// For a file this creates the attachment's own `<id>` directory; for an
 	// image it is the thread directory, which usually already exists.
 	if err := os.MkdirAll(filepath.Dir(absolutePath), privateDirPerm); err != nil {
 		return store.Attachment{}, fmt.Errorf("attachment: mkdir: %w", err)
 	}
-	// Stage bytes to a tmp sibling so a crash between here and the final
-	// rename leaves only a .tmp (no orphan row, no visible final file).
-	if err := os.WriteFile(tmpPath, data, sensitiveFilePerm); err != nil {
-		s.rollbackStagedWrite(upload.kind, tmpPath, absolutePath)
-		return store.Attachment{}, fmt.Errorf("attachment: write tmp file: %w", err)
+	written, err := s.writeTemp(tmpPath, upload, declaredSize, body)
+	if err != nil {
+		return store.Attachment{}, err
+	}
+	if written != declaredSize {
+		return store.Attachment{}, fmt.Errorf("attachment: body delivered %d bytes, declared %d", written, declaredSize)
 	}
 
 	record := store.Attachment{
@@ -218,29 +266,71 @@ func (s *Store) Upload(threadID, filename, mimeType, dataB64 string, createdAt i
 		ThreadID:     threadID,
 		Filename:     filename,
 		MimeType:     upload.mime,
-		Size:         int64(len(data)),
+		Size:         declaredSize,
 		RelativePath: filepath.ToSlash(relativePath),
 		CreatedAt:    createdAt,
 		Kind:         upload.kind,
 	}
-	return record, s.commitStagedWrite(record, tmpPath, absolutePath)
+	if err := s.commitStagedWrite(record, tmpPath, absolutePath); err != nil {
+		return store.Attachment{}, err
+	}
+	committed = true
+	return record, nil
+}
+
+// writeTemp streams the body into the staging file and reports how many
+// bytes landed. The caller owns removing the file on any error.
+//
+// The limit is declaredSize+1 rather than declaredSize so an over-long
+// body is DETECTED (the extra byte makes the count disagree) instead of
+// being silently truncated to exactly the length it claimed.
+func (s *Store) writeTemp(tmpPath string, upload uploadType, declaredSize int64, body io.Reader) (int64, error) {
+	file, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, sensitiveFilePerm)
+	if err != nil {
+		return 0, fmt.Errorf("attachment: create tmp file: %w", err)
+	}
+	reader := bufio.NewReaderSize(io.LimitReader(body, declaredSize+1), copyBufferSize)
+	if upload.kind == store.AttachmentKindImage {
+		header, err := reader.Peek(signatureBytes)
+		if err != nil && !errors.Is(err, io.EOF) {
+			_ = file.Close()
+			return 0, fmt.Errorf("attachment: read payload: %w", err)
+		}
+		// An image says what it is, so it has to be it, and it is judged on
+		// the signature before a single byte is committed. A mismatch is
+		// refused rather than demoted to a file: the caller asked for the
+		// image path (inline bytes, a `[Image #N]` slot, a thumbnail) and
+		// silently giving it something else would be the surprise.
+		if err := validateImagePayload(upload.mime, header); err != nil {
+			_ = file.Close()
+			return 0, err
+		}
+	}
+	written, copyErr := io.Copy(file, reader)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return written, fmt.Errorf("attachment: write payload: %w", copyErr)
+	}
+	if closeErr != nil {
+		return written, fmt.Errorf("attachment: close tmp file: %w", closeErr)
+	}
+	return written, nil
 }
 
 // commitStagedWrite is the second half of every write path: INSERT the row,
-// then publish the staged bytes with an atomic rename, rolling the row back
-// if the rename fails. Shared by Upload and CopyToThread so the "DB row +
-// final file both exist, or neither does" invariant has one implementation.
+// then publish the staged bytes with an atomic rename, deleting the row
+// again if the rename fails. Shared by Upload and CopyToThread so the "DB
+// row + final file both exist, or neither does" invariant has one
+// implementation. The staged bytes themselves are the caller's to remove on
+// any error (its deferred rollbackStagedWrite), so this never touches them.
 func (s *Store) commitStagedWrite(record store.Attachment, tmpPath, absolutePath string) error {
 	if err := s.meta.InsertAttachment(record); err != nil {
-		// DB row never landed; tear down the staged bytes so we don't leak.
-		s.rollbackStagedWrite(record.Kind, tmpPath, absolutePath)
 		return err
 	}
 	// Atomic rename publishes the file at its final path. If this fails
 	// (e.g. FS error between directories), roll back the DB row so we
 	// don't leave a metadata row pointing at a path that doesn't exist.
 	if err := os.Rename(tmpPath, absolutePath); err != nil {
-		s.rollbackStagedWrite(record.Kind, tmpPath, absolutePath)
 		if derr := s.meta.DeleteAttachment(record.ID); derr != nil {
 			return fmt.Errorf("attachment: rename %s → %s: %w (rollback also failed: %v)",
 				tmpPath, absolutePath, err, derr)
@@ -260,15 +350,6 @@ func (s *Store) rollbackStagedWrite(kind, tmpPath, absolutePath string) {
 	if kind == store.AttachmentKindFile {
 		_ = os.RemoveAll(filepath.Dir(absolutePath))
 	}
-}
-
-// limitFor is the per-kind payload cap. Images are re-encoded into a
-// model's context; a file is only ever referenced by path.
-func (s *Store) limitFor(kind string) int64 {
-	if kind == store.AttachmentKindFile {
-		return s.maxFileSize
-	}
-	return s.maxSize
 }
 
 // resolveWritePath joins a freshly built relative path onto the root and
@@ -295,13 +376,13 @@ func (s *Store) resolveWritePath(relativePath string) (string, error) {
 // thread by copying the file on disk, under a fresh id and the same
 // tmp-then-rename + INSERT invariant every other write keeps.
 //
-// It exists because the cross-thread draft clone used to round-trip the
-// bytes through base64 and re-run Upload: that re-validated a payload the
-// store had already accepted, held the whole file in memory twice, and —
-// once files existed — would have re-derived a kind rather than preserving
-// the one already decided. The source thread is a parameter so the clone
-// keeps the ownership boundary ReadThreadBytes / PathForThread enforce; a
-// stale cross-thread id must not be able to pull another thread's file in.
+// It exists because the cross-thread draft clone used to stream the bytes
+// back through Upload: that re-validated a payload the store had already
+// accepted and, once files existed, would have re-derived a kind rather
+// than preserving the one already decided. The source thread is a parameter
+// so the clone keeps the ownership boundary ReadThreadBytes / PathForThread
+// enforce; a stale cross-thread id must not be able to pull another
+// thread's file in.
 func (s *Store) CopyToThread(sourceThreadID, targetThreadID, attachmentID string, createdAt int64) (store.Attachment, error) {
 	if strings.TrimSpace(targetThreadID) == "" {
 		return store.Attachment{}, errors.New("attachment: thread id is required")
@@ -327,12 +408,18 @@ func (s *Store) CopyToThread(sourceThreadID, targetThreadID, attachmentID string
 	}
 	tmpPath := absolutePath + ".tmp"
 
+	committed := false
+	defer func() {
+		if !committed {
+			s.rollbackStagedWrite(source.Kind, tmpPath, absolutePath)
+		}
+	}()
+
 	if err := os.MkdirAll(filepath.Dir(absolutePath), privateDirPerm); err != nil {
 		return store.Attachment{}, fmt.Errorf("attachment: mkdir: %w", err)
 	}
 	size, err := copyFileTo(sourcePath, tmpPath)
 	if err != nil {
-		s.rollbackStagedWrite(source.Kind, tmpPath, absolutePath)
 		return store.Attachment{}, err
 	}
 
@@ -346,7 +433,11 @@ func (s *Store) CopyToThread(sourceThreadID, targetThreadID, attachmentID string
 		CreatedAt:    createdAt,
 		Kind:         source.Kind,
 	}
-	return record, s.commitStagedWrite(record, tmpPath, absolutePath)
+	if err := s.commitStagedWrite(record, tmpPath, absolutePath); err != nil {
+		return store.Attachment{}, err
+	}
+	committed = true
+	return record, nil
 }
 
 // copyFileTo streams one attachment's bytes into a staged destination,
@@ -370,6 +461,45 @@ func copyFileTo(sourcePath, tmpPath string) (int64, error) {
 		return 0, fmt.Errorf("attachment: copy bytes: %w", err)
 	}
 	return size, nil
+}
+
+// Content is one attachment opened for streaming: its metadata row, an
+// open handle on the bytes, and the modification time a conditional
+// request is answered from.
+//
+// The CALLER closes File. Handing back a handle rather than a []byte is
+// the point: the byte route streams a 10 MiB image through a 32 KiB
+// buffer instead of holding the whole file — and, before wave 6b, its
+// base64 inflation as well — in the heap at once.
+type Content struct {
+	Record  store.Attachment
+	File    *os.File
+	ModTime time.Time
+}
+
+// OpenThread opens an attachment's bytes for streaming, on the same terms
+// as ReadThreadBytes: the row must belong to the thread AND be an image.
+// Both checks run on metadata, before the file is touched. This is what
+// the download route serves from, so the kind check here is what keeps a
+// `file` from ever being handed back to a client.
+func (s *Store) OpenThread(threadID, attachmentID string) (Content, error) {
+	record, absolutePath, err := s.resolveThreadAttachment(threadID, attachmentID)
+	if err != nil {
+		return Content{}, err
+	}
+	if record.Kind != store.AttachmentKindImage {
+		return Content{}, fmt.Errorf("%w: %q is a %s attachment", ErrNotAnImage, attachmentID, record.Kind)
+	}
+	file, err := os.Open(absolutePath)
+	if err != nil {
+		return Content{}, fmt.Errorf("attachment: open file: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return Content{}, fmt.Errorf("attachment: stat file: %w", err)
+	}
+	return Content{Record: record, File: file, ModTime: info.ModTime()}, nil
 }
 
 // Get returns the metadata row and the resolved absolute on-disk path.
@@ -429,9 +559,10 @@ func (s *Store) resolveThreadAttachment(threadID, attachmentID string) (store.At
 // The kind check is the one that used to be the MIME allowlist: the
 // attachment root now holds arbitrary bytes, so "safe to hand back to a
 // client" is a property of the ROW, not of the directory. Every caller that
-// serves or inlines bytes goes through here, so the guarantee holds without
-// each of them remembering it. A `file` is reached by PATH (PathForThread)
-// and copied by CopyToThread; nothing needs its bytes in process.
+// serves or inlines bytes goes through here or OpenThread, so the guarantee
+// holds without each of them remembering it. A `file` is reached by PATH
+// (PathForThread) and copied by CopyToThread; nothing needs its bytes in
+// process.
 func (s *Store) ReadThreadBytes(threadID, attachmentID string) (store.Attachment, []byte, error) {
 	record, absolutePath, err := s.resolveThreadAttachment(threadID, attachmentID)
 	if err != nil {
@@ -546,6 +677,12 @@ func (s *Store) resolveAbsolute(relativePath string) (string, error) {
 	return absolutePath, nil
 }
 
+// signatureBytes is how much of a payload decides its image type — the
+// longest signature DetectImageMIME reads is WEBP's twelve. It is the
+// whole header the streaming write peeks at, which is what keeps "is this
+// really a PNG" from costing a full-payload buffer.
+const signatureBytes = 12
+
 // uploadType is what classifyUpload decided about an upload before a byte
 // of the payload has been looked at: which kind it is, the MIME the row
 // will carry, and how it will be named on disk.
@@ -595,8 +732,8 @@ func classifyUpload(mimeType, filename string) (uploadType, error) {
 	if mime == "" {
 		mime = fallbackFileMIME
 	}
-	if len(mime) > maxDeclaredMIMEBytes {
-		return uploadType{}, fmt.Errorf("attachment: declared mime type is %d bytes, max %d", len(mime), maxDeclaredMIMEBytes)
+	if len(mime) > MaxDeclaredMIMEBytes {
+		return uploadType{}, fmt.Errorf("attachment: declared mime type is %d bytes, max %d", len(mime), MaxDeclaredMIMEBytes)
 	}
 	return uploadType{kind: store.AttachmentKindFile, mime: mime, name: sanitizeFilename(filename)}, nil
 }

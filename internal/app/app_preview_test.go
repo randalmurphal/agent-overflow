@@ -1,0 +1,454 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"os"
+	"slices"
+	"testing"
+
+	"agent-overflow/internal/devscan"
+	"agent-overflow/internal/settings"
+	"agent-overflow/internal/transport"
+)
+
+// Nothing here scans the machine. A real scan reads this host's socket
+// tables and then dials every candidate port on loopback, which on a
+// developer's box means their own work; previewScanner refuses to build
+// one inside a test binary, and these fixtures install their own.
+
+// fakeScanner records what it was asked and answers what it was told to.
+type fakeScanner struct {
+	servers []devscan.DevServer
+	err     error
+
+	calls   int
+	owners  []devscan.Owner
+	allowed []int
+}
+
+func (f *fakeScanner) Scan(_ context.Context, owners []devscan.Owner, allowed []int) ([]devscan.DevServer, error) {
+	f.calls++
+	f.owners = owners
+	f.allowed = allowed
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.servers, nil
+}
+
+func newPreviewTestApp(t *testing.T, scanner devServerScanner) *App {
+	t.Helper()
+	app := &App{}
+	app.setSettingsService(settings.NewService(t.TempDir()))
+	app.preview.scanner = scanner
+	return app
+}
+
+// The refusal is the DEFAULT, not something a fixture opts into: a test
+// that forgets to install a scanner must fail loudly rather than probe
+// the developer's own ports.
+func TestPreviewScannerRefusesToScanInsideATestBinary(t *testing.T) {
+	app := &App{}
+	app.setSettingsService(settings.NewService(t.TempDir()))
+
+	if _, err := app.GetDevServers(context.Background()); err == nil {
+		t.Fatal("GetDevServers scanned this machine from a test binary")
+	}
+}
+
+func TestGetDevServersScansOnDemand(t *testing.T) {
+	scanner := &fakeScanner{servers: []devscan.DevServer{
+		{Port: 5173, ThreadID: "thread-a", Allowed: true, Source: devscan.SourceAttributed, Listening: true},
+	}}
+	app := newPreviewTestApp(t, scanner)
+
+	list, err := app.GetDevServers(context.Background())
+	if err != nil {
+		t.Fatalf("GetDevServers: %v", err)
+	}
+	if scanner.calls != 1 {
+		t.Fatalf("scans = %d, want 1: the loop is idle here, so the RPC must scan itself", scanner.calls)
+	}
+	if len(list.Servers) != 1 || list.Servers[0].Port != 5173 {
+		t.Fatalf("servers = %+v", list.Servers)
+	}
+	// Loopback bind, no tailnet: there is no address to share a preview
+	// on, and the empty string is what the client renders its own
+	// sentence for.
+	if list.PreviewHost != "" {
+		t.Fatalf("PreviewHost = %q, want empty on a loopback-only backend", list.PreviewHost)
+	}
+}
+
+// The machine saying it cannot be looked at is an ANSWER, and it must
+// reach the caller. An empty list would read as "nothing is listening",
+// which is a different sentence.
+func TestGetDevServersSurfacesAHaltedScan(t *testing.T) {
+	scanner := &fakeScanner{err: devscan.ErrUnsupported}
+	app := newPreviewTestApp(t, scanner)
+
+	if _, err := app.GetDevServers(context.Background()); !errors.Is(err, devscan.ErrUnsupported) {
+		t.Fatalf("error = %v, want the platform refusal verbatim", err)
+	}
+	// And it is remembered rather than re-asked.
+	if _, err := app.GetDevServers(context.Background()); !errors.Is(err, devscan.ErrUnsupported) {
+		t.Fatalf("second call: error = %v", err)
+	}
+	if scanner.calls != 1 {
+		t.Fatalf("scans = %d, want 1: a machine that already said no is not asked again", scanner.calls)
+	}
+}
+
+func TestAllowAndDisallowPreviewPortsMoveTheStoredSet(t *testing.T) {
+	scanner := &fakeScanner{}
+	app := newPreviewTestApp(t, scanner)
+	ctx := context.Background()
+
+	ports, err := app.AllowPreviewPort(ctx, 5173)
+	if err != nil {
+		t.Fatalf("AllowPreviewPort: %v", err)
+	}
+	if !slices.Equal(ports, []int{5173}) {
+		t.Fatalf("ports = %v, want [5173]", ports)
+	}
+	if _, err := app.AllowPreviewPort(ctx, 3000); err != nil {
+		t.Fatalf("AllowPreviewPort: %v", err)
+	}
+	// Allowing a port twice is the same request, not a duplicate row.
+	ports, err = app.AllowPreviewPort(ctx, 5173)
+	if err != nil {
+		t.Fatalf("AllowPreviewPort repeat: %v", err)
+	}
+	if !slices.Equal(ports, []int{3000, 5173}) {
+		t.Fatalf("ports = %v, want the sorted set [3000 5173]", ports)
+	}
+
+	// The scan sees the new set, so the list refreshes in the same act
+	// rather than on a tick that may never come.
+	if !slices.Equal(scanner.allowed, []int{3000, 5173}) {
+		t.Fatalf("the scan was handed allowed = %v", scanner.allowed)
+	}
+
+	ports, err = app.DisallowPreviewPort(ctx, 3000)
+	if err != nil {
+		t.Fatalf("DisallowPreviewPort: %v", err)
+	}
+	if !slices.Equal(ports, []int{5173}) {
+		t.Fatalf("ports = %v, want [5173]", ports)
+	}
+
+	// Emptying the set answers with a list, not null: a client should not
+	// have to coalesce one absent value per read.
+	ports, err = app.DisallowPreviewPort(ctx, 5173)
+	if err != nil {
+		t.Fatalf("DisallowPreviewPort: %v", err)
+	}
+	if ports == nil || len(ports) != 0 {
+		t.Fatalf("ports = %v, want an empty list", ports)
+	}
+	if stored := app.currentSettings().Network.PreviewPorts; len(stored) != 0 {
+		t.Fatalf("stored previewPorts = %v, want none", stored)
+	}
+}
+
+// An impossible port is refused by the one settings write path, and the
+// refusal names the value rather than losing it silently.
+func TestAllowPreviewPortRefusesAnImpossiblePort(t *testing.T) {
+	app := newPreviewTestApp(t, &fakeScanner{})
+
+	if _, err := app.AllowPreviewPort(context.Background(), 70000); err == nil {
+		t.Fatal("a port outside the range was accepted")
+	}
+	if stored := app.currentSettings().Network.PreviewPorts; len(stored) != 0 {
+		t.Fatalf("a refused write still persisted %v", stored)
+	}
+}
+
+// The whole reason the loop has a gate: on an install nobody is watching
+// this machine from, discovery must not run at all.
+func TestDevServerScansAreGatedOnAnOffMachineViewer(t *testing.T) {
+	app := newPreviewTestApp(t, &fakeScanner{})
+
+	if app.devServerScanWanted() {
+		t.Fatal("a scan was wanted with no event bus at all")
+	}
+
+	bus := transport.NewEventBus(8)
+	defer bus.Close()
+	app.SetEventBus(bus)
+	if app.devServerScanWanted() {
+		t.Fatal("a scan was wanted with nobody subscribed")
+	}
+
+	// The webview in front of the machine is not a reason to scan.
+	local := bus.Subscribe()
+	defer local.Close()
+	local.SetOriginLoopback(true)
+	if app.devServerScanWanted() {
+		t.Fatal("the local webview alone made the backend scan")
+	}
+}
+
+// A backend with no sessions and no terminals owns nothing, so nothing
+// can be attributed to a thread. The nil managers are the shape every
+// fixture that never called Start has, and the owner walk must read them
+// as "no owners" rather than dereference them.
+func TestDevServerOwnersAreEmptyWithNothingRunning(t *testing.T) {
+	app := newPreviewTestApp(t, &fakeScanner{})
+	if owners := app.devServerOwners(); len(owners) != 0 {
+		t.Fatalf("owners = %+v, want none", owners)
+	}
+}
+
+// Nothing below binds a preview listener. A gateway on a loopback-only
+// backend with no tailnet has no address to serve on, so every port in
+// the set lands as a note, which is exactly the state these assert.
+
+// A backend nobody wired a transport server into serves no previews, and
+// says so rather than handing back a link to nowhere.
+func TestMintPreviewURLRefusesWithNoTransportServer(t *testing.T) {
+	app := newPreviewTestApp(t, &fakeScanner{})
+
+	if app.previewGateway() != nil {
+		t.Fatal("a gateway was built with no transport server behind it")
+	}
+	if _, err := app.MintPreviewURL(context.Background(), "thread-a", 5173, "/"); err == nil {
+		t.Fatal("a preview URL was minted on a backend serving no previews")
+	}
+	// The thread is what routes the call, so a call without one is a bug
+	// in the caller and is named as such.
+	if _, err := app.MintPreviewURL(context.Background(), "", 5173, "/"); err == nil {
+		t.Fatal("a preview URL was minted for no thread")
+	}
+}
+
+// One gateway per App: the listeners and the grants are its state, so a
+// second one would serve a set nobody reconciles and hand out cookies
+// nobody honours.
+func TestThePreviewGatewayIsBuiltOnceAndClosedOnce(t *testing.T) {
+	app := newPreviewTestApp(t, &fakeScanner{})
+	app.SetTransportServer(startTestTransportServer(t))
+
+	first := app.previewGateway()
+	if first == nil {
+		t.Fatal("no gateway was built with a transport server wired")
+	}
+	if second := app.previewGateway(); second != first {
+		t.Fatal("a second gateway was built")
+	}
+	if !app.previewGatewayBuilt() {
+		t.Fatal("previewGatewayBuilt said no after one was built")
+	}
+
+	if err := app.closePreviewGateway(); err != nil {
+		t.Fatalf("closePreviewGateway: %v", err)
+	}
+	if app.previewGatewayBuilt() {
+		t.Fatal("the gateway survived its close")
+	}
+}
+
+// The list may only call a port shareable when a listener is actually
+// serving it. Here nothing can be: no tailnet, loopback bind, so the row
+// comes back refused with the gateway's own sentence on it.
+func TestAllowedPortsWithNowhereToServeThemComeBackRefused(t *testing.T) {
+	scanner := &fakeScanner{servers: []devscan.DevServer{
+		{Port: 5173, ThreadID: "thread-a", Allowed: true, Source: devscan.SourceAttributed, Listening: true},
+	}}
+	app := newPreviewTestApp(t, scanner)
+	app.SetTransportServer(startTestTransportServer(t))
+	t.Cleanup(func() { _ = app.closePreviewGateway() })
+
+	list, err := app.GetDevServers(context.Background())
+	if err != nil {
+		t.Fatalf("GetDevServers: %v", err)
+	}
+	if len(list.Servers) != 1 {
+		t.Fatalf("servers = %+v", list.Servers)
+	}
+	row := list.Servers[0]
+	if row.Allowed {
+		t.Fatal("a port with no listener behind it was published as shareable")
+	}
+	if row.Note == "" {
+		t.Fatal("a refused row carries no sentence saying why")
+	}
+	// And the mint agrees with the list: one refusal, not two answers.
+	if _, err := app.MintPreviewURL(context.Background(), "thread-a", 5173, "/"); err == nil {
+		t.Fatal("a URL was minted for a port the list refused")
+	}
+}
+
+// previewHost is the sources' answer, not a second derivation of it. On
+// a loopback-only backend with no tailnet neither source can serve, so
+// the host is empty and the client renders its own sentence.
+func TestPreviewHostIsEmptyWhenNoSourceCanServe(t *testing.T) {
+	app := newPreviewTestApp(t, &fakeScanner{})
+	if host := app.previewHost(); host != "" {
+		t.Fatalf("previewHost = %q with no transport server", host)
+	}
+
+	app.SetTransportServer(startTestTransportServer(t))
+	if host := app.previewHost(); host != "" {
+		t.Fatalf("previewHost = %q on a loopback-only backend with no tailnet", host)
+	}
+	if len(app.previewSources(app.transportServer.Load())) != 2 {
+		t.Fatal("the source order is the whole address policy; both must be present")
+	}
+}
+
+// A port this process is itself listening on is never proxied. Several
+// of this backend's own loopback listeners answer a GET like a page, so
+// the scan offers them as candidates; the list must refuse them by name
+// rather than bind a preview listener that points at this app.
+func TestAPortThisBackendHoldsIsNeverShared(t *testing.T) {
+	self := os.Getpid()
+	scanner := &fakeScanner{servers: []devscan.DevServer{
+		{Port: 4173, PID: self, Allowed: true, Source: devscan.SourceAllowed, Listening: true},
+	}}
+	app := newPreviewTestApp(t, scanner)
+	app.SetTransportServer(startTestTransportServer(t))
+	t.Cleanup(func() { _ = app.closePreviewGateway() })
+
+	list, err := app.GetDevServers(context.Background())
+	if err != nil {
+		t.Fatalf("GetDevServers: %v", err)
+	}
+	if len(list.Servers) != 1 {
+		t.Fatalf("servers = %+v", list.Servers)
+	}
+	row := list.Servers[0]
+	if row.Allowed {
+		t.Fatal("this backend's own port was published as shareable")
+	}
+	if row.Note != previewSelfPortSentence(4173) {
+		t.Fatalf("note = %q, want the self-port sentence", row.Note)
+	}
+	// The mint agrees with the list, and says which port and why rather
+	// than the generic sentence for a port nobody shared.
+	_, err = app.MintPreviewURL(context.Background(), "thread-a", 4173, "/")
+	if err == nil {
+		t.Fatal("a URL was minted for a port this backend holds itself")
+	}
+	if err.Error() != previewSelfPortSentence(4173) {
+		t.Fatalf("mint error = %q, want the self-port sentence", err)
+	}
+}
+
+// Naming one by hand is refused before the set is written, so the
+// setting never holds a choice that can only come back refused.
+func TestNamingAPortThisBackendHoldsIsRefused(t *testing.T) {
+	self := os.Getpid()
+	scanner := &fakeScanner{servers: []devscan.DevServer{
+		{Port: 4173, PID: self, Source: devscan.SourceSeen, Listening: true, Scheme: "http"},
+	}}
+	app := newPreviewTestApp(t, scanner)
+
+	_, err := app.AllowPreviewPort(context.Background(), 4173)
+	if err == nil {
+		t.Fatal("this backend's own port was accepted into the preview set")
+	}
+	if err.Error() != previewSelfPortSentence(4173) {
+		t.Fatalf("error = %q, want the self-port sentence", err)
+	}
+	if stored := app.currentSettings().Network.PreviewPorts; len(stored) != 0 {
+		t.Fatalf("a refused write still persisted %v", stored)
+	}
+}
+
+// Only this process's own ports. Another process holding a port is the
+// ordinary case the whole feature exists for.
+func TestOnlyThisProcessesOwnPortsAreRefused(t *testing.T) {
+	self := os.Getpid()
+	rows := refusePreviewOnOwnPorts([]devscan.DevServer{
+		{Port: 5173, PID: self + 1, Allowed: true},
+		{Port: 4173, PID: self, Allowed: true},
+	}, self)
+
+	if !rows[0].Allowed || rows[0].Note != "" {
+		t.Fatalf("another process's port was refused: %+v", rows[0])
+	}
+	if rows[1].Allowed || rows[1].Note == "" {
+		t.Fatalf("this process's port survived: %+v", rows[1])
+	}
+}
+
+// A listener exists because a scan put its port in the served set, and a
+// scan is the only thing that ever takes one back out. So every path
+// that stops scanning has to hand the set back, or the last pass's
+// listeners stay bound with nobody reading the list they were reconciled
+// against.
+//
+// Both stop paths are asserted through devServerScanTick, which is why
+// the tick is a method: the loop's own body has no test.
+func TestStoppingTheScanReleasesThePreviewListeners(t *testing.T) {
+	scanner := &fakeScanner{servers: []devscan.DevServer{
+		{Port: 5173, ThreadID: "thread-a", Allowed: true, Source: devscan.SourceAttributed, Listening: true},
+	}}
+	app := newPreviewTestApp(t, scanner)
+	app.SetTransportServer(startTestTransportServer(t))
+	t.Cleanup(func() { _ = app.closePreviewGateway() })
+
+	if _, err := app.GetDevServers(context.Background()); err != nil {
+		t.Fatalf("GetDevServers: %v", err)
+	}
+	gateway := app.previewGateway()
+	if gateway == nil {
+		t.Fatal("no gateway was built with a transport server wired")
+	}
+	// This backend can bind nothing (loopback, no tailnet), so the port's
+	// presence in the served set shows up as its note rather than as a
+	// listener. Either way it is state the reconcile put there and only a
+	// reconcile can remove.
+	if len(gateway.Notes())+len(gateway.Ports()) == 0 {
+		t.Fatal("a scan with an allowed port left the gateway holding nothing")
+	}
+
+	// Stop path one: nobody off this machine can read the list. The loop
+	// keeps ticking, so the gateway must survive — only its ports go.
+	if !app.devServerScanTick(context.Background()) {
+		t.Fatal("the tick stopped the loop when the list simply had no readers")
+	}
+	if len(gateway.Ports()) != 0 || len(gateway.Notes()) != 0 {
+		t.Fatalf("ports = %v, notes = %v after the last reader went", gateway.Ports(), gateway.Notes())
+	}
+	if !app.previewGatewayBuilt() {
+		t.Fatal("the gateway was closed by an idle tick; only shutdown may do that")
+	}
+
+	// Stop path two: the machine says it cannot be looked at. The halt is
+	// permanent, so nothing will ever reconcile the set again — and it is
+	// reached by the on-demand RPC as well as by the loop, which is why the
+	// release sits where the halt is recorded. The rows are restated
+	// because the reconcile edits the ones it was handed.
+	scanner.servers = []devscan.DevServer{
+		{Port: 5173, ThreadID: "thread-a", Allowed: true, Source: devscan.SourceAttributed, Listening: true},
+	}
+	if _, err := app.GetDevServers(context.Background()); err != nil {
+		t.Fatalf("GetDevServers: %v", err)
+	}
+	if len(gateway.Notes())+len(gateway.Ports()) == 0 {
+		t.Fatal("the second scan left the gateway holding nothing to release")
+	}
+	scanner.err = devscan.ErrUnsupported
+	if _, err := app.GetDevServers(context.Background()); !errors.Is(err, devscan.ErrUnsupported) {
+		t.Fatalf("GetDevServers error = %v, want the platform refusal", err)
+	}
+	if len(gateway.Ports()) != 0 || len(gateway.Notes()) != 0 {
+		t.Fatalf("ports = %v, notes = %v after discovery halted", gateway.Ports(), gateway.Notes())
+	}
+}
+
+// Releasing must not BUILD a gateway. A backend that never served a
+// preview has no listeners to hand back, and constructing one to give it
+// an empty set would bind the transport server into a path it never took.
+func TestReleasingPreviewListenersNeverBuildsAGateway(t *testing.T) {
+	app := newPreviewTestApp(t, &fakeScanner{})
+	app.SetTransportServer(startTestTransportServer(t))
+
+	app.releasePreviewListeners()
+	if app.previewGatewayBuilt() {
+		t.Fatal("releasing listeners built a gateway that had never existed")
+	}
+}

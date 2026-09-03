@@ -171,7 +171,7 @@ func TestCreateThreadFromPRCreatesThreadWithFirstItem(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github")
+	thread, err := app.CreateThreadFromPR(t.Context(), "owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR() error = %v", err)
 	}
@@ -224,7 +224,7 @@ func TestCreateThreadFromPRDefaultsToGithubWhenForgeEmpty(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "")
+	thread, err := app.CreateThreadFromPR(t.Context(), "owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR() with empty forge error = %v", err)
 	}
@@ -237,7 +237,7 @@ func TestCreateThreadFromPRMissingGh(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github")
+	_, err := app.CreateThreadFromPR(t.Context(), "owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR() error = nil, want gh-missing error")
 	}
@@ -250,7 +250,7 @@ func TestCreateThreadFromPRGhReturnsMalformedJSON(t *testing.T) {
 	installFakeGh(t, `{not json`, samplePRDiff)
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github")
+	_, err := app.CreateThreadFromPR(t.Context(), "owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR() error = nil, want malformed JSON error")
 	}
@@ -273,7 +273,7 @@ exit 1
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("owner/missing-repo", 99, string(provider.Claude), "claude-sonnet-4-6", "github")
+	_, err := app.CreateThreadFromPR(t.Context(), "owner/missing-repo", 99, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR() error = nil, want gh failure")
 	}
@@ -287,12 +287,12 @@ func TestCreateThreadFromPRRejectsInvalidProject(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	for _, bad := range []string{"", "nofoo", "foo/", "/bar"} {
-		if _, err := app.CreateThreadFromPR(bad, 1, string(provider.Claude), "claude-sonnet-4-6", "github"); err == nil {
+		if _, err := app.CreateThreadFromPR(t.Context(), bad, 1, string(provider.Claude), "claude-sonnet-4-6", "github"); err == nil {
 			t.Fatalf("CreateThreadFromPR(%q) error = nil, want validation error", bad)
 		}
 	}
 	// github rejects 3-segment paths; gitlab would accept them.
-	if _, err := app.CreateThreadFromPR("foo/bar/baz", 1, string(provider.Claude), "claude-sonnet-4-6", "github"); err == nil {
+	if _, err := app.CreateThreadFromPR(t.Context(), "foo/bar/baz", 1, string(provider.Claude), "claude-sonnet-4-6", "github"); err == nil {
 		t.Fatal("CreateThreadFromPR with 3-segment github project error = nil, want validation error")
 	}
 }
@@ -321,7 +321,7 @@ func TestCreateThreadFromPRRejectsUnsafeProjectSegments(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := app.CreateThreadFromPR(tc.project, 1, string(provider.Claude), "claude-sonnet-4-6", tc.forge)
+			_, err := app.CreateThreadFromPR(t.Context(), tc.project, 1, string(provider.Claude), "claude-sonnet-4-6", tc.forge)
 			if err == nil {
 				t.Fatalf("CreateThreadFromPR(%q, forge=%q) error = nil, want rejection", tc.project, tc.forge)
 			}
@@ -333,23 +333,23 @@ func TestCreateThreadFromPRRejectsInvalidInputs(t *testing.T) {
 	installFakeGh(t, sampleViewJSON, samplePRDiff)
 	app := newTestAppWithStore(t)
 
-	if _, err := app.CreateThreadFromPR("owner/repo", 0, string(provider.Claude), "claude-sonnet-4-6", "github"); err == nil {
+	if _, err := app.CreateThreadFromPR(t.Context(), "owner/repo", 0, string(provider.Claude), "claude-sonnet-4-6", "github"); err == nil {
 		t.Fatal("number=0 should fail")
 	} else if !strings.Contains(err.Error(), "PR number must be positive") {
 		t.Fatalf("github invalid-number error = %v, want PR-noun message", err)
 	}
-	if _, err := app.CreateThreadFromPR("owner/repo", -3, string(provider.Claude), "claude-sonnet-4-6", "github"); err == nil {
+	if _, err := app.CreateThreadFromPR(t.Context(), "owner/repo", -3, string(provider.Claude), "claude-sonnet-4-6", "github"); err == nil {
 		t.Fatal("number<0 should fail")
 	}
-	if _, err := app.CreateThreadFromPR("group/repo", 0, string(provider.Claude), "claude-sonnet-4-6", "gitlab"); err == nil {
+	if _, err := app.CreateThreadFromPR(t.Context(), "group/repo", 0, string(provider.Claude), "claude-sonnet-4-6", "gitlab"); err == nil {
 		t.Fatal("gitlab number=0 should fail")
 	} else if !strings.Contains(err.Error(), "MR number must be positive") {
 		t.Fatalf("gitlab invalid-number error = %v, want MR-noun message", err)
 	}
-	if _, err := app.CreateThreadFromPR("owner/repo", 1, "", "claude-sonnet-4-6", "github"); err == nil {
+	if _, err := app.CreateThreadFromPR(t.Context(), "owner/repo", 1, "", "claude-sonnet-4-6", "github"); err == nil {
 		t.Fatal("empty provider should fail")
 	}
-	thread, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "", "github")
+	thread, err := app.CreateThreadFromPR(t.Context(), "owner/repo", 1, string(provider.Claude), "", "github")
 	if err != nil {
 		t.Fatalf("empty model should seed provider fallback: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestCreateThreadFromPRRejectsInvalidInputs(t *testing.T) {
 
 func TestCreateThreadFromPRRejectsUnsupportedForge(t *testing.T) {
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "bitbucket")
+	_, err := app.CreateThreadFromPR(t.Context(), "owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "bitbucket")
 	if err == nil {
 		t.Fatal("expected error for unsupported forge")
 	}
@@ -381,7 +381,7 @@ func TestCreateThreadFromPRResolvesRecentWorkspace(t *testing.T) {
 	}
 	app.settings.AddRecentWorkspace(workspace)
 
-	thread, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github")
+	thread, err := app.CreateThreadFromPR(t.Context(), "owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR() error = %v", err)
 	}
@@ -396,7 +396,7 @@ func TestCreateThreadFromPRInvokesExpectedGhCommands(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	if _, err := app.CreateThreadFromPR("owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github"); err != nil {
+	if _, err := app.CreateThreadFromPR(t.Context(), "owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github"); err != nil {
 		t.Fatalf("CreateThreadFromPR() error = %v", err)
 	}
 	calls := readArgLog(t, argLog)
@@ -427,7 +427,7 @@ func TestCreateThreadFromMRCreatesThreadWithFirstItem(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("group/repo", 9, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
+	thread, err := app.CreateThreadFromPR(t.Context(), "group/repo", 9, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR(gitlab) error = %v", err)
 	}
@@ -459,7 +459,7 @@ func TestCreateThreadFromMRAcceptsSubgroupNamespace(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("group/sub1/sub2/repo", 9, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
+	thread, err := app.CreateThreadFromPR(t.Context(), "group/sub1/sub2/repo", 9, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR(subgroup) error = %v", err)
 	}
@@ -486,7 +486,7 @@ func TestCreateThreadFromMRMissingGlab(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("group/repo", 9, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
+	_, err := app.CreateThreadFromPR(t.Context(), "group/repo", 9, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR(gitlab) error = nil, want glab-missing error")
 	}
@@ -499,7 +499,7 @@ func TestCreateThreadFromMRRejectsSingleSegmentProject(t *testing.T) {
 	installFakeGlab(t, sampleMRViewJSON, sampleMRDiff)
 	app := newTestAppWithStore(t)
 
-	if _, err := app.CreateThreadFromPR("single", 1, string(provider.Claude), "claude-sonnet-4-6", "gitlab"); err == nil {
+	if _, err := app.CreateThreadFromPR(t.Context(), "single", 1, string(provider.Claude), "claude-sonnet-4-6", "gitlab"); err == nil {
 		t.Fatal("expected error for single-segment gitlab project")
 	}
 }
@@ -509,7 +509,7 @@ func TestCreateThreadFromMRAnchorIncludesForge(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("group/repo", 9, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
+	thread, err := app.CreateThreadFromPR(t.Context(), "group/repo", 9, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR() error = %v", err)
 	}
@@ -544,7 +544,7 @@ func TestCreateThreadFromPRPreservesMultibyteTitle(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "github")
+	thread, err := app.CreateThreadFromPR(t.Context(), "owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR() error = %v", err)
 	}

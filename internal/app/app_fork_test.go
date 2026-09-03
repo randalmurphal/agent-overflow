@@ -30,7 +30,7 @@ func TestForkThreadClaudePersistsPendingForkStateAndClonesTimeline(t *testing.T)
 	}
 	insertForkTestItems(t, app.store, source.ID)
 
-	forked, err := app.ForkThread(source.ID, nil)
+	forked, err := app.ForkThread(t.Context(), source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread() error = %v", err)
 	}
@@ -81,7 +81,7 @@ func TestForkThreadCodexUsesStoredResumeStateWhenSessionInactive(t *testing.T) {
 	}
 	insertForkTestItems(t, app.store, source.ID)
 
-	forked, err := app.ForkThread(source.ID, nil)
+	forked, err := app.ForkThread(t.Context(), source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread() error = %v", err)
 	}
@@ -108,7 +108,7 @@ func TestForkThreadRejectsThreadsWithoutMessages(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	_, err := app.ForkThread(source.ID, nil)
+	_, err := app.ForkThread(t.Context(), source.ID, nil)
 	if err == nil {
 		t.Fatal("ForkThread() error = nil, want empty-thread failure")
 	}
@@ -140,7 +140,7 @@ func TestForkThreadUsesActiveCodexSession(t *testing.T) {
 	defer session.Close()
 	app.sessionManager().put(source.ID, sessionStateForCodex(session))
 
-	forked, err := app.ForkThread(source.ID, nil)
+	forked, err := app.ForkThread(t.Context(), source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread() error = %v", err)
 	}
@@ -182,7 +182,7 @@ func TestForkThreadCodexRejectsForkTailMismatch(t *testing.T) {
 	insertCodexTurn(t, app.store, source.ID, 2, "turn-2")
 
 	atTurn := 1
-	_, err := app.ForkThread(source.ID, &atTurn)
+	_, err := app.ForkThread(t.Context(), source.ID, &atTurn)
 	if err == nil || !strings.Contains(err.Error(), "expected anchor") {
 		t.Fatalf("ForkThread() error = %v, want fork tail mismatch", err)
 	}
@@ -254,7 +254,7 @@ func TestForkThreadClaudeAtTurnSlicesSessionJSONL(t *testing.T) {
 	// Fork at turn 1 — should clone items from turns 0 and 1, slice the
 	// JSONL up through u1's UUID, set fork.SessionRef to a fresh ID.
 	atTurn := 1
-	forked, err := app.ForkThread(source.ID, &atTurn)
+	forked, err := app.ForkThread(t.Context(), source.ID, &atTurn)
 	if err != nil {
 		t.Fatalf("ForkThread(at=1): %v", err)
 	}
@@ -325,7 +325,7 @@ func TestForkThreadDuringActiveTurnSnapshotsInsteadOfRefusing(t *testing.T) {
 		t.Fatalf("InsertTurn: %v", err)
 	}
 
-	forked, err := app.ForkThread(source.ID, nil)
+	forked, err := app.ForkThread(t.Context(), source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread during an active turn: %v", err)
 	}
@@ -359,10 +359,7 @@ func TestForkThreadFromMessageFirstMessageCreatesEmptyFork(t *testing.T) {
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	sourceAttachment, err := app.UploadAttachment(source.ID, "one.png", "image/png", tinyPNGBase64())
-	if err != nil {
-		t.Fatalf("UploadAttachment: %v", err)
-	}
+	sourceAttachment := uploadTestAttachment(t, app, source.ID, "one.png", "image/png", tinyPNG())
 	meta, err := json.Marshal(userMessageMeta{
 		Attachments: []userMessageAttachmentMeta{
 			{ID: sourceAttachment.ID, ThreadID: source.ID, Filename: "one.png", MimeType: "image/png"},
@@ -386,7 +383,7 @@ func TestForkThreadFromMessageFirstMessageCreatesEmptyFork(t *testing.T) {
 	}
 	seedMessageAnchor(t, app.store, source.ID, "user-first", 0, "", "")
 
-	forked, err := app.ForkThreadFromMessage(source.ID, "user-first")
+	forked, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user-first")
 	if err != nil {
 		t.Fatalf("ForkThreadFromMessage: %v", err)
 	}
@@ -445,7 +442,7 @@ func TestForkThreadFromMessageSynthesizesMissingAnchor(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertItem: %v", err)
 	}
-	forked, err := app.ForkThreadFromMessage(source.ID, "user-no-anchor")
+	forked, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user-no-anchor")
 	if err != nil {
 		t.Fatalf("ForkThreadFromMessage without anchor: %v", err)
 	}
@@ -479,7 +476,7 @@ func TestForkThreadFromMessageDoesNotCopyMessageAnchors(t *testing.T) {
 	}
 	seedMessageAnchor(t, app.store, source.ID, "user-anchored", 0, "", "")
 
-	forked, err := app.ForkThreadFromMessage(source.ID, "user-anchored")
+	forked, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user-anchored")
 	if err != nil {
 		t.Fatalf("ForkThreadFromMessage: %v", err)
 	}
@@ -515,7 +512,7 @@ func TestForkThreadFromMessageRejectsMissingClaudeSessionForLaterTurn(t *testing
 		}
 	}
 	seedMessageAnchor(t, app.store, source.ID, "user-1", 1, "", "")
-	if _, err := app.ForkThreadFromMessage(source.ID, "user-1"); err == nil || !strings.Contains(err.Error(), "missing a Claude session reference") {
+	if _, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user-1"); err == nil || !strings.Contains(err.Error(), "missing a Claude session reference") {
 		t.Fatalf("ForkThreadFromMessage error = %v, want missing session reference", err)
 	}
 }
@@ -558,7 +555,7 @@ func TestForkThreadFromMessageSlicesClaudeSessionByTurnBoundary(t *testing.T) {
 	}
 	seedMessageAnchor(t, app.store, source.ID, "user-1", 1, "u1", "")
 
-	forked, err := app.ForkThreadFromMessage(source.ID, "user-1")
+	forked, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user-1")
 	if err != nil {
 		t.Fatalf("ForkThreadFromMessage: %v", err)
 	}
@@ -612,7 +609,7 @@ func TestForkThreadFromMessageSlicesClaudeSessionFromPendingForkRef(t *testing.T
 	}
 	seedMessageAnchor(t, app.store, source.ID, "user-1", 1, "u1", "")
 
-	forked, err := app.ForkThreadFromMessage(source.ID, "user-1")
+	forked, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user-1")
 	if err != nil {
 		t.Fatalf("ForkThreadFromMessage: %v", err)
 	}
@@ -660,7 +657,7 @@ func TestForkThreadFromMessageCanForkOlderAnchorAfterClaudeSessionFork(t *testin
 		t.Fatalf("source session after rollback = %q, want remapped fork session", revertedSource.SessionRef)
 	}
 
-	forked, err := app.ForkThreadFromMessage(source.ID, "user-1")
+	forked, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user-1")
 	if err != nil {
 		t.Fatalf("ForkThreadFromMessage after rollback: %v", err)
 	}
@@ -689,7 +686,7 @@ func TestForkThreadAtTurnRejectsOutOfRange(t *testing.T) {
 
 	for _, n := range []int{-1, 5, 99} {
 		atTurn := n
-		if _, err := app.ForkThread(source.ID, &atTurn); err == nil {
+		if _, err := app.ForkThread(t.Context(), source.ID, &atTurn); err == nil {
 			t.Errorf("ForkThread(at=%d): expected error, got nil", n)
 		}
 	}
@@ -786,7 +783,7 @@ func TestForkThreadRollsBackOnResumeFailure(t *testing.T) {
 	}
 	insertForkTestItems(t, app.store, source.ID)
 
-	_, err := app.ForkThread(source.ID, nil)
+	_, err := app.ForkThread(t.Context(), source.ID, nil)
 	if err == nil {
 		t.Fatal("expected ForkThread to fail when source is missing SessionRef")
 	}
@@ -835,7 +832,7 @@ func TestForkThreadPropagatesResumeAndCleanupErrors(t *testing.T) {
 	}
 	insertForkTestItems(t, app.store, source.ID)
 
-	_, err := app.ForkThread(source.ID, nil)
+	_, err := app.ForkThread(t.Context(), source.ID, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -930,7 +927,7 @@ func TestForkThread_ExcludesBackgroundRunningRows(t *testing.T) {
 		}
 	}
 
-	forked, err := app.ForkThread(source.ID, nil)
+	forked, err := app.ForkThread(t.Context(), source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread: %v", err)
 	}

@@ -165,7 +165,7 @@
   aria-orientation="vertical"
   aria-label={ariaLabel}
   onkeydown={handleKeydown}
-  class="bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu py-1 {minWidthClass} focus-visible:outline-none"
+  class="bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu py-1 {minWidthClass} focus-visible:outline-none compact:w-full compact:max-w-none compact:rounded-b-none compact:border-x-0 compact:border-b-0"
   data-menu
 >
   {@render children()}

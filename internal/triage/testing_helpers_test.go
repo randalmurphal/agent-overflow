@@ -21,7 +21,7 @@ func ensureTriageProject(t *testing.T, st *store.Store) {
 		return
 	}
 	now := time.Now().UnixMilli()
-	if err := st.CreateProject(store.Project{
+	if _, err := st.CreateProject(store.Project{
 		ID:        triageTestProjectID,
 		Path:      "/tmp/triage",
 		Name:      "Triage Tests",

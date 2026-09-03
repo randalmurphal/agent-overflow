@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"agent-overflow/internal/closer"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
 
@@ -36,7 +39,10 @@ import (
 // rollback: each step that has a side-effect appends an undo to a LIFO
 // `cleanups` slice; on later failure the chain runs in reverse order
 // and any cleanup errors are joined with the primary error.
-func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread, error) {
+//
+//ao:scope threads:operate
+//ao:route thread
+func (a *App) ForkThread(ctx context.Context, sourceThreadID string, atTurnIndex *int) (store.Thread, error) {
 	// Hold the source thread's action lock for the duration of the fork so
 	// concurrent SendMessage / InterruptAndRevertIfClean / etc. can't write
 	// to items mid-clone (would produce a torn snapshot in the new fork).
@@ -164,6 +170,11 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 	}
 
 	fork := store.BuildForkedThread(source)
+	// Observed now, not copied from the source: a fork shares the source's
+	// workspace, and that workspace has kept moving since the source thread
+	// was created. The fork's creation coordinates are where the workspace
+	// stands at the fork, which is what a later transfer needs to reproduce.
+	a.stampThreadCreation(ctx, &fork)
 
 	// The source lock alone leaves the FORK startable mid-build: a
 	// client listing threads right after CreateThread commits can start
@@ -217,13 +228,20 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 		)
 	}
 
+	// The fork row carries cloned history, so it is sidebar-visible the
+	// moment it exists: broadcast it as `listed` so every other attached
+	// client shows it beside the source, as the forking client does.
+	a.broadcastThreadRow(triage.ThreadActionListed, fork)
 	return fork, nil
 }
 
 // ForkThreadFromMessage creates a fork whose conversation stops before the
 // selected user message. This is the message-keyed counterpart to revert: the
 // selected prompt is not copied into the fork.
-func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (store.Thread, error) {
+//
+//ao:scope threads:operate
+//ao:route thread
+func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, userItemID string) (store.Thread, error) {
 	unlock := a.threadLocks().Lock(sourceThreadID)
 	defer unlock()
 
@@ -276,6 +294,7 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 	anchor := a.resolveMessageAnchor("fork thread from message", sourceThreadID, item)
 
 	fork := store.BuildForkedThread(source)
+	a.stampThreadCreation(ctx, &fork)
 	if _, err := usermessage.FromItem(item); err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread from message: build prompt draft: %w", err)
 	}
@@ -351,12 +370,13 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 			cleanups.Run(),
 		)
 	}
-	if err := a.store.UpsertThreadDraft(promptDraft); err != nil {
+	if err := a.writeThreadDraft(transport.ClientIdentity{}, promptDraft); err != nil {
 		return store.Thread{}, errors.Join(
 			fmt.Errorf("fork thread from message: restore prompt draft: %w", err),
 			cleanups.Run(),
 		)
 	}
+	a.broadcastThreadRow(triage.ThreadActionListed, fork)
 	return fork, nil
 }
 

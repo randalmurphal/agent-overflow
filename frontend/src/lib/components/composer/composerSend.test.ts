@@ -6,6 +6,12 @@ import { resetForTest as resetWorktreeIntent } from '../../stores/worktreeIntent
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { makeSettings } from '../../../test/helpers/settings';
+import { DisconnectedError } from '../../transport/wsClient';
+import {
+  hasPendingUnsentMessageConfirmation,
+  resetUnsentMessageConfirmationForTest,
+  resolveUnsentMessageConfirmation,
+} from '../../stores/unsentMessageConfirmation.svelte';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -43,6 +49,7 @@ describe('dispatchSend', () => {
     await loadSettings();
   });
   afterEach(() => {
+    resetUnsentMessageConfirmationForTest();
     vi.restoreAllMocks();
   });
 
@@ -108,6 +115,89 @@ describe('dispatchSend', () => {
       'Failed to send message: Branch "BLITZ-187" already exists.',
     );
     expect(consoleErr).toHaveBeenCalled();
+  });
+
+  // A socket that died AFTER the frame reached the backend looks exactly like
+  // one that died before it, and the transport has already spent its one
+  // retry by the time this runs. The message may be with the agent, so
+  // putting the text back silently is a guess whose wrong answer sends it
+  // twice. The three tests below are the three branches of that decision.
+  describe('a send whose connection died', () => {
+    function undeliverable() {
+      const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const send = setBindingMock('SendMessageWithOptions', async () => {
+        throw new DisconnectedError('connection lost (close 1006)');
+      });
+      const restoreDraft = vi.fn(async () => {});
+      const reportError = vi.fn();
+      const pending = dispatchSend({
+        threadId: 'thread-1',
+        message: 'continue',
+        attachmentIds: [],
+        snapshot: { content: 'continue', attachments: [], terminalChips: [] },
+        restoreDraft,
+        draftThreadId: () => 'thread-1',
+        reportError,
+      });
+      return { consoleErr, send, restoreDraft, reportError, pending };
+    }
+
+    it('asks, and restores the composer when the answer is "Put it back"', async () => {
+      const { restoreDraft, reportError, pending } = undeliverable();
+      await vi.waitFor(() => expect(hasPendingUnsentMessageConfirmation()).toBe(true));
+
+      resolveUnsentMessageConfirmation(true);
+      expect(await pending).toBe(false);
+
+      // From here it is the ordinary failure path, unchanged.
+      expect(restoreDraft).toHaveBeenCalledWith('thread-1', {
+        content: 'continue',
+        attachments: [],
+        terminalChips: [],
+      });
+      expect(reportError).toHaveBeenCalled();
+    });
+
+    it('discards the snapshot and says nothing more when the answer is "Leave it"', async () => {
+      const { restoreDraft, reportError, pending } = undeliverable();
+      await vi.waitFor(() => expect(hasPendingUnsentMessageConfirmation()).toBe(true));
+
+      resolveUnsentMessageConfirmation(false);
+      expect(await pending).toBe(false);
+
+      expect(restoreDraft).not.toHaveBeenCalled();
+      // Nothing further is reported: the person was shown the ambiguity and
+      // decided it, and restating the failure would contradict their answer.
+      expect(reportError).not.toHaveBeenCalled();
+    });
+
+    it('does not ask when the failure is definite, and restores as it always did', async () => {
+      const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+      // A backend that answered with an error is a definite "nothing
+      // happened" — as is a TERMINAL disconnect, where the client has
+      // stopped trying and no frame is in the air.
+      setBindingMock('SendMessageWithOptions', async () => {
+        throw new DisconnectedError('client closed', { terminal: true });
+      });
+      const restoreDraft = vi.fn(async () => {});
+      const reportError = vi.fn();
+
+      const sent = await dispatchSend({
+        threadId: 'thread-1',
+        message: 'continue',
+        attachmentIds: [],
+        snapshot: { content: 'continue', attachments: [], terminalChips: [] },
+        restoreDraft,
+        draftThreadId: () => 'thread-1',
+        reportError,
+      });
+
+      expect(sent).toBe(false);
+      expect(hasPendingUnsentMessageConfirmation()).toBe(false);
+      expect(restoreDraft).toHaveBeenCalled();
+      expect(reportError).toHaveBeenCalled();
+      expect(consoleErr).toHaveBeenCalled();
+    });
   });
 
   it('auto-pins an eligible in-app draft only after its first send succeeds', async () => {

@@ -167,17 +167,26 @@ func TestUpdatePersistsAndSparseSerializes(t *testing.T) {
 }
 
 // TestNetworkSettingsBindAllRoundTripAndSparseDefault confirms the
-// Phase E LAN-bind toggle persists through the same path as every
-// other setting: Update writes the patch, the file omits the key when
-// it equals the default, and a fresh service reload yields the same
-// in-memory value.
+// The LAN-bind toggle persists through SetNetwork, the one write path
+// for the "network" key: the file omits the key when it equals the
+// default, and a fresh service reload yields the same in-memory value.
+// Update refuses the key outright — network exposure rides the
+// step-up-annotated SetNetworkSettings RPC, and a generic patch must
+// not carry the same change past that requirement.
 func TestNetworkSettingsBindAllRoundTripAndSparseDefault(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)
 
-	updated, err := svc.Update(map[string]any{"network": map[string]any{"bindAll": true}})
+	if _, err := svc.Update(map[string]any{"network": map[string]any{"bindAll": true}}); err == nil {
+		t.Fatal("Update accepted the network key, want refusal")
+	}
+	if svc.Get().Network.BindAll {
+		t.Fatal("refused Update still flipped Network.BindAll")
+	}
+
+	updated, err := svc.SetNetwork(NetworkSettings{BindAll: true})
 	if err != nil {
-		t.Fatalf("Update(bindAll=true) error = %v", err)
+		t.Fatalf("SetNetwork(bindAll=true) error = %v", err)
 	}
 	if !updated.Network.BindAll {
 		t.Fatal("Network.BindAll = false, want true")
@@ -190,9 +199,9 @@ func TestNetworkSettingsBindAllRoundTripAndSparseDefault(t *testing.T) {
 
 	// Toggle back to default; file must omit the network key entirely
 	// since the zero-valued struct equals DefaultSettings.Network.
-	updated, err = svc.Update(map[string]any{"network": map[string]any{"bindAll": false}})
+	updated, err = svc.SetNetwork(NetworkSettings{BindAll: false})
 	if err != nil {
-		t.Fatalf("Update(bindAll=false) error = %v", err)
+		t.Fatalf("SetNetwork(bindAll=false) error = %v", err)
 	}
 	if updated.Network.BindAll {
 		t.Fatal("Network.BindAll = true, want false")
@@ -850,82 +859,6 @@ func TestObservabilityOtlpEndpointBlankSerializesAsDefault(t *testing.T) {
 	}
 	if _, present := fileMap["observabilityOtlpEndpoint"]; present {
 		t.Errorf("file contains observabilityOtlpEndpoint when it should be sparse-omitted: %s", string(data))
-	}
-}
-
-// TestUpdateSettings_RejectsRemoteEndpointsKey pins the patch-boundary
-// guard added to Service.Update: a caller that includes
-// "remoteEndpoints" in a generic patch must be refused outright. The
-// underlying applyPatch does wholesale top-level merge, so an accepted
-// patch carrying a redacted (token-empty) slice would clobber every
-// saved token. The dedicated CRUD helpers (AddRemoteEndpoint /
-// UpdateRemoteEndpoint / DeleteRemoteEndpoint / TouchRemoteEndpoint)
-// are the only sanctioned write path for that field.
-func TestUpdateSettings_RejectsRemoteEndpointsKey(t *testing.T) {
-	dir := t.TempDir()
-	svc := NewService(dir)
-
-	patches := []map[string]any{
-		{"remoteEndpoints": []any{}},
-		{"remoteEndpoints": nil},
-		{"timestampFormat": "24-hour", "remoteEndpoints": []any{map[string]any{"id": "x", "url": "ws://h/", "token": ""}}},
-	}
-	for i, patch := range patches {
-		if _, err := svc.Update(patch); err == nil {
-			t.Errorf("patch %d: Update accepted patch carrying remoteEndpoints, want error", i)
-		}
-	}
-
-	// The companion patch with theme set should not have persisted —
-	// reject-at-boundary means atomicity: no half-applied write.
-	got := svc.Get()
-	if got.TimestampFormat == "24-hour" {
-		t.Errorf("timestampFormat leaked through despite rejected patch: %+v", got)
-	}
-}
-
-// TestGetSettings_UpdateSettings_RoundTripPreservesTokens guards the
-// full round-trip: GetSettings (token-redacted) -> mutate one field ->
-// Update(full-struct-as-patch). Even though today's frontend uses
-// sparse patches, a future caller / refactor must not be able to clobber
-// the persisted tokens. With the patch-boundary guard, Update returns
-// an error and the on-disk tokens remain intact.
-func TestGetSettings_UpdateSettings_RoundTripPreservesTokens(t *testing.T) {
-	dir := t.TempDir()
-	svc := NewService(dir)
-
-	if _, err := svc.AddRemoteEndpoint("Tailnet", "ws://10.0.0.5:54321/", "real-secret-token"); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	// Simulate a hostile / regressing caller doing
-	// GetSettings -> mutate -> Update(full struct as map).
-	full := svc.Get()
-	// Redact tokens like GetSettings on App does.
-	for i := range full.RemoteEndpoints {
-		full.RemoteEndpoints[i].Token = ""
-	}
-	patch := map[string]any{
-		"timestampFormat": "24-hour",
-		"remoteEndpoints": full.RemoteEndpoints,
-	}
-
-	if _, err := svc.Update(patch); err == nil {
-		t.Fatal("Update accepted full-struct patch with remoteEndpoints, want error")
-	}
-
-	// The persisted token must remain intact — neither the rejection
-	// path nor any partial-write fallout is allowed to drop the value.
-	reloaded := NewService(dir).Get()
-	if len(reloaded.RemoteEndpoints) != 1 {
-		t.Fatalf("endpoint count after rejected patch = %d, want 1; %+v", len(reloaded.RemoteEndpoints), reloaded.RemoteEndpoints)
-	}
-	if reloaded.RemoteEndpoints[0].Token != "real-secret-token" {
-		t.Fatalf("token clobbered by rejected patch: %q", reloaded.RemoteEndpoints[0].Token)
-	}
-	// The known field should also be untouched (atomicity of the rejection).
-	if reloaded.TimestampFormat == "24-hour" {
-		t.Fatalf("timestampFormat leaked through despite rejected patch: %+v", reloaded)
 	}
 }
 

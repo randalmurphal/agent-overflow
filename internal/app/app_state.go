@@ -102,8 +102,9 @@ type appSessionImportState struct {
 
 // appBrowserState is the provider-neutral arbitrary-web browser concern. The
 // MCP listener is cheap and per-session-tokened; Manager owns the engine — the
-// launcher-hosted controllers or the in-process views this app's own window
-// holds — and every page in it. A deployment with no window has no engine at
+// launcher-hosted controllers, the in-process views this app's own window
+// holds, or the headless Chromium the serve boot asks for — and every page in
+// it. A deployment with neither a window nor that request has no engine at
 // all, and browser tools are not offered there.
 type appBrowserState struct {
 	manager *appbrowser.Manager
@@ -126,7 +127,13 @@ type appBrowserState struct {
 	// the mocked-boot isolation pins (bootstrap.go), so the harness and soak
 	// render the pane's chrome and host rect with no browser behind them and
 	// no display to need.
-	mockEngine         bool
+	mockEngine bool
+	// headlessChromium asks for the headless Chromium engine: a browser this
+	// process launches, one per workspace, because there is no window to host
+	// a view in. Set once before Start by the serve boot alone
+	// (UseHeadlessBrowserEngine), and NEVER inferred from nativeWindow being
+	// nil — that nil is what every test and every `--connect` backend has.
+	headlessChromium   bool
 	applyMu            sync.Mutex
 	applyWG            sync.WaitGroup
 	settingsGeneration atomic.Uint64

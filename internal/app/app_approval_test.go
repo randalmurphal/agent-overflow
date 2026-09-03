@@ -43,7 +43,7 @@ func TestRespondToApprovalRejectsUntrackedCodexRequest(t *testing.T) {
 		Codex:    sess,
 	})
 
-	err = app.RespondToApproval(thread.ID, provider.ApprovalResponse{
+	err = app.RespondToApproval(context.Background(), thread.ID, provider.ApprovalResponse{
 		RequestID: "42",
 		Decision:  "accept",
 	})
@@ -86,7 +86,7 @@ func TestRespondToApprovalPropagatesProviderError(t *testing.T) {
 	})
 
 	// Non-numeric request ID — codex.RespondToApproval must refuse.
-	err = app.RespondToApproval(thread.ID, provider.ApprovalResponse{
+	err = app.RespondToApproval(context.Background(), thread.ID, provider.ApprovalResponse{
 		RequestID: "not-a-number",
 		Decision:  "accept",
 	})

@@ -14,6 +14,12 @@ import (
 // subscriptions (gitwatch, future event streams) so a dropped client
 // does not leak server-side resources.
 //
+// It also carries the connection's ConnPrincipal — the durable session it
+// presented and which screen is on the other end — for handlers that
+// attribute a write, let a client recognize the echo of its own change, or
+// scope persisted state to the caller rather than to a string the caller
+// supplied.
+//
 // One ConnState per connection. The dispatcher injects it into the
 // per-call ctx via WithConnState so handlers can pull it out of their
 // receiver method's `context.Context` parameter — see
@@ -22,16 +28,113 @@ type ConnState struct {
 	mu       sync.Mutex
 	cleanups []func()
 	closed   bool
+
+	// principal is read at upgrade time and never written again, so it
+	// needs no lock: a connection cannot change which session admitted it
+	// or which screen it belongs to.
+	principal ConnPrincipal
+}
+
+// ConnPrincipal is who a connection is, resolved at upgrade time and fixed
+// for its lifetime.
+//
+// A struct rather than loose parameters, because the two string answers
+// are not interchangeable: SessionID is what this backend
+// ADMITTED (Config.SessionForRequest verified a presented credential),
+// while Client is what the peer DECLARED on its upgrade URL. A handler
+// scoping durable state wants the first wherever it exists; a handler
+// suppressing a client's echo of its own write wants the second. Named
+// fields are what stop a call site swapping them.
+type ConnPrincipal struct {
+	// Client is the screen on the other end. Zero means the peer declared
+	// none, which is normal (the harness, the e2e rig, tests).
+	Client ClientIdentity
+	// SessionID is the durable session this connection presented, empty
+	// when it named none — every launch-credential client today.
+	SessionID string
+}
+
+// callerProofKey addresses the per-CALL proof, which is deliberately not on
+// the principal above: a principal is fixed for a connection, and step-up
+// is answered per RPC (see CallerProof).
+type callerProofKey struct{}
+
+// WithCallerProof installs what one call proved about its caller, for the
+// argument-dependent rechecks a bound method runs on itself.
+//
+// The transport resolves it once per RPC and the pre-call gate and the
+// in-method recheck read that same value, so the two cannot disagree about
+// whether this call was stepped up — which matters because the token is
+// spent by the resolution and cannot be presented twice.
+//
+// A context nothing installed this on answers the zero proof, which is the
+// honest answer for an in-process call: it proves nothing about a peer,
+// and every gate that reads it admits such a caller on the session check
+// before it ever asks.
+func WithCallerProof(ctx context.Context, proof CallerProof) context.Context {
+	return context.WithValue(ctx, callerProofKey{}, proof)
+}
+
+// CallerProofFromContext returns what this call proved about its caller.
+func CallerProofFromContext(ctx context.Context) CallerProof {
+	proof, _ := ctx.Value(callerProofKey{}).(CallerProof)
+	return proof
+}
+
+// StepUpProvenFromContext reports whether this call carries a fresh
+// step-up proof — host presence or a spent passkey token. The one reader a
+// bound method needs; the disjunction itself is argued on stepUpProven.
+func StepUpProvenFromContext(ctx context.Context) bool {
+	return stepUpProven(CallerProofFromContext(ctx))
 }
 
 type connStateKey struct{}
 
-// WithConnState returns ctx augmented with a fresh ConnState. The
-// returned ConnState is the one accessible via ConnStateFromContext on
-// any descendant of ctx.
-func WithConnState(ctx context.Context) (context.Context, *ConnState) {
-	state := &ConnState{}
+// WithConnState returns ctx augmented with a fresh ConnState carrying the
+// connection's principal. The returned ConnState is the one accessible via
+// ConnStateFromContext on any descendant of ctx.
+//
+// Pass the zero ConnPrincipal for a connection with no session and no screen
+// behind it (the harness, tests, in-process bindings).
+func WithConnState(ctx context.Context, principal ConnPrincipal) (context.Context, *ConnState) {
+	state := &ConnState{principal: principal}
 	return context.WithValue(ctx, connStateKey{}, state), state
+}
+
+// Client returns the identity the connection declared at upgrade. The zero
+// value means anonymous, which every caller must treat as a normal answer.
+func (c *ConnState) Client() ClientIdentity {
+	if c == nil {
+		return ClientIdentity{}
+	}
+	return c.principal.Client
+}
+
+// SessionID returns the durable session the connection presented, or "" when
+// it presented none.
+//
+// Fixed at upgrade, so it answers "which session was admitted here", never
+// "is that session still live". A handler that authorizes on it must re-ask
+// the session core, because a revocation lands after the upgrade that
+// recorded this.
+func (c *ConnState) SessionID() string {
+	if c == nil {
+		return ""
+	}
+	return c.principal.SessionID
+}
+
+// ClientFromContext is the one-liner handlers use: the identity of the screen
+// this call came from, or the zero value when there is none (an in-process
+// binding, a background saga, a test).
+func ClientFromContext(ctx context.Context) ClientIdentity {
+	return ConnStateFromContext(ctx).Client()
+}
+
+// SessionFromContext is the session half of the same one-liner: the durable
+// session this call's connection presented, or "" when it presented none.
+func SessionFromContext(ctx context.Context) string {
+	return ConnStateFromContext(ctx).SessionID()
 }
 
 // ConnStateFromContext extracts the per-connection ConnState if one was

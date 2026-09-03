@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/assetwatch"
+	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/claudeapp"
 	"agent-overflow/internal/codexapp"
@@ -20,6 +21,7 @@ import (
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/highlightapp"
+	"agent-overflow/internal/identity"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/logging"
@@ -84,13 +86,27 @@ type App struct {
 	setWindowBackground func(red, green, blue uint8)
 	// osNotifications is the single platform-routing seam behind notifyOS.
 	// Desktop boot installs the in-process Wails service adapter; the WSL
-	// headless boot installs the transport bridge; harness mode installs an
-	// explicit unavailable sender. Tests may leave it nil to exercise the
-	// same visible degraded error without pulling in a platform service.
+	// headless and harness boots install the transport bridge. Tests may
+	// leave it nil to exercise the same visible degraded error without
+	// pulling in a platform service.
 	osNotifications osNotificationSender
-	store           *store.Store
-	git             *gitops.Core
-	gitWatch        *gitwatch.Manager
+	// notifications is the event→notification mapping's coordination: the
+	// ordered queue its moments dispatch on, and the small edge state the
+	// pure mapping is handed. See app_notification_mapping.go.
+	notifications notificationDispatch
+	// push is the PHONE half of the same path: its own ordered queue, the
+	// sender this backend wakes phones through, and the standing fault the
+	// owner reads. Its own queue because a send to Google can hang for its
+	// whole timeout and the desktop's toast must not wait behind it. See
+	// app_push.go.
+	push pushDispatch
+	// harnessPush is the recorder a harness boot installs in place of the
+	// FCM sender, and the only harness-shaped field on this struct. It is
+	// nil in every shipping boot. See app_push_harness.go.
+	harnessPush atomic.Pointer[harnessPushSender]
+	store       *store.Store
+	git         *gitops.Core
+	gitWatch    *gitwatch.Manager
 	// gitApp owns gitwatch wire fan-out and the unattended background-fetch
 	// lifecycle. This shell retains the stable Wails façades and event projection.
 	gitAppOnce sync.Once
@@ -128,11 +144,23 @@ type App struct {
 	discussionAppOnce sync.Once
 	discussionApp     *discussionapp.Service
 	// browser owns the built-in provider-neutral browser and its MCP bridge.
-	browser        appBrowserState
-	terminals      *terminal.Manager
-	attachments    *attachment.Store
-	workspaceFiles *workspacefiles.Searcher
-	logger         *logging.Logger
+	browser appBrowserState
+	// backends is the set of OTHER machines this installation has
+	// attached, carried on this backend's own listener
+	// (internal/attachedbackends). Nil in every boot that has no device
+	// profile directory to keep pairings in — a test fixture, and the
+	// harness — and every attached-backend method is a plain refusal
+	// then, never a panic.
+	backends  *attachedbackends.Manager
+	terminals *terminal.Manager
+	// providerTerminals is the per-connection take-control bookkeeping for
+	// claude-tui PTYs: which caller armed which attachment, so a dead socket
+	// releases exactly its own claim and its input lease. Zero value ready.
+	// See app_claudetui_terminal.go.
+	providerTerminals providerTerminalAttachments
+	attachments       *attachment.Store
+	workspaceFiles    *workspacefiles.Searcher
+	logger            *logging.Logger
 	// engineLogger is the workflow run-lifecycle log. Separate from `logger`
 	// because it is always on: the provider-event log is a debugging opt-in,
 	// while a park's diagnosis has to be readable without having enabled
@@ -210,6 +238,17 @@ type App struct {
 	// empty identity there is a correct "not yet known" rather than a
 	// race. See docs/specs/thread-replica-sync.md §3.3.
 	storeIdentity atomic.Pointer[store.Identity]
+	// identity is the session core plus the local page channel's current
+	// credential (app_identity.go). atomic.Pointer for the reason
+	// storeIdentity is one: the transport's hooks can be serving before
+	// initIdentity has run, and nil there means "identity is not wired",
+	// which every accessor answers honestly rather than panicking.
+	identity identitySlot
+	// liveConns parks the transport's live-connection registry for the
+	// AttachSessionConns ordering handshake: the transport is constructed
+	// before initIdentity runs, so the registry must survive until the
+	// session core exists to receive it (app_identity.go).
+	liveConns atomic.Pointer[identity.LiveConns]
 	// updater owns the complete in-app update state machine. This shell retains
 	// only the stable App-bound wire adapters in app_updater.go.
 	updater *appupdate.Service
@@ -399,10 +438,55 @@ type App struct {
 	// (it returns $HOME/Library/Application Support), which env overrides
 	// can't redirect.
 	dataDirOverride string
-	// providerExtraEnv is merged into every provider spawn's environment.
-	// Harness mode uses it to hand ao-mockprovider its control-channel
-	// address + token without exporting those credentials process-wide
-	// (terminals, git hooks, and other children must not inherit them).
+	// certFingerprint is the fingerprint of the TLS certificate the
+	// transport listener presents (internal/servercert), carried on every
+	// pairing link this backend mints so a client that owns its own TLS
+	// configuration can pin it. Empty when the boot resolved no
+	// certificate, which mints links exactly as before: the payload's
+	// field is omitted and the device pairs on proof-of-possession plus
+	// the verification number, never on channel secrecy.
+	//
+	// A boot input like dataDirOverride, written before the transport
+	// serves and never after, so the RPC goroutines that read it cannot
+	// race the write.
+	certFingerprint string
+	// boundPortRecorder persists the port this listener is on, so the
+	// executable's transport-port cache keeps naming the previous bind
+	// after a settings-driven rebind moved it. Nil in every fixture and on
+	// every boot that resolved no config directory, and calling it is
+	// best-effort by construction: the file is a cache, and losing a write
+	// to it costs one churned origin on some later launch, never this call.
+	//
+	// A boot input like the two above, installed before the transport
+	// serves (bootstrap.SetBoundPortRecorder) and never written after.
+	boundPortRecorder func(port int)
+	// domainCert owns the canonical domain's certificate: what is loaded,
+	// what failed, and the one goroutine that renews it. Zero value is an
+	// App with no reconciler running, which is every fixture that never
+	// calls Start. See app_domaincert.go.
+	domainCert domainCertState
+	// tailnet owns whether this backend is a node on the owner's tailnet:
+	// the live node, the listeners it feeds the transport, and the one
+	// goroutine that reconciles them against the persisted preference.
+	// Zero value is an App with no reconciler and no node, which is every
+	// fixture that never calls Start and every install that leaves the
+	// feature off. See app_tailnet.go.
+	tailnet tailnetState
+	// preview owns this machine's dev-server list: the scanner, the one
+	// goroutine that polls it while somebody off-machine is watching, and
+	// the platform refusal once a platform has given one. Zero value is
+	// an App with no loop and no scanner, which is every fixture that
+	// never calls Start. See app_preview.go.
+	preview previewState
+	// providerExtraEnv is merged into the environment of every provider
+	// spawn something outside the process has to STEER: sessions
+	// (sessionProcessEnv) and account sign-ins (Deps.LoginSpawnEnv on the
+	// provider-account manager). Harness mode uses it to hand
+	// ao-mockprovider its control-channel address + token without exporting
+	// those credentials process-wide (terminals, git hooks, and other
+	// children must not inherit them). Account PROBES are deliberately out:
+	// a probe is one invocation with no behaviour to command, so a control
+	// registration for one is a mock nothing addresses.
 	// Set once before Start; never mutated afterwards.
 	providerExtraEnv map[string]string
 	// cliBinDir is the directory holding the canonical-name link to this
@@ -427,6 +511,19 @@ type App struct {
 	// the developer's real Claude Code login. Set once before Start;
 	// never mutated afterwards.
 	fileKeychainOverride bool
+	// activation is the ONE gate every subsystem that can take an action of
+	// its own waits behind, so a supervisor trial can boot fully — store,
+	// migrations, transport bind, RPCs answered — without doing anything a
+	// rollback could not undo. The zero value is OPEN: every boot except a
+	// supervisor trial never touches it. See app_activation.go.
+	activation activation
+	// serviceUpdate holds this backend's ability to replace itself: the call
+	// that asks its supervisor to run an already-staged version, and the
+	// release source, layout and live flow the remote trigger drives. Both
+	// halves are installed by a supervised `serve` boot and absent everywhere
+	// else, which is what makes "this install has no supervisor" an answer
+	// rather than a nil dereference. See app_service_update.go.
+	serviceUpdate serviceUpdateState
 	// credentialHomeOverride, when non-empty, replaces os.UserHomeDir()
 	// as the home that provideraccounts.Credentials operates under —
 	// slot storage, canonical credential, ephemeral probe homes, and the
@@ -530,9 +627,17 @@ func (a *App) backendIdentity() (backendID, replicaGeneration string) {
 
 // --- Item operations ---
 
-// ListItems returns every item persisted for a thread in chronological order.
-func (a *App) ListItems(threadID string) ([]store.Item, error) {
-	return a.store.ListItems(threadID)
+// ListItems returns every item persisted for a thread in chronological
+// order. Unwindowed, so it carries the byte backstop the same way the
+// paged loads do; active panes use the bounded slice surface instead.
+//
+//ao:scope threads:read
+func (a *App) ListItems(threadID string, inlinePreviews bool) ([]store.Item, error) {
+	items, err := a.store.ListItems(threadID)
+	if err != nil {
+		return nil, err
+	}
+	return projectItemSlice(items, inlinePreviews, keepNewest), nil
 }
 
 // --- Payload operations ---

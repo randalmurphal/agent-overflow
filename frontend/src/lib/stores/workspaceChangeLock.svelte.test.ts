@@ -15,9 +15,17 @@ import {
   setBindingMock,
 } from '../../test/mocks/bindings-app';
 import { emitWailsEvent, resetWailsMocks } from '../../test/mocks/wailsio-runtime';
+import { composeWorkspaceKey } from '../utils/workspaceKey';
+import { HOME_BACKEND } from '../transport/backendKey';
+import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
 
 const WORKSPACE = '/repo';
 const OTHER_WORKSPACE = '/repo/.worktrees/feature';
+// The store is keyed by `${backendId} ${path}` (utils/workspaceKey.ts). A
+// client with one backend keys under HOME_BACKEND, which is the empty
+// string, and these tests pin that spelling rather than the bare path.
+const WORKSPACE_KEY = composeWorkspaceKey(HOME_BACKEND, WORKSPACE);
+const OTHER_WORKSPACE_KEY = composeWorkspaceKey(HOME_BACKEND, OTHER_WORKSPACE);
 
 interface BusyThread {
   threadId: string;
@@ -81,6 +89,7 @@ describe('createWorkspaceChangeLockState', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetWailsMocks();
+    __resetEntityIndexForTest();
     vi.useRealTimers();
   });
 
@@ -155,7 +164,9 @@ describe('createWorkspaceChangeLockState', () => {
       expect(state).toHaveAttribute('data-running-background-count', '2');
       expect(state.getAttribute('data-reason') ?? '').toMatch(/background tasks/);
     });
-    // The question asked is about the DIRECTORY, never about the thread id.
+    // The question asked is about the DIRECTORY, never about the thread id
+    // — and it is asked with the bare PATH, never with the composite key:
+    // the backend the key names is pinned on the call instead.
     expect(asked).toEqual([WORKSPACE]);
   });
 
@@ -276,6 +287,38 @@ describe('createWorkspaceChangeLockState', () => {
     });
   });
 
+  // The lock consumes WILDCARD channels only. provider:item_event is
+  // narrowed to the threads a client watches, so a sibling's task
+  // starting in this workspace no longer reaches an unwatching client at
+  // all — a lock that re-checked on it would go stale precisely in the
+  // sibling case it exists for. The four events above cover every
+  // transition the item stream used to stand in for, so this is a
+  // removal, not a downgrade.
+  it('does NOT re-check on provider:item_event', async () => {
+    vi.useFakeTimers();
+    let response: Activity = idle();
+    const list = setBindingMock('GetWorkspaceActivity', async () => response);
+    const pane = await buildPane();
+
+    const { getByTestId } = render(Harness, { props: { pane } });
+    const state = getByTestId('workspace-change-lock');
+    await vi.waitFor(() => expect(state).toHaveAttribute('data-locked', 'false'));
+    expect(list.mock.calls.length).toBe(1);
+
+    response = busyWithTasks();
+    for (let i = 0; i < 5; i += 1) {
+      emitWailsEvent('provider:item_event', {
+        action: 'upsert',
+        threadId: 'thread-1',
+        item: { id: `tool-${i}`, threadId: 'thread-1', kind: 'tool_call', status: 'running' },
+      });
+      await vi.advanceTimersByTimeAsync(100);
+    }
+
+    expect(list.mock.calls.length).toBe(1);
+    expect(state).toHaveAttribute('data-locked', 'false');
+  });
+
   it('shares ONE check between the two controls that gate on it', async () => {
     setBindingMock('GetWorkspaceActivity', async () => idle());
     const pane = await buildPane();
@@ -301,7 +344,7 @@ describe('createWorkspaceChangeLockState', () => {
     render(Harness, { props: { pane: paneB } });
 
     await waitFor(() => {
-      expect(workspaceChangeLockKeys()).toEqual([WORKSPACE]);
+      expect(workspaceChangeLockKeys()).toEqual([WORKSPACE_KEY]);
     });
     expect(getBindingMock('GetWorkspaceActivity')!.mock.calls.length).toBe(1);
   });
@@ -394,9 +437,11 @@ describe('createWorkspaceChangeLockState', () => {
     expect(workspaceChangeLockKeys()).toEqual([]);
   });
 
-  // GetWorkspaceActivity is loopback-only. A remote session's refusal is
-  // permanent, so the fail-safe posture holds (unverified is locked) but the
-  // reason must say why instead of leaking the transport's own shape.
+  // A backend that does not register GetWorkspaceActivity at all refuses it
+  // for good on this connection (a session merely lacking `git:operate` is
+  // stopped by the scope check before any call). The fail-safe posture
+  // holds (unverified is locked) but the reason must say why instead of
+  // leaking the transport's own shape.
   it('reads as locked with the local-only reason when the backend refuses the call', async () => {
     setBindingMock('GetWorkspaceActivity', async () => {
       throw Object.assign(new Error('method not registered'), { code: 'method_not_found' });
@@ -531,10 +576,10 @@ describe('createWorkspaceChangeLockState', () => {
 
     const first = render(Harness, { props: { pane } });
     const second = render(Harness, { props: { pane } });
-    await waitFor(() => expect(workspaceChangeLockKeys()).toEqual([WORKSPACE]));
+    await waitFor(() => expect(workspaceChangeLockKeys()).toEqual([WORKSPACE_KEY]));
 
     first.unmount();
-    expect(workspaceChangeLockKeys()).toEqual([WORKSPACE]);
+    expect(workspaceChangeLockKeys()).toEqual([WORKSPACE_KEY]);
 
     second.unmount();
     expect(workspaceChangeLockKeys()).toEqual([]);
@@ -571,7 +616,7 @@ describe('createWorkspaceChangeLockState', () => {
 
     await waitFor(() => {
       expect(state).toHaveAttribute('data-locked', 'false');
-      expect(workspaceChangeLockKeys()).toEqual([WORKSPACE]);
+      expect(workspaceChangeLockKeys()).toEqual([WORKSPACE_KEY]);
     });
 
     await pane.switchThread(
@@ -579,7 +624,7 @@ describe('createWorkspaceChangeLockState', () => {
     );
 
     await waitFor(() => {
-      expect(workspaceChangeLockKeys()).toEqual([OTHER_WORKSPACE]);
+      expect(workspaceChangeLockKeys()).toEqual([OTHER_WORKSPACE_KEY]);
       expect(state).toHaveAttribute('data-locked', 'true');
       expect(state).toHaveAttribute('data-running-background-count', '1');
     });
@@ -589,13 +634,35 @@ describe('createWorkspaceChangeLockState', () => {
     const list = setBindingMock('GetWorkspaceActivity', async () => idle());
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
     render(Harness, { props: { pane } });
-    await waitFor(() => expect(workspaceChangeLockKeys()).toEqual([WORKSPACE]));
+    await waitFor(() => expect(workspaceChangeLockKeys()).toEqual([WORKSPACE_KEY]));
     expect(list.mock.calls.length).toBe(1);
 
     await pane.switchThread(makeThread({ id: 'thread-b' }));
 
-    await waitFor(() => expect(workspaceChangeLockKeys()).toEqual([WORKSPACE]));
+    await waitFor(() => expect(workspaceChangeLockKeys()).toEqual([WORKSPACE_KEY]));
     // Same directory, same entry: nothing was torn down and re-acquired.
     expect(list.mock.calls.length).toBe(1);
+  });
+
+  it('does NOT share one lock between two backends holding the same path', async () => {
+    // The case the composite key exists for: a laptop and a desktop with the
+    // same checkout at the same absolute path, which is what an ordinary
+    // pair of machines looks like. Keyed by path alone, one machine's busy
+    // agent would lock — or worse, UNLOCK — the other's identical directory,
+    // and `Remove Worktree` would read as safe over live work.
+    setBindingMock('GetWorkspaceActivity', async () => idle());
+    noteThread('thread-here', HOME_BACKEND);
+    noteThread('thread-there', 'laptop');
+
+    const here = await buildPane(makeThread({ id: 'thread-here' }));
+    const there = await buildPane(makeThread({ id: 'thread-there' }));
+    render(Harness, { props: { pane: here } });
+    render(Harness, { props: { pane: there } });
+
+    await waitFor(() =>
+      expect(workspaceChangeLockKeys().slice().sort()).toEqual(
+        [WORKSPACE_KEY, composeWorkspaceKey('laptop', WORKSPACE)].sort(),
+      ),
+    );
   });
 });

@@ -83,6 +83,8 @@ type ProjectDeletionPreview struct {
 // workflow side. It runs read-only SQLite and git queries and mutates nothing.
 //
 // LocalOnly: it reads local checkouts and their uncommitted paths.
+//
+//ao:scope git:operate
 func (a *App) ProjectDeletionPreview(projectID string) (ProjectDeletionPreview, error) {
 	if a.store == nil {
 		return ProjectDeletionPreview{}, fmt.Errorf("project deletion preview: store unavailable")

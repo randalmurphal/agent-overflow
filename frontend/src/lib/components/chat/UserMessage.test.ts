@@ -3,6 +3,7 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import {
   projectTurnCompleted,
   projectTurnStarted,
@@ -22,11 +23,11 @@ describe('<UserMessage>', () => {
     resetBindingMocks();
     resetThreadStatuses();
     // GetAttachmentThumbnail is the inline-grid path (small bytes from the
-    // SQLite thumbnail cache); GetAttachmentData is the modal lightbox path
-    // (original-resolution refetch). Mock both so tests exercising either
-    // path don't blow up on an unstubbed binding.
+    // SQLite thumbnail cache, still an RPC); the modal lightbox path is a
+    // ticketed HTTP transfer of the original bytes. Stub both so tests
+    // exercising either don't blow up on an unstubbed call.
     setBindingMock('GetAttachmentThumbnail', async () => ({ data: 'iVBORw0KGgo=', mimeType: 'image/png' }));
-    setBindingMock('GetAttachmentData', async () => 'iVBORw0KGgo=');
+    mockAttachmentDownload();
   });
 
   afterEach(() => {
@@ -549,7 +550,7 @@ describe('<UserMessage>', () => {
     // mount to rows near the viewport, and the per-pane attachment cache
     // de-dupes across remounts — so a separate IO observer was redundant
     // and got removed. Loading happens immediately on mount, and goes
-    // through GetAttachmentThumbnail (not the full-size GetAttachmentData
+    // through GetAttachmentThumbnail (not the full-size HTTP transfer,
     // which is reserved for the lightbox modal).
     const getAttachmentThumbnail = setBindingMock(
       'GetAttachmentThumbnail',

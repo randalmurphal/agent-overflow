@@ -18,18 +18,48 @@
   // to force an attempt sooner. It calls wsClient.triggerReconnect via
   // the store, which resets the backoff counter.
   //
-  // 'unauthorized' is the one state the automatic loop cannot resolve:
-  // the backend answered and refused this session's token, which is what
-  // a remote/LAN client sees after the backend restarts (tokens are
-  // minted per launch). The wsClient stops retrying there, so this
-  // banner is the whole recovery story and has to name the action that
-  // actually works — otherwise the user watches "Reconnecting…" forever
-  // on a client that is no longer even trying. Retry stays because
-  // triggerReconnect un-latches (one attempt, user-initiated); the
-  // countdown does not, because no attempt is scheduled.
+  // Two states the automatic loop cannot resolve, and the wsClient stops
+  // retrying on both, so this banner is the whole recovery story for
+  // each and has to name the action that actually works — otherwise the
+  // user watches "Reconnecting…" forever on a client that is no longer
+  // even trying. 'unauthorized' is a refused credential, which is what a
+  // remote/LAN client sees after the backend restarts (credentials are
+  // minted per launch); 'pairing-required' is a networked page this
+  // backend will not open a socket for until the device is paired. The
+  // sentence for either comes from transport/connectionRefusal.ts, the
+  // one module that phrases them. Retry stays because triggerReconnect
+  // un-latches (one attempt, user-initiated); the countdown does not,
+  // because no attempt is scheduled.
 
+  // A passkey is the one recovery either terminal state has that does not
+  // need somebody at the other computer, so this banner is where it is
+  // offered — a browser that has never paired, or one whose session family
+  // ended, both arrive here and both are exactly who a registered
+  // credential is for (docs/specs/remote-access.md §4 "Passkeys"). It
+  // re-attaches through the SAME redial pairing uses rather than a second
+  // recovery path; nothing about the ladder changes.
   import { fade } from 'svelte/transition';
-  import { getTransportStatus, retryTransport } from '../../stores/transportStatus.svelte';
+  import {
+    connectionRefusalMessage,
+    isTerminalConnectionStatus,
+  } from '../../transport/connectionRefusal';
+  import { PasskeyAbandonedError, passkeysUsable } from '../../transport/passkey';
+  import { signInWithPasskey, unpairHome } from '../../transport/deviceSession';
+  import { hasHomeEndpoint } from '../../transport/homeEndpoint';
+  import { errString } from '../../utils/errors';
+  import { relativeTime } from '../../utils/format';
+  import {
+    getTransportStatus,
+    redialAfterSignIn,
+    retryTransport,
+  } from '../../stores/transportStatus.svelte';
+  // The phone shell's update channel says at most two things, and this
+  // strip is where they are said: it is already the place this client
+  // states facts about its relationship with its backend, and "your desk
+  // has a newer app than your phone" is one of those
+  // (stores/bundleNotice.svelte.ts). Empty on every other client, which
+  // is every client that cannot install a bundle.
+  import { getBundleNotice } from '../../stores/bundleNotice.svelte';
 
   // Tick once per second so the countdown stays in sync. We only mount
   // when the banner is visible; on a steady-state connection the
@@ -70,9 +100,52 @@
     return () => clearTimeout(t);
   });
 
+  let bundleNotice = $derived(getBundleNotice());
+
+  // A connection problem outranks a bundle notice: one is happening now
+  // and the other is about the next launch. The notice keeps the strip
+  // up on its own once the transport is healthy again.
   let visible = $derived(
-    snapshot.status !== 'connected' && (hasEverConnected || bootGraceExpired),
+    (snapshot.status !== 'connected' && (hasEverConnected || bootGraceExpired))
+      || bundleNotice !== '',
   );
+
+  // A page that mounted while the transport was TERMINAL loaded nothing.
+  // Every store's first fetch was refused by the latched client, and only
+  // entity-keyed stores re-acquire when a connection arrives
+  // (stores/entityStore.svelte.ts) — the sidebar's projects and threads,
+  // settings, keybindings, the pane layout and the persisted app storage
+  // each load once on mount and never again. So leaving a terminal state
+  // from this banner attached the socket and left an EMPTY app (found by
+  // e2e/tests/harness-passkey-lifecycle.spec.ts).
+  //
+  // Booting again is what the pairing-link path gets by construction:
+  // main.ts mounts App only AFTER the redial, so its fan-out runs once,
+  // attached. This is that same thing for a page that was already
+  // mounted, and it covers every way out of a terminal state rather than
+  // the sign-in button alone.
+  //
+  // The guard is what makes it cost nothing: it fires only on the FIRST
+  // connection of a page that has been terminal, where there is no loaded
+  // state and nothing anybody typed to discard. A session that dies
+  // mid-use and is signed back in keeps its page. Plain `let`, not
+  // `$state`: these are the effect's own memory and nothing renders from
+  // them, so making them reactive would only add a dependency that can
+  // re-run it.
+  let sawTerminal = false;
+  let connectedOnce = false;
+
+  $effect(() => {
+    const status = snapshot.status;
+    if (isTerminalConnectionStatus(status)) {
+      sawTerminal = true;
+      return;
+    }
+    if (status !== 'connected') return;
+    const first = !connectedOnce;
+    connectedOnce = true;
+    if (first && sawTerminal) location.reload();
+  });
 
   $effect(() => {
     if (!visible) {
@@ -104,27 +177,103 @@
   });
 
   let bannerClasses = $derived.by(() => {
+    if (snapshot.status === 'connected') {
+      return 'bg-fg/10 border-fg/20 text-fg-muted';
+    }
     if (snapshot.status === 'reconnecting') {
       return 'bg-warning/15 border-warning/30 text-warning';
     }
     return 'bg-error/15 border-error/30 text-error';
   });
 
+  // A ladder that has been reconnecting for minutes goes dormant: one probe
+  // every five minutes and nothing else on the network (transport/wsClient.ts).
+  // The countdown is the wrong sentence there — a number ticking down from 300
+  // reads as "nearly back" every five minutes forever — so the banner states
+  // the fact instead, and says when the connection was last alive, which is the
+  // one thing that tells a person whether this started just now or overnight.
+  //
+  // `lastConnectedAt` is this device's own clock reading, so `relativeTime` is
+  // called with no backend id: correcting it by a backend's skew would be
+  // measuring one clock against another's offset. The 1Hz tick is read so the
+  // sentence ages with the banner rather than freezing at whatever it said when
+  // dormancy began.
+  //
+  // Null when this client has NEVER connected — a page that opened against a
+  // backend that was already gone. The dormant sentence still applies (the
+  // cadence is the same fact), it simply drops the clause it has no answer
+  // for. It does NOT fall back to the countdown: the ladder really is at one
+  // probe per five minutes, and a number ticking down would misdescribe it.
+  let lastSeen = $derived.by(() => {
+    if (snapshot.status !== 'reconnecting') return null;
+    if (!snapshot.dormant) return null;
+    const at = snapshot.lastConnectedAt ?? null;
+    if (at === null) return null;
+    void tick;
+    return relativeTime(at);
+  });
+
+  let dormant = $derived(snapshot.status === 'reconnecting' && snapshot.dormant === true);
+
   let message = $derived.by(() => {
+    if (snapshot.status === 'connected') return bundleNotice;
     if (snapshot.status === 'reconnecting') {
+      if (dormant) {
+        return lastSeen === null
+          ? 'Not reachable. Checking every 5 minutes.'
+          : `Not reachable. Last seen ${lastSeen}. Checking every 5 minutes.`;
+      }
       if (countdown !== null) {
         return `Reconnecting in ${countdown}s…`;
       }
       return 'Reconnecting…';
     }
-    if (snapshot.status === 'unauthorized') {
-      return 'The backend restarted. Reopen the share link to reconnect.';
+    if (isTerminalConnectionStatus(snapshot.status)) {
+      return connectionRefusalMessage(snapshot.status);
     }
     return 'Disconnected from the agent backend.';
   });
 
   function handleRetry(): void {
     retryTransport();
+  }
+
+  // Offered only where it can work: a terminal state (the ladder has
+  // stopped, so there is something to recover FROM), a backend with a
+  // domain, and a page that can hold a credential. A page whose origin is
+  // not its backend's (the phone shell) is excluded: a passkey is bound
+  // to the backend's domain, and the browser refuses the ceremony from
+  // any other origin, so the button could only fail.
+  let terminal = $derived(isTerminalConnectionStatus(snapshot.status));
+  let signInOffered = $derived(terminal && !hasHomeEndpoint() && passkeysUsable());
+  // The shell's recovery instead. A browser is one navigation away from a
+  // new pairing link; a fixed-origin page has nothing to navigate to, so
+  // it forgets home and boots into "scan a code" again.
+  let pairAgainOffered = $derived(terminal && hasHomeEndpoint());
+  let signingIn = $state(false);
+  let signInError = $state('');
+
+  function handlePairAgain(): void {
+    unpairHome();
+    location.reload();
+  }
+
+  async function handleSignIn(): Promise<void> {
+    if (signingIn) return;
+    signingIn = true;
+    signInError = '';
+    try {
+      await signInWithPasskey(navigator.platform || 'Browser');
+      // Awaited, for the reason main.ts awaits it after pairing: the app
+      // is already mounted here, and its stores re-acquire on the
+      // reconnect this settles.
+      await redialAfterSignIn();
+    } catch (err) {
+      // A dismissed prompt is not a failure; the banner simply stays.
+      if (!(err instanceof PasskeyAbandonedError)) signInError = errString(err);
+    } finally {
+      signingIn = false;
+    }
   }
 </script>
 
@@ -152,7 +301,28 @@
     data-status={snapshot.status}
     class="absolute inset-x-0 top-0 z-50 border-b {bannerClasses} px-4 py-1.5 flex items-center gap-2 text-xs"
   >
-    <p class="flex-1 line-clamp-1" title={message}>{message}</p>
+    <p class="flex-1 line-clamp-1" title={signInError || message}>{signInError || message}</p>
+    {#if signInOffered}
+      <button
+        type="button"
+        onclick={() => void handleSignIn()}
+        disabled={signingIn}
+        data-testid="transport-status-passkey"
+        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-60"
+      >
+        Sign in with a passkey
+      </button>
+    {/if}
+    {#if pairAgainOffered}
+      <button
+        type="button"
+        onclick={handlePairAgain}
+        data-testid="transport-status-pair-again"
+        class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        Pair again
+      </button>
+    {/if}
     {#if snapshot.status !== 'connected'}
       <button
         type="button"

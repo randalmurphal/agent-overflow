@@ -11,7 +11,8 @@
 // this module doesn't need to import the ThreadPane / ComposerDraftStore
 // shapes directly — keeps the coupling one-way.
 
-import { DeleteAttachment, UploadAttachment } from '../../stores/bindings';
+import { DeleteAttachment } from '../../stores/bindings';
+import { uploadAttachmentBytes } from '../../transport/attachmentTransfer';
 import { addToast } from '../../stores/toast.svelte';
 import { userFacingError } from '../../utils/userFacingError';
 import type { Attachment } from '../../types/attachment';
@@ -19,7 +20,6 @@ import {
   DEFAULT_MAX_ATTACHMENT_COUNT,
   DEFAULT_MAX_ATTACHMENT_SIZE,
   extractClipboardImages,
-  fileToBase64,
   hasFilePayload,
   rejectionReason,
 } from './attachmentHelpers';
@@ -126,31 +126,35 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
         console.error('image compression failed:', err);
       }
     }
-    // Pre-upload guard: reject by the kind's size ceiling before we burn
-    // cycles on base64 + ship the bytes over the wire. The same check runs
-    // server-side, but failing early here keeps an over-limit drop from
-    // freezing the UI for the round-trip.
+    // Pre-upload guard: reject by the kind's size ceiling before the
+    // bytes go anywhere. The same check runs when the ticket is minted
+    // and again in the store, but failing here keeps an over-limit drop
+    // from costing a round trip at all.
     const rejection = rejectionReason(upload, maxSize);
     if (rejection) {
       addToast('warning', rejection);
       return false;
     }
     try {
-      const base64 = await fileToBase64(upload);
-      const record = (await UploadAttachment(
-        threadId,
-        upload.name,
-        upload.type || '',
-        base64,
-      )) as Attachment;
+      // Two hops, and the file is never a string in either: a mint that
+      // authorizes exactly these bytes, then the bytes themselves as the
+      // body of one PUT.
+      const record = await uploadAttachmentBytes(threadId, upload);
       // Guard against thread-switch-in-flight: only stamp the draft when
       // we're still on the thread the user initiated the upload from.
       if (opts.getThreadId() === threadId) {
         opts.addAttachment(record, insertion);
         return true;
       }
+      // The composer moved on while the bytes were in flight. Nothing
+      // will ever reference this record, so it is dropped here rather
+      // than left as a row and a file on disk that no message, no draft
+      // and no later cleanup pass knows about. Same fire-and-forget
+      // policy as discardAbandonedAttachmentRecords, and for the same
+      // reason: the user has already left the surface.
+      discardAbandonedAttachmentRecords(threadId, [record.id]);
     } catch (err) {
-      console.error('UploadAttachment failed:', err);
+      console.error('attachment upload failed:', err);
       addToast('error', userFacingError(err));
     }
     return false;

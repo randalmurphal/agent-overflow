@@ -77,7 +77,7 @@ func TestUpdateThreadRuntimeModeKeepsModeOnRestartFailure(t *testing.T) {
 		return restartErr
 	}
 
-	if _, err := app.UpdateThreadRuntimeMode(id, string(provider.RuntimeFullAccess)); err != nil {
+	if _, err := app.UpdateThreadRuntimeMode(context.Background(), id, string(provider.RuntimeFullAccess)); err != nil {
 		t.Fatalf("UpdateThreadRuntimeMode error = %v, want nil (restart is deferred)", err)
 	}
 
@@ -115,7 +115,7 @@ func TestUpdateThreadRuntimeModeWaitsForThreadSendLock(t *testing.T) {
 	unlock := app.threadLocks().Lock(id)
 	done := make(chan error, 1)
 	go func() {
-		_, err := app.UpdateThreadRuntimeMode(id, string(provider.RuntimeFullAccess))
+		_, err := app.UpdateThreadRuntimeMode(context.Background(), id, string(provider.RuntimeFullAccess))
 		done <- err
 	}()
 
@@ -199,7 +199,7 @@ func TestSendRuntimeModeChangeReconnectsAfterInflightStart(t *testing.T) {
 
 	sendErr := make(chan error, 1)
 	go func() {
-		_, err := app.SendMessageWithOptions(id, "hello", SendMessageOptions{
+		_, err := app.SendMessageWithOptions(context.Background(), id, "hello", SendMessageOptions{
 			RuntimeMode: string(provider.RuntimeFullAccess),
 		})
 		sendErr <- err
@@ -240,7 +240,7 @@ func TestGetThreadRuntimeModeRoundTrips(t *testing.T) {
 	id := createRuntimeTestThread(t, app, provider.RuntimeFullAccess)
 
 	for _, mode := range provider.AllRuntimeModes {
-		if _, err := app.UpdateThreadRuntimeMode(id, string(mode)); err != nil {
+		if _, err := app.UpdateThreadRuntimeMode(context.Background(), id, string(mode)); err != nil {
 			t.Fatalf("UpdateThreadRuntimeMode(%s): %v", mode, err)
 		}
 		got, err := app.GetThreadRuntimeMode(id)
@@ -267,7 +267,7 @@ func TestCreateThreadUsesFallbackRuntimeMode(t *testing.T) {
 
 func TestCreateThreadRejectsInvalidRuntimeMode(t *testing.T) {
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThread(CreateThreadOptions{
+	_, err := app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID:   defaultTestProjectID,
 		Provider:    string(provider.Claude),
 		Model:       "claude-sonnet-4-6",
@@ -288,7 +288,7 @@ func TestUpdateThreadRuntimeModeSeedsNextNewThreadForSameModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create source thread: %v", err)
 	}
-	if _, err := app.UpdateThreadRuntimeMode(source.ID, string(provider.RuntimeApprovalRequired)); err != nil {
+	if _, err := app.UpdateThreadRuntimeMode(context.Background(), source.ID, string(provider.RuntimeApprovalRequired)); err != nil {
 		t.Fatalf("UpdateThreadRuntimeMode: %v", err)
 	}
 

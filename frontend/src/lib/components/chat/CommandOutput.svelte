@@ -13,6 +13,7 @@
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import DevServerChip from './DevServerChip.svelte';
   import { loopbackDevServerURL } from '../../utils/externalLinks';
+  import { previewChipFor, previewRouted } from '../../stores/devServers.svelte';
   import {
     DEV_SERVER_PROBE_MAX_DEAD_PROBES,
     DEV_SERVER_PROBE_RETRY_MS,
@@ -228,8 +229,19 @@
   // it down, it just stops rescheduling, so the last pending tick lands
   // as one final on-cadence probe and a settled row then keeps its
   // verdict until remount.
+  //
+  // Stage 2 has a second form. The probe asks the PAGE's own backend whether
+  // something answers on a loopback port, which only means anything when the
+  // command ran on that machine and this session can act there. Anywhere else
+  // — a thread on an attached machine, or this page read from a browser — the
+  // machine's own dev-server list is the authority on both questions the
+  // probe was asking (is anything listening, and can this page reach it), and
+  // there is nothing for a probe here to reach. So the loop does not start,
+  // and the chip is read from that list instead.
   let detectedDevServerURL = $state<string | null>(null);
   let confirmedDevServerURL = $state<string | null>(null);
+  let threadId = $derived(pane?.threadId ?? '');
+  let previewChip = $derived(previewChipFor(threadId, detectedDevServerURL ?? ''));
   let liveDevServerURL = $derived(
     loopbackDevServerURL(meta?.devServerUrl ?? (payloadMeta?.devServerUrl as string | undefined)),
   );
@@ -239,7 +251,7 @@
   });
   $effect(() => {
     const url = detectedDevServerURL;
-    if (!url) return;
+    if (!url || previewRouted(threadId)) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let deadStreak = 0;
@@ -296,7 +308,9 @@
   {/snippet}
 
   {#snippet headerActions()}
-    {#if confirmedDevServerURL}
+    {#if previewChip}
+      <DevServerChip url={previewChip.url} preview={previewChip} />
+    {:else if confirmedDevServerURL}
       <DevServerChip url={confirmedDevServerURL} />
     {/if}
     {#if canBackground}

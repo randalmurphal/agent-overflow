@@ -28,6 +28,7 @@ import {
   RetryThreadWorktreeSetup,
 } from './bindings';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
+import { hasScope } from '../transport/scopes';
 
 export type WorktreeSetupState = 'idle' | 'running' | 'failed' | 'succeeded' | 'cancelled';
 export type WorktreeSetupStepStatus = 'pending' | 'running' | 'succeeded' | 'failed';
@@ -152,6 +153,12 @@ export async function retryWorktreeSetup(key: string): Promise<void> {
  */
 export async function hydrateWorktreeSetup(threadId: string): Promise<void> {
   if (!threadId) return;
+  // The snapshot rides `terminal:operate` — worktree setup runs commands
+  // and streams their output. A session without that grant sees neither
+  // the transcript nor the retry control, and this runs on pane mount, so
+  // asking would be one refusal per open of any thread whose row says a
+  // setup ran.
+  if (!hasScope('terminal:operate')) return;
   await hydrateInto(threadId, () => GetThreadWorktreeSetup(threadId));
 }
 

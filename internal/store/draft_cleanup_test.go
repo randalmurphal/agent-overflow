@@ -27,7 +27,7 @@ func threadRowExists(t *testing.T, s *Store, threadID string) bool {
 func TestDeleteEmptyDraftThreadDeletesEmptyChatDraft(t *testing.T) {
 	s := newTestStore(t)
 	thread := createDraftCleanupThread(t, s, "empty-chat-draft", "chat")
-	if err := s.UpsertThreadDraft(ThreadDraft{
+	if _, err := s.UpsertThreadDraft(ThreadDraft{
 		ThreadID:      thread.ID,
 		Content:       "   ",
 		Attachments:   "[]",
@@ -73,7 +73,7 @@ func TestDeleteEmptyDraftThreadDeletesEmptyPlanDraft(t *testing.T) {
 func TestDeleteEmptyDraftThreadKeepsDraftWithContent(t *testing.T) {
 	s := newTestStore(t)
 	thread := createDraftCleanupThread(t, s, "draft-with-content", "chat")
-	if err := s.UpsertThreadDraft(ThreadDraft{
+	if _, err := s.UpsertThreadDraft(ThreadDraft{
 		ThreadID:      thread.ID,
 		Content:       "do not delete",
 		Attachments:   "[]",

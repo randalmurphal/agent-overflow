@@ -1,6 +1,5 @@
 import type { ApprovalKind } from '../types/events';
-import type { Item, Thread } from '../types/models';
-import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
+import type { Thread } from '../types/models';
 import { resolveEffectiveThreadStatus } from '../utils/threadStatusPill';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
@@ -83,19 +82,24 @@ export function sameActiveTurn(left: ActiveTurn | null, right: ActiveTurn | null
 // history/display state, not proof that the provider is working now.
 //
 // Recalculation priority is: pending approval, awaiting input, running,
-// error, plan-ready, interrupted, idle.
+// error, interrupted, idle.
 
 export type ThreadLiveStatus =
   | 'idle'
   | 'running'
   | 'awaiting-input'
   | 'pending-approval'
+  // 'plan-ready' and 'setup-failed' are never pushed as live statuses: both
+  // are resolved from durable thread-row columns
+  // (hasActionableProposedPlan, worktreeSetupState) by
+  // resolveEffectiveThreadStatus. The plan flag used to have a live mirror
+  // here fed by proposed_plan item upserts; it was removed when
+  // `provider:item_event` was narrowed to watched threads, since a sidebar
+  // pill exists precisely for the threads with no pane. The backend now
+  // broadcasts the row on `thread:updated` whenever a proposed-plan write
+  // moves the column.
   | 'plan-ready'
   | 'error'
-  // 'setup-failed' is the odd one out: it is never pushed as a live status.
-  // It is resolved from the thread row's durable worktreeSetupState, the same
-  // way 'interrupted' and 'plan-ready' fall back — see
-  // resolveEffectiveThreadStatus.
   | 'setup-failed'
   | 'interrupted';
 
@@ -132,7 +136,6 @@ const approvalThreadByID = new Map<string, string>();
 // is engaged right now" rather than "user-typed prompt is in flight."
 const activeTurns = createKeyedSignalRegistry<ActiveTurn | null>(null);
 const completedTurnIDsByThread = new Map<string, Set<string>>();
-const planReadyThreads = new Set<string>();
 const errorThreads = new Set<string>();
 const interruptedThreads = new Set<string>();
 const liveStateHydrationTokenByThread = new Map<string, number>();
@@ -178,14 +181,6 @@ function recalculateThreadStatus(threadId: string): void {
     setThreadStatus(threadId, 'error');
     return;
   }
-  // Plan-ready sits below running/error because while a plan exists,
-  // the turn that produced it has settled and the user's next decision
-  // drives the next turn. A fresh turn clears the plan-ready flag
-  // (see projectTurnStarted).
-  if (planReadyThreads.has(threadId)) {
-    setThreadStatus(threadId, 'plan-ready');
-    return;
-  }
   if (interruptedThreads.has(threadId)) {
     setThreadStatus(threadId, 'interrupted');
     return;
@@ -208,7 +203,6 @@ export function getThreadStatus(threadId: string): ThreadLiveStatus {
   }
   if (isThreadWorking(threadId)) return 'running';
   if (errorThreads.has(threadId) || stored === 'error') return 'error';
-  if (planReadyThreads.has(threadId) || stored === 'plan-ready') return 'plan-ready';
   if (interruptedThreads.has(threadId) || stored === 'interrupted') return 'interrupted';
   return 'idle';
 }
@@ -283,7 +277,6 @@ export function clearThreadStatus(threadId: string): void {
   activeTurns.drop(threadId);
   completedTurnIDsByThread.delete(threadId);
   pendingSendThreads.drop(threadId);
-  planReadyThreads.delete(threadId);
   for (const requestIdSet of [
     approvalIDsByThread.get(threadId),
     awaitingInputIDsByThread.get(threadId),
@@ -455,14 +448,11 @@ export function projectTurnStarted(
   if (!threadId || !turnId) return;
   // Turn-started always supersedes a prior optimistic send flag (we
   // have real backend confirmation now) AND clears any prior error
-  // from an earlier turn on the same thread. It also clears the
-  // plan-ready flag: if a plan was proposed and the user's acceptance
-  // kicked off a new turn, the plan is no longer "awaiting a decision"
-  // — the decision happened. Rejecting a plan also fires a new turn
-  // (agent adjusts and re-proposes), so clearing here is correct in
-  // both acceptance and rejection cases.
+  // from an earlier turn on the same thread. The plan-ready half of
+  // that decision lives on the thread ROW now: applyTurnStarted clears
+  // the durable hasActionableProposedPlan on the same event, which is
+  // where the pill reads it from for panes and off-pane sidebars alike.
   pendingSendThreads.set(threadId, false);
-  planReadyThreads.delete(threadId);
   if (hasCompletedTurnID(threadId, turnId)) {
     recalculateThreadStatus(threadId);
     return;
@@ -554,7 +544,6 @@ export function projectThreadReverted(threadId: string): void {
   pendingSendThreads.set(threadId, false);
   interruptedThreads.delete(threadId);
   errorThreads.delete(threadId);
-  planReadyThreads.delete(threadId);
   for (const requestIdSet of [
     approvalIDsByThread.get(threadId),
     awaitingInputIDsByThread.get(threadId),
@@ -612,50 +601,45 @@ export function getActiveTurn(threadId: string | null | undefined): ActiveTurn |
 }
 
 /**
- * Feed a live item upsert into the sidebar-status projection. Item rows can
- * surface attention states such as errors and actionable plans, but they do
- * not decide whether the thread is working. Liveness belongs to backend turn
- * signals plus the send/queue bridge; persisted timeline rows can be stale.
+ * A row of kind `error` was persisted on this thread: the pill flips to
+ * Failed and the optimistic pending-send flag is retired, because whatever
+ * the send was waiting for has failed.
+ *
+ * The carrier is `thread:error_notice`, not the transcript stream. Several
+ * error classes never produce a `provider:turn_completed` the pill could
+ * key on instead (non-fatal wire errors, orphan error results, the
+ * ambiguous-turn-start timeout, flush-dispatch and steer failures), and the
+ * pill is read on threads with no pane, which the narrowed transcript
+ * stream no longer reaches. `api_error` rows deliberately do not notify:
+ * they render their own actionable copy in the transcript and have never
+ * coloured the sidebar.
  */
-export function projectThreadItem(item: Item): void {
-  if (!item?.threadId || !item.id) return;
-
-  if (item.kind === 'error') {
-    pendingSendThreads.set(item.threadId, false);
-    errorThreads.add(item.threadId);
-  } else if (isReaderAuthoredUserText(item)) {
-    // A new message from the READER supersedes the thread's error /
-    // interrupted badge. A subagent's own prompt is a user_text row too
-    // and must not clear a badge nobody attended to.
-    errorThreads.delete(item.threadId);
-    interruptedThreads.delete(item.threadId);
-  }
-
-  // A completed proposed_plan item means the agent has produced a plan
-  // and is waiting on the user's Accept / Edit / Reject decision. The
-  // sidebar pill flips to "Plan ready" so an off-pane user doesn't have
-  // to open the thread to discover the plan is sitting there. Status
-  // 'errored' / 'declined' don't set plan-ready — those are terminal
-  // failures, not actionable plans.
-  if (item.payloadKind === 'proposed_plan' && item.role === 'assistant' && item.status === 'completed') {
-    if (isImplementedProposedPlan(item.meta)) {
-      planReadyThreads.delete(item.threadId);
-    } else {
-      planReadyThreads.add(item.threadId);
-    }
-  }
-
-  recalculateThreadStatus(item.threadId);
+export function projectThreadError(threadId: string): void {
+  if (!threadId) return;
+  pendingSendThreads.set(threadId, false);
+  errorThreads.add(threadId);
+  recalculateThreadStatus(threadId);
 }
 
-function isImplementedProposedPlan(meta: string | undefined): boolean {
-  if (!meta) return false;
-  try {
-    const parsed = JSON.parse(meta) as { planImplementedAt?: number };
-    return Number(parsed.planImplementedAt ?? 0) > 0;
-  } catch {
-    return false;
-  }
+/**
+ * A message the READER wrote landed on this thread, so its error /
+ * interrupted badge is superseded — the user has moved past whatever the
+ * pill was reporting.
+ *
+ * The carrier is the `thread:updated` activity patch, which the backend
+ * emits from exactly the persists that count as thread activity: top-level
+ * user_text rows that are not wire-only context injections and not a
+ * subagent's own prompt (triage.userTextCountsAsThreadActivity, the SQL
+ * predicate `isReaderAuthoredUserText` mirrors). That patch is wildcard, so
+ * the badge clears for threads this client has no pane on — which is the
+ * only place a sidebar pill is read.
+ */
+export function projectReaderMessageSent(threadId: string): void {
+  if (!threadId) return;
+  if (!errorThreads.has(threadId) && !interruptedThreads.has(threadId)) return;
+  errorThreads.delete(threadId);
+  interruptedThreads.delete(threadId);
+  recalculateThreadStatus(threadId);
 }
 
 /**
@@ -738,32 +722,6 @@ export function projectThreadViewed(threadId: string): void {
 }
 
 /**
- * Mark a thread as having a proposed plan that the user hasn't acted
- * on yet. Fires automatically from projectThreadItem when a
- * proposed_plan item lands with a terminal (completed) status; also
- * exposed so other call sites can force the flag if we add richer
- * plan-resolution events later. Cleared on the next turn start
- * (projectTurnStarted) or by an explicit projectPlanResolved.
- */
-export function projectPlanReady(threadId: string): void {
-  if (!threadId) return;
-  planReadyThreads.add(threadId);
-  recalculateThreadStatus(threadId);
-}
-
-/**
- * Clear the plan-ready flag. Called by projectTurnStarted (the user
- * accepted / rejected / edited the plan and a new turn is running)
- * or explicitly if the UI wires a distinct "dismiss plan" action.
- */
-export function projectPlanResolved(threadId: string): void {
-  if (!threadId) return;
-  if (!planReadyThreads.has(threadId)) return;
-  planReadyThreads.delete(threadId);
-  recalculateThreadStatus(threadId);
-}
-
-/**
  * Wipe the entire map. Only intended for test isolation — production
  * code should use clearThreadStatus per id. Also wipes the per-thread
  * send queue because `isThreadWorking` reads that bridge state.
@@ -772,7 +730,6 @@ export function resetForTest(): void {
   activeTurns.reset();
   completedTurnIDsByThread.clear();
   pendingSendThreads.reset();
-  planReadyThreads.clear();
   approvalIDsByThread.clear();
   awaitingInputIDsByThread.clear();
   approvalThreadByID.clear();

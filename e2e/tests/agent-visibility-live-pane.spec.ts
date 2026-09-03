@@ -91,7 +91,7 @@ test('an open pane shows prose, thinking, and the final text as the agent stream
 }) => {
   await harness.rpc('HarnessSetScenario', { scenario: liveScenario() });
   const threadId = await seedAgentThread(harness, 'live-pane-app', 'Live pane');
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Live pane').click();
   const mockId = await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'map surfaces', null);

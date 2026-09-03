@@ -30,6 +30,7 @@
   import Button from '../primitives/Button.svelte';
   import { SPLIT_BTN_BASE } from '../primitives/splitButton';
   import { createWorkspaceChangeLockState } from '../../stores/workspaceChangeLock.svelte';
+  import { hasScope } from '../../transport/scopes';
   import {
     primaryActionFor,
     runCreatePRAction,
@@ -65,6 +66,13 @@
   // Null when healthy; the message itself when the workspace's stream is
   // failing, so the retry button can say what went wrong.
   let statusError = $derived(pane.gitStatus.statusError);
+
+  // Every action here rides `git:operate` — commit, push, pull, PR, ship,
+  // remove-worktree. A session without it never gets a git status either
+  // (the store's own guard), so this control is normally absent rather than
+  // inert; the gate is what keeps every action honest if a status ever
+  // arrives without the grant to act on it.
+  let gitUngranted = $derived(!hasScope('git:operate'));
 
   let actionLoading = $state(false);
 
@@ -176,8 +184,8 @@
   <div class="flex">
     <button
       onclick={() => void executePrimary(ws)}
-      disabled={primaryAction.disabled || actionLoading}
-      title={primaryAction.tooltip}
+      disabled={primaryAction.disabled || actionLoading || gitUngranted}
+      title={gitUngranted ? 'Not granted to this device' : primaryAction.tooltip}
       class="{SPLIT_BTN_BASE} px-2.5 rounded-l disabled:opacity-40 disabled:cursor-not-allowed"
     >
       {actionLoading ? '...' : primaryAction.label}
@@ -206,7 +214,7 @@
       <Menu ariaLabel="Git actions" onClose={closeMenu}>
         <MenuItem
           label="Commit"
-          disabled={!menuStatus.hasChanges}
+          disabled={!menuStatus.hasChanges || gitUngranted}
           onSelect={() => {
             showDropdown = false;
             showCommit = true;
@@ -214,7 +222,7 @@
         />
         <MenuItem
           label="Push"
-          disabled={menuStatus.aheadCount === 0}
+          disabled={menuStatus.aheadCount === 0 || gitUngranted}
           onSelect={() => {
             showDropdown = false;
             void guard(() => runPushAction(ctx(ws)));
@@ -222,7 +230,7 @@
         />
         <MenuItem
           label="Pull"
-          disabled={menuStatus.behindCount === 0}
+          disabled={menuStatus.behindCount === 0 || gitUngranted}
           onSelect={() => {
             showDropdown = false;
             void guard(() => runPullAction(ctx(ws)));
@@ -238,7 +246,7 @@
                 ? `Could not check existing ${labels.longSingular}: ${prLookupError}`
                 : undefined
           }
-          disabled={hasOpenPR ? openPRURL === null : !canCreatePR}
+          disabled={gitUngranted ? !hasOpenPR : (hasOpenPR ? openPRURL === null : !canCreatePR)}
           onSelect={() => {
             showDropdown = false;
             if (openPRURL) {
@@ -251,6 +259,7 @@
         <MenuDivider />
         <MenuItem
           label="Ship Changes…"
+          disabled={gitUngranted}
           onSelect={() => {
             showDropdown = false;
             showShip = true;
@@ -261,8 +270,8 @@
           <MenuItem
             label="Remove Worktree"
             variant="danger"
-            disabled={workspaceLock.locked}
-            title={workspaceLock.locked ? workspaceLock.reason : undefined}
+            disabled={workspaceLock.locked || gitUngranted}
+            title={gitUngranted ? 'Not granted to this device' : workspaceLock.locked ? workspaceLock.reason : undefined}
             onSelect={() => {
               showDropdown = false;
               showRemoveWorktreeConfirm = true;

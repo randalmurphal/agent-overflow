@@ -2,104 +2,80 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import {
   runMode,
   isClientMode,
-  isViewOnlySession,
-  setViewOnlySessionFromBootstrap,
   __resetRunModeForTest,
 } from './runMode';
 
-interface InjectedBootstrap {
-  mode?: unknown;
-  remote?: unknown;
-}
-
-function setInjected(value: InjectedBootstrap | undefined): void {
-  if (value === undefined) {
-    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
-  } else {
-    (globalThis as { __AO_BOOTSTRAP__?: InjectedBootstrap }).__AO_BOOTSTRAP__ = value;
-  }
+// The mode rides the page URL — the `--connect` stub stamps `mode=client`
+// on the URL it hands its webview — so switching modes means rewriting
+// the document URL and dropping the memoised read.
+function setPageMode(mode: string | undefined): void {
+  const search = mode === undefined ? '' : `?mode=${mode}`;
+  window.history.replaceState(null, '', window.location.pathname + search);
   __resetRunModeForTest();
 }
 
 describe('runMode', () => {
   beforeEach(() => {
-    setInjected(undefined);
+    setPageMode(undefined);
   });
 
   afterEach(() => {
-    setInjected(undefined);
+    setPageMode(undefined);
   });
 
-  it('defaults to local when window.__AO_BOOTSTRAP__ is missing', () => {
+  it('defaults to local when the URL carries no mode', () => {
     expect(runMode()).toBe('local');
     expect(isClientMode()).toBe(false);
   });
 
-  it('returns "client" when bootstrap injects mode=client', () => {
-    setInjected({ mode: 'client' });
+  it('returns "client" for mode=client', () => {
+    setPageMode('client');
     expect(runMode()).toBe('client');
     expect(isClientMode()).toBe(true);
   });
 
-  it('returns "headless" when bootstrap injects mode=headless', () => {
-    setInjected({ mode: 'headless' });
+  it('returns "headless" for mode=headless', () => {
+    setPageMode('headless');
     expect(runMode()).toBe('headless');
     expect(isClientMode()).toBe(false);
   });
 
   it('returns "local" for explicit mode=local', () => {
-    setInjected({ mode: 'local' });
+    setPageMode('local');
     expect(runMode()).toBe('local');
     expect(isClientMode()).toBe(false);
   });
 
   it('falls back to local for unknown mode strings', () => {
-    // Forward-compat: a future backend that emits a new mode the SPA
-    // doesn't recognise should not crash. The worst case is a panel
-    // that should hide stays visible — strictly less harmful than a
-    // black-screen.
-    setInjected({ mode: 'something-else' });
+    // Forward-compat: a future shell that stamps a mode the SPA doesn't
+    // recognise should not crash. The worst case is a panel that should
+    // hide stays visible — strictly less harmful than a black screen.
+    setPageMode('something-else');
     expect(runMode()).toBe('local');
     expect(isClientMode()).toBe(false);
   });
 
-  it('falls back to local when mode is non-string', () => {
-    setInjected({ mode: 42 });
-    expect(runMode()).toBe('local');
-  });
-
-  it('falls back to local when bootstrap is present but lacks mode', () => {
-    setInjected({});
+  it('falls back to local for an empty mode parameter', () => {
+    setPageMode('');
     expect(runMode()).toBe('local');
   });
 
   it('memoises the first read until __resetRunModeForTest', () => {
-    setInjected({ mode: 'client' });
+    setPageMode('client');
     expect(runMode()).toBe('client');
 
-    // Rewrite the global without resetting the cache. The memoised
-    // value wins until the test hook clears it.
-    (globalThis as { __AO_BOOTSTRAP__?: InjectedBootstrap }).__AO_BOOTSTRAP__ = { mode: 'local' };
+    // Rewrite the URL without resetting the cache. The memoised value
+    // wins until the test hook clears it.
+    window.history.replaceState(null, '', window.location.pathname + '?mode=local');
     expect(runMode()).toBe('client');
 
     __resetRunModeForTest();
     expect(runMode()).toBe('local');
   });
-
-  it('is view-only only when bootstrap explicitly marks the peer remote', () => {
-    setInjected({ mode: 'client', remote: true });
-    expect(isViewOnlySession()).toBe(true);
-
-    setInjected({ mode: 'client', remote: false });
-    expect(isViewOnlySession()).toBe(false);
-
-    setInjected({ mode: 'client', remote: 'true' });
-    expect(isViewOnlySession()).toBe(false);
-  });
-
-  it('accepts the validated asynchronous bootstrap update', () => {
-    expect(isViewOnlySession()).toBe(false);
-    setViewOnlySessionFromBootstrap(true);
-    expect(isViewOnlySession()).toBe(true);
-  });
 });
+
+// Run mode carries NOTHING about authorization. What a session may do
+// arrives on the manifest and lives in ./scopes.ts, which owns its own
+// suite; keeping the two apart is what lets a `--connect` client attached
+// to a LOCAL backend do everything while its local-only settings panels
+// still hide.

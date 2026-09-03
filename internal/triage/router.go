@@ -884,7 +884,7 @@ func (r *Router) persistProviderErrorItem(threadID string, turnIndex int, summar
 	// emit. Clamp before the dedup probe so a re-fired long error
 	// compares equal to its already-clamped row.
 	summary = ClampErrorSummary(summary)
-	itemKind := "error"
+	itemKind := ItemKindError
 	itemMeta := ""
 	if enum := APIErrorEnum(meta); enum != "" {
 		itemKind = itemKindAPIError
@@ -1086,8 +1086,26 @@ func (r *Router) handleSubagentStatus(evt provider.ProviderEvent) error {
 	return r.observeCodexSubagentStatus(evt)
 }
 
-// ThreadUpdateEvent is the wire shape for thread:updated. Action "full"
-// carries the entire Thread struct; "patch" carries only the changed fields.
+// ThreadUpdateEvent is the wire shape for thread:updated. Every persisted
+// thread-row mutation broadcasts one, so a second attached client converges
+// on the change without a refresh; a write that changed nothing broadcasts
+// nothing.
+//
+// Action names what the receiver must do with the row, not which RPC ran,
+// because membership of the active sidebar is not derivable from the row
+// alone (listing also depends on whether the thread has items or draft
+// content, which only the backend knows):
+//
+//   - "full"     the row's current state — converge a row the client already
+//     has. Says nothing about membership, so a client that does
+//     not have the row ignores it.
+//   - "patch"    changed fields only, keyed by ID.
+//   - "listed"   the row belongs in the active sidebar now — insert it if
+//     absent (creation, fork, terminal start, unarchive).
+//   - "unlisted" the row has left the active sidebar but still exists
+//     (archive). Carries the row so open panes converge too.
+//   - "deleted"  the row is gone from SQLite. ID only; one per row of a
+//     deleted tree, children included.
 type ThreadUpdateEvent struct {
 	Action     string        `json:"action"`
 	Thread     *store.Thread `json:"thread,omitempty"`
@@ -1095,12 +1113,89 @@ type ThreadUpdateEvent struct {
 	Title      *string       `json:"title,omitempty"`
 	Model      *string       `json:"model,omitempty"`
 	SessionRef *string       `json:"sessionRef,omitempty"`
+	// UpdatedAt carries a sidebar-activity bump, and ONLY the one an
+	// activity-counting user_text persist produced — never a turn
+	// completion or an approval request, which reach the client on their
+	// own channels. It is the one patch field a receiver applies without a
+	// cached row: the bump lands in the per-thread live-activity box, not
+	// in the row array (see eventsThreadRows.syncThreadActivity).
+	UpdatedAt *int64 `json:"updatedAt,omitempty"`
 }
 
+// The Action vocabulary, spelled once so an emit site cannot invent a value
+// the frontend's applier does not handle.
+const (
+	ThreadActionFull     = "full"
+	ThreadActionPatch    = "patch"
+	ThreadActionListed   = "listed"
+	ThreadActionUnlisted = "unlisted"
+	ThreadActionDeleted  = "deleted"
+)
+
 func (r *Router) emitThreadPatch(threadID string, patch ThreadUpdateEvent) {
-	patch.Action = "patch"
+	patch.Action = ThreadActionPatch
 	patch.ID = threadID
 	r.emit(eventchan.ThreadUpdated, patch)
+}
+
+// emitThreadRow re-reads the thread through the standard projection and
+// broadcasts it as a `full` row — the triage-side twin of
+// App.broadcastThreadRow, so the two halves of the app announce a changed
+// row the same way.
+//
+// It exists because `threadColumns` computes derived sidebar state
+// (hasActionableProposedPlan, hasIncompleteTurn) that a turn can change
+// from inside triage, and `provider:item_event` is narrowed to the threads
+// a connection is watching — so a client with no pane on this thread would
+// otherwise never learn the plan is sitting there.
+//
+// The projection's subqueries make this heavier than emitThreadPatch's
+// field patch, which is why it is reserved for settle-frequency moments (a
+// plan landing) and never called per streaming chunk. Log-and-continue on a
+// read failure: the write that prompted the broadcast already succeeded and
+// the sidebar converges on the next ListThreads.
+func (r *Router) emitThreadRow(threadID string) {
+	if r.store == nil || threadID == "" {
+		return
+	}
+	row, err := r.store.GetThread(threadID)
+	if err != nil {
+		log.Printf("triage: read thread row for %s: %v", threadID, err)
+		return
+	}
+	r.emit(eventchan.ThreadUpdated, ThreadUpdateEvent{Action: ThreadActionFull, Thread: &row})
+}
+
+// ThreadErrorNoticeEvent announces that a row of kind `error` was
+// persisted and emitted for a thread. Ids only: the prose is on the item
+// itself, which the panes that want it already receive.
+type ThreadErrorNoticeEvent struct {
+	ThreadID string `json:"threadId"`
+	ItemID   string `json:"itemId"`
+}
+
+// emitErrorNotice fires the wildcard companion to an emitted `error`
+// upsert, so the sidebar's Failed pill reaches threads this client is not
+// watching. Called from the ONE persist funnel that carries error rows —
+// every no-turn_completed error class (non-fatal wire errors, orphan error
+// results, ambiguous-turn-start timeout, flush-dispatch failure, steer
+// failure) reaches the store through PersistItem.
+//
+// Two exclusions are behavior, not omission:
+//
+//   - `api_error` rows do NOT notify. The pill has always matched kind
+//     `error` alone; `api_error` renders its own actionable copy in the
+//     transcript (Add credits, Run /login) and never coloured the sidebar.
+//   - Quiet persists do not notify, for the same reason they emit no item
+//     upsert: the row is reserving a timeline position, not reporting.
+func (r *Router) emitErrorNotice(item store.Item) {
+	if item.Kind != ItemKindError || item.ThreadID == "" {
+		return
+	}
+	r.emit(eventchan.ThreadErrorNotice, ThreadErrorNoticeEvent{
+		ThreadID: item.ThreadID,
+		ItemID:   item.ID,
+	})
 }
 
 // bumpThreadActivity is the single chokepoint for advancing
@@ -1110,6 +1205,10 @@ func (r *Router) emitThreadPatch(threadID string, patch ThreadUpdateEvent) {
 // already succeeded; sidebar ordering is best-effort. The nil-store
 // short-circuit supports tests that construct a Router with no store
 // (e.g. interactive_requests_test.go).
+//
+// The user_text boundary goes through bumpThreadActivityForUserText,
+// which adds the wire announcement; turn settle and approval / user-input
+// call this one directly because their own channels already carry it.
 func (r *Router) bumpThreadActivity(threadID string, at int64, reason string) {
 	if r.store == nil || threadID == "" {
 		return
@@ -1117,6 +1216,29 @@ func (r *Router) bumpThreadActivity(threadID string, at int64, reason string) {
 	if err := r.store.MarkThreadActivity(threadID, at); err != nil {
 		log.Printf("triage: mark thread activity on %s for %s: %v", reason, threadID, err)
 	}
+}
+
+// bumpThreadActivityForUserText is the user_text half of that chokepoint:
+// the bump plus the `thread:updated` patch that tells the sidebar about it.
+//
+// The patch is tied to the BUMP rather than added inside bumpThreadActivity
+// because the other two bump boundaries already announce themselves —
+// `provider:turn_completed` and the approval / user-input request channels
+// are wildcard, and their handlers do the same sidebar reordering. Only the
+// user_text bump had no carrier of its own: it rode `countsAsActivity` on
+// the item upsert, which a client that is not watching this thread no
+// longer receives.
+//
+// Failures do not suppress the patch. `MarkThreadActivity` is best-effort
+// (log and continue), and the item upsert it used to ride was emitted
+// regardless too, so suppressing here would make the sidebar quieter than
+// it is today on exactly the write that already went wrong.
+func (r *Router) bumpThreadActivityForUserText(threadID string, at int64) {
+	if threadID == "" {
+		return
+	}
+	r.bumpThreadActivity(threadID, at, "user_text persist")
+	r.emitThreadPatch(threadID, ThreadUpdateEvent{UpdatedAt: &at})
 }
 
 func userTextCountsAsThreadActivity(item store.Item) bool {
@@ -1177,9 +1299,9 @@ func (r *Router) persistUserPromptAtTurnHead(item store.Item) (store.Item, error
 	}
 	countsAsActivity := userTextCountsAsThreadActivity(item)
 	if countsAsActivity {
-		r.bumpThreadActivity(persisted.ThreadID, persisted.UpdatedAt, "user_text persist")
+		r.bumpThreadActivityForUserText(persisted.ThreadID, persisted.UpdatedAt)
 	}
-	r.emitItemUpsertWithActivity(persisted, countsAsActivity)
+	r.emitItemUpsert(persisted)
 	r.metrics.ItemsPersisted.Add(context.Background(), 1,
 		metric.WithAttributes(attribute.String("kind", persisted.Kind)))
 	return persisted, nil
@@ -1217,10 +1339,11 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 	// are timeline history, not activity that should reshuffle the
 	// sidebar.
 	if countsAsActivity {
-		r.bumpThreadActivity(persisted.ThreadID, persisted.UpdatedAt, "user_text persist")
+		r.bumpThreadActivityForUserText(persisted.ThreadID, persisted.UpdatedAt)
 	}
 	if emit {
-		r.emitItemUpsertWithActivity(persisted, countsAsActivity)
+		r.emitItemUpsert(persisted)
+		r.emitErrorNotice(persisted)
 	}
 	r.metrics.ItemsPersisted.Add(context.Background(), 1,
 		metric.WithAttributes(attribute.String("kind", persisted.Kind)))
@@ -1257,10 +1380,10 @@ func (r *Router) persistItemWithPayloadAppend(item store.Item, payloadID string,
 		return err
 	}
 	if countsAsActivity {
-		r.bumpThreadActivity(persisted.ThreadID, persisted.UpdatedAt, "user_text persist")
+		r.bumpThreadActivityForUserText(persisted.ThreadID, persisted.UpdatedAt)
 	}
 	if emit {
-		r.emitItemUpsertWithActivity(persisted, countsAsActivity)
+		r.emitItemUpsert(persisted)
 	}
 	r.metrics.ItemsPersisted.Add(context.Background(), 1,
 		metric.WithAttributes(attribute.String("kind", persisted.Kind)))

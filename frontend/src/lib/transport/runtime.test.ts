@@ -16,6 +16,11 @@ const { mockClient } = vi.hoisted(() => ({
     callByID: vi.fn<(id: number, args: unknown[]) => Promise<unknown>>(),
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn<(channel: string, handler: (data: unknown) => void) => () => void>(),
+    installStepUpProver: vi.fn(),
+    setWatchedThreads: vi.fn(),
+    getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
+    onStatusChange: vi.fn(() => () => undefined),
+    close: vi.fn(),
   },
 }));
 
@@ -32,6 +37,23 @@ vi.mock('./wsClient', () => ({
 }));
 
 import { Call, CancellablePromise, Create, Events } from './runtime';
+import {
+  __attachBackendForTest,
+  __resetBackendsForTest,
+  __setHomeClientForTest,
+  withBackendTarget,
+} from './backends';
+import {
+  __resetEntityIndexForTest,
+  subscriptionBackend,
+  terminalBackend,
+} from './entityIndex';
+import { setBackendIdentityFromBootstrap } from './backendIdentity';
+
+// `src/test/setup.ts` loads the real `wsClient` before this file's
+// `vi.mock` registers, so the registry's home entry captured it. Point it
+// at the fake instead — the seam exists for exactly this ordering.
+__setHomeClientForTest(mockClient as unknown as Parameters<typeof __setHomeClientForTest>[0]);
 import { CancellablePromise as MockCancellablePromise } from '../../test/mocks/wailsio-runtime';
 
 beforeEach(() => {
@@ -64,24 +86,66 @@ describe('Call', () => {
 });
 
 describe('Events.On', () => {
-  it('subscribes via wsClient and invokes the handler with {name, data}', () => {
+  function captureSubscription(): { deliver: (data: unknown) => void; unsubscribe: () => void } {
     let captured: ((data: unknown) => void) | null = null;
     const unsubscribe = vi.fn();
     mockClient.subscribe.mockImplementation((_channel, handler) => {
       captured = handler;
       return unsubscribe;
     });
+    return {
+      deliver: (data: unknown) => {
+        if (!captured) throw new Error('nothing subscribed');
+        captured(data);
+      },
+      unsubscribe,
+    };
+  }
+
+  it('subscribes via the transport and invokes the handler with {name, data, origin}', () => {
+    const subscription = captureSubscription();
 
     const handler = vi.fn();
     const off = Events.On('thread:updated', handler);
     expect(mockClient.subscribe).toHaveBeenCalledWith('thread:updated', expect.any(Function));
-    expect(captured).not.toBeNull();
 
-    captured!({ id: 'thread-a' });
-    expect(handler).toHaveBeenCalledWith({ name: 'thread:updated', data: { id: 'thread-a' } });
+    subscription.deliver({ id: 'thread-a' });
+    expect(handler).toHaveBeenCalledWith({
+      name: 'thread:updated',
+      data: { id: 'thread-a' },
+      // No manifest identity in this test: unknown origin, not a wildcard.
+      origin: { backendId: '' },
+    });
 
     off();
-    expect(unsubscribe).toHaveBeenCalled();
+    expect(subscription.unsubscribe).toHaveBeenCalled();
+  });
+
+  it('stamps each event with the backend the connection identified as', () => {
+    setBackendIdentityFromBootstrap('62c8a1de-0a3f-4f4b-9d0a-2b6b1a5b0f11', 'gen-1');
+    const subscription = captureSubscription();
+
+    const handler = vi.fn<(ev: { origin?: { backendId: string } }) => void>();
+    Events.On('thread:updated', handler);
+    subscription.deliver({ id: 'thread-a' });
+
+    expect(handler.mock.calls[0]?.[0].origin).toEqual({
+      backendId: '62c8a1de-0a3f-4f4b-9d0a-2b6b1a5b0f11',
+    });
+  });
+
+  it('hands every event of one connection the same origin object', () => {
+    setBackendIdentityFromBootstrap('62c8a1de-0a3f-4f4b-9d0a-2b6b1a5b0f11', 'gen-1');
+    const subscription = captureSubscription();
+
+    const handler = vi.fn<(ev: { origin?: { backendId: string } }) => void>();
+    Events.On('thread:updated', handler);
+    subscription.deliver({ id: 'a' });
+    subscription.deliver({ id: 'b' });
+
+    // Stamping is a property write, not an allocation: a streaming
+    // channel must not mint an origin object per frame.
+    expect(handler.mock.calls[0]?.[0].origin).toBe(handler.mock.calls[1]?.[0].origin);
   });
 });
 
@@ -198,5 +262,80 @@ describe('CancellablePromise', () => {
   it('static cancel() resolves to undefined rather than rejecting', async () => {
     await expect(CancellablePromise.cancel()).resolves.toBeUndefined();
     await expect(MockCancellablePromise.cancel()).resolves.toBeUndefined();
+  });
+});
+
+
+// A pinned call is still a call that can MINT an id. The pin names the
+// machine, which is exactly the fact the index wants, so the pinned path
+// has to index its answer the way the routed path does. Skipping it left
+// the minted id unknown, and the NEXT call about it resolved home.
+describe('Call.ByID indexes what a pinned call answers with', () => {
+  const REMOTE = 'laptop';
+  const GIT_STATUS_SUBSCRIBE = 3282404643;
+  const LIST_TERMINALS = 2445206506;
+
+  function remoteClient(result: unknown) {
+    const callByID = vi.fn(async () => result);
+    __attachBackendForTest(
+      {
+        id: REMOTE,
+        backendId: '99999999-8888-4777-8666-555555555555',
+        name: 'Laptop',
+        wsUrl: 'ws://localhost:3000/ws/backend/laptop',
+        bootstrapUrl: '/bootstrap/laptop.json',
+      },
+      {
+        callByID,
+        callByName: vi.fn(),
+        subscribe: vi.fn(() => () => undefined),
+        installStepUpProver: vi.fn(),
+    setWatchedThreads: vi.fn(),
+        setLease: vi.fn(),
+        getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
+        onStatusChange: vi.fn(() => () => undefined),
+        getHello: vi.fn(() => null),
+        onHelloChange: vi.fn(() => () => undefined),
+        close: vi.fn(),
+      } as never,
+    );
+    return callByID;
+  }
+
+  beforeEach(() => {
+    __setHomeClientForTest(mockClient as unknown as Parameters<typeof __setHomeClientForTest>[0]);
+    __resetBackendsForTest();
+    __resetEntityIndexForTest();
+  });
+
+  afterEach(() => {
+    __resetBackendsForTest();
+    __resetEntityIndexForTest();
+  });
+
+  it('notes a single minted id against the pinned backend', async () => {
+    const callByID = remoteClient({ id: 'sub-1' });
+
+    await withBackendTarget(REMOTE, () => Call.ByID(GIT_STATUS_SUBSCRIBE, 'p1'));
+
+    expect(callByID).toHaveBeenCalledTimes(1);
+    expect(subscriptionBackend('sub-1')).toBe(REMOTE);
+  });
+
+  it('notes every row of a pinned list call', async () => {
+    remoteClient([{ terminalID: 'term-a' }, { terminalID: 'term-b' }]);
+
+    await withBackendTarget(REMOTE, () => Call.ByID(LIST_TERMINALS, 't1'));
+
+    expect(terminalBackend('term-a')).toBe(REMOTE);
+    expect(terminalBackend('term-b')).toBe(REMOTE);
+  });
+
+  it('hands the caller the result untouched', async () => {
+    remoteClient({ id: 'sub-1', extra: 7 });
+
+    const result = await withBackendTarget(REMOTE, () => Call.ByID(GIT_STATUS_SUBSCRIBE, 'p1'));
+
+    expect(result).toEqual({ id: 'sub-1', extra: 7 });
   });
 });

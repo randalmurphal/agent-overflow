@@ -1,11 +1,13 @@
 // session-import:progress event domain: per-row outcomes and the terminal
 // frame of an import run. Fan-in target of events.ts's setupEventListeners.
 //
-// The channel is loopback-only on the wire, but this handler still validates
-// every field: the store's fold is what drives a progress bar, a close, and
-// a toast that claims threads were created, and a malformed frame must not
-// be able to claim any of that. Same posture as events.ts's system:stats
-// guard — reject the frame, never partially accept it.
+// The channel reaches any client whose session holds `threads:operate` (the
+// grant ListImportableSessions and ImportSessions already take), and this
+// handler validates every field regardless: the store's fold is what drives a
+// progress bar, a close, and a toast that claims threads were created, and a
+// malformed frame must not be able to claim any of that. Same posture as
+// events.ts's system:stats guard — reject the frame, never partially accept
+// it.
 //
 // A dropped socket is deliberately NOT a terminal condition here. The
 // transport replays every channel's missed frames on reconnect

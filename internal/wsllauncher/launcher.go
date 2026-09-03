@@ -36,6 +36,28 @@ const DefaultBootstrapPrefix = "__AO_BOOTSTRAP__:"
 // passing a flag the other rejects.
 const ResetTransportPortFlag = "reset-transport-port"
 
+// PageURLPath is the backend transport route that answers a page URL.
+// The launcher asks it twice over a document's life: once for the bare
+// URL to navigate to (the reload keybinding, since the boot URL is a
+// one-shot string the backend assembled) and once per loaded document
+// for the one-time ticket that document exchanges for its cookie.
+//
+// PageURLWebviewQuery selects the second answer shape: a caller that
+// owns the window it is navigating gets the URL and the ticket as
+// separate JSON fields (pagehost.Answer) rather than one ticketed URL,
+// so no credential ever reaches a URL the launcher logs or a window
+// diagnostic reports.
+//
+// Both live here for the same reason ResetTransportPortFlag does: they
+// are a contract between two binaries built from this repo, and
+// restating them keeps the Windows launcher from linking the transport
+// server it never runs. A drift guard in this package's tests compares
+// them to their transport-side originals.
+const (
+	PageURLPath         = "/pageurl"
+	PageURLWebviewQuery = "?host=webview"
+)
+
 // ErrNotSupported is the sentinel returned by every Windows-only entry
 // point on macOS and Linux hosts. The wsllauncher package compiles on
 // non-Windows so the Wails build for the desktop binary can import
@@ -55,14 +77,27 @@ var ErrNotSupported = errors.New("wsllauncher: only available on Windows")
 // Bootstrap is what the WSL backend writes back to the launcher.
 // Mirrors the JSON the Linux main.go emits when --print-url-fd is set.
 type Bootstrap struct {
-	Port  int    `json:"port"`
+	Port int `json:"port"`
+	// Token is the backend's session credential, for the launcher's own
+	// requests: the connectivity probe and the notification socket. It is
+	// never put on the page URL — a browser is served a one-time page
+	// ticket instead (internal/transport/credential.go).
 	Token string `json:"token"`
 	// PID is the Linux backend pid. It is diagnostic identity evidence for
 	// profiled Windows/WSL harness launches. Older backends omit it.
 	PID int `json:"pid,omitempty"`
+	// PageURL is the fully assembled URL the WebView2 navigates to. It
+	// carries no credential: the launcher owns that window, so every
+	// document it loads is handed its one-time ticket by injection
+	// (internal/pagehost). Assembled by the backend because the client id
+	// and page marker on it are the backend's to know; the launcher
+	// navigates to it as given rather than rebuilding the rule on the
+	// Windows side. A second navigation (the reload keybinding) asks the
+	// backend's transport.PageURLPath route for a fresh one.
+	PageURL string `json:"pageUrl"`
 	// ClientID is the backend installation's durable UI-state client
-	// identity (main.go ensureClientID). The launcher forwards it onto
-	// the webview URL as ?cid=. Optional: older backends omit it.
+	// identity (main.go ensureClientID). It already rides PageURL as
+	// ?cid=; it stays here for the launcher's diagnostics.
 	ClientID   string `json:"clientId"`
 	PageMarker string `json:"pageMarker"`
 }
@@ -317,7 +352,7 @@ func readBootstrapLine(ctx context.Context, r io.Reader, prefix string, dropFn f
 				resCh <- result{err: fmt.Errorf("decode bootstrap %q: %w", payload, err)}
 				return
 			}
-			if bs.Port <= 0 || bs.Token == "" {
+			if bs.Port <= 0 || bs.Token == "" || bs.PageURL == "" {
 				resCh <- result{err: fmt.Errorf("invalid bootstrap: %+v", bs)}
 				return
 			}

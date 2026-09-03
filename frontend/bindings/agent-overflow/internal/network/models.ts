@@ -22,29 +22,97 @@ export class Settings {
     "bindAll": boolean;
 
     /**
-     * URL is the http://host:port/?t=<token> URL the user can paste
-     * into a remote browser. Server-derived: when BindAll is true
-     * and a non-loopback interface IP is discoverable, the URL
+     * ListenPort is the port the transport binds, or 0 for automatic
+     * (settings.NetworkSettings.ListenPort argues the choice). It is a
+     * PREFERENCE, not an observation: the port actually bound right now
+     * is the authority in URL below, and the two differ for exactly as
+     * long as it takes a saved change to rebind.
+     */
+    "listenPort": number;
+
+    /**
+     * CanonicalDomain is the one HTTPS name this backend answers to
+     * (docs/specs/remote-access.md §7). Bare hostname, no scheme, no
+     * port. Empty means the backend is reached by address only.
+     */
+    "canonicalDomain": string;
+
+    /**
+     * ACMEDNSHook is the argv of the command that publishes and removes
+     * the DNS-01 challenge record. Empty means this backend never orders
+     * a certificate — the name is served by whatever terminates in front
+     * of it, or not over TLS at all.
+     */
+    "acmeDnsHook": string[];
+
+    /**
+     * ExternalCertFile / ExternalKeyFile are absolute paths to a
+     * certificate this backend did not obtain. Both or neither. The pair
+     * wins over issuance: with it set, nothing is ordered.
+     */
+    "externalCertFile": string;
+    "externalKeyFile": string;
+
+    /**
+     * TailnetEnabled asks this backend to join the owner's tailnet as its
+     * own node (docs/specs/remote-access.md §7). Off by default; turning
+     * it on is what makes the app reachable from outside the LAN without
+     * a public listener or a tunnel.
+     */
+    "tailnetEnabled": boolean;
+
+    /**
+     * TailnetControlURL is the coordination server the node registers
+     * with. Empty means the Tailscale service, which is what nearly every
+     * install wants; a self-hosted control plane is why it is settable.
+     */
+    "tailnetControlUrl": string;
+
+    /**
+     * TLS is read-only status, filled by the app from what is actually
+     * loaded. Ignored on Set — nothing here is a preference.
+     */
+    "tls": TLSStatus;
+
+    /**
+     * Tailnet is read-only status about the node, on the same terms as
+     * TLS: every field is observed, none is a preference, and the screen
+     * re-reads GetNetworkSettings rather than subscribing.
+     */
+    "tailnet": TailnetStatus;
+
+    /**
+     * URL is the http://host:port/?t=<ticket> URL the user can paste
+     * into a remote browser. The `t` is a ONE-TIME page ticket, spent
+     * by that browser's first bootstrap exchange for a cookie, so a
+     * copied URL loads the page once and grants nothing further — a
+     * networked page still has to pair. Server-derived: when BindAll is
+     * true and a non-loopback interface IP is discoverable, the URL
      * points at the LAN IP; otherwise it falls back to the server's
      * own Addr.
      */
     "url": string;
 
     /**
-     * Token is the current ephemeral auth token. Surfaced for
-     * debugging / advanced wiring; the user shouldn't normally need
-     * to touch it directly.
+     * Token is this launch's session credential — what a client that is
+     * not a browser presents (`agent-overflow --connect
+     * ws://host:port/ws?token=<value>`, the `ao-harness` CLI). Browsers
+     * never use it: the URL above carries a one-time page ticket instead
+     * and the browser ends up holding a cookie. Surfaced for debugging /
+     * advanced wiring; the user shouldn't normally need to touch it.
      */
     "token": string;
 
     /**
      * Insecure is true when the URL above traverses an untrusted
-     * network in cleartext. Today that's any LAN bind: the URL is
-     * http://, the token is in the query string, and a network
-     * observer on the same Wi-Fi can read both. The frontend
-     * renders a warning banner when Insecure is true so the user
-     * knows to front the bind with Tailscale Serve, an SSH tunnel,
-     * or a reverse proxy before sharing.
+     * network in cleartext. That is any LAN bind whose URL is still
+     * http://: the ticket on it and every byte the paired device
+     * exchanges afterwards are readable by anything on the same
+     * Wi-Fi. The frontend renders a warning banner when Insecure is
+     * true so the user knows to front the bind with Tailscale Serve,
+     * an SSH tunnel, or a reverse proxy before sharing. A URL that came
+     * out https:// — which happens only when a certificate for the
+     * canonical domain is actually loaded — is not flagged.
      */
     "insecure": boolean;
 
@@ -52,6 +120,33 @@ export class Settings {
     constructor($$source: Partial<Settings> = {}) {
         if (!("bindAll" in $$source)) {
             this["bindAll"] = false;
+        }
+        if (!("listenPort" in $$source)) {
+            this["listenPort"] = 0;
+        }
+        if (!("canonicalDomain" in $$source)) {
+            this["canonicalDomain"] = "";
+        }
+        if (!("acmeDnsHook" in $$source)) {
+            this["acmeDnsHook"] = [];
+        }
+        if (!("externalCertFile" in $$source)) {
+            this["externalCertFile"] = "";
+        }
+        if (!("externalKeyFile" in $$source)) {
+            this["externalKeyFile"] = "";
+        }
+        if (!("tailnetEnabled" in $$source)) {
+            this["tailnetEnabled"] = false;
+        }
+        if (!("tailnetControlUrl" in $$source)) {
+            this["tailnetControlUrl"] = "";
+        }
+        if (!("tls" in $$source)) {
+            this["tls"] = (new TLSStatus());
+        }
+        if (!("tailnet" in $$source)) {
+            this["tailnet"] = (new TailnetStatus());
         }
         if (!("url" in $$source)) {
             this["url"] = "";
@@ -70,7 +165,220 @@ export class Settings {
      * Creates a new Settings instance from a string or object.
      */
     static createFrom($$source: any = {}): Settings {
+        const $$createField3_0 = $$createType0;
+        const $$createField8_0 = $$createType1;
+        const $$createField9_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("acmeDnsHook" in $$parsedSource) {
+            $$parsedSource["acmeDnsHook"] = $$createField3_0($$parsedSource["acmeDnsHook"]);
+        }
+        if ("tls" in $$parsedSource) {
+            $$parsedSource["tls"] = $$createField8_0($$parsedSource["tls"]);
+        }
+        if ("tailnet" in $$parsedSource) {
+            $$parsedSource["tailnet"] = $$createField9_0($$parsedSource["tailnet"]);
+        }
         return new Settings($$parsedSource as Partial<Settings>);
     }
 }
+
+/**
+ * TLSStatus is what the Network settings screen shows about the
+ * certificate half. Read-only in both directions: every field is
+ * observed, none is a preference, and there is no push channel — the
+ * screen re-reads GetNetworkSettings.
+ */
+export class TLSStatus {
+    /**
+     * Serving is one of the constants above.
+     */
+    "serving": string;
+
+    /**
+     * NotAfter is when the certificate for the canonical domain expires,
+     * in unix milliseconds. Zero when none is loaded. The self-signed
+     * certificate's expiry is deliberately not reported here: it is ten
+     * years out and nothing renews it.
+     */
+    "notAfter": number;
+
+    /**
+     * Renewing is true while an issuance or renewal is in flight. The
+     * screen polls while it is set, which is why issuance is not an RPC
+     * that blocks — a DNS-01 round trip outlives any call timeout.
+     */
+    "renewing": boolean;
+
+    /**
+     * LastError is the last issuance or load failure, verbatim and
+     * naming its stage. Cleared by the next success. Errors are
+     * user-facing state, not log entries.
+     */
+    "lastError": string;
+
+    /**
+     * SelfSignedFingerprint is the `sha256:<hex>` a paired Go client
+     * pins, the same string the pairing payload carries. Shown so the
+     * two can be compared by eye when a pin is refused.
+     */
+    "selfSignedFingerprint": string;
+
+    /** Creates a new TLSStatus instance. */
+    constructor($$source: Partial<TLSStatus> = {}) {
+        if (!("serving" in $$source)) {
+            this["serving"] = "";
+        }
+        if (!("notAfter" in $$source)) {
+            this["notAfter"] = 0;
+        }
+        if (!("renewing" in $$source)) {
+            this["renewing"] = false;
+        }
+        if (!("lastError" in $$source)) {
+            this["lastError"] = "";
+        }
+        if (!("selfSignedFingerprint" in $$source)) {
+            this["selfSignedFingerprint"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TLSStatus instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TLSStatus {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TLSStatus($$parsedSource as Partial<TLSStatus>);
+    }
+}
+
+/**
+ * TailnetStatus is what the Network settings screen shows about the
+ * tailnet node. Read-only in both directions, like TLSStatus.
+ * 
+ * The state vocabulary is Tailscale's own, carried verbatim rather than
+ * mapped onto a local set. Mapping would mean a table that has to be
+ * extended before this backend can even describe a state its dependency
+ * added, and "the node reports a state this build does not have a
+ * sentence for" is better shown than swallowed.
+ */
+export class TailnetStatus {
+    /**
+     * Running is true when the node is on the tailnet and answering.
+     * Derived from State, and carried separately so the screen does not
+     * have to know which spelling means "up".
+     */
+    "running": boolean;
+
+    /**
+     * State is the node's backend state — "NeedsLogin", "Starting",
+     * "Running", "Stopped". Empty when the feature is off, which is not
+     * a state the node can be in.
+     */
+    "state": string;
+
+    /**
+     * AuthURL is the sign-in link to open while the node waits for the
+     * owner to approve it, and empty otherwise. Single use: it is
+     * published only while it is live, and cleared the moment the node
+     * joins.
+     */
+    "authUrl": string;
+
+    /**
+     * DNSName is the node's MagicDNS name — what the owner types to
+     * reach this backend from any of their devices.
+     */
+    "dnsName": string;
+
+    /**
+     * IPs are the node's tailnet addresses. Shown because a tailnet with
+     * MagicDNS turned off has nothing but these.
+     */
+    "ips": string[];
+
+    /**
+     * URL is the address to open on another device on the same tailnet,
+     * carrying a one-time page ticket like the LAN URL above.
+     * 
+     * There is deliberately no Insecure flag beside it. An http:// URL
+     * here is not the same act as an http:// URL on a LAN: every byte of
+     * it crosses an encrypted, authenticated WireGuard link between two
+     * devices the owner enrolled, so warning about it would teach the
+     * user to ignore a warning that does mean something on the LAN URL.
+     */
+    "url": string;
+
+    /**
+     * HTTPS is true when the node also answers TLS on its ts.net name,
+     * which needs HTTPS enabled in the tailnet's admin panel. False
+     * means the URL above is http:// and the reason is the tailnet's
+     * settings, not this backend's.
+     */
+    "https": boolean;
+
+    /**
+     * HasState is true when a node identity exists on disk. It is what
+     * makes "forget this node" offerable only when there is something to
+     * forget — and, while the feature is off, the only sign that this
+     * backend is still a device in the owner's tailnet admin panel.
+     */
+    "hasState": boolean;
+
+    /**
+     * LastError is the last node failure, verbatim. Cleared by the next
+     * success. Errors are user-facing state, not log entries.
+     */
+    "lastError": string;
+
+    /** Creates a new TailnetStatus instance. */
+    constructor($$source: Partial<TailnetStatus> = {}) {
+        if (!("running" in $$source)) {
+            this["running"] = false;
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("authUrl" in $$source)) {
+            this["authUrl"] = "";
+        }
+        if (!("dnsName" in $$source)) {
+            this["dnsName"] = "";
+        }
+        if (!("ips" in $$source)) {
+            this["ips"] = [];
+        }
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+        if (!("https" in $$source)) {
+            this["https"] = false;
+        }
+        if (!("hasState" in $$source)) {
+            this["hasState"] = false;
+        }
+        if (!("lastError" in $$source)) {
+            this["lastError"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TailnetStatus instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TailnetStatus {
+        const $$createField4_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("ips" in $$parsedSource) {
+            $$parsedSource["ips"] = $$createField4_0($$parsedSource["ips"]);
+        }
+        return new TailnetStatus($$parsedSource as Partial<TailnetStatus>);
+    }
+}
+
+// Private type creation functions
+const $$createType0 = $Create.Array($Create.Any);
+const $$createType1 = TLSStatus.createFrom;
+const $$createType2 = TailnetStatus.createFrom;

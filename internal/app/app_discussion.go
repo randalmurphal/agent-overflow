@@ -10,40 +10,86 @@ import (
 )
 
 // ListDiscussions returns persisted discussion definitions for the given scope.
+//
+//ao:scope threads:read
+//ao:route selected
 func (a *App) ListDiscussions(scope string) ([]store.DiscussionDefinition, error) {
 	return a.discussionService().List(scope)
 }
 
+//ao:scope threads:read
 func (a *App) ListDiscussionsForThread(threadID string) ([]store.DiscussionDefinition, error) {
 	return a.discussionService().ListForThread(threadID)
 }
 
 // GetDiscussion returns a persisted discussion definition by name and scope.
+//
+//ao:scope threads:read
+//ao:route selected
 func (a *App) GetDiscussion(name, scope string) (store.DiscussionDefinition, error) {
 	return a.discussionService().Get(name, scope)
 }
 
 // CreateDiscussion validates and persists a discussion definition.
+//
+//ao:scope threads:operate
+//ao:route selected
 func (a *App) CreateDiscussion(def store.DiscussionDefinition) error {
-	return a.discussionService().Create(def)
+	if err := a.discussionService().Create(def); err != nil {
+		return err
+	}
+	a.announceDiscussionDefinitionsChanged()
+	return nil
 }
 
 // UpdateDiscussion replaces an existing persisted discussion definition.
+//
+//ao:scope threads:operate
+//ao:route selected
 func (a *App) UpdateDiscussion(prevName, prevScope string, def store.DiscussionDefinition) error {
-	return a.discussionService().Update(prevName, prevScope, def)
+	if err := a.discussionService().Update(prevName, prevScope, def); err != nil {
+		return err
+	}
+	a.announceDiscussionDefinitionsChanged()
+	return nil
 }
 
 // DeleteDiscussion removes a persisted discussion definition.
+//
+//ao:scope threads:operate
+//ao:route selected
 func (a *App) DeleteDiscussion(name, scope string) error {
-	return a.discussionService().Delete(name, scope)
+	if err := a.discussionService().Delete(name, scope); err != nil {
+		return err
+	}
+	a.announceDiscussionDefinitionsChanged()
+	return nil
+}
+
+// announceDiscussionDefinitionsChanged nudges every connected client to
+// re-read the definition list after one was created, renamed, edited or
+// deleted.
+//
+// Payload-less on purpose, the same shape workflow:definitions-changed
+// carries: the list is read by SCOPE (and a rename moves a definition between
+// names), so a frame naming one row could not say what any receiver's list now
+// holds. Receivers re-read through ListDiscussions, which is the grant the
+// channel is gated on.
+func (a *App) announceDiscussionDefinitionsChanged() {
+	a.emit(eventchan.DiscussionDefinitionsChanged, nil)
 }
 
 // StartDiscussion creates a deliberation channel and marks the thread as operating in discussion mode.
+//
+//ao:scope threads:operate
 func (a *App) StartDiscussion(threadID, discussionName string) error {
 	return a.discussionService().Start(threadID, discussionName)
 }
 
 // GetChannelMessages returns ordered messages for a discussion channel.
+//
+//ao:scope threads:read
+//ao:route selected
 func (a *App) GetChannelMessages(channelID string, afterSeq, limit int) ([]store.ChannelMessage, error) {
 	return a.discussionService().GetMessages(channelID, afterSeq, limit)
 }
@@ -54,6 +100,9 @@ func (a *App) GetChannelMessages(channelID string, afterSeq, limit int) ([]store
 // with role/provider/model. Rebuilds the FSM from SQLite when the
 // process restarted since the channel was opened (deliberationForChannel).
 // Read-only — same LAN-safety class as GetChannelMessages.
+//
+//ao:scope threads:read
+//ao:route selected
 func (a *App) GetChannelState(channelID string) (ChannelStatePayload, error) {
 	state, err := a.discussionService().ChannelState(channelID)
 	return projectChannelState(state), err
@@ -71,11 +120,14 @@ func (a *App) GetChannelState(channelID string) (ChannelStatePayload, error) {
 // next-turn context automatically (see promptDiscussionSpeaker's
 // unseen-messages window).
 //
-// PostChannelMessage now has a side-effecting path (it can dispatch a
+// PostChannelMessage has a side-effecting path (it can dispatch a
 // prompt into a participant's live provider session via
-// promptDiscussionSpeakerAsync → sendMessage), so it is classified
-// LocalOnly in internal/transport/internalmethods.go alongside
-// SendMessage — see the category-2 comment there.
+// promptDiscussionSpeakerAsync → sendMessage), so it carries
+// threads:operate rather than a read scope — the same annotation
+// SendMessage does, for the same reason.
+//
+//ao:scope threads:operate
+//ao:route selected
 func (a *App) PostChannelMessage(channelID, content string) (store.ChannelMessage, error) {
 	return a.discussionService().Post(channelID, content)
 }
@@ -96,6 +148,9 @@ func (a *App) PostChannelMessage(channelID, content string) (store.ChannelMessag
 // channel is no longer open (syncDiscussionTurn's ErrChannelNotOpen
 // handling in app_discussion_runtime.go) — the reply stays visible only
 // in that participant's own child thread.
+//
+//ao:scope threads:operate
+//ao:route selected
 func (a *App) ConcludeDiscussion(channelID string) (ChannelStatePayload, error) {
 	state, err := a.discussionService().Conclude(channelID)
 	return projectChannelState(state), err

@@ -39,6 +39,8 @@ type PayloadContent struct {
 
 // GetPayloadPreview serves a payload's leading bytes, with the payload's
 // persisted highlight spans attached for diff kinds.
+//
+//ao:scope threads:read
 func (a *App) GetPayloadPreview(threadID string, payloadID string, maxBytes int) (PayloadPreview, error) {
 	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
 		return PayloadPreview{}, err
@@ -60,6 +62,7 @@ func (a *App) GetPayloadPreview(threadID string, payloadID string, maxBytes int)
 	}, nil
 }
 
+//ao:scope threads:read
 func (a *App) GetPayloadChunk(threadID string, payloadID string, offset int, maxBytes int) (PayloadChunk, error) {
 	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
 		return PayloadChunk{}, err
@@ -84,6 +87,8 @@ func (a *App) GetPayloadChunk(threadID string, payloadID string, offset int, max
 // highlight spans attached for diff kinds. The caller must supply the
 // owning thread so payload ids cannot be read outside the thread
 // timeline that references them.
+//
+//ao:scope threads:read
 func (a *App) GetPayloadData(threadID string, payloadID string) (PayloadContent, error) {
 	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
 		return PayloadContent{}, err
@@ -122,6 +127,7 @@ func (a *App) resolveSavePayloadPicker() savePayloadPicker {
 	return a.saveDialog
 }
 
+//ao:scope host
 func (a *App) SavePayloadToFile(threadID string, payloadID string) (string, error) {
 	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
 		return "", err

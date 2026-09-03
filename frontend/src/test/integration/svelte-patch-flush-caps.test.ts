@@ -1,5 +1,5 @@
 // Regression test for the "flush-loop-caps" hunk of
-// frontend/patches/svelte@5.56.8.patch.
+// frontend/patches/svelte@5.57.0.patch.
 //
 // Pristine svelte has two unbounded synchronous flush loops:
 //
@@ -140,7 +140,7 @@ describe('svelte patch: flush loops are capped', () => {
     // Present in production builds too, deliberately: there is no
     // svelte.dev/e/ page for this code, and the captured record is the whole
     // point of the hunk.
-    expect(error.message).toContain('patches/svelte@5.56.8.patch');
+    expect(error.message).toContain('patches/svelte@5.57.0.patch');
     expect(error.message).toContain('flush-loop-caps');
   });
 
@@ -296,7 +296,7 @@ describe('svelte patch: an aborted flush is recorded in ui-trace', () => {
     expect(records[0].kind).toBe('error');
     expect(records[0].message).toContain('flush_loop_exceeded');
     expect(records[0].message).toContain('flushSync');
-    expect(records[0].message).toContain('patches/svelte@5.56.8.patch');
+    expect(records[0].message).toContain('patches/svelte@5.57.0.patch');
     expect(records[0].message).toContain('flush-loop-caps');
   });
 });

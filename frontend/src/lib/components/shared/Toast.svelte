@@ -40,6 +40,8 @@
         out:fade={{ duration: 150 }}
         class="flex items-start gap-2.5 rounded-[12px] border px-3.5 py-2.5 shadow-menu backdrop-blur-md text-[0.8125rem] transition-transform duration-150 hover:scale-[1.015] {colorClasses(toast.type)}"
         role="alert"
+        data-testid="toast"
+        data-toast-type={toast.type}
       >
         <span class="mt-0.5 shrink-0 flex items-center">
           <Icon icon={iconForType(toast.type)} size={14} strokeWidth={2} class="opacity-90" />

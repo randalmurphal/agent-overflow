@@ -29,11 +29,12 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import Icon from '../primitives/Icon.svelte';
   import EditorIcon from '../shared/EditorIcon.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
 
   let { path, name }: { path: string; name: string } = $props();
 
-  let viewOnly = $derived(isViewOnlySession());
+  // The editor catalog and the open itself both act on the host desktop.
+  let noHost = $derived(!hasScope('host'));
   let available = $derived(getAvailableEditors());
   let resolved = $derived(getResolvedEditor());
   let hasChoice = $derived(available.length > 1);
@@ -42,7 +43,7 @@
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
 
   $effect(() => {
-    if (viewOnly) return;
+    if (noHost) return;
     void ensureEditorsLoaded();
   });
 
@@ -50,7 +51,7 @@
   // Empty editorID → backend resolves the default; a concrete id → open
   // in exactly that editor, this once, without touching the default.
   async function openIn(editorID: string): Promise<void> {
-    if (viewOnly) return;
+    if (noHost) return;
     try {
       await openInEditor(path, 0, 0, '', editorID);
     } catch (err) {
@@ -79,7 +80,7 @@
   );
 </script>
 
-{#if !viewOnly}
+{#if !noHost}
   <div class="flex shrink-0">
     <button
       onclick={() => void openIn('')}

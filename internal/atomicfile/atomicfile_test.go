@@ -93,3 +93,55 @@ func TestWritePermsAreOwnerOnly(t *testing.T) {
 		t.Fatalf("file mode = %o, want %o", info.Mode().Perm(), fileMode)
 	}
 }
+
+// SyncDir is the second half of durability, and it is exported because
+// internal/supervise needs it on directories this package did not write into:
+// a snapshot directory it filled file by file, and the runtime root after a
+// restore marker is removed. Without a directory fsync a rename is only in the
+// page cache, so a machine that loses power after a "successful" write comes
+// back to the old name, or to no name at all.
+func TestSyncDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := SyncDir(dir); err != nil {
+		t.Fatalf("SyncDir: %v", err)
+	}
+	if err := SyncDir(""); err == nil {
+		t.Error("SyncDir accepted an empty directory")
+	}
+	if err := SyncDir(filepath.Join(dir, "not-there")); err == nil {
+		t.Error("SyncDir accepted a directory that does not exist")
+	}
+}
+
+// Write does both halves itself, so a caller writing one file needs no second
+// call. The observable half here is that the file is present and readable with
+// private permissions after Write returns.
+func TestWriteSyncsTheDirectoryItRenamedInto(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nested", "state.json")
+	if err := Write(path, []byte("durable")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "durable" {
+		t.Fatalf("contents = %q", data)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != fileMode {
+		t.Errorf("mode = %v, want %v", info.Mode().Perm(), fileMode)
+	}
+	// No temp file survives a successful write.
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("directory holds %d entries, want just the written file", len(entries))
+	}
+}

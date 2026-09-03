@@ -29,6 +29,15 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { emitItemEventUpsert } from '../../../test/helpers/chat';
 import { THREAD_ROW_DRAG_MIME } from '../../utils/threadDragPayload';
+import {
+  REMOTE_BACKEND_UUID,
+  resetStagedBackends,
+  stageBackend,
+} from '../../../test/helpers/backends';
+import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transport/entityIndex';
+import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
+import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -947,20 +956,11 @@ describe('<ThreadRow> live status dot', () => {
     expect(shell.classList.contains('status-glow-info')).toBe(false);
   });
 
-  it('renders a non-pulsing accent dot labelled Plan ready when a plan is waiting', () => {
-    setThreadStatus('t-plan-ready', 'plan-ready');
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, {
-      props: { thread: makeThread({ id: 't-plan-ready' }), pane },
-    });
-    const dot = getByTestId('thread-row-status-dot');
-    expect(dot.getAttribute('data-status')).toBe('plan-ready');
-    expect(dot.getAttribute('aria-label')).toBe('Plan Ready');
-    expect(dot.classList.contains('bg-accent')).toBe(true);
-    expect(dot.classList.contains('animate-pulse')).toBe(false);
-  });
-
-  it('renders durable Plan ready from the thread row without a live event', () => {
+  // Plan ready has ONE source: the row's durable column. There is no live
+  // status to seed — the backend broadcasts the whole row on thread:updated
+  // from every proposed-plan write, so a client that never watched the
+  // thread paints the same pill as the one that ran the turn.
+  it('renders a non-pulsing accent dot labelled Plan ready from the thread row', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, {
       props: {
@@ -971,6 +971,8 @@ describe('<ThreadRow> live status dot', () => {
     const dot = getByTestId('thread-row-status-dot');
     expect(dot.getAttribute('data-status')).toBe('plan-ready');
     expect(dot.getAttribute('aria-label')).toBe('Plan Ready');
+    expect(dot.classList.contains('bg-accent')).toBe(true);
+    expect(dot.classList.contains('animate-pulse')).toBe(false);
   });
 
   it('renders durable Interrupted from the thread row without a live event', () => {
@@ -1225,5 +1227,199 @@ describe('<ThreadRow> status is visual only', () => {
     expect(dot.getAttribute('data-status')).toBe('interrupted');
     expect(dot.className).toContain('border-warning');
     expect(dot.className).toContain('bg-transparent');
+  });
+});
+
+describe('<ThreadRow> on an unreachable machine', () => {
+  // Wave 7c: a row whose backend is off-line dims, and home never does —
+  // the page's own outage is the transport banner's job.
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+    resetKeybindingsStore();
+    resetKeyboardModifiersForTest();
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+  });
+
+  afterEach(() => {
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+  });
+
+  it('dims a row whose machine cannot be reached, and clears when it returns', async () => {
+    const staged = stageBackend({ status: 'reconnecting' });
+    noteThread('thread-1', 'laptop');
+    const thread = makeThread();
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    const row = getByTestId('thread-row');
+    expect(row).toHaveAttribute('data-machine-unreachable', 'true');
+
+    staged.setStatus('connected');
+    await tick();
+    expect(row).not.toHaveAttribute('data-machine-unreachable');
+  });
+
+  it('never dims a home row, whatever the second backend is doing', async () => {
+    stageBackend({ status: 'reconnecting' });
+    const thread = makeThread();
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(getByTestId('thread-row')).not.toHaveAttribute('data-machine-unreachable');
+  });
+});
+
+describe('<ThreadRow> machine chip', () => {
+  // Wave 7d: the chip shares the worktree chip's slot and appears only
+  // when the row's project spans more than one machine.
+  const HOME_UUID = '11111111-2222-4333-8444-555555555555';
+
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+    resetKeybindingsStore();
+    resetKeyboardModifiersForTest();
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+    resetProjectsForTest();
+    __resetBackendIdentityForTest();
+    setBackendIdentityFromBootstrap(HOME_UUID, 1, 'Desk');
+  });
+
+  afterEach(() => {
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+    resetProjectsForTest();
+    __resetBackendIdentityForTest();
+  });
+
+  async function seedRepoOnBothMachines(): Promise<void> {
+    stageBackend();
+    setBindingMock('ListProjects', async () => [
+      { project: { id: 'p-home', path: '/home/me/app', name: 'app', remoteURL: 'git@github.com:me/app.git', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+      { project: { id: 'p-laptop', path: '/Users/me/app', name: 'app', remoteURL: 'https://github.com/me/app', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+    ]);
+    await refreshProjects();
+    noteProject('p-laptop', 'laptop');
+  }
+
+  it('names the machine beside the worktree when the project spans two', async () => {
+    await seedRepoOnBothMachines();
+    noteThread('thread-1', 'laptop');
+    const thread = makeThread({ projectId: 'p-laptop', worktreePath: '/Users/me/app-wt' });
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(getByTestId('thread-row-machine-name').textContent?.trim()).toBe('Laptop');
+    expect(getByTestId('thread-row-worktree-name').textContent?.trim()).toBe('app-wt');
+  });
+
+  it('renders the chip alone for a base-checkout thread, and home by its own name', async () => {
+    await seedRepoOnBothMachines();
+    const thread = makeThread({ projectId: 'p-home' });
+    const pane = createThreadPane();
+    const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(getByTestId('thread-row-machine-name').textContent?.trim()).toBe('Desk');
+    expect(queryByTestId('thread-row-worktree-label')).toBeNull();
+  });
+
+  // A machine with no browser tools cannot open a page at all, which is
+  // worth knowing before sending a turn there. Said on the chip that already
+  // names the machine, because that is where the reader is already looking.
+  it('says so on the chip when that machine has no browser tools', async () => {
+    await seedRepoOnBothMachines();
+    noteThread('thread-1', 'laptop');
+    const thread = makeThread({ projectId: 'p-laptop' });
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(getByTestId('thread-row-machine').getAttribute('title')).toBe(
+      'Machine: Laptop. No browser on this machine.',
+    );
+  });
+
+  it('says only the machine when it has them', async () => {
+    stageBackend({
+      hello: {
+        protocolVersion: 1,
+        capabilities: ['browser'],
+        backendId: REMOTE_BACKEND_UUID,
+        backendName: 'Laptop',
+        serverTimeMs: 0,
+        clockSkewMs: 0,
+        bundleId: '',
+      } as never,
+    });
+    setBindingMock('ListProjects', async () => [
+      { project: { id: 'p-home', path: '/home/me/app', name: 'app', remoteURL: 'git@github.com:me/app.git', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+      { project: { id: 'p-laptop', path: '/Users/me/app', name: 'app', remoteURL: 'https://github.com/me/app', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+    ]);
+    await refreshProjects();
+    noteProject('p-laptop', 'laptop');
+    noteThread('thread-1', 'laptop');
+    const thread = makeThread({ projectId: 'p-laptop' });
+    const pane = createThreadPane();
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(getByTestId('thread-row-machine').getAttribute('title')).toBe('Machine: Laptop');
+  });
+
+  it('shows nothing when the project lives on one machine', async () => {
+    stageBackend();
+    setBindingMock('ListProjects', async () => [
+      { project: { id: 'p-home', path: '/home/me/app', name: 'app', remoteURL: 'git@github.com:me/app.git', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
+    ]);
+    await refreshProjects();
+    const thread = makeThread({ projectId: 'p-home' });
+    const pane = createThreadPane();
+    const { queryByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(queryByTestId('thread-row-worktree')).toBeNull();
+  });
+});
+
+describe('<ThreadRow> compact layout', () => {
+  // The phone has no hover and no right button: the row carries a visible
+  // menu button that raises the same menu right-click does, and it does
+  // not drag (Android starts a drag on a held draggable, which would fight
+  // the long press).
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    await primeSettings();
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+    resetKeybindingsStore();
+    resetKeyboardModifiersForTest();
+    setCompactLayoutForTest(true);
+  });
+
+  afterEach(() => {
+    setCompactLayoutForTest(false);
+  });
+
+  it('opens the row menu from its menu button without opening the thread', async () => {
+    const thread = makeThread();
+    const pane = createThreadPane();
+    registerPaneForTest('main', pane);
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    expect(getByTestId('thread-row').getAttribute('draggable')).toBe('false');
+    expect(document.querySelector('[data-popover-sheet]')).toBeNull();
+
+    await fireEvent.click(getByTestId('thread-row-menu'));
+    await tick();
+    const sheet = document.querySelector('[data-popover-sheet]');
+    expect(sheet).not.toBeNull();
+    expect(sheet?.querySelector('[role="menu"]')).not.toBeNull();
+    expect(pane.threadId).toBeNull();
+  });
+
+  it('keeps the row draggable on the desktop', async () => {
+    setCompactLayoutForTest(false);
+    const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane: createThreadPane() } });
+    expect(getByTestId('thread-row').getAttribute('draggable')).toBe('true');
   });
 });

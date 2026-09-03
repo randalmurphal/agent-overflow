@@ -8,19 +8,19 @@ import {
 } from './markdownEnhance';
 import { buildPathLinkHref } from './pathLinkExtension';
 import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
-import { setViewOnlySessionFromBootstrap } from '../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../transport/scopes';
 
 describe('ensurePathLinkClickDelegate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     __resetPathLinkDelegateForTest();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   afterEach(() => {
     document.body.innerHTML = '';
     __resetPathLinkDelegateForTest();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   function mountAnchor(href: string): HTMLAnchorElement {
@@ -119,7 +119,7 @@ describe('ensurePathLinkClickDelegate', () => {
     const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     ensurePathLinkClickDelegate();
     const link = mountAnchor(buildPathLinkHref('src/foo.ts', undefined, undefined, '/repo'));
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
 
     const event = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
     expect(link.dispatchEvent(event)).toBe(false);

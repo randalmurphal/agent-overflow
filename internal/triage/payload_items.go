@@ -281,6 +281,11 @@ func (r *Router) handleProposedPlan(evt provider.ProviderEvent) error {
 	} else if found {
 		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(plan))
 	}
+	// AFTER the item upsert, preserving the order a pane already sees. The
+	// plan row is what makes hasActionableProposedPlan true, and that
+	// derived column is how every OTHER surface — the sidebar pill on a
+	// thread with no pane — learns a plan is awaiting a decision.
+	r.emitThreadRow(evt.ThreadID)
 	return nil
 }
 
@@ -547,8 +552,19 @@ func BuildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {
 
 func buildCommandOutputPayloadMeta(content string, obj map[string]json.RawMessage) string {
 	parsed := commandOutputPayloadMetaFieldsObject(obj)
-	cm := ExtractCommandOutputMetaWithError(content, parsed.Command, parsed.ExitCode, parsed.ErrorMessage)
-	if cm.ErrorMessage == "" && parsed.IsError {
+	// A failure message exists only for a command that FAILED. The
+	// provider meta the explicit message is read from falls through to
+	// `tool_use_result.stdout` and `tool_result.content`, which on a
+	// successful command hold its ordinary output; persisting that as an
+	// errorMessage put a dev server's startup banner into the failure
+	// slot of every row that exited 0.
+	failed := parsed.ExitCode != 0 || parsed.IsError
+	explicit := ""
+	if failed {
+		explicit = parsed.ErrorMessage
+	}
+	cm := ExtractCommandOutputMetaWithError(content, parsed.Command, parsed.ExitCode, explicit)
+	if cm.ErrorMessage == "" && failed {
 		cm.ErrorMessage = compactCommandErrorMessage(content)
 	}
 	data, err := json.Marshal(cm)

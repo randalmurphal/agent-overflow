@@ -108,7 +108,7 @@ test(
     });
 
     const threadId = await seedAgentThread(harness, 'incident-multidelivery-app', 'Multi delivery');
-    await page.goto(harness.url);
+    await harness.open(page);
     const watch = watchRender(page);
     await page.getByText('Multi delivery').click();
     const mockId = await startMock(harness, threadId);
@@ -157,7 +157,7 @@ test(
       'Codex deliveries',
       'codex',
     );
-    await page.goto(harness.url);
+    await harness.open(page);
     const watch = watchRender(page);
     await page.getByText('Codex deliveries').click();
     await startMock(harness, threadId);

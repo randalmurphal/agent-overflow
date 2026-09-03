@@ -43,6 +43,7 @@ import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { patchThreadDurableStatus, syncLatestTurnCompleted, syncThreadActivity, updateThreadUsageCache } from './eventsThreadRows';
 import { adoptEventStamp } from './threadHistoryStamps';
 import type { ErrorSurface, ThreadPaneIngest } from './threadPaneRoles';
+import { getConnectionId } from '../transport/clientIdentity';
 
 // The provider fan-out writes the ingest surface AND the slice of the
 // pane's error surface its handlers own (session errors, the provider
@@ -62,6 +63,27 @@ type ProviderEventPane = ThreadPaneIngest &
 
 function ingestPanes(): Iterable<ProviderEventPane> {
   return iterPanes();
+}
+
+// A `fail` frame on either interactive channel reaches every client, but
+// it describes ONE client's attempt: the prompt is still open for
+// everybody else, so a sticky "Failed to respond to approval" banner on a
+// screen that never answered is both wrong and unclearable. Only the
+// connection that asked reacts.
+//
+// The CONNECTION and not the device: two tabs of one browser answer
+// independently, and keying on the device id would put the losing tab's
+// error on the other one.
+//
+// An UNSTAMPED frame is shown, which is the pre-stamp behaviour kept
+// verbatim. The stamp is additive, so a bundle running against a backend
+// too old to send it must degrade to what that backend has always done
+// rather than silently swallowing the only surfacing this failure has:
+// the RPC rejection reaches an event handler and goes nowhere. Every
+// current backend stamps it, so the class is closed where the frame is
+// produced.
+function failureIsOurs(connectionId: string | undefined): boolean {
+  return !connectionId || connectionId === getConnectionId();
 }
 
 export function applyModelFallback(evt: ModelFallbackEvent): void {
@@ -102,7 +124,7 @@ export function applyApprovalEvent(evt: ApprovalEvent): void {
       if (evt.threadId && pane.threadId !== evt.threadId) continue;
       const hadApproval = pane.pendingApprovals.some((approval) => approval.requestId === evt.requestId);
       pane.removeApproval(evt.requestId);
-      if (hadApproval && evt.action === 'fail' && evt.detail) {
+      if (hadApproval && evt.action === 'fail' && evt.detail && failureIsOurs(evt.connectionId)) {
         pane.setGeneralError(`Failed to respond to approval: ${evt.detail}`);
       }
     }
@@ -134,7 +156,7 @@ export function applyUserInputEvent(evt: UserInputEvent): void {
       if (evt.threadId && pane.threadId !== evt.threadId) continue;
       const hadRequest = pane.pendingUserInputs.some((request) => request.requestId === evt.requestId);
       pane.removeUserInput(evt.requestId);
-      if (hadRequest && evt.action === 'fail' && evt.detail) {
+      if (hadRequest && evt.action === 'fail' && evt.detail && failureIsOurs(evt.connectionId)) {
         pane.setGeneralError(`Failed to submit input: ${evt.detail}`);
       }
     }

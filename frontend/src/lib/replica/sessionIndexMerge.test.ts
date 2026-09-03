@@ -12,8 +12,8 @@ import {
   initReplica,
   putReplicaWindow,
   removeReplicaWindow,
-  replicaDatabaseName,
 } from './session';
+import { replicaDatabaseName } from './purge';
 import { MAX_REPLICA_THREADS, type ReplicaBody } from './envelope';
 import {
   META_INDEX_KEY,
@@ -145,7 +145,7 @@ describe('replica accounting merge across pages', () => {
 
   it('keeps another page’s entries when this page writes', async () => {
     const backendId = freshBackendId();
-    await initReplica({ backendId, generation: 'g1' });
+    await initReplica({ backendId, generation: 'g1', name: '' });
     await putReplicaWindow('mine', body({ savedAt: 1_000 }));
 
     const other = await otherPage(backendId);
@@ -161,7 +161,7 @@ describe('replica accounting merge across pages', () => {
 
   it('keeps another page’s entries when this page removes', async () => {
     const backendId = freshBackendId();
-    await initReplica({ backendId, generation: 'g1' });
+    await initReplica({ backendId, generation: 'g1', name: '' });
     await putReplicaWindow('mine', body());
 
     const other = await otherPage(backendId);
@@ -177,7 +177,7 @@ describe('replica accounting merge across pages', () => {
 
   it('enforces the replica-wide cap over the union, not this page’s view', async () => {
     const backendId = freshBackendId();
-    await initReplica({ backendId, generation: 'g1' });
+    await initReplica({ backendId, generation: 'g1', name: '' });
 
     const other = await otherPage(backendId);
     await other.writeEnvelope('theirs-0');
@@ -204,7 +204,7 @@ describe('replica accounting merge across pages', () => {
   it('re-reads the stored index after a commit rejected on the watchdog', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     const backendId = freshBackendId();
-    await initReplica({ backendId, generation: 'g1' });
+    await initReplica({ backendId, generation: 'g1', name: '' });
 
     reportNextCommitAsFailed();
     await putReplicaWindow('t-1', body());

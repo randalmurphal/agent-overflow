@@ -316,6 +316,12 @@ type threadState struct {
 	pendingApprovalItems  map[string]string
 	pendingUserInputs     map[string]provider.UserInputRequest
 	pendingUserInputOrder []string
+	// answeredRequests holds the request ids this router has forwarded an
+	// answer for. Several clients render the same prompt, so two of them
+	// can answer it; this is what makes the second one a loser rather than
+	// a duplicate write to the provider. Bounded like its siblings: swept
+	// with the pending maps at the turn boundary. See interactive_claim.go.
+	answeredRequests map[string]struct{}
 }
 
 // threadIdentity is per-thread state that must SURVIVE cleanupThread.

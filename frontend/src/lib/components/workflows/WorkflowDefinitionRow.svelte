@@ -12,7 +12,7 @@
   import { WorkflowRunAutomationNow, WorkflowSetAutomationEnabled } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import type { WorkflowAutomationView, WorkflowDefinitionListing } from '../../types/workflow';
   import { workflowChainSummary, workflowCountdown, workflowDefinitionMeta, workflowMetaLine } from '../../stores/workflowData';
   import { refreshWorkflowRunsSoon } from '../../stores/workflowRuns.svelte';
@@ -23,8 +23,9 @@
   }
   let { definition, automations }: Props = $props();
 
-  let viewOnly = $derived(isViewOnlySession());
-  const localOnly = $derived(viewOnly ? 'Local only' : undefined);
+  // Every control here drives the workflow engine, which is `threads:autonomy`.
+  let ungranted = $derived(!hasScope('threads:autonomy'));
+  const ungrantedTitle = $derived(ungranted ? 'Not granted to this device' : undefined);
   let busy = $state('');
 
   let chain = $derived(workflowChainSummary(definition) || workflowDefinitionMeta(definition));
@@ -39,7 +40,7 @@
   }
 
   async function toggleAutomation(automation: WorkflowAutomationView): Promise<void> {
-    if (viewOnly || busy) return;
+    if (ungranted || busy) return;
     busy = automation.id;
     try {
       await WorkflowSetAutomationEnabled(automation.id, !automation.enabled);
@@ -51,7 +52,7 @@
   }
 
   async function runNow(automation: WorkflowAutomationView): Promise<void> {
-    if (viewOnly || busy) return;
+    if (ungranted || busy) return;
     busy = automation.id;
     try {
       await WorkflowRunAutomationNow(automation.id);
@@ -84,15 +85,15 @@
       <button
         class="shrink-0 text-[0.6875rem] text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
         onclick={() => { void toggleAutomation(automation); }}
-        disabled={viewOnly || busy === automation.id}
-        title={localOnly}
+        disabled={ungranted || busy === automation.id}
+        title={ungrantedTitle}
         data-testid="workflow-automation-toggle"
       >{automation.enabled ? 'Disable' : 'Enable'}</button>
       <button
         class="shrink-0 text-[0.6875rem] text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
         onclick={() => { void runNow(automation); }}
-        disabled={viewOnly || busy === automation.id}
-        title={localOnly}
+        disabled={ungranted || busy === automation.id}
+        title={ungrantedTitle}
         data-testid="workflow-automation-run-now"
       >Run now</button>
     </div>

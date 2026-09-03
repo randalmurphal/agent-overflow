@@ -26,6 +26,15 @@
   import ComposerPendingApprovalPanel from './ComposerPendingApprovalPanel.svelte';
   import ComposerPendingUserInputPanel from './ComposerPendingUserInputPanel.svelte';
   import { deriveComposerInputState } from './composerInputState';
+  import {
+    attachedBackendEntry,
+    backendDisplayName,
+    backendReachable,
+    threadMachine,
+    threadMachineUnreachable,
+  } from '../../stores/attachedBackends.svelte';
+  import { HOME_BACKEND } from '../../transport/backendKey';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { deriveComposerSendState } from './composerSendState';
   import { dispatchSend } from './composerSend';
   import { runInterruptOrRevert } from '../../stores/revertOnInterrupt.svelte';
@@ -52,13 +61,16 @@
     refreshDiffReviewComments,
   } from '../../stores/diffReviewComments.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { ignoringAlreadyHandled } from '../../transport/alreadyHandled';
   import {
     hasStagedWorktreeIntent,
     isWorktreeIntentApplying,
   } from '../../stores/worktreeIntent.svelte';
   import { prepareThreadWorktreeIntent } from '../../stores/worktreeIntentMaterialize';
   import { providerSupports } from '../../providers/catalog';
+  import { hasScope } from '../../transport/scopes';
   import { getFlushedForThread, getQueueForThread, registerQueueItem } from '../../stores/sendQueue.svelte';
+  import { buildSendOptions } from '../../utils/sendOptions';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import { getThreadById, prependThread } from '../../stores/threads.svelte';
   import { getActiveTurn, isSendInFlight } from '../../stores/threadStatuses.svelte';
@@ -95,6 +107,45 @@
   let emptyDraftCleanupKey: string | null = null;
 
   let isDisabled = $derived(!pane.canCompose);
+  // Sending rides `threads:operate`, answering a prompt rides
+  // `approvals:respond`, and attaching rides `attachments:write`. Each
+  // control asks for the capability IT needs rather than for a mode: a
+  // grant set narrower than full is not necessarily view-only, and one
+  // predicate for the whole composer would take the wrong things away.
+  //
+  // The controls stay where they are and go inert. A composer that
+  // vanished would leave a thread looking broken rather than read-only,
+  // and the disabled state is the affordance the rest of the app already
+  // uses for a control that is out of reach.
+  let sendUngranted = $derived(!hasScope('threads:operate'));
+  // The thread's machine, when it is not this page's own and its socket is
+  // down. Empty on a single-backend client and for home, whose drop the
+  // transport banner already announces.
+  let unreachableTarget = $derived.by(() => {
+    const thread = pane.thread;
+    if (!thread || !threadMachineUnreachable(thread.id, thread.projectId)) return '';
+    const entry = attachedBackendEntry(threadMachine(thread.id, thread.projectId));
+    return entry ? backendDisplayName(entry) : 'That machine';
+  });
+  // This client cannot reach the machine the thread runs on, and there is
+  // no local process to fall back on. There is deliberately no
+  // cross-disconnect send queue (spec, "Pairing and remote-only"), so a
+  // composer that stayed live would take a message it cannot deliver.
+  //
+  // The embedded desktop webview is excluded by `host` presence, not by a
+  // run-mode check: what makes its outage different is that the backend is
+  // on this machine and the transport banner is already its story. A phone,
+  // a `--connect` window and a remote browser all hold no host presence and
+  // all mean the same thing by "disconnected".
+  let offline = $derived.by(() => {
+    const thread = pane.thread;
+    if (!thread) return false;
+    const machine = threadMachine(thread.id, thread.projectId);
+    if (backendReachable(machine)) return false;
+    return !(machine === HOME_BACKEND && hasScope('host'));
+  });
+  let compactLayout = $derived(isCompactLayout());
+  let respondUngranted = $derived(!hasScope('approvals:respond'));
   // Mid-round signal: a wire round is currently in flight (the model
   // is streaming text/tool work). The composer stays typeable during
   // a round and Send routes through the backend-owned per-thread
@@ -168,6 +219,7 @@
   let hasDraftDiffReviewComments = $derived(Boolean(activeDiffReviewSource) && activeDiffReviewDraftComments.length > 0);
   let sendState = $derived(deriveComposerSendState({
     isDisabled,
+    sendUngranted,
     sending,
     sendSuspended: sendSuspended || interruptPending,
     hasBlockingPrompt,
@@ -185,6 +237,10 @@
   let hasPlanImplementAction = $derived(sendState.hasPlanImplementAction);
   let inputState = $derived(deriveComposerInputState({
     isDisabled,
+    sendUngranted,
+    unreachableTarget,
+    offline,
+    compact: compactLayout,
     hasBlockingPrompt,
     hasUserInputPrompt,
     userInputCustomAnswer,
@@ -513,14 +569,17 @@
       surface?.recreateInput();
 
       try {
-        await registerQueueItem(midTurnThreadId, message, {
+        // Same builder as the direct-send path, so a queued message and a
+        // dispatched one carry an identical payload — including the send's
+        // idempotency id, which is minted there.
+        await registerQueueItem(midTurnThreadId, message, buildSendOptions({
           attachmentIds: queuedAttachmentIds,
           sourceProposedPlan: draftSourcePlan ?? null,
-          revisionSourceProposedPlan: revisionPlanForMidTurn ?? null,
+          revisionSourceProposedPlan: revisionPlanForMidTurn,
           revisionSourceCommentIds: revisionCommentIdsForMidTurn,
-          revisionSourceDiffReview: diffReviewSourceForSend ?? null,
+          revisionSourceDiffReview: diffReviewSourceForSend,
           revisionSourceDiffCommentIds: revisionDiffCommentIdsForMidTurn,
-        });
+        }));
       } catch (err) {
         pane.setGeneralError(`Failed to queue message: ${String(err)}`);
         // Putting the message back is a second, independent operation: if
@@ -784,6 +843,13 @@
   let supportsAttachments = $derived(providerSupports(pane.thread?.provider, 'attachments'));
 
   function blockAttachment(event: DragEvent | ClipboardEvent, notify = true): boolean {
+    // Uploading rides `attachments:write`, and a paste or a drop is not a
+    // control anybody chose to press — so this refuses without a toast.
+    // Nothing was offered, so nothing failed.
+    if (!hasScope('attachments:write')) {
+      event.preventDefault();
+      return true;
+    }
     if (!supportsAttachments) {
       event.preventDefault();
       if (notify) {
@@ -794,16 +860,20 @@
     return blockPromptAttachment(event, notify);
   }
 
+  // Another screen showing this same thread may have answered the prompt
+  // first. That is not a failure to report — the question is closed, just not
+  // by this click — so it resolves quietly and the panel closes on the
+  // resolution event like any other.
   async function resolveApproval(response: ApprovalResponse): Promise<void> {
     const threadId = pane.threadId;
-    if (!threadId) return;
-    await RespondToApproval(threadId, response);
+    if (!threadId || respondUngranted) return;
+    await ignoringAlreadyHandled(RespondToApproval(threadId, response));
   }
 
   async function resolveUserInput(response: UserInputResponse): Promise<void> {
     const threadId = pane.threadId;
-    if (!threadId) return;
-    await RespondToUserInput(threadId, response);
+    if (!threadId || respondUngranted) return;
+    await ignoringAlreadyHandled(RespondToUserInput(threadId, response));
   }
 
   function handlePromptResolved(): void {
@@ -886,6 +956,7 @@
         <ComposerPendingApprovalPanel
           approval={activeApproval}
           count={blockingApprovals.length}
+          ungranted={respondUngranted}
           onResolve={resolveApproval}
           onError={handlePromptError}
         />
@@ -894,6 +965,7 @@
       {#key activeUserInput.requestId}
         <ComposerPendingUserInputPanel
           request={activeUserInput}
+          ungranted={respondUngranted}
           customAnswer={userInputCustomAnswer}
           submitSignal={userInputSubmitSignal}
           collapsed={userInputCollapsed}

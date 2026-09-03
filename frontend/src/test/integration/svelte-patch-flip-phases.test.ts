@@ -1,5 +1,5 @@
 // Regression test for the "flip-phases" hunk of
-// frontend/patches/svelte@5.56.8.patch.
+// frontend/patches/svelte@5.57.0.patch.
 //
 // Pristine svelte applies FLIP animations after a keyed-each reorder by
 // calling `apply()` per animated item: abort the in-flight animation

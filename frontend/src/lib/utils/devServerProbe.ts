@@ -6,13 +6,13 @@
 // verdict cache of its own, only in-flight dedup, so two layers can
 // never disagree about staleness).
 //
-// A view-only session short-circuits before the wire: the RPC is
-// loopback-only, and a remote viewer's localhost is not the backend's,
-// so the chip has nothing truthful to offer there. Past that guard a
-// rejection is a real transport fault — logged, then degraded to "not
-// live", because the chip is an affordance, not an error surface.
+// A page that cannot act on the host short-circuits before the wire: the
+// probe dials the BACKEND's localhost, and a viewer elsewhere has nothing
+// truthful to offer about it. Past that guard a rejection is a real
+// transport fault — logged, then degraded to "not live", because the chip
+// is an affordance, not an error surface.
 import { ProbeDevServerURL } from '../stores/bindings';
-import { isViewOnlySession } from '../transport/runMode';
+import { hasScope } from '../transport/scopes';
 
 /** Retry cadence while a command still runs and its candidate is unconfirmed. */
 export const DEV_SERVER_PROBE_RETRY_MS = 1_500;
@@ -28,7 +28,7 @@ const inFlight = new Map<string, Promise<boolean>>();
 
 /** Whether a server is currently listening on this loopback URL. */
 export function probeDevServerURL(url: string): Promise<boolean> {
-  if (isViewOnlySession()) return Promise.resolve(false);
+  if (!hasScope('host')) return Promise.resolve(false);
   const pending = inFlight.get(url);
   if (pending) return pending;
 

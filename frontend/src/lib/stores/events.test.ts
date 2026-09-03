@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupEventListeners } from './events';
 import { createThreadPane } from './thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { findPaneShowingThread, registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import {
   getActiveTurn,
   getThreadStatus,
@@ -12,6 +12,7 @@ import {
 import { resetForTest as resetSendQueue } from './sendQueue.svelte';
 import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
 import { getThreads, getThreadLiveActivityAt, refreshThreads } from './threads.svelte';
+import { claimLocalReadMarker, resetLocalReadMarkersForTest } from './threadReadWrites';
 import { getToasts } from './toast.svelte';
 import { getProjectLiveActivityAt, getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
 import {
@@ -23,6 +24,7 @@ import {
   resetForTest as resetProviderStatuses,
 } from './providerStatus.svelte';
 import { transportGapChannel } from '../transport/wsClient';
+import { getConnectionId } from '../transport/clientIdentity';
 import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import {
@@ -89,6 +91,7 @@ describe('setupEventListeners', () => {
     resetThreadStatuses();
     resetSendQueue();
     resetLiveUsageSnapshotsForTest();
+    resetLocalReadMarkersForTest();
     resetProjectsForTest();
     resetRateLimitsInfo();
     resetProviderStatuses();
@@ -281,6 +284,21 @@ describe('setupEventListeners', () => {
     expect(cacheModule.threadItemCache.get('thread-a')).toBeNull();
     // 'thread-other' was untouched — its snapshot survives.
     expect(cacheModule.threadItemCache.get('thread-other')).not.toBeNull();
+
+    // An upsert naming a thread with no pane still evicts defensively:
+    // we cannot value-dedupe a window nobody owns. This branch was
+    // deliberately left as-is when the channel was narrowed — a client
+    // that is not watching a thread simply stops getting these frames,
+    // and its stale snapshot is caught on read instead (the open stamps
+    // the window and SyncThreadWindow answers stale with a replacing
+    // page). It is the one accepted degradation of the narrowing.
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-other',
+      item: makeItem({ id: 'fresh-other', threadId: 'thread-other', kind: 'assistant_text' }),
+    });
+    await nextFrame();
+    expect(cacheModule.threadItemCache.get('thread-other')).toBeNull();
 
     cacheModule.threadItemCache.clear();
   });
@@ -841,6 +859,111 @@ describe('setupEventListeners', () => {
     expect(getThreadStatus('thread-1')).toBe('idle');
   });
 
+  it('shows an approval failure only on the connection that answered', async () => {
+    const pane = await buildPane();
+    const request = {
+      requestId: 'req-1',
+      threadId: 'thread-1',
+      toolName: 'bash',
+      description: 'Allow bash?',
+      input: null,
+      title: 'Approve bash',
+    };
+    const openIt = () => emitWailsEvent('provider:approval', {
+      action: 'request',
+      threadId: 'thread-1',
+      request,
+    });
+
+    // Another screen answered and the write failed. The prompt is still
+    // open here and this client did nothing, so a sticky banner it can
+    // never clear is the wrong thing to put on it.
+    openIt();
+    emitWailsEvent('provider:approval', {
+      action: 'fail',
+      threadId: 'thread-1',
+      requestId: 'req-1',
+      decision: 'failed',
+      detail: 'provider closed the pipe',
+      connectionId: 'some-other-connection',
+    });
+    expect(pane.generalError).toBeNull();
+
+    // This client's own failure still reaches it: the RPC rejection lands
+    // in an event handler and goes nowhere, so this banner is the only
+    // surfacing the person who pressed the button gets.
+    openIt();
+    emitWailsEvent('provider:approval', {
+      action: 'fail',
+      threadId: 'thread-1',
+      requestId: 'req-1',
+      decision: 'failed',
+      detail: 'provider closed the pipe',
+      connectionId: getConnectionId(),
+    });
+    expect(pane.generalError).toBe('Failed to respond to approval: provider closed the pipe');
+  });
+
+  it('shows a user-input failure only on the connection that submitted', async () => {
+    const pane = await buildPane();
+    const request = {
+      requestId: 'input-1',
+      threadId: 'thread-1',
+      toolName: 'user_input',
+      title: 'User Input Required',
+      questions: [{ id: 'scope', header: 'Scope', question: 'Choose a scope' }],
+    };
+    const openIt = () => emitWailsEvent('provider:user_input', {
+      action: 'request',
+      threadId: 'thread-1',
+      request,
+    });
+
+    openIt();
+    emitWailsEvent('provider:user_input', {
+      action: 'fail',
+      threadId: 'thread-1',
+      requestId: 'input-1',
+      detail: 'provider closed the pipe',
+      connectionId: 'some-other-connection',
+    });
+    expect(pane.generalError).toBeNull();
+
+    openIt();
+    emitWailsEvent('provider:user_input', {
+      action: 'fail',
+      threadId: 'thread-1',
+      requestId: 'input-1',
+      detail: 'provider closed the pipe',
+      connectionId: getConnectionId(),
+    });
+    expect(pane.generalError).toBe('Failed to submit input: provider closed the pipe');
+  });
+
+  it('shows an unstamped approval failure, as a pre-stamp backend produced it', async () => {
+    const pane = await buildPane();
+    emitWailsEvent('provider:approval', {
+      action: 'request',
+      threadId: 'thread-1',
+      request: {
+        requestId: 'req-1',
+        threadId: 'thread-1',
+        toolName: 'bash',
+        description: 'Allow bash?',
+        input: null,
+        title: 'Approve bash',
+      },
+    });
+    emitWailsEvent('provider:approval', {
+      action: 'fail',
+      threadId: 'thread-1',
+      requestId: 'req-1',
+      decision: 'failed',
+      detail: 'provider closed the pipe',
+    });
+    expect(pane.generalError).toBe('Failed to respond to approval: provider closed the pipe');
+  });
+
   it('records resolve tombstones even when a pane missed the original request', async () => {
     let releaseSnapshot!: (value: unknown) => void;
     setBindingMock('SwitchThread', async (threadId: unknown) =>
@@ -897,9 +1020,31 @@ describe('setupEventListeners', () => {
     expect(pane.pendingUserInputs).toEqual([]);
   });
 
-  it('sets thread error status from an error item upsert', async () => {
+  it('sets thread error status from a thread:error_notice', async () => {
     await buildPane();
 
+    emitWailsEvent('thread:error_notice', { threadId: 'thread-1', itemId: 'error-1' });
+
+    expect(getThreadStatus('thread-1')).toBe('error');
+  });
+
+  it('sets thread error status for a thread this client has no row or pane for', async () => {
+    await buildPane();
+
+    // The whole point of the wildcard carrier: the Failed pill is read on
+    // threads with no surface, which the narrowed transcript stream no
+    // longer reaches.
+    emitWailsEvent('thread:error_notice', { threadId: 'thread-unmounted', itemId: 'error-9' });
+
+    expect(getThreadStatus('thread-unmounted')).toBe('error');
+  });
+
+  it('does not set thread error status from an error item upsert', async () => {
+    await buildPane();
+
+    // The item carries the prose; the badge is the notice's job. Keeping
+    // both would double-fire on the watched thread and fire on neither for
+    // an unwatched one.
     const item = makeItem({
       id: 'error-1',
       kind: 'error',
@@ -909,47 +1054,54 @@ describe('setupEventListeners', () => {
     emitWailsEvent('provider:item_event', { action: 'upsert', threadId: item.threadId, item });
     await nextFrame();
 
-    expect(getThreadStatus('thread-1')).toBe('error');
+    expect(getThreadStatus('thread-1')).toBe('idle');
   });
 
-  it('clears cached durable Plan Ready when a proposed plan is implemented', async () => {
-    const cached = makeThread({
-      id: 'thread-1',
-      hasActionableProposedPlan: true,
-    });
+  // Durable Plan Ready is a derived column of the thread row, so the
+  // backend broadcasts the whole row from every proposed-plan write
+  // (the in-turn persist, the implemented mark, and the ensure-state
+  // settles). The frontend no longer derives it from plan item upserts:
+  // it cannot, for a thread it is not watching.
+  it('raises cached durable Plan Ready from a thread:updated full row', async () => {
+    const cached = makeThread({ id: 'thread-1', hasActionableProposedPlan: false });
     setBindingMock('ListThreads', async () => [cached]);
     await refreshThreads();
     const pane = await buildPane(cached);
+
+    emitWailsEvent('thread:updated', {
+      action: 'full',
+      thread: { ...cached, hasActionableProposedPlan: true },
+    });
+
+    expect(getThreads()[0]?.hasActionableProposedPlan).toBe(true);
+    expect(pane.thread?.hasActionableProposedPlan).toBe(true);
+  });
+
+  it('clears cached durable Plan Ready from a thread:updated full row', async () => {
+    const cached = makeThread({ id: 'thread-1', hasActionableProposedPlan: true });
+    setBindingMock('ListThreads', async () => [cached]);
+    await refreshThreads();
+    const pane = await buildPane(cached);
+
+    emitWailsEvent('thread:updated', {
+      action: 'full',
+      thread: { ...cached, hasActionableProposedPlan: false },
+    });
+
+    expect(getThreads()[0]?.hasActionableProposedPlan).toBe(false);
+    expect(pane.thread?.hasActionableProposedPlan).toBe(false);
+  });
+
+  it('does not move durable Plan Ready from a proposed-plan item upsert', async () => {
+    const cached = makeThread({ id: 'thread-1', hasActionableProposedPlan: false });
+    setBindingMock('ListThreads', async () => [cached]);
+    await refreshThreads();
 
     const item = makeItem({
       id: 'plan-1',
       threadId: 'thread-1',
       kind: 'tool_call',
       role: 'assistant',
-      payloadKind: 'proposed_plan',
-      status: 'completed',
-      meta: '{"planImplementedAt":123}',
-    });
-    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: item.threadId, item });
-    await nextFrame();
-
-    expect(getThreads()[0]?.hasActionableProposedPlan).toBe(false);
-    expect(pane.thread?.hasActionableProposedPlan).toBe(false);
-  });
-
-  it('ignores user-authored proposed-plan payloads when patching durable Plan Ready', async () => {
-    const cached = makeThread({
-      id: 'thread-1',
-      hasActionableProposedPlan: false,
-    });
-    setBindingMock('ListThreads', async () => [cached]);
-    await refreshThreads();
-
-    const item = makeItem({
-      id: 'user-plan',
-      threadId: 'thread-1',
-      kind: 'user_text',
-      role: 'user',
       payloadKind: 'proposed_plan',
       status: 'completed',
     });
@@ -1543,6 +1695,120 @@ describe('setupEventListeners', () => {
     expect(getThreads()[0]?.title).toBe('Fresh');
   });
 
+  // The convergence half of "every persisted thread-row mutation emits".
+  // These four exercise the case the RPC return value cannot reach: a
+  // client that did NOT issue the mutation. Each drives a row this pane
+  // never touched and asserts the store lands where the mutating client's
+  // own optimistic apply would have put it.
+  describe('thread:updated converges a client that did not mutate', () => {
+    it("applies every field a full row carries, not just the mutating client's field", async () => {
+      setBindingMock('ListThreads', async () => [
+        makeThread({
+          id: 'thread-1',
+          title: 'Before',
+          model: 'claude-sonnet-4-6',
+          reasoningEffort: 'medium',
+          fastMode: false,
+          contextWindow: 200000,
+          branch: 'main',
+          workspacePath: '/repo',
+        }),
+      ]);
+      await refreshThreads();
+
+      emitWailsEvent('thread:updated', {
+        action: 'full',
+        thread: makeThread({
+          id: 'thread-1',
+          title: 'After',
+          model: 'claude-opus-4-1',
+          reasoningEffort: 'xhigh',
+          fastMode: true,
+          contextWindow: 1000000,
+          branch: 'feature/live',
+          workspacePath: '/repo/wt',
+          pinnedAt: 42,
+          pinGroup: 1,
+        }),
+      });
+
+      const row = getThreads()[0];
+      expect(row?.title).toBe('After');
+      expect(row?.model).toBe('claude-opus-4-1');
+      expect(row?.reasoningEffort).toBe('xhigh');
+      expect(row?.fastMode).toBe(true);
+      expect(row?.contextWindow).toBe(1000000);
+      expect(row?.branch).toBe('feature/live');
+      expect(row?.workspacePath).toBe('/repo/wt');
+      expect(row?.pinnedAt).toBe(42);
+      expect(row?.pinGroup).toBe(1);
+    });
+
+    it('inserts a row this client has never seen from a listed event', async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1' })]);
+      await refreshThreads();
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-1']);
+
+      emitWailsEvent('thread:updated', {
+        action: 'listed',
+        thread: makeThread({ id: 'thread-new', title: 'Made elsewhere' }),
+      });
+
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-new', 'thread-1']);
+      expect(getThreads()[0]?.title).toBe('Made elsewhere');
+
+      // A second listed frame for the same row (this client's own echo of
+      // a creation it already prepended) must not duplicate it.
+      emitWailsEvent('thread:updated', {
+        action: 'listed',
+        thread: makeThread({ id: 'thread-new', title: 'Made elsewhere' }),
+      });
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-new', 'thread-1']);
+    });
+
+    it('drops the row from the sidebar on unlisted and on deleted', async () => {
+      setBindingMock('ListThreads', async () => [
+        makeThread({ id: 'thread-1' }),
+        makeThread({ id: 'thread-2' }),
+      ]);
+      await refreshThreads();
+
+      emitWailsEvent('thread:updated', {
+        action: 'unlisted',
+        thread: makeThread({ id: 'thread-1', archived: true }),
+      });
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-2']);
+
+      emitWailsEvent('thread:updated', { action: 'deleted', id: 'thread-2' });
+      expect(getThreads()).toEqual([]);
+    });
+
+    it('closes a pane whose thread was deleted elsewhere', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1' }));
+      expect(pane.threadId).toBe('thread-1');
+
+      emitWailsEvent('thread:updated', { action: 'deleted', id: 'thread-1' });
+
+      expect(findPaneShowingThread('thread-1')).toBeNull();
+    });
+
+    it('leaves a full row for an unknown thread alone', async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1' })]);
+      await refreshThreads();
+
+      // 'full' says what the row IS, never that it belongs in the sidebar:
+      // listing also depends on items and draft content, which only the
+      // backend knows. Inventing the row here would show a draft the
+      // mutating client's own sidebar does not.
+      emitWailsEvent('thread:updated', {
+        action: 'full',
+        thread: makeThread({ id: 'thread-unknown' }),
+      });
+
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-1']);
+    });
+  });
+
   it('projects a model fallback without overwriting the requested model', async () => {
     const pane = await buildPane(makeThread({
       id: 'thread-1',
@@ -1693,7 +1959,12 @@ describe('setupEventListeners', () => {
     expect(liveProjectActivity('project-stale')).toBe(100);
   });
 
-  it('bumps cached project activity from user_text item_event upserts', async () => {
+  // The user_text sidebar bump rides a thread:updated PATCH carrying
+  // `updatedAt` and nothing else. Which user_text persists produce one is
+  // the backend's call (triage.userTextCountsAsThreadActivity: top-level,
+  // not wire-only) — wire-only and subagent-parented rows simply never
+  // emit a patch, so the frontend has no predicate left to get wrong.
+  it('bumps cached project activity from a thread:updated activity patch', async () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
       makeThread({ id: 'thread-fresh', projectId: 'project-fresh', updatedAt: 9000 }),
@@ -1710,61 +1981,21 @@ describe('setupEventListeners', () => {
       updatedAt: 100,
     }));
 
-    emitWailsEvent('provider:item_event', {
-      action: 'upsert',
-      threadId: 'thread-stale',
-      item: makeItem({
-        id: 'user:0',
-        threadId: 'thread-stale',
-        kind: 'user_text',
-        updatedAt: 10_000,
-      }),
+    emitWailsEvent('thread:updated', {
+      action: 'patch',
+      id: 'thread-stale',
+      updatedAt: 10_000,
     });
-    await nextFrame();
 
-    // user_text is one of three sidebar-bump boundaries: send →
-    // surface the thread to the top.
     expect(liveThreadActivity('thread-stale')).toBe(10_000);
-    // pane.thread is deliberately NOT replaced per activity beat any
-    // more — per-beat object churn re-rendered every pane.thread reader.
+    // Neither the row array nor pane.thread is replaced by an activity
+    // beat — per-beat object churn re-rendered every pane.thread reader.
     expect(pane.thread?.updatedAt).toBe(100);
+    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
     expect(liveProjectActivity('project-stale')).toBe(10_000);
   });
 
-  it('does NOT bump cached project activity from wire-only user_text upserts', async () => {
-    setBindingMock('ListThreads', async () => [
-      makeThread({
-        id: 'thread-stale',
-        projectId: 'project-stale',
-        updatedAt: 100,
-        latestTurnCompletedAt: 100,
-      }),
-    ]);
-    setBindingMock('ListProjects', async () => [
-      projectWithCounts('project-stale', 100),
-    ]);
-    await refreshThreads();
-    await refreshProjects();
-
-    emitWailsEvent('provider:item_event', {
-      action: 'upsert',
-      threadId: 'thread-stale',
-      item: makeItem({
-        id: 'user:wire:child_prompt_1',
-        threadId: 'thread-stale',
-        kind: 'user_text',
-        meta: '{"wire_only":true}',
-        updatedAt: 10_000,
-      }),
-    });
-    await nextFrame();
-
-	expect(liveThreadActivity('thread-stale')).toBe(100);
-	expect(getThreads().find((thread) => thread.id === 'thread-stale')?.latestTurnCompletedAt).toBe(100);
-	expect(liveProjectActivity('project-stale')).toBe(100);
-  });
-
-  it('does NOT bump cached project activity when an item upsert is explicitly non-activity', async () => {
+  it('does NOT bump cached project activity from user_text item upserts', async () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
     ]);
@@ -1777,7 +2008,6 @@ describe('setupEventListeners', () => {
     emitWailsEvent('provider:item_event', {
       action: 'upsert',
       threadId: 'thread-stale',
-      countsAsActivity: false,
       item: makeItem({
         id: 'user:0',
         threadId: 'thread-stale',
@@ -1791,31 +2021,40 @@ describe('setupEventListeners', () => {
     expect(liveProjectActivity('project-stale')).toBe(100);
   });
 
-  it('does NOT bump cached project activity from parented user_text upserts', async () => {
+  it('clears an error badge from a thread:updated activity patch', async () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
     ]);
-    setBindingMock('ListProjects', async () => [
-      projectWithCounts('project-stale', 100),
-    ]);
     await refreshThreads();
-    await refreshProjects();
+    emitWailsEvent('thread:error_notice', { threadId: 'thread-stale', itemId: 'error-1' });
+    expect(getThreadStatus('thread-stale')).toBe('error');
 
-    emitWailsEvent('provider:item_event', {
-      action: 'upsert',
-      threadId: 'thread-stale',
-      item: makeItem({
-        id: 'user:wire:child_prompt_2',
-        threadId: 'thread-stale',
-        kind: 'user_text',
-        parentId: 'spawn-1',
-        updatedAt: 10_000,
-      }),
+    emitWailsEvent('thread:updated', {
+      action: 'patch',
+      id: 'thread-stale',
+      updatedAt: 10_000,
     });
-    await nextFrame();
 
-    expect(liveThreadActivity('thread-stale')).toBe(100);
-    expect(liveProjectActivity('project-stale')).toBe(100);
+    expect(getThreadStatus('thread-stale')).toBe('idle');
+  });
+
+  it('applies an activity patch for a thread this client holds no row for', async () => {
+    setBindingMock('ListThreads', async () => []);
+    await refreshThreads();
+    emitWailsEvent('thread:error_notice', { threadId: 'thread-unlisted', itemId: 'error-1' });
+
+    // The patch branch's cached-row guard covers the FIELD merges only:
+    // the activity bump and the badge clear both self-guard and must run
+    // for a thread the sidebar has not listed.
+    emitWailsEvent('thread:updated', {
+      action: 'patch',
+      id: 'thread-unlisted',
+      updatedAt: 10_000,
+      title: 'ignored without a row',
+    });
+
+    expect(getThreadStatus('thread-unlisted')).toBe('idle');
+    expect(getThreads().find((thread) => thread.id === 'thread-unlisted')).toBeUndefined();
   });
 
   it('bumps cached project activity on provider:turn_completed', async () => {
@@ -2151,7 +2390,37 @@ describe('setupEventListeners', () => {
     expect(getThreads()[0]?.latestTurnCompletedAt).toBe(1_000);
   });
 
-  it('preserves an explicit unread marker across a transport-gap thread resync', async () => {
+  it('preserves an explicit unread marker across a transport-gap thread resync while its own write is in flight', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 0, latestTurnCompletedAt: 300 }),
+    ]);
+    await refreshThreads();
+
+    // The mark-unread RPC has not answered yet, so the backend's row
+    // still carries the old stamp. Epoch 0 is the SMALLEST value the
+    // field takes, so nothing in the numbers says it is the newer of
+    // the two; the claim is what says it.
+    const release = claimLocalReadMarker('thread-1', 0);
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 500, latestTurnCompletedAt: 300 }),
+    ]);
+    emitWailsEvent(transportGapChannel, {
+      channel: 'thread:updated',
+      seq: 4,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getThreads()[0]?.lastReadAt).toBe(0);
+    release();
+  });
+
+  it('converges on another device read after the local mark-unread write settles', async () => {
+    // Device B marked the thread unread, so its cached row holds 0.
+    // Device A then opened the thread and the backend broadcast the real
+    // stamp. With no write of its own in flight, B has nothing newer
+    // than the wire row and must take it — the cached 0 used to absorb
+    // every later timestamp for the life of the page.
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', lastReadAt: 0, latestTurnCompletedAt: 300 }),
     ]);
@@ -2167,7 +2436,7 @@ describe('setupEventListeners', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(getThreads()[0]?.lastReadAt).toBe(0);
+    expect(getThreads()[0]?.lastReadAt).toBe(500);
   });
 
   it('converges pane thread rows on completions backfilled by a transport-gap resync', async () => {
@@ -2198,7 +2467,7 @@ describe('setupEventListeners', () => {
     expect(pane.thread?.lastReadAt).toBe(350);
   });
 
-  it('preserves an explicit unread marker when thread:updated is stale', async () => {
+  it('preserves an explicit unread marker when thread:updated is stale mid-write', async () => {
     setBindingMock('ListThreads', async () => [
       makeThread({
         id: 'thread-1',
@@ -2209,6 +2478,7 @@ describe('setupEventListeners', () => {
     ]);
     await refreshThreads();
 
+    const release = claimLocalReadMarker('thread-1', 0);
     emitWailsEvent('thread:updated', {
       action: 'full',
       thread: makeThread({
@@ -2221,6 +2491,48 @@ describe('setupEventListeners', () => {
 
     expect(getThreads()[0]?.title).toBe('New title');
     expect(getThreads()[0]?.lastReadAt).toBe(0);
+    release();
+  });
+
+  it('takes a thread:updated unread from another device once nothing local is in flight', async () => {
+    // The mirror image: this client read the thread, another device
+    // marked it unread, and the backend row now says 0. A forward-only
+    // merge would leave this client the only one seeing it as read.
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 900, latestTurnCompletedAt: 300 }),
+    ]);
+    await refreshThreads();
+
+    emitWailsEvent('thread:updated', {
+      action: 'full',
+      thread: makeThread({ id: 'thread-1', lastReadAt: 0, latestTurnCompletedAt: 300 }),
+    });
+
+    expect(getThreads()[0]?.lastReadAt).toBe(0);
+  });
+
+  it('keeps a local read-ahead when a stale unread row lands during its own write', async () => {
+    // The read-mark persist is in flight and the row the backend still
+    // has says unread. The claim carries the value this client wrote,
+    // so the pane does not flip to unread and back.
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 900, latestTurnCompletedAt: 300 }),
+    ]);
+    await refreshThreads();
+
+    const release = claimLocalReadMarker('thread-1', 900);
+    emitWailsEvent('thread:updated', {
+      action: 'full',
+      thread: makeThread({ id: 'thread-1', lastReadAt: 0, latestTurnCompletedAt: 300 }),
+    });
+    expect(getThreads()[0]?.lastReadAt).toBe(900);
+
+    release();
+    emitWailsEvent('thread:updated', {
+      action: 'full',
+      thread: makeThread({ id: 'thread-1', lastReadAt: 900, latestTurnCompletedAt: 300 }),
+    });
+    expect(getThreads()[0]?.lastReadAt).toBe(900);
   });
 
   it('updates global provider status from app-wide provider:status', async () => {
@@ -3329,18 +3641,19 @@ describe('setupEventListeners', () => {
     expect(pane.getItemById('out-1')?.summary).toBe('B+2');
   });
 
-  it('defers thread-status projection to the frame batch', async () => {
+  it('runs no global-store projection off the item batch at all', async () => {
     await buildPane();
 
+    // The projection this batch used to carry (thread status, sidebar
+    // activity, durable plan status) has moved to wildcard channels, so an
+    // item upsert now touches the pane and the caches and nothing global.
+    // Neither before the frame nor after it.
     const item = makeItem({ id: 'err-1', kind: 'error', role: 'system', summary: 'boom' });
     emitWailsEvent('provider:item_event', { action: 'upsert', threadId: item.threadId, item });
 
-    // Projection used to run synchronously in the WS handler, giving
-    // every upsert message its own global-store write + effect flush.
-    // It now rides the rAF batch with the pane apply.
     expect(getThreadStatus('thread-1')).toBe('idle');
     await nextFrame();
-    expect(getThreadStatus('thread-1')).toBe('error');
+    expect(getThreadStatus('thread-1')).toBe('idle');
   });
 
   // Multi-pane beats land in ONE frame by design. Rotating them (one

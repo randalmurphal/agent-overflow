@@ -60,7 +60,7 @@ test('editing a past user message truncates the tail before the replacement stre
   await harness.rpc('HarnessSetScenario', { name: 'step-gated' });
   await seedTwoTurnThread(harness);
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Sorting question').click();
   await expect(page.getByText('How do I sort an array in JS?')).toBeVisible();
   await expect(page.getByText('Use Array.prototype.sort.')).toBeVisible();
@@ -124,7 +124,7 @@ test('editing a past user message truncates the tail before the replacement stre
 test('the edited text reaches the provider, not the original', async ({ harness, page }) => {
   await seedTwoTurnThread(harness);
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Sorting question').click();
   await page.getByText('How do I sort an array in JS?').hover();
   await page.getByLabel('Edit message and resend from here').first().click();
@@ -149,7 +149,7 @@ test('cancelling the editor leaves the conversation exactly as it was', async ({
 }) => {
   await seedTwoTurnThread(harness);
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Sorting question').click();
   await page.getByText('How do I sort an array in JS?').hover();
   await page.getByLabel('Edit message and resend from here').first().click();

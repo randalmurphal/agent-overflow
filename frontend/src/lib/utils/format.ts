@@ -1,11 +1,26 @@
+import { backendNow } from '../transport/backendClock';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 /**
  * Format a Unix timestamp (milliseconds) as a time string.
  * When format is 'locale' (default), uses relative time ("5m ago").
  * When format is '12-hour' or '24-hour', uses absolute time.
+ *
+ * `backendId` names the machine whose clock MINTED the timestamp, and
+ * only the relative form uses it: "5m ago" is a subtraction against a
+ * clock, and comparing a backend's reading to this device's produces
+ * minutes of error whenever the two have drifted
+ * (`transport/backendClock.ts`). The absolute forms deliberately stay on
+ * the device's own clock — they answer "at what time", which a person
+ * reads against the watch on their wrist, not against a machine's idea
+ * of noon.
+ *
+ * Omitting it means home, which is what every caller meant before a
+ * client could attach a second machine.
  */
 export function relativeTime(
   timestampMs: number,
   format: 'locale' | '12-hour' | '24-hour' = 'locale',
+  backendId: BackendKey = HOME_BACKEND,
 ): string {
   if (format === '12-hour') {
     return new Date(timestampMs).toLocaleString(undefined, {
@@ -20,8 +35,9 @@ export function relativeTime(
     });
   }
 
-  const now = Date.now();
-  const diffMs = now - timestampMs;
+  // Allocation-free: one Map lookup, one closure call, one subtraction.
+  // This runs per visible row on every sidebar recompute.
+  const diffMs = backendNow(backendId) - timestampMs;
 
   if (diffMs < 0) return 'just now';
 
@@ -58,6 +74,25 @@ const TIME_OF_DAY_FORMAT = new Intl.DateTimeFormat(undefined, {
 export function formatTimeOfDay(timestampMs: number): string {
   if (!Number.isFinite(timestampMs)) return 'Invalid Date';
   return TIME_OF_DAY_FORMAT.format(timestampMs);
+}
+
+// Hoisted for the same reason as the clock formatter above.
+const CALENDAR_DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
+  year: 'numeric',
+  month: 'short',
+  day: 'numeric',
+});
+
+/**
+ * Format a Unix timestamp (milliseconds) as a calendar date (e.g.
+ * "10 Jun 2027") for values that are months away and where the time of
+ * day carries no meaning — a certificate's expiry is the one caller.
+ * Non-finite input renders "Invalid Date" rather than throwing, matching
+ * formatTimeOfDay.
+ */
+export function formatCalendarDate(timestampMs: number): string {
+  if (!Number.isFinite(timestampMs)) return 'Invalid Date';
+  return CALENDAR_DATE_FORMAT.format(timestampMs);
 }
 
 /**

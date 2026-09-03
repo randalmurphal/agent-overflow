@@ -100,7 +100,7 @@
   //   - local, !creating:      currentBranch (rows checkout)
   let triggerLabel = $derived.by(() => {
     if (intent.creatingBranch) {
-      if (isLocalBase(intent.newBranchBase)) return 'From Local (with changes)';
+      if (isLocalBase(intent.newBranchBase)) return 'From Base (with changes)';
       const base = intent.newBranchBase || currentBranch;
       return `From ${base || 'branch'}`;
     }
@@ -569,7 +569,7 @@
     {:else}
       {#if showLocalRow}
         <MenuItem
-          label="Local (with changes)"
+          label="Base (with changes)"
           description={currentBranch || undefined}
           checked={isLocalSelected}
           onSelect={selectLocalRow}

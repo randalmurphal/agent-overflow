@@ -165,7 +165,7 @@ func TestSyncThreadWindowBindingNormalizesItemBudget(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := seedSyncBindingThread(t, app)
 
-	want, err := app.ListThreadSliceAround(thread.ID, "", 0)
+	want, err := app.ListThreadSliceAround(thread.ID, "", 0, true)
 	if err != nil {
 		t.Fatalf("list thread slice around: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestRevertAndResendEventCarriesPostCutStamps(t *testing.T) {
 	thread, _ := seedResendThread(t, app, "t-resend-stamps")
 	before := appHistoryStamp(t, app, thread.ID)
 
-	if err := app.RevertConversationAndResendMessage(thread.ID, "user:1",
+	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1",
 		RevertAndResendOptions{Content: "rewritten second"}); err != nil {
 		t.Fatalf("revert and resend: %v", err)
 	}

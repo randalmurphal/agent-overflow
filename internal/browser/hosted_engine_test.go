@@ -670,15 +670,29 @@ func TestManagerWithoutAWindowHasNoEngineAtAll(t *testing.T) {
 // The browser-level dial
 // ---------------------------------------------------------------------
 
-// fakeCDPBrowser is a loopback websocket endpoint speaking just enough CDP
+// fakeCDPCall is one command a fake endpoint answered.
+type fakeCDPCall struct {
+	Method string
+	Params json.RawMessage
+}
+
+// newFakeCDPServer is a loopback websocket endpoint speaking just enough CDP
 // to accept a browser-level connection: every command is recorded and
-// answered with an empty success. It is what the launcher's WebView2
-// debugging endpoint looks like to the dial — a browser that answers
-// commands but has NO tabs of its own to hand out.
-func fakeCDPBrowser(t *testing.T) (wsURL string, methods func() []string) {
+// answered, by default with an empty success. `respond` may return a richer
+// result body for one method — which is how the headless engine's tests get
+// a browser that can hand out a target — and nil falls back to the empty
+// success.
+//
+// It answers on the SESSION the command arrived on: chromedp routes a
+// response to a target's executor by the sessionId echoed back, and a reply
+// that dropped it would be delivered to the browser instead and the caller
+// would wait forever.
+//
+// No browser is started by any of this, on either engine's tests.
+func newFakeCDPServer(t *testing.T, respond func(call fakeCDPCall) any) (wsURL string, calls func() []fakeCDPCall) {
 	t.Helper()
 	var mu sync.Mutex
-	var seen []string
+	var seen []fakeCDPCall
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
 		if err != nil {
@@ -692,27 +706,56 @@ func fakeCDPBrowser(t *testing.T) (wsURL string, methods func() []string) {
 				return
 			}
 			var msg struct {
-				ID     int64  `json:"id"`
-				Method string `json:"method"`
+				ID        int64           `json:"id"`
+				Method    string          `json:"method"`
+				Params    json.RawMessage `json:"params"`
+				SessionID string          `json:"sessionId"`
 			}
 			if err := json.Unmarshal(payload, &msg); err != nil {
 				t.Errorf("bad CDP frame %q: %v", payload, err)
 				return
 			}
+			call := fakeCDPCall{Method: msg.Method, Params: msg.Params}
 			mu.Lock()
-			seen = append(seen, msg.Method)
+			seen = append(seen, call)
 			mu.Unlock()
-			reply, _ := json.Marshal(map[string]any{"id": msg.ID, "result": map[string]any{}})
+			var result any = map[string]any{}
+			if respond != nil {
+				if answer := respond(call); answer != nil {
+					result = answer
+				}
+			}
+			frame := map[string]any{"id": msg.ID, "result": result}
+			if msg.SessionID != "" {
+				frame["sessionId"] = msg.SessionID
+			}
+			reply, _ := json.Marshal(frame)
 			if err := wsutil.WriteServerText(conn, reply); err != nil {
 				return
 			}
 		}
 	}))
 	t.Cleanup(server.Close)
-	return "ws" + strings.TrimPrefix(server.URL, "http"), func() []string {
+	return "ws" + strings.TrimPrefix(server.URL, "http"), func() []fakeCDPCall {
 		mu.Lock()
 		defer mu.Unlock()
-		return append([]string(nil), seen...)
+		return append([]fakeCDPCall(nil), seen...)
+	}
+}
+
+// fakeCDPBrowser is what the launcher's WebView2 debugging endpoint looks
+// like to the dial: a browser that answers commands but has NO tabs of its
+// own to hand out.
+func fakeCDPBrowser(t *testing.T) (wsURL string, methods func() []string) {
+	t.Helper()
+	wsURL, calls := newFakeCDPServer(t, nil)
+	return wsURL, func() []string {
+		seen := calls()
+		names := make([]string, 0, len(seen))
+		for _, call := range seen {
+			names = append(names, call.Method)
+		}
+		return names
 	}
 }
 

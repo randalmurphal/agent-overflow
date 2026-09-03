@@ -928,7 +928,7 @@ export function enforceUniqueTimelineNodeKeys(nodes: readonly TimelineNode[]): v
   // Constant message, variables in `detail` — a key in the message would
   // mint a fresh dedupe signature per defect and walk past the
   // per-signature cap. Console too: a remote session cannot persist (the
-  // reporter is LocalOnly), and there the console line is the only
+  // reporter is host-scoped), and there the console line is the only
   // evidence.
   const detail =
     `${duplicateKeyRepairs} re-keyed, ${duplicateKeySharedNodes} shared-node, sample ${duplicateKeySample}`;
@@ -1687,7 +1687,7 @@ export function groupItemsBySubagent(
         // message, variables in `detail` — an id in the message would mint a
         // fresh signature per launch and walk straight past the per-signature
         // cap. Console too: a remote session cannot persist (the reporter is
-        // LocalOnly), and there the console line is the only evidence.
+        // host-scoped), and there the console line is the only evidence.
         const detail = `launch ${item.id}, ${revisits} skipped`;
         console.warn(`[subagentGrouping] corrupt parent links while flattening (${detail})`);
         reportFrontendDiagnostic(

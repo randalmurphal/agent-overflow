@@ -1,7 +1,6 @@
 package provideraccountapp
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -9,31 +8,36 @@ import (
 
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/claude"
-	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/providerstatus"
 
 	"github.com/google/uuid"
 )
 
-// This file owns the native-login saga: run the provider's own browser flow
-// in a temporary home, verify what it produced, and land it in a slot and the
-// canonical store — with a rollback for every step that can fail partway.
+// This file owns the two halves of the native-login saga that surround the
+// provider's own sign-in: the PREPARATION that has to happen before a provider
+// process runs, and the ADOPTION that verifies what it produced and lands it
+// in a slot and the canonical store — with a rollback for every step that can
+// fail partway. What happens between them is driven by loginsession.go, which
+// owns one live sign-in per provider and the state the UI reads.
 
-// LoginProviderAccount runs the provider's native browser login in a
-// short-lived isolated home, retains only the resulting native credential,
-// atomically activates it, and registers non-secret metadata.
-func (m *Manager) LoginProviderAccount(
-	providerName string,
-) (_ ManagedAccount, retErr error) {
-	if m.shuttingDown() {
-		return ManagedAccount{}, m.shutdownError()
-	}
-	if err := ValidateProvider(providerName); err != nil {
-		return ManagedAccount{}, err
-	}
+// loginAttempt is one sign-in's preparation, carried from beginLogin to
+// adoptLogin. The temporary home is the whole point: the provider CLI writes
+// whatever it produces there, so nothing it does can disturb the account the
+// user is signed in as until adoption decides to switch.
+type loginAttempt struct {
+	provider string
+	binary   string
+	home     *provideraccounts.EphemeralHome
+}
+
+// beginLogin preserves the account currently in the canonical location and
+// cuts the temporary home the provider's sign-in will write into. It runs
+// before any provider process starts, because both halves are about what
+// happens to the CURRENT login if the new one never completes.
+func (m *Manager) beginLogin(providerName string) (*loginAttempt, error) {
 	if m.store == nil || m.credentials == nil {
-		return ManagedAccount{}, errors.New("provider account storage is unavailable")
+		return nil, errors.New("provider account storage is unavailable")
 	}
 
 	binary := m.providerBinaryPath(providerName)
@@ -43,54 +47,39 @@ func (m *Manager) LoginProviderAccount(
 	if err := m.adoptCanonicalProviderAccountLocked(providerName, binary); err != nil {
 		m.mu.Unlock()
 		reconcileMu.Unlock()
-		return ManagedAccount{}, fmt.Errorf("preserve current %s account: %w", providerName, err)
+		return nil, fmt.Errorf("preserve current %s account: %w", providerName, err)
 	}
 	m.mu.Unlock()
 	reconcileMu.Unlock()
 
-	loginHome, err := m.credentials.NewEphemeralHome(providerName)
+	home, err := m.credentials.NewEphemeralHome(providerName)
 	if err != nil {
-		return ManagedAccount{}, fmt.Errorf("prepare %s login: %w", providerName, err)
+		return nil, fmt.Errorf("prepare %s login: %w", providerName, err)
 	}
-	defer func() {
-		if cleanupErr := loginHome.Cleanup(); cleanupErr != nil {
-			retErr = errors.Join(
-				retErr,
-				fmt.Errorf("clean temporary %s login home: %w", providerName, cleanupErr),
-			)
-		}
-	}()
+	return &loginAttempt{provider: providerName, binary: binary, home: home}, nil
+}
 
-	switch providerName {
-	case string(provider.Claude):
-		if m.deps.BrowserExecutable == nil {
-			return ManagedAccount{}, errors.New("locate browser bridge: browser executable resolver unavailable")
-		}
-		executable, err := m.deps.BrowserExecutable()
-		if err != nil {
-			return ManagedAccount{}, fmt.Errorf("locate browser bridge: %w", err)
-		}
-		if err := claude.Login(m.context(), claude.LoginConfig{
-			Binary:            binary,
-			ConfigDir:         loginHome.Path,
-			BrowserExecutable: executable,
-		}); err != nil {
-			return ManagedAccount{}, err
-		}
-	case string(provider.Codex):
-		if err := codex.Login(m.context(), codex.LoginConfig{
-			Binary: binary,
-			Env:    map[string]string{"CODEX_HOME": loginHome.Path},
-			OpenURL: func(rawURL string) error {
-				if m.deps.OpenBrowser == nil {
-					return errors.New("browser opener unavailable")
-				}
-				return m.deps.OpenBrowser(context.Background(), rawURL)
-			},
-		}); err != nil {
-			return ManagedAccount{}, err
-		}
+// cleanup removes the temporary home. Adoption cleans up as soon as it has
+// read everything it needs, so the coordinator's own teardown call is usually
+// a no-op — which is exactly why it is safe on every exit path.
+func (a *loginAttempt) cleanup() error {
+	if a == nil {
+		return nil
 	}
+	if err := a.home.Cleanup(); err != nil {
+		return fmt.Errorf("clean temporary %s login home: %w", a.provider, err)
+	}
+	return nil
+}
+
+// adoptLogin verifies what the provider's sign-in wrote into the temporary
+// home, retains only the resulting native credential, atomically activates it,
+// and registers non-secret metadata.
+func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr error) {
+	providerName := attempt.provider
+	binary := attempt.binary
+	loginHome := attempt.home
+	reconcileMu := m.reconcileMutex(providerName)
 
 	info, err := m.probeProviderAccountAtHome(providerName, binary, loginHome.Path)
 	if err != nil {
@@ -116,8 +105,8 @@ func (m *Manager) LoginProviderAccount(
 			claudeconfig.New(filepath.Join(loginHome.Path, ".claude.json")),
 		)
 	}
-	if err := loginHome.Cleanup(); err != nil {
-		return ManagedAccount{}, fmt.Errorf("clean temporary %s login home: %w", providerName, err)
+	if err := attempt.cleanup(); err != nil {
+		return ManagedAccount{}, err
 	}
 	reconcileMu.Lock()
 	reconcileLocked := true
@@ -250,6 +239,8 @@ func (m *Manager) LoginProviderAccount(
 	reconcileLocked = false
 	m.invalidateProviderAccountProbe(providerName, binary)
 	m.emitProviderAccount(providerName, account, info, generation)
+	// A sign-in adds a card, which no per-account frame can express.
+	m.emitProviderAccountsChanged()
 	m.applySelection(providerName, generation, account.ID)
 	if err := m.RefreshProviderAccountUsage(providerName, account.ID); err != nil {
 		// Login and activation succeeded. Quota refresh is independently

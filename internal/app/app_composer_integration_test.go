@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -81,9 +80,9 @@ func composerSeedThreadWithProvider(t *testing.T, app *App, id, providerKind str
 	return thread
 }
 
-// tinyPNGBase64 returns a short but valid PNG base64 string — enough to pass
-// the MIME whitelist without bloating test output.
-func tinyPNGBase64() string {
+// tinyPNG returns a short but valid PNG payload — enough to pass the MIME
+// whitelist and the signature check without bloating test output.
+func tinyPNG() []byte {
 	payload := []byte{
 		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
 		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
@@ -91,7 +90,7 @@ func tinyPNGBase64() string {
 		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
 		0x89,
 	}
-	return base64.StdEncoding.EncodeToString(payload)
+	return payload
 }
 
 // writeClaudeStdinCapture creates a mock Claude binary that redirects every
@@ -132,7 +131,7 @@ func TestComposer_DraftSaveLoadRoundTrip(t *testing.T) {
 			CreatedAt: 1700_000,
 		},
 	}
-	if err := app.SaveDraft("thr-rt", "hello @file please", []string{"att-1", "att-2"}, chips, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-rt", "hello @file please", []string{"att-1", "att-2"}, chips, nil); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
 
@@ -160,10 +159,10 @@ func TestComposer_DraftOverwritePreservesMostRecent(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-over", "")
 
-	if err := app.SaveDraft("thr-over", "v1", []string{"a"}, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-over", "v1", []string{"a"}, nil, nil); err != nil {
 		t.Fatalf("SaveDraft v1: %v", err)
 	}
-	if err := app.SaveDraft("thr-over", "v2", []string{"b"}, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-over", "v2", []string{"b"}, nil, nil); err != nil {
 		t.Fatalf("SaveDraft v2: %v", err)
 	}
 	got, err := app.GetDraft("thr-over")
@@ -184,10 +183,10 @@ func TestComposer_DraftClearRemovesRow(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-clear", "")
 
-	if err := app.SaveDraft("thr-clear", "to clear", []string{"a"}, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-clear", "to clear", []string{"a"}, nil, nil); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
-	if err := app.ClearDraft("thr-clear"); err != nil {
+	if err := app.ClearDraft(t.Context(), "thr-clear"); err != nil {
 		t.Fatalf("ClearDraft: %v", err)
 	}
 	got, err := app.GetDraft("thr-clear")
@@ -219,11 +218,11 @@ func TestComposer_DraftStaleGenerationCounterRejected(t *testing.T) {
 	composerSeedThread(t, app, "thr-gen", "")
 
 	// "Newer" save with higher logical generation (gen=1, content "new").
-	if err := app.SaveDraft("thr-gen", "new", nil, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-gen", "new", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft gen=1: %v", err)
 	}
 	// "Older" save arriving late (gen=0, content "old"). No counter → it wins.
-	if err := app.SaveDraft("thr-gen", "old", nil, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-gen", "old", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft gen=0: %v", err)
 	}
 	got, err := app.GetDraft("thr-gen")
@@ -242,10 +241,10 @@ func TestComposer_DraftPerThreadIsolation(t *testing.T) {
 	composerSeedThread(t, app, "thr-iso-a", "")
 	composerSeedThread(t, app, "thr-iso-b", "")
 
-	if err := app.SaveDraft("thr-iso-a", "A content", nil, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-iso-a", "A content", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft A: %v", err)
 	}
-	if err := app.SaveDraft("thr-iso-b", "B content", []string{"b-att"}, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-iso-b", "B content", []string{"b-att"}, nil, nil); err != nil {
 		t.Fatalf("SaveDraft B: %v", err)
 	}
 
@@ -271,7 +270,7 @@ func TestComposer_DraftCascadeOnThreadDelete(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-cascade", "")
 
-	if err := app.SaveDraft("thr-cascade", "doomed", nil, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-cascade", "doomed", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
 
@@ -290,21 +289,15 @@ func TestComposer_DraftCascadeOnThreadDelete(t *testing.T) {
 
 // TestComposer_AttachmentReferenceInDraft uploads two real attachments, saves
 // their IDs in a draft, and asserts the attachments are still retrievable
-// via GetAttachmentData.
+// afterwards.
 func TestComposer_AttachmentReferenceInDraft(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-att-draft", "")
 
-	first, err := app.UploadAttachment("thr-att-draft", "a.png", "image/png", tinyPNGBase64())
-	if err != nil {
-		t.Fatalf("Upload a: %v", err)
-	}
-	second, err := app.UploadAttachment("thr-att-draft", "b.png", "image/png", tinyPNGBase64())
-	if err != nil {
-		t.Fatalf("Upload b: %v", err)
-	}
+	first := uploadTestAttachment(t, app, "thr-att-draft", "a.png", "image/png", tinyPNG())
+	second := uploadTestAttachment(t, app, "thr-att-draft", "b.png", "image/png", tinyPNG())
 
-	if err := app.SaveDraft("thr-att-draft", "see: ",
+	if err := app.SaveDraft(t.Context(), "thr-att-draft", "see: ",
 		[]string{first.ID, second.ID}, nil, nil); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
@@ -317,8 +310,8 @@ func TestComposer_AttachmentReferenceInDraft(t *testing.T) {
 		t.Fatalf("AttachmentIDs = %+v", got.AttachmentIDs)
 	}
 	for _, id := range got.AttachmentIDs {
-		if _, err := app.GetAttachmentData("thr-att-draft", id); err != nil {
-			t.Fatalf("GetAttachmentData(%s): %v", id, err)
+		if _, _, err := app.attachments.ReadThreadBytes("thr-att-draft", id); err != nil {
+			t.Fatalf("read attachment %s: %v", id, err)
 		}
 	}
 }
@@ -332,10 +325,7 @@ func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-att-send", "")
 
-	record, err := app.UploadAttachment(thread.ID, "cover.png", "image/png", tinyPNGBase64())
-	if err != nil {
-		t.Fatalf("UploadAttachment: %v", err)
-	}
+	record := uploadTestAttachment(t, app, thread.ID, "cover.png", "image/png", tinyPNG())
 
 	// Attach a real Claude session backed by the passthrough binary so the
 	// send path executes end-to-end (turn index, user item insert, stdin
@@ -389,8 +379,8 @@ func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
 		t.Fatalf("expected attachment metadata on user item, got %+v", meta.Attachments)
 	}
 	// Attachment must still be retrievable post-send.
-	if _, err := app.GetAttachmentData(record.ThreadID, record.ID); err != nil {
-		t.Fatalf("GetAttachmentData after send: %v", err)
+	if _, _, err := app.attachments.ReadThreadBytes(record.ThreadID, record.ID); err != nil {
+		t.Fatalf("read attachment after send: %v", err)
 	}
 	list, err := app.ListAttachments(thread.ID)
 	if err != nil {
@@ -406,12 +396,9 @@ func TestComposer_SendMessageRejectsAttachmentFromDifferentThread(t *testing.T) 
 	sourceThread := composerSeedThread(t, app, "thr-attachment-source", "")
 	targetThread := composerSeedThread(t, app, "thr-attachment-target", "")
 
-	record, err := app.UploadAttachment(sourceThread.ID, "cover.png", "image/png", tinyPNGBase64())
-	if err != nil {
-		t.Fatalf("UploadAttachment: %v", err)
-	}
+	record := uploadTestAttachment(t, app, sourceThread.ID, "cover.png", "image/png", tinyPNG())
 
-	err = app.SendMessage(targetThread.ID, "please review this image", []string{record.ID})
+	err := app.SendMessage(targetThread.ID, "please review this image", []string{record.ID})
 	if err == nil {
 		t.Fatal("SendMessage error = nil, want cross-thread attachment rejection")
 	}
@@ -436,10 +423,7 @@ func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-outgoing", "")
 
-	record, err := app.UploadAttachment(thread.ID, "snap.png", "image/png", tinyPNGBase64())
-	if err != nil {
-		t.Fatalf("UploadAttachment: %v", err)
-	}
+	record := uploadTestAttachment(t, app, thread.ID, "snap.png", "image/png", tinyPNG())
 
 	captureDir := t.TempDir()
 	capturePath := filepath.Join(captureDir, "stdin.log")
@@ -529,14 +513,8 @@ func TestResolveSendMessageAttachmentsByProvider(t *testing.T) {
 	claudeThread := composerSeedThread(t, app, "by-provider-claude", "")
 	tuiThread := composerSeedThreadWithProvider(t, app, "by-provider-tui", string(provider.ClaudeTUI))
 
-	claudeAtt, err := app.UploadAttachment(claudeThread.ID, "pic.png", "image/png", tinyPNGBase64())
-	if err != nil {
-		t.Fatalf("UploadAttachment(claude): %v", err)
-	}
-	tuiAtt, err := app.UploadAttachment(tuiThread.ID, "pic.png", "image/png", tinyPNGBase64())
-	if err != nil {
-		t.Fatalf("UploadAttachment(claude-tui): %v", err)
-	}
+	claudeAtt := uploadTestAttachment(t, app, claudeThread.ID, "pic.png", "image/png", tinyPNG())
+	tuiAtt := uploadTestAttachment(t, app, tuiThread.ID, "pic.png", "image/png", tinyPNG())
 
 	// claude → inline bytes, no path.
 	claudeResolved, err := app.resolveSendMessageAttachments(claudeThread.ID, []string{claudeAtt.ID})
@@ -598,20 +576,17 @@ func TestComposer_AttachmentNotLostOnDraftSave(t *testing.T) {
 	app, rootDir := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-att-save", "")
 
-	record, err := app.UploadAttachment("thr-att-save", "img.png", "image/png", tinyPNGBase64())
-	if err != nil {
-		t.Fatalf("UploadAttachment: %v", err)
-	}
+	record := uploadTestAttachment(t, app, "thr-att-save", "img.png", "image/png", tinyPNG())
 
-	if err := app.SaveDraft("thr-att-save", "hi", []string{record.ID}, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-att-save", "hi", []string{record.ID}, nil, nil); err != nil {
 		t.Fatalf("SaveDraft with ref: %v", err)
 	}
-	if err := app.SaveDraft("thr-att-save", "hi again", nil, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-att-save", "hi again", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft without ref: %v", err)
 	}
 
 	// Attachment metadata row is still there.
-	if _, err := app.GetAttachmentData(record.ThreadID, record.ID); err != nil {
+	if _, _, err := app.attachments.ReadThreadBytes(record.ThreadID, record.ID); err != nil {
 		t.Fatalf("attachment lost after draft save: %v", err)
 	}
 	// Disk file is still there.
@@ -627,7 +602,7 @@ func TestComposer_SendMessageClearsDraft(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-send-draft", "")
 
-	if err := app.SaveDraft(thread.ID, "draft text", nil, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), thread.ID, "draft text", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
 
@@ -732,7 +707,7 @@ func TestComposer_LargeDraftHandled(t *testing.T) {
 		b.WriteByte(byte('a' + (i % 26)))
 	}
 	big := b.String()
-	if err := app.SaveDraft("thr-big", big, nil, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-big", big, nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft big: %v", err)
 	}
 	got, err := app.GetDraft("thr-big")
@@ -754,7 +729,7 @@ func TestComposer_EmptyDraftSaveIsNoOp(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	composerSeedThread(t, app, "thr-empty-save", "")
 
-	if err := app.SaveDraft("thr-empty-save", "", nil, nil, nil); err != nil {
+	if err := app.SaveDraft(t.Context(), "thr-empty-save", "", nil, nil, nil); err != nil {
 		t.Fatalf("SaveDraft empty: %v", err)
 	}
 	got, err := app.GetDraft("thr-empty-save")
@@ -803,7 +778,7 @@ func TestComposer_DraftSurvivesRestart(t *testing.T) {
 	if err := app1.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := app1.SaveDraft(threadID, "survived", []string{"abc"}, []TerminalChip{{ID: "c1", Content: "body"}}, nil); err != nil {
+	if err := app1.SaveDraft(t.Context(), threadID, "survived", []string{"abc"}, []TerminalChip{{ID: "c1", Content: "body"}}, nil); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
 	if err := st1.Close(); err != nil {

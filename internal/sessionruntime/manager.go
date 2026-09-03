@@ -36,6 +36,18 @@ type BrowserMCPSession struct {
 	Codex    *codex.Session
 }
 
+// ThreadProcess is one live provider process, named by the thread it
+// serves. The dev-server scan (internal/devscan) traces a listening
+// socket back to a thread through these: a dev server an agent started
+// is a descendant of one of them, or a member of its process group.
+type ThreadProcess struct {
+	ThreadID string
+	// PID is the provider subprocess. Because every spawn sets Setpgid,
+	// it is also that process's group id (provider.Session.PID says so),
+	// which is the half that survives a dev server daemonising.
+	PID int
+}
+
 // PromptRender is one session-token-scoped system-prompt render memo.
 type PromptRender struct {
 	Source   string
@@ -439,6 +451,37 @@ func (m *Manager) BrowserMCPSessions() []BrowserMCPSession {
 		})
 	}
 	return result
+}
+
+// ThreadProcesses returns the live provider process of every registered
+// thread. Sessions are snapshotted under the manager's lock and PID is
+// read after it is released: PID takes the SESSION's own lock, and the
+// two must never be held together.
+func (m *Manager) ThreadProcesses() []ThreadProcess {
+	type live struct {
+		threadID string
+		session  provider.Session
+	}
+	m.mu.Lock()
+	sessions := make([]live, 0, len(m.sessions))
+	for threadID, entry := range m.sessions {
+		if session := entry.ProviderSession(); session != nil {
+			sessions = append(sessions, live{threadID: threadID, session: session})
+		}
+	}
+	m.mu.Unlock()
+
+	processes := make([]ThreadProcess, 0, len(sessions))
+	for _, entry := range sessions {
+		pid := entry.session.PID()
+		if pid <= 0 {
+			// A session whose process has already gone. Nothing can
+			// descend from it.
+			continue
+		}
+		processes = append(processes, ThreadProcess{ThreadID: entry.threadID, PID: pid})
+	}
+	return processes
 }
 
 func (m *Manager) IdleCandidates(cutoffNano int64) []string {

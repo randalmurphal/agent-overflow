@@ -87,6 +87,9 @@ type WorkflowAutomationView struct {
 
 // WorkflowCreateAutomation validates and persists a new automation, then
 // recomputes the schedule so its first fire is armed without a restart.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowCreateAutomation(input WorkflowAutomationInput) (WorkflowAutomationView, error) {
 	workflowScheduler, err := a.requireWorkflowScheduler()
 	if err != nil {
@@ -111,6 +114,9 @@ func (a *App) WorkflowCreateAutomation(input WorkflowAutomationInput) (WorkflowA
 
 // WorkflowUpdateAutomation replaces an automation's definition. Continuity
 // notes and the fire record are untouched: neither is part of the definition.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowUpdateAutomation(automationID string, input WorkflowAutomationInput) (WorkflowAutomationView, error) {
 	workflowScheduler, err := a.requireWorkflowScheduler()
 	if err != nil {
@@ -151,6 +157,9 @@ func (a *App) WorkflowUpdateAutomation(automationID string, input WorkflowAutoma
 // WorkflowDeleteAutomation removes a trigger. Runs it already started are
 // untouched — they are ordinary runs whose provenance happens to name a row
 // that no longer exists.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowDeleteAutomation(automationID string) error {
 	workflowScheduler, err := a.requireWorkflowScheduler()
 	if err != nil {
@@ -171,6 +180,9 @@ func (a *App) WorkflowDeleteAutomation(automationID string) error {
 
 // WorkflowSetAutomationEnabled is the trigger's on/off switch. Disabling stops
 // future fires; it never touches a run already in flight.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowSetAutomationEnabled(automationID string, enabled bool) error {
 	workflowScheduler, err := a.requireWorkflowScheduler()
 	if err != nil {
@@ -191,6 +203,8 @@ func (a *App) WorkflowSetAutomationEnabled(automationID string, enabled bool) er
 
 // WorkflowListAutomations returns one project's automations, each enriched with
 // what its stored trigger actually means right now.
+//
+//ao:scope threads:read
 func (a *App) WorkflowListAutomations(projectID string) ([]WorkflowAutomationView, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("workflow store unavailable")
@@ -215,6 +229,9 @@ func (a *App) WorkflowListAutomations(projectID string) ([]WorkflowAutomationVie
 // run-if condition (pressing the button is the decision) but still refuses to
 // overlap the automation's own previous run, loudly, because there is someone
 // present to read the refusal.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowRunAutomationNow(automationID string) (store.WorkItem, error) {
 	workflowScheduler, err := a.requireWorkflowScheduler()
 	if err != nil {
@@ -366,7 +383,11 @@ func automationView(automation store.Automation, now time.Time) WorkflowAutomati
 // The run's results are delivered there from then on, replacing any previous
 // binding.
 //
-// LocalOnly: it associates a local run record with a local provider session.
+// threads:autonomy: it decides where an unattended run reports, which is a
+// statement about the autonomous work itself and not thread bookkeeping.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowBindThread(itemID, threadID string) (store.WorkItem, error) {
 	item, err := a.workflowBindableItem(itemID)
 	if err != nil {
@@ -395,7 +416,10 @@ func (a *App) WorkflowBindThread(itemID, threadID string) (store.WorkItem, error
 // WorkflowUnbindThread drops a run's origin binding. Its results go back to the
 // workflows overlay and the OS notification.
 //
-// LocalOnly: same surface as WorkflowBindThread.
+// threads:autonomy: same surface as WorkflowBindThread.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowUnbindThread(itemID string) (store.WorkItem, error) {
 	item, err := a.workflowBindableItem(itemID)
 	if err != nil {
@@ -464,6 +488,9 @@ type WorkflowDefinitionCatalog struct {
 }
 
 // WorkflowGetJobNotes reads the continuity notes stored on an automation.
+//
+//ao:scope threads:read
+//ao:route home
 func (a *App) WorkflowGetJobNotes(automationID string) (string, error) {
 	if a.store == nil {
 		return "", fmt.Errorf("workflow store unavailable")
@@ -476,6 +503,9 @@ func (a *App) WorkflowGetJobNotes(automationID string) (string, error) {
 }
 
 // WorkflowSetJobNotes replaces one automation's bounded continuity notes.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowSetJobNotes(automationID, notes string) error {
 	if a.store == nil {
 		return fmt.Errorf("workflow store unavailable")
@@ -492,6 +522,8 @@ func (a *App) WorkflowSetJobNotes(automationID, notes string) error {
 
 // WorkflowListDefinitions returns resolved project/shared definitions with the
 // existing dry-run validator's first finding and binding cross-check.
+//
+//ao:scope threads:read
 func (a *App) WorkflowListDefinitions(projectID string) (WorkflowDefinitionCatalog, error) {
 	if a.store == nil {
 		return WorkflowDefinitionCatalog{}, fmt.Errorf("workflow store unavailable")
@@ -574,6 +606,8 @@ func (a *App) WorkflowListDefinitions(projectID string) (WorkflowDefinitionCatal
 // query count. A ledger row whose run record is gone keeps its own entry —
 // ledger rows deliberately outlive the runs they attribute — and a chain is
 // followed only as far as its records still exist.
+//
+//ao:scope threads:read
 func (a *App) WorkflowListItemCosts(projectID string) (map[string]float64, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("workflow store unavailable")
@@ -636,6 +670,9 @@ func workItemAncestryChain(itemID string, parents map[string]string) []string {
 //
 // refreshDefinition re-reads the workflow and its prompt files from disk for
 // that attempt instead of rendering the definition the run froze at start.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowRerunItem(ctx context.Context, itemID, guidance string, refreshDefinition bool) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -726,7 +763,11 @@ type WorkflowDiscardResult struct {
 // WorkflowDiscardPreview reports what discarding a run tree would destroy. It
 // runs read-only git queries and mutates nothing.
 //
-// LocalOnly: it reads local checkouts and repository history.
+// git:operate: it reads local checkouts and repository history, the same
+// grant the git reads it is built out of take.
+//
+//ao:scope git:operate
+//ao:route home
 func (a *App) WorkflowDiscardPreview(itemID string) (WorkflowDiscardPreview, error) {
 	preview, err := a.workflowApplication().DiscardPreview(itemID)
 	if err != nil {
@@ -803,6 +844,9 @@ const workflowDispositionPR = "pr"
 
 // WorkflowMergeItem cleanly lands a done item's branch on the live profile's
 // base branch. Refusals park the run for human disposition.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowMergeItem(itemID string) (WorkflowDispositionReceipt, error) {
 	receipt, err := a.workflowApplication().MergeItem(itemID)
 	return projectWorkflowDispositionReceipt(receipt), err
@@ -810,6 +854,9 @@ func (a *App) WorkflowMergeItem(itemID string) (WorkflowDispositionReceipt, erro
 
 // WorkflowCreateItemPR pushes a done item's branch and creates a PR/MR through
 // the repository's existing forge integration.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowCreateItemPR(itemID string) (WorkflowDispositionReceipt, error) {
 	receipt, err := a.workflowApplication().CreateItemPR(itemID)
 	return projectWorkflowDispositionReceipt(receipt), err
@@ -817,6 +864,9 @@ func (a *App) WorkflowCreateItemPR(itemID string) (WorkflowDispositionReceipt, e
 
 // WorkflowDiscardItem removes an eligible item's worktree through the existing
 // guarded removal path and keeps the durable run record.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowDiscardItem(itemID string) (WorkflowDispositionReceipt, error) {
 	receipt, err := a.workflowApplication().DiscardItem(itemID)
 	return projectWorkflowDispositionReceipt(receipt), err
@@ -856,8 +906,11 @@ func (a *App) autoDisposeWorkflowItem(itemID string) {
 // comes down through the engine's one teardown path. Resuming continues on the
 // provider sessions the runs parked on.
 //
-// LocalOnly: pausing interrupts local provider processes and releases the
-// worktrees they hold.
+// threads:autonomy: pausing interrupts autonomous provider processes and
+// releases the worktrees they hold.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowPauseItem(ctx context.Context, itemID string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -879,8 +932,11 @@ func (a *App) WorkflowPauseItem(ctx context.Context, itemID string) error {
 // the path that set it, and a caller that can only ever arm would have no way to
 // change its mind.
 //
-// LocalOnly: the request decides whether the next wave of autonomous provider
-// sessions runs, which is the same control plane as pause.
+// threads:autonomy: the request decides whether the next wave of autonomous
+// provider sessions runs, which is the same control plane as pause.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowRequestSoftStop(ctx context.Context, itemID string, armed bool) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -914,6 +970,9 @@ type WorkflowPRReviewComments struct {
 // WorkflowFetchPRReviewComments returns the PR's review conversations that
 // have not been explicitly resolved. Conversation comments without a forge
 // resolution state remain visible.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowFetchPRReviewComments(itemID string) (WorkflowPRReviewComments, error) {
 	if a.shuttingDown.Load() {
 		return WorkflowPRReviewComments{}, ErrShuttingDown
@@ -928,6 +987,9 @@ func (a *App) WorkflowFetchPRReviewComments(itemID string) (WorkflowPRReviewComm
 // WorkflowSendPRReviewCommentsToThread opens or reuses the run's linked
 // thread, then sends the current unresolved review comments through the
 // normal user-message path.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowSendPRReviewCommentsToThread(itemID string) (store.Thread, error) {
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
@@ -937,6 +999,9 @@ func (a *App) WorkflowSendPRReviewCommentsToThread(itemID string) (store.Thread,
 
 // WorkflowDiscussPR opens or reuses the run's linked thread and sends a
 // diff-free snapshot of the PR and run intent for discussion preparation.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowDiscussPR(itemID string) (store.Thread, error) {
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
@@ -1176,6 +1241,9 @@ const maxWorkflowRunMapMembers = 4096
 // WorkflowRunMapRefusal). Everything else — a store that will not read, a
 // ledger group with an unknown cost source — is an error, and the caller is
 // right to retry those.
+//
+//ao:scope threads:read
+//ao:route home
 func (a *App) WorkflowGetRunMap(ctx context.Context, itemID string) (WorkflowRunMapView, error) {
 	if a.store == nil {
 		return WorkflowRunMapView{}, fmt.Errorf("workflow store unavailable")
@@ -1454,6 +1522,9 @@ func (s resolvedTreeSpend) TreeSpend(_ context.Context, rootItemID string) (engi
 // WorkflowRetryUnit re-runs one failed or taken-over unit of a parked fan-out
 // attempt, the attempt's join included. The note explains the retry in the run
 // record and reaches the unit's next try as feedback.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowRetryUnit(ctx context.Context, itemID, unitID, note string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -1479,6 +1550,9 @@ func (a *App) WorkflowRetryUnit(ctx context.Context, itemID, unitID, note string
 // repairing unit by unit is the same action typed N times. The note explains
 // the retry in the run record and reaches every repaired unit's next try as
 // feedback.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowRetryFailedUnits(ctx context.Context, itemID, note string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -1497,6 +1571,9 @@ func (a *App) WorkflowRetryFailedUnits(ctx context.Context, itemID, note string)
 // is recorded `dropped`, its join sees it as such, and the attempt resumes. The
 // join itself is refused: it is what consolidates the units, so its absence
 // leaves nothing to accept.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowDropUnit(itemID, unitID, note string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -1514,6 +1591,9 @@ func (a *App) WorkflowDropUnit(itemID, unitID, note string) error {
 // human can steer its thread directly. The unit's session stays alive and is
 // re-registered schema-less, exactly as a taken-over phase thread is; its
 // siblings keep running and the attempt parks once they rest.
+//
+//ao:scope threads:autonomy
+//ao:route home
 func (a *App) WorkflowTakeOverUnit(itemID, unitID string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {

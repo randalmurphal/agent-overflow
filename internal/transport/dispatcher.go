@@ -39,8 +39,9 @@ type Method struct {
 	ID           uint32
 	NeedsContext bool
 	IsVariadic   bool
-	// LocalOnly refuses the method for non-loopback peers regardless of
-	// the LocalOnlyMethods name set. Set via RegisterOptions.LocalOnly.
+	// LocalOnly refuses the method for non-loopback peers. Set for every
+	// method on a receiver registered with RegisterOptions.LocalOnly;
+	// there is no per-method form.
 	LocalOnly   bool
 	fn          reflect.Value
 	inputTypes  []reflect.Type
@@ -72,12 +73,14 @@ type RegisterOptions struct {
 	// methods the binding generator emitted.
 	AllowList map[string]bool
 
-	// LocalOnly marks every method on this receiver as loopback-only,
-	// independent of the name-keyed LocalOnlyMethods set (which is
-	// integrity-tested against the generated App method list and so can
-	// only hold App methods). The harness receiver registers with this
-	// set: its entire surface is state injection and must never be
-	// reachable from a non-loopback peer.
+	// LocalOnly marks every method on this receiver as loopback-only.
+	// The harness receiver registers with this set: its entire surface
+	// is state injection into a boot mode that exists to be driven from
+	// this machine, and it carries no `//ao:scope` annotations because
+	// methodgen does not generate for it — so there is no grant a
+	// session could hold that would answer for it. Refusing the whole
+	// receiver off-host is the honest classification, and it is the ONLY
+	// locality gate left on the dispatcher.
 	LocalOnly bool
 }
 
@@ -238,16 +241,19 @@ func (d *Dispatcher) LookupName(name string) (*Method, bool) {
 // FrameError when neither resolves. The wire message is generic to
 // avoid leaking which IDs/names were probed.
 //
-// The origin is a REQUIRED argument, never a default. When isLoopback
-// is false and the resolved method appears in LocalOnlyMethods, the
-// dispatcher refuses with ErrCodeMethodNotFound — indistinguishable
-// from a probe of an unregistered method, so a LAN scanner can't
-// fingerprint which methods are privileged.
+// The origin is a REQUIRED argument, never a default, and what it now
+// decides is RECEIVER-level reachability only: a receiver registered
+// RegisterOptions{LocalOnly} is host tooling whose whole surface is
+// refused off-host (the harness's, today). The per-METHOD origin
+// partition it used to consult is gone — every off-host connection
+// names a session, and what that session may call is decided by
+// AuthorizeSessionMethod against the method's scope (authorize.go).
 //
-// The check happens AFTER lookup so a non-loopback peer probing for a
-// privileged method gets the same shape of error whether the method
-// exists or not. Without that, an attacker could enumerate the
-// privileged surface by comparing response codes.
+// The refusal is ErrCodeMethodNotFound, indistinguishable from a probe
+// of an unregistered method, and it happens AFTER lookup so a peer
+// probing a host-tooling method gets the same shape of error whether it
+// exists or not. Without that, a caller could enumerate the receiver by
+// comparing response codes.
 func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (*Method, *FrameError) {
 	var method *Method
 	if id != 0 {
@@ -266,17 +272,17 @@ func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (
 			Message: "method not registered",
 		}
 	}
-	if !isLoopback && (LocalOnlyMethods[method.Name] || method.LocalOnly) {
+	if !isLoopback && method.LocalOnly {
 		// Wire shape matches an unrelated method-not-found rather than a
 		// distinct "forbidden" code. A probing client can't tell whether
-		// the method exists and is privileged, or simply doesn't exist —
-		// keeping the privileged surface unenumerable from the LAN.
+		// the method exists on a host-tooling receiver or simply doesn't
+		// exist — keeping that receiver unenumerable from off-host.
 		//
-		// Server-side log gives the operator visibility: when a LAN
-		// peer probes a privileged method the wire shape stays
-		// indistinguishable from any other miss, but the log records
-		// the actual method name so an admin can recognise probing.
-		log.Printf("transport: refused %s for non-loopback peer (LAN-only method)", method.Name)
+		// Server-side log gives the operator visibility: the wire shape
+		// stays indistinguishable from any other miss, but the log
+		// records the actual method name so an admin can recognise
+		// repeated probing.
+		log.Printf("transport: refused %s for non-loopback peer (host-tooling receiver)", method.Name)
 		return nil, &FrameError{
 			Code:    ErrCodeMethodNotFound,
 			Message: "method not registered",
@@ -296,7 +302,7 @@ func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (
 //
 // Wire messages for ErrCodeMethodError and ErrCodeInternal are
 // deliberately generic — full prose (file paths, internal state, panic
-// details) is logged server-side. A LAN-attached attacker can probe the
+// details) is logged server-side. A LAN-attached caller can probe the
 // wire shape but cannot harvest project-internal strings.
 //
 // `isLoopback` is the per-connection loopback flag, required rather than
@@ -432,7 +438,7 @@ func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.Raw
 // Method-returned errors used to surface methodErr.Error() to the wire
 // directly. That leaks filesystem paths and internal state — a method
 // that wraps an os.PathError sends "/Users/<name>/secret/path: file not
-// found" to a LAN-attached attacker. We now correlate logs with a short
+// found" to a LAN-attached caller. We now correlate logs with a short
 // random ID and return a generic "method failed (id: <id>)" message so
 // users can grep server logs for the full prose without surfacing it on
 // the wire.
@@ -441,6 +447,16 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 		errResult := results[len(results)-1]
 		if !errResult.IsNil() {
 			methodErr := errResult.Interface().(error)
+			if frame, isAuthz := AuthzFrame(methodErr); isAuthz {
+				// The method refused on its ARGUMENTS rather than failing
+				// (authorize.go): a runtime mode the session may not select,
+				// a host-tier settings key. Its message names the scope and
+				// is the whole answer, so it goes out verbatim on every
+				// origin — the redaction below exists for internal prose,
+				// and a remote caller told "method failed" here would be
+				// told nothing it could act on.
+				return nil, frame
+			}
 			cid := newCorrelationID()
 			log.Printf("transport: %s returned error (id: %s): %v", m.FQN, cid, methodErr)
 			message := fmt.Sprintf("method failed (id: %s)", cid)
@@ -454,8 +470,11 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 				message = methodErr.Error()
 			}
 			code := ErrCodeMethodError
-			if errors.Is(methodErr, ErrTemporarilyUnavailable) {
+			switch {
+			case errors.Is(methodErr, ErrTemporarilyUnavailable):
 				code = ErrCodeTemporarilyUnavailable
+			case errors.Is(methodErr, ErrAlreadyHandled):
+				code = ErrCodeAlreadyHandled
 			}
 			return nil, &FrameError{
 				Code:    code,

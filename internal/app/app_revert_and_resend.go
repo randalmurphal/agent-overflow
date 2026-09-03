@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/transport"
 )
 
 // RevertAndResendOptions carries the resend half of
@@ -84,7 +85,16 @@ type RevertAndResendOptions struct {
 // lock this saga holds across the whole sequence. Rather than reach
 // half of the takeover machinery from inside the lock, an unguarded
 // call fails loudly.
+//
+// ctx is here for the CALLER's identity, not for cancellation: the cut event
+// below is stamped with the connection that asked, because the frontend's
+// own failure handler keys on it (see UserMessageRevertedEvent.ConnectionID).
+// The generated TS bindings strip a leading ctx, so the wire signature is
+// unchanged.
+//
+//ao:scope threads:operate
 func (a *App) RevertConversationAndResendMessage(
+	ctx context.Context,
 	threadID string,
 	userItemID string,
 	opts RevertAndResendOptions,
@@ -166,6 +176,7 @@ func (a *App) RevertConversationAndResendMessage(
 		HistoryRev:            cut.Stamp.Rev,
 		HistoryEpoch:          cut.Stamp.Epoch,
 		DraftPendingResend:    true,
+		ConnectionID:          clientOf(ctx).ConnectionID,
 	})
 
 	// sendMessageLocked, not sendMessageWithOptions: the whole saga runs
@@ -293,12 +304,12 @@ func (a *App) settleRevertAndResendDraft(threadID string, staged stagedThreadDra
 		return
 	}
 	if staged.priorExisted {
-		if err := a.store.UpsertThreadDraft(staged.prior); err != nil {
+		if err := a.writeThreadDraft(transport.ClientIdentity{}, staged.prior); err != nil {
 			log.Printf("app: revert and resend: restore composer draft for thread %s: %v", threadID, err)
 		}
 		return
 	}
-	if err := a.store.DeleteThreadDraft(threadID); err != nil {
+	if err := a.removeThreadDraft(transport.ClientIdentity{}, threadID); err != nil {
 		log.Printf("app: revert and resend: clear staged draft for thread %s: %v", threadID, err)
 	}
 }

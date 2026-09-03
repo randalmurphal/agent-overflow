@@ -746,9 +746,11 @@ Interaction:
 - A **folded lane** and a **collapsed composition** expand the same way
   and cost the same nothing while shut: the projection does not build
   what nobody opened, so a click is the first time a subtree exists.
-- Every mutating affordance respects `isViewOnlySession()` (§10 remote
-  posture). The map itself is read-only, so this touches only the
-  follow chip (allowed) and nothing else.
+- Every mutating affordance asks for the capability it needs —
+  `hasScope('threads:autonomy')` for the workflow controls
+  (`frontend/src/lib/transport/scopes.ts`, §10 remote posture). The map
+  itself is read-only, so this touches only the follow chip (allowed)
+  and nothing else.
 
 ## 9. Scroll and follow: the intentionality contract
 

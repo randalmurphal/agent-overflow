@@ -21,6 +21,8 @@ import (
 type recordedWorkflowNotification struct {
 	Title  string
 	Body   string
+	Kind   notify.Kind
+	ID     string
 	Target notify.Target
 }
 
@@ -30,9 +32,12 @@ type recordingWorkflowNotificationSender struct {
 	wake    chan struct{}
 }
 
-func (s *recordingWorkflowNotificationSender) send(title, body string, target notify.Target) error {
+func (s *recordingWorkflowNotificationSender) send(payload notify.Send) error {
 	s.mu.Lock()
-	s.records = append(s.records, recordedWorkflowNotification{Title: title, Body: body, Target: target})
+	s.records = append(s.records, recordedWorkflowNotification{
+		Title: payload.Title, Body: payload.Body,
+		Kind: payload.Kind, ID: payload.ID, Target: payload.Target,
+	})
 	s.mu.Unlock()
 	select {
 	case s.wake <- struct{}{}:
@@ -92,6 +97,11 @@ func TestWorkflowStateEmitterPersistsTemplateAndSendsTypedNotifications(t *testi
 	if len(records) != 1 || records[0].Target.Kind != "workflow-item" ||
 		records[0].Target.WorkItemID != item.ID || records[0].Body != digest.WhatItNeeds {
 		t.Fatalf("notifications = %+v", records)
+	}
+	// The id is keyed on the item, so a run that rests twice replaces its own
+	// notification instead of stacking a second one beside a stale state.
+	if records[0].Kind != notify.KindWorkflowAttention || records[0].ID != "workflow-item:"+item.ID {
+		t.Fatalf("notification identity = %+v", records[0])
 	}
 }
 

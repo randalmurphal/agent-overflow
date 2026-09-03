@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/engine"
@@ -42,6 +43,10 @@ type sendMessageOptions struct {
 	RevisionSourceDiffReview     *SourceDiffReview
 	RevisionSourceDiffCommentIDs []string
 	OutputSchema                 json.RawMessage
+	// SendID is the client-minted idempotency id of one composer send. Empty
+	// for every app-internal caller, which is what keeps them out of each
+	// other's way. See app_send_idempotency.go.
+	SendID string
 	// PreserveDraft keeps the thread's durable composer draft. Set by the
 	// app-internal injectors (the workflow wake) whose text did not come from
 	// the composer: a user send consumes the draft, but a system-injected
@@ -87,6 +92,9 @@ type userMessageInputs struct {
 	// sends), whose text did not come from a composer and must reach the
 	// provider byte-for-byte as composed.
 	expandComposerCommands bool
+	// sendID rides through to the persisted row's meta, which is what makes
+	// the message its own idempotency record (app_send_idempotency.go).
+	sendID string
 }
 
 // resolvedUserMessage bundles everything resolveUserMessageEnvelope
@@ -209,6 +217,7 @@ func (a *App) resolveUserMessageEnvelope(
 		RevisionDiffCommentIDs: revisionDiffCommentIDs,
 		Command:                command,
 		ExpandComposerCommands: inputs.expandComposerCommands,
+		SendID:                 inputs.sendID,
 	})
 	if err != nil {
 		return resolvedUserMessage{}, fmt.Errorf("user meta: %w", err)
@@ -330,6 +339,23 @@ func (a *App) sendMessageLocked(
 		return store.Item{}, a.sendMessageFn(threadID, content, opts.AttachmentIDs)
 	}
 
+	// Idempotency, first thing inside the lock and before ANY side effect:
+	// no runtime-mode write, no takeover registration, no session start, and
+	// above all no provider write. A repeated frame is answered with what
+	// the first one produced. See app_send_idempotency.go.
+	if record, found, err := a.findRecordedSend(threadID, opts.SendID); err != nil {
+		return store.Item{}, fmt.Errorf("send message: %w", err)
+	} else if found {
+		if record.dispatched {
+			return record.item, nil
+		}
+		// The message is still on the queue, which is the outcome the first
+		// frame produced and the one this caller is asking for again. It is
+		// not a `user_text` row yet, so there is no item to return; the
+		// thread view the bound method reads back is unaffected either way.
+		return store.Item{}, nil
+	}
+
 	if prepared.hasRuntimeMode {
 		if err := a.applyRuntimeModeLocked(threadID, prepared.runtimeMode); err != nil {
 			return store.Item{}, fmt.Errorf("send message: runtime mode: %w", err)
@@ -377,6 +403,7 @@ func (a *App) sendMessageLocked(
 		revisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		revisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		expandComposerCommands:       opts.ExpandComposerCommands,
+		sendID:                       opts.SendID,
 	})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
@@ -478,7 +505,7 @@ func (a *App) sendMessageLocked(
 	}
 	userMsgKept = true
 	if !opts.PreserveDraft {
-		if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
+		if draftErr := a.removeThreadDraft(transport.ClientIdentity{}, threadID); draftErr != nil {
 			log.Printf("send message: delete draft for thread %s: %v", threadID, draftErr)
 		}
 	}
@@ -728,7 +755,7 @@ func (a *App) recordSendFailureAndCompleteTurn(threadID string, turnIndex int, s
 		ID:        triage.NewErrorID(turnIndex, "", errSeq),
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
-		Kind:      "error",
+		Kind:      triage.ItemKindError,
 		Role:      "system",
 		Status:    "completed",
 		Summary:   fmt.Sprintf("Failed to send: %v", sendErr),
@@ -974,6 +1001,10 @@ func (a *App) resolveSourceProposedPlan(threadID string, source *SourceProposedP
 	if _, err := a.store.EnsureProposedPlanState(sourceThreadID, item.ID, time.Now().UnixMilli()); err != nil {
 		return nil, fmt.Errorf("ensure source proposed plan state: %w", err)
 	}
+	// A first-ensure creates the proposed_plans row that makes
+	// hasActionableProposedPlan true; a repeat ensure re-states a row and
+	// the `full` broadcast is idempotent on the receiving side.
+	a.broadcastThreadRowByID(sourceThreadID)
 	resolved := &SourceProposedPlan{
 		ThreadID:  sourceThreadID,
 		ItemID:    item.ID,
@@ -1068,6 +1099,10 @@ func (a *App) applyProposedPlanAcceptance(threadID string, userItem store.Item, 
 		switch {
 		case err == nil:
 			a.refreshProposedPlanItem(sp.ThreadID, sp.ItemID)
+			// The plan stopped being actionable, which is a derived
+			// column of the thread row. Off-pane sidebars read the pill
+			// from there, not from the item upsert above.
+			a.broadcastThreadRowByID(sp.ThreadID)
 		case errors.Is(err, store.ErrProposedPlanAlreadyImplemented):
 			// Re-click on an already-implemented plan: keep the
 			// existing attribution and skip the emit (nothing changed).
@@ -1081,12 +1116,15 @@ func (a *App) applyProposedPlanAcceptance(threadID string, userItem store.Item, 
 			log.Printf("apply plan acceptance: mark revision comments sent %s/%s: %v", rp.ThreadID, rp.ItemID, err)
 		} else {
 			a.refreshProposedPlanItem(rp.ThreadID, rp.ItemID)
+			a.announcePlanCommentsChanged(rp.ThreadID, rp.ItemID)
 		}
 	}
 
 	if rd := resolved.revisionSourceDiff; rd != nil && len(resolved.revisionDiffCommentIDs) > 0 {
 		if err := a.store.MarkDiffReviewCommentsSent(threadID, rd.Scope, rd.SourceKey, resolved.revisionDiffCommentIDs, now, sentTurnID); err != nil {
 			log.Printf("apply plan acceptance: mark diff review comments sent: %v", err)
+		} else {
+			a.announceDiffCommentsChanged(threadID, rd.Scope, rd.SourceKey)
 		}
 	}
 }

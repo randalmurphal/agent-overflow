@@ -549,7 +549,7 @@ func seedProjectAt(t *testing.T, st *store.Store, id, name, path string) store.P
 		UpdatedAt: baseMillis,
 	}
 	if _, err := st.GetProject(id); err != nil {
-		if err := st.CreateProject(project); err != nil {
+		if _, err := st.CreateProject(project); err != nil {
 			t.Fatalf("create project: %v", err)
 		}
 	}

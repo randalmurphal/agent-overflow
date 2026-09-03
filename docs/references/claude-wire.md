@@ -3144,6 +3144,106 @@ API call billed). Response shape per the example above.
 
 ---
 
+## The sign-in control channel
+
+Account sign-in runs on this same `control_request` channel, in a process
+spawned for nothing else. `claude auth login` is deliberately not used: that
+command owns the browser and the URL, and reports completion only by exiting,
+so on a host with no browser the URL is unreachable and on a remote device it
+opens on a machine nobody is looking at. Driving the control channel puts both
+URLs in AO's hands, which is what lets the same flow finish at the machine or
+on a phone. Client: `internal/provider/claude/login.go`.
+
+**The invocation is `-p --input-format stream-json --output-format stream-json
+--verbose`, and every flag is load-bearing.** stream-json in BOTH directions is
+what makes `control_request` a thing the client can send; `--verbose` is
+mandatory under that combination — without it the CLI exits 1 before reading a
+byte of stdin. No prompt is ever sent, so the process emits nothing at all and
+waits. **Stdin must stay open for the whole flow**: EOF ends the process in
+about a second and takes the loopback listener with it.
+
+`CLAUDE_CONFIG_DIR` points at an isolated directory and
+`CLAUDE_SECURESTORAGE_CONFIG_DIR` is cleared, for the reasons
+`internal/provider/pinnedenv.go` gives for every other temporary-home spawn: a
+sign-in must not land in the canonical home before the adoption epilogue has
+decided which slot it belongs in. The rest of the environment is the user's
+configured one, because `ANTHROPIC_BASE_URL` decides which backend the person
+is authenticating to.
+
+### `claude_authenticate`
+
+```json
+{"type":"control_request","request_id":"ao-login-1",
+ "request":{"subtype":"claude_authenticate","loginWithClaudeAi":true}}
+```
+
+Answers with two URLs carrying the SAME PKCE challenge and state, differing
+only in `redirect_uri`:
+
+```json
+{"type":"control_response","response":{"subtype":"success","request_id":"ao-login-1",
+ "response":{"manualUrl":"https://claude.ai/oauth/authorize?...&redirect_uri=…manual",
+             "automaticUrl":"https://claude.ai/oauth/authorize?...&redirect_uri=http://localhost:PORT/callback"}}}
+```
+
+- `manualUrl` redirects to a page showing a `code#state` string to paste back.
+  It is the only form that reaches a person who is not at this machine, so a
+  response without it is not a usable flow.
+- `automaticUrl` redirects to a loopback listener the CLI binds BEFORE it
+  answers. Opening it on this host completes with nothing to paste.
+
+**Calling it again supersedes the live flow.** The CLI keeps one slot; the
+previous challenge is dead the moment a new one is minted, and the CLI never
+answers the superseded flow's outstanding wait.
+
+**`loginWithClaudeAi` may be refused by managed settings.** The refusal is
+prose naming `forceLoginMethod`, with no machine-readable code beside it. It is
+raised BEFORE anything starts — no listener, no challenge, no state — so
+retrying the other account type is free and cannot strand a half-open flow.
+
+### `claude_oauth_callback`
+
+```json
+{"type":"control_request","request_id":"ao-login-2",
+ "request":{"subtype":"claude_oauth_callback","authorizationCode":"…","state":"…"}}
+```
+
+Success answers `{"account":{…}}`. **One failure BURNS the flow**: the CLI
+closes its listener and clears its slot, so every later request on it answers
+`No active claude_authenticate flow`. The recovery is a fresh
+`claude_authenticate` and a fresh link — never a retry of the same one, and
+never a re-prompt against the same URL.
+
+Both halves are required. An absent one is forwarded into the token request as
+`undefined` and comes back as the opaque `Request failed with status code 400`,
+which burns the flow and tells the user nothing — so the client refuses an
+incomplete paste before writing it.
+
+### `claude_oauth_wait_for_completion`
+
+```json
+{"type":"control_request","request_id":"ao-login-3",
+ "request":{"subtype":"claude_oauth_wait_for_completion"}}
+```
+
+Resolves when the CLI's own loopback listener sees the browser come back. It is
+the `automaticUrl` path's completion signal, and the `manualUrl` path does not
+use it — that one completes on `claude_oauth_callback`'s own response.
+
+**It pends unbounded with no keepalive**, and a superseded flow's wait is never
+answered at all, so the client's deadline is the only bound and a supersede
+must abandon the outstanding wait rather than leave a goroutine on it.
+
+### Errors are prose, and only one string is matched
+
+There is no machine-readable code anywhere on this wire. The one sentence
+matched is `No active claude_authenticate flow` (the burned flow, above);
+everything else is surfaced verbatim, bounded and single-lined, because these
+refusals are hand-written sentences naming a setting or an HTTP status and
+replacing them with "sign-in failed" leaves the user nothing to act on.
+
+---
+
 ## `initialize` control_response: `models[]`
 
 The `initialize` control_response AO already sends on every account probe

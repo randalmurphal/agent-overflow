@@ -40,6 +40,9 @@ func (a *App) ReplayManager() *replay.Manager {
 //
 // This is the hook the UI calls after UpdateSettings persists a change —
 // see app_settings.go.
+//
+//ao:scope host
+//ao:route home
 func (a *App) ReconfigureObservability(prev, next settings.Settings) {
 	if a.replay != nil {
 		a.replay.SetEnabled(next.ObservabilityEventLogEnabled)
@@ -62,6 +65,9 @@ func (a *App) uiTrace() (*uitrace.Tracer, error) {
 // GetUIRenderTracePath returns the dev trace file path used by
 // AppendUIRenderTraceBatch. The frontend exposes it through the console trace
 // API so a debug run can be inspected after a visual glitch.
+//
+//ao:scope host
+//ao:route home
 func (a *App) GetUIRenderTracePath() (string, error) {
 	t, err := a.uiTrace()
 	if err != nil {
@@ -74,6 +80,9 @@ func (a *App) GetUIRenderTracePath() (string, error) {
 // The frontend batches calls so rendering never waits on disk. The binding
 // validates each line because it writes directly into the user's config
 // directory.
+//
+//ao:scope host
+//ao:route home
 func (a *App) AppendUIRenderTraceBatch(lines []string) (string, error) {
 	t, err := a.uiTrace()
 	if err != nil {
@@ -99,6 +108,9 @@ func (a *App) frontendErrorLog() (*uitrace.Tracer, error) {
 // must be able to diagnose after the fact, and silent frontend errors have
 // already cost us a multi-day memory-leak hunt (every throw mid-update
 // permanently leaks the deriveds that update had just connected).
+//
+//ao:scope host
+//ao:route home
 func (a *App) ReportFrontendErrorBatch(lines []string) (string, error) {
 	t, err := a.frontendErrorLog()
 	if err != nil {
@@ -113,6 +125,9 @@ func (a *App) ReportFrontendErrorBatch(lines []string) (string, error) {
 // Ctrl+Shift+B so the bug-moment context survives the next rotation
 // triggered by ongoing render activity. Returns the bookmark path
 // (empty string if no trace data exists yet).
+//
+//ao:scope host
+//ao:route home
 func (a *App) BookmarkUIRenderTrace() (string, error) {
 	t, err := a.uiTrace()
 	if err != nil {

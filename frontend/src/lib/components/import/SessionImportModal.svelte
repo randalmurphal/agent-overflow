@@ -63,11 +63,13 @@
   } from '../../stores/sessionImportFilter';
   import { resolveImportCta } from './sessionImportCta';
   import { resolveImportKeyAction } from './sessionImportKeyboard';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import { formatPayloadSize } from '../../utils/payloadExpansion.svelte';
+  import { randomId } from '../../utils/randomId';
 
   // Instance-scoped so two mounted surfaces could never mint the same row id.
-  const INSTANCE = crypto.randomUUID().slice(0, 8);
+  // Through utils/randomId: crypto.randomUUID is secure-context only.
+  const INSTANCE = randomId().slice(0, 8);
   const ROW_ID_PREFIX = `session-import-row-${INSTANCE}`;
   const LISTBOX_ID = `session-import-listbox-${INSTANCE}`;
 
@@ -78,7 +80,8 @@
   let selection = $derived(getImportSelection());
   let run = $derived(getSessionImportRun());
   let runActive = $derived(run?.active === true);
-  let viewOnly = $derived(isViewOnlySession());
+  // Importing walks the provider homes and writes the threads it finds.
+  let ungranted = $derived(!hasScope('threads:operate'));
 
   let providerFilter = $derived(getImportProviderFilter());
   let projectFilter = $derived(getImportProjectFilter());
@@ -121,7 +124,7 @@
     resolveImportCta({
       status,
       run,
-      viewOnly,
+      importUngranted: ungranted,
       failedIds: getFailedImportIds(),
       selection,
       filteredIds,
@@ -322,7 +325,7 @@
       variant="primary"
       size="sm"
       testId="session-import-confirm"
-      title={viewOnly ? 'Local only' : undefined}
+      title={ungranted ? 'Not granted to this device' : undefined}
       disabled={!cta.enabled}
       loading={runActive}
       onclick={runImport}

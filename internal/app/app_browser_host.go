@@ -50,9 +50,13 @@ func (a *App) paneHostOptions() *appbrowser.PaneHostOptions {
 // handle the backend re-derives — so this returns quickly and never
 // blocks on browser work.
 //
-// LocalOnly: it settles pane-host state for real browser windows on this
-// machine, and its only legitimate caller is the launcher process beside
-// this backend.
+// Scoped host: it settles pane-host state for real browser windows on
+// this machine, and its only legitimate caller is the launcher process
+// beside this backend. No remote session can host a native view, so no
+// grant opens it.
+//
+//ao:scope host
+//ao:route home
 func (a *App) BrowserHostReport(pageID, kind, detail string) error {
 	manager := a.browser.manager
 	if manager == nil {

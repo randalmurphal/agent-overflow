@@ -380,20 +380,23 @@ func (h *Harness) HarnessClearThreadProviderCursor(threadID string) error {
 
 // HarnessMockCommand queues a live command for a running mock:
 // advance (release a waitSignal/stall gate), emit (inject wire lines),
-// exit (terminate with a code).
+// exit (terminate with a code), login_complete (settle the account
+// sign-in the mock started).
 func (h *Harness) HarnessMockCommand(mockID string, cmd control.Command) error {
 	srv, err := h.controlServer()
 	if err != nil {
 		return err
 	}
 	switch cmd.Type {
-	case control.CommandAdvance, control.CommandExit:
+	case control.CommandAdvance, control.CommandExit, control.CommandLoginComplete:
 	case control.CommandEmit:
 		if len(cmd.Lines) == 0 {
 			return fmt.Errorf("emit command needs lines")
 		}
 	default:
-		return fmt.Errorf("command type %q must be %s, %s, or %s", cmd.Type, control.CommandAdvance, control.CommandEmit, control.CommandExit)
+		return fmt.Errorf("command type %q must be %s, %s, %s, or %s",
+			cmd.Type, control.CommandAdvance, control.CommandEmit,
+			control.CommandExit, control.CommandLoginComplete)
 	}
 	return srv.Command(mockID, cmd)
 }

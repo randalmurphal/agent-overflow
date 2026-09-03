@@ -11,5 +11,13 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts", "playwright.config.ts", "playwright.manual.config.ts"]
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "android/**/*.ts",
+    "scripts/**/*.ts",
+    "playwright.config.ts",
+    "playwright.manual.config.ts",
+    "playwright.android.config.ts"
+  ]
 }

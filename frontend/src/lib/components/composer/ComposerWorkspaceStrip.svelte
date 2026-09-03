@@ -1,6 +1,7 @@
 <script lang="ts">
   // Workspace strip rendered INSIDE the composer card as the bottom-
-  // most row. The project picker leads on the left. Threads additionally
+  // most row. The project picker leads on the left (the machine picker
+  // ahead of it once a second backend is attached). Threads additionally
   // surface the env (workspace/worktree) picker, an
   // optional worktree branch-name input when the user has staged a new
   // worktree, and the branch picker.
@@ -18,6 +19,7 @@
   // chip.
 
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import MachinePicker from './workspace/MachinePicker.svelte';
   import ProjectPicker from './workspace/ProjectPicker.svelte';
   import EnvPicker from './workspace/EnvPicker.svelte';
   import BranchPicker from './workspace/BranchPicker.svelte';
@@ -25,6 +27,7 @@
   import UsageChip from './UsageChip.svelte';
   import { composerTriggerClasses } from './triggerClasses';
   import { createWorkspaceChangeLockState } from '../../stores/workspaceChangeLock.svelte';
+  import { hasMultipleBackends } from '../../stores/attachedBackends.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -48,6 +51,15 @@
     data-testid="composer-workspace-strip"
     inert={readonly || undefined}
   >
+    {#if hasMultipleBackends()}
+      <!--
+        Machine leads the cluster because it is the outermost "where":
+        machine, then project, then worktree, then branch. Absent on a
+        single-backend client (spec §10 ruling), so that app's strip is
+        exactly the one below.
+      -->
+      <MachinePicker {pane} />
+    {/if}
     <ProjectPicker {pane} />
     <EnvPicker {pane} {workspaceLock} />
     <BranchPicker {pane} />

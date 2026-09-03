@@ -49,10 +49,15 @@ export interface StreamingAssistantRenderContext {
   streaming: boolean;
   /** Whether Settings permits the volatile tail to remain mounted. */
   volatileTailVisible: boolean;
-  /** Whether local path-link extensions are disabled for this client. */
-  viewOnly: boolean;
+  /** Whether path links are inert for this page — true when the session
+   *  cannot act on the host desktop, which is where an editor open lands. */
+  pathLinksInert: boolean;
   /** Base path used by the markdown link extension. */
   workspacePath: string;
+  /** What the `localhost:<port>` link rewrite would render, as one string.
+   *  Empty when the rewrite is off for this thread. See
+   *  `stores/devServers#previewRewriteKey`. */
+  previewKey: string;
 }
 
 export type StreamingAssistantCommitMode = 'authoritative' | 'direct';
@@ -159,8 +164,9 @@ function sameRenderContext(
 ): boolean {
   return left.streaming === right.streaming &&
     left.volatileTailVisible === right.volatileTailVisible &&
-    left.viewOnly === right.viewOnly &&
-    left.workspacePath === right.workspacePath;
+    left.pathLinksInert === right.pathLinksInert &&
+    left.workspacePath === right.workspacePath &&
+    left.previewKey === right.previewKey;
 }
 
 /**

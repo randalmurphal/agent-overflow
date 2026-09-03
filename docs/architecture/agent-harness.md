@@ -117,7 +117,7 @@ every provider spawn inherits its env), the transport comes up, and
 stdout carries exactly one parseable line:
 
 ```
-__AO_HARNESS__: {"url":"http://127.0.0.1:PORT/?token=...","port":PORT,"token":"...",
+__AO_HARNESS__: {"url":"http://127.0.0.1:PORT/?t=TICKET&cid=...","port":PORT,"token":"...",
                  "dataRoot":"...","dataDir":"...","homeDir":"...","mockProvider":"...",
                  "pid":123,"version":"...","clientId":"...",
                  "startupError":"only on failed boot"}
@@ -126,6 +126,22 @@ __AO_HARNESS__: {"url":"http://127.0.0.1:PORT/?token=...","port":PORT,"token":".
 `url` goes straight into a browser / `page.goto()` (it already carries
 `&cid=`), and `token` opens the RPC WebSocket. All subsequent logging goes
 to stderr.
+
+**`url` opens ONE browser session.** The `?t=` on it is a one-time page
+ticket; the load that spends it receives an HttpOnly cookie that carries
+every later request from that browser, including the WebSocket upgrade. A
+caller that navigates again — a reload, or a second cookie-less browser
+context, which is what every Playwright test gets — asks the running
+instance for a fresh URL instead of reusing this string:
+
+```
+GET http://127.0.0.1:PORT/pageurl      Authorization: Bearer <token>
+```
+
+`ao-harness open`/`info`/`attach`/`up` and the e2e rig's
+`HarnessApp.open()` already do this; `harnessclient.Bootstrap.PageURL` is
+the Go helper. Reusing a spent ticket is not a wedge — the page simply
+gets the transport's ordinary refusal — but it is a blank window.
 
 `clientId` is the instance's durable UI-state identity, resolved under its
 OWN `--data-dir` and therefore never the developer's. It is reported
@@ -214,6 +230,27 @@ are not:
   sender logs one line and returns nil). It used to install a refusal
   stub, which meant the e2e spec covering the notification pipe asserted
   the stub's error string and never executed the emission at all.
+  `HarnessNotify` is no longer the only source: the event mapping taps
+  `emit`, so a mock-provider turn coming to rest raises a real
+  `notification:send` on an isolated boot too. That is deliberate — the
+  mapping and the device-tier preference gate are production code the
+  harness should exercise — and it is why the e2e suite filters
+  notification traffic by thread id rather than waiting on "the next
+  send".
+
+  `HarnessNotify` itself is the ONE exception, and it is explicit:
+  it sends through `notifyOSUngated`, the single named bypass of
+  `notifyOS`'s two gates. Both of them read something an e2e run cannot
+  see or set — a per-kind preference the spec never wrote, and the
+  attended-screen rules, which read window focus. A Playwright page HAS
+  focus, so the default `notifyMuteWhenFocused` would silence every
+  harness notification the moment a spec opened the app. Riding
+  `KindWorkflowAttention` because it had no toggle was the previous
+  version of this argument; it has one now, so the bypass is stated
+  rather than smuggled, and
+  `TestOnlyTheHarnessBypassesTheNotificationGate` keeps its caller list
+  at one. The MAPPED sends above still pass both gates in full, which is
+  what keeps the gate itself production code under the harness.
 - **pprof.** Still opt-in via `AGENT_OVERFLOW_PPROF`, but a BARE enable
   (`1`/`true`) binds an ephemeral loopback port on an isolated boot
   instead of `pprofserve`'s fixed `127.0.0.1:6363`. Isolated boots are
@@ -259,12 +296,12 @@ every App plus Harness method. Use `ao-harness rpc --list` for that full list.
 | `HarnessWindowCommand(command)` | Drive one native action (`maximize`, `unmaximize`, `fullscreen`, `unfullscreen`, `minimize`, `unminimize`) or set one outer DIP `bounds` rect. Exactly one is required. Animated transitions return before settling; poll `HarnessWindowState`. Windowed boots only. |
 | `HarnessListThreadRows()` | Every non-archived thread ROW, drafts included. `App.ListThreads` hides a row until it has an item or a content-carrying draft, so this is the only read that can prove a row was *not* created (or read back what a just-materialized one was bound to). |
 | `HarnessSeed(spec)` | **Strictly decoded** (unknown fields refused, positions reported, since a mistyped `treads:` used to seed nothing and return success). Declarative fixtures: projects (existing path or generated git repo), threads, pre-baked turn/item history, project-scoped workflow definitions/profile/items, and `providerHome` files, which are slash-separated relative paths written under the harness-owned provider home (`<dataRoot>/home`, never the real one, even under `AO_HARNESS_KEEP_HOME`), for `.claude.json` MCP config, skills, settings, or a `.claude/projects/...` transcript paired with a thread's `sessionRef`. Returns created ids and the home paths written. |
-| `HarnessReset()` | Blank slate without a reboot: set the global workflow pause and cancel every live run through the production cancel path, stop sessions, settle in-flight turns, delete the workflow run records (`DeleteProjectWorkflowRecords`: production deletion drops these too under D25, but reset drops them first so the delete has no worktrees left to walk against a spec's fixtures), delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, remove the provider trees under the harness-owned home (`.claude`, `.claude.json`, `.codex`: seeded `providerHome` fixtures plus the transcripts mocks wrote, which would otherwise leak into the next test's import scan), drop the cached session-import scan (its dedup is a projection of the rows just deleted, and nothing but a finished import run invalidates it), clear persisted UI view state (`ui_state` rows name entity ids: the workflows overlay stack persists work-item ids, and a surviving row makes the next test's fresh page restore a selection onto deleted rows), and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
+| `HarnessReset()` | Blank slate without a reboot: set the global workflow pause and cancel every live run through the production cancel path, stop sessions, settle in-flight turns, delete the workflow run records (`DeleteProjectWorkflowRecords`: production deletion drops these too under D25, but reset drops them first so the delete has no worktrees left to walk against a spec's fixtures), delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, remove the provider trees under the harness-owned home (`.claude`, `.claude.json`, `.codex`: seeded `providerHome` fixtures plus the transcripts mocks wrote, which would otherwise leak into the next test's import scan), drop the cached session-import scan (its dedup is a projection of the rows just deleted, and nothing but a finished import run invalidates it), clear persisted UI view state (`ui_state` rows name entity ids: the workflows overlay stack persists work-item ids, and a surviving row makes the next test's fresh page restore a selection onto deleted rows — the wipe also takes the user and device settings tiers, which live in the same table since `internal/settings/residency.go`, so the reset drops the settings cache with it and both return to their defaults), and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
 | `HarnessSetScenario(spec)` | Install/replace a mock scenario rule (library `name` or inline `scenario` JSON, optional `cwd` and `sessionRef` scopes, described in "Scoping a scenario" below). Validated at set time. |
 | `HarnessClearScenarios()` / `HarnessListScenarios()` | Drop rules / list library + active rules. |
 | `HarnessListMocks()` | Registered mock processes in spawn order, dead ones pruned by a PID probe (30s grace so a just-exited mock's terminal reports still land). Each row carries `openGate` (the `waitSignal` gate the mock is currently blocked on, empty when none) and `pendingAdvances` (advances buffered for gates that have not opened yet), the state a stuck `advance` await is diagnosed from. |
 | `HarnessClearThreadProviderCursor(threadId)` | Fault injection for an idle thread: clear AO's durable provider cursor without touching the mock process or transcript, so recovery must choose a fresh thread. Refuses an active turn or an already-empty cursor. |
-| `HarnessMockCommand(mockId, cmd)` | Drive a live mock: `advance` (release a `waitSignal`/`stall` gate), `emit` (inject wire lines, `${VAR}`-substituted), `exit` (code). |
+| `HarnessMockCommand(mockId, cmd)` | Drive a live mock: `advance` (release a `waitSignal`/`stall` gate), `emit` (inject wire lines, `${VAR}`-substituted), `exit` (code), `login_complete` (settle a Codex device-code sign-in; `error` empty succeeds and writes the credential, set fails with that text). |
 | `HarnessRecordStart(name, threadId)` / `HarnessRecordStop()` | Capture a replay bundle: DB snapshot at start + the event-log slice recorded until stop. Start requires the thread to be idle (no turn in flight) so the snapshot/event boundary is exact; a failed stop discards the recording and frees the name. |
 | `HarnessReplayBundle(name, opts)` | Restore a bundle's DB snapshot and replay its events with original timing. Refused while another replay is active (checked before the destructive restore). |
 | `HarnessListBundles()` | Enumerate saved bundles. |
@@ -409,8 +446,17 @@ downgrades the version the mock claims (Codex `initialize` userAgent,
 Claude `system/init.claude_code_version`), which is what every
 per-method version gate reads; the default is above every gate, so this
 is the only way a spec exercises a gate's fails-closed branch. It does
-not reach `--version`, the account probe, or one-shot text generation.
-Those invocations answer and exit before a scenario loads.
+not reach `--version`, the account probe, one-shot text generation, or
+the Claude sign-in. Those invocations answer and exit before a scenario
+loads.
+
+A Codex sign-in is the exception among those: its argv is a plain
+`app-server`, so it reaches the ordinary adapter and DOES register on
+the control channel. That is deliberate — the device-code flow finishes
+on a screen this process cannot reach, so `login_complete` is the only
+way a test can finish one — and it is why the boot-mode provider
+environment reaches sign-in spawns as well as sessions. Account probes
+stay out: one invocation, no behaviour to command.
 
 An unbounded `repeat` must contain a pacing step among its direct
 children (`delayMs > 0`, `stall`, `waitSignal`, `approval`, or an `emit`
@@ -605,9 +651,9 @@ the caller explicitly asked the page whether it had settled. The rig
 must not perturb the renderer it exists to watch, least of all while it
 is taking the numbers. The consequence is honest, not free: a freshly
 armed clock has no history, so that query's `settled` reads false until
-the observer has a settle window of it. A view-only remote session never
-arms at all (`harness:ui-query` is loopback-only, so it could never
-receive a query). An ordinary boot
+the observer has a settle window of it. A page that cannot act on the host never
+arms at all (`hasScope('host')`; `harness:ui-query` is loopback-only, so
+it could never receive a query). An ordinary boot
 reads a boolean and stops; the bridge modules are their own rolldown
 chunk that a normal page never fetches (`architecture.test.ts` bans any
 static import of `lib/harness/` outside the store's one dynamic door).
@@ -871,7 +917,9 @@ then scrubbed of everything resume- or identity-shaped: each thread's
 `session_ref` / `pending_fork_session_ref` / `pending_fork_resume_at`,
 `thread_import_state`'s source ids (rows kept, identity emptied), and
 `ui_state` wholesale, that last one being the stale client-scoped restore
-state `HarnessReset` already had to fix once. Only `attachments/` comes
+state `HarnessReset` already had to fix once (and, since the settings
+residency split, the copied instance's user and device settings tiers —
+which is the right answer for a snapshot handed to another machine). Only `attachments/` comes
 across besides the database; settings, provider accounts, replay bundles,
 traces, logs and the instance file are all left behind. The target must
 pass `up`'s own refusals plus three more: no live instance holds it, it

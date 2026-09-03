@@ -83,7 +83,7 @@ func TestPR_CreateThreadFromValidURL(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
+	thread, err := app.CreateThreadFromPR(t.Context(), "agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR() error = %v", err)
 	}
@@ -129,7 +129,7 @@ func TestPR_MissingGhReturnsStructuredError(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "github")
+	_, err := app.CreateThreadFromPR(t.Context(), "owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR() error = nil, want gh-missing error")
 	}
@@ -142,7 +142,7 @@ func TestPR_GhReturnsNonZero(t *testing.T) {
 	installMockGhExitError(t, "could not resolve to a Repository with the name 'owner/missing'")
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("owner/missing", 1, string(provider.Claude), "claude-sonnet-4-6", "github")
+	_, err := app.CreateThreadFromPR(t.Context(), "owner/missing", 1, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR() error = nil, want gh failure")
 	}
@@ -155,7 +155,7 @@ func TestPR_GhReturnsMalformedJSON(t *testing.T) {
 	installFakeGh(t, "not json at all", prIntegrationDiff)
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "github")
+	_, err := app.CreateThreadFromPR(t.Context(), "owner/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR() error = nil, want malformed JSON error")
 	}
@@ -171,7 +171,7 @@ func TestPR_LargeDiffTruncatedOrCapped(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
+	thread, err := app.CreateThreadFromPR(t.Context(), "agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR(largeDiff) error = %v", err)
 	}
@@ -213,7 +213,7 @@ func TestPR_WorkspaceResolvedFromRecents(t *testing.T) {
 		}
 		app.settings.AddRecentWorkspace(matchingClone)
 
-		thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
+		thread, err := app.CreateThreadFromPR(t.Context(), "agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
 		if err != nil {
 			t.Fatalf("CreateThreadFromPR() error = %v", err)
 		}
@@ -232,7 +232,7 @@ func TestPR_WorkspaceResolvedFromRecents(t *testing.T) {
 		}
 		app.settings.AddRecentWorkspace(unrelated)
 
-		thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
+		thread, err := app.CreateThreadFromPR(t.Context(), "agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
 		if err != nil {
 			t.Fatalf("CreateThreadFromPR() error = %v", err)
 		}
@@ -248,7 +248,7 @@ func TestPR_EmptyDiffStillCreatesThread(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
+	thread, err := app.CreateThreadFromPR(t.Context(), "agent/overflow", 77, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR(emptyDiff) error = %v", err)
 	}
@@ -275,7 +275,7 @@ func TestPR_InvalidPRNumberZeroOrNegative(t *testing.T) {
 	for _, num := range []int{0, -1, -99} {
 		num := num
 		t.Run(fmt.Sprintf("num=%d", num), func(t *testing.T) {
-			_, err := app.CreateThreadFromPR("owner/repo", num, string(provider.Claude), "claude-sonnet-4-6", "github")
+			_, err := app.CreateThreadFromPR(t.Context(), "owner/repo", num, string(provider.Claude), "claude-sonnet-4-6", "github")
 			if err == nil {
 				t.Fatalf("CreateThreadFromPR(%d) error = nil, want rejection", num)
 			}
@@ -297,7 +297,7 @@ func TestMR_CreateThreadFromValidGitLabSubgroup(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
-	thread, err := app.CreateThreadFromPR("group/sub/repo", 77, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
+	thread, err := app.CreateThreadFromPR(t.Context(), "group/sub/repo", 77, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR(gitlab subgroup) error = %v", err)
 	}
@@ -343,7 +343,7 @@ exit 1
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("group/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
+	_, err := app.CreateThreadFromPR(t.Context(), "group/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR(gitlab) error = nil, want failure")
 	}
@@ -356,7 +356,7 @@ func TestMR_MissingGlabReturnsStructuredError(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThreadFromPR("group/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
+	_, err := app.CreateThreadFromPR(t.Context(), "group/repo", 1, string(provider.Claude), "claude-sonnet-4-6", "gitlab")
 	if err == nil {
 		t.Fatal("CreateThreadFromPR(gitlab) error = nil, want glab-missing error")
 	}

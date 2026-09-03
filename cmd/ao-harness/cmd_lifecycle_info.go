@@ -23,13 +23,16 @@ func runInfo(e *env, args []string) error {
 			return err
 		}
 		stderrPath := filepath.Join(info.DataDir, logDirName, backendStderrLog)
+		// The url this reports is one a reader is expected to open, so it
+		// carries a fresh ticket rather than the spent boot one.
+		pageURL := pageURLForTarget(ctx, e, bs)
 		if e.jsonOutput() {
-			return e.writeJSON(map[string]any{"id": t.ID, "mode": bs.Mode, "window": bs.Window, "worktree": bs.Worktree, "startedAt": bs.StartedAt, "url": bs.URL, "port": bs.Port, "info": info, "backendStderr": stderrPath})
+			return e.writeJSON(map[string]any{"id": t.ID, "mode": bs.Mode, "window": bs.Window, "worktree": bs.Worktree, "startedAt": bs.StartedAt, "url": pageURL, "port": bs.Port, "info": info, "backendStderr": stderrPath})
 		}
 		e.printf("instance %s (%s%s)\n", t.ID, orUnknown(string(bs.Mode)), windowSuffix(bs.Window))
 		e.printf("  version   %s\n", info.Version)
 		e.printf("  pid       %d\n", info.PID)
-		e.printf("  url       %s\n", bs.URL)
+		e.printf("  url       %s\n", pageURL)
 		e.printf("  worktree  %s\n", orUnknown(bs.Worktree))
 		e.printf("  started   %s\n", orUnknown(bs.StartedAt))
 		e.printf("  data root %s\n", info.DataRoot)

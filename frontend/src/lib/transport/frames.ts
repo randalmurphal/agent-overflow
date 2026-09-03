@@ -7,7 +7,19 @@ export interface ServerRPCFrame {
   type: 'rpc';
   id: string;
   result?: unknown;
-  error?: { code: string; message: string };
+  // `reason` is present only alongside code 'auth_failed', and names which
+  // credential check refused the call. Map it through
+  // ./authReason.ts — never render it raw, and never branch on `message`,
+  // which is generic prose for non-loopback callers.
+  //
+  // `scope` is present only alongside 'scope_required', and names the
+  // capability the caller's session was not granted (one member of
+  // ./scopes.ts's set, `host` included). Same rule: map it through
+  // ./scopeRefusal.ts. It is a field rather than prose for the reason
+  // `code` is one — a method error's TEXT does not survive the wire for a
+  // non-loopback caller, and this is exactly what such a caller must
+  // branch on to explain a disabled surface.
+  error?: { code: string; message: string; reason?: string; scope?: string };
 }
 
 export interface ServerEventFrame {
@@ -42,12 +54,45 @@ export interface ServerPingFrame {
   type: 'ping';
 }
 
+// Server hello: the first frame on every connection
+// (internal/transport/frame.go helloFrame). States what backend this is,
+// what dialect it speaks, and what it can do, so a client seeds its
+// compatibility state before any other frame lands.
+//
+// Nothing gates on `protocolVersion` — features negotiate through
+// `capabilities`, which is why the version is typed as a plain number
+// with no comparison helper anywhere. A backend too old to send this
+// frame simply leaves the client with no hello, which reads as "no
+// capabilities" and degrades rather than guessing.
+export interface ServerHelloFrame {
+  type: 'hello';
+  protocolVersion: number;
+  capabilities: string[];
+  backendId?: string;
+  /** The backend's display name (its hostname). Display only — see
+   *  TransportHello.backendName in wsClient.ts. */
+  backendName?: string;
+  serverTimeMs: number;
+  /** The content id of the SPA this backend serves
+   *  (internal/bundle). Absent on a backend that supplies no bundle —
+   *  a dev-server boot, or one too old to have the routes at all —
+   *  which reads as "nothing to sync from" and is never an error. */
+  bundleId?: string;
+  /** That bundle's app version, for picking the newest among several
+   *  attached backends. */
+  bundleVersion?: string;
+  /** The lowest Android `versionCode` that bundle's native seams can
+   *  run on. A shell below it declines the download and says why. */
+  minShellBuild?: number;
+}
+
 export type ServerFrame =
   | ServerRPCFrame
   | ServerEventFrame
   | ServerBatchFrame
   | ServerReplayFrame
-  | ServerPingFrame;
+  | ServerPingFrame
+  | ServerHelloFrame;
 
 export interface ClientRPCFrame {
   type: 'rpc';
@@ -55,6 +100,20 @@ export interface ClientRPCFrame {
   methodId?: number;
   method?: string;
   params: unknown[];
+  /**
+   * A step-up proof for THIS call: the single-use token
+   * `FinishPasskeyStepUp` minted for this session.
+   *
+   * On the frame rather than in `params` because it is a property of the
+   * presentation and not an argument of the method — the gate reads it
+   * before dispatch, and no method signature changes to accept one.
+   *
+   * **Presenting it SPENDS it**, whatever the call answers. So it is
+   * attached to exactly one frame, never retained, and never replayed:
+   * ./stepUp.ts arms the slot and the frame writer drains it in the same
+   * synchronous step.
+   */
+  stepUpToken?: string;
 }
 
 export interface ClientReplayFrame {
@@ -62,7 +121,84 @@ export interface ClientReplayFrame {
   lastSeqByChannel: Record<string, number>;
 }
 
-export type ClientFrame = ClientRPCFrame | ClientReplayFrame;
+/**
+ * Name the threads this connection is looking at. The backend narrows the
+ * entity-filtered channels (./entityFilteredChannels.ts) to this set and
+ * leaves every other channel alone.
+ *
+ * `threads` is ABSOLUTE — each frame replaces the last, and an empty array
+ * is a legal, meaningful value meaning "no panes open". A connection that
+ * has never sent one receives everything, which is the default every client
+ * that does not speak this frame keeps.
+ *
+ * Its own frame type rather than a field on a subscribe frame: the SPA must
+ * never send a channel `subscribe`, because the backend counts those to
+ * decide whether a dedicated launcher bridge is attached.
+ */
+export interface ClientWatchFrame {
+  type: 'watch';
+  threads: string[];
+}
+
+/**
+ * Whether this CLIENT is in the foreground. The whole-app native lifecycle
+ * and nothing finer: never a pane, never `document.visibilityState`, never
+ * focus. A backgrounded connection is one the OS has paused, which is the
+ * only case in which nothing on it is being looked at.
+ */
+export type LeaseState = 'active' | 'background';
+
+/**
+ * State this client's lifecycle for one connection. While it says
+ * `background` the backend withholds highlight seeds and merges transcript
+ * deltas into one frame per row per 250ms; turns, approvals, errors and
+ * thread rows are untouched, so badges and push mapping keep working.
+ *
+ * `active` is what every connection starts in, so a client that never sends
+ * one — every desktop and browser client — behaves exactly as it did before
+ * the frame existed. The state survives nothing: a reconnect starts active
+ * and the client restates a non-active one after hello, the same way it
+ * restates its watch set.
+ */
+export interface ClientLeaseFrame {
+  type: 'lease';
+  state: LeaseState;
+}
+
+/**
+ * State whether the screen this client is drawn on is being LOOKED AT, and
+ * which threads it is showing.
+ *
+ * Read for exactly one decision: whether the backend raises an OS
+ * notification it was about to raise (`internal/app/app_notifications.go`
+ * `screenIsAlreadyLooking`). It never changes what this connection is sent,
+ * what it renders, or what work the backend does — off-view work shedding is
+ * a rejected design here, and the alternative to a toast is no toast, not a
+ * stale pane.
+ *
+ * Only the backend's OWN screen counts, which the backend decides for itself
+ * from the connection's origin: a phone the owner is staring at never
+ * silences the desktop in front of them.
+ *
+ * Both fields are ABSOLUTE and replace the last frame together — this is not
+ * a latch. `threads` carries the same bounds as `watch`, and an empty array
+ * is legal and meaningful (a screen sitting on its settings page is focused
+ * with no thread on it). A connection that has never sent one is treated as
+ * unattended, which is what every client predating the frame is and what
+ * makes it additive.
+ */
+export interface ClientPresenceFrame {
+  type: 'presence';
+  focused: boolean;
+  threads: string[];
+}
+
+export type ClientFrame =
+  | ClientRPCFrame
+  | ClientReplayFrame
+  | ClientWatchFrame
+  | ClientLeaseFrame
+  | ClientPresenceFrame;
 
 // Logged strings (channel names, error messages) get clamped before
 // reaching console / toast surfaces. Caps the worst-case noise from a

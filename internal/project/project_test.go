@@ -20,7 +20,7 @@ func newTestStore(t *testing.T) *store.Store {
 }
 
 func TestEnsureForWorkspaceRejectsNilStore(t *testing.T) {
-	_, err := EnsureForWorkspace(nil, "/tmp/anywhere")
+	_, _, err := EnsureForWorkspace(nil, "/tmp/anywhere")
 	if err == nil {
 		t.Fatal("nil store: expected error, got nil")
 	}
@@ -31,7 +31,7 @@ func TestEnsureForWorkspaceRejectsNilStore(t *testing.T) {
 
 func TestEnsureForWorkspaceRejectsEmptyPath(t *testing.T) {
 	s := newTestStore(t)
-	_, err := EnsureForWorkspace(s, "")
+	_, _, err := EnsureForWorkspace(s, "")
 	if err == nil {
 		t.Fatal("empty path: expected error, got nil")
 	}
@@ -39,7 +39,7 @@ func TestEnsureForWorkspaceRejectsEmptyPath(t *testing.T) {
 		t.Fatalf("empty path: unexpected error: %v", err)
 	}
 
-	_, err = EnsureForWorkspace(s, "   ")
+	_, _, err = EnsureForWorkspace(s, "   ")
 	if err == nil {
 		t.Fatal("whitespace path: expected error, got nil")
 	}
@@ -47,7 +47,7 @@ func TestEnsureForWorkspaceRejectsEmptyPath(t *testing.T) {
 
 func TestEnsureForWorkspaceCreatesWhenAbsent(t *testing.T) {
 	s := newTestStore(t)
-	got, err := EnsureForWorkspace(s, "/tmp/repo-a")
+	got, _, err := EnsureForWorkspace(s, "/tmp/repo-a")
 	if err != nil {
 		t.Fatalf("EnsureForWorkspace: %v", err)
 	}
@@ -70,12 +70,12 @@ func TestEnsureForWorkspaceCreatesWhenAbsent(t *testing.T) {
 
 func TestEnsureForWorkspaceReturnsExistingByPath(t *testing.T) {
 	s := newTestStore(t)
-	first, err := EnsureForWorkspace(s, "/tmp/repo-b")
+	first, _, err := EnsureForWorkspace(s, "/tmp/repo-b")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 
-	second, err := EnsureForWorkspace(s, "/tmp/repo-b")
+	second, _, err := EnsureForWorkspace(s, "/tmp/repo-b")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -86,14 +86,14 @@ func TestEnsureForWorkspaceReturnsExistingByPath(t *testing.T) {
 
 func TestEnsureForWorkspaceTrimsWhitespace(t *testing.T) {
 	s := newTestStore(t)
-	first, err := EnsureForWorkspace(s, "/tmp/repo-c")
+	first, _, err := EnsureForWorkspace(s, "/tmp/repo-c")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 
 	// Whitespace around the same path should resolve to the same row,
 	// not create a duplicate.
-	second, err := EnsureForWorkspace(s, "  /tmp/repo-c  ")
+	second, _, err := EnsureForWorkspace(s, "  /tmp/repo-c  ")
 	if err != nil {
 		t.Fatalf("whitespace call: %v", err)
 	}
@@ -129,11 +129,11 @@ func TestEnsureForWorkspaceLandsAWorktreeInItsRepository(t *testing.T) {
 		}
 	}
 
-	fromRepo, err := EnsureForWorkspace(s, repo)
+	fromRepo, _, err := EnsureForWorkspace(s, repo)
 	if err != nil {
 		t.Fatalf("EnsureForWorkspace(repo): %v", err)
 	}
-	fromWorktree, err := EnsureForWorkspace(s, worktree)
+	fromWorktree, _, err := EnsureForWorkspace(s, worktree)
 	if err != nil {
 		t.Fatalf("EnsureForWorkspace(worktree): %v", err)
 	}
@@ -149,7 +149,7 @@ func TestEnsureForWorkspaceLandsAWorktreeInItsRepository(t *testing.T) {
 	if err := os.MkdirAll(subdir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", subdir, err)
 	}
-	created, err := EnsureForWorkspace(other, subdir)
+	created, _, err := EnsureForWorkspace(other, subdir)
 	if err != nil {
 		t.Fatalf("EnsureForWorkspace(worktree subdir): %v", err)
 	}

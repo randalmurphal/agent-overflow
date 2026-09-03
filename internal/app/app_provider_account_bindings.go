@@ -20,6 +20,8 @@ type ManagedProviderAccount struct {
 	NeedsLogin bool `json:"needsLogin"`
 }
 
+//ao:scope access:admin
+//ao:route home
 func (a *App) ListProviderAccounts() ([]ManagedProviderAccount, error) {
 	if a.providerAccounts == nil {
 		return []ManagedProviderAccount{}, nil
@@ -35,6 +37,8 @@ func (a *App) ListProviderAccounts() ([]ManagedProviderAccount, error) {
 	return out, nil
 }
 
+//ao:scope access:admin
+//ao:route home
 func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProviderAccount, error) {
 	if a.providerAccounts == nil {
 		return ManagedProviderAccount{}, errors.New("provider account storage is unavailable")
@@ -43,23 +47,77 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 	return managedProviderAccount(account), err
 }
 
-// LoginProviderAccount runs the provider's native browser login in a
-// short-lived isolated home, retains only the resulting native credential,
-// atomically activates it, and registers non-secret metadata.
-func (a *App) LoginProviderAccount(
+// The four sign-in calls. A provider login is a SESSION rather than one long
+// call, because the person finishing it may not be at this machine: the link
+// has to reach them and their answer has to come back to the flow still
+// holding it open. Each returns as soon as it has done its part; every
+// transition after that arrives on `provider:login`.
+//
+// StartProviderLogin begins one and returns as soon as there is something to
+// show — for `browser` a page is opened on this host, for `remote` a link (and
+// on Codex a device code) comes back to be shown wherever the caller is.
+// Whatever was already running for this provider is cancelled.
+//
+//ao:scope access:admin
+//ao:route home
+func (a *App) StartProviderLogin(
 	providerName string,
-) (_ ManagedProviderAccount, retErr error) {
+	method provideraccountapp.LoginMethod,
+) (provideraccountapp.LoginState, error) {
 	if a.providerAccounts == nil {
-		return ManagedProviderAccount{}, errors.New("provider account storage is unavailable")
+		return provideraccountapp.IdleLoginState(providerName),
+			errors.New("provider account storage is unavailable")
 	}
-	account, retErr := a.providerAccounts.LoginProviderAccount(providerName)
-	return managedProviderAccount(account), retErr
+	return a.providerAccounts.StartProviderLogin(providerName, method)
+}
+
+// GetProviderLoginState is how a client that just mounted, or just
+// reconnected, rejoins a sign-in that is already running. It never fails: a
+// provider with nothing in flight is idle.
+//
+//ao:scope access:admin
+//ao:route home
+func (a *App) GetProviderLoginState(providerName string) provideraccountapp.LoginState {
+	if a.providerAccounts == nil {
+		return provideraccountapp.IdleLoginState(providerName)
+	}
+	return a.providerAccounts.ProviderLoginState(providerName)
+}
+
+// SubmitProviderLoginCode hands back the code Claude's sign-in page shows
+// after approval. Codex has no counterpart: its device flow finishes on the
+// ChatGPT page.
+//
+//ao:scope access:admin
+//ao:route home
+func (a *App) SubmitProviderLoginCode(
+	providerName, code string,
+) (provideraccountapp.LoginState, error) {
+	if a.providerAccounts == nil {
+		return provideraccountapp.IdleLoginState(providerName),
+			errors.New("provider account storage is unavailable")
+	}
+	return a.providerAccounts.SubmitProviderLoginCode(providerName, code)
+}
+
+// CancelProviderLogin ends a sign-in and leaves the provider idle.
+//
+//ao:scope access:admin
+//ao:route home
+func (a *App) CancelProviderLogin(providerName string) provideraccountapp.LoginState {
+	if a.providerAccounts == nil {
+		return provideraccountapp.IdleLoginState(providerName)
+	}
+	return a.providerAccounts.CancelProviderLogin(providerName)
 }
 
 // RemoveProviderAccount deletes one saved native login. Removing the selected
 // account activates the next card in display order; removing the final account
 // clears the provider's canonical credential. Existing Codex processes retain
 // cached authentication until the normal safe reconnect-on-send gate.
+//
+//ao:scope access:admin
+//ao:route home
 func (a *App) RemoveProviderAccount(providerName, accountID string) error {
 	if a.providerAccounts == nil {
 		return errors.New("provider account storage is unavailable")
@@ -83,6 +141,9 @@ func (a *App) RemoveProviderAccount(providerName, accountID string) error {
 // enforced inside refreshProviderAccountUsage, scoped to the one account that
 // earned them: the throttle is per-bearer, so another account's card must stay
 // refreshable while the selected account waits one out.
+//
+//ao:scope access:admin
+//ao:route home
 func (a *App) RefreshProviderAccountUsage(providerName, accountID string) error {
 	if a.providerAccounts == nil {
 		return errors.New("provider account storage is unavailable")

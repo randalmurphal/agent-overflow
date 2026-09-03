@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -446,7 +447,7 @@ func TestE2E_MultiTurnClaude(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if _, err := app.UpdateThreadRuntimeMode(thread.ID, string(provider.RuntimeApprovalRequired)); err != nil {
+	if _, err := app.UpdateThreadRuntimeMode(context.Background(), thread.ID, string(provider.RuntimeApprovalRequired)); err != nil {
 		t.Fatalf("UpdateThreadRuntimeMode: %v", err)
 	}
 	storedThread, err := app.store.GetThread(thread.ID)
@@ -530,7 +531,7 @@ func TestE2E_InterruptMidTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if _, err := app.UpdateThreadRuntimeMode(thread.ID, string(provider.RuntimeApprovalRequired)); err != nil {
+	if _, err := app.UpdateThreadRuntimeMode(context.Background(), thread.ID, string(provider.RuntimeApprovalRequired)); err != nil {
 		t.Fatalf("UpdateThreadRuntimeMode: %v", err)
 	}
 
@@ -1086,7 +1087,7 @@ func TestE2E_ClaudeApprovalRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if _, err := app.UpdateThreadRuntimeMode(thread.ID, string(provider.RuntimeApprovalRequired)); err != nil {
+	if _, err := app.UpdateThreadRuntimeMode(context.Background(), thread.ID, string(provider.RuntimeApprovalRequired)); err != nil {
 		t.Fatalf("UpdateThreadRuntimeMode: %v", err)
 	}
 
@@ -1119,7 +1120,7 @@ func TestE2E_ClaudeApprovalRoundTrip(t *testing.T) {
 		t.Fatalf("approval tool = %q", approval.Request.ToolName)
 	}
 
-	if err := app.RespondToApproval(thread.ID, provider.ApprovalResponse{
+	if err := app.RespondToApproval(context.Background(), thread.ID, provider.ApprovalResponse{
 		RequestID: "req-1",
 		Decision:  "allow",
 	}); err != nil {
@@ -1150,7 +1151,7 @@ func TestE2E_StopSessionWithoutStartIsClean(t *testing.T) {
 	}
 
 	// App still usable.
-	if _, err := app.ListItems(thread.ID); err != nil {
+	if _, err := app.ListItems(thread.ID, true); err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}
 }

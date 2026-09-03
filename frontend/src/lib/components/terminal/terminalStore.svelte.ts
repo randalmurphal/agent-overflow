@@ -128,13 +128,18 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
     get activeTerminalID() { return activeTerminalID; },
     get drawerHeight() { return drawerHeight; },
 
-    addTab(summary: TerminalSessionSummary): void {
+    addTab(summary: TerminalSessionSummary, options?: { activate?: boolean }): void {
+      // A tab this client opened, restarted or moved becomes the active one;
+      // a tab another client opened (`terminal:opened`) lands beside the
+      // active tab without taking focus from whatever this person is typing
+      // into, and takes it only when there was nothing active.
+      const activate = options?.activate ?? true;
       const existing = tabs.find((t) => t.terminalID === summary.terminalID);
       if (existing) {
         tabs = tabs.map((t) =>
           t.terminalID === summary.terminalID ? { ...t, summary } : t,
         );
-        activeTerminalID = summary.terminalID;
+        if (activate) activeTerminalID = summary.terminalID;
         return;
       }
       tabs = [
@@ -147,7 +152,7 @@ export function createThreadTerminalState(): ThreadTerminalStateHandle {
       ];
       pendingSequencesByTerminal.set(summary.terminalID, []);
       replayWatermarkByTerminal.set(summary.terminalID, 0);
-      activeTerminalID = summary.terminalID;
+      if (activate || activeTerminalID === null) activeTerminalID = summary.terminalID;
     },
 
     removeTab(terminalID: string): void {
@@ -259,7 +264,8 @@ export interface ThreadTerminalStateHandle {
   readonly tabs: TerminalTabState[];
   readonly activeTerminalID: string | null;
   readonly drawerHeight: number;
-  addTab(summary: TerminalSessionSummary): void;
+  /** Add or refresh a tab. `activate: false` leaves the active tab alone unless there was none. */
+  addTab(summary: TerminalSessionSummary, options?: { activate?: boolean }): void;
   removeTab(terminalID: string): void;
   setActive(terminalID: string): void;
   appendOutput(terminalID: string, data: Uint8Array, sequence?: number): void;

@@ -19,7 +19,7 @@ func snapshotTestStore(t *testing.T) *Store {
 func seedSnapshotFixture(t *testing.T, st *Store, threadID, title string) {
 	t.Helper()
 	now := time.Now().UnixMilli()
-	if err := st.CreateProject(Project{ID: "p1", Path: "/ws/" + threadID, Name: "P", CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := st.CreateProject(Project{ID: "p1", Path: "/ws/" + threadID, Name: "P", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	if err := st.CreateThread(Thread{

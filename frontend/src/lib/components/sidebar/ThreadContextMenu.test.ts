@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadContextMenu from './ThreadContextMenu.svelte';
-import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { clearThreadSelection, setThreadSelection } from '../../stores/threadFilter.svelte';
@@ -227,13 +227,13 @@ describe('<ThreadContextMenu> Check for Provider Updates', () => {
   beforeEach(() => {
     resetBindingMocks();
     clearThreadSelection();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
   });
 
   afterEach(() => {
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   it('is absent on a thread Agent Overflow created itself', () => {
@@ -324,8 +324,8 @@ describe('<ThreadContextMenu> Check for Provider Updates', () => {
     expect(getByRole('button', { name: 'Restore' })).toBeInTheDocument();
   });
 
-  it('is disabled with a Local only tooltip in a view-only session', async () => {
-    setViewOnlySessionFromBootstrap(true);
+  it('is disabled with an ungranted tooltip in a view-only session', async () => {
+    setPageGrantsFromBootstrap(true);
     const check = setBindingMock('CheckThreadImportUpdates', async () => ({
       threadId: 'thread-1',
       status: 'updates-available',
@@ -339,7 +339,7 @@ describe('<ThreadContextMenu> Check for Provider Updates', () => {
     // Visible-but-disabled, not hidden: hiding it would read as "this thread
     // wasn't imported", which is a different fact.
     expect(item.getAttribute('aria-disabled')).toBe('true');
-    expect(item.getAttribute('title')).toBe('Local only');
+    expect(item.getAttribute('title')).toBe('Not granted to this device');
 
     await fireEvent.click(item);
     for (let i = 0; i < 5; i += 1) await Promise.resolve();

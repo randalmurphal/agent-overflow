@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -10,11 +11,47 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/transport"
 )
+
+// classifyInteractiveResponseError tags a provider-level "this request is no
+// longer open" as already-handled at the RPC boundary.
+//
+// The provider keeps its own request table and refuses a stale id itself, so
+// this condition predates several clients — but the client-side filter that
+// recognized it matched on the error TEXT, and the transport redacts method
+// error text for anything that is not the loopback caller. That filter has
+// therefore never worked over the network: a remote client answering a prompt
+// the CLI had already cancelled saw an error banner where the desktop saw
+// nothing. The typed code crosses the wire intact, so both behave the same.
+//
+// The wrap keeps the original error, so callers testing for
+// provider.ErrStaleInteractiveRequest are unaffected. The failure event is
+// still emitted exactly as before — this changes the RPC's classification,
+// not the thread's state.
+func classifyInteractiveResponseError(err error) error {
+	if err == nil || !errors.Is(err, provider.ErrStaleInteractiveRequest) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", transport.ErrAlreadyHandled, err)
+}
+
+// releaseInteractiveClaim hands a claimed prompt back when the answer never
+// reached the provider. Every failure path between the claim and a successful
+// write calls it; missing one wedges the prompt open with nobody able to
+// answer it.
+func (a *App) releaseInteractiveClaim(threadID, requestID string) {
+	if a.triage == nil {
+		return
+	}
+	a.triage.ReleaseInteractiveResponse(threadID, requestID)
+}
 
 // ListPendingInteractiveRequests returns live approval and structured-input
 // prompts for a thread so a pane that missed the original event can hydrate
 // its composer controls.
+//
+//ao:scope approvals:respond
 func (a *App) ListPendingInteractiveRequests(threadID string) (provider.PendingInteractiveRequests, error) {
 	snapshot := provider.PendingInteractiveRequests{
 		Approvals:  []provider.ApprovalRequest{},
@@ -31,18 +68,38 @@ func (a *App) ListPendingInteractiveRequests(threadID string) (provider.PendingI
 }
 
 // RespondToApproval forwards an interactive response to the active provider session.
-func (a *App) RespondToApproval(threadID string, response provider.ApprovalResponse) error {
+//
+// Several clients render the same prompt, so two of them can answer it. The
+// router arbitrates: the loser gets transport.ErrAlreadyHandled and no
+// failure event, because nothing failed — the question was answered without
+// them, which is the state they wanted. Forwarding both answers would send
+// the provider a second response for a request it has already resolved.
+//
+// ctx is here for the CALLER's identity, not for cancellation: the failure
+// events below are stamped with the connection that asked, so the sticky
+// banner they raise lands on that screen and not on every other one. The
+// generated TS bindings strip a leading ctx, so the wire signature is
+// unchanged.
+//
+//ao:scope approvals:respond
+func (a *App) RespondToApproval(ctx context.Context, threadID string, response provider.ApprovalResponse) error {
+	who := clientOf(ctx)
+	if a.triage != nil && !a.triage.ClaimApprovalResponse(threadID, response.RequestID) {
+		return fmt.Errorf("approval %s: %w", response.RequestID, transport.ErrAlreadyHandled)
+	}
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		err := fmt.Errorf("no active session for thread %s", threadID)
-		a.emitApprovalFailure(threadID, response.RequestID, err)
+		a.releaseInteractiveClaim(threadID, response.RequestID)
+		a.emitApprovalFailure(who, threadID, response.RequestID, err)
 		return err
 	}
 
 	providerSess := sess.ProviderSession()
 	if providerSess == nil {
 		err := fmt.Errorf("session has no provider")
-		a.emitApprovalFailure(threadID, response.RequestID, err)
+		a.releaseInteractiveClaim(threadID, response.RequestID)
+		a.emitApprovalFailure(who, threadID, response.RequestID, err)
 		return err
 	}
 	// Approval responses write to provider stdin; stamp activity
@@ -51,9 +108,15 @@ func (a *App) RespondToApproval(threadID string, response provider.ApprovalRespo
 	// EventApprovalResolved bumps again via sessionEventHandler — this
 	// guards the window before that lands.
 	sess.Liveness.BumpActivity(time.Now())
+	// Background, not ctx: the RPC's context ends when the answer is
+	// written back, and abandoning a stdin write half-done would leave the
+	// provider holding a torn response to a prompt it is still waiting on.
 	if err := providerSess.RespondToApproval(context.Background(), response); err != nil {
-		a.emitApprovalFailure(threadID, response.RequestID, err)
-		return err
+		// The write never reached the provider, so the prompt is still
+		// open. Give the claim back or no client could ever answer it.
+		a.releaseInteractiveClaim(threadID, response.RequestID)
+		a.emitApprovalFailure(who, threadID, response.RequestID, err)
+		return classifyInteractiveResponseError(err)
 	}
 
 	decision := provider.NormalizeApprovalDecision(response)
@@ -70,26 +133,41 @@ func (a *App) RespondToApproval(threadID string, response provider.ApprovalRespo
 }
 
 // RespondToUserInput forwards structured answers to the active provider session.
-func (a *App) RespondToUserInput(threadID string, response provider.UserInputResponse) error {
+//
+// Arbitrated the same way as RespondToApproval: a form two screens can both
+// submit is answered once, and the second submitter is told it arrived second
+// rather than handed a failure.
+//
+//ao:scope approvals:respond
+func (a *App) RespondToUserInput(ctx context.Context, threadID string, response provider.UserInputResponse) error {
+	who := clientOf(ctx)
+	if a.triage != nil && !a.triage.ClaimUserInputResponse(threadID, response.RequestID) {
+		return fmt.Errorf("user input %s: %w", response.RequestID, transport.ErrAlreadyHandled)
+	}
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		err := fmt.Errorf("no active session for thread %s", threadID)
-		a.emitUserInputFailure(threadID, response.RequestID, err)
+		a.releaseInteractiveClaim(threadID, response.RequestID)
+		a.emitUserInputFailure(who, threadID, response.RequestID, err)
 		return err
 	}
 
 	providerSess := sess.ProviderSession()
 	if providerSess == nil {
 		err := fmt.Errorf("session has no provider")
-		a.emitUserInputFailure(threadID, response.RequestID, err)
+		a.releaseInteractiveClaim(threadID, response.RequestID)
+		a.emitUserInputFailure(who, threadID, response.RequestID, err)
 		return err
 	}
 	// Same rationale as RespondToApproval: bump before stdin write so
 	// the reaper doesn't kill a session mid-structured-input round-trip.
 	sess.Liveness.BumpActivity(time.Now())
+	// Background for the same reason as RespondToApproval.
 	if err := providerSess.RespondToUserInput(context.Background(), response); err != nil {
-		a.emitUserInputFailure(threadID, response.RequestID, err)
-		return err
+		// The form is still open; hand the claim back (see RespondToApproval).
+		a.releaseInteractiveClaim(threadID, response.RequestID)
+		a.emitUserInputFailure(who, threadID, response.RequestID, err)
+		return classifyInteractiveResponseError(err)
 	}
 
 	decision := "answered"
@@ -135,13 +213,18 @@ func (a *App) emitApprovalResolution(threadID, requestID, decision string, updat
 	}
 }
 
-func (a *App) emitApprovalFailure(threadID, requestID string, err error) {
+// emitApprovalFailure announces that ONE client's answer never reached the
+// provider. It carries that client's connection id, because the prompt is
+// still open for everybody else and a banner saying otherwise is a lie on
+// every screen but the one that tried (see ApprovalEvent.ConnectionID).
+func (a *App) emitApprovalFailure(who transport.ClientIdentity, threadID, requestID string, err error) {
 	a.emit(eventchan.ProviderApproval, provider.ApprovalEvent{
-		Action:    "fail",
-		ThreadID:  threadID,
-		RequestID: requestID,
-		Decision:  "failed",
-		Detail:    err.Error(),
+		Action:       "fail",
+		ThreadID:     threadID,
+		RequestID:    requestID,
+		Decision:     "failed",
+		Detail:       err.Error(),
+		ConnectionID: who.ConnectionID,
 	})
 }
 
@@ -172,12 +255,15 @@ func (a *App) emitUserInputResolution(threadID, requestID, decision string, answ
 	}
 }
 
-func (a *App) emitUserInputFailure(threadID, requestID string, err error) {
+// emitUserInputFailure is emitApprovalFailure's twin, and carries the
+// connection for the same reason.
+func (a *App) emitUserInputFailure(who transport.ClientIdentity, threadID, requestID string, err error) {
 	a.emit(eventchan.ProviderUserInput, provider.UserInputEvent{
-		Action:    "fail",
-		ThreadID:  threadID,
-		RequestID: requestID,
-		Decision:  "failed",
-		Detail:    err.Error(),
+		Action:       "fail",
+		ThreadID:     threadID,
+		RequestID:    requestID,
+		Decision:     "failed",
+		Detail:       err.Error(),
+		ConnectionID: who.ConnectionID,
 	})
 }

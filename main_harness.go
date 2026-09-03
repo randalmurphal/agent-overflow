@@ -145,6 +145,11 @@ func runHarness(flags cliFlags) {
 	}
 	srv.MarkReady()
 
+	// After Start, because Start is what reads any configured credential:
+	// the recorder is installed only where there is none, so a harness
+	// instance can never lose a real sender to it (app_push_harness.go).
+	appservice.InstallHarnessPushSender(appService.App)
+
 	if err := writeHarnessBootstrap(bootstrapOut, srv, paths, nil, instanceIdentityFor(paths, instanceinfo.ModeHarness, flags.window, 0, "", "", "", "")); err != nil {
 		shutdownHeadless(appService, srv)
 		fatalf("harness: write bootstrap: %v", err)
@@ -593,8 +598,16 @@ func seedHarnessSettings(dataDir, mockProvider string) error {
 
 // harnessBootstrap is the one-line JSON contract agents parse off
 // stdout. Everything needed to attach is in this line: the page URL
-// (token included), the WS token for direct RPC clients, and the data
-// paths where evidence (DB, traces, event logs) accumulates.
+// (one-time page ticket included), the session token for direct RPC
+// clients, and the data paths where evidence (DB, traces, event logs)
+// accumulates.
+//
+// The page URL opens ONE browser session — its ticket is spent by the
+// first page load, and the cookie that load receives carries every later
+// request from that browser. A caller that opens a second, cookie-less
+// browser context (the e2e rig does, once per test) asks the running
+// instance for a fresh URL at transport.PageURLPath rather than reusing
+// this string.
 type harnessBootstrap struct {
 	URL          string `json:"url"`
 	Port         int    `json:"port"`
@@ -634,7 +647,7 @@ func newHarnessBootstrap(srv *transport.Server, paths harnessPaths, startupErr e
 	clientID := ensureClientID()
 	pageMarker := srv.PageMarker()
 	bs := harnessBootstrap{
-		URL:          appURLWithPageMarker(appURLWithClientID(srv.AppURL(), clientID), pageMarker),
+		URL:          fullPageURL(srv),
 		Port:         portFromAddr(srv.Addr()),
 		Token:        srv.Token(),
 		DataRoot:     paths.DataRoot,

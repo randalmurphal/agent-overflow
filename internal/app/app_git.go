@@ -52,11 +52,15 @@ func (a *App) workspaceState(project, workspace string) GitWorkspaceState {
 // refresh runs against a warm PR cache, and it arms gitwatch's
 // missed-event detection — a refresh that observes a change the fs watches
 // never reported is how a silently dead watchpoint gets reinstalled.
+//
+//ao:scope git:operate
 func (a *App) GetGitStatus(ws WorkspaceRef) (gitops.GitStatus, error) {
 	return a.gitApplication().Status(ws)
 }
 
 // GitListBranches lists repository branches from the workspace's project root.
+//
+//ao:scope git:operate
 func (a *App) GitListBranches(ws WorkspaceRef) ([]gitops.GitBranch, error) {
 	return a.gitApplication().ListBranches(ws)
 }
@@ -70,6 +74,8 @@ func (a *App) GitListBranches(ws WorkspaceRef) ([]gitops.GitBranch, error) {
 // No workspace locks or ensureWorkspaceChangeAllowed — `git fetch` only
 // touches `refs/remotes/*` and never HEAD/index/working tree, so running it
 // concurrently with an active turn is safe.
+//
+//ao:scope git:operate
 func (a *App) GitMaybeFetchRemotes(ws WorkspaceRef) (bool, error) {
 	return a.gitApplication().MaybeFetchRemotes(ws)
 }
@@ -78,6 +84,8 @@ func (a *App) GitMaybeFetchRemotes(ws WorkspaceRef) (bool, error) {
 // thread in the workspace is locked across the current-branch read so a
 // concurrent checkout can't flip the path between the check and the
 // operation.
+//
+//ao:scope git:operate
 func (a *App) GitSyncBranch(ws WorkspaceRef, branch string) ([]gitops.GitBranch, error) {
 	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
@@ -107,16 +115,22 @@ func (a *App) GitSyncBranch(ws WorkspaceRef, branch string) ([]gitops.GitBranch,
 // GitCommit stages all changes and commits workspace changes.
 // WARNING: This stages everything (git add -A) before committing, including
 // untracked files.
+//
+//ao:scope git:operate
 func (a *App) GitCommit(ws WorkspaceRef, subject, body string) (gitops.GitActionResult, error) {
 	return a.gitApplication().Commit(ws, subject, body)
 }
 
 // GitPush pushes the workspace's current branch.
+//
+//ao:scope git:operate
 func (a *App) GitPush(ws WorkspaceRef) (gitops.GitActionResult, error) {
 	return a.gitApplication().Push(ws)
 }
 
 // GitPull fast-forwards the workspace's current branch.
+//
+//ao:scope git:operate
 func (a *App) GitPull(ws WorkspaceRef) (gitops.GitActionResult, error) {
 	return a.gitApplication().Pull(ws)
 }
@@ -128,6 +142,8 @@ func (a *App) GitPull(ws WorkspaceRef) (gitops.GitActionResult, error) {
 // workspace-keyed write UpdateThreadBranch uses (and broadcast the same way),
 // so a sibling thread sharing the worktree syncs without the frontend
 // guessing which rows moved.
+//
+//ao:scope git:operate
 func (a *App) GitCheckout(ws WorkspaceRef, branch string) (GitWorkspaceState, error) {
 	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
@@ -179,6 +195,8 @@ func (a *App) GitCheckout(ws WorkspaceRef, branch string) (GitWorkspaceState, er
 //
 // Thread rows in the workspace are re-branched as for GitCheckout. Does not
 // restart provider sessions because the cwd is unchanged.
+//
+//ao:scope git:operate
 func (a *App) GitCreateBranchFrom(ws WorkspaceRef, name, baseBranch string, carryLocalChanges bool) (GitWorkspaceState, error) {
 	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
@@ -311,6 +329,8 @@ func (a *App) createBranchInWorkspace(workspace, name, resolvedBase string, base
 
 // GitCreatePR opens a pull request for the workspace's current branch. When
 // draft is true the PR is opened as a GitHub draft (gh pr create --draft).
+//
+//ao:scope git:operate
 func (a *App) GitCreatePR(ws WorkspaceRef, title, body string, draft bool) (gitops.GitActionResult, error) {
 	return a.gitApplication().CreatePR(ws, title, body, draft)
 }

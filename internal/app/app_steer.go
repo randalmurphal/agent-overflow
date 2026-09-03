@@ -53,9 +53,14 @@ import (
 // turn's pending_input vec and emits an `item/completed userMessage`
 // inside the same turn so triage handleUserText correlates the wire
 // echo with the pending-send marker we register here.
-func (a *App) SteerMessageWithOptions(threadID string, content string, opts SendMessageOptions) (store.Thread, error) {
+//
+//ao:scope threads:operate
+func (a *App) SteerMessageWithOptions(ctx context.Context, threadID string, content string, opts SendMessageOptions) (store.Thread, error) {
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
+	}
+	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
+		return store.Thread{}, err
 	}
 	if _, err := a.steerMessageWithOptions(threadID, content, sendMessageOptions{
 		AttachmentIDs:                opts.AttachmentIDs,
@@ -228,7 +233,7 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 			ID:        triage.NewErrorID(turnIndex, "", errSeq),
 			ThreadID:  threadID,
 			TurnIndex: turnIndex,
-			Kind:      "error",
+			Kind:      triage.ItemKindError,
 			Role:      "system",
 			Status:    "completed",
 			Summary:   fmt.Sprintf("Failed to steer: %v", steerErr),

@@ -146,7 +146,7 @@ func TestSteerMessageWithOptions_PersistsUserRowAndDispatchesToCodex(t *testing.
 		Codex:    sess,
 	})
 
-	updated, err := app.SteerMessageWithOptions(thread.ID, "steer me", SendMessageOptions{})
+	updated, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "steer me", SendMessageOptions{})
 	if err != nil {
 		t.Fatalf("SteerMessageWithOptions: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestSteerMessageWithOptions_FailsForNonCodexProvider(t *testing.T) {
 		Claude: (*claude.Session)(nil),
 	})
 
-	_, err := app.SteerMessageWithOptions(thread.ID, "anything", SendMessageOptions{})
+	_, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "anything", SendMessageOptions{})
 	if err == nil {
 		t.Fatal("SteerMessageWithOptions for Claude err = nil, want refusal")
 	}
@@ -240,7 +240,7 @@ func TestSteerMessageWithOptions_NoActiveTurnSurfacesSentinel(t *testing.T) {
 	})
 
 	// No turn inserted — the store has nothing in flight.
-	_, err := app.SteerMessageWithOptions(thread.ID, "anything", SendMessageOptions{})
+	_, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "anything", SendMessageOptions{})
 	if !errors.Is(err, codex.ErrNoActiveTurn) {
 		t.Fatalf("err = %v, want ErrNoActiveTurn", err)
 	}
@@ -280,7 +280,7 @@ func TestSteerMessageWithOptions_FailureClearsPendingSendAndPersistsErrorRow(t *
 		Codex:    sess,
 	})
 
-	_, err := app.SteerMessageWithOptions(thread.ID, "doomed", SendMessageOptions{})
+	_, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "doomed", SendMessageOptions{})
 	if err == nil {
 		t.Fatal("expected SteerMessageWithOptions error for NoActiveTurn wire reply")
 	}
@@ -375,7 +375,7 @@ func TestSteerMessageWithOptions_MarksProposedPlanImplemented(t *testing.T) {
 		Codex:    sess,
 	})
 
-	if _, err := app.SteerMessageWithOptions(thread.ID, "Implement the plan.", SendMessageOptions{
+	if _, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 	}); err != nil {
 		t.Fatalf("SteerMessageWithOptions: %v", err)

@@ -46,10 +46,6 @@ var frontendDefaultsDenied = map[string]string{
 	"window": "desktop window placement, owned by Go, absent from the TS Settings type",
 	// No TypeScript counterpart.
 	"editor": "open-in-editor preference, absent from the TS Settings type",
-	// Redacted on every read path (app_settings.go redactedSettings), and
-	// rejected by Service.Update. A default-materialized empty list would
-	// invite the read-mutate-write round trip that persists the redaction.
-	"remoteEndpoints": "redacted wire field; the store must not default-materialize it",
 
 	// Optional in the TS Settings type and deliberately left undefined by
 	// the frontend: each treats absence as "the provider decides", so a

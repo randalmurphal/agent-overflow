@@ -7,6 +7,7 @@
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
   import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
   import { getSettings } from '../../stores/settings.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import {
     createUserMessageOverflowCoordinator,
     USER_MESSAGE_OVERFLOW_COORDINATOR_CONTEXT,
@@ -438,12 +439,15 @@
   // The 62rem outer cap and asymmetric padding preserve the previous 920px
   // wide-pane content bounds exactly while giving narrow panes 8px more
   // clearance on each side. One style definition keeps every copy aligned.
+  // Compact has no rail (a desktop affordance, per the phone design), so
+  // the left gutter it reserves goes too and the row is symmetric.
   const ROW_SHELL_CLASSES = 'mx-auto w-full';
-  const ROW_SHELL_STYLE = [
+  let compact = $derived(isCompactLayout());
+  let rowShellStyle = $derived([
     `max-width: ${NAV_RAIL_ROW_MAX_WIDTH_PX}px`,
-    `padding-left: ${NAV_RAIL_ROW_LEFT_PADDING_PX}px`,
+    `padding-left: ${compact ? NAV_RAIL_ROW_RIGHT_PADDING_PX : NAV_RAIL_ROW_LEFT_PADDING_PX}px`,
     `padding-right: ${NAV_RAIL_ROW_RIGHT_PADDING_PX}px`,
-  ].join('; ');
+  ].join('; '));
 
   const jump = createTimelineJump({
     getPane: () => pane,
@@ -900,7 +904,7 @@
     {:else if pane.items.length === 0 && getActiveTurn(pane.threadId)}
       <!-- Active turn but no items yet. The working/todo UI lives in the
            ChatView bottom overlay, outside the virtualized history. -->
-      <div class={`${ROW_SHELL_CLASSES} pt-8`} style={ROW_SHELL_STYLE}></div>
+      <div class={`${ROW_SHELL_CLASSES} pt-8`} style={rowShellStyle}></div>
     {:else}
       {#snippet renderNode(node: TimelineNode, depth: number)}
         {#if node.kind === 'leaf'}
@@ -976,7 +980,7 @@
             <!-- The timeline header has stable identity and exact geometry.
                  Keeping it outside transcript rows prevents a prepend from
                  removing 60px from the retained former-first row. -->
-            <div class={`h-full pt-6 ${ROW_SHELL_CLASSES}`} style={ROW_SHELL_STYLE}>
+            <div class={`h-full pt-6 ${ROW_SHELL_CLASSES}`} style={rowShellStyle}>
               {#if pane.hasMoreHistory}
                 <div class="mb-3 flex justify-center">
                   <Button
@@ -1036,9 +1040,9 @@
                    comment in app.css and
                    docs/architecture/settle-flicker-analysis.md. -->
               <div data-row-geometry-content>
-                <!-- Row column: see ROW_SHELL_STYLE for the rail clearance
+                <!-- Row column: see rowShellStyle for the rail clearance
                      contract shared by every row-aligned surface. -->
-                <div class={ROW_SHELL_CLASSES} style={ROW_SHELL_STYLE}>
+                <div class={ROW_SHELL_CLASSES} style={rowShellStyle}>
                   {#if rows.rowDecorations.responseDividerIndexes.has(index)}
                     {@const showResponsePill = rows.rowDecorations.responsePillIndexes.has(index)}
                     {@const responseDuration = rows.responsePillDuration(node)}
@@ -1082,7 +1086,7 @@
         {#if pane.hasMoreNewer}
           <div
             class={`${ROW_SHELL_CLASSES} flex justify-center pb-6 pt-2`}
-            style={ROW_SHELL_STYLE}
+            style={rowShellStyle}
           >
             <div class="flex items-center gap-2 rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/80 px-2 py-1.5 shadow-sheet">
               <Button
@@ -1166,7 +1170,7 @@
         style:height={`${jump.flash.height}px`}
         data-testid="timeline-jump-flash"
       >
-        <div class={`${ROW_SHELL_CLASSES} h-full`} style={ROW_SHELL_STYLE}>
+        <div class={`${ROW_SHELL_CLASSES} h-full`} style={rowShellStyle}>
           <div
             class="nav-jump-flash h-full w-full rounded-lg bg-accent/10"
             style:animation-duration={`${JUMP_FLASH_DURATION_MS}ms`}
@@ -1178,17 +1182,19 @@
 
   <!-- Message navigation rail: tick pills in the left row padding, one
        per user message. Sibling of the scroller for the same C24 reason
-       as the chip below; ROW_SHELL_STYLE derives its left edge from the
+       as the chip below; rowShellStyle derives its left edge from the
        rail's hit width plus a real dead gutter. -->
-  <MessageNavRail
-    bind:this={navRail}
-    {pane}
-    nodes={revealedNodes}
-    getListRef={() => listRef}
-    onJumpToItem={(id) => {
-      void jump.jumpToItem(id);
-    }}
-  />
+  {#if !compact}
+    <MessageNavRail
+      bind:this={navRail}
+      {pane}
+      nodes={revealedNodes}
+      getListRef={() => listRef}
+      onJumpToItem={(id) => {
+        void jump.jumpToItem(id);
+      }}
+    />
+  {/if}
 
   <!-- Visible when the user has escaped or is no longer near the bottom.
        Wiring this to `!isSticky` would also pop the chip during sidebar/

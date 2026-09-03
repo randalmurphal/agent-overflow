@@ -27,6 +27,7 @@ import {
   ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
   LOAD_OLDER_ITEM_BUDGET,
   loadOlderResult,
+  wantsInlinePreviews,
   type LoadOlderResult,
   type PaneScrollController,
 } from './threadPaneShared';
@@ -719,6 +720,7 @@ export function createThreadTimelineWindow(
         currentThread.id,
         cursorForBinding(floor),
         LOAD_OLDER_ITEM_BUDGET,
+        wantsInlinePreviews(),
       );
       if (
         gen !== options.getSwitchGeneration() ||
@@ -884,6 +886,7 @@ export function createThreadTimelineWindow(
         currentThread.id,
         sliceAnchorID,
         ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+        wantsInlinePreviews(),
       );
       if (
         gen !== options.getSwitchGeneration() ||
@@ -942,6 +945,7 @@ export function createThreadTimelineWindow(
         currentThread.id,
         cursorForBinding(ceiling),
         LOAD_OLDER_ITEM_BUDGET,
+        wantsInlinePreviews(),
       );
       if (
         gen !== options.getSwitchGeneration() ||
@@ -1007,6 +1011,7 @@ export function createThreadTimelineWindow(
         currentThread.id,
         '',
         ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+        wantsInlinePreviews(),
       );
       if (
         gen !== options.getSwitchGeneration() ||

@@ -83,13 +83,13 @@ to the attachments root and referenced by path in the prompt.
 - `Upload` derives the kind with the rule above. File uploads store the
   declared MIME or `application/octet-stream` when empty; no signature
   check beyond the image rule.
-- `GetAttachmentData` and `GetAttachmentThumbnail` refuse `file` kind.
+- The download route and `GetAttachmentThumbnail` refuse `file` kind.
   The images-only allowlist existed so the directory was safe to serve;
   that guarantee now lives on the kind, not the directory.
 - Cross-thread draft clone (`cloneUserMessageAttachmentsForDraft`)
-  copies the file on disk instead of round-tripping bytes through base64
-  `Upload`; a new store method does the copy plus INSERT with the same
-  tmp-then-rename invariant. Applies to images too.
+  copies the file on disk instead of round-tripping the bytes back
+  through `Upload`; a new store method does the copy plus INSERT with the
+  same tmp-then-rename invariant. Applies to images too.
 - Thumbnail generation is never attempted for files.
 
 ### Send path
@@ -135,17 +135,26 @@ to the attachments root and referenced by path in the prompt.
 
 ### Transfer carrier
 
-`main` carries bytes as base64 through the `UploadAttachment` WS RPC.
-The WS frame cap is 75 MiB on both sides, so a 50 MiB file (~67 MiB
-encoded) fits, at the cost of one transient string of that size on each
-side. That is accepted as transitional: the `remote-access` branch
-already replaced this RPC with a ticketed streamed `PUT
-/attachments/upload` (wave 6b, `internal/transport/attachmentroutes.go`)
-and a streaming store. When that branch rebases over this work, the
-file kind rides the same route with no design change: the ticket fixes
-filename, MIME, and byte count; the store's kind rule runs on the
-streamed prefix for images and on the declared type for files; the
-50 MiB cap replaces the route's 10 MiB body bound for `file` tickets.
+Bytes ride a ticketed, streamed `PUT /attachments/upload`
+(`internal/transport/attachmentroutes.go`), never a WS frame. The client
+mints a single-use ticket naming the thread, filename, MIME and byte
+count, then PUTs exactly that many bytes; the request body is bounded by
+the ticket's own size (`http.MaxBytesReader`), so nothing depends on
+`Content-Length` being honest and no base64 copy of the payload exists on
+either side.
+
+The kind rides that route with no design change. It is decided twice from
+the same declaration: once at mint time, which is what picks the cap the
+ticket may carry (10 MiB for an `image`, 50 MiB for a `file`), and again
+in the store, which enforces it against the bytes actually written. For
+an `image` the store judges the signature off the streamed prefix; a
+`file` streams verbatim, because no signature would mean anything for it.
+
+Reads are the mirror, and there is no `GetAttachmentData` RPC: a client
+mints a download ticket and fetches
+`GET /attachments/{threadID}/{attachmentID}`, which serves `image` rows
+only. A `file`'s bytes are never handed to a client at all; the agent
+reaches them by path.
 
 ## Verification
 

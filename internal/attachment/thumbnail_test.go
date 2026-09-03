@@ -2,7 +2,6 @@ package attachment
 
 import (
 	"bytes"
-	"encoding/base64"
 	"image"
 	"image/color"
 	"image/gif"
@@ -53,7 +52,7 @@ func TestThumbnailGeneratesAndCachesForPNG(t *testing.T) {
 
 	// Upload a real PNG so Thumbnail can read it from disk.
 	src := realPNG(t)
-	record, err := attStore.Upload("thread-thumb-png", "shot.png", "image/png", base64.StdEncoding.EncodeToString(src), 1)
+	record, err := uploadBytes(attStore, "thread-thumb-png", "shot.png", "image/png", src, 1)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -116,7 +115,7 @@ func TestThumbnailJPEGInputProducesJPEGOutput(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "thread-thumb-jpeg")
 	src := realJPEG(t)
-	record, err := attStore.Upload("thread-thumb-jpeg", "photo.jpg", "image/jpeg", base64.StdEncoding.EncodeToString(src), 1)
+	record, err := uploadBytes(attStore, "thread-thumb-jpeg", "photo.jpg", "image/jpeg", src, 1)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -134,7 +133,7 @@ func TestThumbnailRejectsCrossThreadID(t *testing.T) {
 	seedThread(t, meta, "thread-a")
 	seedThread(t, meta, "thread-b")
 	src := realPNG(t)
-	record, err := attStore.Upload("thread-a", "shot.png", "image/png", base64.StdEncoding.EncodeToString(src), 1)
+	record, err := uploadBytes(attStore, "thread-a", "shot.png", "image/png", src, 1)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -178,7 +177,7 @@ func TestThumbnailGIFFirstFrame(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "thread-thumb-gif")
 	src := realGIF(t)
-	record, err := attStore.Upload("thread-thumb-gif", "anim.gif", "image/gif", base64.StdEncoding.EncodeToString(src), 1)
+	record, err := uploadBytes(attStore, "thread-thumb-gif", "anim.gif", "image/gif", src, 1)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -286,7 +285,7 @@ func TestThumbnailDedupesConcurrentSameID(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "thread-thumb-conc")
 	src := realPNG(t)
-	record, err := attStore.Upload("thread-thumb-conc", "shot.png", "image/png", base64.StdEncoding.EncodeToString(src), 1)
+	record, err := uploadBytes(attStore, "thread-thumb-conc", "shot.png", "image/png", src, 1)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}

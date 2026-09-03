@@ -1,11 +1,13 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"agent-overflow/internal/chatmodel"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadapp"
@@ -30,9 +32,15 @@ type NewThreadDefaultsUpdate struct {
 // UpdateNewThreadDefaults updates the provider/model profile used to seed
 // future draft placeholders and newly-created threads. It intentionally does
 // not mutate any existing thread row.
-func (a *App) UpdateNewThreadDefaults(update NewThreadDefaultsUpdate) (ThreadDefaults, error) {
+//
+//ao:scope threads:operate
+//ao:route home
+func (a *App) UpdateNewThreadDefaults(ctx context.Context, update NewThreadDefaultsUpdate) (ThreadDefaults, error) {
 	if a.store == nil {
 		return ThreadDefaults{}, fmt.Errorf("update new thread defaults: store unavailable")
+	}
+	if err := a.requireAutonomy(ctx, update.RuntimeMode); err != nil {
+		return ThreadDefaults{}, err
 	}
 	projectID := strings.TrimSpace(update.ProjectID)
 	if projectID == "" {
@@ -50,11 +58,35 @@ func (a *App) UpdateNewThreadDefaults(update NewThreadDefaultsUpdate) (ThreadDef
 	if err := a.store.UpsertChatModelProfile(profile); err != nil {
 		return ThreadDefaults{}, err
 	}
-	return a.GetThreadDefaults(CreateThreadOptions{
+	defaults, err := a.GetThreadDefaults(CreateThreadOptions{
 		ProjectID: projectID,
 		Provider:  profile.Provider,
 		Model:     profile.Model,
 	})
+	if err != nil {
+		return ThreadDefaults{}, err
+	}
+	// Every open "+ New" composer on this project is about to create a thread
+	// with the model, effort and runtime mode that just changed. Answering the
+	// writer alone converged its own panes and left every other client's
+	// placeholder toolbar showing the superseded seed until reload. The frame
+	// carries the same pair the writer applies locally, so its echo repeats an
+	// apply it already made.
+	a.emit(eventchan.ChatBarNewThreadDefaults, NewThreadDefaultsChangedEvent{
+		ProjectID: projectID,
+		Defaults:  defaults,
+	})
+	return defaults, nil
+}
+
+// NewThreadDefaultsChangedEvent is the payload of `chatbar:new-thread-defaults`:
+// the seed a future thread gets, and the project whose draft placeholders adopt
+// it. Both halves are needed — the persisted profile row is app-wide, but the
+// SET a write converges is the placeholders on the project it was made from,
+// which is what UpdateNewThreadDefaults's caller already does with its answer.
+type NewThreadDefaultsChangedEvent struct {
+	ProjectID string         `json:"projectId"`
+	Defaults  ThreadDefaults `json:"defaults"`
 }
 
 func (a *App) newThreadDefaultsProfile(update NewThreadDefaultsUpdate) (store.ChatModelProfile, error) {

@@ -76,6 +76,15 @@ type ThreadContextUsageCategory struct {
 // (see internal/triage/provider_commands.go).
 //
 // Never spawns — a pure read of what a probe already left behind.
+//
+// Wire-reachable deliberately: the SAME rich entries already reach remote
+// peers on the `provider:commands` channel, whose registry row is
+// AudienceAny, so refusing the RPC would empty a cold thread's menu and buy
+// no confidentiality. If that channel ever becomes loopback-only, or this
+// shape grows a path or env field, re-run the decision.
+//
+//ao:scope threads:read
+//ao:route selected
 func (a *App) GetClaudeSlashCommands() ClaudeSlashCommands {
 	commands, probed := a.providerDiscoveryService().ClaudeCommands()
 	return ClaudeSlashCommands{Probed: probed, Commands: slicesx.OrEmpty(commands)}
@@ -94,6 +103,8 @@ func (a *App) GetClaudeSlashCommands() ClaudeSlashCommands {
 //
 // Local-only on the wire: it drives a provider session running under the
 // user's credentials on the host.
+//
+//ao:scope threads:operate
 func (a *App) GetThreadContextUsage(threadID string) (ThreadContextUsage, error) {
 	if a.shuttingDown.Load() {
 		return ThreadContextUsage{}, ErrShuttingDown
@@ -144,6 +155,9 @@ func projectThreadContextUsage(usage *claude.ContextUsage) ThreadContextUsage {
 //
 // LocalOnly on the wire: it reads the user's home directory and the
 // workspace tree, and its rows name what is installed on the host.
+//
+//ao:scope threads:operate
+//ao:route selected
 func (a *App) GetClaudeSkills(workspacePath string) ([]claudeconfig.Skill, error) {
 	return a.claudeAppService().Skills(workspacePath)
 }
@@ -167,6 +181,8 @@ func (a *App) GetClaudeSkills(workspacePath string) ([]claudeconfig.Skill, error
 //     branch on provider before reaching for this.
 //   - timeout / provider error: surfaced verbatim so the UI can render
 //     the CLI-supplied message.
+//
+//ao:scope threads:operate
 func (a *App) StopClaudeTask(threadID, taskID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
@@ -202,6 +218,8 @@ func (a *App) StopClaudeTask(threadID, taskID string) error {
 //     frontend must branch on provider before reaching for this.
 //   - timeout / provider error: surfaced verbatim, including the CLI's
 //     refusal when no foreground task matched the tool_use_id.
+//
+//ao:scope threads:operate
 func (a *App) BackgroundClaudeTask(threadID, toolUseID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown

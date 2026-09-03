@@ -12,9 +12,9 @@ ground truth that separates the two.
 - Input validation is the trust boundary: only loopback HTTP(S) URLs
   (`localhost`, `127.0.0.0/8`, `[::1]`) are dialable. Anything else is
   an error, never a dial. The caller is a wire RPC
-  (`ProbeDevServerURL`, loopback-only in
-  `internal/transport/internalmethods.go`), and a prober that dials
-  arbitrary hosts is an SSRF primitive.
+  (`ProbeDevServerURL`, `//ao:scope host` — it probes THIS machine's
+  loopback, so it has no remote form and no session may be granted it),
+  and a prober that dials arbitrary hosts is an SSRF primitive.
 - `localhost` resolves statically to `127.0.0.1` then `::1` (never
   through the system resolver), so dial targets stay deterministic and
   a server bound to a single address family is still found.

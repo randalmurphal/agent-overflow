@@ -1,7 +1,8 @@
 // Tests drive a hand-rolled MockWebSocket through the WSClient state
-// machine. We avoid pulling in `ws` or any other npm package — the
-// fake here is small enough that adding a dependency would cost more
-// than it saves.
+// machine. We avoid pulling in `ws` or any other npm package — the fake
+// is small enough that adding a dependency would cost more than it
+// saves. It lives in src/test/helpers/mockWebSocket.ts, because
+// stepUp.test.ts drives the same client through it.
 //
 // Coverage matrix:
 //   - first connect lazily on call/subscribe; subsequent calls share it
@@ -30,6 +31,10 @@
 //     are refused locally, a manual retry un-latches and a repeat
 //     refusal re-latches. A loopback session, a 1005 relay teardown,
 //     and a network-down loop all keep the ordinary retry behavior.
+//   - the OTHER terminal state, 'pairing-required': a page whose socket
+//     would arrive off-host while it holds no paired session latches
+//     before dialing, and pairing un-latches it. A paired networked
+//     page and every loopback page are unaffected.
 //   - backoff collapse: an RPC / page resume / triggerReconnect fires a
 //     queued backoff attempt immediately; the RPC path is rate-floored
 //     (one attempt per RECONNECT_INITIAL_MS); resume-while-hidden no-ops
@@ -50,6 +55,17 @@
 //   - close() during pending reconnect cancels the timer
 //   - subscriber-throw isolation; unsubscribe-during-dispatch
 //   - send-throw fails the matching pending RPC
+//   - forward tolerance (the future-dialect fixture): unknown frame
+//     types, unknown event channels, unknown fields on known frames and
+//     unaddressable shapes all counted rather than thrown on, with the
+//     known traffic still delivered in full and the console silent; the
+//     replay cursor stays free of the mis-shaped entries that would
+//     otherwise break gap recovery for the session; the per-kind tally
+//     is capped against a peer naming a new type every frame
+//   - the zero-seeded notification:activated cursor (the cold-launch
+//     mechanism) is asked for only by a session that is local in both
+//     senses; a remote session omits it, writes no checkpoint, and still
+//     replays what it actually missed across a reconnect
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BootstrapRejectedError } from './bootstrap';
@@ -58,117 +74,33 @@ import {
   BOOTSTRAP_INVALIDATE_AFTER_FAILURES,
   createWSClient,
   DisconnectedError,
+  DORMANT_AFTER_MS,
+  DORMANT_PROBE_JITTER_MS,
+  DORMANT_PROBE_MS,
   MAX_PENDING_RPCS,
   MAX_REPLAY_CHANNELS,
+  MAX_WATCH_THREADS,
   RECONNECT_INITIAL_MS,
   RECONNECT_MAX_LOCAL_MS,
   RECONNECT_MAX_REMOTE_MS,
+  RETRY_ON_TRANSIENT_CLOSE,
   RPC_TIMEOUT_MS,
   STALE_TRAFFIC_THRESHOLD_MS,
   STALE_CHECK_INTERVAL_MS,
   TransportError,
   transportGapChannel,
 } from './wsClient';
-import { __resetRunModeForTest, isViewOnlySession } from './runMode';
+import { __resetRunModeForTest } from './runMode';
+import { grantedScopes, hasScope } from './scopes';
+import { getConnectionId, getDeviceId } from './clientIdentity';
+import { clearPairedSession, hasPairedSession, redeemPairing } from './deviceSession';
 
-// MockWebSocket is a hand-rolled fake that exposes the same shape as
-// the WSLike interface the wsClient depends on. Tests drive it via
-// `acceptOpen`, `pushFrame`, and `triggerClose`.
-class MockWebSocket {
-  static instances: MockWebSocket[] = [];
-  static reset(): void {
-    MockWebSocket.instances = [];
-  }
-
-  url: string;
-  readyState = 0; // CONNECTING
-
-  // Frames the client has sent. Captured as parsed JSON for ergonomic
-  // assertions.
-  sent: Array<Record<string, unknown>> = [];
-
-  // When set, `send` throws this value rather than appending to `sent`.
-  // Drives the send-failure branch in tests.
-  sendError: Error | null = null;
-
-  private listeners = {
-    open: new Set<() => void>(),
-    close: new Set<(ev: CloseEvent) => void>(),
-    error: new Set<(ev: Event) => void>(),
-    message: new Set<(ev: MessageEvent) => void>(),
-  };
-
-  constructor(url: string) {
-    this.url = url;
-    MockWebSocket.instances.push(this);
-  }
-
-  send(data: string): void {
-    if (this.sendError) throw this.sendError;
-    this.sent.push(JSON.parse(data) as Record<string, unknown>);
-  }
-
-  close(code?: number, _reason?: string): void {
-    this.triggerClose(code ?? 1005);
-  }
-
-  addEventListener(type: 'open', listener: () => void): void;
-  addEventListener(type: 'close', listener: (ev: CloseEvent) => void): void;
-  addEventListener(type: 'error', listener: (ev: Event) => void): void;
-  addEventListener(type: 'message', listener: (ev: MessageEvent) => void): void;
-  addEventListener(type: string, listener: unknown): void {
-    if (type === 'open') this.listeners.open.add(listener as () => void);
-    else if (type === 'close') this.listeners.close.add(listener as (ev: CloseEvent) => void);
-    else if (type === 'error') this.listeners.error.add(listener as (ev: Event) => void);
-    else if (type === 'message') this.listeners.message.add(listener as (ev: MessageEvent) => void);
-  }
-
-  // Test-driver helpers ----------------------------------------------------
-
-  acceptOpen(): void {
-    this.readyState = 1; // OPEN
-    for (const fn of [...this.listeners.open]) fn();
-  }
-
-  pushFrame(frame: unknown): void {
-    const ev = new MessageEvent('message', { data: JSON.stringify(frame) });
-    for (const fn of [...this.listeners.message]) fn(ev);
-  }
-
-  pushRawText(text: string): void {
-    const ev = new MessageEvent('message', { data: text });
-    for (const fn of [...this.listeners.message]) fn(ev);
-  }
-
-  // Default code 1006 (abnormal closure) — the shape of a network
-  // death, which is what most tests simulate and what the outage
-  // diagnostics record.
-  triggerClose(code = 1006): void {
-    if (this.readyState === 3) return;
-    this.readyState = 3; // CLOSED
-    const ev = new CloseEvent('close', { code });
-    for (const fn of [...this.listeners.close]) fn(ev);
-  }
-
-  triggerError(): void {
-    const ev = new Event('error');
-    for (const fn of [...this.listeners.error]) fn(ev);
-  }
-}
-
-// FakeCtor centralises the `as unknown as new (url: string) => MockWebSocket`
-// dance. Each test passes it to createWSClient instead of repeating the
-// cast.
-const FakeCtor = MockWebSocket as unknown as new (url: string) => MockWebSocket;
-
-// flushMicrotasks yields the event loop a few times so promise-chained
-// callbacks (ensureConnected.then(...)) run before the test reads
-// state. Two ticks covers our actual chain depth; bumping if a future
-// test introduces deeper chaining is fine.
-async function flushMicrotasks(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-}
+// The fake socket, the constructor cast and the microtask flush live in
+// src/test/helpers/mockWebSocket.ts: the step-up interception suite
+// drives the same client through the same fake, and two copies would be
+// two answers to what the client sends.
+import { FakeCtor, flushMicrotasks, MockWebSocket } from '../../test/helpers/mockWebSocket';
+import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
 
 const bootstrap = async () => ({ wsUrl: 'ws://example/ws', token: 'test-token' });
 
@@ -176,12 +108,10 @@ describe('WSClient', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
     __resetRunModeForTest();
   });
 
   afterEach(() => {
-    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
     __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -222,6 +152,50 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it('puts a step-up token on the armed call and on no other', async () => {
+    // The token is SPENT by being presented, so which frame carries it is
+    // the whole contract: the armed call, never the one issued after the
+    // arming callback returned, and never a second call inside it.
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    // Never answered; close() below settles them. The catch is what keeps
+    // that from surfacing as an unhandled rejection.
+    const swallow = () => {};
+    client.withStepUpToken('one-shot', () => {
+      client.callByName('Armed', []).catch(swallow);
+      client.callByName('Second', []).catch(swallow);
+    });
+    client.callByName('Later', []).catch(swallow);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    const rpcs = ws.sent.filter((f) => f.type === 'rpc');
+    expect(rpcs.map((f) => f.method)).toEqual(['Armed', 'Second', 'Later']);
+    expect(rpcs.map((f) => f.stepUpToken)).toEqual(['one-shot', undefined, undefined]);
+
+    client.close();
+  });
+
+  it('leaves the slot empty when the armed callback issues no call', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.withStepUpToken('unspent', () => {
+      // Nothing. A slot that stayed armed here would put somebody's proof
+      // on whatever background load dispatched next.
+    });
+    client.callByName('Innocent', []).catch(() => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    const rpc = ws.sent.find((f) => f.type === 'rpc')!;
+    expect(rpc).toMatchObject({ method: 'Innocent' });
+    expect(rpc.stepUpToken).toBeUndefined();
+
+    client.close();
+  });
+
   it('rejects with TransportError on a server-side FrameError', async () => {
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
 
@@ -241,6 +215,43 @@ describe('WSClient', () => {
     expect(caught).toBeInstanceOf(TransportError);
     expect((caught as TransportError).code).toBe('method_not_found');
     expect((caught as TransportError).message).toBe('missing');
+
+    client.close();
+  });
+
+  it('carries a scope refusal\u2019s capability name onto the rejection', async () => {
+    // The missing capability rides a FIELD, because a method error\u2019s prose
+    // is redacted for a non-loopback caller \u2014 exactly the caller that has to
+    // explain why a surface is disabled. Losing it here leaves
+    // ./scopeRefusal.ts nothing to say but the generic sentence.
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const p = client.callByID(9, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    const id = ws.sent[1]!.id as string;
+    ws.pushFrame({
+      type: 'rpc',
+      id,
+      error: { code: 'scope_required', message: 'not authorized', scope: 'git:operate' },
+    });
+    await expect(p).rejects.toMatchObject({ code: 'scope_required', scope: 'git:operate' });
+
+    // An ordinary failure leaves the field alone, so a caller reading it
+    // as "was this an authorization refusal" is never misled.
+    const q = client.callByID(10, []);
+    await flushMicrotasks();
+    const nextId = ws.sent.at(-1)!.id as string;
+    ws.pushFrame({ type: 'rpc', id: nextId, error: { code: 'method_error', message: 'boom' } });
+    let caught: unknown;
+    try {
+      await q;
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as TransportError).scope).toBeUndefined();
 
     client.close();
   });
@@ -344,6 +355,103 @@ describe('WSClient', () => {
     client.close();
   });
 
+  // The zero-seeded cursor asks the backend for the notification
+  // channel's whole retained ring. That is right for the desktop window,
+  // which a toast click can cold-launch before it has a socket, and wrong
+  // for anything else: the queue on the other end OPENS every activation
+  // it receives, so a phone attaching would have its pane walked through
+  // every notification the desk has clicked since boot.
+  it('does not ask for the activation ring when the manifest says the backend is remote', async () => {
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 'test-token', remote: true }),
+    });
+    client.subscribe('notification:activated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    expect(ws.sent[0]).toEqual({ type: 'replay', lastSeqByChannel: {} });
+    client.close();
+  });
+
+  it('does not ask for the activation ring when the page itself is not loopback-served', async () => {
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap,
+      loopbackOrigin: () => false,
+    });
+    client.subscribe('notification:activated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    expect(ws.sent[0]).toEqual({ type: 'replay', lastSeqByChannel: {} });
+    client.close();
+  });
+
+  it('leaves no activation checkpoint behind on a remote session', async () => {
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 'test-token', remote: true }),
+    });
+    client.subscribe('notification:activated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    ws.pushFrame({ type: 'replay' });
+    ws.pushFrame({
+      type: 'event',
+      channel: 'notification:activated',
+      seq: 3,
+      data: { kind: 'none' },
+    });
+
+    // Nothing reads the checkpoint back on this session, so writing one
+    // is a sessionStorage write per click that buys nothing.
+    expect(sessionStorage.getItem('ao:notification-activation-seq')).toBeNull();
+    client.close();
+  });
+
+  it('still replays what a remote session actually missed across a reconnect', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 'test-token', remote: true }),
+    });
+    client.subscribe('notification:activated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.pushFrame({ type: 'replay' });
+    first.pushFrame({
+      type: 'event',
+      channel: 'notification:activated',
+      seq: 5,
+      data: { kind: 'none' },
+    });
+
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await flushMicrotasks();
+
+    // Declining the cold-launch seed is not the same as opting out of
+    // gap recovery: the ordinary cursor is still carried, so the session
+    // asks for exactly the activations that happened while it was gone.
+    expect(second.sent[0]).toEqual({
+      type: 'replay',
+      lastSeqByChannel: { 'notification:activated': 5 },
+    });
+    client.close();
+  });
+
   it('orders a live activation that races ahead of replay completion', async () => {
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
     const seen: string[] = [];
@@ -391,6 +499,599 @@ describe('WSClient', () => {
       caught = err;
     }
     expect(caught).toBeInstanceOf(DisconnectedError);
+
+    client.close();
+  });
+
+  it('rejects with the close code and reason preserved, not a bare "socket closed"', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const p = client.callByID(1, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.triggerClose(1012, 'backend restarting');
+    let caught: unknown;
+    try {
+      await p;
+    } catch (err) {
+      caught = err;
+    }
+    const err = caught as DisconnectedError;
+    expect(err).toBeInstanceOf(DisconnectedError);
+    expect(err.closeCode).toBe(1012);
+    expect(err.closeReason).toBe('backend restarting');
+    // In the MESSAGE too: the ~150 sites that render a failure read
+    // `err.message`, and the cause has to survive that rendering or it
+    // never reaches a human.
+    expect(err.message).toContain('1012');
+    expect(err.message).toContain('backend restarting');
+    // Not terminal: the ladder is still running, so a store that
+    // suspends on this edge will re-source on the next connect.
+    expect(err.terminal).toBe(false);
+
+    client.close();
+  });
+
+  it('carries the socket error that preceded the close as the rejection cause', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const p = client.callByID(1, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    // A socket-level failure arrives before the close on every engine
+    // that reports one. 1006 is the same code for every abnormal end, so
+    // this object is the only thing distinguishing them.
+    const detail = new ErrorEvent('error', { message: 'TLS handshake failed' });
+    ws.triggerError(detail);
+    ws.triggerClose(1006);
+
+    let caught: unknown;
+    try {
+      await p;
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as DisconnectedError).cause).toBe(detail);
+
+    client.close();
+  });
+
+  it('clears a previous socket error so it cannot be blamed for the next close', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    client.subscribe('thread:updated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.triggerError(new ErrorEvent('error', { message: 'first socket died' }));
+    first.triggerClose(1006);
+
+    await vi.advanceTimersByTimeAsync(300);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const p = client.callByID(1, []);
+    await vi.advanceTimersByTimeAsync(0);
+    // Second socket dies cleanly, with no error event of its own.
+    second.triggerClose(1001, 'going away');
+    let caught: unknown;
+    try {
+      await p;
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as DisconnectedError).cause).toBeUndefined();
+    expect((caught as DisconnectedError).closeReason).toBe('going away');
+
+    client.close();
+    vi.useRealTimers();
+  });
+
+  it('ships exactly the two idempotent sends in the retry-on-transient-close allowlist', () => {
+    // A tripwire, not a formality. The allowlist is the one place an RPC
+    // can be re-sent without its caller knowing, and every entry trades a
+    // lost answer for a possibly-duplicated action. THE RULE: a call is
+    // admissible only when the backend is idempotent for it. Both entries
+    // here are, because both carry a client-minted `sendId` the backend
+    // answers a repeat from. Growing this must be a reviewed decision that
+    // also updates this expectation and the entry's `why`, never a quiet
+    // append.
+    expect(RETRY_ON_TRANSIENT_CLOSE.map((entry) => entry.methodId)).toEqual([
+      3632185196, // SendMessageWithOptions
+      1034543696, // RegisterQueueItem
+    ]);
+    for (const entry of RETRY_ON_TRANSIENT_CLOSE) {
+      expect(entry.why).toContain('sendId');
+    }
+  });
+
+  it('re-sends the SAME sendId on the retry, from the retained frame', async () => {
+    // The whole mechanism rests on this: the retry replays the frame that
+    // was built once, so the backend sees one id twice and answers the
+    // second from the first one's record. A retry that rebuilt its
+    // arguments would mint a second id and start the turn twice — the
+    // exact bug the allowlist exists to fix.
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const p = client.callByID(3632185196, ['thread-1', 'hello', { sendId: 'send-abc' }]);
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    const firstSent = first.sent.filter((f) => f.type === 'rpc');
+    expect(firstSent).toHaveLength(1);
+    first.triggerClose(1006);
+
+    await vi.advanceTimersByTimeAsync(300);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    const retried = second.sent.filter((f) => f.type === 'rpc');
+    expect(retried).toHaveLength(1);
+    expect(retried[0]!.params).toEqual(firstSent[0]!.params);
+    expect((retried[0]!.params as unknown[])[2]).toEqual({ sendId: 'send-abc' });
+
+    // The backend, having already accepted the first frame, answers the
+    // retry from its record — an ordinary success, not a second send.
+    second.pushFrame({ type: 'rpc', id: retried[0]!.id as string, result: { id: 'thread-1' } });
+    await expect(p).resolves.toEqual({ id: 'thread-1' });
+
+    client.close();
+    vi.useRealTimers();
+  });
+
+  it('does not retry an ordinary call across a transient close', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const p = client.callByID(1, []);
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.triggerClose(1006);
+
+    await expect(p).rejects.toBeInstanceOf(DisconnectedError);
+    await vi.advanceTimersByTimeAsync(300);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    // Only the replay handshake — the dead call was NOT re-sent.
+    expect(second.sent.filter((f) => f.type === 'rpc')).toHaveLength(0);
+
+    client.close();
+    vi.useRealTimers();
+  });
+
+  it('re-sends an allowlisted call once after a transient close, and only once', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap,
+      retryOnTransientClose: [{ methodId: 42, why: 'test seam' }],
+    });
+
+    const p = client.callByID(42, ['arg']);
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    const id = first.sent.find((f) => f.type === 'rpc')!.id as string;
+
+    first.triggerClose(1006);
+    await vi.advanceTimersByTimeAsync(300);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Re-sent under the SAME id: request ids are client-side bookkeeping,
+    // so the caller's promise is still the one waiting on this answer.
+    const resent = second.sent.filter((f) => f.type === 'rpc');
+    expect(resent).toHaveLength(1);
+    expect(resent[0]!.id).toBe(id);
+
+    // The one retry is spent. A second close settles the call rather
+    // than parking it again — otherwise a flapping link would keep a
+    // caller waiting indefinitely on a call it believes is in flight.
+    second.triggerClose(1006, 'flapped again');
+    await expect(p).rejects.toMatchObject({ closeReason: 'flapped again' });
+
+    client.close();
+    vi.useRealTimers();
+  });
+
+  it('records the hello frame and answers capability questions from it', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    // Before any hello: every capability question answers false, so a
+    // feature degrades rather than being attempted against a backend
+    // that may not have it.
+    expect(client.getHello()).toBeNull();
+    expect(client.hasCapability('anything')).toBe(false);
+
+    const p = client.callByID(1, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.pushFrame({
+      type: 'hello',
+      protocolVersion: 1,
+      capabilities: ['demo.feature'],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: Date.now(),
+    });
+
+    expect(client.getHello()?.backendId).toBe('backend-uuid-1');
+    expect(client.getHello()?.protocolVersion).toBe(1);
+    expect(client.hasCapability('demo.feature')).toBe(true);
+    // An unrecognised name is false, never a guess from the version.
+    expect(client.hasCapability('some.future.feature')).toBe(false);
+
+    const id = ws.sent.find((f) => f.type === 'rpc')!.id as string;
+    ws.pushFrame({ type: 'rpc', id, result: 'ok' });
+    await expect(p).resolves.toBe('ok');
+    client.close();
+  });
+
+  it('keeps the hello answer across a reconnect and republishes only on change', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const seen: Array<string | null> = [];
+    client.onHelloChange((hello) => seen.push(hello?.backendId ?? null));
+
+    client.subscribe('thread:updated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    const hello = {
+      type: 'hello',
+      protocolVersion: 1,
+      capabilities: ['demo.feature'],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: Date.now(),
+    };
+    first.pushFrame(hello);
+
+    first.triggerClose(1006);
+    // The ladder is trying to reach the SAME backend, so the capability
+    // answer must not flap to "unsupported" for the length of an outage.
+    expect(client.hasCapability('demo.feature')).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(300);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    // Same backend, same answer but a fresh clock: waking every consumer
+    // for a few milliseconds of skew would turn a routine reconnect into
+    // a re-render.
+    second.pushFrame({ ...hello, serverTimeMs: Date.now() + 5 });
+    expect(seen).toEqual([null, 'backend-uuid-1']);
+
+    // A different backend IS a change, and must be published.
+    second.pushFrame({ ...hello, backendId: 'backend-uuid-2' });
+    expect(seen).toEqual([null, 'backend-uuid-1', 'backend-uuid-2']);
+
+    client.close();
+    vi.useRealTimers();
+  });
+
+  it('accepts a hello whose fields are the wrong shape, falling back neutrally', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    // A future backend may send shapes this build has never seen.
+    // Half-understanding the frame beats rejecting it: refusing would
+    // make an additive server change look like a backend with no
+    // capabilities at all.
+    ws.pushFrame({
+      type: 'hello',
+      protocolVersion: 'two',
+      capabilities: [null, 'demo.feature', 7],
+      backendId: 42,
+      serverTimeMs: 'soon',
+      unknownFutureField: { nested: true },
+    });
+
+    const hello = client.getHello()!;
+    expect(hello.protocolVersion).toBe(0);
+    expect(hello.capabilities).toEqual(['demo.feature']);
+    expect(hello.backendId).toBe('');
+    expect(hello.serverTimeMs).toBe(0);
+    expect(hello.clockSkewMs).toBe(0);
+    // A backend that says nothing about a bundle reads as "supplies
+    // none", which is what a dev-server boot is and what every backend
+    // older than the routes is.
+    expect(hello.bundleId).toBe('');
+    expect(hello.bundleVersion).toBe('');
+    expect(hello.minShellBuild).toBe(0);
+    expect(client.hasCapability('demo.feature')).toBe(true);
+
+    client.close();
+  });
+
+  it('carries the bundle the backend serves, and neutralises a floor it cannot read', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.pushFrame({
+      type: 'hello',
+      protocolVersion: 1,
+      capabilities: [],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: Date.now(),
+      bundleId: 'a'.repeat(64),
+      bundleVersion: '0.0.14',
+      minShellBuild: 2,
+    });
+    expect(client.getHello()?.bundleId).toBe('a'.repeat(64));
+    expect(client.getHello()?.bundleVersion).toBe('0.0.14');
+    expect(client.getHello()?.minShellBuild).toBe(2);
+
+    // A floor is a whole number of builds. Anything else is unreadable,
+    // and 0 — "no floor" — lets the shell decide on the id alone rather
+    // than refusing an update it could probably run.
+    ws.pushFrame({
+      type: 'hello',
+      protocolVersion: 1,
+      capabilities: [],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: Date.now(),
+      bundleId: 'a'.repeat(64),
+      bundleVersion: 7,
+      minShellBuild: '2',
+    });
+    expect(client.getHello()?.bundleVersion).toBe('');
+    expect(client.getHello()?.minShellBuild).toBe(0);
+
+    client.close();
+  });
+
+  it('publishes a rebuilt bundle on the same backend as a change', async () => {
+    // The one edge the shell's bundle sync is subscribed for: same
+    // machine, same capabilities, new SPA. A change check that compared
+    // identity alone would never wake it.
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const seen: string[] = [];
+    client.onHelloChange((hello) => {
+      if (hello) seen.push(hello.bundleId);
+    });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    const hello = {
+      type: 'hello',
+      protocolVersion: 1,
+      capabilities: [],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: 1_000,
+      bundleId: 'a'.repeat(64),
+      bundleVersion: '0.0.14',
+      minShellBuild: 1,
+    };
+    ws.pushFrame(hello);
+    ws.pushFrame({ ...hello, serverTimeMs: 2_000 });
+    ws.pushFrame({ ...hello, bundleId: 'b'.repeat(64), bundleVersion: '0.0.15' });
+    expect(seen).toEqual(['a'.repeat(64), 'b'.repeat(64)]);
+
+    client.close();
+  });
+
+  // The future-dialect fixture (docs/specs/remote-access.md §9).
+  //
+  // The swap window — an old bundle live against a just-updated backend
+  // for minutes — is a normal operating state. This drives a recorded
+  // stream salted with everything the NEXT dialect could plausibly add
+  // and asserts the client keeps working: unknown frame types, unknown
+  // event channels, unknown fields on frames it does know, and shapes it
+  // cannot address at all. Nothing may throw, nothing may reach the
+  // error console, and no known-frame handling may be disturbed.
+  it('runs normally against a future dialect, and reports zero errors', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const known: unknown[] = [];
+    const futureChannel: unknown[] = [];
+    client.subscribe('thread:updated', (data) => known.push(data));
+    client.subscribe('future:channel', (data) => futureChannel.push(data));
+
+    const p = client.callByID(1, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    const id = ws.sent.find((f) => f.type === 'rpc')!.id as string;
+
+    // A hello carrying fields this build has never seen, alongside the
+    // ones it has.
+    ws.pushFrame({
+      type: 'hello',
+      protocolVersion: 2,
+      capabilities: ['demo.feature'],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: Date.now(),
+      bundleId: 'a'.repeat(64),
+      bundleVersion: '0.0.14',
+      minShellBuild: 1,
+      negotiatedCiphers: ['x'],
+      leaseTtlMs: 30_000,
+      bundleSignature: { alg: 'future', sig: 'x' },
+    });
+
+    // Frame types from a dialect that does not exist yet.
+    ws.pushFrame({ type: 'lease', scopes: ['threads:read'], ttlMs: 30_000 });
+    ws.pushFrame({ type: 'push-token-request', nonce: 'abc' });
+    ws.pushFrame({ type: 'hello-again', protocolVersion: 3 });
+
+    // A known frame with unknown fields, and a known event on a channel
+    // this build never registered.
+    ws.pushFrame({
+      type: 'event',
+      channel: 'thread:updated',
+      seq: 1,
+      data: { id: 't1' },
+      deviceId: 'device-9',
+      originScope: 'threads:write',
+    });
+    ws.pushFrame({ type: 'event', channel: 'future:channel', seq: 1, data: { future: true } });
+    ws.pushFrame({ type: 'event', channel: 'nobody:listens', seq: 1, data: null });
+
+    // A batch mixing a known event with one on an unknown channel, plus
+    // an entry shape this build cannot address at all. The known event
+    // must still arrive — dropping a prefix or a suffix would leave the
+    // seq cursor lying about what was delivered.
+    ws.pushFrame({
+      type: 'batch',
+      events: [
+        { channel: 'thread:updated', seq: 2, data: { id: 't2' }, replicaEpoch: 4 },
+        { channel: 'future:channel', seq: 2, data: { future: true } },
+        { channel: 42, seq: 'soon', data: null },
+      ],
+      coalescedFrom: 3,
+    });
+
+    // Shapes that are not frames at all.
+    ws.pushRawText('not json at all');
+    ws.pushFrame(null);
+    ws.pushFrame([1, 2, 3]);
+    ws.pushFrame({ id: 'no-type-field' });
+
+    // The RPC still completes across all of it.
+    ws.pushFrame({ type: 'rpc', id, result: 'ok' });
+    await expect(p).resolves.toBe('ok');
+
+    // Known traffic was delivered in full, including the batch entries
+    // on either side of the unaddressable one.
+    expect(known).toEqual([{ id: 't1' }, { id: 't2' }]);
+    expect(futureChannel).toEqual([{ future: true }, { future: true }]);
+    // Unknown fields did not disturb the hello this build understands,
+    // the bundle fields included — a shell in the swap window has to
+    // keep being able to see the bundle that would end it.
+    expect(client.getHello()?.backendId).toBe('backend-uuid-1');
+    expect(client.getHello()?.bundleId).toBe('a'.repeat(64));
+    expect(client.getHello()?.minShellBuild).toBe(1);
+    expect(client.hasCapability('demo.feature')).toBe(true);
+
+    // Everything unaddressable was COUNTED, never thrown on.
+    const stats = client.getUnknownInputStats();
+    expect(stats.kinds).toMatchObject({
+      lease: 1,
+      'push-token-request': 1,
+      'hello-again': 1,
+      'event-shape': 1,
+      unparseable: 1,
+      'non-object': 2, // null and the array
+      untyped: 1,
+    });
+    expect(stats.total).toBe(8);
+
+    // Zero errors, and no per-frame warn spam either: a routine version
+    // skew must not fill the console.
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(consoleWarn).not.toHaveBeenCalled();
+
+    // And the client is still usable afterwards — the point of the whole
+    // exercise is that the swap window is survivable, not merely quiet.
+    const after = client.callByID(2, []);
+    await flushMicrotasks();
+    const secondId = ws.sent.filter((f) => f.type === 'rpc')[1]!.id as string;
+    ws.pushFrame({ type: 'rpc', id: secondId, result: 'still working' });
+    await expect(after).resolves.toBe('still working');
+
+    client.close();
+  });
+
+  it('keeps the replay cursor clean when a future dialect sends an event it cannot address', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    first.pushFrame({ type: 'event', channel: 'thread:updated', seq: 4, data: null });
+    // Channel and seq of a shape this build cannot read. Before the
+    // ingest check these landed in the cursor map as key "undefined" with
+    // a NaN seq, which serialized into the next replay request as
+    // {"undefined": null} — a map[string]uint64 decode failure that made
+    // the server refuse the WHOLE replay, costing the client its gap
+    // recovery for the rest of the session.
+    first.pushFrame({ type: 'event', seq: 5, data: null });
+    first.pushFrame({ type: 'event', channel: 'thread:updated', seq: 'later', data: null });
+
+    first.triggerClose(1006);
+    // Drain the reconnect timer (Math.random=0.5, attempt=0 -> 125ms).
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await flushMicrotasks();
+
+    const replay = second.sent.find((f) => f.type === 'replay')!;
+    const cursors = replay.lastSeqByChannel as Record<string, unknown>;
+    expect(cursors['thread:updated']).toBe(4);
+    for (const [channel, seq] of Object.entries(cursors)) {
+      expect(typeof channel).toBe('string');
+      expect(channel).not.toBe('undefined');
+      expect(Number.isSafeInteger(seq)).toBe(true);
+    }
+
+    client.close();
+  });
+
+  it('bounds the unknown-kind tally against a peer naming a new frame type every frame', async () => {
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    for (let i = 0; i < 200; i += 1) {
+      ws.pushFrame({ type: `future-type-${i}` });
+    }
+
+    const stats = client.getUnknownInputStats();
+    // Every frame counted, but the per-kind breakdown is capped so the
+    // map cannot be grown without limit by the peer.
+    expect(stats.total).toBe(200);
+    expect(Object.keys(stats.kinds).length).toBeLessThanOrEqual(8);
 
     client.close();
   });
@@ -510,6 +1211,47 @@ describe('WSClient', () => {
       type: 'replay',
       lastSeqByChannel: { 'thread:updated': 3 },
     });
+
+    client.close();
+  });
+
+  // The RING-ABSENT marker, which is the other half of the same restart
+  // story (internal/transport/eventbus.go Replay). Rings are created at
+  // the first Emit, so a channel the restarted backend has not emitted
+  // on yet answers a stale cursor with a marker at seq 0 rather than
+  // with silence. Seq 0 is below every seq the bus can mint, so this
+  // asserts the cursor resets far enough for the very first live frame
+  // (seq 1) to pass the dedup check.
+  it('accepts a gap marker at seq 0 and lets the next live seq 1 through', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const gaps: unknown[] = [];
+    const channel: unknown[] = [];
+    client.subscribe(transportGapChannel, (data) => gaps.push(data));
+    client.subscribe('provider:item_event', (data) => channel.push(data));
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    // Climb against the backend that is about to restart.
+    ws.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 4200, data: 'old' });
+    expect(channel).toEqual(['old']);
+
+    // The restarted backend has no ring for this channel, so its replay
+    // answers the reset marker.
+    ws.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 0, data: null, gap: true });
+    expect(gaps).toEqual([{ channel: 'provider:item_event', seq: 0 }]);
+
+    // Without the reset this frame is dropped as a duplicate of 4200,
+    // and so is every frame after it until the new sequence overtakes.
+    ws.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 1, data: 'fresh' });
+    expect(channel).toEqual(['old', null, 'fresh']);
+
+    // No spurious drop report: seq 1 is exactly one past the reset
+    // cursor, so the forward-skip heuristic must stay quiet.
+    expect(gaps).toEqual([{ channel: 'provider:item_event', seq: 0 }]);
 
     client.close();
   });
@@ -771,7 +1513,7 @@ describe('WSClient', () => {
     client.close();
   });
 
-  it('rejects on malformed bootstrap JSON via fetch path', async () => {
+  it('wraps a malformed-bootstrap failure as a transport error and keeps the cause', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     // Stub global fetch with a response that returns invalid JSON.
     const fetchMock = vi.fn(async () => ({
@@ -792,18 +1534,25 @@ describe('WSClient', () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(SyntaxError);
+    // The caller must see a TRANSPORT-class failure, not the raw
+    // SyntaxError: a manifest that would not parse means the request was
+    // never sent, and a caller with side effects classifies on
+    // DisconnectedError to decide whether "nothing happened" is safe to
+    // assume. The original error survives as `cause` so triage keeps it.
+    expect(caught).toBeInstanceOf(DisconnectedError);
+    expect((caught as DisconnectedError).cause).toBeInstanceOf(SyntaxError);
+    expect((caught as DisconnectedError).message).toContain('Unexpected token');
     client.close();
     vi.unstubAllGlobals();
   });
 
-  it('rejects bootstrap missing wsUrl/token', async () => {
+  it('rejects bootstrap missing wsUrl', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ wsUrl: 'ws://example/ws' }),
+      json: async () => ({ launchId: 'launch-1' }),
     }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -815,7 +1564,7 @@ describe('WSClient', () => {
     } catch (err) {
       caught = err;
     }
-    expect((caught as Error).message).toMatch(/missing wsUrl\/token/);
+    expect((caught as Error).message).toMatch(/missing wsUrl/);
     client.close();
     vi.unstubAllGlobals();
   });
@@ -843,27 +1592,40 @@ describe('WSClient', () => {
     vi.unstubAllGlobals();
   });
 
-  it('reads bootstrap from window.__AO_BOOTSTRAP__ without fetching', async () => {
-    const fetchMock = vi.fn(async () => {
-      throw new Error('fetch should not be called');
-    });
+  it('opens the manifest wsUrl with only the identity parameters appended', async () => {
+    // The page's credential is the HttpOnly cookie the manifest fetch
+    // set, and the browser attaches it to a same-origin upgrade by
+    // itself. Nothing that could function as a credential may be
+    // appended here — that would be one the page could read, the exact
+    // thing this transport no longer has.
+    //
+    // The two identity parameters are the deliberate exception, and are
+    // asserted as an exhaustive allow-list rather than by presence: they
+    // are self-asserted, unauthenticated, and grant nothing. The server
+    // uses them to say WHICH SCREEN wrote a row, never whether it may.
+    // Adding a third parameter here has to be a decision, not a drift.
+    const wsUrl = `ws://${window.location.host}/ws`;
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ wsUrl, launchId: 'launch-1', remote: true }),
+    }));
     vi.stubGlobal('fetch', fetchMock);
-    (globalThis as { __AO_BOOTSTRAP__?: { wsUrl: string; token: string; remote?: boolean } }).__AO_BOOTSTRAP__ = {
-      wsUrl: 'ws://injected/',
-      token: 'inj',
-      remote: true,
-    };
 
     try {
       const client = createWSClient({ WebSocketCtor: FakeCtor });
       const p = client.callByID(1, []);
-      await flushMicrotasks();
-      expect(fetchMock).not.toHaveBeenCalled();
-      expect(MockWebSocket.instances).toHaveLength(1);
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
       const ws = MockWebSocket.instances[0]!;
-      expect(ws.url).toContain('ws://injected/');
-      expect(ws.url).toContain('token=inj');
-      expect(isViewOnlySession()).toBe(true);
+      const opened = new URL(ws.url);
+      expect(`${opened.protocol}//${opened.host}${opened.pathname}`).toBe(wsUrl);
+      expect([...opened.searchParams.keys()].sort()).toEqual(['conn', 'did']);
+      expect(opened.searchParams.get('did')).toBe(getDeviceId());
+      expect(opened.searchParams.get('conn')).toBe(getConnectionId());
+      // A page served over the network holds no grant of its own.
+      expect(grantedScopes().source).toBe('unpaired');
+      expect(hasScope('host')).toBe(false);
 
       ws.acceptOpen();
       await flushMicrotasks();
@@ -872,17 +1634,16 @@ describe('WSClient', () => {
       await expect(p).resolves.toBe('ok');
       client.close();
     } finally {
-      delete (globalThis as { __AO_BOOTSTRAP__?: { wsUrl: string; token: string } }).__AO_BOOTSTRAP__;
       vi.unstubAllGlobals();
     }
   });
 
-  it('publishes fetched bootstrap locality to the view-only helper', async () => {
+  it('publishes fetched bootstrap locality to the capability store', async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ wsUrl: `ws://${window.location.host}/ws`, token: 'abc123', remote: true }),
+      json: async () => ({ wsUrl: `ws://${window.location.host}/ws`, remote: true }),
     }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -890,7 +1651,8 @@ describe('WSClient', () => {
     try {
       const unsubscribe = client.subscribe('workflow:item-state', () => {});
       await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
-      expect(isViewOnlySession()).toBe(true);
+      expect(hasScope('host')).toBe(false);
+      expect(hasScope('threads:operate')).toBe(false);
       unsubscribe();
     } finally {
       client.close();
@@ -898,16 +1660,17 @@ describe('WSClient', () => {
     }
   });
 
-  it('stashes the URL token and falls back to it once the URL is scrubbed', async () => {
-    // First load carries ?t=; defaultBootstrap must scrub it from the
-    // URL, stash it in sessionStorage, and serve a tokenless "reload"
-    // (second client, scrubbed URL) from the stash.
-    window.history.replaceState(null, '', '/?t=abc123');
+  it('spends the URL ticket once and boots a reload without one', async () => {
+    // First load carries ?t=; the manifest fetch spends it and scrubs
+    // the URL. A reload (second client, scrubbed URL) fetches with no
+    // ticket at all — the cookie the exchange set is the credential from
+    // then on, so nothing script-readable has to survive the scrub.
+    window.history.replaceState(null, '', '/?t=ticket-1');
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ wsUrl: `ws://${window.location.host}/ws`, token: 'abc123' }),
+      json: async () => ({ wsUrl: `ws://${window.location.host}/ws`, launchId: 'launch-1' }),
     }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -915,51 +1678,48 @@ describe('WSClient', () => {
       const first = createWSClient({ WebSocketCtor: FakeCtor });
       void first.callByID(1, []).catch(() => {});
       await flushMicrotasks();
-      expect(fetchMock).toHaveBeenCalledWith('/bootstrap.json?t=abc123', expect.anything());
-      expect(window.sessionStorage.getItem('ao:bootstrap-token')).toBe('abc123');
+      expect(fetchMock).toHaveBeenCalledWith('/bootstrap.json?t=ticket-1', expect.anything());
       expect(window.location.search).toBe('');
       first.close();
 
       const second = createWSClient({ WebSocketCtor: FakeCtor });
       void second.callByID(1, []).catch(() => {});
       await flushMicrotasks();
-      expect(fetchMock).toHaveBeenLastCalledWith('/bootstrap.json?t=abc123', expect.anything());
+      expect(fetchMock).toHaveBeenLastCalledWith('/bootstrap.json', expect.anything());
       second.close();
     } finally {
-      window.sessionStorage.clear();
       window.history.replaceState(null, '', '/');
       vi.unstubAllGlobals();
     }
   });
 
-  it('marks the post-invalidation refetch as a revalidation', async () => {
-    // An injected (--connect) manifest short-circuits an ordinary fetch,
-    // so the fetcher must be told when the refetch exists to observe a
-    // suspect credential (defaultBootstrap then routes it through the
-    // stub's /bootstrap.json probe). The flag arms on invalidation and
-    // stands down once a fetch resolves.
+  it('refetches the manifest after consecutive pre-open failures', async () => {
+    // The cached manifest is what a reconnect replays, so a backend that
+    // restarted would be retried forever on a credential it no longer
+    // honours. Every BOOTSTRAP_INVALIDATE_AFTER_FAILURES pre-open deaths
+    // the cache is dropped and the next attempt fetches for real, which
+    // is what turns a doomed loop into an observable refusal.
     vi.useFakeTimers();
     try {
-      const calls: Array<boolean | undefined> = [];
+      let fetches = 0;
       const client = createWSClient({
         WebSocketCtor: FakeCtor,
-        bootstrap: async (opts?: { revalidate?: boolean }) => {
-          calls.push(opts?.revalidate);
-          return { wsUrl: 'ws://example/ws', token: 't', remote: true };
+        bootstrap: async () => {
+          fetches += 1;
+          return { wsUrl: 'ws://example/ws', launchId: 'launch-1', remote: true };
         },
       });
       client.subscribe('x', () => {});
       await vi.advanceTimersByTimeAsync(0);
-      expect(calls).toEqual([false]);
+      expect(fetches).toBe(1);
 
       // Two consecutive pre-open deaths trip the cache invalidation; the
-      // refetch that follows must carry the revalidation mark, and the
-      // pre-invalidation attempts must not have fetched at all (cache).
+      // attempts before it reuse the cache and must not fetch again.
       for (let i = 0; i < BOOTSTRAP_INVALIDATE_AFTER_FAILURES; i++) {
         MockWebSocket.instances.at(-1)!.triggerClose();
         await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
       }
-      expect(calls).toEqual([false, true]);
+      expect(fetches).toBe(2);
       MockWebSocket.instances.at(-1)!.acceptOpen();
       await vi.advanceTimersByTimeAsync(0);
       client.close();
@@ -968,13 +1728,11 @@ describe('WSClient', () => {
     }
   });
 
-  it('keeps a stashed token the server refuses', async () => {
-    // Re-presenting a stale token costs the identical 404, so clearing
-    // buys nothing — and it would destroy the one copy that lets a page
-    // reload recover from a refusal that wasn't real (a proxy blip
-    // answering 404 for a token the server still honours).
+  it('surfaces a refusal from a ticketless refetch', async () => {
+    // Mid-session there is no ticket to present: the request carries the
+    // cookie alone, and a server that no longer recognises it answers
+    // the same unfingerprintable 404 it gives an unknown path.
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    window.sessionStorage.setItem('ao:bootstrap-token', 'stale');
     const fetchMock = vi.fn(async () => ({ ok: false, status: 404 }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -987,11 +1745,9 @@ describe('WSClient', () => {
         caught = err;
       }
       expect((caught as Error).message).toMatch(/HTTP 404/);
-      expect(fetchMock).toHaveBeenCalledWith('/bootstrap.json?t=stale', expect.anything());
-      expect(window.sessionStorage.getItem('ao:bootstrap-token')).toBe('stale');
+      expect(fetchMock).toHaveBeenCalledWith('/bootstrap.json', expect.anything());
       client.close();
     } finally {
-      window.sessionStorage.clear();
       vi.unstubAllGlobals();
     }
   });
@@ -1682,7 +2438,7 @@ describe('WSClient', () => {
     client.close();
   });
 
-  it('does not force-close a remote socket while RPCs are in flight (mid-transfer guard)', async () => {
+  it('does not force-close a remote socket while a RECENT RPC is in flight (mid-transfer guard)', async () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
@@ -1698,11 +2454,11 @@ describe('WSClient', () => {
     await vi.advanceTimersByTimeAsync(0);
     first.pushFrame({ type: 'ping' });
 
-    // Silence past the threshold with the RPC still pending: a single
-    // huge response frame can legitimately hold the wire that long on a
-    // remote link, so the watchdog must stand down and let the RPC
-    // timeout arbitrate.
-    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS + STALE_CHECK_INTERVAL_MS);
+    // Silence INSIDE the threshold with the RPC still pending: a single
+    // large response frame yields no message event until it is fully
+    // received and blocks the heartbeats queued behind it, so the
+    // watchdog stands down and lets the RPC timeout arbitrate.
+    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS - STALE_CHECK_INTERVAL_MS);
     expect(first.readyState).toBe(1);
 
     // Once the response lands (no pending RPCs), renewed silence
@@ -1712,6 +2468,43 @@ describe('WSClient', () => {
     await expect(p).resolves.toBe('ok');
     await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS + STALE_CHECK_INTERVAL_MS);
     expect(first.readyState).toBe(3);
+
+    client.close();
+  });
+
+  // The other side of that guard, and the reason it is a WINDOW rather
+  // than "is anything pending". A half-open remote socket keeps its
+  // in-flight calls pending forever (no response is coming and no close
+  // event is either), so a guard that stood down for any pending call
+  // switched the watchdog off on exactly the connections it exists for,
+  // and the app sat in `connected` until each RPC's own 60s timeout.
+  it('force-closes a remote socket whose every pending RPC is older than the threshold', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't', remote: true }),
+    });
+    const p = client.callByID(5, []);
+    p.catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.pushFrame({ type: 'ping' });
+
+    // The call stays pending and nothing arrives. Past the threshold it
+    // can no longer be a transfer in progress: a response that had not
+    // delivered a byte in that window IS the stall.
+    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS + STALE_CHECK_INTERVAL_MS);
+    expect(first.readyState).toBe(3);
+
+    // And the reconnect path took over rather than the client sitting in
+    // `connected` until the RPC's own 60s timeout.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(2);
 
     client.close();
   });
@@ -2141,6 +2934,10 @@ describe('WSClient', () => {
   // The WSL relay tears sockets down with 1005 and a minimised WebView2
   // gets suspended out from under its connection; neither is an auth
   // failure. Same backend, same token, recovery must be silent.
+  //
+  // Both of those pages load from loopback and reach a backend the
+  // manifest calls remote (the `--connect` stub's `remote` describes its
+  // UPSTREAM), which is the shape driven here.
   it('rides out a relay teardown on a remote session without latching', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
@@ -2153,7 +2950,7 @@ describe('WSClient', () => {
     const client = createWSClient({
       WebSocketCtor: FakeCtor,
       bootstrap: fetchSpy,
-      loopbackOrigin: () => false,
+      loopbackOrigin: () => true,
     });
     const seen: string[] = [];
     client.onStatusChange((snap) => seen.push(snap.status));
@@ -2208,6 +3005,198 @@ describe('WSClient', () => {
     expect(client.getStatus().nextAttemptAt).not.toBeNull();
 
     client.close();
+  });
+
+  // The second terminal state. The backend opens a `/ws` upgrade for an
+  // off-host peer only when the upgrade NAMES a live session, so a page
+  // whose socket would arrive that way while holding no paired session
+  // has nothing to dial with. It must say what to do instead of climbing
+  // a ladder of doomed sockets.
+  //
+  // The three inputs are asserted separately below, because each one
+  // alone would decide this wrongly for a page that really works.
+  it('latches a pairing prompt for a networked page holding no paired session', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    localStorage.clear();
+
+    const fetchSpy = vi
+      .fn<() => Promise<{ wsUrl: string; token: string; remote?: boolean }>>()
+      .mockResolvedValue({ wsUrl: 'ws://example/ws', token: 't', remote: true });
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: fetchSpy,
+      loopbackOrigin: () => false,
+    });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The manifest SERVED — the page loads and the person can act — and
+    // no socket was opened to learn the upgrade would be refused.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(client.getStatus()).toEqual({ status: 'pairing-required', nextAttemptAt: null });
+    expect(MockWebSocket.instances).toHaveLength(0);
+
+    // Terminal, on the same terms as the refused credential: waiting
+    // pairs no device, so minutes of wall clock buy nothing.
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(MockWebSocket.instances).toHaveLength(0);
+
+    // Passive demand must not restart the ladder either.
+    const call = client.callByName('App.Anything', []);
+    await expect(call).rejects.toBeInstanceOf(DisconnectedError);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    client.close();
+  });
+
+  // Term 1 of the rule: `remote` is the backend's own verdict on THIS
+  // page's peer. A networked page against a backend that reads it as
+  // loopback — Tailscale Serve, a same-host reverse proxy — has a socket
+  // that opens, so the origin alone must not latch it.
+  it('does not ask a page to pair when the backend reads its peer as local', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    localStorage.clear();
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't' }),
+      loopbackOrigin: () => false,
+    });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    MockWebSocket.instances[0]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.getStatus().status).toBe('connected');
+    client.close();
+  });
+
+  // Term 2: the `--connect` stub's page is served from a loopback
+  // listener on this machine while its manifest's `remote` describes the
+  // UPSTREAM it carries the socket to. Latching on the manifest alone
+  // would strand a desktop window behind a pairing prompt for a device
+  // that IS the host.
+  it('does not ask a loopback page to pair when the manifest names a remote backend', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    localStorage.clear();
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't', remote: true }),
+      loopbackOrigin: () => true,
+    });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    MockWebSocket.instances[0]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.getStatus().status).toBe('connected');
+    client.close();
+  });
+
+  // Term 3, and the state this whole path exists to let a person reach:
+  // the same networked page once it holds a paired session dials exactly
+  // as before, naming that session with a ticket.
+  it('dials a networked page normally once it holds a paired session', async () => {
+    localStorage.clear();
+    try {
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify({ ticket: 'tik-p' }), { status: 200 })),
+      );
+
+      const client = createWSClient({
+        WebSocketCtor: FakeCtor,
+        bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't', remote: true }),
+        loopbackOrigin: () => false,
+      });
+      const seen: string[] = [];
+      client.onStatusChange((snap) => seen.push(snap.status));
+      client.subscribe('x', () => {});
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+
+      const url = new URL(MockWebSocket.instances[0]!.url);
+      expect(url.searchParams.get('ticket')).toBe('tik-p');
+      MockWebSocket.instances[0]!.acceptOpen();
+      await flushMicrotasks();
+
+      expect(client.getStatus().status).toBe('connected');
+      expect(seen).not.toContain('pairing-required');
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // The door's transition, not just its on-state: pairing from the
+  // latched page must produce a live connection without a reload, which
+  // is the only remedy the banner offers.
+  it('un-latches the pairing prompt when the device pairs', async () => {
+    localStorage.clear();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const client = createWSClient({
+        WebSocketCtor: FakeCtor,
+        bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't', remote: true }),
+        loopbackOrigin: () => false,
+      });
+      client.subscribe('x', () => {});
+      await vi.waitFor(() =>
+        expect(client.getStatus().status).toBe('pairing-required'),
+      );
+      expect(MockWebSocket.instances).toHaveLength(0);
+
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify({ ticket: 'tik-r' }), { status: 200 })),
+      );
+      client.redialAfterPairing();
+
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+      MockWebSocket.instances[0]!.acceptOpen();
+      await flushMicrotasks();
+      expect(client.getStatus().status).toBe('connected');
+
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
   });
 
   it('reports an outage summary through the diagnostics sink on reconnect', async () => {
@@ -2378,5 +3367,941 @@ describe('WSClient', () => {
 
     client.close();
     vi.useRealTimers();
+  });
+
+  // The paired-device dial: a browser that holds its session credential
+  // in script (it arrived in the /auth/pair response body, not as a
+  // cookie) names its session through a fresh single-use ticket on the
+  // upgrade URL. Every other test in this file dials unpaired and pins
+  // the converse: no ticket parameter, no /auth fetch.
+  it('names a paired session on the upgrade via a fresh ticket', async () => {
+    localStorage.clear();
+    try {
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      const ticketFetch = vi.fn(
+        async () => new Response(JSON.stringify({ ticket: 'tik-9' }), { status: 200 }),
+      );
+      vi.stubGlobal('fetch', ticketFetch);
+
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      void client.callByID(123, ['arg']).catch(() => {});
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+
+      expect(ticketFetch).toHaveBeenCalledWith('/auth/ticket', expect.anything());
+      const url = new URL(MockWebSocket.instances[0]!.url);
+      expect(url.searchParams.get('ticket')).toBe('tik-9');
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // A paired session with no ticket must FAIL the dial, never dial
+  // bare: on a browser that also holds the local page cookie, a bare
+  // dial admits this screen as the LOCAL channel — a socket revoking
+  // the paired device would never reach.
+  it('fails the dial rather than fall back to the page cookie while the session is unproven', async () => {
+    localStorage.clear();
+    try {
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      // Every /auth call answers 503: the mint proves nothing either
+      // way, so the stored session must survive and no socket may open.
+      const downFetch = vi.fn(async () => new Response('', { status: 503 }));
+      vi.stubGlobal('fetch', downFetch);
+
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      void client.callByID(123, ['arg']).catch(() => {});
+      await vi.waitFor(() => expect(downFetch).toHaveBeenCalled());
+      await flushMicrotasks();
+
+      expect(MockWebSocket.instances).toHaveLength(0);
+      expect(hasPairedSession()).toBe(true);
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // The socket that carried the pairing screen dialed before the
+  // credential existed. Completing the flow re-dials so the upgrade
+  // names the just-confirmed session instead of whatever the cookie did.
+  it('redialAfterPairing moves an open bare socket onto a ticket dial', async () => {
+    localStorage.clear();
+    try {
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      void client.callByID(123, ['arg']).catch(() => {});
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+      const first = MockWebSocket.instances[0]!;
+      expect(new URL(first.url).searchParams.get('ticket')).toBeNull();
+      first.acceptOpen();
+      await flushMicrotasks();
+
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      const ticketFetch = vi.fn(
+        async () => new Response(JSON.stringify({ ticket: 'tik-2' }), { status: 200 }),
+      );
+      vi.stubGlobal('fetch', ticketFetch);
+
+      client.redialAfterPairing();
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+      expect(first.readyState).toBe(3);
+      const url = new URL(MockWebSocket.instances[1]!.url);
+      expect(url.searchParams.get('ticket')).toBe('tik-2');
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // A dying socket's close event landing during the pre-socket stage of
+  // a fresh connect must not queue a second attempt: the fresh attempt's
+  // socket is already past 'open' when the queued one dials, so the
+  // supersede guard never reaps it and BOTH sockets stay attached (seen
+  // live as two registry entries for one page after a pairing redial).
+  //
+  // Driven through the stale watchdog's force-close (a bare
+  // `ws.close()`) rather than the pairing redial, which is where it was
+  // found: the redial now DETACHES the socket it retires, so its close
+  // takes the superseded branch and never reaches the schedule this
+  // pins. Every other close still does.
+  it('does not dial a second socket when a close lands mid-connect', async () => {
+    localStorage.clear();
+    try {
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      // Only the SECOND mint stalls until released — that is the
+      // pre-socket window of the connect attempt under test. Any later
+      // mint answers at once, so a wrongly queued third attempt gets to
+      // dial and the assertion below can see its socket.
+      let releaseMint: (() => void) | null = null;
+      let mints = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          mints += 1;
+          if (mints === 2) {
+            await new Promise<void>((resolve) => {
+              releaseMint = resolve;
+            });
+          }
+          return new Response(JSON.stringify({ ticket: `tik-${mints}` }), { status: 200 });
+        }),
+      );
+
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      void client.callByID(123, ['arg']).catch(() => {});
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+      const first = MockWebSocket.instances[0]!;
+      first.acceptOpen();
+      await flushMicrotasks();
+
+      // The client force-closes the socket (browser semantics: CLOSING
+      // now, close event later), and fresh demand starts a connect that
+      // stalls in its mint, before constructing a socket.
+      first.deferClose = true;
+      first.close();
+      expect(first.readyState).toBe(2);
+      void client.callByID(124, ['arg']).catch(() => {});
+      await vi.waitFor(() => expect(mints).toBe(2));
+
+      // The old socket's close arrives while that attempt is in flight.
+      first.flushClose();
+      await flushMicrotasks();
+
+      // The stalled attempt proceeds and its socket opens.
+      releaseMint!();
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+      MockWebSocket.instances[1]!.acceptOpen();
+      await flushMicrotasks();
+
+      // No queued third attempt fires behind it (the ladder's first
+      // delay is well under this wait).
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(MockWebSocket.instances).toHaveLength(2);
+      expect(MockWebSocket.instances[1]!.readyState).toBe(1);
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // Staging the whole transition main.ts drives: the pairing screen
+  // hands over, the redial retires the pre-pairing socket, and the app
+  // mounts. The bug this pins is that the app used to mount while the
+  // redial was still in flight, so the retiring socket's close rejected
+  // boot RPCs that never rode it — a burst of failures for a pairing
+  // that worked (2026-08-31).
+  it('does not reject calls issued while the pre-pairing socket is being retired', async () => {
+    localStorage.clear();
+    try {
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      void client.callByID(123, ['arg']).catch(() => {});
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+      const bare = MockWebSocket.instances[0]!;
+      bare.acceptOpen();
+      await flushMicrotasks();
+
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify({ ticket: 'tik-2' }), { status: 200 })),
+      );
+
+      // Browser semantics: close() moves the socket to CLOSING and the
+      // close event lands later — during the redial's mint, which is
+      // exactly the window the app used to mount into.
+      bare.deferClose = true;
+      const settled = client.redialAfterPairing();
+
+      let bootRejection: unknown = null;
+      const bootCall = client.callByID(456, ['boot']).catch((err: unknown) => {
+        bootRejection = err;
+        return null;
+      });
+      bare.flushClose();
+      await flushMicrotasks();
+      expect(bootRejection).toBeNull();
+
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+      const paired = MockWebSocket.instances[1]!;
+      expect(new URL(paired.url).searchParams.get('ticket')).toBe('tik-2');
+      paired.acceptOpen();
+      await settled;
+
+      // The redial resolved only once the ticketed socket was serving,
+      // and the call made during the retirement rode it.
+      expect(paired.readyState).toBe(1);
+      const bootFrames = paired.sent.filter((frame) => frame.methodId === 456);
+      expect(bootFrames).toHaveLength(1);
+      paired.pushFrame({ type: 'rpc', id: bootFrames[0]!.id as string, result: 'ok' });
+      await expect(bootCall).resolves.toBe('ok');
+      expect(bootRejection).toBeNull();
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // The app must mount even when the backend is not answering: its
+  // reconnecting banner is the designed surface for that, and a pairing
+  // screen that never handed over would be the worse answer.
+  it('redialAfterPairing resolves when the dial cannot be made', async () => {
+    localStorage.clear();
+    try {
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      // Every /auth call fails outright, so the mint proves nothing and
+      // the dial refuses to fall back to a bare socket.
+      vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline'); }));
+
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      await client.redialAfterPairing();
+
+      expect(MockWebSocket.instances).toHaveLength(0);
+      expect(hasPairedSession()).toBe(true);
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+// The client half of the lifecycle lease (internal/transport/lease.go).
+//
+// Coverage:
+//   - a state is sent once and an identical one sends nothing
+//   - a client that never leases puts NO lease byte on the wire, on the
+//     first connection or any later one — the desktop and browser floor
+//   - a state set while disconnected is retained and stated on open
+//   - a non-active state is restated after every reconnect, and resuming
+//     stops the restatement (the backend starts every connection active)
+// The DORMANT end of the reconnect ladder.
+//
+// A ladder that has been failing for DORMANT_AFTER_MS is not measuring a
+// relay flap any more: the backend is off, the machine is asleep, the phone
+// left the network. Doubling forever answers that badly in both directions —
+// an hour-long backoff leaves a backend that came back at minute six
+// unnoticed until minute sixty, and thirty-second retries all night are a
+// radio wake per attempt for nothing.
+//
+// So dormancy is a FLAT cadence and nothing else. It changes what this client
+// DIALS; it changes nothing about what a connection carries, what any surface
+// renders, or what is asked for — every demand path still probes at once, and
+// the tests below are as much about that half as about the slow half.
+describe('dormant reconnect ladder', () => {
+  beforeEach(() => {
+    MockWebSocket.reset();
+    sessionStorage.clear();
+    __resetRunModeForTest();
+    vi.useFakeTimers();
+    // Longest jittered delay, so the climb below takes the fewest laps.
+    vi.spyOn(Math, 'random').mockReturnValue(0.999);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    __resetRunModeForTest();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // Climb the ladder on sockets that never open until the client is past
+  // DORMANT_AFTER_MS, then fail once more — that last schedule is the one
+  // that computes the dormant cadence.
+  async function dormantClient() {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+
+    const started = Date.now();
+    while (Date.now() - started <= DORMANT_AFTER_MS) {
+      MockWebSocket.instances.at(-1)!.triggerClose();
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+    }
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+    return client;
+  }
+
+  function nextAttemptIn(client: ReturnType<typeof createWSClient>): number | null {
+    const at = client.getStatus().nextAttemptAt;
+    return at === null ? null : at - Date.now();
+  }
+
+  it('climbs the ordinary ladder first, then flattens to one probe per DORMANT_PROBE_MS', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+
+    // A few minutes short of the threshold this is an ordinary ladder: not
+    // dormant, and capped by the local ceiling.
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().dormant).toBe(false);
+    expect(nextAttemptIn(client)!).toBeLessThanOrEqual(RECONNECT_MAX_LOCAL_MS);
+
+    const started = Date.now();
+    while (Date.now() - started <= DORMANT_AFTER_MS) {
+      MockWebSocket.instances.at(-1)!.triggerClose();
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+    }
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const snap = client.getStatus();
+    // Dormancy is an ordinary reconnecting status wearing a flag, never a
+    // state of its own: a surface that does not read the flag is unchanged.
+    expect(snap.status).toBe('reconnecting');
+    expect(snap.dormant).toBe(true);
+    // Never connected, so there is no last-seen moment to report.
+    expect(snap.lastConnectedAt).toBeNull();
+    expect(nextAttemptIn(client)!).toBeGreaterThanOrEqual(DORMANT_PROBE_MS);
+    expect(nextAttemptIn(client)!).toBeLessThanOrEqual(DORMANT_PROBE_MS + DORMANT_PROBE_JITTER_MS);
+
+    // FLAT, not exponential: the probe after this one is the same distance
+    // away, which is what keeps a recovered backend from waiting an hour.
+    const dialsBefore = MockWebSocket.instances.length;
+    await vi.advanceTimersByTimeAsync(DORMANT_PROBE_MS + DORMANT_PROBE_JITTER_MS);
+    expect(MockWebSocket.instances.length).toBe(dialsBefore + 1);
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().dormant).toBe(true);
+    expect(nextAttemptIn(client)!).toBeGreaterThanOrEqual(DORMANT_PROBE_MS);
+    expect(nextAttemptIn(client)!).toBeLessThanOrEqual(DORMANT_PROBE_MS + DORMANT_PROBE_JITTER_MS);
+
+    client.close();
+  });
+
+  it('ends the dormancy on a probe that connects and stays up', async () => {
+    const client = await dormantClient();
+
+    await vi.advanceTimersByTimeAsync(DORMANT_PROBE_MS + DORMANT_PROBE_JITTER_MS);
+    const revived = MockWebSocket.instances.at(-1)!;
+    revived.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().status).toBe('connected');
+    // The open is the last moment bytes crossed on a socket that then sat
+    // idle, which is what "last seen" reports.
+    const seenAt = Date.now();
+
+    // A connection that PROVED itself is what resets the ladder's age, on
+    // the same evidence rule the backoff reset uses: an accept-then-die
+    // socket must not talk the client out of its slow cadence.
+    await vi.advanceTimersByTimeAsync(BACKOFF_RESET_AFTER_MS);
+    revived.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const snap = client.getStatus();
+    expect(snap.status).toBe('reconnecting');
+    expect(snap.dormant).toBe(false);
+    expect(snap.lastConnectedAt).toBe(seenAt);
+    expect(nextAttemptIn(client)!).toBeLessThanOrEqual(RECONNECT_INITIAL_MS);
+
+    client.close();
+  });
+
+  it('keeps the dormancy through a probe that dies inside the stability window', async () => {
+    const client = await dormantClient();
+
+    await vi.advanceTimersByTimeAsync(DORMANT_PROBE_MS + DORMANT_PROBE_JITTER_MS);
+    const flapping = MockWebSocket.instances.at(-1)!;
+    flapping.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(BACKOFF_RESET_AFTER_MS - 1_000);
+    flapping.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // A backend that accepts and dies is the storm the ladder exists for;
+    // treating it as recovery would put this client back on a 50ms retry.
+    expect(client.getStatus().dormant).toBe(true);
+    expect(nextAttemptIn(client)!).toBeGreaterThanOrEqual(DORMANT_PROBE_MS);
+
+    client.close();
+  });
+
+  it('wakes the ladder on Retry, immediately and for good', async () => {
+    const client = await dormantClient();
+    const dialsBefore = MockWebSocket.instances.length;
+
+    client.triggerReconnect();
+    await flushMicrotasks();
+    // No time advanced: a person pressing Retry is the clearest demand there
+    // is, and it does not wait out the probe interval.
+    expect(MockWebSocket.instances.length).toBe(dialsBefore + 1);
+
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+    // And the ladder's accumulated pessimism goes with it: this is an
+    // ordinary first failure again, not a dormant client that dialled once.
+    expect(client.getStatus().dormant).toBe(false);
+    expect(nextAttemptIn(client)!).toBeLessThanOrEqual(RECONNECT_INITIAL_MS);
+
+    client.close();
+  });
+
+  it('schedules no probe at all while the whole client is backgrounded', async () => {
+    const client = await dormantClient();
+    const dialsBefore = MockWebSocket.instances.length;
+
+    client.setLease('background');
+    const snap = client.getStatus();
+    // Still dormant, still reconnecting — there is simply nothing scheduled,
+    // which is what a null nextAttemptAt says.
+    expect(snap.dormant).toBe(true);
+    expect(snap.nextAttemptAt).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(6 * DORMANT_PROBE_MS);
+    expect(MockWebSocket.instances.length).toBe(dialsBefore);
+
+    client.close();
+  });
+
+  it('probes the moment the client comes back to the foreground', async () => {
+    const client = await dormantClient();
+    client.setLease('background');
+    await vi.advanceTimersByTimeAsync(6 * DORMANT_PROBE_MS);
+    const dialsBefore = MockWebSocket.instances.length;
+
+    client.setLease('active');
+    await flushMicrotasks();
+    // The cost of scheduling nothing while backgrounded is paid back here:
+    // the app coming back is demand, so it dials now rather than at the end
+    // of an interval nobody was waiting on.
+    expect(MockWebSocket.instances.length).toBe(dialsBefore + 1);
+
+    client.close();
+  });
+
+  it('probes at once when a pane opens, and stays dormant if that probe fails', async () => {
+    const client = await dormantClient();
+    // Some time later, long past the demand rate floor and long before the
+    // scheduled probe.
+    await vi.advanceTimersByTimeAsync(60_000);
+    const dialsBefore = MockWebSocket.instances.length;
+
+    // What opening a pane reaches: a fresh subscribe on this client.
+    client.subscribe('git:status', () => {});
+    await flushMicrotasks();
+    expect(MockWebSocket.instances.length).toBe(dialsBefore + 1);
+
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+    // Demand COLLAPSES the wait; it does not reset the ladder. Otherwise a
+    // remounting pane or a background poll could talk a genuinely
+    // unreachable backend out of its slow cadence forever.
+    expect(client.getStatus().dormant).toBe(true);
+    expect(nextAttemptIn(client)!).toBeGreaterThanOrEqual(DORMANT_PROBE_MS);
+
+    client.close();
+  });
+
+  it('probes at once for an RPC, and stays dormant if that probe fails', async () => {
+    const client = await dormantClient();
+    await vi.advanceTimersByTimeAsync(60_000);
+    const dialsBefore = MockWebSocket.instances.length;
+
+    const pending = client.callByID(123, []).catch(() => {});
+    await flushMicrotasks();
+    expect(MockWebSocket.instances.length).toBe(dialsBefore + 1);
+
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().dormant).toBe(true);
+
+    client.close();
+    await pending;
+  });
+
+  it('carries the last-seen moment into the dormant snapshot', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    const seenAt = Date.now();
+    first.triggerClose();
+
+    const started = Date.now();
+    while (Date.now() - started <= DORMANT_AFTER_MS) {
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+      MockWebSocket.instances.at(-1)!.triggerClose();
+    }
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const snap = client.getStatus();
+    expect(snap.dormant).toBe(true);
+    // The banner's whole sentence: this is the moment it renders as
+    // "Last seen 12m ago", and it is the LAST time bytes crossed rather
+    // than the last dial.
+    expect(snap.lastConnectedAt).toBe(seenAt);
+
+    client.close();
+  });
+
+  // The regression this field's shape exists to prevent. `lastFrameAt` is
+  // ALSO bumped by handleLifecycleResume, on a socket that may have been
+  // half-open since the machine went to sleep. Deriving "last seen" from it
+  // at close would date an overnight outage to the moment the lid opened,
+  // and the banner would say the backend was there a minute ago.
+  it('dates last-seen from the last real frame, not from a lifecycle resume', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // One real frame, then a long silence in which nothing arrives.
+    first.pushFrame({ type: 'event', channel: 'thread:updated', seq: 1, data: {} });
+    await vi.advanceTimersByTimeAsync(0);
+    const lastRealFrame = Date.now();
+
+    await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
+    // The page thaws. The socket still reads as OPEN, so the resume refreshes
+    // the watchdog's clock — and must not touch last-seen.
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.getStatus().lastConnectedAt).toBe(lastRealFrame);
+
+    client.close();
+  });
+});
+
+describe('lease frame', () => {
+  beforeEach(() => {
+    MockWebSocket.reset();
+    sessionStorage.clear();
+    __resetRunModeForTest();
+  });
+
+  afterEach(() => {
+    __resetRunModeForTest();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function leaseFrames(ws: MockWebSocket): Array<Record<string, unknown>> {
+    return ws.sent.filter((frame) => frame.type === 'lease');
+  }
+
+  async function connectedClient() {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    return { client, ws };
+  }
+
+  it('states a background lease once and dedups a repeat', async () => {
+    const { client, ws } = await connectedClient();
+
+    client.setLease('background');
+    client.setLease('background');
+    expect(leaseFrames(ws)).toEqual([{ type: 'lease', state: 'background' }]);
+
+    client.setLease('active');
+    expect(leaseFrames(ws)).toEqual([
+      { type: 'lease', state: 'background' },
+      { type: 'lease', state: 'active' },
+    ]);
+
+    client.close();
+  });
+
+  it('sends nothing for a client that never leases, on any connection', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    try {
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      client.subscribe('thread:updated', () => {});
+      await vi.advanceTimersByTimeAsync(0);
+      const first = MockWebSocket.instances[0]!;
+      first.acceptOpen();
+      await vi.advanceTimersByTimeAsync(0);
+      // `active` is the resting state AND the never-set one, so even
+      // stating it explicitly here would be a change; stating nothing is
+      // what every desktop and browser client does.
+      expect(leaseFrames(first)).toHaveLength(0);
+
+      first.triggerClose();
+      await vi.advanceTimersByTimeAsync(125);
+      const second = MockWebSocket.instances[1]!;
+      second.acceptOpen();
+      await flushMicrotasks();
+      expect(leaseFrames(second)).toHaveLength(0);
+
+      client.close();
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('retains a lease set while disconnected and states it on open', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    // No socket yet — the send is dropped, the state is kept.
+    client.setLease('background');
+
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    expect(leaseFrames(ws)).toEqual([{ type: 'lease', state: 'background' }]);
+
+    client.close();
+  });
+
+  it('restates a background lease after a reconnect, and stops once resumed', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    try {
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      client.subscribe('thread:updated', () => {});
+      await vi.advanceTimersByTimeAsync(0);
+      const first = MockWebSocket.instances[0]!;
+      first.acceptOpen();
+      await vi.advanceTimersByTimeAsync(0);
+      client.setLease('background');
+
+      first.triggerClose();
+      await vi.advanceTimersByTimeAsync(125);
+      const second = MockWebSocket.instances[1]!;
+      second.acceptOpen();
+      await flushMicrotasks();
+
+      // A fresh connection starts ACTIVE on the backend, so a phone that
+      // slept through the drop would otherwise be streamed at full rate.
+      // Beside the watch restatement and ahead of the replay it precedes.
+      expect(leaseFrames(second)).toEqual([{ type: 'lease', state: 'background' }]);
+      expect(second.sent.at(-1)).toMatchObject({ type: 'replay' });
+
+      client.setLease('active');
+      second.triggerClose();
+      // Second reconnect of this client: the backoff ladder has climbed, so
+      // the wait is longer than the first one's.
+      await vi.advanceTimersByTimeAsync(2000);
+      const third = MockWebSocket.instances[2]!;
+      third.acceptOpen();
+      await flushMicrotasks();
+      // Nothing to restate: the new connection already is what we want.
+      expect(leaseFrames(third)).toHaveLength(0);
+
+      client.close();
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+});
+
+// The client half of the screen-presence frame
+// (internal/transport/presence.go).
+//
+// It states whether this screen is being LOOKED AT, which the backend reads
+// for one decision — whether to raise an OS notification — and for nothing
+// about delivery. So the coverage here is about the frame's own contract:
+//
+//   - both halves replace the last frame together, and an identical state
+//     writes no bytes
+//   - a client that never composes one puts NO presence byte on the wire
+//   - a composed presence is RESTATED after every reconnect, including an
+//     unattended one: the backend treats an unstated presence as
+//     unattended, so there is no resting value a new connection holds
+describe('presence frame', () => {
+  beforeEach(() => {
+    MockWebSocket.reset();
+    sessionStorage.clear();
+    __resetRunModeForTest();
+  });
+
+  afterEach(() => {
+    __resetRunModeForTest();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function presenceFrames(ws: MockWebSocket): Array<Record<string, unknown>> {
+    return ws.sent.filter((frame) => frame.type === 'presence');
+  }
+
+  async function connectedClient() {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    return { client, ws };
+  }
+
+  it('states a presence once, dedups a repeat, and replaces both halves', async () => {
+    const { client, ws } = await connectedClient();
+
+    client.setPresence(true, ['t-b', 't-a']);
+    // Same state, different order: the set is sorted before the compare, so
+    // a pane reorder that changes nothing writes nothing.
+    client.setPresence(true, ['t-a', 't-b']);
+    expect(presenceFrames(ws)).toEqual([
+      { type: 'presence', focused: true, threads: ['t-a', 't-b'] },
+    ]);
+
+    // Blurred AND the panes gone, in one frame. Not a latch.
+    client.setPresence(false, []);
+    expect(presenceFrames(ws).at(-1)).toEqual({ type: 'presence', focused: false, threads: [] });
+
+    // Either half alone is a change.
+    client.setPresence(true, []);
+    expect(presenceFrames(ws).at(-1)).toEqual({ type: 'presence', focused: true, threads: [] });
+
+    client.close();
+  });
+
+  it('sends nothing for a client that never composes one', async () => {
+    const { client, ws } = await connectedClient();
+    expect(presenceFrames(ws)).toHaveLength(0);
+    client.close();
+  });
+
+  it('refuses a set past the wire bound and leaves the last one standing', async () => {
+    const { client, ws } = await connectedClient();
+    client.setPresence(true, ['t-a']);
+
+    const tooMany = Array.from({ length: MAX_WATCH_THREADS + 1 }, (_, i) => `t${i}`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    client.setPresence(true, tooMany);
+    expect(warn).toHaveBeenCalled();
+    // A truncated set would claim a thread is off screen when it is not.
+    expect(presenceFrames(ws)).toEqual([
+      { type: 'presence', focused: true, threads: ['t-a'] },
+    ]);
+
+    client.close();
+  });
+
+  it('restates the presence after a reconnect, unattended states included', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    try {
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      client.subscribe('thread:updated', () => {});
+      await vi.advanceTimersByTimeAsync(0);
+      const first = MockWebSocket.instances[0]!;
+      first.acceptOpen();
+      await vi.advanceTimersByTimeAsync(0);
+      client.setPresence(true, ['t-a']);
+
+      first.triggerClose();
+      await vi.advanceTimersByTimeAsync(125);
+      const second = MockWebSocket.instances[1]!;
+      second.acceptOpen();
+      await flushMicrotasks();
+      // Beside the watch and lease restatements, ahead of the replay.
+      expect(presenceFrames(second)).toEqual([
+        { type: 'presence', focused: true, threads: ['t-a'] },
+      ]);
+      expect(second.sent.at(-1)).toMatchObject({ type: 'replay' });
+
+      // And an UNATTENDED state is restated too, unlike the lease's
+      // `active`: there is no resting presence the backend already holds,
+      // and a screen that reconnected without restating would go back to
+      // being treated as unattended anyway. Restating it is what keeps the
+      // wire state and this client's idea of it the same object.
+      client.setPresence(false, []);
+      second.triggerClose();
+      await vi.advanceTimersByTimeAsync(2000);
+      const third = MockWebSocket.instances[2]!;
+      third.acceptOpen();
+      await flushMicrotasks();
+      expect(presenceFrames(third)).toEqual([
+        { type: 'presence', focused: false, threads: [] },
+      ]);
+
+      client.close();
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+});
+
+// A shell page's manifest can only describe a socket at the origin that
+// served the document, which is the one origin a shell page knows is
+// wrong. So the dial carries it onto the endpoint, and an ATTACHED
+// backend's absolute wsUrl — a phone holds one client per machine, each
+// remote — is left exactly as it came.
+describe('WSClient under a shell origin', () => {
+  const ENDPOINT = 'https://desk.tail-scale.ts.net:7777';
+
+  beforeEach(() => {
+    MockWebSocket.reset();
+    sessionStorage.clear();
+    __resetHomeEndpointForTest();
+    setHomeEndpoint(ENDPOINT);
+  });
+
+  afterEach(() => {
+    __resetHomeEndpointForTest();
+    vi.restoreAllMocks();
+  });
+
+  it('dials the endpoint for a manifest that names a relative socket', async () => {
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: '/ws' }),
+    });
+    client.callByName('Anything', []).catch(() => {});
+    await flushMicrotasks();
+
+    const dialed = new URL(MockWebSocket.instances[0]!.url);
+    expect(dialed.protocol).toBe('wss:');
+    expect(dialed.host).toBe('desk.tail-scale.ts.net:7777');
+    expect(dialed.pathname).toBe('/ws');
+    client.close();
+  });
+
+  it('leaves the absolute socket of an attached machine alone', async () => {
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'wss://laptop.tail-scale.ts.net:7777/ws' }),
+    });
+    client.callByName('Anything', []).catch(() => {});
+    await flushMicrotasks();
+
+    expect(new URL(MockWebSocket.instances[0]!.url).host)
+      .toBe('laptop.tail-scale.ts.net:7777');
+    client.close();
   });
 });

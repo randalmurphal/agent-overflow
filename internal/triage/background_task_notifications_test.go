@@ -203,6 +203,80 @@ func TestBackgroundTaskNotification_WithoutLaunchOrStashDoesNotCreateRow(t *test
 // `tool_completion` sibling so the launch row gets its "-> done"
 // companion in the UI. Without this drain the launch stays running
 // forever (the original bug).
+// The workspace-change lock gates irreversible actions (remove worktree,
+// re-point a thread's checkout) on "is anything running in this
+// directory". It reads WILDCARD channels only, because the sibling
+// thread whose task it is blocking on is one this client may never have
+// mounted — and provider:item_event, which the lock used to poll on, is
+// now narrowed to the threads a client watches. So every Claude
+// transition that changes CountLiveRunningBackgroundToolCalls has to
+// nudge on provider:background_tasks_changed. This walks the two live
+// ones in order; the boot-time third is
+// TestRecoverOrphanedBackgroundTasksNudgesTheWorkspaceLock.
+func TestBackgroundTaskTransitionsNudgeBackgroundTasksChanged(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "sleep 30"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-1",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	taskStartedMeta, _ := json.Marshal(map[string]any{"task_id": "task-1"})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-1",
+		Meta: taskStartedMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_started meta merge: %v", err)
+	}
+
+	// EXIT. The host saw the process end; the agent has not observed it,
+	// so no chat row is written and the only other signal —
+	// provider:background_task_state{exited} — is loopback-only.
+	emissions.reset()
+	stashMeta, _ := json.Marshal(map[string]any{
+		"task_id": "task-1", "tool_use_id": "bg-1",
+		"status": "completed", "source": "task_updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1",
+		Meta: stashMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_updated stash: %v", err)
+	}
+	if n := countEvents(emissions.snapshot(), "provider:background_tasks_changed"); n != 1 {
+		t.Fatalf("exit emitted %d background_tasks_changed, want 1 (%+v)", n, emissions.snapshot())
+	}
+
+	// DRAIN. The completion sibling is what drops the launch out of
+	// CountLiveRunningBackgroundToolCalls, so the lock's answer changes here.
+	emissions.reset()
+	notificationMeta, _ := json.Marshal(map[string]any{
+		"task_id": "task-1", "tool_use_id": "bg-1",
+		"status": "completed", "source": "task_notification",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1", ItemID: "bg-1",
+		Meta: notificationMeta, Content: `Background command "sleep 30" completed`,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_notification: %v", err)
+	}
+	if dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(dones) != 1 {
+		t.Fatalf("precondition: expected the completion sibling, got %d", len(dones))
+	}
+	if n := countEvents(emissions.snapshot(), "provider:background_tasks_changed"); n == 0 {
+		t.Fatalf("drain emitted no background_tasks_changed (%+v)", emissions.snapshot())
+	}
+}
+
 func TestBackgroundTaskNotification_StashedTerminalThenNotificationWritesSibling(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

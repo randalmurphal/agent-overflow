@@ -23,7 +23,7 @@ shared UX. Optimized for performance, memory efficiency, and minimal code.
 
 ## Commands
 
-Requires Go 1.26.2+, Node 24+, and pnpm 10+. On Linux, install
+Requires Go 1.26.6+, Node 24+, and pnpm 10+. On Linux, install
 `libgtk-4-dev`, `libwebkitgtk-6.0-dev`, `pkg-config`, and `gcc` before
 `make install` (the GTK4 / WebKitGTK 6.0 stack ships on Ubuntu 23.04+ /
 Debian 13+).
@@ -40,8 +40,11 @@ Debian 13+).
 | `make release` | direct-install artifacts in `dist/release/<version>/` |
 | `make harness` | real app, isolated data dir, mocked providers; `harness-window` / `harness-wsl` open a real window on it, `make e2e` runs Playwright against it, `bin/ao-harness` drives any instance from a shell. See [agent-harness.md](docs/architecture/agent-harness.md). |
 | `make soak` | the harness shell plus the indefinite streaming preset, for hours-long renderer reproductions beside your own app; `soak-check` summarizes, `soak-window` is the native equivalent. See [soak-rig.md](docs/architecture/soak-rig.md). |
+| `make apk` | the Android shell's debug APK: the SPA with the shell aliases on, `cap sync`, `assembleDebug`. Needs a JDK 21 and an Android SDK, neither of which is on PATH. See [mobile/AGENTS.md](mobile/AGENTS.md). |
+| `make e2e-android` | the shell smoke, driving the app inside a running emulator's own WebView (Playwright's Android API), where the native seams are real. Its own config, directory and one spec; written against the docs and NOT yet run on a device. Not a blocking gate: with none attached it prints how to start one and exits clean. See [e2e/AGENTS.md](e2e/AGENTS.md) § The emulator smoke. |
 | `make provider-smoke` | manual real-provider gate. **Spends real model tokens**; needs authenticated `claude` + `codex` on PATH. Run before a release and after upgrading either provider CLI. See [providersmoke_test.go](internal/app/providersmoke_test.go). |
 | `make import-corpus-smoke` | manual session-import gate over a **copy** of your provider homes (`AO_IMPORT_CORPUS_CLAUDE` / `AO_IMPORT_CORPUS_CODEX`; a root overlapping a live home is refused, and there is no fallback). Spends no tokens. Run after provider CLI upgrades and before importer changes. See [importcorpussmoke_test.go](internal/app/importcorpussmoke_test.go). |
+| `AO_HEADLESS_CHROMIUM_SMOKE=1 go test ./internal/browser -run TestHeadlessChromiumReal -count=1` | manual headless-browser gate, and the ONLY test that starts a real browser. Needs a system Chromium (`browserChromiumPath`, or one on PATH); downloads nothing and spends no tokens. It proves this machine's Chromium accepts the exact command line serve mode builds, sandbox included. Run after a Chromium major upgrade and before changing the launch flags. On no automatic target. See [headless_engine_test.go](internal/browser/headless_engine_test.go). |
 
 Every task must leave `make go-build`, `make go-test`,
 `cd frontend && pnpm run check`, and `cd frontend && pnpm run build`
@@ -147,6 +150,7 @@ Guardrails:
 /internal/                    Go packages (see internal/AGENTS.md)
 /frontend/                    Svelte 5 app (see frontend/AGENTS.md)
 /e2e/                         Playwright suite for the agent test harness (see e2e/AGENTS.md)
+/mobile/                      Capacitor shell for Android (see mobile/AGENTS.md)
 /docs/architecture/           deep-dive design docs
 /docs/GLOSSARY.md             coined vocabulary + terms with conflicting meanings across subsystems
 /docs/references/             provider wire references + spike policy
@@ -199,10 +203,16 @@ See [docs/references/spike-policy.md](docs/references/spike-policy.md).
   back-channel that bypasses `internal/transport/`. The embedded
   webview, `agent-overflow --connect`, and remote browser access share
   the same HTTP+WS wire shape. Any new App-bound method also becomes a
-  wire RPC; if it touches local FS, external processes, provider
-  sessions, settings, credentials, or attachments, classify it in
-  `internal/transport/internalmethods.go` `LocalOnlyMethods`. See
-  `internal/transport/AGENTS.md` for the authz and replay rules.
+  wire RPC, so it carries an `//ao:scope <name>` annotation naming the
+  capability it exercises — `methodgen` fails the run without one, and
+  that scope is what the per-call gate compares a session's grants
+  against. It also carries a ROUTE, naming which attached backend the
+  call belongs to: `thread` and `project` are inferred from a first
+  parameter named `threadID` / `projectID`, `workspace` from a first
+  parameter of type `gitapp.WorkspaceRef`, and everything else declares
+  `//ao:route home|selected|all` or the same generator fails the run.
+  See `internal/transport/AGENTS.md` for both vocabularies, the
+  step-up set, and the authz and replay rules.
 
 - **`.claude/` and `.playwright-mcp/` MUST stay excluded from the
   Wails3 dev watcher.** Claude Code's worktree isolation creates

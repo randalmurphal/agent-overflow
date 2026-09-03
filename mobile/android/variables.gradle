@@ -1,0 +1,29 @@
+ext {
+    // 26, not the Capacitor template's 23. The barcode scanner's native
+    // library (io.ionic.libs:ionbarcode-android) declares 26 itself, and
+    // a manifest merge across that gap fails the build outright rather
+    // than degrading. Overriding the merge instead would ship a scanner
+    // that compiles and then fails on the devices the override covers,
+    // so the floor moves up: Android 8.0, August 2017.
+    minSdkVersion = 26
+    compileSdkVersion = 36
+    targetSdkVersion = 36
+    androidxActivityVersion = '1.11.0'
+    androidxAppCompatVersion = '1.7.1'
+    androidxCoordinatorLayoutVersion = '1.3.0'
+    androidxCoreVersion = '1.17.0'
+    androidxFragmentVersion = '1.8.9'
+    coreSplashScreenVersion = '1.2.0'
+    androidxWebkitVersion = '1.14.0'
+    // Push. The classpath entry is unconditional; google-services.json is
+    // what decides whether it initialises (app/build.gradle says why).
+    firebaseMessagingVersion = '25.1.2'
+    junitVersion = '4.13.2'
+    // Unit tests only. android.jar's `org.json` is a stub whose methods
+    // throw, so the JVM suite needs the real implementation on its
+    // classpath ahead of it; nothing ships this to a device.
+    orgJsonVersion = '20250517'
+    androidxJunitVersion = '1.3.0'
+    androidxEspressoCoreVersion = '3.7.0'
+    cordovaAndroidVersion = '14.0.1'
+}

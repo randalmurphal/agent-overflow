@@ -87,14 +87,14 @@
   let isAtProjectRoot = $derived(sameNormalizedPath(currentWorkspace, projectPath));
   let intent = $derived(worktreeIntentForThread(pane.thread));
 
-  // Trigger reflects *where you are*, not the picker's mode. "Local"
+  // Trigger reflects *where you are*, not the picker's mode. "Base"
   // sits at the project root; the worktree's basename otherwise. Staged
   // new-worktree intent overrides both so the user sees that the next
   // send will run somewhere new.
   let stagingNewWorktree = $derived(intent.mode === 'new-worktree');
   let triggerLabel = $derived.by(() => {
     if (stagingNewWorktree) return 'New Worktree';
-    if (isAtProjectRoot) return 'Local';
+    if (isAtProjectRoot) return 'Base';
     return pathBasename(currentWorkspace) || 'Worktree';
   });
   let triggerIcon = $derived.by(() => {
@@ -388,7 +388,7 @@
 >
   <Menu ariaLabel="Workspace" onClose={closeMenu}>
     <MenuItem
-      label={projectPath ? `Local · ${pathBasename(projectPath)}` : 'Local'}
+      label={projectPath ? `Base · ${pathBasename(projectPath)}` : 'Base'}
       checked={isAtProjectRoot && !stagingNewWorktree}
       disabled={!projectPath || workspaceChangingDisabled}
       title={workspaceChangingDisabled ? disabledReason : undefined}

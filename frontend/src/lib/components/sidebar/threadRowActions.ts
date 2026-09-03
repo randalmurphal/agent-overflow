@@ -17,7 +17,6 @@ import {
   DeleteThread,
   ForkThread,
   GitRemoveWorktree,
-  MarkThreadUnread,
   PinThread,
   RenameThread,
   SetThreadPinGroup,
@@ -25,9 +24,9 @@ import {
   UnpinThread,
 } from '../../stores/bindings';
 import {
+  markThreadUnread,
   prependThread,
   removeThread,
-  updateThreadLastRead,
   updateThreadPinState,
   updateThreadTitle,
 } from '../../stores/threads.svelte';
@@ -83,11 +82,11 @@ export async function renameThreadAction(
 
 export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
-    // Stop the session before archiving so the provider process is cleaned up.
-    // Best-effort: log if it fails but proceed with archive.
-    await StopSession(ctx.thread.id).catch((err) => {
-      console.error('Failed to stop session before archive:', err);
-    });
+    // No StopSession here: ArchiveThread closes the thread's provider
+    // session server-side (internal/app/app_thread_archive.go), so the
+    // process is released for every client rather than only the one
+    // that remembers to ask first — and, unlike a client-side stop, it
+    // re-checks that the thread was not re-engaged in the gap.
     await ArchiveThread(ctx.thread.id);
     removeThread(ctx.thread.id);
     closePanesShowingThread(ctx.thread.id);
@@ -136,10 +135,10 @@ export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
 
 export async function markThreadUnreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
-    await MarkThreadUnread(ctx.thread.id);
-    // Explicit unread is persisted as epoch 0. Undefined means "never
-    // tracked" and is intentionally treated as read for old rows.
-    updateThreadLastRead(ctx.thread.id, 0);
+    // The store owns the RPC and the local patch together: the two have
+    // to happen under one claim on the read marker, or a thread:updated
+    // row landing between them wins on a comparison it cannot make.
+    await markThreadUnread(ctx.thread.id);
     addToast('info', 'Marked unread.');
   } catch (err) {
     console.error('Failed to mark thread unread:', err);

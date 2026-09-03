@@ -38,12 +38,18 @@ import (
 // per-thread correlation map so a CleanupThread sweep is consistent
 // across all of them.
 
-// QueuedFlushItem is one user message awaiting provider dispatch. Lives only
-// in router memory — never persisted to SQLite — and is drained when the app
-// dispatch worker accepts it or cleared on session teardown. That is why it
-// carries a FlushSettlement: "queued" is not "durable", and an app-layer
-// record that outlives the process has to wait for either a provider write or
-// a successful recovery into the durable composer draft.
+// QueuedFlushItem is one user message awaiting provider dispatch. THIS copy
+// lives only in router memory, drained when the app dispatch worker accepts
+// it and cleared on session teardown; the app layer keeps a durable row of
+// its own (`flush_queue_items`, migration v85) so a crash between the send
+// and the provider write does not lose a message the composer has already
+// cleared. Triage neither writes nor reads that row.
+//
+// The FlushSettlement is the seam between the two. "Queued" is not
+// "durable", so an app-layer record that outlives the process — the durable
+// row itself, and any injector's bookkeeping — waits here for either a
+// provider write or a successful recovery into the durable composer draft,
+// which are the only two moments a queued message is safely somewhere else.
 //
 // The Payload is opaque to triage: the app layer (app_flush_queue.go)
 // owns the wire shape (attachments, source-plan refs, revision
@@ -653,7 +659,7 @@ func (r *Router) selfHealEchoConsumedFlushRow(threadID string, entry pendingSend
 				// without this upsert it stays invisible until a thread
 				// reload (round-7, R7-7). Idempotent for rows the
 				// promote path already emitted.
-				r.emitItemUpsertWithActivity(updated, false)
+				r.emitItemUpsert(updated)
 			}
 		}
 	case retained == nil:

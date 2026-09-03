@@ -172,7 +172,7 @@ func (s *Settings) setProviderEnvVars(providerKey string, vars []ProviderEnvVar)
 // variable's Value cleared. This is the projection GetSettings applies before
 // the list crosses the transport boundary: GetSettings is reachable from a
 // LAN-attached client, and a sensitive value is exactly the kind of material
-// the RemoteEndpoints token redaction exists to keep off that wire.
+// that must not cross that wire.
 //
 // The copy is deep enough to leave the Service's cached Settings untouched —
 // the slice shares backing memory with the cache, so clearing in place would
@@ -393,25 +393,22 @@ func (s *Service) SetProviderEnvVar(providerName, name, value string, sensitive 
 	}
 	name = strings.TrimSpace(name)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	current := s.loadFromFile()
-	next := append([]ProviderEnvVar(nil), current.ProviderEnvVars(key)...)
-	replaced := false
-	for i := range next {
-		if strings.EqualFold(next[i].Name, name) {
-			next[i] = ProviderEnvVar{Name: name, Value: value, Sensitive: sensitive}
-			replaced = true
-			break
+	return s.mutate("", DeviceDesktop, func(current Settings) (Settings, error) {
+		next := append([]ProviderEnvVar(nil), current.ProviderEnvVars(key)...)
+		replaced := false
+		for i := range next {
+			if strings.EqualFold(next[i].Name, name) {
+				next[i] = ProviderEnvVar{Name: name, Value: value, Sensitive: sensitive}
+				replaced = true
+				break
+			}
 		}
-	}
-	if !replaced {
-		next = append(next, ProviderEnvVar{Name: name, Value: value, Sensitive: sensitive})
-	}
-	current.setProviderEnvVars(key, next)
-
-	return s.persistValidated(current)
+		if !replaced {
+			next = append(next, ProviderEnvVar{Name: name, Value: value, Sensitive: sensitive})
+		}
+		current.setProviderEnvVars(key, next)
+		return validated(current)
+	})
 }
 
 // DeleteProviderEnvVar removes one variable by name (case-insensitively).
@@ -427,40 +424,32 @@ func (s *Service) DeleteProviderEnvVar(providerName, name string) (Settings, err
 		return Settings{}, fmt.Errorf("settings: environment variable name required")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	current := s.loadFromFile()
-	existing := current.ProviderEnvVars(key)
-	next := make([]ProviderEnvVar, 0, len(existing))
-	removed := false
-	for _, v := range existing {
-		if !removed && strings.EqualFold(v.Name, name) {
-			removed = true
-			continue
+	return s.mutate("", DeviceDesktop, func(current Settings) (Settings, error) {
+		existing := current.ProviderEnvVars(key)
+		next := make([]ProviderEnvVar, 0, len(existing))
+		removed := false
+		for _, v := range existing {
+			if !removed && strings.EqualFold(v.Name, name) {
+				removed = true
+				continue
+			}
+			next = append(next, v)
 		}
-		next = append(next, v)
-	}
-	if !removed {
-		return Settings{}, fmt.Errorf("settings: %s has no environment variable %q", providerName, name)
-	}
-	current.setProviderEnvVars(key, next)
-
-	return s.persistValidated(current)
+		if !removed {
+			return Settings{}, fmt.Errorf("settings: %s has no environment variable %q", providerName, name)
+		}
+		current.setProviderEnvVars(key, next)
+		return validated(current)
+	})
 }
 
-// persistValidated validates, writes, and refreshes the cache. Must be called
-// with s.mu held. Shared by the two custom-environment mutators so neither can
-// skip validation on its way to disk.
-func (s *Service) persistValidated(current Settings) (Settings, error) {
-	validated, err := validateSettings(current)
+// validated is the whole-struct validation both custom-environment mutators
+// run on their way to disk, so neither can skip it. The remaining mutators
+// validate only the fields they touch (see mutate).
+func validated(current Settings) (Settings, error) {
+	checked, err := validateSettings(current)
 	if err != nil {
 		return Settings{}, fmt.Errorf("settings: validate: %w", err)
 	}
-	if err := s.writeSparse(validated); err != nil {
-		return Settings{}, err
-	}
-	s.cached = &validated
-	s.cachedState = readFileState(s.path)
-	return validated, nil
+	return checked, nil
 }

@@ -76,6 +76,29 @@
      *  keep stable header geometry. */
     statusItem?: Pick<Item, 'kind' | 'status' | 'isBackground' | 'payloadMeta'>;
     hasMoreDiffContent?: boolean;
+    /**
+     * Present only while this file's preview patch is still behind a
+     * wire-projection marker (`previewElided`, internal/itemwire) — the
+     * row arrived without patch text this client did not ask for, or
+     * that was over the preview byte budget.
+     *
+     * Its presence is what makes the disclosure live for a file with no
+     * body yet: expanding calls `request()`, and the block renders the
+     * same Loading… / Retry affordance every other lazily-loaded body
+     * uses (ExpandablePayloadBody) until the patch arrives. DiffFileStack
+     * owns the fetch because it is per ITEM, not per file, and drops this
+     * prop once the patch is in hand.
+     *
+     * Collapsed, a file carrying this renders identically to one whose
+     * patch arrived inline: the header, path, and +/- counts all come
+     * from metadata the projection never touches.
+     */
+    elidedPreview?: {
+      readonly loading: boolean;
+      readonly error: string | null;
+      request(): void;
+      retry(): void;
+    };
   }
 
   let {
@@ -89,6 +112,7 @@
     createdAt,
     statusItem,
     hasMoreDiffContent = false,
+    elidedPreview,
   }: Props = $props();
 
   let inlineRows = $derived(buildInlineDiffRowsCached(file.lines));
@@ -109,7 +133,11 @@
     pane && itemId ? pane.diffCardExpandedOverride(itemId, file.path) : localOverride,
   );
   let effectiveExpanded = $derived(userOverride ?? defaultExpanded);
-  let canToggle = $derived(hasBody || shouldShowFullCTA);
+  // A file whose patch is still behind the projection marker has no body
+  // YET, so the disclosure has to stay live on its own account —
+  // otherwise the one interaction that recovers the patch is the one the
+  // reader cannot perform.
+  let canToggle = $derived(hasBody || shouldShowFullCTA || elidedPreview !== undefined);
   // Components are encoded separately so the literal `:` joiner stays
   // unambiguous even when item ids or paths contain `:` themselves.
   let regionDomId = $derived(chatRowDomId(
@@ -160,6 +188,19 @@
     untrack(() => {
       void requestFileSpans(fileNow, id);
     });
+  });
+
+  // Expand-time recovery. Deliberately keyed on expansion rather than on
+  // mount: a collapsed card renders nothing the projection removed, so a
+  // mount-time fetch would spend on the wire exactly what it saved. It
+  // fires at mount only for a card that is ALREADY expanded — a reader's
+  // pinned-open override, or `collapseDiffPreviews` off — which is the
+  // same "this is on screen" condition, arriving earlier.
+  $effect(() => {
+    if (!effectiveExpanded) return;
+    const handle = elidedPreview;
+    if (!handle) return;
+    untrack(() => handle.request());
   });
 
   function openReview(event: MouseEvent | KeyboardEvent): void {
@@ -286,6 +327,37 @@
 
   {#if effectiveExpanded && canToggle}
     <div id={regionDomId}>
+      {#if !hasBody && elidedPreview}
+        <!-- Same body chrome and same Loading… / Retry affordance as
+             every other lazily-loaded payload body
+             (ExpandablePayloadBody), so a recovered patch and a
+             lazily-fetched one read identically while they load. -->
+        <div class="ml-5 border-l border-border-subtle bg-surface-0/35" data-testid="diff-file-recovering">
+          {#if elidedPreview.error}
+            <div class="space-y-2 px-3 py-2">
+              <p class="text-[0.6875rem] text-error" role="alert">
+                Failed to load: {elidedPreview.error}
+              </p>
+              <button
+                type="button"
+                class="text-[0.6875rem] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+                onclick={() => elidedPreview?.retry()}
+                data-testid="diff-file-recover-retry"
+              >
+                Retry
+              </button>
+            </div>
+          {:else}
+            <p
+              class="px-3 py-2 text-[0.6875rem] text-fg-subtle animate-pulse"
+              role="status"
+              aria-live="polite"
+            >
+              Loading…
+            </p>
+          {/if}
+        </div>
+      {/if}
       {#if hasBody}
         <div class="ml-5 border-l border-border-subtle bg-surface-0/35 relative">
           <div

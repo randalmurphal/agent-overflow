@@ -229,6 +229,13 @@ export interface Settings {
   /** Permit browser_open_file outside the current workspace/project roots. */
   browserAllowOutsideWorkspace: boolean;
   /**
+   * Absolute path to the Chromium the HEADLESS engine runs, on a backend
+   * with no window to host a browser view in (serve mode). Empty means
+   * "find one on PATH"; nothing is ever downloaded. It has no effect on a
+   * windowed deployment, whose engine is the platform's own.
+   */
+  browserChromiumPath: string;
+  /**
    * Keep-awake master switch (the sidebar moon/sun toggle): while on,
    * the app holds an OS sleep inhibitor so the machine never
    * idle-sleeps. Persisted, so it survives restarts. Mirrors
@@ -242,6 +249,42 @@ export interface Settings {
    * while the machine stays awake. Default on.
    */
   keepAwakeScreen: boolean;
+  /**
+   * OS notifications master switch. Off means this screen raises none at
+   * all, including workflow attention and the update notice. Default on:
+   * notifications were unconditional before these keys existed, so an
+   * absent key must read as the behaviour the user already had.
+   */
+  notificationsEnabled: boolean;
+  /** OS notification when a top-level turn finishes. Default on. */
+  notifyTurnComplete: boolean;
+  /** OS notification when the agent is blocked on your approval. Default on. */
+  notifyApprovalNeeded: boolean;
+  /** OS notification when a turn fails or a provider stops. Default on. */
+  notifyError: boolean;
+  /** OS notification when a provider's login is gone. Default on. */
+  notifyProviderSignedOut: boolean;
+  /** OS notification when a workflow item waits on a person or fails. Default on. */
+  notifyWorkflowAttention: boolean;
+  /** OS notification when an app update did not apply. Default on. */
+  notifyAppUpdate: boolean;
+  /**
+   * Quiet while this app's window has focus on the screen being
+   * interrupted. Default on: a toast on the window you are typing in tells
+   * you something already in front of you.
+   *
+   * Read by the backend's own sender and nowhere in the renderer. It
+   * decides whether an OS notification is RAISED, never what a client is
+   * sent or what it draws.
+   */
+  notifyMuteWhenFocused: boolean;
+  /**
+   * Quiet about a thread that is open in a visible pane on that screen,
+   * even when another app has focus. Default OFF — a pane in an unfocused
+   * window is weak evidence a person saw the moment. Same read-side rule
+   * as `notifyMuteWhenFocused`.
+   */
+  notifyMuteWhenThreadVisible: boolean;
   /**
    * Working-indicator spinner verbs: replace the rail's "Working" label
    * with one verb per turn, drawn from the built-in list plus
@@ -449,14 +492,6 @@ export interface Settings {
    */
   gitlabSelfHostedHosts: string[];
 
-  /**
-   * Phase F --connect target list. Optional in the wire shape because
-   * the Go side persists with `omitempty` — fresh installs have no
-   * remoteEndpoints key and TS callers should treat undefined as the
-   * empty list.
-   */
-  remoteEndpoints?: RemoteEndpointPersisted[];
-
   /** Sidebar project sort order. Persisted in Go settings for cross-restart durability. */
   projectSortMode: ProjectSortMode;
 
@@ -484,24 +519,60 @@ export interface Settings {
 export interface NetworkPersistedSettings {
   /** When true, the transport server binds to 0.0.0.0 instead of 127.0.0.1. */
   bindAll: boolean;
+
+  /**
+   * The port the transport binds, or 0 for automatic — which is an
+   * ephemeral port on first launch, reused from a cache after that. A
+   * non-zero value is the operator naming the port this install owns.
+   */
+  listenPort: number;
+
+  /**
+   * The one HTTPS name this backend answers to: a bare hostname, no
+   * scheme, no port, no path. Empty means the backend is reached by
+   * address only.
+   */
+  canonicalDomain: string;
+
+  /**
+   * argv of the command that publishes and removes the DNS-01 challenge
+   * record. Run as `<argv...> set|clear <fqdn> <value>`. Empty means the
+   * backend never orders a certificate.
+   */
+  acmeDnsHook: string[];
+
+  /**
+   * Absolute paths to a certificate this backend did not obtain. Both or
+   * neither; the pair is served for the canonical domain and stops the
+   * backend ordering one of its own.
+   */
+  externalCertFile: string;
+  externalKeyFile: string;
+
+  /**
+   * The owner's hand-named half of this machine's preview set: dev-server
+   * ports the scan did not attribute to a thread but that should still be
+   * reachable from their other devices. Sorted and deduplicated by the
+   * backend. The attributed half is discovered per tick and never stored.
+   */
+  previewPorts: number[];
+
+  /**
+   * When true, this backend joins the owner's tailnet as its own node, so
+   * it is reachable from their other devices with no public listener.
+   */
+  tailnetEnabled: boolean;
+
+  /**
+   * The coordination server the node registers with. Empty means the
+   * Tailscale service; a self-hosted control plane is why it is settable.
+   */
+  tailnetControlUrl: string;
 }
 
 export interface RetentionPersistedSettings {
   /** Age threshold in days. 0 disables the sweep. */
   days: number;
-}
-
-/**
- * RemoteEndpointPersisted mirrors settings.RemoteEndpoint from the Go
- * side. The `lastUsedAt` field is a Unix-seconds timestamp, omitted
- * when the endpoint has never been used.
- */
-export interface RemoteEndpointPersisted {
-  id: string;
-  name: string;
-  url: string;
-  token: string;
-  lastUsedAt?: number;
 }
 
 export interface ProviderStatus {

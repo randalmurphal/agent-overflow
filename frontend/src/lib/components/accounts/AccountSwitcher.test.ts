@@ -105,12 +105,17 @@ describe('<AccountSwitcher> — selection', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('runs the login flow instead of a switch for a needs-login account', async () => {
+  it('starts a sign-in instead of a switch for a needs-login account, and shows its link', async () => {
     setBindingMock('ListProviderAccounts', async () => [
       account({ id: 'claude-a', displayName: 'Work', active: true }),
       account({ id: 'claude-b', displayName: 'Stale', needsLogin: true }),
     ]);
-    const loginMock = setBindingMock('LoginProviderAccount', async () => undefined);
+    const loginMock = setBindingMock('StartProviderLogin', async () => ({
+      provider: 'claude',
+      phase: 'awaiting_code',
+      method: 'remote',
+      authorizeUrl: 'https://claude.ai/oauth/authorize?state=abc',
+    }));
     const switchMock = setBindingMock('SwitchProviderAccount', async () => undefined);
     const onClose = vi.fn();
     const { findByTestId } = render(AccountSwitcher, { open: true, onClose });
@@ -118,7 +123,12 @@ describe('<AccountSwitcher> — selection', () => {
     const row = await findByTestId('account-switcher-row-claude-b');
     await fireEvent.click(row.querySelector('button') as HTMLButtonElement);
 
-    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('claude'));
+    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('claude', expect.any(String)));
+    // The picker stays open around the flow: the link it just produced is the
+    // only thing that can finish the sign-in.
+    const flow = await findByTestId('provider-login-flow-claude');
+    expect((flow.querySelector('[data-testid="provider-login-url"]') as HTMLInputElement).value)
+      .toBe('https://claude.ai/oauth/authorize?state=abc');
     expect(switchMock).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
   });

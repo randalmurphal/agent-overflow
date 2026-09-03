@@ -15,7 +15,7 @@
   import type { WorkspaceRef } from '../../types/git';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import { openWorkflowFullReview } from '../../stores/workflowThreads';
 
   interface Props {
@@ -31,7 +31,9 @@
   }
   let { workspace, threadId, baseBranch, expandFirst }: Props = $props();
 
-  let viewOnly = $derived(isViewOnlySession());
+  // Both controls read workspace content — the branch-base diff, and the
+  // review companion opened over it.
+  let ungranted = $derived(!hasScope('files:read'));
   let patch = $state('');
   let files = $state<PatchFile[]>([]);
   let loading = $state(false);
@@ -52,7 +54,7 @@
   });
 
   async function load(): Promise<void> {
-    if (loading || viewOnly || !workspace) return;
+    if (loading || ungranted || !workspace) return;
     loading = true;
     error = '';
     try {
@@ -78,7 +80,7 @@
   }
 
   async function openFullReview(): Promise<void> {
-    if (viewOnly || !threadId) return;
+    if (ungranted || !threadId) return;
     try {
       await openWorkflowFullReview(threadId);
     } catch (err) {
@@ -96,8 +98,8 @@
     <button
       class="text-xs text-error hover:underline disabled:cursor-not-allowed disabled:opacity-50"
       onclick={() => { void load(); }}
-      disabled={viewOnly}
-      title={viewOnly ? 'Local only' : undefined}
+      disabled={ungranted}
+      title={ungranted ? 'Not granted to this device' : undefined}
       data-testid="workflow-diff-retry"
     >{error} · retry</button>
   {:else if loaded}
@@ -106,8 +108,8 @@
     <button
       class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
       onclick={() => { void load(); }}
-      disabled={viewOnly || !workspace}
-      title={viewOnly ? 'Local only' : undefined}
+      disabled={ungranted || !workspace}
+      title={ungranted ? 'Not granted to this device' : undefined}
       data-testid="workflow-diff-load"
     >Load changes</button>
   {/if}
@@ -116,8 +118,8 @@
     <button
       class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
       onclick={() => { void openFullReview(); }}
-      disabled={viewOnly}
-      title={viewOnly ? 'Local only' : undefined}
+      disabled={ungranted}
+      title={ungranted ? 'Not granted to this device' : undefined}
       data-testid="workflow-open-full-review"
     >Open full review</button>
   {/if}

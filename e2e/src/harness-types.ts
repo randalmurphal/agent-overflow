@@ -9,6 +9,14 @@ export interface HarnessBootstrap {
   mockProvider: string;
   pid: number;
   version: string;
+  /**
+   * This instance's durable UI-state identity, already threaded onto `url`
+   * as `&cid=`. The harness socket declares the SAME id on its upgrade so
+   * its RPCs resolve to the page's ui_state bucket — the backend scopes
+   * that bucket by the connection, so a socket declaring nothing has no
+   * bucket to read at all.
+   */
+  clientId?: string;
   startupError?: string;
 }
 

@@ -252,7 +252,10 @@ func runAttach(e *env, args []string) error {
 		return fmt.Errorf("create browser log: %w", err)
 	}
 
-	spec := attachSpec{Browser: choice, URL: bs.URL, ProfileDir: profileDir, WindowWidth: *width, WindowHeight: *height, DevToolsPort: *devtools}
+	// The browser this launches has an empty cookie jar (a fresh profile
+	// directory), so it needs a ticket of its own to exchange.
+	pageURL := pageURLForTarget(ctx, e, bs)
+	spec := attachSpec{Browser: choice, URL: pageURL, ProfileDir: profileDir, WindowWidth: *width, WindowHeight: *height, DevToolsPort: *devtools}
 	// The foreground browser is a child of THIS context, so signal
 	// delivery tears it down through the same group kill a failed
 	// readiness wait uses. A detached one is deliberately tied to a
@@ -311,7 +314,7 @@ func runAttach(e *env, args []string) error {
 			return e.writeJSON(map[string]any{
 				"pid": cmd.Process.Pid, "pageId": pageID, "detached": true,
 				"browser": choice.Path, "browserSource": choice.Source,
-				"url": bs.URL, "log": logPath, "profileDir": profileDir,
+				"url": pageURL, "log": logPath, "profileDir": profileDir,
 			})
 		}
 		e.printf("attached headless page %s to instance %s\n", pageID, t.ID)
@@ -325,7 +328,7 @@ func runAttach(e *env, args []string) error {
 		if err := e.writeJSON(map[string]any{
 			"pid": cmd.Process.Pid, "pageId": pageID, "detached": false,
 			"browser": choice.Path, "browserSource": choice.Source,
-			"url": bs.URL, "log": logPath, "profileDir": profileDir,
+			"url": pageURL, "log": logPath, "profileDir": profileDir,
 		}); err != nil {
 			teardown()
 			return err

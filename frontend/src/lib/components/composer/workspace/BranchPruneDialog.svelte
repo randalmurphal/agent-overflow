@@ -12,7 +12,7 @@
   import Button from '../../primitives/Button.svelte';
   import SteppedSpinner from '../../primitives/SteppedSpinner.svelte';
   import { GitListBranchPruneCandidates, GitPruneBranches } from '../../../stores/bindings';
-  import { isViewOnlySession } from '../../../transport/runMode';
+  import { hasScope } from '../../../transport/scopes';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
   import type {
@@ -30,7 +30,8 @@
 
   let { workspace, open, onClose }: Props = $props();
 
-  let viewOnly = $derived(isViewOnlySession());
+  // Listing and deleting branches are both git mutations of the workspace.
+  let ungranted = $derived(!hasScope('git:operate'));
   let loading = $state(false);
   let deleting = $state(false);
   let loadError = $state('');
@@ -80,7 +81,7 @@
   }
 
   async function confirmDelete(): Promise<void> {
-    if (viewOnly || deleting || checkedCount === 0) return;
+    if (ungranted || deleting || checkedCount === 0) return;
     const selections = candidates
       .filter((c) => checked[c.branch])
       .map((c) => ({ branch: c.branch, tip: c.tip }));
@@ -203,8 +204,8 @@
       variant="danger"
       size="sm"
       testId="prune-dialog-confirm"
-      title={viewOnly ? 'Local only' : undefined}
-      disabled={viewOnly || loading || checkedCount === 0}
+      title={ungranted ? 'Not granted to this device' : undefined}
+      disabled={ungranted || loading || checkedCount === 0}
       loading={deleting}
       onclick={confirmDelete}
     >

@@ -32,6 +32,9 @@ func (a *App) themeService() (*theme.Service, error) {
 // The error return covers service construction only (no writable config
 // path). Per-file problems are Warnings on the result — user-facing
 // state, not log entries.
+//
+//ao:scope settings:read
+//ao:route home
 func (a *App) GetThemeFiles() (theme.Files, error) {
 	service, err := a.themeService()
 	if err != nil {
@@ -50,6 +53,14 @@ func (a *App) GetThemeFiles() (theme.Files, error) {
 // change cost a redundant round trip. Suppression is re-armed after the
 // write because the event arrives asynchronously, after os.Rename has
 // already returned.
+//
+// Host-scoped because the file it writes is THIS machine's appearance
+// (theme-system.md decision 4: local-only writes, per client). A paired
+// device holds its own selection in its own storage; settings:write would
+// have let it repaint the desktop it is not looking at.
+//
+//ao:scope host
+//ao:route home
 func (a *App) SetAppearance(appearance theme.Appearance) error {
 	service, err := a.themeService()
 	if err != nil {
@@ -75,6 +86,9 @@ func (a *App) SetAppearance(appearance theme.Appearance) error {
 // lives in the Windows launcher process) has nothing to paint and
 // succeeds silently — the request is satisfied as far as this process
 // can satisfy it. An invalid color is a real error and is reported.
+//
+//ao:scope host
+//ao:route home
 func (a *App) SetWindowBackgroundColor(hex string) error {
 	red, green, blue, err := theme.ParseHexColor(hex)
 	if err != nil {
@@ -134,6 +148,9 @@ func (a *App) spinnerService() (*spinner.Service, error) {
 // The error return covers service construction only (no writable config
 // path). Per-sprite problems are Warnings on the result — user-facing
 // state, not log entries.
+//
+//ao:scope settings:read
+//ao:route home
 func (a *App) GetSpinnerFiles() (spinner.Files, error) {
 	service, err := a.spinnerService()
 	if err != nil {

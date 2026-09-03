@@ -16,7 +16,16 @@
     "checkJs": false,
     "types": ["svelte", "vitest/globals", "@testing-library/jest-dom", "node"],
     "paths": {
-      "~/*": ["./src/*"]
+      "~/*": ["./src/*"],
+      // The Capacitor packages live in mobile/, not here (vite.config.ts
+      // says why, and aliases the same four specifiers). Typed against
+      // the same stub the desktop build resolves them to, so a checker
+      // run in this directory needs no Android toolchain installed and
+      // src/lib/native/plugins.ts still declares the shapes it uses.
+      "@capacitor/app": ["./src/lib/native/capacitorAbsent.ts"],
+      "@capacitor/barcode-scanner": ["./src/lib/native/capacitorAbsent.ts"],
+      "@aparajita/capacitor-biometric-auth": ["./src/lib/native/capacitorAbsent.ts"],
+      "@capacitor/core": ["./src/lib/native/capacitorAbsent.ts"]
     }
   },
   "include": ["src/**/*", "src/**/*.svelte", "bindings/**/*"],
