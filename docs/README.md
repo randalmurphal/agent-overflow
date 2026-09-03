@@ -95,6 +95,7 @@ ships and stops being cited gets deleted (git history keeps it).
 | [`workflows-system-decisions.md`](specs/workflows-system-decisions.md) | The binding decisions log companion to that spec, D1 onward. |
 | [`agent-visibility.md`](specs/agent-visibility.md) | How subagent work surfaces in the timeline. Partially implemented; unchecked criteria are the open work. |
 | [`code-review.md`](specs/code-review.md) | The review workflow design, signed off 2026-08-23. Not implemented yet. |
+| [`file-attachments.md`](specs/file-attachments.md) | Any-file composer attachments: copy to the attachments root, path line in the prompt, `--add-dir` for Claude. Signed off 2026-09-02; implementation in progress. |
 | [`remote-access.md`](specs/remote-access.md) | Remote and multi-device access. Draft; only phase-0 groundwork is built. |
 | [`remote-access-boundaries.md`](specs/remote-access-boundaries.md) | The boundaries and guarantees companion to the remote-access spec. |
 | [`testing-harness.md`](specs/testing-harness.md) | The harness contract and design rationale. `architecture/agent-harness.md` describes the built surface. |
