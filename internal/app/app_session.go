@@ -494,6 +494,7 @@ func (a *App) spawnProviderSession(
 		} else {
 			cfg.ProjectsDir = projectsDir
 		}
+		cfg.AdditionalDirs = a.claudeAdditionalDirs()
 		applyClaudeSessionAxes(&cfg, a.settings.Get().ClaudeSessionAxesForProvider(t.Provider))
 		// The peer-visible name rides the Config rather than the options
 		// bundle on purpose: it is live-changeable through `/rename`, so
@@ -660,6 +661,7 @@ func (a *App) spawnProviderSession(
 		cfg.Env = provider.BuildEnvironment(
 			a.sessionProcessEnv(string(provider.ClaudeTUI), nil, credential),
 		)
+		cfg.AdditionalDirs = a.claudeAdditionalDirs()
 		cfg.Upstream = a.claudetuiUpstream()
 		cfg.EventLogger = a.logger
 		sess, err := claudetui.NewSession(context.Background(), threadID, cfg, onEvent)

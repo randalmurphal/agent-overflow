@@ -286,3 +286,58 @@ func usermessageMetaFromItem(item store.Item) (userMessageMeta, error) {
 	err := json.Unmarshal([]byte(item.Meta), &meta)
 	return meta, err
 }
+
+// Claude gets `--add-dir <attachmentsRoot>` on every spawn so a Read of an
+// attached file never raises a permission prompt for a path outside the
+// workspace. This asserts the whole chain — attachment store root → App
+// stamp → claude.Config → buildArgs → argv — by recording the real argv
+// the spawned binary was given.
+func TestStartSession_ClaudeGetsAddDirForTheAttachmentsRoot(t *testing.T) {
+	app, _ := setupE2EApp(t)
+
+	root := filepath.Join(t.TempDir(), "attachments")
+	attStore, err := attachment.NewStore(attachment.Config{RootDir: root}, app.store)
+	if err != nil {
+		t.Fatalf("attachment.NewStore: %v", err)
+	}
+	app.attachments = attStore
+
+	workspace := t.TempDir()
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	argvPath := filepath.Join(t.TempDir(), "argv.txt")
+	binary := filepath.Join(t.TempDir(), "claude-argv.sh")
+	script := "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\" >> " + argvPath + "; done\ncat >/dev/null\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write argv-recording binary: %v", err)
+	}
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		raw, err := os.ReadFile(argvPath)
+		if err == nil {
+			argv := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+			for i, arg := range argv {
+				if arg == "--add-dir" && i+1 < len(argv) && argv[i+1] == root {
+					return
+				}
+			}
+			if len(argv) > 0 && time.Now().After(deadline) {
+				t.Fatalf("argv has no `--add-dir %s`: %v", root, argv)
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for the spawned argv (%v)", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

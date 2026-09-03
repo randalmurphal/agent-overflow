@@ -165,6 +165,12 @@ aliases `Task` and `Agent`: disallowing one removes both. This session
 has NO live-update surface, so `reconcileSettingsOwnedAxes` pins both
 axes rather than converging them.
 
+`Config.AdditionalDirs` → `--add-dir` is the third flag shared with the
+headless launch, stamped by the app with the attachments root so a Read
+of an attached file never prompts. Rationale and the commander
+verification are in `claude/AGENTS.md` §Spawn posture; keep the two
+emitters identical.
+
 ## Take-control
 
 Take-control is WIRED, end to end: `attach.go` here
