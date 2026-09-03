@@ -12,8 +12,7 @@
 // `compressedImageName`) are pure and unit-tested; only
 // `compressImageToFit` touches browser APIs (createImageBitmap, canvas).
 
-import { isAllowedAttachmentMime } from '../../types/attachment';
-import { matchesImageExtension } from './attachmentHelpers';
+import { classifyAttachment } from './attachmentHelpers';
 
 /**
  * Sources beyond this are rejected outright rather than decoded: a
@@ -39,14 +38,14 @@ const QUALITY_STEPS = [0.92, 0.85, 0.78, 0.68];
 const FALLBACK_SCALE_STEPS = [0.75, 0.55];
 
 /**
- * True when an over-limit file is worth a compression attempt: an image
- * we'd otherwise accept, within the decode-safety ceiling. MIME may be
- * missing after some drag sources, so the extension sniff backs it up —
- * decode failures on non-images are caught by the caller.
+ * True when an over-limit file is worth a compression attempt: an upload
+ * that classifies as an IMAGE, within the decode-safety ceiling. A `file`
+ * is never re-encoded — it travels by path, byte-identical. Decode failures
+ * on something that only looked like an image are caught by the caller.
  */
 export function shouldCompressImage(file: File, maxBytes: number): boolean {
   if (file.size <= maxBytes || file.size > MAX_COMPRESS_SOURCE_BYTES) return false;
-  return isAllowedAttachmentMime(file.type) || matchesImageExtension(file.name);
+  return classifyAttachment(file.type, file.name) === 'image';
 }
 
 /**

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Attachment } from '../types/attachment';
 import {
   ensureImagePlaceholders,
+  findImagePlaceholderRanges,
   imagePlaceholderLabel,
   insertImagePlaceholder,
   reconcileImagePlaceholders,
@@ -18,6 +19,20 @@ function attachment(id: string): Attachment {
     size: 100,
     relativePath: `thread-1/${id}.png`,
     createdAt: 1,
+    kind: 'image',
+  };
+}
+
+function file(id: string): Attachment {
+  return {
+    id,
+    threadId: 'thread-1',
+    filename: `${id}.pdf`,
+    mimeType: 'application/pdf',
+    size: 100,
+    relativePath: `thread-1/${id}/${id}.pdf`,
+    createdAt: 1,
+    kind: 'file',
   };
 }
 
@@ -122,5 +137,48 @@ describe('imagePlaceholders', () => {
   it('adds missing placeholders for persisted attachment-only drafts', () => {
     expect(ensureImagePlaceholders('Look here', [attachment('att-1')]))
       .toBe('Look here [Image #1]');
+  });
+
+  // A file occupies an attachment slot but no text slot, so every number and
+  // every match has to run over the IMAGE subset — otherwise `[Image #2]`
+  // means the second attachment, which is the file.
+  describe('a draft mixing images and files', () => {
+    const mixed = () => [attachment('img-1'), file('doc-1'), attachment('img-2')];
+
+    it('numbers images only', () => {
+      const ranges = findImagePlaceholderRanges('[Image #1] [Image #2]', mixed());
+      expect(ranges.map((range) => range.attachmentId)).toEqual(['img-1', 'img-2']);
+      expect(ranges.map((range) => range.label)).toEqual(['[Image #1]', '[Image #2]']);
+    });
+
+    it('appends a marker for each image and none for the file', () => {
+      expect(ensureImagePlaceholders('Look here', mixed()))
+        .toBe('Look here [Image #1] [Image #2]');
+    });
+
+    it('deleting the [Image #2] text drops the second IMAGE and keeps the file', () => {
+      const result = reconcileImagePlaceholders('[Image #1]', mixed());
+
+      expect(result.removedAttachmentIds).toEqual(['img-2']);
+      expect(result.attachments.map((item) => item.id)).toEqual(['img-1', 'doc-1']);
+    });
+
+    it('never drops a file, even when every marker is gone', () => {
+      const result = reconcileImagePlaceholders('', mixed());
+
+      expect(result.removedAttachmentIds).toEqual(['img-1', 'img-2']);
+      expect(result.attachments.map((item) => item.id)).toEqual(['doc-1']);
+    });
+
+    it('removing the first image renumbers the second down to #1', () => {
+      const result = removeImagePlaceholderByAttachmentId(
+        '[Image #1] [Image #2]',
+        mixed(),
+        'img-1',
+      );
+
+      expect(result?.content).toBe('[Image #1]');
+      expect(result?.attachmentIds).toEqual(['img-1']);
+    });
   });
 });

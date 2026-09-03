@@ -1,8 +1,9 @@
 import {
   DEFAULT_MAX_ATTACHMENT_COUNT,
-  DEFAULT_MAX_ATTACHMENT_SIZE,
   isAllowedAttachmentMime,
+  maxAttachmentSizeFor,
   type Attachment,
+  type AttachmentKind,
 } from '../types/attachment';
 import type { Item, SourceProposedPlan } from '../types/models';
 import { commandWordRanges, type CommandWordRange } from './commandWords';
@@ -13,6 +14,7 @@ export interface AttachmentPreviewSource {
   filename: string;
   mimeType: string;
   size: number;
+  kind: AttachmentKind;
 }
 
 export interface UserMessageMeta {
@@ -67,9 +69,9 @@ function stringField(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function sizeField(value: unknown): number | null {
+function sizeField(value: unknown, maxBytes: number): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  if (value < 0 || value > DEFAULT_MAX_ATTACHMENT_SIZE) return null;
+  if (value < 0 || value > maxBytes) return null;
   return value;
 }
 
@@ -166,10 +168,17 @@ function attachmentFromMeta(
   const threadId = metaThreadId || expectedThreadId;
   if (!threadId) return null;
 
-  const mimeType = stringField(record.mimeType);
-  if (!isAllowedAttachmentMime(mimeType)) return null;
+  // Absent means IMAGE: every row written before the kind existed carried
+  // one. Only the literal `file` is a file, so an unrecognised value stays on
+  // the strict branch and has to pass the image MIME check.
+  const kind: AttachmentKind = stringField(record.kind) === 'file' ? 'file' : 'image';
 
-  const size = sizeField(record.size);
+  const mimeType = stringField(record.mimeType);
+  // A file's MIME is whatever the browser declared and the backend bounded;
+  // it is never decoded here, so there is nothing to validate it against.
+  if (kind === 'image' && !isAllowedAttachmentMime(mimeType)) return null;
+
+  const size = sizeField(record.size, maxAttachmentSizeFor(kind));
   if (size === null) return null;
 
   return {
@@ -178,6 +187,7 @@ function attachmentFromMeta(
     filename: stringField(record.filename) || id,
     mimeType,
     size,
+    kind,
   };
 }
 

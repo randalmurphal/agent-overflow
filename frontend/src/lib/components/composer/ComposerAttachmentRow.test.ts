@@ -13,6 +13,20 @@ function makeAttachment(id: string, filename = `${id}.png`, size = 512): Attachm
     size,
     relativePath: `thread-1/${id}.png`,
     createdAt: 1,
+    kind: 'image',
+  };
+}
+
+function makeFile(id: string, filename = `${id}.pdf`, size = 2048): Attachment {
+  return {
+    id,
+    threadId: 'thread-1',
+    filename,
+    mimeType: 'application/pdf',
+    size,
+    relativePath: `thread-1/${id}/${filename}`,
+    createdAt: 1,
+    kind: 'file',
   };
 }
 
@@ -36,7 +50,7 @@ describe('<ComposerAttachmentRow>', () => {
     const { getByText } = render(ComposerAttachmentRow, {
       props: { attachments: [], onRemove: vi.fn(), dragActive: true },
     });
-    expect(getByText(/Drop an image/)).toBeInTheDocument();
+    expect(getByText(/Drop files/)).toBeInTheDocument();
   });
 
   it('renders each attachment as a thumbnail button', async () => {
@@ -64,5 +78,54 @@ describe('<ComposerAttachmentRow>', () => {
     });
     await fireEvent.click(getByLabelText('Remove hero.png'));
     expect(onRemove).toHaveBeenCalledWith('a1');
+  });
+
+  it('renders a file as a chip with its name and size, and no preview affordance', async () => {
+    const thumbnail = setBindingMock('GetAttachmentThumbnail', async () => ({
+      data: 'iVBORw0KGgo=',
+      mimeType: 'image/png',
+    }));
+    const { getByTestId, getByText, queryByLabelText, queryByTestId } = render(ComposerAttachmentRow, {
+      props: {
+        attachments: [makeFile('f1', 'report.pdf', 2048)],
+        onRemove: vi.fn(),
+      },
+    });
+
+    const chip = getByTestId('attachment-file-chip');
+    expect(chip).toHaveAttribute('title', 'report.pdf (2.0 KB)');
+    expect(getByText('report.pdf')).toBeInTheDocument();
+    expect(getByText('2.0 KB')).toBeInTheDocument();
+    // Bytes are never served for a file, so nothing may ask for them, and
+    // there is no `#N` badge because a file holds no `[Image #N]` slot.
+    expect(queryByLabelText('Preview report.pdf')).toBeNull();
+    expect(queryByTestId('attachment-thumb')).toBeNull();
+    await waitFor(() => expect(thumbnail).not.toHaveBeenCalled());
+  });
+
+  it('removes a file through its chip', async () => {
+    const onRemove = vi.fn();
+    const { getByLabelText } = render(ComposerAttachmentRow, {
+      props: { attachments: [makeFile('f1', 'report.pdf')], onRemove },
+    });
+
+    await fireEvent.click(getByLabelText('Remove report.pdf'));
+    expect(onRemove).toHaveBeenCalledWith('f1');
+  });
+
+  it('numbers the badges over images, skipping the file between them', () => {
+    const { getByLabelText } = render(ComposerAttachmentRow, {
+      props: {
+        attachments: [
+          makeAttachment('a1', 'one.png'),
+          makeFile('f1', 'report.pdf'),
+          makeAttachment('a2', 'two.png'),
+        ],
+        onRemove: vi.fn(),
+      },
+    });
+
+    expect(getByLabelText('Image 1')).toHaveTextContent('#1');
+    expect(getByLabelText('Image 2')).toHaveTextContent('#2');
   });
 });

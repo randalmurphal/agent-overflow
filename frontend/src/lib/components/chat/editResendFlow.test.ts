@@ -156,6 +156,29 @@ function userItem(id: string, turnIndex: number, summary: string, threadId = 'th
   });
 }
 
+/** A sent message that carried a file attachment, as its meta records it. */
+function userItemWithFileAttachment(id: string, turnIndex: number, summary: string): Item {
+  return makeItem({
+    id,
+    threadId: 'thread-1',
+    turnIndex,
+    itemIndex: 0,
+    kind: 'user_text',
+    role: 'user',
+    summary,
+    meta: JSON.stringify({
+      attachments: [{
+        id: 'att-sent-pdf',
+        threadId: 'thread-1',
+        filename: 'report.pdf',
+        mimeType: 'application/pdf',
+        size: 2048,
+        kind: 'file',
+      }],
+    }),
+  });
+}
+
 async function buildPane(
   thread: Thread = seedThread(),
   items: Item[] = [],
@@ -191,6 +214,7 @@ async function buildPane(
     size: 64,
     relativePath: `${thread.id}/shot.png`,
     createdAt: 1,
+    kind: 'image',
   }));
 
   const pane = createThreadPane({ paneId });
@@ -464,6 +488,25 @@ describe('edit-and-resend flow — attachment-record policy on exit', () => {
     await fireEvent.click(view.getByText('Discard'));
 
     await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith(thread.id, 'att-pasted'));
+  });
+
+  it('a SEEDED file chip removed in the editor keeps its record — the sent message still owns it', async () => {
+    const thread = seedThread();
+    const item = userItemWithFileAttachment('user:1', 1, 'Update one of the lines');
+    const pane = await buildPane(thread, [item]);
+    const deleteAttachment = setBindingMock('DeleteAttachment', async () => {});
+
+    const view = render(ChatView, { props: { pane } });
+    const editor = await openMessageEditor(view);
+
+    // The edit copy seeds the file the same way it seeds an image.
+    await waitFor(() => expect(within(editor).getByTestId('attachment-file-chip')).toBeInTheDocument());
+    await fireEvent.click(within(editor).getByLabelText('Remove report.pdf'));
+
+    await waitFor(() => expect(within(editor).queryByTestId('attachment-file-chip')).toBeNull());
+    // Dropping it from THIS draft must not destroy the record the original
+    // message references — only ids this session uploaded are reclaimable.
+    expect(deleteAttachment).not.toHaveBeenCalled();
   });
 
   it('reclaims nothing when the resend succeeds — the sent message owns the ids', async () => {

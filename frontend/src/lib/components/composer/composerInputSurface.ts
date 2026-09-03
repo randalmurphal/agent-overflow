@@ -145,6 +145,12 @@ export interface ComposerInputSurfaceHandle {
   autosizeInput(): void;
   /** True while an upload batch is in flight. */
   uploading(): boolean;
+  /**
+   * Resolves once no upload batch is in flight. A host awaits this before it
+   * snapshots the draft to send: dropping a file and pressing Enter is one
+   * gesture, and the ids of uploads still in the air are not in the draft yet.
+   */
+  waitForUploads(): Promise<void>;
 
   // Drag handlers for the host's drop zone. The card the user sees is the
   // target, and it is larger than this surface, so the host owns the

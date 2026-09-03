@@ -5,6 +5,7 @@ import {
   type AttachmentPreviewSource,
 } from './userMessageMeta';
 import { base64ToBytes } from './base64';
+import { imageAttachments } from '../types/attachment';
 
 export {
   parseUserMessageAttachments,
@@ -117,7 +118,7 @@ export function createAttachmentPreviews(
   // are populated by the load $effect below.
   const initialSeed: Record<string, ImagePreviewItem> = {};
   if (options.cache) {
-    for (const attachment of getAttachments()) {
+    for (const attachment of imageAttachments(getAttachments())) {
       const cached = options.cache.get(attachment.id);
       if (cached) initialSeed[attachment.id] = cached;
     }
@@ -176,7 +177,9 @@ export function createAttachmentPreviews(
   }
 
   $effect(() => {
-    const attachments = getAttachments();
+    // Files never get bytes: `GetAttachmentThumbnail` errors for one, so a
+    // request here would be a guaranteed console error per file per mount.
+    const attachments = imageAttachments(getAttachments());
     const generation = ++loadGeneration;
     const nextIds = new Set(attachments.map((attachment) => attachment.id));
     const currentPreviews = untrack(() => previews);
@@ -232,7 +235,9 @@ export function createAttachmentPreviews(
      * pop visible flashes between images.
      */
     async loadExpandedPreview(selectedId: string): Promise<ExpandedImagePreview | null> {
-      const attachments = getAttachments();
+      // Siblings in the lightbox are the message's IMAGES; a file is not
+      // one, and has no expand affordance to reach this from.
+      const attachments = imageAttachments(getAttachments());
       const fullPreviews = await Promise.all(
         attachments.map((attachment) =>
           loadAttachmentFullSize(attachment).catch((err) => {

@@ -20,7 +20,7 @@ import {
   DEFAULT_MAX_ATTACHMENT_SIZE,
   extractClipboardImages,
   fileToBase64,
-  hasImagePayload,
+  hasFilePayload,
   rejectionReason,
 } from './attachmentHelpers';
 import { compressImageToFit, shouldCompressImage } from './imageCompress';
@@ -69,7 +69,11 @@ export interface ComposerUploadsOptions {
   removeAttachment: (id: string) => void;
   /** Returns how many attachments are already in the composer draft. */
   getAttachmentCount?: () => number;
-  /** Size ceiling for a single uploaded file. Defaults to 10 MiB. */
+  /**
+   * Size ceiling for a single uploaded IMAGE, and the target recompression
+   * aims at. Defaults to 10 MiB. A `file` is bounded by the policy constant
+   * (`DEFAULT_MAX_FILE_ATTACHMENT_SIZE`), which nothing else consumes.
+   */
   maxAttachmentSize?: number;
   /** Count ceiling for a single send. Defaults to 8 to match provider UX. */
   maxAttachments?: number;
@@ -85,6 +89,13 @@ export interface ComposerUploadsHandle {
   handlePaste(event: ClipboardEvent, insertion?: UploadInsertionPoint | null): Promise<void>;
   deleteAttachmentRecord(id: string): Promise<void>;
   removeAttachment(id: string): Promise<void>;
+  /**
+   * Resolves once no upload batch is in flight. A send awaits this before it
+   * snapshots the draft: dropping a file and pressing Enter is one gesture to
+   * the user, and without the wait the message goes without the attachment
+   * whose upload had not landed yet.
+   */
+  waitForUploads(): Promise<void>;
 }
 
 export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUploadsHandle {
@@ -93,6 +104,9 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
 
   let dragDepth = $state(0);
   let activeUploadBatches = $state(0);
+  // Resolved (and emptied) the moment the batch count reaches zero, so
+  // `waitForUploads` costs nothing while idle and needs no polling.
+  let uploadIdleWaiters: Array<() => void> = [];
 
   async function uploadOne(
     threadId: string,
@@ -112,10 +126,10 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
         console.error('image compression failed:', err);
       }
     }
-    // Pre-upload guard: reject by size + MIME / extension before we
-    // burn cycles on base64 + ship the bytes over the wire. The same
-    // check runs server-side, but failing early here keeps a
-    // misclicked 50MB drop from freezing the UI for the round-trip.
+    // Pre-upload guard: reject by the kind's size ceiling before we burn
+    // cycles on base64 + ship the bytes over the wire. The same check runs
+    // server-side, but failing early here keeps an over-limit drop from
+    // freezing the UI for the round-trip.
     const rejection = rejectionReason(upload, maxSize);
     if (rejection) {
       addToast('warning', rejection);
@@ -156,7 +170,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
       const existingCount = opts.getAttachmentCount?.() ?? 0;
       const availableSlots = Math.max(0, maxAttachments - existingCount);
       if (availableSlots === 0) {
-        addToast('warning', `You can attach up to ${maxAttachments} images per message.`);
+        addToast('warning', `You can attach up to ${maxAttachments} attachments per message.`);
         return;
       }
       let acceptedCount = 0;
@@ -168,10 +182,15 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
         if (accepted) acceptedCount += 1;
       }
       if (processedCount < list.length) {
-        addToast('warning', `Only the first ${availableSlots} valid image${availableSlots === 1 ? '' : 's'} were attached.`);
+        addToast('warning', `Only the first ${availableSlots} valid file${availableSlots === 1 ? '' : 's'} were attached.`);
       }
     } finally {
       activeUploadBatches = Math.max(0, activeUploadBatches - 1);
+      if (activeUploadBatches === 0 && uploadIdleWaiters.length > 0) {
+        const waiters = uploadIdleWaiters;
+        uploadIdleWaiters = [];
+        for (const resolve of waiters) resolve();
+      }
     }
   }
 
@@ -195,7 +214,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
     get uploading() { return activeUploadBatches > 0; },
 
     handleDragEnter(event: DragEvent): void {
-      if (!hasImagePayload(event)) return;
+      if (!hasFilePayload(event)) return;
       event.preventDefault();
       dragDepth += 1;
     },
@@ -205,7 +224,7 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
     },
 
     handleDragOver(event: DragEvent): void {
-      if (!hasImagePayload(event)) return;
+      if (!hasFilePayload(event)) return;
       event.preventDefault();
     },
 
@@ -232,6 +251,13 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
     async removeAttachment(id: string): Promise<void> {
       opts.removeAttachment(id);
       await deleteAttachmentRecord(id);
+    },
+
+    waitForUploads(): Promise<void> {
+      if (activeUploadBatches === 0) return Promise.resolve();
+      return new Promise((resolve) => {
+        uploadIdleWaiters.push(resolve);
+      });
     },
   };
 }

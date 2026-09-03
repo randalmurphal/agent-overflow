@@ -420,6 +420,17 @@
       surface?.recreateInput();
       return;
     }
+    // Dropping a file and pressing Enter is ONE gesture. Every branch below
+    // snapshots `draft.attachments`, and an upload still in the air is not in
+    // it yet — so the message would go without the attachment the user just
+    // added. Awaited here, above the branch point, so the queue path and the
+    // send path cannot answer this differently. Nothing visible changes: the
+    // send control's own state is unaffected.
+    //
+    // Guarded rather than awaited unconditionally: an already-resolved promise
+    // still costs the rest of `send` a microtask hop, and the overwhelmingly
+    // common send has no upload to wait for.
+    if (surface?.uploading()) await surface.waitForUploads();
     if (!pane.threadId) {
       if (!(await pane.ensureMaterializedThread())) return;
     }
