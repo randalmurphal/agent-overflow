@@ -52,17 +52,23 @@
   {#if !overlay}
     <div style:height="{REVIEW_FILE_GAP_PX}px" class="shrink-0">
       {#if !first}
-        <div class="h-px bg-border/60"></div>
+        <!-- Closing cap: the PREVIOUS file's slab ends here, so the gap
+             band's top hosts its rounded bottom edge (mx-2 matches the
+             slab inset every row carries). -->
+        <div class="mx-2 h-2 rounded-b-[var(--radius-control)] border-x border-b border-border-subtle bg-surface-1"></div>
       {/if}
     </div>
   {/if}
-  <!-- Accent-washed bar so file boundaries read at a glance. Mixed
-       OPAQUE (accent into surface) rather than a translucent utility:
-       the sticky overlay renders this same bar over scrolled diff
-       content, and a see-through tint would let lines bleed through. -->
+  <!-- Neutral opaque bar (the accent wash competed with the add/del
+       tints): the sticky overlay renders this same bar over scrolled
+       diff content, so it must stay opaque — a see-through tint would
+       let lines bleed through. Rounded top only in normal flow; the
+       overlay floats mid-file where rounded corners would leak the
+       code scrolling behind them. -->
   <div
-    class="box-border flex min-h-0 flex-1 items-center border-y border-accent/20"
-    style:background-color="color-mix(in oklab, var(--accent) 9%, var(--surface-2))"
+    class="box-border flex min-h-0 flex-1 items-center border-border bg-surface-2 {overlay
+      ? 'border-y'
+      : 'mx-2 rounded-t-[var(--radius-control)] border-x border-t border-b border-b-border-subtle'}"
   >
     <button
       type="button"

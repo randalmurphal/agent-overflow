@@ -271,7 +271,28 @@ transactions.
   subagent children: `decorateSubagentAnchors` stamps each windowed
   launch anchor with its descendant count + latest-child summary
   (collapsed-card aggregates), and `ListSubagentDescendants` loads the
-  full child subtree on demand when a group card expands. It also owns
+  full child subtree on demand when a group card expands. An anchor
+  carrying `meta.transcript_root_id` is a §E6 resume CARRIER, whose own
+  subtree is empty because the agent's rows stay under the ORIGINAL
+  launch (claude-wire.md §E6): it is aggregated and walked from that
+  ROOT instead, so a resumed round's card is not permanently empty.
+  The aggregates are per ROUND, because the frontend renders one card
+  per round: `subagentResumeRounds` finds every resume-prompt row under
+  the window's walk roots (`kind='user_text'`, parented to the root,
+  `meta.subagent_resume_prompt`), those positions cut the root's subtree
+  into half-open ranges — the root owns everything before the first,
+  round k owns `[prompt_k, prompt_k+1)` — and one window-function query
+  partitions by ANCHOR instead of root. A root that HAS rounds also
+  carries `subagentTranscriptDescendantCount`, the whole-subtree total
+  the agent pane hydrates against; the key is absent otherwise, and a
+  carrier whose prompt row never landed keeps the whole-transcript
+  fallback. The prompt probe runs whenever the window holds a tool_call
+  — a root alone in the window can have rounds whose carriers are
+  outside it, and nothing on the root row says so — and it is ordered in
+  GO, because an SQL `ORDER BY turn_index, item_index` flips the local
+  arm off `idx_items_parent` onto a whole-thread ordering scan
+  (`TestSubagentResumeRoundProbeProbesTheParentIndexes`). Finding no
+  rounds falls back to the unsliced query, unchanged. It also owns
   the two shared SQL fragments both this file and `thread_aggregates.go`
   build their recursive reads from:
   - `descendantsCTE(table, rootSet)` — the LOCAL-ONLY `rel(root, id)`

@@ -80,6 +80,7 @@
     type TimelineNode,
   } from '../../utils/subagentGrouping';
   import {
+    agentScopeRootId,
     claudeResumeCarrierIdentity,
     codexCompletionPreview,
     codexSubagentLaunchInfo,
@@ -177,7 +178,11 @@
   $effect(() => {
     if (navigationOnly || !expanded || !pane) return;
     if (group.loadedDescendantCount >= descendantCount) return;
-    void pane.ensureSubagentChildren(group.parent.id);
+    // Hydration is per TRANSCRIPT ROOT: a §E6 resume carrier's round is
+    // stored under the original launch, so asking for the carrier's own
+    // id would fetch nothing (`agentScopeRootId`). The rows come back
+    // parented to the root and this pass re-slices them per round.
+    void pane.ensureSubagentChildren(agentScopeRootId(group.parent));
   });
 
   // ---- Header content derivations ---------------------------------
@@ -329,7 +334,9 @@
   // breadcrumb (spec Q4b). Rows never talk to the companion store.
   function openInPane(event: MouseEvent): void {
     event.stopPropagation();
-    pane?.openAgentPane(parent.id, agentTitle);
+    // Scope = transcript root (a resume carrier's rows live under the
+    // original launch); the crumb label stays this card's agent name.
+    pane?.openAgentPane(agentScopeRootId(parent), agentTitle);
   }
 
   let previewText = $derived.by<string>(() => {

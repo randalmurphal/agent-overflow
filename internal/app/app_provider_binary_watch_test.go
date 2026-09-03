@@ -4,12 +4,15 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/claudecatalog"
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/testutil"
 )
@@ -185,6 +188,56 @@ func TestProviderBinaryUpgradeRefreshesTheCatalogBeforeCommitting(t *testing.T) 
 	app.sweepProviderBinaries()
 	if probes != probed {
 		t.Fatalf("the upgrade was not committed; it re-probes forever (%d)", probes)
+	}
+}
+
+// A Claude upgrade must void the models learned from the OLD binary before
+// the recheck: claudemodels retains learned wire-only models across probes of
+// one binary, so without the explicit drop the post-upgrade re-probe would
+// carry the old binary's models forward (retained) into the new binary's
+// answer.
+func TestProviderBinaryUpgradeDropsLearnedClaudeModels(t *testing.T) {
+	resetClaudeProbeCacheForTest()
+	t.Cleanup(resetClaudeProbeCacheForTest)
+	app := newTestAppWithStore(t)
+
+	binary := filepath.Join(t.TempDir(), "claude")
+	writeClaudeProbeMockAt(t, binary, "2.1.100")
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set claude binary: %v", err)
+	}
+	version := "2.1.100"
+	stubProviderBinaryDetect(t, func(providerName string) string {
+		if providerName != string(provider.Claude) {
+			return "0.149.0"
+		}
+		return version
+	})
+	app.sweepProviderBinaries()
+
+	// Learn a wire-only model under the identity the app reads through, the
+	// way a real probe's capture would.
+	var capture claudecatalog.ModelCapture
+	capture.Capture([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
+	capture.Store(app.providerDiscoveryService().ClaudeProbeKey())
+	models, err := app.GetModelsForProvider(string(provider.Claude))
+	if err != nil {
+		t.Fatalf("GetModelsForProvider: %v", err)
+	}
+	if !slices.ContainsFunc(models, func(m provider.ModelInfo) bool { return m.Slug == "claude-newthing-1" }) {
+		t.Fatal("the learned model did not land in the served catalog")
+	}
+
+	version = "2.1.200"
+	writeClaudeProbeMockAt(t, binary, "2.1.200")
+	app.sweepProviderBinaries()
+
+	models, err = app.GetModelsForProvider(string(provider.Claude))
+	if err != nil {
+		t.Fatalf("GetModelsForProvider after upgrade: %v", err)
+	}
+	if slices.ContainsFunc(models, func(m provider.ModelInfo) bool { return m.Slug == "claude-newthing-1" }) {
+		t.Fatal("the old binary's learned model survived the upgrade")
 	}
 }
 

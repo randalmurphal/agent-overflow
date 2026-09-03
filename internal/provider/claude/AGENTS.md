@@ -248,6 +248,15 @@ dispatches. Parser state is single-goroutine, driven by the read loop.
   them yet. When something is: light up a newer path on PRESENCE, and
   never refuse an older path on absence, because the stream-json engine
   under-reports what it implements.
+- **A §E6 resume rebinds the task LIFECYCLE, never the transcript.** The
+  CLI persists the ORIGINAL launch's `toolUseId` in the agent's metadata
+  and keeps stamping it as `parent_tool_use_id` on every sidechain row of
+  every later round. `taskTranscriptRoots` records that first binding
+  write-once per `task_id` — a rebind must never overwrite it — and the
+  rebind's meta-only `EventToolStart` carries it as `transcript_root_id`
+  so triage can place the round's rows without guessing. The rebind is
+  also the ONE envelope carrying the resume message (`prompt`), which is
+  why `parseTaskStartedEvent` returns TWO events on that path.
 - `run_in_background: true` on a tool_use input is a HINT
   (`backgroundHintInput`), never a verdict. The completion classifies
   from `tool_use_result.backgroundTaskId` or, on a sidechain where
@@ -275,7 +284,11 @@ dispatches. Parser state is single-goroutine, driven by the read loop.
   a sidechain's `compact_boundary` / `isCompactSummary` rows
   (claude-wire.md §"What neither path forwards"), so those two shapes —
   and only those — are projected out of otherwise-dropped batches, keyed
-  to the launch via `taskScopes` or the `task_started` map.
+  to the launch via the task's TRANSCRIPT ROOT (`taskTranscriptRoots`,
+  write-once per task_id), else `taskScopes`, else the `task_started`
+  map. Root first is load-bearing: a §E6 resume rebinds the
+  `task_started` map onto the CARRIER, and a compaction filed there
+  would sit outside the agent's own subtree.
 
 ## Lifecycles this package drives
 

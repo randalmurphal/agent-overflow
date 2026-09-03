@@ -44,6 +44,19 @@ import (
 // transcript reads exactly like a complete one, and no second signal
 // would ever correct it.
 func (r *Router) backfillSubagentTranscript(threadID string, launch store.Item, data []byte) (int, error) {
+	// The terminal can land on a §E6 resume CARRIER, whose own subtree is
+	// empty: the agent's rows — round one's and every resumed round's —
+	// are parented to the transcript ROOT (transcript_root.go). Replaying
+	// against the carrier indexed nothing as delivered, so the whole
+	// sidechain read as undelivered and was re-minted under the carrier,
+	// reparenting round-1 rows and duplicating text (2026-09-03). Scope,
+	// turn, delivered index and replay parent all come from the root; the
+	// carrier keeps its lifecycle row, its progress stamp and its own
+	// `complete:<carrier>` sibling.
+	launch, err := r.transcriptRootOrSelf(threadID, launch)
+	if err != nil {
+		return 0, err
+	}
 	converted, err := claudeimport.ConvertSubagentTranscriptData(data, launch.ID)
 	if err != nil {
 		return 0, fmt.Errorf("read subagent transcript: %w", err)
@@ -131,10 +144,13 @@ type subagentDeliveredRows struct {
 	// live parser (recoveredBlockItemID) and the importer's converter
 	// (nextBlockItemID) spell identically.
 	byProviderItem map[string]store.Item
-	// openingPromptByProviderItem covers the launch-scoped prompt row. Its
-	// item id is derived from the launch so it can exist before Claude reveals
-	// the transcript uuid; meta gains that uuid when the real row arrives.
-	openingPromptByProviderItem map[string]store.Item
+	// scopedPromptByProviderItem covers the launch-scoped prompt rows: the
+	// agent's OPENING prompt, and the prompt that opened each RESUMED round
+	// (§E6). Both are minted with an id derived from a tool_use scope so they
+	// can exist before Claude reveals the transcript uuid; meta gains that
+	// uuid when the real row arrives. Keyed by that uuid, because a bound
+	// row is exactly what proves the transcript's copy is already delivered.
+	scopedPromptByProviderItem map[string]store.Item
 }
 
 func (r *Router) subagentDeliveredRows(threadID string, launch store.Item) (subagentDeliveredRows, error) {
@@ -143,10 +159,10 @@ func (r *Router) subagentDeliveredRows(threadID string, launch store.Item) (suba
 		return subagentDeliveredRows{}, fmt.Errorf("list turn %d of %s: %w", launch.TurnIndex, threadID, err)
 	}
 	index := subagentDeliveredRows{
-		turnIndex:                   launch.TurnIndex,
-		byID:                        make(map[string]store.Item, len(items)),
-		byProviderItem:              map[string]store.Item{},
-		openingPromptByProviderItem: map[string]store.Item{},
+		turnIndex:                  launch.TurnIndex,
+		byID:                       make(map[string]store.Item, len(items)),
+		byProviderItem:             map[string]store.Item{},
+		scopedPromptByProviderItem: map[string]store.Item{},
 	}
 	for _, item := range items {
 		index.byID[item.ID] = item
@@ -155,12 +171,12 @@ func (r *Router) subagentDeliveredRows(threadID string, launch store.Item) (suba
 		}
 		if providerItemID := decodeProviderItemID(item.Meta); providerItemID != "" {
 			if item.Kind == itemKindUserText {
-				opening, _, _, stateErr := subagentOpeningPromptState(item.Meta)
+				scoped, _, _, stateErr := subagentScopedPromptState(item.Meta)
 				if stateErr != nil {
-					return subagentDeliveredRows{}, fmt.Errorf("decode opening prompt %s/%s: %w", threadID, item.ID, stateErr)
+					return subagentDeliveredRows{}, fmt.Errorf("decode scoped prompt %s/%s: %w", threadID, item.ID, stateErr)
 				}
-				if opening {
-					index.openingPromptByProviderItem[providerItemID] = item
+				if scoped {
+					index.scopedPromptByProviderItem[providerItemID] = item
 				}
 			} else if item.Kind == itemKindAssistantText || item.Kind == itemKindThinking {
 				index.byProviderItem[item.Kind+"|"+providerItemID] = item
@@ -245,10 +261,11 @@ func subagentEventDelivered(evt provider.ProviderEvent, delivered subagentDelive
 		row, found := delivered.byProviderItem[itemKindThinking+"|"+itemID]
 		return true, found && row.Status == statusCompleted
 	case provider.EventUserText:
-		// Opening prompts use the launch-scoped row identity so they can be
-		// rendered at launch time. Older and later user-role rows retain the
-		// provider-keyed identity for backward compatibility.
-		_, found := delivered.openingPromptByProviderItem[itemID]
+		// Opening and §E6 resume prompts use a scope-derived row identity so
+		// they can be rendered before the transcript names them. Older and
+		// later user-role rows retain the provider-keyed identity for
+		// backward compatibility.
+		_, found := delivered.scopedPromptByProviderItem[itemID]
 		if !found {
 			_, found = delivered.byID["user:wire:"+itemID]
 		}

@@ -69,8 +69,13 @@
   // drift apart via root font-size.
   let lineHeight = $derived(`${REVIEW_LINE_HEIGHT_PX}px`);
   let lineClass = $derived(wordWrap ? 'flex' : 'flex overflow-hidden');
+  // Wrap mode: break at word boundaries (break-all split identifiers
+  // mid-token) and hang continuations 2ch past the first line, so a
+  // wrapped line reads as one line rather than a ragged new row.
   let contentClass = $derived(
-    wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre',
+    wordWrap
+      ? 'whitespace-pre-wrap break-words pl-[calc(0.5rem+2ch)] indent-[-2ch]'
+      : 'whitespace-pre pl-2',
   );
 
   function stackedAnchor(row: PatchDisplayRow): CommentAnchor {
@@ -147,18 +152,18 @@
   {#if isSmallGap(gap) && onExpandGap}
     <button
       type="button"
-      class="flex w-full cursor-pointer items-center gap-2 bg-accent/[0.07] px-8 text-left text-[0.6875rem] text-fg-muted hover:bg-accent/15 hover:text-fg"
+      class="flex w-full cursor-pointer items-center gap-2 bg-surface-2/50 px-8 text-left text-[0.6875rem] text-fg-muted hover:bg-surface-2/80 hover:text-fg"
       style:height={wordWrap ? undefined : lineHeight}
       data-testid="review-gap-expand-all"
       aria-label="Expand {gapLabel(gap)}"
       onclick={() => onExpandGap?.(path, gap, 'all')}
     >
-      <span class="text-accent" aria-hidden="true">↕</span>
+      <span class="text-fg-subtle" aria-hidden="true">↕</span>
       <span>{gapLabel(gap)}</span>
     </button>
   {:else}
     <div
-      class="flex w-full items-center bg-accent/[0.07] text-[0.6875rem] text-fg-muted"
+      class="flex w-full items-center bg-surface-2/50 text-[0.6875rem] text-fg-muted"
       style:height={wordWrap ? undefined : lineHeight}
       data-testid="review-gap"
     >
@@ -167,7 +172,7 @@
           {#if gap.location !== 'trailing'}
             <button
               type="button"
-              class="flex size-4 items-center justify-center rounded-[3px] text-accent hover:bg-accent/20 focus-visible:bg-accent/20 focus:outline-none"
+              class="flex size-4 items-center justify-center rounded-[3px] text-fg-muted hover:bg-surface-2 hover:text-accent focus-visible:bg-surface-2 focus:outline-none"
               aria-label="Expand up"
               data-testid="review-gap-expand-up"
               onclick={() => onExpandGap?.(path, gap, 'up')}
@@ -176,7 +181,7 @@
           {#if gap.location !== 'leading'}
             <button
               type="button"
-              class="flex size-4 items-center justify-center rounded-[3px] text-accent hover:bg-accent/20 focus-visible:bg-accent/20 focus:outline-none"
+              class="flex size-4 items-center justify-center rounded-[3px] text-fg-muted hover:bg-surface-2 hover:text-accent focus-visible:bg-surface-2 focus:outline-none"
               aria-label="Expand down"
               data-testid="review-gap-expand-down"
               onclick={() => onExpandGap?.(path, gap, 'down')}
@@ -200,8 +205,11 @@
 <!-- `hoverRow` composes with the tint backgrounds via a pointer-inert
      ::before overlay — a hover bg class would just replace the add/del
      wash instead of layering on it. -->
+<!-- mx-2 + border-x: each file renders as an inset card slab on the
+     darker page background. Horizontal only — the exact-height contract
+     allows no vertical borders here. -->
 <div
-  class="bg-surface-1 font-mono text-xs text-fg"
+  class="mx-2 border-x border-border-subtle bg-surface-1 font-mono text-xs text-fg"
   style:line-height={lineHeight}
   data-testid="review-line-block"
   data-path={path}
@@ -221,14 +229,14 @@
           {#if pair.left}
             {@render actionCell(sideAnchor(pair.left, 'old'), 'old-line')}
             <span class="flex shrink-0 {gutterTintClass(pair.left.line.type)}">{@render gutter(pair.left.oldLine)}</span>
-            <span class="min-w-0 flex-1 {contentClass} pl-2 pr-2"><DiffLineContent line={pair.left.line} spans={getSpansForLine(file, pair.left.line, spanContext)} intraline={pair.left.intraline ?? null} /></span>
+            <span class="min-w-0 flex-1 {contentClass} pr-2"><DiffLineContent line={pair.left.line} spans={getSpansForLine(file, pair.left.line, spanContext)} intraline={pair.left.intraline ?? null} /></span>
           {/if}
         </div>
         <div class="group relative flex w-1/2 min-w-0 border-l border-border-subtle before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/40'}">
           {#if pair.right}
             {@render actionCell(sideAnchor(pair.right, 'new'), 'new-line')}
             <span class="flex shrink-0 {gutterTintClass(pair.right.line.type)}">{@render gutter(pair.right.newLine)}</span>
-            <span class="min-w-0 flex-1 {contentClass} pl-2 pr-2"><DiffLineContent line={pair.right.line} spans={getSpansForLine(file, pair.right.line, spanContext)} intraline={pair.right.intraline ?? null} /></span>
+            <span class="min-w-0 flex-1 {contentClass} pr-2"><DiffLineContent line={pair.right.line} spans={getSpansForLine(file, pair.right.line, spanContext)} intraline={pair.right.intraline ?? null} /></span>
           {/if}
         </div>
       </div>
@@ -250,7 +258,7 @@
             {@render gutter(row.oldLine)}
             {@render gutter(row.newLine)}
           </span>
-          <span class="min-w-0 flex-1 {contentClass} pl-2 pr-3"><DiffLineContent line={row.line} spans={getSpansForLine(file, row.line, spanContext)} intraline={row.intraline ?? null} /></span>
+          <span class="min-w-0 flex-1 {contentClass} pr-3"><DiffLineContent line={row.line} spans={getSpansForLine(file, row.line, spanContext)} intraline={row.intraline ?? null} /></span>
         </div>
       {/if}
     {/each}

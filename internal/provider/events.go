@@ -319,6 +319,26 @@ const MetaSubagentOpeningPromptKey = "subagent_opening_prompt"
 // replaces this snapshot in place and clears the marker.
 const MetaSubagentPromptProvisionalKey = "subagent_prompt_provisional"
 
+// MetaSubagentResumePromptKey marks the user-role row that opens a RESUMED
+// round of one agent (Claude §E6): the `prompt` the rebind
+// `system/task_started` carries, which is the resuming tool's own message
+// text. It is not the agent's opening prompt — that row belongs to the
+// original launch — so the two are marked apart, but both are launch-scoped
+// prompt rows whose provider uuid arrives later from the transcript.
+const MetaSubagentResumePromptKey = "subagent_resume_prompt"
+
+// MetaResumeCarrierIDKey names the resume CARRIER a resume prompt row was
+// minted for. The row itself is written under the agent's transcript ROOT
+// (where every sidechain row of every round stays parented), so the carrier
+// id is the only record of which round the prompt opened.
+const MetaResumeCarrierIDKey = "resume_carrier_id"
+
+// MetaTranscriptRootIDKey marks a resume CARRIER row with the id of the
+// launch that owns the agent's transcript. Only a carrier carries it, which
+// makes it the one structural test for "this row is a lifecycle row, not a
+// transcript root".
+const MetaTranscriptRootIDKey = "transcript_root_id"
+
 // SubagentOpeningPromptItemID is shared by live triage and session import so
 // refresh converges on the prompt row created when the agent launched.
 func SubagentOpeningPromptItemID(scope string) string {

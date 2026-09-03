@@ -867,6 +867,14 @@ func (p *Parser) parseTaskStartedEvent(
 
 	p.rememberTaskToolUse(taskID, toolUseID)
 	if taskType == "local_agent" {
+		// Write-once: the FIRST tool_use a local_agent task binds to is
+		// the agent's transcript root, and a resume rebind must never
+		// move it. On the resume path this call is a no-op when the
+		// root is already known, and records nothing when it is not
+		// (the reconnect edge) — never the carrier.
+		if !isResume {
+			p.rememberTaskTranscriptRoot(taskID, toolUseID)
+		}
 		p.noteMirrorTaskScope(taskID, toolUseID, true)
 	}
 	taskRef := p.taskToolUseRef(taskID)
@@ -940,16 +948,77 @@ func (p *Parser) parseTaskStartedEvent(
 		if agentType := firstNonEmpty(readRawString(raw["subagent_type"]), readRawString(raw["subagentType"])); agentType != "" {
 			metaFields["subagent_type"] = agentType
 		}
+		// transcript_root_id names the row the resumed agent's rows are
+		// STILL parented to. The lifecycle rebinds onto the carrier but
+		// the conversation tree does not move (claude-wire.md §E6), so
+		// triage stamps this on the carrier and treats the root as the
+		// only transcript scope. Omitted when this parser never saw the
+		// original binding; triage then falls back to
+		// resumes_tool_use_id and the persisted items.meta.task_id.
+		if root := p.taskTranscriptRoot(taskID); root != "" && root != toolUseID {
+			metaFields["transcript_root_id"] = root
+		}
 	}
 	meta, _ := json.Marshal(metaFields)
-	return []provider.ProviderEvent{{
+	events := []provider.ProviderEvent{{
 		Kind:            provider.EventToolStart,
 		ThreadID:        threadID,
 		ItemID:          toolUseID,
 		Meta:            meta,
 		ParentToolUseID: taskRef.ParentToolUseID,
 		Timestamp:       now,
-	}}, nil
+	}}
+	if isResume {
+		if prompt := resumePromptEvent(threadID, toolUseID, p.taskTranscriptRoot(taskID), readRawString(raw["prompt"]), now); prompt != nil {
+			events = append(events, *prompt)
+		}
+	}
+	return events, nil
+}
+
+// resumePromptEvent builds the row that says WHAT the model asked a
+// resumed agent to do. The rebind `task_started` is the one envelope
+// carrying it (`prompt` == the resuming tool's `message` text), and no
+// later envelope repeats it — without this row the resumed round opens
+// with the agent's answer and no question.
+//
+// The identity is the CARRIER's scope, so the round-2 prompt cannot
+// collide with the round-1 opening prompt (which is the ORIGINAL
+// launch's scope) and a re-delivered rebind is a no-op. The PARENT is
+// the transcript root, carried on the meta because the parser is the
+// one reader that knows it without a lookup: the rows of the round this
+// prompt opens live under the root too. The envelope's
+// `ParentToolUseID` stays the carrier, which is what the event means;
+// triage resolves the placement. An empty prompt produces no row.
+func resumePromptEvent(threadID, carrierToolUseID, transcriptRootID, prompt string, now time.Time) *provider.ProviderEvent {
+	if strings.TrimSpace(prompt) == "" {
+		return nil
+	}
+	fields := map[string]any{
+		"wire_only":                               true,
+		provider.MetaSubagentResumePromptKey:      true,
+		provider.MetaSubagentPromptProvisionalKey: true,
+		provider.MetaResumeCarrierIDKey:           carrierToolUseID,
+	}
+	if transcriptRootID != "" && transcriptRootID != carrierToolUseID {
+		fields[provider.MetaTranscriptRootIDKey] = transcriptRootID
+	}
+	meta, err := json.Marshal(fields)
+	if err != nil {
+		log.Printf("claude: encode resume prompt meta for %s: %v", carrierToolUseID, err)
+		return nil
+	}
+	return &provider.ProviderEvent{
+		Kind:            provider.EventUserText,
+		ThreadID:        threadID,
+		ItemID:          provider.SubagentOpeningPromptItemID(carrierToolUseID),
+		Role:            "user",
+		Content:         prompt,
+		ContentPresent:  true,
+		Meta:            meta,
+		ParentToolUseID: carrierToolUseID,
+		Timestamp:       now,
+	}
 }
 
 // parseTaskProgressEvent handles `system/task_progress`: the CLI's

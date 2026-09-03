@@ -565,7 +565,7 @@ var DefaultSettings = Settings{
 	SansFont:               "geist",
 	MonoFont:               "geist",
 	FontSize:               13,
-	DiffWordWrap:           false,
+	DiffWordWrap:           true,
 	CollapseDiffPreviews:   true,
 	StreamingEnabled:       true,
 	LowPowerMode:           false,

@@ -1412,22 +1412,47 @@ describe('reviewPane store — PR scope', () => {
     expect(state.scope).toBe('workspace');
   });
 
-  it('detects a PR opened after mount on the next reload', async () => {
+  it('detects a PR opened after mount without a reload', async () => {
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     expect(state.prRef).toBeNull();
 
     // The push that carries the newly-opened PR lands on the shared store;
-    // the pane picks it up on its next reload.
+    // `prRef` derives from it live, so the option surfaces (and the MR
+    // badge's open-review click works) with no reload and no scope entry.
+    // Regression: a once-at-mount probe raced the git-status load, leaving
+    // a boot-restored pane with no PR option until pr scope was forced.
     seedPaneWorkspaceStatus('pane-1', {
       forge: 'gitlab',
       openPrUrl: 'https://gitlab.com/group/sub/repo/-/merge_requests/3',
       openPrNumber: 3,
     });
-    await state.reload();
 
     await vi.waitFor(() => {
       expect(state.prRef).toEqual({ forge: 'gitlab', namespace: 'group/sub', repo: 'repo', number: 3 });
+    });
+  });
+
+  it('a pane restored into pr scope before git status lands retries when the ref resolves', async () => {
+    installPRMocks();
+    appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'pr' }));
+    // No pane registered and no git status yet: the boot load runs before
+    // the fetch lands and comes up with no reference.
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    expect(state.scope).toBe('pr');
+    expect(state.error).toContain('No PR or MR');
+
+    // The enriched status lands on the shared store; the ref watcher
+    // retries the load with no user interaction and the pane recovers.
+    seedPaneWorkspaceStatus('pane-1', {
+      forge: 'github',
+      openPrUrl: 'https://github.com/owner/repo/pull/5',
+      openPrNumber: 5,
+    });
+    await vi.waitFor(() => {
+      expect(state.prRef?.number).toBe(5);
+      expect(state.error).toBeNull();
     });
   });
 

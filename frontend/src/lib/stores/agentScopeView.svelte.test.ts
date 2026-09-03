@@ -236,6 +236,122 @@ describe('createAgentScopeView', () => {
     view.dispose();
   });
 
+  // ---- §E6 resume lifecycle -------------------------------------------
+  // A resumed async agent's rows stay parented to the ORIGINAL launch, so
+  // the scope is that launch — but its STATUS settled when round one did.
+  // The view resolves a separate lifecycle row (the latest carrier) and
+  // the turn facet follows it, or the pane reads settled while round two
+  // runs.
+  function carrier(overrides: Partial<Item> = {}): Item {
+    return makeItem({
+      id: 'carrier-1',
+      itemIndex: 8,
+      threadId: THREAD_ID,
+      kind: 'tool_call',
+      toolName: 'SendMessage',
+      isBackground: true,
+      status: 'running',
+      createdAt: 20_000,
+      updatedAt: 20_000,
+      summary: 'Agent: outer',
+      meta: JSON.stringify({ task_id: 'task-1', transcript_root_id: 'launch-1' }),
+      ...overrides,
+    });
+  }
+
+  it('is the launch itself when the scope was never resumed', async () => {
+    const { pane, agent } = await setup();
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+
+    expect(view.lifecycle?.id).toBe('launch-1');
+    expect(view.lifecycleCompletion?.id).toBe('scope-completion');
+
+    view.dispose();
+  });
+
+  it('follows the running resume carrier while the scope root has settled', async () => {
+    const { pane, agent } = await setup();
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+    // Round one settled: without the lifecycle row the turn would be
+    // settled for the whole of round two.
+    expect(view.pane.timelineTurns.activeKey).toBeNull();
+
+    pane.upsertItem(carrier());
+
+    expect(view.lifecycle?.id).toBe('carrier-1');
+    expect(view.lifecycleCompletion).toBeUndefined();
+    expect(view.pane.timelineTurns.activeKey).not.toBeNull();
+    expect(view.pane.timelineTurns.settled).toBeNull();
+    // The carrier is a lifecycle row, not a transcript row: it is
+    // top-level in the source timeline and must never enter the window.
+    expect(view.items.some((item) => item.id === 'carrier-1')).toBe(false);
+
+    view.dispose();
+  });
+
+  it('settles on the carrier’s own completion, timing the round from the resume', async () => {
+    const { pane, agent } = await setup();
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+    pane.upsertItem(carrier());
+    pane.upsertItem(
+      makeItem({
+        id: 'complete:carrier-1',
+        itemIndex: 9,
+        threadId: THREAD_ID,
+        kind: 'tool_completion',
+        status: 'completed',
+        completionOf: 'carrier-1',
+        createdAt: 25_000,
+        updatedAt: 26_000,
+        summary: 'Agent: outer -> done',
+      }),
+    );
+
+    expect(view.lifecycleCompletion?.id).toBe('complete:carrier-1');
+    expect(view.pane.timelineTurns.activeKey).toBeNull();
+    // startedAt is the RESUME, not the original launch (user ruling): the
+    // reader is watching this round.
+    expect(view.pane.timelineTurns.settled).toEqual({
+      key: view.pane.timelineTurns.keyOf(view.items[0]),
+      startedAt: 20_000,
+      completedAt: 26_000,
+    });
+    // A carrier's completion sibling is no more a transcript row than the
+    // carrier is.
+    expect(view.items.some((item) => item.id === 'complete:carrier-1')).toBe(false);
+
+    view.dispose();
+  });
+
+  it('takes the LATEST carrier when an agent has been resumed twice', async () => {
+    const { pane, agent } = await setup();
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+    pane.upsertItem(carrier({ status: 'completed' }));
+    pane.upsertItem(
+      carrier({ id: 'carrier-2', itemIndex: 10, createdAt: 30_000, updatedAt: 30_000 }),
+    );
+
+    expect(view.lifecycle?.id).toBe('carrier-2');
+    expect(view.pane.timelineTurns.activeKey).not.toBeNull();
+
+    view.dispose();
+  });
+
+  it('ignores a carrier bound to a different agent', async () => {
+    const { pane, agent } = await setup();
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+    pane.upsertItem(
+      carrier({
+        id: 'carrier-other',
+        meta: JSON.stringify({ task_id: 'task-2', transcript_root_id: 'some-other-launch' }),
+      }),
+    );
+
+    expect(view.lifecycle?.id).toBe('launch-1');
+
+    view.dispose();
+  });
+
   // ---- Pinned divergences ---------------------------------------------
   // Two behaviors from the 2026-08-22 incident class, pinned as CONTRACT
   // rather than as a side effect of how the facade happens to be built.

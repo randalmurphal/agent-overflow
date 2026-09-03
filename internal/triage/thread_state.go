@@ -251,6 +251,16 @@ type threadState struct {
 	// maxPendingToolCorrelationsPerThread; swept with the threadState.
 	pendingToolCorrelations map[string]itemMetaCorrelationFields
 
+	// carrierRoots maps a §E6 resume CARRIER's tool_use id to the
+	// transcript ROOT it is a lifecycle row for, so Handle can rewrite a
+	// carrier-parented live event onto the root before any handler sees
+	// it. Populated wherever transcriptRoot resolves (the keep-running
+	// flip, the terminal replay, the resume prompt row). Session-scoped:
+	// the durable answer is the carrier row's own `transcript_root_id`
+	// stamp, so losing this map costs a lookup, never correctness.
+	// Bounded by maxCarrierRootsPerThread; swept with the threadState.
+	carrierRoots map[string]string
+
 	// compactingSince is the open compacting window: the epoch-ms
 	// timestamp of the frame that opened it. Live-only projection behind
 	// `provider:compacting` (compaction_status.go); closed by the explicit

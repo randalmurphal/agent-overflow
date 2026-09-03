@@ -463,6 +463,37 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     expect(opened).toEqual([['agent-1', 'Explore']]);
   });
 
+  it('opens a §E6 resume carrier on the ORIGINAL launch, keeping its own label', async () => {
+    // Only the task lifecycle rebinds onto the carrier: every round's rows
+    // stay parented to the original launch, so scoping the pane to the
+    // carrier would open an empty transcript.
+    const carrier = makeItem({
+      id: 'toolu_resume',
+      kind: 'tool_call',
+      status: 'running',
+      isBackground: true,
+      toolName: 'SendMessage',
+      summary: 'Agent: audit the parser',
+      meta: JSON.stringify({
+        task_id: 'a1',
+        transcript_root_id: 'toolu_root',
+        subagent_type: 'general-purpose',
+      }),
+    });
+    const opened: [string, string][] = [];
+    const pane = makeFakePane({
+      getItemById: () => undefined,
+      openAgentPane: (id: string, label: string) => {
+        opened.push([id, label]);
+      },
+    } as Partial<import('../../stores/thread.svelte').ThreadPane>);
+
+    const { getByTestId } = render(AgentRow, { props: { pane, item: carrier } });
+    await fireEvent.click(getByTestId('agent-row-open-pane'));
+
+    expect(opened).toEqual([['toolu_root', 'General Purpose']]);
+  });
+
   it('offers no open-in-pane door without a pane to route through', () => {
     const item = makeItem({
       kind: 'tool_completion',

@@ -164,6 +164,16 @@
     if (failure) addToast('error', failure);
   }
 
+  // Plain click on the PR badge opens the companion review pane on the PR
+  // scope; mod+click falls through to the external forge link. False (no
+  // subject yet — e.g. a pane still materializing) also falls through.
+  function openPrReview(): boolean {
+    const subject = reviewSubjectForPane(pane);
+    if (!subject) return false;
+    void openReviewCompanion(pane.paneId, subject, { scope: 'pr' });
+    return true;
+  }
+
   function toggleWorkspaceReview(): void {
     if (pane.showReviewPane) {
       pane.setShowReviewPane(false);
@@ -181,7 +191,7 @@
      `pane.workspace` (git and review) or `pane.threadId` (the pieces whose
      subject genuinely is a persisted row). -->
 <div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
-  <PrBadge status={pane.gitStatus.status} />
+  <PrBadge status={pane.gitStatus.status} onOpenReview={openPrReview} />
   {#if hasWorkspace}
     <WorkspaceDiffBadge
       status={pane.gitStatus.status}

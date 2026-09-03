@@ -284,6 +284,181 @@ describe('<AgentPane>', () => {
     expect(getByText('grandchild work')).toBeTruthy();
   });
 
+  // ---- §E6 resume: the scope root is the transcript, the carrier is the
+  // lifecycle ---------------------------------------------------------
+  // Claude parents every resumed round to the ORIGINAL launch and rebinds
+  // only the task lifecycle onto the `SendMessage` carrier. The pane is
+  // scoped to the root, so identity comes from the root and run state,
+  // elapsed and Stop come from the carrier.
+  function resumeCarrier(overrides: Partial<Item> = {}): Item {
+    return makeItem({
+      id: 'carrier-1',
+      itemIndex: 5,
+      threadId: THREAD_ID,
+      kind: 'tool_call',
+      toolName: 'SendMessage',
+      role: 'assistant',
+      isBackground: true,
+      status: 'running',
+      summary: 'Agent: exploring',
+      meta: JSON.stringify({
+        task_id: 'task-round-2',
+        transcript_root_id: 'launch-1',
+        subagent_type: 'Explore',
+        subagent_model: 'claude-opus-5',
+        description: 'Explore the parser',
+      }),
+      ...overrides,
+    });
+  }
+
+  it('shows the AGENT’s model, never the thread’s, for a resumed agent', async () => {
+    const { ctx } = await setup([
+      launchItem({
+        status: 'running',
+        isBackground: true,
+        payloadMeta: JSON.stringify({
+          toolName: 'Agent',
+          input: { description: 'Explore the parser', subagent_type: 'Explore' },
+        }),
+        meta: JSON.stringify({ task_id: 'task-round-1', subagent_model: 'claude-opus-5' }),
+      }),
+      makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'round one' }),
+      makeItem({ id: 'complete:launch-1', itemIndex: 2, threadId: THREAD_ID, kind: 'tool_completion', status: 'completed', completionOf: 'launch-1', summary: 'done' }),
+      resumeCarrier(),
+    ]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+
+    const { getByTestId } = render(AgentPane, { props: { ctx } });
+
+    // The ROOT names the model; the thread's Sonnet must not win.
+    expect(getByTestId('agent-pane-model').textContent?.trim()).toBe('Opus 5');
+    // The carrier is running, so the pane reads active even though the
+    // root's own completion sibling settled at the end of round one.
+    expect(getByTestId('agent-pane-working')).toBeTruthy();
+  });
+
+  it('reads the model off the carrier when the root has not paged in', async () => {
+    // Restore onto a resumed agent whose original launch sits above the
+    // window: the carrier carries the original's `subagent_model`, so the
+    // chip must not fall back to the thread model.
+    const { pane, ctx } = await setup([resumeCarrier()]);
+    (pane as { loadUntilItem: ThreadPane['loadUntilItem'] }).loadUntilItem = async () => false;
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+
+    const { getByTestId } = render(AgentPane, { props: { ctx } });
+
+    expect(getByTestId('agent-pane-not-loaded')).toBeTruthy();
+    expect(getByTestId('agent-pane-model').textContent?.trim()).toBe('Opus 5');
+  });
+
+  it('times the working chip from the resume, and stops the CURRENT round', async () => {
+    const stop = vi.fn(async () => {});
+    setBindingMock('StopClaudeTask', stop);
+    const now = Date.now();
+    const { ctx } = await setup([
+      launchItem({
+        status: 'running',
+        isBackground: true,
+        createdAt: now - 3_600_000,
+        meta: JSON.stringify({ task_id: 'task-round-1' }),
+      }),
+      makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'round one' }),
+      makeItem({ id: 'complete:launch-1', itemIndex: 2, threadId: THREAD_ID, kind: 'tool_completion', status: 'completed', completionOf: 'launch-1', summary: 'done' }),
+      resumeCarrier({ createdAt: now - 60_500, updatedAt: now - 60_500 }),
+    ]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+
+    const { getByTestId } = render(AgentPane, { props: { ctx } });
+
+    // One minute since the RESUME, not an hour since the launch.
+    expect(getByTestId('agent-pane-working-elapsed').textContent?.trim()).toBe('1m 0s');
+
+    // Stop targets the round that is actually running.
+    await fireEvent.click(getByTestId('composer-interrupt'));
+    await waitFor(() => expect(stop).toHaveBeenCalledWith(THREAD_ID, 'task-round-2'));
+  });
+
+  it('renders the resumed round’s rows, which are parented to the root', async () => {
+    setBindingMock('GetSettings', async () => makeSettings({ activityRunDefault: 'expanded' }));
+    await loadSettings();
+    const { ctx } = await setup([
+      launchItem({ status: 'running', isBackground: true }),
+      makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'round one work' }),
+      makeItem({ id: 'complete:launch-1', itemIndex: 2, threadId: THREAD_ID, kind: 'tool_completion', status: 'completed', completionOf: 'launch-1', summary: 'done' }),
+      resumeCarrier(),
+      makeItem({
+        id: 'user:subagent-prompt:carrier-1',
+        itemIndex: 6,
+        threadId: THREAD_ID,
+        kind: 'user_text',
+        role: 'user',
+        parentId: 'launch-1',
+        summary: 'now check the lexer',
+      }),
+      makeItem({ id: 'round2-text', itemIndex: 7, threadId: THREAD_ID, parentId: 'launch-1', summary: 'round two work' }),
+    ]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+
+    const { getByTestId } = render(AgentPane, { props: { ctx } });
+
+    const timeline = getByTestId('agent-pane-timeline');
+    expect(timeline.textContent).toContain('round one work');
+    expect(timeline.textContent).toContain('now check the lexer');
+    expect(timeline.textContent).toContain('round two work');
+    // The carrier and its completion are lifecycle rows, not transcript
+    // rows: the scoped window never shows them.
+    expect(timeline.textContent).not.toContain('Agent: exploring');
+  });
+
+  it('hydrates against the WHOLE transcript count, not the root card’s round-one slice', async () => {
+    // The store bounds the root's `subagentDescendantCount` to round one
+    // (each round is its own card) and stamps the all-rounds total as
+    // `subagentTranscriptDescendantCount`. Round one is fully loaded here,
+    // so gating on the round count would skip the fetch and the pane
+    // would open without round two.
+    const listDescendants = vi.fn(async () => []);
+    setBindingMock('ListSubagentDescendants', listDescendants);
+    const { ctx } = await setup([
+      launchItem({
+        status: 'running',
+        isBackground: true,
+        meta: JSON.stringify({
+          task_id: 'task-round-1',
+          subagentDescendantCount: 1,
+          subagentTranscriptDescendantCount: 3,
+        }),
+      }),
+      makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'round one work' }),
+      resumeCarrier(),
+    ]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+
+    render(AgentPane, { props: { ctx } });
+
+    await waitFor(() => expect(listDescendants).toHaveBeenCalledWith(THREAD_ID, 'launch-1'));
+  });
+
+  it('does not re-fetch a round-one-only agent whose rows are all loaded', async () => {
+    const listDescendants = vi.fn(async () => []);
+    setBindingMock('ListSubagentDescendants', listDescendants);
+    const { ctx } = await setup([
+      launchItem({
+        status: 'running',
+        isBackground: true,
+        meta: JSON.stringify({ task_id: 'task-round-1', subagentDescendantCount: 1 }),
+      }),
+      makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'round one work' }),
+    ]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+
+    render(AgentPane, { props: { ctx } });
+    await tick();
+    await tick();
+
+    expect(listDescendants).not.toHaveBeenCalled();
+  });
+
   // A Codex child's final answer is a NORMAL message in the transcript —
   // its assistant text streams to the parent thread parented to the
   // launch, exactly like Claude's. The completion sibling's `preview` is

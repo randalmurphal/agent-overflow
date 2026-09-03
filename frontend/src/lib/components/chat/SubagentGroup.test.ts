@@ -735,6 +735,30 @@ describe('<SubagentGroup>', () => {
     await waitFor(() => expect(ensured).toEqual(['lazy']));
   });
 
+  it('hydrates a §E6 resume carrier’s card against the TRANSCRIPT ROOT', async () => {
+    // The round's rows are stored under the original launch, so asking
+    // for the carrier's own id would fetch nothing and the card would
+    // stay on "Loading N entries" forever.
+    const { pane, ensured } = paneStub();
+    const group = mkGroup({
+      parentId: 'toolu_resume',
+      parentItem: mkAgentParent('toolu_resume', {
+        toolName: 'SendMessage',
+        isBackground: true,
+        metaFields: {
+          task_id: 'a1',
+          transcript_root_id: 'toolu_root',
+          subagent_type: 'general-purpose',
+        },
+      }),
+      children: [],
+      descendantCount: 3,
+      loadedDescendantCount: 0,
+    });
+    render(SubagentGroupTestHarness, { props: { group, pane } });
+    await waitFor(() => expect(ensured).toEqual(['toolu_root']));
+  });
+
   it('does not request hydration when every descendant is loaded', async () => {
     const { pane, ensured } = paneStub();
     const group = mkGroup({

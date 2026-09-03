@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // FindStreamItemByProviderItemID resolves a streamed assistant row from the
@@ -219,6 +220,46 @@ func (s *Store) FindUserTextItemBySendID(threadID, sendID string, window int) (I
 	)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find user text item by send id for thread %s: %w", threadID, err)
+	}
+	return item, found, nil
+}
+
+// FindProvisionalSubagentPrompt returns the oldest launch-scoped prompt
+// row under parentID that still carries the provisional marker and whose
+// summary is exactly `content`.
+//
+// It is the reconciliation half of the §E6 resume prompt: that row is
+// minted from the rebind `system/task_started` (which has no provider
+// uuid to give) and the agent's terminal transcript later delivers the
+// same text WITH a uuid. Without this lookup the transcript row lands as
+// a second `user:wire:<uuid>` duplicate below the answer it asked for.
+//
+// `parent_id <> ”` is load-bearing: it is the predicate of the partial
+// idx_items_parent (thread_id, parent_id) index, and SQLite cannot prove
+// it from a bound parameter. The meta LIKE is a cheap post-index filter
+// over the handful of rows one launch scope holds; the exact comparison
+// is the summary equality, in SQL rather than in Go so a long agent
+// prompt is never carried back across the boundary to be discarded.
+func (s *Store) FindProvisionalSubagentPrompt(threadID, parentID, content string) (Item, bool, error) {
+	if strings.TrimSpace(threadID) == "" || strings.TrimSpace(parentID) == "" {
+		return Item{}, false, nil
+	}
+	item, found, err := queryOneHydratedTimelineItem(
+		s.reader(), threadID,
+		`SELECT id FROM items
+		  WHERE thread_id = ?
+		    AND parent_id = ?
+		    AND parent_id <> ''
+		    AND kind = 'user_text'
+		    AND summary = ?
+		    AND meta LIKE '%subagent_prompt_provisional%'
+		    AND COALESCE(json_extract(meta, '$.provider_item_id'), '') = ''
+		  ORDER BY turn_index, item_index
+		  LIMIT 1`,
+		threadID, parentID, content,
+	)
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: find provisional subagent prompt %s/%s: %w", threadID, parentID, err)
 	}
 	return item, found, nil
 }

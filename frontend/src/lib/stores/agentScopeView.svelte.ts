@@ -48,7 +48,10 @@
 //   restore bookkeeping by scrollStateKey (per SCOPE, so an agent pane's
 //   position never clobbers the main timeline's saved position).
 // - `agentScopeRootId`: the launch this view is scoped to. Empty on the
-//   thread timeline; rows read it to know which surface they are on.
+//   thread timeline; rows read it to know which surface they are on. It
+//   is always a TRANSCRIPT ROOT: a §E6 resume carrier's rows are parented
+//   to the original launch, so every opener resolves through
+//   `utils/subagentLaunch.ts#agentScopeRootId` before scoping here.
 // - `items`: the scope's loaded subtree. Direct children get their
 //   `parentId` LIFTED (cleared) so the grouping treats them as this
 //   surface's top level. A direct child launch remains a card, but its own
@@ -67,8 +70,10 @@
 //   "Response 1m 58s" pill on a still-running agent the moment the
 //   launching turn settled (live regression 2026-08-22). Here every
 //   scoped row shares one key, whatever turn it carries; the
-//   turn is active while the scoped launch runs and settles on the
-//   launch's own completion, with the agent's own duration.
+//   turn is active while the scope's LIFECYCLE row runs and settles on
+//   that row's own completion, with the agent's own duration. The
+//   lifecycle row is the launch, or the latest resume carrier bound to
+//   it — the root settled when round one did.
 // - `activityRuns`: an own registry. Run membership differs per surface
 //   (the scoped list has different top-level rows), and collapse state
 //   is a view concern, so sharing the source registry would let one
@@ -121,6 +126,7 @@ import type {
   ScrollToItemRequest,
 } from './threadPaneShared';
 import type { TimelineTurnFacet } from './threadTurnProjection';
+import { claudeResumeTranscriptRootId } from '../utils/subagentLaunch';
 
 /** The one turn key every scoped row shares (see `timelineTurns` above). */
 const AGENT_SCOPE_TURN_KEY = 0;
@@ -130,6 +136,16 @@ export interface AgentScopeView {
   readonly pane: ThreadPane;
   /** The scope's loaded subtree (what `pane.items` answers). */
   readonly items: Item[];
+  /**
+   * The row whose STATUS is the scope's: the launch, or the latest §E6
+   * resume carrier bound to it. The turn facet, the composer shell's
+   * run state, its elapsed timer, its progress ticks and its Stop target
+   * all read this row; identity (name, model, description) reads the
+   * launch. One resolver so the two can never disagree.
+   */
+  readonly lifecycle: Item | undefined;
+  /** The `completionOf` sibling of `lifecycle`, once one has landed. */
+  readonly lifecycleCompletion: Item | undefined;
   /** Release the view's own registries. Call on unmount. */
   dispose(): void;
 }
@@ -226,18 +242,26 @@ export function createAgentScopeView(
   // `collectAgentScopeRetainedIds` (direct rows + completion siblings); the
   // SCOPE's own row and its completion sibling stay out — they feed the
   // pane's breadcrumb and status line, not the transcript.
-  let scopedItems = $derived.by<Item[]>(() => {
+  // The same pass collects the scope's §E6 resume CARRIERS — the rows
+  // Claude rebinds the agent's task onto to resume it. They are top-level
+  // rows of the source timeline (nothing is ever parented to one), so
+  // they are deliberately not in the window; they are the scope's
+  // lifecycle rows, read below.
+  let scopeWindow = $derived.by<{ items: Item[]; carriers: Item[] }>(() => {
     void sourcePane.timelineRevision;
-    if (!scopeItemId) return [];
+    if (!scopeItemId) return { items: [], carriers: [] };
     const retained = collectAgentScopeRetainedIds(sourcePane.items, scopeItemId);
-    const out: Item[] = [];
+    const items: Item[] = [];
+    const carriers: Item[] = [];
     for (const item of sourcePane.items) {
+      if (claudeResumeTranscriptRootId(item) === scopeItemId) carriers.push(item);
       if (item.id === scopeItemId || !retained.has(item.id)) continue;
       if (item.completionOf === scopeItemId) continue;
-      out.push(item.parentId === scopeItemId ? { ...item, parentId: undefined } : item);
+      items.push(item.parentId === scopeItemId ? { ...item, parentId: undefined } : item);
     }
-    return out;
+    return { items, carriers };
   });
+  let scopedItems = $derived(scopeWindow.items);
 
   // ---- Scope lifecycle as the timeline's turn ---------------------------
   // Status reads go through the SOURCE pane's live row (`getItemById`,
@@ -247,25 +271,39 @@ export function createAgentScopeView(
   // follow. Its MEMBERSHIP comes from the array (structure); its fields
   // must not, because a patch to the row is written in place and the
   // array signal stays silent for it.
-  let scopeLaunch = $derived.by<Item | undefined>(() => {
-    void sourcePane.timelineRevision;
-    return scopeItemId ? sourcePane.getItemById(scopeItemId) : undefined;
+  //
+  // The LIFECYCLE row is the launch for an ordinary agent and the LATEST
+  // resume carrier for a resumed one (claude-wire.md §E6): the scope root
+  // settled when its first round did, so reading status from it would
+  // settle the pane's turn while round two runs. Elapsed counts from the
+  // resume, which is what the reader is watching (user ruling).
+  let lifecycle = $derived.by<Item | undefined>(() => {
+    const root = scopeItemId ? sourcePane.getItemById(scopeItemId) : undefined;
+    let latest = root;
+    // `>=` with the carriers in timeline order: the latest carrier wins,
+    // and a carrier always outranks the root at an equal timestamp
+    // because it is written after it.
+    for (const carrier of scopeWindow.carriers) {
+      const live = sourcePane.getItemById(carrier.id) ?? carrier;
+      if (!latest || live.createdAt >= latest.createdAt) latest = live;
+    }
+    return latest;
   });
-  let scopeCompletion = $derived.by<Item | undefined>(() => {
-    void sourcePane.timelineRevision;
-    if (!scopeItemId) return undefined;
-    const completion = sourcePane.items.find((item) => item.completionOf === scopeItemId);
+  let lifecycleCompletion = $derived.by<Item | undefined>(() => {
+    const lifecycleId = lifecycle?.id;
+    if (!lifecycleId) return undefined;
+    const completion = sourcePane.items.find((item) => item.completionOf === lifecycleId);
     return completion ? (sourcePane.getItemById(completion.id) ?? completion) : undefined;
   });
   const timelineTurns: TimelineTurnFacet = {
     keyOf: () => AGENT_SCOPE_TURN_KEY,
     get activeKey() {
-      const status = (scopeCompletion ?? scopeLaunch)?.status;
+      const status = (lifecycleCompletion ?? lifecycle)?.status;
       return status === 'running' || status === 'streaming' ? AGENT_SCOPE_TURN_KEY : null;
     },
     get settled() {
-      const launch = scopeLaunch;
-      const statusItem = scopeCompletion ?? launch;
+      const launch = lifecycle;
+      const statusItem = lifecycleCompletion ?? launch;
       if (!launch || !statusItem) return null;
       if (statusItem.status === 'running' || statusItem.status === 'streaming') return null;
       return {
@@ -532,6 +570,12 @@ export function createAgentScopeView(
     pane,
     get items() {
       return scopedItems;
+    },
+    get lifecycle() {
+      return lifecycle;
+    },
+    get lifecycleCompletion() {
+      return lifecycleCompletion;
     },
     dispose() {
       activityRuns.clear();

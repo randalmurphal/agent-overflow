@@ -547,11 +547,12 @@ func TestCatalogDriftIsReportedOncePerDistinctReport(t *testing.T) {
 	}
 }
 
-// TestCatalogTransitionsBetweenReportingAndSilentBinaries is the state-machine
-// half: a CLI that stops reporting models must not leave the previous list
-// enriching a binary that no longer claims it, while an unreadable array —
-// which is no information — must leave the last good answer alone.
-func TestCatalogTransitionsBetweenReportingAndSilentBinaries(t *testing.T) {
+// TestCatalogRetainsEnrichmentThroughDegradedAnswers is the state-machine
+// half: neither an unreadable array (no information) nor an empty one (a
+// server-gated shortlist that flaked — incident 2026-09-03, claude-fable-5-1)
+// may subtract a model this identity already learned. The one subtraction
+// event is DropBinary, exercised in TestCatalogDropBinary.
+func TestCatalogRetainsEnrichmentThroughDegradedAnswers(t *testing.T) {
 	catalog := NewCatalog()
 	key := testKey("a")
 	wire := []claude.WireModel{{Value: "claude-newthing-1", DisplayName: "Newthing"}}
@@ -569,12 +570,119 @@ func TestCatalogTransitionsBetweenReportingAndSilentBinaries(t *testing.T) {
 		t.Errorf("drift = %v, want one unreadable report", drift)
 	}
 
-	catalog.Store(key, nil, nil)
-	if _, ok := findModel(catalog.ModelsFor(key, string(provider.Claude)), "claude-newthing-1"); ok {
-		t.Error("a binary that reports no models must clear the enrichment it previously supplied")
+	drift = catalog.Store(key, nil, nil)
+	if _, ok := findModel(catalog.ModelsFor(key, string(provider.Claude)), "claude-newthing-1"); !ok {
+		t.Error("an empty answer from the same binary must keep the learned model")
 	}
-	if !slices.Equal(slugs(catalog.ModelsFor(key, string(provider.Claude))), slugs(provider.ClaudeModels)) {
-		t.Error("clearing the enrichment must leave the shipped catalog, never an empty picker")
+	if len(drift) != 1 || drift[0].Kind != DriftRetained {
+		t.Errorf("drift = %v, want one retained notice", drift)
+	}
+	if repeat := catalog.Store(key, nil, nil); len(repeat) != 0 {
+		t.Errorf("a repeated empty answer must not repeat the notice: %s", FormatDrift(repeat))
+	}
+
+	// An empty answer for an identity that never enriched has nothing to
+	// keep and nothing to say — the plain catalog, silently.
+	fresh := testKey("never-enriched")
+	if drift := catalog.Store(fresh, nil, nil); len(drift) != 0 {
+		t.Errorf("empty wire with no previous enrichment reported %s", FormatDrift(drift))
+	}
+	if !slices.Equal(slugs(catalog.ModelsFor(fresh, string(provider.Claude))), slugs(provider.ClaudeModels)) {
+		t.Error("no-enrichment identity must serve the shipped catalog")
+	}
+}
+
+// TestCatalogRetainsLearnedModelsAcrossPartialWires covers the incident shape
+// exactly: a later NON-empty wire that omits a learned model (a gated row
+// flaking out of the shortlist) keeps serving it, says so once, and hands the
+// row back to the wire when it returns.
+func TestCatalogRetainsLearnedModelsAcrossPartialWires(t *testing.T) {
+	catalog := NewCatalog()
+	key := testKey("a")
+	full := []claude.WireModel{
+		{Value: "opus", ResolvedModel: "claude-opus-5"},
+		{Value: "claude-newthing-1", DisplayName: "Newthing"},
+	}
+	degraded := []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5"}}
+
+	catalog.Store(key, full, nil)
+	drift := catalog.Store(key, degraded, nil)
+	if _, ok := findModel(catalog.ModelsFor(key, string(provider.Claude)), "claude-newthing-1"); !ok {
+		t.Fatal("a partial wire must not subtract the learned model")
+	}
+	if !slices.Contains(driftKinds(drift, "claude-newthing-1"), DriftRetained) {
+		t.Errorf("drift = %s, want a retained line for the omitted model", FormatDrift(drift))
+	}
+	if repeat := catalog.Store(key, degraded, nil); len(repeat) != 0 {
+		t.Errorf("an unchanged degraded wire must not repeat: %s", FormatDrift(repeat))
+	}
+
+	drift = catalog.Store(key, full, nil)
+	if slices.Contains(driftKinds(drift, "claude-newthing-1"), DriftRetained) {
+		t.Errorf("the wire re-listing the model must own it again, drift = %s", FormatDrift(drift))
+	}
+	if _, ok := findModel(catalog.ModelsFor(key, string(provider.Claude)), "claude-newthing-1"); !ok {
+		t.Error("the re-listed model must still be served")
+	}
+}
+
+// TestCatalogDropBinary: a binary version change voids every claim learned
+// from that path — and only that path.
+func TestCatalogDropBinary(t *testing.T) {
+	catalog := NewCatalog()
+	wire := []claude.WireModel{{Value: "claude-newthing-1", DisplayName: "Newthing"}}
+	upgraded := testKey("a")
+	other := provider.ProbeCacheKey{Binary: "/opt/other/claude", AccountID: "a", WorkDir: "/home/u"}
+	catalog.Store(upgraded, wire, nil)
+	catalog.Store(other, wire, nil)
+
+	if dropped := catalog.DropBinary(upgraded.Binary); dropped != 1 {
+		t.Fatalf("DropBinary dropped %d entries, want 1", dropped)
+	}
+	if _, ok := findModel(catalog.ModelsFor(upgraded, string(provider.Claude)), "claude-newthing-1"); ok {
+		t.Error("the upgraded binary's learned model must be gone")
+	}
+	if !slices.Equal(slugs(catalog.ModelsFor(upgraded, string(provider.Claude))), slugs(provider.ClaudeModels)) {
+		t.Error("the dropped identity must fall back to the shipped catalog")
+	}
+	if _, ok := findModel(catalog.ModelsFor(other, string(provider.Claude)), "claude-newthing-1"); !ok {
+		t.Error("another binary's entry must be untouched")
+	}
+
+	// The dropped identity re-learns from its next probe, and the learned
+	// memory starts empty: nothing from before the drop is retained.
+	drift := catalog.Store(upgraded, []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5"}}, nil)
+	if slices.Contains(driftKinds(drift, "claude-newthing-1"), DriftRetained) {
+		t.Errorf("a dropped binary's models must not resurrect, drift = %s", FormatDrift(drift))
+	}
+	if _, ok := findModel(catalog.ModelsFor(upgraded, string(provider.Claude)), "claude-newthing-1"); ok {
+		t.Error("a dropped binary's models must not resurrect into the picker")
+	}
+}
+
+// TestCatalogReportsWhenDriftClears: enrichment disagreements resolving (or
+// vanishing) must leave a log line, not silence — before DriftCleared, an
+// entry reverting to the plain catalog left no evidence of when.
+func TestCatalogReportsWhenDriftClears(t *testing.T) {
+	catalog := NewCatalogWith([]provider.ModelInfo{{
+		Slug:         "claude-opus-5",
+		Name:         "Opus",
+		Provider:     "claude",
+		Capabilities: []string{provider.ModelCapabilityFastMode},
+	}})
+	key := testKey("a")
+	disagreeing := []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5"}}
+	agreeing := []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5", SupportsFastMode: true}}
+
+	if drift := catalog.Store(key, disagreeing, nil); len(drift) == 0 {
+		t.Fatal("the capability disagreement must report")
+	}
+	drift := catalog.Store(key, agreeing, nil)
+	if len(drift) != 1 || drift[0].Kind != DriftCleared {
+		t.Fatalf("drift = %v, want one cleared line", drift)
+	}
+	if repeat := catalog.Store(key, agreeing, nil); len(repeat) != 0 {
+		t.Errorf("a still-clean report must stay silent: %s", FormatDrift(repeat))
 	}
 }
 

@@ -55,10 +55,13 @@ type ProbeConfig struct {
 	//
 	// The two arguments are distinct answers and callers must treat them so:
 	//
-	//   - (models, nil) — the CLI reported this list. An EMPTY list is a real
-	//     answer (a CLI too old to report models); a consumer holding an
-	//     earlier list must drop it rather than keep enriching from a binary
-	//     that no longer claims those models.
+	//   - (models, nil) — the CLI reported this list. What an EMPTY list (or
+	//     a list missing a previously reported model) means is the CONSUMER's
+	//     policy call, not this contract's: the array is a server-gated
+	//     picker shortlist, so one degraded answer from the same binary is
+	//     not proof a model is gone. internal/claudemodels retains models
+	//     learned earlier from the same binary and subtracts only when the
+	//     binary's version changes (Catalog.DropBinary).
 	//   - (nil, err) — the array was present but unreadable. That is no
 	//     information at all, so a consumer must keep what it had and surface
 	//     the error. It is deliberately NOT fatal to the probe: identity is

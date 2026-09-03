@@ -75,25 +75,25 @@
 </script>
 
 <article
-  class="border-y border-border-subtle bg-surface-0 px-3 py-2 text-[0.75rem]"
+  class="border-y border-border-subtle bg-surface-0/50 px-3 py-2 text-[0.75rem]"
   data-testid="review-comment-thread"
 >
   <div class="mb-1 flex items-center gap-2">
     <span class="min-w-0 flex-1 truncate font-mono text-[0.6875rem] text-fg-muted">{commentLocation(comment)}</span>
     {#if orphaned}
-      <span class="rounded border border-border-subtle px-1.5 py-0.5 text-[0.6875rem] text-fg-muted">orphaned - line no longer in diff</span>
+      <span class="shrink-0 rounded-full bg-surface-2 px-1.5 py-px text-[0.625rem] text-fg-muted" title="Line no longer in diff">orphaned</span>
     {/if}
     {#if !editing}
       <button
         type="button"
-        class="rounded px-1.5 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg"
+        class="shrink-0 rounded-[var(--radius-control)] border border-border-subtle px-2 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg"
         onclick={startEdit}
       >
         Edit
       </button>
       <button
         type="button"
-        class="rounded px-1.5 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg"
+        class="shrink-0 rounded-[var(--radius-control)] border border-border-subtle px-2 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg disabled:opacity-45"
         disabled={busy}
         onclick={() => { void deleteComment(); }}
       >

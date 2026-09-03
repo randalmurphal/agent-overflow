@@ -368,7 +368,17 @@ function createReviewPaneState(
   // history to restore and nothing to write back.
   const persisted = threadId === null ? null : readPersistedScope(threadId);
   const initialPRRef = prRefFromThread(initialThread ?? {});
-  let prRef: PRRef | null = $state(initialPRRef);
+  // The thread row's own PR reference — set when the thread was created FROM
+  // a pull request, and never rewritten afterwards, so resolving it once is
+  // honest memoization. `undefined` means "not looked up yet".
+  let threadPRRef: PRRef | null | undefined = $state(
+    initialThread === null ? undefined : initialPRRef,
+  );
+  // Derived, not probed-once: the workspace fallback reads the live
+  // git-status store, so the PR becomes selectable the moment status
+  // lands (or a PR opens while the pane sits open) instead of only when
+  // something re-enters pr scope.
+  const prRef: PRRef | null = $derived(threadPRRef ?? workspacePRRef());
   let scope: ReviewScope = $state(
     initialPRRef && workspace.workspacePath === '' ? 'pr' : (persisted?.scope ?? 'workspace'),
   );
@@ -593,12 +603,6 @@ function createReviewPaneState(
   const drafts = $derived(comments.filter((comment) => comment.status === 'draft'));
   const isTurnActive = $derived(threadId !== null && getActiveTurn(threadId) !== null);
 
-  // The thread row's own PR reference — set when the thread was created FROM
-  // a pull request, and never rewritten afterwards, so resolving it once is
-  // honest memoization. `undefined` means "not looked up yet".
-  let threadPRRef: PRRef | null | undefined =
-    initialThread === null ? undefined : prRefFromThread(initialThread);
-
   // The workspace's CURRENT open PR, read live from the shared git-status
   // store. Not memoized: a PR opened while this pane sat open must become
   // selectable, and one that merged must stop being offered.
@@ -625,15 +629,13 @@ function createReviewPaneState(
         }
       }
     }
-    prRef = threadPRRef ?? workspacePRRef();
     return prRef;
   }
 
-  // The scope dropdown's PR option renders only once prRef resolves, and
-  // ensurePRRef otherwise runs only on ENTRY into pr scope — without
-  // probing at mount (and on reload, for a PR opened while the pane sat
-  // open), a thread whose BRANCH has an open PR (the git-status detection
-  // path) could never surface the option at all.
+  // `prRef` derives from the git-status store live, but the thread-row
+  // half still takes one GetThread round trip to memoize — kick it at
+  // mount so a thread created FROM a PR surfaces that PR without waiting
+  // for pr-scope entry.
   function probePRRef(): void {
     void ensurePRRef().catch(() => {
       // Not swallowed: ensurePRRef records a thread-lookup failure in
@@ -644,6 +646,21 @@ function createReviewPaneState(
   // Set by dispose(); a load that resolves after disposal must not write
   // back into a dead state — or hold a PR reference nobody will release.
   let disposed = false;
+
+  // A pr-scope load that ran before `prRef` resolved is waiting on input,
+  // not failed: a pane restored into persisted pr scope races the
+  // git-status fetch at boot and used to stick on "No PR or MR is
+  // available" until the user reloaded by hand. The flag is set by the
+  // load that came up empty and consumed by the watcher below the moment
+  // the derived ref lands.
+  let awaitingPRRef = $state(false);
+  const disposePRRefWatch = $effect.root(() => {
+    $effect(() => {
+      if (!awaitingPRRef || prRef === null) return;
+      awaitingPRRef = false;
+      void reload();
+    });
+  });
 
   /**
    * Take (or keep) this pane's reference on the shared PR entity. One
@@ -678,6 +695,7 @@ function createReviewPaneState(
 
   function dispose(): void {
     disposed = true;
+    disposePRRefWatch();
     resetConflictView();
     closeCILogView();
     releasePR();
@@ -715,11 +733,11 @@ function createReviewPaneState(
       releasePR();
     }
     if (nextScope === 'pr') {
-      const ref = await ensurePRRef();
-      if (!ref) {
-        error = 'No PR or MR is available for this thread.';
-        return;
-      }
+      // Resolve before entry so the load below can hold the PR. A null
+      // ref still ENTERS the scope: the load surfaces the user-facing
+      // error, and the ref watcher retries the moment one resolves — a
+      // badge click can race the git-status fetch by design.
+      await ensurePRRef();
     }
     scope = nextScope;
     baseBranch = nextScope === 'branch'
@@ -821,6 +839,7 @@ function createReviewPaneState(
       let loadingPRRef: PRRef | null = null;
       let loadingPRKey: string | null = null;
       if (scope === 'pr' && prRef) {
+        awaitingPRRef = false;
         loadingPRRef = prRef;
         loadingPRKey = prKey(loadingPRRef);
         const hold = holdPR(loadingPRRef);
@@ -830,6 +849,11 @@ function createReviewPaneState(
         // Scope can change mid-load (the selector stays enabled while a PR
         // loads); a pane that is no longer on a PR holds no reference.
         releasePR();
+        awaitingPRRef = false;
+      } else {
+        // pr scope with no resolvable ref: loadPatch will surface the
+        // user-facing error, and the ref watcher retries if one appears.
+        awaitingPRRef = true;
       }
       const loaded = await loadPatch(
         { workspace, threadId },

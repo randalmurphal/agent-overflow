@@ -136,6 +136,53 @@ edit copy seeds files alongside images, and removing a SEEDED chip must
 not delete its record — the sent message still references it (the
 `shouldDeleteAttachmentRecord` rule above).
 
+## Agent cards and the agent pane
+
+`SubagentGroup.svelte` is the one card for every launch kind and
+`components/agent/AgentPane.svelte` is the one scoped thread view
+(spec: [`agent-visibility.md`](../../../../../docs/specs/agent-visibility.md)).
+Launch detection is `utils/subagentLaunch.ts#subagentLaunchInfo` and
+nothing else; the tree is `utils/subagentGrouping.ts`.
+
+A Claude §E6 RESUME CARRIER is the one launch whose rows are not its
+own. Claude resumes an idle async agent with a `SendMessage`, rebinds
+the task onto that row, and then parents the whole resumed round —
+tool calls, prose, nested launches, background Bash — to the ORIGINAL
+launch, in every round. So:
+
+- A carrier is a LIFECYCLE row: run state, elapsed, progress ticks and
+  Stop read it. Identity (name, description, model) and the transcript
+  read the ORIGINAL launch.
+- The transcript root is `meta.transcript_root_id`, and every surface
+  that OPENS or HYDRATES a scope resolves it through
+  `utils/subagentLaunch.ts#agentScopeRootId` — the row door
+  (`AgentRow.svelte`), the card (`SubagentGroup.svelte`, both
+  `openAgentPane` and `ensureSubagentChildren`), and the tray
+  (`ActivityRailBackgroundBody.svelte`). Scoping a pane to a carrier
+  opens an empty transcript; hydrating one fetches nothing. The crumb
+  LABEL stays whatever the caller was looking at.
+- Cards slice per round: `groupItemsBySubagent` splits the root's bucket
+  at each carrier's resume prompt row
+  (`user:subagent-prompt:<carrierId>`), so the round-1 card shows round
+  1 and each carrier's card shows its own round. Only the root's direct
+  bucket is sliced — a nested launch inside a round is an anchor of its
+  own. The store's decoration is sliced the same way: an anchor's
+  `subagentDescendantCount` is its ROUND, and the root alone carries
+  `subagentTranscriptDescendantCount` (all rounds), which is what the
+  pane's hydration gate reads (`decoratedSubagentAggregates(...).transcriptCount`).
+  A card gates on the round count; the pane, scoped to the root and
+  showing every round, would stop fetching after round one otherwise.
+- `stores/agentScopeView.svelte.ts` resolves the lifecycle row once, for
+  the timeline's turn facet and the composer shell alike, so the run
+  pill and the working chip cannot disagree. Elapsed counts from the
+  RESUME, not from the original launch (user ruling).
+- Known asymmetry: `stores/threadSubagentMemory.ts` folds an evicted row
+  under its nearest launch ANCESTOR, which for a resumed round is the
+  root, never the carrier. A carrier's card therefore has no fold
+  aggregate of its own; its expand re-hydrates the root and the rows
+  re-slice. Do not "fix" that by folding under the carrier — nothing is
+  parented to one.
+
 ## Activity runs
 
 The projection's last pass wraps consecutive activity rows into ONE

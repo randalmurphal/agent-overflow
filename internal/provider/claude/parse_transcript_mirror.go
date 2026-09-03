@@ -323,10 +323,17 @@ func (p *Parser) tapUnprojectedCompaction(
 		return nil
 	}
 
-	// The launch tool call is the scope every row lands under. task_started
-	// binds it minutes before any compaction; a resumed agent's newest
-	// carrier wins, matching noteMirrorTaskScope's rebind rule.
-	scope := state.taskScopes[agentID].scope
+	// The launch tool call is the scope every row lands under, and for a
+	// resumed agent that is the TRANSCRIPT ROOT — the original launch —
+	// never the newest carrier: the lifecycle rebinds onto the carrier
+	// but the agent's conversation tree does not move (claude-wire.md
+	// §E6). The current binding is the fallback for the reconnect edge,
+	// where this parser never saw the original; triage's carrier-parent
+	// rewrite covers the rest.
+	scope := p.taskTranscriptRoot(agentID)
+	if scope == "" {
+		scope = state.taskScopes[agentID].scope
+	}
 	if scope == "" {
 		scope = p.taskToolUseRef(agentID).ToolUseID
 	}

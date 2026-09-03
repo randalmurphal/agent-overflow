@@ -208,7 +208,7 @@
               class={!filterActive && collapsedPaths.has(node.path) ? 'shrink-0' : 'shrink-0 rotate-90'}
             />
             <Icon icon={Folder} size={12} class="shrink-0 opacity-80" />
-            <span class="min-w-0 truncate font-mono">{node.name}</span>
+            <span class="min-w-0 truncate">{node.name}</span>
           </span>
         </button>
       {:else}
@@ -224,7 +224,7 @@
           {@render indentGuides(entry.depth)}
           <span class="flex min-w-0 flex-1 items-center gap-1.5 pl-0.5">
             <Icon icon={FileText} size={12} class="shrink-0 opacity-75" />
-            <span class="min-w-0 flex-1 truncate font-mono {fileNameClass(node.fileKind)}">{node.name}</span>
+            <span class="min-w-0 flex-1 truncate {fileNameClass(node.fileKind)}">{node.name}</span>
             {#if commentCount > 0}
               <span
                 class="shrink-0 rounded-full bg-surface-2 px-1.5 text-[0.625rem] tabular-nums text-fg-muted"
@@ -233,10 +233,10 @@
               >{commentCount}</span>
             {/if}
             {#if node.additions > 0}
-              <span class="shrink-0 tabular-nums text-success">+{node.additions}</span>
+              <span class="shrink-0 text-[0.6875rem] tabular-nums text-success">+{node.additions}</span>
             {/if}
             {#if node.deletions > 0}
-              <span class="shrink-0 tabular-nums text-error">-{node.deletions}</span>
+              <span class="shrink-0 text-[0.6875rem] tabular-nums text-error">-{node.deletions}</span>
             {/if}
           </span>
         </button>

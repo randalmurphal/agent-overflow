@@ -53,6 +53,18 @@ sites for the first three live beside the persists that cause them
 `router.go`). Adding a new global consumer of an item row is the thing
 this split exists to prevent.
 
+## Pre-dispatch rewrites
+
+`Handle` performs exactly two checks before the switch. The stopped-thread
+gate (invariant 29) drops every wire event for a thread `CleanupThread`
+marked stopped. The carrier rewrite then replaces a `ParentToolUseID`
+naming a known §E6 resume CARRIER with that agent's transcript ROOT
+(`internal/triage/transcript_root.go`), so no handler can write a row
+parented to a lifecycle row. Both are cheap by construction — the rewrite
+short-circuits on an empty parent before taking the lock — and both apply
+to every kind, which is why they live above the switch rather than in a
+handler.
+
 ## The Sentinel
 
 The `default` branch in `Handle` returns

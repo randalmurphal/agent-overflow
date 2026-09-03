@@ -27,7 +27,10 @@
 //   - Claude `SendMessage` background carrier — the §E6 resume rebind.
 //     The parser marks the resuming tool_use backgrounded and triage
 //     stamps the rebound `task_id` on it, so "backgrounded SendMessage
-//     carrying a task id" is the carrier and nothing else is.
+//     carrying a task id" is the carrier and nothing else is. A carrier
+//     is the round's LIFECYCLE row only: the round's rows stay parented
+//     to the original launch, which `agentScopeRootId` resolves from
+//     `meta.transcript_root_id`.
 //   - Codex `spawn_agent` (normalized to `toolName=collab_agent`) — child
 //     threads, always asynchronous.
 //
@@ -351,6 +354,36 @@ export function isClaudeResumeCarrierItem(item: Item): boolean {
   if ((item.toolName ?? '').trim() !== 'SendMessage') return false;
   if (item.isBackground !== true) return false;
   return extractClaudeTaskID(item) !== null;
+}
+
+/**
+ * The ORIGINAL launch a resume carrier's round belongs to, or '' for
+ * every other row (claude-wire.md §E6). Claude parents a resumed round's
+ * rows — tool calls, prose, nested launches, background Bash — to the
+ * launch that STARTED the agent, in every round; only the task
+ * LIFECYCLE (progress ticks, the terminal, Stop) rebinds onto the
+ * carrier. Triage stamps the original's id as `meta.transcript_root_id`,
+ * and for round 3+ it still names the ORIGINAL, never the previous
+ * carrier, so the chain is one hop deep by construction.
+ */
+export function claudeResumeTranscriptRootId(item: Item): string {
+  if (!isClaudeResumeCarrierItem(item)) return '';
+  const root = parseJsonObject(item.meta)?.transcript_root_id;
+  if (typeof root !== 'string') return '';
+  const trimmed = root.trim();
+  return trimmed && trimmed !== item.id ? trimmed : '';
+}
+
+/**
+ * THE agent-scope resolver: the id whose SUBTREE is this launch's
+ * transcript. Every surface that opens or hydrates an agent scope goes
+ * through it — the row door, the card, the tray, the pane — so a resumed
+ * agent's pane, hydration and breadcrumb all land on the one row the
+ * rounds are parented to. Identity (name, description, model) stays with
+ * whatever row the caller was looking at; only the SCOPE moves.
+ */
+export function agentScopeRootId(item: Item): string {
+  return claudeResumeTranscriptRootId(item) || item.id;
 }
 
 export interface ClaudeResumeCarrierIdentity {

@@ -34,6 +34,24 @@
     if (!url) return;
     await OpenExternalURL(url);
   }
+
+  // Forge review states arrive as wire enums (APPROVED,
+  // CHANGES_REQUESTED, REVIEW_REQUIRED, COMMENTED, ...): render them as
+  // words with a semantic tint instead of raw constants.
+  function reviewStateLabel(state: string): string {
+    return state.replaceAll('_', ' ').toLowerCase();
+  }
+
+  function reviewStatePillClass(state: string): string {
+    switch (state.toUpperCase()) {
+      case 'APPROVED':
+        return 'bg-success/12 text-success';
+      case 'CHANGES_REQUESTED':
+        return 'bg-error/12 text-error';
+      default:
+        return 'bg-surface-2 text-fg-muted';
+    }
+  }
 </script>
 
 <section class="shrink-0 border-b border-border bg-surface-1 px-4 py-3.5" data-testid="review-pr-header">
@@ -96,10 +114,17 @@
   {/if}
 
   {#if detail.latestReviews.length > 0 || detail.reviewDecision}
-    <div class="mt-3 flex flex-wrap gap-2 text-[0.6875rem] text-fg-muted">
-      {#if detail.reviewDecision}<span>Decision: {detail.reviewDecision}</span>{/if}
+    <div class="mt-3 flex flex-wrap items-center gap-1.5 text-[0.6875rem]">
+      {#if detail.reviewDecision}
+        <span class="inline-flex items-center gap-1 rounded-full px-2 py-px {reviewStatePillClass(detail.reviewDecision)}">
+          {reviewStateLabel(detail.reviewDecision)}
+        </span>
+      {/if}
       {#each detail.latestReviews as review (`${review.authorLogin}:${review.submittedAt}`)}
-        <span>{review.authorLogin}: {review.state}</span>
+        <span class="inline-flex items-center gap-1 rounded-full bg-surface-2/60 py-px pl-2 pr-1 text-fg-muted">
+          {review.authorLogin}
+          <span class="rounded-full px-1.5 {reviewStatePillClass(review.state)}">{reviewStateLabel(review.state)}</span>
+        </span>
       {/each}
     </div>
   {/if}
