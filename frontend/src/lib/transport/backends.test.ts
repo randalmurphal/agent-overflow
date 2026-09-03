@@ -9,6 +9,7 @@ const { homeClient } = vi.hoisted(() => ({
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn<(channel: string, handler: (data: unknown) => void) => () => void>(),
     installStepUpProver: vi.fn(),
+    setWatchedThreads: vi.fn(),
     setLease: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onStatusChange: vi.fn(() => () => undefined),
@@ -39,6 +40,7 @@ import {
   installStepUpProverEverywhere,
   mergeBackendResults,
   setLeaseEverywhere,
+  setWatchedThreadsEverywhere,
   subscribeEveryBackend,
   type BackendDescriptor,
 } from './backends';
@@ -58,6 +60,7 @@ import {
   threadGroupBackend,
 } from './entityIndex';
 import { onBackendDetached, type BackendDetachment } from './backends';
+import { backendClockSkew, resetBackendClocksForTest } from './backendClock';
 import { Events } from './runtime';
 
 type FakeClient = typeof homeClient;
@@ -68,6 +71,7 @@ function fakeClient(): FakeClient {
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn<(channel: string, handler: (data: unknown) => void) => () => void>(),
     installStepUpProver: vi.fn(),
+    setWatchedThreads: vi.fn(),
     setLease: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onStatusChange: vi.fn(() => () => undefined),
@@ -129,6 +133,7 @@ beforeEach(() => {
   __resetBackendsForTest();
   __resetBackendIdentityForTest();
   __resetEntityIndexForTest();
+  resetBackendClocksForTest();
   homeHandlers = new Map();
   for (const fn of Object.values(homeClient)) (fn as { mockReset?: () => void }).mockReset?.();
   homeClient.getStatus.mockReturnValue({ status: 'connected', nextAttemptAt: null });
@@ -196,6 +201,65 @@ describe('the registry', () => {
     expect(client.setLease).toHaveBeenLastCalledWith('active');
     const later = attachFake({ id: 'desktop', backendId: '' });
     expect(later.client.setLease).not.toHaveBeenCalled();
+  });
+
+  it('sends the whole watched set while home is the only backend', () => {
+    setWatchedThreadsEverywhere(['thread-a', 'thread-b']);
+    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith(['thread-a', 'thread-b']);
+  });
+
+  it('sends each backend the threads it owns', () => {
+    noteThread('thread-home', '');
+    noteThread('thread-laptop', 'laptop');
+    const { client } = attachFake();
+
+    setWatchedThreadsEverywhere(['thread-home', 'thread-laptop']);
+
+    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith(['thread-home']);
+    expect(client.setWatchedThreads).toHaveBeenLastCalledWith(['thread-laptop']);
+  });
+
+  it('sends a thread of unknown origin to every backend', () => {
+    // The entity index only knows what this session has listed or been
+    // pushed, so a deep link or a replica cold open has no machine yet.
+    // Withholding it from the machine that does own it is a pane that
+    // silently receives nothing, and nothing later corrects that.
+    const { client } = attachFake();
+
+    setWatchedThreadsEverywhere(['thread-unplaced']);
+
+    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith(['thread-unplaced']);
+    expect(client.setWatchedThreads).toHaveBeenLastCalledWith(['thread-unplaced']);
+  });
+
+  it('states the watched set on a backend attached afterwards', () => {
+    noteThread('thread-laptop', 'laptop');
+    setWatchedThreadsEverywhere(['thread-laptop']);
+    const { client } = attachFake();
+    expect(client.setWatchedThreads).toHaveBeenCalledWith(['thread-laptop']);
+  });
+
+  it('tells a backend that owns none of the watched threads so', () => {
+    noteThread('thread-home', '');
+    const { client } = attachFake();
+
+    setWatchedThreadsEverywhere(['thread-home']);
+
+    // An empty set is a legal value meaning "nothing here is being
+    // looked at", and saying it is what stops this machine pushing
+    // entity-filtered frames nobody reads.
+    expect(client.setWatchedThreads).toHaveBeenLastCalledWith([]);
+  });
+
+  it('publishes an attached backend’s clock and drops it on detach', () => {
+    const { client } = attachFake();
+    client.getHello.mockReturnValue({ clockSkewMs: 90_000 } as never);
+    expect(backendClockSkew('laptop')).toBe(90_000);
+
+    detachBackend('laptop');
+    // A reading held for a machine nothing is attached to would keep
+    // skewing whatever still names that id.
+    expect(backendClockSkew('laptop')).toBe(0);
   });
 });
 

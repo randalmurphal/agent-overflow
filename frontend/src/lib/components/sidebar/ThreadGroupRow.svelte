@@ -34,6 +34,8 @@
   import { PIN_GROUP_BACK, PIN_GROUP_FRONT } from './threadRowActions';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { sidebarRowPaddingLeftPx, sidebarTimeLabel } from '../../utils/sidebarRowMetrics';
+  import { threadGroupBackend } from '../../transport/entityIndex';
+  import { HOME_BACKEND } from '../../transport/backendKey';
   import {
     canDropThreadInGroup,
     endThreadRowDrag,
@@ -95,7 +97,9 @@
       const at = getThreadLiveActivityAt(member);
       if (at > latest) latest = at;
     }
-    return sidebarTimeLabel(latest || (group.updatedAt ?? 0));
+    // A group and its members live on one machine, so the group's own
+    // backend is the clock for every stamp folded in above.
+    return sidebarTimeLabel(latest || (group.updatedAt ?? 0), threadGroupBackend(group.id) ?? HOME_BACKEND);
   });
 
   // ── Inline rename ────────────────────────────────────────────────────────

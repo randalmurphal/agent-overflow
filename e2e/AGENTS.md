@@ -24,6 +24,26 @@ directory.
   order before the next test's fixtures, and a ui query naming no page
   refuses two. A page still there after five seconds fails the test as
   a leaked context.
+- **A spec that asserts a MAPPED notification must not have a page open.**
+  Since wave R5 the SPA states a screen presence on its socket, and the
+  backend's default `notifyMuteWhenFocused` holds back a notification about
+  a screen that is being looked at (`internal/app/app_notifications.go`) —
+  a Playwright page HAS focus, so a mapped turn-complete would simply not be
+  raised. `notifications.spec.ts` and `push.spec.ts` are page-free today and
+  that is what makes them deterministic, not luck. A spec that genuinely
+  needs both writes `UpdateSettings({ notifyMuteWhenFocused: false,
+  notifyMuteWhenThreadVisible: false })` first, on the same connection the
+  sender reads (a harness connection names no device, so the write lands on
+  the backend machine's own screen).
+
+  The attended gate is deliberately LIVE under the harness rather than
+  pinned off at boot: turning it off there would make it the one piece of
+  notification logic `make e2e` never runs, which is the mistake this rig
+  already made once with the refusal stub
+  (`docs/architecture/agent-harness.md`). `HarnessNotify` is the single
+  exception and it says so — it sends through `notifyOSUngated`, because a
+  send that exercises the pipe must not depend on preferences a spec never
+  set.
 - `harness.rpc('MethodName', ...)` calls bound methods by NAME STRING, so
   no compiler connects these call sites to the Go signature. Changing a
   bound method's parameters must sweep `e2e/tests` and `cmd/ao-harness`

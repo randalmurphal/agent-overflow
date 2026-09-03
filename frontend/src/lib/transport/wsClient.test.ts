@@ -76,6 +76,7 @@ import {
   DisconnectedError,
   MAX_PENDING_RPCS,
   MAX_REPLAY_CHANNELS,
+  MAX_WATCH_THREADS,
   RECONNECT_INITIAL_MS,
   RECONNECT_MAX_LOCAL_MS,
   RECONNECT_MAX_REMOTE_MS,
@@ -3770,6 +3771,136 @@ describe('lease frame', () => {
       await flushMicrotasks();
       // Nothing to restate: the new connection already is what we want.
       expect(leaseFrames(third)).toHaveLength(0);
+
+      client.close();
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+});
+
+// The client half of the screen-presence frame
+// (internal/transport/presence.go).
+//
+// It states whether this screen is being LOOKED AT, which the backend reads
+// for one decision — whether to raise an OS notification — and for nothing
+// about delivery. So the coverage here is about the frame's own contract:
+//
+//   - both halves replace the last frame together, and an identical state
+//     writes no bytes
+//   - a client that never composes one puts NO presence byte on the wire
+//   - a composed presence is RESTATED after every reconnect, including an
+//     unattended one: the backend treats an unstated presence as
+//     unattended, so there is no resting value a new connection holds
+describe('presence frame', () => {
+  beforeEach(() => {
+    MockWebSocket.reset();
+    sessionStorage.clear();
+    __resetRunModeForTest();
+  });
+
+  afterEach(() => {
+    __resetRunModeForTest();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function presenceFrames(ws: MockWebSocket): Array<Record<string, unknown>> {
+    return ws.sent.filter((frame) => frame.type === 'presence');
+  }
+
+  async function connectedClient() {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    return { client, ws };
+  }
+
+  it('states a presence once, dedups a repeat, and replaces both halves', async () => {
+    const { client, ws } = await connectedClient();
+
+    client.setPresence(true, ['t-b', 't-a']);
+    // Same state, different order: the set is sorted before the compare, so
+    // a pane reorder that changes nothing writes nothing.
+    client.setPresence(true, ['t-a', 't-b']);
+    expect(presenceFrames(ws)).toEqual([
+      { type: 'presence', focused: true, threads: ['t-a', 't-b'] },
+    ]);
+
+    // Blurred AND the panes gone, in one frame. Not a latch.
+    client.setPresence(false, []);
+    expect(presenceFrames(ws).at(-1)).toEqual({ type: 'presence', focused: false, threads: [] });
+
+    // Either half alone is a change.
+    client.setPresence(true, []);
+    expect(presenceFrames(ws).at(-1)).toEqual({ type: 'presence', focused: true, threads: [] });
+
+    client.close();
+  });
+
+  it('sends nothing for a client that never composes one', async () => {
+    const { client, ws } = await connectedClient();
+    expect(presenceFrames(ws)).toHaveLength(0);
+    client.close();
+  });
+
+  it('refuses a set past the wire bound and leaves the last one standing', async () => {
+    const { client, ws } = await connectedClient();
+    client.setPresence(true, ['t-a']);
+
+    const tooMany = Array.from({ length: MAX_WATCH_THREADS + 1 }, (_, i) => `t${i}`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    client.setPresence(true, tooMany);
+    expect(warn).toHaveBeenCalled();
+    // A truncated set would claim a thread is off screen when it is not.
+    expect(presenceFrames(ws)).toEqual([
+      { type: 'presence', focused: true, threads: ['t-a'] },
+    ]);
+
+    client.close();
+  });
+
+  it('restates the presence after a reconnect, unattended states included', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    try {
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      client.subscribe('thread:updated', () => {});
+      await vi.advanceTimersByTimeAsync(0);
+      const first = MockWebSocket.instances[0]!;
+      first.acceptOpen();
+      await vi.advanceTimersByTimeAsync(0);
+      client.setPresence(true, ['t-a']);
+
+      first.triggerClose();
+      await vi.advanceTimersByTimeAsync(125);
+      const second = MockWebSocket.instances[1]!;
+      second.acceptOpen();
+      await flushMicrotasks();
+      // Beside the watch and lease restatements, ahead of the replay.
+      expect(presenceFrames(second)).toEqual([
+        { type: 'presence', focused: true, threads: ['t-a'] },
+      ]);
+      expect(second.sent.at(-1)).toMatchObject({ type: 'replay' });
+
+      // And an UNATTENDED state is restated too, unlike the lease's
+      // `active`: there is no resting presence the backend already holds,
+      // and a screen that reconnected without restating would go back to
+      // being treated as unattended anyway. Restating it is what keeps the
+      // wire state and this client's idea of it the same object.
+      client.setPresence(false, []);
+      second.triggerClose();
+      await vi.advanceTimersByTimeAsync(2000);
+      const third = MockWebSocket.instances[2]!;
+      third.acceptOpen();
+      await flushMicrotasks();
+      expect(presenceFrames(third)).toEqual([
+        { type: 'presence', focused: false, threads: [] },
+      ]);
 
       client.close();
     } finally {

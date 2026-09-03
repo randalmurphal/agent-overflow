@@ -9,6 +9,7 @@ const { mockClient } = vi.hoisted(() => ({
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn<(channel: string, handler: (data: unknown) => void) => () => void>(),
     installStepUpProver: vi.fn(),
+    setWatchedThreads: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onStatusChange: vi.fn(() => () => undefined),
     close: vi.fn(),

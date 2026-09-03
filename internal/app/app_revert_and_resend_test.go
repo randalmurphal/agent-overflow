@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
@@ -100,7 +102,7 @@ func TestRevertAndResendReplacesMessageAndRestoresWIP(t *testing.T) {
 	}
 
 	const edited = "rewritten prompt"
-	if err := app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{Content: edited}); err != nil {
+	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: edited}); err != nil {
 		t.Fatalf("revert and resend: %v", err)
 	}
 
@@ -179,6 +181,7 @@ func TestRevertAndResendKeepsMergedDraftWhenResendFails(t *testing.T) {
 	// exactly the window the crash copy exists for.
 	const edited = "rewritten prompt"
 	err := app.RevertConversationAndResendMessage(
+		context.Background(),
 		thread.ID, "user:1",
 		RevertAndResendOptions{Content: edited, AttachmentIDs: []string{"ghost-attachment"}},
 	)
@@ -221,7 +224,7 @@ func TestRevertAndResendClearsDraftWhenNoWIP(t *testing.T) {
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-nowip")
 
-	if err := app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"}); err != nil {
+	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"}); err != nil {
 		t.Fatalf("revert and resend: %v", err)
 	}
 
@@ -242,6 +245,7 @@ func TestRevertAndResendStagesEditedPayloadWithoutWIP(t *testing.T) {
 
 	const edited = "rewritten prompt"
 	if err := app.RevertConversationAndResendMessage(
+		context.Background(),
 		thread.ID, "user:1",
 		RevertAndResendOptions{Content: edited, AttachmentIDs: []string{"ghost-attachment"}},
 	); err == nil {
@@ -284,6 +288,7 @@ func TestRevertAndResendKeepsAttachments(t *testing.T) {
 	}
 
 	if err := app.RevertConversationAndResendMessage(
+		context.Background(),
 		thread.ID, "user:1",
 		RevertAndResendOptions{Content: "rewritten prompt", AttachmentIDs: []string{record.ID}},
 	); err != nil {
@@ -318,7 +323,7 @@ func TestRevertAndResendConfirmedKillClearsBackgroundRows(t *testing.T) {
 		t.Fatalf("precondition: running background tasks = %d (%v), want 1", count, err)
 	}
 
-	if err := app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt", KillRunningBackgroundTasks: true}); err != nil {
+	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt", KillRunningBackgroundTasks: true}); err != nil {
 		t.Fatalf("confirmed revert and resend: %v", err)
 	}
 
@@ -373,7 +378,7 @@ func TestRevertAndResendMidTurnAnchorEmitsKeptSet(t *testing.T) {
 	}
 	seedMessageAnchor(t, app.store, thread.ID, "user:steer", 0, "u1", "")
 
-	if err := app.RevertConversationAndResendMessage(thread.ID, "user:steer", RevertAndResendOptions{Content: "rewritten steer"}); err != nil {
+	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:steer", RevertAndResendOptions{Content: "rewritten steer"}); err != nil {
 		t.Fatalf("revert and resend: %v", err)
 	}
 
@@ -476,7 +481,7 @@ func TestRevertAndResendReExpandsComposerCommands(t *testing.T) {
 	}
 
 	const edited = "/workflow start the release"
-	if err := app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{Content: edited}); err != nil {
+	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: edited}); err != nil {
 		t.Fatalf("revert and resend: %v", err)
 	}
 
@@ -504,5 +509,54 @@ func TestRevertAndResendReExpandsComposerCommands(t *testing.T) {
 	})
 	if !strings.Contains(sent, edited) {
 		t.Fatalf("wire payload carries the block but not the typed text: %s", sent)
+	}
+}
+
+// The cut is a fact about the thread and every client applies it. The SAGA
+// running around it is not: "did MY edit-and-resend commit" is a question
+// only the connection that started it can be answering, and a second client
+// recording a marker for somebody else's revert answers it wrong — a later
+// guard rejection on the same anchor reads as a committed revert and sends
+// the failure handler down the recovery branch.
+//
+// The CONNECTION and not the device: two tabs of one browser run independent
+// flows on the same thread.
+func TestARevertAndResendNamesTheConnectionThatStartedIt(t *testing.T) {
+	app, bus := newResendTestApp(t)
+	thread, _ := seedResendThread(t, app, "t-resend-attribution")
+
+	ctx := ctxFromClient(transport.ClientIdentity{DeviceID: "laptop-1", ConnectionID: "conn-9"})
+	if err := app.RevertConversationAndResendMessage(ctx, thread.ID, "user:1", RevertAndResendOptions{
+		Content: "rewritten prompt",
+	}); err != nil {
+		t.Fatalf("revert and resend: %v", err)
+	}
+
+	_, evt := findRevertedEvent(t, bus)
+	if evt.ConnectionID != "conn-9" {
+		t.Fatalf("connectionId = %q, want conn-9", evt.ConnectionID)
+	}
+	if !evt.DraftPendingResend {
+		t.Fatal("draftPendingResend = false; the stamp only matters on a saga frame")
+	}
+}
+
+// An in-process caller has no connection, and the frame carries no stamp. A
+// client must still record its own marker on one: unstamped has to keep
+// meaning what it meant before the stamp existed, or a bundle against an
+// older backend would classify every committed revert as "nothing happened".
+func TestARevertWithNoConnectionCarriesNoStamp(t *testing.T) {
+	app, bus := newResendTestApp(t)
+	thread, _ := seedResendThread(t, app, "t-resend-unstamped")
+
+	if err := app.RevertConversationAndResendMessage(t.Context(), thread.ID, "user:1", RevertAndResendOptions{
+		Content: "rewritten prompt",
+	}); err != nil {
+		t.Fatalf("revert and resend: %v", err)
+	}
+
+	_, evt := findRevertedEvent(t, bus)
+	if evt.ConnectionID != "" {
+		t.Fatalf("connectionId = %q, want empty", evt.ConnectionID)
 	}
 }

@@ -108,14 +108,20 @@ func (h *harnessHost) Emit(channel eventchan.Channel, data any) {
 // Notify drives the send pipe and the activation pipe from one RPC, which is
 // what lets the e2e rig observe both halves without a presenter.
 //
-// The kind is KindWorkflowAttention: the harness is exercising the PIPE, not
-// a mapped moment, so it must ride a kind that carries no per-kind toggle —
-// otherwise a test's notification would depend on a preference the test
-// never set. An allocated id rather than a stable one, for the same reason:
-// this call names no moment to retract.
+// It sends through notifyOSUngated, the one bypass of the preference and
+// attended-screen gates (app_notifications.go), because every one of those
+// reads something the test cannot see or control. The kind toggle would need
+// a preference the test never set, and the attended-screen rules read window
+// focus — a Playwright page HAS focus, so the default `notifyMuteWhenFocused`
+// would silence every harness notification the moment a spec opened the app.
+// Riding KindWorkflowAttention because it had no toggle was the old version
+// of this argument; it has one now, so the bypass is explicit instead.
+//
+// An allocated id rather than a stable one, for the same reason: this call
+// names no moment to retract.
 func (h *harnessHost) Notify(title, body string, target notify.Target) error {
 	return errors.Join(
-		h.app.notifyOS(notify.Send{
+		h.app.notifyOSUngated(notify.Send{
 			ID:     notify.NewID(h.app.notifications.harnessSeq.Add(1)),
 			Kind:   notify.KindWorkflowAttention,
 			Title:  title,

@@ -215,9 +215,11 @@ func TestClientFrameVocabularyIsFrozen(t *testing.T) {
 		frameTypeSubscribe,
 		frameTypeWatch,
 		frameTypeLease,
+		frameTypePresence,
 	}
 	want := map[string]bool{
 		"rpc": true, "replay": true, "subscribe": true, "watch": true, "lease": true,
+		"presence": true,
 	}
 	if len(frozen) != len(want) {
 		t.Fatalf("client frame vocabulary changed: %v", frozen)

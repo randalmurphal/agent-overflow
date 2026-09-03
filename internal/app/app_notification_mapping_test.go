@@ -373,8 +373,46 @@ func TestPreferenceSilencesOnlyTheKindItNames(t *testing.T) {
 	}
 }
 
-// TestTheMasterSwitchSilencesEveryKind, including the two that predate the
-// per-kind toggles: "off" on this screen has to mean off.
+// The two kinds that reach no event tap — a workflow item waiting on a
+// person, and the launcher's "update didn't apply" notice — each have a
+// toggle of their own now, and it silences that kind and nothing else. They
+// are driven through notifyOS directly because that is how their senders
+// reach it: neither is mapped off the event funnel.
+func TestWorkflowAttentionAndAppUpdateHaveTogglesOfTheirOwn(t *testing.T) {
+	for _, tc := range []struct {
+		key      string
+		silenced notify.Kind
+		survives notify.Kind
+	}{
+		{"notifyWorkflowAttention", notify.KindWorkflowAttention, notify.KindAppUpdate},
+		{"notifyAppUpdate", notify.KindAppUpdate, notify.KindWorkflowAttention},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			app, recorder := newNotificationMappingApp(t)
+			if _, err := app.settings.BackendScreen().Update(map[string]any{
+				tc.key: false,
+			}); err != nil {
+				t.Fatalf("update settings: %v", err)
+			}
+			silenced := notify.Send{ID: "a", Kind: tc.silenced, Title: "t", Target: notify.Target{Kind: "none"}}
+			err := app.notifyOS(silenced)
+			var notificationErr *NotificationError
+			if !errors.As(err, &notificationErr) || notificationErr.Code != NotificationSuppressed {
+				t.Fatalf("notifyOS(%s) = %v, want suppressed", tc.silenced, err)
+			}
+			survives := notify.Send{ID: "b", Kind: tc.survives, Title: "t", Target: notify.Target{Kind: "none"}}
+			if err := app.notifyOS(survives); err != nil {
+				t.Fatalf("notifyOS(%s) = %v, want the other kind untouched", tc.survives, err)
+			}
+			if sends := recorder.snapshot(); len(sends) != 1 || sends[0].Kind != tc.survives {
+				t.Fatalf("presenter saw %#v, want only %s", sends, tc.survives)
+			}
+		})
+	}
+}
+
+// TestTheMasterSwitchSilencesEveryKind, every one of the six: "off" on this
+// screen has to mean off, whatever the per-kind toggles say.
 func TestTheMasterSwitchSilencesEveryKind(t *testing.T) {
 	app, recorder := newNotificationMappingApp(t)
 	if _, err := app.settings.BackendScreen().Update(map[string]any{

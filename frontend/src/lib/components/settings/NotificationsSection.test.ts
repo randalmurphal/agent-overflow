@@ -30,6 +30,15 @@ const perKind: Array<[string, keyof Settings]> = [
   ['Toggle approval needed notifications', 'notifyApprovalNeeded'],
   ['Toggle error notifications', 'notifyError'],
   ['Toggle provider signed out notifications', 'notifyProviderSignedOut'],
+  ['Toggle workflow needs attention notifications', 'notifyWorkflowAttention'],
+  ['Toggle app update notifications', 'notifyAppUpdate'],
+];
+
+// The second stack answers a different question, so it is a separate table:
+// these are not per-kind toggles and only one of them defaults on.
+const quietWhen: Array<[string, keyof Settings, boolean]> = [
+  ['Toggle quiet when this window is focused', 'notifyMuteWhenFocused', true],
+  ['Toggle quiet when the thread is on screen', 'notifyMuteWhenThreadVisible', false],
 ];
 
 describe('<NotificationsSection>', () => {
@@ -54,12 +63,28 @@ describe('<NotificationsSection>', () => {
     expect(mock!.mock.calls[0][0]).toEqual({ [key]: false });
   });
 
-  it('hides the per-kind rows when the master switch is off', async () => {
+  it('renders the quiet-when stack at its own defaults', async () => {
+    const { getByRole } = render(NotificationsSection);
+    for (const [name, , on] of quietWhen) {
+      expect(getByRole('switch', { name }).getAttribute('aria-checked')).toBe(String(on));
+    }
+  });
+
+  it.each(quietWhen)('dispatches %s as its own key', async (name, key, on) => {
+    const { getByRole } = render(NotificationsSection);
+    await fireEvent.click(getByRole('switch', { name }));
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ [key]: !on });
+  });
+
+  it('hides every row beneath the master switch when it is off', async () => {
     await seed({ notificationsEnabled: false });
     const { getByRole, queryByRole } = render(NotificationsSection);
     expect(getByRole('switch', { name: 'Toggle desktop notifications' }).getAttribute('aria-checked'))
       .toBe('false');
-    for (const [name] of perKind) {
+    for (const [name] of [...perKind, ...quietWhen]) {
       expect(queryByRole('switch', { name })).toBeNull();
     }
   });

@@ -4,7 +4,7 @@ import { clearThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { clearThreadSizePriors } from '../utils/virtual/priors';
 import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
 import { clearItemProjectionSourcesForThread } from '../utils/itemProjectionSource.svelte';
-import { ListThreads } from './bindings';
+import { ListThreads, MarkThreadRead, MarkThreadUnread } from './bindings';
 import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './liveTodoState.svelte';
 import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
@@ -15,6 +15,7 @@ import { addToast } from './toast.svelte';
 import { releaseThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { onBackendDetached } from '../transport/backends';
+import { withLocalReadMarker } from './threadReadWrites';
 
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn'>>;
 
@@ -176,6 +177,43 @@ export function updateThreadReadState(
  */
 export function updateThreadLastRead(id: string, lastReadAt: number | undefined): void {
   updateThreadReadState(id, { lastReadAt });
+}
+
+/**
+ * Persist the read stamp this client just applied locally.
+ *
+ * The RPC and the claim are one call because they have to be: the claim
+ * is what tells `mergeThreadRowWithLocal` that a row arriving mid-flight
+ * from another client's mark-unread is older than what this page did,
+ * and a caller that could make the write without it would reintroduce
+ * exactly the merge the claim exists to settle.
+ *
+ * Fire-and-forget by contract — a failed read stamp is a sidebar pill
+ * that lingers, not something to interrupt anyone over — so the caller
+ * gets the promise and the rejection is logged here.
+ */
+export function markThreadRead(id: string, lastReadAt: number): Promise<void> {
+  return withLocalReadMarker(id, lastReadAt, () => MarkThreadRead(id))
+    .catch((err) => {
+      console.error('Failed to mark thread read:', err);
+    });
+}
+
+/**
+ * Mark a thread unread and patch the local row to match.
+ *
+ * Explicit unread is persisted as epoch 0; `undefined` means "never
+ * tracked" and is deliberately read as read, for rows that predate the
+ * column. The claim spans the RPC AND the local patch, because the
+ * window a wire row can land in covers both halves — 0 is the smallest
+ * value the field takes, so nothing downstream can tell it from a stale
+ * one on the numbers alone.
+ */
+export async function markThreadUnread(id: string): Promise<void> {
+  await withLocalReadMarker(id, 0, async () => {
+    await MarkThreadUnread(id);
+    updateThreadLastRead(id, 0);
+  });
 }
 
 /**

@@ -62,6 +62,7 @@ function fakeClient(): unknown {
     subscribe: () => () => undefined,
     installStepUpProver: () => undefined,
     setLease: () => undefined,
+    setWatchedThreads: () => undefined,
     getStatus: () => ({ status: 'connected', nextAttemptAt: null }),
     onStatusChange: () => () => undefined,
     getHello: () => null,

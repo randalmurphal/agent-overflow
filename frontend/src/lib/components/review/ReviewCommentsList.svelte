@@ -123,6 +123,11 @@
           <span class="min-w-0 truncate" title={item.author}>{item.author}</span>
           <span class="min-w-0 flex-1"></span>
           {#if item.createdAtMs !== null}
+            <!-- Deliberately unskewed (transport/backendClock.ts). A
+                 forge comment's createdAt is GitHub's or GitLab's clock,
+                 not any backend's, and this list mixes those with local
+                 drafts. Correcting the whole column by one machine's skew
+                 would make the majority of it wrong to fix a minority. -->
             <span class="shrink-0" data-testid="review-comments-item-time">{relativeTime(item.createdAtMs)}</span>
           {/if}
           {#if item.replies > 0}

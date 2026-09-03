@@ -778,10 +778,13 @@ it; the backend derives scope from the authenticated session's device.
   on): `lowPowerMode`, fonts + `fontSize`, `paneDensity`,
   `activityRunWindowRows`, `activityRunDefault`, `streamingEnabled`,
   `diffWordWrap`, `collapseDiffPreviews`, `timestampFormat`,
-  `editor.preference`, `backgroundGitFetch`, `projectSortMode`,
-  `usagePeriod`, `recentWorkspaces`, plus the six spinner-appearance
-  keys the taxonomy wave classified device (display, like fonts and
-  motion).
+  `editor.preference`, `backgroundGitFetch`, `usagePeriod`,
+  `recentWorkspaces`, plus the six spinner-appearance keys the taxonomy
+  wave classified device (display, like fonts and motion).
+  `projectSortMode` was device here until 2026-09-03 and is user tier
+  now (how a person orders their projects follows the person); its
+  value is promoted out of the screen bucket on first read
+  (`retieredKeys`, internal/settings/residency.go).
 
   Adjudicated OUT of this list (2026-08-31, phase-4 design):
   - **Theme** is client-file-resident by design (appearance.json on a
@@ -3640,6 +3643,72 @@ the terminal tab strip is unchanged; the Android WebView's own
 long-press behaviour (whether it raises `contextmenu`, and when) is
 unverified until the on-device pass. The manifest declares
 VIBRATE so the 10ms tick on a handled hold is real on the device.
+
+**Polish pass, convergence residue LANDED (2026-09-03, wave R3).** The
+rest of the cross-device audit. Read markers: explicit unread persists
+as epoch 0, the smallest value `lastReadAt` takes, and the old merge let
+any 0 win forever, so one device's mark-unread could never be read
+again on another short of a reload; `threadReadWrites.ts` now holds a
+claim for the value THIS page load is writing, and the merge is three
+ordered rules (a held claim wins, else a wire 0 wins, else the newest)
+with both RPCs owned by the thread store. Failure frames on
+`provider:approval`, `provider:user_input` and the edit-and-resend cut
+carry the originating `connectionId` (never the device: two tabs answer
+independently) and a receiver reacts only to its own; an unstamped
+frame is applied, the pre-stamp behaviour, so a bundle ahead of its
+backend swallows nothing (§8; the rule is in internal/app/AGENTS.md "A
+broadcast about ONE client's attempt names that client"). No
+"thread is being edited" channel: the thread lock already serialises
+the saga and a client-produced busy flag on a broadcast channel is the
+deferred steering primitive. The watched-thread set is SPLIT across
+attached backends (each machine gets the ids it owns plus every id
+whose owner is unknown) and restated on every later attach; before, the
+home socket alone was narrowed and a pane on an attached machine
+received nothing. `projectSortMode` moved from the device tier to the
+user tier (§6), with `retieredKeys` / `promoteRetieredKeys` as the
+one-shot that lifts the value out of the screen bucket on first read.
+Relative timestamps subtract against the minting backend's clock
+(`backendClock.ts`, from the hello's `clockSkewMs`, a closure per
+backend because a skew-only hello is deliberately not republished);
+absolute forms stay on the device clock, and forge comment times stay
+unskewed because they are the forge's clock. Preview listeners are
+released (`SetPorts(nil)`) on every path that stops scanning, not only
+at shutdown. Residuals, recorded and left: the edit-and-resend
+`executingThreads` set covers one page load only, by design; a
+retiered key that was never set anywhere costs one store read per
+bucket per process until its new home holds a row.
+
+**Polish pass, notification preferences LANDED (2026-09-03, wave R5).**
+Under the B3 ruling (every kind its own toggle, plus quiet-while-focused
+and quiet-while-the-thread-is-on-screen), §9's preference gate grew
+from four toggles to six (`notifyWorkflowAttention`, `notifyAppUpdate`;
+`notificationKindEnabledIn` is now TOTAL over `notify.Kind` with a
+fail-closed default, and a phone's push fan-out reads the same two
+rows from its own bucket) and gained the attended-screen half:
+`notifyMuteWhenFocused` (default on) and `notifyMuteWhenThreadVisible`
+(default off), both device tier, both read only by `notifyOS` against
+the backend machine's own screen. The facts come from a new client
+frame, `presence` (`{focused, threads}`, the watch frame's bounds,
+absolute and replaced whole, never a latch), kept on the Subscriber and
+read by `EventBus.LocalScreenPresence`, which ORs over LOOPBACK
+connections only: the embedded webview, the WSL launcher's WebView2
+(which arrives on loopback through WSL2's localhost forwarding) and a
+`--connect` tab on the same machine are that screen; a phone or a
+remote browser never silences the desk. The frame changes what is
+RAISED and never what is SENT: nothing on the delivery path reads it,
+and the SPA composes it in one leaf (`stores/screenPresence.ts`,
+focus/blur/visibilitychange plus the pane and compact-screen edges)
+that nothing else may import. Refusals are typed apart
+(`NotificationScreenAttended` beside `NotificationSuppressed`) and
+neither is logged; a retraction is never gated by either half; the
+phones are not subject to the attended half. The harness RPC is the one
+named bypass (`notifyOSUngated`, caller list pinned to one by test),
+because a Playwright page HAS focus and the default would silence every
+harness notification. Residuals, recorded and left: a desktop pane
+scrolled off the horizontal strip still counts as on screen (an
+observer per pane is more machinery than the decision is worth); a
+spec that drives a real turn and wants the toast must turn both quiet
+rules off through `UpdateSettings` (e2e/AGENTS.md).
 
 ## 17. Testing
 

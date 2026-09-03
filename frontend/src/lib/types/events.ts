@@ -114,6 +114,14 @@ export interface ApprovalEvent {
   decision?: '' | 'approved' | 'declined' | 'amended' | 'lost' | 'failed';
   detail?: string;
   requestedAt?: number;
+  /**
+   * The page load whose answer failed, on `action: 'fail'` only. A
+   * failure is not a fact about the thread — the prompt is still open
+   * everywhere else — so only the connection that tried shows the
+   * banner. Absent means no screen was behind it (or a backend too old
+   * to stamp it), which reads as "not mine".
+   */
+  connectionId?: string;
 }
 
 export interface UserInputRequest {
@@ -136,6 +144,8 @@ export interface UserInputEvent {
   decision?: '' | 'answered' | 'declined' | 'lost' | 'failed';
   detail?: string;
   requestedAt?: number;
+  /** Mirrors ApprovalEvent.connectionId, on `action: 'fail'` only. */
+  connectionId?: string;
 }
 
 /**

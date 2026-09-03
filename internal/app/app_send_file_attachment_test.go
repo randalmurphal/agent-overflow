@@ -231,7 +231,7 @@ func TestRevertAndResend_MixedAttachmentTurnReachesTheWire(t *testing.T) {
 	}
 
 	ids, fileLine := mixedTurnFixture(t, app, thread.ID)
-	if err := app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{
+	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{
 		Content:       mixedTurnMessage,
 		AttachmentIDs: ids,
 	}); err != nil {

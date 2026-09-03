@@ -1508,11 +1508,54 @@ type, field, and bound (`MaxReplayChannels`, `MaxSubscribeChannels`,
 `MaxRPCParams`, `MaxWatchThreads`, `MaxWatchThreadIDBytes`) beside the decoder.
 What a gap means to a client is not.
 
-A client may send five frame types: `rpc`, `replay`, `subscribe`, `watch` and
-`lease`. `TestClientFrameVocabularyIsFrozen` pins the list, because each one
-is a contract two codebases hold — a new type also needs a word in
-`frontend/src/lib/transport/frames.ts` and a route in `readLoop`, and the
-freeze is what makes that a deliberate edit rather than a compile.
+A client may send six frame types: `rpc`, `replay`, `subscribe`, `watch`,
+`lease` and `presence`. `TestClientFrameVocabularyIsFrozen` pins the list,
+because each one is a contract two codebases hold — a new type also needs a
+word in `frontend/src/lib/transport/frames.ts` and a route in `readLoop`, and
+the freeze is what makes that a deliberate edit rather than a compile.
+
+Three of them state something about the CLIENT rather than asking for
+something, and they are routinely confused because all three mention threads
+or attention. They are different questions with different answers:
+
+| frame | states | the backend changes |
+|---|---|---|
+| `watch` | which threads a surface EXISTS for | which entity-filtered frames this connection is SENT |
+| `lease` | whether the OS has paused this whole client | withholds highlight seeds, merges transcript deltas |
+| `presence` | whether this screen is being LOOKED AT, and what it shows | whether an OS notification is RAISED, and nothing else |
+
+## The screen presence frame
+
+`presence.go` is the third of those, and its whole doctrine is that it
+changes nothing about delivery. `{focused, threads}`, absolute, replacing the
+last frame — not a latch — stored on the `Subscriber` behind one atomic
+pointer, and read only by `EventBus.LocalScreenPresence`, whose one caller is
+`internal/app`'s `screenIsAlreadyLooking`. Same bounds as `watch`
+(`MaxWatchThreads`, `MaxWatchThreadIDBytes`), and a frame past them is a
+`bad_params` refusal that leaves the previous presence standing: a truncated
+set would claim a thread is off screen when it is not.
+
+Four properties, each with a test in `presence_test.go` /
+`conn_presence_test.go`:
+
+- **It is not off-view work shedding, and must never become it.** The only
+  outcome it can produce is a toast that is not raised. Nothing may read
+  `Subscriber.presence` in `deliver`, in `handleReplay`, in the gap
+  accounting or beside the lease, and
+  `TestConnPresenceFrameDoesNotNarrowDelivery` is the tripwire.
+- **Unattended until stated.** A connection that never sent one — every
+  client predating the frame — is not a screen, so the frame is additive and
+  the behaviour before it existed is "every notification is raised".
+- **Only the LOCAL screen counts.** `LocalScreenPresence` ORs over
+  subscribers on a LOOPBACK origin, because the backend interrupts the
+  machine it runs on: a phone the owner is staring at must not silence the
+  desktop in front of them. The WSL deployment is included by that rule
+  rather than excepted from it — WSL2 forwards the distro's `127.0.0.1:<port>`
+  to the Windows host's localhost, so the launcher's WebView2 arrives on the
+  loopback interface and `loopback.PeerAddress` answers true, the same fact
+  `handleWS` already admits the launcher's own sockets on.
+- **It dies with the socket.** No teardown to remember: a closed laptop lid
+  stops being a screen because its subscriber left the bus.
 
 `gap:true` means "your replay seq fell outside the in-memory ring, re-fetch
 through the list endpoints". It is a resync instruction rather than a late

@@ -58,6 +58,15 @@ type Target struct {
 	BackendID string `json:"backendId,omitempty"`
 }
 
+// The target kinds. These are the WIRE spellings: the frontend's tap route
+// (frontend/src/lib/stores/events.ts) and the phone's parser read them
+// verbatim, so a rename here is a wire change, not a refactor.
+const (
+	TargetThread       = "thread"
+	TargetWorkflowItem = "workflow-item"
+	TargetNone         = "none"
+)
+
 // Send is the backend-to-presenter wire payload: the Windows launcher over
 // the transport event ring, and (§9) an attached remote client raising the
 // same notification natively.
@@ -131,7 +140,7 @@ func ValidateTarget(target Target) error {
 		return fmt.Errorf("notification target backendId exceeds %d bytes", MaxBackendIDBytes)
 	}
 	switch target.Kind {
-	case "thread":
+	case TargetThread:
 		if target.ThreadID == "" {
 			return errors.New("notification thread target requires threadId")
 		}
@@ -141,7 +150,7 @@ func ValidateTarget(target Target) error {
 		if target.WorkItemID != "" {
 			return errors.New("notification thread target must not include workflow identifiers")
 		}
-	case "workflow-item":
+	case TargetWorkflowItem:
 		if target.WorkItemID == "" {
 			return errors.New("notification workflow-item target requires workItemId")
 		}
@@ -151,7 +160,7 @@ func ValidateTarget(target Target) error {
 		if target.ThreadID != "" {
 			return errors.New("notification workflow-item target must include only workItemId")
 		}
-	case "none":
+	case TargetNone:
 		if target.ThreadID != "" || target.WorkItemID != "" {
 			return errors.New("notification none target must not include identifiers")
 		}

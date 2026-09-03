@@ -21,6 +21,7 @@ import {
 } from './threadStatuses.svelte';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import { resetBindingMocks } from '../../test/mocks/bindings-app';
+import { getConnectionId } from '../transport/clientIdentity';
 import {
   __resetThreadHistoryStampsForTest,
   getThreadHistoryStamp,
@@ -114,6 +115,43 @@ describe('applyUserMessageReverted', () => {
     expect(consumeResendRevertMarker('thread-a', 'u:1')).toBe(true);
     // Consumed: a second read answers false.
     expect(consumeResendRevertMarker('thread-a', 'u:1')).toBe(false);
+  });
+
+  it('records a marker only for a saga this page load started', async () => {
+    await seedPane();
+    // Another screen ran the edit-and-resend. The cut is a fact about the
+    // thread and this client applies it, but "did MY revert commit" is a
+    // different question and the answer here is no. Recording it would
+    // let a later guard rejection on this anchor read as a committed
+    // revert and send the failure handler down the recovery branch.
+    applyUserMessageReverted({
+      threadId: 'thread-a',
+      userItemId: 'u:1',
+      turnIndex: 1,
+      draftPendingResend: true,
+      connectionId: 'some-other-connection',
+    });
+    expect(consumeResendRevertMarker('thread-a', 'u:1')).toBe(false);
+
+    applyUserMessageReverted({
+      threadId: 'thread-a',
+      userItemId: 'u:2',
+      turnIndex: 2,
+      draftPendingResend: true,
+      connectionId: getConnectionId(),
+    });
+    expect(consumeResendRevertMarker('thread-a', 'u:2')).toBe(true);
+  });
+
+  it('records an unstamped saga frame, as a pre-stamp backend produced it', async () => {
+    await seedPane();
+    applyUserMessageReverted({
+      threadId: 'thread-a',
+      userItemId: 'u:1',
+      turnIndex: 1,
+      draftPendingResend: true,
+    });
+    expect(consumeResendRevertMarker('thread-a', 'u:1')).toBe(true);
   });
 
   it('retires a thread\'s older markers when any newer revert lands', async () => {

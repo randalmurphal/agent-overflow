@@ -649,6 +649,8 @@ func (h *connHandler) readLoop(ctx context.Context) error {
 			h.handleWatch(ctx, frame)
 		case frameTypeLease:
 			h.handleLease(ctx, frame)
+		case frameTypePresence:
+			h.handlePresence(ctx, frame)
 		default:
 			h.writeError(ctx, frame.ID, &FrameError{
 				Code:    ErrCodeBadParams,
@@ -740,6 +742,37 @@ func (h *connHandler) handleLease(ctx context.Context, frame ClientFrame) {
 	case h.leaseWake <- struct{}{}:
 	default:
 	}
+}
+
+// handlePresence records what this connection's screen is already showing
+// (presence.go). Both halves are ABSOLUTE and replace the last frame
+// together, and an empty thread array is legal — it means "no thread on
+// screen", which is a client sitting on its settings page.
+//
+// The bounds are the watch frame's, because the payload is the same thing:
+// a bounded set of thread ids this client named. An oversized set or an
+// unusable id is a bad_params refusal that leaves the previous presence
+// standing, mirroring handleWatch — and standing on the LAST STATED
+// presence is the safe direction here for the same reason it is there: a
+// truncated set would claim a thread is not on screen when it is, and the
+// person would stop being told about it.
+//
+// One reader, deliberately: the OS-notification gate. Nothing on the
+// delivery path may learn this connection is unattended, so this touches
+// neither the subscriber's filters nor the pump — the whole of the write is
+// one atomic store.
+func (h *connHandler) handlePresence(ctx context.Context, frame ClientFrame) {
+	if len(frame.Threads) > MaxWatchThreads {
+		h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid screen presence"})
+		return
+	}
+	for _, threadID := range frame.Threads {
+		if threadID == "" || len(threadID) > MaxWatchThreadIDBytes {
+			h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid screen presence"})
+			return
+		}
+	}
+	h.sub.SetPresence(frame.Focused, frame.Threads)
 }
 
 // dispatchRPC enforces the per-conn concurrency cap and spawns a

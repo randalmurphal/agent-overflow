@@ -233,6 +233,14 @@ document (`frontend/src/lib/stores/watchedThreads.ts`). A surface that stopped
 receiving while off-screen would render stale the moment it is looked at again,
 and the recovery is a resync the user waits through.
 
+Because the filter is per connection, a client attached to several backends
+SPLITS its set rather than repeating it (`transport/backends.ts`
+`setWatchedThreadsEverywhere`): each machine is sent the thread ids it owns,
+plus every id whose owner the client does not yet know. Withholding an id from
+its owner is a surface that silently receives nothing and nothing later
+corrects it, while an unknown owner is the ordinary state of a thread reached
+by deep link or painted from the replica.
+
 ### A client states whether it is running at all
 
 A client sends `{"type":"lease","state":"background"}` when the PLATFORM has

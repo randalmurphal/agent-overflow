@@ -44,6 +44,7 @@ export function stageBackend(
     callByName: vi.fn(async () => undefined),
     subscribe: vi.fn(() => () => undefined),
     installStepUpProver: vi.fn(),
+    setWatchedThreads: vi.fn(),
     getStatus: vi.fn(() => snapshot),
     onStatusChange: vi.fn((listener: (next: TransportStatusSnapshot) => void) => {
       listeners.add(listener);

@@ -83,4 +83,8 @@ export const SETTINGS_DEFAULTS = {
   notifyApprovalNeeded: true,
   notifyError: true,
   notifyProviderSignedOut: true,
+  notifyWorkflowAttention: true,
+  notifyAppUpdate: true,
+  notifyMuteWhenFocused: true,
+  notifyMuteWhenThreadVisible: false,
 } satisfies Settings;

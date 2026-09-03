@@ -263,12 +263,13 @@ func (a *App) notificationBackendID() string {
 // logNotificationFailure reports the first failure of each kind and stays
 // quiet afterwards.
 //
-// A suppressed send is not a failure at all — it is the user's preference
-// being honoured — and logging it would put a line in the log every time a
-// turn completed on a machine where turn notifications are off. Everything
-// else logs ONCE per code: a notification daemon that is not running, or an
-// authorization the user denied, is a standing condition, and one line says
-// it as well as a thousand.
+// Neither GATE outcome is a failure. A suppressed send is the user's
+// preference being honoured, and an attended-screen refusal is them already
+// looking at the thing — logging either would put a line in the log every
+// time a turn completed on a machine where turn notifications are off, or on
+// every turn a person watched finish. Everything else logs ONCE per code: a
+// notification daemon that is not running, or an authorization the user
+// denied, is a standing condition, and one line says it as well as a thousand.
 func (a *App) logNotificationFailure(err error) {
 	if err == nil {
 		return
@@ -278,7 +279,7 @@ func (a *App) logNotificationFailure(err error) {
 	if errors.As(err, &notificationErr) {
 		code = notificationErr.Code
 	}
-	if code == NotificationSuppressed {
+	if code == NotificationSuppressed || code == NotificationScreenAttended {
 		return
 	}
 	if a.notifications.loggedCodes == nil {

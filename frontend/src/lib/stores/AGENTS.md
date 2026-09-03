@@ -107,6 +107,36 @@ stops waking readers.
   ahead of `switchThread`, because a thread only becomes derivable from the
   sources after that resolves — which is after its history and window loads
   have already gone out on the same socket.
+
+  **It composes; it does not address.** Both entry points push through
+  `transport/backends.setWatchedThreadsEverywhere`, which splits the set
+  across every attached connection. Pushing to `wsClient` — the HOME
+  socket, which is what this did — meant every pane on an attached machine
+  was watched by nobody and received none of the narrowed channels. The
+  split rule and why an unknown-owner id goes to everyone are in
+  `transport/AGENTS.md`.
+- `screenPresence.ts` is its DELIBERATE OPPOSITE, and the two must not be
+  confused. It states `{focused, threads}` — `document.hasFocus()`,
+  `document.hidden`, and the panes on screen (every open pane on a desktop,
+  the revealed one under the compact layout) — to every attached backend
+  through `transport/backends.setPresenceEverywhere`. That module reads
+  visibility precisely because the question it answers is "is somebody
+  looking".
+
+  **ONE CONSUMER, AND IT IS NOT IN THIS APP.** The backend reads it in
+  `notifyOS` alone, to decide whether to RAISE an OS notification about
+  something already on screen. Nothing here is sent fewer frames, nothing
+  renders differently, and no work is skipped: off-view work shedding stays
+  banned, and this is not it. Nothing in the SPA may import the module for
+  anything else, and no delivery, subscription or fetch decision may ever be
+  keyed on it.
+
+  App.svelte installs it once (the document's focus and visibility edges are
+  the module's own; the pane and compact-screen edges are a `$effect`). The
+  desktop set is an approximation on purpose — a pane scrolled off the
+  horizontal strip still counts — because resolving it exactly needs an
+  observer per pane on every scroll, for a notification the person sees the
+  moment they scroll back.
 - `thread:updated` is the convergence channel for the thread row, and the
   handler is `eventsThreadRows.ts`. The backend broadcasts one event per
   persisted row change, so the handler must apply the WHOLE row, not the
@@ -129,6 +159,38 @@ stops waking readers.
   applied WITHOUT a cached row (the other patch fields are not), routed to
   `syncThreadActivity`'s keyed live-activity box rather than merged into the
   row, and it clears the thread's error / interrupted badge.
+- **The read marker is the one row field where newer is not larger, and a
+  local write has to say so out loud.** Explicit unread persists as epoch
+  0 — the SMALLEST value `lastReadAt` takes — so `eventsThreadRows.ts`
+  cannot tell "I just marked this unread" from "a 0 that another client
+  already superseded" on the numbers. It used to try: any 0 from any
+  source won, forever, which meant a cached 0 absorbed every later
+  timestamp the backend broadcast and the thread could never read as read
+  again short of a reload (2026-09-03). `threadReadWrites.ts` replaces
+  that with an explicit claim — the value this page load is currently
+  writing, held for as long as it is writing it — and the merge is three
+  ordered rules: a held claim wins outright, else a wire 0 wins, else the
+  newest of everything defined.
+
+  Both writes go through the store (`markThreadRead`, `markThreadUnread`)
+  and both RPCs are registered in `architecture.test.ts`'s
+  `ENTITY_OWNED_BINDINGS` for that reason: a caller making either one
+  directly produces exactly the row the claim exists to settle. The claim
+  spans the RPC AND its local patch, not just the RPC — the window a
+  stale wire row lands in covers either half on its own.
+- **A `fail` frame is broadcast but describes ONE client's attempt, so it
+  carries the connection that made it.** `provider:approval`,
+  `provider:user_input` and the `user_message:reverted` saga frame each
+  stamp `connectionId`, and the handler reacts only when it matches
+  `getConnectionId()`. Without it, a failed approval answer put a sticky,
+  unclearable banner on every screen showing the prompt — which is still
+  open for all of them — and a second client's edit-and-resend recorded a
+  marker that made a later guard rejection read as a committed revert.
+  The CONNECTION and never the device: two tabs of one browser answer and
+  edit independently. An UNSTAMPED frame is applied, which is the
+  pre-stamp behaviour kept verbatim, because the stamp is additive and a
+  bundle running against an older backend must not swallow the only
+  surfacing a failure has.
 - `thread:error_notice` is the third sidebar fact off the same cliff: the
   Failed pill. `{threadId, itemId}` and nothing else — the error PROSE is
   still an item row on the narrowed stream, because prose is only readable

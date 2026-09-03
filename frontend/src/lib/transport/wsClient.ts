@@ -846,6 +846,18 @@ export class WSClient {
   // every connection active, so the two are the same fact on the wire and a
   // client that never calls `setLease` sends nothing and restates nothing.
   private lease: LeaseState = 'active';
+  // What this screen last said it was doing (./frames.ts ClientPresenceFrame).
+  // `null` means nothing has been stated, which the backend treats as
+  // UNATTENDED — the same answer every client predating the frame gives, and
+  // the reason a client that never composes one is unaffected by it.
+  //
+  // The desired state, not the state last written to a socket, on exactly the
+  // terms `watchedThreads` is: it is restated after every hello, so a send
+  // that lost a closing socket costs nothing past that connection.
+  //
+  // It is also the dedup key. A window focus event fires on every alt-tab and
+  // a pane recompute on every open, so an unchanged screen writes no bytes.
+  private presence: { focused: boolean; threads: string[] } | null = null;
 
   constructor(opts: WSClientOptions = {}) {
     this.fetchBootstrap = opts.bootstrap ?? defaultBootstrap;
@@ -1045,6 +1057,47 @@ export class WSClient {
     if (this.lease === state) return;
     this.lease = state;
     this.sendFrame({ type: 'lease', state });
+  }
+
+  /**
+   * State whether this screen is being looked at, and which threads it shows.
+   *
+   * THIS IS NOT THE WATCH SET AND NOT THE LEASE. The watch set is pane
+   * EXISTENCE and narrows what this connection is sent; the lease is the
+   * whole-client native lifecycle. This is neither: it changes nothing about
+   * delivery or rendering, and is read for one decision on the backend —
+   * whether to raise an OS notification about something already on screen
+   * (`internal/app/app_notifications.go`). Nothing here sheds work.
+   *
+   * Both halves replace the last frame together, so a screen that blurs and
+   * closes its pane stops being attended in one frame rather than keeping
+   * whichever half it stopped restating.
+   *
+   * Idempotent, and silent when disconnected: the state is retained and
+   * restated on the next open, beside the watch set and the lease. The door
+   * meant for callers is `stores/screenPresence.ts`, which states it to every
+   * attached backend.
+   */
+  setPresence(focused: boolean, threadIds: readonly string[]): void {
+    // Sorted + deduped for the same reason the watch set is: pane registries
+    // iterate in insertion order, and a reorder that changes nothing about
+    // what is on screen must not write a frame.
+    const threads = [...new Set(threadIds)].sort();
+    if (threads.length > MAX_WATCH_THREADS) {
+      // Unreachable by construction — this set is a subset of the open panes,
+      // which the watch set already bounds. The backend would refuse the
+      // frame, so leave the previous presence standing rather than send a
+      // truncated one: a truncated set claims a thread is off screen when it
+      // is not, and the notification it costs is the one about that thread.
+      console.warn(`wsClient: presence set of ${threads.length} exceeds ${MAX_WATCH_THREADS}; not stating it`);
+      return;
+    }
+    const previous = this.presence;
+    if (previous !== null && previous.focused === focused && sameStringList(previous.threads, threads)) {
+      return;
+    }
+    this.presence = { focused, threads };
+    this.sendFrame({ type: 'presence', focused, threads });
   }
 
   /** Current transport status snapshot. Cheap; safe to call repeatedly. */
@@ -1768,6 +1821,18 @@ export class WSClient {
     // frame — `active` is what the new connection already is.
     if (this.lease !== 'active') {
       this.sendFrame({ type: 'lease', state: this.lease });
+    }
+    // And the screen presence, on the same terms — but unconditionally for a
+    // client that has composed one, because there is no resting value the new
+    // connection already holds: the backend treats an unstated presence as
+    // UNATTENDED, so a focused screen that reconnected without restating
+    // would start raising notifications for what it is looking at.
+    if (this.presence !== null) {
+      this.sendFrame({
+        type: 'presence',
+        focused: this.presence.focused,
+        threads: this.presence.threads,
+      });
     }
     // First-frame after open: replay any missed events. The server
     // only acts on this if the map is non-empty; it's still cheap

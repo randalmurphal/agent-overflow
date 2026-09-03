@@ -15,6 +15,7 @@ const (
 	frameTypeSubscribe = "subscribe"
 	frameTypeWatch     = "watch"
 	frameTypeLease     = "lease"
+	frameTypePresence  = "presence"
 	frameTypeBatch     = "batch"
 	frameTypePing      = "ping"
 	frameTypeHello     = "hello"
@@ -259,6 +260,14 @@ const MaxRPCParams = 64
 //     other spelling is a bad_params refusal that leaves the lease as it
 //     was, and a connection that never sends one behaves exactly as it did
 //     before the frame existed. Doctrine and mechanism: lease.go.
+//   - "presence": state what this screen is ALREADY SHOWING — whether the
+//     client's window has focus, in Focused, and which threads are on
+//     screen, in Threads. Read by exactly one thing, the OS-notification
+//     gate (internal/app notifyOS), to decide whether raising a toast is
+//     worth it. It does not touch delivery, filtering, gap accounting or
+//     the lease, and it must never be given a second reader: shedding
+//     WORK for an unattended surface is a rejected design here
+//     (lease.go, event_entity.go). Doctrine and mechanism: presence.go.
 //
 // Deliberately a SEPARATE frame type from "subscribe" rather than another
 // field on it. The two answer different questions — subscribe narrows by
@@ -279,12 +288,28 @@ type ClientFrame struct {
 	Params           []json.RawMessage `json:"params,omitempty"`
 	LastSeqByChannel map[string]uint64 `json:"lastSeqByChannel,omitempty"`
 	Channels         []string          `json:"channels,omitempty"`
-	// Threads carries a watch frame's absolute entity set. `omitempty` is
-	// correct here and costs nothing: the field is read only for a frame
-	// whose Type is already "watch", so an empty array and an absent one
-	// mean the same thing on that frame — watching nothing — and no other
-	// frame type is affected by its absence.
+	// Threads carries a watch frame's absolute entity set, and a presence
+	// frame's absolute on-screen set. `omitempty` is correct here and costs
+	// nothing: the field is read only for a frame whose Type is already
+	// "watch" or "presence", and on both of those an empty array and an
+	// absent one mean the same thing — nothing watched, nothing on screen —
+	// so no other frame type is affected by its absence.
+	//
+	// ONE field for two frames rather than two, because it carries the same
+	// thing under the same bounds (MaxWatchThreads, MaxWatchThreadIDBytes):
+	// a bounded set of thread ids this client named. The frames differ in
+	// what the backend DOES with the set, which is the Type's job to say.
 	Threads []string `json:"threads,omitempty"`
+	// Focused carries a presence frame's window-focus bit. Read only for a
+	// frame whose Type is already "presence", where an absent field reads
+	// as false — "not attended", which is the resting state every
+	// connection starts in and the one a client that never sends the frame
+	// keeps forever. That is the OPPOSITE of the lease frame's State,
+	// which refuses an absent value: `active` there is the permissive
+	// reading and a serialization bug must not reach it by accident, while
+	// `focused: false` here can only ever cause MORE notifications, never
+	// fewer.
+	Focused bool `json:"focused,omitempty"`
 	// State carries a lease frame's whole-client lifecycle: "active" or
 	// "background", and nothing else (lease.go). Read only for a frame
 	// whose Type is already "lease", so `omitempty` costs nothing and no

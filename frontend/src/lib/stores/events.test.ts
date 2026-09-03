@@ -12,6 +12,7 @@ import {
 import { resetForTest as resetSendQueue } from './sendQueue.svelte';
 import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
 import { getThreads, getThreadLiveActivityAt, refreshThreads } from './threads.svelte';
+import { claimLocalReadMarker, resetLocalReadMarkersForTest } from './threadReadWrites';
 import { getToasts } from './toast.svelte';
 import { getProjectLiveActivityAt, getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
 import {
@@ -23,6 +24,7 @@ import {
   resetForTest as resetProviderStatuses,
 } from './providerStatus.svelte';
 import { transportGapChannel } from '../transport/wsClient';
+import { getConnectionId } from '../transport/clientIdentity';
 import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import {
@@ -89,6 +91,7 @@ describe('setupEventListeners', () => {
     resetThreadStatuses();
     resetSendQueue();
     resetLiveUsageSnapshotsForTest();
+    resetLocalReadMarkersForTest();
     resetProjectsForTest();
     resetRateLimitsInfo();
     resetProviderStatuses();
@@ -854,6 +857,111 @@ describe('setupEventListeners', () => {
 
     expect(pane.pendingApprovals).toEqual([]);
     expect(getThreadStatus('thread-1')).toBe('idle');
+  });
+
+  it('shows an approval failure only on the connection that answered', async () => {
+    const pane = await buildPane();
+    const request = {
+      requestId: 'req-1',
+      threadId: 'thread-1',
+      toolName: 'bash',
+      description: 'Allow bash?',
+      input: null,
+      title: 'Approve bash',
+    };
+    const openIt = () => emitWailsEvent('provider:approval', {
+      action: 'request',
+      threadId: 'thread-1',
+      request,
+    });
+
+    // Another screen answered and the write failed. The prompt is still
+    // open here and this client did nothing, so a sticky banner it can
+    // never clear is the wrong thing to put on it.
+    openIt();
+    emitWailsEvent('provider:approval', {
+      action: 'fail',
+      threadId: 'thread-1',
+      requestId: 'req-1',
+      decision: 'failed',
+      detail: 'provider closed the pipe',
+      connectionId: 'some-other-connection',
+    });
+    expect(pane.generalError).toBeNull();
+
+    // This client's own failure still reaches it: the RPC rejection lands
+    // in an event handler and goes nowhere, so this banner is the only
+    // surfacing the person who pressed the button gets.
+    openIt();
+    emitWailsEvent('provider:approval', {
+      action: 'fail',
+      threadId: 'thread-1',
+      requestId: 'req-1',
+      decision: 'failed',
+      detail: 'provider closed the pipe',
+      connectionId: getConnectionId(),
+    });
+    expect(pane.generalError).toBe('Failed to respond to approval: provider closed the pipe');
+  });
+
+  it('shows a user-input failure only on the connection that submitted', async () => {
+    const pane = await buildPane();
+    const request = {
+      requestId: 'input-1',
+      threadId: 'thread-1',
+      toolName: 'user_input',
+      title: 'User Input Required',
+      questions: [{ id: 'scope', header: 'Scope', question: 'Choose a scope' }],
+    };
+    const openIt = () => emitWailsEvent('provider:user_input', {
+      action: 'request',
+      threadId: 'thread-1',
+      request,
+    });
+
+    openIt();
+    emitWailsEvent('provider:user_input', {
+      action: 'fail',
+      threadId: 'thread-1',
+      requestId: 'input-1',
+      detail: 'provider closed the pipe',
+      connectionId: 'some-other-connection',
+    });
+    expect(pane.generalError).toBeNull();
+
+    openIt();
+    emitWailsEvent('provider:user_input', {
+      action: 'fail',
+      threadId: 'thread-1',
+      requestId: 'input-1',
+      detail: 'provider closed the pipe',
+      connectionId: getConnectionId(),
+    });
+    expect(pane.generalError).toBe('Failed to submit input: provider closed the pipe');
+  });
+
+  it('shows an unstamped approval failure, as a pre-stamp backend produced it', async () => {
+    const pane = await buildPane();
+    emitWailsEvent('provider:approval', {
+      action: 'request',
+      threadId: 'thread-1',
+      request: {
+        requestId: 'req-1',
+        threadId: 'thread-1',
+        toolName: 'bash',
+        description: 'Allow bash?',
+        input: null,
+        title: 'Approve bash',
+      },
+    });
+    emitWailsEvent('provider:approval', {
+      action: 'fail',
+      threadId: 'thread-1',
+      requestId: 'req-1',
+      decision: 'failed',
+      detail: 'provider closed the pipe',
+    });
+    expect(pane.generalError).toBe('Failed to respond to approval: provider closed the pipe');
   });
 
   it('records resolve tombstones even when a pane missed the original request', async () => {
@@ -2282,7 +2390,37 @@ describe('setupEventListeners', () => {
     expect(getThreads()[0]?.latestTurnCompletedAt).toBe(1_000);
   });
 
-  it('preserves an explicit unread marker across a transport-gap thread resync', async () => {
+  it('preserves an explicit unread marker across a transport-gap thread resync while its own write is in flight', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 0, latestTurnCompletedAt: 300 }),
+    ]);
+    await refreshThreads();
+
+    // The mark-unread RPC has not answered yet, so the backend's row
+    // still carries the old stamp. Epoch 0 is the SMALLEST value the
+    // field takes, so nothing in the numbers says it is the newer of
+    // the two; the claim is what says it.
+    const release = claimLocalReadMarker('thread-1', 0);
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 500, latestTurnCompletedAt: 300 }),
+    ]);
+    emitWailsEvent(transportGapChannel, {
+      channel: 'thread:updated',
+      seq: 4,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getThreads()[0]?.lastReadAt).toBe(0);
+    release();
+  });
+
+  it('converges on another device read after the local mark-unread write settles', async () => {
+    // Device B marked the thread unread, so its cached row holds 0.
+    // Device A then opened the thread and the backend broadcast the real
+    // stamp. With no write of its own in flight, B has nothing newer
+    // than the wire row and must take it — the cached 0 used to absorb
+    // every later timestamp for the life of the page.
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', lastReadAt: 0, latestTurnCompletedAt: 300 }),
     ]);
@@ -2298,7 +2436,7 @@ describe('setupEventListeners', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(getThreads()[0]?.lastReadAt).toBe(0);
+    expect(getThreads()[0]?.lastReadAt).toBe(500);
   });
 
   it('converges pane thread rows on completions backfilled by a transport-gap resync', async () => {
@@ -2329,7 +2467,7 @@ describe('setupEventListeners', () => {
     expect(pane.thread?.lastReadAt).toBe(350);
   });
 
-  it('preserves an explicit unread marker when thread:updated is stale', async () => {
+  it('preserves an explicit unread marker when thread:updated is stale mid-write', async () => {
     setBindingMock('ListThreads', async () => [
       makeThread({
         id: 'thread-1',
@@ -2340,6 +2478,7 @@ describe('setupEventListeners', () => {
     ]);
     await refreshThreads();
 
+    const release = claimLocalReadMarker('thread-1', 0);
     emitWailsEvent('thread:updated', {
       action: 'full',
       thread: makeThread({
@@ -2352,6 +2491,48 @@ describe('setupEventListeners', () => {
 
     expect(getThreads()[0]?.title).toBe('New title');
     expect(getThreads()[0]?.lastReadAt).toBe(0);
+    release();
+  });
+
+  it('takes a thread:updated unread from another device once nothing local is in flight', async () => {
+    // The mirror image: this client read the thread, another device
+    // marked it unread, and the backend row now says 0. A forward-only
+    // merge would leave this client the only one seeing it as read.
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 900, latestTurnCompletedAt: 300 }),
+    ]);
+    await refreshThreads();
+
+    emitWailsEvent('thread:updated', {
+      action: 'full',
+      thread: makeThread({ id: 'thread-1', lastReadAt: 0, latestTurnCompletedAt: 300 }),
+    });
+
+    expect(getThreads()[0]?.lastReadAt).toBe(0);
+  });
+
+  it('keeps a local read-ahead when a stale unread row lands during its own write', async () => {
+    // The read-mark persist is in flight and the row the backend still
+    // has says unread. The claim carries the value this client wrote,
+    // so the pane does not flip to unread and back.
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 900, latestTurnCompletedAt: 300 }),
+    ]);
+    await refreshThreads();
+
+    const release = claimLocalReadMarker('thread-1', 900);
+    emitWailsEvent('thread:updated', {
+      action: 'full',
+      thread: makeThread({ id: 'thread-1', lastReadAt: 0, latestTurnCompletedAt: 300 }),
+    });
+    expect(getThreads()[0]?.lastReadAt).toBe(900);
+
+    release();
+    emitWailsEvent('thread:updated', {
+      action: 'full',
+      thread: makeThread({ id: 'thread-1', lastReadAt: 900, latestTurnCompletedAt: 300 }),
+    });
+    expect(getThreads()[0]?.lastReadAt).toBe(900);
   });
 
   it('updates global provider status from app-wide provider:status', async () => {

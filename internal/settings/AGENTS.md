@@ -276,6 +276,29 @@ file, which is what the pre-database boot readers in `main.go` and
   Windows launcher on WSL. It binds class `desktop` with it, because that is
   what that screen is. It is not "the device tier, globally"; a key with no
   screen behind it does not belong in the device tier at all.
+
+  Two rules the residency owes anything that MOVES:
+
+  - **A key that changes tier changes storage, so its existing value has to
+    be moved with it.** `retieredKeys` names every such key and the tier its
+    value was written under before the move; `promoteRetieredKeys` runs the
+    one-shot, following `seedTiers`' rules (never overwrite an existing
+    destination row, log and continue, leave the old row where it is). It
+    runs from `getFor` — a READ — and that placement is forced: a device-tier
+    value lives in the CALLING SCREEN's bucket, and the desktop webview's
+    bucket is keyed on the browser profile's own id, which nothing at boot
+    can enumerate. One attempt per bucket per process, and none at all once
+    every retiered key holds a row in its new home. Delete a row once no
+    install predating the move can still be running;
+    `TestEveryRetieredKeyActuallyLeftTheTierItNames` fails on one that names
+    the tier the key is already in.
+  - **The user tier is not in settings.json, so a file this process cannot
+    read says nothing about it.** All three of `loadFromFile`'s exits —
+    parsed, absent, preserved-as-corrupt — go through `overlayUserTier`. The
+    two fallback exits returned bare defaults until 2026-09-03, which meant
+    an install with no settings.json ignored every user-tier ROW: `mutate`
+    rewrites the file only for a write that moved a key still resident in
+    it, so an owner who has only ever changed preferences never has one.
 - `gendefaults.go` + `gendefaults/`: the generator that makes
   `DefaultSettings` the SINGLE source of settings defaults. It reflects
   the struct's json tags (the `knownSettingsFieldNames` walk), takes each
@@ -313,6 +336,20 @@ file, which is what the pre-database boot readers in `main.go` and
   host-side sender resolves them against the backend machine's own bucket
   (`Service.BackendScreen`) exactly as an attached client resolves them
   against its own.
+
+  **The notification keys are the worked example, and there are two shapes
+  of them.** Six PER-KIND toggles — one per `notify.Kind`, so
+  `notificationKindEnabledIn` is total and no moment is silenceable only by
+  the master switch — plus two ATTENDED-SCREEN keys,
+  `notifyMuteWhenFocused` and `notifyMuteWhenThreadVisible`. All eight are
+  device tier for the same reason: they describe a SCREEN. The attended pair
+  is the sharper case, since it is read ONLY by `Service.BackendScreen()`
+  and never by a client at all; it still belongs to a screen, because the
+  question it answers is about the one this process interrupts.
+  `notifyMuteWhenThreadVisible` is the one that defaults FALSE, so it stays
+  out of `DefaultSettings` altogether (the `ClaudeTUIEnabled` rule: a Go
+  zero value IS the default, and restating it would be a second place for it
+  to drift).
   A DEVICE-tier field may also want a different default on some kinds of
   screen. That is `classDefaults` in `classdefaults.go`, and it is a
   separate decision from `DefaultSettings`: the global default is what a

@@ -58,12 +58,13 @@ const (
 	// KindWorkflowAttention is a workflow item that needs a human or failed.
 	// It predates this mapping (App.notifyOS's first production sender) and
 	// is named here so every send carries a kind and the preference gate is
-	// total. It has no per-kind toggle of its own — the master switch is
-	// what silences it.
+	// total. It has a toggle of its own like every other kind: a moment
+	// nobody can silence individually is one whose only answer is the master
+	// switch, which is the wrong price for one noisy workflow.
 	KindWorkflowAttention Kind = "workflow-attention"
 	// KindAppUpdate is the WSL launcher's "update didn't apply" notice, the
-	// second sender that predates this mapping. Master switch only, same as
-	// KindWorkflowAttention.
+	// second sender that predates this mapping. Its own toggle too, same
+	// reasoning as KindWorkflowAttention.
 	KindAppUpdate Kind = "app-update"
 )
 
@@ -330,7 +331,7 @@ func MapProviderAuth(change ProviderAuthChange) (Notification, bool) {
 		Body:  "Sign in again to keep running turns.",
 		// No route: a provider's login is not a thread and not a workflow
 		// item. The click foregrounds the app, where the sign-in banner is.
-		Target: Target{Kind: "none"},
+		Target: Target{Kind: TargetNone},
 	}}, true
 }
 
@@ -352,7 +353,7 @@ func threadNotification(kind Kind, thread ThreadRef, body string) Notification {
 		Kind:   kind,
 		Title:  title,
 		Body:   SummaryLine(body, MaxBodyRunes),
-		Target: Target{Kind: "thread", ThreadID: thread.ID},
+		Target: Target{Kind: TargetThread, ThreadID: thread.ID},
 	}}
 }
 

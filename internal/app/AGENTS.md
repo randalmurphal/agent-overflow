@@ -254,13 +254,44 @@ WHERE each one is observed and how the sentence is finished.
   never retains a whole wire payload. The queue is a `serialqueue.Queue` rather
   than a bare `go` because ORDER is the retraction contract: a retract that
   overtook its own send would strand the notification forever.
-- **`notifyOS` is the one preference gate**, and that placement is the point: a
+- **`notifyOS` is the one gate**, and that placement is the point: a
   send that reaches a presenter without passing through it does not exist, so no
   sender can ship having forgotten to ask. Checking at each call site is a class
   of bug, not a bug.
-- **A retraction is never gated.** The gate answers "may I interrupt you", and
-  withdrawing something already on screen is the opposite. Gating it would let a
-  toggle flipped mid-flight strand the very alerts it was meant to stop.
+- **TWO QUESTIONS, ONE GATE.** The per-kind toggles answer "is this moment worth
+  an interruption" (`notificationKindEnabledIn`, TOTAL over `notify.Kind` with no
+  permissive default — a kind this build has no preference for is refused, not
+  raised). The ATTENDED-SCREEN rules answer "is this screen already looking"
+  (`screenIsAlreadyLooking`), from `notifyMuteWhenFocused` /
+  `notifyMuteWhenThreadVisible` on the backend machine's own screen and the
+  transport's per-connection presence over its LOOPBACK connections. Both live
+  here for one reason: a sender that could reach a presenter without passing them
+  is a sender that can forget one.
+- **Reading focus here changes NOTHING about delivery.** The only outcome the
+  attended-screen half can produce is a toast that is not raised: no client is
+  sent fewer frames, no surface renders differently, and no work is skipped
+  because something is off-view. Off-view work shedding is a rejected design in
+  this codebase, and this is not it — the alternative to a toast is no toast, not
+  a stale pane. The thread rule applies only to a `Target` that NAMES a thread; a
+  workflow item and the update notice have no pane to be showing.
+- **The refusals are typed apart.** `NotificationSuppressed` is "you turned it
+  off"; `NotificationScreenAttended` is "you were watching". Neither is a fault,
+  so `logNotificationFailure` skips both — but a log line that could not tell
+  them apart would be useless for the one question anybody asks here.
+- **The phones are NOT subject to the attended-screen half.** A phone in a
+  pocket is a different screen from the one the presence describes.
+  `pushFanout` runs after `notifyOS` and applies the per-kind gate per phone
+  and nothing else.
+- **There is exactly ONE bypass, and it is named.** `notifyOSUngated` skips both
+  halves for the harness RPC alone (`app_harness.go`), because every gate reads a
+  preference or a screen an e2e run cannot see or control — a Playwright page HAS
+  focus, so the default `notifyMuteWhenFocused` would silence every harness
+  notification the moment a spec opened the app.
+  `TestOnlyTheHarnessBypassesTheNotificationGate` keeps the caller list at one.
+- **A retraction is never gated**, by either half. The gate answers "may I
+  interrupt you", and withdrawing something already on screen is the opposite.
+  Gating it would let a toggle flipped mid-flight — or somebody walking back to
+  their desk — strand the very alerts it was meant to stop.
 - **A notification body carries no content.** Titles are the thread's own,
   clipped; bodies are fixed phrases from `internal/notify`. The provider's
   stderr tail, the failed turn's error message and the approval's command line
@@ -568,6 +599,15 @@ WHO the owners are, and WHEN a scan is worth doing.
   to PID, because both spawn paths call `procutil.ConfigureGroup` — and
   the group is the half that still matches after a dev server daemonises
   out of the ancestor chain.
+- **A stop releases the listeners.** Both paths that end discovery — the
+  last remote receiver going away, and the halt a scan error records —
+  call `releasePreviewListeners`, which is `SetPorts(nil)`. Discovery
+  stopping is what makes the published list unmaintainable, so a gateway
+  still holding a port from the last good scan is serving an address
+  nothing re-verifies and that no `DisallowPreviewPort` will visit,
+  because the row it acted on is gone. Any future exit from the scan owes
+  the same call; it is cheap and it refuses to build a gateway that does
+  not exist.
 - **A scan error stops discovery and is remembered.** Every error a scan
   can return comes from the enumerator (this platform cannot look, or the
   socket tables cannot be read) and neither changes on a retry; the probe
@@ -742,6 +782,39 @@ The frontend half is `frontend/src/lib/stores/serviceUpdate.svelte.ts` (one box
 per attached backend, fed by both channels and re-read on every hello) and
 `components/settings/MachineUpdates.svelte`; its guide entry is
 `frontend/src/lib/stores/AGENTS.md`.
+
+## A broadcast about ONE client's attempt names that client
+
+An event channel that is not entity-filtered reaches every client, which is
+right for a fact about the THREAD and wrong for a fact about one caller's
+call. Three frames are the second kind, and each carries the connection that
+produced it so a receiver can tell whose it is:
+
+- `provider:approval` and `provider:user_input` with `action:"fail"`
+  (`app_approval.go`, `emitApprovalFailure` / `emitUserInputFailure`). The
+  prompt is still open on every other screen; a sticky "Failed to respond to
+  approval" banner there is both wrong and unclearable by whoever reads it.
+  The `resolve` half is deliberately unstamped — that one IS everybody's.
+- `user_message:reverted` with `DraftPendingResend`
+  (`app_revert_and_resend.go`). The cut is everybody's and every client
+  applies it; the SAGA is not, and a second client recording a marker for it
+  makes a later guard rejection read as a committed revert.
+
+Three rules hold for all of them, and for the fourth one somebody adds:
+
+- **The CONNECTION, never the device.** Two tabs of one browser answer and
+  edit independently, so a device stamp puts the losing tab's error on the
+  other one. It is the same key `app_draft_broadcast.go` suppresses a
+  draft echo on, and for the same reason.
+- **An empty stamp is a real value**, produced by every in-process caller
+  (a saga, a workflow phase, a test) and read by the client as "apply it".
+  That keeps a bundle running against an older backend behaving exactly as
+  it did rather than silently swallowing a failure whose only surfacing
+  this is.
+- **Reaching the caller needs a leading `ctx context.Context`** and
+  `clientOf(ctx)`. The generator strips it from the TS bindings, so no wire
+  signature and no method ID moves — regenerate both halves anyway, because
+  the doc comment travels.
 
 ## An armed resource belongs to its connection
 

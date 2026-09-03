@@ -17,7 +17,6 @@ import {
   DeleteThread,
   ForkThread,
   GitRemoveWorktree,
-  MarkThreadUnread,
   PinThread,
   RenameThread,
   SetThreadPinGroup,
@@ -25,9 +24,9 @@ import {
   UnpinThread,
 } from '../../stores/bindings';
 import {
+  markThreadUnread,
   prependThread,
   removeThread,
-  updateThreadLastRead,
   updateThreadPinState,
   updateThreadTitle,
 } from '../../stores/threads.svelte';
@@ -136,10 +135,10 @@ export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
 
 export async function markThreadUnreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
-    await MarkThreadUnread(ctx.thread.id);
-    // Explicit unread is persisted as epoch 0. Undefined means "never
-    // tracked" and is intentionally treated as read for old rows.
-    updateThreadLastRead(ctx.thread.id, 0);
+    // The store owns the RPC and the local patch together: the two have
+    // to happen under one claim on the read marker, or a thread:updated
+    // row landing between them wins on a comparison it cannot make.
+    await markThreadUnread(ctx.thread.id);
     addToast('info', 'Marked unread.');
   } catch (err) {
     console.error('Failed to mark thread unread:', err);

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -19,7 +20,10 @@ func TestASecondAnswerToOnePromptIsReportedAsAlreadyHandled(t *testing.T) {
 	app.ensureTriageRouter()
 
 	var failures []provider.ApprovalEvent
-	app.emitEventFn = func(name string, data any) {
+	// testEmitHook, not emitEventFn: a.emit forwards to THIS hook, and the
+	// other one observes a different funnel — so the "no failure event"
+	// assertion below was passing against a recorder nothing wrote to.
+	app.testEmitHook = func(name string, data any) {
 		if name != eventchan.ProviderApproval.String() {
 			return
 		}
@@ -37,7 +41,7 @@ func TestASecondAnswerToOnePromptIsReportedAsAlreadyHandled(t *testing.T) {
 	}
 	failures = nil
 
-	err := app.RespondToApproval("thread-1", provider.ApprovalResponse{
+	err := app.RespondToApproval(context.Background(), "thread-1", provider.ApprovalResponse{
 		RequestID: "req-1",
 		Decision:  "accept",
 	})
@@ -62,7 +66,7 @@ func TestASecondUserInputSubmissionIsReportedAsAlreadyHandled(t *testing.T) {
 		t.Fatal("the first submission was refused")
 	}
 
-	err := app.RespondToUserInput("thread-1", provider.UserInputResponse{
+	err := app.RespondToUserInput(context.Background(), "thread-1", provider.UserInputResponse{
 		RequestID: "req-1",
 	})
 	if !errors.Is(err, transport.ErrAlreadyHandled) {
@@ -77,7 +81,7 @@ func TestAFailedAnswerCanBeRetried(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.ensureTriageRouter()
 
-	first := app.RespondToApproval("thread-1", provider.ApprovalResponse{
+	first := app.RespondToApproval(context.Background(), "thread-1", provider.ApprovalResponse{
 		RequestID: "req-1",
 		Decision:  "accept",
 	})
@@ -89,7 +93,7 @@ func TestAFailedAnswerCanBeRetried(t *testing.T) {
 	}
 
 	// The retry must reach the same failure, not a spurious already-handled.
-	second := app.RespondToApproval("thread-1", provider.ApprovalResponse{
+	second := app.RespondToApproval(context.Background(), "thread-1", provider.ApprovalResponse{
 		RequestID: "req-1",
 		Decision:  "accept",
 	})

@@ -135,6 +135,15 @@ var tierByKey = map[string]Tier{
 	//     like.
 	"backgroundGitFetch": TierUser,
 	"editor":             TierUser,
+	// Retiered from device 2026-09-03: how a person likes their project
+	// list ordered is a preference about their own work, not about the
+	// screen showing it. The sidebar store has always said so in prose
+	// ("a user preference, not view state"), and the two halves
+	// disagreeing meant a phone and a laptop sorted differently with
+	// nothing in the UI to explain why. Its value on installs that
+	// predate this move is promoted out of the screen bucket it was
+	// written into; see retieredKeys in residency.go.
+	"projectSortMode": TierUser,
 
 	// ---- device: this screen and this installation ----------------------
 	"lowPowerMode":          TierDevice,
@@ -148,7 +157,6 @@ var tierByKey = map[string]Tier{
 	"diffWordWrap":          TierDevice,
 	"collapseDiffPreviews":  TierDevice,
 	"timestampFormat":       TierDevice,
-	"projectSortMode":       TierDevice,
 	"usagePeriod":           TierDevice,
 	"recentWorkspaces":      TierDevice,
 	// OS notifications are a property of the SCREEN they interrupt: a
@@ -169,6 +177,14 @@ var tierByKey = map[string]Tier{
 	"notifyApprovalNeeded":    TierDevice,
 	"notifyError":             TierDevice,
 	"notifyProviderSignedOut": TierDevice,
+	"notifyWorkflowAttention": TierDevice,
+	"notifyAppUpdate":         TierDevice,
+	// The two "quiet when" keys are the same tier for the same reason, one
+	// step further in: they do not ask which moments matter, they ask
+	// whether THIS screen is already being looked at. That question has no
+	// answer at all without a screen to ask it of.
+	"notifyMuteWhenFocused":       TierDevice,
+	"notifyMuteWhenThreadVisible": TierDevice,
 	// Spinner appearance is display, like fonts and motion.
 	"spinnerVerbsEnabled":         TierDevice,
 	"spinnerAnimationsEnabled":    TierDevice,

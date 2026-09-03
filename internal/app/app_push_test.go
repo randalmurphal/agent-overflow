@@ -197,6 +197,39 @@ func TestAPhoneIsWokenOnItsOwnPreferences(t *testing.T) {
 	}
 }
 
+// The two kinds that reach no event tap ride the SAME per-phone gate, because
+// there is one switch and not a copy per screen. A phone that silenced
+// workflow attention still buzzes for an update notice.
+func TestAPhoneSilencesTheTwoLateKindsOnItsOwn(t *testing.T) {
+	app, sender := pushApp(t)
+	quiet := pairPhone(t, app, "thumb-quiet", "token-quiet")
+	pairPhone(t, app, "thumb-loud", "token-loud")
+
+	if _, err := app.UpdateSettings(callFrom(quiet.ID, false), map[string]any{
+		"notifyWorkflowAttention": false,
+	}); err != nil {
+		t.Fatalf("UpdateSettings on the quiet phone: %v", err)
+	}
+
+	attention := notify.Send{
+		ID: "workflow:item", Kind: notify.KindWorkflowAttention, Title: "t",
+		Target: notify.Target{Kind: "none"},
+	}
+	firedPush(t, app, attention)
+	if got := sender.tokens(); len(got) != 1 || got[0] != "token-loud" {
+		t.Fatalf("woken = %v, want only the phone that still wants workflow notices", got)
+	}
+
+	update := notify.Send{
+		ID: "app:update", Kind: notify.KindAppUpdate, Title: "t",
+		Target: notify.Target{Kind: "none"},
+	}
+	firedPush(t, app, update)
+	if got := sender.tokens(); len(got) != 3 {
+		t.Fatalf("woken = %v, want both phones woken for a kind neither silenced", got)
+	}
+}
+
 // A RETRACTION IS NEVER GATED — the same rule notifyOS holds, for the same
 // reason: a toggle flipped between a send and its withdrawal must not strand
 // the notification it was flipped to stop.

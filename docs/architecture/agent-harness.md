@@ -237,6 +237,20 @@ are not:
   harness should exercise — and it is why the e2e suite filters
   notification traffic by thread id rather than waiting on "the next
   send".
+
+  `HarnessNotify` itself is the ONE exception, and it is explicit:
+  it sends through `notifyOSUngated`, the single named bypass of
+  `notifyOS`'s two gates. Both of them read something an e2e run cannot
+  see or set — a per-kind preference the spec never wrote, and the
+  attended-screen rules, which read window focus. A Playwright page HAS
+  focus, so the default `notifyMuteWhenFocused` would silence every
+  harness notification the moment a spec opened the app. Riding
+  `KindWorkflowAttention` because it had no toggle was the previous
+  version of this argument; it has one now, so the bypass is stated
+  rather than smuggled, and
+  `TestOnlyTheHarnessBypassesTheNotificationGate` keeps its caller list
+  at one. The MAPPED sends above still pass both gates in full, which is
+  what keeps the gate itself production code under the harness.
 - **pprof.** Still opt-in via `AGENT_OVERFLOW_PPROF`, but a BARE enable
   (`1`/`true`) binds an ephemeral loopback port on an isolated boot
   instead of `pprofserve`'s fixed `127.0.0.1:6363`. Isolated boots are

@@ -91,23 +91,67 @@ func (a *App) startDevServerPreviews() {
 		for {
 			select {
 			case <-ctx.Done():
+				a.releasePreviewListeners()
 				return
 			case <-ticker.C:
-				if !a.devServerScanWanted() {
-					continue
-				}
-				if _, err := a.scanDevServers(ctx); err != nil {
-					// Every error a scan can return is the machine saying
-					// it cannot be looked at, and that does not change on
-					// a retry. Stopping is what makes it an answer rather
-					// than a log line repeated every three seconds; the
-					// RPC returns the same sentence to whoever asks.
-					log.Printf("devscan: dev-server discovery stopped: %v", err)
+				if !a.devServerScanTick(ctx) {
 					return
 				}
 			}
 		}
 	}()
+}
+
+// devServerScanTick runs one pass and reports whether the loop goes on.
+// Its own method because both of its stop paths have to hand the
+// listeners back, and a body inlined in a goroutine has no test.
+func (a *App) devServerScanTick(ctx context.Context) bool {
+	if !a.devServerScanWanted() {
+		// Nobody off this machine can read the list any more, so nothing
+		// may stay bound on the strength of the last pass that could.
+		a.releasePreviewListeners()
+		return true
+	}
+	if _, err := a.scanDevServers(ctx); err != nil {
+		// Every error a scan can return is the machine saying it cannot
+		// be looked at, and that does not change on a retry. Stopping is
+		// what makes it an answer rather than a log line repeated every
+		// three seconds; the RPC returns the same sentence to whoever
+		// asks. The listeners were handed back where the halt was
+		// recorded, so an on-demand GetDevServers that halts frees them
+		// too.
+		log.Printf("devscan: dev-server discovery stopped: %v", err)
+		return false
+	}
+	return true
+}
+
+// releasePreviewListeners retires every listener the last pass bound.
+//
+// A preview listener exists because a scan put its port in the served
+// set, and `reconcilePreviewListeners` is the only thing that ever takes
+// one back out — so every path that stops scanning leaves the whole set
+// bound with nobody reading the list it was reconciled against. Three
+// paths do that: the receiver count going to zero (the last remote
+// session detached), a halted enumerator, and the life context ending.
+// The first is not shutdown at all, so the gateway must survive it: this
+// releases the PORTS and keeps the gateway, and the next pass rebinds
+// whatever is still listening. Shutdown is `closePreviewGateway`, which
+// retires the grants too.
+//
+// Nothing is built here. A gateway that was never constructed has no
+// listeners to release, and building one to hand it an empty set would
+// bind the transport server into a backend that served no preview.
+func (a *App) releasePreviewListeners() {
+	if !a.previewGatewayBuilt() {
+		return
+	}
+	a.preview.mu.Lock()
+	gateway := a.preview.gateway
+	a.preview.mu.Unlock()
+	if gateway != nil {
+		gateway.SetPorts(nil)
+	}
 }
 
 // devServerScanWanted reports whether anybody off this machine is in a
@@ -144,6 +188,13 @@ func (a *App) scanDevServers(ctx context.Context) ([]devscan.DevServer, error) {
 		a.preview.halted = err
 		a.preview.last = nil
 		a.preview.mu.Unlock()
+		// Halting is permanent, so no later pass will ever reconcile the
+		// served set again. Hand the last pass's listeners back here,
+		// where the halt is recorded, rather than in the loop: the
+		// on-demand RPC halts through this same path and would otherwise
+		// leave a backend that can no longer look at itself still
+		// proxying whatever it saw last.
+		a.releasePreviewListeners()
 		return nil, err
 	}
 

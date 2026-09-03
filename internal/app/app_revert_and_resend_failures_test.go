@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -57,7 +58,7 @@ func TestRevertAndResendStagingFailureLeavesEverythingUntouched(t *testing.T) {
 		t.Fatalf("seed corrupt draft: %v", err)
 	}
 
-	err := app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"})
+	err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"})
 	if err == nil {
 		t.Fatal("revert and resend succeeded with an undecodable draft row, want the staging step to fail")
 	}
@@ -125,7 +126,7 @@ func TestRevertAndResendRollbackFailureAfterStagingKeepsCrashCopy(t *testing.T) 
 	}
 
 	const edited = "rewritten prompt"
-	err = app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{Content: edited})
+	err = app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: edited})
 	if err == nil {
 		t.Fatal("revert and resend succeeded with no session file, want the provider rollback to fail")
 	}
@@ -211,7 +212,7 @@ func TestRevertAndResendConvergesOnRetryAfterCommittedProviderCut(t *testing.T) 
 
 	// The retry.
 	const edited = "rewritten steer"
-	if err := app.RevertConversationAndResendMessage(thread.ID, "user:steer", RevertAndResendOptions{Content: edited}); err != nil {
+	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:steer", RevertAndResendOptions{Content: edited}); err != nil {
 		t.Fatalf("retried revert and resend: %v", err)
 	}
 
@@ -261,7 +262,7 @@ func TestRevertAndResendRestoresChipsAndPlanLinkByteIdentical(t *testing.T) {
 		t.Fatalf("seed WIP draft: %v", err)
 	}
 
-	if err := app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"}); err != nil {
+	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"}); err != nil {
 		t.Fatalf("revert and resend: %v", err)
 	}
 
@@ -298,6 +299,7 @@ func TestRevertAndResendStagedCrashCopyKeepsChipsAndPlanLink(t *testing.T) {
 
 	const edited = "rewritten prompt"
 	if err := app.RevertConversationAndResendMessage(
+		context.Background(),
 		thread.ID, "user:1",
 		RevertAndResendOptions{Content: edited, AttachmentIDs: []string{"att-edited"}},
 	); err == nil {
@@ -356,7 +358,7 @@ func TestRevertAndResendSerializesConcurrentSendAfterReplacement(t *testing.T) {
 	}
 
 	const edited = "rewritten prompt"
-	if err := app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{Content: edited}); err != nil {
+	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: edited}); err != nil {
 		t.Fatalf("revert and resend: %v", err)
 	}
 	select {
@@ -453,6 +455,7 @@ func TestRevertAndResendSettlesDraftAgainstMidSagaComposerSaves(t *testing.T) {
 			}
 
 			if err := app.RevertConversationAndResendMessage(
+				context.Background(),
 				thread.ID, "user:1",
 				RevertAndResendOptions{Content: "rewritten prompt"},
 			); err != nil {
@@ -518,6 +521,7 @@ func TestRevertAndResendReportsSuccessWhenTheSettleFails(t *testing.T) {
 	}
 
 	if err := app.RevertConversationAndResendMessage(
+		context.Background(),
 		thread.ID, "user:1",
 		RevertAndResendOptions{Content: "rewritten prompt"},
 	); err != nil {
@@ -539,7 +543,7 @@ func TestRevertAndResendProceedsOncePendingSendResolves(t *testing.T) {
 	thread, _ := seedResendThread(t, app, "t-resend-pending-release")
 
 	app.triage.RegisterPendingSendWithExpectation(thread.ID, "user:1", 1, triage.PendingSendExpectation{ProviderItemID: ""})
-	err := app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"})
+	err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"})
 	if err == nil || !strings.Contains(err.Error(), "awaiting provider confirmation") {
 		t.Fatalf("error = %v, want the pending-send refusal", err)
 	}
@@ -552,7 +556,7 @@ func TestRevertAndResendProceedsOncePendingSendResolves(t *testing.T) {
 	}
 
 	const edited = "rewritten prompt"
-	if err := app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{Content: edited}); err != nil {
+	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: edited}); err != nil {
 		t.Fatalf("revert and resend after the pending send resolved: %v", err)
 	}
 	items, err := app.store.ListItems(thread.ID)
@@ -609,7 +613,7 @@ func TestRevertAndResendCodexForksAndResends(t *testing.T) {
 	}
 
 	const edited = "rewritten prompt"
-	if err := app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{Content: edited}); err != nil {
+	if err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: edited}); err != nil {
 		t.Fatalf("codex revert and resend: %v", err)
 	}
 
@@ -689,7 +693,7 @@ func TestRevertAndResendCodexRollbackFailureKeepsCrashCopy(t *testing.T) {
 	}
 
 	const edited = "rewritten prompt"
-	err := app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{Content: edited})
+	err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: edited})
 	if err == nil || !strings.Contains(err.Error(), "expected anchor") {
 		t.Fatalf("error = %v, want the fork tail mismatch to abort the rollback", err)
 	}

@@ -264,6 +264,27 @@ export interface Settings {
   notifyError: boolean;
   /** OS notification when a provider's login is gone. Default on. */
   notifyProviderSignedOut: boolean;
+  /** OS notification when a workflow item waits on a person or fails. Default on. */
+  notifyWorkflowAttention: boolean;
+  /** OS notification when an app update did not apply. Default on. */
+  notifyAppUpdate: boolean;
+  /**
+   * Quiet while this app's window has focus on the screen being
+   * interrupted. Default on: a toast on the window you are typing in tells
+   * you something already in front of you.
+   *
+   * Read by the backend's own sender and nowhere in the renderer. It
+   * decides whether an OS notification is RAISED, never what a client is
+   * sent or what it draws.
+   */
+  notifyMuteWhenFocused: boolean;
+  /**
+   * Quiet about a thread that is open in a visible pane on that screen,
+   * even when another app has focus. Default OFF — a pane in an unfocused
+   * window is weak evidence a person saw the moment. Same read-side rule
+   * as `notifyMuteWhenFocused`.
+   */
+  notifyMuteWhenThreadVisible: boolean;
   /**
    * Working-indicator spinner verbs: replace the rail's "Working" label
    * with one verb per turn, drawn from the built-in list plus

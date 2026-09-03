@@ -89,6 +89,25 @@ type UserMessageRevertedEvent struct {
 	// still-open editor on failure). False on the un-send path, where
 	// the draft row IS the restored composer.
 	DraftPendingResend bool `json:"draftPendingResend,omitempty"`
+	// ConnectionID names the page load whose edit-and-resend saga produced
+	// this cut, and is set only alongside DraftPendingResend.
+	//
+	// The cut itself is a fact about the thread and every client applies
+	// it. What is NOT shared is the saga: the frontend records a marker on
+	// this event and its own failure handler consumes it to decide whether
+	// its revert committed (frontend/src/lib/stores/eventsMessageRevert.ts),
+	// so a second client's saga would otherwise answer the first client's
+	// question — reporting a committed revert to a caller whose own call
+	// never got one. Suppression is by CONNECTION and never by device: two
+	// tabs of one browser run independent sagas.
+	//
+	// Empty means no screen was behind the call (a saga, a test) or a
+	// backend too old to stamp it. A receiver RECORDS an unstamped cut as
+	// its own (frontend/src/lib/stores/eventsMessageRevert.ts,
+	// resendIsOurs), the pre-stamp behaviour kept for a bundle ahead of
+	// its backend; stamping is what keeps one client's saga out of the
+	// others' failure handlers.
+	ConnectionID string `json:"connectionId,omitempty"`
 }
 
 // InterruptAndRevertIfClean is the unified Stop-button entry point.

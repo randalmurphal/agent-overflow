@@ -66,6 +66,7 @@ function stageMachine(overrides: Partial<BackendDescriptor> = {}): {
     callByName: vi.fn(async () => undefined),
     subscribe: vi.fn(() => () => undefined),
     installStepUpProver: vi.fn(),
+    setWatchedThreads: vi.fn(),
     setLease: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onStatusChange: vi.fn(() => () => undefined),

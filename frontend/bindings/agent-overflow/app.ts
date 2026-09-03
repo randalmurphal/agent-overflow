@@ -3500,6 +3500,12 @@ export function ResizeTerminal(terminalID: string, rows: number, cols: number): 
  * failure event, because nothing failed — the question was answered without
  * them, which is the state they wanted. Forwarding both answers would send
  * the provider a second response for a request it has already resolved.
+ * 
+ * ctx is here for the CALLER's identity, not for cancellation: the failure
+ * events below are stamped with the connection that asked, so the sticky
+ * banner they raise lands on that screen and not on every other one. The
+ * generated TS bindings strip a leading ctx, so the wire signature is
+ * unchanged.
  */
 export function RespondToApproval(threadID: string, response: provider$0.ApprovalResponse): $CancellablePromise<void> {
     return $Call.ByID(1919237704, threadID, response);
@@ -3623,6 +3629,12 @@ export function RetryThreadWorktreeSetup(threadID: string): $CancellablePromise<
  * lock this saga holds across the whole sequence. Rather than reach
  * half of the takeover machinery from inside the lock, an unguarded
  * call fails loudly.
+ * 
+ * ctx is here for the CALLER's identity, not for cancellation: the cut event
+ * below is stamped with the connection that asked, because the frontend's
+ * own failure handler keys on it (see UserMessageRevertedEvent.ConnectionID).
+ * The generated TS bindings strip a leading ctx, so the wire signature is
+ * unchanged.
  */
 export function RevertConversationAndResendMessage(threadID: string, userItemID: string, opts: app$0.RevertAndResendOptions): $CancellablePromise<void> {
     return $Call.ByID(2059566413, threadID, userItemID, opts);
@@ -3777,6 +3789,11 @@ export function SendPlanRevisionComments(threadID: string, planItemID: string, c
  * change cost a redundant round trip. Suppression is re-armed after the
  * write because the event arrives asynchronously, after os.Rename has
  * already returned.
+ * 
+ * Host-scoped because the file it writes is THIS machine's appearance
+ * (theme-system.md decision 4: local-only writes, per client). A paired
+ * device holds its own selection in its own storage; settings:write would
+ * have let it repaint the desktop it is not looking at.
  */
 export function SetAppearance(appearance: theme$0.Appearance): $CancellablePromise<void> {
     return $Call.ByID(3167202905, appearance);

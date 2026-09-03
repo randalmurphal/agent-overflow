@@ -165,11 +165,40 @@ export interface ClientLeaseFrame {
   state: LeaseState;
 }
 
+/**
+ * State whether the screen this client is drawn on is being LOOKED AT, and
+ * which threads it is showing.
+ *
+ * Read for exactly one decision: whether the backend raises an OS
+ * notification it was about to raise (`internal/app/app_notifications.go`
+ * `screenIsAlreadyLooking`). It never changes what this connection is sent,
+ * what it renders, or what work the backend does — off-view work shedding is
+ * a rejected design here, and the alternative to a toast is no toast, not a
+ * stale pane.
+ *
+ * Only the backend's OWN screen counts, which the backend decides for itself
+ * from the connection's origin: a phone the owner is staring at never
+ * silences the desktop in front of them.
+ *
+ * Both fields are ABSOLUTE and replace the last frame together — this is not
+ * a latch. `threads` carries the same bounds as `watch`, and an empty array
+ * is legal and meaningful (a screen sitting on its settings page is focused
+ * with no thread on it). A connection that has never sent one is treated as
+ * unattended, which is what every client predating the frame is and what
+ * makes it additive.
+ */
+export interface ClientPresenceFrame {
+  type: 'presence';
+  focused: boolean;
+  threads: string[];
+}
+
 export type ClientFrame =
   | ClientRPCFrame
   | ClientReplayFrame
   | ClientWatchFrame
-  | ClientLeaseFrame;
+  | ClientLeaseFrame
+  | ClientPresenceFrame;
 
 // Logged strings (channel names, error messages) get clamped before
 // reaching console / toast surfaces. Caps the worst-case noise from a

@@ -57,6 +57,27 @@ export interface TransportHandle {
    * the interface a caller reaches for.
    */
   setLease(state: LeaseState): void;
+  /**
+   * Narrow this connection's entity-filtered channels to `threadIds`.
+   *
+   * Per connection because that is what the frame does: a machine can
+   * only push frames about threads it holds. ./backends.ts owns the SPLIT
+   * (`setWatchedThreadsEverywhere`) and `stores/watchedThreads.ts` owns
+   * the composition; a per-handle call is the mechanism, not the
+   * interface a caller reaches for.
+   */
+  setWatchedThreads(threadIds: readonly string[]): void;
+  /**
+   * State whether the screen behind this connection is being looked at,
+   * and which threads it shows.
+   *
+   * Neither of the two above: it narrows nothing and sheds no work. The
+   * backend reads it for one decision — whether to raise an OS
+   * notification about something already on screen — and only for its own
+   * machine's connections. ./backends.ts fans it out
+   * (`setPresenceEverywhere`) and `stores/screenPresence.ts` composes it.
+   */
+  setPresence(focused: boolean, threadIds: readonly string[]): void;
   subscribe(channel: string, handler: (data: unknown) => void): () => void;
 }
 

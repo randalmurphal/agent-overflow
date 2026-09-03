@@ -361,6 +361,14 @@ func TestNotificationPreferencesDefaultOn(t *testing.T) {
 		"notifyApprovalNeeded":    DefaultSettings.NotifyApprovalNeeded,
 		"notifyError":             DefaultSettings.NotifyError,
 		"notifyProviderSignedOut": DefaultSettings.NotifyProviderSignedOut,
+		// The two kinds that predated the mapping have toggles of their own
+		// now, and they default ON for the same reason the other four do:
+		// they were unconditional before the keys existed.
+		"notifyWorkflowAttention": DefaultSettings.NotifyWorkflowAttention,
+		"notifyAppUpdate":         DefaultSettings.NotifyAppUpdate,
+		// "Quiet when this window is focused" is the one attended-screen
+		// rule that is on by default; see the field.
+		"notifyMuteWhenFocused": DefaultSettings.NotifyMuteWhenFocused,
 	} {
 		if !on {
 			t.Errorf("%s defaults off", key)
@@ -370,6 +378,17 @@ func TestNotificationPreferencesDefaultOn(t *testing.T) {
 			t.Errorf("%s is tier %q (known=%t), want %q: a notification interrupts a SCREEN",
 				key, tier, ok, TierDevice)
 		}
+	}
+	// The weaker attended-screen rule is the one notification preference
+	// that defaults OFF, so it must NOT appear in DefaultSettings —
+	// writeSparse persists what differs from the defaults, and listing it
+	// would drop a user's `true` on the next write.
+	if DefaultSettings.NotifyMuteWhenThreadVisible {
+		t.Error("notifyMuteWhenThreadVisible defaults on; a thread on screen in an unfocused " +
+			"window is weak evidence a person saw the moment")
+	}
+	if tier, ok := TierForKey("notifyMuteWhenThreadVisible"); !ok || tier != TierDevice {
+		t.Errorf("notifyMuteWhenThreadVisible is tier %q (known=%t), want %q", tier, ok, TierDevice)
 	}
 }
 
@@ -457,5 +476,139 @@ func TestInvalidateTierCacheRereadsTheUserTier(t *testing.T) {
 	svc.InvalidateTierCache()
 	if !svc.Get().ConfirmDelete {
 		t.Fatal("the user tier did not reload after its row was dropped")
+	}
+}
+
+// A key that CHANGED tier is a key whose value is sitting in the wrong home.
+// Without the promotion the read below answers the default, which the user
+// reads as the app having forgotten what they chose.
+func TestARetieredKeyIsPromotedOutOfTheScreenThatWroteIt(t *testing.T) {
+	svc, store := tieredService(t)
+	const screen = "client:the-screen-that-wrote-it"
+	if err := store.SetUIState(screen, map[string]string{"projectSortMode": `"manual"`}); err != nil {
+		t.Fatalf("seed the old device row: %v", err)
+	}
+
+	got := svc.For(screen, DeviceDesktop).Get()
+	if got.ProjectSortMode != "manual" {
+		t.Fatalf("ProjectSortMode = %q, want the value the screen still held", got.ProjectSortMode)
+	}
+	if value := store.scopes[UserScope]["projectSortMode"]; value != `"manual"` {
+		t.Fatalf("user scope row = %q, want the promoted value", value)
+	}
+	// The old row is left where it is: applyRows filters by tier, so it is
+	// inert, and deleting it would lose the value on a downgrade.
+	if value := store.scopes[screen]["projectSortMode"]; value != `"manual"` {
+		t.Fatalf("old device row = %q, want it left alone", value)
+	}
+}
+
+// Promotion is a one-shot for a value nobody has restated. A choice made
+// AFTER the move outranks one made before it.
+func TestPromotingARetieredKeyNeverOverwritesItsNewHome(t *testing.T) {
+	svc, store := tieredService(t)
+	const screen = "client:stale-screen"
+	if err := store.SetUIState(screen, map[string]string{"projectSortMode": `"manual"`}); err != nil {
+		t.Fatalf("seed the old device row: %v", err)
+	}
+	if err := store.SetUIState(UserScope, map[string]string{"projectSortMode": `"createdAt"`}); err != nil {
+		t.Fatalf("seed the user row: %v", err)
+	}
+
+	got := svc.For(screen, DeviceDesktop).Get()
+	if got.ProjectSortMode != "createdAt" {
+		t.Fatalf("ProjectSortMode = %q, want the value already in its new home", got.ProjectSortMode)
+	}
+	if value := store.scopes[UserScope]["projectSortMode"]; value != `"createdAt"` {
+		t.Fatalf("user scope row = %q, want it untouched", value)
+	}
+}
+
+// The point of the move: once promoted, the value follows the person to a
+// screen that never wrote it — which is exactly what the device tier could
+// not do.
+func TestAPromotedKeyReachesEveryOtherScreen(t *testing.T) {
+	svc, store := tieredService(t)
+	const first = "client:first-screen"
+	if err := store.SetUIState(first, map[string]string{"projectSortMode": `"manual"`}); err != nil {
+		t.Fatalf("seed the old device row: %v", err)
+	}
+	if got := svc.For(first, DeviceDesktop).Get(); got.ProjectSortMode != "manual" {
+		t.Fatalf("first screen read %q", got.ProjectSortMode)
+	}
+
+	if got := svc.For("device:a-phone", DevicePhone).Get(); got.ProjectSortMode != "manual" {
+		t.Fatalf("second screen read %q, want the promoted value", got.ProjectSortMode)
+	}
+}
+
+// A store read that fails must not fabricate a promotion, and must not fail
+// the read that asked. Same posture as overlayScope and seedTiers.
+func TestAnUnreadableBucketPromotesNothing(t *testing.T) {
+	svc, store := tieredService(t)
+	store.readErr = fmt.Errorf("bucket unreadable")
+
+	got := svc.For("client:unreadable", DeviceDesktop).Get()
+	if got.ProjectSortMode != DefaultSettings.ProjectSortMode {
+		t.Fatalf("ProjectSortMode = %q, want the default", got.ProjectSortMode)
+	}
+	if _, ok := store.scopes[UserScope]["projectSortMode"]; ok {
+		t.Fatal("an unreadable bucket wrote a user row anyway")
+	}
+}
+
+// The table cannot outlive what it describes. A row naming a key that never
+// moved (or that moved back) is a store read every process pays for nothing,
+// and a row for an unclassified key would promote into no home at all.
+func TestEveryRetieredKeyActuallyLeftTheTierItNames(t *testing.T) {
+	for key, was := range retieredKeys {
+		now, ok := TierForKey(key)
+		if !ok {
+			t.Errorf("retiered key %q is not classified in tierByKey", key)
+			continue
+		}
+		if now == was {
+			t.Errorf("retiered key %q still names tier %s; delete the row", key, was)
+		}
+		if scopeForTier(was, testBackendBucket) == "" {
+			t.Errorf("retiered key %q came from tier %s, which has no ui_state scope to read", key, was)
+		}
+		if scopeForTier(now, testBackendBucket) == "" {
+			t.Errorf("retiered key %q moved to tier %s, which has no ui_state scope to write", key, now)
+		}
+	}
+}
+
+// settings.json is absent for the whole life of an install whose owner has
+// only ever changed preferences — mutate does not rewrite the file for a
+// write that moved nothing resident in it. The user tier lives in the store,
+// so an unreadable file must say nothing about it.
+func TestTheUserTierIsReadWithNoSettingsFile(t *testing.T) {
+	svc, store := tieredService(t)
+	if _, err := os.Stat(svc.Path()); !os.IsNotExist(err) {
+		t.Fatalf("fixture wrote a settings file: %v", err)
+	}
+	if err := store.SetUIState(UserScope, map[string]string{"confirmDelete": `false`}); err != nil {
+		t.Fatalf("seed the user row: %v", err)
+	}
+
+	if got := svc.Get(); got.ConfirmDelete {
+		t.Fatal("ConfirmDelete = true; the user tier was ignored because the file is absent")
+	}
+}
+
+// Same argument one exit over: a file preserved as corrupt is a file this
+// process could not read, which is not a statement about the store.
+func TestTheUserTierSurvivesACorruptSettingsFile(t *testing.T) {
+	svc, store := tieredService(t)
+	if err := os.WriteFile(svc.Path(), []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("write a corrupt settings file: %v", err)
+	}
+	if err := store.SetUIState(UserScope, map[string]string{"confirmDelete": `false`}); err != nil {
+		t.Fatalf("seed the user row: %v", err)
+	}
+
+	if got := svc.Get(); got.ConfirmDelete {
+		t.Fatal("ConfirmDelete = true; the user tier was dropped with the corrupt file")
 	}
 }

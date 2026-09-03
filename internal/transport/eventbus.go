@@ -484,6 +484,55 @@ func (b *EventBus) RemoteReceiverCount(channel string) int {
 	return count
 }
 
+// LocalScreenPresence answers what the BACKEND MACHINE's own screen is
+// already showing, for the OS-notification gate and for nothing else
+// (presence.go states the doctrine; internal/app notifyOS is the caller).
+//
+// focused is true when any client on this machine has window focus.
+// threadVisible is true when any of them has threadID on screen. An empty
+// threadID asks only the first question, which is what a notification with
+// no thread behind it (a signed-out provider, an update notice, a workflow
+// item) has to ask.
+//
+// ORed over subscribers rather than answered by one, because "this machine's
+// screen" is not one connection: the embedded webview and a `--connect`
+// browser tab beside it are two, and either one being looked at is a person
+// looking. Loopback is what makes a subscriber local — the same flag
+// eventVisibleToOrigin reads, so the two cannot disagree about which
+// connections are this machine's own. A subscriber with no origin recorded
+// (the harness waiter and every other non-connection subscriber) is not a
+// screen and does not count, and neither does a remote one: a phone in
+// another room being focused must not silence the desk.
+func (b *EventBus) LocalScreenPresence(threadID string) (focused, threadVisible bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, subscriber := range b.subList {
+		if subscriber.closed.Load() {
+			continue
+		}
+		loopback := subscriber.loopback.Load()
+		if loopback == nil || !*loopback {
+			continue
+		}
+		presence := subscriber.presence.Load()
+		if presence == nil {
+			continue
+		}
+		if presence.focused {
+			focused = true
+		}
+		if threadID != "" {
+			if _, ok := presence.threads[threadID]; ok {
+				threadVisible = true
+			}
+		}
+		if focused && (threadVisible || threadID == "") {
+			break
+		}
+	}
+	return focused, threadVisible
+}
+
 // Replay returns the events the client missed since lastSeqByChannel.
 // For each channel:
 //   - If lastSeq is older than the oldest event in the ring, a single
@@ -628,6 +677,11 @@ type Subscriber struct {
 	// want the same behavior — the frame states a lifecycle, not a filter
 	// that latches out of wildcard.
 	background atomic.Bool
+	// presence is what this connection's screen is already showing
+	// (presence.go): nil until the first `presence` frame, which reads as
+	// "not attended". Never consulted by deliver — it changes what the OS
+	// notification gate RAISES, never what this subscriber is sent.
+	presence atomic.Pointer[subscriberPresence]
 	// gapped records the channels this subscriber has dropped events on
 	// since it last learned about the loss. Written only inside deliver,
 	// which runs under the bus mutex (Emit's fanout is its sole call
@@ -684,6 +738,22 @@ func (s *Subscriber) SetWatchedThreads(entityIDs []string) {
 // atomic and never read under a lock.
 func (s *Subscriber) SetBackground(background bool) {
 	s.background.Store(background)
+}
+
+// SetPresence records what this connection's screen is showing (presence.go).
+// Like SetBackground and unlike SetChannels / SetWatchedThreads this is NOT a
+// latch: each call replaces both halves at once, because they describe one
+// instant and a focus bit paired with a stale thread set is a fact that was
+// never true.
+func (s *Subscriber) SetPresence(focused bool, threadIDs []string) {
+	next := &subscriberPresence{focused: focused}
+	if len(threadIDs) > 0 {
+		next.threads = make(map[string]struct{}, len(threadIDs))
+		for _, id := range threadIDs {
+			next.threads[id] = struct{}{}
+		}
+	}
+	s.presence.Store(next)
 }
 
 // SetOriginLoopback arms enqueue-time origin-visibility filtering for a

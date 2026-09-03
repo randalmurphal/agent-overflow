@@ -75,8 +75,15 @@ func (a *App) ListPendingInteractiveRequests(threadID string) (provider.PendingI
 // them, which is the state they wanted. Forwarding both answers would send
 // the provider a second response for a request it has already resolved.
 //
+// ctx is here for the CALLER's identity, not for cancellation: the failure
+// events below are stamped with the connection that asked, so the sticky
+// banner they raise lands on that screen and not on every other one. The
+// generated TS bindings strip a leading ctx, so the wire signature is
+// unchanged.
+//
 //ao:scope approvals:respond
-func (a *App) RespondToApproval(threadID string, response provider.ApprovalResponse) error {
+func (a *App) RespondToApproval(ctx context.Context, threadID string, response provider.ApprovalResponse) error {
+	who := clientOf(ctx)
 	if a.triage != nil && !a.triage.ClaimApprovalResponse(threadID, response.RequestID) {
 		return fmt.Errorf("approval %s: %w", response.RequestID, transport.ErrAlreadyHandled)
 	}
@@ -84,7 +91,7 @@ func (a *App) RespondToApproval(threadID string, response provider.ApprovalRespo
 	if !ok {
 		err := fmt.Errorf("no active session for thread %s", threadID)
 		a.releaseInteractiveClaim(threadID, response.RequestID)
-		a.emitApprovalFailure(threadID, response.RequestID, err)
+		a.emitApprovalFailure(who, threadID, response.RequestID, err)
 		return err
 	}
 
@@ -92,7 +99,7 @@ func (a *App) RespondToApproval(threadID string, response provider.ApprovalRespo
 	if providerSess == nil {
 		err := fmt.Errorf("session has no provider")
 		a.releaseInteractiveClaim(threadID, response.RequestID)
-		a.emitApprovalFailure(threadID, response.RequestID, err)
+		a.emitApprovalFailure(who, threadID, response.RequestID, err)
 		return err
 	}
 	// Approval responses write to provider stdin; stamp activity
@@ -101,11 +108,14 @@ func (a *App) RespondToApproval(threadID string, response provider.ApprovalRespo
 	// EventApprovalResolved bumps again via sessionEventHandler — this
 	// guards the window before that lands.
 	sess.Liveness.BumpActivity(time.Now())
+	// Background, not ctx: the RPC's context ends when the answer is
+	// written back, and abandoning a stdin write half-done would leave the
+	// provider holding a torn response to a prompt it is still waiting on.
 	if err := providerSess.RespondToApproval(context.Background(), response); err != nil {
 		// The write never reached the provider, so the prompt is still
 		// open. Give the claim back or no client could ever answer it.
 		a.releaseInteractiveClaim(threadID, response.RequestID)
-		a.emitApprovalFailure(threadID, response.RequestID, err)
+		a.emitApprovalFailure(who, threadID, response.RequestID, err)
 		return classifyInteractiveResponseError(err)
 	}
 
@@ -129,7 +139,8 @@ func (a *App) RespondToApproval(threadID string, response provider.ApprovalRespo
 // rather than handed a failure.
 //
 //ao:scope approvals:respond
-func (a *App) RespondToUserInput(threadID string, response provider.UserInputResponse) error {
+func (a *App) RespondToUserInput(ctx context.Context, threadID string, response provider.UserInputResponse) error {
+	who := clientOf(ctx)
 	if a.triage != nil && !a.triage.ClaimUserInputResponse(threadID, response.RequestID) {
 		return fmt.Errorf("user input %s: %w", response.RequestID, transport.ErrAlreadyHandled)
 	}
@@ -137,7 +148,7 @@ func (a *App) RespondToUserInput(threadID string, response provider.UserInputRes
 	if !ok {
 		err := fmt.Errorf("no active session for thread %s", threadID)
 		a.releaseInteractiveClaim(threadID, response.RequestID)
-		a.emitUserInputFailure(threadID, response.RequestID, err)
+		a.emitUserInputFailure(who, threadID, response.RequestID, err)
 		return err
 	}
 
@@ -145,16 +156,17 @@ func (a *App) RespondToUserInput(threadID string, response provider.UserInputRes
 	if providerSess == nil {
 		err := fmt.Errorf("session has no provider")
 		a.releaseInteractiveClaim(threadID, response.RequestID)
-		a.emitUserInputFailure(threadID, response.RequestID, err)
+		a.emitUserInputFailure(who, threadID, response.RequestID, err)
 		return err
 	}
 	// Same rationale as RespondToApproval: bump before stdin write so
 	// the reaper doesn't kill a session mid-structured-input round-trip.
 	sess.Liveness.BumpActivity(time.Now())
+	// Background for the same reason as RespondToApproval.
 	if err := providerSess.RespondToUserInput(context.Background(), response); err != nil {
 		// The form is still open; hand the claim back (see RespondToApproval).
 		a.releaseInteractiveClaim(threadID, response.RequestID)
-		a.emitUserInputFailure(threadID, response.RequestID, err)
+		a.emitUserInputFailure(who, threadID, response.RequestID, err)
 		return classifyInteractiveResponseError(err)
 	}
 
@@ -201,13 +213,18 @@ func (a *App) emitApprovalResolution(threadID, requestID, decision string, updat
 	}
 }
 
-func (a *App) emitApprovalFailure(threadID, requestID string, err error) {
+// emitApprovalFailure announces that ONE client's answer never reached the
+// provider. It carries that client's connection id, because the prompt is
+// still open for everybody else and a banner saying otherwise is a lie on
+// every screen but the one that tried (see ApprovalEvent.ConnectionID).
+func (a *App) emitApprovalFailure(who transport.ClientIdentity, threadID, requestID string, err error) {
 	a.emit(eventchan.ProviderApproval, provider.ApprovalEvent{
-		Action:    "fail",
-		ThreadID:  threadID,
-		RequestID: requestID,
-		Decision:  "failed",
-		Detail:    err.Error(),
+		Action:       "fail",
+		ThreadID:     threadID,
+		RequestID:    requestID,
+		Decision:     "failed",
+		Detail:       err.Error(),
+		ConnectionID: who.ConnectionID,
 	})
 }
 
@@ -238,12 +255,15 @@ func (a *App) emitUserInputResolution(threadID, requestID, decision string, answ
 	}
 }
 
-func (a *App) emitUserInputFailure(threadID, requestID string, err error) {
+// emitUserInputFailure is emitApprovalFailure's twin, and carries the
+// connection for the same reason.
+func (a *App) emitUserInputFailure(who transport.ClientIdentity, threadID, requestID string, err error) {
 	a.emit(eventchan.ProviderUserInput, provider.UserInputEvent{
-		Action:    "fail",
-		ThreadID:  threadID,
-		RequestID: requestID,
-		Decision:  "failed",
-		Detail:    err.Error(),
+		Action:       "fail",
+		ThreadID:     threadID,
+		RequestID:    requestID,
+		Decision:     "failed",
+		Detail:       err.Error(),
+		ConnectionID: who.ConnectionID,
 	})
 }

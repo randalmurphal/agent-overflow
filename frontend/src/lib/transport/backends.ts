@@ -43,7 +43,8 @@ import {
   getBackendIdentity,
   onBackendIdentity,
 } from './backendIdentity';
-import { forgetBackendEntities, type ForgottenEntities } from './entityIndex';
+import { forgetBackendEntities, threadBackend, type ForgottenEntities } from './entityIndex';
+import { forgetBackendClock, registerBackendClock } from './backendClock';
 import { grantedScopes, refreshGrantedScopes, type ScopeSnapshot } from './scopes';
 import {
   fetchBackendManifest,
@@ -180,6 +181,21 @@ let installedProver: StepUpProver | null = null;
 // rather than at the next resume.
 let clientLease: LeaseState = 'active';
 
+// The whole watched-thread set, unsplit. Held for the third instance of the
+// same reason: which machines exist is this module's fact, and the composing
+// store (stores/watchedThreads.ts) must not have to learn it. Kept whole
+// rather than per backend because the split depends on ./entityIndex.ts,
+// which moves under it — a thread's owner becomes known after the set that
+// carried it was already sent.
+let watchedThreadIds: string[] = [];
+
+// What this screen last said it was doing, held for the fourth instance of
+// the same reason: "every attached backend, and every one attached
+// afterwards" is this module's fact. `null` is "nothing composed yet", which
+// every backend treats as unattended, so a backend attached before the first
+// compose needs no catch-up frame.
+let screenPresence: { focused: boolean; threads: string[] } | null = null;
+
 // The handle for one entry. Identical in shape to the single-connection
 // handle it replaced.
 function createHandle(entry: () => Entry, id: string): TransportHandle {
@@ -201,6 +217,12 @@ function createHandle(entry: () => Entry, id: string): TransportHandle {
     },
     setLease(state: LeaseState): void {
       entry().client.setLease(state);
+    },
+    setWatchedThreads(threadIds: readonly string[]): void {
+      entry().client.setWatchedThreads(threadIds);
+    },
+    setPresence(focused: boolean, threadIds: readonly string[]): void {
+      entry().client.setPresence(focused, threadIds);
     },
     subscribe(channel: string, handler: (data: unknown) => void): () => void {
       return entry().client.subscribe(channel, handler);
@@ -246,6 +268,11 @@ function makeEntry(
     },
   };
   handle = createHandle(() => entry, id);
+  // Its clock, for anything formatting a timestamp this backend minted.
+  // A closure over the entry rather than a copied number: the reading
+  // moves on every reconnect and wsClient does not publish a hello whose
+  // only change is the clock (./backendClock.ts says why).
+  registerBackendClock(id, () => entry.client.getHello()?.clockSkewMs ?? 0);
   return entry;
 }
 
@@ -356,6 +383,14 @@ export function attachBackend(descriptor: BackendDescriptor): BackendEntry {
   // A backend attached while the client is asleep is told so now, not at
   // the next resume: it would otherwise stream at full rate to a paused app.
   if (clientLease !== 'active') entry.handle.setLease(clientLease);
+  // And the watched set, for the same reason: a machine attached while
+  // panes are already open would otherwise push nothing for them until
+  // the next composition change, which on a settled screen is never.
+  if (watchedThreadIds.length > 0) sendWatchedThreads(entry);
+  // And this screen's presence, which a backend attached mid-session would
+  // otherwise read as unattended until the next focus change — on a settled
+  // screen, never.
+  sendScreenPresence(entry);
   // Resolve this backend's grant set from the credential stored for it,
   // BEFORE anything renders against it. A surface that mounted on the
   // unresolved snapshot would hide every control the backend would in fact
@@ -399,6 +434,9 @@ export function detachBackend(id: string): void {
   // failover).
   const forgotten: ForgottenEntities = forgetBackendEntities(entry.id);
   forgetBackendIdentity(entry.id);
+  // Its clock goes with it. A reading held for a machine nothing is
+  // attached to would keep skewing whatever still names that id.
+  forgetBackendClock(entry.id);
   notifyBackendDetached({ backendId: entry.id, ...forgotten });
   notifyBackendsChanged();
 }
@@ -510,6 +548,92 @@ export function installStepUpProverEverywhere(prover: StepUpProver | null): void
 export function setLeaseEverywhere(state: LeaseState): void {
   clientLease = state;
   for (const entry of entries) entry.handle.setLease(state);
+}
+
+/**
+ * State this screen's presence on every attached backend, and on every
+ * backend attached afterwards.
+ *
+ * `stores/screenPresence.ts` is the door; this is the fan-out. REPEATED
+ * rather than split, unlike the watch set, and for a reason that only looks
+ * like an oversight: thread ids are unique across backends
+ * (`internal/entityid`), so a machine that does not hold the thread matches
+ * nothing and a machine that does gets the truth. Splitting it would risk
+ * withholding an id whose owner this client has not learned yet — and the
+ * cost of that is a notification about the very thread the person is reading.
+ *
+ * Each backend decides for itself whether this screen is ITS screen, from
+ * the connection's origin, so a phone stating a focused presence to the
+ * desktop it is attached to silences nothing there.
+ */
+export function setPresenceEverywhere(focused: boolean, threadIds: readonly string[]): void {
+  screenPresence = { focused, threads: [...threadIds] };
+  for (const entry of entries) sendScreenPresence(entry);
+}
+
+function sendScreenPresence(entry: Entry): void {
+  if (screenPresence === null) return;
+  entry.handle.setPresence(screenPresence.focused, screenPresence.threads);
+}
+
+/**
+ * State the watched-thread set on every attached backend, and on every
+ * backend attached afterwards.
+ *
+ * `stores/watchedThreads.ts` is the door; this is the fan-out. Unlike the
+ * lease, the set is SPLIT rather than repeated: a watch frame narrows the
+ * entity-filtered channels of ONE connection, so a machine only needs the
+ * ids it can push frames about.
+ *
+ * **Each backend is sent the ids it owns, plus every id whose owner this
+ * client does not know.** Both halves are load-bearing and they fail in
+ * opposite directions:
+ *
+ *  - The owner must never be short an id. Withholding one is a pane that
+ *    silently stops receiving, which `stores/watchedThreads.ts` calls the
+ *    outcome this whole mechanism exists to prevent — and unlike an
+ *    over-broad set, nothing later corrects it.
+ *  - An unknown id goes to everyone because ./entityIndex.ts is populated
+ *    by what this session has listed and been pushed, so a thread opened
+ *    from a deep link or painted from the replica has no machine yet
+ *    (that module's own doc says so). Home-only would be the routing
+ *    fallback's answer, and it is the wrong one here: the id may well
+ *    belong to an attached machine that is about to be asked for its
+ *    history. The cost is wire bytes on a backend that holds no such
+ *    thread, which the next recompute drops once a list or an event names
+ *    the owner.
+ *
+ * A single-backend client is unchanged by construction: nothing is
+ * attached beyond home, and home is the only recipient either way.
+ *
+ * The per-socket bound is each handle's own — `setWatchedThreads` refuses
+ * a set past `MAX_WATCH_THREADS` and keeps the previous one — so a split
+ * can only ever bring a connection further under it, never over.
+ */
+export function setWatchedThreadsEverywhere(threadIds: readonly string[]): void {
+  watchedThreadIds = [...threadIds];
+  for (const entry of entries) sendWatchedThreads(entry);
+}
+
+function sendWatchedThreads(entry: Entry): void {
+  entry.handle.setWatchedThreads(watchedThreadsFor(entry.id));
+}
+
+/**
+ * The share of the watched set one backend is sent. Exported for the
+ * tests that pin the split rule above; every caller in the app goes
+ * through `setWatchedThreadsEverywhere`.
+ */
+export function watchedThreadsFor(backendId: BackendKey): string[] {
+  // The common case is one backend, where the split is the whole set and
+  // walking it to prove that is pure cost.
+  if (entries.length <= 1) return [...watchedThreadIds];
+  const mine: string[] = [];
+  for (const id of watchedThreadIds) {
+    const owner = threadBackend(id);
+    if (owner === undefined || owner === backendId) mine.push(id);
+  }
+  return mine;
 }
 
 // ---------------------------------------------------------------------------
@@ -718,6 +842,8 @@ export function __resetBackendsForTest(): void {
   homeEntry.lastFanoutError = null;
   installedProver = null;
   clientLease = 'active';
+  watchedThreadIds = [];
+  screenPresence = null;
   backendSource = manifestBackendDescriptors;
 }
 
@@ -740,6 +866,14 @@ export function __attachBackendForTest(
   // A backend attached while the client is asleep is told so now, not at
   // the next resume: it would otherwise stream at full rate to a paused app.
   if (clientLease !== 'active') entry.handle.setLease(clientLease);
+  // And the watched set, for the same reason: a machine attached while
+  // panes are already open would otherwise push nothing for them until
+  // the next composition change, which on a settled screen is never.
+  if (watchedThreadIds.length > 0) sendWatchedThreads(entry);
+  // And this screen's presence, which a backend attached mid-session would
+  // otherwise read as unattended until the next focus change — on a settled
+  // screen, never.
+  sendScreenPresence(entry);
   refreshGrantedScopes(entry.id);
   for (const sub of standing) attachStanding(sub, entry);
   notifyBackendsChanged();

@@ -29,6 +29,10 @@
   import { hydrateWorkflowAttention } from './lib/stores/workflowRuns.svelte';
   import { syncSidebarLayoutFromAppStorage } from './lib/stores/sidebarLayout.svelte';
   import { installLayoutMode } from './lib/stores/layoutMode.svelte';
+  import {
+    installScreenPresence,
+    refreshScreenPresence,
+  } from './lib/stores/screenPresence';
   import { installLongPressContextMenu } from './lib/utils/longPressContextMenu';
   import { syncUsagePeriodFromSettings } from './lib/stores/usagePeriod.svelte';
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
@@ -361,6 +365,19 @@
     return () => obs.disconnect();
   });
 
+  // Restate this screen's presence whenever the panes or the compact screen
+  // change. The composer reads that state on every run, so the effect keeps
+  // its dependencies, and the transport dedups — an unchanged screen writes
+  // nothing. The document's own focus and visibility edges are the module's
+  // (installScreenPresence below), not this effect's.
+  //
+  // Read for ONE decision on the backend: whether an OS notification is
+  // RAISED. It changes nothing about what this client is sent or renders, and
+  // nothing else in the app may read it.
+  $effect(() => {
+    refreshScreenPresence();
+  });
+
   onMount(() => {
     const cleanupEvents = setupEventListeners();
     // Theme first, and not awaited: the pre-effects above already painted the
@@ -446,6 +463,7 @@
     // `contextmenu` at the pressed element, so every menu opens on the phone.
     const cleanupLongPress = installLongPressContextMenu();
     const cleanupZoomKeys = installZoomKeybindings();
+    const cleanupScreenPresence = installScreenPresence();
 
     // Register the built-in commands. The hooks close over stable references
     // so commands see the live pane state each time they run.
@@ -518,6 +536,7 @@
       cleanupExternalLinks();
       cleanupLongPress();
       cleanupZoomKeys();
+      cleanupScreenPresence();
       cleanupLoafTrace();
       cleanupHarnessBridge();
       window.removeEventListener('pagehide', flushPaneLayout);

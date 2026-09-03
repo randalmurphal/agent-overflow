@@ -1004,12 +1004,13 @@ export class Settings {
     /**
      * The OS-notification preferences (docs/specs/remote-access.md §9).
      * NotificationsEnabled is the master switch: with it off this screen
-     * raises no OS notification at all, including the two senders that
-     * predate the event mapping (a workflow item needing a human, and the
-     * WSL launcher's "update didn't apply" notice). The four below are the
-     * per-kind toggles over notify.Kind's four mapped moments.
+     * raises no OS notification at all. The six per-kind toggles below cover
+     * every notify.Kind — the four mapped moments plus the two senders that
+     * predate the mapping (a workflow item needing a human, and the WSL
+     * launcher's "update didn't apply" notice), which used to have the
+     * master switch as their only silencer.
      * 
-     * ALL FIVE DEFAULT TRUE, and are therefore all present in
+     * ALL SEVEN DEFAULT TRUE, and are therefore all present in
      * DefaultSettings. That is the KeepAwakeScreen pattern and it is what
      * makes an absent key read as ON — which matters more here than
      * anywhere else, because notifications were unconditional before these
@@ -1017,9 +1018,9 @@ export class Settings {
      * behaviour they had, and only then narrow it.
      * 
      * The defaults are also the honest answer to "what is worth
-     * interrupting someone for": all four moments are ones where either the
-     * agent has stopped needing the machine and started needing the person,
-     * or nothing will run again until the person acts.
+     * interrupting someone for": every one of these moments is one where
+     * either the agent has stopped needing the machine and started needing
+     * the person, or nothing will run again until the person acts.
      */
     "notificationsEnabled": boolean;
 
@@ -1045,6 +1046,45 @@ export class Settings {
      * NotifyProviderSignedOut covers a provider whose login is gone.
      */
     "notifyProviderSignedOut": boolean;
+
+    /**
+     * NotifyWorkflowAttention covers a workflow item waiting on a person or
+     * failed. It reaches the same gate as the four above; there is no
+     * "predates the mapping" carve-out any more, because a kind nobody can
+     * silence individually is one the master switch is the only answer to.
+     */
+    "notifyWorkflowAttention": boolean;
+
+    /**
+     * NotifyAppUpdate covers the WSL launcher's "update didn't apply"
+     * notice. Same reasoning as NotifyWorkflowAttention.
+     */
+    "notifyAppUpdate": boolean;
+
+    /**
+     * The ATTENDED-SCREEN preferences: not "which moments are worth an
+     * interruption" but "is this screen already being looked at". Both are
+     * read by the host-side sender only (app_notifications.go notifyOS),
+     * against the backend machine's own screen, and neither changes what any
+     * client is SENT or renders — a notification that is not raised is one
+     * less toast, never one less frame.
+     * 
+     * NotifyMuteWhenFocused defaults TRUE: a toast on the window you are
+     * typing in tells you something you can already see. It is the half of
+     * this pair almost everyone wants, which is why it is the one that is on.
+     */
+    "notifyMuteWhenFocused": boolean;
+
+    /**
+     * NotifyMuteWhenThreadVisible defaults FALSE, so it stays out of
+     * DefaultSettings (the ClaudeTUIEnabled rule: a field whose intended
+     * default is the Go zero value must not be listed there, or writeSparse
+     * drops a user's `true` on write). Off by default because a thread being
+     * on screen in some pane of an unfocused window is much weaker evidence
+     * that a person saw the moment than the window having focus is, and a
+     * missed turn-complete is worse than a redundant one.
+     */
+    "notifyMuteWhenThreadVisible": boolean;
 
     /**
      * Window stores the desktop window placement (position, size, and
@@ -1221,6 +1261,18 @@ export class Settings {
         if (!("notifyProviderSignedOut" in $$source)) {
             this["notifyProviderSignedOut"] = false;
         }
+        if (!("notifyWorkflowAttention" in $$source)) {
+            this["notifyWorkflowAttention"] = false;
+        }
+        if (!("notifyAppUpdate" in $$source)) {
+            this["notifyAppUpdate"] = false;
+        }
+        if (!("notifyMuteWhenFocused" in $$source)) {
+            this["notifyMuteWhenFocused"] = false;
+        }
+        if (!("notifyMuteWhenThreadVisible" in $$source)) {
+            this["notifyMuteWhenThreadVisible"] = false;
+        }
         if (!("window" in $$source)) {
             this["window"] = (new windowgeom$0.Geometry());
         }
@@ -1250,7 +1302,7 @@ export class Settings {
         const $$createField57_0 = $$createType0;
         const $$createField62_0 = $$createType0;
         const $$createField64_0 = $$createType0;
-        const $$createField74_0 = $$createType12;
+        const $$createField78_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -1307,7 +1359,7 @@ export class Settings {
             $$parsedSource["spinnerDisabledAnimations"] = $$createField64_0($$parsedSource["spinnerDisabledAnimations"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField74_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField78_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

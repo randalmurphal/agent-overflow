@@ -485,12 +485,13 @@ type Settings struct {
 
 	// The OS-notification preferences (docs/specs/remote-access.md §9).
 	// NotificationsEnabled is the master switch: with it off this screen
-	// raises no OS notification at all, including the two senders that
-	// predate the event mapping (a workflow item needing a human, and the
-	// WSL launcher's "update didn't apply" notice). The four below are the
-	// per-kind toggles over notify.Kind's four mapped moments.
+	// raises no OS notification at all. The six per-kind toggles below cover
+	// every notify.Kind — the four mapped moments plus the two senders that
+	// predate the mapping (a workflow item needing a human, and the WSL
+	// launcher's "update didn't apply" notice), which used to have the
+	// master switch as their only silencer.
 	//
-	// ALL FIVE DEFAULT TRUE, and are therefore all present in
+	// ALL SEVEN DEFAULT TRUE, and are therefore all present in
 	// DefaultSettings. That is the KeepAwakeScreen pattern and it is what
 	// makes an absent key read as ON — which matters more here than
 	// anywhere else, because notifications were unconditional before these
@@ -498,9 +499,9 @@ type Settings struct {
 	// behaviour they had, and only then narrow it.
 	//
 	// The defaults are also the honest answer to "what is worth
-	// interrupting someone for": all four moments are ones where either the
-	// agent has stopped needing the machine and started needing the person,
-	// or nothing will run again until the person acts.
+	// interrupting someone for": every one of these moments is one where
+	// either the agent has stopped needing the machine and started needing
+	// the person, or nothing will run again until the person acts.
 	NotificationsEnabled bool `json:"notificationsEnabled"`
 	// NotifyTurnComplete covers a top-level turn arriving at rest. The
 	// noisiest of the four by volume, and the first one a user with many
@@ -513,6 +514,34 @@ type Settings struct {
 	NotifyError bool `json:"notifyError"`
 	// NotifyProviderSignedOut covers a provider whose login is gone.
 	NotifyProviderSignedOut bool `json:"notifyProviderSignedOut"`
+	// NotifyWorkflowAttention covers a workflow item waiting on a person or
+	// failed. It reaches the same gate as the four above; there is no
+	// "predates the mapping" carve-out any more, because a kind nobody can
+	// silence individually is one the master switch is the only answer to.
+	NotifyWorkflowAttention bool `json:"notifyWorkflowAttention"`
+	// NotifyAppUpdate covers the WSL launcher's "update didn't apply"
+	// notice. Same reasoning as NotifyWorkflowAttention.
+	NotifyAppUpdate bool `json:"notifyAppUpdate"`
+
+	// The ATTENDED-SCREEN preferences: not "which moments are worth an
+	// interruption" but "is this screen already being looked at". Both are
+	// read by the host-side sender only (app_notifications.go notifyOS),
+	// against the backend machine's own screen, and neither changes what any
+	// client is SENT or renders — a notification that is not raised is one
+	// less toast, never one less frame.
+	//
+	// NotifyMuteWhenFocused defaults TRUE: a toast on the window you are
+	// typing in tells you something you can already see. It is the half of
+	// this pair almost everyone wants, which is why it is the one that is on.
+	NotifyMuteWhenFocused bool `json:"notifyMuteWhenFocused"`
+	// NotifyMuteWhenThreadVisible defaults FALSE, so it stays out of
+	// DefaultSettings (the ClaudeTUIEnabled rule: a field whose intended
+	// default is the Go zero value must not be listed there, or writeSparse
+	// drops a user's `true` on write). Off by default because a thread being
+	// on screen in some pane of an unfocused window is much weaker evidence
+	// that a person saw the moment than the window having focus is, and a
+	// missed turn-complete is worse than a redundant one.
+	NotifyMuteWhenThreadVisible bool `json:"notifyMuteWhenThreadVisible"`
 
 	// Per-client UI view state (pane layout, collapsed projects,
 	// sidebar width, …) deliberately does NOT live here: it moved to
@@ -614,6 +643,14 @@ var DefaultSettings = Settings{
 	NotifyApprovalNeeded:    true,
 	NotifyError:             true,
 	NotifyProviderSignedOut: true,
+	NotifyWorkflowAttention: true,
+	NotifyAppUpdate:         true,
+	// Muting a screen you are already looking at is what a person means by
+	// "notify me": the interruption is worth nothing when the answer is
+	// already in front of them. Its weaker sibling
+	// (NotifyMuteWhenThreadVisible) is the Go zero value and deliberately
+	// not here — see the field.
+	NotifyMuteWhenFocused: true,
 }
 
 // HiddenModelsForProvider returns the hidden-model slug list for the
@@ -661,6 +698,12 @@ type Service struct {
 	// main.go and main_desktop.go depend on.
 	store         TierStore
 	backendBucket string
+	// retieredBuckets and retieredSettled bound the one-shot promotion of a
+	// key that CHANGED tier (residency.go, retieredKeys) to one attempt per
+	// bucket per process, and to none at all once every retiered key holds a
+	// row in its new home. Written under s.mu.
+	retieredBuckets map[string]bool
+	retieredSettled bool
 	// unknownFields captures any top-level JSON keys from the on-disk file
 	// that do not map to a field on the Settings struct. We preserve them
 	// verbatim on writeSparse so downgrading the app, or running a build
@@ -896,9 +939,12 @@ func (s *Service) addRecentWorkspace(bucket string, class DeviceClass, path stri
 func (s *Service) loadFromFile() Settings {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
-		// Missing file is normal on first run.
+		// Missing file is normal on first run — and it stays missing far
+		// longer than that: mutate rewrites settings.json only for a write
+		// that moved a key still resident in it, so an install whose owner
+		// has only ever changed preferences has no file at all.
 		s.unknownFields = nil
-		return copyDefaults()
+		return sanitizeLoadedSettings(s.overlayUserTier(copyDefaults()))
 	}
 
 	// Start from defaults, then overlay file values.
@@ -911,19 +957,36 @@ func (s *Service) loadFromFile() Settings {
 			log.Printf("settings: malformed JSON in %s; original preserved at %s, falling back to defaults: %v", s.path, preservedPath, err)
 		}
 		s.unknownFields = nil
-		return copyDefaults()
+		return sanitizeLoadedSettings(s.overlayUserTier(copyDefaults()))
 	}
 	s.unknownFields = captureUnknownFields(data)
-	if s.store != nil {
-		// Non-host keys no longer persist here. Whatever the file still holds
-		// for them is a pre-migration leftover that seedTiers already
-		// consumed, so it is reset to the default and then overlaid from the
-		// user scope — otherwise a stale file value would outrank the row the
-		// user's last save actually wrote.
-		resetTieredFields(&result)
-		result = overlayScope(result, s.store, UserScope, TierUser)
+	return sanitizeLoadedSettings(s.overlayUserTier(result))
+}
+
+// overlayUserTier applies the user tier over whatever the FILE produced, and
+// is the only place that decides where user-tier values come from. Must be
+// called with s.mu held.
+//
+// Every one of loadFromFile's three exits goes through it, which is the fix
+// and not tidiness: the two fallback exits returned bare defaults, so an
+// install with no settings.json — or one whose file had just been preserved
+// as corrupt — silently ignored every user-tier ROW in the store. The user
+// tier does not live in that file; a file that cannot be read says nothing
+// about it.
+//
+// A store-less service has no user tier to apply: its keys are still in the
+// file, which is the pre-phase-4 behaviour the boot readers depend on.
+func (s *Service) overlayUserTier(current Settings) Settings {
+	if s.store == nil {
+		return current
 	}
-	return sanitizeLoadedSettings(result)
+	// Non-host keys no longer persist in the file. Whatever it still holds
+	// for them is a pre-migration leftover that seedTiers already consumed,
+	// so it is reset to the default and then overlaid from the user scope —
+	// otherwise a stale file value would outrank the row the user's last
+	// save actually wrote.
+	resetTieredFields(&current)
+	return overlayScope(current, s.store, UserScope, TierUser)
 }
 
 // resetTieredFields restores the DEFAULT of every key that no longer persists

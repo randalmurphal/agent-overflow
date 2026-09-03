@@ -11,7 +11,10 @@
 //   - projectSortMode is a user preference, not view state — it stays
 //     in Go settings (with localStorage as the pre-load cache) so it
 //     follows the user, and syncSidebarFromSettings() reconciles it
-//     after loadSettings().
+//     after loadSettings(). It is a USER-tier settings key
+//     (internal/settings/tier.go), so every screen this person opens
+//     reads the same order; a per-screen answer is what the device tier
+//     is for, and this is not one.
 //
 // Project expansion uses an inverted set: we persist explicit *collapses*
 // rather than expansions, so an unseen project defaults to expanded

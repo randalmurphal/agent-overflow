@@ -6,11 +6,18 @@
   // answers. The host-side sender resolves them against the backend
   // machine's own screen.
   //
-  // The master switch hides rather than disables the per-kind rows, the
+  // The master switch hides rather than disables the rows beneath it, the
   // SpinnerSection pattern: a stack of greyed-out toggles reads as broken,
   // while their absence reads as "nothing to configure until you turn this
-  // on". All five default ON, because notifications were unconditional
-  // before these keys existed.
+  // on". Every per-kind toggle defaults ON, because notifications were
+  // unconditional before these keys existed.
+  //
+  // TWO STACKS, TWO QUESTIONS. The per-kind toggles answer "is this moment
+  // worth an interruption"; "Quiet when" answers "is this screen already
+  // looking". They are independent, so somebody who wants only the stronger
+  // rule gets only the stronger rule. Both are read by the backend for one
+  // decision — whether an OS notification is RAISED — and neither changes
+  // what any client is sent or renders.
   //
   // The phone-push block sits at the FOOT of this section rather than in
   // its own, because it answers the same question one screen down: these
@@ -94,6 +101,65 @@
           onToggle={(value) => updateSetting('notifyProviderSignedOut', value)}
         />
       </SettingsField>
+
+      <SettingsField
+        id="notifications.workflow-attention"
+        label="Workflow needs attention"
+        hint="When a workflow item is waiting on a person, or failed."
+      >
+        <ToggleSwitch
+          checked={settings.notifyWorkflowAttention}
+          ariaLabel="Toggle workflow needs attention notifications"
+          onToggle={(value) => updateSetting('notifyWorkflowAttention', value)}
+        />
+      </SettingsField>
+
+      <SettingsField
+        id="notifications.app-update"
+        label="App update notices"
+        hint="When an update did not apply and the app needs a hand."
+      >
+        <ToggleSwitch
+          checked={settings.notifyAppUpdate}
+          ariaLabel="Toggle app update notifications"
+          onToggle={(value) => updateSetting('notifyAppUpdate', value)}
+        />
+      </SettingsField>
+
+      <!-- The second stack, headed rather than sectioned: it belongs to the
+           same question the toggles above answer, one step further in, and
+           the phone-push block stays at the foot of the whole thing. -->
+      <div class="pt-3">
+        <SettingsHeader
+          title="Quiet when"
+          description="Held back on this screen only. A paired phone is still woken."
+        />
+        <div class="flex flex-col gap-1">
+          <SettingsField
+            id="notifications.quiet-when-focused"
+            label="This window is focused"
+            hint="No notification while you are already looking at the app on this screen."
+          >
+            <ToggleSwitch
+              checked={settings.notifyMuteWhenFocused}
+              ariaLabel="Toggle quiet when this window is focused"
+              onToggle={(value) => updateSetting('notifyMuteWhenFocused', value)}
+            />
+          </SettingsField>
+
+          <SettingsField
+            id="notifications.quiet-when-thread-visible"
+            label="The thread is on screen"
+            hint="No notification about a thread that is open in a visible pane, even when another app is focused."
+          >
+            <ToggleSwitch
+              checked={settings.notifyMuteWhenThreadVisible}
+              ariaLabel="Toggle quiet when the thread is on screen"
+              onToggle={(value) => updateSetting('notifyMuteWhenThreadVisible', value)}
+            />
+          </SettingsField>
+        </div>
+      </div>
     {/if}
 
     <PhonePushBlock />

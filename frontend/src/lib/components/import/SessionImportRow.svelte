@@ -15,6 +15,7 @@
   import { getProviderDefinition } from '../../providers/catalog';
   import type { ImportRowResult, ImportableSession } from '../../types/sessionImport';
   import { relativeTime } from '../../utils/format';
+  import { selectedBackend } from '../../stores/selectedBackend.svelte';
   import { formatPayloadSize } from '../../utils/payloadExpansion.svelte';
 
   interface Props {
@@ -186,7 +187,9 @@
   {/if}
 
   <span class="w-[5.5rem] shrink-0 text-right tabular-nums text-fg-hint">
-    {relativeTime(row.lastActivityAt)}
+    <!-- The listing is `selected`-routed, so the stamp was minted by the
+         machine the person is looking at, not necessarily by home. -->
+    {relativeTime(row.lastActivityAt, 'locale', selectedBackend())}
   </span>
 
   <!-- Outcome stamp. Present only once a run has reported on this row.

@@ -69,6 +69,8 @@
     type ThreadDragPayload,
   } from '../../utils/threadDragPayload';
   import { sidebarRowPaddingLeftPx, sidebarTimeLabel } from '../../utils/sidebarRowMetrics';
+  import { threadBackend } from '../../transport/entityIndex';
+  import { HOME_BACKEND } from '../../transport/backendKey';
 
   let {
     thread,
@@ -290,7 +292,11 @@
   // forward now that unrelated beats no longer re-render every row.
   let timeLabel = $derived.by(() => {
     getMinuteNow();
-    return sidebarTimeLabel(getThreadLiveActivityAt(thread));
+    // Read against the clock of the machine that minted the stamp
+    // (transport/backendClock.ts); a row whose owner is not known yet
+    // reads as home, which is what every row meant before a second
+    // machine could be attached.
+    return sidebarTimeLabel(getThreadLiveActivityAt(thread), threadBackend(thread.id) ?? HOME_BACKEND);
   });
 
   function handleContextMenu(e: MouseEvent) {

@@ -115,7 +115,7 @@ func (a *App) workflowApplication() *workflowapp.Service {
 						Title: title,
 						Body:  body,
 						Target: notify.Target{
-							Kind:       "workflow-item",
+							Kind:       notify.TargetWorkflowItem,
 							WorkItemID: itemID,
 							BackendID:  a.notificationBackendID(),
 						},

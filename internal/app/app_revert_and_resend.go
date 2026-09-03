@@ -86,8 +86,15 @@ type RevertAndResendOptions struct {
 // half of the takeover machinery from inside the lock, an unguarded
 // call fails loudly.
 //
+// ctx is here for the CALLER's identity, not for cancellation: the cut event
+// below is stamped with the connection that asked, because the frontend's
+// own failure handler keys on it (see UserMessageRevertedEvent.ConnectionID).
+// The generated TS bindings strip a leading ctx, so the wire signature is
+// unchanged.
+//
 //ao:scope threads:operate
 func (a *App) RevertConversationAndResendMessage(
+	ctx context.Context,
 	threadID string,
 	userItemID string,
 	opts RevertAndResendOptions,
@@ -169,6 +176,7 @@ func (a *App) RevertConversationAndResendMessage(
 		HistoryRev:            cut.Stamp.Rev,
 		HistoryEpoch:          cut.Stamp.Epoch,
 		DraftPendingResend:    true,
+		ConnectionID:          clientOf(ctx).ConnectionID,
 	})
 
 	// sendMessageLocked, not sendMessageWithOptions: the whole saga runs

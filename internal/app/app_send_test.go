@@ -1221,7 +1221,7 @@ func TestSendMessageRenamesTemporaryWorktreeBranchOnFirstTurn(t *testing.T) {
 func TestRespondToApprovalNoActiveSessionError(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	err := app.RespondToApproval("nonexistent-thread", provider.ApprovalResponse{
+	err := app.RespondToApproval(context.Background(), "nonexistent-thread", provider.ApprovalResponse{
 		RequestID: "1",
 		Decision:  "accept",
 	})
@@ -1261,7 +1261,7 @@ func TestRespondToApprovalRejectsUntrackedClaudeRequest(t *testing.T) {
 		Claude:   sess,
 	})
 
-	err = app.RespondToApproval(thread.ID, provider.ApprovalResponse{
+	err = app.RespondToApproval(context.Background(), thread.ID, provider.ApprovalResponse{
 		RequestID: "42",
 		Decision:  "accept",
 	})
@@ -1282,7 +1282,7 @@ func TestRespondToApprovalNoProviderError(t *testing.T) {
 		Token:    "test-token",
 	})
 
-	err := app.RespondToApproval(thread.ID, provider.ApprovalResponse{
+	err := app.RespondToApproval(context.Background(), thread.ID, provider.ApprovalResponse{
 		RequestID: "42",
 		Decision:  "accept",
 	})

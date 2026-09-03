@@ -373,3 +373,82 @@ func TestOnlyThisProcessesOwnPortsAreRefused(t *testing.T) {
 		t.Fatalf("this process's port survived: %+v", rows[1])
 	}
 }
+
+// A listener exists because a scan put its port in the served set, and a
+// scan is the only thing that ever takes one back out. So every path
+// that stops scanning has to hand the set back, or the last pass's
+// listeners stay bound with nobody reading the list they were reconciled
+// against.
+//
+// Both stop paths are asserted through devServerScanTick, which is why
+// the tick is a method: the loop's own body has no test.
+func TestStoppingTheScanReleasesThePreviewListeners(t *testing.T) {
+	scanner := &fakeScanner{servers: []devscan.DevServer{
+		{Port: 5173, ThreadID: "thread-a", Allowed: true, Source: devscan.SourceAttributed, Listening: true},
+	}}
+	app := newPreviewTestApp(t, scanner)
+	app.SetTransportServer(startTestTransportServer(t))
+	t.Cleanup(func() { _ = app.closePreviewGateway() })
+
+	if _, err := app.GetDevServers(context.Background()); err != nil {
+		t.Fatalf("GetDevServers: %v", err)
+	}
+	gateway := app.previewGateway()
+	if gateway == nil {
+		t.Fatal("no gateway was built with a transport server wired")
+	}
+	// This backend can bind nothing (loopback, no tailnet), so the port's
+	// presence in the served set shows up as its note rather than as a
+	// listener. Either way it is state the reconcile put there and only a
+	// reconcile can remove.
+	if len(gateway.Notes())+len(gateway.Ports()) == 0 {
+		t.Fatal("a scan with an allowed port left the gateway holding nothing")
+	}
+
+	// Stop path one: nobody off this machine can read the list. The loop
+	// keeps ticking, so the gateway must survive — only its ports go.
+	if !app.devServerScanTick(context.Background()) {
+		t.Fatal("the tick stopped the loop when the list simply had no readers")
+	}
+	if len(gateway.Ports()) != 0 || len(gateway.Notes()) != 0 {
+		t.Fatalf("ports = %v, notes = %v after the last reader went", gateway.Ports(), gateway.Notes())
+	}
+	if !app.previewGatewayBuilt() {
+		t.Fatal("the gateway was closed by an idle tick; only shutdown may do that")
+	}
+
+	// Stop path two: the machine says it cannot be looked at. The halt is
+	// permanent, so nothing will ever reconcile the set again — and it is
+	// reached by the on-demand RPC as well as by the loop, which is why the
+	// release sits where the halt is recorded. The rows are restated
+	// because the reconcile edits the ones it was handed.
+	scanner.servers = []devscan.DevServer{
+		{Port: 5173, ThreadID: "thread-a", Allowed: true, Source: devscan.SourceAttributed, Listening: true},
+	}
+	if _, err := app.GetDevServers(context.Background()); err != nil {
+		t.Fatalf("GetDevServers: %v", err)
+	}
+	if len(gateway.Notes())+len(gateway.Ports()) == 0 {
+		t.Fatal("the second scan left the gateway holding nothing to release")
+	}
+	scanner.err = devscan.ErrUnsupported
+	if _, err := app.GetDevServers(context.Background()); !errors.Is(err, devscan.ErrUnsupported) {
+		t.Fatalf("GetDevServers error = %v, want the platform refusal", err)
+	}
+	if len(gateway.Ports()) != 0 || len(gateway.Notes()) != 0 {
+		t.Fatalf("ports = %v, notes = %v after discovery halted", gateway.Ports(), gateway.Notes())
+	}
+}
+
+// Releasing must not BUILD a gateway. A backend that never served a
+// preview has no listeners to hand back, and constructing one to give it
+// an empty set would bind the transport server into a path it never took.
+func TestReleasingPreviewListenersNeverBuildsAGateway(t *testing.T) {
+	app := newPreviewTestApp(t, &fakeScanner{})
+	app.SetTransportServer(startTestTransportServer(t))
+
+	app.releasePreviewListeners()
+	if app.previewGatewayBuilt() {
+		t.Fatal("releasing listeners built a gateway that had never existed")
+	}
+}

@@ -206,6 +206,7 @@ func (c Caller) AddRecentWorkspace(path string) {
 // row applied over the top would outrank it. No store, no residency, no
 // class.
 func (s *Service) getFor(bucket string, class DeviceClass) Settings {
+	s.promoteRetieredKeys(bucket)
 	current := s.Get()
 	s.mu.RLock()
 	store := s.store
@@ -221,6 +222,150 @@ func (s *Service) getFor(bucket string, class DeviceClass) Settings {
 		current = overlayScope(current, store, bucket, TierDevice)
 	}
 	return sanitizeLoadedSettings(current)
+}
+
+// retieredKeys names every settings key whose TIER has changed since it
+// shipped, mapping the key to the tier its value was written under BEFORE
+// the move. tierByKey already says where it lives now.
+//
+// The table exists because retiering relocates storage (see this file's
+// opening note): the moment a key's tier changes, applyRows stops decoding
+// the row it already has, and the user watches the app forget a preference
+// they set. seedTiers covers the file → scope direction and nothing else,
+// so a scope → scope move needs its own one-shot.
+//
+// An empty table is the ordinary state. Add a row in the same change that
+// moves the key, and delete it once no install that predates the move can
+// still be running — the value has been promoted by then, and the row costs
+// one store read per process.
+var retieredKeys = map[string]Tier{
+	// Moved device -> user 2026-09-03. Its value is sitting in whichever
+	// SCREEN's bucket last wrote it.
+	"projectSortMode": TierDevice,
+}
+
+// scopeForTier answers the `ui_state` scope a tier's values live in, seen
+// from one caller. TierHost has none: it persists in settings.json, and
+// seedTiers is what moves a file value into a scope.
+func scopeForTier(tier Tier, bucket string) string {
+	switch tier {
+	case TierUser:
+		return UserScope
+	case TierDevice:
+		return bucket
+	}
+	return ""
+}
+
+// promoteRetieredKeys moves the value a retiered key still holds under its
+// OLD residency into its new one, at most once per bucket per process.
+//
+// It runs from getFor — a READ — rather than from boot, and that placement
+// is forced by where a device-tier value actually is. A device row lives in
+// the CALLING SCREEN's bucket, and the desktop webview's bucket is keyed on
+// the browser profile's own durable id (internal/app's uiStateScope), which
+// nothing at boot can enumerate. So the first read from a screen still
+// holding the old row is the only moment the value is reachable, and the
+// promotion has to happen there or not at all.
+//
+// It follows seedTiers' rules, for seedTiers' reasons: never overwrite an
+// existing destination row (a value the user has since set outranks one they
+// set before the move), log and continue on every failure (a preference
+// reverting to its default is not worth failing a read over), and leave the
+// old row where it is (applyRows filters by tier, so it is inert, and
+// deleting it would make a downgrade lose the value twice).
+//
+// Two screens that disagreed about a device-tier value cannot both win a key
+// that is now one person's answer: whichever reads first supplies it. That is
+// the move being real rather than a bug in it.
+func (s *Service) promoteRetieredKeys(bucket string) {
+	if len(retieredKeys) == 0 || bucket == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.store == nil || s.retieredSettled || s.retieredBuckets[bucket] {
+		s.mu.Unlock()
+		return
+	}
+	if s.retieredBuckets == nil {
+		s.retieredBuckets = make(map[string]bool, 1)
+	}
+	s.retieredBuckets[bucket] = true
+	store := s.store
+	s.mu.Unlock()
+
+	// One read per distinct scope, however many keys name it. Reads are
+	// memoized rather than repeated because a scope answers every key at
+	// once and this runs on a read path.
+	scopes := map[string]map[string]string{}
+	read := func(scope string) map[string]string {
+		if rows, ok := scopes[scope]; ok {
+			return rows
+		}
+		rows, err := store.GetUIState(scope)
+		if err != nil {
+			log.Printf("settings: read %q before promoting a retiered key: %v", scope, err)
+			rows = nil
+		}
+		scopes[scope] = rows
+		return rows
+	}
+
+	writes := map[string]map[string]string{}
+	settled := true
+	for key, was := range retieredKeys {
+		now, ok := TierForKey(key)
+		if !ok {
+			// An unclassified key has no destination. tier.go's totality
+			// test would have caught this already; say so rather than
+			// promoting into nowhere.
+			log.Printf("settings: retiered key %q is not classified", key)
+			continue
+		}
+		to := scopeForTier(now, bucket)
+		from := scopeForTier(was, bucket)
+		if to == "" || from == "" || to == from {
+			continue
+		}
+		if _, taken := read(to)[key]; taken {
+			continue
+		}
+		// This key still has nothing in its new home, so a bucket nobody has
+		// read yet could still be carrying it.
+		settled = false
+		value, held := read(from)[key]
+		if !held {
+			continue
+		}
+		entries := writes[to]
+		if entries == nil {
+			entries = map[string]string{}
+			writes[to] = entries
+		}
+		entries[key] = value
+	}
+
+	moved := false
+	for scope, entries := range writes {
+		if err := store.SetUIState(scope, entries); err != nil {
+			log.Printf("settings: promote %d retiered key(s) into %q: %v", len(entries), scope, err)
+			continue
+		}
+		moved = true
+		log.Printf("settings: promoted %d retiered key(s) into %s", len(entries), scope)
+	}
+
+	s.mu.Lock()
+	if settled {
+		// Every retiered key already answers from its new home, so no bucket
+		// can be holding anything and no later read needs to look.
+		s.retieredSettled = true
+	}
+	if moved {
+		// The cached snapshot's user half predates the rows just written.
+		s.cached = nil
+	}
+	s.mu.Unlock()
 }
 
 // fileResident reports whether a settings key persists in settings.json.

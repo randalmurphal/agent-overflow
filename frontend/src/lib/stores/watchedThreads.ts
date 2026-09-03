@@ -16,7 +16,14 @@
 // table that participant CHILD threads have no pane in), so this module
 // stays a leaf that only knows how to union what it is handed — the same
 // one-way shape panes.svelte.ts uses for its destroyed/mounted observers.
-import { wsClient } from '../transport/wsClient';
+//
+// The set is composed here and SPLIT in transport/backends.ts: a watch
+// frame narrows one connection, and once a client is attached to several
+// machines a thread that lives on one of them is nothing the others can
+// push about. This module deliberately does not know which machine owns
+// what — sending to the home socket alone is what it used to do, and it
+// left every pane on an attached machine receiving nothing.
+import { setWatchedThreadsEverywhere } from '../transport/backends';
 
 type WatchedThreadSource = () => Iterable<string>;
 
@@ -59,7 +66,7 @@ function composeWatchedThreads(): string[] {
  * wire.
  */
 export function refreshWatchedThreads(): void {
-  wsClient.setWatchedThreads(composeWatchedThreads());
+  setWatchedThreadsEverywhere(composeWatchedThreads());
 }
 
 /**
@@ -81,7 +88,7 @@ export function refreshWatchedThreads(): void {
  */
 export function watchThreadsBeforeMount(threadIds: readonly string[]): void {
   if (threadIds.length === 0) return;
-  wsClient.setWatchedThreads([...composeWatchedThreads(), ...threadIds]);
+  setWatchedThreadsEverywhere([...composeWatchedThreads(), ...threadIds]);
 }
 
 /** Test seam: drops every registered source and the composed set with it. */

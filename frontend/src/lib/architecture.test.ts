@@ -78,6 +78,7 @@ const PROVIDER_ACCOUNTS_STORE = 'lib/stores/providerAccounts.svelte.ts';
 const SYSTEMS_STORE = 'lib/stores/systems.svelte.ts';
 const SERVICE_UPDATE_STORE = 'lib/stores/serviceUpdate.svelte.ts';
 const DEV_SERVERS_STORE = 'lib/stores/devServers.svelte.ts';
+const THREADS_STORE = 'lib/stores/threads.svelte.ts';
 
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionPaneAttach: owned(BROWSER_COMPANION_STORE, 'attachBrowserCompanion()'),
@@ -85,6 +86,14 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionPaneRect: owned(BROWSER_COMPANION_STORE, 'reportBrowserPaneRect()'),
   BrowserCompanionDo: owned(BROWSER_COMPANION_STORE, 'browserCompanionAct()'),
   BrowserCompanionThreadState: owned(BROWSER_COMPANION_STORE, 'hydrateBrowserCompanionState()'),
+  // The read marker is the one thread-row field where the newest value is
+  // not the largest one (explicit unread persists as epoch 0), so the
+  // merge in eventsThreadRows.ts can only tell a local write from a stale
+  // wire row by asking whether one is in flight. Both RPCs are made under
+  // that claim (threadReadWrites.ts) and a caller that made either one
+  // directly would produce exactly the row the claim exists to settle.
+  MarkThreadRead: owned(THREADS_STORE, 'markThreadRead()'),
+  MarkThreadUnread: owned(THREADS_STORE, 'markThreadUnread()'),
   GetGitStatus: owned(GIT_STATUS_STORE, 'refreshGitStatus()'),
   GitStatusSubscribe: owned(GIT_STATUS_STORE, 'attachGitStatus()'),
   GitStatusUnsubscribe: owned(GIT_STATUS_STORE, 'the attachment release()'),

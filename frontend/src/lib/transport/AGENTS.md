@@ -357,7 +357,8 @@ remote browser alike. Protocol and authz rules:
 - `entityFilteredChannels.ts` is the list of channels the backend narrows
   to the threads this client says it is looking at
   (`wsClient.setWatchedThreads` sends the `watch` frame; the set is composed
-  in `stores/watchedThreads.ts`). It exists for ONE consumer: the forward-skip
+  in `stores/watchedThreads.ts` and SPLIT across connections by
+  `backends.setWatchedThreadsEverywhere`). It exists for ONE consumer: the forward-skip
   heuristic above, which must not read a withheld frame's spent sequence
   number as a drop. So the list is not a convenience copy — it is half of a
   decision whose other half is `ChannelPolicy.EntityFiltered`, and
@@ -367,6 +368,35 @@ remote browser alike. Protocol and authz rules:
   together with the Go row, and never widen the exemption past "a filter has
   been sent" and "this channel is filtered" — an explicit `gap:true` marker
   is the server stating a loss and is always honoured.
+- **The watched-thread set is per CONNECTION, and the fan-out splits it.**
+  `backends.setWatchedThreadsEverywhere` is the third member of the
+  "every attached backend, and every one attached afterwards" family
+  (`installStepUpProverEverywhere`, `setLeaseEverywhere`,
+  `setPresenceEverywhere`), and the only one that does not repeat its
+  argument verbatim: a `watch` frame
+  narrows the channels of ONE machine, so each backend is sent the ids
+  it owns (`entityIndex.threadBackend`) PLUS every id whose owner this
+  client does not know yet. Both halves matter and they fail in opposite
+  directions — withholding an id from its owner is a pane that silently
+  receives nothing and nothing later corrects it, while an unknown id is
+  the ordinary state of a thread reached by deep link or painted from
+  the replica, so home-only would be the routing fallback's answer and
+  the wrong one here. Pushing to `wsClient` alone (what this used to do)
+  meant every pane on an attached machine received nothing at all. The
+  per-socket `MAX_WATCH_THREADS` bound is each handle's own, and a split
+  can only bring a connection further under it.
+- **A timestamp is read against the clock that MINTED it**
+  (`backendClock.ts`). Every hello frame carries the server's own reading
+  of the moment it was sent and `wsClient` stores the difference as
+  `clockSkewMs`; this module is what makes that measurement reachable
+  from `utils/format.ts`'s `relativeTime`, keyed by backend. It holds a
+  SOURCE per backend rather than a number, because `wsClient`
+  deliberately suppresses a hello publish whose only change is the clock
+  — a cached copy would be the skew from whichever reconnect last
+  differed in some other field. An unregistered backend reads zero skew,
+  which is what every caller did before this existed. Only the RELATIVE
+  form uses it: "5m ago" is a subtraction against a clock, while an
+  absolute time is read against the watch on the reader's wrist.
 - `lease.ts` is the ONE door for the client's foreground lifecycle, and it
   is a NATIVE signal: the phone shell's pause/resume, arriving through a
   Capacitor plugin in wave 6f-c. Nothing in the SPA calls it today, on
@@ -386,6 +416,26 @@ remote browser alike. Protocol and authz rules:
   highlight seeds and merged transcript deltas
   (`internal/transport/lease.go`); everything else is untouched, so badges
   and the push mapping keep working while the screen is off.
+- **`presence` is the frame that DOES read focus, and the one thing it may
+  ever change is whether a toast appears.** `stores/screenPresence.ts`
+  composes `{focused, threads}` from `document.hasFocus()`,
+  `document.hidden` and the panes on screen; `backends.setPresenceEverywhere`
+  is the fourth member of the "every attached backend" family and REPEATS
+  its argument verbatim (thread ids are unique across backends, so a machine
+  that does not hold the thread matches nothing); `wsClient.setPresence`
+  dedups, bounds the set by `MAX_WATCH_THREADS`, and restates after every
+  hello beside the watch set and the lease — including an unattended state,
+  because the backend holds no resting value to fall back on.
+
+  **It is the exception that proves the two rules above, not a hole in
+  them.** The watch set is pane EXISTENCE and the lease is the native
+  lifecycle, both because a surface that stopped RECEIVING renders wrongly
+  the moment it is looked at. This frame narrows nothing and withholds
+  nothing: the backend reads it in `notifyOS` alone, to decide whether to
+  raise an OS notification about something already on screen
+  (`internal/app/app_notifications.go`). Nothing else in the SPA may read
+  the module, and no delivery, subscription or fetch decision may ever be
+  keyed on it.
 - `authReason.ts` is the ONE place a credential refusal becomes a
   sentence. The backend answers `auth_failed` plus a `reason` from a
   closed set (`internal/identity/reason.go`), and a component that

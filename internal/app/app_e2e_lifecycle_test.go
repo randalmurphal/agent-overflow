@@ -1120,7 +1120,7 @@ func TestE2E_ClaudeApprovalRoundTrip(t *testing.T) {
 		t.Fatalf("approval tool = %q", approval.Request.ToolName)
 	}
 
-	if err := app.RespondToApproval(thread.ID, provider.ApprovalResponse{
+	if err := app.RespondToApproval(context.Background(), thread.ID, provider.ApprovalResponse{
 		RequestID: "req-1",
 		Decision:  "allow",
 	}); err != nil {

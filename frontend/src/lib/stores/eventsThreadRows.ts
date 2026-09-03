@@ -15,6 +15,7 @@ import { addToast } from './toast.svelte';
 import { getThreadById, getThreadLiveActivityAt, getThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
+import { pendingLocalReadMarker } from './threadReadWrites';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at its two acquisition points, so a new pane member
@@ -63,14 +64,17 @@ function mergeThreadRowWithLocal(
   // so an n-row resync is O(n) instead of n linear getThreadById scans.
   cachedThread: Thread | undefined = getThreadById(updated.id),
 ): Thread {
-  const readMarkers = [updated.lastReadAt];
+  // The wire value is kept apart from the local ones: `lastReadAt` is the
+  // one field where the two are not interchangeable, because explicit
+  // unread is the SMALLEST value it takes. See mergeReadMarker.
+  const localReadMarkers: number[] = [];
   const latestCompletions = [updated.latestTurnCompletedAt];
   // getThreadLiveActivityAt folds in the live streaming box, so a row
   // snapshotted before recent stream beats catches the durable
   // updatedAt up to the newest live bump here.
   const activityMarkers = [updated.updatedAt, getThreadLiveActivityAt(updated)];
   if (cachedThread?.lastReadAt !== undefined) {
-    readMarkers.push(cachedThread.lastReadAt);
+    localReadMarkers.push(cachedThread.lastReadAt);
   }
   if (cachedThread?.latestTurnCompletedAt !== undefined) {
     latestCompletions.push(cachedThread.latestTurnCompletedAt);
@@ -82,7 +86,7 @@ function mergeThreadRowWithLocal(
   for (const pane of ingestPanes()) {
     if (pane.threadId !== updated.id || !pane.thread) continue;
     if (pane.thread.lastReadAt !== undefined) {
-      readMarkers.push(pane.thread.lastReadAt);
+      localReadMarkers.push(pane.thread.lastReadAt);
     }
     if (pane.thread.latestTurnCompletedAt !== undefined) {
       latestCompletions.push(pane.thread.latestTurnCompletedAt);
@@ -92,7 +96,7 @@ function mergeThreadRowWithLocal(
     }
   }
 
-  const lastReadAt = mergeReadMarkersPreservingUnread(readMarkers);
+  const lastReadAt = mergeReadMarker(updated.id, updated.lastReadAt, localReadMarkers);
   const latestTurnCompletedAt = mergeLatestTurnCompletedAt(latestCompletions);
   const updatedAt = mergeLatestActivityAt(activityMarkers);
   return { ...updated, updatedAt, lastReadAt, latestTurnCompletedAt };
@@ -189,15 +193,46 @@ export function refreshSidebarProjections(): void {
   void refreshThreadGroups();
 }
 
-function mergeReadMarkersPreservingUnread(readMarkers: Array<number | undefined>): number | undefined {
-  const definedReadMarkers = readMarkers.filter((value): value is number => value !== undefined);
-  if (definedReadMarkers.length === 0) {
-    return undefined;
+/**
+ * Reconcile a thread row's read marker: the value the backend just sent
+ * against the copies this page load is holding.
+ *
+ * Three rules, in order, and each one is a different question.
+ *
+ * 1. A read marker THIS page load is currently writing wins outright,
+ *    value and all (`threadReadWrites.ts`). It is the newest thing that
+ *    happened to the field and the backend has not answered for it yet,
+ *    so no wire row can be later. This is the only rule that can return
+ *    an explicit unread, and holding the claim is what earns it.
+ * 2. Otherwise a wire 0 wins, because it IS the backend's answer and
+ *    every local write has been settled by rule 1. Without this the
+ *    field is forward-only and no client but the one that pressed the
+ *    button ever sees a thread go unread.
+ * 3. Otherwise the newest of everything defined. Local copies can lead
+ *    the wire by a debounce interval, and a row snapshotted before the
+ *    persist landed must not drag a read thread back to unread.
+ *
+ * Rule 3 used to be the whole function with "any 0 wins" bolted in front
+ * of it, which made a cached 0 permanent: it was folded back into every
+ * later merge and absorbed the timestamp another device's read
+ * broadcast, for the life of the page.
+ */
+function mergeReadMarker(
+  threadId: string,
+  wireReadMarker: number | undefined,
+  localReadMarkers: number[],
+): number | undefined {
+  const pending = pendingLocalReadMarker(threadId);
+  if (pending.held) {
+    return pending.lastReadAt;
   }
-  if (definedReadMarkers.includes(0)) {
+  if (wireReadMarker === 0) {
     return 0;
   }
-  return Math.max(...definedReadMarkers);
+  if (wireReadMarker === undefined && localReadMarkers.length === 0) {
+    return undefined;
+  }
+  return Math.max(wireReadMarker ?? Number.NEGATIVE_INFINITY, ...localReadMarkers);
 }
 
 function mergeLatestTurnCompletedAt(completions: Array<number | undefined>): number | undefined {
