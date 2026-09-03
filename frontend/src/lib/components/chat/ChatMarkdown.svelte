@@ -33,7 +33,13 @@
   // target keeps the structure this component renders.
 
   import { getContext, untrack } from 'svelte';
-  import { Streamdown, type ProvenAppend } from '../../markdown';
+  import {
+    EMBEDDED_HTML_EXTENSIONS,
+    Streamdown,
+    sanitizeEmbeddedHtmlToken,
+    type Extension,
+    type ProvenAppend,
+  } from '../../markdown';
   import {
     CHAT_MARKDOWN_PRESENCE_CONTEXT,
     CHAT_MARKDOWN_SETTLED_CONTEXT,
@@ -83,6 +89,7 @@
     workspacePath = '',
     pathRefs,
     threadId = '',
+    embeddedHtml = false,
     class: className = '',
   }: {
     source: string;
@@ -112,6 +119,14 @@
      *  the surface. Surfaces with no thread (settings previews, PR bodies)
      *  leave every link exactly as written. */
     threadId?: string;
+    /** Render forge-authored embedded HTML. OFF for agent chat output by
+     *  design: only forge-content surfaces (PR/MR descriptions, review
+     *  comments) pass true. `<details>/<summary>` and the safe inline
+     *  pairs become native tokens, remaining complete blocks render
+     *  through the allowlist sanitizer, and anything unrecognized shows
+     *  as escaped literal text — never silently dropped. See
+     *  `markdown/parser/extensions/embeddedHtml.ts`. */
+    embeddedHtml?: boolean;
     class?: string;
   } = $props();
 
@@ -180,14 +195,14 @@
   });
 
   // Preview first: the path-link extension claims every `[…](…)` link it is
-  // offered, so behind it the preview one would never see one.
+  // offered, so behind it the preview one would never see one. The embedded
+  // HTML pair claims only `<tag` starts, disjoint from both.
   const extensions = $derived.by(() => {
-    if (previewLinkExtension && pathLinkExtension) {
-      return [previewLinkExtension, pathLinkExtension];
-    }
-    if (previewLinkExtension) return [previewLinkExtension];
-    if (pathLinkExtension) return [pathLinkExtension];
-    return undefined;
+    const list: Extension[] = [];
+    if (previewLinkExtension) list.push(previewLinkExtension);
+    if (pathLinkExtension) list.push(pathLinkExtension);
+    if (embeddedHtml) list.push(...EMBEDDED_HTML_EXTENSIONS);
+    return list.length > 0 ? list : undefined;
   });
 
   // The path-link prefix carries a per-page-load nonce so only links
@@ -378,7 +393,7 @@
     {mermaidConfig}
     {allowedLinkPrefixes}
     {allowedImagePrefixes}
-    renderHtml={false}
+    renderHtml={embeddedHtml ? sanitizeEmbeddedHtmlToken : false}
     compactStaticHtml={true}
     {trimFirstBlockMargin}
     {trimLastBlockMargin}

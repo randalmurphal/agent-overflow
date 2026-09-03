@@ -36,6 +36,8 @@ export type {
   ProvenAppend,
 } from './parser/index';
 export { parseIncompleteMarkdown } from './parser/incompleteMarkdown';
+export { EMBEDDED_HTML_EXTENSIONS } from './parser/extensions/embeddedHtml';
+export { sanitizeEmbeddedHtmlToken } from './render/htmlSanitize';
 export { acquireDocumentInteraction } from './render/documentInteraction';
 export type { DocumentInteraction } from './render/documentInteraction';
 export { attachStreamdownLiteralHost, streamdownLiteralHostOf } from './render/literalHost';

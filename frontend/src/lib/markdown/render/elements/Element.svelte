@@ -317,6 +317,17 @@
 	<!-- TODO This does not seems to be tokenized for now -->
 {:else if token.type === 'text'}
 	{@render children()}
+{:else if token.type === 'details'}
+	<!-- Embedded forge HTML (opt-in; parser/extensions/embeddedHtml.ts).
+	     Chrome comes from the `.markdown-body details` cascade rules, so
+	     no theme slot exists for these two. -->
+	<details data-streamdown-details={id} class="md-blk" open={token.open}>
+		{@render children()}
+	</details>
+{:else if token.type === 'detailsSummary'}
+	<summary data-streamdown-summary={id}>
+		{@render children()}
+	</summary>
 {:else if token.type === 'html'}
 	{#if streamdown.renderHtml}
 		{@const content =

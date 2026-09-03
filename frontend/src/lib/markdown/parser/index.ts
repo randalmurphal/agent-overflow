@@ -31,6 +31,8 @@ export type {
   AlignToken,
   CitationToken,
   MdxToken,
+  DetailsToken,
+  DetailsSummaryToken,
   TableToken,
   THead,
   TBody,

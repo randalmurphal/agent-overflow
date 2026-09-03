@@ -20,6 +20,7 @@ import type { DescriptionDetailToken, DescriptionListToken, DescriptionTermToken
 import type { AlignToken } from './extensions/align';
 import type { CitationToken } from './extensions/citations';
 import type { MdxToken } from './extensions/mdx';
+import type { DetailsSummaryToken, DetailsToken } from './extensions/embeddedHtml';
 import { markedAlert } from './extensions/alert';
 import { markedFootnote, markedFootnoteBlock } from './extensions/footnotes';
 import { markedMath } from './extensions/math';
@@ -239,7 +240,7 @@ export type Extension = {
     start?: TokenizerStartFunction;
     applyInBlockParsing?: boolean;
 };
-export type StreamdownToken = Exclude<MarkedToken, Tokens.List | Tokens.ListItem | Tokens.Table> | ListToken | ListItemToken | MathToken | AlertToken | FootnoteToken | SubSupToken | BrToken | HrToken | TableToken | THead | TBody | TFoot | THeadRow | TRow | TH | TD | DescriptionListToken | DescriptionToken | DescriptionDetailToken | DescriptionTermToken | AlignToken | CitationToken | MdxToken;
+export type StreamdownToken = Exclude<MarkedToken, Tokens.List | Tokens.ListItem | Tokens.Table> | ListToken | ListItemToken | MathToken | AlertToken | FootnoteToken | SubSupToken | BrToken | HrToken | TableToken | THead | TBody | TFoot | THeadRow | TRow | TH | TD | DescriptionListToken | DescriptionToken | DescriptionDetailToken | DescriptionTermToken | AlignToken | CitationToken | MdxToken | DetailsToken | DetailsSummaryToken;
 export type { TableToken, THead, TBody, TFoot, THeadRow, TRow, TH, TD } from './extensions/table';
 
 /** marked's per-Lexer reference-link table. */
@@ -262,3 +263,4 @@ type LexOptions = LexerOptions & {
 	};
 };
 export type { MathToken, AlertToken, FootnoteToken, SubSupToken, BrToken, HrToken, AlignToken, CitationToken, MdxToken };
+export type { DetailsToken, DetailsSummaryToken };

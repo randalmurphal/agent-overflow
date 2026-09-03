@@ -73,6 +73,8 @@ parser/
   incompleteMarkdown.inline.ts      speculative inline emphasis (DISABLED)
   incompleteMarkdown.structural.ts  links, footnotes, math, dl, MDX
   extensions/         the 13 engine extensions (alert, list, table, math, …)
+                      plus the OPT-IN embeddedHtml.ts pair (see Security
+                      boundary), registered only by forge-content surfaces
 render/
   Streamdown.svelte   the root: props → context → blocks → one of two paths
   Block.svelte        one volatile block, reactive
@@ -115,6 +117,21 @@ Pinned by `ChatMarkdown.test.ts` ("never renders a raw same-origin
 anchor…" / "…img…" / "…a //-leading href…", the last one over both
 render paths) and, per href class, by
 `ChatMarkdown.compactStaticLinkUrls.test.ts`.
+
+**Embedded forge HTML is opt-in, and agent chat never gets it.** Forge
+comment surfaces (PR/MR descriptions, review threads) pass
+`embeddedHtml` on `ChatMarkdown`, which registers
+`parser/extensions/embeddedHtml.ts` (structural `<details>/<summary>`
+folding plus safe inline pairs mapped onto NATIVE tokens — `<a href>` →
+link, `<img>` → image — so their URLs go through the same `transformUrl`
+policy above) and passes `render/htmlSanitize.ts` as `renderHtml` for
+whatever the extensions did not claim: allowlisted elements with
+allowlisted attributes, `href`/`src` absolute http(s) only, unknown HTML
+as escaped literal text (never silently dropped), comments as nothing.
+Agent chat keeps `renderHtml={false}` — an html token renders as
+NOTHING there, and any change to that default is a security decision.
+Pinned by `ChatMarkdown.embeddedHtml.test.ts` (both directions, script
+inertness) and `render/htmlSanitize.test.ts`.
 
 ## Host seams
 

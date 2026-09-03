@@ -16,6 +16,7 @@ import { cleanup } from '@testing-library/svelte';
 import { resetWailsMocks } from './mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from './mocks/bindings-app';
 import { resetAttachmentTransferMocks } from './mocks/attachmentTransfer';
+import { setPageGrantsFromBootstrap } from '../lib/transport/scopes';
 import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/threadStatuses.svelte';
 import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
 import { clearThreadScrollSnapshotsForTest } from '../lib/utils/threadScrollSnapshots';
@@ -33,6 +34,12 @@ function installBrowserTraceSinks(): void {
 
 beforeEach(() => {
   installBrowserTraceSinks();
+  // Same pin as setup.ts: with no bootstrap fetch nothing resolves the
+  // page's grants, and scopes.ts THROWS in test mode on a pre-resolution
+  // read outside a reactive context (the 2026-09-03 idle-trim tripwire).
+  // Pin the embedded webview's answer; a test exercising a narrower
+  // session sets its own.
+  setPageGrantsFromBootstrap(false);
 });
 
 afterEach(() => {

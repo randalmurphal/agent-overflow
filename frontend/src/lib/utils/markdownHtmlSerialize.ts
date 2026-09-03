@@ -22,10 +22,13 @@
 // (`<script>`, `javascript:` hrefs, `onerror=` in a raw HTML span)
 // simply never reaches a branch that could emit it.
 //
-// Raw HTML in the source is DROPPED, matching the rendered view:
-// ChatMarkdown passes `renderHtml={false}`, so the renderer
+// Raw HTML in the source is DROPPED, matching the rendered agent-chat
+// view: ChatMarkdown defaults to `renderHtml={false}`, so the renderer
 // renders `html` tokens as nothing. Copy is truthful to what was on
-// screen, and the flavor stays inert by construction.
+// screen, and the flavor stays inert by construction. Surfaces that opt
+// into embedded forge HTML render a sanitized subset the html flavor
+// still omits (the `html` case below) — a known fidelity gap, accepted
+// to keep this serializer tag-emitting-by-named-branch only.
 //
 // Math and mermaid blocks emit their SOURCE inside `<pre><code>`.
 // Rendering KaTeX HTML or a mermaid SVG into the clipboard flavor is a
@@ -195,8 +198,12 @@ function renderBlock(token: MdToken): string {
     case 'html':
     case 'def':
     case 'space':
-      // `html`: never rendered on screen (`renderHtml={false}`), never
-      // copied. `def`/`space`: no visible output by definition.
+      // `html`: agent chat never renders it (`renderHtml={false}`), so it
+      // is never copied. Embedded-HTML surfaces (forge comments) do render
+      // a sanitized subset, which this serializer deliberately drops from
+      // the html flavor — text/plain still carries the raw source, and a
+      // structural `details` token degrades to its children via the
+      // default case below. `def`/`space`: no visible output by definition.
       return '';
     default:
       // Unreachable for the types in BLOCK_TYPES; kept so a future
