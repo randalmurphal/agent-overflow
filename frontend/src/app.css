@@ -1430,7 +1430,7 @@ html.light .working-sprite {
   display: flex;
   flex-direction: column;
 }
-.settings-sections > * + * {
+.settings-sections > :not(:first-child) {
   margin-top: 1.75rem;
   padding-top: 1.75rem;
   border-top: 1px solid var(--border-subtle);
