@@ -242,6 +242,13 @@ missing value over one that skips. Two rules keep the evidence real:
 - Draft threads (no items yet) are hidden from the sidebar. Seed at least
   one turn, or send the first message before navigating, when a spec needs
   the thread visible.
+- **A seeded-and-opened thread takes the MOUNT path; the in-app draft does
+  not.** "+ New" holds a placeholder and adopts the created row in place,
+  which is a different code path from `openThreadInPane` for everything
+  keyed on the pane's thread identity (the watched-thread set above all).
+  `draft-first-turn-render.spec.ts` drives that path through the real
+  composer and asserts the first turn RENDERS; a change to how a pane
+  acquires its thread is not covered by the RPC-seeded specs.
 - **Every page this backend hands out shares ONE ui_state bucket.** Pane
   layout persists under the `client:<id>` scope and `/pageurl` answers with
   the same client id every time, so a second page BOOTS INTO the panes the

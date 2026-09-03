@@ -39,6 +39,7 @@ import type {
 } from '../types/events';
 import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
 import { getThreadById } from './threads.svelte';
+import { refreshWatchedThreads } from './watchedThreads';
 import { leaseDuringSettle } from '../utils/scrollLeaseDuringTransition';
 import { createGitStatusView, type GitStatusView } from './gitStatusStore.svelte';
 import { workspaceRefForThread } from '../utils/workspaceKey';
@@ -117,6 +118,21 @@ export type {
 export function createThreadPane(options: ThreadPaneOptions = {}) {
   const paneId = options.paneId ?? 'pane';
   let thread: Thread | null = $state(null);
+  // THE one write to `thread`. Every path that puts a different thread (or
+  // none) on this pane goes through here, and an identity change restates
+  // the watched-thread set: that set is what admits the thread's
+  // entity-filtered frames (`provider:item_event` above all) on this
+  // connection, and it is composed from `pane.threadId` over the registry.
+  // A draft placeholder contributes nothing to it, so the pane adopting the
+  // real row on first send is exactly the moment the backend would otherwise
+  // keep withholding the whole first turn (2026-09-03). Same-id replacements
+  // (metadata patches) change nothing the set reads, and the transport dedups
+  // the rest, so the recompute is keyed on identity alone.
+  function assignThread(next: Thread | null): void {
+    const before = thread?.id ?? null;
+    thread = next;
+    if ((next?.id ?? null) !== before) refreshWatchedThreads();
+  }
   let contextWindow: ContextWindow | null = $state(null);
   let loading: boolean = $state(false);
   let showTerminal: boolean = $state(false);
@@ -211,9 +227,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   const draftState = createThreadDraftPlaceholder({
     paneId,
     getThread: () => thread,
-    setThread: (next) => {
-      thread = next;
-    },
+    setThread: assignThread,
     getItemCount: () => getItems().length,
     getShowTerminal: () => showTerminal,
     bumpSwitchGeneration: () => {
@@ -563,9 +577,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   const switchLoad = createThreadSwitchLoad({
     paneId,
     getThread: () => thread,
-    setThread: (next) => {
-      thread = next;
-    },
+    setThread: assignThread,
     getDraftPlaceholder: () => draftState.placeholder,
     clearDraftPlaceholder: draftState.reset,
     getItems,
@@ -656,7 +668,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // state before reporting callback failures, so an aborted clear leaves a
     // coherent settled pane that can be cleared again.
     streamingReveal.disposeAll();
-    thread = null;
+    assignThread(null);
     updateEffectiveModel('');
     draftState.reset();
     replaceTimelineItems([]);
@@ -1562,7 +1574,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       ) {
         updateEffectiveModel('');
       }
-      thread = nextThread;
+      assignThread(nextThread);
       contextWindow = seedContextWindow(nextThread);
     },
 

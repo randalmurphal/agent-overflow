@@ -108,6 +108,19 @@ stops waking readers.
   sources after that resolves — which is after its history and window loads
   have already gone out on the same socket.
 
+  **A pane that changes thread WITHOUT mounting restates the set too.** The
+  in-app draft is that path: the pane holds a synthetic placeholder (which
+  contributes nothing), `CreateThread` runs on the first keystroke or send,
+  and the pane adopts the real row in place. Every write to a pane's
+  `thread` goes through `assignThread` in `thread.svelte.ts`, which calls
+  `refreshWatchedThreads` on an identity change — the draft adopt, the
+  clear, `replaceThread`, both switch-load commits. Before that chokepoint
+  existed the adopt restated nothing, and every new thread rendered its
+  status and none of its items until a reload (2026-09-03).
+  `e2e/tests/draft-first-turn-render.spec.ts` sends from a real "+ New"
+  draft for exactly this reason; RPC-seeded threads only ever take the
+  mount path.
+
   **It composes; it does not address.** Both entry points push through
   `transport/backends.setWatchedThreadsEverywhere`, which splits the set
   across every attached connection. Pushing to `wsClient` — the HOME

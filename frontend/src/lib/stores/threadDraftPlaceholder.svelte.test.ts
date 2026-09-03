@@ -4,8 +4,10 @@
 // an unsent draft, the placeholder terminals and worktree intent a restage
 // or a cwd change must clean up, and materialization into a real thread.
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createThreadPane } from './thread.svelte';
+import { openEmptyPane, resetPanesForTest } from './panes.svelte';
+import { wsClient } from '../transport/wsClient';
 import {
   resetForTest as resetWorktreeIntent,
   setAttachBranch,
@@ -332,6 +334,61 @@ describe('threadDraftPlaceholder', () => {
       );
     } finally {
       resetWorktreeIntent();
+    }
+  });
+});
+
+// The watched-thread set is what admits a thread's entity-filtered frames
+// (`provider:item_event` above all) on this connection. A placeholder pane
+// contributes nothing to it, so the recompute has to happen the moment the
+// pane adopts the real row: without it the backend keeps withholding every
+// item of the first turn until some unrelated pane change restates the set.
+describe('threadDraftPlaceholder watch set', () => {
+  beforeEach(() => {
+    installThreadPaneTestEnv();
+    resetPanesForTest();
+  });
+
+  it('re-sends the watched set with the real thread id once the placeholder materializes', async () => {
+    const pushed: string[][] = [];
+    vi.spyOn(wsClient, 'setWatchedThreads').mockImplementation((ids) => {
+      pushed.push([...ids]);
+    });
+    try {
+      const pane = openEmptyPane();
+      const project: Project = {
+        id: 'p-1',
+        path: '/tmp/project',
+        name: 'project',
+        sortPosition: 0,
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+      };
+      pane.startDraftPlaceholder(project, 'chat', {
+        provider: 'claude',
+        model: 'm',
+        workspacePath: '/tmp/project',
+        branch: 'main',
+      });
+      setBindingMock('CreateThread', async () =>
+        makeThread({
+          id: 'thread-real',
+          projectId: 'p-1',
+          projectPath: '/tmp/project',
+          workspacePath: '/tmp/project',
+          branch: 'main',
+          isDraft: true,
+        }),
+      );
+
+      expect(await pane.ensureMaterializedThread()).toBe('thread-real');
+
+      expect(pushed.at(-1)).toContain('thread-real');
+      // And the synthetic placeholder id was never something to watch.
+      expect(pushed.flat().some((id) => id.startsWith('draft:'))).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
     }
   });
 });

@@ -35,6 +35,11 @@ function fakeBackendClient(): never {
     callByID: async () => null,
     callByName: async () => null,
     subscribe: () => () => undefined,
+    // The three per-connection frames the registry restates on every
+    // composition change; a pane mounted under this suite reaches them.
+    setWatchedThreads: () => undefined,
+    setPresence: () => undefined,
+    setLease: () => undefined,
     installStepUpProver: () => undefined,
     getStatus: () => ({ status: 'connected', nextAttemptAt: null }),
     onStatusChange: () => () => undefined,
