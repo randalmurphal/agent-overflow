@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/claudecatalog"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/providerstatus"
 )
@@ -221,6 +222,12 @@ func (a *App) refreshProviderCatalogAfterUpgrade(providerName string) error {
 		_, err := a.providerDiscoveryService().RecheckCodexAccount()
 		return err
 	case string(provider.Claude):
+		// Learned wire-only models are claims about the binary that reported
+		// them, and claudemodels retains them across probes of one binary —
+		// so they must be dropped BEFORE the recheck, or the re-probe's
+		// store would carry the old binary's models into the new one's
+		// answer. A version change is the one legitimate subtraction event.
+		claudecatalog.DropModelsForBinary(a.providerBinaryPath(providerName))
 		_, err := a.providerDiscoveryService().RecheckClaudeAccount()
 		return err
 	}

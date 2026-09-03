@@ -57,6 +57,16 @@ In priority order (each rule earns its place from the shape above):
    defaulted to, the merge steps DOWN to the highest remaining tier below it.
    Silently promoting a model to a costlier tier is the one failure mode that
    spends the user's money.
+6. **Learned models survive degraded answers** (`Catalog.Store`, not `Merge`:
+   this rule needs per-identity memory). Rule 1 applied to wire-only models,
+   not just shipped ones: the shortlist's rows are server-gated, and on
+   2026-09-03 one flaky probe answer omitted `claude-fable-5-1` and silently
+   removed it from every picker for hours while the user's threads ran it. A
+   wire that omits a model this identity learned earlier — or reports no
+   models at all — leaves the learned models served (`DriftRetained`). The
+   one subtraction event is the binary behind the entry changing:
+   `DropBinary`, called by the provider-binary watcher before its re-probe,
+   because a learned model is a claim about the binary that reported it.
 
 ## Drift, not toasts
 
@@ -65,6 +75,12 @@ DISTINCT report per probe identity (`Catalog.Store` returns nil for a repeat).
 It is a maintenance signal for whoever edits the catalog. None of it is
 actionable by the user, and none of it degrades the session they are starting,
 so it is never a toast and never blocks anything.
+
+Two kinds exist for the retention rule. `DriftRetained` marks a learned model
+this wire omitted (or a wire that reported no models over an enriched entry).
+`DriftCleared` fires when a report goes from something to NOTHING — before
+it, enrichment reverting to the plain catalog left no log evidence of when,
+which is exactly how the 2026-09-03 disappearance went unnoticed.
 
 `DriftDisabled` is reported and nothing else: the CLI's schema has a `disabled`
 flag (an org's Zero Data Retention setting excluding a model) but no capture
@@ -115,13 +131,15 @@ be served to another.
 It deliberately does NOT share the probe cache's TTL or its invalidations. A
 model list has no correctness deadline; dropping it on a recheck would make
 wire-only models vanish from an open picker for the seconds a re-probe takes.
-Every probe replaces the entry wholesale, and the map is capped instead.
+The map is capped instead, and the one deliberate drop is `DropBinary` for
+entries whose binary changed underneath its path (merge rule 6).
 
 ## Anti-patterns
 
-- Do NOT let the wire subtract. Removing a model, or treating a miss as
-  authoritative, breaks the one hard requirement: no working model disappears
-  from the picker.
+- Do NOT let the wire subtract — learned models included. Treating a miss (or
+  an empty answer) as authoritative breaks the one hard requirement: no
+  working model disappears from the picker. Only `DropBinary` subtracts, on a
+  binary version change.
 - Do NOT spawn anything from here. If a caller wants fresher models, it probes.
 - Do NOT surface drift to the user. It is a note to the maintainer.
 - Do NOT infer capability from an alias string. `[1m]` presence is evidence;

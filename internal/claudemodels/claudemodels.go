@@ -44,6 +44,19 @@ const (
 	// DriftUnreadable — the wire carried a `models` array that would not
 	// decode. Nothing was merged and the previous answer was kept.
 	DriftUnreadable DriftKind = "unreadable"
+	// DriftRetained — this probe's wire omitted models the same identity
+	// learned from an earlier probe (or reported no models at all). Wire
+	// ABSENCE carries no information — the list is a shortlist and a gated
+	// row can flake out of one answer — so the learned models stay served
+	// (incident 2026-09-03: one degraded probe silently removed
+	// claude-fable-5-1 from every picker for hours). The one real
+	// subtraction event is a binary version change: DropBinary.
+	DriftRetained DriftKind = "retained"
+	// DriftCleared — this probe produced no drift where the previous one
+	// did. Reported so enrichment LOSS is visible in the log: before this
+	// kind, an entry silently reverting to the plain catalog left no
+	// evidence of when it happened.
+	DriftCleared DriftKind = "cleared"
 )
 
 // Drift is one line of the maintenance report a merge produces.
@@ -509,18 +522,33 @@ func effortSlugs(options []provider.ReasoningEffortOption) []string {
 // Deliberately NOT tied to the probe cache's TTL or its invalidations. A model
 // list has no correctness deadline — dropping it when identity is rechecked
 // would make wire-only models vanish from an open picker for the seconds a
-// re-probe takes, and every probe replaces the entry wholesale anyway. The
-// entry count is capped instead.
+// re-probe takes. The entry count is capped instead, and the one deliberate
+// drop is DropBinary, for entries whose binary changed underneath its path.
 type Catalog struct {
-	mu      sync.Mutex
-	base    []provider.ModelInfo
-	entries map[string]catalogEntry
-	order   []string
+	mu   sync.Mutex
+	base []provider.ModelInfo
+	// baseSlugs answers "is this slug the hand catalog's or learned from the
+	// wire" without a scan per stored row.
+	baseSlugs map[string]bool
+	entries   map[string]catalogEntry
+	order     []string
 }
 
 type catalogEntry struct {
 	models []provider.ModelInfo
 	drift  string
+	// binary is the ProbeCacheKey.Binary this entry was learned from, kept
+	// so DropBinary can void every claim about a binary that changed.
+	binary string
+	// learned is the wire-only models this identity has accumulated: the
+	// current wire's plus any earlier ones the wire has since omitted.
+	// Absence is no information (see DriftRetained), so these survive a
+	// degraded probe answer and die only with the entry or the binary.
+	learned []provider.ModelInfo
+	// wireEmpty dedupes the DriftRetained notice for a wire that keeps
+	// reporting no models: the first empty answer is worth a line, the
+	// hundredth is not.
+	wireEmpty bool
 }
 
 // maxCatalogEntries bounds the map. Keys vary with binary, account, and custom
@@ -538,22 +566,35 @@ func NewCatalog() *Catalog {
 // NewCatalogWith returns a Catalog over an explicit base list. Tests use it to
 // exercise the merge against a small, stable catalog.
 func NewCatalogWith(base []provider.ModelInfo) *Catalog {
+	baseSlugs := make(map[string]bool, len(base))
+	for _, model := range base {
+		baseSlugs[model.Slug] = true
+	}
 	return &Catalog{
-		base:    provider.CloneModels(base),
-		entries: make(map[string]catalogEntry),
+		base:      provider.CloneModels(base),
+		baseSlugs: baseSlugs,
+		entries:   make(map[string]catalogEntry),
 	}
 }
 
 // Store records the models one probe reported under its identity and returns
 // the drift worth logging — nil when there is nothing to say, and nil when the
 // same drift was already reported for this key, so a caller that logs on every
-// probe result logs each distinct report once.
+// probe result logs each distinct report once. A report that goes from
+// something to NOTHING is itself a line (DriftCleared): enrichment vanishing
+// silently is how the 2026-09-03 fable-5-1 disappearance went unnoticed.
 //
 // wireErr is the decode outcome from claude.ProbeConfig.OnModels and is
 // handled here rather than at the call site so no caller can get the rule
 // wrong: an unreadable array is NO information, so the previous entry stands.
-// An empty (or absent) array IS information — a binary that reports no models
-// — so it replaces the entry with the plain catalog.
+//
+// Absence never subtracts, in either shape. An empty (or absent) array, and a
+// non-empty array missing models this identity learned earlier, both leave the
+// learned models served: the list is the CLI's picker shortlist, its rows are
+// server-gated, and one degraded answer must not remove a model the user's
+// threads are running (merge rule 1 applied to learned models, not just
+// shipped ones). The one event that voids learned models is the binary behind
+// the entry changing — DropBinary, driven by the provider-binary watcher.
 func (c *Catalog) Store(key provider.ProbeCacheKey, wire []claude.WireModel, wireErr error) []Drift {
 	if wireErr != nil {
 		return []Drift{{
@@ -562,15 +603,52 @@ func (c *Catalog) Store(key provider.ProbeCacheKey, wire []claude.WireModel, wir
 		}}
 	}
 
-	models, drift := Merge(c.base, wire)
-	report := FormatDrift(drift)
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	encoded := key.String()
 	previous, existed := c.entries[encoded]
-	c.entries[encoded] = catalogEntry{models: models, drift: report}
+
+	if len(wire) == 0 && existed {
+		notice := !previous.wireEmpty && (len(previous.learned) > 0 || previous.drift != "")
+		previous.wireEmpty = true
+		c.entries[encoded] = previous
+		if !notice {
+			return nil
+		}
+		return []Drift{{
+			Kind:   DriftRetained,
+			Detail: "wire reported no models; keeping the previous enriched answer for this identity",
+		}}
+	}
+
+	models, drift := Merge(c.base, wire)
+	var learned []provider.ModelInfo
+	for _, model := range models {
+		if !c.baseSlugs[model.Slug] {
+			learned = append(learned, model)
+		}
+	}
+	for _, kept := range previous.learned {
+		if slices.ContainsFunc(models, func(m provider.ModelInfo) bool { return m.Slug == kept.Slug }) {
+			continue
+		}
+		models = append(models, kept)
+		learned = append(learned, kept)
+		drift = append(drift, Drift{
+			Model:  kept.Slug,
+			Kind:   DriftRetained,
+			Detail: "absent from this wire; retained from an earlier probe of this binary",
+		})
+	}
+	report := FormatDrift(drift)
+
+	c.entries[encoded] = catalogEntry{
+		models:  models,
+		drift:   report,
+		binary:  key.Binary,
+		learned: learned,
+	}
 	if !existed {
 		c.order = append(c.order, encoded)
 		c.evictOldestLocked()
@@ -578,7 +656,36 @@ func (c *Catalog) Store(key provider.ProbeCacheKey, wire []claude.WireModel, wir
 	if existed && previous.drift == report {
 		return nil
 	}
+	if existed && report == "" && previous.drift != "" {
+		return []Drift{{
+			Kind:   DriftCleared,
+			Detail: "previous drift resolved (was: " + previous.drift + ")",
+		}}
+	}
 	return drift
+}
+
+// DropBinary forgets every entry learned from one configured binary path and
+// reports how many it dropped. This is the one legitimate wire subtraction: a
+// learned model is a claim about the binary that reported it, and once the
+// file behind that path reports a different version the claim is void —
+// capabilities and all. Callers re-probe immediately after; until that lands,
+// ModelsFor serves the shipped catalog for the dropped identities.
+func (c *Catalog) DropBinary(binary string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	dropped := 0
+	kept := c.order[:0]
+	for _, encoded := range c.order {
+		if entry, ok := c.entries[encoded]; ok && entry.binary == binary {
+			delete(c.entries, encoded)
+			dropped++
+			continue
+		}
+		kept = append(kept, encoded)
+	}
+	c.order = kept
+	return dropped
 }
 
 func (c *Catalog) evictOldestLocked() {
