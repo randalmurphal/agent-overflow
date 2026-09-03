@@ -928,10 +928,11 @@ func (a *App) codexResendAfterInterrupt(
 	}
 	a.triage.ClearPendingSendsByItemIDs(threadID, ids)
 
-	// The original dispatch delivered image attachments alongside the
-	// steer; this resend is the content's only remaining delivery, so
-	// it must carry them too (round-14, CT14-2). IDs come from the
-	// persisted rows' meta — the same source the requeue payload uses.
+	// The original dispatch delivered the turn's attachments alongside the
+	// steer; this resend is the content's only remaining delivery, so it
+	// must carry them too (round-14, CT14-2) — images in the provider
+	// slice, files as prompt lines. IDs come from the persisted rows'
+	// meta — the same source the requeue payload uses.
 	var attachmentIDs []string
 	for _, p := range persisted {
 		ids, err := attachmentIDsFromUserMeta(p.Meta)
@@ -941,21 +942,25 @@ func (a *App) codexResendAfterInterrupt(
 		}
 		attachmentIDs = append(attachmentIDs, ids...)
 	}
-	providerAttachments, _, err := a.resolveSendMessageAttachments(threadID, attachmentIDs)
+	attachments, err := a.resolveSendMessageAttachments(threadID, attachmentIDs)
 	if err != nil {
 		log.Printf("app: codex interrupt re-send: resolve attachments for %s: %v", threadID, err)
 		a.restoreEagerPersistedFlushesToDraft(threadID, persisted)
 		return
 	}
 
-	merged := strings.Join(contents, "\n\n")
+	// This resend is the merged content's only remaining delivery, so it
+	// carries the file lines too — the original dispatch put them on its
+	// providerContent, which Codex discarded with the rest of the pending
+	// input at turn/interrupt.
+	merged := appendFileAttachmentLines(strings.Join(contents, "\n\n"), attachments.fileLines)
 	// The merged re-send is correlated to the FIRST item's row, which is
 	// the row the pending entry below is registered for. Items 2+ share
 	// that correlation, exactly as they share the turn.
 	resendClientID, resendExpect := providerSendIdentity(sess, persisted[0].UserItemID, "")
 	sendOpts := provider.SendOptions{
 		InteractionMode:     provider.NormalizeInteractionMode(thread.Mode),
-		Attachments:         providerAttachments,
+		Attachments:         attachments.images,
 		ClientUserMessageID: resendClientID,
 	}
 

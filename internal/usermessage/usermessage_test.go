@@ -369,3 +369,36 @@ func TestReadProviderParentUUID(t *testing.T) {
 		t.Errorf("stored parent = %q, want p-1", got)
 	}
 }
+
+// The kind rides the meta because the timeline renders from it: a tile
+// for an image, a chip for a file. It is omitempty and empty means image,
+// so a row written before the column existed still renders as what it is.
+func TestMarshalProjectsAttachmentKind(t *testing.T) {
+	got, err := Marshal(Input{Attachments: []store.Attachment{
+		{ID: "a1", ThreadID: "t1", Filename: "shot.png", MimeType: "image/png", Kind: store.AttachmentKindImage},
+		{ID: "a2", ThreadID: "t1", Filename: "report.pdf", MimeType: "application/pdf", Kind: store.AttachmentKindFile},
+	}})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded Meta
+	if err := json.Unmarshal([]byte(got), &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.Attachments[0].Kind != store.AttachmentKindImage {
+		t.Errorf("image kind: got %q", decoded.Attachments[0].Kind)
+	}
+	if decoded.Attachments[1].Kind != store.AttachmentKindFile {
+		t.Errorf("file kind: got %q", decoded.Attachments[1].Kind)
+	}
+
+	// A pre-kind row decodes to the empty string, which readers treat as
+	// an image rather than as a value to repair.
+	var legacy Meta
+	if err := json.Unmarshal([]byte(`{"attachments":[{"id":"a3","filename":"old.png"}]}`), &legacy); err != nil {
+		t.Fatalf("decode legacy: %v", err)
+	}
+	if legacy.Attachments[0].Kind != "" {
+		t.Errorf("legacy kind: got %q want empty", legacy.Attachments[0].Kind)
+	}
+}

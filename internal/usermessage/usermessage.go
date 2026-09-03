@@ -71,6 +71,15 @@ type AttachmentMeta struct {
 	Filename string `json:"filename"`
 	MimeType string `json:"mimeType"`
 	Size     int64  `json:"size"`
+	// Kind is store.AttachmentKindImage or store.AttachmentKindFile. It is
+	// what the timeline row renders from — an image tile or a file chip —
+	// and the MIME type cannot stand in for it: an `image/heic` attachment
+	// is a file, because no provider ingests one.
+	//
+	// omitempty, and EMPTY MEANS IMAGE. Every row written before the kind
+	// existed carried an image, so an absent value is the truth about that
+	// row rather than a gap to repair.
+	Kind string `json:"kind,omitempty"`
 }
 
 // Marshal returns the JSON-encoded user-message meta for the given
@@ -97,6 +106,7 @@ func Marshal(in Input) (string, error) {
 			Filename: attachment.Filename,
 			MimeType: attachment.MimeType,
 			Size:     attachment.Size,
+			Kind:     attachment.Kind,
 		})
 	}
 	meta := Meta{

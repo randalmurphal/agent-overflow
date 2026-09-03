@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -227,5 +229,137 @@ func TestListAttachmentsEmptyIsNonNil(t *testing.T) {
 	}
 	if list == nil {
 		t.Fatal("expected non-nil empty slice")
+	}
+}
+
+// The bound byte accessors are image-only, and the refusal comes off the
+// ROW rather than off a MIME allowlist — the attachments directory now
+// holds arbitrary bytes, so "safe to serve" is a property of the kind.
+// Both go through the store's ReadThreadBytes / Thumbnail, which is why
+// neither method needs its own check.
+func TestUploadAttachmentAcceptsFileKindButNeverServesIt(t *testing.T) {
+	app := newAttachmentTestApp(t)
+
+	record, err := app.UploadAttachment("thr-a", "report.pdf", "application/pdf",
+		base64.StdEncoding.EncodeToString([]byte("%PDF-1.7\n")))
+	if err != nil {
+		t.Fatalf("UploadAttachment: %v", err)
+	}
+	if record.Kind != store.AttachmentKindFile {
+		t.Fatalf("Kind: got %q want %q", record.Kind, store.AttachmentKindFile)
+	}
+	if record.MimeType != "application/pdf" {
+		t.Fatalf("MimeType: got %q", record.MimeType)
+	}
+
+	if _, err := app.GetAttachmentData("thr-a", record.ID); !errors.Is(err, attachment.ErrNotAnImage) {
+		t.Errorf("GetAttachmentData: got %v want ErrNotAnImage", err)
+	}
+	if _, err := app.GetAttachmentThumbnail("thr-a", record.ID); !errors.Is(err, attachment.ErrNotAnImage) {
+		t.Errorf("GetAttachmentThumbnail: got %v want ErrNotAnImage", err)
+	}
+
+	// Deleting a file takes its `<id>` directory with it.
+	if err := app.DeleteAttachment(record.ID); err != nil {
+		t.Fatalf("DeleteAttachment: %v", err)
+	}
+	if _, err := app.GetAttachmentData("thr-a", record.ID); err == nil {
+		t.Fatal("expected the deleted attachment to be gone")
+	}
+}
+
+// A mixed turn is the shape the whole feature turns on: the `[Image #N]`
+// markers are numbered over the IMAGE subset, so a file sitting between
+// two images must not consume a number, must not enter the provider
+// slice, and must arrive as a prompt line on providerContent — never on
+// the persisted content.
+func TestResolveUserMessageEnvelopeMixedAttachmentTurn(t *testing.T) {
+	app := newAttachmentTestApp(t)
+
+	first, err := app.UploadAttachment("thr-a", "one.png", "image/png", pngBase64(t))
+	if err != nil {
+		t.Fatalf("upload one.png: %v", err)
+	}
+	file, err := app.UploadAttachment("thr-a", "report.pdf", "application/pdf",
+		base64.StdEncoding.EncodeToString([]byte("%PDF-1.7\n")))
+	if err != nil {
+		t.Fatalf("upload report.pdf: %v", err)
+	}
+	second, err := app.UploadAttachment("thr-a", "two.png", "image/png", pngBase64(t))
+	if err != nil {
+		t.Fatalf("upload two.png: %v", err)
+	}
+
+	content := "look at [Image #1] and [Image #2]"
+	resolved, err := app.resolveUserMessageEnvelope("thr-a", content, userMessageInputs{
+		attachmentIDs: []string{first.ID, file.ID, second.ID},
+	})
+	if err != nil {
+		t.Fatalf("resolveUserMessageEnvelope: %v", err)
+	}
+
+	// The provider slice is the image subset, in order, with the file gone.
+	if len(resolved.providerAttachments) != 2 {
+		t.Fatalf("providerAttachments = %d, want 2 (images only)", len(resolved.providerAttachments))
+	}
+	if resolved.providerAttachments[0].ID != first.ID || resolved.providerAttachments[1].ID != second.ID {
+		t.Fatalf("provider slice lost its [Image #N] binding: %+v", resolved.providerAttachments)
+	}
+
+	// Every attachment is still on the row.
+	if len(resolved.persistedAttachments) != 3 {
+		t.Fatalf("persistedAttachments = %d, want 3", len(resolved.persistedAttachments))
+	}
+	var meta userMessageMeta
+	if err := json.Unmarshal([]byte(resolved.userMessageMeta), &meta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	wantKinds := []string{store.AttachmentKindImage, store.AttachmentKindFile, store.AttachmentKindImage}
+	if len(meta.Attachments) != 3 {
+		t.Fatalf("meta attachments = %d, want 3", len(meta.Attachments))
+	}
+	for i, want := range wantKinds {
+		if meta.Attachments[i].Kind != want {
+			t.Errorf("meta attachment %d kind = %q, want %q", i, meta.Attachments[i].Kind, want)
+		}
+	}
+
+	// The line rides providerContent only.
+	if resolved.content != content {
+		t.Fatalf("persisted content changed: %q", resolved.content)
+	}
+	_, path, err := app.attachments.PathForThread("thr-a", file.ID)
+	if err != nil {
+		t.Fatalf("PathForThread: %v", err)
+	}
+	wantLine := attachment.PromptLine(file, path)
+	if resolved.providerContent != content+"\n\n"+wantLine {
+		t.Fatalf("providerContent =\n%q\nwant\n%q", resolved.providerContent, content+"\n\n"+wantLine)
+	}
+	if strings.Contains(wantLine, "[Image #") {
+		t.Fatal("the file line must carry no image marker")
+	}
+}
+
+// The cap is on the union of both kinds: an attachment costs a slot
+// whichever way it is delivered.
+func TestResolveSendMessageAttachmentsCapsBothKindsTogether(t *testing.T) {
+	app := newAttachmentTestApp(t)
+
+	ids := make([]string, 0, attachment.DefaultMaxCount+1)
+	for i := range attachment.DefaultMaxCount + 1 {
+		mime, data := "image/png", pngBase64(t)
+		if i%2 == 1 {
+			mime, data = "application/pdf", base64.StdEncoding.EncodeToString([]byte("%PDF-1.7\n"))
+		}
+		record, err := app.UploadAttachment("thr-a", "a", mime, data)
+		if err != nil {
+			t.Fatalf("upload %d: %v", i, err)
+		}
+		ids = append(ids, record.ID)
+	}
+	if _, err := app.resolveSendMessageAttachments("thr-a", ids); err == nil ||
+		!strings.Contains(err.Error(), "too many attachments") {
+		t.Fatalf("expected the union cap to fire, got %v", err)
 	}
 }
