@@ -11,6 +11,7 @@ import {
   resetAppStorageForTest,
 } from './appStorage';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { purgeClientState } from '../transport/clientPurge';
 
 const BUCKET_CACHE_KEY = 'agent-overflow:uistate:bucket';
 
@@ -163,5 +164,44 @@ describe('appStorage', () => {
       expect(localStorage.getItem('agent-overflow:sidebar:width')).toBeNull();
     });
   });
+
+  // A sign-out, a detach and a refused credential all land here through
+  // `transport/clientPurge.ts`. The localStorage blob is the half that
+  // outlives the tab, so clearing only the Map would leave a departed
+  // backend's preferences readable by whoever opens the page next.
+  describe('the purge seam', () => {
+    it('drops the bucket and its localStorage cache on a sign-out', () => {
+      appStorageSet('sidebar:width', '312');
+      expect(localStorage.getItem(BUCKET_CACHE_KEY)).not.toBeNull();
+
+      purgeClientState(null);
+
+      expect(appStorageGet('sidebar:width')).toBeNull();
+      expect(localStorage.getItem(BUCKET_CACHE_KEY)).toBeNull();
+    });
+
+    it('drops the named backend and leaves the others standing', () => {
+      appStorageSet('sidebar:width', '312');
+      expect(localStorage.getItem(BUCKET_CACHE_KEY)).not.toBeNull();
+
+      // A backend this client holds no bucket for is a no-op, not an error.
+      expect(() => purgeClientState('some-other-machine')).not.toThrow();
+
+      expect(appStorageGet('sidebar:width')).toBe('312');
+      expect(localStorage.getItem(BUCKET_CACHE_KEY)).not.toBeNull();
+    });
+
+    it('does not flush pending writes back into the emptied bucket', async () => {
+      const setMock = setBindingMock('SetUIState', async () => null);
+      appStorageSet('a', '1');
+
+      purgeClientState(null);
+      await flushAppStorage();
+
+      expect(setMock).not.toHaveBeenCalled();
+      expect(appStorageGet('a')).toBeNull();
+    });
+  });
+
 });
 

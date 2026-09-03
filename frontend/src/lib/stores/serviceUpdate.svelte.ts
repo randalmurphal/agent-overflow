@@ -27,7 +27,10 @@
 //   - `service:update-outcome` is the supervisor's verdict, `committed` or
 //     `rolled-back`, carrying the `updateId` the request answered. It is
 //     kept beside the status so the person who pressed Update is told how
-//     it ended, and cleared by the next request.
+//     it ended, and cleared by the next request. It names TWO versions,
+//     because on a rollback the version that booted is not the version that
+//     failed. The backend publishes it at most once per settled update, so
+//     a machine that has rebooted since one does not re-announce it.
 
 import {
   GetServiceUpdateStatus,
@@ -56,7 +59,10 @@ export type { ReleaseSummary, ServiceUpdateStatus };
 export interface ServiceUpdateOutcome {
   updateId: string;
   outcome: 'committed' | 'rolled-back' | string;
+  /** What actually booted. On a rollback this is the version that came back. */
   version: string;
+  /** What the update was aiming at. On a rollback this is the version that failed. */
+  target?: string;
   reason?: string;
 }
 

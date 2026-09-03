@@ -244,7 +244,17 @@ knowing before changing it:
   pairing order.
 - **The decision is a pure function** (`decideBundleSync`), one row per
   case, and each row has a unit test. Add a case by adding a row and a
-  test, not by adding a branch to the driver around it.
+  test, not by adding a branch to the driver around it. That includes the
+  per-bundle attempt cap: `attempts` is an INPUT and `exhausted` is a row,
+  because a failed attempt has to answer the very next hello as well as
+  its own retry timer. While the cap lived only beside `scheduleRetry`,
+  the decision kept answering `download`, `run()` re-evaluated after every
+  failure, and a backend serving a bundle this phone cannot take was
+  refetched with no delay and no end. A limit the pure decision cannot see
+  is not a limit.
+- **Only a SUCCESS re-evaluates from `run()`.** After a failure the retry
+  timer owns the next look, so the one path with a delay on it is the only
+  path back.
 - **A phone running the APK's own bundle knows its id from
   `bundle-id.txt`**, written into `frontend/dist` at build time by
   `frontend/scripts/bundleId.ts` with the same rule `internal/bundle`
@@ -433,7 +443,7 @@ never resolves a Capacitor module at runtime:
 | `native/platform.ts` | `isNativeShell()`, off `window.Capacitor` |
 | `native/plugins.ts` | the guarded dynamic imports, and nothing else |
 | `native/lifecycle.ts` | pause/resume to `setClientLease`, hardware back to the compact list |
-| `native/lock.ts` | biometric gate on cold start and on resume past a window |
+| `native/lock.ts` | the app-lock gate: covers on PAUSE, prompts on cold start and on a resume past the window |
 | `native/qr.ts` | `scanPairingQr()` |
 | `native/pickers.ts` | a documented stub |
 | `native/boot.ts` | what runs before anything mounts; `adoptPairingEndpoint` is the one place both pairing doors (scanned code, `#pair=` hash) point the shell at a backend |
@@ -448,6 +458,18 @@ one) and takes it. And the lock screen is a FIXED, full-bleed element
 mounted after the app's root with the root marked `inert` while locked:
 the app underneath stays mounted and warm, and nothing under the paint
 can take focus or a tap.
+
+The cover goes up on PAUSE, not on resume, and that is the half a lock
+is easy to get wrong. A gate that waits for resume leaves the app's own
+pixels in the task switcher's thumbnail for the whole time the phone is
+away, and on screen for the frame between the window being shown again
+and the resume handler running. What resume decides is only whether to
+PROMPT, and a prompt that was owed when the app paused (a cold start
+still waiting, a dismissed prompt) is still owed when it comes back,
+however short the trip: the cover and the debt are two facts, and
+`lock.ts` keeps them apart. Android's `FLAG_SECURE` (set in `MainActivity.onCreate`, before
+anything else) is the other half: it keeps the thumbnail itself blank
+and refuses screenshots and screen recording of this app.
 
 Read `frontend/src/lib/native/lifecycle.ts`'s header before touching the
 lifecycle: the pause signal is the ONLY visibility signal this client
@@ -487,3 +509,34 @@ Named here so nobody reads their absence as an oversight:
 - **iOS.** Only `npx cap add android` was run. The seams are written
   against Capacitor rather than against Android, so an iOS target is
   another platform folder and a signing story, not a second frontend.
+- **At-rest protection for what the shell stores.** Three facts, stated
+  plainly because their absence is easy to misread as coverage:
+  1. The device key is a WebCrypto P-256 (ES256) key pair created
+     non-extractable and kept in IndexedDB
+     (`frontend/src/lib/transport/deviceKey.ts`). Non-extractable means
+     the private half never leaves the WebView as bytes, so it cannot be
+     copied out by page code. It is NOT hardware-backed: it lives in the
+     app's own data directory, and it is protected by the Android
+     sandbox and by full-disk encryption, not by the Keystore or by any
+     user-presence check.
+  2. The thread replica (`ao-replica-<backendId>`) is NOT encrypted at
+     rest. It holds message text, tool output and diffs for every thread
+     the phone has opened, in the clear, in the same data directory.
+  3. The biometric lock (`frontend/src/lib/native/lock.ts`) is an
+     independent prompt in front of the UI. It gates the SCREEN. It is
+     not the key's gate and not the replica's gate: neither one is
+     sealed by the ceremony, so passing it is what reveals the app, and
+     failing it does not make the stored bytes any harder to read.
+
+  The target design, when this is picked up: mint the device key inside
+  the Android Keystore with `setUserAuthenticationRequired`, so the
+  biometric ceremony becomes the key's own unlock rather than a screen
+  in front of it, and the phone stops being able to sign a device proof
+  while locked. That needs a native plugin (WebCrypto cannot reach the
+  Keystore), which is why it is not a small change and why it is named
+  here rather than half-built. Seal the replica the same way, with a key
+  wrapped by that Keystore key, so its contents follow the same unlock.
+  Until both land, the honest claim in any UI copy or spec sentence is
+  that a phone whose disk is readable and whose lock screen is off gives
+  up the replica; do not write copy that implies the biometric prompt
+  protects the data.

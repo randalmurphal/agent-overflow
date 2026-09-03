@@ -108,6 +108,25 @@ describe('<MachineUpdates>', () => {
     await waitFor(() => expect(card.textContent).toContain('Restarting into version 1.3.0…'));
   });
 
+  it('falls back to the running version when a backend names no target', async () => {
+    // A machine on a build older than this bundle publishes the outcome
+    // without a target. The running version is then the closest true answer,
+    // and it is better than a sentence with a hole in it.
+    const { findByTestId } = render(MachineUpdates);
+    emitWailsEvent('service:update-status', status({ currentVersion: '1.3.0' }));
+    emitWailsEvent('service:update-outcome', {
+      updateId: 'u-3',
+      outcome: 'rolled-back',
+      version: '1.3.0',
+    });
+    const card = await findByTestId('machine-update');
+    await waitFor(() =>
+      expect(card.textContent).toContain(
+        'The update to version 1.3.0 was rolled back. Running 1.3.0.',
+      ),
+    );
+  });
+
   it('reports how the last update ended, and a flow that failed', async () => {
     const { findByTestId } = render(MachineUpdates);
     emitWailsEvent('service:update-status', status({ currentVersion: '1.3.0' }));
@@ -115,15 +134,19 @@ describe('<MachineUpdates>', () => {
     const card = await findByTestId('machine-update');
     await waitFor(() => expect(card.textContent).toContain('Updated to version 1.3.0.'));
 
+    // A rollback names TWO versions: 1.4.0 is what the update was aiming at
+    // and 1.3.0 is what came back and is answering right now. Naming only the
+    // running one told the person their old version was the one that failed.
     emitWailsEvent('service:update-outcome', {
       updateId: 'u-2',
       outcome: 'rolled-back',
-      version: '1.4.0',
+      version: '1.3.0',
+      target: '1.4.0',
       reason: 'The new version did not come up.',
     });
     await waitFor(() =>
       expect(card.textContent).toContain(
-        'The update to version 1.4.0 was rolled back. The new version did not come up.',
+        'The update to version 1.4.0 was rolled back. Running 1.3.0. The new version did not come up.',
       ),
     );
 

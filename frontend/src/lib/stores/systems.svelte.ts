@@ -32,6 +32,8 @@ import {
 } from './bindings';
 import { hasScope } from '../transport/scopes';
 import { detachBackend } from '../transport/backends';
+import { purgeClientState } from '../transport/clientPurge';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import {
   descriptorForAttachedId,
   publishAttachedBackend,
@@ -115,6 +117,12 @@ export async function removeSystem(id: string): Promise<void> {
   // it, and the socket closes now rather than at that sync.
   publishDetachedBackend(id);
   detachBackend(id);
+  // And what that machine stored on this device. The desktop's removal
+  // door is this one rather than `detachAttachedBackend` (the profile
+  // lives in the local Go process, not in a client session slot), so the
+  // purge has to be stated here too or a detach from Settings leaves the
+  // replica a detach from a phone removes.
+  purgeClientState(id);
 }
 
 export async function renameSystem(id: string, nickname: string): Promise<void> {
@@ -129,10 +137,26 @@ export function systemLabel(system: Pick<AttachedBackend, 'name' | 'nickname' | 
 
 /**
  * `backend:attach` — how one pairing ended. Called by events.ts. Retires
- * the pending row either way; on success the transport learns the door
- * now and the list is re-read so the new row carries what pairing wrote.
+ * the pending row either way; on success the transport learns the door now
+ * and the list is re-read so the new row carries what pairing wrote.
+ *
+ * **Only home's frame counts, and `origin` is how that is decided here
+ * rather than trusted upstream.** The event hub subscribes every attached
+ * backend (`transport/backends.ts`'s `subscribeEveryBackend`), so this
+ * handler is reachable from a machine that is not the one whose profile
+ * directory these four RPCs act on. The Go channel is loopback-only and
+ * host-scoped, which excludes a network peer but not a backend that is
+ * itself on this box, and the descriptor built below names THIS machine's
+ * proxy path (`/ws/backend/<id>`), so another backend's frame would
+ * register a door home does not serve and leave a socket that can never
+ * open. Answers null when the frame is not home's, which the caller reads
+ * as "say nothing".
  */
-export function applyBackendAttach(evt: BackendAttachEvent): { name: string; error: string } {
+export function applyBackendAttach(
+  evt: BackendAttachEvent,
+  origin: BackendKey = HOME_BACKEND,
+): { name: string; error: string } | null {
+  if (origin !== HOME_BACKEND) return null;
   const row = pending.find((p) => p.id === evt.id);
   pending = pending.filter((p) => p.id !== evt.id);
   const name = row?.name ?? evt.id;

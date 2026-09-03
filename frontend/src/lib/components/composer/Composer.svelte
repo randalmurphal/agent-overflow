@@ -29,9 +29,12 @@
   import {
     attachedBackendEntry,
     backendDisplayName,
+    backendReachable,
     threadMachine,
     threadMachineUnreachable,
   } from '../../stores/attachedBackends.svelte';
+  import { HOME_BACKEND } from '../../transport/backendKey';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { deriveComposerSendState } from './composerSendState';
   import { dispatchSend } from './composerSend';
   import { runInterruptOrRevert } from '../../stores/revertOnInterrupt.svelte';
@@ -123,6 +126,24 @@
     const entry = attachedBackendEntry(threadMachine(thread.id, thread.projectId));
     return entry ? backendDisplayName(entry) : 'That machine';
   });
+  // This client cannot reach the machine the thread runs on, and there is
+  // no local process to fall back on. There is deliberately no
+  // cross-disconnect send queue (spec, "Pairing and remote-only"), so a
+  // composer that stayed live would take a message it cannot deliver.
+  //
+  // The embedded desktop webview is excluded by `host` presence, not by a
+  // run-mode check: what makes its outage different is that the backend is
+  // on this machine and the transport banner is already its story. A phone,
+  // a `--connect` window and a remote browser all hold no host presence and
+  // all mean the same thing by "disconnected".
+  let offline = $derived.by(() => {
+    const thread = pane.thread;
+    if (!thread) return false;
+    const machine = threadMachine(thread.id, thread.projectId);
+    if (backendReachable(machine)) return false;
+    return !(machine === HOME_BACKEND && hasScope('host'));
+  });
+  let compactLayout = $derived(isCompactLayout());
   let respondUngranted = $derived(!hasScope('approvals:respond'));
   // Mid-round signal: a wire round is currently in flight (the model
   // is streaming text/tool work). The composer stays typeable during
@@ -217,6 +238,8 @@
     isDisabled,
     sendUngranted,
     unreachableTarget,
+    offline,
+    compact: compactLayout,
     hasBlockingPrompt,
     hasUserInputPrompt,
     userInputCustomAnswer,

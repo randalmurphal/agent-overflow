@@ -24,17 +24,22 @@
 // app behave identically: it never populates the index for its own rows
 // beyond what the fan-out notes, and every lookup that misses lands where
 // it always did.
+//
+// **What actually populates it**, and nothing else does: the `all`
+// fan-out's per-backend shares (`noteRowsFromCall`, called from
+// ./runtime.ts with each backend's own answer), the ids a routed call
+// ANSWERED with (`noteFamilyRowsFromCall`, same door), and the origin
+// stamp on a `thread:updated` / `project:updated` /
+// `thread-group:updated` frame (`stores/events.ts`). The replica's cold
+// open does NOT populate it: a window painted from IndexedDB carries no
+// origin, so a thread whose row this session never listed resolves home
+// until a list call or an event names its machine.
 
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import type { IdFamily } from './methodFamilies';
 
 const threads = new Map<string, BackendKey>();
 const projects = new Map<string, BackendKey>();
-// An approval is answered against the backend that raised it, and the
-// answer RPC names the approval rather than the thread. One extra map
-// rather than a second lookup through the thread, because an approval can
-// outlive the moment its thread row was loaded.
-const approvalThreads = new Map<string, string>();
 // The id families that are neither thread nor project and cannot be
 // resolved through one: a workflow item and an automation belong to a
 // project the caller may never have listed, a terminal is a live process
@@ -58,15 +63,6 @@ export function threadBackend(threadId: string): BackendKey | undefined {
 /** The backend that owns `projectId`, or undefined when unknown. */
 export function projectBackend(projectId: string): BackendKey | undefined {
   return projects.get(projectId);
-}
-
-/**
- * The backend that raised `approvalId`, resolved through the thread it
- * belongs to. Undefined when either link is unknown.
- */
-export function approvalBackend(approvalId: string): BackendKey | undefined {
-  const threadId = approvalThreads.get(approvalId);
-  return threadId === undefined ? undefined : threads.get(threadId);
 }
 
 /** The backend that owns `itemId` (a workflow item), or undefined. */
@@ -97,11 +93,6 @@ export function noteThread(threadId: string, backendId: BackendKey): void {
 export function noteProject(projectId: string, backendId: BackendKey): void {
   if (projectId === '') return;
   projects.set(projectId, backendId);
-}
-
-export function noteApproval(approvalId: string, threadId: string): void {
-  if (approvalId === '' || threadId === '') return;
-  approvalThreads.set(approvalId, threadId);
 }
 
 export function noteWorkflowItem(itemId: string, backendId: BackendKey): void {
@@ -158,19 +149,54 @@ export function forgetProject(projectId: string): void {
   projects.delete(projectId);
 }
 
-/** Drop every entity a backend owned. Called when it detaches. */
-export function forgetBackendEntities(backendId: BackendKey): void {
-  for (const [id, owner] of threads) {
-    if (owner === backendId) threads.delete(id);
+/**
+ * Every entity id a backend owned, as detaching it drops them.
+ *
+ * The three named sets are the ones a ROW STORE holds
+ * (`stores/threads.svelte.ts`, `stores/projects.svelte.ts`,
+ * `stores/threadGroups.svelte.ts`); the rest have no store to tell.
+ */
+export interface ForgottenEntities {
+  readonly threadIds: readonly string[];
+  readonly projectIds: readonly string[];
+  readonly threadGroupIds: readonly string[];
+}
+
+/**
+ * Drop every entity a backend owned, and ANSWER with what went.
+ *
+ * The answer is not a convenience: it is the only ordering-free way for a
+ * row store to learn which rows to drop. A listener that asked the index
+ * itself would have to run before this call, and "before" is exactly the
+ * kind of ordering that is correct on the machine it was written on and
+ * wrong on the next one. `./backends.ts` hands this value to
+ * `onBackendDetached`, so the payload IS the fact and nothing has to be
+ * sequenced against it.
+ *
+ * Every map is swept, including the ones no store mirrors: a leftover
+ * entry would resolve a terminal or a subscription to a machine this
+ * client no longer holds a socket to.
+ */
+export function forgetBackendEntities(backendId: BackendKey): ForgottenEntities {
+  const threadIds = takeOwned(threads, backendId);
+  const projectIds = takeOwned(projects, backendId);
+  const threadGroupIds = takeOwned(threadGroups, backendId);
+  for (const map of [workflowItems, automations, terminals, subscriptions]) {
+    takeOwned(map, backendId);
   }
-  for (const [id, owner] of projects) {
-    if (owner === backendId) projects.delete(id);
+  return { threadIds, projectIds, threadGroupIds };
+}
+
+// Delete every entry `backendId` owns and answer with their ids. One pass,
+// and the ids are collected before the deletes so the iteration is not
+// asked to survive its own mutation.
+function takeOwned(map: Map<string, BackendKey>, backendId: BackendKey): string[] {
+  const owned: string[] = [];
+  for (const [id, owner] of map) {
+    if (owner === backendId) owned.push(id);
   }
-  for (const map of [workflowItems, automations, terminals, subscriptions, threadGroups]) {
-    for (const [id, owner] of map) {
-      if (owner === backendId) map.delete(id);
-    }
-  }
+  for (const id of owned) map.delete(id);
+  return owned;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,9 +337,8 @@ export function noteFamilyRowsFromCall(
   }
 }
 
-/** Record a batch of thread rows. Exported for the stores that receive
- *  rows outside a list call (a resync, a replica cold open). */
-export function noteThreadRows(rows: readonly unknown[], backendId: BackendKey): void {
+/** Record a batch of thread rows from one backend's share of a list call. */
+function noteThreadRows(rows: readonly unknown[], backendId: BackendKey): void {
   for (const row of rows) {
     const id = (row as { id?: unknown })?.id;
     if (typeof id === 'string' && id !== '') threads.set(id, backendId);
@@ -325,7 +350,7 @@ export function noteThreadRows(rows: readonly unknown[], backendId: BackendKey):
  * bare `Project` and the `ProjectWithCounts` wrapper the sidebar list
  * answers with.
  */
-export function noteProjectRows(rows: readonly unknown[], backendId: BackendKey): void {
+function noteProjectRows(rows: readonly unknown[], backendId: BackendKey): void {
   for (const row of rows) {
     const record = row as { id?: unknown; project?: { id?: unknown } };
     const id = typeof record?.project?.id === 'string' ? record.project.id : record?.id;
@@ -333,49 +358,16 @@ export function noteProjectRows(rows: readonly unknown[], backendId: BackendKey)
   }
 }
 
-/**
- * Record the backend a single thread row arrived from, for the paths that
- * carry one row rather than a list: a `thread:updated` event (whose origin
- * stamp names the connection), a create, a replica cold open (whose
- * database is per backend, so the stamp is known).
- *
- * Takes the origin's `backendId`, which may be the backend's UUID rather
- * than its registry id; both resolve through ./backends.ts, and storing
- * whichever arrived avoids a lookup on an event path.
- */
-export function noteThreadRow(row: unknown, backendId: BackendKey): void {
-  const id = (row as { id?: unknown })?.id;
-  if (typeof id === 'string' && id !== '') threads.set(id, backendId);
-}
-
-/** Diagnostics and tests: how many entities are indexed. */
-export function entityIndexSize(): {
-  threads: number;
-  projects: number;
-  workflowItems: number;
-  automations: number;
-  terminals: number;
-  subscriptions: number;
-} {
-  return {
-    threads: threads.size,
-    projects: projects.size,
-    workflowItems: workflowItems.size,
-    automations: automations.size,
-    terminals: terminals.size,
-    subscriptions: subscriptions.size,
-  };
-}
-
-/** Test seam: forget everything. */
+/** Test seam: forget everything. Every map, so one case cannot leak a
+ *  group or a terminal into the next. */
 export function __resetEntityIndexForTest(): void {
   threads.clear();
   projects.clear();
-  approvalThreads.clear();
   workflowItems.clear();
   automations.clear();
   terminals.clear();
   subscriptions.clear();
+  threadGroups.clear();
 }
 
 /**

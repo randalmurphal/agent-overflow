@@ -79,6 +79,7 @@ import {
   type ReplicaIndexEntry,
 } from './idb';
 import { replicaDatabaseName, unclaimedReplicaDatabases } from './purge';
+import { onPurgeClientState, type PurgeScope } from '../transport/clientPurge';
 
 /**
  * Consecutive failed operations before the replica gives up for the
@@ -671,6 +672,39 @@ export async function removeReplicaWindow(
  */
 onBackendIdentity((identity, backend) => {
   void initReplica(identity, backend);
+});
+
+/**
+ * The replica's half of a sign-out, a detach and a refused credential
+ * (`transport/clientPurge.ts` owns the three moments).
+ *
+ * Sign-out passes `null` and takes every database on the origin, which is
+ * the empty live set `purgeReplicaDatabases` already documents. A single
+ * backend is expressed the same way: keep every OTHER attached backend's
+ * database and let the sweep drop the one that is going. Naming the
+ * survivors rather than the target is what keeps one code path for both,
+ * and it is the safer direction too, since the sweep's own guard against
+ * an unidentified backend still applies.
+ */
+function purgeForScope(scope: PurgeScope): Promise<unknown> {
+  if (scope === null) return purgeReplicaDatabases(new Set());
+  const survivors = new Set<string>();
+  for (const [backend, held] of sessions) {
+    if (backend === scope) continue;
+    if (held.identity.backendId !== '') survivors.add(held.identity.backendId);
+  }
+  const goingId = sessions.get(scope)?.identity.backendId ?? '';
+  // Nothing nameable is going, and an empty survivor set would then read
+  // as "drop everything". That is sign-out's instruction, not this one.
+  if (goingId === '' || survivors.has(goingId)) return Promise.resolve(null);
+  return purgeReplicaDatabases(survivors);
+}
+
+// `void` on the promise, not because nothing awaits it (`purgeClientState`
+// contains a rejection either way) but because the step's contract is
+// `void | Promise<void>` and this one answers a value nobody reads.
+onPurgeClientState(async (scope) => {
+  await purgeForScope(scope);
 });
 
 /** Test-only: forget every session and re-enable after a failure latch. */

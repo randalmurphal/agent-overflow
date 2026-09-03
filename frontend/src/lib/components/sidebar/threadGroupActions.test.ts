@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import {
+  CROSS_MACHINE_GROUP_REFUSAL,
   NEW_THREAD_GROUP_NAME,
   createThreadGroupAction,
   createThreadGroupAndMoveAction,
@@ -21,6 +22,7 @@ import {
 } from '../../stores/threadGroups.svelte';
 import { getThreadById, getThreads, prependThread, removeThread } from '../../stores/threads.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
 import type { Thread, ThreadGroup } from '../../types/models';
 
 function mkGroup(id: string, overrides: Partial<ThreadGroup> = {}): ThreadGroup {
@@ -62,6 +64,7 @@ function errorToasts(): string {
 describe('threadGroupActions', () => {
   beforeEach(() => {
     resetBindingMocks();
+    __resetEntityIndexForTest();
     resetThreadGroupsForTest();
     for (const t of [...getThreads()]) removeThread(t.id);
     for (const toast of [...getToasts()]) removeToast(toast.id);
@@ -248,6 +251,59 @@ describe('threadGroupActions', () => {
       expect(await moveThreadsToGroupAction(['t1'], 'g1')).toBe(false);
       expect(getThreadById('t1')?.groupId).toBeUndefined();
       expect(errorToasts()).toContain('another project');
+    });
+
+    // SetThreadGroup takes a LIST and the threadList id family reads the
+    // FIRST id to route it, so a batch spanning two machines would post
+    // every id to one of them. No door in the sidebar builds one, but this
+    // module is the seam they all share, so the refusal lives here.
+    it('refuses a batch whose threads live on different machines', async () => {
+      setBindingMock('SetThreadGroup', async () => [mkThread('t1', { groupId: 'g1' })]);
+      prependThread(mkThread('t1'));
+      prependThread(mkThread('t2'));
+      noteThread('t1', '');
+      noteThread('t2', 'other-machine');
+
+      expect(await moveThreadsToGroupAction(['t1', 't2'], 'g1')).toBe(false);
+      expect(getBindingMock('SetThreadGroup')?.mock.calls).toHaveLength(0);
+      expect(errorToasts()).toContain(CROSS_MACHINE_GROUP_REFUSAL.toLowerCase());
+      expect(getThreadById('t1')?.groupId).toBeUndefined();
+    });
+
+    it('refuses an ungroup batch that spans machines too', async () => {
+      setBindingMock('SetThreadGroup', async () => []);
+      prependThread(mkThread('t1', { groupId: 'g1' }));
+      prependThread(mkThread('t2', { groupId: 'g2' }));
+      noteThread('t1', '');
+      noteThread('t2', 'other-machine');
+
+      expect(await removeThreadsFromGroupAction(['t1', 't2'])).toBe(false);
+      expect(getBindingMock('SetThreadGroup')?.mock.calls).toHaveLength(0);
+    });
+
+    it('sends a batch whose threads share one machine', async () => {
+      const mock = setBindingMock('SetThreadGroup', async () => [
+        mkThread('t1', { groupId: 'g1' }),
+        mkThread('t2', { groupId: 'g1' }),
+      ]);
+      prependThread(mkThread('t1'));
+      prependThread(mkThread('t2'));
+      noteThread('t1', 'other-machine');
+      noteThread('t2', 'other-machine');
+
+      expect(await moveThreadsToGroupAction(['t1', 't2'], 'g1')).toBe(true);
+      expect(mock.mock.calls[0]).toEqual([['t1', 't2'], 'g1']);
+    });
+
+    // An id nothing has indexed disagrees with nobody: it routes where it
+    // always did, so the guard must not turn "unknown" into a refusal.
+    it('sends a batch the index has never seen', async () => {
+      const mock = setBindingMock('SetThreadGroup', async () => [mkThread('t1', { groupId: 'g1' })]);
+      prependThread(mkThread('t1'));
+      prependThread(mkThread('t2'));
+
+      expect(await moveThreadsToGroupAction(['t1', 't2'], 'g1')).toBe(true);
+      expect(mock.mock.calls).toHaveLength(1);
     });
   });
 });

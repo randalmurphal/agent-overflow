@@ -75,7 +75,7 @@ const APK_BUNDLE_ID_PATH = 'bundle-id.txt';
  * metered link until the app is killed is a data bill rather than a
  * recovery. A different id resets it, and so does a relaunch.
  */
-const MAX_ATTEMPTS_PER_BUNDLE = 6;
+export const MAX_ATTEMPTS_PER_BUNDLE = 6;
 
 /** A backend that publishes a bundle, flattened out of its hello. */
 export interface BundleCandidate {
@@ -98,6 +98,8 @@ export interface BundleSyncInput {
   lease: LeaseState;
   /** The id being fetched right now, or '' when nothing is. */
   inFlight: string;
+  /** How many times THIS launch has already tried to install `target`. */
+  attempts: number;
 }
 
 /** What to do about `target`, and why. */
@@ -106,6 +108,8 @@ export type BundleDecision =
   | { kind: 'idle' }
   /** Already downloaded once and failed its first boot. Never again. */
   | { kind: 'rolled-back'; id: string }
+  /** Tried and failed too many times this launch. Wait for a relaunch. */
+  | { kind: 'exhausted'; id: string }
   /** This APK is below the bundle's floor. Say so; download nothing. */
   | { kind: 'too-old'; id: string; backendName: string }
   /** The app is paused. Wait for the foreground. */
@@ -149,6 +153,15 @@ export function decideBundleSync(input: BundleSyncInput): BundleDecision {
 
   if (input.inFlight === id) return { kind: 'joined', id };
   if (input.inFlight !== '') return { kind: 'busy', id };
+
+  // The cap lives HERE, in the decision, and not beside the retry timer.
+  // A failed attempt has to answer the very next hello as well as its own
+  // retry, and a cap the decision could not see was a cap that only slowed
+  // the schedule down: `run()` re-evaluated after every failure and this
+  // row returned `download` again, so a backend serving a bundle this
+  // phone cannot take was refetched, archive and all, with no delay and no
+  // end. A different id resets the count, and so does a relaunch.
+  if (input.attempts >= MAX_ATTEMPTS_PER_BUNDLE) return { kind: 'exhausted', id };
 
   return { kind: 'download', id, backend: target.backend };
 }
@@ -237,6 +250,7 @@ let inFlight = '';
 let attemptsById = new Map<string, number>();
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let toldTooOld = '';
+let toldExhausted = '';
 let readyReported = false;
 
 /**
@@ -288,6 +302,7 @@ export function stopBundleSync(): void {
   runningId = '';
   inFlight = '';
   toldTooOld = '';
+  toldExhausted = '';
   readyReported = false;
 }
 
@@ -337,18 +352,30 @@ export async function confirmLaunchHealthy(): Promise<void> {
 
 function evaluate(): void {
   if (plugin === null || nativeState === null) return;
+  const target = pickBundleSource([...candidates.values()]);
   const decision = decideBundleSync({
-    target: pickBundleSource([...candidates.values()]),
+    target,
     running: runningId,
     state: nativeState,
     lease: clientLease(),
     inFlight,
+    attempts: target === null ? 0 : (attemptsById.get(target.bundleId) ?? 0),
   });
   switch (decision.kind) {
     case 'idle':
     case 'joined':
     case 'busy':
     case 'deferred':
+      return;
+    case 'exhausted':
+      // Said once per id: `toldExhausted` is the same shape `toldTooOld`
+      // has, and for the same reason. Nothing more happens for this id
+      // until the app is launched again.
+      if (toldExhausted === decision.id) return;
+      toldExhausted = decision.id;
+      console.warn(
+        `bundleSync: ${decision.id} failed ${MAX_ATTEMPTS_PER_BUNDLE} times this launch; not fetching it again`,
+      );
       return;
     case 'rolled-back':
       // Once per launch per id would need a second set to remember; the
@@ -371,6 +398,9 @@ async function run(id: string, backend: BackendKey): Promise<void> {
   inFlight = id;
   const attempt = (attemptsById.get(id) ?? 0) + 1;
   attemptsById.set(id, attempt);
+  // Named apart from the module-level `installed` listener list on purpose:
+  // one tail call reads it and it means "this attempt staged a bundle".
+  let staged = false;
   try {
     await fetchAndStage(id, backend);
     attemptsById.delete(id);
@@ -379,15 +409,19 @@ async function run(id: string, backend: BackendKey): Promise<void> {
     // next hello if it guessed wrong.
     nativeState = await plugin!.state();
     noteBundleReady();
+    staged = true;
   } catch (err) {
     console.warn(`bundleSync: ${id} did not install (attempt ${attempt})`, err);
     if (attempt < MAX_ATTEMPTS_PER_BUNDLE) scheduleRetry(attempt);
   } finally {
     inFlight = '';
   }
-  // A hello that arrived mid-download, or a newer bundle that superseded
-  // this one, is answered here rather than dropped.
-  evaluate();
+  // Only a SUCCESS re-evaluates here. After a failure the retry timer owns
+  // the next look, and it is the only thing that may: re-evaluating inline
+  // put the very next attempt on the same tick as the one that just failed,
+  // which is a download loop with no delay in it. A hello that arrived
+  // mid-download evaluates on its own edge either way.
+  if (staged) evaluate();
 }
 
 /**

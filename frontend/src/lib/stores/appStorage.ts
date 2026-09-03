@@ -40,6 +40,7 @@
 
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
+import { onPurgeClientState, type PurgeScope } from '../transport/clientPurge';
 import { DeleteUIState, GetUIState, SetUIState } from './bindings';
 import { addToast } from './toast.svelte';
 
@@ -302,6 +303,52 @@ export async function flushAppStorage(backend: BackendKey = HOME_BACKEND): Promi
   store.flushInFlight = run;
   await run;
 }
+
+/**
+ * Drop one backend's bucket, in memory and in the same-session cache.
+ *
+ * The localStorage blob is the half that outlives the tab, so a sign-out
+ * that cleared only the Map would leave the pane layout, the pinned rows
+ * and every other persisted preference of a backend this device no longer
+ * has a credential for readable by whoever opens the page next.
+ *
+ * Pending writes are dropped rather than flushed: they are addressed to a
+ * backend this client is in the middle of letting go of, and a flush would
+ * either fail or write state back into a bucket that was just emptied.
+ */
+function dropBucket(store: BackendStore): void {
+  if (store.flushTimer !== null) {
+    clearTimeout(store.flushTimer);
+    store.flushTimer = null;
+  }
+  store.pendingSets.clear();
+  store.pendingDeletes.clear();
+  store.bucket = new Map();
+  store.hydrated = false;
+  store.saveFailureToastShown = false;
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.removeItem(bucketCacheKey(store.backend));
+  } catch {
+    // Best-effort, exactly as the write side is.
+  }
+}
+
+// The bucket's half of a sign-out, a detach and a refused credential
+// (`transport/clientPurge.ts` owns the three moments). A null scope is
+// every backend; anything else is one, and a scope this client holds no
+// bucket for is a no-op rather than an error.
+onPurgeClientState((scope: PurgeScope) => {
+  if (scope === null) {
+    for (const store of stores.values()) dropBucket(store);
+    stores.clear();
+    return;
+  }
+  const held = stores.get(scope);
+  if (held === undefined) return;
+  dropBucket(held);
+  stores.delete(scope);
+});
 
 /**
  * Test helper — re-run module-init resolution against the CURRENT

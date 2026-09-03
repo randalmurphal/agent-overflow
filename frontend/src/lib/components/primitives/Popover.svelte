@@ -401,6 +401,13 @@
       // next one after it closes.
       if (hasOpenDescendantPopover()) return;
       e.stopPropagation();
+      // Claimed, not merely handled. `stopPropagation` keeps the press off
+      // the surfaces behind this one, but it says nothing to the code that
+      // asks "did anybody take it", and the phone shell's hardware back
+      // button asks exactly that (`native/lifecycle.ts` reads
+      // `defaultPrevented`). Without this line one back press dismissed the
+      // sheet AND went back a screen, or left the app from the list.
+      e.preventDefault();
       onClose('escape');
     };
     // Scroll moves the anchor without resizing anything → follow. Resize

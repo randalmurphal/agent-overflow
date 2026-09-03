@@ -1,5 +1,10 @@
-// Which ID FAMILY a method's first argument names, for the 59 bound
-// methods keyed by an id that is neither a thread nor a project.
+// Which ID FAMILY a method's first argument names, for the 49 bound
+// methods keyed by an id that is neither a thread nor a project AND
+// carries it as argument 0.
+//
+// The count is asserted by `methodFamilies.test.ts` rather than left as
+// prose: the table is hand-kept, so the one thing a reader cannot check by
+// eye is whether it is still complete, and a number nobody verifies drifts.
 //
 // `methodRoutes.ts` parks all of them on `home` — the generator infers
 // `thread` and `project` from a first parameter it can recognise, and it
@@ -21,6 +26,15 @@
 // Device, passkey and backend-profile admin families are deliberately
 // absent: those are administration OF this client's own attachments and
 // belong to the page's own backend for good.
+//
+// **Known gap, stated so nobody reads its absence as coverage.** A handful
+// of `WorkflowAgent*` methods carry their item id INSIDE a struct argument
+// (`WorkflowAgentGuideRunInput.ItemID` and friends), so `args[0]` is an
+// object and the lookup below cannot see it. They stay parked on home,
+// which is right for every client that has one backend and wrong for an
+// agent run that lives on a second machine. Nothing in the SPA calls them
+// today; closing it means teaching this table to read a named field, not
+// adding a second table.
 
 import type { BackendKey } from './backendKey';
 import {

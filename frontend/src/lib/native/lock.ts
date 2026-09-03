@@ -2,9 +2,14 @@
 // whole app (docs/specs/remote-access.md § "Opening the app" — the phone
 // is more sensitive than anything else on it).
 //
-// It runs on cold start and on resume after a background window has
-// elapsed, and until it passes the WebView shows
-// `components/native/LockScreen.svelte` over everything. There is no
+// The lock screen goes up the moment the OS pauses the app, and the WebView
+// stays behind `components/native/LockScreen.svelte` until the gate passes.
+// Covering on PAUSE rather than on resume is what keeps the app's own
+// pixels out of the task switcher's thumbnail and off the screen for the
+// frame before a resume handler can run. The background WINDOW is still
+// what decides whether resuming asks for a prompt or simply lifts the
+// cover: a person switching apps for five seconds is not asked again,
+// unless a prompt was already owed when they left. There is no
 // passkey ceremony in the WebView and there does not need to be: step-up
 // already lives at pairing-mint on the GRANTING side, which is the
 // owner's desktop with its passkey. What this gate protects is the app
@@ -112,11 +117,24 @@ export async function installAppLock(options: AppLockOptions = {}): Promise<AppL
   if (!biometric) return inert;
 
   const windowMs = options.backgroundWindowMs ?? lockWindowMs();
-  let locked = true;
+  // Two facts, not one. `covered` is whether the lock screen is painted;
+  // `owed` is whether the platform prompt has to PASS before it can come
+  // down. They part ways on a short trip: the cover goes up on every
+  // pause and comes down on a quick return, but a prompt that was owed
+  // before the trip (a cold start still waiting, a prompt that was
+  // dismissed) is still owed after it. Folding them into one flag let a
+  // three-second trip to another app lift a prompt nobody had passed.
+  let covered = true;
+  let owed = true;
   let lastPausedAt: number | null = null;
-  const publish = (): void => options.onChange?.(locked);
+  // The prompt in flight, so a second request joins it. The platform's
+  // own dialog can pause and resume this app (the device-credential
+  // fallback is another activity), and that resume must not stack a
+  // second prompt on the one it interrupted.
+  let prompting: Promise<boolean> | null = null;
+  const publish = (): void => options.onChange?.(covered);
 
-  const unlock = async (): Promise<boolean> => {
+  const prompt = async (): Promise<boolean> => {
     try {
       await biometric.authenticate({
         reason: 'Unlock Agent Overflow',
@@ -131,10 +149,26 @@ export async function installAppLock(options: AppLockOptions = {}): Promise<AppL
       // a message that accuses somebody of a fault they did not commit.
       return false;
     }
-    locked = false;
+    owed = false;
+    covered = false;
     lastPausedAt = null;
     publish();
     return true;
+  };
+
+  const unlock = (): Promise<boolean> => {
+    if (prompting === null) {
+      prompting = prompt().finally(() => {
+        prompting = null;
+      });
+    }
+    return prompting;
+  };
+
+  const cover = (): void => {
+    if (covered) return;
+    covered = true;
+    publish();
   };
 
   const app = await appPlugin();
@@ -142,16 +176,36 @@ export async function installAppLock(options: AppLockOptions = {}): Promise<AppL
     ? await Promise.all([
         app.addListener('pause', () => {
           lastPausedAt = Date.now();
+          // Covered on the way OUT, not on the way back in. A cover that
+          // waited for resume left the app's own pixels on screen for the
+          // whole time it was away: in the task switcher's thumbnail, and
+          // for the frame between the window being shown again and the
+          // resume handler running. What resume decides is whether to
+          // PROMPT, never whether the screen is covered.
+          cover();
         }),
         app.addListener('resume', () => {
-          if (locked) return;
-          if (!shouldLock(lastPausedAt, Date.now(), windowMs)) return;
-          locked = true;
+          // A prompt owed before the trip is owed after it, however short
+          // the trip was. `unlock` joins a prompt still up rather than
+          // raising a second one.
+          if (owed) {
+            void unlock();
+            return;
+          }
+          if (shouldLock(lastPausedAt, Date.now(), windowMs)) {
+            // Past the window: the prompt is owed again. A person who just
+            // picked the phone back up should be looking at the platform's
+            // prompt, not at a button that asks for it.
+            owed = true;
+            cover();
+            void unlock();
+            return;
+          }
+          // A short trip: lift the cover the pause put up, and ask nothing.
+          if (!covered) return;
+          covered = false;
+          lastPausedAt = null;
           publish();
-          // The prompt comes up on its own, as it does on a cold start.
-          // A person who just picked the phone back up should be looking
-          // at the platform's prompt, not at a button that asks for it.
-          void unlock();
         }),
       ])
     : [];
@@ -162,7 +216,7 @@ export async function installAppLock(options: AppLockOptions = {}): Promise<AppL
   void unlock();
 
   return {
-    locked: () => locked,
+    locked: () => covered,
     unlock,
     dispose: () => {
       for (const handle of handles) void handle.remove();

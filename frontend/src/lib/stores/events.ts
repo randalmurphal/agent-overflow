@@ -428,13 +428,20 @@ export function setupEventListeners(): () => void {
 
   // backend:attach — how a pairing this machine started from Settings →
   // Systems ended, minutes after AddBackend returned the verification
-  // number. Loopback-only and host-scoped on the Go side, so only the
-  // page that can manage systems ever receives it.
-  const cancelBackendAttach = wailsEventOn<BackendAttachEvent>('backend:attach', (evt) => {
-    const outcome = applyBackendAttach(evt);
-    if (outcome.error) addToast('error', `Could not attach ${outcome.name}: ${outcome.error}`);
-    else addToast('success', `Attached ${outcome.name}`);
-  });
+  // number. Loopback-only and host-scoped on the Go side, so only the page
+  // that can manage systems ever receives it. The ORIGIN is still checked:
+  // this subscription is installed on every attached backend, and only
+  // home's profile directory is what those RPCs act on (see
+  // `applyBackendAttach`).
+  const cancelBackendAttach = wailsEventOn<BackendAttachEvent>(
+    'backend:attach',
+    (evt, origin) => {
+      const outcome = applyBackendAttach(evt, backendKeyForOrigin(origin.backendId));
+      if (outcome === null) return;
+      if (outcome.error) addToast('error', `Could not attach ${outcome.name}: ${outcome.error}`);
+      else addToast('success', `Attached ${outcome.name}`);
+    },
+  );
 
   // project:updated — one frame per project row a persisted write moved. The
   // sidebar list is otherwise refreshed only on mount and after the issuing

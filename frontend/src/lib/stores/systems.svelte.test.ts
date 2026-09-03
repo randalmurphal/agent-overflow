@@ -73,6 +73,24 @@ describe('systems store', () => {
     expect(list).toHaveBeenCalled();
   });
 
+  // The event hub subscribes EVERY attached backend, so this handler is
+  // reachable from a machine that is not the one whose profile directory
+  // the four system RPCs act on, and the descriptor it would build names
+  // this machine's own proxy path. A frame from anywhere but home would
+  // register a door home does not serve.
+  it('says nothing about a frame that arrived on another backend', async () => {
+    setBindingMock('AddBackend', async () => ({
+      id: 'laptop', name: 'Laptop', endpoint: LAPTOP.endpoint, verificationNumber: '42',
+    }));
+    await addSystem('link');
+
+    expect(applyBackendAttach({ id: 'laptop', attached: true }, 'desktop')).toBeNull();
+    // The pending row survives: the pairing home is waiting on has not
+    // been answered, and retiring it would drop the confirmation UI.
+    expect(getPendingAttachments().map((p) => p.id)).toEqual(['laptop']);
+    expect(backendById('laptop')).toBeUndefined();
+  });
+
   it('reports a refused pairing by name and attaches nothing', async () => {
     setBindingMock('AddBackend', async () => ({
       id: 'laptop', name: 'Laptop', endpoint: LAPTOP.endpoint, verificationNumber: '42',

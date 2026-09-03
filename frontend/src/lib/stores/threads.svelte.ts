@@ -14,6 +14,7 @@ import { clearThreadStatus } from './threadStatuses.svelte';
 import { addToast } from './toast.svelte';
 import { releaseThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
+import { onBackendDetached } from '../transport/backends';
 
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn'>>;
 
@@ -225,6 +226,36 @@ export function clearThreadGroupMembership(groupId: string): void {
   });
   if (changed) threads = next;
 }
+
+/**
+ * Drop every row a detached backend owned.
+ *
+ * NOT `removeThread`: these threads were not deleted, they merely stopped
+ * being reachable from this client, so nothing durable is evicted here.
+ * What has to go is the ROW, because the entity index has already forgotten
+ * which machine it came from and every call about it would resolve to the
+ * page's own backend from now on. A row nobody can route is worse than no
+ * row: it looks live and answers wrong.
+ *
+ * The ids arrive in the detach payload rather than being read back from
+ * the index, which is what makes this ordering-free
+ * (`transport/backends.ts`, `BackendDetachment`).
+ */
+export function dropThreadsForDetachedBackend(ids: readonly string[]): void {
+  if (ids.length === 0) return;
+  const gone = new Set(ids);
+  const kept = threads.filter((t) => !gone.has(t.id));
+  if (kept.length === threads.length) return;
+  threads = kept;
+  for (const id of gone) {
+    liveActivityAt.drop(id);
+    clearThreadStatus(id);
+    dropLiveTodoUiPrefs(id);
+    dropActivityRailUiPrefs(id);
+  }
+}
+
+onBackendDetached(({ threadIds }) => dropThreadsForDetachedBackend(threadIds));
 
 /**
  * Returns the thread with the given id, or undefined if the sidebar doesn't

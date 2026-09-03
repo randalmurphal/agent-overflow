@@ -43,7 +43,7 @@ import {
   getBackendIdentity,
   onBackendIdentity,
 } from './backendIdentity';
-import { forgetBackendEntities } from './entityIndex';
+import { forgetBackendEntities, type ForgottenEntities } from './entityIndex';
 import { grantedScopes, refreshGrantedScopes, type ScopeSnapshot } from './scopes';
 import {
   fetchBackendManifest,
@@ -129,6 +129,31 @@ const entries: Entry[] = [];
 const byId = new Map<string, Entry>();
 
 const changeListeners = new Set<() => void>();
+
+/**
+ * What a detach took with it: the backend, and every row id this client
+ * held for it.
+ *
+ * The ids travel IN the notification rather than being looked up by the
+ * listener, and that is the whole design. A row store has to drop exactly
+ * the rows whose backend just left, and the only place that set exists is
+ * the entity index the same call clears. A listener that asked the index
+ * would have to be sequenced BEFORE the clear, and an ordering that has to
+ * be remembered is one that is right on the machine it was written on and
+ * wrong on the next. Carrying the payload removes the ordering entirely.
+ */
+export interface BackendDetachment {
+  /** The registry id that is no longer attached. */
+  readonly backendId: BackendKey;
+  /** Thread ids this client had indexed to it. */
+  readonly threadIds: readonly string[];
+  /** Project ids this client had indexed to it. */
+  readonly projectIds: readonly string[];
+  /** Thread-group ids this client had indexed to it. */
+  readonly threadGroupIds: readonly string[];
+}
+
+const detachListeners = new Set<(detached: BackendDetachment) => void>();
 
 // Subscriptions that must exist on EVERY attached backend, so a backend
 // attached later gets them too. ./runtime.ts's event fan-out is the one
@@ -361,10 +386,20 @@ export function detachBackend(id: string): void {
   entry.client.close();
   // Everything keyed on this backend goes with it. Leaving the entity
   // index populated would resolve a thread to a machine this client is no
-  // longer attached to, and `resolveTransport` would silently answer home
-  // — the same row, the wrong backend, with nothing to see it happen.
-  forgetBackendEntities(entry.id);
+  // longer attached to, and `resolveTransport` would silently answer home:
+  // the same row, the wrong backend, with nothing to see it happen.
+  //
+  // Clearing the index alone is not enough, and the reason is the same
+  // sentence read the other way. The ROW STORES still hold that machine's
+  // threads, projects and groups, and once the index has forgotten them
+  // every call about one resolves home. So the ids that just went are
+  // handed to `onBackendDetached` BEFORE anything can render again, and
+  // the stores that hold rows drop theirs. Detach is not a place where a
+  // send may quietly land on another machine (spec §10: never a silent
+  // failover).
+  const forgotten: ForgottenEntities = forgetBackendEntities(entry.id);
   forgetBackendIdentity(entry.id);
+  notifyBackendDetached({ backendId: entry.id, ...forgotten });
   notifyBackendsChanged();
 }
 
@@ -379,6 +414,34 @@ export function onBackendsChanged(listener: () => void): () => void {
 
 function notifyBackendsChanged(): void {
   for (const listener of changeListeners) listener();
+}
+
+/**
+ * Subscribe to a backend LEAVING, with the rows it took.
+ *
+ * Separate from `onBackendsChanged` because the two answer different
+ * questions: that one is "the list moved, re-derive", this one is "these
+ * exact ids are gone, drop them". A listener here must not throw; one that
+ * does would strand the detach half-done, so the failure is contained and
+ * logged and the rest still run.
+ */
+export function onBackendDetached(
+  listener: (detached: BackendDetachment) => void,
+): () => void {
+  detachListeners.add(listener);
+  return () => {
+    detachListeners.delete(listener);
+  };
+}
+
+function notifyBackendDetached(detached: BackendDetachment): void {
+  for (const listener of detachListeners) {
+    try {
+      listener(detached);
+    } catch (err) {
+      console.warn('transport: a backend-detach listener threw', err);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ import {
 import { repoKey } from '../utils/repoKey';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { projectBackend } from '../transport/entityIndex';
+import { onBackendDetached } from '../transport/backends';
 import { hasMultipleBackends } from './attachedBackends.svelte';
 
 let projects: ProjectWithCounts[] = $state([]);
@@ -261,6 +262,22 @@ export function removeProjectLocal(id: string): void {
 }
 
 /** Test helper — clears state between tests. */
+/**
+ * Drop every project row a detached backend owned, for the reason
+ * `threads.svelte.ts` states about its own: the entity index has already
+ * forgotten the machine, so a row left here would route its next call to
+ * the page's own backend.
+ */
+export function dropProjectsForDetachedBackend(ids: readonly string[]): void {
+  if (ids.length === 0) return;
+  const gone = new Set(ids);
+  const kept = projects.filter((p) => !gone.has(p.project.id));
+  if (kept.length === projects.length) return;
+  projects = kept;
+}
+
+onBackendDetached(({ projectIds }) => dropProjectsForDetachedBackend(projectIds));
+
 export function resetProjectsForTest(): void {
   projects = [];
   loaded = false;

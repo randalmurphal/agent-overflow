@@ -124,7 +124,9 @@ What compact changes, and where:
   `inert`, never unmounted, so a trip back to the list keeps the
   timeline's observers and scroll position. `revealPane` flips to the
   thread screen because every "show me this pane" path already passes
-  through it; the chat header's back button flips to the list.
+  through it; the chat header's back button flips to the list, and so
+  does the last pane leaving (`destroyPane`), since compact has no close
+  control and an empty thread screen has no back button.
 - **One pane per screen.** `PaneHost` sizes every pane to the strip and
   drops the dividers; companions still open and the existing reveal
   glide is the switch between a thread and its companion. No pane close

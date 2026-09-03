@@ -338,17 +338,21 @@ test.describe.serial('remote device lifecycle', () => {
     // A gated control stays MOUNTED and goes inert — never hidden, never a
     // click that swallows itself (transport/AGENTS.md).
     await expect(phone.getByTestId('view-only-indicator')).toBeVisible();
-    await expect(phone.getByLabel('Message Input')).toBeDisabled();
     await expect(phone.getByTestId('project-item-new-thread').first()).toBeDisabled();
 
     // A representative navigation: open a thread, switch to the other,
     // open settings. Each of those mounts panes whose stores fire passive
     // loads, which is exactly the burst this asserts the absence of.
+    //
+    // The composer is asserted once a thread is open, because this page
+    // boots to NO pane: a revoke deletes the device's ui_state bucket on
+    // the backend and the client purges its own copy on the 401, so the
+    // re-paired page does not resurrect the layout the revoked device had.
     const rows = phone.getByTestId('thread-row');
     await rows.first().click();
-    await expect(phone.getByLabel('Message Input')).toBeVisible();
+    await expect(phone.getByLabel('Message Input')).toBeDisabled();
     await rows.last().click();
-    await expect(phone.getByLabel('Message Input')).toBeVisible();
+    await expect(phone.getByLabel('Message Input')).toBeDisabled();
     await phone.getByTestId('sidebar-settings-button').click();
     await expect(phone.getByRole('tablist', { name: 'Settings Sections' })).toBeVisible();
     await phone.getByRole('tab', { name: 'Remote access' }).click();
@@ -427,6 +431,9 @@ test.describe.serial('remote device lifecycle', () => {
       device.id,
     );
     await expect(phone.getByTestId('view-only-indicator')).toHaveCount(0);
+    // A NEW device row has no ui_state, so the page boots to no pane; the
+    // composer is a control of an open thread.
+    await phone.getByTestId('thread-row').first().click();
     await expect(phone.getByLabel('Message Input')).toBeEnabled();
   });
 

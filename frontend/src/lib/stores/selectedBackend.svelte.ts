@@ -20,9 +20,10 @@
 //     thread on another machine, else the app-wide choice.
 //  3. Otherwise home.
 //
-// The writer is `components/composer/workspace/MachinePicker.svelte`, one
-// more dropdown in the composer's project / worktree / branch strip,
-// mounted only while more than one backend is attached (spec §10). On a
+// The writers are the composer's workspace strip pickers:
+// `MachinePicker.svelte` (which machine) and `ProjectPicker.svelte` (a
+// project lives on one machine, so choosing it chooses one). Both stage
+// the PANE's choice; the machine picker also moves the app-wide one. On a
 // single-backend page nothing writes here and the answer is always home.
 //
 // The primitive is the single current choice plus the per-pane override a
@@ -49,11 +50,20 @@ export function setFocusedThreadResolver(resolve: () => string | null): void {
   focusedThreadId = resolve;
 }
 // Per-pane overrides: a draft placeholder staging a thread on another
-// machine. Keyed by pane id, dropped when the pane closes. A plain Map,
-// not a rune: it is read on the RPC path and written by a picker, and
-// nothing renders from it in this wave.
+// machine. Keyed by pane id, dropped when the pane closes
+// (`stores/panes.svelte.ts`'s `destroyPane`). A plain Map, not a rune: it
+// is read on the RPC path and written by a picker, and nothing renders
+// from it in this wave.
 const byPane = new Map<string, BackendKey>();
-let activePane: string | null = null;
+// Which pane's override to prefer, as a RESOLVER rather than a value.
+//
+// The first shipped form was a setter somebody had to call on every focus
+// change, and nobody ever did: `activePane` stayed null for the life of
+// the app, so every `setPaneBackend` write was dead and the project
+// picker's machine choice reached routing through nothing at all. A pull
+// cannot be forgotten, which is the same argument `focusedThreadId` above
+// makes and the same shape `setGitStatusPaneBridge` uses.
+let activePaneId: (() => string | null) | null = null;
 
 /**
  * The backend a `selected` call goes to. See the order at the top.
@@ -67,7 +77,8 @@ export function selectedBackend(): BackendKey {
     const owner = threadBackend(threadId);
     if (owner !== undefined) return live(owner);
   }
-  const override = activePane === null ? undefined : byPane.get(activePane);
+  const paneId = activePaneId?.() ?? null;
+  const override = paneId === null ? undefined : byPane.get(paneId);
   return live(override ?? selected);
 }
 
@@ -91,17 +102,19 @@ export function setPaneBackend(paneId: string, backendId: BackendKey | null): vo
   else byPane.set(paneId, backendId);
 }
 
-/** Name the pane whose choice `selectedBackend()` should prefer. */
-export function setActiveBackendPane(paneId: string | null): void {
-  activePane = paneId;
+/**
+ * Arm the resolver for "which pane's staged machine counts right now".
+ * Called once, by stores/panes.svelte, beside the focused-thread resolver.
+ */
+export function setActiveBackendPaneResolver(resolve: () => string | null): void {
+  activePaneId = resolve;
 }
 
 /** Test seam: back to the single-backend answer. */
 export function __resetSelectedBackendForTest(): void {
   selected = HOME_BACKEND;
   byPane.clear();
-  activePane = null;
-  // The resolver is module wiring armed by stores/panes.svelte at ITS
-  // load, not per-test state: clearing it would silently unarm the focused
-  // rule for every later test in the run.
+  // Neither resolver is cleared. Both are module wiring armed by
+  // stores/panes.svelte at ITS load, not per-test state, and clearing them
+  // would silently unarm the rules for every later test in the run.
 }

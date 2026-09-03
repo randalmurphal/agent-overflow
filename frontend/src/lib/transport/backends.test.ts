@@ -46,6 +46,18 @@ import {
   __resetBackendIdentityForTest,
   setBackendIdentityFromBootstrap,
 } from './backendIdentity';
+import {
+  __resetEntityIndexForTest,
+  noteProject,
+  noteTerminal,
+  noteThread,
+  noteThreadGroup,
+  projectBackend,
+  terminalBackend,
+  threadBackend,
+  threadGroupBackend,
+} from './entityIndex';
+import { onBackendDetached, type BackendDetachment } from './backends';
 import { Events } from './runtime';
 
 type FakeClient = typeof homeClient;
@@ -116,6 +128,7 @@ beforeEach(() => {
   __setHomeClientForTest(homeClient as never);
   __resetBackendsForTest();
   __resetBackendIdentityForTest();
+  __resetEntityIndexForTest();
   homeHandlers = new Map();
   for (const fn of Object.values(homeClient)) (fn as { mockReset?: () => void }).mockReset?.();
   homeClient.getStatus.mockReturnValue({ status: 'connected', nextAttemptAt: null });
@@ -290,5 +303,73 @@ describe('callEveryBackend', () => {
       [[{ id: 'a' }], ''],
       [[{ id: 'b' }], 'laptop'],
     ]);
+  });
+});
+
+
+// A detached backend takes its rows with it. Both halves matter and each
+// breaks differently: an index that still resolves the thread points calls
+// at a machine this client is no longer attached to, and an index that
+// forgot it while the row stores kept the row sends the next call about it
+// to HOME. Spec section 10: never a silent failover to another machine.
+describe('detach forgets what the backend owned', () => {
+  it('drops every family the index held for it, and nothing another backend holds', () => {
+    attachFake();
+    attachFake({ id: 'desktop', backendId: HOME_UUID, name: 'Desktop' });
+    noteThread('t-laptop', 'laptop');
+    noteProject('p-laptop', 'laptop');
+    noteThreadGroup('g-laptop', 'laptop');
+    noteTerminal('term-laptop', 'laptop');
+    noteThread('t-desktop', 'desktop');
+
+    detachBackend('laptop');
+
+    expect(threadBackend('t-laptop')).toBeUndefined();
+    expect(projectBackend('p-laptop')).toBeUndefined();
+    expect(threadGroupBackend('g-laptop')).toBeUndefined();
+    expect(terminalBackend('term-laptop')).toBeUndefined();
+    expect(threadBackend('t-desktop')).toBe('desktop');
+  });
+
+  // The ids ride the notification rather than being looked up afterwards:
+  // by the time a listener runs, the index has already forgotten them, so
+  // there would be nothing left to ask.
+  it('carries the forgotten ids to the listeners', () => {
+    attachFake();
+    noteThread('t1', 'laptop');
+    noteThread('t2', 'laptop');
+    noteProject('p1', 'laptop');
+    noteThreadGroup('g1', 'laptop');
+    const seen: BackendDetachment[] = [];
+    onBackendDetached((detachment) => seen.push(detachment));
+
+    detachBackend('laptop');
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].backendId).toBe('laptop');
+    expect([...seen[0].threadIds].sort()).toEqual(['t1', 't2']);
+    expect([...seen[0].projectIds]).toEqual(['p1']);
+    expect([...seen[0].threadGroupIds]).toEqual(['g1']);
+  });
+
+  it('says nothing when the id names no attached backend, or names home', () => {
+    const seen: BackendDetachment[] = [];
+    onBackendDetached((detachment) => seen.push(detachment));
+
+    detachBackend('never-attached');
+    detachBackend('');
+
+    expect(seen).toEqual([]);
+  });
+
+  it('stops calling a listener once its remover runs', () => {
+    const listener = vi.fn();
+    const remove = onBackendDetached(listener);
+    attachFake();
+    detachBackend('laptop');
+    remove();
+    attachFake();
+    detachBackend('laptop');
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 });

@@ -69,6 +69,11 @@
     }
   });
 
+  // Two versions, because a rollback is the case where they differ: `target`
+  // is what the update was aiming at and `version` is what came back, and
+  // naming only the second told the person their old version was the one
+  // that failed. `target` is absent on a backend older than this bundle, and
+  // there the running version is the closest true answer.
   const outcomeCopy = $derived.by(() => {
     const o = m.outcome;
     if (o === null) return null;
@@ -76,9 +81,10 @@
       return { tone: 'info' as const, text: `Updated to version ${o.version}.` };
     }
     const reason = o.reason ? ` ${o.reason}` : '';
+    const target = o.target || o.version;
     return {
       tone: 'warn' as const,
-      text: `The update to version ${o.version} was rolled back.${reason}`,
+      text: `The update to version ${target} was rolled back. Running ${o.version}.${reason}`,
     };
   });
 

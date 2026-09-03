@@ -198,9 +198,13 @@ remote browser alike. Protocol and authz rules:
   incomplete. `runtime.ts` warns once per method id in dev, which is where a
   route that is genuinely missing becomes visible.
 - `entityIndex.ts` is which backend owns which entity: plain `Map`s from
-  thread id and project id to registry id, populated where rows enter the
-  client (the `all` fan-out's per-backend shares, `thread:updated`'s origin
-  stamp, the per-backend replica's cold open). **Rows gain no field.**
+  thread id and project id to registry id, populated at exactly three
+  doors — the `all` fan-out's per-backend shares, the ids a routed call
+  answered with, and the origin stamp on a `thread:updated` /
+  `project:updated` / `thread-group:updated` frame. The replica's cold open
+  is NOT one of them: a window painted from IndexedDB carries no origin, so
+  a thread this session never listed resolves home until a list call or an
+  event names its machine. **Rows gain no field.**
   Stamping `backendId` onto every Thread would cost a property on every
   sidebar row, make two copies of one fact, and still need the index for
   ids whose row is not loaded. An id it does not know resolves home, which
@@ -222,9 +226,10 @@ remote browser alike. Protocol and authz rules:
   person is looking at (`stores/selectedBackend.svelte.ts`), and `all` fans
   out and merges.
 - `methodFamilies.ts` is the hand-kept table the generator cannot write.
-  59 bound methods are keyed by an id that is neither a thread nor a
-  project — a workflow item, a workflow automation, a terminal, a
-  subscription — and the generator parks all of them on `home`, because
+  49 bound methods are keyed by an id that is neither a thread nor a
+  project and carry it as argument 0 — a workflow item, a workflow
+  automation, a terminal, a subscription, a thread group, a thread-id
+  batch — and the generator parks all of them on `home`, because
   `itemID` and `automationID` are both `string` and no signature scan can
   tell them apart. Home is the right FALLBACK and the wrong answer once one
   of those lives on a second machine, so **route resolution asks the family
@@ -233,10 +238,15 @@ remote browser alike. Protocol and authz rules:
   ANSWERED with (`entityIndex.ts`'s `RESULT_FAMILIES`: the list that
   enumerated them, the open that minted a terminal, the subscribe that
   minted a subscription id), keyed by METHOD and never sniffed from the
-  row. `methodFamilies.test.ts` pins every id against the generated table,
-  so a rename fails loudly instead of quietly reverting to home. Device,
+  row. `methodFamilies.test.ts` pins every id against the generated table
+  AND asserts the count above, so a rename fails loudly instead of quietly
+  reverting to home and the number in this sentence cannot drift. Device,
   passkey and backend-profile admin families are deliberately absent: they
-  administer this client's own attachments and belong to home for good. The merge rule is stated and implemented exactly once, in
+  administer this client's own attachments and belong to home for good.
+  One gap is known and named in the module header rather than left to be
+  rediscovered: several `WorkflowAgent*` methods carry their item id inside
+  a STRUCT argument, so `args[0]` is an object the lookup cannot read and
+  they stay on home. The merge rule is stated and implemented exactly once, in
   `backends.ts`'s `mergeBackendResults`: arrays concatenate in attach
   order, id-keyed objects shallow-merge, anything else takes the home
   share. A failed backend's share is DROPPED and recorded on its entry
@@ -279,6 +289,20 @@ remote browser alike. Protocol and authz rules:
   refusal, and the omission would be invisible on the owner's own machine:
   the same recurring shape as the per-call-site wrapping this module
   replaced. Where it runs is `wsClient.ts`'s single interception above.
+
+  **The ceremony runs on the handle that REFUSED, which the transport
+  passes it (`StepUpTarget`).** A token is minted for the session that
+  began the ceremony and judged against the session presenting it
+  (`transport.Config.StepUpProof`), and one client is one backend and one
+  session. Both ceremony methods are routed `home`, so issuing them
+  through the generated bindings minted the proof on the PAGE's own
+  backend: a refusal on an attached machine was then retried with a token
+  that machine never issued, and the person saw the change fail after
+  touching their sensor. Nothing about the route table fixes that, because
+  the ceremony is not a call about the home backend — it is a call about
+  the connection being refused. The two method ids are constants in
+  `stepUp.ts`, pinned to the generated bindings by `stepUp.test.ts`, since
+  a call BY NAME would be one more place a rename fails on the wire.
 
   **One mechanism, and a new `//ao:stepup` method's UI wires NOTHING.**
   Per-call-site wrapping is the recurring-bug shape: the wrapper is what
@@ -709,17 +733,36 @@ remote browser alike. Protocol and authz rules:
   discipline lives in the module header and is load-bearing: renewal is
   single-flight, stores before use, and never retries an unread
   exchange, because a refresh secret presented twice reads as reuse
-  evidence that ends the session. `components/pairing/PairingScreen.svelte`
-  (mounted by `main.ts` on a `#pair=` fragment) is its enrolment surface.
-  While a paired session is stored, it is the ONLY identity the upgrade
-  may present: a dial that cannot mint a ticket fails and retries rather
-  than proceeding bare, because on a browser that also holds the local
-  page cookie a bare dial admits the screen as the local channel — a
-  socket revoking the paired device never reaches. Completing the
-  pairing flow calls `wsClient.redialAfterPairing()` for the same
-  reason: the socket opened under the pairing screen predates the
-  credential and carries the wrong identity — and because the grants the
-  credential arrived with are what `scopes.ts` re-reads there.
+  evidence that ends the session.
+  `components/pairing/PairingScreen.svelte` (mounted by `main.ts` on a
+  `#pair=` fragment) is its enrolment surface. While a paired session is
+  stored, it is the ONLY identity the upgrade may present: a dial that
+  cannot mint a ticket fails and retries rather than proceeding bare,
+  because on a browser that also holds the local page cookie a bare dial
+  admits the screen as the local channel — a socket revoking the paired
+  device never reaches. Completing the pairing flow calls
+  `wsClient.redialAfterPairing()` for the same reason: the socket opened
+  under the pairing screen predates the credential and carries the wrong
+  identity — and because the grants the credential arrived with are what
+  `scopes.ts` re-reads there.
+
+  **Single-flight has two halves, and the in-realm Map is only the cheap
+  one.** A second TAB is a second realm over the same localStorage, so
+  that Map cannot see it: two tabs waking together on a near-expiry
+  credential each renewed, the second presented the secret the first had
+  spent, and the backend ended the session family for both — a sign-out of
+  every tab, recoverable only by pairing again. The cross-context half is
+  `renewalLease.ts`: `navigator.locks` where it exists, and a short-TTL
+  localStorage lease where it does not, since a plain-HTTP LAN
+  page (spec §15 constraint 6) has no Web Locks any more than it has
+  `crypto.subtle`. Three rules it depends on, and any future exchange with
+  the same single-use property inherits all three: the lease EXPIRES
+  rather than being released, because a tab killed mid-exchange releases
+  nothing; the winner is decided by RE-READING the entry, because two
+  contexts writing in the same instant both read their own write back; and
+  the guarded work re-reads its own stored state INSIDE the lease and
+  returns the other context's success, which is what makes a lost race a
+  no-op instead of a second exchange.
 
   `signInWithPasskey` lives HERE rather than in `passkey.ts` on the
   one-writer rule: what it produces is what redemption produces — a

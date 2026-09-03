@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_ATTEMPTS_PER_BUNDLE,
   candidateFrom,
   decideBundleSync,
   pickBundleSource,
@@ -51,6 +52,7 @@ function input(overrides: Partial<BundleSyncInput> = {}): BundleSyncInput {
     state: state(),
     lease: 'active',
     inFlight: '',
+    attempts: 0,
     ...overrides,
   };
 }
@@ -137,6 +139,31 @@ describe('decideBundleSync', () => {
   it('waits out a download of a different id rather than superseding it mid-transfer', () => {
     const other = 'c'.repeat(64);
     expect(decideBundleSync(input({ inFlight: other }))).toEqual({ kind: 'busy', id: OFFERED });
+  });
+
+  it('keeps downloading while attempts are left', () => {
+    const decision = decideBundleSync(input({ attempts: MAX_ATTEMPTS_PER_BUNDLE - 1 }));
+    expect(decision.kind).toBe('download');
+  });
+
+  it('stops fetching a bundle that has failed its cap of times', () => {
+    // The cap has to be answerable HERE, because a failed attempt has to
+    // answer the very next hello as well as its own retry timer. When the
+    // cap lived only beside that timer, the decision kept saying
+    // `download` and the archive was refetched with no delay and no end.
+    expect(decideBundleSync(input({ attempts: MAX_ATTEMPTS_PER_BUNDLE }))).toEqual({
+      kind: 'exhausted',
+      id: OFFERED,
+    });
+  });
+
+  it('joins a live download of the exhausted id rather than abandoning it', () => {
+    // The cap is about starting a fetch, not about a transfer already
+    // running: the one in flight may be the attempt that succeeds.
+    const decision = decideBundleSync(
+      input({ attempts: MAX_ATTEMPTS_PER_BUNDLE, inFlight: OFFERED }),
+    );
+    expect(decision).toEqual({ kind: 'joined', id: OFFERED });
   });
 
   it('answers the floor before the lease, so a phone that can never take it is told', () => {

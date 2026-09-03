@@ -3,6 +3,7 @@ package dev.agentoverflow.app;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.WindowManager;
 
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.ServerPath;
@@ -52,6 +53,16 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // The window never becomes a screenshot or a task-switcher
+        // thumbnail. The app lock covers the WebView while the app is
+        // paused, but the recents preview is taken by the system from the
+        // window itself, so a cover drawn inside the page cannot reach it.
+        // This is the only place that decision can be made, and it is made
+        // before the Bridge exists so no frame is ever captured.
+        getWindow().setFlags(
+                WindowManager.LayoutParams.FLAG_SECURE,
+                WindowManager.LayoutParams.FLAG_SECURE);
+
         registerPlugin(BundlePlugin.class);
         registerPlugin(dev.agentoverflow.app.push.PushPlugin.class);
 

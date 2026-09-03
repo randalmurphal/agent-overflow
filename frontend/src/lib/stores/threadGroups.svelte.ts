@@ -11,6 +11,7 @@
 // re-deriving the sidebar for it is correct.
 
 import { ListThreadGroups } from './bindings';
+import { onBackendDetached } from '../transport/backends';
 import { clearThreadGroupMembership } from './threads.svelte';
 import { addToast } from './toast.svelte';
 import type { ThreadGroup } from '../types/models';
@@ -68,6 +69,22 @@ export function getThreadGroupsForProject(projectId: string): readonly ThreadGro
 export function getThreadGroupById(id: string): ThreadGroup | undefined {
   return threadGroups.find((group) => group.id === id);
 }
+
+/**
+ * Drop every group a detached backend owned, for the reason
+ * `threads.svelte.ts` states about its rows: the entity index has already
+ * forgotten the machine, so a group row left in the sidebar would send its
+ * rename, its pin and its delete to the page's own backend.
+ */
+export function dropThreadGroupsForDetachedBackend(ids: readonly string[]): void {
+  if (ids.length === 0) return;
+  const gone = new Set(ids);
+  const kept = threadGroups.filter((group) => !gone.has(group.id));
+  if (kept.length === threadGroups.length) return;
+  threadGroups = kept;
+}
+
+onBackendDetached(({ threadGroupIds }) => dropThreadGroupsForDetachedBackend(threadGroupIds));
 
 /**
  * Boot-time / resync wholesale load. Throws on failure so the caller

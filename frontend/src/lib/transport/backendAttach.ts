@@ -39,6 +39,7 @@ import {
   type PairingPayload,
 } from './deviceSession';
 import { runBeforeBackendDetach } from './detachSteps';
+import { purgeClientState } from './clientPurge';
 import {
   endpointHost,
   forgetBackendEndpoint,
@@ -145,7 +146,7 @@ export async function awaitAttachedActivation(
 
 /**
  * Remove a machine this client attached itself: the socket, then the
- * credential, then the address.
+ * credential, then the address, then what it stored on this device.
  *
  * That order is the whole reason this is one function. Closing the socket
  * first means nothing is dialing while the credential is being taken
@@ -182,6 +183,12 @@ export function detachAttachedBackend(id: BackendKey): void {
   detachBackend(id);
   clearPairedSession(id);
   forgetBackendEndpoint(id);
+  // The fourth thing, and it is not one of the three above: those end the
+  // relationship, this removes what the relationship left behind. That
+  // machine's replica database and its ui_state bucket are readable by
+  // whoever holds this device, and nothing else will ever reclaim them.
+  // After the credential, because a purge is not a reason to keep talking.
+  purgeClientState(id);
 }
 
 // ---------------------------------------------------------------------------

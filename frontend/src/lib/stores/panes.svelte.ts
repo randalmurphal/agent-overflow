@@ -1,4 +1,4 @@
-import { showCompactThread } from './layoutMode.svelte';
+import { showCompactList, showCompactThread } from './layoutMode.svelte';
 import type { Thread } from '../types/models';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
 import {
@@ -13,7 +13,12 @@ import {
 import { getThreadById, replaceThread as replaceThreadInRegistry } from './threads.svelte';
 import { setGitStatusPaneBridge } from './gitStatusStore.svelte';
 import { workspaceKeyForThread } from '../utils/workspaceKey';
-import { setFocusedThreadResolver } from './selectedBackend.svelte';
+import {
+  setActiveBackendPaneResolver,
+  setFocusedThreadResolver,
+  setPaneBackend,
+} from './selectedBackend.svelte';
+import { onBackendDetached } from '../transport/backends';
 import { REVEAL_PANE_EVENT } from './eventNames';
 import {
   refreshWatchedThreads,
@@ -316,6 +321,10 @@ export function destroyPane(id: string): void {
   panes.delete(id);
   paneActivationById = new Map(paneActivationById);
   paneActivationById.delete(id);
+  // The pane's staged machine goes with the pane. Left behind it is a map
+  // entry that grows for the life of the session and, if a pane id is ever
+  // reused, stages a machine nobody picked.
+  setPaneBackend(id, null);
   removePaneLayoutItem(id, { persist: false });
   // Cascade: paired companion panes close with their source. Fired after the
   // source pane is fully torn down so observers see consistent registry/layout
@@ -327,6 +336,12 @@ export function destroyPane(id: string): void {
     focusedPaneId = nextFocusId;
     if (nextFocusId) revealPane(nextFocusId);
   }
+  // The thread screen with nothing on it is the list. Compact has no close
+  // control of its own, so the last pane goes here only when something
+  // else took it (a deleted thread, a detached machine), and leaving the
+  // person on an empty screen with no back button is a dead end. Off
+  // compact this is a no-op stamp.
+  if (panes.size === 0) showCompactList();
   // After the companion cascade, so one recompute covers every pane the
   // close removed rather than one per observer.
   refreshWatchedThreads();
@@ -728,6 +743,23 @@ export function syncThread(thread: Thread): void {
 // ring, and the failure mode would be an init order that decides whether
 // routing works.
 setFocusedThreadResolver(() => getFocusedPaneOrNull()?.threadId ?? null);
+// The second half of the same question: which PANE's staged machine the
+// `selected` route should prefer when the focused pane holds a draft that
+// has no indexed thread yet. A resolver rather than a write on every focus
+// change, for the reason above and one more: `focusedPaneId` is assigned
+// in eight places, and a push from each is a rule somebody has to
+// remember. Pulling closes the class instead.
+setActiveBackendPaneResolver(() => getFocusedThreadPaneId());
+
+// A backend that detached takes its panes with it. The alternative is a
+// pane still showing that machine's thread while the entity index has
+// forgotten it, at which point the composer re-enables (nothing is
+// unreachable once the entry is gone) and the next send resolves to the
+// page's own backend. Closing is what this app already does when a thread
+// stops being openable, and it is the only answer that cannot re-route.
+onBackendDetached(({ threadIds }) => {
+  closePanesShowingThreads(threadIds);
+});
 
 setGitStatusPaneBridge({
   syncThread,
