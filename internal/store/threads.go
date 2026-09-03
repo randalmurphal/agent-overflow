@@ -36,6 +36,7 @@ const threadColumns = `id, COALESCE(project_id, ''),
     (SELECT MAX(completed_at) FROM turns
       WHERE turns.thread_id = threads.id AND completed_at IS NOT NULL),
     archived, last_read_at, pinned_at, pin_group,
+    COALESCE(group_id, ''),
     worktree_setup_state, import_source,
 	EXISTS (
       SELECT 1
@@ -187,6 +188,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
 		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt, &pinGroup,
+		&t.GroupID,
 		&t.WorktreeSetupState, &t.ImportSource,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &isDraft,
 	); err != nil {
@@ -271,8 +273,8 @@ func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
 		    mode, reasoning_effort, fast_mode, context_window,
 		    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
 		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
-		    created_at, updated_at, archived, last_read_at, import_source)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    created_at, updated_at, archived, last_read_at, import_source, group_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		t.PRRef,
@@ -282,6 +284,7 @@ func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
 		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived), lastReadAtArg, t.ImportSource,
+		nilIfEmpty(t.GroupID),
 	)
 	return err
 }
@@ -1131,17 +1134,38 @@ func (s *Store) setThreadPinnedAt(id string, ts *int64) error {
 			id,
 		)
 	} else {
+		// A grouped row holds no pin of its own (the v76 CHECK). The WHERE
+		// term keeps that refusal from surfacing as a raw constraint failure;
+		// the probe below names it.
 		result, err = s.db.Exec(
 			`UPDATE threads
 		        SET pinned_at = ?, pin_group = ?
-		      WHERE id = ?`,
+		      WHERE id = ? AND group_id IS NULL`,
 			*ts, PinGroupFront, id,
 		)
 	}
 	if err != nil {
 		return fmt.Errorf("store: update pin state for %s: %w", id, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update pin state for %s", id))
+	if err := requireRowsAffected(result, fmt.Sprintf("store: update pin state for %s", id)); err != nil {
+		if ts != nil && s.threadIsGrouped(id) {
+			return fmt.Errorf("store: pin %s: %w", id, ErrThreadGrouped)
+		}
+		return err
+	}
+	return nil
+}
+
+// threadIsGrouped is the failure-path probe behind ErrThreadGrouped. A
+// missing row reads as ungrouped so the caller's sql.ErrNoRows stands.
+func (s *Store) threadIsGrouped(id string) bool {
+	var grouped bool
+	if err := s.db.QueryRow(
+		`SELECT group_id IS NOT NULL FROM threads WHERE id = ?`, id,
+	).Scan(&grouped); err != nil {
+		return false
+	}
+	return grouped
 }
 
 // UpdateSessionRef records the provider resume cursor without touching

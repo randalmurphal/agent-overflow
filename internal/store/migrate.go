@@ -1435,6 +1435,47 @@ CREATE INDEX idx_items_completion_created
 		// enforced by InsertAttachment, which is the table's one writer.
 		SQL: `ALTER TABLE attachments ADD COLUMN kind TEXT NOT NULL DEFAULT 'image';`,
 	},
+	{
+		Version: 76,
+		Name:    "thread_groups",
+		// A named, collapsible sidebar row that gathers threads of ONE
+		// project. Spec: docs/specs/sidebar-thread-groups.md.
+		//
+		// `threads.group_id` carries the CHECK that makes "one pin per
+		// visible row" structural: a grouped thread cannot hold a pin, and
+		// no caller that skips PinThread's own guard can write one. The
+		// index is partial because group_id is NULL on nearly every row;
+		// the FK's SET NULL walks it on a group delete. The FK's ON DELETE
+		// SET NULL is what "delete group = ungroup" means, archived members
+		// included, and it fires because every writer connection carries
+		// foreign_keys=1 (dsn.go).
+		//
+		// `thread_groups.pin_group` repeats v71's thread-side CHECK verbatim:
+		// a group is pinnable to the same two burners, and latent group state
+		// on an unpinned row is refused the same way.
+		//
+		// A plain ADD COLUMN with a CHECK and a REFERENCES clause — SQLite
+		// permits both on an added column as long as its default is NULL,
+		// which it is — so the FK-parent `threads` table is not rebuilt.
+		SQL: `CREATE TABLE thread_groups (
+    id         TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    pinned_at  INTEGER,
+    pin_group  INTEGER
+        CHECK(pin_group IS NULL OR (pinned_at IS NOT NULL AND pin_group IN (0, 1))),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX idx_thread_groups_project ON thread_groups(project_id);
+
+ALTER TABLE threads ADD COLUMN group_id TEXT
+    REFERENCES thread_groups(id) ON DELETE SET NULL
+    CHECK(group_id IS NULL OR pinned_at IS NULL);
+
+CREATE INDEX idx_threads_group ON threads(group_id) WHERE group_id IS NOT NULL;`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

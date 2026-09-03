@@ -138,6 +138,13 @@ const (
 	TerminalOutput Channel = "terminal:output"
 )
 
+// thread-group:* — the sidebar thread group (migration v76). Its own
+// family rather than a thread:* member because a group is NOT a thread:
+// the frame carries a store.ThreadGroup and an action, and no thread id.
+const (
+	ThreadGroupUpdated Channel = "thread-group:updated"
+)
+
 // thread:* — thread-row state every viewer renders.
 const (
 	ThreadModeChanged        Channel = "thread:mode_changed"

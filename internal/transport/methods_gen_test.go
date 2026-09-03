@@ -71,6 +71,20 @@ var wireSafeMethods = map[string]bool{
 	"SwitchThread":         true,
 	"GetThreadRuntimeMode": true,
 
+	// Sidebar thread groups (migration v76). Pure SQLite CRUD over a
+	// project id, a user-chosen name, a pin, and thread membership: no
+	// filesystem, no process, no provider session, no settings. They sit
+	// beside the thread pin methods for the same reason — the remote
+	// browser renders the same sidebar and must be able to drive it.
+	"ListThreadGroups":       true,
+	"CreateThreadGroup":      true,
+	"RenameThreadGroup":      true,
+	"DeleteThreadGroup":      true,
+	"PinThreadGroup":         true,
+	"UnpinThreadGroup":       true,
+	"SetThreadGroupPinGroup": true,
+	"SetThreadGroup":         true,
+
 	// Usage accounting reads (append-only ledger aggregates and the
 	// latest provider-reported quota windows; no credentials, no FS).
 	"GetUsageStats":          true,

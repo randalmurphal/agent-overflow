@@ -631,6 +631,17 @@ var channelPolicies = []ChannelPolicy{
 			"is deliberately wire-safe, same story as spinner:changed.",
 	},
 	{
+		Channel:   eventchan.ThreadGroupUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Why: "A sidebar grouping row: project id, user-chosen name, pin " +
+			"state. ListThreadGroups is deliberately wire-safe and returns " +
+			"identical rows, so the push discloses nothing a poll could " +
+			"not — same reasoning as thread:updated, which it flips with " +
+			"if thread reads ever go LocalOnly. Delete frames carry only " +
+			"the removed row, so every frame matters: never latest-only.",
+	},
+	{
 		Channel:   eventchan.ThreadModeChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

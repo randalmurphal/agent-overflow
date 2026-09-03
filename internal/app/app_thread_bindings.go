@@ -230,16 +230,35 @@ func (a *App) MarkThreadUnread(id string) error { return a.threadApplication().M
 
 // PinThread marks the thread as front-burner pinned. Pinned threads sort into
 // two manual attention groups above needs-attention.
-func (a *App) PinThread(id string) (store.Thread, error) { return a.threadApplication().Pin(id) }
+//
+// The three pin mutators each emit a whole-row thread:updated "full"
+// frame. They used to emit nothing, so a second connected client kept
+// showing stale pin state until something else touched the row.
+func (a *App) PinThread(id string) (store.Thread, error) {
+	return a.emitPinnedThread(a.threadApplication().Pin(id))
+}
 
 // SetThreadPinGroup moves an already-pinned thread between the front and back
 // burners and returns the refreshed row for frontend reconciliation.
 func (a *App) SetThreadPinGroup(id string, group int) (store.Thread, error) {
-	return a.threadApplication().SetPinGroup(id, group)
+	return a.emitPinnedThread(a.threadApplication().SetPinGroup(id, group))
 }
 
 // UnpinThread clears pinned_at and pin_group and returns the refreshed row.
-func (a *App) UnpinThread(id string) (store.Thread, error) { return a.threadApplication().Unpin(id) }
+func (a *App) UnpinThread(id string) (store.Thread, error) {
+	return a.emitPinnedThread(a.threadApplication().Unpin(id))
+}
+
+// emitPinnedThread pushes the refreshed row and passes the pair straight
+// through, so each pin binding stays one line and none of them can forget
+// the emit.
+func (a *App) emitPinnedThread(thread store.Thread, err error) (store.Thread, error) {
+	if err != nil {
+		return store.Thread{}, err
+	}
+	a.emitThreadReplaced(thread)
+	return thread, nil
+}
 
 // UpdateThreadProvider switches to the provider's latest remembered profile
 // and restarts the session if one is live so the new provider takes effect.

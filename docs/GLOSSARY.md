@@ -124,6 +124,8 @@ Source: `frontend/AGENTS.md`.
 | **overlay** | A sibling of `<PaneHost>` (workflows, settings): never a pane kind, never replaces the pane strip. |
 | **front burner** | The first manual sidebar pin block. `pin_group` NULL/0 maps here; it keeps the accent pin and sorts by the normal status/activity/id comparator within the block. |
 | **back burner** | The second manual sidebar pin block. `pin_group = 1`; it uses the muted pin token and the same normal comparator, separated from front burner only when both blocks exist. |
+| **group** (thread group) | A named, collapsible sidebar row gathering threads of ONE project (`thread_groups`, migration v76; `docs/specs/sidebar-thread-groups.md`). Its top row is NOT a thread: everything it shows — status, activity, sort position — bubbles from its members, the way a discussion parent's does. It is a row in the normal sort, not a third pin tier, and it is itself pinnable to either burner. Unqualified "group" in sidebar code means this. |
+| **`pin_group`** | The COLUMN naming which burner a pin sits on (front = NULL/0, back = 1), on `threads` since v71 and on `thread_groups` since v76. Despite the name it has nothing to do with a thread group: the two concepts collide only in spelling, and the column keeps its name because renaming a shipped column costs a table rebuild. |
 
 ## Providers, accounts, triage
 

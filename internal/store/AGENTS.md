@@ -123,6 +123,25 @@ transactions.
     wrote, read back by id inside the same transaction. Returning none
     is the ordinary answer: the caller writes on every UI attach and the
     observed branch usually already matches.
+- `thread_groups.go` — the sidebar thread group (migration v76; spec:
+  `docs/specs/sidebar-thread-groups.md`): the `ThreadGroup` row, its CRUD, its
+  three pin primitives, and `SetThreadGroup` — the ONE writer of
+  `threads.group_id`. The pin trio mirrors the thread pin primitives exactly,
+  including "a pin never touches `updated_at`" (a pin is a
+  sidebar-presentation tweak, and `updated_at` is what an EMPTY group sorts
+  by). `SetThreadGroup` runs one transaction, one `UPDATE ... RETURNING id`
+  per named root, and reads the touched rows back INSIDE that transaction:
+  the caller named roots and has no other way to learn the discussion-child
+  ids that travelled with them, and a second read would be a second snapshot.
+  Three properties are structural, not prevalidated — the project subquery
+  refuses a cross-project move (an unknown group resolves to no project and
+  fails the same way, `ErrThreadGroupGone`), the ROOT id must have been
+  updated or the whole call rolls back (a discussion child named as a root
+  is `ErrThreadNotRoot`; a deleted one is `ErrThreadGone`), and GROUPING
+  strips the pin in the same statement ("one pin per visible row").
+  Ungrouping touches only `group_id`: a bulk selection can name ungrouped
+  rows too, and their pins are theirs to keep. See "Recent schema changes
+  (v76)" below.
 - `projects.go` — projects table (threads carry a `project_id` FK).
 - `project_worktree_setup.go` — the `projects.worktree_setup` JSON column
   (migration v46): the project's worktree setup recipe, read and written
@@ -1003,6 +1022,39 @@ an empty `provider_turn_id`.
   saga uses instead, writing `session_ref` and the pin pair together
   (they describe one resume state) and leaving `updated_at` alone.
   Pinned by `TestUpdateThreadPreservesPendingForkPin`.
+
+## Recent schema changes (v76) — sidebar thread groups
+
+- `thread_groups` is a named, collapsible sidebar row gathering threads of ONE
+  project. It is not a thread: it has a name, a pin, and nothing else of its
+  own — status, activity, and sort position all come from its members, so
+  nothing here is derived or cached. `pin_group` repeats v71's thread-side
+  CHECK verbatim.
+- `threads.group_id` carries the CHECK that makes "one pin per visible row"
+  STRUCTURAL: `group_id IS NULL OR pinned_at IS NULL`, so a grouped+pinned
+  row cannot be written by any caller. `PinThread` states the same rule in
+  its WHERE (`group_id IS NULL`) and reports the miss as `ErrThreadGrouped`,
+  so the user reads a rule rather than a raw constraint failure; grouping in
+  `SetThreadGroup` strips the pin in the same statement. A plain `ADD COLUMN`
+  with a CHECK and a `REFERENCES` clause —
+  SQLite permits both on an added column whose default is NULL — so the
+  FK-parent `threads` table is not rebuilt.
+- **The two FKs are the mechanism, not a convenience.** `threads.group_id`'s
+  `ON DELETE SET NULL` is what "delete group = ungroup" means, archived
+  members included, and `thread_groups.project_id`'s `ON DELETE CASCADE` is
+  why a group cannot outlive its project. Neither has a Go-side sweep behind
+  it, and neither needs one: every writer connection carries
+  `foreign_keys=1` in its DSN (`dsn.go`), verified once at boot.
+- **Deliberately absent from `updateThreadSetSQL`**, like `pinned_at` and
+  `live_todo`: `SetThreadGroup` is the column's one writer, and a whole-row
+  `UpdateThread` from a stale `Thread` struct could move a thread back into a
+  group the user just left or resurrect one that was deleted. It IS in
+  `threadColumns` and in `insertThread` — the sidebar reads it on every row,
+  and a fork of a grouped thread lands in the same group
+  (`BuildForkedThread`).
+- The frontend reads `groupId` on top-level nodes only, so a discussion child
+  that follows its root (the `parent_thread_id` disjunct) and is later
+  orphan-promoted still renders sensibly: it lands in that group.
 
 ## Recent schema changes (v75) — attachment kind
 

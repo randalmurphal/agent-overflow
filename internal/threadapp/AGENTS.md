@@ -11,6 +11,11 @@ What belongs here:
 - Thread row creation and validation after `internal/app` supplies model and git policy
   through narrow ports.
 - List/get/archive/read/pin/rename/branch metadata operations.
+- Sidebar thread groups (`groups.go`, migration v76): group CRUD, the group
+  pin trio, and membership moves. Pure persistence — a group owns no
+  process, workspace, or provider session — so none of it takes a thread
+  action lock: the registry serializes ACTIONS on a live thread, and moving
+  a sidebar row between groups is not one.
 - Model-profile selection and the guarded provider-switch write.
 - Chat/plan interaction-mode validation and persistence.
 - Store-only fork validation, interrupted settlement, Codex anchor lookup, and

@@ -5369,3 +5369,79 @@ func TestMigrationV75BackfillsAttachmentKind(t *testing.T) {
 		t.Fatalf("pre-v75 attachment kind = %q, want %q", kind, AttachmentKindImage)
 	}
 }
+
+// TestMigrationV76ThreadGroupSchema applies v76 over a POPULATED, pinned
+// threads table — the shape every upgraded store has, and the one a plain
+// ADD COLUMN with a CHECK and a REFERENCES clause has to survive — and pins
+// what the accessors rest on: the index pair (the threads side partial),
+// the two CHECKs, and the FK's SET NULL under the writer's foreign_keys=1.
+func TestMigrationV76ThreadGroupSchema(t *testing.T) {
+	db := migrateThrough(t, 75)
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v76', '/v76', 'v76', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (
+		id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived, pinned_at, pin_group
+	) VALUES ('t-v76', 'p-v76', 'v76', 'claude', '/v76', '', 1, 1, 0, 5, 1)`)
+
+	if err := applyMigration(db, migrationByVersion(t, 76)); err != nil {
+		t.Fatalf("apply migration v76 over a pinned row: %v", err)
+	}
+
+	for _, index := range []string{"idx_thread_groups_project", "idx_threads_group"} {
+		var count int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
+		).Scan(&count); err != nil {
+			t.Fatalf("probe index %s: %v", index, err)
+		}
+		if count != 1 {
+			t.Errorf("index %s missing", index)
+		}
+	}
+	if got := readIndexSQL(t, db, "idx_threads_group"); !strings.Contains(got, "WHERE group_id IS NOT NULL") {
+		t.Errorf("idx_threads_group is not partial: %s", got)
+	}
+
+	// The upgraded row kept its pin, and the group_id it gained is NULL.
+	var pinnedAt, groupID sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT pinned_at, group_id FROM threads WHERE id = 't-v76'`,
+	).Scan(&pinnedAt, &groupID); err != nil {
+		t.Fatalf("read upgraded row: %v", err)
+	}
+	if !pinnedAt.Valid || pinnedAt.Int64 != 5 || groupID.Valid {
+		t.Fatalf("upgraded row = (pinned_at %v, group_id %v), want (5, NULL)", pinnedAt, groupID)
+	}
+
+	mustExec(t, db, `INSERT INTO thread_groups (id, project_id, name, created_at, updated_at)
+		VALUES ('g-v76', 'p-v76', 'Group', 1, 1)`)
+
+	// The threads-side CHECK refuses a row that is grouped AND pinned, in
+	// either write order.
+	if _, err := db.Exec(`UPDATE threads SET group_id = 'g-v76' WHERE id = 't-v76'`); err == nil {
+		t.Error("grouping a pinned row succeeded; the threads CHECK is missing")
+	}
+	mustExec(t, db, `UPDATE threads SET pinned_at = NULL, pin_group = NULL, group_id = 'g-v76' WHERE id = 't-v76'`)
+	if _, err := db.Exec(`UPDATE threads SET pinned_at = 1 WHERE id = 't-v76'`); err == nil {
+		t.Error("pinning a grouped row succeeded; the threads CHECK is missing")
+	}
+
+	// The group-side CHECK is v71's, repeated: no burner without a pin.
+	if _, err := db.Exec(`UPDATE thread_groups SET pin_group = 0 WHERE id = 'g-v76'`); err == nil {
+		t.Error("a burner on an unpinned group succeeded; the pin_group CHECK is missing")
+	}
+	if _, err := db.Exec(`UPDATE thread_groups SET pinned_at = 1, pin_group = 5 WHERE id = 'g-v76'`); err == nil {
+		t.Error("an out-of-range burner succeeded; the pin_group CHECK is missing")
+	}
+
+	// Deleting the group ungroups through the FK and deletes no thread.
+	mustExec(t, db, `DELETE FROM thread_groups WHERE id = 'g-v76'`)
+	var after sql.NullString
+	if err := db.QueryRow(`SELECT group_id FROM threads WHERE id = 't-v76'`).Scan(&after); err != nil {
+		t.Fatalf("read row after group delete: %v", err)
+	}
+	if after.Valid {
+		t.Errorf("group_id = %q after the group was deleted, want NULL", after.String)
+	}
+}

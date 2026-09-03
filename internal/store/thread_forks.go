@@ -28,6 +28,10 @@ import (
 // would render 0% for forked threads even though the cloned items
 // occupy meaningful context.
 //
+// `GroupID` IS copied: a fork of a grouped thread lands in the same
+// sidebar group (migration v76). The fork carries no pin, so the
+// "one pin per visible row" CHECK holds by construction.
+//
 // Pure: this only builds the row. The caller persists it (CreateThread)
 // and pairs it with the side-effecting clone steps.
 func BuildForkedThread(source Thread) Thread {
@@ -47,6 +51,7 @@ func BuildForkedThread(source Thread) Thread {
 		ContextWindow:      source.ContextWindow,
 		RuntimeMode:        source.RuntimeMode,
 		LastTokenUsage:     source.LastTokenUsage,
+		GroupID:            source.GroupID,
 		ForkedFromThreadID: source.ID,
 		CreatedAt:          now,
 		UpdatedAt:          now,

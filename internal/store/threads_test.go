@@ -2856,6 +2856,7 @@ var threadColumnsNotWrittenByUpdateThread = map[string]string{
 	"history_rev":              "the replica-invalidation counter (v55), maintained by the items triggers and bumpHistoryRevTx — a Go-side whole-row write would rewind it",
 	"history_epoch":            "the replica-invalidation epoch (v55), maintained by the same triggers",
 	"history_bulk_load":        "a transaction-private flag ApplyImportBatch and DeleteThread raise to suppress the per-row triggers; it is never visible outside their transaction",
+	"group_id":                 "sidebar group membership (v76), owned by SetThreadGroup — the one writer of the column; a whole-row write from a stale struct could move a thread back into a group the user just left, or resurrect one that was deleted",
 	"live_todo":                "the provider's live todo list (v65), owned by SetThreadLiveTodo / ClearThreadLiveTodo; a rename must not drop a list the user is still working through",
 }
 

@@ -55,6 +55,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "CreateProposedPlanComment", ID: 4246792665},            // main.App.CreateProposedPlanComment
 	{Name: "CreateThread", ID: 2579322833},                         // main.App.CreateThread
 	{Name: "CreateThreadFromPR", ID: 1716017387},                   // main.App.CreateThreadFromPR
+	{Name: "CreateThreadGroup", ID: 1478438024},                    // main.App.CreateThreadGroup
 	{Name: "DeleteAttachment", ID: 2428457759},                     // main.App.DeleteAttachment
 	{Name: "DeleteDiffReviewComment", ID: 1303317790},              // main.App.DeleteDiffReviewComment
 	{Name: "DeleteDiscussion", ID: 302062730},                      // main.App.DeleteDiscussion
@@ -64,6 +65,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteProviderCustomEnvVar", ID: 784096448},            // main.App.DeleteProviderCustomEnvVar
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297},                 // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974},                         // main.App.DeleteThread
+	{Name: "DeleteThreadGroup", ID: 4104302889},                    // main.App.DeleteThreadGroup
 	{Name: "DeleteUIState", ID: 1186757769},                        // main.App.DeleteUIState
 	{Name: "DownloadUpdate", ID: 115027584},                        // main.App.DownloadUpdate
 	{Name: "ForkThread", ID: 4063914461},                           // main.App.ForkThread
@@ -182,6 +184,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListSubagentDescendants", ID: 1299118478},              // main.App.ListSubagentDescendants
 	{Name: "ListTerminals", ID: 2445206506},                        // main.App.ListTerminals
 	{Name: "ListThreadEditDiffs", ID: 2243533007},                  // main.App.ListThreadEditDiffs
+	{Name: "ListThreadGroups", ID: 2176447381},                     // main.App.ListThreadGroups
 	{Name: "ListThreadMcpServers", ID: 245278513},                  // main.App.ListThreadMcpServers
 	{Name: "ListThreadProposedPlans", ID: 2485050629},              // main.App.ListThreadProposedPlans
 	{Name: "ListThreadSliceAround", ID: 4176102096},                // main.App.ListThreadSliceAround
@@ -198,6 +201,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "OpenInEditor", ID: 3994295523},                         // main.App.OpenInEditor
 	{Name: "OpenTerminal", ID: 2247958725},                         // main.App.OpenTerminal
 	{Name: "PinThread", ID: 1748405812},                            // main.App.PinThread
+	{Name: "PinThreadGroup", ID: 842795367},                        // main.App.PinThreadGroup
 	{Name: "PostChannelMessage", ID: 1315440605},                   // main.App.PostChannelMessage
 	{Name: "PrepareThreadWorktree", ID: 2870364785},                // main.App.PrepareThreadWorktree
 	{Name: "ProbeClaudeAccount", ID: 1313986574},                   // main.App.ProbeClaudeAccount
@@ -225,6 +229,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RemoveProviderAccount", ID: 684418419},                 // main.App.RemoveProviderAccount
 	{Name: "RenameProject", ID: 3728890856},                        // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435},                          // main.App.RenameThread
+	{Name: "RenameThreadGroup", ID: 723690026},                     // main.App.RenameThreadGroup
 	{Name: "ReplyToPRThread", ID: 446243420},                       // main.App.ReplyToPRThread
 	{Name: "ReportFrontendErrorBatch", ID: 2174329377},             // main.App.ReportFrontendErrorBatch
 	{Name: "ReportUpdateInstallStatus", ID: 314214419},             // main.App.ReportUpdateInstallStatus
@@ -254,6 +259,8 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SetPRUpdatesActive", ID: 1078249699},                   // main.App.SetPRUpdatesActive
 	{Name: "SetProjectWorktreeSetup", ID: 322092470},               // main.App.SetProjectWorktreeSetup
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465},              // main.App.SetProviderCustomEnvVar
+	{Name: "SetThreadGroup", ID: 2514763466},                       // main.App.SetThreadGroup
+	{Name: "SetThreadGroupPinGroup", ID: 4218979176},               // main.App.SetThreadGroupPinGroup
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811},            // main.App.SetThreadMcpServerEnabled
 	{Name: "SetThreadPinGroup", ID: 3112222989},                    // main.App.SetThreadPinGroup
 	{Name: "SetUIState", ID: 1514250938},                           // main.App.SetUIState
@@ -281,6 +288,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UnarchiveProject", ID: 2561521885},                     // main.App.UnarchiveProject
 	{Name: "UnarchiveThread", ID: 3655125512},                      // main.App.UnarchiveThread
 	{Name: "UnpinThread", ID: 3175043037},                          // main.App.UnpinThread
+	{Name: "UnpinThreadGroup", ID: 48743460},                       // main.App.UnpinThreadGroup
 	{Name: "UnsubscribePRUpdates", ID: 2888550814},                 // main.App.UnsubscribePRUpdates
 	{Name: "UpdateContextSettingsProfile", ID: 1472386383},         // main.App.UpdateContextSettingsProfile
 	{Name: "UpdateDiffReviewComment", ID: 2452201652},              // main.App.UpdateDiffReviewComment

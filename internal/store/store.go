@@ -413,6 +413,14 @@ type Thread struct {
 	// pre-v71 pinned rows in the front-burner group without a backfill;
 	// unpinned rows always store NULL. Owned by the narrow pin mutators.
 	PinGroup *int `json:"pinGroup,omitempty"`
+	// GroupID names the sidebar thread group this row belongs to
+	// (migration v76), or "" for a top-level thread. SetThreadGroup is its
+	// ONE writer; a schema CHECK refuses a group and a pin on the same row
+	// ("one pin per visible row"), and the FK's ON DELETE SET NULL is what
+	// makes deleting a group ungroup its members instead of deleting them.
+	// Discussion children follow their root, so the frontend reads it on
+	// top-level nodes only.
+	GroupID string `json:"groupId,omitempty"`
 	// WorktreeSetupState is the durable half of the per-project worktree
 	// setup run this thread's worktree was cut with (migration v47):
 	// "running", "failed", or "" for nothing to say — never ran, succeeded,
