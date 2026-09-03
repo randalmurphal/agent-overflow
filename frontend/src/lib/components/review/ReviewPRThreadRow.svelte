@@ -1,6 +1,7 @@
 <script lang="ts">
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
+  import { relativeTime } from '../../utils/format';
   import type { ReviewThread } from '../../types/models';
   import type { CommentAnchor } from '../../stores/reviewPane.svelte';
   import { isImeComposingEvent } from '../../utils/imeComposition';
@@ -47,6 +48,17 @@
   const location = $derived(anchor.side === 'file'
     ? anchor.filePath
     : `${anchor.filePath}:${anchor.newLine || anchor.oldLine || ''}`);
+  // The file header sits directly above this row, so the full path is
+  // noise: show basename(:line), keep the full location as the tooltip.
+  const shortLocation = $derived.by(() => {
+    const slash = location.lastIndexOf('/');
+    return slash < 0 ? location : location.slice(slash + 1);
+  });
+
+  function commentTime(createdAt: string): string {
+    const ms = Date.parse(createdAt);
+    return Number.isNaN(ms) ? createdAt : relativeTime(ms);
+  }
 
   function onKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
@@ -64,22 +76,29 @@
   }
 </script>
 
-<article class="border-y border-border-subtle bg-surface-0 px-3 py-2 text-xs" data-testid="review-pr-thread">
+<article class="border-y border-border-subtle bg-surface-0/50 px-3 py-2 text-xs" data-testid="review-pr-thread">
   <div class="flex items-center gap-2">
-    <button type="button" class="min-w-0 flex-1 truncate text-left font-mono text-[0.6875rem] text-fg-muted" onclick={onToggle}>
-      {location}
-      {#if thread.isResolved}<span class="ml-1 rounded border border-border-subtle px-1">resolved</span>{/if}
-      {#if thread.isOutdated || orphaned}<span class="ml-1 rounded border border-border-subtle px-1">outdated</span>{/if}
-      {#if collapsed}<span class="ml-2 normal-case">{summary}</span>{/if}
+    <button type="button" class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-left" onclick={onToggle} title={location}>
+      <span class="min-w-0 truncate font-mono text-[0.6875rem] text-fg-muted">{shortLocation}</span>
+      {#if thread.isResolved}<span class="shrink-0 rounded-full bg-success/12 px-1.5 py-px text-[0.625rem] text-success">resolved</span>{/if}
+      {#if thread.isOutdated || orphaned}<span class="shrink-0 rounded-full bg-surface-2 px-1.5 py-px text-[0.625rem] text-fg-muted">outdated</span>{/if}
+      <!-- Basis-0 so the summary only takes leftover width: with basis
+           auto its long text would absorb the row and crush the location
+           span to an ellipsis even when the summary itself truncates. -->
+      {#if collapsed}<span class="min-w-0 flex-1 truncate text-fg-subtle">{summary}</span>{/if}
     </button>
-    <button type="button" class="rounded px-1.5 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2" onclick={() => { replying = !replying; }}>
+    <button
+      type="button"
+      class="shrink-0 rounded-[var(--radius-control)] border border-border-subtle px-2 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg"
+      onclick={() => { replying = !replying; }}
+    >
       Reply
     </button>
     {#if onSendToAgent}
       {@const sendToAgent = onSendToAgent}
       <button
         type="button"
-        class="rounded px-1.5 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 disabled:opacity-45"
+        class="shrink-0 rounded-[var(--radius-control)] border border-border-subtle px-2 py-0.5 text-[0.6875rem] text-fg-muted hover:bg-surface-2 hover:text-fg disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
         disabled={isTurnActive}
         title={isTurnActive ? 'Agent turn is active' : 'Send to agent'}
         onclick={() => { void sendToAgent(); }}
@@ -92,8 +111,11 @@
   {#if !collapsed}
     <div class="mt-2 space-y-2">
       {#each thread.comments as comment (`${comment.databaseID}:${comment.createdAt}`)}
-        <div class="rounded border border-border-subtle bg-surface-1 px-2 py-1.5">
-          <div class="mb-1 text-[0.6875rem] text-fg-muted">{comment.authorLogin} · {comment.createdAt}</div>
+        <div class="rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 px-2.5 py-2">
+          <div class="mb-1 flex items-baseline gap-1.5 text-[0.6875rem]">
+            <span class="font-medium text-fg">{comment.authorLogin}</span>
+            <span class="text-fg-subtle">{commentTime(comment.createdAt)}</span>
+          </div>
           <ChatMarkdown source={comment.body} pathRefs={EMPTY_PATH_REFS} />
         </div>
       {/each}
@@ -102,7 +124,7 @@
 
   {#if replying}
     <textarea
-      class="mt-2 w-full resize-none rounded border border-border-subtle bg-surface-1 px-2 py-1.5 text-xs text-fg"
+      class="mt-2 w-full resize-none rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-1.5 text-xs text-fg focus:border-accent/60 focus:outline-none"
       rows="3"
       value={body}
       oninput={(event) => onBodyChange(event.currentTarget.value)}
@@ -112,7 +134,7 @@
     <div class="mt-2 flex justify-end">
       <button
         type="button"
-        class="rounded bg-accent px-2 py-1 text-[0.6875rem] font-medium text-accent-fg disabled:opacity-45"
+        class="rounded-[var(--radius-control)] bg-accent px-2 py-1 text-[0.6875rem] font-medium text-accent-fg disabled:opacity-45"
         disabled={sending || body.trim() === ''}
         onclick={() => { void onSendReply(); }}
       >

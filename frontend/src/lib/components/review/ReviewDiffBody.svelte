@@ -399,9 +399,10 @@
 
 <div class="relative h-full min-h-0 min-w-0 flex-1" data-testid="review-diff-body">
   {#if stickyFile}
+    <!-- left/right 8px match the row slabs' mx-2 inset. -->
     <div
-      class="absolute left-0 top-0 z-10 shadow-sheet"
-      style:right="{scrollbarInset}px"
+      class="absolute left-2 top-0 z-10 shadow-sheet"
+      style:right="{scrollbarInset + 8}px"
       data-testid="review-sticky-header"
     >
       <ReviewFileHeaderRow
@@ -449,10 +450,11 @@
               first={row.fileIndex === 0}
             />
           {:else if row.kind === 'surface-end'}
-            <!-- Closing hairline for the last file's slab (exact height:
-                 REVIEW_SURFACE_END_PX). -->
+            <!-- Closing cap for the last file's slab (exact height:
+                 REVIEW_SURFACE_END_PX; box-border keeps the border
+                 inside it). -->
             <div style:height="{REVIEW_SURFACE_END_PX}px">
-              <div class="h-px bg-border/60"></div>
+              <div class="mx-2 h-full rounded-b-[var(--radius-control)] border-x border-b border-border-subtle bg-surface-1"></div>
             </div>
           {:else if row.kind === 'line-block'}
             <ReviewLineBlockRow
@@ -469,17 +471,18 @@
               {onExpandGap}
             />
           {:else if row.kind === 'draft-editor'}
-            <!-- bg-surface-1 keeps the file slab continuous behind the
-                 inserted rows (the page behind is darker surface-0). -->
-            <div class="bg-surface-1">
+            <!-- mx-2 + border-x + bg-surface-1 keep the file slab
+                 continuous behind the inserted rows (the page behind is
+                 darker surface-0). -->
+            <div class="mx-2 border-x border-border-subtle bg-surface-1">
               {@render draftEditor?.(row.anchor)}
             </div>
           {:else if row.kind === 'comment-thread'}
-            <div class="bg-surface-1 transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
+            <div class="mx-2 border-x border-border-subtle bg-surface-1 transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
               {@render commentThread?.(row.threadKey, row.anchor)}
             </div>
           {:else}
-            <div class="bg-surface-1 transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
+            <div class="mx-2 border-x border-border-subtle bg-surface-1 transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
               {@render prThread?.(row.thread, row.anchor, row.collapsed, row.orphaned)}
             </div>
           {/if}

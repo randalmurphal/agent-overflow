@@ -12,9 +12,9 @@ export const REVIEW_LINE_HEIGHT_PX = 20;
 // The file-header row paints the between-files separation gap INSIDE its
 // exact height (gap band + header bar), so the estimate table stays
 // truthful: header row = GAP + BAR. The gap band also paints the
-// PREVIOUS file's closing hairline at its top edge (files render as
-// slabs on the darker page background). The sticky overlay renders the
-// bar alone.
+// PREVIOUS file's closing cap (rounded bottom border) at its top edge
+// (files render as inset card slabs on the darker page background). The
+// sticky overlay renders the bar alone.
 export const REVIEW_FILE_GAP_PX = 24;
 export const REVIEW_FILE_HEADER_BAR_PX = 36;
 export const REVIEW_FILE_HEADER_PX = REVIEW_FILE_GAP_PX + REVIEW_FILE_HEADER_BAR_PX;

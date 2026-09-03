@@ -14,7 +14,7 @@ export const SETTINGS_DEFAULTS = {
   monoFont: "geist",
   fontSize: 13,
   recentWorkspaces: [],
-  diffWordWrap: false,
+  diffWordWrap: true,
   collapseDiffPreviews: true,
   streamingEnabled: true,
   lowPowerMode: false,

@@ -91,10 +91,13 @@ read tail-first.
   painted INSIDE the header row (`REVIEW_FILE_GAP_PX` band +
   `REVIEW_FILE_HEADER_BAR_PX` bar = `REVIEW_FILE_HEADER_PX`); the sticky
   overlay renders the bar alone (`overlay` prop) and appears only once
-  the BAR (not the gap) passes the viewport top. The last file's slab
-  closes with an exact-height `surface-end` row (`REVIEW_SURFACE_END_PX`
-  hairline). Hunk-gap bands are ordinary display rows inside line blocks
-  (one line tall, no borders). Same exactness rules.
+  the BAR (not the gap) passes the viewport top. Files render as inset
+  card slabs (`mx-2` + `border-x` on every row of a file, horizontal
+  only — never a vertical border on an exact row); each slab's rounded
+  bottom cap is painted by the NEXT header's gap band, and the last
+  file's by the exact-height `surface-end` row (`REVIEW_SURFACE_END_PX`).
+  Hunk-gap bands are ordinary display rows inside line blocks (one line
+  tall, no borders). Same exactness rules.
 - **Hunk-gap expansion**: `buildPatchDisplayRows` emits `gap` rows
   (leading/between/trailing, new-side coordinates) for the unchanged
   runs hidden between hunks; conflict pseudo-files suppress them (their
