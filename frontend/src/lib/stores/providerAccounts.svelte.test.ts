@@ -37,7 +37,7 @@ import {
 } from './rateLimitsInfo.svelte';
 import { getToasts, removeToast } from './toast.svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { setPageGrantsFromBootstrap } from '../transport/scopes';
+import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/scopes';
 import { account, deferred } from '../../test/helpers/providerAccounts';
 import type { ManagedProviderAccount } from './bindings';
 import { ProviderLoginMethod, ProviderLoginPhase, ProviderLoginState } from './bindings';
@@ -58,6 +58,51 @@ afterEach(() => {
   resetProviderAccounts();
   resetAccountInfo();
   resetRateLimits();
+});
+
+// The startup hydrate and the transport-gap recovery both call into this
+// store OUTSIDE a reactive context, before the WS client has fetched the
+// bootstrap manifest that answers this page's locality. A `hasScope` read
+// then answers a placeholder that nothing revisits, and an admin page settles
+// forever into "not admin" — no accounts, no rejoined sign-in. `scopes.ts`
+// throws on such a read in test mode, so "does not throw" IS the assertion,
+// paired with "issues nothing until the manifest lands, then does".
+// Regression: harness-passkey-lifecycle + harness-remote-device-lifecycle
+// caught this on real pages on 2026-09-03.
+describe('reads its admin scope only after the bootstrap manifest resolves', () => {
+  afterEach(() => {
+    setPageGrantsFromBootstrap(false);
+  });
+
+  it('loadProviderAccounts waits for the manifest, then lists once granted', async () => {
+    __resetScopesForTest();
+    const list = setBindingMock('ListProviderAccounts', async () => []);
+    let pending: Promise<void>;
+    expect(() => {
+      pending = loadProviderAccounts();
+    }, 'the placeholder read must not throw — it must wait').not.toThrow();
+    await Promise.resolve();
+    expect(list, 'nothing may be listed before the manifest answers').not.toHaveBeenCalled();
+
+    setPageGrantsFromBootstrap(false); // the manifest lands: on host, so admin
+    await pending!;
+    expect(list, 'the grant is real, so the listing runs once it is known').toHaveBeenCalledTimes(1);
+  });
+
+  it('hydrateProviderLogins waits for the manifest, then reads state once granted', async () => {
+    __resetScopesForTest();
+    const state = setBindingMock('GetProviderLoginState', async () => null);
+    let pending: Promise<void>;
+    expect(() => {
+      pending = hydrateProviderLogins();
+    }, 'the placeholder read must not throw — it must wait').not.toThrow();
+    await Promise.resolve();
+    expect(state, 'no login state may be read before the manifest answers').not.toHaveBeenCalled();
+
+    setPageGrantsFromBootstrap(false); // the manifest lands: on host, so admin
+    await pending!;
+    expect(state, 'an admin page rejoins its live sign-in once the grant is known').toHaveBeenCalled();
+  });
 });
 
 describe('loadProviderAccounts', () => {

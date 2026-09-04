@@ -46,7 +46,7 @@ import { clearProviderRateLimits, setProviderRateLimits } from './rateLimitsInfo
 import { addToast } from './toast.svelte';
 import { recheckProviderAccount } from '../providers/actions';
 import { getProviderDefinition, PROVIDER_SETTINGS_ORDER } from '../providers/catalog';
-import { hasScope } from '../transport/scopes';
+import { hasScope, pageGrantsResolved } from '../transport/scopes';
 import { PROVIDER_IDS, type ProviderID } from '../types/providers';
 import { userFacingError } from '../utils/userFacingError';
 
@@ -188,15 +188,21 @@ export function providerAccountActionLabel(account: ManagedProviderAccount): str
  * previous listing in place, because a transient RPC failure is not evidence
  * that the user's accounts went away.
  */
-export function loadProviderAccounts(): Promise<void> {
+export async function loadProviderAccounts(): Promise<void> {
+  // This runs unprompted at startup (eventsProvider's hydrate) and on
+  // transport-gap recovery — OUTSIDE a reactive context, before the bootstrap
+  // manifest has answered this page's locality. A `hasScope` read now would
+  // answer the placeholder and never revisit it, settling a page that is in
+  // fact admin into "loaded, nothing saved" for its whole life
+  // (transport/AGENTS.md § scopes.ts). Wait for the answer first.
+  await pageGrantsResolved();
   // The provider-account surface is billing identity, which `access:admin`
-  // covers. Without the grant the listing call can only be refused — and this
-  // one runs unprompted at startup (eventsProvider's hydrate) and on
-  // transport-gap recovery, where the refusal would surface as an unexplained
-  // error toast. Settle into "loaded, nothing saved" instead of asking.
+  // covers. Without the grant the listing call can only be refused, and the
+  // refusal would surface as an unexplained error toast; settle into
+  // "loaded, nothing saved" instead of asking.
   if (!hasScope('access:admin')) {
     loading = false;
-    return Promise.resolve();
+    return;
   }
   return pendingLoad ?? startLoad();
 }
@@ -489,6 +495,10 @@ function adoptProviderLogin(provider: ProviderID, state: ProviderLoginState): vo
  * long afterwards must not open a panel about a sign-in nobody is watching.
  */
 export async function hydrateProviderLogins(): Promise<void> {
+  // Mount and transport-gap recovery both reach here before grants resolve;
+  // wait so an admin page is not read as unprivileged and left never
+  // rejoining a live sign-in (transport/AGENTS.md § scopes.ts).
+  await pageGrantsResolved();
   if (!hasScope('access:admin')) return;
   await Promise.all(
     ACCOUNT_PROVIDERS.map(async (provider) => {
