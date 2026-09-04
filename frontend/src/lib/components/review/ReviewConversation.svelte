@@ -1,25 +1,24 @@
 <script lang="ts">
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
+  import ReviewConversationCommits from './ReviewConversationCommits.svelte';
   import ReviewConversationThread from './ReviewConversationThread.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import { relativeTime } from '../../utils/format';
   import { visibleBody } from '../../utils/reviewComments';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
-  import type { ReviewVerdict } from '../../types/models';
 
-  // The Conversation section's body: review verdict summaries first, then
-  // EVERY thread (file-anchored and PR-level) in the store's frozen triage
-  // order — unresolved first, settled and outdated after. The section
-  // never reorders under the reader; new arrivals wait behind the header's
-  // "N new" chip.
+  // The Conversation section's body: ONE chronological feed (newest
+  // first) interleaving thread cards, review verdicts, and commit pushes
+  // — GitLab's overview timeline, compact. The store owns the feed and
+  // freezes its order while the section is open; new arrivals wait
+  // behind the header's "N new" chip.
 
   interface Props {
     review: ReviewPaneState;
-    reviews: readonly ReviewVerdict[];
     canSendToAgent: boolean;
   }
 
-  let { review, reviews, canSendToAgent }: Props = $props();
+  let { review, canSendToAgent }: Props = $props();
 
   let rootEl: HTMLElement | undefined = $state();
 
@@ -58,37 +57,39 @@
 </script>
 
 <div bind:this={rootEl} class="space-y-1.5 px-2 py-2 text-xs" data-testid="review-conversation">
-  {#each reviews as verdict (`${verdict.authorLogin}:${verdict.submittedAt}`)}
-    {@const body = visibleBody(verdict.body)}
-    <article
-      class="rounded-[var(--radius-control)] border border-border-subtle bg-surface-1/50 px-2.5 py-1.5"
-      data-testid="review-conversation-verdict"
-    >
-      <div class="flex items-center gap-1.5">
-        <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {verdictPillClass(verdict.state)}">{verdictLabel(verdict.state)}</span>
-        <span class="min-w-0 truncate text-[0.6875rem] font-medium text-fg">{verdict.authorLogin}</span>
-        {#if verdictTime(verdict.submittedAt)}
-          <span class="shrink-0 text-[0.625rem] text-fg-subtle">{verdictTime(verdict.submittedAt)}</span>
-        {/if}
-      </div>
-      {#if body !== ''}
-        <div class="mt-1.5">
-          <ChatMarkdown source={body} pathRefs={EMPTY_PATH_REFS} embeddedHtml />
+  {#each review.conversationFeed as entry (entry.id)}
+    {#if entry.kind === 'thread'}
+      <ReviewConversationThread
+        {review}
+        thread={entry.thread}
+        {canSendToAgent}
+        inDiff={entry.thread.path !== '' && diffPaths.has(entry.thread.path)}
+      />
+    {:else if entry.kind === 'verdict'}
+      {@const body = visibleBody(entry.verdict.body)}
+      <article
+        class="rounded-[var(--radius-control)] border border-border-subtle bg-surface-1/50 px-2.5 py-1.5"
+        data-testid="review-conversation-verdict"
+      >
+        <div class="flex items-center gap-1.5">
+          <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {verdictPillClass(entry.verdict.state)}">{verdictLabel(entry.verdict.state)}</span>
+          <span class="max-w-36 truncate text-[0.6875rem] font-medium text-fg" title={entry.verdict.authorLogin}>{entry.verdict.authorLogin}</span>
+          {#if verdictTime(entry.verdict.submittedAt)}
+            <span class="shrink-0 text-[0.625rem] text-fg-subtle">{verdictTime(entry.verdict.submittedAt)}</span>
+          {/if}
         </div>
-      {/if}
-    </article>
+        {#if body !== ''}
+          <div class="mt-1.5">
+            <ChatMarkdown source={body} pathRefs={EMPTY_PATH_REFS} embeddedHtml />
+          </div>
+        {/if}
+      </article>
+    {:else}
+      <ReviewConversationCommits {review} author={entry.author} commits={entry.commits} />
+    {/if}
   {/each}
 
-  {#each review.conversationThreads as thread (thread.id)}
-    <ReviewConversationThread
-      {review}
-      {thread}
-      {canSendToAgent}
-      inDiff={thread.path !== '' && diffPaths.has(thread.path)}
-    />
-  {/each}
-
-  {#if reviews.length === 0 && review.conversationThreads.length === 0}
+  {#if review.conversationFeed.length === 0}
     <div class="px-1 py-1 text-fg-muted">No conversation yet.</div>
   {/if}
 </div>

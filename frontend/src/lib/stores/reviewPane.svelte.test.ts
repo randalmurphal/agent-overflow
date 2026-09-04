@@ -11,6 +11,7 @@ import {
   disposeReviewStateForPane,
   openReviewCompanion,
   reviewStateForPane,
+  type ConversationFeedItem,
   type ReviewSubject,
 } from './reviewPane.svelte';
 import {
@@ -2358,6 +2359,11 @@ describe('reviewPane store — conversation section and resolve', () => {
     return state;
   }
 
+  function feedThreadIds(state: { conversationFeed: readonly ConversationFeedItem[] }): string[] {
+    return state.conversationFeed.flatMap((entry) =>
+      (entry.kind === 'thread' ? [entry.thread.id] : []));
+  }
+
   it('freezes ordering while open: arrivals wait behind the new chip, reveal folds them in', async () => {
     const resolvedEarly = convThread('t-resolved', {
       isResolved: true,
@@ -2369,8 +2375,9 @@ describe('reviewPane store — conversation section and resolve', () => {
     const state = await statePRWithThreads([resolvedEarly, openLater]);
 
     state.setConversationOpen(true);
-    // Unresolved leads despite being chronologically later.
-    expect(state.conversationThreads.map((thread) => thread.id)).toEqual(['t-open', 't-resolved']);
+    // Chronological, newest first; replies unfold by default only on the
+    // unresolved thread.
+    expect(feedThreadIds(state)).toEqual(['t-open', 't-resolved']);
     expect(state.conversationThreadExpanded('t-open')).toBe(true);
     expect(state.conversationThreadExpanded('t-resolved')).toBe(false);
 
@@ -2381,24 +2388,60 @@ describe('reviewPane store — conversation section and resolve', () => {
       threads: [resolvedEarly, openLater, convThread('t-arrived')],
       headSHA: 'sha-a',
     });
-    expect(state.conversationThreads.map((thread) => thread.id)).toEqual(['t-open', 't-resolved']);
+    expect(feedThreadIds(state)).toEqual(['t-open', 't-resolved']);
     expect(state.conversationNewCount).toBe(1);
 
     state.revealNewConversationThreads();
     expect(state.conversationNewCount).toBe(0);
-    expect(state.conversationThreads.map((thread) => thread.id)).toEqual([
-      't-arrived', 't-open', 't-resolved',
-    ]);
+    // The arrival interleaves by its own time (2026-01-01, tie broken by
+    // id) rather than jumping the whole feed.
+    expect(feedThreadIds(state)).toEqual(['t-open', 't-arrived', 't-resolved']);
 
     // Closing forgets the frozen view; leaving pr scope closes it.
     state.setConversationOpen(false);
-    expect(state.conversationThreads).toEqual([]);
+    expect(state.conversationFeed).toEqual([]);
     state.setConversationOpen(true);
     await state.setScope('workspace');
     expect(state.conversationOpen).toBe(false);
   });
 
-  it('a remote resolve never collapses a card the reader has open', async () => {
+  it('interleaves verdicts and commit pushes chronologically, newest first', async () => {
+    installPRMocks();
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1',
+      prKey: PR_KEY,
+      detail: prDetailStub({
+        latestReviews: [{
+          authorLogin: 'rev', state: 'APPROVED',
+          submittedAt: '2026-01-03T00:00:00Z', body: '', commitSHA: '',
+        }],
+      }),
+      threads: [convThread('t-1', {
+        comments: [{ authorLogin: 'alice', body: 'hm', createdAt: '2026-01-02T00:00:00Z', databaseID: 1 }],
+      })],
+      headSHA: 'sha-a',
+    }));
+    // Newest first, one author: one contiguous push row, timed by its
+    // newest commit and keyed by its oldest.
+    setBindingMock('ListPRCommits', async () => [
+      { sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'second', author: 'ann', authoredAt: Date.parse('2026-01-04T00:00:00Z') },
+      { sha: 'a'.repeat(40), shortSha: 'aaaaaaa', subject: 'first', author: 'ann', authoredAt: Date.parse('2026-01-01T12:00:00Z') },
+    ]);
+    const state = reviewStateForPane('pane-1', subjectFor('thread-1', prThreadStub()));
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await waitLoaded(state);
+
+    state.setConversationOpen(true);
+    expect(state.conversationFeed.map((entry) => entry.kind)).toEqual([
+      'commits', 'verdict', 'thread',
+    ]);
+    const push = state.conversationFeed[0];
+    expect(push?.kind === 'commits' && push.commits.map((commit) => commit.shortSha))
+      .toEqual(['bbbbbbb', 'aaaaaaa']);
+  });
+
+  it('a remote resolve never folds replies the reader has open', async () => {
     const open = convThread('t-1');
     const state = await statePRWithThreads([open]);
     state.setConversationOpen(true);
@@ -2410,8 +2453,9 @@ describe('reviewPane store — conversation section and resolve', () => {
       threads: [{ ...open, isResolved: true }],
       headSHA: 'sha-a',
     });
-    // Content converges (the pill flips), position and expansion hold.
-    expect(state.conversationThreads[0]?.isResolved).toBe(true);
+    // Content converges (the pill flips), position and the fold hold.
+    const first = state.conversationFeed[0];
+    expect(first?.kind === 'thread' && first.thread.isResolved).toBe(true);
     expect(state.conversationThreadExpanded('t-1')).toBe(true);
 
     // ...even across a reveal (new arrivals fold in, open cards stay open).

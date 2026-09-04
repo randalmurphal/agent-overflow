@@ -166,11 +166,16 @@ and anti-changes that live only here:
   (owner preference, stated for the comments overhaul; applies to new
   review chrome).
 - PR comments live in the header's collapsible Conversation section
-  beside Description, not a separate view or tab; all threads, verdicts
-  first, unresolved leading. Reading is protected from updates: ordering
-  freezes while the section is open, arrivals wait behind an "N new"
-  chip, and a remote resolve never collapses or moves an open card
-  ("nothing worse than GitLab"). Mechanism:
+  beside Description, not a separate view or tab. The section is one
+  chronological feed (newest first) of thread cards, review verdicts and
+  commit pushes — mirror the forge's proven overview presentation, no
+  invented triage layouts (ruling 2026-09-04, superseding the
+  unresolved-first ordering). A top-level comment is NEVER truncated or
+  clamped; only settled threads' replies may fold. Reading is protected
+  from updates: ordering freezes while the section is open, arrivals
+  wait behind an "N new" chip, and a remote resolve never moves an open
+  card ("nothing worse than GitLab"). Both header sections are
+  user-resizable (bottom drag handle, remembered height). Mechanism:
   `frontend/src/lib/components/review/AGENTS.md`.
 
 ## Miscellany

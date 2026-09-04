@@ -74,6 +74,7 @@ import type {
   DiffReviewScope,
   PRDetail,
   ReviewThread,
+  ReviewVerdict,
   SubmitPRReviewResult,
   Thread,
 } from '../types/models';
@@ -108,6 +109,15 @@ import { sortFilesTreeOrder } from '../utils/reviewTree';
 import type { CommentListItem } from '../utils/reviewComments';
 
 export type ReviewScope = DiffReviewScope;
+
+/** One row of the Conversation section's chronological feed: a review
+ * thread's card, a verdict one-liner, or one contiguous run of pushed
+ * commits by one author. Ids are prefixed per kind (`t:`/`v:`/`c:`) so
+ * the frozen-order capture can hold all three still at once. */
+export type ConversationFeedItem =
+  | { kind: 'thread'; id: string; thread: ReviewThread }
+  | { kind: 'verdict'; id: string; verdict: ReviewVerdict }
+  | { kind: 'commits'; id: string; author: string; commits: readonly BranchCommit[] };
 
 export interface ReviewPaneState {
   /** Subject this state was created for — the registry's staleness check.
@@ -242,23 +252,26 @@ export interface ReviewPaneState {
   /** Jump the diff body to a thread's row (conversation → diff). */
   jumpToDiffThread(thread: ReviewThread): void;
   // ------------------------------------------------------------------
-  // The PR header's Conversation section. Ordering is FROZEN while the
-  // section is open: remote updates never reorder or hide what the reader
-  // is looking at. Threads that arrive after the capture count into
-  // `conversationNewCount` and join only on reveal.
+  // The PR header's Conversation section: one chronological feed (newest
+  // first) of thread cards, review verdicts, and commit pushes. Ordering
+  // is FROZEN while the section is open: remote updates never reorder or
+  // hide what the reader is looking at. Entries that arrive after the
+  // capture count into `conversationNewCount` and join only on reveal.
   // ------------------------------------------------------------------
   readonly conversationOpen: boolean;
-  /** All threads in the frozen triage order (unresolved first, then
-   * chronological). Empty while the section is closed. */
-  readonly conversationThreads: readonly ReviewThread[];
-  /** Threads that arrived after the frozen order was captured. */
+  /** The whole feed — thread cards, verdicts, commit pushes — in the
+   * frozen chronological order (newest first). Empty while closed. */
+  readonly conversationFeed: readonly ConversationFeedItem[];
+  /** Feed entries that arrived after the frozen order was captured. */
   readonly conversationNewCount: number;
   /** Thread the section should scroll to; consumed by the section. */
   readonly pendingConversationThreadId: string | null;
   setConversationOpen(open: boolean): void;
-  /** Fold the arrived-since-capture threads in (fresh triage order;
-   * threads already expanded stay expanded). */
+  /** Fold the arrived-since-capture entries in (fresh chronological
+   * order; reply folds already open stay open). */
   revealNewConversationThreads(): void;
+  /** Whether a thread card's REPLIES are unfolded. The card's first
+   * comment is always visible; settled threads fold replies by default. */
   conversationThreadExpanded(threadId: string): boolean;
   toggleConversationThread(threadId: string): void;
   /** Open the conversation section scrolled to one thread (inline strip
@@ -301,6 +314,7 @@ const statesBySourcePane = new Map<string, ReviewPaneState>();
 // the reader on a prThreads IDENTITY change, so a fresh [] per read would
 // look like the review threads moved on every keystroke.
 const EMPTY_PR_THREADS: readonly ReviewThread[] = Object.freeze([]);
+const EMPTY_CONVERSATION_FEED: readonly ConversationFeedItem[] = Object.freeze([]);
 
 // Same stability rule for the comment list a workspace-only pane reads.
 const EMPTY_COMMENTS: readonly DiffReviewComment[] = Object.freeze([]);
@@ -539,15 +553,59 @@ function createReviewPaneState(
     const threads = prSnapshot?.threads ?? EMPTY_PR_THREADS;
     return prEntityKey ? overriddenPRThreads(prEntityKey, threads) : threads;
   });
-  // The frozen conversation order projected onto the live threads: content
-  // updates (new replies, resolve flips) flow through, position does not.
-  const conversationThreads = $derived.by<readonly ReviewThread[]>(() => {
-    if (!conversationOpen || conversationOrder.length === 0) return EMPTY_PR_THREADS;
-    const byId = new Map(prThreads.map((thread) => [thread.id, thread]));
-    const out: ReviewThread[] = [];
+  // The live feed universe: every thread, verdict, and commit push the
+  // section could show, chronological newest first. The frozen order is
+  // captured FROM this and projected back ONTO it, so content updates
+  // (new replies, resolve flips) flow through while position holds.
+  const conversationFeedSource = $derived.by<readonly { timeMs: number; item: ConversationFeedItem }[]>(() => {
+    const out: { timeMs: number; item: ConversationFeedItem }[] = [];
+    for (const thread of prThreads) {
+      const parsed = Date.parse(thread.comments[0]?.createdAt ?? '');
+      out.push({
+        timeMs: Number.isFinite(parsed) ? parsed : 0,
+        item: { kind: 'thread', id: `t:${thread.id}`, thread },
+      });
+    }
+    for (const verdict of prSnapshot?.detail?.latestReviews ?? []) {
+      const parsed = Date.parse(verdict.submittedAt);
+      out.push({
+        timeMs: Number.isFinite(parsed) ? parsed : 0,
+        item: { kind: 'verdict', id: `v:${verdict.authorLogin}:${verdict.submittedAt}`, verdict },
+      });
+    }
+    // `commits` arrives newest first; one feed row per contiguous run by
+    // one author, keyed by the run's OLDEST sha so a later push on top
+    // starts a new row instead of re-identifying this one.
+    let group: BranchCommit[] = [];
+    const flush = () => {
+      if (group.length === 0) return;
+      out.push({
+        timeMs: group[0].authoredAt,
+        item: {
+          kind: 'commits',
+          id: `c:${group[group.length - 1].sha}`,
+          author: group[0].author,
+          commits: group,
+        },
+      });
+      group = [];
+    };
+    for (const commit of commits) {
+      if (group.length > 0 && group[0].author !== commit.author) flush();
+      group.push(commit);
+    }
+    flush();
+    out.sort((a, b) => b.timeMs - a.timeMs || a.item.id.localeCompare(b.item.id));
+    return out;
+  });
+  // The frozen order projected onto the live universe.
+  const conversationFeed = $derived.by<readonly ConversationFeedItem[]>(() => {
+    if (!conversationOpen || conversationOrder.length === 0) return EMPTY_CONVERSATION_FEED;
+    const byId = new Map(conversationFeedSource.map((entry) => [entry.item.id, entry.item]));
+    const out: ConversationFeedItem[] = [];
     for (const id of conversationOrder) {
-      const thread = byId.get(id);
-      if (thread) out.push(thread);
+      const item = byId.get(id);
+      if (item) out.push(item);
     }
     return out;
   });
@@ -555,8 +613,8 @@ function createReviewPaneState(
     if (!conversationOpen) return 0;
     const known = new Set(conversationOrder);
     let count = 0;
-    for (const thread of prThreads) {
-      if (!known.has(thread.id)) count += 1;
+    for (const entry of conversationFeedSource) {
+      if (!known.has(entry.item.id)) count += 1;
     }
     return count;
   });
@@ -1432,32 +1490,25 @@ function createReviewPaneState(
   // Conversation section
   // ------------------------------------------------------------------
 
-  function conversationRank(thread: ReviewThread): number {
-    // Actionable first; flat comments and settled threads read after.
-    return thread.isResolvable && !thread.isResolved && !thread.isOutdated ? 0 : 1;
+  function threadSettled(thread: ReviewThread): boolean {
+    return thread.isResolvable && (thread.isResolved || thread.isOutdated);
   }
 
-  function conversationTime(thread: ReviewThread): number {
-    const parsed = Date.parse(thread.comments[0]?.createdAt ?? '');
-    return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
-  }
-
-  // Captures the triage order and the expanded-by-default set from the
-  // threads in hand. `preserveExpanded` keeps threads that were already
-  // reading as expanded expanded — a reveal must not collapse a thread
-  // that was remotely resolved while the reader had it open.
+  // Captures the feed order (chronological, newest first) and the
+  // replies-unfolded-by-default set from the entries in hand.
+  // `preserveExpanded` keeps folds that were already open open — a reveal
+  // must not fold a thread's replies away because it was remotely
+  // resolved while the reader had them open.
   function captureConversationOrder(preserveExpanded: boolean): void {
-    const sorted = [...prThreads].sort((a, b) =>
-      conversationRank(a) - conversationRank(b)
-      || conversationTime(a) - conversationTime(b)
-      || a.id.localeCompare(b.id));
-    conversationOrder = sorted.map((thread) => thread.id);
+    conversationOrder = conversationFeedSource.map((entry) => entry.item.id);
     const expanded = new Set<string>();
-    for (const thread of sorted) {
-      if (conversationRank(thread) === 0) expanded.add(thread.id);
+    const present = new Set<string>();
+    for (const entry of conversationFeedSource) {
+      if (entry.item.kind !== 'thread') continue;
+      present.add(entry.item.thread.id);
+      if (!threadSettled(entry.item.thread)) expanded.add(entry.item.thread.id);
     }
     if (preserveExpanded) {
-      const present = new Set(conversationOrder);
       for (const id of conversationDefaultExpanded) {
         if (present.has(id)) expanded.add(id);
       }
@@ -1469,8 +1520,8 @@ function createReviewPaneState(
     if (open === conversationOpen) return;
     conversationOpen = open;
     if (open) {
-      // A fresh visit is a fresh triage view: defaults recompute and the
-      // previous visit's manual expand/collapse choices are let go.
+      // A fresh visit is a fresh view: the order and the reply-fold
+      // defaults recompute and the previous visit's manual choices go.
       conversationExpandOverrides.clear();
       captureConversationOrder(false);
     } else {
@@ -1488,7 +1539,7 @@ function createReviewPaneState(
     setConversationOpen(true);
     // The target may still be behind the "N new" chip (it just arrived on
     // a poll); fold the arrivals in so the jump has somewhere to land.
-    if (!conversationOrder.includes(prThreadId)) captureConversationOrder(true);
+    if (!conversationOrder.includes(`t:${prThreadId}`)) captureConversationOrder(true);
     if (!conversationThreadExpanded(prThreadId)) conversationExpandOverrides.set(prThreadId, true);
     pendingConversationThreadId = prThreadId;
   }
@@ -1717,7 +1768,7 @@ function createReviewPaneState(
     get prDetail() { return prSnapshot?.detail ?? null; },
     get prThreads() { return prThreads; },
     get conversationOpen() { return conversationOpen; },
-    get conversationThreads() { return conversationThreads; },
+    get conversationFeed() { return conversationFeed; },
     get conversationNewCount() { return conversationNewCount; },
     get pendingConversationThreadId() { return pendingConversationThreadId; },
     get prHeadSHA() { return loadedPRHeadSHA; },

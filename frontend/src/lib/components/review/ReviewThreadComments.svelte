@@ -25,6 +25,9 @@
     /** False keeps the bodies folded while the composer stays available
      *  (a collapsed strip with a drafted reply). */
     showComments?: boolean;
+    /** True renders replies only — for hosts that already render the
+     *  thread's first comment themselves (the conversation card). */
+    skipFirst?: boolean;
     onBodyChange: (body: string) => void;
     onSendReply: () => Promise<void> | void;
     onCloseReply: () => void;
@@ -37,6 +40,7 @@
     sending,
     replying,
     showComments = true,
+    skipFirst = false,
     onBodyChange,
     onSendReply,
     onCloseReply,
@@ -65,7 +69,7 @@
 
 {#if showComments}
   <div class="space-y-2">
-    {#each thread.comments as comment (`${comment.databaseID}:${comment.createdAt}`)}
+    {#each skipFirst ? thread.comments.slice(1) : thread.comments as comment (`${comment.databaseID}:${comment.createdAt}`)}
       {@const shown = visibleBody(comment.body)}
       {#if shown !== ''}
         <div class="rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 px-2.5 py-2">

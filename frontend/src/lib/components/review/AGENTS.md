@@ -37,14 +37,22 @@ one.
   state badge and base/head refs live in the `ReviewPane` toolbar stats
   area rather than here. It hosts two `ReviewCollapsibleSection`s:
   Description (local open state) and Conversation
-  (`ReviewConversation` + `ReviewConversationThread`), whose open state
-  lives on the review store because its ordering FREEZES while open —
-  captured at open (unresolved first, then chronological), remote
-  arrivals wait behind an "N new" chip, and a remote resolve never
-  collapses or moves a card the reader has open
-  (`conversationThreads` / `captureConversationOrder` in
-  `stores/reviewPane.svelte.ts`). The section body is height-capped so
-  the diff below stays reachable.
+  (`ReviewConversation` + `ReviewConversationThread` +
+  `ReviewConversationCommits`). The Conversation body is ONE
+  chronological feed, newest first, interleaving thread cards, verdict
+  rows and commit-push rows (GitLab's overview timeline, compact); a
+  thread card's first comment always renders IN FULL — never truncated,
+  never behind a click — and what folds is only the REPLIES, default
+  folded on settled (resolved/outdated) threads behind an "N replies"
+  toggle. Its open state lives on the review store because the feed
+  order FREEZES while open — captured at open, remote arrivals wait
+  behind an "N new" chip, and a remote resolve never moves a card or
+  folds replies the reader has open (`conversationFeed` /
+  `captureConversationOrder` in `stores/reviewPane.svelte.ts`). Both
+  section bodies render through `ReviewResizableBody`: a default
+  max-height cap until the user drags the bottom handle, then a
+  remembered pixel height shared per section across panes
+  (`stores/reviewSectionSizes.svelte.ts`).
 - Forge-authored bodies (PR description, review thread comments, verdict
   summaries) render `ChatMarkdown` with `embeddedHtml` — the sanitized
   forge-HTML surface (`markdown/AGENTS.md` § Security boundary) — and

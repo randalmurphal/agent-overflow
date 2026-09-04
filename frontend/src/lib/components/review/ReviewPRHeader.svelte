@@ -5,6 +5,7 @@
   import ReviewCIChips from './ReviewCIChips.svelte';
   import ReviewCollapsibleSection from './ReviewCollapsibleSection.svelte';
   import ReviewConversation from './ReviewConversation.svelte';
+  import ReviewResizableBody from './ReviewResizableBody.svelte';
   import Icon from '../primitives/Icon.svelte';
   import { OpenExternalURL } from '../../stores/bindings';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
@@ -133,9 +134,11 @@
       onToggle={() => { descriptionOpen = !descriptionOpen; }}
       testid="review-pr-description"
     >
-      <div class="max-h-96 overflow-y-auto px-2.5 py-2 text-xs text-fg">
-        <ChatMarkdown source={detail.body} pathRefs={EMPTY_PATH_REFS} embeddedHtml />
-      </div>
+      <ReviewResizableBody section="description" fallbackClass="max-h-96">
+        <div class="px-2.5 py-2 text-xs text-fg">
+          <ChatMarkdown source={detail.body} pathRefs={EMPTY_PATH_REFS} embeddedHtml />
+        </div>
+      </ReviewResizableBody>
     </ReviewCollapsibleSection>
   {/if}
 
@@ -168,14 +171,12 @@
           </button>
         {/if}
       {/snippet}
-      <!-- Capped at roughly half the pane so the diff below stays in
-           reach; the section scrolls internally past that. -->
-      <!-- Capped low enough that the diff stays usable below it on a
-           laptop screen; the section scrolls internally instead. The vh
-           leg only bites on very short viewports. -->
-      <div class="max-h-[min(35vh,20rem)] overflow-y-auto">
-        <ReviewConversation {review} reviews={detail.latestReviews} {canSendToAgent} />
-      </div>
+      <!-- The default cap keeps the diff usable below on a laptop screen
+           (the vh leg only bites on very short viewports); the resize
+           handle replaces it the moment the user drags. -->
+      <ReviewResizableBody section="conversation" fallbackClass="max-h-[min(35vh,20rem)]">
+        <ReviewConversation {review} {canSendToAgent} />
+      </ReviewResizableBody>
     </ReviewCollapsibleSection>
   {/if}
 
