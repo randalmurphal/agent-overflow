@@ -488,6 +488,7 @@ export function createUseStickToBottomController(
     writeScrollTop,
     liveContentActive: liveContentActiveNow,
     prefersReducedMotion: motionReduced,
+    devicePixelRatio: () => window.devicePixelRatio,
     forceNextSpringTickTrace,
     scrollTopUnexplained,
     reportWriteRefusal,

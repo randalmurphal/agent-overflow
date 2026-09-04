@@ -223,10 +223,9 @@ const RESUME_CLAMP_WINDOW_MS = 2000;
 // cruise-until-stop.
 //
 // The tail below the envelope is the spring's own decay, bounded below
-// by the quantized-motion floor. Browser scrollTop writes land on whole
-// CSS pixels, so a sub-pixel tail can otherwise show only 14–55 position
-// changes per second on a high-refresh display. The floor keeps visible
-// position changes at 60Hz or faster without translating the content.
+// by the quantized-motion floor (see SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME):
+// every displayed frame of the tail moves the same whole number of
+// device pixels, all the way to the landing.
 const SPRING_DECEL_ENVELOPE_RATIO = 0.09;
 // Lower cap on the envelope itself (an upper bound never squeezed below
 // this), NOT a forced minimum speed: without it the envelope would
@@ -280,32 +279,127 @@ const SPRING_DECEL_ENVELOPE_MIN_PX_PER_FRAME = 1.6;
 // long the pane has actually been still.
 const SPRING_ACCEL_SLEW_FACTOR_PER_FRAME = 1.1;
 // Where a standstill ramp starts, in px per 60Hz frame. The ramp base
-// is max(this, quantized-motion floor). Both are currently 1.0, so the
-// standstill starts at the same CSS-space rate at every refresh cadence.
+// is max(this, the motion floor's rate), so a standstill never ramps
+// through the sub-floor band the floor exists to skip.
 const SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME = 1;
-// The quantized-motion floor releases inside this remaining distance, letting
-// the spring's natural exponential decay land the glide — a ~3-frame
-// ritardando (the "cradle") instead of constant-speed-then-stop,
-// which read as too firm (2026-07-04 feedback on the 1.2px release).
-const SPRING_QUANTIZED_FLOOR_RELEASE_PX = 3;
 
-// Chromium and WebView2 quantize programmatic scrollTop writes to whole
-// CSS pixels. One CSS pixel per 60Hz-equivalent frame is a continuous
-// 60px/s floor at every refresh rate. Fractional integration plus the
-// rounding-error carry below distributes those pixels over displayed
-// frames without a refresh ladder whose rung changes alter glide speed.
-// Fractional DPR changes the device-pixel displacement pattern, not this
-// CSS-space rate; scroll-dpr.spec.ts pins Chromium's constant hairline raster
-// energy across those alternating physical steps.
+// ===== Whole-pixel motion =====
+// Every engine snaps a scrollTop write to its pixel grid, and which
+// grid is the engine's to choose: desktop Chromium rounds to whole CSS
+// pixels at every DPR (scrollTopQuantization.browser.test.ts pins 1,
+// 1.25, 1.5 and 2), the Android WebView to whole DEVICE pixels (the
+// 2026-09-04 Pixel 9a probe: 1/2.625 CSS px steps, readbacks at 1/32
+// px precision). A model that integrates fractional displacement and
+// lets the engine round it therefore paints an ALTERNATING step
+// pattern whenever its per-frame rate is not a whole number of grid
+// pixels — 1,1,1,2 at DPR 1.25, 1,2,1,2 at 2.625 × 120Hz — and the
+// slow tail is exactly where that is visible. Owner ruling 2026-09-04:
+// no jitter, and if constant motion cannot avoid it the glide stops
+// rather than jitters. So the spring authors whole grid pixels. The
+// grid is WITNESSED, never assumed: device pixels (the finer grid, the
+// one the display paints) until a write off the CSS-pixel grid reads
+// back rounded onto it, which latches CSS pixels for the page's life —
+// on a DPR-2 desktop the first odd device-pixel rung is that write, so
+// at most one tick shows the engine's rounding. Each tick's
+// displacement is snapped to a LADDER of even cadences:
+//
+//   - `n` device pixels a tick from one up to SPRING_STEP_DIFFUSION_MIN_
+//     DEVICE_PX, and below one, one device pixel every `k` ticks — the
+//     nearest rung either way, held through a small hysteresis
+//     (SPRING_STEP_HYSTERESIS_DEVICE_PX) around the previous rung, so a
+//     monotone deceleration steps down 3,2,1 once and never wobbles
+//     2,1,2,1 at a rounding boundary, and a rate under a pixel a tick
+//     shows as a steady cadence rather than the irregular 1,0,1,1,0 mix
+//     error diffusion makes of it. The sub-pixel residue is dropped;
+//     the spring's own feedback absorbs the rate it quantizes away.
+//   - At cruise, where a ±1 on a step of eight or more is invisible,
+//     the residue is CARRIED (error diffusion) so the average rate is
+//     exact at every refresh rate.
+//   - The motion floor is a rung of that ladder (quantizedFloorRung):
+//     `n` device pixels every displayed frame, or one every `k`, the
+//     regular cadence closest in ratio to this reference rate. In the
+//     floor regime the tick advances exactly that, by frame count, so
+//     rAF timestamp jitter can never slip an extra pixel in.
+//   - The floor holds until the cross-target clamp lands the glide.
+//     The former 3px release (a ~3-frame sub-pixel "cradle", 2026-07-04
+//     feedback) is exactly the tail the ruling retired: on the grid it
+//     could only be an irregular one.
+//
+// This is the reference rate the rung is derived from: one CSS pixel per
+// 60Hz-equivalent frame, 60px/s. The rung lands within a factor of
+// ~1.4 of it: exactly 60px/s at DPR 1 and 2 on 60Hz and at DPR 1 on
+// 120/240Hz; ~46px/s (one device pixel per frame) on a 2.625 × 120Hz
+// phone; 72px/s (one per two frames) on a 144Hz DPR-1 panel.
 export const SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME = 1;
+// Hysteresis around the previous ladder rung, in device pixels a tick
+// above one and in ticks a pixel below. Timestamp jitter perturbs a
+// tick's displacement by ~2%, so 0.15 holds every rung below ~7 device
+// pixels per frame steady; above that a ±1 wobble is under 15% of the
+// step and invisible.
+const SPRING_STEP_HYSTERESIS_DEVICE_PX = 0.15;
+// From this many device pixels per tick the write goes back to error
+// diffusion: a ±1 alternation on a step of eight is under an eighth of
+// the step, below what motion at that speed resolves, and the exact
+// average rate it buys is what keeps cruise speed the same at every
+// refresh rate (rounding 13.5 per 120Hz tick to 13 is a 4% cruise).
+const SPRING_STEP_DIFFUSION_MIN_DEVICE_PX = 8;
+// The 60-changes-per-second bound on the rung's cadence is applied with
+// this slack: the EMA of a 120Hz display converges on 8.33ms from either
+// side, and without it one-in-two frames (59.99 changes/s) would be
+// refused for one-in-one (120px/s) on half the ticks.
+const SPRING_FLOOR_CADENCE_SLACK = 0.05;
+// The floor hold releases once the velocity exceeds the rung's rate by
+// this factor: above the ~0.2% the recurrence hovers at near the floor,
+// below one 240Hz tick of the slew ramp (1.1^0.25 ≈ 1.024), so a real
+// extension releases within one or two ticks at any refresh rate.
+const SPRING_FLOOR_RELEASE_FACTOR = 1.02;
 
-// Cadence telemetry: EMA over real tick gaps, bounded to plausible
+// Frame cadence: EMA over real tick gaps, bounded to plausible
 // single-frame intervals so a missed frame or a background stall never
 // reads as a slow display. It persists across chases and re-converges
 // after the window moves to a monitor with a different refresh rate.
+// It is what converts the CSS-space reference rate into device pixels
+// per DISPLAYED frame for the rung (null = assume 60Hz; the first ~10
+// frames of the first chase after load run on that assumption).
 const FRAME_INTERVAL_EMA_ALPHA = 0.15;
 const FRAME_INTERVAL_SAMPLE_MIN_MS = 3;
 const FRAME_INTERVAL_SAMPLE_MAX_MS = 21;
+
+/**
+ * The motion floor as a whole-device-pixel cadence: `pxPerEvent` device
+ * pixels every `framesPerEvent` displayed frames. `frameFraction` is one
+ * displayed frame in 60Hz frames (0.5 at 120Hz). The candidates are the
+ * two regular cadences bracketing the reference rate
+ * (SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME, in device pixels per
+ * displayed frame `reference = dpr · frameFraction`); the closer in
+ * ratio wins, except that the cadence never drops below 60 position
+ * changes per second (`framesPerEvent ≤ 1 / frameFraction`), the
+ * continuity the CSS-space floor was always for. Exported for its tests.
+ */
+export function quantizedFloorRung(
+  devicePixelRatio: number,
+  frameFraction: number,
+): { pxPerEvent: number; framesPerEvent: number } {
+  const reference = devicePixelRatio * frameFraction * SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME;
+  if (reference >= 1) {
+    const low = Math.floor(reference);
+    const pxPerEvent = reference / low <= (low + 1) / reference ? low : low + 1;
+    return { pxPerEvent, framesPerEvent: 1 };
+  }
+  // One pixel every k frames: k = floor(1/reference) runs at or above the
+  // reference, k + 1 below it, and neither slower than 60 changes/s —
+  // with a little slack, since a measured 120Hz cadence sits a hair
+  // either side of exactly two frames and the rung must not flip with it.
+  const maxFrames = Math.max(
+    1,
+    Math.floor((1 + SPRING_FLOOR_CADENCE_SLACK) / frameFraction),
+  );
+  const fast = Math.min(maxFrames, Math.max(1, Math.floor(1 / reference)));
+  const slow = fast + 1;
+  const framesPerEvent =
+    slow <= maxFrames && reference * slow < 1 / (fast * reference) ? slow : fast;
+  return { pxPerEvent: 1, framesPerEvent };
+}
 
 // ===== Write-refusal guard =====
 // bug-report-20260818T003129Z: an ActivityRun clip spent 227 seconds
@@ -414,7 +508,8 @@ interface ChaseTelemetry {
   startedAt: number;
   ticks: number;
   writeTicks: number;
-  quantizedNoopTicks: number;
+  /** Integrating ticks whose displacement rounded to no device pixel. */
+  zeroStepTicks: number;
   sentinelTicks: number;
   maxGapMs: number;
   gapBuckets: number[];
@@ -550,6 +645,12 @@ export interface SpringChaseDeps {
    * controller's combined motionReduced() gate). */
   prefersReducedMotion(): boolean;
   /**
+   * The engine's scrollTop grid, device pixels per CSS pixel
+   * (`window.devicePixelRatio`). Read per tick: the window can move
+   * between monitors, and browser zoom changes it too.
+   */
+  devicePixelRatio(): number;
+  /**
    * Force the controller's sampled spring-tick trace to record the next
    * write, so the trace shows every chase boundary rather than every
    * ~12th sampled tick.
@@ -595,6 +696,13 @@ export interface SpringChase {
   isActive(): boolean;
   /** Current spring run token for trace payloads; 0 = no spring in flight. */
   token(): number;
+  /**
+   * The model's velocity after the last tick, in CSS px per 60Hz frame.
+   * TEST ONLY: the kinematic suites pin the ramp, the envelope and the
+   * retarget bridge on the model, since the written motion is whole
+   * device pixels and cannot show a 10% per-frame ratio.
+   */
+  velocityForTest(): number;
   /** User broke from auto-follow — the next tick bails and cancels. */
   requestStop(): void;
   clearStopRequest(): void;
@@ -653,18 +761,27 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   // motion floor. Reset at every catch-up and on
   // cancel, so each growth's entry ramp stays natural.
   let quantizedFloorEngaged = false;
-  // Chromium stores programmatic scrollTop writes as whole CSS pixels. Learn
-  // that contract from this chase instead of assuming every system webview
-  // shares it. Once two interior fractional writes read back exactly rounded,
-  // a request that rounds to the current pixel cannot change the paint. Keep
-  // integrating the spring but omit that setter, its scroll event, and the
-  // event's mandatory readback. Engines that retain fractional positions never
-  // confirm the contract and keep every write.
-  let wholePixelQuantizationWitnesses = 0;
-  let wholePixelQuantizationConfirmed = false;
+  // The floor hold, latched from the first sub-floor step of an engaged
+  // glide until the landing, a reversal, or a target extension that
+  // drives the velocity above the release band (see the tick).
+  let floorHolding = false;
+  // The write ladder's state (see the whole-device-pixel block): the
+  // rung the previous tick wrote — `n` device pixels per tick as +n,
+  // one pixel every `k` ticks as −k, 0 for none — which is the
+  // hysteresis anchor; the direction it was written in (a reversal
+  // starts the ladder afresh); and the ticks counted toward a cadence
+  // rung's next pixel.
+  let lastRung = 0;
+  let rungDirection = 0;
+  let cadenceTicks = 0;
   // Measured rAF cadence for the motion-floor derivation. Deliberately
   // NOT reset in cancel() — see the constant block.
   let frameIntervalEmaMs: number | null = null;
+  // The engine's grid, witnessed: false while writes on the device-pixel
+  // grid read back exactly, true from the first one that read back
+  // rounded to a whole CSS pixel. An engine property, so it is never
+  // reset — see the constant block.
+  let cssPixelGridWitnessed = false;
   // Monotonic counter (cheaper than `Symbol('spring')` per start). 0 means
   // no spring in flight; positive values identify the current spring run.
   let springToken = 0;
@@ -753,7 +870,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       startedAt: nowMs(),
       ticks: 0,
       writeTicks: 0,
-      quantizedNoopTicks: 0,
+      zeroStepTicks: 0,
       sentinelTicks: 0,
       maxGapMs: 0,
       gapBuckets: new Array<number>(CHASE_GAP_BUCKET_BOUNDS_MS.length + 1).fill(0),
@@ -823,7 +940,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       durationMs: Math.round(nowMs() - stats.startedAt),
       ticks: stats.ticks,
       writeTicks: stats.writeTicks,
-      quantizedNoopTicks: stats.quantizedNoopTicks,
+      zeroStepTicks: stats.zeroStepTicks,
       sentinelTicks: stats.sentinelTicks,
       maxGapMs: Math.round(stats.maxGapMs * 10) / 10,
       // Bucket bounds documented at CHASE_GAP_BUCKET_BOUNDS_MS:
@@ -859,8 +976,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     retarget.reset();
     accumulated = 0;
     quantizedFloorEngaged = false;
-    wholePixelQuantizationWitnesses = 0;
-    wholePixelQuantizationConfirmed = false;
+    floorHolding = false;
+    lastRung = 0;
+    rungDirection = 0;
+    cadenceTicks = 0;
     lastTickAt = null;
     selectionPauseTraced = false;
     deps.arrival.clear();
@@ -1020,6 +1139,25 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       if (chaseTelemetry) recordChaseFrame(now, previousTickAt, dtFrames);
       const integrationFrames = Math.min(dtFrames, SPRING_MAX_CATCHUP_STEPS);
 
+      // The engine's pixel grid and the display's cadence, per tick (see
+      // the whole-device-pixel block): grid pixels per CSS pixel (the
+      // device ratio, or 1 once the engine is seen rounding to CSS
+      // pixels), the floor rung, its average rate as CSS px per displayed
+      // frame (`floorTickCss`) and per 60Hz frame (`floorRate`, the unit
+      // velocity is in), and the ramp base that rate floors.
+      const rawDpr = deps.devicePixelRatio();
+      const dpr =
+        !cssPixelGridWitnessed && Number.isFinite(rawDpr) && rawDpr > 0 ? rawDpr : 1;
+      const frameFraction =
+        (frameIntervalEmaMs ?? SIXTY_FPS_INTERVAL_MS) / SIXTY_FPS_INTERVAL_MS;
+      const floorRung = quantizedFloorRung(dpr, frameFraction);
+      const floorTickCss = floorRung.pxPerEvent / floorRung.framesPerEvent / dpr;
+      const floorRate = floorTickCss / frameFraction;
+      const slewRampBase = Math.max(SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME, floorRate);
+      // This tick's integrated displacement in CSS px, kept apart from
+      // the carried residue (`accumulated`) so the write can band on it.
+      let tickDisplacement = 0;
+
       // Wedged-element backoff: while the write-refusal latch is set,
       // the WHOLE tick body below — including the geometry reads, each
       // a forced layout — runs only on probe-cadence ticks. The
@@ -1036,15 +1174,14 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       // latch can never re-enter a display-rate loop.
       if (writeRefusalLatched) {
         if (now - lastRefusalProbeAt < SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS) {
-          const base = Math.max(
-            SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME,
-            SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME,
-          );
           const speed = Math.abs(velocity);
-          if (speed > base) {
+          if (speed > slewRampBase) {
             velocity =
               Math.sign(velocity)
-              * Math.max(base, speed / Math.pow(SPRING_ACCEL_SLEW_FACTOR_PER_FRAME, dtFrames));
+              * Math.max(
+                slewRampBase,
+                speed / Math.pow(SPRING_ACCEL_SLEW_FACTOR_PER_FRAME, dtFrames),
+              );
           }
           retarget.breakMotion();
           springFrameHandle = requestFrame(tick);
@@ -1104,13 +1241,6 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       const wantsSpringNow = wantsStreamingSpringNow || springStartedFromStructuralAppend;
       const withinTargetChangeRetainWindow =
         wantsSpringNow && now - lastTargetChangedAt < RETAIN_ANIMATION_DURATION_MS;
-
-      // Standstill entry speed for the acceleration ramp — perceptual
-      // base, floored by the whole-pixel motion contract.
-      const slewRampBase = Math.max(
-        SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME,
-        SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME,
-      );
 
       if (current !== target && !deps.arrival.matches(target)) {
         // Content oscillation guard: if the sentinel was idle
@@ -1188,7 +1318,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               // position (`current + accumulated`) — pure arithmetic, no
               // extra layout reads — so a multi-step catch-up follows the
               // same curve N sequential 60Hz frames would have.
-              const stepDiff = target - (current + accumulated);
+              const stepDiff = target - (current + accumulated + tickDisplacement);
               const stepStartVelocity = velocity;
               // Slew base: the speed already pointing at the target when
               // this step began. A reversal contributes zero, so the new
@@ -1266,27 +1396,28 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
                 velocity = -slewCeiling;
               }
               // Once this quantum has run faster than the motion floor,
-              // do not let deceleration sink below it until the release
-              // distance. This keeps integer scrollTop movement visible at
-              // 60Hz or faster. Reversals still decelerate through zero.
-              if (
-                Math.abs(velocity) >= SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME
-              ) {
+              // deceleration never sinks below it: the hold LATCHES the
+              // first time the spring's own velocity falls under the
+              // rung's rate and releases only when a target extension
+              // drives it a twentieth above (through the slew ramp or the
+              // retarget bridge). Near the floor the natural velocity
+              // sits within a fraction of a percent of the rate for
+              // frames at a time, and a hold keyed on the instantaneous
+              // comparison interleaved two cadences (the 2026-09-04
+              // 240Hz probe). Reversals still decelerate through zero.
+              if (velocity * stepDiff <= 0) {
+                floorHolding = false;
+              } else if (Math.abs(velocity) >= floorRate) {
                 quantizedFloorEngaged = true;
-              } else if (
-                quantizedFloorEngaged
-                && remaining > SPRING_QUANTIZED_FLOOR_RELEASE_PX
-              ) {
-                if (stepDiff > 0 && velocity > 0) {
-                  velocity = SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME;
-                } else if (stepDiff < 0 && velocity < 0) {
-                  velocity = -SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME;
-                }
+              } else if (quantizedFloorEngaged) {
+                velocity = Math.sign(stepDiff) * floorRate;
+                floorHolding = true;
               }
               // The three ceilings above produce the fixed-target
-              // candidate. A target extension during braking passes that
-              // candidate through the acceleration-continuity bridge.
-              // Every other step returns it unchanged.
+              // candidate. A target extension during braking (or a held
+              // speed) passes that candidate through the acceleration-
+              // continuity bridge. Every other step returns it unchanged.
+              const candidate = velocity;
               velocity = retarget.step(
                 target,
                 stepDiff,
@@ -1295,126 +1426,210 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
                 stepFraction,
                 SPRING_MAX_VELOCITY_PX_PER_FRAME,
               );
-              accumulated += velocity * stepFraction;
+              if (
+                floorHolding
+                && velocity === candidate
+                && velocity * stepDiff > 0
+                && Math.abs(velocity) < floorRate * SPRING_FLOOR_RELEASE_FACTOR
+              ) {
+                // Floor regime: the tick advances the rung's average by
+                // FRAME COUNT (one rAF tick is one displayed frame; a
+                // dropped frame is not made up as a double step), spread
+                // over the tick's sub-steps so the sum is exact whatever
+                // the split. On the ladder below that displacement IS
+                // the rung: `pxPerEvent` a tick, or one every
+                // `framesPerEvent`.
+                velocity = Math.sign(stepDiff) * floorRate;
+                tickDisplacement +=
+                  Math.sign(stepDiff) * floorTickCss * (stepFraction / integrationFrames);
+              } else {
+                // Released: a reversal, the bridge ramping out of the
+                // hold (its output differs from the candidate), or the
+                // slew ramp past the release band.
+                floorHolding = false;
+                tickDisplacement += velocity * stepFraction;
+              }
             }
-            const next = current + accumulated;
-            // Pre-clamp in JS so we know the post-state without a second
-            // layout read just to check whether the browser clamped. Cross-
-            // target clamps in EITHER direction count as kinematic
-            // overshoot: a positive-diff chase overshoots when
-            // `next > target`, a negative-diff chase (the symmetric branch
-            // that lets the spring follow shrinks) overshoots when
-            // `next < target`. Both clamp to `target` and zero `accumulated`
-            // below.
-            const crossedTarget =
-              (current < target && next > target)
-              || (current > target && next < target);
-            const clamped = crossedTarget ? target : next;
-            const quantizedNoop =
-              wholePixelQuantizationConfirmed
-              && Number.isInteger(current)
-              && Math.round(clamped) === current;
-            const postWriteTop = quantizedNoop
-              ? current
-              : deps.writeScrollTop(
+            // ---- Whole-device-pixel step (see the constant block) ----
+            // This tick's integrated displacement becomes a signed whole
+            // number of device pixels off the ladder. The band is chosen
+            // by the TICK's own displacement, never a carried total, so a
+            // residue that accrued below one device pixel cannot surface
+            // as a double step the moment the rate crosses one (the
+            // `0 2 0 2` onset of the 2026-09-04 120Hz probe).
+            const tickDevicePx = tickDisplacement * dpr;
+            const magnitude = Math.abs(tickDevicePx);
+            const direction = Math.sign(tickDevicePx);
+            let stepDevicePx = 0;
+            if (direction !== rungDirection) {
+              lastRung = 0;
+              cadenceTicks = 0;
+              rungDirection = direction;
+            }
+            if (magnitude >= SPRING_STEP_DIFFUSION_MIN_DEVICE_PX) {
+              // Cruise: error diffusion, the nearest whole pixel out with
+              // the residue carried, so the average rate is exact.
+              const wantDevicePx = (accumulated + tickDisplacement) * dpr;
+              stepDevicePx = Math.round(wantDevicePx);
+              accumulated = (wantDevicePx - stepDevicePx) / dpr;
+              lastRung = 0;
+              cadenceTicks = 0;
+            } else if (magnitude >= 1) {
+              // Whole pixels a tick, held through hysteresis around the
+              // previous rung; the residue is discarded so timestamp
+              // jitter never accrues into an extra pixel.
+              let rung = Math.round(magnitude);
+              if (
+                lastRung > 0
+                && Math.abs(magnitude - lastRung) < 0.5 + SPRING_STEP_HYSTERESIS_DEVICE_PX
+              ) {
+                rung = lastRung;
+              }
+              stepDevicePx = direction * rung;
+              lastRung = rung;
+              cadenceTicks = 0;
+              accumulated = 0;
+            } else if (magnitude > 0) {
+              // One pixel every k ticks, k the nearest cadence to the
+              // displacement's reciprocal under the same hysteresis: a
+              // rate under a pixel a tick is shown as an even cadence,
+              // never as the irregular mix error diffusion would make
+              // of it. The motion floor's rung lands here on its own.
+              const ticksPerPx = 1 / magnitude;
+              let cadence = Math.round(ticksPerPx);
+              if (
+                lastRung < 0
+                && Math.abs(ticksPerPx + lastRung) < 0.5 + SPRING_STEP_HYSTERESIS_DEVICE_PX
+              ) {
+                cadence = -lastRung;
+              }
+              lastRung = -cadence;
+              cadenceTicks += 1;
+              if (cadenceTicks >= cadence) {
+                stepDevicePx = direction;
+                cadenceTicks = 0;
+              }
+              accumulated = 0;
+            }
+            if (stepDevicePx === 0) {
+              // Nothing whole to write: touch neither the element nor the
+              // refusal guard (no request was made, so nothing was
+              // refused).
+              if (chaseTelemetry) chaseTelemetry.zeroStepTicks += 1;
+            } else {
+              const next = current + stepDevicePx / dpr;
+              // Pre-clamp in JS so we know the post-state without a second
+              // layout read just to check whether the browser clamped. Cross-
+              // target clamps in EITHER direction count as kinematic
+              // overshoot: a positive-diff chase overshoots when
+              // `next > target`, a negative-diff chase (the symmetric branch
+              // that lets the spring follow shrinks) overshoots when
+              // `next < target`. Both clamp to `target` (the one write that
+              // may be fractional: the exact landing) and zero
+              // `accumulated` below.
+              const crossedTarget =
+                (current < target && next > target)
+                || (current > target && next < target);
+              const clamped = crossedTarget ? target : next;
+              const postWriteTop =
+                deps.writeScrollTop(
                   crossedTarget ? 'spring.overshoot' : 'spring.tick',
                   clamped,
                 ) ?? current;
-            if (chaseTelemetry) {
-              if (quantizedNoop) chaseTelemetry.quantizedNoopTicks += 1;
-              else chaseTelemetry.writeTicks += 1;
-            }
-            if (!quantizedNoop && !Number.isInteger(clamped)) {
-              // Interior writes cannot be max-scroll clamping. They give a
-              // clean observation of the engine's storage precision.
-              if (!crossedTarget && Math.abs(target - clamped) > 1) {
-                if (postWriteTop === Math.round(clamped)) {
-                  wholePixelQuantizationWitnesses += 1;
-                  if (wholePixelQuantizationWitnesses >= 2) {
-                    wholePixelQuantizationConfirmed = true;
-                  }
-                } else {
-                  wholePixelQuantizationWitnesses = 0;
-                  wholePixelQuantizationConfirmed = false;
+              if (chaseTelemetry) chaseTelemetry.writeTicks += 1;
+              if (clamped === target) {
+                deps.arrival.record(target);
+                // A landing from the floor is the glide's end: the
+                // carried velocity would only decay to the ramp base the
+                // next quantum starts from anyway, and the arrival check
+                // below needs it under its threshold to settle the
+                // spring on this frame, as the sub-pixel tail's decay
+                // used to. A faster landing (a clamp across a moved
+                // target) keeps its momentum for the carry rule.
+                if (Math.abs(velocity) <= floorRate) velocity = 0;
+                floorHolding = false;
+                lastRung = 0;
+                cadenceTicks = 0;
+                accumulated = 0;
+              }
+              if (crossedTarget) {
+                retarget.breakMotion();
+              }
+              // Three-way write classification (see the write-refusal
+              // guard's constant block): MOVED heals, REFUSED counts,
+              // INCONCLUSIVE (no motion, sub-threshold request) is
+              // evidence of nothing and touches nothing.
+              if (postWriteTop !== current) {
+                // MOVED: the element accepted the write. Healing requires
+                // observed MOTION — not merely "not refused" — because a
+                // sub-threshold no-motion write (ramp onset, near-target
+                // sliver) proves nothing about a wedge.
+                if (writeRefusalLatched) {
+                  deps.reportWriteRefusal({
+                    phase: 'healed',
+                    consecutiveRefusals: consecutiveRefusedWrites,
+                    requested: clamped,
+                    scrollTop: postWriteTop,
+                    target,
+                    wedgeMs: Math.round(now - refusalLatchedAt),
+                  });
+                  writeRefusalLatched = false;
+                  refusalLatchedAt = 0;
+                  lastRefusalProbeAt = 0;
                 }
-              } else if (postWriteTop === clamped) {
-                // A fractional readback disproves whole-pixel storage even at
-                // a chase boundary. Do not carry a stale inference forward.
-                wholePixelQuantizationWitnesses = 0;
-                wholePixelQuantizationConfirmed = false;
+                consecutiveRefusedWrites = 0;
+                // The model's residue was settled above, per band. The
+                // engine's own readback residue (its grid snap, or a
+                // max-scroll clamp) is never carried: `current` resyncs
+                // to the readback below. A ladder write that lands off
+                // the CSS-pixel grid and reads back ON it is the grid
+                // witness: from here the ladder's pixel is the CSS
+                // pixel. The landing write is excluded (the target may
+                // be fractional and clamps are not roundings).
+                if (
+                  !cssPixelGridWitnessed
+                  && !crossedTarget
+                  && postWriteTop !== clamped
+                  && Number.isInteger(postWriteTop)
+                  && Math.abs(postWriteTop - clamped) < 1
+                ) {
+                  cssPixelGridWitnessed = true;
+                  lastRung = 0;
+                  cadenceTicks = 0;
+                }
+              } else if (Math.abs(clamped - current) >= SPRING_WRITE_REFUSAL_MIN_MOTION_PX) {
+                // REFUSED WRITE: a real motion request moved the element
+                // by nothing. Re-anchor the model to reality — dropping
+                // `accumulated` pins the simulated position back to the
+                // element's true one, so the next write stays within one
+                // velocity-capped step of it and a heal can only ever be
+                // a bounded glide, never a teleport. Velocity is kept:
+                // it carries the ramped probe speed and seeds the heal
+                // glide's cruise. Probe pacing is NOT stamped here — the
+                // gate above the geometry reads owns the probe slot.
+                accumulated = 0;
+                retarget.breakMotion();
+                consecutiveRefusedWrites += 1;
+                if (chaseTelemetry) chaseTelemetry.refusedWrites += 1;
+                if (
+                  !writeRefusalLatched
+                  && consecutiveRefusedWrites >= SPRING_WRITE_REFUSAL_LATCH_TICKS
+                ) {
+                  writeRefusalLatched = true;
+                  refusalLatchedAt = now;
+                  lastRefusalProbeAt = now;
+                  deps.reportWriteRefusal({
+                    phase: 'latched',
+                    consecutiveRefusals: consecutiveRefusedWrites,
+                    requested: clamped,
+                    scrollTop: postWriteTop,
+                    target,
+                    wedgeMs: 0,
+                  });
+                }
               }
+              current = postWriteTop;
             }
-            if (clamped === target) {
-              deps.arrival.record(target);
-            }
-            if (crossedTarget) {
-              retarget.breakMotion();
-            }
-            // Three-way write classification (see the write-refusal
-            // guard's constant block): MOVED heals, REFUSED counts,
-            // INCONCLUSIVE (no motion, sub-threshold request) is
-            // evidence of nothing and touches nothing.
-            if (postWriteTop !== current) {
-              // MOVED: the element accepted the write. Healing requires
-              // observed MOTION — not merely "not refused" — because a
-              // sub-threshold no-motion write (ramp onset, near-target
-              // sliver) proves nothing about a wedge.
-              if (writeRefusalLatched) {
-                deps.reportWriteRefusal({
-                  phase: 'healed',
-                  consecutiveRefusals: consecutiveRefusedWrites,
-                  requested: clamped,
-                  scrollTop: postWriteTop,
-                  target,
-                  wedgeMs: Math.round(now - refusalLatchedAt),
-                });
-                writeRefusalLatched = false;
-                refusalLatchedAt = 0;
-                lastRefusalProbeAt = 0;
-              }
-              consecutiveRefusedWrites = 0;
-              // Carry the browser's integer-rounding error instead of
-              // dropping it. This is error diffusion: sub-pixel progress
-              // accumulates until the next whole-CSS-pixel readback can move.
-              // A remainder ≥1px means the browser CLAMPED the
-              // write (engine max-scrollTop race) — resync from the
-              // readback rather than fighting it. Cross-target landings
-              // start the next segment clean.
-              const remainder = clamped - postWriteTop;
-              accumulated =
-                !crossedTarget && remainder > -1 && remainder < 1 ? remainder : 0;
-            } else if (Math.abs(clamped - current) >= SPRING_WRITE_REFUSAL_MIN_MOTION_PX) {
-              // REFUSED WRITE: a real motion request moved the element
-              // by nothing. Re-anchor the model to reality — dropping
-              // `accumulated` pins the simulated position back to the
-              // element's true one, so the next write stays within one
-              // velocity-capped step of it and a heal can only ever be
-              // a bounded glide, never a teleport. Velocity is kept:
-              // it carries the ramped probe speed and seeds the heal
-              // glide's cruise. Probe pacing is NOT stamped here — the
-              // gate above the geometry reads owns the probe slot.
-              accumulated = 0;
-              retarget.breakMotion();
-              consecutiveRefusedWrites += 1;
-              if (chaseTelemetry) chaseTelemetry.refusedWrites += 1;
-              if (
-                !writeRefusalLatched
-                && consecutiveRefusedWrites >= SPRING_WRITE_REFUSAL_LATCH_TICKS
-              ) {
-                writeRefusalLatched = true;
-                refusalLatchedAt = now;
-                lastRefusalProbeAt = now;
-                deps.reportWriteRefusal({
-                  phase: 'latched',
-                  consecutiveRefusals: consecutiveRefusedWrites,
-                  requested: clamped,
-                  scrollTop: postWriteTop,
-                  target,
-                  wedgeMs: 0,
-                });
-              }
-            }
-            current = postWriteTop;
           }
         }
       } else {
@@ -1449,6 +1664,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         // next growth starts its ramp naturally (a carried remnant ≥
         // the floor re-engages it on the first step anyway).
         quantizedFloorEngaged = false;
+        floorHolding = false;
+        lastRung = 0;
+        rungDirection = 0;
+        cadenceTicks = 0;
         if (withinTargetChangeRetainWindow && velocity > 0) {
           if (velocity > SPRING_CARRY_VELOCITY_CEILING) {
             velocity = SPRING_CARRY_VELOCITY_CEILING;
@@ -1550,6 +1769,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     gateOpen,
     isActive: () => springToken !== 0,
     token: () => springToken,
+    velocityForTest: () => velocity,
     requestStop: () => {
       springStopRequested = true;
     },

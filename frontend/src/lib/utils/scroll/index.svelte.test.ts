@@ -3245,9 +3245,12 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
 
     it('advances every sub-step frame at 120Hz', async () => {
-      // At ~120Hz each rAF is ~8.33ms. The spring must still write a
-      // fractional step every frame; holding alternate frames is visible
-      // stair-stepping on ProMotion displays.
+      // At ~120Hz each rAF is ~8.33ms. The spring integrates a fractional
+      // step every frame and writes whatever whole device pixel has
+      // accrued: a cold onset on a 1× grid runs under a pixel a frame, so
+      // most frames land a pixel, none moves backwards, and none jumps
+      // (a model that skipped frames would show as a stationary run or a
+      // multi-pixel catch-up).
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150); // warm
@@ -3267,9 +3270,13 @@ describe('createUseStickToBottomController — spring chase', () => {
       // …and stayed below the 800px target the whole window, so no clamp
       // collision can fake a monotonic run.
       expect(samples[samples.length - 1]).toBeLessThan(800);
+      let advancing = 0;
       for (let i = 1; i < samples.length; i += 1) {
-        expect(samples[i]).toBeGreaterThan(samples[i - 1]);
+        expect(samples[i]).toBeGreaterThanOrEqual(samples[i - 1]);
+        expect(samples[i] - samples[i - 1]).toBeLessThanOrEqual(2);
+        if (samples[i] > samples[i - 1]) advancing += 1;
       }
+      expect(advancing).toBeGreaterThanOrEqual(Math.floor((samples.length - 1) / 2));
     });
 
     it('sync-pins a positive delta caused by content width reflow instead of spring-chasing it', async () => {
@@ -3571,11 +3578,12 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.contentHeight = 1000;
       ro.fire(contentEl, 1000);
 
-      await advanceUntil(() => Math.abs(geom.scrollTop - 600) <= 1);
-      // Arrival also needs |velocity| < 0.5, and the structural-append
-      // flag keeps momentum carry alive until the retain window lapses
-      // (markTargetChanged at ~150ms + 350ms). Wait past that so the
-      // spring's arrival check can cancel it.
+      // The floor lands the last pixel exactly, on its own frame, and
+      // that landing is what zeroes the velocity the arrival check needs.
+      await advanceUntil(() => geom.scrollTop === 600);
+      // The structural-append flag keeps momentum carry alive until the
+      // retain window lapses (markTargetChanged at ~150ms + 350ms). Wait
+      // past that so the spring's arrival check can cancel it.
       while (mockNow < 520) await nextFrame();
 
       // Spring canceled (instant mode never enters the sentinel), so a
@@ -3811,15 +3819,22 @@ describe('createUseStickToBottomController — spring chase', () => {
         // frozen at ~8; with the fix, velocity is zeroed immediately.
         for (let i = 0; i < 3; i++) await nextFrame();
 
-        // Small growth (+3px). With clean velocity (0), the spring
-        // chases smoothly (~0.12px/frame). With frozen velocity (~8),
-        // accumulated exceeds 3px on the first frame → overshoot+clamp.
+        // Small growth (+3px). With clean velocity (0) the spring's cold
+        // onset runs under a pixel a frame, so the grid shows its first
+        // pixel a frame or two in and the rest follow one at a time.
+        // With frozen velocity (~8), the first frame would land all 3px
+        // (overshoot + clamp).
         geom.scrollHeight = nearTarget + 603;
         geom.contentHeight = nearTarget + 403;
         ro.fire(contentEl, nearTarget + 403); // target = nearTarget + 3
-        await nextFrame();
-        expect(geom.scrollTop).toBeGreaterThan(nearTarget);
-        expect(geom.scrollTop).toBeLessThan(nearTarget + 3);
+        let moved = false;
+        for (let i = 0; i < 3; i++) {
+          await nextFrame();
+          expect(geom.scrollTop).toBeGreaterThanOrEqual(nearTarget);
+          expect(geom.scrollTop).toBeLessThan(nearTarget + 3);
+          if (geom.scrollTop > nearTarget) moved = true;
+        }
+        expect(moved).toBe(true);
       });
 
       it("observe('content') during spring defers to the chase, and follow-up growth stays smooth", async () => {
@@ -4012,8 +4027,16 @@ describe('createUseStickToBottomController — spring chase', () => {
         geom.contentHeight = down + 403;
         ro.fire(contentEl, down + 403); // target = down + 3
         const beforeResume = geom.scrollTop; // down
-        await nextFrame();
-        expect(geom.scrollTop).toBeGreaterThan(beforeResume);
+        // A cold 3px onset runs under a pixel a frame, so the grid shows
+        // its first pixel a frame or two in; what the sign gate
+        // guarantees is that no frame moves AWAY from the bottom.
+        let moved = false;
+        for (let i = 0; i < 3; i++) {
+          await nextFrame();
+          expect(geom.scrollTop).toBeGreaterThanOrEqual(beforeResume);
+          if (geom.scrollTop > beforeResume) moved = true;
+        }
+        expect(moved).toBe(true);
         // A real (small) move toward the bottom, not a snap.
         expect(geom.scrollTop).toBeLessThan(down + 3);
       });
@@ -6792,6 +6815,9 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       await advanceUntil(() => Math.abs(geom.scrollTop - 500) <= 1);
       while (mockNow < 520) await nextFrame();
+      // The floor's last write (500, read back 499) and the settle it
+      // triggers take a frame or two past the band; count after them.
+      for (let i = 0; i < 3; i++) await nextFrame();
 
       const writesAfterSettling = writes.length;
       for (let i = 0; i < 20; i++) await nextFrame();

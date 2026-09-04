@@ -78,13 +78,10 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     A permanent content layer caused stale WebView2 pixels while state,
     DOM, and input remained live (bug-report-20260823T224631Z). Earlier
     promote/demote leases also caused three raster-transition flickers.
-    The spring instead accounts for integer `scrollTop` in its motion
-    model. It carries rounding error forward and holds a constant floor
-    of one CSS pixel per 60Hz-equivalent frame. Fractional integration
-    distributes those whole-pixel changes across display frames, keeping
-    the floor at 60px/s instead of changing it at refresh-rate rungs.
-    Real-Chromium coverage pins CSS-pixel quantization at DPR 1, 1.25, 1.5,
-    and 2. It also pins constant hairline raster energy while fractional DPR
+    The spring instead authors whole grid pixels in its motion model
+    (below). Real-Chromium coverage pins CSS-pixel quantization at DPR
+    1, 1.25, 1.5, and 2 — the premise of the spring's grid witness. It
+    also pins constant hairline raster energy while fractional DPR
     turns equal CSS-space steps into alternating device-pixel displacement.
     The soak rig's `make soak-contract` probe checks quantization and
     compositor ownership in WebView2.
@@ -113,12 +110,32 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     accelerate→decelerate crossover is wherever the falling envelope
     undercuts the rising ramp, so a fixed-target glide needs no mode
     state. A target that extends while the viewport is already braking
-    uses an acceleration-preserving **retarget bridge**. Velocity stays
-    forward, acceleration advances from braking through zero into driving
-    under a per-frame jerk bound, and large-glide jerk scales from the
-    endpoint accelerations so a cap-speed handoff does not nearly stop.
-    Repeated streamed-line tests pin the bridge at 60, 120, and 165Hz and
-    through whole-pixel `scrollTop` quantization. Carried
+    or holding a speed uses an acceleration-preserving **retarget
+    bridge**. Velocity stays forward, acceleration advances from braking
+    through zero into driving under a per-frame jerk bound, and
+    large-glide jerk scales from the endpoint accelerations so a
+    cap-speed handoff does not nearly stop. Repeated streamed-line tests
+    pin the bridge at 60, 120, and 165Hz.
+    What the spring WRITES is whole pixels on the engine's grid (owner
+    ruling 2026-09-04: no jitter; where constant motion cannot avoid
+    it, stop instead). Each tick's displacement snaps to a ladder of
+    even cadences — `n` grid pixels a tick, or one every `k` ticks, the
+    nearest rung held through a small hysteresis — so a deceleration
+    steps 3, 2, 1 once and a slow rate is a steady cadence, never the
+    1,2,1,2 or 1,0,1,1,0 mix that rounding a fractional model paints;
+    only at cruise (8+ pixels a tick) is the residue carried for an
+    exact average rate. The **motion floor** is a rung of that ladder,
+    derived per tick from the grid and the measured frame cadence
+    (`quantizedFloorRung`: closest in ratio to 60px/s, never under 60
+    changes a second — 1 CSS px per 60Hz frame at DPR 1 and 2, one per
+    two frames at 120Hz DPR 1, one device pixel per frame on a 2.625×
+    120Hz phone), and once a glide has run above it the floor holds
+    through to the landing: there is no sub-pixel tail. The grid is
+    witnessed from readback, device pixels until a write off the
+    CSS-pixel grid reads back rounded onto it (desktop Chromium at every
+    DPR), and the witness persists for the page's life. The 120Hz
+    result is unit-traced only; the Android emulator runs at 60Hz.
+    Carried
     momentum decays by the slew factor per real elapsed frame while
     parked, so a brief inter-quantum catch-up resumes at speed while a
     longer pause re-enters at the base ramp. Also owns the

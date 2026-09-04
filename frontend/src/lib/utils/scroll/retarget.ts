@@ -1,7 +1,9 @@
 // Acceleration continuity for a spring whose target moves while it is
 // already gliding. Fixed-target velocity shaping stays in spring.ts.
 // This state machine owns only the discontinuity introduced when a new
-// same-direction target interrupts braking.
+// same-direction target interrupts braking — or a held speed (the
+// envelope's minimum, the motion floor's rung), where the jump from zero
+// acceleration straight to the slew ramp's is the same kick.
 
 const RETARGET_JERK_FLOOR_PX_PER_FRAME_CUBED = 0.1;
 const RETARGET_JERK_ENDPOINT_FRACTION = 0.125;
@@ -88,7 +90,7 @@ export function createRetargetAccelerationBridge(): RetargetAccelerationBridge {
       && targetChanged
       && wasMovingTowardTarget
       && velocity * direction > 0
-      && lastTowardAcceleration < 0
+      && lastTowardAcceleration <= 0
       && candidateTowardAcceleration > lastTowardAcceleration
     ) {
       bridgeAcceleration = lastAcceleration;

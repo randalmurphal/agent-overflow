@@ -294,12 +294,26 @@ findings, each fixed at the root and each with a test:
   passes every rung. Whether a thread should auto-focus its composer
   on a phone at all is an open question for the owner: it costs a
   keyboard on every open.
+  Focused-terminal Escape goes to the pane, never into xterm.
+- **Sidebar chord pill**: shown only while a modifier is held, the
+  jump-hint door.
+- **Keyboard cut-off**: `index.html` asks for
+  `interactive-widget=resizes-content`, and the scroll observers re-pin
+  a pinned reader when the viewport shrinks (`contentRO.viewportShrink`).
 
-## 10. Spring judder on the 120Hz phone (2026-09-04, findings, awaiting a ruling)
+The scroll spring's absence on the phone was not reproduced on a
+device in this pass; the hypothesis is the WebView honouring Android's
+"remove animations" / battery-saver `prefers-reduced-motion`, which the
+controller already respects. Check `matchMedia('(prefers-reduced-motion:
+reduce)')` on the device before touching the spring.
+
+## 10. Spring judder on the 120Hz phone (2026-09-04)
 
 Measured on the Pixel 9a over the harness, then left alone (owner asked
 for the emulator instead). Scripts in the session scratchpad
-(`phone-quant-probe.mjs`, `phone-scroll-probe.mjs`).
+(`phone-quant-probe.mjs`, `phone-scroll-probe.mjs`). The ruling and
+what shipped are at the end of this section; the findings stand as
+written.
 
 - **The panel runs the WebView at 120Hz.** Smooth Display is on
   (`peak_refresh_rate` unset = Infinity; modes 60 and 120). rAF gaps
@@ -333,18 +347,26 @@ for the emulator instead). Scripts in the session scratchpad
   device pixels with the existing error carry, so a glide decelerates
   through uniform 4 → 3 → 2 rungs instead of alternating. (c) A
   setting. (c) is possible; (a)+(b) is structural and closes the
-  class on every high-DPR, high-Hz device without a knob. No change
-  made pending the ruling.
-  Focused-terminal Escape goes to the pane, never into xterm.
-- **Sidebar chord pill**: shown only while a modifier is held, the
-  jump-hint door.
-- **Keyboard cut-off**: `index.html` asks for
-  `interactive-widget=resizes-content`, and the scroll observers re-pin
-  a pinned reader when the viewport shrinks (`contentRO.viewportShrink`).
-
-The scroll spring's absence on the phone was not reproduced on a
-device in this pass; the hypothesis is the WebView honouring Android's
-"remove animations" / battery-saver `prefers-reduced-motion`, which the
-controller already respects. Check `matchMedia('(prefers-reduced-motion:
-reduce)')` on the device before touching the spring.
-
+  class on every high-DPR, high-Hz device without a knob.
+- **Ruling** (owner, 2026-09-04): avoid jitter; where constant motion
+  cannot, the glide should stop rather than jitter ("I will almost
+  always notice the jittering").
+- **What shipped** (branch `spring-whole-pixel-motion`): (a)+(b),
+  generalized. The spring writes whole grid pixels off a ladder of even
+  cadences (`n` pixels a tick, or one every `k` ticks, hysteresis
+  either way), the floor is a rung of that ladder derived from the
+  cadence EMA and the grid (1 device px per 120Hz frame on the phone,
+  46px/s; unchanged 60px/s at DPR 1 and 2 on 60Hz), it holds through
+  to the landing (the sub-pixel "cradle" is gone everywhere), and the
+  grid itself is witnessed from readback — device pixels until the
+  engine is seen rounding to CSS pixels, which desktop Chromium does at
+  every DPR. Mechanism and constants:
+  [`frontend-scroll.md`](../architecture/frontend-scroll.md) § the
+  `spring.ts` bullet, and the "Whole-pixel motion" block in
+  `spring.ts`. Not yet looked at on the phone: the emulator runs 60Hz
+  only, so the 120Hz result is unit-traced (`spring.test.ts` 'quantized
+  motion floor'), not seen. Visible trade-offs to check on a device:
+  the phone's floor is ~46px/s instead of 60; a 144Hz DPR-1 panel's is
+  72, a 165Hz one's 82; fractional-DPR desktops on a device-pixel
+  engine step whole device pixels (48px/s at 1.25×); every landing is
+  firmer.

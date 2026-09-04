@@ -16,6 +16,7 @@ import {
   __resetSpringFrameBatcherForTest,
   createSpringChase,
   SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME,
+  quantizedFloorRung,
   SPRING_WRITE_REFUSAL_LATCH_TICKS,
   SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS,
   type ArrivalReadback,
@@ -48,6 +49,8 @@ interface Harness {
   writes: { caller: string; value: number }[];
   refusalEvents: SpringWriteRefusalEvent[];
   getScrollTop(): number;
+  /** The model's velocity after the last tick (px per 60Hz frame). */
+  velocity(): number;
   setTarget(value: number): void;
   getTarget(): number;
   setLiveContentActive(active: boolean): void;
@@ -56,11 +59,12 @@ interface Harness {
 }
 
 /**
- * `quantize: true` models the browser's scrollTop contract at 1× DPI:
- * a fractional write lands on a whole pixel, and readbacks return that
- * rounded value. The default (fractional storage) keeps the kinematic
- * assertions exact; the quantized variant exercises the
- * remainder-carry path (which is inert when writes store exactly).
+ * `quantize: true` models the browser's scrollTop contract: a write lands
+ * on the engine's pixel grid — whole CSS pixels at the default `dpr` of
+ * 1, whole DEVICE pixels otherwise (the Pixel 9a probe, 2026-09-04:
+ * 1/2.625 CSS px steps) — and readbacks return that snapped value. The
+ * default (fractional storage) keeps the kinematic assertions exact.
+ * `dpr` is also what the spring's `devicePixelRatio` dep reports.
  *
  * `clientHeight` (default 0 = unmeasured) arms the chase-distance clamp;
  * the kinematic tests leave it off so their long-glide assertions stay
@@ -69,12 +73,20 @@ interface Harness {
 function makeHarness(
   opts: {
     quantize?: boolean;
+    dpr?: number;
+    /**
+     * The engine rounds every write to a whole CSS pixel whatever the
+     * device ratio (desktop Chromium at DPR 2, per the browser test).
+     * Implies `quantize`.
+     */
+    cssGrid?: boolean;
     clientHeight?: number;
     refuse?: boolean;
     /** Engine max-scroll clamp: stored scrollTop never exceeds this. */
     clampMax?: number;
   } = {},
 ): Harness {
+  const dpr = opts.dpr ?? 1;
   let scrollTop = 0;
   let target = 0;
   let liveContentActive = true;
@@ -93,7 +105,11 @@ function makeHarness(
   const refusalEvents: SpringWriteRefusalEvent[] = [];
   const store = (value: number): void => {
     if (!refuseWrites) {
-      const quantized = opts.quantize ? Math.round(value) : value;
+      const quantized = opts.cssGrid
+        ? Math.round(value)
+        : opts.quantize
+          ? Math.round(value * dpr) / dpr
+          : value;
       scrollTop = opts.clampMax === undefined ? quantized : Math.min(quantized, opts.clampMax);
     }
     lastExplainedScrollTop = scrollTop;
@@ -137,6 +153,7 @@ function makeHarness(
     },
     liveContentActive: () => liveContentActive,
     prefersReducedMotion: () => false,
+    devicePixelRatio: () => dpr,
     forceNextSpringTickTrace: () => {},
     scrollTopUnexplained: () =>
       lastExplainedScrollTop !== null
@@ -146,11 +163,13 @@ function makeHarness(
     },
   };
 
+  const spring = createSpringChase(deps);
   return {
-    spring: createSpringChase(deps),
+    spring,
     writes,
     refusalEvents,
     getScrollTop: () => scrollTop,
+    velocity: () => spring.velocityForTest(),
     setTarget: (value) => {
       target = value;
     },
@@ -174,6 +193,21 @@ function displacements(h: Harness, frames: number): number[] {
     const before = h.getScrollTop();
     frame();
     out.push(h.getScrollTop() - before);
+  }
+  return out;
+}
+
+/**
+ * The model's velocity after each of `frames` ticks. The kinematic
+ * suites (ramp ratios, envelope, retarget bridge, parked decay) pin the
+ * MODEL: what reaches scrollTop is whole device pixels, which cannot
+ * show a 10% per-frame ratio (see SpringChase.velocityForTest).
+ */
+function velocities(h: Harness, frames: number, ms = 16.67): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < frames; i++) {
+    frame(ms);
+    out.push(h.velocity());
   }
   return out;
 }
@@ -456,11 +490,10 @@ describe('momentum carry across catch-up', () => {
     // measurably in motion.
     h.setTarget(h.getTarget() + 20);
     h.spring.markTargetChanged();
-    const before = h.getScrollTop();
     frame();
-    const firstFrameMove = h.getScrollTop() - before;
-    expect(firstFrameMove).toBeGreaterThan(1.7);
-    expect(firstFrameMove).toBeLessThan(1.9);
+    const firstFrameVelocity = h.velocity();
+    expect(firstFrameVelocity).toBeGreaterThan(1.7);
+    expect(firstFrameVelocity).toBeLessThan(1.9);
   });
 
   it('sheds all momentum once the retain window has lapsed', () => {
@@ -477,11 +510,10 @@ describe('momentum carry across catch-up', () => {
     // asserted above.
     h.setTarget(h.getTarget() + 20);
     h.spring.markTargetChanged();
-    const before = h.getScrollTop();
     frame();
-    const firstFrameMove = h.getScrollTop() - before;
-    expect(firstFrameMove).toBeGreaterThan(1.05);
-    expect(firstFrameMove).toBeLessThan(1.2);
+    const firstFrameVelocity = h.velocity();
+    expect(firstFrameVelocity).toBeGreaterThan(1.05);
+    expect(firstFrameVelocity).toBeLessThan(1.2);
   });
 });
 
@@ -492,14 +524,14 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     h.spring.markTargetChanged();
     h.spring.start();
 
-    const moves = displacements(h, 6);
+    const speeds = velocities(h, 6);
     // Pre-slew, the first frame jumped straight to min(raw spring
     // ≈3.8, envelope 6.6). Slewed: the 1px-per-60Hz-frame motion floor
     // × the ramp factor, compounding ~10% per frame.
-    expect(moves[0]).toBeGreaterThan(1.0);
-    expect(moves[0]).toBeLessThan(1.2);
-    for (let i = 1; i < moves.length; i++) {
-      const ratio = moves[i] / moves[i - 1];
+    expect(speeds[0]).toBeGreaterThan(1.0);
+    expect(speeds[0]).toBeLessThan(1.2);
+    for (let i = 1; i < speeds.length; i++) {
+      const ratio = speeds[i] / speeds[i - 1];
       expect(ratio).toBeGreaterThan(1.08);
       expect(ratio).toBeLessThan(1.16);
     }
@@ -542,7 +574,7 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     let priorAcceleration = 0;
     let consecutiveDecelFrames = 0;
     for (let i = 0; i < 60 && consecutiveDecelFrames < 3; i++) {
-      const speed = displacements(h, 1)[0];
+      const speed = velocities(h, 1)[0];
       const acceleration = speed - priorSpeed;
       consecutiveDecelFrames = acceleration < -0.05 ? consecutiveDecelFrames + 1 : 0;
       priorSpeed = speed;
@@ -569,7 +601,7 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
         h.setTarget(h.getTarget() + 100);
         h.spring.markTargetChanged();
       }
-      const speed = displacements(h, 1)[0];
+      const speed = velocities(h, 1)[0];
       accelerations.push(speed - priorSpeed);
       speeds.push(speed);
       priorSpeed = speed;
@@ -594,7 +626,7 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     let acceleration = 0;
     let consecutiveDecelFrames = 0;
     for (let i = 0; i < 150 && consecutiveDecelFrames < 3; i++) {
-      const nextSpeed = displacements(h, 1)[0];
+      const nextSpeed = velocities(h, 1)[0];
       acceleration = nextSpeed - speed;
       speed = nextSpeed;
       consecutiveDecelFrames = acceleration < -0.05 ? consecutiveDecelFrames + 1 : 0;
@@ -607,7 +639,7 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     const handoffAccelerations = [acceleration];
     const handoffSpeeds: number[] = [];
     for (let i = 0; i < 18; i++) {
-      const nextSpeed = displacements(h, 1)[0];
+      const nextSpeed = velocities(h, 1)[0];
       handoffAccelerations.push(nextSpeed - speed);
       handoffSpeeds.push(nextSpeed);
       speed = nextSpeed;
@@ -639,6 +671,7 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
       let priorSpeed = 0;
       const accelerations: number[] = [];
       const speeds: number[] = [];
+      const steps: number[] = [];
       const frameCount = framesPerGrowth * 8;
       for (let i = 0; i < frameCount; i++) {
         if (i > 0 && i % framesPerGrowth === 0) {
@@ -649,20 +682,38 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
         frame(frameMs);
         // The first spring tick always integrates one full 60Hz step.
         // It is outside the warm repeated-retarget window below.
-        const speed = (h.getScrollTop() - before) / stepFraction;
+        const speed = h.velocity();
         accelerations.push((speed - priorSpeed) / stepFraction);
         speeds.push(speed);
+        steps.push(h.getScrollTop() - before);
         priorSpeed = speed;
       }
 
       const warmStart = framesPerGrowth * 4;
-      const warmAccelerations = accelerations.slice(warmStart);
-      for (let i = 1; i < warmAccelerations.length; i++) {
-        const upwardJerk =
-          (warmAccelerations[i] - warmAccelerations[i - 1]) / stepFraction;
-        expect(upwardJerk).toBeLessThanOrEqual(0.105);
+      // The velocity is the model; the ladder rounds what it writes to a
+      // whole pixel a tick, and the deceleration envelope reads the
+      // remaining distance off that grid. So a tick right after the
+      // written rung changed carries the envelope's own stair — the
+      // one acceleration corner whole-pixel feedback licenses — and
+      // every other tick, the retargets included, stays under the
+      // bridge's jerk.
+      for (let i = warmStart + 1; i < accelerations.length; i++) {
+        if (steps[i - 1] !== steps[i - 2]) continue;
+        const upwardJerk = (accelerations[i] - accelerations[i - 1]) / stepFraction;
+        expect(upwardJerk, `tick ${i}`).toBeLessThanOrEqual(0.105);
       }
       expect(speeds.slice(warmStart).every((value) => value > 0)).toBe(true);
+      // And the grid itself: whole pixels forward, rungs changing by one
+      // at a time, no tick idle longer than the rate's floor cadence.
+      const floorRung = quantizedFloorRung(1, stepFraction);
+      let idleRun = 0;
+      for (let i = warmStart; i < steps.length; i++) {
+        expect(Number.isInteger(steps[i]), `tick ${i}`).toBe(true);
+        expect(steps[i], `tick ${i}`).toBeGreaterThanOrEqual(0);
+        expect(Math.abs(steps[i] - steps[i - 1]), `tick ${i}`).toBeLessThanOrEqual(1);
+        idleRun = steps[i] === 0 ? idleRun + 1 : 0;
+        expect(idleRun, `tick ${i}`).toBeLessThan(floorRung.framesPerEvent);
+      }
     },
   );
 
@@ -710,9 +761,8 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     // long enough to read as stillness must not relaunch at speed.
     h.setTarget(h.getTarget() + 20);
     h.spring.markTargetChanged();
-    const before = h.getScrollTop();
     frame();
-    const entry = h.getScrollTop() - before;
+    const entry = h.velocity();
     expect(entry).toBeGreaterThan(1.0);
     expect(entry).toBeLessThan(1.3);
   });
@@ -754,8 +804,11 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     // effective 120Hz retention was 0.448/frame vs the tuned 0.56 —
     // ~20% velocity bleed per extra step — which diverges far outside
     // this tolerance.
+    // A 100× grid (device pixels of 0.01 CSS px) keeps the ladder's
+    // whole-pixel rounding out of a position comparison that is about
+    // the integrator alone.
     const run = (frameMs: number): number => {
-      const h = makeHarness();
+      const h = makeHarness({ dpr: 100 });
       h.setTarget(6);
       h.spring.markTargetChanged();
       h.spring.start();
@@ -798,13 +851,13 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     // ramps geometrically from the base — without the negative-side
     // clamp the first downward frame would be ~-5 (raw spring), a
     // visible kick.
-    const moves = displacements(h, 6);
-    const firstDown = moves.findIndex((m) => m < 0);
+    const speeds = velocities(h, 6);
+    const firstDown = speeds.findIndex((v) => v < 0);
     expect(firstDown).toBeGreaterThanOrEqual(0);
     expect(firstDown).toBeLessThanOrEqual(2);
-    expect(moves[firstDown]).toBeGreaterThanOrEqual(-1.2);
-    for (let i = firstDown + 1; i < moves.length; i++) {
-      const ratio = moves[i] / moves[i - 1];
+    expect(speeds[firstDown]).toBeGreaterThanOrEqual(-1.2);
+    for (let i = firstDown + 1; i < speeds.length; i++) {
+      const ratio = speeds[i] / speeds[i - 1];
       expect(ratio).toBeGreaterThan(1.05);
       expect(ratio).toBeLessThan(1.2);
     }
@@ -815,11 +868,11 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
     h.setTarget(60);
     h.spring.markTargetChanged();
     h.spring.start();
-    const moves = displacements(h, 3);
-    expect(moves[0]).toBeGreaterThan(1.0);
-    expect(moves[0]).toBeLessThan(1.2);
-    expect(moves[1] / moves[0]).toBeGreaterThan(1.08);
-    expect(moves[1] / moves[0]).toBeLessThan(1.16);
+    const speeds = velocities(h, 3);
+    expect(speeds[0]).toBeGreaterThan(1.0);
+    expect(speeds[0]).toBeLessThan(1.2);
+    expect(speeds[1] / speeds[0]).toBeGreaterThan(1.08);
+    expect(speeds[1] / speeds[0]).toBeLessThan(1.16);
   });
 
   it('counts a long-task gap while parked in full: decay uses real elapsed time, not the catch-up cap', () => {
@@ -838,9 +891,8 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
 
     h.setTarget(h.getTarget() + 20);
     h.spring.markTargetChanged();
-    const before = h.getScrollTop();
     frame();
-    const entry = h.getScrollTop() - before;
+    const entry = h.velocity();
     expect(entry).toBeGreaterThan(1.0);
     expect(entry).toBeLessThan(1.3);
   });
@@ -848,10 +900,11 @@ describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () =
 
 describe('glide shaping (decel envelope + quantized tail)', () => {
   // The peak sits at the slew-ramp ↔ envelope crossover; the envelope
-  // (0.09 · remaining) shapes the
-  // ease-out. The motion floor holds its quantized tail until the final
-  // three-pixel landing. These tests pin the envelope bound, floor, and
-  // error-carry continuity under integer scrollTop rounding.
+  // (0.09 · remaining) shapes the ease-out. The motion floor holds its
+  // whole-pixel tail until the landing (owner ruling 2026-09-04: no
+  // sub-pixel cradle, the floor stops rather than jitters). These tests
+  // pin the envelope bound, the floor, and write continuity under
+  // integer scrollTop rounding.
   function parkAt(h: Harness, target: number): void {
     h.setTarget(target);
     h.spring.markTargetChanged();
@@ -903,9 +956,10 @@ describe('glide shaping (decel envelope + quantized tail)', () => {
     const floorHold = moves.filter((m) => m > 0.98 && m < 1.02);
     expect(floorHold.length).toBeGreaterThanOrEqual(2);
     // A decelerating glide never dwells below one CSS pixel per 60Hz
-    // frame. The floor releases only inside the last 3px.
-    const breathingBand = moves.filter((m) => m > 0.05 && m < 0.95);
-    expect(breathingBand.length).toBeLessThanOrEqual(4);
+    // frame: the floor holds to the landing, and the only write under a
+    // pixel is the exact landing itself (the final frame, excluded).
+    const breathingBand = moves.slice(0, -1).filter((m) => m > 0.05 && m < 0.95);
+    expect(breathingBand).toEqual([]);
   });
 
   it('eases a tiny growth in gently without a snap', () => {
@@ -914,14 +968,21 @@ describe('glide shaping (decel envelope + quantized tail)', () => {
 
     h.setTarget(103); // sub-line growth
     h.spring.markTargetChanged();
-    const moves = movesUntilNear(h, 103, 20);
+    const before = h.getScrollTop();
+    frame();
     // Cold first frame is pure spring physics, (0.08·3)/1.25 ≈ 0.19 —
-    // the envelope min (1.6) is an upper bound, never a forced speed.
-    expect(moves[0]).toBeGreaterThan(0.15);
-    expect(moves[0]).toBeLessThan(0.25);
+    // the envelope min (1.6) is an upper bound, never a forced speed —
+    // under half a pixel, so the grid shows nothing yet.
+    expect(h.velocity()).toBeGreaterThan(0.15);
+    expect(h.velocity()).toBeLessThan(0.25);
+    expect(h.getScrollTop()).toBe(before);
+    // Then whole pixels accrue from that curve: never the 3px in one
+    // frame, never a step backwards.
+    const moves = movesUntilNear(h, 103, 20);
+    expect(moves.length).toBeGreaterThanOrEqual(2);
     for (const move of moves) {
       expect(move).toBeLessThanOrEqual(1);
-      expect(move).toBeGreaterThan(0);
+      expect(move).toBeGreaterThanOrEqual(0);
     }
   });
 
@@ -953,11 +1014,173 @@ describe('glide shaping (decel envelope + quantized tail)', () => {
 });
 
 describe('quantized motion floor', () => {
-  it('holds one CSS pixel per 60Hz-equivalent frame without a refresh-rate rung', () => {
+  it('derives the floor rung from the 60px/s reference on each grid and cadence', () => {
     expect(SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME).toBe(1);
+    // [dpr, refreshHz, device px per event, frames per event]: the
+    // regular cadence closest in ratio to 60px/s, never under 60
+    // position changes a second.
+    const table: [number, number, number, number][] = [
+      [1, 60, 1, 1], // 60px/s
+      [2, 60, 2, 1], // 60px/s
+      [1, 120, 1, 2], // 60px/s
+      [1, 240, 1, 4], // 60px/s
+      [1, 144, 1, 2], // 72px/s
+      [1, 165, 1, 2], // 82px/s: one in three would be 55 changes/s
+      [1, 90, 1, 1], // 90px/s: one in two would be 45 changes/s
+      [1.25, 60, 1, 1], // 48px/s
+      [1.5, 60, 2, 1], // 80px/s: one device pixel would be 40
+      [2.625, 120, 1, 1], // 46px/s, the Pixel 9a
+      [2.625, 60, 3, 1], // 69px/s
+      [3, 120, 2, 1], // 80px/s
+      [0.8, 240, 1, 4], // zoomed out: 75px/s, held to 60 changes/s
+    ];
+    for (const [dpr, hz, pxPerEvent, framesPerEvent] of table) {
+      expect(quantizedFloorRung(dpr, 60 / hz), `${dpr}× at ${hz}Hz`).toEqual({
+        pxPerEvent,
+        framesPerEvent,
+      });
+    }
   });
 
-  it('does not submit writes that a witnessed whole-pixel engine would reject', () => {
+  it('on a 2.625× 120Hz phone the glide steps whole device pixels, ends on a steady one-a-frame floor, and lands exactly', () => {
+    const dpr = 2.625;
+    const refreshInterval = 1000 / 120;
+    const h = makeHarness({ quantize: true, dpr });
+    h.setTarget(100);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 240; i++) frame(refreshInterval);
+
+    h.setTarget(160);
+    h.spring.markTargetChanged();
+    const steps: number[] = [];
+    for (let i = 0; i < 480 && h.getScrollTop() < 160; i++) {
+      const before = h.getScrollTop();
+      frame(refreshInterval);
+      steps.push((h.getScrollTop() - before) * dpr);
+    }
+    expect(h.getScrollTop()).toBe(160);
+    // Every step but the exact landing is a whole number of device
+    // pixels — the 1,2,1,2 the phone showed was a fractional model
+    // snapped by the engine.
+    const interior = steps.slice(0, -1);
+    for (const step of interior) {
+      expect(Math.abs(step - Math.round(step))).toBeLessThan(1e-6);
+    }
+    // Past the peak the rungs only step down (3,3,2,2,1 — once each).
+    const peak = interior.indexOf(Math.max(...interior));
+    for (let i = peak + 1; i < interior.length; i++) {
+      expect(interior[i]).toBeLessThanOrEqual(interior[i - 1] + 1e-6);
+    }
+    // The tail is the rung — one device pixel every frame, no
+    // stationary frame, no sub-floor cradle — all the way to the landing.
+    const tail = interior.slice(-10);
+    for (const step of tail) expect(Math.round(step)).toBe(1);
+  });
+
+  it('a 2× grid at 60Hz keeps the one-CSS-pixel floor (two device pixels a frame)', () => {
+    const h = makeHarness({ quantize: true, dpr: 2 });
+    h.setTarget(100);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 60; i++) frame();
+    expect(h.getScrollTop()).toBe(100);
+
+    h.setTarget(160);
+    h.spring.markTargetChanged();
+    const moves: number[] = [];
+    for (let i = 0; i < 80 && h.getScrollTop() < 160; i++) {
+      const before = h.getScrollTop();
+      frame();
+      moves.push(h.getScrollTop() - before);
+    }
+    expect(h.getScrollTop()).toBe(160);
+    for (const move of moves) {
+      expect(Math.abs(move * 2 - Math.round(move * 2))).toBeLessThan(1e-6);
+    }
+    const floorHold = moves.filter((m) => Math.abs(m - 1) < 1e-6);
+    expect(floorHold.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('witnesses a CSS-pixel engine at DPR 2 on its first half-pixel write and moves the ladder to CSS pixels', () => {
+    // Desktop Chromium rounds every scrollTop write to a whole CSS
+    // pixel at DPR 2 (scrollTopQuantization.browser.test.ts). A ladder
+    // that kept writing device pixels there would have the engine paint
+    // its odd rungs (1.5 CSS px) as 2,1,2,1.
+    const h = makeHarness({ cssGrid: true, dpr: 2 });
+    h.setTarget(400);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    const requested: number[] = [];
+    const steps: number[] = [];
+    for (let i = 0; i < 200 && h.getScrollTop() < 400; i++) {
+      const before = h.getScrollTop();
+      const writesBefore = h.writes.length;
+      frame();
+      if (h.writes.length > writesBefore) requested.push(h.writes[h.writes.length - 1].value);
+      steps.push(h.getScrollTop() - before);
+    }
+    expect(h.getScrollTop()).toBe(400);
+    // Exactly one write ever lands off the CSS grid: the witness.
+    const offGrid = requested.filter((value) => !Number.isInteger(value));
+    expect(offGrid).toHaveLength(1);
+    const witnessAt = requested.indexOf(offGrid[0]);
+    for (const value of requested.slice(witnessAt + 1)) expect(Number.isInteger(value)).toBe(true);
+    // And after it the painted steps are the ladder's own rungs: below
+    // cruise (the diffusion band, where the envelope sheds several
+    // pixels a frame), down by at most one CSS pixel a frame and
+    // monotone, the 60px/s floor (one CSS px a frame) through to the
+    // landing.
+    const interior = steps.slice(0, -1);
+    const peak = interior.indexOf(Math.max(...interior));
+    for (let i = Math.max(peak + 1, witnessAt + 2); i < interior.length; i++) {
+      if (interior[i - 1] >= 8) continue;
+      expect(interior[i], `frame ${i}`).toBeLessThanOrEqual(interior[i - 1]);
+      expect(interior[i - 1] - interior[i], `frame ${i}`).toBeLessThanOrEqual(1);
+    }
+    for (const step of interior.slice(-4)) expect(step).toBe(1);
+
+    // The witness is an engine property: a second chase writes CSS
+    // pixels from its first tick.
+    h.setTarget(460);
+    h.spring.markTargetChanged();
+    const secondChase = h.writes.length;
+    for (let i = 0; i < 100 && h.getScrollTop() < 460; i++) frame();
+    expect(h.getScrollTop()).toBe(460);
+    for (const write of h.writes.slice(secondChase)) expect(Number.isInteger(write.value)).toBe(true);
+  });
+
+  it('a 1.25× grid at 60Hz steps whole device pixels, never the 1,1,1,2 alternation', () => {
+    const dpr = 1.25;
+    const h = makeHarness({ quantize: true, dpr });
+    h.setTarget(100);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 60; i++) frame();
+    expect(h.getScrollTop()).toBe(100);
+
+    h.setTarget(160);
+    h.spring.markTargetChanged();
+    const steps: number[] = [];
+    for (let i = 0; i < 100 && h.getScrollTop() < 160; i++) {
+      const before = h.getScrollTop();
+      frame();
+      steps.push((h.getScrollTop() - before) * dpr);
+    }
+    expect(h.getScrollTop()).toBe(160);
+    const interior = steps.slice(0, -1);
+    for (const step of interior) {
+      expect(Math.abs(step - Math.round(step))).toBeLessThan(1e-6);
+    }
+    const peak = interior.indexOf(Math.max(...interior));
+    for (let i = peak + 1; i < interior.length; i++) {
+      expect(interior[i]).toBeLessThanOrEqual(interior[i - 1] + 1e-6);
+    }
+    // The 48px/s rung: one device pixel (0.8 CSS px) a frame.
+    for (const step of interior.slice(-4)) expect(Math.round(step)).toBe(1);
+  });
+
+  it('submits only writes that move a whole device pixel', () => {
     const refreshInterval = 1000 / 165;
     const h = makeHarness({ quantize: true });
     h.setTarget(100);
@@ -977,13 +1200,20 @@ describe('quantized motion floor', () => {
 
     expect(h.getScrollTop()).toBeGreaterThanOrEqual(158);
     const submittedWrites = h.writes.length - writesBefore;
-    // Two natural fractional writes establish the engine contract. After
-    // that, a frame whose rounded destination is the current pixel has no
-    // observable write to make. Keep a small allowance for the witnesses and
-    // the exact arrival write.
-    expect(submittedWrites).toBeLessThanOrEqual(movingFrames + 3);
+    // A tick whose displacement rounds to no device pixel writes
+    // nothing, so writes never outnumber moving frames beyond the exact
+    // landing write.
+    expect(submittedWrites).toBeLessThanOrEqual(movingFrames + 1);
   });
 
+  /**
+   * Drive a 60px quantum at `chaseHz` after two seconds of `warmHz`
+   * frames (the cadence EMA re-converges during the chase), and assert
+   * the last five pixels — the floor holds from about six pixels out,
+   * where the spring's own velocity drops under the rung's rate — are
+   * the rung: whole pixels, one every `framesPerEvent` frames exactly,
+   * through to the landing. Returns the tail's period in ms per pixel.
+   */
   function assertQuantizedTailCadence(warmHz: number, chaseHz: number): number {
     const warmInterval = 1000 / warmHz;
     const chaseInterval = 1000 / chaseHz;
@@ -996,38 +1226,33 @@ describe('quantized motion floor', () => {
     h.setTarget(160);
     h.spring.markTargetChanged();
     const tailMoves: number[] = [];
-    for (let i = 0; i < chaseHz * 3 && h.getScrollTop() < 158; i++) {
+    for (let i = 0; i < chaseHz * 3 && h.getScrollTop() < 160; i++) {
       const before = h.getScrollTop();
       frame(chaseInterval);
-      if (before >= 152 && before < 157) {
-        tailMoves.push(h.getScrollTop() - before);
-      }
+      if (before >= 155) tailMoves.push(h.getScrollTop() - before);
     }
-    expect(h.getScrollTop()).toBeGreaterThanOrEqual(158);
-    expect(tailMoves.length).toBeGreaterThanOrEqual(3);
-    const tailDurationMs = tailMoves.length * chaseInterval;
-    const maxStationaryFrames = Math.max(0, Math.ceil(chaseHz / 60) - 1);
-    let stationaryRun = 0;
-    let longestStationaryRun = 0;
-    for (const move of tailMoves) {
-      expect(move).toBeGreaterThanOrEqual(0);
-      expect(move).toBeLessThanOrEqual(2);
-      if (move === 0) {
-        stationaryRun += 1;
-        longestStationaryRun = Math.max(longestStationaryRun, stationaryRun);
-      } else {
-        stationaryRun = 0;
-      }
+    expect(h.getScrollTop()).toBe(160);
+    const rung = quantizedFloorRung(1, 60 / chaseHz);
+    expect(rung.pxPerEvent).toBe(1);
+    const moveTicks: number[] = [];
+    tailMoves.forEach((move, tick) => {
+      expect([0, 1]).toContain(move);
+      if (move === 1) moveTicks.push(tick);
+    });
+    expect(moveTicks).toHaveLength(5);
+    for (let i = 1; i < moveTicks.length; i++) {
+      expect(moveTicks[i] - moveTicks[i - 1]).toBe(rung.framesPerEvent);
     }
-    expect(longestStationaryRun).toBeLessThanOrEqual(maxStationaryFrames);
-    return tailDurationMs;
+    return rung.framesPerEvent;
   }
 
-  it('keeps quantized tail speed stable from 60 through 240Hz', () => {
-    const durations = [60, 90, 120, 144, 165, 240]
-      .map((refreshHz) => assertQuantizedTailCadence(refreshHz, refreshHz));
-    expect(Math.max(...durations) - Math.min(...durations))
-      .toBeLessThanOrEqual(1000 / 60);
+  it('runs the tail at its rung from 60 through 240Hz: whole pixels, evenly spaced, near 60px/s', () => {
+    for (const refreshHz of [60, 90, 120, 144, 165, 240]) {
+      const framesPerPixel = assertQuantizedTailCadence(refreshHz, refreshHz);
+      const pxPerSecond = refreshHz / framesPerPixel;
+      expect(pxPerSecond, `${refreshHz}Hz`).toBeGreaterThanOrEqual(60);
+      expect(pxPerSecond, `${refreshHz}Hz`).toBeLessThanOrEqual(90);
+    }
   });
 
   it.each([
@@ -1036,10 +1261,12 @@ describe('quantized motion floor', () => {
     [120, 165],
     [165, 120],
   ])('changes from %iHz to %iHz without a quantized-tail pulse', (warmHz, chaseHz) => {
-    const transitionedDuration = assertQuantizedTailCadence(warmHz, chaseHz);
-    const steadyDuration = assertQuantizedTailCadence(chaseHz, chaseHz);
-    expect(Math.abs(transitionedDuration - steadyDuration))
-      .toBeLessThanOrEqual(1000 / chaseHz);
+    // The rung is re-derived from the cadence EMA every tick, so a chase
+    // that starts on the old monitor's EMA settles onto the new rung
+    // long before its tail — the same cadence as a chase warmed there.
+    const transitionedCadence = assertQuantizedTailCadence(warmHz, chaseHz);
+    const steadyCadence = assertQuantizedTailCadence(chaseHz, chaseHz);
+    expect(transitionedCadence).toBe(steadyCadence);
   });
 });
 
