@@ -13,6 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  __resetEngineGridForTest,
   __resetSpringFrameBatcherForTest,
   createSpringChase,
   SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME,
@@ -80,6 +81,12 @@ function makeHarness(
      * Implies `quantize`.
      */
     cssGrid?: boolean;
+    /**
+     * The engine FLOORS every write to a whole CSS pixel whatever the
+     * device ratio (macOS WKWebView, the 2026-09-04 spike: 100.75 reads
+     * back 100, and +0.5 never moves). Implies `quantize`.
+     */
+    floorGrid?: boolean;
     clientHeight?: number;
     refuse?: boolean;
     /** Engine max-scroll clamp: stored scrollTop never exceeds this. */
@@ -105,7 +112,9 @@ function makeHarness(
   const refusalEvents: SpringWriteRefusalEvent[] = [];
   const store = (value: number): void => {
     if (!refuseWrites) {
-      const quantized = opts.cssGrid
+      const quantized = opts.floorGrid
+        ? Math.floor(value)
+        : opts.cssGrid
         ? Math.round(value)
         : opts.quantize
           ? Math.round(value * dpr) / dpr
@@ -186,6 +195,21 @@ function makeHarness(
   };
 }
 
+/**
+ * Ticks between the last `events` pixel events of a per-tick step
+ * series, the landing included. The landing cradle makes the last
+ * three events of a floor rung `k` take k, 2k, 3k ticks, so a glide
+ * that ends on the rung reads [k, k, 2k, 3k] over its last five.
+ */
+function eventIntervals(steps: number[], events = 5): number[] {
+  const ticks: number[] = [];
+  steps.forEach((step, i) => {
+    if (step !== 0) ticks.push(i);
+  });
+  const last = ticks.slice(-events);
+  return last.slice(1).map((tick, i) => tick - last[i]);
+}
+
 /** Per-frame scrollTop displacements over `frames` ticks. */
 function displacements(h: Harness, frames: number): number[] {
   const out: number[] = [];
@@ -222,6 +246,7 @@ beforeEach(() => {
   });
   vi.stubGlobal('cancelAnimationFrame', () => {});
   __resetSpringFrameBatcherForTest();
+  __resetEngineGridForTest();
   vi.spyOn(performance, 'now').mockImplementation(() => now);
 });
 
@@ -1017,22 +1042,22 @@ describe('quantized motion floor', () => {
   it('derives the floor rung from the 60px/s reference on each grid and cadence', () => {
     expect(SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME).toBe(1);
     // [dpr, refreshHz, device px per event, frames per event]: the
-    // regular cadence closest in ratio to 60px/s, never under 60
+    // regular cadence closest in ratio to 60px/s, never under 45
     // position changes a second.
     const table: [number, number, number, number][] = [
       [1, 60, 1, 1], // 60px/s
       [2, 60, 2, 1], // 60px/s
       [1, 120, 1, 2], // 60px/s
       [1, 240, 1, 4], // 60px/s
-      [1, 144, 1, 2], // 72px/s
-      [1, 165, 1, 2], // 82px/s: one in three would be 55 changes/s
-      [1, 90, 1, 1], // 90px/s: one in two would be 45 changes/s
+      [1, 144, 1, 2], // 72px/s: one in three (48) is further in ratio
+      [1, 165, 1, 3], // 55px/s, 55 changes/s: closer than one in two (82)
+      [1, 90, 1, 2], // 45px/s, at the cadence bound
       [1.25, 60, 1, 1], // 48px/s
       [1.5, 60, 2, 1], // 80px/s: one device pixel would be 40
       [2.625, 120, 1, 1], // 46px/s, the Pixel 9a
       [2.625, 60, 3, 1], // 69px/s
       [3, 120, 2, 1], // 80px/s
-      [0.8, 240, 1, 4], // zoomed out: 75px/s, held to 60 changes/s
+      [0.8, 240, 1, 5], // zoomed out: 60 CSS px/s, 48 changes/s
     ];
     for (const [dpr, hz, pxPerEvent, framesPerEvent] of table) {
       expect(quantizedFloorRung(dpr, 60 / hz), `${dpr}× at ${hz}Hz`).toEqual({
@@ -1067,15 +1092,17 @@ describe('quantized motion floor', () => {
     for (const step of interior) {
       expect(Math.abs(step - Math.round(step))).toBeLessThan(1e-6);
     }
-    // Past the peak the rungs only step down (3,3,2,2,1 — once each).
+    // Past the peak the rungs only step down (3,3,2,2,1 — once each)
+    // until the landing cradle (its last six ticks).
     const peak = interior.indexOf(Math.max(...interior));
-    for (let i = peak + 1; i < interior.length; i++) {
+    for (let i = peak + 1; i < interior.length - 6; i++) {
       expect(interior[i]).toBeLessThanOrEqual(interior[i - 1] + 1e-6);
     }
-    // The tail is the rung — one device pixel every frame, no
-    // stationary frame, no sub-floor cradle — all the way to the landing.
-    const tail = interior.slice(-10);
-    for (const step of tail) expect(Math.round(step)).toBe(1);
+    // The tail is the rung — one device pixel every frame, never a
+    // sub-pixel write — then the even cradle: 1, 1, 2, 3 frames between
+    // the last five pixels, the landing included.
+    for (const step of interior.slice(-7, -4)) expect(Math.round(step)).toBe(1);
+    expect(eventIntervals(steps)).toEqual([1, 1, 2, 3]);
   });
 
   it('a 2× grid at 60Hz keeps the one-CSS-pixel floor (two device pixels a frame)', () => {
@@ -1133,12 +1160,13 @@ describe('quantized motion floor', () => {
     // landing.
     const interior = steps.slice(0, -1);
     const peak = interior.indexOf(Math.max(...interior));
-    for (let i = Math.max(peak + 1, witnessAt + 2); i < interior.length; i++) {
+    for (let i = Math.max(peak + 1, witnessAt + 2); i < interior.length - 6; i++) {
       if (interior[i - 1] >= 8) continue;
       expect(interior[i], `frame ${i}`).toBeLessThanOrEqual(interior[i - 1]);
       expect(interior[i - 1] - interior[i], `frame ${i}`).toBeLessThanOrEqual(1);
     }
-    for (const step of interior.slice(-4)) expect(step).toBe(1);
+    for (const step of interior.slice(-7, -4)) expect(step).toBe(1);
+    expect(eventIntervals(steps)).toEqual([1, 1, 2, 3]);
 
     // The witness is an engine property: a second chase writes CSS
     // pixels from its first tick.
@@ -1173,11 +1201,13 @@ describe('quantized motion floor', () => {
       expect(Math.abs(step - Math.round(step))).toBeLessThan(1e-6);
     }
     const peak = interior.indexOf(Math.max(...interior));
-    for (let i = peak + 1; i < interior.length; i++) {
+    for (let i = peak + 1; i < interior.length - 6; i++) {
       expect(interior[i]).toBeLessThanOrEqual(interior[i - 1] + 1e-6);
     }
-    // The 48px/s rung: one device pixel (0.8 CSS px) a frame.
-    for (const step of interior.slice(-4)) expect(Math.round(step)).toBe(1);
+    // The 48px/s rung: one device pixel (0.8 CSS px) a frame, then the
+    // even cradle.
+    for (const step of interior.slice(-7, -4)) expect(Math.round(step)).toBe(1);
+    expect(eventIntervals(steps)).toEqual([1, 1, 2, 3]);
   });
 
   it('submits only writes that move a whole device pixel', () => {
@@ -1211,8 +1241,9 @@ describe('quantized motion floor', () => {
    * frames (the cadence EMA re-converges during the chase), and assert
    * the last five pixels — the floor holds from about six pixels out,
    * where the spring's own velocity drops under the rung's rate — are
-   * the rung: whole pixels, one every `framesPerEvent` frames exactly,
-   * through to the landing. Returns the tail's period in ms per pixel.
+   * the rung `k` (whole pixels, one every `framesPerEvent` frames
+   * exactly) closed by the even cradle: k, k, 2k, 3k frames between
+   * them, the landing included. Returns `k`.
    */
   function assertQuantizedTailCadence(warmHz: number, chaseHz: number): number {
     const warmInterval = 1000 / warmHz;
@@ -1234,24 +1265,22 @@ describe('quantized motion floor', () => {
     expect(h.getScrollTop()).toBe(160);
     const rung = quantizedFloorRung(1, 60 / chaseHz);
     expect(rung.pxPerEvent).toBe(1);
-    const moveTicks: number[] = [];
-    tailMoves.forEach((move, tick) => {
-      expect([0, 1]).toContain(move);
-      if (move === 1) moveTicks.push(tick);
-    });
-    expect(moveTicks).toHaveLength(5);
-    for (let i = 1; i < moveTicks.length; i++) {
-      expect(moveTicks[i] - moveTicks[i - 1]).toBe(rung.framesPerEvent);
-    }
-    return rung.framesPerEvent;
+    for (const move of tailMoves) expect([0, 1]).toContain(move);
+    expect(tailMoves.filter((move) => move === 1)).toHaveLength(5);
+    const k = rung.framesPerEvent;
+    expect(eventIntervals(tailMoves), `${chaseHz}Hz`).toEqual([k, k, 2 * k, 3 * k]);
+    return k;
   }
 
   it('runs the tail at its rung from 60 through 240Hz: whole pixels, evenly spaced, near 60px/s', () => {
+    // px/s per panel: exactly 60 wherever a whole number of frames
+    // makes it, else the closest even cadence at or above 45 changes/s
+    // — 55 on the 165Hz panel (one in three), not 82 (one in two).
+    const expected: Record<number, number> = { 60: 60, 90: 45, 120: 60, 144: 72, 165: 55, 240: 60 };
     for (const refreshHz of [60, 90, 120, 144, 165, 240]) {
       const framesPerPixel = assertQuantizedTailCadence(refreshHz, refreshHz);
       const pxPerSecond = refreshHz / framesPerPixel;
-      expect(pxPerSecond, `${refreshHz}Hz`).toBeGreaterThanOrEqual(60);
-      expect(pxPerSecond, `${refreshHz}Hz`).toBeLessThanOrEqual(90);
+      expect(pxPerSecond, `${refreshHz}Hz`).toBeCloseTo(expected[refreshHz], 0);
     }
   });
 
@@ -1267,6 +1296,144 @@ describe('quantized motion floor', () => {
     const transitionedCadence = assertQuantizedTailCadence(warmHz, chaseHz);
     const steadyCadence = assertQuantizedTailCadence(chaseHz, chaseHz);
     expect(transitionedCadence).toBe(steadyCadence);
+  });
+
+  /**
+   * Park a fresh harness at 96 with `hz` frames, then glide to 160
+   * collecting per-tick steps (both sit on every grid in play: 96 and
+   * 160 are whole device pixels at 1.25× and 2.625×). `cold` forgets the
+   * grid witness the park earned, so the measured glide is a page's
+   * very first.
+   */
+  function glideSteps(
+    h: Harness,
+    hz: number,
+    opts: { cold?: boolean } = {},
+  ): { steps: number[]; writes: number[] } {
+    const interval = 1000 / hz;
+    h.setTarget(96);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < hz * 3 && h.getScrollTop() !== 96; i++) frame(interval);
+    expect(h.getScrollTop(), `park at ${hz}Hz`).toBe(96);
+    if (opts.cold) __resetEngineGridForTest();
+    const writesBefore = h.writes.length;
+    h.setTarget(160);
+    h.spring.markTargetChanged();
+    const steps: number[] = [];
+    for (let i = 0; i < hz * 3 && h.getScrollTop() < 160; i++) {
+      const before = h.getScrollTop();
+      frame(interval);
+      steps.push(h.getScrollTop() - before);
+    }
+    expect(h.getScrollTop(), `land at ${hz}Hz`).toBe(160);
+    return { steps, writes: h.writes.slice(writesBefore).map((w) => w.value) };
+  }
+
+  it('witnesses a flooring engine (WKWebView) at DPR 2 on an unmoved half-pixel write, so a 165Hz glide never freezes', () => {
+    // Before the fix the witness needed motion, and on WebKit a half
+    // pixel never moves: the ramp sat on the one-device-pixel rung
+    // writing 0.5 CSS px per tick, frozen, until a rung of three (1.5
+    // px) finally floored to one — dozens of ticks into every glide.
+    const h = makeHarness({ floorGrid: true, dpr: 2 });
+    const { steps, writes } = glideSteps(h, 165, { cold: true });
+    // One off-grid write ever: the witness, which did not move.
+    const offGrid = writes.filter((value) => !Number.isInteger(value));
+    expect(offGrid).toHaveLength(1);
+    // First motion within a handful of ticks of the onset, no frozen run.
+    expect(steps.findIndex((step) => step !== 0)).toBeLessThanOrEqual(5);
+    const rung = quantizedFloorRung(1, 60 / 165);
+    let idle = 0;
+    for (const step of steps) {
+      idle = step === 0 ? idle + 1 : 0;
+      expect(idle).toBeLessThanOrEqual(3 * rung.framesPerEvent);
+    }
+    // Whole CSS pixels from the witness on, and the 55px/s rung's cradle.
+    for (const value of writes.slice(writes.indexOf(offGrid[0]) + 1)) {
+      expect(Number.isInteger(value)).toBe(true);
+    }
+    expect(eventIntervals(steps)).toEqual([3, 3, 6, 9]);
+  });
+
+  it('the grid witness is page-wide: a second spring writes CSS pixels from its first tick', () => {
+    const first = makeHarness({ cssGrid: true, dpr: 2 });
+    glideSteps(first, 60);
+    const second = makeHarness({ cssGrid: true, dpr: 2 });
+    const { writes } = glideSteps(second, 60);
+    for (const value of writes) expect(Number.isInteger(value)).toBe(true);
+  });
+
+  it('a readback off the CSS grid latches the device grid and undoes a witness a max-scroll clamp faked', () => {
+    // A device-pixel engine (the phone) whose max scroll sits under a
+    // stale target: writes past it read back the integer max, within a
+    // pixel of an off-grid request — the CSS witness's own signature.
+    const dpr = 2.625;
+    const h = makeHarness({ quantize: true, dpr, clampMax: 130 });
+    h.setTarget(100);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 180 && h.getScrollTop() !== 100; i++) frame();
+    h.setTarget(160);
+    h.spring.markTargetChanged();
+    for (let i = 0; i < 120; i++) frame();
+    expect(h.getScrollTop()).toBe(130);
+    // The target comes back inside the engine's range: whatever the
+    // clamp taught, the ladder ends up back on device pixels, because
+    // the first integer write that reads back fractional says so.
+    h.setTarget(80); // 210 device pixels exactly
+    h.spring.markTargetChanged();
+    const writesBefore = h.writes.length;
+    for (let i = 0; i < 240 && h.getScrollTop() !== 80; i++) frame();
+    expect(h.getScrollTop()).toBe(80);
+    const tail = h.writes.slice(writesBefore).slice(-6, -1).map((w) => w.value);
+    for (const value of tail) {
+      expect(Math.abs(value * dpr - Math.round(value * dpr)), `${value}`).toBeLessThan(1e-6);
+    }
+    expect(tail.some((value) => !Number.isInteger(value))).toBe(true);
+  });
+
+  it('never freezes, steps whole grid pixels and lands through the even cradle on every engine, grid and cadence', () => {
+    const engines = ['round', 'floor', 'device'] as const;
+    for (const engine of engines) {
+      for (const dpr of [1, 1.25, 2, 2.625]) {
+        for (const hz of [60, 120, 144, 165, 240]) {
+          for (const cold of [true, false]) {
+            __resetEngineGridForTest();
+            const label = `${engine} ${dpr}× ${hz}Hz ${cold ? 'first glide' : 'witnessed'}`;
+            const h = makeHarness(
+              engine === 'round'
+                ? { cssGrid: true, dpr }
+                : engine === 'floor'
+                  ? { floorGrid: true, dpr }
+                  : { quantize: true, dpr },
+            );
+            const { steps } = glideSteps(h, hz, { cold });
+            const gridDpr = engine === 'device' ? dpr : 1;
+            const rung = quantizedFloorRung(gridDpr, 60 / hz);
+            // Onset: motion within six ticks (a witness tick, then the
+            // slowest onset rung), and no idle run longer than the
+            // cradle's widest gap thereafter.
+            expect(steps.findIndex((step) => step !== 0), label).toBeLessThanOrEqual(6);
+            let idle = 0;
+            for (const step of steps) {
+              idle = step === 0 ? idle + 1 : 0;
+              expect(idle, label).toBeLessThanOrEqual(3 * rung.framesPerEvent);
+            }
+            // Every interior step is a whole grid pixel; never backwards.
+            for (const step of steps.slice(0, -1)) {
+              expect(step, label).toBeGreaterThanOrEqual(0);
+              expect(Math.abs(step * gridDpr - Math.round(step * gridDpr)), label).toBeLessThan(
+                1e-6,
+              );
+            }
+            // The even cradle, whatever the rung's size: k, k, 2k, 3k
+            // ticks between the last five events.
+            const k = rung.framesPerEvent;
+            expect(eventIntervals(steps), label).toEqual([k, k, 2 * k, 3 * k]);
+          }
+        }
+      }
+    }
   });
 });
 

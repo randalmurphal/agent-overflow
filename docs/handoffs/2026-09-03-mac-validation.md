@@ -370,3 +370,36 @@ written.
   72, a 165Hz one's 82; fractional-DPR desktops on a device-pixel
   engine step whole device pixels (48px/s at 1.25×); every landing is
   firmer.
+- **Mac follow-up (2026-09-04).** Two of those trade-offs were wrong
+  enough to fix, and the witness hid a freeze.
+  - macOS WKWebView FLOORS a fractional `scrollTop` write to the whole
+    CSS pixel below (standalone Swift spike on the M2 Air, DPR 2:
+    100.75 → 100, 200.999 → 200, `+0.5` repeated never moves, `+1.5`
+    repeated moves exactly 1 px a write). It does not round, and there
+    is no device-pixel grid. The witness above required observed MOTION
+    to latch CSS pixels, so on a Retina display above 60Hz (where the
+    ramp starts at 1 device px = 0.5 CSS px) every send glide sat
+    frozen for 10–40 ticks a pane until a 3-device-pixel rung floored
+    to 1. The 60Hz Mac never showed it: its ramp starts at 2 device
+    px = 1 CSS px, and a harness send there glided cleanly (50 ticks,
+    50 writes, 0 zero-step ticks). The witness now accepts an
+    off-grid write that reads back on the CSS grid within a pixel,
+    moved or not; a readback OFF the CSS grid (the Pixel's 1/32 px
+    values) latches the device grid for good; and the witness is
+    page-wide module state, so a second pane never re-learns it. The
+    Pixel measurement (§ above) stands and drives the phone's rung.
+  - The floor's cadence bound is 45 changes a second, not 60, so a
+    165Hz DPR-1 panel runs one pixel every three frames (55px/s, the
+    rung closest to the reference and to main's 60) instead of every
+    two (82px/s). 144Hz keeps 72 (the ratio pick), 120 and 240 keep 60.
+  - The landing cradle is back, on the grid: the last three pixel
+    events run at k, 2k, 3k ticks (`SPRING_LANDING_CRADLE_EVENTS`; 0 is
+    the flat stop this section shipped). What to feel-check on the
+    165Hz Windows setup against main: the tail is 55px/s even instead
+    of 60px/s irregular (3,3,2 ticks a pixel), mid-speed rungs plateau
+    where main alternated 2,3,2,3, and the onset base is 1.375 px a
+    frame instead of 1.0. Cruise is identical.
+  - Harness gotcha that faked two "frozen glide" captures: the
+    WKWebView harness window runs rAF only while frontmost. Reveal it
+    (`bin/ao-harness rpc HarnessWindowCommand '{"action":"reveal"}'`)
+    right before a timing-sensitive send.

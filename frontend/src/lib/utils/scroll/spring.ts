@@ -296,11 +296,18 @@ const SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME = 1;
 // slow tail is exactly where that is visible. Owner ruling 2026-09-04:
 // no jitter, and if constant motion cannot avoid it the glide stops
 // rather than jitters. So the spring authors whole grid pixels. The
-// grid is WITNESSED, never assumed: device pixels (the finer grid, the
-// one the display paints) until a write off the CSS-pixel grid reads
-// back rounded onto it, which latches CSS pixels for the page's life —
-// on a DPR-2 desktop the first odd device-pixel rung is that write, so
-// at most one tick shows the engine's rounding. Each tick's
+// grid is WITNESSED, never assumed, and page-wide, since it is a
+// property of the engine and not of any one scroller: device pixels
+// (the finer grid, the one the display paints) until an interior write
+// off the CSS-pixel grid reads back ON it, which latches CSS pixels for
+// the page's life. Chromium ROUNDS such a write (it moves), macOS
+// WKWebView FLOORS it (100.5 reads back 100, unmoved, and so would
+// every half pixel after it: the 2026-09-04 spike on the M2 Air), so
+// the witness is the integer readback within a pixel, moved or not —
+// a witness that waited for motion froze every Retina glide above 60Hz
+// on WebKit. The converse latches the device grid for good: a readback
+// off the CSS grid is something no CSS-grid engine ever returns, which
+// also undoes a CSS witness a max-scroll clamp faked. Each tick's
 // displacement is snapped to a LADDER of even cadences:
 //
 //   - `n` device pixels a tick from one up to SPRING_STEP_DIFFUSION_MIN_
@@ -320,17 +327,24 @@ const SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME = 1;
 //     regular cadence closest in ratio to this reference rate. In the
 //     floor regime the tick advances exactly that, by frame count, so
 //     rAF timestamp jitter can never slip an extra pixel in.
-//   - The floor holds until the cross-target clamp lands the glide.
-//     The former 3px release (a ~3-frame sub-pixel "cradle", 2026-07-04
-//     feedback) is exactly the tail the ruling retired: on the grid it
-//     could only be an irregular one.
+//   - The floor holds until the cross-target clamp lands the glide,
+//     through a landing cradle that is itself even: the last
+//     SPRING_LANDING_CRADLE_EVENTS pixel events each take one floor
+//     interval longer than the one before (k, 2k, 3k ticks). That is
+//     the ritardando the 2026-07-04 feedback asked for (a flat stop
+//     read as too firm), on the grid, where the sub-pixel decay that
+//     used to make it could only paint an irregular one.
 //
 // This is the reference rate the rung is derived from: one CSS pixel per
 // 60Hz-equivalent frame, 60px/s. The rung lands within a factor of
-// ~1.4 of it: exactly 60px/s at DPR 1 and 2 on 60Hz and at DPR 1 on
-// 120/240Hz; ~46px/s (one device pixel per frame) on a 2.625 × 120Hz
-// phone; 72px/s (one per two frames) on a 144Hz DPR-1 panel.
+// ~1.35 of it: exactly 60px/s at DPR 1 and 2 on 60Hz and at DPR 1 on
+// 120/240Hz; 55px/s (one per three frames) on a 165Hz DPR-1 panel;
+// ~46px/s (one device pixel per frame) on a 2.625 × 120Hz phone;
+// 72px/s (one per two frames) on a 144Hz DPR-1 panel.
 export const SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME = 1;
+// How many pixel events the landing cradle spans (see the floor bullet
+// above); 0 is a flat stop.
+const SPRING_LANDING_CRADLE_EVENTS = 3;
 // Hysteresis around the previous ladder rung, in device pixels a tick
 // above one and in ticks a pixel below. Timestamp jitter perturbs a
 // tick's displacement by ~2%, so 0.15 holds every rung below ~7 device
@@ -343,10 +357,18 @@ const SPRING_STEP_HYSTERESIS_DEVICE_PX = 0.15;
 // average rate it buys is what keeps cruise speed the same at every
 // refresh rate (rounding 13.5 per 120Hz tick to 13 is a 4% cruise).
 const SPRING_STEP_DIFFUSION_MIN_DEVICE_PX = 8;
-// The 60-changes-per-second bound on the rung's cadence is applied with
-// this slack: the EMA of a 120Hz display converges on 8.33ms from either
-// side, and without it one-in-two frames (59.99 changes/s) would be
-// refused for one-in-one (120px/s) on half the ticks.
+// The slowest cadence a floor rung may run at, in position changes a
+// second: below this a one-pixel crawl starts to read as discrete
+// steps. It is deliberately under 60, so that a 165Hz panel may run
+// one pixel every three frames (55 changes/s, 55px/s: the rung closest
+// to the reference, and to what the fractional model painted there)
+// instead of every two (82px/s), and it leaves a 120Hz cadence EMA that
+// converges on 8.33ms from either side nowhere near a rung flip.
+const SPRING_FLOOR_MIN_CHANGES_PER_SECOND = 45;
+// The bound is applied with this slack: a cadence EMA hovers a hair
+// either side of its true interval, and a panel sitting exactly on the
+// bound (90Hz, one pixel every two frames = 45 changes/s) must not flip
+// its rung with it.
 const SPRING_FLOOR_CADENCE_SLACK = 0.05;
 // The floor hold releases once the velocity exceeds the rung's rate by
 // this factor: above the ~0.2% the recurrence hovers at near the floor,
@@ -372,8 +394,8 @@ const FRAME_INTERVAL_SAMPLE_MAX_MS = 21;
  * two regular cadences bracketing the reference rate
  * (SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME, in device pixels per
  * displayed frame `reference = dpr · frameFraction`); the closer in
- * ratio wins, except that the cadence never drops below 60 position
- * changes per second (`framesPerEvent ≤ 1 / frameFraction`), the
+ * ratio wins, except that the cadence never drops below
+ * SPRING_FLOOR_MIN_CHANGES_PER_SECOND position changes a second, the
  * continuity the CSS-space floor was always for. Exported for its tests.
  */
 export function quantizedFloorRung(
@@ -387,18 +409,32 @@ export function quantizedFloorRung(
     return { pxPerEvent, framesPerEvent: 1 };
   }
   // One pixel every k frames: k = floor(1/reference) runs at or above the
-  // reference, k + 1 below it, and neither slower than 60 changes/s —
-  // with a little slack, since a measured 120Hz cadence sits a hair
-  // either side of exactly two frames and the rung must not flip with it.
+  // reference, k + 1 below it, and neither slower than the cadence bound
+  // (k displayed frames per change ≤ 60Hz frames per change at the bound).
   const maxFrames = Math.max(
     1,
-    Math.floor((1 + SPRING_FLOOR_CADENCE_SLACK) / frameFraction),
+    Math.floor(
+      ((60 / SPRING_FLOOR_MIN_CHANGES_PER_SECOND) * (1 + SPRING_FLOOR_CADENCE_SLACK))
+        / frameFraction,
+    ),
   );
   const fast = Math.min(maxFrames, Math.max(1, Math.floor(1 / reference)));
   const slow = fast + 1;
   const framesPerEvent =
     slow <= maxFrames && reference * slow < 1 / (fast * reference) ? slow : fast;
   return { pxPerEvent: 1, framesPerEvent };
+}
+
+// The engine's scrollTop grid, witnessed from readback (see the
+// whole-pixel block): 'device' until proven otherwise, 'css' from an
+// off-grid write that read back on the CSS grid, 'device' for good from
+// a readback off it. Module state on purpose — one engine per page, so
+// one witness serves every scroller, and a pane opened later does not
+// spend a tick re-learning it.
+type EngineGrid = 'unknown' | 'css' | 'device';
+let engineGrid: EngineGrid = 'unknown';
+export function __resetEngineGridForTest(): void {
+  engineGrid = 'unknown';
 }
 
 // ===== Write-refusal guard =====
@@ -508,7 +544,8 @@ interface ChaseTelemetry {
   startedAt: number;
   ticks: number;
   writeTicks: number;
-  /** Integrating ticks whose displacement rounded to no device pixel. */
+  /** Integrating ticks that wrote nothing: displacement under a device
+   * pixel, or a cradle tick between stretched events. */
   zeroStepTicks: number;
   sentinelTicks: number;
   maxGapMs: number;
@@ -774,14 +811,12 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   let lastRung = 0;
   let rungDirection = 0;
   let cadenceTicks = 0;
+  // Ticks since the last pixel event while the landing cradle is
+  // stretching the floor's cadence (see the floor regime in the tick).
+  let cradleTicks = 0;
   // Measured rAF cadence for the motion-floor derivation. Deliberately
   // NOT reset in cancel() — see the constant block.
   let frameIntervalEmaMs: number | null = null;
-  // The engine's grid, witnessed: false while writes on the device-pixel
-  // grid read back exactly, true from the first one that read back
-  // rounded to a whole CSS pixel. An engine property, so it is never
-  // reset — see the constant block.
-  let cssPixelGridWitnessed = false;
   // Monotonic counter (cheaper than `Symbol('spring')` per start). 0 means
   // no spring in flight; positive values identify the current spring run.
   let springToken = 0;
@@ -980,6 +1015,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     lastRung = 0;
     rungDirection = 0;
     cadenceTicks = 0;
+    cradleTicks = 0;
     lastTickAt = null;
     selectionPauseTraced = false;
     deps.arrival.clear();
@@ -1141,13 +1177,13 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
 
       // The engine's pixel grid and the display's cadence, per tick (see
       // the whole-device-pixel block): grid pixels per CSS pixel (the
-      // device ratio, or 1 once the engine is seen rounding to CSS
-      // pixels), the floor rung, its average rate as CSS px per displayed
+      // device ratio, or 1 once the engine is witnessed on the CSS
+      // grid), the floor rung, its average rate as CSS px per displayed
       // frame (`floorTickCss`) and per 60Hz frame (`floorRate`, the unit
       // velocity is in), and the ramp base that rate floors.
       const rawDpr = deps.devicePixelRatio();
       const dpr =
-        !cssPixelGridWitnessed && Number.isFinite(rawDpr) && rawDpr > 0 ? rawDpr : 1;
+        engineGrid !== 'css' && Number.isFinite(rawDpr) && rawDpr > 0 ? rawDpr : 1;
       const frameFraction =
         (frameIntervalEmaMs ?? SIXTY_FPS_INTERVAL_MS) / SIXTY_FPS_INTERVAL_MS;
       const floorRung = quantizedFloorRung(dpr, frameFraction);
@@ -1157,6 +1193,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       // This tick's integrated displacement in CSS px, kept apart from
       // the carried residue (`accumulated`) so the write can band on it.
       let tickDisplacement = 0;
+      let cradleTickCounted = false;
 
       // Wedged-element backoff: while the write-refusal latch is set,
       // the WHOLE tick body below — including the geometry reads, each
@@ -1440,8 +1477,29 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
                 // the rung: `pxPerEvent` a tick, or one every
                 // `framesPerEvent`.
                 velocity = Math.sign(stepDiff) * floorRate;
-                tickDisplacement +=
-                  Math.sign(stepDiff) * floorTickCss * (stepFraction / integrationFrames);
+                // The landing cradle (see the constant block): with
+                // `n` pixel events left, the current one takes
+                // (CRADLE + 1 − n) floor intervals — the rung's tick
+                // displacement is emitted only on every `stretch`-th
+                // tick since the last event, and the ladder below sees
+                // the same rung at a longer cadence: the last three
+                // events at k, 2k, 3k ticks, whatever the rung's size.
+                const eventsLeft = Math.max(
+                  1,
+                  Math.ceil((Math.abs(stepDiff) * dpr) / floorRung.pxPerEvent - 1e-6),
+                );
+                const stretch =
+                  eventsLeft <= SPRING_LANDING_CRADLE_EVENTS
+                    ? SPRING_LANDING_CRADLE_EVENTS + 1 - eventsLeft
+                    : 1;
+                if (stretch > 1 && !cradleTickCounted) {
+                  cradleTickCounted = true;
+                  cradleTicks += 1;
+                }
+                if (stretch === 1 || cradleTicks % stretch === 0) {
+                  tickDisplacement +=
+                    Math.sign(stepDiff) * floorTickCss * (stepFraction / integrationFrames);
+                }
               } else {
                 // Released: a reversal, the bridge ramping out of the
                 // hold (its output differs from the candidate), or the
@@ -1461,9 +1519,13 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
             const magnitude = Math.abs(tickDevicePx);
             const direction = Math.sign(tickDevicePx);
             let stepDevicePx = 0;
-            if (direction !== rungDirection) {
+            // A reversal starts the ladder afresh; a tick with nothing to
+            // write (a gated cradle tick) is not one, and keeps the
+            // cadence count it is part of.
+            if (direction !== 0 && direction !== rungDirection) {
               lastRung = 0;
               cadenceTicks = 0;
+              cradleTicks = 0;
               rungDirection = direction;
             }
             if (magnitude >= SPRING_STEP_DIFFUSION_MIN_DEVICE_PX) {
@@ -1474,6 +1536,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               accumulated = (wantDevicePx - stepDevicePx) / dpr;
               lastRung = 0;
               cadenceTicks = 0;
+              cradleTicks = 0;
             } else if (magnitude >= 1) {
               // Whole pixels a tick, held through hysteresis around the
               // previous rung; the residue is discarded so timestamp
@@ -1488,6 +1551,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               stepDevicePx = direction * rung;
               lastRung = rung;
               cadenceTicks = 0;
+              cradleTicks = 0;
               accumulated = 0;
             } else if (magnitude > 0) {
               // One pixel every k ticks, k the nearest cadence to the
@@ -1508,6 +1572,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               if (cadenceTicks >= cadence) {
                 stepDevicePx = direction;
                 cadenceTicks = 0;
+                cradleTicks = 0;
               }
               accumulated = 0;
             }
@@ -1550,10 +1615,32 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
                 floorHolding = false;
                 lastRung = 0;
                 cadenceTicks = 0;
+                cradleTicks = 0;
                 accumulated = 0;
               }
               if (crossedTarget) {
                 retarget.breakMotion();
+              }
+              // ---- Grid witness (see the constant block) ----
+              // Interior writes only: the landing may be fractional, and
+              // a max-scroll clamp is not a rounding. A readback off the
+              // CSS grid is final evidence of a finer (device-pixel)
+              // grid. Until then, an off-grid request that read back ON
+              // the grid within a pixel is the CSS witness — rounded and
+              // moved (Chromium) or floored and unmoved (WKWebView) alike.
+              if (engineGrid !== 'device' && !crossedTarget && Math.abs(target - clamped) > 1) {
+                if (!Number.isInteger(postWriteTop)) {
+                  engineGrid = 'device';
+                } else if (
+                  engineGrid === 'unknown'
+                  && !Number.isInteger(clamped)
+                  && Math.abs(postWriteTop - clamped) < 1
+                ) {
+                  engineGrid = 'css';
+                  lastRung = 0;
+                  cadenceTicks = 0;
+                  cradleTicks = 0;
+                }
               }
               // Three-way write classification (see the write-refusal
               // guard's constant block): MOVED heals, REFUSED counts,
@@ -1581,22 +1668,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
                 // The model's residue was settled above, per band. The
                 // engine's own readback residue (its grid snap, or a
                 // max-scroll clamp) is never carried: `current` resyncs
-                // to the readback below. A ladder write that lands off
-                // the CSS-pixel grid and reads back ON it is the grid
-                // witness: from here the ladder's pixel is the CSS
-                // pixel. The landing write is excluded (the target may
-                // be fractional and clamps are not roundings).
-                if (
-                  !cssPixelGridWitnessed
-                  && !crossedTarget
-                  && postWriteTop !== clamped
-                  && Number.isInteger(postWriteTop)
-                  && Math.abs(postWriteTop - clamped) < 1
-                ) {
-                  cssPixelGridWitnessed = true;
-                  lastRung = 0;
-                  cadenceTicks = 0;
-                }
+                // to the readback below.
               } else if (Math.abs(clamped - current) >= SPRING_WRITE_REFUSAL_MIN_MOTION_PX) {
                 // REFUSED WRITE: a real motion request moved the element
                 // by nothing. Re-anchor the model to reality — dropping
@@ -1668,6 +1740,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         lastRung = 0;
         rungDirection = 0;
         cadenceTicks = 0;
+        cradleTicks = 0;
         if (withinTargetChangeRetainWindow && velocity > 0) {
           if (velocity > SPRING_CARRY_VELOCITY_CEILING) {
             velocity = SPRING_CARRY_VELOCITY_CEILING;

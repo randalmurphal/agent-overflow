@@ -126,15 +126,23 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     only at cruise (8+ pixels a tick) is the residue carried for an
     exact average rate. The **motion floor** is a rung of that ladder,
     derived per tick from the grid and the measured frame cadence
-    (`quantizedFloorRung`: closest in ratio to 60px/s, never under 60
+    (`quantizedFloorRung`: closest in ratio to 60px/s, never under 45
     changes a second — 1 CSS px per 60Hz frame at DPR 1 and 2, one per
-    two frames at 120Hz DPR 1, one device pixel per frame on a 2.625×
-    120Hz phone), and once a glide has run above it the floor holds
-    through to the landing: there is no sub-pixel tail. The grid is
-    witnessed from readback, device pixels until a write off the
-    CSS-pixel grid reads back rounded onto it (desktop Chromium at every
-    DPR), and the witness persists for the page's life. The 120Hz
-    result is unit-traced only; the Android emulator runs at 60Hz.
+    two frames at 120Hz DPR 1, one per three at 165Hz DPR 1 (55px/s),
+    one device pixel per frame on a 2.625× 120Hz phone), and once a
+    glide has run above it the floor holds through to the landing.
+    There is no sub-pixel tail; the landing **cradle** is on the grid
+    instead — the last `SPRING_LANDING_CRADLE_EVENTS` (3) pixel events
+    run at k, 2k, 3k ticks, the ritardando of the 2026-07-04 feedback
+    made even, and 0 is a flat stop. The grid is witnessed from
+    readback, page-wide (one engine, module state): device pixels until
+    an interior write off the CSS-pixel grid reads back ON it, moved
+    (desktop Chromium rounds) or unmoved (macOS WKWebView floors: the
+    2026-09-04 spike), and a readback off the CSS grid latches the
+    device grid for good. A witness that waited for motion froze every
+    Retina glide above 60Hz on WebKit, where a half-pixel write never
+    moves. The 120Hz phone result is unit-traced only; the Android
+    emulator runs at 60Hz.
     Carried
     momentum decays by the slew factor per real elapsed frame while
     parked, so a brief inter-quantum catch-up resumes at speed while a
