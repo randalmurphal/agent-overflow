@@ -10,8 +10,10 @@
   // panel so it can only ever match the page that is actually mounted.
 
   import { tick } from 'svelte';
+  import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
   import SettingsRail from './SettingsRail.svelte';
   import { SETTINGS_PAGES } from './pages';
@@ -45,16 +47,31 @@
 
   let activeSection: SettingsSection = $state(DEFAULT_SETTINGS_SECTION);
 
+  // Compact renders Settings as stacked screens, not the desktop two-pane
+  // spread (docs/specs/remote-access.md § The phone client): the rail is a
+  // full-width screen and picking a section drills into the page, with a
+  // back affordance in the page header. Desktop ignores `railOpen` — both
+  // columns stay visible. A deep link to a specific section lands on that
+  // page directly.
+  let railOpen = $state(true);
+  let compact = $derived(isCompactLayout());
+
   $effect(() => {
     activeSection = initialSection;
+    railOpen = initialSection === DEFAULT_SETTINGS_SECTION;
   });
+
+  function openSection(section: SettingsSection): void {
+    activeSection = section;
+    railOpen = false;
+  }
 
   let page = $derived(settingsSectionDef(activeSection));
   let Page = $derived(SETTINGS_PAGES[activeSection]);
   let panelEl = $state<HTMLElement | null>(null);
 
   async function selectHit(hit: SettingsSearchHit): Promise<void> {
-    activeSection = hit.page.id;
+    openSection(hit.page.id);
     if (hit.kind !== 'field') {
       await tick();
       panelEl?.scrollTo({ top: 0 });
@@ -84,15 +101,18 @@
   </header>
 
   <div class="flex flex-1 min-h-0">
-    <SettingsRail
-      {activeSection}
-      onSelectSection={(section) => (activeSection = section)}
-      onSelectHit={(hit) => void selectHit(hit)}
-    />
+    <div class={compact && !railOpen ? 'hidden' : 'contents'}>
+      <SettingsRail
+        {activeSection}
+        onSelectSection={openSection}
+        onSelectHit={(hit) => void selectHit(hit)}
+      />
+    </div>
 
     <div
       bind:this={panelEl}
-      class="flex-1 overflow-y-auto px-8 py-6"
+      class="flex-1 overflow-y-auto px-8 py-6 compact:px-4"
+      class:hidden={compact && railOpen}
       role="tabpanel"
       id="settings-panel-{activeSection}"
       aria-labelledby="settings-tab-{activeSection}"
@@ -102,6 +122,16 @@
           class="mb-7 flex flex-col gap-1 border-b border-border-subtle pb-5"
           data-testid="settings-page-header"
         >
+          {#if compact}
+            <button
+              onclick={() => (railOpen = true)}
+              data-testid="settings-page-back"
+              class="-ml-1.5 mb-1 flex h-9 items-center gap-1 self-start rounded-[var(--radius-field)] pr-2 text-[0.8125rem] text-fg-muted active:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            >
+              <Icon icon={ChevronLeft} size={16} strokeWidth={2} />
+              All settings
+            </button>
+          {/if}
           <h3 class="text-[1.125rem] font-semibold tracking-tight text-fg">{page.label}</h3>
           <p class={SECTION_PROSE_CLASS}>{page.description}</p>
         </header>

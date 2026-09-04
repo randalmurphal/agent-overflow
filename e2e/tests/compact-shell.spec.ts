@@ -227,3 +227,54 @@ test('the chat header opens the command palette', async ({ harness, page }) => {
   await page.getByTestId('palette-open').tap();
   await expect(page.getByTestId('command-palette-input')).toBeVisible();
 });
+
+// The desktop Settings spread (rail beside panel) crammed both columns
+// into a phone's width and clipped the panel's controls off the right
+// edge (found in the 2026-09-04 screen sweep). The spec rules Settings a
+// stacked screen on compact (docs/specs/remote-access.md § The phone
+// client): the rail is its own full-width screen, a section drills into
+// its page, and the page header's back affordance returns to the rail.
+test('Settings is stacked screens on compact, with every control in reach', async ({
+  harness,
+  page,
+}) => {
+  await harness.open(page);
+  await page.getByText('Settings', { exact: true }).click();
+
+  // The rail is the whole screen, and the page panel is not beside it.
+  const rail = page.getByRole('tab', { name: 'Theme' });
+  await expect(rail).toBeVisible();
+  const viewport = page.viewportSize()!;
+  const tabWidth = (await rail.boundingBox())!.width;
+  expect(tabWidth, 'the rail must span the phone width').toBeGreaterThan(viewport.width * 0.85);
+  await expect(page.getByTestId('settings-page-header')).toBeHidden();
+
+  // Drilling in shows the page alone, back returns to the rail.
+  await rail.click();
+  await expect(page.getByTestId('settings-page-header')).toBeVisible();
+  await expect(rail).toBeHidden();
+
+  // No interactive control on the page may stick out of the viewport —
+  // selects included, which is what the two-pane squeeze clipped.
+  const clipped = await page.evaluate(() => {
+    const panel = document.querySelector('[id^="settings-panel-"]');
+    if (!panel) return ['missing settings panel'];
+    const vw = innerWidth;
+    const out: string[] = [];
+    for (const el of panel.querySelectorAll<HTMLElement>('button, select, input, textarea, a, [role="button"]')) {
+      if (!el.checkVisibility({ visibilityProperty: true })) continue;
+      const b = el.getBoundingClientRect();
+      if (b.width === 0 || b.height === 0) continue;
+      if (b.left < -1 || b.right > vw + 1) {
+        out.push(`${el.tagName}[${el.getAttribute('aria-label') ?? el.id ?? ''}] l=${Math.round(b.left)} r=${Math.round(b.right)} vw=${vw}`);
+        if (out.length >= 6) break;
+      }
+    }
+    return out;
+  });
+  expect(clipped).toEqual([]);
+
+  await page.getByTestId('settings-page-back').click();
+  await expect(rail).toBeVisible();
+  await expect(page.getByTestId('settings-page-header')).toBeHidden();
+});

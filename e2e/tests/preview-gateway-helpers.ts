@@ -267,10 +267,9 @@ async function openRemoteAccessPage(page: Page): Promise<void> {
   await page.getByTestId('sidebar-settings-button').click();
   await expect(page.getByRole('tablist', { name: 'Settings Sections' })).toBeVisible();
   await page.getByRole('tab', { name: 'Remote access' }).click();
-  await expect(page.getByRole('tab', { name: 'Remote access' })).toHaveAttribute(
-    'aria-selected',
-    'true',
-  );
+  // Selecting drills into the page; on compact the rail (and its tab)
+  // leaves the screen, so the arrival assertion is the page header.
+  await expect(page.getByTestId('settings-page-header')).toContainText('Remote access');
 }
 
 async function closeSettings(page: Page): Promise<void> {

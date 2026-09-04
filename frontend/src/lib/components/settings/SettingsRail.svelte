@@ -106,7 +106,9 @@
   }
 </script>
 
-<div class="flex w-56 shrink-0 flex-col border-r border-border-subtle">
+<div
+  class="flex w-56 shrink-0 flex-col border-r border-border-subtle compact:w-full compact:border-r-0"
+>
   <div class="px-3 pt-3 pb-2">
     <div class="relative">
       <span

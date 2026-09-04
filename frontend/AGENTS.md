@@ -127,6 +127,19 @@ What compact changes, and where:
   through it; the chat header's back button flips to the list, and so
   does the last pane leaving (`destroyPane`), since compact has no close
   control and an empty thread screen has no back button.
+  Because the swap is INHERITED visibility, an inline
+  `visibility: visible` anywhere under a screen punches through it and
+  paints over the other screen — the timeline's warm-up gate did exactly
+  that on a real phone (2026-09-04). A style that means "not hidden"
+  must clear the property (`undefined` / `''`), never set `visible`;
+  the compact back-navigation spec fails on any element that still
+  computes visible inside the hidden screen.
+- **Settings is stacked screens** (`SettingsView`): the rail is a
+  full-width screen, picking a section drills into the page, and the
+  page header's back button returns — the desktop two-pane spread
+  clipped the panel's controls off a phone's right edge. The compact
+  spec's Settings case asserts the drill-in and that no control on a
+  page extends past the viewport.
 - **One pane per screen.** `PaneHost` sizes every pane to the strip and
   drops the dividers; companions still open and the existing reveal
   glide is the switch between a thread and its companion. No pane close
