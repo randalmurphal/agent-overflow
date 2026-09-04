@@ -199,14 +199,23 @@
   data-testid="composer-toolbar"
 >
   {#if hasComposableSurface}
-    <!-- One real box around the pickers (not display:contents): it is the
-         child the density observer watches, so any picker's width move
-         still re-measures, and it is what the minimal rung hides as a
-         unit. The pickers stay mounted under the roll-up, keeping their
-         registry handles, so a roll-up row opens the same sheet a chord
-         would. -->
-    <div class="flex items-center gap-0.5 min-w-0" data-composer-toolbar-pickers>
-      <ModelProviderMenu {pane} />
+    <!-- The model stays a control at every rung: which model answers is
+         the one picker a phone user reads before sending (owner ruling,
+         2026-09-04). -->
+    <ModelProviderMenu {pane} />
+    <!-- One real box around the other pickers (not display:contents): it
+         is the child the density observer watches, so any picker's width
+         move still re-measures, and it is what the minimal rung hides as
+         a unit. It must NOT shrink (no min-w-0): a flex item allowed
+         below its content width lets the pickers overflow it and overlap
+         the meters while the toolbar's scrollWidth still reads as
+         fitting, which is exactly the overlap the first phone session
+         showed at the compact rung. Only an unshrinkable box pushes the
+         right cluster past the edge and lets the ladder see the
+         overflow. The pickers stay mounted under the roll-up, keeping
+         their registry handles, so a roll-up row opens the same sheet a
+         chord would. -->
+    <div class="flex items-center gap-0.5 shrink-0" data-composer-toolbar-pickers>
       <EffortMenu {pane} />
       {#if !isDiscussionThread && supportsPlanMode}
         <AgentModeToggle {pane} />
@@ -292,9 +301,10 @@
   ) {
     display: none;
   }
-  /* The minimal rung: the picker cluster folds into one roll-up trigger
-     so Send and the meters stay on screen at phone widths. The roll-up
-     exists only there; everywhere else the pickers are the controls. */
+  /* The minimal rung: every picker but the model folds into one roll-up
+     trigger so the model, Send and the meters stay on screen at phone
+     widths. The roll-up exists only there; everywhere else the pickers
+     are the controls. */
   :global([data-composer-toolbar][data-density='minimal'] [data-composer-toolbar-pickers]) {
     display: none;
   }

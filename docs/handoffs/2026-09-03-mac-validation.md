@@ -271,15 +271,70 @@ findings, each fixed at the root and each with a test:
   peer. `transport/scopes.ts` now answers `host` false for every paired
   session (spec § Principal tiers), server presence untouched.
 - **Header**: the desktop cluster (and the command-palette button) is
-  one sheet behind `chat-header-more` on compact; the title gets the
-  width. `GitActionsControl` gained `trigger={false}` + `openMenu()` so
-  its popover and dialogs stay mounted outside the sheet.
-- **Composer meters**: the `minimal` rung keeps the meters and folds
-  the pickers into `ComposerPickersRollup`; the mode row shares
-  `agentModeCycle.ts` with the toolbar button.
+  one menu behind `chat-header-more` on compact; the title gets the
+  width. A dropdown at the button, not a bottom sheet (owner: "where I
+  am clicking", second phone pass). `GitActionsControl` gained
+  `trigger={false}` + `openMenu()` so its popover and dialogs stay
+  mounted outside the menu.
+- **Composer meters**: the `minimal` rung keeps the model and the
+  meters and folds the other pickers into `ComposerPickersRollup`; the
+  mode row shares `agentModeCycle.ts` with the toolbar button. The
+  first cut gave the picker box `min-w-0`, which let the pickers
+  overlap the meters while the density ladder still read the row as
+  fitting (the phone sat at `compact` with controls painted over each
+  other); the box is `shrink-0` now and the e2e case asserts no two
+  toolbar controls overlap.
 - **Back stack**: `native/lifecycle.ts#answerBackPress` — Escape
   (Settings page → rail through `escapeSettingsOverlay`), terminal
   drawer, on-screen companion (closed, thread revealed), list, exit.
+  The first on-device run read "back from review" as a failure; it was
+  the soft keyboard eating the press (opening a thread focuses the
+  composer, which raises the keyboard, and Android answers the first
+  back by closing it). The emulator run with a keyboard-aware press
+  passes every rung. Whether a thread should auto-focus its composer
+  on a phone at all is an open question for the owner: it costs a
+  keyboard on every open.
+
+## 10. Spring judder on the 120Hz phone (2026-09-04, findings, awaiting a ruling)
+
+Measured on the Pixel 9a over the harness, then left alone (owner asked
+for the emulator instead). Scripts in the session scratchpad
+(`phone-quant-probe.mjs`, `phone-scroll-probe.mjs`).
+
+- **The panel runs the WebView at 120Hz.** Smooth Display is on
+  (`peak_refresh_rate` unset = Infinity; modes 60 and 120). rAF gaps
+  were 8.3ms in 1050 of 1073 frames through a streamed turn, idle or
+  writing.
+- **`scrollTop` writes snap to DEVICE pixels there, not whole CSS
+  pixels.** Writes at 0.25px steps read back on a 0.381px grid
+  (1/2.625). The "Chromium quantizes to whole CSS pixels" premise
+  behind `SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME` is a DPR-1
+  observation; the spring's `wholePixelQuantizationConfirmed` latch
+  correctly never engages on the phone, so every tick writes.
+- **Why it judders.** The floor and the slew ramp base are 1 CSS px
+  per 60Hz frame, integrated by real elapsed time (by design; the
+  cadence EMA is telemetry only, so this is NOT a refresh-rate
+  detection bug). At 120Hz the slow band is 0.5 CSS px per frame =
+  1.31 device px, and the decel envelope's 1.6 → 1 CSS px/60Hz-frame
+  band is 2.1 → 1.3 device px per 8.3ms frame. A non-integer
+  device-pixel rate snaps to alternating step sizes: the trace shows
+  consecutive frames of `1 1 1 2 1`, `2 3 2 3 2`, `3 4 3 4` device px —
+  a 33–100% frame-to-frame swing at low speed, which the eye reads as
+  jitter without lag (the average rate is right). On a DPR-2 60Hz Mac
+  the same floor is exactly 2 device px every frame and the decel band
+  is 3.2 → 2, so the alternation there is rare and mild; DPR-1 Windows
+  is exact by construction.
+- **Options.** (a) A device-aware floor and ramp base: the smallest
+  whole number of device pixels per DISPLAYED frame that is at least
+  the 60px/s rate (2 dev px per 120Hz frame at DPR 2.625 = 91px/s;
+  unchanged at DPR 1 and DPR 2 at 60Hz), from `devicePixelRatio` and
+  the live cadence EMA. (b) Integer device-pixel stepping in the low
+  band (below ~5 dev px per frame): quantize each write to whole
+  device pixels with the existing error carry, so a glide decelerates
+  through uniform 4 → 3 → 2 rungs instead of alternating. (c) A
+  setting. (c) is possible; (a)+(b) is structural and closes the
+  class on every high-DPR, high-Hz device without a knob. No change
+  made pending the ruling.
   Focused-terminal Escape goes to the pane, never into xterm.
 - **Sidebar chord pill**: shown only while a modifier is held, the
   jump-hint door.

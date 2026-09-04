@@ -149,11 +149,13 @@ describe('<ComposerToolbar>', () => {
     });
   });
 
-  it('the minimal rung keeps the meters and rolls the pickers into one sheet', async () => {
-    // The meters are what a phone user glances at; the pickers are one tap
-    // further away, not gone. Both are mounted at every rung (the rung is
-    // CSS), so the assertion is that the roll-up exists and that its row
-    // opens the picker the chord would — through the same registry handle.
+  it('the minimal rung keeps the model and the meters and rolls the other pickers up', async () => {
+    // The model and the meters are what a phone user reads before sending;
+    // the other pickers are one tap further away, not gone. Everything is
+    // mounted at every rung (the rung is CSS), so the assertion is that
+    // the roll-up exists, that it carries no model row (the model stays a
+    // control), and that its row opens the picker the chord would —
+    // through the same registry handle.
     restoreDimensions = installToolbarDimensions(800);
     // The suite's synchronous rAF stub is for the density measurement; an
     // open Popover re-requests a frame per frame to follow its anchor,
@@ -162,18 +164,23 @@ describe('<ComposerToolbar>', () => {
       setTimeout(() => callback(performance.now()), 0);
       return 0;
     });
-    const { container, getByTestId, getByRole } = renderToolbar();
+    const { container, getByTestId, getByRole, queryByRole } = renderToolbar();
     await waitFor(() => {
       expect(getByTestId('composer-toolbar')).toHaveAttribute('data-density', 'minimal');
     });
     expect(container.querySelectorAll('[data-composer-toolbar-meter]').length).toBeGreaterThan(0);
+    // The model trigger is outside the picker box the rung hides.
     const modelTrigger = getByTestId('composer-model-menu-trigger');
-    expect(modelTrigger).toHaveAttribute('aria-expanded', 'false');
+    expect(modelTrigger.closest('[data-composer-toolbar-pickers]')).toBeNull();
+    const effortTrigger = getByTestId('composer-effort-trigger');
+    expect(effortTrigger.closest('[data-composer-toolbar-pickers]')).not.toBeNull();
+    expect(effortTrigger).toHaveAttribute('aria-expanded', 'false');
 
     await fireEvent.click(getByTestId('composer-pickers-rollup'));
-    await fireEvent.click(getByRole('menuitem', { name: 'Model…' }));
+    expect(queryByRole('menuitem', { name: 'Model…' })).toBeNull();
+    await fireEvent.click(getByRole('menuitem', { name: 'Effort…' }));
     await waitFor(() => {
-      expect(modelTrigger).toHaveAttribute('aria-expanded', 'true');
+      expect(effortTrigger).toHaveAttribute('aria-expanded', 'true');
     });
   });
 

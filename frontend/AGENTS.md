@@ -172,18 +172,27 @@ What compact changes, and where:
   fights the long press.
 - **The chat header is a title and one button.** The desktop's action
   cluster (review, PR, terminal, runs, take control, browser, editor,
-  git split button) rolls into a sheet behind `chat-header-more`
-  (`ChatHeaderActions`), so the title keeps its width. No command
-  palette button: the phone has no chords for one to stand in for. The
-  git split button's popover and dialogs stay mounted outside the sheet
-  (`GitActionsControl`'s `trigger={false}` + `openMenu`).
-- **The composer's `minimal` rung keeps the meters.** Below the width
-  where even icon-only pickers fit beside the rate-limit and context
-  meters, the picker cluster folds into `composer-pickers-rollup`
-  (`ComposerPickersRollup`), whose rows open the same registry handles
-  the chords do; the pickers stay mounted under it. The meters are what
-  a phone reader glances at (owner ruling, 2026-09-04), so they never
-  yield. `composerToolbarDensity.ts` documents the ladder.
+  git split button) rolls into a menu behind `chat-header-more`
+  (`ChatHeaderActions`), so the title keeps its width. That menu is
+  the one compact popover that is NOT a bottom sheet (`sheet={false}`,
+  `bottom-end`): a control at the top of the screen answers where the
+  finger is, and the bottom is where the composer's sheets rise from
+  (owner ruling, 2026-09-04). No command palette button: the phone has
+  no chords for one to stand in for. The git split button's popover and
+  dialogs stay mounted outside the menu (`GitActionsControl`'s
+  `trigger={false}` + `openMenu`).
+- **The composer's `minimal` rung keeps the model and the meters.**
+  Below the width where even icon-only pickers fit beside the
+  rate-limit and context meters, every picker but the model folds into
+  `composer-pickers-rollup` (`ComposerPickersRollup`), whose rows open
+  the same registry handles the chords do; the pickers stay mounted
+  under it. The model and the meters are what a phone reader reads
+  before sending (owner ruling, 2026-09-04), so they never yield.
+  `composerToolbarDensity.ts` documents the ladder. The picker box the
+  rung hides is `shrink-0` on purpose: a box allowed below its content
+  width let the pickers paint over the meters while the toolbar's
+  `scrollWidth` still read as fitting, so the ladder never reached the
+  rung it was built for (first phone session, 2026-09-04).
 - **The hardware back is one stack** (`native/lifecycle.ts`
   `answerBackPress`): an open sheet or overlay (a synthetic Escape,
   which also steps Settings' page back to its rail through

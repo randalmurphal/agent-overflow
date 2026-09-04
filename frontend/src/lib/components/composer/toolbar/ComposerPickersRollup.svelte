@@ -1,12 +1,12 @@
 <script lang="ts">
-  // The toolbar's minimal rung: one trigger standing in for the whole
-  // picker cluster, so the read-only meters (rate limits, context) keep
-  // their place on a phone-width composer instead of yielding to the
-  // pickers. Each row hands off to the picker it names — the picker
-  // components stay mounted (CSS-hidden by the rung) and keep their
-  // registry handles, so a row opens exactly the sheet the chord would.
-  // The two toggles (agent mode, plan sidebar) act in place, the way
-  // their buttons do.
+  // The toolbar's minimal rung: one trigger standing in for every picker
+  // but the model, so the model, the read-only meters (rate limits,
+  // context) and Send keep their place on a phone-width composer instead
+  // of yielding to the pickers. Each row hands off to the picker it
+  // names — the picker components stay mounted (CSS-hidden by the rung)
+  // and keep their registry handles, so a row opens exactly the sheet
+  // the chord would. The two toggles (agent mode, plan sidebar) act in
+  // place, the way their buttons do.
   import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import { openComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
@@ -67,7 +67,6 @@
 <Popover anchor={triggerEl} {open} onClose={close} placement="top-start" role="none">
   {#snippet children()}
     <Menu ariaLabel="Composer options" onClose={close}>
-      <MenuItem label="Model…" onSelect={() => pick(() => openComposerPicker(pane.paneId, 'model'))} />
       <MenuItem label="Effort…" onSelect={() => pick(() => openComposerPicker(pane.paneId, 'effort'))} />
       {#if showMode}
         <MenuItem

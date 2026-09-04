@@ -2326,15 +2326,18 @@ text above was deviated from:
   list keeps the timeline's observers and scroll position. `revealPane`
   flips to the thread screen; the chat header grows a back button and
   loses the pane close control, and rolls its action cluster into one
-  sheet (`chat-header-more`) so the title keeps its width — no
-  command-palette button, since the phone has no chords for one to
-  stand in for (first real-phone pass, 2026-09-04). Panes are one
+  menu (`chat-header-more`) so the title keeps its width — a dropdown
+  at the button rather than a bottom sheet, since a control at the top
+  of the screen answers where the finger is (owner ruling, 2026-09-04);
+  no command-palette button, since the phone has no chords for one to
+  stand in for (first real-phone pass, the same day). Panes are one
   screen wide with no dividers, so companions still open and the reveal
   glide is the screen switch; the hardware back closes the companion
   on screen and reveals its thread before it goes to the list. The
-  composer's densest rung folds the pickers into a roll-up and keeps
-  the rate-limit and context meters (owner ruling, same day). Popovers are bottom sheets by default (`Popover`'s `sheet`
-  prop; the composer's completion lists opt out), overlays fill the
+  composer's densest rung folds every picker but the model into a
+  roll-up and keeps the model, the rate-limit and context meters, and
+  Send (owner ruling, same day). Popovers are bottom sheets by default (`Popover`'s `sheet`
+  prop; the composer's completion lists and the header menu opt out), overlays fill the
   screen, Return inserts a newline (`enterSends`), the nav rail and its
   gutter are gone. Deviation from the design text above: the terminal is
   a stacked screen over the chat column rather than a route of its own,
@@ -3648,8 +3651,9 @@ same handler; `ContextMenu` renders as a bottom sheet there, matching
 `Popover`; rows are 36px and `select-none`; nothing is draggable
 under compact (rows, project headers, pane title); the project
 header keeps only `+`, its menu gaining New Thread and New Terminal
-(scope-gated); the chat header's action cluster becomes one sheet (the
-palette button it briefly carried is gone: no chords on a phone).
+(scope-gated); the chat header's action cluster becomes one dropdown
+menu at its button (the palette button it briefly carried is gone: no
+chords on a phone).
 Desktop pixels are unchanged. Verified by the detector's unit suite, component
 tests per row, and the compact Playwright project driving a real
 held touch through CDP. Residuals, recorded and left: header `xs`

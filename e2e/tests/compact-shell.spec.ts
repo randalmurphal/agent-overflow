@@ -236,7 +236,13 @@ test('the project header carries its menu, with New Terminal inside', async ({ h
 // with the title clipped, an open-in-editor button the device cannot
 // act on, and a command-palette button standing in for chords the phone
 // does not have. Compact rolls the actions into one sheet.
-test('the chat header rolls its actions into one sheet', async ({ harness, page }) => {
+// The header's one button opens a menu that drops from the button, not a
+// bottom sheet (owner ruling, 2026-09-04): a control at the top of the
+// screen answers where the finger is.
+test('the chat header rolls its actions into one dropdown at the button', async ({
+  harness,
+  page,
+}) => {
   await harness.open(page);
   await page.getByTestId('thread-row').filter({ hasText: 'First task' }).click();
   await expect(page.getByTestId('palette-open')).toHaveCount(0);
@@ -247,39 +253,75 @@ test('the chat header rolls its actions into one sheet', async ({ harness, page 
   const clipped = await title.evaluate((el) => el.scrollWidth > el.clientWidth + 1);
   expect(clipped, 'the title must not be clipped beside one button').toBe(false);
 
-  await page.getByTestId('chat-header-more').tap();
-  const sheet = page.locator('[data-popover-sheet]');
-  await expect(sheet.getByRole('menu', { name: 'Thread actions' })).toBeVisible();
-  await sheet.getByRole('menuitem', { name: /Review changes/ }).tap();
-  await expect(sheet).toHaveCount(0);
+  const button = page.getByTestId('chat-header-more');
+  await button.tap();
+  const menu = page.locator('[data-popover]:not([data-popover-sheet])');
+  await expect(menu.getByRole('menu', { name: 'Thread actions' })).toBeVisible();
+  await expect(menu).toHaveAttribute('data-placement', /^bottom/);
+  const buttonBox = await button.boundingBox();
+  const menuBox = await menu.boundingBox();
+  expect(buttonBox && menuBox).toBeTruthy();
+  // Hangs from the button's bottom edge, inside the viewport.
+  expect(menuBox!.y).toBeGreaterThanOrEqual(buttonBox!.y + buttonBox!.height - 1);
+  expect(menuBox!.y).toBeLessThan(buttonBox!.y + buttonBox!.height + 16);
+  expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
+  await menu.getByRole('menuitem', { name: /Review changes/ }).tap();
+  await expect(menu).toHaveCount(0);
   await expect(page.locator('section[data-pane-kind="review"]')).toBeVisible();
 });
 
-// Below the width where even icon-only pickers plus the meters fit, the
-// pickers fold into one roll-up and the meters stay (owner ruling,
-// 2026-09-04: the usage and context readings are what a phone user
-// glances at). Each roll-up row opens the picker the chord would.
-test('the composer\'s densest rung rolls the pickers into one sheet and keeps the meters', async ({
+// Below the width where even icon-only pickers plus the meters fit, every
+// picker but the model folds into one roll-up; the model and the meters
+// stay (owner ruling, 2026-09-04: which model answers and the usage and
+// context readings are what a phone user reads before sending). Each
+// roll-up row opens the picker the chord would.
+test('the composer\'s densest rung keeps the model and the meters and rolls the rest up', async ({
   harness,
   page,
 }) => {
-  await page.setViewportSize({ width: 300, height: 720 });
+  await page.setViewportSize({ width: 360, height: 720 });
   await harness.open(page);
   await page.getByTestId('thread-row').filter({ hasText: 'First task' }).click();
   const toolbar = page.getByTestId('composer-toolbar');
   await expect(toolbar).toHaveAttribute('data-density', 'minimal');
-  await expect(page.getByTestId('composer-model-menu-trigger')).toBeHidden();
+  await expect(page.getByTestId('composer-model-menu-trigger')).toBeVisible();
+  await expect(page.getByTestId('composer-effort-trigger')).toBeHidden();
   await expect(toolbar.locator('[data-composer-toolbar-meter]').first()).toBeVisible();
+  await expect(page.getByTestId('composer-send')).toBeVisible();
   await expect
     .poll(() => toolbar.evaluate((el) => el.scrollWidth - el.clientWidth))
     .toBeLessThanOrEqual(1);
+  // Nothing overlaps: every visible toolbar control ends before the next
+  // one starts (the shrunk picker box once let the pickers paint over
+  // the meters while the ladder still read the row as fitting).
+  const overlaps = await toolbar.evaluate((el) => {
+    // One box per control: a meter is its wrapper (its inner button is
+    // the same box), every other control is its button.
+    const controls = [...el.querySelectorAll<HTMLElement>('button, [data-composer-toolbar-meter]')]
+      .filter((c) => c.offsetParent !== null && c.getClientRects().length > 0)
+      .filter((c) => !c.parentElement?.closest('button, [data-composer-toolbar-meter]'))
+      .map((c) => ({
+        id: c.dataset.testid ?? c.getAttribute('aria-label') ?? c.tagName,
+        rect: c.getBoundingClientRect(),
+      }))
+      .sort((a, b) => a.rect.left - b.rect.left);
+    const bad: string[] = [];
+    for (let i = 1; i < controls.length; i++) {
+      if (controls[i].rect.left < controls[i - 1].rect.right - 1) {
+        bad.push(`${controls[i - 1].id} over ${controls[i].id}`);
+      }
+    }
+    return bad;
+  });
+  expect(overlaps, 'toolbar controls must not overlap').toEqual([]);
 
   await page.getByTestId('composer-pickers-rollup').tap();
   const sheet = page.locator('[data-popover-sheet]');
-  await sheet.getByRole('menuitem', { name: 'Model…' }).tap();
+  await expect(sheet.getByRole('menuitem', { name: 'Model…' })).toHaveCount(0);
+  await sheet.getByRole('menuitem', { name: 'Effort…' }).tap();
   // The row opened the picker itself: its (hidden) trigger reports open
   // and a sheet with the picker's menu is up.
-  await expect(page.getByTestId('composer-model-menu-trigger')).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByTestId('composer-effort-trigger')).toHaveAttribute('aria-expanded', 'true');
   await expect(page.locator('[data-popover-sheet]').getByRole('menu')).toBeVisible();
 });
 

@@ -194,11 +194,15 @@
     void openReviewCompanion(pane.paneId, subject, { scope: 'workspace' });
   }
 
-  // Compact rolls the whole cluster into one sheet so the title keeps the
-  // header's width. Every row is the same handler the desktop control
-  // runs; the rows only exist where the control would. The git rows are
-  // GitActionsControl's own menu, opened from here (`openMenu`) so its
-  // dialogs live outside this sheet and survive its close.
+  // Compact rolls the whole cluster into one menu so the title keeps the
+  // header's width. It drops from the button it was tapped on, not as a
+  // bottom sheet: a header control's menu belongs where the finger is
+  // (owner ruling, 2026-09-04), and the bottom of the screen is where
+  // the composer's own sheets rise from. Every row is the same handler
+  // the desktop control runs; the rows only exist where the control
+  // would. The git rows are GitActionsControl's own menu, opened from
+  // here (`openMenu`) so its dialogs live outside this menu and survive
+  // its close.
   let showMore = $state(false);
   let moreTriggerEl: HTMLElement | undefined = $state(undefined);
   let gitControl: GitActionsControl | undefined = $state(undefined);
@@ -258,7 +262,14 @@
       {/snippet}
     </Button>
   </div>
-  <Popover anchor={moreTriggerEl} open={showMore} onClose={closeMore} placement="bottom-end" role="none">
+  <Popover
+    anchor={moreTriggerEl}
+    open={showMore}
+    onClose={closeMore}
+    placement="bottom-end"
+    sheet={false}
+    role="none"
+  >
     {#snippet children()}
       <Menu ariaLabel="Thread actions" onClose={closeMore}>
         {#if hasWorkspace}
