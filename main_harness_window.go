@@ -22,6 +22,7 @@ import (
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/harnessrpc"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/uiwindow"
 	"agent-overflow/internal/windowgeom"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -137,8 +138,10 @@ func driveHarnessWindow(window *application.WebviewWindow, command harnessrpc.Wi
 		window.Minimise()
 	case "unminimize":
 		window.UnMinimise()
+	case "reveal":
+		uiwindow.Reveal(window)
 	default:
-		return errors.New("unknown window action: use maximize, unmaximize, fullscreen, unfullscreen, minimize, or unminimize")
+		return errors.New("unknown window action: use maximize, unmaximize, fullscreen, unfullscreen, minimize, unminimize, or reveal")
 	}
 	return nil
 }

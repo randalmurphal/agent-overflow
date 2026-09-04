@@ -77,7 +77,7 @@ func TestHarnessWindowCommandValidatesBeforeDriving(t *testing.T) {
 	}
 
 	bounds := WindowRect{X: 8, Y: 41, Width: 1454, Height: 907}
-	valid := []WindowCommand{{Action: "maximize"}, {Bounds: &bounds}}
+	valid := []WindowCommand{{Action: "maximize"}, {Action: "reveal"}, {Bounds: &bounds}}
 	for _, command := range valid {
 		if err := h.HarnessWindowCommand(command); err != nil {
 			t.Fatalf("HarnessWindowCommand(%+v): %v", command, err)

@@ -35,6 +35,12 @@ type WindowState struct {
 
 // WindowCommand drives one native state transition or sets the outer bounds.
 // Exactly one of Action and Bounds must be supplied.
+//
+// `reveal` is the production "bring the app forward" path
+// (`uiwindow.Reveal`: the OS-notification click, a second launch) rather
+// than a window primitive, so the invariant it carries — a maximized window
+// stays maximized — is assertable from a script instead of by clicking a
+// real notification.
 type WindowCommand struct {
 	Action string      `json:"action,omitempty"`
 	Bounds *WindowRect `json:"bounds,omitempty"`
@@ -51,10 +57,10 @@ func (c WindowCommand) validate() error {
 		return nil
 	}
 	switch c.Action {
-	case "maximize", "unmaximize", "fullscreen", "unfullscreen", "minimize", "unminimize":
+	case "maximize", "unmaximize", "fullscreen", "unfullscreen", "minimize", "unminimize", "reveal":
 		return nil
 	default:
-		return errors.New("unknown window action: use maximize, unmaximize, fullscreen, unfullscreen, minimize, or unminimize")
+		return errors.New("unknown window action: use maximize, unmaximize, fullscreen, unfullscreen, minimize, unminimize, or reveal")
 	}
 }
 
