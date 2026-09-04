@@ -511,10 +511,15 @@ func TestHeadlessChromiumReal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new page: %v", err)
 	}
-	if err := page.Navigate(t.Context(), "about:blank"); err != nil {
+	// Operations run on a context derived from the page's own lifetime,
+	// which is the Manager's contract (operationContext): a bare caller
+	// context carries no chromedp target and chromedp refuses it.
+	opCtx, cancel := operationContext(t.Context(), page.Lifetime(), operationTimeout)
+	defer cancel()
+	if err := page.Navigate(opCtx, "about:blank"); err != nil {
 		t.Fatalf("navigate: %v", err)
 	}
-	url, _, err := page.Info(t.Context())
+	url, _, err := page.Info(opCtx)
 	if err != nil {
 		t.Fatalf("read page state: %v", err)
 	}
