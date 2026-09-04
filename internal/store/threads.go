@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"agent-overflow/internal/threadmode"
@@ -551,6 +552,29 @@ func (s *Store) ListThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
 		refs = append(refs, ref)
 	}
 	return refs, rows.Err()
+}
+
+// ListThreadWorkspacePaths returns every distinct workspace_path spelling a
+// thread row holds, archived rows included. It exists for one caller,
+// `threadapp.UpdateBranch`, which resolves each spelling against the
+// directory it is about to re-branch so `UpdateBranchForWorkspace` can stay
+// an exact match. Distinct spellings number the workspaces, not the threads.
+func (s *Store) ListThreadWorkspacePaths() ([]string, error) {
+	rows, err := s.reader().Query(`SELECT DISTINCT workspace_path FROM threads WHERE workspace_path != ''`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list thread workspace paths: %w", err)
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, fmt.Errorf("store: scan thread workspace path: %w", err)
+		}
+		paths = append(paths, path)
+	}
+	return paths, rows.Err()
 }
 
 // threadBusyPredicateSQL is the persisted "this thread is doing work in its
@@ -1520,9 +1544,10 @@ func (s *Store) UpdateContextSettings(threadID string, tokens, standardPercent, 
 	})
 }
 
-// UpdateBranchForWorkspace persists a branch observed in workspacePath onto
+// UpdateBranchForWorkspace persists a branch observed in a workspace onto
 // every thread row currently sitting in that workspace, and returns those
-// rows as they stand afterwards.
+// rows as they stand afterwards. The workspace arrives as every SPELLING of
+// its directory the caller knows to be stored (see below).
 //
 // The branch is a fact about the CHECKOUT, not about one thread: several
 // threads share a worktree routinely (project-root threads default to it,
@@ -1539,15 +1564,18 @@ func (s *Store) UpdateContextSettings(threadID string, tokens, standardPercent, 
 // the UPDATE to the workspace path means a thread that has since moved is
 // simply not matched, so the stale observation cannot follow it.
 //
-// The match is an EXACT one against either of two spellings of the same
-// directory: the path as the caller observed it, and its symlink-resolved
-// canonical form (the App resolves it; passing the same string twice is
-// legal and deduped). Thread rows store whichever spelling was current when
-// they were created — a worktree cut through a symlinked path keeps that
-// path — so matching only the caller's spelling left the rows stored under
-// the other one claiming a branch the working tree had left behind. It stays
-// an exact comparison, never a prefix or a re-resolution per row: that is
-// what keeps this a compare-and-swap on a directory rather than a scan.
+// The match is an EXACT one against each spelling in `spellings`, never a
+// prefix or a re-resolution per row: that is what keeps this a
+// compare-and-swap on a directory rather than a scan. Thread rows store
+// whichever spelling of a directory was current when they were created (a
+// worktree cut through a symlinked path keeps that path; on macOS a row
+// can hold `/var/...` where git answers `/private/var/...`), and the caller
+// knows only its own, so the caller (`threadapp.UpdateBranch`) first asks
+// `ListThreadWorkspacePaths` which stored spellings resolve to the same
+// directory and hands ALL of them here. Two fixed spellings (the observed
+// one and its canonical form) were not enough: a row under a third
+// spelling kept a branch the working tree had left behind (2026-09-03,
+// found on macOS). Duplicates and empties in `spellings` are dropped.
 //
 // Matching zero rows is a normal outcome, not an error: every thread may
 // have left the workspace (or the last one was deleted) between the
@@ -1566,24 +1594,36 @@ func (s *Store) UpdateContextSettings(threadID string, tokens, standardPercent, 
 // the UPDATE returned, so the rows handed back are exactly the rows written:
 // neither a concurrent writer nor a thread that already sat on this branch
 // can widen the answer.
-func (s *Store) UpdateBranchForWorkspace(workspacePath, canonicalPath, branch string) ([]Thread, error) {
+func (s *Store) UpdateBranchForWorkspace(spellings []string, branch string) ([]Thread, error) {
+	keys := make([]string, 0, len(spellings))
+	for _, spelling := range spellings {
+		if spelling != "" && !slices.Contains(keys, spelling) {
+			keys = append(keys, spelling)
+		}
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("store: update branch: workspace path is required")
+	}
+	workspacePath := keys[0]
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("store: begin branch write for workspace %s: %w", workspacePath, err)
 	}
 	defer tx.Rollback()
 
-	// One placeholder when the two spellings agree (the ordinary case), so
-	// the common path issues exactly the query it always did.
-	if canonicalPath == "" {
-		canonicalPath = workspacePath
-	}
 	value := nilIfEmpty(branch)
+	args := make([]any, 0, len(keys)+2)
+	args = append(args, value)
+	for _, key := range keys {
+		args = append(args, key)
+	}
+	args = append(args, value)
 	updated, err := tx.Query(
 		`UPDATE threads SET branch = ?
-		   WHERE (workspace_path = ? OR workspace_path = ?) AND branch IS NOT ?
+		   WHERE workspace_path IN (`+placeholders(len(keys))+`) AND branch IS NOT ?
 		 RETURNING id`,
-		value, workspacePath, canonicalPath, value,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: update branch for workspace %s: %w", workspacePath, err)

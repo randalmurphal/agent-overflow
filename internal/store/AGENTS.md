@@ -126,7 +126,11 @@ transactions.
     scope IS the guard: a thread that has since moved is simply not
     matched, so a stale observation cannot follow it. The branch is a
     fact about the checkout, so it lands on every thread sitting there,
-    not just the observing one. The UPDATE additionally excludes rows
+    not just the observing one. The key is an exact match over every
+    STORED spelling of the directory (`threadapp.UpdateBranch` resolves
+    them through `ListThreadWorkspacePaths`): rows keep the spelling they
+    were created with, and on macOS that is `/var/...` beside git's
+    `/private/var/...`, so two fixed spellings missed rows. The UPDATE additionally excludes rows
     that would not change (`branch IS NOT ?`, null-safe so the
     empty-string/NULL spelling behaves) and returns exactly the rows it
     wrote, read back by id inside the same transaction. Returning none

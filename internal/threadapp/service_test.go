@@ -415,3 +415,46 @@ func TestUpdateBranchMatchesCanonicalWorkspaceSpelling(t *testing.T) {
 		t.Fatalf("stored thread = %+v, %v", stored, err)
 	}
 }
+
+// TestUpdateBranchReachesRowsStoredUnderAnotherSpelling is the other
+// direction of the canonical match, and the one macOS exercises on every
+// checkout: the ROW holds a spelling the caller never sees (`/var/...` from
+// a temp dir, a symlinked checkout path) while the caller observes the
+// resolved one. Matching the caller's spelling and its canonical form found
+// nothing; the stored spellings have to be resolved too.
+func TestUpdateBranchReachesRowsStoredUnderAnotherSpelling(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	realRoot := t.TempDir()
+	link := filepath.Join(t.TempDir(), "repo-link")
+	if err := symlinkForTest(realRoot, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	thread, err := service.Create(CreateOptions{ProjectID: "project", WorkspaceOverride: link})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if stored, _ := database.GetThread(thread.ID); stored.WorkspacePath != link {
+		t.Fatalf("fixture: WorkspacePath = %q, want the link spelling %q", stored.WorkspacePath, link)
+	}
+	rows, err := service.UpdateBranch(gitops.CanonicalPath(realRoot), "feature/resolved")
+	if err != nil || len(rows) != 1 || rows[0].ID != thread.ID {
+		t.Fatalf("UpdateBranch = %+v, %v", rows, err)
+	}
+	stored, err := database.GetThread(thread.ID)
+	if err != nil || stored.Branch != "feature/resolved" {
+		t.Fatalf("stored thread = %+v, %v", stored, err)
+	}
+	// A row in an unrelated directory is untouched: resolving spellings must
+	// widen the match to the same directory and nowhere else.
+	service.deps.NewID = func() string { return "elsewhere" }
+	other, err := service.Create(CreateOptions{ProjectID: "project", WorkspaceOverride: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Create(other): %v", err)
+	}
+	if rows, err := service.UpdateBranch(link, "feature/again"); err != nil || len(rows) != 1 || rows[0].ID != thread.ID {
+		t.Fatalf("UpdateBranch(link) = %+v, %v; want only the linked thread", rows, err)
+	}
+	if got, _ := database.GetThread(other.ID); got.Branch == "feature/again" {
+		t.Fatal("a thread in another directory took the branch")
+	}
+}

@@ -1122,7 +1122,7 @@ func TestUpdateBranchForWorkspacePersists(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 
-	rows, err := s.UpdateBranchForWorkspace(thr.WorkspacePath, thr.WorkspacePath, "feat/abc")
+	rows, err := s.UpdateBranchForWorkspace([]string{thr.WorkspacePath}, "feat/abc")
 	if err != nil {
 		t.Fatalf("UpdateBranchForWorkspace(): %v", err)
 	}
@@ -1135,7 +1135,7 @@ func TestUpdateBranchForWorkspacePersists(t *testing.T) {
 	}
 
 	// Empty string clears the column.
-	rows, err = s.UpdateBranchForWorkspace(thr.WorkspacePath, thr.WorkspacePath, "")
+	rows, err = s.UpdateBranchForWorkspace([]string{thr.WorkspacePath}, "")
 	if err != nil {
 		t.Fatalf("UpdateBranchForWorkspace(empty): %v", err)
 	}
@@ -1176,7 +1176,7 @@ func TestUpdateBranchForWorkspaceUpdatesEveryThreadThere(t *testing.T) {
 		t.Fatalf("CreateThread(other): %v", err)
 	}
 
-	rows, err := s.UpdateBranchForWorkspace(shared, shared, "feature/live")
+	rows, err := s.UpdateBranchForWorkspace([]string{shared}, "feature/live")
 	if err != nil {
 		t.Fatalf("UpdateBranchForWorkspace(): %v", err)
 	}
@@ -1226,7 +1226,7 @@ func TestUpdateBranchForWorkspaceSkipsThreadsThatMoved(t *testing.T) {
 	}
 
 	// The queued observation from the OLD workspace arrives afterwards.
-	rows, err := s.UpdateBranchForWorkspace(observedWorkspace, observedWorkspace, "stale/branch")
+	rows, err := s.UpdateBranchForWorkspace([]string{observedWorkspace}, "stale/branch")
 	if err != nil {
 		t.Fatalf("UpdateBranchForWorkspace(): %v", err)
 	}
@@ -1240,7 +1240,7 @@ func TestUpdateBranchForWorkspaceSkipsThreadsThatMoved(t *testing.T) {
 
 	// The same-workspace write still applies, so the keying is not simply
 	// rejecting everything and the thread converges once it re-observes.
-	rows, err = s.UpdateBranchForWorkspace(moved.WorkspacePath, moved.WorkspacePath, "feature/renamed")
+	rows, err = s.UpdateBranchForWorkspace([]string{moved.WorkspacePath}, "feature/renamed")
 	if err != nil {
 		t.Fatalf("UpdateBranchForWorkspace(current workspace): %v", err)
 	}
@@ -1274,7 +1274,7 @@ func TestUpdateBranchForWorkspaceMatchesEitherSpelling(t *testing.T) {
 		}
 	}
 
-	rows, err := s.UpdateBranchForWorkspace(linked, canonical, "feature/live")
+	rows, err := s.UpdateBranchForWorkspace([]string{linked, canonical}, "feature/live")
 	if err != nil {
 		t.Fatalf("UpdateBranchForWorkspace(): %v", err)
 	}
@@ -1298,7 +1298,7 @@ func TestUpdateBranchForWorkspaceMatchesEitherSpelling(t *testing.T) {
 func TestUpdateBranchForWorkspaceEmptyWorkspaceIsNotAnError(t *testing.T) {
 	s := newTestStore(t)
 
-	rows, err := s.UpdateBranchForWorkspace("/tmp/nobody-here", "/tmp/nobody-here", "main")
+	rows, err := s.UpdateBranchForWorkspace([]string{"/tmp/nobody-here"}, "main")
 	if err != nil {
 		t.Fatalf("UpdateBranchForWorkspace(empty workspace): %v", err)
 	}
@@ -1327,7 +1327,7 @@ func TestUpdateBranchForWorkspaceReturnsOnlyChangedRows(t *testing.T) {
 	}
 
 	// Nothing moved: both rows already say main.
-	rows, err := s.UpdateBranchForWorkspace(shared, shared, "main")
+	rows, err := s.UpdateBranchForWorkspace([]string{shared}, "main")
 	if err != nil {
 		t.Fatalf("UpdateBranchForWorkspace(no change): %v", err)
 	}
@@ -1344,7 +1344,7 @@ func TestUpdateBranchForWorkspaceReturnsOnlyChangedRows(t *testing.T) {
 	if err := s.UpdateThread(moved); err != nil {
 		t.Fatalf("UpdateThread(nc-a): %v", err)
 	}
-	rows, err = s.UpdateBranchForWorkspace(shared, shared, "main")
+	rows, err = s.UpdateBranchForWorkspace([]string{shared}, "main")
 	if err != nil {
 		t.Fatalf("UpdateBranchForWorkspace(partial): %v", err)
 	}
@@ -1373,7 +1373,7 @@ func TestUpdateBranchForWorkspaceClearIsNullSafe(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 
-	rows, err := s.UpdateBranchForWorkspace(thr.WorkspacePath, thr.WorkspacePath, "")
+	rows, err := s.UpdateBranchForWorkspace([]string{thr.WorkspacePath}, "")
 	if err != nil {
 		t.Fatalf("UpdateBranchForWorkspace(clear an empty branch): %v", err)
 	}
@@ -1390,7 +1390,7 @@ func TestUpdateBranchForWorkspaceClearIsNullSafe(t *testing.T) {
 	if err := s.UpdateThread(set); err != nil {
 		t.Fatalf("UpdateThread(): %v", err)
 	}
-	rows, err = s.UpdateBranchForWorkspace(thr.WorkspacePath, thr.WorkspacePath, "")
+	rows, err = s.UpdateBranchForWorkspace([]string{thr.WorkspacePath}, "")
 	if err != nil {
 		t.Fatalf("UpdateBranchForWorkspace(clear): %v", err)
 	}

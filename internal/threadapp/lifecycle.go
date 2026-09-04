@@ -133,7 +133,35 @@ func (s *Service) UpdateBranch(workspacePath, branch string) ([]store.Thread, er
 			return nil, fmt.Errorf("update branch: %w", err)
 		}
 	}
-	return database.UpdateBranchForWorkspace(
-		workspacePath, gitops.CanonicalPath(workspacePath), branch,
-	)
+	spellings, err := storedSpellingsOf(database, workspacePath)
+	if err != nil {
+		return nil, err
+	}
+	return database.UpdateBranchForWorkspace(spellings, branch)
+}
+
+// storedSpellingsOf answers every spelling of workspacePath a thread row can
+// be keyed under: the caller's own, its canonical form, and every stored
+// workspace_path that resolves to the same directory. Thread rows keep the
+// spelling that was current when they were created, and the store matches
+// exactly (a compare-and-swap, never a scan), so the resolution happens
+// here, once per distinct stored spelling rather than once per row. Two
+// fixed spellings missed a row under a third one: on macOS a thread created
+// at `/var/...` sat unre-branched while git named `/private/var/...`.
+func storedSpellingsOf(database *store.Store, workspacePath string) ([]string, error) {
+	canonical := gitops.CanonicalPath(workspacePath)
+	spellings := []string{workspacePath, canonical}
+	stored, err := database.ListThreadWorkspacePaths()
+	if err != nil {
+		return nil, fmt.Errorf("update branch: %w", err)
+	}
+	for _, path := range stored {
+		if path == workspacePath || path == canonical {
+			continue
+		}
+		if gitops.CanonicalPath(path) == canonical {
+			spellings = append(spellings, path)
+		}
+	}
+	return spellings, nil
 }
