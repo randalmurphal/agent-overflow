@@ -45,6 +45,38 @@ test('the viewport picks compact and the list is the root screen', async ({ harn
   await expect(page.getByTestId('sidebar-resizer')).toHaveCount(0);
 });
 
+// The first real-phone session (Pixel 9a, 2026-09-04) opened a thread and
+// could not send: the composer toolbar's densest rung still overflowed a
+// phone's width and the clipped control was Send, at the row's right end.
+// CDP clicks tap DOM nodes wherever they are, so no interaction test can
+// catch a control a FINGER cannot reach — only geometry can, which is
+// what this case asserts, in the state the phone hit (a locked thread,
+// where the rate-limit meters join the row).
+test('every composer control stays inside the phone viewport', async ({ harness, page }) => {
+  await harness.open(page);
+  await page.getByTestId('thread-row').filter({ hasText: 'First task' }).click();
+  const toolbar = page.getByTestId('composer-toolbar');
+  await expect(toolbar).toBeVisible();
+
+  // The toolbar may not overflow itself: an overflowing flex row clips
+  // whatever sits at its end, silently.
+  await expect
+    .poll(() => toolbar.evaluate((el) => el.scrollWidth - el.clientWidth), {
+      message: 'the composer toolbar must fit its width at phone size',
+    })
+    .toBeLessThanOrEqual(1);
+
+  // And Send in particular is fully on screen.
+  const send = page.getByTestId('composer-send');
+  await expect(send).toBeVisible();
+  const box = (await send.boundingBox())!;
+  const viewport = page.viewportSize()!;
+  expect(box.x, 'send must not hang off the left edge').toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width, 'send must not hang off the right edge').toBeLessThanOrEqual(
+    viewport.width,
+  );
+});
+
 test('opening a thread swaps to the thread screen and back returns to the list', async ({
   harness,
   page,
