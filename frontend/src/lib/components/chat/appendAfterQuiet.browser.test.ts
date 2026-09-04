@@ -206,6 +206,42 @@ async function waitForDrain(pane: ThreadPane, id: string): Promise<void> {
 }
 
 describe('append after a quiet gap — the growth glides', () => {
+  it('an optimistic send keeps gliding when composer padding changes during the append', async () => {
+    setUiRenderTraceEnabled(true);
+    clearUiRenderTrace();
+    const threadId = 'thread-send-composer-resize';
+    const { pane, scrollEl } = await mountTimeline(
+      threadId, seedTimelineItems(threadId, PROSE), QUIET_BOTTOM,
+    );
+    await sleep(SILENT_GAP_MS);
+    const since = lastTraceSeq();
+    // Composer arms before inserting its optimistic row. No provider turn
+    // or liveness stamp exists yet.
+    pane.armStructuralSpring();
+    pane.upsertItems([makeItem({
+      id: 'optimistic-send', threadId, turnIndex: 100, itemIndex: 0,
+      kind: 'user_text', role: 'user', status: 'completed',
+      summary: 'A multiline draft becomes the optimistic sent message. '.repeat(40),
+    })]);
+    await tick();
+    await waitFor(() => getUiRenderTraceRecords().some((r) =>
+      r.seq > since && r.label === 'scroll.write' && (r.data as Record<string, unknown>).caller === 'spring.tick'),
+    'the send spring to begin');
+    const before = scrollEl.scrollTop;
+    // Matches the Windows trace: the content is unchanged while the
+    // composer/rail publishes a 205px change in the usable viewport.
+    scrollEl.style.paddingBottom = '205px';
+    await raf();
+    await raf();
+    const writes = getUiRenderTraceRecords().filter((r) =>
+      r.seq > since && r.label === 'scroll.write');
+    expect(writes.filter((r) => (r.data as Record<string, unknown>).caller === 'contentRO.viewportShrink')).toHaveLength(0);
+    expect(scrollEl.scrollTop - before).toBeLessThan(100);
+    const opened = distanceToBottom(scrollEl);
+    expect(opened).toBeGreaterThan(8);
+    await expectGlide(scrollEl, opened, since);
+  });
+
   it('A: prose -> first tool call of a new run', async () => {
     setUiRenderTraceEnabled(true);
     clearUiRenderTrace();

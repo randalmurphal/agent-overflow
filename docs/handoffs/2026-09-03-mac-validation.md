@@ -299,7 +299,9 @@ findings, each fixed at the root and each with a test:
   jump-hint door.
 - **Keyboard cut-off**: `index.html` asks for
   `interactive-widget=resizes-content`, and the scroll observers re-pin
-  a pinned reader when the viewport shrinks (`contentRO.viewportShrink`).
+  an idle pinned reader when the viewport shrinks. Viewport-only samples
+  now use the controller's shared composer-geometry policy: an active send
+  glide owns the remaining distance instead of being instantly landed.
 
 The scroll spring's absence on the phone was not reproduced on a
 device in this pass; the hypothesis is the WebView honouring Android's

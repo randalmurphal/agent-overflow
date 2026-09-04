@@ -175,8 +175,7 @@ export type ContentWriteCaller =
   | 'contentRO.positiveDelta'
   | 'contentRO.negativeDelta'
   | 'contentRO.negativeDeltaReflow'
-  | 'contentRO.oscillationSnap'
-  | 'contentRO.viewportShrink';
+  | 'contentRO.oscillationSnap';
 
 export interface ContentDecision {
   /** At most one scrollTop write per delivery; value is always the bottom target. */

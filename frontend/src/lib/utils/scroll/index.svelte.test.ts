@@ -7408,6 +7408,33 @@ describe('createUseStickToBottomController — external content-geometry source'
       expect(geom.scrollTop).toBe(400);
     });
 
+    it.each([60, 120, 165, 240])('viewport deliveries preserve a send glide at %sHz, even after its append window expires', async (hz) => {
+      deliverWithViewport(800, 400);
+      controller.skipWarmup();
+      controller.markStructuralContentPending();
+      geom.contentHeight = 1072;
+      geom.scrollHeight = 1272;
+      deliverWithViewport(1072, 400);
+      await nextFrameAfter(1000 / hz);
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      expect(geom.scrollTop).toBeLessThan(672);
+
+      // The viewport signal can arrive after the 250ms structural mark.
+      // An in-flight glide remains the owner independently of that clock.
+      mockNow += 251;
+      const before = geom.scrollTop;
+      geom.scrollHeight += 205;
+      deliverWithViewport(1072, 195);
+      expect(geom.scrollTop).toBe(before);
+      // The other announcer of exactly the same viewport change agrees.
+      controller.observe('composer-geometry');
+      expect(geom.scrollTop).toBe(before);
+      await nextFrameAfter(1000 / hz);
+      expect(geom.scrollTop).toBeGreaterThanOrEqual(before);
+      expect(geom.scrollTop - before).toBeLessThanOrEqual(27);
+      expect(geom.scrollTop).toBeLessThan(877);
+    });
+
     it('keeps sample geometry current across escaped grow, shrink, and repeated resize transitions', () => {
       deliverWithViewport(800, 400);
       controller.setEscapedFromLock(true);

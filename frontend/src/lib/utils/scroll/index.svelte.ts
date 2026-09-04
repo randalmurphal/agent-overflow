@@ -523,6 +523,7 @@ export function createUseStickToBottomController(
     isNearBottom: () => isNearBottomState,
     targetScrollTop,
     refreshIsNearBottom,
+    viewportGeometryChanged: notifyLiveContentMaybeGrew,
     cacheExternalBottomTarget,
     contentGeometryForSample,
     writeScrollTop,

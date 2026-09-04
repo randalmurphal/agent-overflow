@@ -191,6 +191,8 @@ export interface ContentObserverDeps {
   isNearBottom(): boolean;
   targetScrollTop(): number;
   refreshIsNearBottom(): number;
+  /** A viewport-only sample uses the controller's shared geometry policy. */
+  viewportGeometryChanged(): void;
   /**
    * Read-free bottom geometry for an authoritative virtualizer sample.
    * Computes target = content height - content-box viewport height and
@@ -622,26 +624,10 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       // next sample and needs no mutable offset to rebase.
       if (viewportChanged) {
         deps.refreshIsNearBottom();
-        // A viewport that SHRANK under a pinned reader leaves scrollTop
-        // where it was and the bottom target further down, so the tail
-        // slides out under the new edge: the soft keyboard on a phone
-        // cut the last message off (2026-09-04), and a window resize on
-        // the desktop is the same shape. Pinned means follow the bottom,
-        // so re-pin instantly, under the same gate every other external
-        // geometry change uses (escaped or paused readers are left
-        // alone). Growth needs nothing: the browser clamps scrollTop to
-        // the smaller range itself.
-        const target = deps.targetScrollTop();
-        if (
-          scrollEl.scrollTop < target
-          && deps.isAtBottom()
-          && !deps.escaped()
-          && deps.pauseDepth() === 0
-        ) {
-          resizeDifference = 1;
-          scheduleResizeDifferenceClear(1);
-          deps.writeScrollTop('contentRO.viewportShrink', target);
-        }
+        // Keyboard/window changes pin an idle reader, but must not land
+        // an active send glide. The same observation also arrives through
+        // composer-geometry; both use one controller policy.
+        deps.viewportGeometryChanged();
       }
       if (widthChanged && isUiRenderTraceEnabled()) trace('scroll.contentRO.widthReflow', () => ({
         prevWidth: prevWidth === undefined ? null : roundCssPx(prevWidth),

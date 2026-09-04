@@ -976,6 +976,13 @@ Two consumers, neither of them the physics choice:
    viewport) still snaps through, matching the resolver's mid-spring
    threshold.
 
+   The observer's zero-content-delta viewport samples enter this SAME
+   path. Never add a separate instant-pin branch there: the send can
+   already be gliding when the composer and viewport resize. A Windows
+   dev trace showed the first 1px spring tick followed by a 205px instant
+   viewport pin (2026-09-04). Idle keyboard/window resizing still pins;
+   escaped and paused readers remain untouched.
+
 Getting liveness wrong is cheap by construction: the worst outcome is a
 sentinel restart or one extra rAF, never a teleport. The 500ms hold is
 pure tuning, and unlike the latch it replaced it is not load-bearing for
