@@ -958,7 +958,11 @@
            mismatch the estimate degrades per-row to the kind table /
            flat default. See utils/virtual/priors.ts and
            docs/architecture/frontend-scroll.md. -->
-      <div style:visibility={hideContentForWarmup ? 'hidden' : 'visible'}>
+      <!-- Warm-up clears to no inline value, never `visible`: an explicit
+           `visibility: visible` would override the inherited hidden that
+           the compact screen swap keys on and paint the timeline over the
+           thread list (found on-device 2026-09-04). -->
+      <div style:visibility={hideContentForWarmup ? 'hidden' : undefined}>
         {#key pane.threadId}
         <TimelineVirtualizer
           bind:this={listRef}

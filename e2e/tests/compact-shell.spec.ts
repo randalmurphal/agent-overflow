@@ -106,6 +106,25 @@ test('opening a thread swaps to the thread screen and back returns to the list',
   await expect(page.getByTestId('chat-header-title')).toBeAttached();
   await expect(page.getByTestId('chat-header-title')).toHaveText('First task');
 
+  // Nothing inside the hidden thread screen may still paint: the swap
+  // works by inherited `visibility: hidden`, so one inline
+  // `visibility: visible` anywhere in the subtree punches through and
+  // draws over the list — exactly how the timeline painted over the
+  // thread rows on a real phone (2026-09-04).
+  const leaks = await page.evaluate(() => {
+    const pane = document.querySelector('.compact-screen-thread');
+    if (!pane) return ['missing .compact-screen-thread'];
+    const out: string[] = [];
+    for (const el of pane.querySelectorAll<HTMLElement>('*')) {
+      if (el.checkVisibility({ visibilityProperty: true })) {
+        out.push(`${el.tagName}.${String(el.className).slice(0, 60)}`);
+        if (out.length >= 5) break;
+      }
+    }
+    return out;
+  });
+  expect(leaks).toEqual([]);
+
   // Tapping the already-open thread reveals it again.
   await page.getByTestId('thread-row').filter({ hasText: 'First task' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
