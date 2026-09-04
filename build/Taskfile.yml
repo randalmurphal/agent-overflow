@@ -25,11 +25,8 @@ tasks:
     label: build:frontend (DEV={{.DEV}})
     summary: Build the frontend project
     dir: frontend
-    sources:
-      - "**/*"
-      - exclude: node_modules/**/*
-    generates:
-      - dist/**/*
+    # Always rebuilt: no sources/generates fingerprint. See generate:bindings.
+    method: none
     deps:
       - task: install:frontend:deps
       - task: generate:bindings
@@ -47,11 +44,8 @@ tasks:
     label: build:frontend:no-bindings (DEV={{.DEV}})
     summary: Build the frontend project after platform-specific bindings were generated
     dir: frontend
-    sources:
-      - "**/*"
-      - exclude: node_modules/**/*
-    generates:
-      - dist/**/*
+    # Always rebuilt: no sources/generates fingerprint. See generate:bindings.
+    method: none
     deps:
       - task: install:frontend:deps
     cmds:
@@ -66,15 +60,16 @@ tasks:
     summary: Generates bindings for the frontend
     deps:
       - task: go:mod:tidy
-    sources:
-      - "**/*.[jt]s"
-      - exclude: frontend/**/*
-      - frontend/bindings/**/*  # Rerun when switching between dev/production mode causes changes in output
-      - "**/*.go"
-      - go.mod
-      - go.sum
-    generates:
-      - frontend/bindings/**/*
+    # Always regenerated, like build:frontend above: no sources/generates
+    # fingerprint. Task's checksum method walks source globs following
+    # symlinks and SWALLOWS a glob error, so one dangling symlink under the
+    # tree (a gitignored node_modules left behind by a relocated package
+    # was enough) empties the source set and freezes the fingerprint:
+    # every later build reports
+    # "up to date" and ships whatever dist/ and bindings/ already hold. On
+    # 2026-09-03 that shipped a pre-merge frontend inside a post-merge
+    # backend. Twelve seconds a build is the price of a gate that is true.
+    method: none
     cmds:
       # -time-type is deliberately left at its default (Go time.Time → TS
       # `string`, RFC3339 on the wire). The `Date` mode emits

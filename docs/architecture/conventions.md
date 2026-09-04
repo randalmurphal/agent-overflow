@@ -182,6 +182,16 @@ happens through stable sibling ids in triage.
   Regenerate with `wails3 generate bindings -ts`. Always pass `-ts` so
   Wails emits TypeScript rather than JS bindings. `build/Taskfile.yml`'s
   `generate:bindings` target runs it with `-clean=true` and the build flags.
+- **`make build` always rebuilds the frontend and the bindings.** The
+  `build:frontend` and `generate:bindings` tasks run with `method: none`,
+  no source fingerprint. Task's checksum walker follows symlinks and
+  swallows a glob error, so a single dangling symlink under the tree (a
+  gitignored `node_modules` left behind by a relocated package was
+  enough) empties the source set and freezes the fingerprint at "up to
+  date" forever; on
+  2026-09-03 that shipped a pre-merge page inside a post-merge backend,
+  and the app booted to nothing but HTTP 404 toasts. Don't reintroduce
+  `sources:` on a task whose output is embedded in the binary.
 - **Heavy content on demand.** Fetch diffs, command output, and thinking
   via a Wails binding when the user expands. Don't preload. The `items`
   list the frontend receives already omits `payload.data`; fetching it
