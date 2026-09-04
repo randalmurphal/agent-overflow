@@ -357,6 +357,21 @@ CLIENT MACHINE, so a write-blocked session keeps its own locally (§9.6).
   invalidation and remounts the surface (`PaneHost.test.ts`).
 - No visible in-app explanatory text for internal mechanics, shortcuts,
   or implementation details.
+- A render throw is contained, never page-wide. Uncaught, a throw inside
+  an update flush aborts the whole batch and every region the traversal
+  had not reached keeps its stale DOM for good: a composer that will not
+  clear after its send went through, a reveal stopped mid-message
+  (2026-08-29, 2026-09-04). Every pane body (`panes/PaneHost.svelte`),
+  the thread list (`sidebar/Sidebar.svelte`) and the review pane sit in
+  `shared/RenderBoundary.svelte`, which renders the failure in place
+  with a Retry and records it through `reportFrontendDiagnostic`
+  (the boundary keeps it from `window.onerror`). A new top-level region
+  gets the same wrapper. The most common throw of the class, a repeated
+  key in a keyed `{#each}`, no longer throws at all: the `each-key-repair`
+  vendor hunk below repairs the key and reports it, so a duplicate is a
+  logged bug instead of a frozen page. `utils/uniqueEachKeys.ts` stays
+  the tool for lists whose repeats are LEGITIMATE (model-authored option
+  rows): those must not be reported as bugs on every render.
 
 ## Testing
 
@@ -479,8 +494,9 @@ pnpm patch. Fix parser bugs there, never duplicating the fix in
 map, the host seams, the path-relative URL security boundary and the test
 map.
 
-`patches/svelte@5.57.0.patch` has five hunks, each dropping when its
-suite passes against an unpatched release.
+`patches/svelte@5.57.0.patch` has six hunks, each dropping when its
+suite passes against an unpatched release (the two deliberate
+divergences never will; their rows say so).
 `svelte-patch-zombie-leak.test.ts` and
 `svelte-patch-event-slot.test.ts` are two more suites with no hunk
 left, guarding leak classes upstream fixed in 5.56.5 and 5.57.0; both
@@ -491,6 +507,7 @@ must keep passing UNPATCHED.
 | ownerless-roots | `$effect.root` inherited the creating component's context and parent, so store-level roots pinned dead row instances. Deliberate divergence, no upstream issue: carry forward, re-evaluate every bump. | `svelte-patch-ownerless-roots.test.ts` |
 | destroy-pass-errors | A throwing user `$effect` teardown aborted the sibling-destroy loop, leaving queued effects subscribed and detached DOM retained for the parent's lifetime. Upstream PR [#18566](https://github.com/sveltejs/svelte/pull/18566). | `svelte-patch-destroy-pass.test.ts` |
 | flush-loop-caps | Both synchronous flush loops were unbounded, so a cycle was an unreportable renderer freeze (2026-08-07: WebView2 wedged 8+ minutes, no paint, no error, nothing in any log). The caps abort and throw a svelte-shaped error that `utils/frontendErrorCapture.ts` persists, message kept in production. PR candidate. | `svelte-patch-flush-caps.test.ts` |
+| each-key-repair | A repeated key in a keyed `{#each}` threw `each_key_duplicate` from inside the flush, aborting the batch and freezing every region it had not reached (2026-08-29: 400+ hits behind the pane-freeze incident; 2026-09-04: a composer that kept its sent text). The hunk repairs the repeat to a unique key (`key\u0000#n`, stable across runs for string and number keys; a fresh Symbol otherwise) and reports it once per block through `reportError`, so `utils/frontendErrorCapture.ts` records the key value where the throw used to land. Deliberate divergence: upstream throws by design. | `svelte-patch-each-key-repair.test.ts` |
 | reconnect-dedupe | `get()` on a disconnected, dirty, previously-run derived registered it twice in one dep, so losing its last reader left that dep and everything upstream connected for the app's life (2026-08-23 heap snapshot: a closed pane's 3.4k detached nodes). PR candidate. | `svelte-patch-reconnect-dedupe.test.ts`, `chatview-dom-retention.test.ts` |
 | flip-phases | An animated keyed-each reorder interleaved abort / read / create per item, forcing up to N style-layout passes in one microtask (34.6ms of gBCR self-time in a sidebar-reorder burst, 2026-08-26). Three phased loops instead: identical geometry, one forced pass. PR candidate. | `svelte-patch-flip-phases.test.ts` |
 

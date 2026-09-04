@@ -1,13 +1,17 @@
 // Keys for a `{#each}` over a list whose key strings come off the wire.
 //
-// THE HAZARD. Svelte's keyed `{#each}` THROWS `each_key_duplicate`, and a
-// throw inside an update flush aborts the whole batch — the pane stops
+// THE HAZARD. Pristine svelte's keyed `{#each}` THROWS `each_key_duplicate`,
+// and a throw inside an update flush aborts the whole batch — the pane stops
 // rendering and the app looks frozen (production incident 2026-08-29, where
 // the duplicate was a subagent card key; `subagentGrouping`'s
 // `enforceUniqueTimelineNodeKeys` is the timeline's own copy of this repair).
-// Any key derived from provider-, model- or MCP-server-authored text is a
-// candidate: nothing upstream promises those strings are distinct, and the
-// surfaces that render them (the question card, the pending-input panel, the
+// The `each-key-repair` vendor hunk (frontend/AGENTS.md § Vendor patches)
+// now repairs a repeat inside svelte and REPORTS it as a bug through the
+// frontend error log. This helper is for lists whose repeats are legitimate:
+// any key derived from provider-, model- or MCP-server-authored text, where
+// nothing upstream promises the strings are distinct and a repeat is the
+// producer's statement, not a defect to log on every render. The surfaces
+// that render them (the question card, the pending-input panel, the
 // elicitation form) sit inside a pane that is usually streaming.
 //
 // WHAT THIS DOES. Returns the natural keys unchanged when they are already

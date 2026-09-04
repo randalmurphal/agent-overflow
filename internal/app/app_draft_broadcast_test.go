@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 )
@@ -255,4 +257,106 @@ func TestBackendWrittenDraftsBroadcastAnonymously(t *testing.T) {
 	if evt.DeviceID != "" || evt.ConnectionID != "" {
 		t.Fatalf("frame = %+v, want no identity for a backend write", evt)
 	}
+}
+
+// A send CONSUMES the composer's draft, so the frame announcing the delete is
+// the one case where the writer's identity earns its keep twice over: the
+// sending screen has already cleared its own composer, and an anonymous frame
+// would make it re-read the row it just consumed. A send with no screen behind
+// it — a saga, a queue dispatch — still announces the delete to everyone.
+//
+// Driven through sendMessageWithOptions rather than a bound method: the
+// a.sendMessageFn test seam returns from sendMessageLocked BEFORE the draft
+// delete, so a stubbed send proves nothing here. This is the same waist a
+// ctx-carrying bound method reaches (StartCodexReview), with the composer
+// fixture's passthrough Claude script installed over the poisoned binary.
+func TestASendConsumingADraftNamesTheSendingScreen(t *testing.T) {
+	phone := transport.ClientIdentity{DeviceID: "device-phone", ConnectionID: "conn-phone-1"}
+
+	// A thread with a live provider session and a persisted draft, capturing
+	// only what the SEND emits — the seeding save has already happened.
+	setup := func(t *testing.T) (*App, store.Thread, *draftBroadcasts) {
+		t.Helper()
+		app := draftTestApp(t)
+		thread := composerSeedThread(t, app, "thr-send-draft-identity", "")
+		if err := app.SaveDraft(context.Background(), thread.ID, "half-typed", nil, nil, nil); err != nil {
+			t.Fatalf("SaveDraft: %v", err)
+		}
+		sess, err := claude.NewSession(
+			context.Background(),
+			thread.ID,
+			claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+			func(provider.ProviderEvent) {},
+		)
+		if err != nil {
+			t.Fatalf("claude.NewSession: %v", err)
+		}
+		t.Cleanup(func() { _ = sess.Close() })
+		app.sessionManager().put(thread.ID, session{
+			Provider: string(provider.Claude),
+			Token:    "tok",
+			Claude:   sess,
+		})
+		return app, thread, captureDraftBroadcasts(t, app)
+	}
+
+	// The frame is only worth checking if the send really went the whole way:
+	// persisted the user row, then deleted the draft behind it.
+	assertSent := func(t *testing.T, app *App, threadID string) {
+		t.Helper()
+		persisted, err := app.store.HasItems(threadID)
+		if err != nil {
+			t.Fatalf("HasItems: %v", err)
+		}
+		if !persisted {
+			t.Fatal("send persisted no user row; it short-circuited before the draft delete")
+		}
+		draft, err := app.GetDraft(threadID)
+		if err != nil {
+			t.Fatalf("GetDraft: %v", err)
+		}
+		if draft.Content != "" {
+			t.Fatalf("draft content after send = %q, want the row gone", draft.Content)
+		}
+	}
+
+	t.Run("the screen that sent is named", func(t *testing.T) {
+		app, thread, broadcasts := setup(t)
+
+		if _, err := app.sendMessageWithOptions(
+			ctxFromClient(phone), thread.ID, "actual message",
+			sendMessageOptions{ExpandComposerCommands: true},
+		); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		assertSent(t, app, thread.ID)
+
+		evt := broadcasts.expectOne("a send consuming a draft")
+		if evt.ThreadID != thread.ID {
+			t.Errorf("frame = %+v, want a frame for %s", evt, thread.ID)
+		}
+		if evt.DeviceID != phone.DeviceID || evt.ConnectionID != phone.ConnectionID {
+			t.Errorf("frame = %+v, want the sending screen's identity %+v", evt, phone)
+		}
+	})
+
+	t.Run("a send with no screen behind it is anonymous", func(t *testing.T) {
+		app, thread, broadcasts := setup(t)
+
+		if _, err := app.sendMessageWithOptions(
+			context.Background(), thread.ID, "actual message",
+			sendMessageOptions{ExpandComposerCommands: true},
+		); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		assertSent(t, app, thread.ID)
+
+		evt := broadcasts.expectOne("a backend-driven send consuming a draft")
+		if evt.ThreadID != thread.ID {
+			t.Errorf("frame = %+v, want a frame for %s", evt, thread.ID)
+		}
+		if evt.DeviceID != "" || evt.ConnectionID != "" {
+			t.Errorf("frame = %+v, want no identity for a send no screen made", evt)
+		}
+	})
 }

@@ -65,6 +65,15 @@ A send awaits `waitForUploads()` before it snapshots `draft.attachments`
 in the air is not in the draft yet. Guarded on `uploading()` so the
 common send stays synchronous.
 
+A send also awaits `draft.quiesceSaves()` before the RPC that consumes
+the draft row (`SendMessageWithOptions`, `RegisterQueueItem`). The
+backend runs one connection's RPCs concurrently, so a debounced
+`SaveDraft` still on the wire can land AFTER the send's delete and put
+the sent text back in the row for every screen to re-read. The wait
+cancels the pending timer and joins the saves already issued; on the
+direct path it runs under `sending`, on the queue path after the
+synchronous local clear, so a second Enter during it has nothing to send.
+
 ## One send has one id, and a dead socket is not a verdict
 
 `utils/sendOptions.ts#buildSendOptions` mints a `sendId` on every call,

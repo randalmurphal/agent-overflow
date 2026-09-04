@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import ChatView from '../chat/ChatView.svelte';
   import CompanionPane from './CompanionPane.svelte';
+  import RenderBoundary from '../shared/RenderBoundary.svelte';
   import {
     focusPane,
     getFocusedPaneId,
@@ -473,22 +474,26 @@
           onpointerdown={() => handlePanePointerDown(item.paneId)}
           onfocusin={() => handlePaneFocusIn(item.paneId)}
         >
-          {#if item.kind === 'take-control'}
-            <!-- Lazy: TakeControlPane pulls the xterm stack; a static
-                 import here would drag the terminal chunks into the eager
-                 startup graph (see the TerminalView mount in ChatView). -->
-            {#await import('../takecontrol/TakeControlPane.svelte')}
-              <div class="flex h-full items-center justify-center text-xs text-fg-muted">Loading terminal...</div>
-            {:then { default: TakeControlPane }}
-              <TakeControlPane paneId={item.paneId} />
-            {:catch err}
-              <div class="flex h-full items-center justify-center text-xs text-error" data-testid="take-control-load-error">
-                Failed to load terminal: {err instanceof Error ? err.message : String(err)}
-              </div>
-            {/await}
-          {:else}
-            <CompanionPane paneId={item.paneId} kind={item.kind} sourcePaneId={item.sourcePaneId!} />
-          {/if}
+          <!-- Every pane body sits in its own boundary: a render throw in one
+               pane tears down and reports that pane alone, never the strip. -->
+          <RenderBoundary label="This panel" testId="pane-render-error">
+            {#if item.kind === 'take-control'}
+              <!-- Lazy: TakeControlPane pulls the xterm stack; a static
+                   import here would drag the terminal chunks into the eager
+                   startup graph (see the TerminalView mount in ChatView). -->
+              {#await import('../takecontrol/TakeControlPane.svelte')}
+                <div class="flex h-full items-center justify-center text-xs text-fg-muted">Loading terminal...</div>
+              {:then { default: TakeControlPane }}
+                <TakeControlPane paneId={item.paneId} />
+              {:catch err}
+                <div class="flex h-full items-center justify-center text-xs text-error" data-testid="take-control-load-error">
+                  Failed to load terminal: {err instanceof Error ? err.message : String(err)}
+                </div>
+              {/await}
+            {:else}
+              <CompanionPane paneId={item.paneId} kind={item.kind} sourcePaneId={item.sourcePaneId!} />
+            {/if}
+          </RenderBoundary>
         </section>
       {:else}
         {@const pane = getPane(item.paneId)}
@@ -516,7 +521,9 @@
             ondrop={(event) => drag.onPaneDrop(event, item.paneId)}
             ondragend={drag.onPaneDragEnd}
           >
-            <ChatView {pane} onPaneDragStart={(event) => drag.onPaneDragStart(event, item.paneId)} />
+            <RenderBoundary label="This thread pane" testId="pane-render-error">
+              <ChatView {pane} onPaneDragStart={(event) => drag.onPaneDragStart(event, item.paneId)} />
+            </RenderBoundary>
           </section>
         {:else}
           <section

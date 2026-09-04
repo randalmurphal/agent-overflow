@@ -23,13 +23,13 @@ one.
   render: the Files/Comments tab, and the extension filter's "Apply filter
   to diff" (it derives the `diffFiles` subset and maps top-file highlight
   indexes back to the full list). The text search stays rail-only.
-  Everything under its toolbar sits in a `<svelte:boundary>`: a render
-  throw (a keyed-each collision, a row model that cannot build) renders
-  the failure in place with a Retry, and is recorded through
-  `reportFrontendDiagnostic` because the boundary keeps it from
-  `window.onerror`. Without it the flush aborted mid-branch and the pane
-  kept the previous branch's DOM — "Loading…" over a fully loaded store,
-  the only trace in `frontend-errors.jsonl` (MR !309, 2026-09-04).
+  Everything under its toolbar sits in `shared/RenderBoundary.svelte`: a
+  render throw (a row model that cannot build) renders the failure in
+  place with a Retry, and is recorded through `reportFrontendDiagnostic`
+  because the boundary keeps it from `window.onerror`. Without it the
+  flush aborted mid-branch and the pane kept the previous branch's DOM —
+  "Loading…" over a fully loaded store, the only trace in
+  `frontend-errors.jsonl` (MR !309, 2026-09-04).
 - `reviewScroll.ts` is the pane's only scrollTop writer, with
   per-(thread, scope, geometry) position memory. The conflict view passes
   `scope:conflicts` so its position does not clobber the diff's. It
